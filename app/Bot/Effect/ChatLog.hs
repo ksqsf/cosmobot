@@ -9,8 +9,12 @@ module Bot.Effect.ChatLog where
 import Bot.Message
 import Bot.Prelude
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Storage.SQLite as Storage
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as AesonTypes
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
+import qualified Data.Text.Encoding as TextEncoding
 
 data ChatLog :: Effect where
   RecordMessage
@@ -43,7 +47,7 @@ data ChatLogEntry = ChatLogEntry
   , imageUrls :: ![Text]
   , text :: !Text
   }
-  deriving (Show, Generic, Aeson.ToJSON)
+  deriving (Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 recordMessage :: ChatLog :> es => IncomingMessage -> Eff es ()
 recordMessage message =
@@ -59,24 +63,32 @@ queryChat message limit includeBotMessages =
 
 runChatLog
   :: IOE :> es
-  => Eff (ChatLog : es) a
+  => Maybe Storage.SQLiteStore
+  -> Eff (ChatLog : es) a
   -> Eff es a
-runChatLog inner = do
+runChatLog sqliteStore inner = do
   ref <- liftIO (IORef.newIORef [] :: IO (IORef.IORef [ChatLogRecord]))
   interpret
     (\_ -> \case
-      RecordMessage message ->
-        liftIO $ IORef.modifyIORef' ref (userRecord message :)
-      RecordBotMessage context messageId body ->
-        liftIO $ IORef.modifyIORef' ref (botRecord context messageId body :)
+      RecordMessage message -> do
+        let record = userRecord message
+        liftIO $ IORef.modifyIORef' ref (record :)
+        persistRecord sqliteStore record
+      RecordBotMessage context messageId body -> do
+        let record = botRecord context messageId body
+        liftIO $ IORef.modifyIORef' ref (record :)
+        persistRecord sqliteStore record
       QueryChat message limit includeBotMessages -> do
-        records <- liftIO (IORef.readIORef ref)
-        pure
-          $ map chatLogEntry
-          $ reverse
-          $ take (max 0 limit)
-          $ filter (visible includeBotMessages)
-          $ filter (sameChat message) records)
+        case sqliteStore of
+          Just store -> liftIO (queryStored store message limit includeBotMessages)
+          Nothing -> do
+            records <- liftIO (IORef.readIORef ref)
+            pure
+              $ map chatLogEntry
+              $ reverse
+              $ take (max 0 limit)
+              $ filter (visible includeBotMessages)
+              $ filter (sameChat message) records)
     inner
 
 data ChatLogRecord = ChatLogRecord
@@ -123,6 +135,36 @@ sameChat left right =
 visible :: Bool -> ChatLogRecord -> Bool
 visible includeBotMessages record =
   includeBotMessages || not record.isBot
+
+persistRecord :: IOE :> es => Maybe Storage.SQLiteStore -> ChatLogRecord -> Eff es ()
+persistRecord Nothing _ =
+  pure ()
+persistRecord (Just store) record =
+  liftIO $
+    Storage.saveChatLogEntry
+      store
+      (platformKey record.message)
+      (kindKey record.message)
+      record.message.chatId
+      record.isBot
+      (Aeson.toJSON (chatLogEntry record))
+
+queryStored :: Storage.SQLiteStore -> IncomingMessage -> Int -> Bool -> IO [ChatLogEntry]
+queryStored store message limit includeBotMessages = do
+  values <- Storage.queryChatLogEntries store (platformKey message) (kindKey message) message.chatId includeBotMessages limit
+  pure (mapMaybe (AesonTypes.parseMaybe Aeson.parseJSON) values)
+
+platformKey :: IncomingMessage -> Text
+platformKey =
+  jsonText . (.platform)
+
+kindKey :: IncomingMessage -> Text
+kindKey =
+  jsonText . (.kind)
+
+jsonText :: Aeson.ToJSON a => a -> Text
+jsonText =
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
 
 chatLogEntry :: ChatLogRecord -> ChatLogEntry
 chatLogEntry record =

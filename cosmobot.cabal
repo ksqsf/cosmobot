@@ -64,6 +64,7 @@ executable cosmobot
         Bot.Config
         Bot.Conversation
         Bot.Message
+        Bot.Storage.SQLite
         Bot.Filter
         Bot.Handler.Ask
         Bot.Effect.Chat
@@ -81,6 +82,7 @@ executable cosmobot
                     , relude
                     , text
                     , containers
+                    , direct-sqlite
                     , directory
                     , filepath
                     , optics

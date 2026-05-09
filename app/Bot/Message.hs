@@ -12,14 +12,14 @@ import qualified Data.Aeson as Aeson
 data ChatPlatform
   = PlatformQQ
   | PlatformTelegram
-  deriving (Eq, Show, Generic, Aeson.ToJSON)
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 data ChatKind
   = ChatPrivate
   | ChatGroup
   | ChatChannel
   | ChatUnknown Text
-  deriving (Eq, Show, Generic, Aeson.ToJSON)
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 data IncomingMessage = IncomingMessage
   { platform  :: !ChatPlatform

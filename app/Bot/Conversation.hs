@@ -8,23 +8,48 @@ module Bot.Conversation where
 
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Storage.SQLite as Storage
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
 import qualified Data.IORef as IORef
 import qualified Data.Map.Strict as Map
 
-newtype ConversationStore = ConversationStore
+data ConversationStore = ConversationStore
   { unConversationStore :: IORef.IORef (Map Integer Conversation)
+  , sqliteStore :: !(Maybe Storage.SQLiteStore)
   }
 
 newtype Conversation = Conversation
   { messages :: [LLM.ChatMessage]
   }
-  deriving (Show)
+  deriving (Show, Generic)
 
-newConversationStore :: IO ConversationStore
-newConversationStore =
-  ConversationStore <$> IORef.newIORef Map.empty
+instance Aeson.ToJSON Conversation where
+  toJSON Conversation{messages} =
+    Aeson.object
+      [ "messages" Aeson..= messages
+      ]
+
+instance Aeson.FromJSON Conversation where
+  parseJSON = Aeson.withObject "Conversation" $ \o ->
+    Conversation <$> o Aeson..: "messages"
+
+newConversationStore :: Maybe Storage.SQLiteStore -> IO ConversationStore
+newConversationStore sqliteStore = do
+  conversations <- maybe (pure Map.empty) loadStoredConversations sqliteStore
+  ref <- IORef.newIORef conversations
+  pure ConversationStore{unConversationStore = ref, sqliteStore}
+
+loadStoredConversations :: Storage.SQLiteStore -> IO (Map Integer Conversation)
+loadStoredConversations store =
+  Map.mapMaybe decodeConversation <$> Storage.loadConversationRows store
+
+decodeConversation :: Text -> Maybe Conversation
+decodeConversation =
+  either (const Nothing) Just . Aeson.eitherDecodeStrict' . TextEncoding.encodeUtf8
 
 startWithUser :: Text -> Conversation
 startWithUser prompt =
@@ -73,11 +98,16 @@ assistantContext answer =
       ]
 
 lookupConversation :: IOE :> es => ConversationStore -> Integer -> Eff es (Maybe Conversation)
-lookupConversation (ConversationStore ref) messageId =
+lookupConversation ConversationStore{unConversationStore = ref} messageId =
   liftIO $ Map.lookup messageId <$> IORef.readIORef ref
 
 rememberConversation :: IOE :> es => ConversationStore -> Maybe Integer -> Conversation -> Eff es ()
 rememberConversation _ Nothing _ =
   pure ()
-rememberConversation (ConversationStore ref) (Just messageId) conversation =
+rememberConversation ConversationStore{unConversationStore = ref, sqliteStore} (Just messageId) conversation = do
   liftIO $ IORef.modifyIORef' ref (Map.insert messageId conversation)
+  traverse_ (\store -> liftIO (Storage.saveConversationJson store messageId (conversationJson conversation))) sqliteStore
+
+conversationJson :: Conversation -> Text
+conversationJson =
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode

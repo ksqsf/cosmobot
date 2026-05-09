@@ -1,6 +1,9 @@
 [log]
 level = "info"
 
+[storage]
+sqlite_path = "cosmobot.sqlite3"
+
 [qq]
 host = "127.0.0.1"
 port = 3001

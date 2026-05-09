@@ -312,6 +312,19 @@ instance Aeson.ToJSON ChatMessage where
       <> [ "tool_calls" Aeson..= toolCalls | not (null toolCalls) ]
       <> maybe [] (\value -> ["tool_call_id" Aeson..= value]) toolCallId
 
+instance Aeson.FromJSON ChatMessage where
+  parseJSON = Aeson.withObject "ChatMessage" $ \o -> do
+    role <- o Aeson..: "role"
+    content <- o Aeson..:? "content"
+    toolCalls <- fromMaybe [] <$> o Aeson..:? "tool_calls"
+    toolCallId <- o Aeson..:? "tool_call_id"
+    pure ChatMessage
+      { role = role
+      , content = content
+      , toolCalls = toolCalls
+      , toolCallId = toolCallId
+      }
+
 data MessageContent
   = TextContent !Text
   | PartsContent ![ContentPart]
@@ -321,6 +334,11 @@ instance Aeson.ToJSON MessageContent where
   toJSON = \case
     TextContent text -> Aeson.String text
     PartsContent parts -> Aeson.toJSON parts
+
+instance Aeson.FromJSON MessageContent where
+  parseJSON value =
+    (TextContent <$> Aeson.parseJSON value) <|>
+      (PartsContent <$> Aeson.parseJSON value)
 
 data ContentPart
   = TextPart !Text
@@ -341,6 +359,24 @@ instance Aeson.ToJSON ContentPart where
             [ "url" Aeson..= url
             ]
         ]
+
+instance Aeson.FromJSON ContentPart where
+  parseJSON = Aeson.withObject "ContentPart" $ \o -> do
+    type_ <- o Aeson..: "type" :: AesonTypes.Parser Text
+    case type_ of
+      "text" ->
+        TextPart <$> o Aeson..: "text"
+      "image_url" -> do
+        imageUrl <- o Aeson..: "image_url"
+        url <- parseImageUrl imageUrl
+        pure (ImageUrlPart url)
+      other ->
+        fail [i|Unknown content part type: #{other}|]
+    where
+      parseImageUrl = \case
+        Aeson.String url -> pure url
+        Aeson.Object obj -> obj Aeson..: "url"
+        _ -> fail "Invalid image_url content part"
 
 userText :: Text -> ChatMessage
 userText prompt =

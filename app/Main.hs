@@ -16,6 +16,7 @@ import Bot.Filter
 import Bot.Handler.Ask
 import Bot.Message
 import Bot.Prelude
+import qualified Bot.Storage.SQLite as SQLiteStorage
 import Control.Concurrent (forkIO)
 import qualified Control.Concurrent.Chan as Chan
 import qualified Data.Aeson as Aeson
@@ -26,10 +27,11 @@ import qualified Streaming.Prelude as S
 main :: IO ()
 main = do
   cfg <- loadConfig "config.toml"
-  conversations <- newConversationStore
+  sqliteStore <- Just <$> SQLiteStorage.openSQLiteStore cfg.sqlitePath
+  conversations <- newConversationStore sqliteStore
   runEff $
     runBotLog cfg.logLevel .
-    ChatLog.runChatLog .
+    ChatLog.runChatLog sqliteStore .
     Scheduler.runScheduler .
     Telegram.runTelegram cfg.telegram .
     QQ.runQQ cfg.qq .

@@ -23,6 +23,7 @@ data BotConfig = BotConfig
   , llm      :: !LLM.Config
   , handlers :: !HandlersConfig
   , logLevel :: !LogLevel
+  , sqlitePath :: !FilePath
   }
   deriving (Show)
 
@@ -58,6 +59,7 @@ loadConfig path = do
 
 data FileConfig = FileConfig
   { log      :: !LogFileConfig
+  , storage  :: !StorageFileConfig
   , qq       :: !QQFileConfig
   , telegram :: !TelegramFileConfig
   , llm      :: !LLMFileConfig
@@ -68,6 +70,7 @@ data FileConfig = FileConfig
 instance FromValue FileConfig where
   fromValue = parseTableFromValue $ FileConfig
     <$> fmap (fromMaybe defaultLogFileConfig) (optKey "log")
+    <*> fmap (fromMaybe defaultStorageFileConfig) (optKey "storage")
     <*> reqKey "qq"
     <*> reqKey "telegram"
     <*> reqKey "llm"
@@ -94,6 +97,21 @@ instance FromValue LogFileConfig where
     pure LogFileConfig
       { level = fromMaybe defaultLogFileConfig.level level
       }
+
+newtype StorageFileConfig = StorageFileConfig
+  { sqlitePath :: FilePath
+  }
+  deriving (Show)
+
+defaultStorageFileConfig :: StorageFileConfig
+defaultStorageFileConfig = StorageFileConfig
+  { sqlitePath = "cosmobot.sqlite3"
+  }
+
+instance FromValue StorageFileConfig where
+  fromValue = parseTableFromValue do
+    sqlitePath <- fromMaybe defaultStorageFileConfig.sqlitePath <$> optKey "sqlite_path"
+    pure StorageFileConfig{sqlitePath}
 
 instance FromValue ConfigLogLevel where
   fromValue = \case
@@ -259,6 +277,7 @@ toBotConfig cfg =
         }
     , handlers = withPlatformConfig cfg.qq cfg.telegram cfg.handlers
     , logLevel = cfg.log.level
+    , sqlitePath = cfg.storage.sqlitePath
     }
 
 withPlatformConfig :: QQFileConfig -> TelegramFileConfig -> HandlersConfig -> HandlersConfig
