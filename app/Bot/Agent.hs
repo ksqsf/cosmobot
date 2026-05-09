@@ -27,20 +27,34 @@ data Tool es = Tool
   { name        :: !Text
   , description :: !Text
   , parameters  :: !Aeson.Value
-  , allowed     :: AgentContext -> Bool
-  , run         :: AgentContext -> Aeson.Value -> Eff es Text
+  , allowed     :: AgentContext es -> Bool
+  , run         :: AgentContext es -> Aeson.Value -> Eff es ToolResult
   }
 
-data AgentContext = AgentContext
+data AgentContext es = AgentContext
   { message :: IncomingMessage
   , superuser :: !Bool
   , askCommand :: !Text
+  , remember :: Maybe Integer -> Conversation -> Eff es ()
   }
+
+data ToolResult = ToolResult
+  { content    :: !Text
+  , messageIds :: ![Maybe Integer]
+  }
+
+toolText :: Text -> ToolResult
+toolText content =
+  ToolResult content []
+
+toolMessage :: Maybe Integer -> Text -> ToolResult
+toolMessage messageId content =
+  ToolResult content [messageId]
 
 runAgent
   :: (LLM.LLM :> es, Log :> es)
   => Int
-  -> AgentContext
+  -> AgentContext es
   -> [Tool es]
   -> Conversation
   -> Eff es (Text, Conversation)
@@ -61,13 +75,15 @@ runAgent maxTurns context tools conversation =
               pure (toolLimitMessage answer.content, answered)
           | otherwise -> do
               results <- traverse execute calls
-              loop (turnsLeft - 1) (appendMessages results answered)
+              let next = appendMessages (map fst results) answered
+              traverse_ (\messageId -> context.remember messageId next) (concatMap snd results)
+              loop (turnsLeft - 1) next
 
     execute call = do
       let callName = call.name
       result <- runTool context tools call `catch` \(err :: SomeException) ->
-        pure [i|Tool #{callName} failed: #{show err :: String}|]
-      pure (LLM.toolResult call result)
+        pure (toolText [i|Tool #{callName} failed: #{show err :: String}|])
+      pure (LLM.toolResult call result.content, result.messageIds)
 
 toolLimitMessage :: Text -> Text
 toolLimitMessage content
@@ -82,32 +98,32 @@ toolSchema Tool{name, description, parameters} =
     , parameters = parameters
     }
 
-runTool :: AgentContext -> [Tool es] -> LLM.ToolCall -> Eff es Text
+runTool :: AgentContext es -> [Tool es] -> LLM.ToolCall -> Eff es ToolResult
 runTool context tools call =
   case find ((== call.name) . (.name)) tools of
     Nothing ->
-      pure [i|Unknown tool: #{callName}|]
+      pure (toolText [i|Unknown tool: #{callName}|])
     Just tool
       | not (toolAllowed tool context) ->
-          pure [i|Permission denied for tool: #{callName}|]
+          pure (toolText [i|Permission denied for tool: #{callName}|])
       | otherwise ->
       case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 call.arguments) of
         Left err ->
-          pure [i|Invalid JSON arguments for #{callName}: #{err}|]
+          pure (toolText [i|Invalid JSON arguments for #{callName}: #{err}|])
         Right args ->
           tool.run context args
   where
     callName = call.name
 
-toolAllowed :: Tool es -> AgentContext -> Bool
+toolAllowed :: Tool es -> AgentContext es -> Bool
 toolAllowed tool context =
   tool.allowed context
 
-everyone :: AgentContext -> Bool
+everyone :: AgentContext es -> Bool
 everyone _ =
   True
 
-superuserOnly :: AgentContext -> Bool
+superuserOnly :: AgentContext es -> Bool
 superuserOnly =
   (.superuser)
 
@@ -145,10 +161,10 @@ listDirectoryTool = Tool
       target <- resolveSafePath path
       isDir <- liftIO (doesDirectoryExist target)
       if not isDir
-        then pure "Not a directory."
+        then pure (toolText "Not a directory.")
         else do
           entries <- liftIO (listDirectory target)
-          pure (jsonText entries)
+          pure (toolText (jsonText entries))
   }
 
 readFileTool :: IOE :> es => Tool es
@@ -164,8 +180,8 @@ readFileTool = Tool
       target <- resolveSafePath path
       isFile <- liftIO (doesFileExist target)
       if not isFile
-        then pure "Not a file."
-        else liftIO (Text.readFile target)
+        then pure (toolText "Not a file.")
+        else toolText <$> liftIO (Text.readFile target)
   }
 
 sendReplyTool :: Chat.Chat :> es => Tool es
@@ -180,7 +196,7 @@ sendReplyTool = Tool
   , run = \context -> withTextArg "text" \text -> do
       sent <- Chat.replyTo context.message text
       let sentText = show sent :: String
-      pure [i|Sent message id: #{sentText}|]
+      pure (toolMessage sent [i|Sent message id: #{sentText}|])
   }
 
 mentionUserTool :: Chat.Chat :> es => Tool es
@@ -196,11 +212,11 @@ mentionUserTool = Tool
   , run = \context args ->
       case AesonTypes.parseEither mentionUserArgs args of
         Left err ->
-          pure (Text.pack err)
+          pure (toolText (Text.pack err))
         Right (userId, text) -> do
           sent <- Chat.mentionUser context.message userId text
           let sentText = show sent :: String
-          pure [i|Sent mention message id: #{sentText}|]
+          pure (toolMessage sent [i|Sent mention message id: #{sentText}|])
   }
 
 senderMemberInfoTool :: Chat.Chat :> es => Tool es
@@ -211,7 +227,7 @@ senderMemberInfoTool = Tool
   , allowed = everyone
   , run = \context _ -> do
       info <- Chat.getSenderMemberInfo context.message
-      pure (maybe "No member information is available for this message." jsonText info)
+      pure (toolText (maybe "No member information is available for this message." jsonText info))
   }
 
 memberInfoTool :: Chat.Chat :> es => Tool es
@@ -225,7 +241,7 @@ memberInfoTool = Tool
   , allowed = everyone
   , run = \context -> withIntegerArg "user_id" \userId -> do
       info <- Chat.getMemberInfo context.message userId
-      pure (maybe "No member information is available for this user in the current chat." jsonText info)
+      pure (toolText (maybe "No member information is available for this user in the current chat." jsonText info))
   }
 
 listGroupMembersTool :: Chat.Chat :> es => Tool es
@@ -236,7 +252,7 @@ listGroupMembersTool = Tool
   , allowed = everyone
   , run = \context _ -> do
       members <- Chat.listGroupMembers context.message
-      pure (maybe "Group member listing is not available for this platform or chat." jsonText members)
+      pure (toolText (maybe "Group member listing is not available for this platform or chat." jsonText members))
   }
 
 currentMentionsTool :: Tool es
@@ -246,7 +262,7 @@ currentMentionsTool = Tool
   , parameters = objectSchema [] []
   , allowed = everyone
   , run = \context _ ->
-      pure (jsonText context.message.mentions)
+      pure (toolText (jsonText context.message.mentions))
   }
 
 scheduleAgentActionTool :: Scheduler.Scheduler :> es => Tool es
@@ -262,10 +278,10 @@ scheduleAgentActionTool = Tool
   , run = \context args ->
       case AesonTypes.parseEither scheduledActionArgs args of
         Left err ->
-          pure (Text.pack err)
+          pure (toolText (Text.pack err))
         Right (delaySeconds, prompt) -> do
           Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
-          pure [i|Scheduled agent action in #{delaySeconds} seconds.|]
+          pure (toolText [i|Scheduled agent action in #{delaySeconds} seconds.|])
   }
 
 scheduledActionArgs :: Aeson.Value -> AesonTypes.Parser (Int, Text)
@@ -275,7 +291,7 @@ scheduledActionArgs =
     prompt <- o Aeson..: Key.fromText "prompt"
     pure (delaySeconds, prompt)
 
-scheduledAgentMessage :: AgentContext -> Int -> Text -> IncomingMessage
+scheduledAgentMessage :: AgentContext es -> Int -> Text -> IncomingMessage
 scheduledAgentMessage context delaySeconds prompt =
   let original = context.message
       commandText = context.askCommand <> " " <> prompt
@@ -294,15 +310,15 @@ scheduledAgentMessage context delaySeconds prompt =
           ]
       }
 
-withTextArg :: Text -> (Text -> Eff es Text) -> Aeson.Value -> Eff es Text
+withTextArg :: Text -> (Text -> Eff es ToolResult) -> Aeson.Value -> Eff es ToolResult
 withTextArg key action =
-  either (pure . Text.pack) action . AesonTypes.parseEither parser
+  either (pure . toolText . Text.pack) action . AesonTypes.parseEither parser
   where
     parser = Aeson.withObject "tool arguments" (Aeson..: Key.fromText key)
 
-withIntegerArg :: Text -> (Integer -> Eff es Text) -> Aeson.Value -> Eff es Text
+withIntegerArg :: Text -> (Integer -> Eff es ToolResult) -> Aeson.Value -> Eff es ToolResult
 withIntegerArg key action =
-  either (pure . Text.pack) action . AesonTypes.parseEither parser
+  either (pure . toolText . Text.pack) action . AesonTypes.parseEither parser
   where
     parser = Aeson.withObject "tool arguments" (Aeson..: Key.fromText key)
 

@@ -121,7 +121,7 @@ startAskConversation label cfg conversations message prompt = do
   logTrace label message
   logInfo label (incomingMessageLog message)
   let conversation = startConversation cfg (promptOrImageDefault prompt message.imageUrls) message.imageUrls
-  (answer, answeredConversation) <- askConversation cfg message conversation
+  (answer, answeredConversation) <- askConversation cfg conversations message conversation
   responseId <- Chat.replyTo message answer
   rememberConversation conversations responseId answeredConversation
 
@@ -166,7 +166,7 @@ startConversationFromReply cfg conversations message parentId = do
   let prompt = promptWithReferencedContext message.text referenced contextImages
   unless (Text.null prompt && null contextImages) do
     let conversation = startConversation cfg prompt contextImages
-    (answer, answeredConversation) <- askConversation cfg message conversation
+    (answer, answeredConversation) <- askConversation cfg conversations message conversation
     responseId <- Chat.replyTo message answer
     rememberConversation conversations responseId answeredConversation
 
@@ -182,20 +182,29 @@ continueConversation cfg conversations message conversation = do
   logInfo "continuing conversation" (incomingMessageLog message)
   let nextConversation =
         appendUserContext (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
-  (answer, answeredConversation) <- askConversation cfg message nextConversation
+  (answer, answeredConversation) <- askConversation cfg conversations message nextConversation
   responseId <- Chat.replyTo message answer
   rememberConversation conversations responseId answeredConversation
 
 askConversation
   :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
+  -> ConversationStore
   -> IncomingMessage
   -> Conversation
   -> Eff es (Text, Conversation)
-askConversation cfg message conversation =
-  Agent.runAgent cfg.agentMaxTurns (Agent.AgentContext message (isSuperuser cfg message) cfg.command) Agent.defaultTools conversation `catch` \(err :: SomeException) -> do
+askConversation cfg conversations message conversation =
+  Agent.runAgent cfg.agentMaxTurns context Agent.defaultTools conversation `catch` \(err :: SomeException) -> do
     logInfo "LLM request failed" (show err :: String)
     pure ("LLM request failed.", conversation)
+  where
+    context =
+      Agent.AgentContext
+        { message = message
+        , superuser = isSuperuser cfg message
+        , askCommand = cfg.command
+        , remember = rememberConversation conversations
+        }
 
 drawConversation
   :: (LLM.LLM :> es, Log :> es)
