@@ -12,6 +12,7 @@ import Bot.Config
 import Bot.Conversation
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Filter
 import Bot.Message
 import Bot.Prelude
@@ -19,7 +20,7 @@ import Control.Concurrent (forkIO)
 import qualified Data.Text as Text
 
 askHandlers
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> [RouteHandler es]
@@ -32,7 +33,7 @@ askHandlers cfg conversations =
   ]
 
 drawRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -41,7 +42,7 @@ drawRoute cfg conversations =
     forkEff (startDrawConversation "matched draw route" cfg conversations message prompt)
 
 askRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -55,7 +56,7 @@ forkEff action =
     void $ liftIO $ forkIO (runInIO action)
 
 privateRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -71,7 +72,7 @@ privateRoute cfg conversations =
         <* notCommand cfg.drawCommand
 
 mentionRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -88,7 +89,7 @@ mentionRoute cfg conversations =
         <* notCommand cfg.drawCommand
 
 continueRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -109,7 +110,7 @@ continueRoute cfg conversations =
       replyToMessage <* notCommand cfg.command <* notCommand cfg.drawCommand
 
 startAskConversation
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => Text
   -> AskHandlerConfig
   -> ConversationStore
@@ -125,7 +126,7 @@ startAskConversation label cfg conversations message prompt = do
   rememberConversation conversations responseId answeredConversation
 
 startDrawConversation
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => Text
   -> AskHandlerConfig
   -> ConversationStore
@@ -151,7 +152,7 @@ fetchReferencedMessage message =
   traverse (Chat.getMessageContent message) message.replyToMessageId <&> join
 
 startConversationFromReply
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
@@ -170,7 +171,7 @@ startConversationFromReply cfg conversations message parentId = do
     rememberConversation conversations responseId answeredConversation
 
 continueConversation
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
@@ -186,13 +187,13 @@ continueConversation cfg conversations message conversation = do
   rememberConversation conversations responseId answeredConversation
 
 askConversation
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> IncomingMessage
   -> Conversation
   -> Eff es (Text, Conversation)
 askConversation cfg message conversation =
-  Agent.runAgent cfg.agentMaxTurns (Agent.AgentContext message (isSuperuser cfg message)) Agent.defaultTools conversation `catch` \(err :: SomeException) -> do
+  Agent.runAgent cfg.agentMaxTurns (Agent.AgentContext message (isSuperuser cfg message) cfg.command) Agent.defaultTools conversation `catch` \(err :: SomeException) -> do
     logInfo "LLM request failed" (show err :: String)
     pure ("LLM request failed.", conversation)
 

@@ -70,6 +70,7 @@ executable cosmobot
         Bot.Effect.Chat.QQ
         Bot.Effect.Chat.Telegram
         Bot.Effect.LLM
+        Bot.Effect.Scheduler
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:

@@ -9,6 +9,7 @@ module Bot.Agent where
 import Bot.Conversation
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -33,6 +34,7 @@ data Tool es = Tool
 data AgentContext = AgentContext
   { message :: IncomingMessage
   , superuser :: !Bool
+  , askCommand :: !Text
   }
 
 runAgent
@@ -117,12 +119,13 @@ appendMessages :: [LLM.ChatMessage] -> Conversation -> Conversation
 appendMessages newMessages (Conversation messages) =
   Conversation (messages <> newMessages)
 
-defaultTools :: (Chat.Chat :> es, IOE :> es) => [Tool es]
+defaultTools :: (Chat.Chat :> es, Scheduler.Scheduler :> es, IOE :> es) => [Tool es]
 defaultTools =
   [ listDirectoryTool
   , readFileTool
   , sendReplyTool
   , senderMemberInfoTool
+  , scheduleAgentActionTool
   ]
 
 listDirectoryTool :: IOE :> es => Tool es
@@ -187,6 +190,51 @@ senderMemberInfoTool = Tool
       pure (maybe "No member information is available for this message." jsonText info)
   }
 
+scheduleAgentActionTool :: Scheduler.Scheduler :> es => Tool es
+scheduleAgentActionTool = Tool
+  { name = "schedule_agent_action"
+  , description = "Schedule a future agent action in the current chat. The future action is processed through the same incoming message pipeline and replies to the current user message."
+  , parameters = objectSchema
+      [ requiredInteger "delay_seconds" "Delay before running the future agent action, in seconds."
+      , requiredText "prompt" "Prompt for the future agent action."
+      ]
+      ["delay_seconds", "prompt"]
+  , allowed = everyone
+  , run = \context args ->
+      case AesonTypes.parseEither scheduledActionArgs args of
+        Left err ->
+          pure (Text.pack err)
+        Right (delaySeconds, prompt) -> do
+          Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
+          pure [i|Scheduled agent action in #{delaySeconds} seconds.|]
+  }
+
+scheduledActionArgs :: Aeson.Value -> AesonTypes.Parser (Int, Text)
+scheduledActionArgs =
+  Aeson.withObject "scheduled action arguments" $ \o -> do
+    delaySeconds <- o Aeson..: Key.fromText "delay_seconds"
+    prompt <- o Aeson..: Key.fromText "prompt"
+    pure (delaySeconds, prompt)
+
+scheduledAgentMessage :: AgentContext -> Int -> Text -> IncomingMessage
+scheduledAgentMessage context delaySeconds prompt =
+  let original = context.message
+      commandText = context.askCommand <> " " <> prompt
+  in original
+      { messageId = original.messageId
+      , replyToMessageId = Nothing
+      , mentions = []
+      , mentionUsernames = []
+      , imageUrls = []
+      , text = commandText
+      , raw = Aeson.object
+          [ "type" Aeson..= Aeson.String "scheduled_agent_action"
+          , "delay_seconds" Aeson..= delaySeconds
+          , "prompt" Aeson..= prompt
+          , "original_message" Aeson..= original.raw
+          ]
+      }
+
 withTextArg :: Text -> (Text -> Eff es Text) -> Aeson.Value -> Eff es Text
 withTextArg key action =
   either (pure . Text.pack) action . AesonTypes.parseEither parser
@@ -210,6 +258,16 @@ requiredText name description =
   ( name
   , Aeson.object
       [ "type" Aeson..= Aeson.String "string"
+      , "description" Aeson..= description
+      ]
+  )
+
+requiredInteger :: Text -> Text -> (Text, Aeson.Value)
+requiredInteger name description =
+  ( name
+  , Aeson.object
+      [ "type" Aeson..= Aeson.String "integer"
+      , "minimum" Aeson..= (0 :: Int)
       , "description" Aeson..= description
       ]
   )

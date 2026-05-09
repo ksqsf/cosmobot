@@ -10,6 +10,7 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Filter
 import Bot.Handler.Ask
 import Bot.Message
@@ -27,6 +28,7 @@ main = do
   conversations <- newConversationStore
   runEff $
     runBotLog cfg.logLevel .
+    Scheduler.runScheduler .
     Telegram.runTelegram cfg.telegram .
     QQ.runQQ cfg.qq .
     Chat.runChatWith platformReplyTo platformGetMessageContent platformGetSenderMemberInfo .
@@ -35,7 +37,7 @@ main = do
       consumeWith (routes cfg conversations) incomingMessages
 
 routes
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => BotConfig
   -> ConversationStore
   -> [RouteHandler es]
@@ -76,12 +78,13 @@ platformGetSenderMemberInfo message =
       pure Nothing
 
 incomingMessages
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages =
   mergeIncomingMessages
     [ QQ.incomingMessages
     , Telegram.incomingMessages
+    , Scheduler.scheduledMessages
     ]
 
 mergeIncomingMessages
