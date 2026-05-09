@@ -8,6 +8,7 @@ module Bot.Agent where
 
 import Bot.Conversation
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Message
@@ -36,6 +37,7 @@ data AgentContext es = AgentContext
   , superuser :: !Bool
   , askCommand :: !Text
   , remember :: Maybe Integer -> Conversation -> Eff es ()
+  , recordBotMessage :: Maybe Integer -> Text -> Eff es ()
   }
 
 data ToolResult = ToolResult
@@ -135,10 +137,11 @@ appendMessages :: [LLM.ChatMessage] -> Conversation -> Conversation
 appendMessages newMessages (Conversation messages) =
   Conversation (messages <> newMessages)
 
-defaultTools :: (Chat.Chat :> es, Scheduler.Scheduler :> es, IOE :> es) => [Tool es]
+defaultTools :: (Chat.Chat :> es, ChatLog.ChatLog :> es, Scheduler.Scheduler :> es, IOE :> es) => [Tool es]
 defaultTools =
   [ listDirectoryTool
   , readFileTool
+  , queryChatLogTool
   , sendReplyTool
   , mentionUserTool
   , senderMemberInfoTool
@@ -184,6 +187,25 @@ readFileTool = Tool
         else toolText <$> liftIO (Text.readFile target)
   }
 
+queryChatLogTool :: ChatLog.ChatLog :> es => Tool es
+queryChatLogTool = Tool
+  { name = "query_current_chat_log"
+  , description = "Return recent messages recorded in the current chat. Results are in chronological order and include sender ids, message ids, mentions, image urls, and text."
+  , parameters = objectSchema
+      [ requiredInteger "limit" "Maximum number of recent messages to return."
+      , optionalBoolean "include_bot_messages" "Whether to include bot messages. Defaults to false."
+      ]
+      ["limit"]
+  , allowed = everyone
+  , run = \context args ->
+      case AesonTypes.parseEither queryChatLogArgs args of
+        Left err ->
+          pure (toolText (Text.pack err))
+        Right (limit, includeBotMessages) -> do
+          entries <- ChatLog.queryChat context.message (fromInteger (max 0 limit)) includeBotMessages
+          pure (toolText (jsonText entries))
+  }
+
 sendReplyTool :: Chat.Chat :> es => Tool es
 sendReplyTool = Tool
   { name = "send_reply_to_current_chat"
@@ -195,6 +217,7 @@ sendReplyTool = Tool
   , allowed = everyone
   , run = \context -> withTextArg "text" \text -> do
       sent <- Chat.replyTo context.message text
+      context.recordBotMessage sent text
       let sentText = show sent :: String
       pure (toolMessage sent [i|Sent message id: #{sentText}|])
   }
@@ -215,6 +238,7 @@ mentionUserTool = Tool
           pure (toolText (Text.pack err))
         Right (userId, text) -> do
           sent <- Chat.mentionUser context.message userId text
+          context.recordBotMessage sent text
           let sentText = show sent :: String
           pure (toolMessage sent [i|Sent mention message id: #{sentText}|])
   }
@@ -322,6 +346,13 @@ withIntegerArg key action =
   where
     parser = Aeson.withObject "tool arguments" (Aeson..: Key.fromText key)
 
+queryChatLogArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Bool)
+queryChatLogArgs =
+  Aeson.withObject "query chat log arguments" $ \o -> do
+    limit <- o Aeson..: Key.fromText "limit"
+    includeBotMessages <- fromMaybe False <$> o Aeson..:? Key.fromText "include_bot_messages"
+    pure (limit, includeBotMessages)
+
 mentionUserArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Text)
 mentionUserArgs =
   Aeson.withObject "mention user arguments" $ \o -> do
@@ -356,6 +387,15 @@ requiredInteger name description =
   , Aeson.object
       [ "type" Aeson..= Aeson.String "integer"
       , "minimum" Aeson..= (0 :: Int)
+      , "description" Aeson..= description
+      ]
+  )
+
+optionalBoolean :: Text -> Text -> (Text, Aeson.Value)
+optionalBoolean name description =
+  ( name
+  , Aeson.object
+      [ "type" Aeson..= Aeson.String "boolean"
       , "description" Aeson..= description
       ]
   )

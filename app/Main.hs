@@ -7,6 +7,7 @@ module Main (main) where
 import Bot.Config
 import Bot.Conversation
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
 import qualified Bot.Effect.LLM as LLM
@@ -28,16 +29,17 @@ main = do
   conversations <- newConversationStore
   runEff $
     runBotLog cfg.logLevel .
+    ChatLog.runChatLog .
     Scheduler.runScheduler .
     Telegram.runTelegram cfg.telegram .
     QQ.runQQ cfg.qq .
     Chat.runChatWith platformReplyTo platformGetMessageContent platformGetSenderMemberInfo platformGetMemberInfo platformListGroupMembers platformMentionUser .
     LLM.runLLM cfg.llm $ do
       logInfo_ "Cosmobot stand by!"
-      consumeWith (routes cfg conversations) incomingMessages
+      consumeWith (routes cfg conversations) (recordedIncomingMessages incomingMessages)
 
 routes
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => BotConfig
   -> ConversationStore
   -> [RouteHandler es]
@@ -126,6 +128,15 @@ incomingMessages =
     , Telegram.incomingMessages
     , Scheduler.scheduledMessages
     ]
+
+recordedIncomingMessages
+  :: ChatLog.ChatLog :> es
+  => Stream (Of IncomingMessage) (Eff es) ()
+  -> Stream (Of IncomingMessage) (Eff es) ()
+recordedIncomingMessages =
+  S.mapM \message -> do
+    ChatLog.recordMessage message
+    pure message
 
 mergeIncomingMessages
   :: IOE :> es

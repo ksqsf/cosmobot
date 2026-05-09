@@ -67,6 +67,7 @@ executable cosmobot
         Bot.Filter
         Bot.Handler.Ask
         Bot.Effect.Chat
+        Bot.Effect.ChatLog
         Bot.Effect.Chat.QQ
         Bot.Effect.Chat.Telegram
         Bot.Effect.LLM

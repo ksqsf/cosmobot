@@ -11,6 +11,7 @@ import qualified Bot.Agent as Agent
 import Bot.Config
 import Bot.Conversation
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Filter
@@ -20,7 +21,7 @@ import Control.Concurrent (forkIO)
 import qualified Data.Text as Text
 
 askHandlers
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> [RouteHandler es]
@@ -33,7 +34,7 @@ askHandlers cfg conversations =
   ]
 
 drawRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -42,7 +43,7 @@ drawRoute cfg conversations =
     forkEff (startDrawConversation "matched draw route" cfg conversations message prompt)
 
 askRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -56,7 +57,7 @@ forkEff action =
     void $ liftIO $ forkIO (runInIO action)
 
 privateRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -72,7 +73,7 @@ privateRoute cfg conversations =
         <* notCommand cfg.drawCommand
 
 mentionRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -89,7 +90,7 @@ mentionRoute cfg conversations =
         <* notCommand cfg.drawCommand
 
 continueRoute
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
@@ -110,7 +111,7 @@ continueRoute cfg conversations =
       replyToMessage <* notCommand cfg.command <* notCommand cfg.drawCommand
 
 startAskConversation
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => Text
   -> AskHandlerConfig
   -> ConversationStore
@@ -126,10 +127,11 @@ startAskConversation label cfg conversations message prompt = do
   let conversation = startConversation cfg contextPrompt contextImages
   (answer, answeredConversation) <- askConversation cfg conversations message conversation
   responseId <- Chat.replyTo message answer
+  ChatLog.recordBotMessage message responseId answer
   rememberConversation conversations responseId answeredConversation
 
 startDrawConversation
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => Text
   -> AskHandlerConfig
   -> ConversationStore
@@ -145,6 +147,7 @@ startDrawConversation label cfg conversations message prompt = do
   let conversation = startConversation cfg contextPrompt contextImages
   answer <- drawConversation conversation
   responseId <- Chat.replyTo message answer
+  ChatLog.recordBotMessage message responseId answer
   rememberConversation conversations responseId (appendAssistant answer conversation)
 
 fetchReferencedMessage
@@ -155,7 +158,7 @@ fetchReferencedMessage message =
   traverse (Chat.getMessageContent message) message.replyToMessageId <&> join
 
 startConversationFromReply
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
@@ -171,10 +174,11 @@ startConversationFromReply cfg conversations message parentId = do
     let conversation = startConversation cfg prompt contextImages
     (answer, answeredConversation) <- askConversation cfg conversations message conversation
     responseId <- Chat.replyTo message answer
+    ChatLog.recordBotMessage message responseId answer
     rememberConversation conversations responseId answeredConversation
 
 continueConversation
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
@@ -187,10 +191,11 @@ continueConversation cfg conversations message conversation = do
         appendUserContext (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
   (answer, answeredConversation) <- askConversation cfg conversations message nextConversation
   responseId <- Chat.replyTo message answer
+  ChatLog.recordBotMessage message responseId answer
   rememberConversation conversations responseId answeredConversation
 
 askConversation
-  :: (Chat.Chat :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
@@ -207,6 +212,7 @@ askConversation cfg conversations message conversation =
         , superuser = isSuperuser cfg message
         , askCommand = cfg.command
         , remember = rememberConversation conversations
+        , recordBotMessage = ChatLog.recordBotMessage message
         }
 
 drawConversation
