@@ -120,7 +120,10 @@ startAskConversation
 startAskConversation label cfg conversations message prompt = do
   logTrace label message
   logInfo label (incomingMessageLog message)
-  let conversation = startConversation cfg (promptOrImageDefault prompt message.imageUrls) message.imageUrls
+  referenced <- fetchReferencedMessage message
+  let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
+  let contextPrompt = promptWithReferencedContext prompt referenced contextImages
+  let conversation = startConversation cfg contextPrompt contextImages
   (answer, answeredConversation) <- askConversation cfg conversations message conversation
   responseId <- Chat.replyTo message answer
   rememberConversation conversations responseId answeredConversation
