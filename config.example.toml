@@ -1,0 +1,38 @@
+[log]
+level = "info"
+
+[qq]
+host = "127.0.0.1"
+port = 3001
+path = "/"
+token = "xxx"
+bot_qq = 0
+superusers = []
+
+[telegram]
+bot_token = ""
+bot_id = ""
+superusers = []
+
+[llm]
+endpoint = "openrouter.ai"
+api_key = ""
+model = "openai/gpt-4o-mini"
+web_search = false
+web_search_max_results = 5
+web_fetch = false
+web_fetch_max_uses = 5
+web_fetch_max_content_tokens = 50000
+datetime = false
+image_generation = false
+image_generation_model = "openai/gpt-5-image-mini"
+image_generation_quality = "medium"
+image_generation_size = "1024x1024"
+image_generation_output_format = "png"
+
+[handlers.ask]
+command = "!ask"
+draw_command = "!draw"
+agent_max_turns = 4
+qq_group_whitelist = []
+telegram_chat_whitelist = []
