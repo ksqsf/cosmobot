@@ -696,6 +696,35 @@ replyTo message body =
     _ ->
       pure Nothing
 
+mentionUser :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
+mentionUser message userId body =
+  case (message.platform, message.chatId) of
+    (PlatformTelegram, Just chatId) -> do
+      sent <- sendMessage SendMessageRequest
+        { chatId = chatId
+        , messageThreadId = Nothing
+        , text = telegramMentionHtml userId body
+        , parseMode = Just ParseModeHTML
+        , disableNotification = Nothing
+        , replyToMessageId = message.messageId
+        }
+      pure (Just sent.messageId)
+    _ ->
+      pure Nothing
+
+telegramMentionHtml :: Integer -> Text -> Text
+telegramMentionHtml userId body =
+  [i|<a href="tg://user?id=#{userId}">user</a> #{escapeHtml body}|]
+
+escapeHtml :: Text -> Text
+escapeHtml =
+  Text.concatMap \case
+    '<' -> "&lt;"
+    '>' -> "&gt;"
+    '&' -> "&amp;"
+    '"' -> "&quot;"
+    c   -> Text.singleton c
+
 replyTextAndImages :: Telegram :> es => Integer -> Maybe Integer -> Text -> Eff es Message
 replyTextAndImages chatId replyToMessageId body =
   case ChatEffect.replyImageUrls body of

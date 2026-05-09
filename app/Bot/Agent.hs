@@ -124,7 +124,10 @@ defaultTools =
   [ listDirectoryTool
   , readFileTool
   , sendReplyTool
+  , mentionUserTool
   , senderMemberInfoTool
+  , memberInfoTool
+  , currentMentionsTool
   , scheduleAgentActionTool
   ]
 
@@ -179,6 +182,26 @@ sendReplyTool = Tool
       pure [i|Sent message id: #{sentText}|]
   }
 
+mentionUserTool :: Chat.Chat :> es => Tool es
+mentionUserTool = Tool
+  { name = "mention_user"
+  , description = "Send a reply in the current chat that mentions the given user id. On QQ this sends an actual at segment."
+  , parameters = objectSchema
+      [ requiredInteger "user_id" "Platform user id to mention."
+      , requiredText "text" "Message text to send after the mention."
+      ]
+      ["user_id", "text"]
+  , allowed = everyone
+  , run = \context args ->
+      case AesonTypes.parseEither mentionUserArgs args of
+        Left err ->
+          pure (Text.pack err)
+        Right (userId, text) -> do
+          sent <- Chat.mentionUser context.message userId text
+          let sentText = show sent :: String
+          pure [i|Sent mention message id: #{sentText}|]
+  }
+
 senderMemberInfoTool :: Chat.Chat :> es => Tool es
 senderMemberInfoTool = Tool
   { name = "get_current_sender_member_info"
@@ -188,6 +211,30 @@ senderMemberInfoTool = Tool
   , run = \context _ -> do
       info <- Chat.getSenderMemberInfo context.message
       pure (maybe "No member information is available for this message." jsonText info)
+  }
+
+memberInfoTool :: Chat.Chat :> es => Tool es
+memberInfoTool = Tool
+  { name = "get_group_member_info"
+  , description = "Get platform-provided member information for any user id in the current group chat."
+  , parameters = objectSchema
+      [ requiredInteger "user_id" "Platform user id to query in the current group."
+      ]
+      ["user_id"]
+  , allowed = everyone
+  , run = \context -> withIntegerArg "user_id" \userId -> do
+      info <- Chat.getMemberInfo context.message userId
+      pure (maybe "No member information is available for this user in the current chat." jsonText info)
+  }
+
+currentMentionsTool :: Tool es
+currentMentionsTool = Tool
+  { name = "get_current_message_mentions"
+  , description = "Return platform user ids mentioned in the current message, in message order. On QQ these are QQ numbers from at segments."
+  , parameters = objectSchema [] []
+  , allowed = everyone
+  , run = \context _ ->
+      pure (jsonText context.message.mentions)
   }
 
 scheduleAgentActionTool :: Scheduler.Scheduler :> es => Tool es
@@ -223,8 +270,8 @@ scheduledAgentMessage context delaySeconds prompt =
   in original
       { messageId = original.messageId
       , replyToMessageId = Nothing
-      , mentions = []
-      , mentionUsernames = []
+      , mentions = original.mentions
+      , mentionUsernames = original.mentionUsernames
       , imageUrls = []
       , text = commandText
       , raw = Aeson.object
@@ -240,6 +287,19 @@ withTextArg key action =
   either (pure . Text.pack) action . AesonTypes.parseEither parser
   where
     parser = Aeson.withObject "tool arguments" (Aeson..: Key.fromText key)
+
+withIntegerArg :: Text -> (Integer -> Eff es Text) -> Aeson.Value -> Eff es Text
+withIntegerArg key action =
+  either (pure . Text.pack) action . AesonTypes.parseEither parser
+  where
+    parser = Aeson.withObject "tool arguments" (Aeson..: Key.fromText key)
+
+mentionUserArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Text)
+mentionUserArgs =
+  Aeson.withObject "mention user arguments" $ \o -> do
+    userId <- o Aeson..: Key.fromText "user_id"
+    text <- o Aeson..: Key.fromText "text"
+    pure (userId, text)
 
 resolveSafePath :: IOE :> es => Text -> Eff es FilePath
 resolveSafePath rawPath = do

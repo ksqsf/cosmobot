@@ -23,6 +23,15 @@ data Chat :: Effect where
   GetSenderMemberInfo
     :: IncomingMessage
     -> Chat m (Maybe Aeson.Value)
+  GetMemberInfo
+    :: IncomingMessage
+    -> Integer
+    -> Chat m (Maybe Aeson.Value)
+  MentionUser
+    :: IncomingMessage
+    -> Integer
+    -> Text
+    -> Chat m (Maybe Integer)
 
 type instance DispatchOf Chat = Dynamic
 
@@ -38,19 +47,33 @@ getSenderMemberInfo :: Chat :> es => IncomingMessage -> Eff es (Maybe Aeson.Valu
 getSenderMemberInfo message =
   send (GetSenderMemberInfo message)
 
+getMemberInfo :: Chat :> es => IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+getMemberInfo message userId =
+  send (GetMemberInfo message userId)
+
+mentionUser :: Chat :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
+mentionUser message userId body =
+  send (MentionUser message userId body)
+
 runChatWith
   :: (IncomingMessage -> Text -> Eff es (Maybe Integer))
   -> (IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage))
   -> (IncomingMessage -> Eff es (Maybe Aeson.Value))
+  -> (IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value))
+  -> (IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer))
   -> Eff (Chat : es) a
   -> Eff es a
-runChatWith reply fetch fetchMember = interpret $ \_ -> \case
+runChatWith reply fetch fetchSenderMember fetchMember mention = interpret $ \_ -> \case
   ReplyTo message body ->
     reply message body
   GetMessageContent message messageId ->
     fetch message messageId
   GetSenderMemberInfo message ->
-    fetchMember message
+    fetchSenderMember message
+  GetMemberInfo message userId ->
+    fetchMember message userId
+  MentionUser message userId body ->
+    mention message userId body
 
 renderReplyBody :: Text -> Text
 renderReplyBody body =

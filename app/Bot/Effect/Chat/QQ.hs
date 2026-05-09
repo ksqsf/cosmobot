@@ -192,6 +192,27 @@ replyTo message body =
         ])
     _ -> pure Nothing
 
+mentionUser :: QQ :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
+mentionUser message userId body =
+  case (message.platform, message.kind, message.chatId <|> message.senderId) of
+    (PlatformQQ, ChatGroup, Just groupId) ->
+      responseMessageId <$> sendAction (Aeson.object
+        [ "action" Aeson..= Aeson.String "send_group_msg"
+        , "params" Aeson..= Aeson.object
+            [ "group_id" Aeson..= groupId
+            , "message" Aeson..= mentionMessage message userId body
+            ]
+        ])
+    (PlatformQQ, ChatPrivate, Just userId_) ->
+      responseMessageId <$> sendAction (Aeson.object
+        [ "action" Aeson..= Aeson.String "send_private_msg"
+        , "params" Aeson..= Aeson.object
+            [ "user_id" Aeson..= userId_
+            , "message" Aeson..= replyMessage message body
+            ]
+        ])
+    _ -> pure Nothing
+
 responseMessageId :: ActionResponse -> Maybe Integer
 responseMessageId response =
   response.data_ >>= \case
@@ -250,6 +271,38 @@ replyMessage message body =
               ]
           ]
       ] <> replyContent text imageUrls
+
+mentionMessage :: IncomingMessage -> Integer -> Text -> Aeson.Value
+mentionMessage message userId body =
+  Aeson.toJSON $ maybe mentionOnly withReply message.messageId
+  where
+    text = Chat.renderReplyBody body
+    mentionOnly =
+      mentionContent userId text
+    withReply messageId =
+      [ Aeson.object
+          [ "type" Aeson..= Aeson.String "reply"
+          , "data" Aeson..= Aeson.object
+              [ "id" Aeson..= messageId
+              ]
+          ]
+      ] <> mentionContent userId text
+
+mentionContent :: Integer -> Text -> [Aeson.Value]
+mentionContent userId body =
+  [ Aeson.object
+      [ "type" Aeson..= Aeson.String "at"
+      , "data" Aeson..= Aeson.object
+          [ "qq" Aeson..= userId
+          ]
+      ]
+  , Aeson.object
+      [ "type" Aeson..= Aeson.String "text"
+      , "data" Aeson..= Aeson.object
+          [ "text" Aeson..= (" " <> body)
+          ]
+      ]
+  ]
 
 replyContent :: Text -> [Text] -> [Aeson.Value]
 replyContent body imageUrls =
