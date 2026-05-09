@@ -27,6 +27,9 @@ data Chat :: Effect where
     :: IncomingMessage
     -> Integer
     -> Chat m (Maybe Aeson.Value)
+  ListGroupMembers
+    :: IncomingMessage
+    -> Chat m (Maybe Aeson.Value)
   MentionUser
     :: IncomingMessage
     -> Integer
@@ -51,6 +54,10 @@ getMemberInfo :: Chat :> es => IncomingMessage -> Integer -> Eff es (Maybe Aeson
 getMemberInfo message userId =
   send (GetMemberInfo message userId)
 
+listGroupMembers :: Chat :> es => IncomingMessage -> Eff es (Maybe Aeson.Value)
+listGroupMembers message =
+  send (ListGroupMembers message)
+
 mentionUser :: Chat :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
 mentionUser message userId body =
   send (MentionUser message userId body)
@@ -60,10 +67,11 @@ runChatWith
   -> (IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage))
   -> (IncomingMessage -> Eff es (Maybe Aeson.Value))
   -> (IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value))
+  -> (IncomingMessage -> Eff es (Maybe Aeson.Value))
   -> (IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer))
   -> Eff (Chat : es) a
   -> Eff es a
-runChatWith reply fetch fetchSenderMember fetchMember mention = interpret $ \_ -> \case
+runChatWith reply fetch fetchSenderMember fetchMember listMembers mention = interpret $ \_ -> \case
   ReplyTo message body ->
     reply message body
   GetMessageContent message messageId ->
@@ -72,6 +80,8 @@ runChatWith reply fetch fetchSenderMember fetchMember mention = interpret $ \_ -
     fetchSenderMember message
   GetMemberInfo message userId ->
     fetchMember message userId
+  ListGroupMembers message ->
+    listMembers message
   MentionUser message userId body ->
     mention message userId body
 

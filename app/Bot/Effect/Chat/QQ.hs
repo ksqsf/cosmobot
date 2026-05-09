@@ -241,6 +241,16 @@ getGroupMemberInfo groupId userId =
         ]
     ])
 
+getGroupMemberList :: QQ :> es => Integer -> Eff es (Maybe Aeson.Value)
+getGroupMemberList groupId =
+  (.data_) <$> sendAction (Aeson.object
+    [ "action" Aeson..= Aeson.String "get_group_member_list"
+    , "params" Aeson..= Aeson.object
+        [ "group_id" Aeson..= groupId
+        , "no_cache" Aeson..= False
+        ]
+    ])
+
 actionDataMessage :: ActionResponse -> Maybe ReferencedMessage
 actionDataMessage response =
   response.data_ >>= referencedMessageFromValue

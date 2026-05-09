@@ -31,7 +31,7 @@ main = do
     Scheduler.runScheduler .
     Telegram.runTelegram cfg.telegram .
     QQ.runQQ cfg.qq .
-    Chat.runChatWith platformReplyTo platformGetMessageContent platformGetSenderMemberInfo platformGetMemberInfo platformMentionUser .
+    Chat.runChatWith platformReplyTo platformGetMessageContent platformGetSenderMemberInfo platformGetMemberInfo platformListGroupMembers platformMentionUser .
     LLM.runLLM cfg.llm $ do
       logInfo_ "Cosmobot stand by!"
       consumeWith (routes cfg conversations) incomingMessages
@@ -88,6 +88,19 @@ platformGetMemberInfo message userId =
       QQ.getGroupMemberInfo groupId userId
     (PlatformTelegram, ChatGroup, Just chatId) ->
       Just . Aeson.toJSON <$> Telegram.getChatMember chatId userId
+    _ ->
+      pure Nothing
+
+platformListGroupMembers
+  :: QQ.QQ :> es
+  => IncomingMessage
+  -> Eff es (Maybe Aeson.Value)
+platformListGroupMembers message =
+  case (message.platform, message.kind, message.chatId) of
+    (PlatformQQ, ChatGroup, Just groupId) ->
+      QQ.getGroupMemberList groupId
+    (PlatformTelegram, ChatGroup, Just _) ->
+      pure Nothing
     _ ->
       pure Nothing
 

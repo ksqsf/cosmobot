@@ -127,6 +127,7 @@ defaultTools =
   , mentionUserTool
   , senderMemberInfoTool
   , memberInfoTool
+  , listGroupMembersTool
   , currentMentionsTool
   , scheduleAgentActionTool
   ]
@@ -225,6 +226,17 @@ memberInfoTool = Tool
   , run = \context -> withIntegerArg "user_id" \userId -> do
       info <- Chat.getMemberInfo context.message userId
       pure (maybe "No member information is available for this user in the current chat." jsonText info)
+  }
+
+listGroupMembersTool :: Chat.Chat :> es => Tool es
+listGroupMembersTool = Tool
+  { name = "list_group_members"
+  , description = "List members in the current group chat, including platform user ids and nicknames when available. QQ groups are supported. Telegram Bot API does not expose full member lists, so Telegram may return unavailable."
+  , parameters = objectSchema [] []
+  , allowed = everyone
+  , run = \context _ -> do
+      members <- Chat.listGroupMembers context.message
+      pure (maybe "Group member listing is not available for this platform or chat." jsonText members)
   }
 
 currentMentionsTool :: Tool es
