@@ -80,6 +80,7 @@ common app-deps
                     , bytestring
                     , aeson
                     , string-interpolate
+                    , unix
     hs-source-dirs:   app
 
 common test-deps

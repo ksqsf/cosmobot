@@ -30,6 +30,9 @@ import qualified Data.Text.IO as Text
 import System.Directory
 import System.FilePath
 import System.IO.Error (userError)
+import System.Posix.Signals (signalProcess, sigKILL)
+import System.Process (createProcess, shell, std_out, std_err, StdStream(..), getPid, waitForProcess)
+import System.Timeout (timeout)
 
 -- | Tool definition exposed to the LLM function-calling API.
 data Tool es = Tool
@@ -199,6 +202,7 @@ defaultTools =
   , currentMentionsTool
   , scheduleAgentActionTool
   , listCurrentUserSchedulesTool
+  , runBashTool
   ]
 
 listDirectoryTool :: IOE :> es => Tool es
@@ -206,7 +210,7 @@ listDirectoryTool = Tool
   { name = "list_directory"
   , description = "List files and directories under a path inside the bot working directory."
   , parameters = objectSchema
-      [ requiredText "path" "Directory path relative to the bot working directory. Use \".\" for the working directory."
+      [ fieldText "path" "Directory path relative to the bot working directory. Use \".\" for the working directory."
       ]
       ["path"]
   , allowed = superuserOnly
@@ -225,7 +229,7 @@ readFileTool = Tool
   { name = "read_file"
   , description = "Read a UTF-8 text file inside the bot working directory."
   , parameters = objectSchema
-      [ requiredText "path" "File path relative to the bot working directory."
+      [ fieldText "path" "File path relative to the bot working directory."
       ]
       ["path"]
   , allowed = superuserOnly
@@ -242,8 +246,8 @@ queryChatLogTool = Tool
   { name = "query_current_chat_log"
   , description = "Return recent messages recorded in the current chat. Results are in chronological order and include sender ids, message ids, mentions, image urls, and text."
   , parameters = objectSchema
-      [ requiredInteger "limit" "Maximum number of recent messages to return."
-      , optionalBoolean "include_bot_messages" "Whether to include bot messages. Defaults to false."
+      [ fieldInteger "limit" "Maximum number of recent messages to return."
+      , fieldBoolean "include_bot_messages" "Whether to include bot messages. Defaults to false."
       ]
       ["limit"]
   , allowed = everyone
@@ -261,7 +265,7 @@ generateImageTool = Tool
   { name = "generate_image"
   , description = "Generate an actual image from a prompt and send it to the current chat. Use this when the user asks to draw, create, or generate an image, including scheduled future image requests. After using this tool, keep the final answer brief and do not repeat the image URL."
   , parameters = objectSchema
-      [ requiredText "prompt" "Image generation prompt. Include the user's visual requirements, style, subject, text, and constraints."
+      [ fieldText "prompt" "Image generation prompt. Include the user's visual requirements, style, subject, text, and constraints."
       ]
       ["prompt"]
   , allowed = everyone
@@ -282,8 +286,8 @@ sendReplyTool = Tool
   { name = "send_reply_to_current_chat"
   , description = "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
   , parameters = objectSchema
-      [ optionalText "text" "Message text to send. May be omitted when image_urls is non-empty."
-      , optionalTextArray "image_urls" "Image URLs to send as images in the same reply. The platform must be able to fetch these URLs."
+      [ fieldText "text" "Message text to send. May be omitted when image_urls is non-empty."
+      , fieldTextArray "image_urls" "Image URLs to send as images in the same reply. The platform must be able to fetch these URLs."
       ]
       []
   , allowed = everyone
@@ -303,8 +307,8 @@ mentionUserTool = Tool
   { name = "mention_user"
   , description = "Send a reply in the current chat that mentions the given user id. On QQ this sends an actual at segment."
   , parameters = objectSchema
-      [ requiredInteger "user_id" "Platform user id to mention."
-      , requiredText "text" "Message text to send after the mention."
+      [ fieldInteger "user_id" "Platform user id to mention."
+      , fieldText "text" "Message text to send after the mention."
       ]
       ["user_id", "text"]
   , allowed = everyone
@@ -335,7 +339,7 @@ memberInfoTool = Tool
   { name = "get_group_member_info"
   , description = "Get platform-provided member information for any user id in the current group chat."
   , parameters = objectSchema
-      [ requiredInteger "user_id" "Platform user id to query in the current group."
+      [ fieldInteger "user_id" "Platform user id to query in the current group."
       ]
       ["user_id"]
   , allowed = everyone
@@ -370,8 +374,8 @@ scheduleAgentActionTool = Tool
   { name = "schedule_agent_action"
   , description = "Schedule a future agent action in the current chat. The future action is processed through the same incoming message pipeline and replies to the current user message."
   , parameters = objectSchema
-      [ requiredInteger "delay_seconds" "Delay before running the future agent action, in seconds."
-      , requiredText "prompt" "Prompt for the future agent action."
+      [ fieldInteger "delay_seconds" "Delay before running the future agent action, in seconds."
+      , fieldText "prompt" "Prompt for the future agent action."
       ]
       ["delay_seconds", "prompt"]
   , allowed = everyone
@@ -394,6 +398,44 @@ listCurrentUserSchedulesTool = Tool
       schedules <- Scheduler.listScheduledMessages context.message
       pure (toolText (jsonText (map scheduleSummary schedules)))
   }
+
+runBashTool :: IOE :> es => Tool es
+runBashTool = Tool
+  { name = "run_bash"
+  , description = "Run a bash script and obtain outputs; do not run malicious code"
+  , parameters = objectSchema
+      [ fieldText "script" "The bash script to be executed in the cwd"
+      , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the process. Defaults to 30."
+      ]
+      ["script"]
+  , allowed = superuserOnly
+  , run = \_ -> withTextArg "script" \script -> do
+      result <- liftIO $ runBashSafe (Text.unpack script)
+      pure (toolText result)
+  }
+
+runBashSafe :: String -> IO Text
+runBashSafe script = do
+  let timeoutSeconds = 30
+  (_, Just hOut, Just hErr, ph) <- createProcess
+    (shell script) { std_out = CreatePipe, std_err = CreatePipe }
+  outcome <- timeout (timeoutSeconds * 1_000_000) $ do
+    stdoutText <- Text.hGetContents hOut
+    stderrText <- Text.hGetContents hErr
+    exitCode <- waitForProcess ph
+    pure (exitCode, stdoutText, stderrText)
+  case outcome of
+    Nothing -> do
+      mPid <- getPid ph
+      traverse_ (signalProcess sigKILL) mPid
+      _ <- waitForProcess ph
+      pure $ "Script timed out after " <> Text.pack (show (timeoutSeconds :: Int)) <> " seconds and was killed."
+    Just (exitCode, stdoutText, stderrText) ->
+      pure $ Text.strip $ Text.unlines $ filter (not . Text.null)
+        [ if Text.null stdoutText then "" else "stdout:\n" <> stdoutText
+        , if Text.null stderrText then "" else "stderr:\n" <> stderrText
+        , "exit code: " <> Text.pack (show exitCode)
+        ]
 
 data ScheduleSummary = ScheduleSummary
   { scheduleId :: !Integer
@@ -497,8 +539,8 @@ isEqualOrParentOf :: FilePath -> FilePath -> Bool
 isEqualOrParentOf parent child =
   parent == child || addTrailingPathSeparator parent `isPrefixOf` child
 
-requiredText :: Text -> Text -> (Text, Aeson.Value)
-requiredText name description =
+fieldText :: Text -> Text -> (Text, Aeson.Value)
+fieldText name description =
   ( name
   , Aeson.object
       [ "type" Aeson..= Aeson.String "string"
@@ -506,12 +548,8 @@ requiredText name description =
       ]
   )
 
-optionalText :: Text -> Text -> (Text, Aeson.Value)
-optionalText =
-  requiredText
-
-optionalTextArray :: Text -> Text -> (Text, Aeson.Value)
-optionalTextArray name description =
+fieldTextArray :: Text -> Text -> (Text, Aeson.Value)
+fieldTextArray name description =
   ( name
   , Aeson.object
       [ "type" Aeson..= Aeson.String "array"
@@ -522,8 +560,8 @@ optionalTextArray name description =
       ]
   )
 
-requiredInteger :: Text -> Text -> (Text, Aeson.Value)
-requiredInteger name description =
+fieldInteger :: Text -> Text -> (Text, Aeson.Value)
+fieldInteger name description =
   ( name
   , Aeson.object
       [ "type" Aeson..= Aeson.String "integer"
@@ -532,8 +570,8 @@ requiredInteger name description =
       ]
   )
 
-optionalBoolean :: Text -> Text -> (Text, Aeson.Value)
-optionalBoolean name description =
+fieldBoolean :: Text -> Text -> (Text, Aeson.Value)
+fieldBoolean name description =
   ( name
   , Aeson.object
       [ "type" Aeson..= Aeson.String "boolean"
