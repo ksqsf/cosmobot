@@ -15,7 +15,9 @@ import Data.List (maximum)
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.Text.Encoding as TextEncoding
 import Network.HTTP.Req
+import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 import qualified Data.Text as Text
@@ -45,6 +47,10 @@ data Telegram :: Effect where
   CallTelegram
     :: TelegramRequest req
     => req -> Telegram m (TelegramResponse req)
+  UploadPhoto
+    :: SendPhotoRequest
+    -> FilePath
+    -> Telegram m Message
 
 type instance DispatchOf Telegram = Dynamic
 
@@ -62,6 +68,8 @@ runTelegram
 runTelegram cfg = interpret $ \_ -> \case
   CallTelegram request ->
     apiCall cfg (telegramMethod request) request
+  UploadPhoto request path ->
+    apiMultipartCall cfg "sendPhoto" (sendPhotoParts request path)
 
 -- ---------------------------------------------------------------------------
 -- Streaming
@@ -179,6 +187,26 @@ apiCall cfg method body = do
   resp :: Response <- liftIO $ runReq defaultHttpConfig $
     req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse telegramRequestOptions
       <&> responseBody
+  decodeResponse resp
+
+apiMultipartCall
+  :: (IOE :> es, Log :> es, Aeson.FromJSON result)
+  => Config
+  -> Text
+  -> [Multipart.Part]
+  -> Eff es result
+apiMultipartCall cfg method parts = do
+  resp :: Response <- liftIO $ runReq defaultHttpConfig do
+    body <- reqBodyMultipart parts
+    req POST (apiUrl cfg method) body jsonResponse telegramRequestOptions
+      <&> responseBody
+  decodeResponse resp
+
+decodeResponse
+  :: (IOE :> es, Aeson.FromJSON result)
+  => Response
+  -> Eff es result
+decodeResponse resp =
   case resp of
     Err desc -> throwIO (APIException desc)
     Ok value -> case Aeson.fromJSON value of
@@ -219,6 +247,34 @@ telegramRetryDelayMicroseconds =
 telegramRequestOptions :: Option 'Https
 telegramRequestOptions =
   responseTimeout telegramHttpResponseTimeoutMicroseconds
+
+sendPhotoParts :: SendPhotoRequest -> FilePath -> [Multipart.Part]
+sendPhotoParts SendPhotoRequest{..} path =
+  [ textPart "chat_id" (show chatId)
+  , Multipart.partFile "photo" path
+  ]
+    <> maybePart "message_thread_id" (show <$> messageThreadId)
+    <> maybePart "caption" caption
+    <> maybePart "parse_mode" (parseModeText <$> parseMode)
+    <> maybePart "disable_notification" (boolText <$> disableNotification)
+    <> maybePart "reply_to_message_id" (show <$> replyToMessageId)
+
+textPart :: Text -> Text -> Multipart.Part
+textPart name value =
+  Multipart.partBS name (TextEncoding.encodeUtf8 value)
+
+maybePart :: Text -> Maybe Text -> [Multipart.Part]
+maybePart name =
+  maybe [] \value -> [textPart name value]
+
+boolText :: Bool -> Text
+boolText True  = "true"
+boolText False = "false"
+
+parseModeText :: ParseMode -> Text
+parseModeText ParseModeMarkdown   = "Markdown"
+parseModeText ParseModeMarkdownV2 = "MarkdownV2"
+parseModeText ParseModeHTML       = "HTML"
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -711,6 +767,10 @@ sendMessage = callTelegram
 sendPhoto :: Telegram :> es => SendPhotoRequest -> Eff es Message
 sendPhoto = callTelegram
 
+uploadPhoto :: Telegram :> es => SendPhotoRequest -> FilePath -> Eff es Message
+uploadPhoto request path =
+  send (UploadPhoto request path)
+
 replyTo :: Telegram :> es => IncomingMessage -> Text -> Eff es (Maybe Integer)
 replyTo message body =
   case (message.platform, message.chatId) of
@@ -754,7 +814,7 @@ replyTextAndImages chatId replyToMessageId body =
   case ChatEffect.replyImageUrls body of
     [] -> sendText (ChatEffect.renderReplyBody body)
     firstImage : restImages -> do
-      firstSent <- sendPhoto SendPhotoRequest
+      firstSent <- sendImageRequest SendPhotoRequest
         { chatId = chatId
         , messageThreadId = Nothing
         , photo = firstImage
@@ -774,7 +834,7 @@ replyTextAndImages chatId replyToMessageId body =
       , disableNotification = Nothing
       , replyToMessageId = replyToMessageId
       }
-    sendImage caption photo = void $ sendPhoto SendPhotoRequest
+    sendImage caption photo = void $ sendImageRequest SendPhotoRequest
       { chatId = chatId
       , messageThreadId = Nothing
       , photo = photo
@@ -783,6 +843,16 @@ replyTextAndImages chatId replyToMessageId body =
       , disableNotification = Nothing
       , replyToMessageId = Nothing
       }
+
+sendImageRequest :: Telegram :> es => SendPhotoRequest -> Eff es Message
+sendImageRequest request =
+  case localFilePhoto request.photo of
+    Just path -> uploadPhoto request path
+    Nothing   -> sendPhoto request
+
+localFilePhoto :: Text -> Maybe FilePath
+localFilePhoto photo =
+  Text.unpack <$> Text.stripPrefix "file://" photo
 
 nonEmptyText :: Text -> Maybe Text
 nonEmptyText text

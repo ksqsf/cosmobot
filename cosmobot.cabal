@@ -86,6 +86,7 @@ executable cosmobot
                     , direct-sqlite
                     , directory
                     , filepath
+                    , http-client
                     , optics
                     , string-interpolate
                     , time
