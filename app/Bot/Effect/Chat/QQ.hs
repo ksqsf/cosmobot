@@ -15,6 +15,7 @@ module Bot.Effect.Chat.QQ
   , runQQ
   , eventsStream
   , incomingMessages
+  , eventToIncomingMessage
   , readActionResponse
   , replyTo
   , getMessageContent
@@ -422,6 +423,7 @@ instance Aeson.FromJSON Event where
 eventToIncomingMessage :: Event -> Maybe IncomingMessage
 eventToIncomingMessage event
   | event.postType /= "message" = Nothing
+  | isSelfMessage event = Nothing
   | otherwise = Just IncomingMessage
       { platform  = PlatformQQ
       , kind      = oneBotChatKind event.messageType
@@ -436,6 +438,13 @@ eventToIncomingMessage event
       , text      = fromMaybe "" ((event.message >>= messageText) <|> event.rawMessage)
       , raw       = event.rawEvent
       }
+
+isSelfMessage :: Event -> Bool
+isSelfMessage event =
+  isJust do
+    selfId <- event.selfId
+    userId <- event.userId
+    guard (selfId == userId)
 
 oneBotChatKind :: Maybe Text -> ChatKind
 oneBotChatKind = \case

@@ -155,3 +155,21 @@ test-suite scratchpad-spec
         Bot.Storage.SQLite
         Bot.Handler.Scratchpad
     hs-source-dirs:   test
+
+test-suite chat-platform-spec
+    import:           warnings
+                    , language
+                    , app-deps
+    type:             exitcode-stdio-1.0
+    main-is:          ChatPlatformSpec.hs
+    other-modules:
+        Bot.Prelude
+        Bot.Message
+        Bot.Effect.Chat
+        Bot.Effect.Chat.QQ
+        Bot.Effect.Chat.Telegram
+    build-depends:    base64-bytestring
+                    , http-client
+                    , req
+                    , websockets
+    hs-source-dirs:   test

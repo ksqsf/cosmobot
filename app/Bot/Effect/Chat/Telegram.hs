@@ -23,6 +23,7 @@ module Bot.Effect.Chat.Telegram
   , SendPhotoRequest (..)
   , runTelegram
   , incomingMessages
+  , updateToIncomingMessage
   , getMe
   , getUpdates
   , sendMessage
@@ -188,6 +189,7 @@ resolveIncomingMessageImages message = do
 updateToIncomingMessage :: Update -> Maybe IncomingMessage
 updateToIncomingMessage Update{message = telegramMessage} = do
   message <- telegramMessage
+  guard (not (isBotMessage message))
   pure IncomingMessage
     { platform  = PlatformTelegram
     , kind      = telegramChatKind message.chat.type_
@@ -202,6 +204,10 @@ updateToIncomingMessage Update{message = telegramMessage} = do
     , text      = messageText message
     , raw       = Aeson.toJSON message
     }
+
+isBotMessage :: Message -> Bool
+isBotMessage message =
+  maybe False (.isBot) message.from
 
 telegramChatKind :: ChatType -> ChatKind
 telegramChatKind = \case
