@@ -104,8 +104,11 @@ rankTitle suffix = do
   pure (date <> suffix)
 
 currentDateText :: IO Text
-currentDateText =
-  Text.pack . formatTime defaultTimeLocale "%F" . utctDay <$> getCurrentTime
+currentDateText = do
+  now <- getCurrentTime
+  let tz = hoursToTimeZone 8
+      day = localDay (utcToLocalTime tz now)
+  pure (Text.pack (formatTime defaultTimeLocale "%F" day))
 
 fetchChampionshipRows :: IO [[Text]]
 fetchChampionshipRows = do
