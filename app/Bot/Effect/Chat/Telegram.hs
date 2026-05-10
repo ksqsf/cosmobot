@@ -323,7 +323,7 @@ apiCall
   -> Eff es result
 apiCall cfg method body = do
   logTelegramApiRequest method
-  resp :: Response <- liftIO $ runReq defaultHttpConfig $
+  resp :: Response <- liftIO $ runReq telegramHttpConfig $
     req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse (telegramRequestOptions method)
       <&> responseBody
   logTelegramApiResponse method
@@ -337,12 +337,19 @@ apiMultipartCall
   -> Eff es result
 apiMultipartCall cfg method parts = do
   logTelegramApiRequest method
-  resp :: Response <- liftIO $ runReq defaultHttpConfig do
+  resp :: Response <- liftIO $ runReq telegramHttpConfig do
     body <- reqBodyMultipart parts
     req POST (apiUrl cfg method) body jsonResponse (telegramRequestOptions method)
       <&> responseBody
   logTelegramApiResponse method
   decodeResponse resp
+
+telegramHttpConfig :: HttpConfig
+telegramHttpConfig =
+  defaultHttpConfig
+    { httpConfigRetryJudge = \_ _ -> False
+    , httpConfigRetryJudgeException = \_ _ -> False
+    }
 
 logTelegramApiRequest :: Log :> es => Text -> Eff es ()
 logTelegramApiRequest method =
@@ -394,7 +401,7 @@ telegramLongPollResponseTimeoutMicroseconds =
 
 telegramApiResponseTimeoutMicroseconds :: Int
 telegramApiResponseTimeoutMicroseconds =
-  10 * 1000000
+  3 * 1000000
 
 telegramRetryDelayMicroseconds :: Int
 telegramRetryDelayMicroseconds =
