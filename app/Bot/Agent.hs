@@ -209,17 +209,22 @@ queryChatLogTool = Tool
 sendReplyTool :: Chat.Chat :> es => Tool es
 sendReplyTool = Tool
   { name = "send_reply_to_current_chat"
-  , description = "Send a reply message to the same chat as the current user message. Use only when the user asks you to send an additional message before the final answer."
+  , description = "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
   , parameters = objectSchema
-      [ requiredText "text" "Message text to send."
+      [ optionalText "text" "Message text to send. May be omitted when image_urls is non-empty."
+      , optionalTextArray "image_urls" "Image URLs to send as images in the same reply. The platform must be able to fetch these URLs."
       ]
-      ["text"]
+      []
   , allowed = everyone
-  , run = \context -> withTextArg "text" \text -> do
-      sent <- Chat.replyTo context.message text
-      context.recordBotMessage sent text
-      let sentText = show sent :: String
-      pure (toolMessage sent [i|Sent message id: #{sentText}|])
+  , run = \context args ->
+      case AesonTypes.parseEither sendReplyArgs args of
+        Left err ->
+          pure (toolText (Text.pack err))
+        Right body -> do
+          sent <- Chat.replyTo context.message body
+          context.recordBotMessage sent body
+          let sentText = show sent :: String
+          pure (toolMessage sent [i|Sent message id: #{sentText}|])
   }
 
 mentionUserTool :: Chat.Chat :> es => Tool es
@@ -360,6 +365,22 @@ mentionUserArgs =
     text <- o Aeson..: Key.fromText "text"
     pure (userId, text)
 
+sendReplyArgs :: Aeson.Value -> AesonTypes.Parser Text
+sendReplyArgs =
+  Aeson.withObject "send reply arguments" $ \o -> do
+    text <- Text.strip . fromMaybe "" <$> o Aeson..:? Key.fromText "text"
+    imageUrls <- map Text.strip . fromMaybe [] <$> o Aeson..:? Key.fromText "image_urls"
+    let body = replyBodyWithImages text (filter (not . Text.null) imageUrls)
+    when (Text.null body) do
+      fail "Either text or image_urls must be provided."
+    pure body
+
+replyBodyWithImages :: Text -> [Text] -> Text
+replyBodyWithImages text imageUrls =
+  Text.strip $ Text.unlines $
+    [ text | not (Text.null text) ]
+      <> map ("[image] " <>) imageUrls
+
 resolveSafePath :: IOE :> es => Text -> Eff es FilePath
 resolveSafePath rawPath = do
   cwd <- liftIO getCurrentDirectory
@@ -377,6 +398,22 @@ requiredText name description =
   ( name
   , Aeson.object
       [ "type" Aeson..= Aeson.String "string"
+      , "description" Aeson..= description
+      ]
+  )
+
+optionalText :: Text -> Text -> (Text, Aeson.Value)
+optionalText =
+  requiredText
+
+optionalTextArray :: Text -> Text -> (Text, Aeson.Value)
+optionalTextArray name description =
+  ( name
+  , Aeson.object
+      [ "type" Aeson..= Aeson.String "array"
+      , "items" Aeson..= Aeson.object
+          [ "type" Aeson..= Aeson.String "string"
+          ]
       , "description" Aeson..= description
       ]
   )
