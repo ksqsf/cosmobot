@@ -4,6 +4,7 @@ Description : In-memory chat log
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Bot.Effect.ChatLog where
 
@@ -15,6 +16,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
+import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 
 data ChatLog :: Effect where
@@ -85,7 +87,7 @@ runChatLog sqliteStore inner = do
           Nothing -> do
             records <- liftIO (IORef.readIORef ref)
             pure
-              $ map chatLogEntry
+              $ map (sanitizeChatLogEntry . chatLogEntry)
               $ reverse
               $ take (max 0 limit)
               $ filter (visible includeBotMessages)
@@ -148,7 +150,7 @@ persistRecord (Just store) record =
         (kindKey record.message)
         record.message.chatId
         record.isBot
-        (Aeson.toJSON (chatLogEntry record))
+        (Aeson.toJSON (sanitizeChatLogEntry (chatLogEntry record)))
     )
     `catch` \(err :: SomeException) ->
       logInfo "Failed to persist chat log entry" (show err :: String)
@@ -156,7 +158,7 @@ persistRecord (Just store) record =
 queryStored :: Storage.SQLiteStore -> IncomingMessage -> Int -> Bool -> IO [ChatLogEntry]
 queryStored store message limit includeBotMessages = do
   values <- Storage.queryChatLogEntries store (platformKey message) (kindKey message) message.chatId includeBotMessages limit
-  pure (mapMaybe (AesonTypes.parseMaybe Aeson.parseJSON) values)
+  pure (map sanitizeChatLogEntry (mapMaybe (AesonTypes.parseMaybe Aeson.parseJSON) values))
 
 platformKey :: IncomingMessage -> Text
 platformKey =
@@ -186,3 +188,40 @@ chatLogEntry record =
     , imageUrls = record.message.imageUrls
     , text = record.message.text
     }
+
+sanitizeChatLogEntry :: ChatLogEntry -> ChatLogEntry
+sanitizeChatLogEntry ChatLogEntry{..} =
+  ChatLogEntry
+    { imageUrls = map sanitizeImageRef imageUrls
+    , text = sanitizeImageText text
+    , ..
+    }
+
+sanitizeImageRef :: Text -> Text
+sanitizeImageRef ref
+  | isBase64ImageRef ref = "[Picture]"
+  | otherwise = ref
+
+sanitizeImageText :: Text -> Text
+sanitizeImageText text =
+  Text.intercalate "\n" (map sanitizeImageLine (Text.lines text))
+
+sanitizeImageLine :: Text -> Text
+sanitizeImageLine line
+  | isBase64ImageRef stripped = "[Picture]"
+  | Just ref <- Text.stripPrefix "[image] " stripped
+  , isBase64ImageRef ref = "[image] [Picture]"
+  | isBase64ImageRefInfix stripped = "[Picture]"
+  | otherwise = line
+  where
+    stripped = Text.strip line
+
+isBase64ImageRef :: Text -> Bool
+isBase64ImageRef ref =
+  "data:image/" `Text.isPrefixOf` Text.strip ref &&
+    ";base64," `Text.isInfixOf` ref
+
+isBase64ImageRefInfix :: Text -> Bool
+isBase64ImageRefInfix text =
+  "data:image/" `Text.isInfixOf` text &&
+    ";base64," `Text.isInfixOf` text
