@@ -8,6 +8,7 @@ module Bot.Message where
 
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.Text as Text
 
 data ChatPlatform
   = PlatformQQ
@@ -61,6 +62,33 @@ incomingMessageLog message =
     , text = message.text
     , imageCount = length message.imageUrls
     }
+
+incomingMessageLogLine :: IncomingMessage -> Text
+incomingMessageLogLine message =
+  Text.unwords
+    [ "platform=" <> show message.platform
+    , "kind=" <> show message.kind
+    , "chat=" <> showMaybe message.chatId
+    , "sender=" <> showMaybe message.senderId
+    , "username=" <> fromMaybe "-" message.senderUsername
+    , "message=" <> showMaybe message.messageId
+    , "reply_to=" <> showMaybe message.replyToMessageId
+    , "mentions=" <> show (length message.mentions + length message.mentionUsernames)
+    , "images=" <> show (length message.imageUrls)
+    , "text=" <> previewText 80 message.text
+    ]
+
+previewText :: Int -> Text -> Text
+previewText maxChars text =
+  let oneLine = Text.unwords (Text.words text)
+      shortened = Text.take maxChars oneLine
+  in if Text.length oneLine > maxChars
+    then shortened <> "..."
+    else shortened
+
+showMaybe :: Show a => Maybe a -> Text
+showMaybe =
+  maybe "-" show
 
 data ReferencedMessage = ReferencedMessage
   { messageId :: !(Maybe Integer)

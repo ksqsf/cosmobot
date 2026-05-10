@@ -110,7 +110,7 @@ incomingMessages = do
       S.lift $ logInfo "Ignoring QQ event" postType
     Just message -> do
       S.lift $ logTrace "incoming qq message" message
-      S.lift $ logInfo "incoming qq message" (incomingMessageLog message)
+      S.lift $ logInfo "incoming qq message" (incomingMessageLogLine message)
       S.yield message
   incomingMessages
 

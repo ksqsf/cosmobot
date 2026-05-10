@@ -104,7 +104,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
         , modalities = if imageRequest then Just ["image", "text"] else Nothing
         , imageConfig = if imageRequest then imageGenerationConfig cfg else Nothing
         }
-  logInfo "LLM request" (LLMRequestLog endpoint request)
+  logInfo "LLM request" (llmRequestLogLine endpoint request)
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
       (chatCompletionsUrl endpoint)
@@ -112,7 +112,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
       jsonResponse
       (header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
   let body = responseBody response
-  logInfo "LLM response" (llmResponseLog endpoint requestModel body)
+  logInfo "LLM response" (llmResponseLogLine endpoint requestModel body)
   case chatCompletionText body of
     Just answer -> pure answer
     Nothing     -> throwIO (LLMException [i|OpenAI response had no text choices: #{show body :: String}|])
@@ -128,7 +128,7 @@ askOpenAIWithTools cfg@Config{endpoint, apiKey = Just key, model} functionTools 
         , modalities = Nothing
         , imageConfig = Nothing
         }
-  logInfo "LLM request" (LLMRequestLog endpoint request)
+  logInfo "LLM request" (llmRequestLogLine endpoint request)
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
       (chatCompletionsUrl endpoint)
@@ -136,7 +136,7 @@ askOpenAIWithTools cfg@Config{endpoint, apiKey = Just key, model} functionTools 
       jsonResponse
       (header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
   let body = responseBody response
-  logInfo "LLM response" (llmResponseLog endpoint model body)
+  logInfo "LLM response" (llmResponseLogLine endpoint model body)
   pure (chatCompletionAnswer body)
 
 chatCompletionsUrl :: Text -> Url 'Https
@@ -294,6 +294,33 @@ llmResponseLog endpoint model response =
     , images = foldMap (fromMaybe [] . (.message.images)) response.choices
     , toolCalls = foldMap (.message.toolCalls) response.choices
     }
+
+llmRequestLogLine :: Text -> ChatCompletionRequest -> Text
+llmRequestLogLine endpoint request =
+  Text.unwords
+    [ "endpoint=" <> endpoint
+    , "model=" <> request.model
+    , "messages=" <> show (length request.messages)
+    , "tools=" <> maybe "0" (show . length) request.tools
+    , "modalities=" <> maybe "-" (Text.intercalate ",") request.modalities
+    , "image_config=" <> show (isJust request.imageConfig)
+    ]
+
+llmResponseLogLine :: Text -> Text -> ChatCompletionResponse -> Text
+llmResponseLogLine endpoint model response =
+  Text.unwords
+    [ "endpoint=" <> endpoint
+    , "model=" <> model
+    , "choices=" <> show (length response.choices)
+    , "usage=" <> show (isJust response.usage)
+    , "annotations=" <> show (length annotations)
+    , "images=" <> show (length images)
+    , "tool_calls=" <> show (length toolCalls)
+    ]
+  where
+    annotations = foldMap (fromMaybe [] . (.message.annotations)) response.choices
+    images = foldMap (fromMaybe [] . (.message.images)) response.choices
+    toolCalls = foldMap (.message.toolCalls) response.choices
 
 data ChatMessage = ChatMessage
   { role    :: !Text

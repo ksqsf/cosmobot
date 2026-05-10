@@ -124,3 +124,36 @@ executable cosmobot
         QuasiQuotes
         TypeFamilies
         BlockArguments
+
+test-suite filter-spec
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          FilterSpec.hs
+    other-modules:
+        Bot.Prelude
+        Bot.Message
+        Bot.Filter
+    build-depends:    base >=4.18.0.0
+                    , relude
+                    , text
+                    , aeson
+                    , effectful
+                    , log-effectful
+                    , string-interpolate
+                    , streaming
+    hs-source-dirs:   test
+                    , app
+    default-language: GHC2021
+    default-extensions:
+        DataKinds
+        DeriveAnyClass
+        DerivingVia
+        DuplicateRecordFields
+        LambdaCase
+        NoFieldSelectors
+        NoImplicitPrelude
+        OverloadedRecordDot
+        OverloadedStrings
+        QuasiQuotes
+        TypeFamilies
+        BlockArguments

@@ -75,15 +75,60 @@ promptOrImages =
       then Nothing
       else Just prompt
 
-type RouteHandler es = IncomingMessage -> Eff es ()
+data RouteResult es
+  = MatchedAndContinue (Eff es ())
+  | MatchedAndStop (Eff es ())
+  | UnmatchedAndContinue
+  | UnmatchedAndStop
+
+type RouteHandler es = IncomingMessage -> Eff es (RouteResult es)
 
 route :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> RouteHandler es
-route (MessageFilter filt) handler message =
-  traverse_ (handler message) (filt message)
+route =
+  routeWith MatchedAndContinue UnmatchedAndContinue
+
+routeStop :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> RouteHandler es
+routeStop =
+  routeWith MatchedAndStop UnmatchedAndContinue
+
+routeWith
+  :: (Eff es () -> RouteResult es)
+  -> RouteResult es
+  -> MessageFilter a
+  -> (IncomingMessage -> a -> Eff es ())
+  -> RouteHandler es
+routeWith matched unmatched (MessageFilter filt) handler message =
+  pure case filt message of
+    Just value -> matched (handler message value)
+    Nothing    -> unmatched
+
+runRouteResult :: RouteResult es -> Eff es Bool
+runRouteResult = \case
+  MatchedAndContinue action -> action $> True
+  MatchedAndStop action     -> action $> False
+  UnmatchedAndContinue      -> pure True
+  UnmatchedAndStop          -> pure False
+
+routeMatched :: RouteResult es -> Bool
+routeMatched = \case
+  MatchedAndContinue _ -> True
+  MatchedAndStop _     -> True
+  UnmatchedAndContinue -> False
+  UnmatchedAndStop     -> False
+
+routeContinues :: RouteResult es -> Bool
+routeContinues = \case
+  MatchedAndContinue _ -> True
+  MatchedAndStop _     -> False
+  UnmatchedAndContinue -> True
+  UnmatchedAndStop     -> False
 
 runHandlers :: [RouteHandler es] -> IncomingMessage -> Eff es ()
-runHandlers handlers message =
-  traverse_ ($ message) handlers
+runHandlers [] _ =
+  pure ()
+runHandlers (handler : handlers) message = do
+  continue <- handler message >>= runRouteResult
+  when continue (runHandlers handlers message)
 
 consumeWith
   :: [RouteHandler es]

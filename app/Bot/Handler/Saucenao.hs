@@ -43,8 +43,8 @@ saucenaoRoute
   -> AskHandlerConfig
   -> RouteHandler es
 saucenaoRoute saucenaoCfg askCfg =
-  route (command saucenaoCommand <* matching (canStartConversation askCfg)) \message _ -> do
-    logInfo "matched saucenao route" (incomingMessageLog message)
+  routeStop (command saucenaoCommand <* matching (canStartConversation askCfg)) \message _ -> do
+    logInfo "matched saucenao route" (incomingMessageLogLine message)
     forkEff (sendSaucenaoResults saucenaoCfg message)
 
 forkEff :: IOE :> es => Eff es () -> Eff es ()

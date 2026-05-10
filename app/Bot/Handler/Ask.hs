@@ -39,7 +39,7 @@ drawRoute
   -> ConversationStore
   -> RouteHandler es
 drawRoute cfg conversations =
-  route (command cfg.drawCommand <* matching (canStartConversation cfg)) $ \message prompt ->
+  routeStop (command cfg.drawCommand <* matching (canStartConversation cfg)) $ \message prompt ->
     forkEff (startDrawConversation "matched draw route" cfg conversations message prompt)
 
 askRoute
@@ -48,7 +48,7 @@ askRoute
   -> ConversationStore
   -> RouteHandler es
 askRoute cfg conversations =
-  route (command cfg.command <* matching (canStartConversation cfg)) $ \message prompt ->
+  routeStop (command cfg.command <* matching (canStartConversation cfg)) $ \message prompt ->
     forkEff (startAskConversation "matched ask route" cfg conversations message prompt)
 
 forkEff :: IOE :> es => Eff es () -> Eff es ()
@@ -62,7 +62,7 @@ privateRoute
   -> ConversationStore
   -> RouteHandler es
 privateRoute cfg conversations =
-  route privateMessage $ \message prompt ->
+  routeStop privateMessage $ \message prompt ->
     startAskConversation "matched private ask route" cfg conversations message prompt
   where
     privateMessage =
@@ -78,7 +78,7 @@ mentionRoute
   -> ConversationStore
   -> RouteHandler es
 mentionRoute cfg conversations =
-  route mentionMessage $ \message prompt ->
+  routeStop mentionMessage $ \message prompt ->
     startAskConversation "matched bot mention route" cfg conversations message prompt
   where
     mentionMessage =
@@ -95,7 +95,7 @@ continueRoute
   -> ConversationStore
   -> RouteHandler es
 continueRoute cfg conversations =
-  route continuedMessage \message parentId -> do
+  routeStop continuedMessage \message parentId -> do
     parent <- lookupConversation conversations parentId
     case parent of
       Nothing
@@ -120,7 +120,7 @@ startAskConversation
   -> Eff es ()
 startAskConversation label cfg conversations message prompt = do
   logTrace label message
-  logInfo label (incomingMessageLog message)
+  logInfo label (incomingMessageLogLine message)
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
@@ -140,7 +140,7 @@ startDrawConversation
   -> Eff es ()
 startDrawConversation label cfg conversations message prompt = do
   logTrace label message
-  logInfo label (incomingMessageLog message)
+  logInfo label (incomingMessageLogLine message)
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
@@ -166,7 +166,7 @@ startConversationFromReply
   -> Eff es ()
 startConversationFromReply cfg conversations message parentId = do
   logTrace "starting conversation from mentioned reply" message
-  logInfo "starting conversation from mentioned reply" (incomingMessageLog message)
+  logInfo "starting conversation from mentioned reply" (incomingMessageLogLine message)
   referenced <- Chat.getMessageContent message parentId
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let prompt = promptWithReferencedContext message.text referenced contextImages
@@ -186,7 +186,7 @@ continueConversation
   -> Eff es ()
 continueConversation cfg conversations message conversation = do
   logTrace "continuing conversation" message
-  logInfo "continuing conversation" (incomingMessageLog message)
+  logInfo "continuing conversation" (incomingMessageLogLine message)
   let nextConversation =
         appendUserContext (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
   (answer, answeredConversation) <- askConversation cfg conversations message nextConversation

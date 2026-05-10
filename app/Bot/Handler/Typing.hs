@@ -52,8 +52,8 @@ rankRoute
   -> IO [[Text]]
   -> RouteHandler es
 rankRoute cfg commandText titleSuffix failureMessage fetchRows =
-  route (command commandText <* matching (canStartConversation cfg)) \message _ -> do
-    logInfo "matched typing rank route" (commandText, incomingMessageLog message)
+  routeStop (command commandText <* matching (canStartConversation cfg)) \message _ -> do
+    logInfo "matched typing rank route" (commandText <> " " <> incomingMessageLogLine message)
     forkEff (sendRankImage titleSuffix failureMessage fetchRows message)
 
 forkEff :: IOE :> es => Eff es () -> Eff es ()

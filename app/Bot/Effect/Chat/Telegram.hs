@@ -125,7 +125,7 @@ incomingMessages = S.for updatesStream $ \update ->
     Just parsedMessage -> do
       message <- S.lift (resolveIncomingMessageImages parsedMessage)
       S.lift $ logTrace "incoming Telegram message" message
-      S.lift $ logInfo "incoming Telegram message" (incomingMessageLog message)
+      S.lift $ logInfo "incoming Telegram message" (incomingMessageLogLine message)
       S.yield message
 
 resolveIncomingMessageImages :: Telegram :> es => IncomingMessage -> Eff es IncomingMessage

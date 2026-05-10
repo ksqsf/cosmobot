@@ -22,6 +22,7 @@ import qualified Bot.Storage.SQLite as SQLiteStorage
 import Control.Concurrent (forkIO)
 import qualified Control.Concurrent.Chan as Chan
 import qualified Data.Aeson as Aeson
+import qualified Data.List as List
 import Log.Backend.StandardOutput
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
@@ -37,7 +38,7 @@ main = do
     Scheduler.runScheduler .
     Telegram.runTelegram cfg.telegram .
     QQ.runQQ cfg.qq .
-    Chat.runChatWith platformReplyTo platformGetMessageContent platformGetSenderMemberInfo platformGetMemberInfo platformListGroupMembers platformMentionUser .
+    Chat.runChatWith replyToPlatform getPlatformMessageContent getPlatformSenderMemberInfo getPlatformMemberInfo listPlatformGroupMembers mentionPlatformUser .
     LLM.runLLM cfg.llm $ do
       logInfo_ "Cosmobot stand by!"
       consumeWith (routes cfg conversations) (recordedIncomingMessages incomingMessages)
@@ -50,78 +51,143 @@ routes
 routes cfg conversations =
   typingHandlers cfg.handlers.ask <> saucenaoHandlers cfg.saucenao cfg.handlers.ask <> askHandlers cfg.handlers.ask conversations
 
-platformReplyTo
+data ChatPlatformDriver es = ChatPlatformDriver
+  { platform :: !ChatPlatform
+  , replyTo :: IncomingMessage -> Text -> Eff es (Maybe Integer)
+  , getMessageContent :: IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
+  , getSenderMemberInfo :: IncomingMessage -> Eff es (Maybe Aeson.Value)
+  , getMemberInfo :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+  , listGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
+  , mentionUser :: IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
+  }
+
+chatPlatformDrivers
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  => [ChatPlatformDriver es]
+chatPlatformDrivers =
+  [ qqDriver
+  , telegramDriver
+  ]
+
+qqDriver
+  :: (QQ.QQ :> es, IOE :> es)
+  => ChatPlatformDriver es
+qqDriver = ChatPlatformDriver
+  { platform = PlatformQQ
+  , replyTo = QQ.replyTo
+  , getMessageContent = \_ messageId -> QQ.getMessageContent messageId
+  , getSenderMemberInfo = \message ->
+      case (message.kind, message.chatId, message.senderId) of
+        (ChatGroup, Just groupId, Just userId) ->
+          QQ.getGroupMemberInfo groupId userId
+        _ ->
+          pure Nothing
+  , getMemberInfo = \message userId ->
+      case (message.kind, message.chatId) of
+        (ChatGroup, Just groupId) ->
+          QQ.getGroupMemberInfo groupId userId
+        _ ->
+          pure Nothing
+  , listGroupMembers = \message ->
+      case (message.kind, message.chatId) of
+        (ChatGroup, Just groupId) ->
+          QQ.getGroupMemberList groupId
+        _ ->
+          pure Nothing
+  , mentionUser = QQ.mentionUser
+  }
+
+telegramDriver
+  :: (Telegram.Telegram :> es, IOE :> es)
+  => ChatPlatformDriver es
+telegramDriver = ChatPlatformDriver
+  { platform = PlatformTelegram
+  , replyTo = Telegram.replyTo
+  , getMessageContent = Telegram.getMessageContent
+  , getSenderMemberInfo = \message ->
+      case (message.kind, message.chatId, message.senderId) of
+        (ChatGroup, Just chatId, Just userId) ->
+          Just . Aeson.toJSON <$> Telegram.getChatMember chatId userId
+        _ ->
+          pure Nothing
+  , getMemberInfo = \message userId ->
+      case (message.kind, message.chatId) of
+        (ChatGroup, Just chatId) ->
+          Just . Aeson.toJSON <$> Telegram.getChatMember chatId userId
+        _ ->
+          pure Nothing
+  , listGroupMembers = \_ ->
+      pure Nothing
+  , mentionUser = Telegram.mentionUser
+  }
+
+platformDriver
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  => IncomingMessage
+  -> Maybe (ChatPlatformDriver es)
+platformDriver message =
+  List.find ((== message.platform) . (.platform)) chatPlatformDrivers
+
+withPlatformDriver
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  => IncomingMessage
+  -> (ChatPlatformDriver es -> Eff es (Maybe a))
+  -> Eff es (Maybe a)
+withPlatformDriver message action =
+  maybe (pure Nothing) action (platformDriver message)
+
+replyToPlatform
   :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
   => IncomingMessage
   -> Text
   -> Eff es (Maybe Integer)
-platformReplyTo message body =
-  case message.platform of
-    PlatformQQ       -> QQ.replyTo message body
-    PlatformTelegram -> Telegram.replyTo message body
+replyToPlatform message body =
+  withPlatformDriver message \driver ->
+    driver.replyTo message body
 
-platformGetMessageContent
-  :: (QQ.QQ :> es, Telegram.Telegram :> es)
+getPlatformMessageContent
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Eff es (Maybe ReferencedMessage)
-platformGetMessageContent message messageId =
-  case message.platform of
-    PlatformQQ       -> QQ.getMessageContent messageId
-    PlatformTelegram -> Telegram.getMessageContent message messageId
+getPlatformMessageContent message messageId =
+  withPlatformDriver message \driver ->
+    driver.getMessageContent message messageId
 
-platformGetSenderMemberInfo
-  :: (QQ.QQ :> es, Telegram.Telegram :> es)
+getPlatformSenderMemberInfo
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
   => IncomingMessage
   -> Eff es (Maybe Aeson.Value)
-platformGetSenderMemberInfo message =
-  case (message.platform, message.kind, message.chatId, message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId, Just userId) ->
-      QQ.getGroupMemberInfo groupId userId
-    (PlatformTelegram, ChatGroup, Just chatId, Just userId) ->
-      Just . Aeson.toJSON <$> Telegram.getChatMember chatId userId
-    _ ->
-      pure Nothing
+getPlatformSenderMemberInfo message =
+  withPlatformDriver message \driver ->
+    driver.getSenderMemberInfo message
 
-platformGetMemberInfo
-  :: (QQ.QQ :> es, Telegram.Telegram :> es)
+getPlatformMemberInfo
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Eff es (Maybe Aeson.Value)
-platformGetMemberInfo message userId =
-  case (message.platform, message.kind, message.chatId) of
-    (PlatformQQ, ChatGroup, Just groupId) ->
-      QQ.getGroupMemberInfo groupId userId
-    (PlatformTelegram, ChatGroup, Just chatId) ->
-      Just . Aeson.toJSON <$> Telegram.getChatMember chatId userId
-    _ ->
-      pure Nothing
+getPlatformMemberInfo message userId =
+  withPlatformDriver message \driver ->
+    driver.getMemberInfo message userId
 
-platformListGroupMembers
-  :: QQ.QQ :> es
+listPlatformGroupMembers
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
   => IncomingMessage
   -> Eff es (Maybe Aeson.Value)
-platformListGroupMembers message =
-  case (message.platform, message.kind, message.chatId) of
-    (PlatformQQ, ChatGroup, Just groupId) ->
-      QQ.getGroupMemberList groupId
-    (PlatformTelegram, ChatGroup, Just _) ->
-      pure Nothing
-    _ ->
-      pure Nothing
+listPlatformGroupMembers message =
+  withPlatformDriver message \driver ->
+    driver.listGroupMembers message
 
-platformMentionUser
+mentionPlatformUser
   :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Text
   -> Eff es (Maybe Integer)
-platformMentionUser message userId body =
-  case message.platform of
-    PlatformQQ ->
-      QQ.mentionUser message userId body
-    PlatformTelegram ->
-      Telegram.mentionUser message userId body
+mentionPlatformUser message userId body =
+  withPlatformDriver message \driver ->
+    driver.mentionUser message userId body
 
 incomingMessages
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
