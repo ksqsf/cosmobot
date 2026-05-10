@@ -61,14 +61,14 @@ platformReplyTo message body =
     PlatformTelegram -> Telegram.replyTo message body
 
 platformGetMessageContent
-  :: QQ.QQ :> es
+  :: (QQ.QQ :> es, Telegram.Telegram :> es)
   => IncomingMessage
   -> Integer
   -> Eff es (Maybe ReferencedMessage)
 platformGetMessageContent message messageId =
   case message.platform of
     PlatformQQ       -> QQ.getMessageContent messageId
-    PlatformTelegram -> pure Nothing
+    PlatformTelegram -> Telegram.getMessageContent message messageId
 
 platformGetSenderMemberInfo
   :: (QQ.QQ :> es, Telegram.Telegram :> es)

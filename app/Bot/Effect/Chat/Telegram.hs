@@ -52,6 +52,9 @@ data Telegram :: Effect where
   CallTelegram
     :: TelegramRequest req
     => req -> Telegram m (TelegramResponse req)
+  FileUrl
+    :: Text
+    -> Telegram m Text
   UploadPhoto
     :: SendPhotoRequest
     -> FilePath
@@ -64,6 +67,12 @@ callTelegram
   => req -> Eff es (TelegramResponse req)
 callTelegram = send . CallTelegram
 
+fileUrl
+  :: Telegram :> es
+  => Text
+  -> Eff es Text
+fileUrl = send . FileUrl
+
 runTelegram
   :: IOE :> es
   => Log :> es
@@ -73,6 +82,9 @@ runTelegram
 runTelegram cfg = interpret $ \_ -> \case
   CallTelegram request ->
     apiCall cfg (telegramMethod request) request
+  FileUrl fileId -> do
+    file :: File <- apiCall cfg (telegramMethod (GetFileRequest fileId)) (GetFileRequest fileId)
+    pure (telegramFileUrl cfg file.filePath)
   UploadPhoto request path ->
     apiMultipartCall cfg "sendPhoto" (sendPhotoParts request path)
 
@@ -110,10 +122,29 @@ incomingMessages = S.for updatesStream $ \update ->
     Nothing -> do
       S.lift $ logTrace_ [i|Ignoring Telegram event|]
       S.lift $ logInfo_ "Ignoring Telegram event"
-    Just message -> do
+    Just parsedMessage -> do
+      message <- S.lift (resolveIncomingMessageImages parsedMessage)
       S.lift $ logTrace "incoming Telegram message" message
       S.lift $ logInfo "incoming Telegram message" (incomingMessageLog message)
       S.yield message
+
+resolveIncomingMessageImages :: Telegram :> es => IncomingMessage -> Eff es IncomingMessage
+resolveIncomingMessageImages message = do
+  imageUrls <- traverse fileUrl message.imageUrls
+  pure IncomingMessage
+    { platform = message.platform
+    , kind = message.kind
+    , chatId = message.chatId
+    , senderId = message.senderId
+    , senderUsername = message.senderUsername
+    , messageId = message.messageId
+    , replyToMessageId = message.replyToMessageId
+    , mentions = message.mentions
+    , mentionUsernames = message.mentionUsernames
+    , imageUrls = imageUrls
+    , text = message.text
+    , raw = message.raw
+    }
 
 updateToIncomingMessage :: Update -> Maybe IncomingMessage
 updateToIncomingMessage Update{message = telegramMessage} = do
@@ -128,8 +159,8 @@ updateToIncomingMessage Update{message = telegramMessage} = do
     , replyToMessageId = (.messageId) <$> message.replyToMessage
     , mentions  = messageMentionIds message
     , mentionUsernames = messageMentionUsernames message
-    , imageUrls = []
-    , text      = Text.strip (fromMaybe "" message.text)
+    , imageUrls = messageImageFileIds message
+    , text      = messageText message
     , raw       = Aeson.toJSON message
     }
 
@@ -142,7 +173,7 @@ telegramChatKind = \case
 
 messageMentionIds :: Message -> [Integer]
 messageMentionIds message =
-  mapMaybe entityMentionUserId (fromMaybe [] message.entities)
+  mapMaybe entityMentionUserId (messageEntities message)
 
 entityMentionUserId :: MessageEntity -> Maybe Integer
 entityMentionUserId entity =
@@ -150,20 +181,67 @@ entityMentionUserId entity =
 
 messageMentionUsernames :: Message -> [Text]
 messageMentionUsernames message =
-  mapMaybe (entityMentionUsername (fromMaybe "" message.text)) (fromMaybe [] message.entities)
+  mapMaybe (entityMentionUsername (messageText message)) (messageEntities message)
+
+messageText :: Message -> Text
+messageText message =
+  Text.strip (fromMaybe "" (message.text <|> message.caption))
+
+messageEntities :: Message -> [MessageEntity]
+messageEntities message =
+  fromMaybe [] (message.entities <|> message.captionEntities)
+
+messageImageFileIds :: Message -> [Text]
+messageImageFileIds message =
+  maybe [] (maybeToList . largestPhotoFileId) message.photo
+
+largestPhotoFileId :: [PhotoSize] -> Maybe Text
+largestPhotoFileId =
+  fmap (.fileId) . viaNonEmpty largest
+  where
+    largest photos =
+      let MaxPhotoSize photo = sconcat (fmap MaxPhotoSize photos)
+      in photo
+
+newtype MaxPhotoSize = MaxPhotoSize { unMaxPhotoSize :: PhotoSize }
+
+instance Semigroup MaxPhotoSize where
+  MaxPhotoSize a <> MaxPhotoSize b =
+    MaxPhotoSize (if photoArea a >= photoArea b then a else b)
+
+photoArea :: PhotoSize -> Integer
+photoArea photo =
+  photo.width * photo.height
+
+getMessageContent :: Telegram :> es => IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
+getMessageContent message messageId =
+  case Aeson.fromJSON message.raw :: Aeson.Result Message of
+    Aeson.Success telegramMessage ->
+      case telegramMessage.replyToMessage of
+        Just referenced
+          | referenced.messageId == messageId -> do
+              imageUrls <- traverse fileUrl (messageImageFileIds referenced)
+              pure $ Just ReferencedMessage
+                { messageId = Just referenced.messageId
+                , text = messageText referenced
+                , imageUrls = imageUrls
+                }
+        _ -> pure Nothing
+    Aeson.Error _ ->
+      pure Nothing
 
 entityMentionUsername :: Text -> MessageEntity -> Maybe Text
-entityMentionUsername messageText entity
+entityMentionUsername text entity
   | Just username <- entity.user >>= (.username) =
       Just (normalizeUsername username)
   | entity.type_ == "mention" =
-      normalizeUsername <$> entityText messageText entity
+      normalizeUsername <$> entityText text entity
   | otherwise =
       Nothing
 
 entityText :: Text -> MessageEntity -> Maybe Text
-entityText messageText entity =
-  let piece = Text.take (fromInteger entity.length) (Text.drop (fromInteger entity.offset) messageText)
+entityText text entity =
+  let piece = Text.take (fromInteger entity.length) (Text.drop (fromInteger entity.offset) text)
   in if Text.null piece
     then Nothing
     else Just piece
@@ -181,6 +259,12 @@ apiUrl cfg method =
   https "api.telegram.org"
     /: ("bot" <> cfg.botToken)
     /: method
+
+telegramFileUrl :: Config -> Text -> Text
+telegramFileUrl cfg path =
+  [i|https://api.telegram.org/file/bot#{token}/#{path}|]
+  where
+    token = cfg.botToken
 
 apiCall
   :: (IOE :> es, Log :> es, Aeson.ToJSON body, Aeson.FromJSON result)
@@ -347,6 +431,9 @@ data Message = Message
   , replyToMessage  :: !(Maybe Message)
   , text            :: !(Maybe Text)
   , entities        :: !(Maybe [MessageEntity])
+  , caption         :: !(Maybe Text)
+  , captionEntities :: !(Maybe [MessageEntity])
+  , photo           :: !(Maybe [PhotoSize])
   } deriving (Show, Generic)
 
 instance Aeson.FromJSON Message where
@@ -359,6 +446,9 @@ instance Aeson.FromJSON Message where
     replyToMessage <- o Aeson..:? "reply_to_message"
     text <- o Aeson..:? "text"
     entities <- o Aeson..:? "entities"
+    caption <- o Aeson..:? "caption"
+    captionEntities <- o Aeson..:? "caption_entities"
+    photo <- o Aeson..:? "photo"
     pure Message{..}
 
 instance Aeson.ToJSON Message where
@@ -372,6 +462,35 @@ instance Aeson.ToJSON Message where
     <> maybeField "reply_to_message" replyToMessage
     <> maybeField "text" text
     <> maybeField "entities" entities
+    <> maybeField "caption" caption
+    <> maybeField "caption_entities" captionEntities
+    <> maybeField "photo" photo
+
+data PhotoSize = PhotoSize
+  { fileId       :: !Text
+  , fileUniqueId :: !Text
+  , width        :: !Integer
+  , height       :: !Integer
+  , fileSize     :: !(Maybe Integer)
+  } deriving (Show, Generic)
+
+instance Aeson.FromJSON PhotoSize where
+  parseJSON = Aeson.withObject "PhotoSize" $ \o -> do
+    fileId <- o Aeson..: "file_id"
+    fileUniqueId <- o Aeson..: "file_unique_id"
+    width <- o Aeson..: "width"
+    height <- o Aeson..: "height"
+    fileSize <- o Aeson..:? "file_size"
+    pure PhotoSize{..}
+
+instance Aeson.ToJSON PhotoSize where
+  toJSON PhotoSize{..} = Aeson.object $
+    [ "file_id" Aeson..= fileId
+    , "file_unique_id" Aeson..= fileUniqueId
+    , "width" Aeson..= width
+    , "height" Aeson..= height
+    ]
+    <> maybeField "file_size" fileSize
 
 data MessageEntity = MessageEntity
   { type_  :: !Text
@@ -525,6 +644,34 @@ instance Aeson.ToJSON GetMeRequest where
 instance TelegramRequest GetMeRequest where
   type TelegramResponse GetMeRequest = User
   telegramMethod _ = "getMe"
+
+newtype GetFileRequest = GetFileRequest
+  { fileId :: Text
+  } deriving (Show, Generic)
+
+instance Aeson.ToJSON GetFileRequest where
+  toJSON GetFileRequest{..} = Aeson.object
+    [ "file_id" Aeson..= fileId
+    ]
+
+instance TelegramRequest GetFileRequest where
+  type TelegramResponse GetFileRequest = File
+  telegramMethod _ = "getFile"
+
+data File = File
+  { fileId       :: !Text
+  , fileUniqueId :: !Text
+  , fileSize     :: !(Maybe Integer)
+  , filePath     :: !Text
+  } deriving (Show, Generic)
+
+instance Aeson.FromJSON File where
+  parseJSON = Aeson.withObject "File" $ \o -> do
+    fileId <- o Aeson..: "file_id"
+    fileUniqueId <- o Aeson..: "file_unique_id"
+    fileSize <- o Aeson..:? "file_size"
+    filePath <- o Aeson..: "file_path"
+    pure File{..}
 
 data GetUpdatesRequest = GetUpdatesRequest
   { offset  :: !Int
