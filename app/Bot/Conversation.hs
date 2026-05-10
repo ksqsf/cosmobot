@@ -3,6 +3,7 @@ Module      : Bot.Conversation
 Description : In-memory conversation graph
 Stability   : experimental
 -}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Bot.Conversation where
 
@@ -101,12 +102,18 @@ lookupConversation :: IOE :> es => ConversationStore -> Integer -> Eff es (Maybe
 lookupConversation ConversationStore{unConversationStore = ref} messageId =
   liftIO $ Map.lookup messageId <$> IORef.readIORef ref
 
-rememberConversation :: IOE :> es => ConversationStore -> Maybe Integer -> Conversation -> Eff es ()
+rememberConversation :: (IOE :> es, Log :> es) => ConversationStore -> Maybe Integer -> Conversation -> Eff es ()
 rememberConversation _ Nothing _ =
   pure ()
 rememberConversation ConversationStore{unConversationStore = ref, sqliteStore} (Just messageId) conversation = do
   liftIO $ IORef.modifyIORef' ref (Map.insert messageId conversation)
-  traverse_ (\store -> liftIO (Storage.saveConversationJson store messageId (conversationJson conversation))) sqliteStore
+  traverse_
+    ( \store ->
+        liftIO (Storage.saveConversationJson store messageId (conversationJson conversation))
+          `catch` \(err :: SomeException) ->
+            logInfo "Failed to persist conversation" (show err :: String)
+    )
+    sqliteStore
 
 conversationJson :: Conversation -> Text
 conversationJson =

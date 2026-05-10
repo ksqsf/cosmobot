@@ -3,6 +3,7 @@ Module      : Bot.Effect.ChatLog
 Description : In-memory chat log
 Stability   : experimental
 -}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Bot.Effect.ChatLog where
 
@@ -62,7 +63,7 @@ queryChat message limit includeBotMessages =
   send (QueryChat message limit includeBotMessages)
 
 runChatLog
-  :: IOE :> es
+  :: (IOE :> es, Log :> es)
   => Maybe Storage.SQLiteStore
   -> Eff (ChatLog : es) a
   -> Eff es a
@@ -136,18 +137,21 @@ visible :: Bool -> ChatLogRecord -> Bool
 visible includeBotMessages record =
   includeBotMessages || not record.isBot
 
-persistRecord :: IOE :> es => Maybe Storage.SQLiteStore -> ChatLogRecord -> Eff es ()
+persistRecord :: (IOE :> es, Log :> es) => Maybe Storage.SQLiteStore -> ChatLogRecord -> Eff es ()
 persistRecord Nothing _ =
   pure ()
 persistRecord (Just store) record =
-  liftIO $
-    Storage.saveChatLogEntry
-      store
-      (platformKey record.message)
-      (kindKey record.message)
-      record.message.chatId
-      record.isBot
-      (Aeson.toJSON (chatLogEntry record))
+  liftIO
+    ( Storage.saveChatLogEntry
+        store
+        (platformKey record.message)
+        (kindKey record.message)
+        record.message.chatId
+        record.isBot
+        (Aeson.toJSON (chatLogEntry record))
+    )
+    `catch` \(err :: SomeException) ->
+      logInfo "Failed to persist chat log entry" (show err :: String)
 
 queryStored :: Storage.SQLiteStore -> IncomingMessage -> Int -> Bool -> IO [ChatLogEntry]
 queryStored store message limit includeBotMessages = do

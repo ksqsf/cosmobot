@@ -7,13 +7,14 @@ Stability   : experimental
 module Bot.Storage.SQLite where
 
 import Bot.Prelude
+import Control.Concurrent (threadDelay)
+import qualified Control.Concurrent.MVar as MVar
+import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Database.SQLite3 as SQLite
-import qualified Control.Concurrent.MVar as MVar
-import qualified Control.Exception as Exception
 
 data SQLiteStore = SQLiteStore
   { database :: !SQLite.Database
@@ -25,8 +26,16 @@ openSQLiteStore path = do
   database <- SQLite.open (toText path)
   lock <- MVar.newMVar ()
   let store = SQLiteStore{database, lock}
+  configure database
   migrate store
   pure store
+
+configure :: SQLite.Database -> IO ()
+configure db = do
+  SQLite.exec db [i|PRAGMA busy_timeout = #{sqliteBusyTimeoutMilliseconds}|]
+  retrySQLiteBusy sqliteBusyRetries $
+    SQLite.exec db "PRAGMA journal_mode = WAL"
+  SQLite.exec db "PRAGMA synchronous = NORMAL"
 
 migrate :: SQLiteStore -> IO ()
 migrate store = withStore store \db -> do
@@ -109,7 +118,8 @@ queryChatLogEntries store platformKey kindKey chatId includeBotMessages limit = 
 
 withStore :: SQLiteStore -> (SQLite.Database -> IO a) -> IO a
 withStore SQLiteStore{database, lock} action =
-  MVar.withMVar lock \_ -> action database
+  MVar.withMVar lock \_ ->
+    retrySQLiteBusy sqliteBusyRetries (action database)
 
 withStatement :: SQLite.Database -> Text -> [SQLite.SQLData] -> (SQLite.Statement -> IO a) -> IO a
 withStatement db sql params action =
@@ -141,3 +151,33 @@ columnInteger stmt index =
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
   TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+
+sqliteBusyTimeoutMilliseconds :: Int
+sqliteBusyTimeoutMilliseconds =
+  5000
+
+sqliteBusyRetries :: Int
+sqliteBusyRetries =
+  3
+
+sqliteBusyRetryDelayMicroseconds :: Int
+sqliteBusyRetryDelayMicroseconds =
+  200000
+
+retrySQLiteBusy :: Int -> IO a -> IO a
+retrySQLiteBusy retries action =
+  action `Exception.catch` \(err :: SQLite.SQLError) ->
+    if retries > 0 && isBusyError (SQLite.sqlError err)
+      then do
+        threadDelay sqliteBusyRetryDelayMicroseconds
+        retrySQLiteBusy (retries - 1) action
+      else Exception.throwIO err
+
+isBusyError :: SQLite.Error -> Bool
+isBusyError = \case
+  SQLite.ErrorBusy        -> True
+  SQLite.ErrorLocked      -> True
+  SQLite.ErrorBusyTimeout -> True
+  SQLite.ErrorBusyRecovery -> True
+  SQLite.ErrorBusySnapshot -> True
+  _                       -> False
