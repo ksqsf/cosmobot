@@ -33,6 +33,7 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
+      , testCase "conversation replies share latest context" testConversationRepliesShareLatestContext
       ]
 
 testScheduleToolCreatesQueryableSchedule :: IO ()
@@ -66,6 +67,19 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= [(Just 42, "hello\n[image] https://example.test/image.png")])
   IORef.readIORef remembered >>= (@?= [Just 42])
+
+testConversationRepliesShareLatestContext :: IO ()
+testConversationRepliesShareLatestContext = runEff $ runTestLog do
+  store <- liftIO (newConversationStore Nothing)
+  let firstConversation = startWithUser "first"
+      secondConversation = appendAssistant "second" firstConversation
+  rememberConversation store (Just 1) firstConversation
+  rememberConversationFrom store (Just 1) (Just 2) secondConversation
+  firstLookup <- lookupConversation store 1
+  secondLookup <- lookupConversation store 2
+  liftIO do
+    (show firstLookup :: String) @?= show (Just secondConversation)
+    (show secondLookup :: String) @?= show (Just secondConversation)
 
 runAgentWith
   :: IORef.IORef [LLM.ChatAnswer]
