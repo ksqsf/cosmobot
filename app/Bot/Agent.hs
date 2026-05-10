@@ -198,6 +198,7 @@ defaultTools =
   , listGroupMembersTool
   , currentMentionsTool
   , scheduleAgentActionTool
+  , listCurrentUserSchedulesTool
   ]
 
 listDirectoryTool :: IOE :> es => Tool es
@@ -382,6 +383,39 @@ scheduleAgentActionTool = Tool
           Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
           pure (toolText [i|Scheduled agent action in #{delaySeconds} seconds.|])
   }
+
+listCurrentUserSchedulesTool :: Scheduler.Scheduler :> es => Tool es
+listCurrentUserSchedulesTool = Tool
+  { name = "list_current_user_schedules"
+  , description = "List pending scheduled agent actions created by the current user in the current chat. Returns schedule ids, remaining seconds, and scheduled prompts."
+  , parameters = objectSchema [] []
+  , allowed = everyone
+  , run = \context _ -> do
+      schedules <- Scheduler.listScheduledMessages context.message
+      pure (toolText (jsonText (map scheduleSummary schedules)))
+  }
+
+data ScheduleSummary = ScheduleSummary
+  { scheduleId :: !Integer
+  , remainingSeconds :: !Int
+  , prompt :: !Text
+  }
+  deriving (Show, Generic, Aeson.ToJSON)
+
+scheduleSummary :: Scheduler.ScheduledMessage -> ScheduleSummary
+scheduleSummary schedule =
+  ScheduleSummary
+    { scheduleId = schedule.scheduleId
+    , remainingSeconds = schedule.remainingSeconds
+    , prompt = scheduledPrompt schedule.message
+    }
+
+scheduledPrompt :: IncomingMessage -> Text
+scheduledPrompt message =
+  fromMaybe message.text (AesonTypes.parseMaybe parsePrompt message.raw)
+  where
+    parsePrompt =
+      Aeson.withObject "scheduled action" (Aeson..: Key.fromText "prompt")
 
 scheduledActionArgs :: Aeson.Value -> AesonTypes.Parser (Int, Text)
 scheduledActionArgs =
