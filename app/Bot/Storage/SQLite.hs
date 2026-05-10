@@ -7,6 +7,14 @@ Stability   : experimental
 module Bot.Storage.SQLite
   ( SQLiteStore
   , openSQLiteStore
+  , JsonCollection (..)
+  , StoredState (..)
+  , declareJsonCollection
+  , loadJsonCollection
+  , appendJsonCollection
+  , replaceJsonCollectionItem
+  , deleteJsonCollectionRows
+  , clearJsonCollection
   , loadConversationRows
   , saveConversationJson
   , saveChatLogEntry
@@ -24,11 +32,14 @@ import Bot.Prelude
 import Control.Concurrent (threadDelay)
 import qualified Control.Concurrent.MVar as MVar
 import qualified Control.Exception as Exception
+import Data.Char (isAlpha, isAlphaNum, isAscii)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Map.Strict as Map
+import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Database.SQLite3 as SQLite
+import System.IO.Error (userError)
 
 -- | Thread-safe handle for the bot's SQLite database.
 data SQLiteStore = SQLiteStore
@@ -40,6 +51,17 @@ data StoredTodo = StoredTodo
   { rowId :: !Integer
   , body :: !Text
   , done :: !Bool
+  }
+  deriving (Eq, Show)
+
+data JsonCollection a = JsonCollection
+  { tableName :: !Text
+  , scopeColumns :: ![Text]
+  }
+
+data StoredState a = StoredState
+  { rowId :: !Integer
+  , value :: !a
   }
   deriving (Eq, Show)
 
@@ -72,6 +94,150 @@ migrate store = withStore store \db -> do
     "CREATE TABLE IF NOT EXISTS scratchpad_todos (id INTEGER PRIMARY KEY AUTOINCREMENT, platform_key TEXT NOT NULL, sender_key TEXT NOT NULL, body TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)"
   SQLite.exec db
     "CREATE INDEX IF NOT EXISTS scratchpad_todos_sender_idx ON scratchpad_todos(platform_key, sender_key, id)"
+
+declareJsonCollection :: SQLiteStore -> JsonCollection a -> IO ()
+declareJsonCollection store collection = do
+  validateCollection collection
+  withStore store \db -> do
+    SQLite.exec db
+      [i|CREATE TABLE IF NOT EXISTS #{tableName} (id INTEGER PRIMARY KEY AUTOINCREMENT#{scopeDefinitions}, item_json TEXT NOT NULL)|]
+    SQLite.exec db
+      [i|CREATE INDEX IF NOT EXISTS #{tableName}_scope_idx ON #{tableName}(#{indexColumns})|]
+  where
+    tableName =
+      collection.tableName
+    scopeDefinitions =
+      Text.concat (map (", " <>) (map (<> " TEXT NOT NULL") collection.scopeColumns))
+    indexColumns =
+      Text.intercalate ", " (collection.scopeColumns <> ["id"])
+
+loadJsonCollection :: Aeson.FromJSON a => SQLiteStore -> JsonCollection a -> [Text] -> IO [StoredState a]
+loadJsonCollection store collection scopeValues = do
+  declareJsonCollection store collection
+  validateScope collection scopeValues
+  withStore store \db ->
+    withStatement db
+      [i|SELECT id, item_json FROM #{tableName} WHERE #{scopePredicate collection} ORDER BY id ASC|]
+      (map SQLite.SQLText scopeValues)
+      (rows [])
+  where
+    tableName =
+      collection.tableName
+    rows acc stmt =
+      SQLite.step stmt >>= \case
+        SQLite.Done ->
+          pure (reverse acc)
+        SQLite.Row -> do
+          rowId <- columnInteger stmt 0
+          itemJson <- columnText stmt 1
+          case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 itemJson) of
+            Right value ->
+              rows (StoredState{rowId, value} : acc) stmt
+            Left err ->
+              Exception.throwIO (userError [i|Could not decode #{tableName} row #{rowId}: #{err}|])
+
+appendJsonCollection :: Aeson.ToJSON a => SQLiteStore -> JsonCollection a -> [Text] -> a -> IO ()
+appendJsonCollection store collection scopeValues value = do
+  declareJsonCollection store collection
+  validateScope collection scopeValues
+  withStore store \db ->
+    withStatement db
+      [i|INSERT INTO #{tableName}(#{insertColumns}) VALUES (#{insertPlaceholders})|]
+      (map SQLite.SQLText scopeValues <> [SQLite.SQLText (jsonText value)])
+      stepDone
+  where
+    tableName =
+      collection.tableName
+    insertColumns =
+      Text.intercalate ", " (collection.scopeColumns <> ["item_json"])
+    insertPlaceholders =
+      Text.intercalate ", " (replicate (length collection.scopeColumns + 1) "?")
+
+replaceJsonCollectionItem :: Aeson.ToJSON a => SQLiteStore -> JsonCollection a -> [Text] -> Integer -> a -> IO ()
+replaceJsonCollectionItem store collection scopeValues rowId value = do
+  declareJsonCollection store collection
+  validateScope collection scopeValues
+  withStore store \db ->
+    withStatement db
+      [i|UPDATE #{tableName} SET item_json = ? WHERE #{scopePredicate collection} AND id = ?|]
+      ([SQLite.SQLText (jsonText value)] <> map SQLite.SQLText scopeValues <> [SQLite.SQLInteger (fromIntegral rowId)])
+      stepDone
+  where
+    tableName =
+      collection.tableName
+
+deleteJsonCollectionRows :: SQLiteStore -> JsonCollection a -> [Text] -> [Integer] -> IO ()
+deleteJsonCollectionRows store collection scopeValues rowIds =
+  traverse_ (deleteJsonCollectionRow store collection scopeValues) rowIds
+
+deleteJsonCollectionRow :: SQLiteStore -> JsonCollection a -> [Text] -> Integer -> IO ()
+deleteJsonCollectionRow store collection scopeValues rowId = do
+  declareJsonCollection store collection
+  validateScope collection scopeValues
+  withStore store \db ->
+    withStatement db
+      [i|DELETE FROM #{tableName} WHERE #{scopePredicate collection} AND id = ?|]
+      (map SQLite.SQLText scopeValues <> [SQLite.SQLInteger (fromIntegral rowId)])
+      stepDone
+  where
+    tableName =
+      collection.tableName
+
+clearJsonCollection :: SQLiteStore -> JsonCollection a -> [Text] -> IO ()
+clearJsonCollection store collection scopeValues = do
+  declareJsonCollection store collection
+  validateScope collection scopeValues
+  withStore store \db ->
+    withStatement db
+      [i|DELETE FROM #{tableName} WHERE #{scopePredicate collection}|]
+      (map SQLite.SQLText scopeValues)
+      stepDone
+  where
+    tableName =
+      collection.tableName
+
+scopePredicate :: JsonCollection a -> Text
+scopePredicate collection =
+  Text.intercalate " AND " (map (<> " = ?") collection.scopeColumns)
+
+validateCollection :: JsonCollection a -> IO ()
+validateCollection collection = do
+  unless (validIdentifier collection.tableName) $
+    Exception.throwIO (userError [i|Invalid SQLite table name: #{tableName}|])
+  traverse_ validateScopeColumn collection.scopeColumns
+  when (null collection.scopeColumns) $
+    Exception.throwIO (userError [i|JSON collection #{tableName} must define at least one scope column|])
+  where
+    tableName =
+      collection.tableName
+    validateScopeColumn column =
+      unless (validIdentifier column) $
+        Exception.throwIO (userError [i|Invalid SQLite scope column: #{column}|])
+
+validateScope :: JsonCollection a -> [Text] -> IO ()
+validateScope collection scopeValues =
+  unless (length collection.scopeColumns == length scopeValues) $
+    Exception.throwIO (userError [i|JSON collection #{tableName} expected #{scopeColumnCount} scope values, got #{scopeValueCount}|])
+  where
+    tableName =
+      collection.tableName
+    scopeColumnCount =
+      length collection.scopeColumns
+    scopeValueCount =
+      length scopeValues
+
+validIdentifier :: Text -> Bool
+validIdentifier identifier =
+  case Text.uncons identifier of
+    Nothing ->
+      False
+    Just (firstChar, rest) ->
+      validFirst firstChar && Text.all validRest rest
+  where
+    validFirst char =
+      char == '_' || (isAscii char && isAlpha char)
+    validRest char =
+      char == '_' || (isAscii char && isAlphaNum char)
 
 -- | Load persisted conversation JSON keyed by bot message id.
 loadConversationRows :: SQLiteStore -> IO (Map Integer Text)
