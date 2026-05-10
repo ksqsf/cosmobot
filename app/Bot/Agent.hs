@@ -137,11 +137,12 @@ appendMessages :: [LLM.ChatMessage] -> Conversation -> Conversation
 appendMessages newMessages (Conversation messages) =
   Conversation (messages <> newMessages)
 
-defaultTools :: (Chat.Chat :> es, ChatLog.ChatLog :> es, Scheduler.Scheduler :> es, IOE :> es) => [Tool es]
+defaultTools :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, IOE :> es) => [Tool es]
 defaultTools =
   [ listDirectoryTool
   , readFileTool
   , queryChatLogTool
+  , generateImageTool
   , sendReplyTool
   , mentionUserTool
   , senderMemberInfoTool
@@ -204,6 +205,27 @@ queryChatLogTool = Tool
         Right (limit, includeBotMessages) -> do
           entries <- ChatLog.queryChat context.message (fromInteger (max 0 limit)) includeBotMessages
           pure (toolText (jsonText entries))
+  }
+
+generateImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
+generateImageTool = Tool
+  { name = "generate_image"
+  , description = "Generate an actual image from a prompt and send it to the current chat. Use this when the user asks to draw, create, or generate an image, including scheduled future image requests. After using this tool, keep the final answer brief and do not repeat the image URL."
+  , parameters = objectSchema
+      [ requiredText "prompt" "Image generation prompt. Include the user's visual requirements, style, subject, text, and constraints."
+      ]
+      ["prompt"]
+  , allowed = everyone
+  , run = \context -> withTextArg "prompt" \prompt -> do
+      generated <- LLM.askImageWithHistory [LLM.userWithImages prompt context.message.imageUrls]
+      case Chat.replyImageUrls generated of
+        [] ->
+          pure (toolText generated)
+        _ -> do
+          sent <- Chat.replyTo context.message generated
+          context.recordBotMessage sent generated
+          let sentText = show sent :: String
+          pure (toolMessage sent [i|Generated and sent image message id: #{sentText}|])
   }
 
 sendReplyTool :: Chat.Chat :> es => Tool es
