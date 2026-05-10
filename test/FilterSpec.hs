@@ -5,19 +5,24 @@ import qualified Data.IORef as IORef
 import Bot.Filter
 import Bot.Message
 import Bot.Prelude
+import Test.Tasty
+import Test.Tasty.HUnit
 
 main :: IO ()
-main = do
-  testCommandFilter
-  testRouteStopPreventsLaterHandlers
-  testRouteContinueRunsLaterHandlers
+main =
+  defaultMain $
+    testGroup "filter"
+      [ testCase "command strips prefix and rejects other commands" testCommandFilter
+      , testCase "routeStop prevents later handlers" testRouteStopPreventsLaterHandlers
+      , testCase "route continues to later handlers" testRouteContinueRunsLaterHandlers
+      ]
 
 testCommandFilter :: IO ()
 testCommandFilter = do
   let matched = applyFilter (command "!ask") (message "!ask hello")
       unmatched = applyFilter (command "!ask") (message "!draw hello")
-  assertEqual "command strips and trims the prefix" (Just "hello") matched
-  assertEqual "command rejects other prefixes" Nothing unmatched
+  matched @?= Just "hello"
+  unmatched @?= Nothing
 
 testRouteStopPreventsLaterHandlers :: IO ()
 testRouteStopPreventsLaterHandlers = do
@@ -27,7 +32,7 @@ testRouteStopPreventsLaterHandlers = do
     , appendStopCall calls "second"
     ]
     (message "hello")
-  assertEqual "matched stop route prevents later handlers" ["first"] =<< IORef.readIORef calls
+  IORef.readIORef calls >>= (@?= ["first"])
 
 testRouteContinueRunsLaterHandlers :: IO ()
 testRouteContinueRunsLaterHandlers = do
@@ -37,7 +42,7 @@ testRouteContinueRunsLaterHandlers = do
     , appendStopCall calls "second"
     ]
     (message "hello")
-  assertEqual "matched continue route runs later handlers" ["first", "second"] =<< IORef.readIORef calls
+  IORef.readIORef calls >>= (@?= ["first", "second"])
 
 appendContinueCall :: IORef.IORef [Text] -> Text -> RouteHandler '[IOE]
 appendContinueCall calls label =
@@ -80,8 +85,3 @@ messageFrom senderId text =
     , text = text
     , raw = Aeson.Null
     }
-
-assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
-assertEqual label expected actual =
-  unless (expected == actual) $
-    fail (label <> ": expected " <> show expected <> ", got " <> show actual)

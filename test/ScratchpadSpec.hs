@@ -11,12 +11,17 @@ import qualified Bot.Storage.SQLite as Storage
 import qualified Control.Exception as Exception
 import qualified System.Directory as Directory
 import System.FilePath ((</>))
+import Test.Tasty
+import Test.Tasty.HUnit
 
 main :: IO ()
-main = do
-  testScratchpadTodoFlow
-  testScratchpadSenderIsolation
-  testScratchpadPersistence
+main =
+  defaultMain $
+    testGroup "scratchpad"
+      [ testCase "todo command flow" testScratchpadTodoFlow
+      , testCase "todo lists are scoped by sender" testScratchpadSenderIsolation
+      , testCase "todo list persists through SQLite" testScratchpadPersistence
+      ]
 
 testScratchpadTodoFlow :: IO ()
 testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
@@ -29,8 +34,8 @@ testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
   runScratchpad store replies (message "!todo")
   runScratchpad store replies (message "!clear")
   runScratchpad store replies (message "!list")
-  assertEqual
-    "scratchpad commands reply with expected todo state"
+  IORef.readIORef replies
+    >>= (@?=)
     [ "已添加 #1: buy milk"
     , "已添加 #2: write tests"
     , "已完成 #1: buy milk"
@@ -40,7 +45,6 @@ testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
     , "已清空 todo list。"
     , "todo list 为空。"
     ]
-    =<< IORef.readIORef replies
 
 testScratchpadSenderIsolation :: IO ()
 testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store -> do
@@ -49,14 +53,13 @@ testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store ->
   runScratchpad store replies (messageFrom 201 "!todo bob task")
   runScratchpad store replies (messageFrom 200 "!list")
   runScratchpad store replies (messageFrom 201 "!list")
-  assertEqual
-    "scratchpad todo lists are scoped by sender"
+  IORef.readIORef replies
+    >>= (@?=)
     [ "已添加 #1: alice task"
     , "已添加 #1: bob task"
     , "- [ ] 1. alice task\n"
     , "- [ ] 1. bob task\n"
     ]
-    =<< IORef.readIORef replies
 
 testScratchpadPersistence :: IO ()
 testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
@@ -66,10 +69,7 @@ testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
   readReplies <- IORef.newIORef ([] :: [Text])
   readStore <- Storage.openSQLiteStore path
   runScratchpad readStore readReplies (message "!list")
-  assertEqual
-    "scratchpad todo list persists through SQLite"
-    ["- [ ] 1. persists\n"]
-    =<< IORef.readIORef readReplies
+  IORef.readIORef readReplies >>= (@?= ["- [ ] 1. persists\n"])
 
 withScratchpadStore :: String -> (Storage.SQLiteStore -> IO ()) -> IO ()
 withScratchpadStore label action =
@@ -124,8 +124,3 @@ messageFrom senderId text =
     , text = text
     , raw = Aeson.Null
     }
-
-assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
-assertEqual label expected actual =
-  unless (expected == actual) $
-    fail (label <> ": expected " <> show expected <> ", got " <> show actual)

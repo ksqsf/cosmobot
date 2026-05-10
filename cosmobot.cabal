@@ -82,6 +82,10 @@ common app-deps
                     , string-interpolate
     hs-source-dirs:   app
 
+common test-deps
+    build-depends:    tasty
+                    , tasty-hunit
+
 executable cosmobot
     -- Import common warning flags.
     import:           warnings
@@ -132,6 +136,7 @@ test-suite filter-spec
     import:           warnings
                     , language
                     , app-deps
+                    , test-deps
     type:             exitcode-stdio-1.0
     main-is:          FilterSpec.hs
     other-modules:
@@ -145,6 +150,7 @@ test-suite scratchpad-spec
     import:           warnings
                     , language
                     , app-deps
+                    , test-deps
     type:             exitcode-stdio-1.0
     main-is:          ScratchpadSpec.hs
     other-modules:
@@ -160,6 +166,7 @@ test-suite chat-platform-spec
     import:           warnings
                     , language
                     , app-deps
+                    , test-deps
     type:             exitcode-stdio-1.0
     main-is:          ChatPlatformSpec.hs
     other-modules:
@@ -178,6 +185,7 @@ test-suite scheduler-spec
     import:           warnings
                     , language
                     , app-deps
+                    , test-deps
     type:             exitcode-stdio-1.0
     main-is:          SchedulerSpec.hs
     other-modules:

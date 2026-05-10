@@ -5,19 +5,24 @@ import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
 import Bot.Message
 import Bot.Prelude
+import Test.Tasty
+import Test.Tasty.HUnit
 
 main :: IO ()
-main = do
-  testQqUserMessageConvertsToIncomingMessage
-  testQqSelfMessageIsIgnored
-  testTelegramUserMessageConvertsToIncomingMessage
-  testTelegramBotMessageIsIgnored
+main =
+  defaultMain $
+    testGroup "chat platforms"
+      [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      , testCase "QQ self message is ignored" testQqSelfMessageIsIgnored
+      , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
+      , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
+      ]
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
 testQqUserMessageConvertsToIncomingMessage = do
   let incoming = QQ.eventToIncomingMessage (qqMessageEvent 10001)
-  assertEqual "QQ user message is converted" (Just PlatformQQ) ((.platform) <$> incoming)
-  assertEqual "QQ user text is preserved" (Just "hello") ((.text) <$> incoming)
+  ((.platform) <$> incoming) @?= Just PlatformQQ
+  ((.text) <$> incoming) @?= Just "hello"
 
 testQqSelfMessageIsIgnored :: IO ()
 testQqSelfMessageIsIgnored =
@@ -28,8 +33,8 @@ testQqSelfMessageIsIgnored =
 testTelegramUserMessageConvertsToIncomingMessage :: IO ()
 testTelegramUserMessageConvertsToIncomingMessage = do
   let incoming = Telegram.updateToIncomingMessage (telegramUpdate False)
-  assertEqual "Telegram user message is converted" (Just PlatformTelegram) ((.platform) <$> incoming)
-  assertEqual "Telegram user text is preserved" (Just "hello") ((.text) <$> incoming)
+  ((.platform) <$> incoming) @?= Just PlatformTelegram
+  ((.text) <$> incoming) @?= Just "hello"
 
 testTelegramBotMessageIsIgnored :: IO ()
 testTelegramBotMessageIsIgnored =
@@ -104,12 +109,3 @@ telegramChat =
     , firstName = Nothing
     , lastName = Nothing
     }
-
-assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
-assertEqual label expected actual =
-  unless (expected == actual) $
-    fail (label <> ": expected " <> show expected <> ", got " <> show actual)
-
-assertBool :: String -> Bool -> IO ()
-assertBool label value =
-  unless value (fail label)

@@ -5,19 +5,24 @@ import Bot.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Streaming.Prelude as S
+import Test.Tasty
+import Test.Tasty.HUnit
 
 main :: IO ()
-main = do
-  testScheduledMessagesAreScopedByCurrentUser
-  testElapsedScheduleLeavesPendingList
+main =
+  defaultMain $
+    testGroup "scheduler"
+      [ testCase "scheduled messages are scoped by current user" testScheduledMessagesAreScopedByCurrentUser
+      , testCase "elapsed schedule leaves pending list" testElapsedScheduleLeavesPendingList
+      ]
 
 testScheduledMessagesAreScopedByCurrentUser :: IO ()
 testScheduledMessagesAreScopedByCurrentUser = runEff $ Scheduler.runScheduler do
   Scheduler.scheduleMessage 60 (messageFrom 200 "!ask remind me")
   ownSchedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
   otherSchedules <- Scheduler.listScheduledMessages (messageFrom 201 "what schedules?")
-  liftIO $ assertEqual "current user sees one pending schedule" 1 (length ownSchedules)
-  liftIO $ assertEqual "other user cannot see pending schedule" 0 (length otherSchedules)
+  liftIO $ length ownSchedules @?= 1
+  liftIO $ length otherSchedules @?= 0
   liftIO $ assertBool "remaining seconds are positive" (all ((> 0) . (.remainingSeconds)) ownSchedules)
 
 testElapsedScheduleLeavesPendingList :: IO ()
@@ -25,7 +30,7 @@ testElapsedScheduleLeavesPendingList = runEff $ Scheduler.runScheduler do
   Scheduler.scheduleMessage 0 (messageFrom 200 "!ask now")
   _ <- S.head_ Scheduler.scheduledMessages
   schedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
-  liftIO $ assertEqual "elapsed schedule is no longer pending" 0 (length schedules)
+  liftIO $ length schedules @?= 0
 
 messageFrom :: Integer -> Text -> IncomingMessage
 messageFrom senderId text =
@@ -43,12 +48,3 @@ messageFrom senderId text =
     , text = text
     , raw = Aeson.Null
     }
-
-assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
-assertEqual label expected actual =
-  unless (expected == actual) $
-    fail (label <> ": expected " <> show expected <> ", got " <> show actual)
-
-assertBool :: String -> Bool -> IO ()
-assertBool label value =
-  unless value (fail label)
