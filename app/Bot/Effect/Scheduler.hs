@@ -19,6 +19,7 @@ import Bot.Prelude
 import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Concurrent.Chan as Chan
 import qualified Control.Concurrent.MVar as MVar
+import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 import GHC.Clock (getMonotonicTimeNSec)
 import qualified Streaming as S
@@ -29,7 +30,7 @@ data ScheduledMessage = ScheduledMessage
   , remainingSeconds :: !Int
   , message :: !IncomingMessage
   }
-  deriving (Show, Generic, ToJSON)
+  deriving (Show, Generic, Aeson.ToJSON)
 
 data PendingMessage = PendingMessage
   { scheduleId :: !Integer
@@ -84,19 +85,19 @@ runScheduler
   -> Eff es a
 runScheduler inner = do
   chan <- liftIO (Chan.newChan :: IO (Chan.Chan IncomingMessage))
-  state <- liftIO (MVar.newMVar (SchedulerState 1 Map.empty))
+  schedulerStateVar <- liftIO (MVar.newMVar (SchedulerState 1 Map.empty))
   interpret
     (\_ -> \case
       ScheduleMessage delaySeconds message -> do
-        scheduleId <- liftIO $ registerPendingMessage state delaySeconds message
+        scheduleId <- liftIO $ registerPendingMessage schedulerStateVar delaySeconds message
         void $ liftIO $ forkIO do
           threadDelay (max 0 delaySeconds * 1000000)
-          MVar.modifyMVar_ state \schedulerState ->
+          MVar.modifyMVar_ schedulerStateVar \schedulerState ->
             pure schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}
           Chan.writeChan chan message
       ListScheduledMessages message -> do
         now <- liftIO getMonotonicTimeNSec
-        pending <- liftIO $ MVar.withMVar state (pure . Map.elems . (.pendingMessages))
+        pending <- liftIO $ MVar.withMVar schedulerStateVar (pure . Map.elems . (.pendingMessages))
         pure
           [ scheduledMessage now pendingMessage
           | pendingMessage <- pending
@@ -107,9 +108,9 @@ runScheduler inner = do
     inner
 
 registerPendingMessage :: MVar.MVar SchedulerState -> Int -> IncomingMessage -> IO Integer
-registerPendingMessage state delaySeconds message = do
+registerPendingMessage schedulerStateVar delaySeconds message = do
   now <- getMonotonicTimeNSec
-  MVar.modifyMVar state \schedulerState -> do
+  MVar.modifyMVar schedulerStateVar \schedulerState -> do
     let scheduleId = schedulerState.nextScheduleId
         delayNanoseconds = fromIntegral (max 0 delaySeconds) * nanosecondsPerSecond
         pendingMessage = PendingMessage

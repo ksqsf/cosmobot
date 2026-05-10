@@ -173,3 +173,15 @@ test-suite chat-platform-spec
                     , req
                     , websockets
     hs-source-dirs:   test
+
+test-suite scheduler-spec
+    import:           warnings
+                    , language
+                    , app-deps
+    type:             exitcode-stdio-1.0
+    main-is:          SchedulerSpec.hs
+    other-modules:
+        Bot.Prelude
+        Bot.Message
+        Bot.Effect.Scheduler
+    hs-source-dirs:   test
