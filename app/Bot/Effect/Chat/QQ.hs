@@ -13,9 +13,12 @@ import Bot.Prelude
 import Control.Concurrent (forkIO)
 import qualified Control.Concurrent.Chan as Chan
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as Aeson
 import Data.List (isInfixOf)
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
 import qualified Network.WebSockets as WS
 import qualified Streaming as S
@@ -171,44 +174,48 @@ instance Aeson.FromJSON ActionResponse where
     message <- o Aeson..:? "message"
     pure ActionResponse{..}
 
-replyTo :: QQ :> es => IncomingMessage -> Text -> Eff es (Maybe Integer)
+replyTo :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe Integer)
 replyTo message body =
   case (message.platform, message.kind, message.chatId <|> message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId) ->
+    (PlatformQQ, ChatGroup, Just groupId) -> do
+      qqMessage <- replyMessage message body
       responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_group_msg"
         , "params" Aeson..= Aeson.object
             [ "group_id" Aeson..= groupId
-            , "message" Aeson..= replyMessage message body
+            , "message" Aeson..= qqMessage
             ]
         ])
-    (PlatformQQ, ChatPrivate, Just userId) ->
+    (PlatformQQ, ChatPrivate, Just userId) -> do
+      qqMessage <- replyMessage message body
       responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
         , "params" Aeson..= Aeson.object
             [ "user_id" Aeson..= userId
-            , "message" Aeson..= replyMessage message body
+            , "message" Aeson..= qqMessage
             ]
         ])
     _ -> pure Nothing
 
-mentionUser :: QQ :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
+mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
 mentionUser message userId body =
   case (message.platform, message.kind, message.chatId <|> message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId) ->
+    (PlatformQQ, ChatGroup, Just groupId) -> do
+      qqMessage <- mentionMessage message userId body
       responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_group_msg"
         , "params" Aeson..= Aeson.object
             [ "group_id" Aeson..= groupId
-            , "message" Aeson..= mentionMessage message userId body
+            , "message" Aeson..= qqMessage
             ]
         ])
-    (PlatformQQ, ChatPrivate, Just userId_) ->
+    (PlatformQQ, ChatPrivate, Just userId_) -> do
+      qqMessage <- replyMessage message body
       responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
         , "params" Aeson..= Aeson.object
             [ "user_id" Aeson..= userId_
-            , "message" Aeson..= replyMessage message body
+            , "message" Aeson..= qqMessage
             ]
         ])
     _ -> pure Nothing
@@ -265,38 +272,41 @@ referencedMessageFromValue = Aeson.parseMaybe $
     let imageUrls = maybe [] messageImageUrls message
     pure ReferencedMessage{..}
 
-replyMessage :: IncomingMessage -> Text -> Aeson.Value
+replyMessage :: IOE :> es => IncomingMessage -> Text -> Eff es Aeson.Value
 replyMessage message body =
-  Aeson.toJSON $ maybe textOnly withReply message.messageId
+  Aeson.toJSON <$> maybe textOnly withReply message.messageId
   where
     text = Chat.renderReplyBody body
     imageUrls = Chat.replyImageUrls body
     textOnly =
       replyContent text imageUrls
     withReply messageId =
-      [ Aeson.object
-          [ "type" Aeson..= Aeson.String "reply"
-          , "data" Aeson..= Aeson.object
-              [ "id" Aeson..= (show messageId :: Text)
-              ]
-          ]
-      ] <> replyContent text imageUrls
+      ( [ Aeson.object
+            [ "type" Aeson..= Aeson.String "reply"
+            , "data" Aeson..= Aeson.object
+                [ "id" Aeson..= (show messageId :: Text)
+                ]
+            ]
+        ] <>
+      ) <$> replyContent text imageUrls
 
-mentionMessage :: IncomingMessage -> Integer -> Text -> Aeson.Value
+mentionMessage :: IOE :> es => IncomingMessage -> Integer -> Text -> Eff es Aeson.Value
 mentionMessage message userId body =
-  Aeson.toJSON $ maybe mentionOnly withReply message.messageId
+  Aeson.toJSON <$> maybe mentionOnly withReply message.messageId
   where
     text = Chat.renderReplyBody body
     mentionOnly =
-      mentionContent userId text
+      pure (mentionContent userId text)
     withReply messageId =
-      [ Aeson.object
-          [ "type" Aeson..= Aeson.String "reply"
-          , "data" Aeson..= Aeson.object
-              [ "id" Aeson..= messageId
+      pure
+        ( [ Aeson.object
+              [ "type" Aeson..= Aeson.String "reply"
+              , "data" Aeson..= Aeson.object
+                  [ "id" Aeson..= messageId
+                  ]
               ]
-          ]
-      ] <> mentionContent userId text
+          ] <> mentionContent userId text
+        )
 
 mentionContent :: Integer -> Text -> [Aeson.Value]
 mentionContent userId body =
@@ -314,10 +324,12 @@ mentionContent userId body =
       ]
   ]
 
-replyContent :: Text -> [Text] -> [Aeson.Value]
-replyContent body imageUrls =
-  [ textSegment body | not (Text.null body) ]
-    <> map imageSegment imageUrls
+replyContent :: IOE :> es => Text -> [Text] -> Eff es [Aeson.Value]
+replyContent body imageUrls = do
+  imageSegments <- traverse imageSegment imageUrls
+  pure $
+    [ textSegment body | not (Text.null body) ]
+      <> imageSegments
 
 textSegment :: Text -> Aeson.Value
 textSegment body =
@@ -328,14 +340,27 @@ textSegment body =
         ]
     ]
 
-imageSegment :: Text -> Aeson.Value
+imageSegment :: IOE :> es => Text -> Eff es Aeson.Value
 imageSegment url =
+  imageSegmentValue <$> qqImageFile url
+
+imageSegmentValue :: Text -> Aeson.Value
+imageSegmentValue file =
   Aeson.object
     [ "type" Aeson..= Aeson.String "image"
     , "data" Aeson..= Aeson.object
-        [ "file" Aeson..= url
+        [ "file" Aeson..= file
         ]
     ]
+
+qqImageFile :: IOE :> es => Text -> Eff es Text
+qqImageFile url =
+  case Text.stripPrefix "file://" url of
+    Nothing ->
+      pure url
+    Just path -> do
+      bytes <- liftIO (ByteString.readFile (Text.unpack path))
+      pure ("base64://" <> TextEncoding.decodeUtf8 (Base64.encode bytes))
 
 data Event = Event
   { time        :: !(Maybe Integer)

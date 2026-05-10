@@ -67,6 +67,7 @@ executable cosmobot
         Bot.Storage.SQLite
         Bot.Filter
         Bot.Handler.Ask
+        Bot.Handler.Typing
         Bot.Effect.Chat
         Bot.Effect.ChatLog
         Bot.Effect.Chat.QQ
@@ -87,15 +88,18 @@ executable cosmobot
                     , filepath
                     , optics
                     , string-interpolate
+                    , time
                     , effectful
                     , log-base
                     , log-effectful
                     , streaming
                     , req
                     , bytestring
+                    , base64-bytestring
                     , aeson
                     , aeson-optics
                     , dotenv
+                    , process
                     , websockets
                     , toml-parser
 

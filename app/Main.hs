@@ -14,6 +14,7 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Filter
 import Bot.Handler.Ask
+import Bot.Handler.Typing
 import Bot.Message
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as SQLiteStorage
@@ -46,10 +47,10 @@ routes
   -> ConversationStore
   -> [RouteHandler es]
 routes cfg conversations =
-  askHandlers cfg.handlers.ask conversations
+  typingHandlers cfg.handlers.ask <> askHandlers cfg.handlers.ask conversations
 
 platformReplyTo
-  :: (QQ.QQ :> es, Telegram.Telegram :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
   => IncomingMessage
   -> Text
   -> Eff es (Maybe Integer)
@@ -109,7 +110,7 @@ platformListGroupMembers message =
       pure Nothing
 
 platformMentionUser
-  :: (QQ.QQ :> es, Telegram.Telegram :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Text
