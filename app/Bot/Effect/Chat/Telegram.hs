@@ -54,6 +54,7 @@ import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Text.Encoding as TextEncoding
+import Network.HTTP.Client (Manager)
 import Network.HTTP.Req
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Streaming as S
@@ -118,14 +119,18 @@ runTelegram
   => Config
   -> Eff (Telegram : es) a
   -> Eff es a
-runTelegram cfg = interpret $ \_ -> \case
-  CallTelegram request ->
-    apiCall cfg (telegramMethod request) request
-  FileUrl fileId -> do
-    file :: File <- apiCall cfg (telegramMethod (GetFileRequest fileId)) (GetFileRequest fileId)
-    pure (telegramFileUrl cfg file.filePath)
-  UploadPhoto request path ->
-    apiMultipartCall cfg "sendPhoto" (sendPhotoParts request path)
+runTelegram cfg inner = withReqManager $ \manager ->
+  interpret
+    ( \_ -> \case
+        CallTelegram request ->
+          apiCall manager cfg (telegramMethod request) request
+        FileUrl fileId -> do
+          file :: File <- apiCall manager cfg (telegramMethod (GetFileRequest fileId)) (GetFileRequest fileId)
+          pure (telegramFileUrl cfg file.filePath)
+        UploadPhoto request path ->
+          apiMultipartCall manager cfg "sendPhoto" (sendPhotoParts request path)
+    )
+    inner
 
 -- ---------------------------------------------------------------------------
 -- Streaming
@@ -317,37 +322,50 @@ telegramFileUrl cfg path =
 
 apiCall
   :: (IOE :> es, Log :> es, Aeson.ToJSON body, Aeson.FromJSON result)
-  => Config
+  => Manager
+  -> Config
   -> Text
   -> body
   -> Eff es result
-apiCall cfg method body = do
+apiCall manager cfg method body = do
   logTelegramApiRequest method
-  resp :: Response <- liftIO $ runReq telegramHttpConfig $
-    req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse (telegramRequestOptions method)
-      <&> responseBody
+  resp :: Response <-
+    ( liftIO $ runReq (telegramHttpConfig manager) $
+        req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse (telegramRequestOptions method)
+          <&> responseBody
+    ) `catch` \(err :: SomeException) ->
+      throwIO (APIException (sanitizeTelegramException cfg err))
   logTelegramApiResponse method
   decodeResponse resp
 
 apiMultipartCall
   :: (IOE :> es, Log :> es, Aeson.FromJSON result)
-  => Config
+  => Manager
+  -> Config
   -> Text
   -> [Multipart.Part]
   -> Eff es result
-apiMultipartCall cfg method parts = do
+apiMultipartCall manager cfg method parts = do
   logTelegramApiRequest method
-  resp :: Response <- liftIO $ runReq telegramHttpConfig do
-    body <- reqBodyMultipart parts
-    req POST (apiUrl cfg method) body jsonResponse (telegramRequestOptions method)
-      <&> responseBody
+  resp :: Response <-
+    ( liftIO $ runReq (telegramHttpConfig manager) do
+        body <- reqBodyMultipart parts
+        req POST (apiUrl cfg method) body jsonResponse (telegramRequestOptions method)
+          <&> responseBody
+    ) `catch` \(err :: SomeException) ->
+      throwIO (APIException (sanitizeTelegramException cfg err))
   logTelegramApiResponse method
   decodeResponse resp
 
-telegramHttpConfig :: HttpConfig
-telegramHttpConfig =
+sanitizeTelegramException :: Config -> SomeException -> Text
+sanitizeTelegramException cfg err =
+  Text.replace cfg.botToken "<telegram-token>" (show err)
+
+telegramHttpConfig :: Manager -> HttpConfig
+telegramHttpConfig manager =
   defaultHttpConfig
-    { httpConfigRetryJudge = \_ _ -> False
+    { httpConfigAltManager = Just manager
+    , httpConfigRetryJudge = \_ _ -> False
     , httpConfigRetryJudgeException = \_ _ -> False
     }
 
@@ -401,7 +419,7 @@ telegramLongPollResponseTimeoutMicroseconds =
 
 telegramApiResponseTimeoutMicroseconds :: Int
 telegramApiResponseTimeoutMicroseconds =
-  3 * 1000000
+  10 * 1000000
 
 telegramRetryDelayMicroseconds :: Int
 telegramRetryDelayMicroseconds =
