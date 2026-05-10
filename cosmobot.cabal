@@ -193,3 +193,39 @@ test-suite scheduler-spec
         Bot.Message
         Bot.Effect.Scheduler
     hs-source-dirs:   test
+
+test-suite agent-spec
+    import:           warnings
+                    , language
+                    , app-deps
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          AgentSpec.hs
+    other-modules:
+        Bot.Agent
+        Bot.Conversation
+        Bot.Effect.Chat
+        Bot.Effect.ChatLog
+        Bot.Effect.LLM
+        Bot.Effect.Scheduler
+        Bot.Message
+        Bot.Prelude
+        Bot.Storage.SQLite
+    build-depends:    http-client
+                    , req
+    hs-source-dirs:   test
+
+test-suite chat-log-spec
+    import:           warnings
+                    , language
+                    , app-deps
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          ChatLogSpec.hs
+    other-modules:
+        Bot.Effect.Chat
+        Bot.Effect.ChatLog
+        Bot.Message
+        Bot.Prelude
+        Bot.Storage.SQLite
+    hs-source-dirs:   test
