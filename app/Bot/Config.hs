@@ -23,6 +23,7 @@ data BotConfig = BotConfig
   { qq       :: !QQ.Config
   , telegram :: !Telegram.Config
   , llm      :: !LLM.Config
+  , saucenao :: !SaucenaoConfig
   , handlers :: !HandlersConfig
   , logLevel :: !LogLevel
   , sqlitePath :: !FilePath
@@ -65,6 +66,7 @@ data FileConfig = FileConfig
   , qq       :: !QQFileConfig
   , telegram :: !TelegramFileConfig
   , llm      :: !LLMFileConfig
+  , saucenao :: !SaucenaoConfig
   , handlers :: !HandlersConfig
   }
   deriving (Show)
@@ -76,6 +78,7 @@ instance FromValue FileConfig where
     <*> reqKey "qq"
     <*> reqKey "telegram"
     <*> reqKey "llm"
+    <*> fmap (fromMaybe defaultSaucenaoConfig) (optKey "saucenao")
     <*> reqKey "handlers"
 
 newtype LogFileConfig = LogFileConfig
@@ -205,6 +208,20 @@ data LLMFileConfig = LLMFileConfig
   }
   deriving (Show)
 
+newtype SaucenaoConfig = SaucenaoConfig
+  { apiKey :: Maybe Text
+  }
+  deriving (Show)
+
+defaultSaucenaoConfig :: SaucenaoConfig
+defaultSaucenaoConfig = SaucenaoConfig
+  { apiKey = Nothing
+  }
+
+instance FromValue SaucenaoConfig where
+  fromValue = parseTableFromValue $ SaucenaoConfig
+    <$> optToken "api_key"
+
 instance FromValue LLMFileConfig where
   fromValue = parseTableFromValue $ LLMFileConfig
     <$> fmap (fromMaybe LLM.defaultConfig.endpoint) (optKey "endpoint")
@@ -291,6 +308,7 @@ toBotConfig cfg =
         , imageGenerationOutputFormat = cfg.llm.imageGenerationOutputFormat
         , imageGenerationModeration = cfg.llm.imageGenerationModeration
         }
+    , saucenao = cfg.saucenao
     , handlers = withPlatformConfig cfg.qq cfg.telegram cfg.handlers
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath

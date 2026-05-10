@@ -14,6 +14,7 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Filter
 import Bot.Handler.Ask
+import Bot.Handler.Saucenao
 import Bot.Handler.Typing
 import Bot.Message
 import Bot.Prelude
@@ -47,7 +48,7 @@ routes
   -> ConversationStore
   -> [RouteHandler es]
 routes cfg conversations =
-  typingHandlers cfg.handlers.ask <> askHandlers cfg.handlers.ask conversations
+  typingHandlers cfg.handlers.ask <> saucenaoHandlers cfg.saucenao cfg.handlers.ask <> askHandlers cfg.handlers.ask conversations
 
 platformReplyTo
   :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)

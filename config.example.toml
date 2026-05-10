@@ -33,6 +33,9 @@ image_generation_quality = "medium"
 image_generation_size = "1024x1024"
 image_generation_output_format = "png"
 
+[saucenao]
+api_key = ""
+
 [handlers.ask]
 command = "!ask"
 draw_command = "!draw"
