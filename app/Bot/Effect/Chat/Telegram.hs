@@ -4,11 +4,13 @@ Description : Telegram effects
 Stability   : experimental
 -}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Bot.Effect.Chat.Telegram where
 
 import qualified Bot.Effect.Chat as ChatEffect
 import Bot.Message
+import Control.Concurrent (threadDelay)
 import Data.List (maximum)
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -66,23 +68,30 @@ runTelegram cfg = interpret $ \_ -> \case
 -- ---------------------------------------------------------------------------
 
 updatesStream'
-  :: (Telegram :> es, Log :> es)
+  :: (Telegram :> es, Log :> es, IOE :> es)
   => Int
   -> Stream (Of Update) (Eff es) ()
 updatesStream' offset = do
-  batches <- S.lift (getUpdates offset)
-  S.lift $ logTrace_ [i|Got a batch of #{length batches} messages|]
-  S.lift $ logInfo "Telegram update batch" (length batches)
-  S.each batches
-  let nextOffset = case batches of
-        [] -> offset
-        _  -> 1 + maximum (map (fromInteger . (.updateId)) batches)
-  updatesStream' nextOffset
+  result <- S.lift $ (Right <$> getUpdates offset) `catch` \(err :: SomeException) -> do
+    logInfo "Telegram getUpdates failed, retrying" (show err :: String)
+    liftIO $ threadDelay telegramRetryDelayMicroseconds
+    pure (Left ())
+  case result of
+    Left () ->
+      updatesStream' offset
+    Right batches -> do
+      S.lift $ logTrace_ [i|Got a batch of #{length batches} messages|]
+      S.lift $ logInfo "Telegram update batch" (length batches)
+      S.each batches
+      let nextOffset = case batches of
+            [] -> offset
+            _  -> 1 + maximum (map (fromInteger . (.updateId)) batches)
+      updatesStream' nextOffset
 
-updatesStream :: (Telegram :> es, Log :> es) => Stream (Of Update) (Eff es) ()
-updatesStream = updatesStream' (-1)
+updatesStream :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of Update) (Eff es) ()
+updatesStream = updatesStream' 0
 
-incomingMessages :: (Telegram :> es, Log :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = S.for updatesStream $ \update ->
   case updateToIncomingMessage update of
     Nothing -> do
@@ -168,7 +177,7 @@ apiCall
   -> Eff es result
 apiCall cfg method body = do
   resp :: Response <- liftIO $ runReq defaultHttpConfig $
-    req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse mempty
+    req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse telegramRequestOptions
       <&> responseBody
   case resp of
     Err desc -> throwIO (APIException desc)
@@ -195,6 +204,21 @@ instance Aeson.FromJSON Response where
 maybeField :: Aeson.ToJSON value => Aeson.Key -> Maybe value -> [Aeson.Pair]
 maybeField key =
   maybe [] (\value -> [key Aeson..= value])
+
+telegramLongPollTimeoutSeconds :: Int
+telegramLongPollTimeoutSeconds = 30
+
+telegramHttpResponseTimeoutMicroseconds :: Int
+telegramHttpResponseTimeoutMicroseconds =
+  (telegramLongPollTimeoutSeconds + 10) * 1000000
+
+telegramRetryDelayMicroseconds :: Int
+telegramRetryDelayMicroseconds =
+  5 * 1000000
+
+telegramRequestOptions :: Option 'Https
+telegramRequestOptions =
+  responseTimeout telegramHttpResponseTimeoutMicroseconds
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -677,7 +701,7 @@ getMe =
 getUpdates :: Telegram :> es => Int -> Eff es [Update]
 getUpdates offset = callTelegram $ GetUpdatesRequest
   { offset  = offset
-  , timeout = 30
+  , timeout = telegramLongPollTimeoutSeconds
   , limit   = 100
   }
 
