@@ -137,64 +137,71 @@ platformDriver message =
   List.find ((== message.platform) . (.platform)) chatPlatformDrivers
 
 withPlatformDriver
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
   => IncomingMessage
+  -> Text
   -> (ChatPlatformDriver es -> Eff es (Maybe a))
   -> Eff es (Maybe a)
-withPlatformDriver message action =
-  maybe (pure Nothing) action (platformDriver message)
+withPlatformDriver message label action =
+  case platformDriver message of
+    Nothing ->
+      pure Nothing
+    Just driver ->
+      action driver `catch` \(err :: SomeException) -> do
+        logInfo [i|#{label} failed|] (message.platform, show err :: String)
+        pure Nothing
 
 replyToPlatform
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Text
   -> Eff es (Maybe Integer)
 replyToPlatform message body =
-  withPlatformDriver message \driver ->
+  withPlatformDriver message "chat reply" \driver ->
     driver.replyTo message body
 
 getPlatformMessageContent
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Eff es (Maybe ReferencedMessage)
 getPlatformMessageContent message messageId =
-  withPlatformDriver message \driver ->
+  withPlatformDriver message "fetch referenced message" \driver ->
     driver.getMessageContent message messageId
 
 getPlatformSenderMemberInfo
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Eff es (Maybe Aeson.Value)
 getPlatformSenderMemberInfo message =
-  withPlatformDriver message \driver ->
+  withPlatformDriver message "fetch sender member info" \driver ->
     driver.getSenderMemberInfo message
 
 getPlatformMemberInfo
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Eff es (Maybe Aeson.Value)
 getPlatformMemberInfo message userId =
-  withPlatformDriver message \driver ->
+  withPlatformDriver message "fetch member info" \driver ->
     driver.getMemberInfo message userId
 
 listPlatformGroupMembers
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Eff es (Maybe Aeson.Value)
 listPlatformGroupMembers message =
-  withPlatformDriver message \driver ->
+  withPlatformDriver message "list group members" \driver ->
     driver.listGroupMembers message
 
 mentionPlatformUser
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Text
   -> Eff es (Maybe Integer)
 mentionPlatformUser message userId body =
-  withPlatformDriver message \driver ->
+  withPlatformDriver message "chat mention" \driver ->
     driver.mentionUser message userId body
 
 incomingMessages
@@ -217,7 +224,7 @@ recordedIncomingMessages =
     pure message
 
 mergeIncomingMessages
-  :: IOE :> es
+  :: (Log :> es, IOE :> es)
   => [Stream (Of IncomingMessage) (Eff es) ()]
   -> Stream (Of IncomingMessage) (Eff es) ()
 mergeIncomingMessages streams = do
@@ -229,12 +236,14 @@ mergeIncomingMessages streams = do
     S.yield message
 
 pump
-  :: IOE :> es
+  :: (Log :> es, IOE :> es)
   => Chan.Chan IncomingMessage
   -> Stream (Of IncomingMessage) (Eff es) ()
   -> Eff es ()
-pump chan =
-  S.mapM_ (liftIO . Chan.writeChan chan)
+pump chan stream =
+  S.mapM_ (liftIO . Chan.writeChan chan) stream
+    `catch` \(err :: SomeException) ->
+      logInfo "Incoming message stream stopped" (show err :: String)
 
 runBotLog :: IOE :> es => LogLevel -> Eff (Log : es) a -> Eff es a
 runBotLog level inner = withStdOutLogger $ \logger ->

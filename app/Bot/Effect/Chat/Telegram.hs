@@ -163,7 +163,10 @@ incomingMessages = S.for updatesStream $ \update ->
       S.lift $ logTrace_ [i|Ignoring Telegram event|]
       S.lift $ logInfo_ "Ignoring Telegram event"
     Just parsedMessage -> do
-      message <- S.lift (resolveIncomingMessageImages parsedMessage)
+      message <- S.lift $
+        resolveIncomingMessageImages parsedMessage `catch` \(err :: SomeException) -> do
+          logInfo "Telegram image resolution failed" (show err :: String)
+          pure parsedMessage
       S.lift $ logTrace "incoming Telegram message" message
       S.lift $ logInfo "incoming Telegram message" (incomingMessageLogLine message)
       S.yield message

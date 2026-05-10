@@ -213,6 +213,7 @@ test-suite agent-spec
         Bot.Prelude
         Bot.Storage.SQLite
     build-depends:    http-client
+                    , process
                     , req
     hs-source-dirs:   test
 

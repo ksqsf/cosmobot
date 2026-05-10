@@ -41,6 +41,7 @@ import qualified Data.Text as Text
 import qualified Network.WebSockets as WS
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
+import qualified System.Timeout as Timeout
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -92,8 +93,20 @@ runQQ cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
         (\_ -> \case
           ReceiveEvent -> liftIO (Chan.readChan eventChan)
           SendAction value -> do
-            liftIO (WS.sendTextData conn (Aeson.encode value))
-            liftIO (Chan.readChan responseChan))
+            result <- (Right <$> liftIO do
+                WS.sendTextData conn (Aeson.encode value)
+                Timeout.timeout qqActionTimeoutMicroseconds (Chan.readChan responseChan))
+              `catch` \(err :: SomeException) -> do
+                logInfo "QQ action failed" (show err :: String)
+                pure (Left ())
+            case result of
+              Right (Just response) ->
+                pure response
+              Right Nothing -> do
+                logInfo_ "QQ action timed out"
+                pure failedActionResponse
+              Left () ->
+                pure failedActionResponse)
         inner
 
 websocketPath :: Config -> String
@@ -175,6 +188,19 @@ readValue conn = do
     Left err -> do
       logInfo_ [i|Ignoring malformed QQ frame: #{Text.pack err}|]
       readValue conn
+
+failedActionResponse :: ActionResponse
+failedActionResponse =
+  ActionResponse
+    { status = Just "failed"
+    , retcode = Nothing
+    , data_ = Nothing
+    , message = Just "action failed"
+    }
+
+qqActionTimeoutMicroseconds :: Int
+qqActionTimeoutMicroseconds =
+  40 * 1000000
 
 -- | Raw OneBot action response.
 data ActionResponse = ActionResponse
