@@ -1,20 +1,36 @@
-{-
+{-|
 Module      : Bot.Message
 Description : Unified incoming message types
 Stability   : experimental
 -}
 
-module Bot.Message where
+module Bot.Message
+  ( -- * Chat identity
+    ChatPlatform (..)
+  , ChatKind (..)
+
+    -- * Incoming messages
+  , IncomingMessage (..)
+  , incomingMessageLogLine
+
+    -- * Referenced messages
+  , ReferencedMessage (..)
+  )
+where
 
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 
+-- | Chat platform backends supported by the unified message layer.
 data ChatPlatform
   = PlatformQQ
+  -- ^ Tencent QQ via a OneBot-compatible gateway.
   | PlatformTelegram
+  -- ^ Telegram Bot API.
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
+-- | Coarse chat shape shared across platforms.
 data ChatKind
   = ChatPrivate
   | ChatGroup
@@ -22,6 +38,7 @@ data ChatKind
   | ChatUnknown Text
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
+-- | Platform-normalized message consumed by handlers.
 data IncomingMessage = IncomingMessage
   { platform  :: !ChatPlatform
   , kind      :: !ChatKind
@@ -38,31 +55,7 @@ data IncomingMessage = IncomingMessage
   }
   deriving (Show, Generic, Aeson.ToJSON)
 
-data IncomingMessageLog = IncomingMessageLog
-  { platform :: !ChatPlatform
-  , kind     :: !ChatKind
-  , chatId   :: !(Maybe Integer)
-  , senderId :: !(Maybe Integer)
-  , senderUsername :: !(Maybe Text)
-  , messageId :: !(Maybe Integer)
-  , text     :: !Text
-  , imageCount :: !Int
-  }
-  deriving (Show, Generic, Aeson.ToJSON)
-
-incomingMessageLog :: IncomingMessage -> IncomingMessageLog
-incomingMessageLog message =
-  IncomingMessageLog
-    { platform = message.platform
-    , kind = message.kind
-    , chatId = message.chatId
-    , senderId = message.senderId
-    , senderUsername = message.senderUsername
-    , messageId = message.messageId
-    , text = message.text
-    , imageCount = length message.imageUrls
-    }
-
+-- | Compact one-line representation for info-level logs.
 incomingMessageLogLine :: IncomingMessage -> Text
 incomingMessageLogLine message =
   Text.unwords
@@ -90,6 +83,7 @@ showMaybe :: Show a => Maybe a -> Text
 showMaybe =
   maybe "-" show
 
+-- | Minimal content fetched for a message referenced by reply.
 data ReferencedMessage = ReferencedMessage
   { messageId :: !(Maybe Integer)
   , text      :: !Text

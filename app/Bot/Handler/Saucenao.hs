@@ -1,11 +1,14 @@
-{-
+{-|
 Module      : Bot.Handler.Saucenao
 Description : SauceNAO command handler
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Handler.Saucenao where
+module Bot.Handler.Saucenao
+  ( saucenaoHandlers
+  )
+where
 
 import Bot.Config
 import qualified Bot.Effect.Chat as Chat
@@ -28,6 +31,7 @@ saucenaoCommand :: Text
 saucenaoCommand =
   "!saucenao"
 
+-- | Routes for SauceNAO reverse image search commands.
 saucenaoHandlers
   :: (Chat.Chat :> es, Log :> es, IOE :> es)
   => SaucenaoConfig

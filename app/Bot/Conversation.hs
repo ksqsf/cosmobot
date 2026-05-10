@@ -1,11 +1,28 @@
-{-
+{-|
 Module      : Bot.Conversation
 Description : In-memory conversation graph
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Conversation where
+module Bot.Conversation
+  ( -- * Store
+    ConversationStore
+  , newConversationStore
+  , lookupConversation
+  , rememberConversation
+
+    -- * Conversation values
+  , Conversation (..)
+  , startWithUser
+  , startWithUserContext
+  , startWithSystemAndUser
+  , startWithSystemAndUserContext
+  , appendUser
+  , appendUserContext
+  , appendAssistant
+  )
+where
 
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
@@ -18,11 +35,13 @@ import qualified Data.Text as Text
 import qualified Data.IORef as IORef
 import qualified Data.Map.Strict as Map
 
+-- | Mutable conversation index, optionally mirrored into SQLite.
 data ConversationStore = ConversationStore
   { unConversationStore :: IORef.IORef (Map Integer Conversation)
   , sqliteStore :: !(Maybe Storage.SQLiteStore)
   }
 
+-- | Ordered chat history sent to the LLM.
 newtype Conversation = Conversation
   { messages :: [LLM.ChatMessage]
   }
@@ -38,6 +57,7 @@ instance Aeson.FromJSON Conversation where
   parseJSON = Aeson.withObject "Conversation" $ \o ->
     Conversation <$> o Aeson..: "messages"
 
+-- | Create a store and preload persisted conversations when storage exists.
 newConversationStore :: Maybe Storage.SQLiteStore -> IO ConversationStore
 newConversationStore sqliteStore = do
   conversations <- maybe (pure Map.empty) loadStoredConversations sqliteStore
@@ -52,18 +72,22 @@ decodeConversation :: Text -> Maybe Conversation
 decodeConversation =
   either (const Nothing) Just . Aeson.eitherDecodeStrict' . TextEncoding.encodeUtf8
 
+-- | Start a conversation with a single user text message.
 startWithUser :: Text -> Conversation
 startWithUser prompt =
   startWithSystemAndUserContext "" prompt []
 
+-- | Start a conversation with user text and image context.
 startWithUserContext :: Text -> [Text] -> Conversation
 startWithUserContext prompt imageUrls =
   startWithSystemAndUserContext "" prompt imageUrls
 
+-- | Start with a system prompt and user text.
 startWithSystemAndUser :: Text -> Text -> Conversation
 startWithSystemAndUser systemPrompt prompt =
   startWithSystemAndUserContext systemPrompt prompt []
 
+-- | Start with a system prompt plus user text and image context.
 startWithSystemAndUserContext :: Text -> Text -> [Text] -> Conversation
 startWithSystemAndUserContext systemPrompt prompt imageUrls =
   Conversation (systemMessages <> [LLM.userWithImages prompt imageUrls])
@@ -72,14 +96,17 @@ startWithSystemAndUserContext systemPrompt prompt imageUrls =
       | Text.null systemPrompt = []
       | otherwise         = [LLM.systemText systemPrompt]
 
+-- | Append a text-only user turn.
 appendUser :: Text -> Conversation -> Conversation
 appendUser prompt =
   appendUserContext prompt []
 
+-- | Append a user turn with optional image context.
 appendUserContext :: Text -> [Text] -> Conversation -> Conversation
 appendUserContext prompt imageUrls (Conversation history) =
   Conversation (history <> [LLM.userWithImages prompt imageUrls])
 
+-- | Append an assistant reply, preserving generated image references as context.
 appendAssistant :: Text -> Conversation -> Conversation
 appendAssistant answer (Conversation history) =
   Conversation (history <> assistantContext answer)
@@ -98,10 +125,12 @@ assistantContext answer =
       | not (null imageUrls)
       ]
 
+-- | Look up the conversation associated with a bot reply message id.
 lookupConversation :: IOE :> es => ConversationStore -> Integer -> Eff es (Maybe Conversation)
 lookupConversation ConversationStore{unConversationStore = ref} messageId =
   liftIO $ Map.lookup messageId <$> IORef.readIORef ref
 
+-- | Associate a bot reply message id with a conversation and persist it.
 rememberConversation :: (IOE :> es, Log :> es) => ConversationStore -> Maybe Integer -> Conversation -> Eff es ()
 rememberConversation _ Nothing _ =
   pure ()

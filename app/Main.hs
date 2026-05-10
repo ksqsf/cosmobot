@@ -2,6 +2,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 
+-- | Cosmobot executable wiring configuration, effects, platforms, and routes.
 module Main (main) where
 
 import Bot.Config
@@ -27,6 +28,7 @@ import Log.Backend.StandardOutput
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 
+-- | Start the bot using @config.toml@ from the current working directory.
 main :: IO ()
 main = do
   cfg <- loadConfig "config.toml"

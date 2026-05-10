@@ -1,4 +1,4 @@
-{-
+{-|
 Module      : Bot.Effect.ChatLog
 Description : In-memory chat log
 Stability   : experimental
@@ -6,7 +6,15 @@ Stability   : experimental
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Bot.Effect.ChatLog where
+module Bot.Effect.ChatLog
+  ( ChatLog
+  , ChatLogEntry (..)
+  , recordMessage
+  , recordBotMessage
+  , queryChat
+  , runChatLog
+  )
+where
 
 import Bot.Message
 import Bot.Prelude
@@ -19,6 +27,7 @@ import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 
+-- | Append-only chat log used by agent tools for local context.
 data ChatLog :: Effect where
   RecordMessage
     :: IncomingMessage
@@ -36,6 +45,7 @@ data ChatLog :: Effect where
 
 type instance DispatchOf ChatLog = Dynamic
 
+-- | Sanitized message record exposed to agent tools.
 data ChatLogEntry = ChatLogEntry
   { platform :: !ChatPlatform
   , kind :: !ChatKind
@@ -52,18 +62,22 @@ data ChatLogEntry = ChatLogEntry
   }
   deriving (Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
+-- | Record a user/platform message.
 recordMessage :: ChatLog :> es => IncomingMessage -> Eff es ()
 recordMessage message =
   send (RecordMessage message)
 
+-- | Record a bot reply in the same chat as its triggering message.
 recordBotMessage :: ChatLog :> es => IncomingMessage -> Maybe Integer -> Text -> Eff es ()
 recordBotMessage context messageId body =
   send (RecordBotMessage context messageId body)
 
+-- | Query recent messages from the current chat in chronological order.
 queryChat :: ChatLog :> es => IncomingMessage -> Int -> Bool -> Eff es [ChatLogEntry]
 queryChat message limit includeBotMessages =
   send (QueryChat message limit includeBotMessages)
 
+-- | Interpret chat logging in memory, optionally backed by SQLite.
 runChatLog
   :: (IOE :> es, Log :> es)
   => Maybe Storage.SQLiteStore

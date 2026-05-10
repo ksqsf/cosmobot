@@ -1,10 +1,28 @@
-{-
+{-|
 Module      : Bot.Config
 Description : Application configuration
 Stability   : experimental
 -}
 
-module Bot.Config where
+module Bot.Config
+  ( -- * Top-level configuration
+    BotConfig (..)
+  , HandlersConfig (..)
+  , AskHandlerConfig (..)
+  , TelegramChatRef (..)
+  , SaucenaoConfig (..)
+  , loadConfig
+
+    -- * Handler predicates
+  , isAllowedGroup
+  , isAllowedPrivate
+  , isSuperuser
+  , canStartConversation
+  , canStartFromReply
+  , mentionsConfiguredBot
+  , normalizeUsername
+  )
+where
 
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Chat.QQ as QQ
@@ -19,6 +37,7 @@ import qualified Toml.Semantics.Types as TomlValue
 import qualified Toml
 import Toml.Schema
 
+-- | Fully normalized runtime configuration.
 data BotConfig = BotConfig
   { qq       :: !QQ.Config
   , telegram :: !Telegram.Config
@@ -30,11 +49,13 @@ data BotConfig = BotConfig
   }
   deriving (Show)
 
+-- | Configuration for all handler groups.
 newtype HandlersConfig = HandlersConfig
   { ask :: AskHandlerConfig
   }
   deriving (Show)
 
+-- | Admission, identity, and prompt settings for the ask handler.
 data AskHandlerConfig = AskHandlerConfig
   { command          :: !Text
   , drawCommand      :: !Text
@@ -50,6 +71,7 @@ data AskHandlerConfig = AskHandlerConfig
   }
   deriving (Show)
 
+-- | Read and normalize the TOML configuration used by the executable.
 loadConfig :: FilePath -> IO BotConfig
 loadConfig path = do
   content <- TextIO.readFile path
@@ -158,6 +180,7 @@ data TelegramBotId
   | TelegramBotUsername !Text
   deriving (Show)
 
+-- | Telegram chat whitelist entry, by numeric id or username/title.
 data TelegramChatRef
   = TelegramChatNumeric !Integer
   | TelegramChatUsername !Text
@@ -208,6 +231,7 @@ data LLMFileConfig = LLMFileConfig
   }
   deriving (Show)
 
+-- | SauceNAO integration settings.
 newtype SaucenaoConfig = SaucenaoConfig
   { apiKey :: Maybe Text
   }
@@ -330,6 +354,7 @@ withPlatformConfig qq telegram (HandlersConfig askCfg) =
     , agentMaxTurns = askCfg.agentMaxTurns
     }
 
+-- | Whether a group message is from an explicitly allowed chat.
 isAllowedGroup :: AskHandlerConfig -> IncomingMessage -> Bool
 isAllowedGroup cfg message =
   message.kind == ChatGroup && case message.platform of
@@ -338,6 +363,7 @@ isAllowedGroup cfg message =
     PlatformTelegram ->
       any (telegramChatAllowed message) cfg.telegramChatWhitelist
 
+-- | Whether the message mentions one of the configured bot identities.
 mentionsConfiguredBot :: AskHandlerConfig -> IncomingMessage -> Bool
 mentionsConfiguredBot cfg message =
   case message.platform of
@@ -347,6 +373,7 @@ mentionsConfiguredBot cfg message =
       any (`elem` message.mentions) cfg.botTelegramIds ||
         any (`elem` message.mentionUsernames) cfg.botTelegramUsernames
 
+-- | Whether a private message may start a bot conversation.
 isAllowedPrivate :: AskHandlerConfig -> IncomingMessage -> Bool
 isAllowedPrivate cfg message =
   message.kind == ChatPrivate && case message.platform of
@@ -355,6 +382,7 @@ isAllowedPrivate cfg message =
     PlatformTelegram ->
       maybe False (`elem` map normalizeUsername cfg.telegramSuperusers) (normalizeUsername <$> message.senderUsername)
 
+-- | Whether the message sender may use privileged agent tools.
 isSuperuser :: AskHandlerConfig -> IncomingMessage -> Bool
 isSuperuser cfg message =
   case message.platform of
@@ -363,6 +391,7 @@ isSuperuser cfg message =
     PlatformTelegram ->
       maybe False (`elem` map normalizeUsername cfg.telegramSuperusers) (normalizeUsername <$> message.senderUsername)
 
+-- | General admission predicate for starting a new conversation.
 canStartConversation :: AskHandlerConfig -> IncomingMessage -> Bool
 canStartConversation cfg message =
   case message.kind of
@@ -370,6 +399,7 @@ canStartConversation cfg message =
     ChatGroup   -> isAllowedGroup cfg message || isTelegramMention cfg message
     _           -> False
 
+-- | Admission predicate for starting from a reply to an unknown message.
 canStartFromReply :: AskHandlerConfig -> IncomingMessage -> Bool
 canStartFromReply cfg message =
   case message.kind of
@@ -381,6 +411,7 @@ isTelegramMention :: AskHandlerConfig -> IncomingMessage -> Bool
 isTelegramMention cfg message =
   message.platform == PlatformTelegram && mentionsConfiguredBot cfg message
 
+-- | Normalize Telegram-style usernames for config and message comparison.
 normalizeUsername :: Text -> Text
 normalizeUsername =
   Text.toLower . Text.dropWhile (== '@') . Text.strip

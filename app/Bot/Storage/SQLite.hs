@@ -1,10 +1,18 @@
-{-
+{-|
 Module      : Bot.Storage.SQLite
 Description : SQLite persistence
 Stability   : experimental
 -}
 
-module Bot.Storage.SQLite where
+module Bot.Storage.SQLite
+  ( SQLiteStore
+  , openSQLiteStore
+  , loadConversationRows
+  , saveConversationJson
+  , saveChatLogEntry
+  , queryChatLogEntries
+  )
+where
 
 import Bot.Prelude
 import Control.Concurrent (threadDelay)
@@ -16,11 +24,13 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Database.SQLite3 as SQLite
 
+-- | Thread-safe handle for the bot's SQLite database.
 data SQLiteStore = SQLiteStore
   { database :: !SQLite.Database
   , lock :: !(MVar.MVar ())
   }
 
+-- | Open the database, configure connection pragmas, and run migrations.
 openSQLiteStore :: FilePath -> IO SQLiteStore
 openSQLiteStore path = do
   database <- SQLite.open (toText path)
@@ -46,6 +56,7 @@ migrate store = withStore store \db -> do
   SQLite.exec db
     "CREATE INDEX IF NOT EXISTS chat_log_chat_idx ON chat_log(platform_key, kind_key, chat_id, id)"
 
+-- | Load persisted conversation JSON keyed by bot message id.
 loadConversationRows :: SQLiteStore -> IO (Map Integer Text)
 loadConversationRows store = withStore store \db ->
   withStatement db "SELECT message_id, conversation_json FROM conversations" [] \stmt ->
@@ -60,6 +71,7 @@ loadConversationRows store = withStore store \db ->
           json <- columnText stmt 1
           rows (Map.insert messageId json acc) stmt
 
+-- | Upsert a serialized conversation for a bot message id.
 saveConversationJson :: SQLiteStore -> Integer -> Text -> IO ()
 saveConversationJson store messageId conversationJson = withStore store \db ->
   withStatement db
@@ -69,6 +81,7 @@ saveConversationJson store messageId conversationJson = withStore store \db ->
     ]
     stepDone
 
+-- | Persist one sanitized chat log entry.
 saveChatLogEntry :: SQLiteStore -> Text -> Text -> Maybe Integer -> Bool -> Aeson.Value -> IO ()
 saveChatLogEntry store platformKey kindKey chatId isBot entry = withStore store \db ->
   withStatement db
@@ -81,6 +94,7 @@ saveChatLogEntry store platformKey kindKey chatId isBot entry = withStore store 
     ]
     stepDone
 
+-- | Return recent chat log entries in chronological order.
 queryChatLogEntries :: SQLiteStore -> Text -> Text -> Maybe Integer -> Bool -> Int -> IO [Aeson.Value]
 queryChatLogEntries store platformKey kindKey chatId includeBotMessages limit = withStore store \db ->
   withStatement db sql params \stmt ->

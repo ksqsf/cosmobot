@@ -1,11 +1,14 @@
-{-
+{-|
 Module      : Bot.Handler.Ask
 Description : Ask command and threaded conversation handler
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Handler.Ask where
+module Bot.Handler.Ask
+  ( askHandlers
+  )
+where
 
 import qualified Bot.Agent as Agent
 import Bot.Config
@@ -20,6 +23,7 @@ import Bot.Prelude
 import Control.Concurrent (forkIO)
 import qualified Data.Text as Text
 
+-- | Routes for ask, draw, private, mention, and reply continuation flows.
 askHandlers
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => AskHandlerConfig

@@ -1,4 +1,4 @@
-{-
+{-|
 Module      : Bot.Effect.Chat.Telegram
 Description : Telegram effects
 Stability   : experimental
@@ -6,7 +6,42 @@ Stability   : experimental
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Effect.Chat.Telegram where
+module Bot.Effect.Chat.Telegram
+  ( Telegram
+  , Config (..)
+  , User (..)
+  , Update (..)
+  , Chat (..)
+  , ChatType (..)
+  , ChatMember (..)
+  , ChatMemberStatus (..)
+  , Message (..)
+  , MessageEntity (..)
+  , PhotoSize (..)
+  , ParseMode (..)
+  , SendMessageRequest (..)
+  , SendPhotoRequest (..)
+  , runTelegram
+  , incomingMessages
+  , getMe
+  , getUpdates
+  , sendMessage
+  , sendPhoto
+  , uploadPhoto
+  , replyTo
+  , getMessageContent
+  , forwardMessage
+  , deleteMessage
+  , pinMessage
+  , unpinMessage
+  , getChat
+  , getChatMember
+  , banChatMember
+  , unbanChatMember
+  , leaveChat
+  , mentionUser
+  )
+where
 
 import qualified Bot.Effect.Chat as ChatEffect
 import Bot.Message
@@ -31,6 +66,7 @@ import System.IO (hClose, openTempFile)
 -- Config
 -- ---------------------------------------------------------------------------
 
+-- | Telegram Bot API credentials.
 newtype Config = Config
   { botToken :: Text
   }
@@ -48,6 +84,7 @@ class (Aeson.ToJSON req, Aeson.FromJSON (TelegramResponse req)) => TelegramReque
 -- Effect
 -- ---------------------------------------------------------------------------
 
+-- | Telegram Bot API effect.
 data Telegram :: Effect where
   CallTelegram
     :: TelegramRequest req
@@ -73,6 +110,7 @@ fileUrl
   -> Eff es Text
 fileUrl = send . FileUrl
 
+-- | Interpret Telegram operations with HTTP calls to the Bot API.
 runTelegram
   :: IOE :> es
   => Log :> es
@@ -116,6 +154,7 @@ updatesStream' offset = do
 updatesStream :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of Update) (Eff es) ()
 updatesStream = updatesStream' 0
 
+-- | Poll Telegram updates and yield platform-independent messages.
 incomingMessages :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = S.for updatesStream $ \update ->
   case updateToIncomingMessage update of
@@ -203,7 +242,7 @@ largestPhotoFileId =
       let MaxPhotoSize photo = sconcat (fmap MaxPhotoSize photos)
       in photo
 
-newtype MaxPhotoSize = MaxPhotoSize { unMaxPhotoSize :: PhotoSize }
+newtype MaxPhotoSize = MaxPhotoSize PhotoSize
 
 instance Semigroup MaxPhotoSize where
   MaxPhotoSize a <> MaxPhotoSize b =
@@ -213,6 +252,7 @@ photoArea :: PhotoSize -> Integer
 photoArea photo =
   photo.width * photo.height
 
+-- | Resolve the content of a replied-to Telegram message when available locally.
 getMessageContent :: Telegram :> es => IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
 getMessageContent message messageId =
   case Aeson.fromJSON message.raw :: Aeson.Result Message of
@@ -369,6 +409,7 @@ parseModeText ParseModeHTML       = "HTML"
 -- Types
 -- ---------------------------------------------------------------------------
 
+-- | Telegram update envelope returned by long polling.
 data Update = Update
   { updateId          :: Integer
   , message           :: Maybe Message
@@ -394,6 +435,7 @@ instance Aeson.ToJSON Update where
     <> maybeField "channel_post" channelPost
     <> maybeField "edited_channel_post" editedChannelPost
 
+-- | Telegram user object fields used by the bot.
 data User = User
   { id        :: !Integer
   , isBot     :: !Bool
@@ -422,6 +464,7 @@ instance Aeson.ToJSON User where
     where
       User{isBot, firstName, lastName, username} = user
 
+-- | Telegram message object fields consumed by the unified parser.
 data Message = Message
   { messageId       :: !Integer
   , messageThreadId :: !(Maybe Integer)
@@ -466,6 +509,7 @@ instance Aeson.ToJSON Message where
     <> maybeField "caption_entities" captionEntities
     <> maybeField "photo" photo
 
+-- | Telegram photo variant metadata.
 data PhotoSize = PhotoSize
   { fileId       :: !Text
   , fileUniqueId :: !Text
@@ -492,6 +536,7 @@ instance Aeson.ToJSON PhotoSize where
     ]
     <> maybeField "file_size" fileSize
 
+-- | Telegram message entity metadata used for mention extraction.
 data MessageEntity = MessageEntity
   { type_  :: !Text
   , offset :: !Integer
@@ -517,6 +562,7 @@ instance Aeson.ToJSON MessageEntity where
     where
       MessageEntity{type_, offset, user} = entity
 
+-- | Telegram chat kind.
 data ChatType
   = ChatTypePrivate
   | ChatTypeGroup
@@ -538,6 +584,7 @@ instance Aeson.FromJSON ChatType where
     "channel"    -> pure ChatTypeChannel
     other        -> fail $ "Unknown ChatType: " <> show other
 
+-- | Telegram chat object fields used for routing and metadata.
 data Chat = Chat
   { id        :: !Integer
   , type_     :: !ChatType
@@ -569,6 +616,7 @@ instance Aeson.ToJSON Chat where
     where
       Chat{type_, title, username, firstName, lastName} = chat
 
+-- | Telegram membership status.
 data ChatMemberStatus
   = ChatMemberCreator
   | ChatMemberAdministrator
@@ -596,6 +644,7 @@ instance Aeson.ToJSON ChatMemberStatus where
   toJSON ChatMemberLeft          = Aeson.String "left"
   toJSON ChatMemberKicked        = Aeson.String "kicked"
 
+-- | Telegram membership information returned by @getChatMember@.
 data ChatMember = ChatMember
   { status :: !ChatMemberStatus
   , user   :: !User
@@ -613,6 +662,7 @@ instance Aeson.ToJSON ChatMember where
     , "user" Aeson..= user
     ]
 
+-- | Telegram parse mode for outbound formatted text.
 data ParseMode
   = ParseModeMarkdown
   | ParseModeMarkdownV2
@@ -690,6 +740,7 @@ instance TelegramRequest GetUpdatesRequest where
   type TelegramResponse GetUpdatesRequest = [Update]
   telegramMethod _ = "getUpdates"
 
+-- | Request payload for Telegram @sendMessage@.
 data SendMessageRequest = SendMessageRequest
   { chatId              :: !Integer
   , messageThreadId     :: !(Maybe Integer)
@@ -723,6 +774,7 @@ instance TelegramRequest SendMessageRequest where
   type TelegramResponse SendMessageRequest = Message
   telegramMethod _ = "sendMessage"
 
+-- | Request payload for Telegram @sendPhoto@.
 data SendPhotoRequest = SendPhotoRequest
   { chatId              :: !Integer
   , messageThreadId     :: !(Maybe Integer)
@@ -902,10 +954,12 @@ instance TelegramRequest LeaveChatRequest where
 -- Smart constructors
 -- ---------------------------------------------------------------------------
 
+-- | Return the bot user associated with the current token.
 getMe :: Telegram :> es => Eff es User
 getMe =
   callTelegram GetMeRequest
 
+-- | Long-poll Telegram updates from an offset.
 getUpdates :: Telegram :> es => Int -> Eff es [Update]
 getUpdates offset = callTelegram $ GetUpdatesRequest
   { offset  = offset
@@ -913,16 +967,20 @@ getUpdates offset = callTelegram $ GetUpdatesRequest
   , limit   = 100
   }
 
+-- | Call Telegram @sendMessage@.
 sendMessage :: Telegram :> es => SendMessageRequest -> Eff es Message
 sendMessage = callTelegram
 
+-- | Call Telegram @sendPhoto@ with a remote or already-uploaded photo ref.
 sendPhoto :: Telegram :> es => SendPhotoRequest -> Eff es Message
 sendPhoto = callTelegram
 
+-- | Upload a local photo file through multipart/form-data.
 uploadPhoto :: Telegram :> es => SendPhotoRequest -> FilePath -> Eff es Message
 uploadPhoto request path =
   send (UploadPhoto request path)
 
+-- | Reply to a Telegram chat, including image directives in the body.
 replyTo :: (Telegram :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe Integer)
 replyTo message body =
   case (message.platform, message.chatId) of
@@ -932,6 +990,7 @@ replyTo message body =
     _ ->
       pure Nothing
 
+-- | Reply with an HTML mention for a Telegram user id.
 mentionUser :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
 mentionUser message userId body =
   case (message.platform, message.chatId) of
@@ -1038,38 +1097,47 @@ nonEmptyText text
   | Text.null text = Nothing
   | otherwise      = Just text
 
+-- | Forward an existing Telegram message.
 forwardMessage :: Telegram :> es => Integer -> Integer -> Integer -> Eff es Message
 forwardMessage chatId fromChatId messageId =
   callTelegram $ ForwardMessageRequest{..}
 
+-- | Delete a Telegram message when the bot has permission.
 deleteMessage :: Telegram :> es => Integer -> Integer -> Eff es Bool
 deleteMessage chatId messageId =
   callTelegram $ DeleteMessageRequest{..}
 
+-- | Pin a Telegram message in a chat.
 pinMessage :: Telegram :> es => Integer -> Integer -> Bool -> Eff es Bool
 pinMessage chatId messageId disableNotification =
   callTelegram $ PinMessageRequest{..}
 
+-- | Unpin a Telegram message in a chat.
 unpinMessage :: Telegram :> es => Integer -> Integer -> Eff es Bool
 unpinMessage chatId messageId =
   callTelegram $ UnpinMessageRequest{..}
 
+-- | Fetch Telegram chat metadata.
 getChat :: Telegram :> es => Integer -> Eff es Chat
 getChat chatId =
   callTelegram $ GetChatRequest{..}
 
+-- | Fetch one user's membership in a Telegram chat.
 getChatMember :: Telegram :> es => Integer -> Integer -> Eff es ChatMember
 getChatMember chatId userId =
   callTelegram $ GetChatMemberRequest{..}
 
+-- | Ban a Telegram user from a chat.
 banChatMember :: Telegram :> es => Integer -> Integer -> Maybe Integer -> Eff es Bool
 banChatMember chatId userId untilDate =
   callTelegram $ BanChatMemberRequest{..}
 
+-- | Unban a Telegram user from a chat.
 unbanChatMember :: Telegram :> es => Integer -> Integer -> Eff es Bool
 unbanChatMember chatId userId =
   callTelegram $ UnbanChatMemberRequest { onlyIfBanned = True, .. }
 
+-- | Leave a Telegram chat.
 leaveChat :: Telegram :> es => Integer -> Eff es Bool
 leaveChat chatId =
   callTelegram $ LeaveChatRequest{..}

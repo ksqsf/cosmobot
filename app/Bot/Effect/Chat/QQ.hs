@@ -1,11 +1,28 @@
-{-
+{-|
 Module      : Bot.Effect.Chat.QQ
 Description : QQ/NapCat OneBot v11 websocket effect
 Stability   : experimental
 -}
 {-# LANGUAGE RecordWildCards #-}
 
-module Bot.Effect.Chat.QQ where
+module Bot.Effect.Chat.QQ
+  ( QQ
+  , Config (..)
+  , Event (..)
+  , ActionResponse (..)
+  , receiveEvent
+  , sendAction
+  , runQQ
+  , eventsStream
+  , incomingMessages
+  , readActionResponse
+  , replyTo
+  , getMessageContent
+  , getGroupMemberInfo
+  , getGroupMemberList
+  , mentionUser
+  )
+where
 
 import qualified Bot.Effect.Chat as Chat
 import Bot.Message
@@ -28,6 +45,7 @@ import qualified Streaming.Prelude as S
 -- Config
 -- ---------------------------------------------------------------------------
 
+-- | Connection settings for a OneBot v11 websocket endpoint.
 data Config = Config
   { host  :: !String
   , port  :: !Int
@@ -36,30 +54,26 @@ data Config = Config
   }
   deriving (Show)
 
-defaultConfig :: Config
-defaultConfig = Config
-  { host  = "127.0.0.1"
-  , port  = 3001
-  , path  = "/"
-  , token = Just "xxx"
-  }
-
 -- ---------------------------------------------------------------------------
 -- Effect
 -- ---------------------------------------------------------------------------
 
+-- | Low-level OneBot transport effect.
 data QQ :: Effect where
   ReceiveEvent :: QQ m Event
   SendAction :: Aeson.Value -> QQ m ActionResponse
 
 type instance DispatchOf QQ = Dynamic
 
+-- | Receive one raw OneBot event from the websocket reader.
 receiveEvent :: QQ :> es => Eff es Event
 receiveEvent = send ReceiveEvent
 
+-- | Send one raw OneBot action payload.
 sendAction :: QQ :> es => Aeson.Value -> Eff es ActionResponse
 sendAction = send . SendAction
 
+-- | Connect to OneBot and interpret QQ operations over the websocket.
 runQQ
   :: IOE :> es
   => Log :> es
@@ -94,12 +108,14 @@ websocketPath Config{path, token = Just t} =
 -- Streaming
 -- ---------------------------------------------------------------------------
 
+-- | Stream raw OneBot events.
 eventsStream :: QQ :> es => Stream (Of Event) (Eff es) ()
 eventsStream = do
   event <- S.lift receiveEvent
   S.yield event
   eventsStream
 
+-- | Stream OneBot message events as platform-independent messages.
 incomingMessages :: (QQ :> es, Log :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
   event <- S.lift receiveEvent
@@ -136,6 +152,7 @@ readFrames eventChan responseChan conn = forever do
         Aeson.Error err ->
           logInfo_ [i|Ignoring malformed QQ frame: #{Text.pack err}|]
 
+-- | Read frames until an action response is found.
 readActionResponse :: (IOE :> es, Log :> es) => WS.Connection -> Eff es ActionResponse
 readActionResponse conn = do
   value <- readValue conn
@@ -158,6 +175,7 @@ readValue conn = do
       logInfo_ [i|Ignoring malformed QQ frame: #{Text.pack err}|]
       readValue conn
 
+-- | Raw OneBot action response.
 data ActionResponse = ActionResponse
   { status  :: !(Maybe Text)
   , retcode :: !(Maybe Integer)
@@ -174,6 +192,7 @@ instance Aeson.FromJSON ActionResponse where
     message <- o Aeson..:? "message"
     pure ActionResponse{..}
 
+-- | Reply to a QQ private or group message.
 replyTo :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe Integer)
 replyTo message body =
   case (message.platform, message.kind, message.chatId <|> message.senderId) of
@@ -197,6 +216,7 @@ replyTo message body =
         ])
     _ -> pure Nothing
 
+-- | Send a reply that mentions a QQ user where the platform supports it.
 mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
 mentionUser message userId body =
   case (message.platform, message.kind, message.chatId <|> message.senderId) of
@@ -228,6 +248,7 @@ responseMessageId response =
       Nothing    -> Nothing
     _ -> Nothing
 
+-- | Fetch message text and image references by QQ message id.
 getMessageContent :: QQ :> es => Integer -> Eff es (Maybe ReferencedMessage)
 getMessageContent messageId =
   actionDataMessage <$> sendAction (Aeson.object
@@ -237,6 +258,7 @@ getMessageContent messageId =
         ]
     ])
 
+-- | Fetch platform-provided QQ group member information.
 getGroupMemberInfo :: QQ :> es => Integer -> Integer -> Eff es (Maybe Aeson.Value)
 getGroupMemberInfo groupId userId =
   (.data_) <$> sendAction (Aeson.object
@@ -248,6 +270,7 @@ getGroupMemberInfo groupId userId =
         ]
     ])
 
+-- | Fetch platform-provided QQ group member list.
 getGroupMemberList :: QQ :> es => Integer -> Eff es (Maybe Aeson.Value)
 getGroupMemberList groupId =
   (.data_) <$> sendAction (Aeson.object
@@ -362,6 +385,7 @@ qqImageFile url =
       bytes <- liftIO (ByteString.readFile (Text.unpack path))
       pure ("base64://" <> TextEncoding.decodeUtf8 (Base64.encode bytes))
 
+-- | Raw OneBot event fields needed by the message parser.
 data Event = Event
   { time        :: !(Maybe Integer)
   , selfId      :: !(Maybe Integer)

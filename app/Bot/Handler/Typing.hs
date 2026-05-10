@@ -1,11 +1,14 @@
-{-
+{-|
 Module      : Bot.Handler.Typing
 Description : Typing website commands
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Handler.Typing where
+module Bot.Handler.Typing
+  ( typingHandlers
+  )
+where
 
 import Bot.Config
 import qualified Bot.Effect.Chat as Chat
@@ -34,6 +37,7 @@ championshipRankCommand = "!jbscj"
 tigerRankCommand :: Text
 tigerRankCommand = "!hbcj"
 
+-- | Routes that render typing leaderboard snapshots.
 typingHandlers
   :: (Chat.Chat :> es, Log :> es, IOE :> es)
   => AskHandlerConfig

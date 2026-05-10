@@ -1,10 +1,17 @@
-{-
+{-|
 Module      : Bot.Agent
 Description : Agent loop and extensible tool framework
 Stability   : experimental
 -}
 
-module Bot.Agent where
+module Bot.Agent
+  ( Tool (..)
+  , AgentContext (..)
+  , ToolResult (..)
+  , runAgent
+  , defaultTools
+  )
+where
 
 import Bot.Conversation
 import qualified Bot.Effect.Chat as Chat
@@ -24,6 +31,7 @@ import System.Directory
 import System.FilePath
 import System.IO.Error (userError)
 
+-- | Tool definition exposed to the LLM function-calling API.
 data Tool es = Tool
   { name        :: !Text
   , description :: !Text
@@ -32,6 +40,7 @@ data Tool es = Tool
   , run         :: AgentContext es -> Aeson.Value -> Eff es ToolResult
   }
 
+-- | Per-message capabilities and permissions made available to tools.
 data AgentContext es = AgentContext
   { message :: IncomingMessage
   , superuser :: !Bool
@@ -40,6 +49,7 @@ data AgentContext es = AgentContext
   , recordBotMessage :: Maybe Integer -> Text -> Eff es ()
   }
 
+-- | Text returned to the LLM plus any bot message ids produced by a tool.
 data ToolResult = ToolResult
   { content    :: !Text
   , messageIds :: ![Maybe Integer]
@@ -53,6 +63,7 @@ toolMessage :: Maybe Integer -> Text -> ToolResult
 toolMessage messageId content =
   ToolResult content [messageId]
 
+-- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
 runAgent
   :: (LLM.LLM :> es, Log :> es)
   => Int
@@ -173,6 +184,7 @@ appendMessages :: [LLM.ChatMessage] -> Conversation -> Conversation
 appendMessages newMessages (Conversation messages) =
   Conversation (messages <> newMessages)
 
+-- | Built-in tools exposed to the model after per-message permission checks.
 defaultTools :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, IOE :> es) => [Tool es]
 defaultTools =
   [ listDirectoryTool

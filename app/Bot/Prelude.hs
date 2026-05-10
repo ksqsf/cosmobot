@@ -1,4 +1,4 @@
-{-
+{-|
 Module      : Bot.Prelude
 Description : Custom prelude
 Stability   : experimental

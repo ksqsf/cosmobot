@@ -1,11 +1,38 @@
-{-
+{-|
 Module      : Bot.Effect.LLM
 Description : Query LLM
 Stability   : experimental
 -}
-module Bot.Effect.LLM where
+module Bot.Effect.LLM
+  ( -- * Effect
+    LLM
+  , ask
+  , askWithHistory
+  , askImageWithHistory
+  , askWithTools
+  , runLLM
 
-import Bot.Prelude
+    -- * Configuration
+  , Config (..)
+  , defaultConfig
+
+    -- * Conversation values
+  , ChatMessage (..)
+  , MessageContent (..)
+  , ContentPart (..)
+  , ChatAnswer (..)
+  , FunctionTool (..)
+  , ToolCall (..)
+  , userText
+  , userWithImages
+  , systemText
+  , assistantText
+  , assistantAnswer
+  , toolResult
+  )
+where
+
+import Bot.Prelude hiding (ask)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as AesonTypes
@@ -15,6 +42,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Network.HTTP.Req
 
+-- | Runtime configuration for the OpenAI-compatible chat endpoint.
 data Config = Config
   { endpoint :: !Text
   , apiKey   :: !(Maybe Text)
@@ -36,6 +64,7 @@ data Config = Config
   }
   deriving (Show)
 
+-- | Defaults for optional LLM features.
 defaultConfig :: Config
 defaultConfig = Config
   { endpoint = "openrouter.ai"
@@ -57,6 +86,7 @@ defaultConfig = Config
   , imageGenerationModeration = Nothing
   }
 
+-- | Effect for text, image, and tool-calling LLM requests.
 data LLM :: Effect where
   Ask :: [ChatMessage] -> LLM m Text
   AskImage :: [ChatMessage] -> LLM m Text
@@ -64,19 +94,24 @@ data LLM :: Effect where
 
 type instance DispatchOf LLM = Dynamic
 
+-- | Ask a one-shot text question without preserving history.
 ask :: LLM :> es => Text -> Eff es Text
 ask prompt = askWithHistory [userText prompt]
 
+-- | Ask for a text answer using an explicit chat history.
 askWithHistory :: LLM :> es => [ChatMessage] -> Eff es Text
 askWithHistory = send . Ask
 
+-- | Ask the configured image model to generate an image response.
 askImageWithHistory :: LLM :> es => [ChatMessage] -> Eff es Text
 askImageWithHistory = send . AskImage
 
+-- | Ask with function tools and return both text and tool calls.
 askWithTools :: LLM :> es => [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
 askWithTools tools messages =
   send (AskTools tools messages)
 
+-- | Interpret LLM requests through an OpenAI-compatible HTTP endpoint.
 runLLM
   :: IOE :> es
   => Log :> es
@@ -230,6 +265,7 @@ serverTools Config{webSearch, webSearchMaxResults, webFetch, webFetchMaxUses, we
     , if datetime then Just DatetimeTool else Nothing
     ]
 
+-- | OpenAI-compatible function tool schema exposed to the model.
 data FunctionTool = FunctionTool
   { name        :: !Text
   , description :: !Text
@@ -268,33 +304,6 @@ imageGenerationConfig Config{imageGenerationQuality, imageGenerationSize, imageG
         <> maybe [] (\value -> ["output_format" Aeson..= value]) imageGenerationOutputFormat
         <> maybe [] (\value -> ["moderation" Aeson..= value]) imageGenerationModeration
 
-data LLMRequestLog = LLMRequestLog
-  { endpoint :: !Text
-  , request  :: !ChatCompletionRequest
-  }
-  deriving (Show, Generic, Aeson.ToJSON)
-
-data LLMResponseLog = LLMResponseLog
-  { endpoint    :: !Text
-  , model       :: !Text
-  , usage       :: !(Maybe Aeson.Value)
-  , annotations :: ![Aeson.Value]
-  , images      :: ![Aeson.Value]
-  , toolCalls   :: ![ToolCall]
-  }
-  deriving (Show, Generic, Aeson.ToJSON)
-
-llmResponseLog :: Text -> Text -> ChatCompletionResponse -> LLMResponseLog
-llmResponseLog endpoint model response =
-  LLMResponseLog
-    { endpoint = endpoint
-    , model = model
-    , usage = response.usage
-    , annotations = foldMap (fromMaybe [] . (.message.annotations)) response.choices
-    , images = foldMap (fromMaybe [] . (.message.images)) response.choices
-    , toolCalls = foldMap (.message.toolCalls) response.choices
-    }
-
 llmRequestLogLine :: Text -> ChatCompletionRequest -> Text
 llmRequestLogLine endpoint request =
   Text.unwords
@@ -322,6 +331,7 @@ llmResponseLogLine endpoint model response =
     images = foldMap (fromMaybe [] . (.message.images)) response.choices
     toolCalls = foldMap (.message.toolCalls) response.choices
 
+-- | One message in an OpenAI-compatible chat transcript.
 data ChatMessage = ChatMessage
   { role    :: !Text
   , content :: !(Maybe MessageContent)
@@ -352,6 +362,7 @@ instance Aeson.FromJSON ChatMessage where
       , toolCallId = toolCallId
       }
 
+-- | Chat message content as plain text or OpenAI-compatible content parts.
 data MessageContent
   = TextContent !Text
   | PartsContent ![ContentPart]
@@ -367,6 +378,7 @@ instance Aeson.FromJSON MessageContent where
     (TextContent <$> Aeson.parseJSON value) <|>
       (PartsContent <$> Aeson.parseJSON value)
 
+-- | One OpenAI-compatible multimodal content part.
 data ContentPart
   = TextPart !Text
   | ImageUrlPart !Text
@@ -405,24 +417,29 @@ instance Aeson.FromJSON ContentPart where
         Aeson.Object obj -> obj Aeson..: "url"
         _ -> fail "Invalid image_url content part"
 
+-- | Construct a text-only user message.
 userText :: Text -> ChatMessage
 userText prompt =
   ChatMessage "user" (Just (TextContent prompt)) [] Nothing
 
+-- | Construct a system prompt message.
 systemText :: Text -> ChatMessage
 systemText prompt =
   ChatMessage "system" (Just (TextContent prompt)) [] Nothing
 
+-- | Construct a user message with optional image URL parts.
 userWithImages :: Text -> [Text] -> ChatMessage
 userWithImages prompt [] =
   userText prompt
 userWithImages prompt urls =
   ChatMessage "user" (Just (PartsContent (TextPart prompt : map ImageUrlPart urls))) [] Nothing
 
+-- | Construct a text-only assistant message.
 assistantText :: Text -> ChatMessage
 assistantText answer =
   ChatMessage "assistant" (Just (TextContent answer)) [] Nothing
 
+-- | Convert a normalized answer back into transcript form.
 assistantAnswer :: ChatAnswer -> ChatMessage
 assistantAnswer ChatAnswer{content, toolCalls} =
   ChatMessage "assistant" messageContent toolCalls Nothing
@@ -431,6 +448,7 @@ assistantAnswer ChatAnswer{content, toolCalls} =
       | Text.null content = Nothing
       | otherwise         = Just (TextContent content)
 
+-- | Construct a tool result message for a previously requested call.
 toolResult :: ToolCall -> Text -> ChatMessage
 toolResult call result =
   ChatMessage "tool" (Just (TextContent result)) [] (Just call.id)
@@ -472,12 +490,14 @@ instance Aeson.FromJSON ChatMessageResponse where
       , toolCalls = toolCalls
       }
 
+-- | Assistant response after normalizing provider-specific response shapes.
 data ChatAnswer = ChatAnswer
   { content   :: !Text
   , toolCalls :: ![ToolCall]
   }
   deriving (Show, Generic, Aeson.ToJSON)
 
+-- | A single function call requested by the model.
 data ToolCall = ToolCall
   { id        :: !Text
   , name      :: !Text
