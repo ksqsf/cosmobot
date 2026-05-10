@@ -11,6 +11,7 @@ module Bot.Effect.LLM
   , askImageWithHistory
   , askWithTools
   , runLLM
+  , runLLMWith
 
     -- * Configuration
   , Config (..)
@@ -122,6 +123,17 @@ runLLM cfg = interpret $ \_ -> \case
   Ask messages -> askOpenAI False cfg messages
   AskImage messages -> askOpenAI True cfg messages
   AskTools tools messages -> askOpenAIWithTools cfg tools messages
+
+runLLMWith
+  :: ([ChatMessage] -> Eff es Text)
+  -> ([ChatMessage] -> Eff es Text)
+  -> ([FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer)
+  -> Eff (LLM : es) a
+  -> Eff es a
+runLLMWith askText askImage askTools = interpret $ \_ -> \case
+  Ask messages -> askText messages
+  AskImage messages -> askImage messages
+  AskTools tools messages -> askTools tools messages
 
 askOpenAI :: (IOE :> es, Log :> es) => Bool -> Config -> [ChatMessage] -> Eff es Text
 askOpenAI _ Config{apiKey = Nothing} _ =
