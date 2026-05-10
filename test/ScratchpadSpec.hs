@@ -16,6 +16,7 @@ main :: IO ()
 main = do
   testScratchpadTodoFlow
   testScratchpadSenderIsolation
+  testScratchpadPersistence
 
 testScratchpadTodoFlow :: IO ()
 testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
@@ -57,13 +58,31 @@ testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store ->
     ]
     =<< IORef.readIORef replies
 
+testScratchpadPersistence :: IO ()
+testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
+  writeReplies <- IORef.newIORef ([] :: [Text])
+  writeStore <- Storage.openSQLiteStore path
+  runScratchpad writeStore writeReplies (message "!todo persists")
+  readReplies <- IORef.newIORef ([] :: [Text])
+  readStore <- Storage.openSQLiteStore path
+  runScratchpad readStore readReplies (message "!list")
+  assertEqual
+    "scratchpad todo list persists through SQLite"
+    ["- [ ] 1. persists\n"]
+    =<< IORef.readIORef readReplies
+
 withScratchpadStore :: String -> (Storage.SQLiteStore -> IO ()) -> IO ()
-withScratchpadStore label action = do
+withScratchpadStore label action =
+  withScratchpadPath label \path -> do
+    store <- Storage.openSQLiteStore path
+    action store
+
+withScratchpadPath :: String -> (FilePath -> IO ()) -> IO ()
+withScratchpadPath label action = do
   tmp <- Directory.getTemporaryDirectory
   let path = tmp </> ("cosmobot-scratchpad-spec-" <> label <> ".sqlite")
   Directory.removeFile path `Exception.catch` \(_ :: IOException) -> pure ()
-  store <- Storage.openSQLiteStore path
-  action store
+  action path
 
 runScratchpad :: Storage.SQLiteStore -> IORef.IORef [Text] -> IncomingMessage -> IO ()
 runScratchpad store replies incoming =
