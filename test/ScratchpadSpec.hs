@@ -21,6 +21,8 @@ main =
       [ testCase "todo command flow" testScratchpadTodoFlow
       , testCase "todo lists are scoped by sender" testScratchpadSenderIsolation
       , testCase "todo list persists through SQLite" testScratchpadPersistence
+      , testCase "invalid commands reply with usage or missing item" testScratchpadInvalidCommands
+      , testCase "messages without sender are rejected" testScratchpadMissingSender
       ]
 
 testScratchpadTodoFlow :: IO ()
@@ -70,6 +72,29 @@ testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
   readStore <- Storage.openSQLiteStore path
   runScratchpad readStore readReplies (message "!list")
   IORef.readIORef readReplies >>= (@?= ["- [ ] 1. persists\n"])
+
+testScratchpadInvalidCommands :: IO ()
+testScratchpadInvalidCommands = withScratchpadStore "invalid-commands" \store -> do
+  replies <- IORef.newIORef ([] :: [Text])
+  runScratchpad store replies (message "!done")
+  runScratchpad store replies (message "!done nope")
+  runScratchpad store replies (message "!todo only task")
+  runScratchpad store replies (message "!done 2")
+  runScratchpad store replies (message "!rm")
+  IORef.readIORef replies
+    >>= (@?=)
+      [ "用法：!done <todo编号>"
+      , "用法：!done <todo编号>"
+      , "已添加 #1: only task"
+      , "没有编号 2 的 todo。"
+      , "用法：!rm <编号1> <编号2> ..."
+      ]
+
+testScratchpadMissingSender :: IO ()
+testScratchpadMissingSender = withScratchpadStore "missing-sender" \store -> do
+  replies <- IORef.newIORef ([] :: [Text])
+  runScratchpad store replies (messageWithoutSender "!todo unsaved")
+  IORef.readIORef replies >>= (@?= ["无法识别发送者，不能保存 todo。"])
 
 withScratchpadStore :: String -> (Storage.SQLiteStore -> IO ()) -> IO ()
 withScratchpadStore label action =
@@ -123,4 +148,11 @@ messageFrom senderId text =
     , imageUrls = []
     , text = text
     , raw = Aeson.Null
+    }
+
+messageWithoutSender :: Text -> IncomingMessage
+messageWithoutSender text =
+  (message text)
+    { senderId = Nothing
+    , senderUsername = Nothing
     }

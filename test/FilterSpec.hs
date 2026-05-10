@@ -13,6 +13,9 @@ main =
   defaultMain $
     testGroup "filter"
       [ testCase "command strips prefix and rejects other commands" testCommandFilter
+      , testCase "promptOrImages accepts images without text" testPromptOrImages
+      , testCase "fromGroups matches only allowed group chats" testFromGroups
+      , testCase "notReply rejects replies" testNotReply
       , testCase "routeStop prevents later handlers" testRouteStopPreventsLaterHandlers
       , testCase "route continues to later handlers" testRouteContinueRunsLaterHandlers
       ]
@@ -23,6 +26,23 @@ testCommandFilter = do
       unmatched = applyFilter (command "!ask") (message "!draw hello")
   matched @?= Just "hello"
   unmatched @?= Nothing
+
+testPromptOrImages :: IO ()
+testPromptOrImages = do
+  applyFilter promptOrImages (message "") @?= Nothing
+  applyFilter promptOrImages (message "  hello  ") @?= Just "hello"
+  applyFilter promptOrImages (messageWithImages "" ["https://example.test/image.png"]) @?= Just ""
+
+testFromGroups :: IO ()
+testFromGroups = do
+  assertBool "allowed group matches" (isJust (applyFilter (fromGroups [100]) (message "hello"){kind = ChatGroup, chatId = Just 100}))
+  assertBool "other group does not match" (isNothing (applyFilter (fromGroups [100]) (message "hello"){kind = ChatGroup, chatId = Just 101}))
+  assertBool "private chat does not match" (isNothing (applyFilter (fromGroups [100]) (message "hello"){kind = ChatPrivate, chatId = Just 100}))
+
+testNotReply :: IO ()
+testNotReply = do
+  assertBool "non-reply matches" (isJust (applyFilter notReply (message "hello")))
+  assertBool "reply does not match" (isNothing (applyFilter notReply (message "hello"){replyToMessageId = Just 1}))
 
 testRouteStopPreventsLaterHandlers :: IO ()
 testRouteStopPreventsLaterHandlers = do
@@ -71,6 +91,14 @@ message =
 
 messageFrom :: Integer -> Text -> IncomingMessage
 messageFrom senderId text =
+  messageFromWithImages senderId text []
+
+messageWithImages :: Text -> [Text] -> IncomingMessage
+messageWithImages =
+  messageFromWithImages 200
+
+messageFromWithImages :: Integer -> Text -> [Text] -> IncomingMessage
+messageFromWithImages senderId text imageUrls =
   IncomingMessage
     { platform = PlatformTelegram
     , kind = ChatPrivate
@@ -81,7 +109,7 @@ messageFrom senderId text =
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []
-    , imageUrls = []
+    , imageUrls = imageUrls
     , text = text
     , raw = Aeson.Null
     }
