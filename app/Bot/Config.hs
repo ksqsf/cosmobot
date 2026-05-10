@@ -11,6 +11,8 @@ import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
 import Bot.Message
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import qualified Toml.Semantics.Types as TomlValue
@@ -36,7 +38,7 @@ data AskHandlerConfig = AskHandlerConfig
   { command          :: !Text
   , drawCommand      :: !Text
   , qqGroupWhitelist :: ![Integer]
-  , telegramChatWhitelist :: ![Integer]
+  , telegramChatWhitelist :: ![TelegramChatRef]
   , qqSuperusers     :: ![Integer]
   , telegramSuperusers :: ![Text]
   , botQQ            :: !(Maybe Integer)
@@ -153,6 +155,11 @@ data TelegramBotId
   | TelegramBotUsername !Text
   deriving (Show)
 
+data TelegramChatRef
+  = TelegramChatNumeric !Integer
+  | TelegramChatUsername !Text
+  deriving (Eq, Show)
+
 instance FromValue TelegramBotId where
   fromValue = \case
     TomlValue.Integer' _ value ->
@@ -161,6 +168,15 @@ instance FromValue TelegramBotId where
       pure (TelegramBotUsername (normalizeUsername value))
     _ ->
       fail "telegram.bot_id must be an integer id or a username string"
+
+instance FromValue TelegramChatRef where
+  fromValue = \case
+    TomlValue.Integer' _ value ->
+      pure (TelegramChatNumeric value)
+    TomlValue.Text' _ value ->
+      pure (TelegramChatUsername (normalizeUsername value))
+    _ ->
+      fail "handlers.ask.telegram_chat_whitelist entries must be integer chat ids or username strings"
 
 instance FromValue TelegramFileConfig where
   fromValue = parseTableFromValue $ TelegramFileConfig
@@ -302,7 +318,7 @@ isAllowedGroup cfg message =
     PlatformQQ ->
       maybe False (`elem` cfg.qqGroupWhitelist) message.chatId
     PlatformTelegram ->
-      maybe False (`elem` cfg.telegramChatWhitelist) message.chatId
+      any (telegramChatAllowed message) cfg.telegramChatWhitelist
 
 mentionsConfiguredBot :: AskHandlerConfig -> IncomingMessage -> Bool
 mentionsConfiguredBot cfg message =
@@ -350,6 +366,36 @@ isTelegramMention cfg message =
 normalizeUsername :: Text -> Text
 normalizeUsername =
   Text.toLower . Text.dropWhile (== '@') . Text.strip
+
+telegramChatAllowed :: IncomingMessage -> TelegramChatRef -> Bool
+telegramChatAllowed message = \case
+  TelegramChatNumeric chatId ->
+    message.chatId == Just chatId
+  TelegramChatUsername username ->
+    username `elem` telegramMessageChatNames message
+
+telegramMessageChatNames :: IncomingMessage -> [Text]
+telegramMessageChatNames message =
+  map normalizeUsername $
+    fromMaybe [] (AesonTypes.parseMaybe telegramChatNamesFromRaw message.raw)
+
+telegramChatNamesFromRaw :: Aeson.Value -> AesonTypes.Parser [Text]
+telegramChatNamesFromRaw =
+  Aeson.withObject "TelegramMessage" $ \o -> do
+    direct <- fromMaybe [] <$> do
+      chat <- o Aeson..:? "chat"
+      traverse telegramChatNamesFromChat chat
+    original <- fromMaybe [] <$> do
+      originalMessage <- o Aeson..:? "original_message"
+      traverse telegramChatNamesFromRaw originalMessage
+    pure (direct <> original)
+
+telegramChatNamesFromChat :: Aeson.Value -> AesonTypes.Parser [Text]
+telegramChatNamesFromChat =
+  Aeson.withObject "TelegramChat" $ \o -> do
+    username <- o Aeson..:? "username"
+    title <- o Aeson..:? "title"
+    pure (catMaybes [username, title])
 
 telegramBotIds :: Maybe TelegramBotId -> [Integer]
 telegramBotIds = \case
