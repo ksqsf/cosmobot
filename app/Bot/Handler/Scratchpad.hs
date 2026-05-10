@@ -15,6 +15,7 @@ import Bot.Filter
 import Bot.Message
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as Storage
+import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 
 scratchpadHandlers
@@ -35,6 +36,22 @@ data ScratchpadCommand
   | ListCommand
   | ClearCommand
   | RemoveCommand
+
+data TodoItem = TodoItem
+  { body :: !Text
+  , done :: !Bool
+  }
+  deriving stock (Eq, Generic, Show)
+  deriving anyclass (Aeson.FromJSON, Aeson.ToJSON)
+
+type StoredTodo = Storage.StoredState TodoItem
+
+todoItems :: Storage.JsonCollection TodoItem
+todoItems =
+  Storage.JsonCollection
+    { tableName = "scratchpad_todo_items"
+    , scopeColumns = ["platform_key", "sender_key"]
+    }
 
 scratchpadRoute
   :: (Chat.Chat :> es, IOE :> es)
@@ -77,8 +94,8 @@ handleTodo store platformKey senderKey message args
   | Text.null body =
       replyWithList store platformKey senderKey message
   | otherwise = do
-      liftIO (Storage.addTodoItem store platformKey senderKey body)
-      todos <- liftIO (Storage.loadTodoList store platformKey senderKey)
+      liftIO (addTodoItem store platformKey senderKey body)
+      todos <- liftIO (loadTodoList store platformKey senderKey)
       void $ Chat.replyTo message ("已添加 #" <> show (length todos) <> ": " <> body)
   where
     body = Text.strip args
@@ -96,13 +113,13 @@ handleDone store platformKey senderKey message args =
     Nothing ->
       void $ Chat.replyTo message "用法：!done <todo编号>"
     Just index -> do
-      todos <- liftIO (Storage.loadTodoList store platformKey senderKey)
+      todos <- liftIO (loadTodoList store platformKey senderKey)
       case todoAt index todos of
         Nothing ->
           void $ Chat.replyTo message [i|没有编号 #{index} 的 todo。|]
         Just todo -> do
-          liftIO (Storage.markTodoDone store platformKey senderKey todo.rowId)
-          void $ Chat.replyTo message ("已完成 #" <> show index <> ": " <> todo.body)
+          liftIO (markTodoDone store platformKey senderKey todo)
+          void $ Chat.replyTo message ("已完成 #" <> show index <> ": " <> todo.value.body)
 
 handleClear
   :: (Chat.Chat :> es, IOE :> es)
@@ -112,7 +129,7 @@ handleClear
   -> IncomingMessage
   -> Eff es ()
 handleClear store platformKey senderKey message = do
-  liftIO (Storage.clearTodoList store platformKey senderKey)
+  liftIO (clearTodoList store platformKey senderKey)
   void $ Chat.replyTo message "已清空 todo list。"
 
 handleRemove
@@ -128,9 +145,9 @@ handleRemove store platformKey senderKey message args =
     [] ->
       void $ Chat.replyTo message "用法：!rm <编号1> <编号2> ..."
     indices -> do
-      todos <- liftIO (Storage.loadTodoList store platformKey senderKey)
+      todos <- liftIO (loadTodoList store platformKey senderKey)
       let rows = mapMaybe (`todoAt` todos) indices
-      liftIO (Storage.deleteTodoRows store platformKey senderKey (map (.rowId) rows))
+      liftIO (deleteTodoRows store platformKey senderKey (map (.rowId) rows))
       void $ Chat.replyTo message [i|已删除 #{length rows} 项。|]
 
 replyWithList
@@ -141,22 +158,47 @@ replyWithList
   -> IncomingMessage
   -> Eff es ()
 replyWithList store platformKey senderKey message = do
-  todos <- liftIO (Storage.loadTodoList store platformKey senderKey)
+  todos <- liftIO (loadTodoList store platformKey senderKey)
   void $ Chat.replyTo message (renderTodoList todos)
 
-renderTodoList :: [Storage.StoredTodo] -> Text
+renderTodoList :: [StoredTodo] -> Text
 renderTodoList [] =
   "todo list 为空。"
 renderTodoList todos =
   Text.unlines (zipWith render [1 :: Int ..] todos)
   where
     render index todo =
-      "- [" <> status todo <> "] " <> show index <> ". " <> todo.body
+      "- [" <> status todo.value <> "] " <> show index <> ". " <> todo.value.body
     status todo
       | todo.done = "X"
       | otherwise = " "
 
-todoAt :: Int -> [Storage.StoredTodo] -> Maybe Storage.StoredTodo
+loadTodoList :: Storage.SQLiteStore -> Text -> Text -> IO [StoredTodo]
+loadTodoList store platformKey senderKey =
+  Storage.loadJsonCollection store todoItems (todoScope platformKey senderKey)
+
+addTodoItem :: Storage.SQLiteStore -> Text -> Text -> Text -> IO ()
+addTodoItem store platformKey senderKey body =
+  Storage.appendJsonCollection store todoItems (todoScope platformKey senderKey) TodoItem{body, done = False}
+
+markTodoDone :: Storage.SQLiteStore -> Text -> Text -> StoredTodo -> IO ()
+markTodoDone store platformKey senderKey todo = do
+  let item = todo.value
+  Storage.replaceJsonCollectionItem store todoItems (todoScope platformKey senderKey) todo.rowId item{done = True}
+
+deleteTodoRows :: Storage.SQLiteStore -> Text -> Text -> [Integer] -> IO ()
+deleteTodoRows store platformKey senderKey =
+  Storage.deleteJsonCollectionRows store todoItems (todoScope platformKey senderKey)
+
+clearTodoList :: Storage.SQLiteStore -> Text -> Text -> IO ()
+clearTodoList store platformKey senderKey =
+  Storage.clearJsonCollection store todoItems (todoScope platformKey senderKey)
+
+todoScope :: Text -> Text -> [Text]
+todoScope platformKey senderKey =
+  [platformKey, senderKey]
+
+todoAt :: Int -> [StoredTodo] -> Maybe StoredTodo
 todoAt index todos
   | index <= 0 = Nothing
   | otherwise = viaNonEmpty head (drop (index - 1) todos)
