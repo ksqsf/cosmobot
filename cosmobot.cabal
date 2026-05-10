@@ -67,6 +67,7 @@ executable cosmobot
         Bot.Storage.SQLite
         Bot.Filter
         Bot.Handler.Ask
+        Bot.Handler.Scratchpad
         Bot.Handler.Typing
         Bot.Effect.Chat
         Bot.Effect.ChatLog
@@ -133,10 +134,57 @@ test-suite filter-spec
         Bot.Prelude
         Bot.Message
         Bot.Filter
+        Bot.Effect.Chat
     build-depends:    base >=4.18.0.0
                     , relude
                     , text
                     , aeson
+                    , containers
+                    , direct-sqlite
+                    , bytestring
+                    , directory
+                    , filepath
+                    , effectful
+                    , log-effectful
+                    , string-interpolate
+                    , streaming
+    hs-source-dirs:   test
+                    , app
+    default-language: GHC2021
+    default-extensions:
+        DataKinds
+        DeriveAnyClass
+        DerivingVia
+        DuplicateRecordFields
+        LambdaCase
+        NoFieldSelectors
+        NoImplicitPrelude
+        OverloadedRecordDot
+        OverloadedStrings
+        QuasiQuotes
+        TypeFamilies
+        BlockArguments
+
+test-suite scratchpad-spec
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          ScratchpadSpec.hs
+    other-modules:
+        Bot.Filter
+        Bot.Prelude
+        Bot.Message
+        Bot.Effect.Chat
+        Bot.Storage.SQLite
+        Bot.Handler.Scratchpad
+    build-depends:    base >=4.18.0.0
+                    , relude
+                    , text
+                    , aeson
+                    , containers
+                    , direct-sqlite
+                    , bytestring
+                    , directory
+                    , filepath
                     , effectful
                     , log-effectful
                     , string-interpolate

@@ -61,12 +61,16 @@ applyFilter (MessageFilter filt) =
   filt
 
 message :: Text -> IncomingMessage
-message text =
+message =
+  messageFrom 200
+
+messageFrom :: Integer -> Text -> IncomingMessage
+messageFrom senderId text =
   IncomingMessage
     { platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just 100
-    , senderId = Just 200
+    , senderId = Just senderId
     , senderUsername = Just "alice"
     , messageId = Just 300
     , replyToMessageId = Nothing

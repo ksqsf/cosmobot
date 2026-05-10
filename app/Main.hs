@@ -16,6 +16,7 @@ import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Filter
 import Bot.Handler.Ask
 import Bot.Handler.Saucenao
+import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
 import Bot.Message
 import Bot.Prelude
@@ -32,26 +33,31 @@ import qualified Streaming.Prelude as S
 main :: IO ()
 main = do
   cfg <- loadConfig "config.toml"
-  sqliteStore <- Just <$> SQLiteStorage.openSQLiteStore cfg.sqlitePath
-  conversations <- newConversationStore sqliteStore
+  sqliteStore <- SQLiteStorage.openSQLiteStore cfg.sqlitePath
+  let maybeSQLiteStore = Just sqliteStore
+  conversations <- newConversationStore maybeSQLiteStore
   runEff $
     runBotLog cfg.logLevel .
-    ChatLog.runChatLog sqliteStore .
+    ChatLog.runChatLog maybeSQLiteStore .
     Scheduler.runScheduler .
     Telegram.runTelegram cfg.telegram .
     QQ.runQQ cfg.qq .
     Chat.runChatWith replyToPlatform getPlatformMessageContent getPlatformSenderMemberInfo getPlatformMemberInfo listPlatformGroupMembers mentionPlatformUser .
     LLM.runLLM cfg.llm $ do
       logInfo_ "Cosmobot stand by!"
-      consumeWith (routes cfg conversations) (recordedIncomingMessages incomingMessages)
+      consumeWith (routes cfg sqliteStore conversations) (recordedIncomingMessages incomingMessages)
 
 routes
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => BotConfig
+  -> SQLiteStorage.SQLiteStore
   -> ConversationStore
   -> [RouteHandler es]
-routes cfg conversations =
-  typingHandlers cfg.handlers.ask <> saucenaoHandlers cfg.saucenao cfg.handlers.ask <> askHandlers cfg.handlers.ask conversations
+routes cfg sqliteStore conversations =
+  scratchpadHandlers sqliteStore
+    <> typingHandlers cfg.handlers.ask
+    <> saucenaoHandlers cfg.saucenao cfg.handlers.ask
+    <> askHandlers cfg.handlers.ask conversations
 
 data ChatPlatformDriver es = ChatPlatformDriver
   { platform :: !ChatPlatform

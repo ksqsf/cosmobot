@@ -11,6 +11,12 @@ module Bot.Storage.SQLite
   , saveConversationJson
   , saveChatLogEntry
   , queryChatLogEntries
+  , StoredTodo (..)
+  , loadTodoList
+  , addTodoItem
+  , markTodoDone
+  , deleteTodoRows
+  , clearTodoList
   )
 where
 
@@ -29,6 +35,13 @@ data SQLiteStore = SQLiteStore
   { database :: !SQLite.Database
   , lock :: !(MVar.MVar ())
   }
+
+data StoredTodo = StoredTodo
+  { rowId :: !Integer
+  , body :: !Text
+  , done :: !Bool
+  }
+  deriving (Eq, Show)
 
 -- | Open the database, configure connection pragmas, and run migrations.
 openSQLiteStore :: FilePath -> IO SQLiteStore
@@ -55,6 +68,10 @@ migrate store = withStore store \db -> do
     "CREATE TABLE IF NOT EXISTS chat_log (id INTEGER PRIMARY KEY AUTOINCREMENT, platform_key TEXT NOT NULL, kind_key TEXT NOT NULL, chat_id INTEGER, is_bot INTEGER NOT NULL, entry_json TEXT NOT NULL)"
   SQLite.exec db
     "CREATE INDEX IF NOT EXISTS chat_log_chat_idx ON chat_log(platform_key, kind_key, chat_id, id)"
+  SQLite.exec db
+    "CREATE TABLE IF NOT EXISTS scratchpad_todos (id INTEGER PRIMARY KEY AUTOINCREMENT, platform_key TEXT NOT NULL, sender_key TEXT NOT NULL, body TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)"
+  SQLite.exec db
+    "CREATE INDEX IF NOT EXISTS scratchpad_todos_sender_idx ON scratchpad_todos(platform_key, sender_key, id)"
 
 -- | Load persisted conversation JSON keyed by bot message id.
 loadConversationRows :: SQLiteStore -> IO (Map Integer Text)
@@ -130,6 +147,68 @@ queryChatLogEntries store platformKey kindKey chatId includeBotMessages limit = 
                   Left _ -> acc
           rows acc' stmt
 
+loadTodoList :: SQLiteStore -> Text -> Text -> IO [StoredTodo]
+loadTodoList store platformKey senderKey = withStore store \db ->
+  withStatement db
+    "SELECT id, body, done FROM scratchpad_todos WHERE platform_key = ? AND sender_key = ? ORDER BY id ASC"
+    [ SQLite.SQLText platformKey
+    , SQLite.SQLText senderKey
+    ]
+    (rows [])
+  where
+    rows acc stmt =
+      SQLite.step stmt >>= \case
+        SQLite.Done ->
+          pure (reverse acc)
+        SQLite.Row -> do
+          rowId <- columnInteger stmt 0
+          body <- columnText stmt 1
+          done <- columnBool stmt 2
+          rows (StoredTodo{rowId, body, done} : acc) stmt
+
+addTodoItem :: SQLiteStore -> Text -> Text -> Text -> IO ()
+addTodoItem store platformKey senderKey body = withStore store \db ->
+  withStatement db
+    "INSERT INTO scratchpad_todos(platform_key, sender_key, body, done) VALUES (?, ?, ?, 0)"
+    [ SQLite.SQLText platformKey
+    , SQLite.SQLText senderKey
+    , SQLite.SQLText body
+    ]
+    stepDone
+
+markTodoDone :: SQLiteStore -> Text -> Text -> Integer -> IO ()
+markTodoDone store platformKey senderKey rowId = withStore store \db ->
+  withStatement db
+    "UPDATE scratchpad_todos SET done = 1 WHERE platform_key = ? AND sender_key = ? AND id = ?"
+    [ SQLite.SQLText platformKey
+    , SQLite.SQLText senderKey
+    , SQLite.SQLInteger (fromIntegral rowId)
+    ]
+    stepDone
+
+deleteTodoRows :: SQLiteStore -> Text -> Text -> [Integer] -> IO ()
+deleteTodoRows store platformKey senderKey rowIds =
+  traverse_ (deleteTodoRow store platformKey senderKey) rowIds
+
+deleteTodoRow :: SQLiteStore -> Text -> Text -> Integer -> IO ()
+deleteTodoRow store platformKey senderKey rowId = withStore store \db ->
+  withStatement db
+    "DELETE FROM scratchpad_todos WHERE platform_key = ? AND sender_key = ? AND id = ?"
+    [ SQLite.SQLText platformKey
+    , SQLite.SQLText senderKey
+    , SQLite.SQLInteger (fromIntegral rowId)
+    ]
+    stepDone
+
+clearTodoList :: SQLiteStore -> Text -> Text -> IO ()
+clearTodoList store platformKey senderKey = withStore store \db ->
+  withStatement db
+    "DELETE FROM scratchpad_todos WHERE platform_key = ? AND sender_key = ?"
+    [ SQLite.SQLText platformKey
+    , SQLite.SQLText senderKey
+    ]
+    stepDone
+
 withStore :: SQLiteStore -> (SQLite.Database -> IO a) -> IO a
 withStore SQLiteStore{database, lock} action =
   MVar.withMVar lock \_ ->
@@ -161,6 +240,13 @@ columnInteger stmt index =
     SQLite.SQLInteger value -> pure (fromIntegral value)
     SQLite.SQLText value -> maybe (pure 0) pure (readMaybe (toString value))
     _ -> pure 0
+
+columnBool :: SQLite.Statement -> Int -> IO Bool
+columnBool stmt index =
+  SQLite.column stmt (SQLite.ColumnIndex index) >>= \case
+    SQLite.SQLInteger value -> pure (value /= 0)
+    SQLite.SQLText value -> pure (value == "1" || value == "true")
+    _ -> pure False
 
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
