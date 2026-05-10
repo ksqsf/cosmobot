@@ -8,6 +8,7 @@ module Bot.Effect.Scheduler
   ( Scheduler
   , ScheduledMessage (..)
   , scheduleMessage
+  , deleteScheduledMessage
   , listScheduledMessages
   , scheduledMessages
   , runScheduler
@@ -54,6 +55,10 @@ data Scheduler :: Effect where
     -> Scheduler m [ScheduledMessage]
   ReceiveScheduledMessage
     :: Scheduler m IncomingMessage
+  DeleteScheduledMessage
+    :: IncomingMessage
+    -> Integer
+    -> Scheduler m Bool
 
 type instance DispatchOf Scheduler = Dynamic
 
@@ -78,6 +83,10 @@ receiveScheduledMessage :: Scheduler :> es => Eff es IncomingMessage
 receiveScheduledMessage =
   send ReceiveScheduledMessage
 
+-- | Delete a scheduled message with ID. Returns True if there is such an ID.
+deleteScheduledMessage :: Scheduler :> es => IncomingMessage -> Integer -> Eff es Bool
+deleteScheduledMessage message schedId = send (DeleteScheduledMessage message schedId)
+
 -- | Interpret scheduled messages with an in-memory delay queue.
 runScheduler
   :: IOE :> es
@@ -95,6 +104,15 @@ runScheduler inner = do
           MVar.modifyMVar_ schedulerStateVar \schedulerState ->
             pure schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}
           Chan.writeChan chan message
+      DeleteScheduledMessage message scheduleId -> do
+        scheduleMb <- liftIO $ MVar.withMVar schedulerStateVar $ \schedulerState -> pure (Map.lookup scheduleId schedulerState.pendingMessages)
+        case scheduleMb of
+          Nothing -> pure False
+          Just schedule -> do
+            if sameMessageOwner message schedule.message
+              then do liftIO $ MVar.modifyMVar_ schedulerStateVar $ \schedulerState -> pure schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}
+                      pure True
+              else pure False
       ListScheduledMessages message -> do
         now <- liftIO getMonotonicTimeNSec
         pending <- liftIO $ MVar.withMVar schedulerStateVar (pure . Map.elems . (.pendingMessages))

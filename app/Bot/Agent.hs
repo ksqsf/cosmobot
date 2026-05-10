@@ -201,6 +201,7 @@ defaultTools =
   , listGroupMembersTool
   , currentMentionsTool
   , scheduleAgentActionTool
+  , deleteScheduledAgentActionTool
   , listCurrentUserSchedulesTool
   , runBashTool
   ]
@@ -386,6 +387,22 @@ scheduleAgentActionTool = Tool
         Right (delaySeconds, prompt) -> do
           Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
           pure (toolText [i|Scheduled agent action in #{delaySeconds} seconds.|])
+  }
+
+deleteScheduledAgentActionTool :: Scheduler.Scheduler :> es => Tool es
+deleteScheduledAgentActionTool = Tool
+  { name = "delete_scheduled_agent_action"
+  , description = "Delete a schedule using schedule ID. Only current user's schedules may be deleted."
+  , parameters = objectSchema
+    [ fieldInteger "schedule_id" "The schedule ID to be deleted."
+    ]
+    ["schedule_id"]
+  , allowed = everyone
+  , run = \context -> withIntegerArg "schedule_id" $ \scheduleId -> do
+      ok <- Scheduler.deleteScheduledMessage context.message scheduleId
+      if ok
+        then pure (toolText [i|Schedule #{scheduleId} has been removed.|])
+        else pure (toolText [i|Schedule #{scheduleId} is not available to the user.|])
   }
 
 listCurrentUserSchedulesTool :: Scheduler.Scheduler :> es => Tool es
