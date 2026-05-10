@@ -61,7 +61,7 @@ runAgent
   -> Conversation
   -> Eff es (Text, Conversation)
 runAgent maxTurns context tools conversation =
-  loop (max 1 maxTurns) conversation
+  loop (max 1 maxTurns) (closeInterruptedToolCalls conversation)
   where
     exposedTools = filter (`toolAllowed` context) tools
 
@@ -74,7 +74,8 @@ runAgent maxTurns context tools conversation =
         calls
           | turnsLeft <= 1 -> do
               logInfo "Agent tool turn limit reached" calls
-              pure (toolLimitMessage answer.content, answered)
+              let paused = appendMessages (map pausedToolResult calls) answered
+              pure (toolLimitMessage answer.content calls, paused)
           | otherwise -> do
               results <- traverse execute calls
               let next = appendMessages (map fst results) answered
@@ -87,10 +88,45 @@ runAgent maxTurns context tools conversation =
         pure (toolText [i|Tool #{callName} failed: #{show err :: String}|])
       pure (LLM.toolResult call result.content, result.messageIds)
 
-toolLimitMessage :: Text -> Text
-toolLimitMessage content
-  | Text.null (Text.strip content) = "Agent stopped: maximum tool turns reached."
-  | otherwise = content
+toolLimitMessage :: Text -> [LLM.ToolCall] -> Text
+toolLimitMessage content calls
+  | Text.null stripped =
+      [i|已暂停：本次 agent 工具调用轮数已用完，尚未执行下一步工具调用：#{toolCallList calls}
+
+如果需要继续，请直接回复下一条消息。|]
+  | otherwise =
+      [i|#{stripped}
+
+已暂停：本次 agent 工具调用轮数已用完，尚未执行下一步工具调用：#{toolCallList calls}
+
+如果需要继续，请直接回复下一条消息。|]
+  where
+    stripped = Text.strip content
+
+toolCallList :: [LLM.ToolCall] -> Text
+toolCallList calls =
+  Text.intercalate ", " (map (.name) calls)
+
+pausedToolResult :: LLM.ToolCall -> LLM.ChatMessage
+pausedToolResult call =
+  LLM.toolResult call "Agent paused because the maximum tool turn limit was reached before this tool call could run. The user may continue the conversation to resume the work."
+
+closeInterruptedToolCalls :: Conversation -> Conversation
+closeInterruptedToolCalls (Conversation messages) =
+  Conversation (go messages)
+  where
+    go [] = []
+    go (message : rest)
+      | message.role == "assistant" && not (null message.toolCalls) =
+          let (toolResults, remaining) = span isToolResult rest
+              existingIds = mapMaybe (.toolCallId) toolResults
+              missingCalls = filter ((`notElem` existingIds) . (.id)) message.toolCalls
+          in message : toolResults <> map pausedToolResult missingCalls <> go remaining
+      | otherwise =
+          message : go rest
+
+    isToolResult message =
+      message.role == "tool"
 
 toolSchema :: Tool es -> LLM.FunctionTool
 toolSchema Tool{name, description, parameters} =
