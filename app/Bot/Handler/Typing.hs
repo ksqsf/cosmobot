@@ -19,9 +19,9 @@ import Control.Concurrent (forkIO)
 import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
+import qualified Data.ByteString as BS
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Data.Text.IO as TextIO
 import Data.Time
 import GHC.Clock (getMonotonicTimeNSec)
 import Network.HTTP.Req
@@ -271,7 +271,7 @@ renderRankImage title rows = do
   nonce <- getMonotonicTimeNSec
   let typstPath = dir </> "typing-rank-" <> show nonce <.> "typ"
       pngPath = dir </> "typing-rank-" <> show nonce <.> "png"
-  TextIO.writeFile typstPath (typstDocument title rows)
+  BS.writeFile typstPath (TextEncoding.encodeUtf8 (typstDocument title rows))
   (code, _out, err) <- readProcessWithExitCode "typst" ["compile", typstPath, pngPath] ""
   case code of
     ExitSuccess -> pure pngPath
