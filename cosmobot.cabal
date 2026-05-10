@@ -50,9 +50,43 @@ extra-doc-files:    CHANGELOG.md
 common warnings
     ghc-options: -Wall
 
+common language
+    default-language: GHC2021
+    default-extensions:
+        DataKinds
+        DeriveAnyClass
+        DerivingVia
+        DuplicateRecordFields
+        LambdaCase
+        NoFieldSelectors
+        NoImplicitPrelude
+        OverloadedRecordDot
+        OverloadedStrings
+        QuasiQuotes
+        TypeFamilies
+        BlockArguments
+
+common app-deps
+    build-depends:    base >=4.18.0.0
+                    , relude
+                    , text
+                    , containers
+                    , direct-sqlite
+                    , directory
+                    , filepath
+                    , effectful
+                    , log-effectful
+                    , streaming
+                    , bytestring
+                    , aeson
+                    , string-interpolate
+    hs-source-dirs:   app
+
 executable cosmobot
     -- Import common warning flags.
     import:           warnings
+                    , language
+                    , app-deps
 
     -- .hs or .lhs file containing the Main module.
     main-is:          Main.hs
@@ -81,53 +115,23 @@ executable cosmobot
     -- other-extensions:
 
     -- Other library packages from which modules are imported.
-    build-depends:    base >=4.18.0.0
-                    , relude
-                    , text
-                    , containers
-                    , direct-sqlite
-                    , directory
-                    , filepath
-                    , http-client
+    build-depends:    http-client
                     , modern-uri
                     , optics
-                    , string-interpolate
                     , time
-                    , effectful
                     , log-base
-                    , log-effectful
-                    , streaming
                     , req
-                    , bytestring
                     , base64-bytestring
-                    , aeson
                     , aeson-optics
                     , dotenv
                     , process
                     , websockets
                     , toml-parser
 
-    -- Directories containing source files.
-    hs-source-dirs:   app
-
-    -- Base language which the package is written in.
-    default-language: GHC2021
-    default-extensions:
-        DataKinds
-        DeriveAnyClass
-        DerivingVia
-        DuplicateRecordFields
-        LambdaCase
-        NoFieldSelectors
-        NoImplicitPrelude
-        OverloadedRecordDot
-        OverloadedStrings
-        QuasiQuotes
-        TypeFamilies
-        BlockArguments
-
 test-suite filter-spec
     import:           warnings
+                    , language
+                    , app-deps
     type:             exitcode-stdio-1.0
     main-is:          FilterSpec.hs
     other-modules:
@@ -135,38 +139,12 @@ test-suite filter-spec
         Bot.Message
         Bot.Filter
         Bot.Effect.Chat
-    build-depends:    base >=4.18.0.0
-                    , relude
-                    , text
-                    , aeson
-                    , containers
-                    , direct-sqlite
-                    , bytestring
-                    , directory
-                    , filepath
-                    , effectful
-                    , log-effectful
-                    , string-interpolate
-                    , streaming
     hs-source-dirs:   test
-                    , app
-    default-language: GHC2021
-    default-extensions:
-        DataKinds
-        DeriveAnyClass
-        DerivingVia
-        DuplicateRecordFields
-        LambdaCase
-        NoFieldSelectors
-        NoImplicitPrelude
-        OverloadedRecordDot
-        OverloadedStrings
-        QuasiQuotes
-        TypeFamilies
-        BlockArguments
 
 test-suite scratchpad-spec
     import:           warnings
+                    , language
+                    , app-deps
     type:             exitcode-stdio-1.0
     main-is:          ScratchpadSpec.hs
     other-modules:
@@ -176,32 +154,4 @@ test-suite scratchpad-spec
         Bot.Effect.Chat
         Bot.Storage.SQLite
         Bot.Handler.Scratchpad
-    build-depends:    base >=4.18.0.0
-                    , relude
-                    , text
-                    , aeson
-                    , containers
-                    , direct-sqlite
-                    , bytestring
-                    , directory
-                    , filepath
-                    , effectful
-                    , log-effectful
-                    , string-interpolate
-                    , streaming
     hs-source-dirs:   test
-                    , app
-    default-language: GHC2021
-    default-extensions:
-        DataKinds
-        DeriveAnyClass
-        DerivingVia
-        DuplicateRecordFields
-        LambdaCase
-        NoFieldSelectors
-        NoImplicitPrelude
-        OverloadedRecordDot
-        OverloadedStrings
-        QuasiQuotes
-        TypeFamilies
-        BlockArguments
