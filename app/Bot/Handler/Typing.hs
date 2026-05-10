@@ -13,6 +13,7 @@ import Bot.Filter
 import Bot.Message
 import Bot.Prelude
 import Control.Concurrent (forkIO)
+import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
@@ -76,14 +77,22 @@ sendRankImage titleSuffix failureMessage fetchRows message =
     imagePath <- liftIO (renderRankImage title rows)
     logInfo "Rendered typing rank image" imagePath
     sent <- Chat.replyTo message ("[image] file://" <> Text.pack imagePath)
+      `finally` cleanupRankFiles imagePath
     logInfo "Sent typing rank image" sent
     when (isNothing sent) do
-      void $ Chat.replyTo message [i|#{title}已生成，但图片发送失败：#{Text.pack imagePath}|]
+      void $ Chat.replyTo message [i|#{title}已生成，但图片发送失败。|]
   where
     handleError action =
       action `catch` \(err :: SomeException) -> do
         logInfo "Failed to render typing rank" (show err :: String)
         void $ Chat.replyTo message failureMessage
+
+cleanupRankFiles :: IOE :> es => FilePath -> Eff es ()
+cleanupRankFiles pngPath =
+  traverse_ removeIfExists [pngPath, replaceExtension pngPath "typ"]
+  where
+    removeIfExists path =
+      liftIO (removeFile path) `catch` \(_ :: SomeException) -> pure ()
 
 rankTitle :: Text -> IO Text
 rankTitle suffix = do
@@ -262,7 +271,16 @@ renderRankImage title rows = do
   (code, _out, err) <- readProcessWithExitCode "typst" ["compile", typstPath, pngPath] ""
   case code of
     ExitSuccess -> pure pngPath
-    ExitFailure _ -> fail ("typst failed: " <> err)
+    ExitFailure _ -> do
+      cleanupRenderFiles typstPath pngPath
+      fail ("typst failed: " <> err)
+
+cleanupRenderFiles :: FilePath -> FilePath -> IO ()
+cleanupRenderFiles typstPath pngPath =
+  traverse_ removeIfExists [typstPath, pngPath]
+  where
+    removeIfExists path =
+      removeFile path `Exception.catch` \(_ :: SomeException) -> pure ()
 
 typstDocument :: Text -> [[Text]] -> Text
 typstDocument title rows =

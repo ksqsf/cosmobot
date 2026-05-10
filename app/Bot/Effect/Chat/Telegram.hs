@@ -15,12 +15,17 @@ import Data.List (maximum)
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Text.Encoding as TextEncoding
 import Network.HTTP.Req
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
+import System.Directory (createDirectoryIfMissing, removeFile)
 import qualified Data.Text as Text
+import System.FilePath ((<.>))
+import System.IO (hClose, openTempFile)
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -771,7 +776,7 @@ uploadPhoto :: Telegram :> es => SendPhotoRequest -> FilePath -> Eff es Message
 uploadPhoto request path =
   send (UploadPhoto request path)
 
-replyTo :: Telegram :> es => IncomingMessage -> Text -> Eff es (Maybe Integer)
+replyTo :: (Telegram :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe Integer)
 replyTo message body =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
@@ -809,7 +814,7 @@ escapeHtml =
     '"' -> "&quot;"
     c   -> Text.singleton c
 
-replyTextAndImages :: Telegram :> es => Integer -> Maybe Integer -> Text -> Eff es Message
+replyTextAndImages :: (Telegram :> es, IOE :> es) => Integer -> Maybe Integer -> Text -> Eff es Message
 replyTextAndImages chatId replyToMessageId body =
   case ChatEffect.replyImageUrls body of
     [] -> sendText (ChatEffect.renderReplyBody body)
@@ -844,15 +849,42 @@ replyTextAndImages chatId replyToMessageId body =
       , replyToMessageId = Nothing
       }
 
-sendImageRequest :: Telegram :> es => SendPhotoRequest -> Eff es Message
+sendImageRequest :: (Telegram :> es, IOE :> es) => SendPhotoRequest -> Eff es Message
 sendImageRequest request =
   case localFilePhoto request.photo of
     Just path -> uploadPhoto request path
-    Nothing   -> sendPhoto request
+    Nothing ->
+      case dataImagePhoto request.photo of
+        Just bytes -> uploadTemporaryPhoto request bytes
+        Nothing    -> sendPhoto request
 
 localFilePhoto :: Text -> Maybe FilePath
 localFilePhoto photo =
   Text.unpack <$> Text.stripPrefix "file://" photo
+
+dataImagePhoto :: Text -> Maybe ByteString.ByteString
+dataImagePhoto photo = do
+  rest <- Text.stripPrefix "data:image/" (Text.strip photo)
+  let (_, encodedWithMarker) = Text.breakOn ";base64," rest
+  encoded <- Text.stripPrefix ";base64," encodedWithMarker
+  either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
+
+uploadTemporaryPhoto :: (Telegram :> es, IOE :> es) => SendPhotoRequest -> ByteString.ByteString -> Eff es Message
+uploadTemporaryPhoto request bytes = do
+  path <- liftIO do
+    createDirectoryIfMissing True telegramTempDir
+    (path, fileHandle) <- openTempFile telegramTempDir ("telegram-photo" <.> "png")
+    ByteString.hPut fileHandle bytes
+    hClose fileHandle
+    pure path
+  uploadPhoto request path `finally` cleanup path
+  where
+    cleanup path =
+      liftIO (removeFile path) `catch` \(_ :: SomeException) -> pure ()
+
+telegramTempDir :: FilePath
+telegramTempDir =
+  "/tmp/cosmobot-telegram"
 
 nonEmptyText :: Text -> Maybe Text
 nonEmptyText text
