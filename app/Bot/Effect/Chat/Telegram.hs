@@ -322,9 +322,11 @@ apiCall
   -> body
   -> Eff es result
 apiCall cfg method body = do
+  logTelegramApiRequest method
   resp :: Response <- liftIO $ runReq defaultHttpConfig $
-    req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse telegramRequestOptions
+    req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse (telegramRequestOptions method)
       <&> responseBody
+  logTelegramApiResponse method
   decodeResponse resp
 
 apiMultipartCall
@@ -334,11 +336,23 @@ apiMultipartCall
   -> [Multipart.Part]
   -> Eff es result
 apiMultipartCall cfg method parts = do
+  logTelegramApiRequest method
   resp :: Response <- liftIO $ runReq defaultHttpConfig do
     body <- reqBodyMultipart parts
-    req POST (apiUrl cfg method) body jsonResponse telegramRequestOptions
+    req POST (apiUrl cfg method) body jsonResponse (telegramRequestOptions method)
       <&> responseBody
+  logTelegramApiResponse method
   decodeResponse resp
+
+logTelegramApiRequest :: Log :> es => Text -> Eff es ()
+logTelegramApiRequest method =
+  unless (method == "getUpdates") $
+    logInfo "Telegram API request" method
+
+logTelegramApiResponse :: Log :> es => Text -> Eff es ()
+logTelegramApiResponse method =
+  unless (method == "getUpdates") $
+    logInfo "Telegram API response" method
 
 decodeResponse
   :: (IOE :> es, Aeson.FromJSON result)
@@ -374,17 +388,24 @@ maybeField key =
 telegramLongPollTimeoutSeconds :: Int
 telegramLongPollTimeoutSeconds = 30
 
-telegramHttpResponseTimeoutMicroseconds :: Int
-telegramHttpResponseTimeoutMicroseconds =
+telegramLongPollResponseTimeoutMicroseconds :: Int
+telegramLongPollResponseTimeoutMicroseconds =
   (telegramLongPollTimeoutSeconds + 10) * 1000000
+
+telegramApiResponseTimeoutMicroseconds :: Int
+telegramApiResponseTimeoutMicroseconds =
+  10 * 1000000
 
 telegramRetryDelayMicroseconds :: Int
 telegramRetryDelayMicroseconds =
   5 * 1000000
 
-telegramRequestOptions :: Option 'Https
-telegramRequestOptions =
-  responseTimeout telegramHttpResponseTimeoutMicroseconds
+telegramRequestOptions :: Text -> Option 'Https
+telegramRequestOptions method =
+  responseTimeout $
+    if method == "getUpdates"
+      then telegramLongPollResponseTimeoutMicroseconds
+      else telegramApiResponseTimeoutMicroseconds
 
 sendPhotoParts :: SendPhotoRequest -> FilePath -> [Multipart.Part]
 sendPhotoParts SendPhotoRequest{..} path =
