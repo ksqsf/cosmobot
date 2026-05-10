@@ -101,9 +101,11 @@ runScheduler inner = do
         scheduleId <- liftIO $ registerPendingMessage schedulerStateVar delaySeconds message
         void $ liftIO $ forkIO do
           threadDelay (max 0 delaySeconds * 1000000)
-          MVar.modifyMVar_ schedulerStateVar \schedulerState ->
-            pure schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}
-          Chan.writeChan chan message
+          stillExists <- liftIO $ MVar.withMVar schedulerStateVar $ \schedulerState -> pure (Map.lookup scheduleId schedulerState.pendingMessages)
+          when (isJust stillExists) $ do
+            MVar.modifyMVar_ schedulerStateVar \schedulerState ->
+              pure schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}
+            Chan.writeChan chan message
       DeleteScheduledMessage message scheduleId -> do
         scheduleMb <- liftIO $ MVar.withMVar schedulerStateVar $ \schedulerState -> pure (Map.lookup scheduleId schedulerState.pendingMessages)
         case scheduleMb of
