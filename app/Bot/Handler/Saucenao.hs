@@ -10,10 +10,10 @@ module Bot.Handler.Saucenao
   )
 where
 
-import Bot.Config
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Filter
 import Bot.Core.Message
+import Bot.Handler.Saucenao.Config
 import Bot.Util.Multipart
 import Bot.Prelude
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -36,19 +36,17 @@ saucenaoCommand =
 saucenaoHandlers
   :: (Chat.Chat :> es, Log :> es, IOE :> es)
   => SaucenaoConfig
-  -> AskHandlerConfig
   -> [RouteHandler es]
-saucenaoHandlers saucenaoCfg askCfg =
-  [ saucenaoRoute saucenaoCfg askCfg
+saucenaoHandlers saucenaoCfg =
+  [ saucenaoRoute saucenaoCfg
   ]
 
 saucenaoRoute
   :: (Chat.Chat :> es, Log :> es, IOE :> es)
   => SaucenaoConfig
-  -> AskHandlerConfig
   -> RouteHandler es
-saucenaoRoute saucenaoCfg askCfg =
-  routeStop (command saucenaoCommand <* matching (canStartConversation askCfg)) \message _ -> do
+saucenaoRoute saucenaoCfg =
+  routeStop (command saucenaoCommand) \message _ -> do
     logInfo "matched saucenao route" (incomingMessageLogLine message)
     forkEff (sendSaucenaoResults saucenaoCfg message)
 

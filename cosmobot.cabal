@@ -152,12 +152,20 @@ executable cosmobot
 
     -- Modules included in this executable, other than Main.
     other-modules:
+        Bot.Agent.Config
         Bot.Chat.Driver
+        Bot.Chat.Driver.QQ.Config
+        Bot.Chat.Driver.Telegram.Config
         Bot.Config
+        Bot.Config.Toml
         Bot.Core.Filter
+        Bot.Effect.LLM.Config
         Bot.Handler.Ask
+        Bot.Handler.Ask.Config
         Bot.Handler.Scratchpad
+        Bot.Handler.Saucenao.Config
         Bot.Handler.Typing
+        Bot.Memory.Config
         Bot.Handler.Saucenao
 
     -- LANGUAGE extensions used by modules in this package.

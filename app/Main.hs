@@ -56,7 +56,7 @@ routes
 routes cfg sqliteStore conversations =
   scratchpadHandlers sqliteStore
     <> typingHandlers cfg.handlers.ask
-    <> saucenaoHandlers cfg.saucenao cfg.handlers.ask
+    <> saucenaoHandlers cfg.saucenao
     <> askHandlers cfg.memory cfg.tool cfg.handlers.ask conversations
 
 recordedIncomingMessages

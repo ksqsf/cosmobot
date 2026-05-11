@@ -11,13 +11,13 @@ module Bot.Handler.Ask
 where
 
 import qualified Bot.Agent as Agent
-import Bot.Config
 import Bot.Core.Conversation
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Core.Filter
+import Bot.Handler.Ask.Config
 import qualified Bot.Memory as Memory
 import Bot.Core.Message
 import Bot.Prelude

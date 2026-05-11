@@ -8,10 +8,11 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 
 - `app/Main.hs` wires config, storage, effects, platforms, routes, and incoming message streams.
 - `app/Bot/Core/Message.hs` defines the normalized message identity shared by platforms, filters, handlers, tools, storage, and memory.
-- `app/Bot/Config.hs` parses `config.toml` into normalized runtime config. Optional sections generally have `default...Config` values and are normalized in `toBotConfig`.
+- `app/Bot/Config.hs` parses top-level `config.toml` sections into normalized runtime config. Concrete section parsers belong next to the driver, effect, handler, tool, or memory domain that owns them.
 - `app/Bot/Core/Filter.hs` defines route combinators. Handlers compose `RouteHandler`s and usually fork long-running work with `forkEff`.
 - `app/Bot/Handler/*` owns user-visible command behavior. Handlers should decide admission, gather message context, and call effects or domain modules.
 - `app/Bot/Handler/Ask.hs` owns ask/draw/private/mention/reply conversation flow and `!halt` handling. New conversations are created by `startConversation`; continuations append user turns to stored conversations. It should not branch on concrete chat platforms; streaming reply presentation belongs behind the `Chat` effect.
+- `app/Bot/Handler/Ask/Config.hs` owns ask handler config, admission predicates, and Telegram chat whitelist parsing.
 - `app/Bot/Core/Conversation.hs` owns conversation values and the mutable conversation store. Persisted conversations are keyed by bot reply message id; active streaming conversations are also keyed by bot reply message id so continuations can wait for completion or `!halt`.
 - `app/Bot/Agent.hs` owns the LLM/tool loop and built-in tool implementations. The streaming path returns `Stream (Of Text) (Eff es) (Text, Conversation)` and consumes `LLM.askWithToolsStreaming` directly. This module is already large; prefer extracting cohesive tool families instead of adding more unrelated helpers here.
 - `app/Bot/Agent/Types.hs` owns tool/context/config record types shared by the agent loop and handlers.
@@ -31,13 +32,13 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - Do not conflate chat identity and sender identity. Features scoped to people should normally key by `platform` and `senderId`; features scoped to conversations/chats should use `platform` and `chatId`.
 - Keep persisted user-visible state scoped defensively. If a required identity is missing, prefer a clear rejection over guessing.
 - Keep platform-specific API details in `Bot.Chat.Driver.QQ`, `Bot.Chat.Driver.Telegram`, or dispatch glue in `Bot.Chat.Driver`; do not leak them into handlers or agent tools.
-- Keep route admission logic in `Bot.Config` and `Bot.Core.Filter`; handlers should compose those predicates instead of reimplementing them.
+- Keep route admission logic in `Bot.Handler.Ask.Config` and route combinators in `Bot.Core.Filter`; handlers should compose those predicates instead of reimplementing them.
 - Prefer structured parsers/APIs (`aeson`, `Toml.Schema`, SQLite helpers) over ad hoc text manipulation.
 - Add abstractions only when they reduce real duplication or isolate a growing responsibility.
 
 ## Change Rules
 
-- When changing handler behavior, check route predicates in `Bot.Config` and `Bot.Core.Filter` first.
+- When changing handler behavior, check route predicates in `Bot.Handler.Ask.Config` and route combinators in `Bot.Core.Filter` first.
 - When adding config, update `Bot.Config`, `config.example.toml`, and all call sites that consume `BotConfig`.
 - Keep `config.toml` section ownership explicit: chat platform settings live under `[driver.qq]` and `[driver.telegram]`; handler settings live under `[handler.saucenao]` and `[handler.ask]`. Do not reintroduce top-level `[qq]`, `[telegram]`, `[saucenao]`, or `[handlers.*]` sections.
 - When adding `[llm]` config, update `Bot.Config`, `Bot.Effect.LLM.Config`, OpenAI-compatible request serialization when applicable, and `config.example.toml`.
@@ -51,7 +52,7 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 
 - `Bot.Agent.Tools` is an aggregator only; tool implementations live in `Bot.Agent.Tools.*` modules grouped by domain. Keep shared tool schema/argument helpers in `Bot.Agent.Tools.Common`.
 - `Bot.Effect.LLM` mixes the effect API, OpenAI-compatible transport, chat message JSON, and tool-call JSON. The likely split is transport/request types versus public effect/message types.
-- `Bot.Config` is a single large parser and normalizer. If config grows further, split file-section parsers into focused modules or at least group each section as a compact block with defaults, parser, and normalization together.
+- `Bot.Config` is the top-level config assembler. Keep concrete file-section parsers in focused `*.Config` modules near the domain that owns the setting.
 - `Bot.Handler.Ask` has several similar route constructors with repeated capability constraints. Be careful when extending it; small helper records may be better than longer argument lists.
 - Test suites repeat fixtures for `IncomingMessage` and effect runners. If this grows, introduce shared test helpers rather than copying message constructors.
 

@@ -10,9 +10,9 @@ module Bot.Handler.Typing
   )
 where
 
-import Bot.Config
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Filter
+import Bot.Handler.Ask.Config
 import qualified Bot.Util.Html as Html
 import qualified Bot.Util.Image as Image
 import Bot.Core.Message
