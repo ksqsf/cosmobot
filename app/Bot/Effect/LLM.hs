@@ -53,6 +53,8 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextEncoding
+import qualified Data.Text.Lazy as LazyText
+import qualified Data.Text.Lazy.Builder as TextBuilder
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Client.TLS as HTTP
 import Network.HTTP.Req
@@ -466,7 +468,7 @@ streamChatCompletion endpoint apiKey request emit = do
   manager <- liftIO HTTP.newTlsManager
   response <- liftIO (HTTP.responseOpen httpRequest manager)
   let bodyReader = HTTP.responseBody response
-  let initial = StreamState "" "" Map.empty
+  let initial = StreamState "" mempty Map.empty
   streamStateAnswer <$> (processBody bodyReader initial `finally` liftIO (HTTP.responseClose response))
   where
     processBody bodyReader streamState = do
@@ -526,25 +528,25 @@ lastOrEmpty xs = fromMaybe "" (viaNonEmpty last xs)
 
 data StreamState = StreamState
   { pendingLine :: !Text
-  , contentAccumulator :: !Text
+  , contentAccumulator :: !TextBuilder.Builder
   , toolAccumulator :: !(Map Int PartialToolCall)
   }
-  deriving (Show, Generic)
+  deriving (Generic)
 
 data PartialToolCall = PartialToolCall
   { partialId :: !(Maybe Text)
   , partialName :: !(Maybe Text)
-  , partialArguments :: !Text
+  , partialArguments :: !TextBuilder.Builder
   }
-  deriving (Show, Generic)
+  deriving (Generic)
 
 emptyPartialToolCall :: PartialToolCall
-emptyPartialToolCall = PartialToolCall Nothing Nothing ""
+emptyPartialToolCall = PartialToolCall Nothing Nothing mempty
 
 streamStateAnswer :: StreamState -> ChatAnswer
 streamStateAnswer streamState =
   ChatAnswer
-    { content = Text.strip streamState.contentAccumulator
+    { content = Text.strip (builderToStrictText streamState.contentAccumulator)
     , toolCalls = mapMaybe completePartialToolCall (Map.elems streamState.toolAccumulator)
     }
 
@@ -555,8 +557,12 @@ completePartialToolCall PartialToolCall{partialId, partialName, partialArguments
   pure ToolCall
     { id = callId
     , name = functionName
-    , arguments = partialArguments
+    , arguments = builderToStrictText partialArguments
     }
+
+builderToStrictText :: TextBuilder.Builder -> Text
+builderToStrictText =
+  LazyText.toStrict . TextBuilder.toLazyText
 
 applyStreamChunk :: IOE :> es => (Text -> IO ()) -> StreamState -> ChatCompletionStreamChunk -> Eff es StreamState
 applyStreamChunk emit streamState chunk =
@@ -566,7 +572,7 @@ applyStreamChunk emit streamState chunk =
       let contentDelta = fromMaybe "" delta.content
       unless (Text.null contentDelta) (liftIO (emit contentDelta))
       pure $ acc
-        & #contentAccumulator %~ (<> contentDelta)
+        & #contentAccumulator %~ (<> TextBuilder.fromText contentDelta)
         & #toolAccumulator %~ \toolAccumulator ->
             foldl' applyToolCallDelta toolAccumulator delta.toolCalls
 
@@ -578,7 +584,7 @@ applyToolCallDelta acc delta =
       partial
         & #partialId %~ (delta.id <|>)
         & #partialName %~ ((delta.function >>= (.name)) <|>)
-        & #partialArguments %~ (<> fromMaybe "" (delta.function >>= (.arguments)))
+        & #partialArguments %~ (<> TextBuilder.fromText (fromMaybe "" (delta.function >>= (.arguments))))
 
 data ChatCompletionStreamChunk = ChatCompletionStreamChunk
   { choices :: ![StreamChoice]
