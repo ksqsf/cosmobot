@@ -1,12 +1,13 @@
 {-|
-Module      : Bot.Effect.Chat.QQ
+Module      : Bot.Chat.Driver.QQ
 Description : QQ/NapCat OneBot v11 websocket effect
 Stability   : experimental
 -}
 {-# LANGUAGE RecordWildCards #-}
 
-module Bot.Effect.Chat.QQ
-  ( QQ
+module Bot.Chat.Driver.QQ
+  ( qqDriver
+  , QQ
   , Config (..)
   , Event (..)
   , ActionResponse (..)
@@ -26,6 +27,7 @@ module Bot.Effect.Chat.QQ
   )
 where
 
+import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
@@ -59,6 +61,39 @@ data Config = Config
   , token :: !(Maybe Text)
   }
   deriving (Show)
+
+qqDriver
+  :: (QQ :> es, IOE :> es)
+  => Driver.ChatPlatformDriver es
+qqDriver = Driver.ChatPlatformDriver
+  { Driver.platform = PlatformQQ
+  , Driver.replyTo = replyTo
+  , Driver.editMessage = \_ _ _ -> pure False
+  , Driver.replyStreamStyle = \_ -> pure (Chat.ChunkedReply qqStreamingMessageLimit)
+  , Driver.getMessageContent = \_ messageId -> getMessageContent messageId
+  , Driver.getSenderMemberInfo = \message ->
+      case (message.kind, message.chatId, message.senderId) of
+        (ChatGroup, Just groupId, Just userId) ->
+          getGroupMemberInfo groupId userId
+        _ ->
+          pure Nothing
+  , Driver.getMemberInfo = \message userId ->
+      case (message.kind, message.chatId) of
+        (ChatGroup, Just groupId) ->
+          getGroupMemberInfo groupId userId
+        _ ->
+          pure Nothing
+  , Driver.listGroupMembers = \message ->
+      case (message.kind, message.chatId) of
+        (ChatGroup, Just groupId) ->
+          getGroupMemberList groupId
+        _ ->
+          pure Nothing
+  , Driver.mentionUser = mentionUser
+  }
+
+qqStreamingMessageLimit :: Int
+qqStreamingMessageLimit = 4000
 
 -- ---------------------------------------------------------------------------
 -- Effect

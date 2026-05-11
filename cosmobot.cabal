@@ -117,6 +117,7 @@ executable cosmobot
         Bot.Agent.Tools
         Bot.Agent.Types
         Bot.Chat.Driver
+        Bot.Chat.Driver.Types
         Bot.Config
         Bot.Core.Conversation
         Bot.Util.Html
@@ -132,8 +133,8 @@ executable cosmobot
         Bot.Handler.Typing
         Bot.Effect.Chat
         Bot.Effect.ChatLog
-        Bot.Effect.Chat.QQ
-        Bot.Effect.Chat.Telegram
+        Bot.Chat.Driver.QQ
+        Bot.Chat.Driver.Telegram
         Bot.Effect.LLM
         Bot.Effect.Scheduler
         Bot.Handler.Saucenao
@@ -192,8 +193,9 @@ test-suite chat-platform-spec
         Bot.Core.Message
         Bot.Effect.Chat
         Bot.Core.ReplyBody
-        Bot.Effect.Chat.QQ
-        Bot.Effect.Chat.Telegram
+        Bot.Chat.Driver.Types
+        Bot.Chat.Driver.QQ
+        Bot.Chat.Driver.Telegram
         Bot.Util.Multipart
     build-depends:    base64-bytestring
                     , http-client

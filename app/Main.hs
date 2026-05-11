@@ -10,8 +10,6 @@ import Bot.Core.Conversation
 import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
-import qualified Bot.Effect.Chat.QQ as QQ
-import qualified Bot.Effect.Chat.Telegram as Telegram
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Core.Filter
@@ -39,13 +37,15 @@ main = do
   runEff $
     runBotLog cfg.logLevel .
     ChatLog.runChatLog maybeSQLiteStore .
-    Scheduler.runScheduler .
-    Telegram.runTelegram cfg.telegram .
-    QQ.runQQ cfg.qq .
-    ChatDriver.runChatDrivers .
-    LLM.runLLM cfg.llm $ do
-      logInfo_ "Cosmobot stand by!"
-      consumeWith (routes cfg sqliteStore conversations) (recordedIncomingMessages incomingMessages)
+    Scheduler.runScheduler $
+      LLM.runLLM cfg.llm $
+        ChatDriver.runChatDrivers cfg.qq cfg.telegram \chatMessageStreams -> do
+          logInfo_ "Cosmobot stand by!"
+          let messageStreams =
+                chatMessageStreams <> [Scheduler.scheduledMessages]
+          consumeWith
+            (routes cfg sqliteStore conversations)
+            (recordedIncomingMessages (mergeIncomingMessages messageStreams))
 
 routes
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
@@ -58,16 +58,6 @@ routes cfg sqliteStore conversations =
     <> typingHandlers cfg.handlers.ask
     <> saucenaoHandlers cfg.saucenao cfg.handlers.ask
     <> askHandlers cfg.memory cfg.tool cfg.handlers.ask conversations
-
-incomingMessages
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages =
-  mergeIncomingMessages
-    [ QQ.incomingMessages
-    , Telegram.incomingMessages
-    , Scheduler.scheduledMessages
-    ]
 
 recordedIncomingMessages
   :: ChatLog.ChatLog :> es

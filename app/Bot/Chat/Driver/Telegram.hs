@@ -1,13 +1,14 @@
 {-|
-Module      : Bot.Effect.Chat.Telegram
+Module      : Bot.Chat.Driver.Telegram
 Description : Telegram effects
 Stability   : experimental
 -}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Effect.Chat.Telegram
-  ( Telegram
+module Bot.Chat.Driver.Telegram
+  ( telegramDriver
+  , Telegram
   , Config (..)
   , User (..)
   , Update (..)
@@ -46,6 +47,7 @@ module Bot.Effect.Chat.Telegram
   )
 where
 
+import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as ChatEffect
 import Bot.Util.Multipart
 import Bot.Core.Message
@@ -76,6 +78,35 @@ newtype Config = Config
   { botToken :: Text
   }
   deriving (Show)
+
+telegramDriver
+  :: (Telegram :> es, IOE :> es)
+  => Driver.ChatPlatformDriver es
+telegramDriver = Driver.ChatPlatformDriver
+  { Driver.platform = PlatformTelegram
+  , Driver.replyTo = replyTo
+  , Driver.editMessage = editMessage
+  , Driver.replyStreamStyle = \_ -> pure (ChatEffect.EditableReply telegramEditChunkChars)
+  , Driver.getMessageContent = getMessageContent
+  , Driver.getSenderMemberInfo = \message ->
+      case (message.kind, message.chatId, message.senderId) of
+        (ChatGroup, Just chatId, Just userId) ->
+          Just . Aeson.toJSON <$> getChatMember chatId userId
+        _ ->
+          pure Nothing
+  , Driver.getMemberInfo = \message userId ->
+      case (message.kind, message.chatId) of
+        (ChatGroup, Just chatId) ->
+          Just . Aeson.toJSON <$> getChatMember chatId userId
+        _ ->
+          pure Nothing
+  , Driver.listGroupMembers = \_ ->
+      pure Nothing
+  , Driver.mentionUser = mentionUser
+  }
+
+telegramEditChunkChars :: Int
+telegramEditChunkChars = 50
 
 -- ---------------------------------------------------------------------------
 -- Typeclass

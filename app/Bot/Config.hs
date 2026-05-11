@@ -26,8 +26,8 @@ module Bot.Config
 where
 
 import qualified Bot.Effect.LLM as LLM
-import qualified Bot.Effect.Chat.QQ as QQ
-import qualified Bot.Effect.Chat.Telegram as Telegram
+import qualified Bot.Chat.Driver.QQ as QQ
+import qualified Bot.Chat.Driver.Telegram as Telegram
 import qualified Bot.Agent as Agent
 import qualified Bot.Memory as Memory
 import Bot.Core.Message

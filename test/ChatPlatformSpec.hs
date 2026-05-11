@@ -1,8 +1,8 @@
 module Main (main) where
 
 import qualified Data.Aeson as Aeson
-import qualified Bot.Effect.Chat.QQ as QQ
-import qualified Bot.Effect.Chat.Telegram as Telegram
+import qualified Bot.Chat.Driver.QQ as QQ
+import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
 import Bot.Prelude
 import Test.Tasty

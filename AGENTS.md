@@ -7,20 +7,21 @@ cosmobot is a unified chatbot framework. It is intentionally small enough to kee
 Data enters as platform-specific events, becomes `IncomingMessage`, flows through route handlers, and may call LLM/tool/platform effects before producing replies.
 
 - `app/Main.hs` wires config, storage, effects, platforms, routes, and incoming message streams.
-- `app/Bot/Message.hs` defines the normalized message identity shared by platforms, filters, handlers, tools, storage, and memory.
+- `app/Bot/Core/Message.hs` defines the normalized message identity shared by platforms, filters, handlers, tools, storage, and memory.
 - `app/Bot/Config.hs` parses `config.toml` into normalized runtime config. Optional sections generally have `default...Config` values and are normalized in `toBotConfig`.
-- `app/Bot/Filter.hs` defines route combinators. Handlers compose `RouteHandler`s and usually fork long-running work with `forkEff`.
+- `app/Bot/Core/Filter.hs` defines route combinators. Handlers compose `RouteHandler`s and usually fork long-running work with `forkEff`.
 - `app/Bot/Handler/*` owns user-visible command behavior. Handlers should decide admission, gather message context, and call effects or domain modules.
 - `app/Bot/Handler/Ask.hs` owns ask/draw/private/mention/reply conversation flow and `!halt` handling. New conversations are created by `startConversation`; continuations append user turns to stored conversations. It should not branch on concrete chat platforms; streaming reply presentation belongs behind the `Chat` effect.
-- `app/Bot/Conversation.hs` owns conversation values and the mutable conversation store. Persisted conversations are keyed by bot reply message id; active streaming conversations are also keyed by bot reply message id so continuations can wait for completion or `!halt`.
+- `app/Bot/Core/Conversation.hs` owns conversation values and the mutable conversation store. Persisted conversations are keyed by bot reply message id; active streaming conversations are also keyed by bot reply message id so continuations can wait for completion or `!halt`.
 - `app/Bot/Agent.hs` owns the LLM/tool loop and built-in tool implementations. The streaming path returns `Stream (Of Text) (Eff es) (Text, Conversation)` and consumes `LLM.askWithToolsStreaming` directly. This module is already large; prefer extracting cohesive tool families instead of adding more unrelated helpers here.
-- `app/Bot/Agent/Tool.hs` owns tool/context/config record types shared by the agent loop and handlers.
-- `app/Bot/Effect/*` modules define effect boundaries for chat platforms, chat log, LLM, and scheduler.
+- `app/Bot/Agent/Types.hs` owns tool/context/config record types shared by the agent loop and handlers.
+- `app/Bot/Effect/*` modules define shared application effect boundaries such as unified chat, chat log, LLM, and scheduler.
 - `app/Bot/Effect/LLM.hs` owns the OpenAI-compatible request/response JSON, SSE streaming transport, chat message representation, image-generation request shaping, and request-level LLM options such as `reasoning_effort`. Public streaming APIs return `Stream (Of Text) (Eff es) result`.
-- `app/Bot/ReplyBody.hs` owns shared reply-body directives such as `[image] ...`; chat backends parse these directives before sending platform messages.
-- `app/Bot/Image.hs` owns shared non-effect image helpers such as generated image compression and temporary image cleanup.
-- `app/Bot/Chat/Driver.hs` adapts normalized `Chat` effects to concrete QQ/Telegram backends, including per-platform streaming reply strategy selection.
-- `app/Bot/Effect/Chat/QQ.hs` owns OneBot/NapCat-specific message parsing. When resolving referenced QQ messages, handle forwarded-message nodes by fetching `get_forward_msg` and merging the text from every forwarded node in order.
+- `app/Bot/Core/ReplyBody.hs` owns shared reply-body directives such as `[image] ...`; chat backends parse these directives before sending platform messages.
+- `app/Bot/Util/Image.hs` owns shared non-effect image helpers such as generated image compression and temporary image cleanup.
+- `app/Bot/Chat/Driver.hs` is the adapter entry point for concrete chat backends. It runs QQ/Telegram platform effects internally and exposes one unified `Chat` interpreter plus platform incoming-message streams to executable wiring.
+- `app/Bot/Chat/Driver/QQ.hs` owns the QQ/OneBot effect, websocket transport, OneBot/NapCat-specific message parsing, and QQ chat driver fragment. When resolving referenced QQ messages, handle forwarded-message nodes by fetching `get_forward_msg` and merging the text from every forwarded node in order.
+- `app/Bot/Chat/Driver/Telegram.hs` owns the Telegram effect, Bot API transport/types, Telegram update parsing, and Telegram chat driver fragment.
 - `app/Bot/Storage/SQLite.hs` is the SQLite persistence layer. Reuse `JsonCollection` helpers for scoped JSON state instead of creating bespoke SQL unless needed.
 - `app/Bot/Memory.hs` owns per-sender and per-chat persistent memory files.
 
@@ -29,14 +30,14 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - Use `effectful` for application effects and `streaming` for incoming and LLM text streams.
 - Do not conflate chat identity and sender identity. Features scoped to people should normally key by `platform` and `senderId`; features scoped to conversations/chats should use `platform` and `chatId`.
 - Keep persisted user-visible state scoped defensively. If a required identity is missing, prefer a clear rejection over guessing.
-- Keep platform-specific API details in QQ/Telegram drivers or `Bot.Chat.Driver`, not in handlers or agent tools.
-- Keep route admission logic in `Bot.Config` and `Bot.Filter`; handlers should compose those predicates instead of reimplementing them.
+- Keep platform-specific API details in `Bot.Chat.Driver.QQ`, `Bot.Chat.Driver.Telegram`, or dispatch glue in `Bot.Chat.Driver`; do not leak them into handlers or agent tools.
+- Keep route admission logic in `Bot.Config` and `Bot.Core.Filter`; handlers should compose those predicates instead of reimplementing them.
 - Prefer structured parsers/APIs (`aeson`, `Toml.Schema`, SQLite helpers) over ad hoc text manipulation.
 - Add abstractions only when they reduce real duplication or isolate a growing responsibility.
 
 ## Change Rules
 
-- When changing handler behavior, check route predicates in `Bot.Config` and `Bot.Filter` first.
+- When changing handler behavior, check route predicates in `Bot.Config` and `Bot.Core.Filter` first.
 - When adding config, update `Bot.Config`, `config.example.toml`, and all call sites that consume `BotConfig`.
 - When adding `[llm]` config, update `Bot.Config`, `Bot.Effect.LLM.Config`, OpenAI-compatible request serialization when applicable, and `config.example.toml`.
 - When adding a new module, update `cosmobot.cabal` for the executable and relevant test suites.
@@ -47,7 +48,7 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 
 ## Known Pressure Points
 
-- `Bot.Agent` mixes the loop, permission checks, tool schemas, tool implementations, web fetch/search helpers, memory tool plumbing, scheduler tools, and shell execution. The likely split is `Bot.Agent.Core` plus `Bot.Agent.Tool.*` modules grouped by domain.
+- `Bot.Agent` mixes the loop, permission checks, tool schemas, tool implementations, web fetch/search helpers, memory tool plumbing, scheduler tools, and shell execution. The likely split is `Bot.Agent.Core` plus `Bot.Agent.Tools.*` modules grouped by domain.
 - `Bot.Effect.LLM` mixes the effect API, OpenAI-compatible transport, chat message JSON, and tool-call JSON. The likely split is transport/request types versus public effect/message types.
 - `Bot.Config` is a single large parser and normalizer. If config grows further, split file-section parsers into focused modules or at least group each section as a compact block with defaults, parser, and normalization together.
 - `Bot.Handler.Ask` has several similar route constructors with repeated capability constraints. Be careful when extending it; small helper records may be better than longer argument lists.
