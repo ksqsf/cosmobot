@@ -14,6 +14,7 @@ main =
     testGroup "chat platforms"
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
       , testCase "QQ self message is ignored" testQqSelfMessageIsIgnored
+      , testCase "QQ forwarded messages merge all node text" testQqForwardedMessagesMergeAllNodeText
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
@@ -30,6 +31,32 @@ testQqSelfMessageIsIgnored =
   assertBool
     "QQ messages sent by the bot itself are ignored"
     (isNothing (QQ.eventToIncomingMessage (qqMessageEvent qqBotUserId)))
+
+testQqForwardedMessagesMergeAllNodeText :: IO ()
+testQqForwardedMessagesMergeAllNodeText =
+  QQ.forwardedMessagesText forwardedMessages @?= "first\nsecond\nthird"
+  where
+    forwardedMessages = Aeson.object
+      [ "messages" Aeson..=
+          [ Aeson.object
+              [ "type" Aeson..= ("node" :: Text)
+              , "data" Aeson..= Aeson.object
+                  [ "content" Aeson..=
+                      [ textSegment "first"
+                      , imageSegment "https://example.test/ignored.png"
+                      ]
+                  ]
+              ]
+          , Aeson.object
+              [ "content" Aeson..=
+                  [ textSegment "second"
+                  ]
+              ]
+          , Aeson.object
+              [ "raw_message" Aeson..= ("third" :: Text)
+              ]
+          ]
+      ]
 
 testTelegramUserMessageConvertsToIncomingMessage :: IO ()
 testTelegramUserMessageConvertsToIncomingMessage = do
@@ -87,6 +114,24 @@ qqMessageEvent userId =
 qqBotUserId :: Integer
 qqBotUserId =
   424242
+
+textSegment :: Text -> Aeson.Value
+textSegment text =
+  Aeson.object
+    [ "type" Aeson..= ("text" :: Text)
+    , "data" Aeson..= Aeson.object
+        [ "text" Aeson..= text
+        ]
+    ]
+
+imageSegment :: Text -> Aeson.Value
+imageSegment url =
+  Aeson.object
+    [ "type" Aeson..= ("image" :: Text)
+    , "data" Aeson..= Aeson.object
+        [ "url" Aeson..= url
+        ]
+    ]
 
 telegramUpdate :: Bool -> Telegram.Update
 telegramUpdate fromBot =

@@ -20,6 +20,7 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - `app/Bot/ReplyBody.hs` owns shared reply-body directives such as `[image] ...`; chat backends parse these directives before sending platform messages.
 - `app/Bot/Image.hs` owns shared non-effect image helpers such as generated image compression and temporary image cleanup.
 - `app/Bot/Chat/Platform.hs` adapts normalized `Chat` effects to concrete QQ/Telegram backends, including per-platform streaming reply strategy selection.
+- `app/Bot/Effect/Chat/QQ.hs` owns OneBot/NapCat-specific message parsing. When resolving referenced QQ messages, handle forwarded-message nodes by fetching `get_forward_msg` and merging the text from every forwarded node in order.
 - `app/Bot/Storage/SQLite.hs` is the SQLite persistence layer. Reuse `JsonCollection` helpers for scoped JSON state instead of creating bespoke SQL unless needed.
 - `app/Bot/Memory.hs` owns per-sender and per-chat persistent memory files.
 

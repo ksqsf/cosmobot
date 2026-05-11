@@ -16,6 +16,7 @@ module Bot.Effect.Chat.QQ
   , eventsStream
   , incomingMessages
   , eventToIncomingMessage
+  , forwardedMessagesText
   , readActionResponse
   , replyTo
   , getMessageContent
@@ -333,13 +334,33 @@ responseMessageId response =
 
 -- | Fetch message text and image references by QQ message id.
 getMessageContent :: QQ :> es => Integer -> Eff es (Maybe ReferencedMessage)
-getMessageContent messageId =
-  actionDataMessage <$> sendAction (Aeson.object
+getMessageContent messageId = do
+  response <- sendAction (Aeson.object
     [ "action" Aeson..= Aeson.String "get_msg"
     , "params" Aeson..= Aeson.object
         [ "message_id" Aeson..= messageId
         ]
     ])
+  case response.data_ of
+    Nothing ->
+      pure Nothing
+    Just value ->
+      traverse (appendForwardedMessageText (referencedMessageForwardIds value)) (referencedMessageFromValue value)
+
+appendForwardedMessageText :: QQ :> es => [Text] -> ReferencedMessage -> Eff es ReferencedMessage
+appendForwardedMessageText forwardIds referenced = do
+  forwardedTexts <- traverse getForwardedMessageText forwardIds
+  pure (referencedWithText referenced (joinMessageTexts (referenced.text : forwardedTexts)))
+
+getForwardedMessageText :: QQ :> es => Text -> Eff es Text
+getForwardedMessageText forwardId = do
+  response <- sendAction (Aeson.object
+    [ "action" Aeson..= Aeson.String "get_forward_msg"
+    , "params" Aeson..= Aeson.object
+        [ "id" Aeson..= forwardId
+        ]
+    ])
+  pure (maybe "" forwardedMessagesText response.data_)
 
 -- | Fetch platform-provided QQ group member information.
 getGroupMemberInfo :: QQ :> es => Integer -> Integer -> Eff es (Maybe Aeson.Value)
@@ -364,9 +385,9 @@ getGroupMemberList groupId =
         ]
     ])
 
-actionDataMessage :: ActionResponse -> Maybe ReferencedMessage
-actionDataMessage response =
-  response.data_ >>= referencedMessageFromValue
+referencedWithText :: ReferencedMessage -> Text -> ReferencedMessage
+referencedWithText ReferencedMessage{messageId, senderDisplayName, senderIdentifier, imageUrls} text =
+  ReferencedMessage{messageId, senderDisplayName, senderIdentifier, text, imageUrls}
 
 referencedMessageFromValue :: Aeson.Value -> Maybe ReferencedMessage
 referencedMessageFromValue = Aeson.parseMaybe $
@@ -566,6 +587,78 @@ messageImageUrls :: Aeson.Value -> [Text]
 messageImageUrls = \case
   Aeson.Array segments -> mapMaybe imageSegmentUrl (toList segments)
   _ -> []
+
+referencedMessageForwardIds :: Aeson.Value -> [Text]
+referencedMessageForwardIds =
+  Aeson.parseMaybe (Aeson.withObject "ReferencedMessageForwardIds" (Aeson..:? "message")) >>> \case
+    Just (Just message) -> messageForwardIds message
+    _ -> []
+
+messageForwardIds :: Aeson.Value -> [Text]
+messageForwardIds = \case
+  Aeson.Array segments -> mapMaybe forwardSegmentId (toList segments)
+  _ -> []
+
+forwardSegmentId :: Aeson.Value -> Maybe Text
+forwardSegmentId = \case
+  Aeson.Object obj
+    | Just (Aeson.String "forward") <- KeyMap.lookup "type" obj
+    , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj
+    , Just (Aeson.String id_) <- KeyMap.lookup "id" data_
+    , not (Text.null id_) ->
+        Just id_
+  _ -> Nothing
+
+forwardedMessagesText :: Aeson.Value -> Text
+forwardedMessagesText =
+  joinMessageTexts . forwardedMessageTexts
+
+forwardedMessageTexts :: Aeson.Value -> [Text]
+forwardedMessageTexts = \case
+  Aeson.Object obj
+    | Just (Aeson.Array messages) <- KeyMap.lookup "messages" obj ->
+        mapMaybe forwardedMessageNodeText (toList messages)
+    | Just (Aeson.Array messages) <- KeyMap.lookup "content" obj ->
+        mapMaybe forwardedMessageNodeText (toList messages)
+  Aeson.Array messages ->
+    mapMaybe forwardedMessageNodeText (toList messages)
+  message ->
+    maybeToList (messageText message)
+
+forwardedMessageNodeText :: Aeson.Value -> Maybe Text
+forwardedMessageNodeText value =
+  nonEmptyText
+    (forwardedNodeContent value >>= messageText)
+    <|> nonEmptyText (forwardedNodeRawMessage value)
+    <|> nonEmptyText (messageText value)
+
+forwardedNodeContent :: Aeson.Value -> Maybe Aeson.Value
+forwardedNodeContent =
+  join . Aeson.parseMaybe parser
+  where
+    parser =
+      Aeson.withObject "ForwardedMessageNode" $ \o -> do
+        type_ <- o Aeson..:? "type"
+        data_ <- o Aeson..:? "data"
+        content <- o Aeson..:? "content"
+        message <- o Aeson..:? "message"
+        case (type_ :: Maybe Text, data_ :: Maybe Aeson.Value, content, message) of
+          (Just "node", Just (Aeson.Object nodeData), _, _) ->
+            pure (KeyMap.lookup "content" nodeData)
+          (_, _, Just value, _) ->
+            pure (Just value)
+          (_, _, _, Just value) ->
+            pure (Just value)
+          _ ->
+            pure Nothing
+
+forwardedNodeRawMessage :: Aeson.Value -> Maybe Text
+forwardedNodeRawMessage =
+  join . Aeson.parseMaybe (Aeson.withObject "ForwardedMessageNode" (Aeson..:? "raw_message"))
+
+joinMessageTexts :: [Text] -> Text
+joinMessageTexts =
+  Text.intercalate "\n" . filter (not . Text.null) . map Text.strip
 
 imageSegmentUrl :: Aeson.Value -> Maybe Text
 imageSegmentUrl = \case
