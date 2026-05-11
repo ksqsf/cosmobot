@@ -85,6 +85,7 @@ common app-deps
                     , aeson
                     , string-interpolate
                     , unix
+                    , modern-uri
     hs-source-dirs:   app
 
 common test-deps
@@ -129,7 +130,6 @@ executable cosmobot
 
     -- Other library packages from which modules are imported.
     build-depends:    http-client
-                    , modern-uri
                     , optics
                     , time
                     , log-base

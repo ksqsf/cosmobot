@@ -42,6 +42,8 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Network.HTTP.Req
+import System.IO.Error (ioError, userError)
+import qualified Text.URI as URI
 
 -- | Runtime configuration for the OpenAI-compatible chat endpoint.
 data Config = Config
@@ -68,7 +70,7 @@ data Config = Config
 -- | Defaults for optional LLM features.
 defaultConfig :: Config
 defaultConfig = Config
-  { endpoint = "openrouter.ai"
+  { endpoint = "https://openrouter.ai/api/v1"
   , apiKey   = Nothing
   , model    = "openai/gpt-4o-mini"
   , webSearch = False
@@ -152,12 +154,13 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
         , imageConfig = if imageRequest then imageGenerationConfig cfg else Nothing
         }
   logInfo "LLM request" (llmRequestLogLine endpoint request)
+  (url, options) <- liftIO (chatCompletionsUrl endpoint)
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
-      (chatCompletionsUrl endpoint)
+      url
       (ReqBodyJson request)
       jsonResponse
-      (header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
+      (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
   let body = responseBody response
   logInfo "LLM response" (llmResponseLogLine endpoint requestModel body)
   case chatCompletionText body of
@@ -176,29 +179,25 @@ askOpenAIWithTools cfg@Config{endpoint, apiKey = Just key, model} functionTools 
         , imageConfig = Nothing
         }
   logInfo "LLM request" (llmRequestLogLine endpoint request)
+  (url, options) <- liftIO (chatCompletionsUrl endpoint)
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
-      (chatCompletionsUrl endpoint)
+      url
       (ReqBodyJson request)
       jsonResponse
-      (header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
+      (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
   let body = responseBody response
   logInfo "LLM response" (llmResponseLogLine endpoint model body)
   pure (chatCompletionAnswer body)
 
-chatCompletionsUrl :: Text -> Url 'Https
-chatCompletionsUrl endpoint =
-  case endpoint of
-    "openrouter"       -> openRouterUrl
-    "openrouter.ai"    -> openRouterUrl
-    "openai"           -> openAIUrl
-    "api.openai.com"   -> openAIUrl
-    host               -> https host /: "v1" /: "chat" /: "completions"
-  where
-    openRouterUrl =
-      https "openrouter.ai" /: "api" /: "v1" /: "chat" /: "completions"
-    openAIUrl =
-      https "api.openai.com" /: "v1" /: "chat" /: "completions"
+chatCompletionsUrl :: Text -> IO (Url 'Https, Option 'Https)
+chatCompletionsUrl endpoint = do
+  uri <- URI.mkURI endpoint
+  case useHttpsURI uri of
+    Nothing ->
+      ioError (userError [i|Unsupported LLM endpoint URL: #{endpoint}. Use a full HTTPS base URL such as https://api.openai.com/v1.|])
+    Just (url, options) ->
+      pure (url /: "chat" /: "completions", options)
 
 newtype LLMException = LLMException Text
   deriving (Show)
