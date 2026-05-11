@@ -52,6 +52,7 @@ data Config = Config
   , model    :: !Text
   , imageGeneration :: !Bool
   , imageGenerationEndpoint :: !(Maybe Text)
+  , imageGenerationApiKey :: !(Maybe Text)
   , imageGenerationModel :: !(Maybe Text)
   , imageGenerationQuality :: !(Maybe Text)
   , imageGenerationSize :: !(Maybe Text)
@@ -70,6 +71,7 @@ defaultConfig = Config
   , model    = "openai/gpt-4o-mini"
   , imageGeneration = False
   , imageGenerationEndpoint = Nothing
+  , imageGenerationApiKey = Nothing
   , imageGenerationModel = Nothing
   , imageGenerationQuality = Nothing
   , imageGenerationSize = Nothing
@@ -136,6 +138,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
   | otherwise = do
   let imageRequest = forceImage
       requestEndpoint = if imageRequest then fromMaybe endpoint cfg.imageGenerationEndpoint else endpoint
+      requestApiKey = if imageRequest then fromMaybe key cfg.imageGenerationApiKey else key
       requestModel = if imageRequest then fromMaybe model cfg.imageGenerationModel else model
       request = ChatCompletionRequest
         { model = requestModel
@@ -151,7 +154,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
       url
       (ReqBodyJson request)
       jsonResponse
-      (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
+      (options <> header "Authorization" (ByteString.pack [i|Bearer #{requestApiKey}|]))
   let body = responseBody response
   logInfo "LLM response" (llmResponseLogLine requestEndpoint requestModel body)
   case chatCompletionText body of

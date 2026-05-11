@@ -226,6 +226,7 @@ data LLMFileConfig = LLMFileConfig
   , model    :: !Text
   , imageGeneration :: !Bool
   , imageGenerationEndpoint :: !(Maybe Text)
+  , imageGenerationApiKey :: !(Maybe Text)
   , imageGenerationModel :: !(Maybe Text)
   , imageGenerationQuality :: !(Maybe Text)
   , imageGenerationSize :: !(Maybe Text)
@@ -319,6 +320,7 @@ instance FromValue LLMFileConfig where
     <*> reqKey "model"
     <*> fmap (fromMaybe LLM.defaultConfig.imageGeneration) (optKey "image_generation")
     <*> optKey "image_generation_endpoint"
+    <*> optToken "image_generation_api_key"
     <*> optKey "image_generation_model"
     <*> optKey "image_generation_quality"
     <*> optKey "image_generation_size"
@@ -427,6 +429,7 @@ toBotConfig cfg =
         , model    = cfg.llm.model
         , imageGeneration = cfg.llm.imageGeneration
         , imageGenerationEndpoint = cfg.llm.imageGenerationEndpoint
+        , imageGenerationApiKey = cfg.llm.imageGenerationApiKey
         , imageGenerationModel = cfg.llm.imageGenerationModel
         , imageGenerationQuality = cfg.llm.imageGenerationQuality
         , imageGenerationSize = cfg.llm.imageGenerationSize
