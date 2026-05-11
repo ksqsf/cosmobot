@@ -45,6 +45,8 @@ main =
       , testCase "conversation branches persist through SQLite reload" testConversationBranchesPersistThroughSQLiteReload
       , testCase "memory tool manages current sender memory" testMemoryToolManagesCurrentSenderMemory
       , testCase "memory tool enforces non-superuser length limit" testMemoryToolEnforcesLengthLimit
+      , testCase "run_bash captures stdout and stderr" testRunBashCapturesStdoutAndStderr
+      , testCase "run_bash kills timed out process" testRunBashKillsTimedOutProcess
       ]
 
 testScheduleToolCreatesQueryableSchedule :: IO ()
@@ -168,6 +170,33 @@ testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
   exists <- doesFileExist (dir </> "telegram" </> "200.md")
   exists @?= False
 
+testRunBashCapturesStdoutAndStderr :: IO ()
+testRunBashCapturesStdoutAndStderr = do
+  answers <- IORef.newIORef
+    [ LLM.ChatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("printf stdout; printf stderr >&2" :: Text), "timeout_seconds" Aeson..= (5 :: Int)])]
+    , LLM.ChatAnswer "done" []
+    ]
+  (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing) do
+    Agent.runAgent 4 superuserContext Agent.defaultTools (startWithUser "run command")
+  answer @?= "done"
+  let output = Text.unlines (toolOutputs conversation)
+  assertBool "stdout is included" ("stdout:\nstdout" `Text.isInfixOf` output)
+  assertBool "stderr is included" ("stderr:\nstderr" `Text.isInfixOf` output)
+  assertBool "exit code is included" ("exit code: ExitSuccess" `Text.isInfixOf` output)
+
+testRunBashKillsTimedOutProcess :: IO ()
+testRunBashKillsTimedOutProcess = do
+  answers <- IORef.newIORef
+    [ LLM.ChatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("sleep 2; printf late" :: Text), "timeout_seconds" Aeson..= (1 :: Int)])]
+    , LLM.ChatAnswer "done" []
+    ]
+  (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing) do
+    Agent.runAgent 4 superuserContext Agent.defaultTools (startWithUser "run slow command")
+  answer @?= "done"
+  let output = Text.unlines (toolOutputs conversation)
+  assertBool ("timeout is reported in: " <> Text.unpack output) ("Script timed out after 1 seconds and was killed." `Text.isInfixOf` output)
+  assertBool ("post-timeout output is not included in: " <> Text.unpack output) (not ("late" `Text.isInfixOf` output))
+
 withMemoryTempDir :: (FilePath -> IO a) -> IO a
 withMemoryTempDir action = do
   root <- getTemporaryDirectory
@@ -199,6 +228,14 @@ sameConversationIds rows =
       True
     firstId : rest ->
       isJust firstId && all (== firstId) rest
+
+toolOutputs :: Conversation -> [Text]
+toolOutputs (Conversation messages) =
+  [ text
+  | message <- messages
+  , message.role == "tool"
+  , Just (LLM.TextContent text) <- [message.content]
+  ]
 
 runAgentWith
   :: IORef.IORef [LLM.ChatAnswer]
@@ -247,6 +284,10 @@ agentContext =
     , remember = \_ _ -> pure ()
     , recordBotMessage = \_ _ -> pure ()
     }
+
+superuserContext :: Agent.AgentContext es
+superuserContext =
+  agentContext{Agent.superuser = True}
 
 agentContextWith :: IOE :> es => IORef.IORef [(Maybe Integer, Text)] -> IORef.IORef [Maybe Integer] -> Agent.AgentContext es
 agentContextWith recorded remembered =

@@ -50,6 +50,9 @@ extra-doc-files:    CHANGELOG.md
 common warnings
     ghc-options: -Wall
 
+common threaded
+    ghc-options: -threaded
+
 common language
     default-language: GHC2021
     default-extensions:
@@ -91,6 +94,7 @@ common test-deps
 executable cosmobot
     -- Import common warning flags.
     import:           warnings
+                    , threaded
                     , language
                     , app-deps
 
@@ -201,6 +205,7 @@ test-suite scheduler-spec
 
 test-suite agent-spec
     import:           warnings
+                    , threaded
                     , language
                     , app-deps
                     , test-deps

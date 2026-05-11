@@ -22,6 +22,9 @@ import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Memory as Memory
 import Bot.Message
 import Bot.Prelude
+import Control.Concurrent (forkIO)
+import qualified Control.Concurrent.MVar as MVar
+import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
@@ -30,10 +33,12 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as Text
 import System.Directory
+import System.Exit (ExitCode)
 import System.FilePath
+import System.IO (hClose)
 import System.IO.Error (userError)
-import System.Posix.Signals (signalProcess, sigKILL)
-import System.Process (createProcess, shell, std_out, std_err, StdStream(..), getPid, waitForProcess)
+import System.Posix.Signals (signalProcess, signalProcessGroup, sigKILL)
+import System.Process (ProcessHandle, createProcess, shell, std_out, std_err, create_group, StdStream(..), getPid, waitForProcess)
 import System.Timeout (timeout)
 
 -- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
@@ -414,40 +419,112 @@ listCurrentUserSchedulesTool = Tool
 runBashTool :: IOE :> es => Tool es
 runBashTool = Tool
   { name = "run_bash"
-  , description = "Run a bash script and obtain outputs; do not run malicious code"
+  , description = "Run a bash script and obtain outputs; do not run malicious code."
   , parameters = objectSchema
       [ fieldText "script" "The bash script to be executed in the cwd"
       , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the process. Defaults to 30."
       ]
       ["script"]
   , allowed = superuserOnly
-  , run = \_ -> withTextArg "script" \script -> do
-      result <- liftIO $ runBashSafe (Text.unpack script)
-      pure (toolText result)
+  , run = \_ args ->
+      case AesonTypes.parseEither runBashArgs args of
+        Left err ->
+          pure (toolText (Text.pack err))
+        Right (script, timeoutSeconds) -> do
+          result <- liftIO $ runBashSafe timeoutSeconds (Text.unpack script)
+          pure (toolText result)
   }
 
-runBashSafe :: String -> IO Text
-runBashSafe script = do
-  let timeoutSeconds = 30
+runBashSafe :: Int -> String -> IO Text
+runBashSafe timeoutSeconds script = do
+  let effectiveTimeout = max 1 timeoutSeconds
   (_, Just hOut, Just hErr, ph) <- createProcess
-    (shell script) { std_out = CreatePipe, std_err = CreatePipe }
-  outcome <- timeout (timeoutSeconds * 1_000_000) $ do
-    stdoutText <- Text.hGetContents hOut
-    stderrText <- Text.hGetContents hErr
-    exitCode <- waitForProcess ph
-    pure (exitCode, stdoutText, stderrText)
+    (shell script)
+      { std_out = CreatePipe
+      , std_err = CreatePipe
+      , create_group = True
+      }
+  stdoutVar <- readHandleAsync hOut
+  stderrVar <- readHandleAsync hErr
+  exitVar <- waitForProcessAsync ph
+  outcome <- timeout (effectiveTimeout * 1_000_000) (MVar.takeMVar exitVar)
   case outcome of
     Nothing -> do
-      mPid <- getPid ph
-      traverse_ (signalProcess sigKILL) mPid
-      _ <- waitForProcess ph
-      pure $ "Script timed out after " <> Text.pack (show (timeoutSeconds :: Int)) <> " seconds and was killed."
-    Just (exitCode, stdoutText, stderrText) ->
+      killProcessTree ph
+      _ <- timeout processExitGraceMicroseconds (MVar.takeMVar exitVar)
+      stdoutText <- readerText "stdout" stdoutVar
+      stderrText <- readerText "stderr" stderrVar
+      ignoreIO (hClose hOut)
+      ignoreIO (hClose hErr)
       pure $ Text.strip $ Text.unlines $ filter (not . Text.null)
-        [ if Text.null stdoutText then "" else "stdout:\n" <> stdoutText
+        [ "Script timed out after " <> Text.pack (show effectiveTimeout) <> " seconds and was killed."
+        , if Text.null stdoutText then "" else "stdout:\n" <> stdoutText
         , if Text.null stderrText then "" else "stderr:\n" <> stderrText
-        , "exit code: " <> Text.pack (show exitCode)
         ]
+    Just (Left err) ->
+      Exception.throwIO err
+    Just (Right exitCode) -> do
+      stdoutText <- readerText "stdout" stdoutVar
+      stderrText <- readerText "stderr" stderrVar
+      ignoreIO (hClose hOut)
+      ignoreIO (hClose hErr)
+      pure (formatBashResult exitCode stdoutText stderrText)
+
+waitForProcessAsync :: ProcessHandle -> IO (MVar.MVar (Either SomeException ExitCode))
+waitForProcessAsync ph = do
+  result <- MVar.newEmptyMVar
+  void $ forkIO do
+    output <- Exception.try (waitForProcess ph)
+    void (MVar.tryPutMVar result output)
+  pure result
+
+readHandleAsync :: Handle -> IO (MVar.MVar (Either SomeException Text))
+readHandleAsync processOutputHandle = do
+  result <- MVar.newEmptyMVar
+  void $ forkIO do
+    output <- Exception.try do
+      text <- Text.hGetContents processOutputHandle
+      Exception.evaluate (Text.length text) $> text
+    void (MVar.tryPutMVar result output)
+  pure result
+
+readerText :: Text -> MVar.MVar (Either SomeException Text) -> IO Text
+readerText label result = do
+  outcome <- timeout processExitGraceMicroseconds (MVar.takeMVar result)
+  pure case outcome of
+    Nothing ->
+      [i|Could not read #{label}: reader timed out.|]
+    Just (Left err) ->
+      [i|Could not read #{label}: #{show err :: String}|]
+    Just (Right text) ->
+      text
+
+killProcessTree :: ProcessHandle -> IO ()
+killProcessTree ph = do
+  mPid <- getPid ph
+  traverse_ killPid mPid
+  where
+    killPid pid =
+      ignoreIO $
+        signalProcessGroup sigKILL (fromIntegral pid)
+          `Exception.catch` \(_ :: SomeException) ->
+            signalProcess sigKILL pid
+
+ignoreIO :: IO () -> IO ()
+ignoreIO action =
+  action `Exception.catch` \(_ :: SomeException) -> pure ()
+
+formatBashResult :: Show exitCode => exitCode -> Text -> Text -> Text
+formatBashResult exitCode stdoutText stderrText =
+  Text.strip $ Text.unlines $ filter (not . Text.null)
+    [ if Text.null stdoutText then "" else "stdout:\n" <> stdoutText
+    , if Text.null stderrText then "" else "stderr:\n" <> stderrText
+    , "exit code: " <> Text.pack (show exitCode)
+    ]
+
+processExitGraceMicroseconds :: Int
+processExitGraceMicroseconds =
+  5 * 1_000_000
 
 data ScheduleSummary = ScheduleSummary
   { scheduleId :: !Integer
@@ -558,6 +635,15 @@ queryChatLogArgs =
     limit <- o Aeson..: Key.fromText "limit"
     includeBotMessages <- fromMaybe False <$> o Aeson..:? Key.fromText "include_bot_messages"
     pure (limit, includeBotMessages)
+
+runBashArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int)
+runBashArgs =
+  Aeson.withObject "run bash arguments" $ \o -> do
+    script <- o Aeson..: Key.fromText "script"
+    timeoutSeconds <- fromMaybe 30 <$> o Aeson..:? Key.fromText "timeout_seconds"
+    when (timeoutSeconds <= 0) do
+      fail "timeout_seconds must be positive."
+    pure (script, timeoutSeconds)
 
 mentionUserArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Text)
 mentionUserArgs =
