@@ -86,6 +86,8 @@ common app-deps
                     , string-interpolate
                     , unix
                     , modern-uri
+                    , req
+                    , time
     hs-source-dirs:   app
 
 common test-deps
@@ -131,9 +133,7 @@ executable cosmobot
     -- Other library packages from which modules are imported.
     build-depends:    http-client
                     , optics
-                    , time
                     , log-base
-                    , req
                     , base64-bytestring
                     , aeson-optics
                     , dotenv

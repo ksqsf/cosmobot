@@ -149,7 +149,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
       request = ChatCompletionRequest
         { model = requestModel
         , messages = imagePromptMessages imageRequest messages
-        , tools = if imageRequest then Nothing else toolSpecs (serverTools cfg) []
+        , tools = Nothing
         , modalities = if imageRequest then Just ["image", "text"] else Nothing
         , imageConfig = if imageRequest then imageGenerationConfig cfg else Nothing
         }
@@ -170,11 +170,11 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
 askOpenAIWithTools :: (IOE :> es, Log :> es) => Config -> [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
 askOpenAIWithTools Config{apiKey = Nothing} _ _ =
   pure (ChatAnswer "LLM is not configured: set llm.api_key." [])
-askOpenAIWithTools cfg@Config{endpoint, apiKey = Just key, model} functionTools messages = do
+askOpenAIWithTools Config{endpoint, apiKey = Just key, model} functionTools messages = do
   let request = ChatCompletionRequest
         { model = model
         , messages = messages
-        , tools = toolSpecs (serverTools cfg) functionTools
+        , tools = toolSpecs functionTools
         , modalities = Nothing
         , imageConfig = Nothing
         }
@@ -222,59 +222,13 @@ instance Aeson.ToJSON ChatCompletionRequest where
       <> maybe [] (\value -> ["modalities" Aeson..= value]) modalities
       <> maybe [] (\value -> ["image_config" Aeson..= value]) imageConfig
 
-data ToolSpec
-  = ServerToolSpec !ServerTool
-  | FunctionToolSpec !FunctionTool
+newtype ToolSpec
+  = FunctionToolSpec FunctionTool
   deriving (Show)
 
 instance Aeson.ToJSON ToolSpec where
   toJSON = \case
-    ServerToolSpec tool -> Aeson.toJSON tool
     FunctionToolSpec tool -> Aeson.toJSON tool
-
-data ServerTool
-  = WebSearchTool
-      { maxResults :: !(Maybe Int)
-      }
-  | WebFetchTool
-      { maxUses :: !(Maybe Int)
-      , maxContentTokens :: !(Maybe Int)
-      }
-  | DatetimeTool
-  deriving (Show)
-
-instance Aeson.ToJSON ServerTool where
-  toJSON WebSearchTool{maxResults} =
-    Aeson.object $
-      [ "type" Aeson..= Aeson.String "openrouter:web_search"
-      ]
-      <> maybe [] (\value ->
-        [ "parameters" Aeson..= Aeson.object
-            [ "max_results" Aeson..= value
-            ]
-        ]) maxResults
-  toJSON WebFetchTool{maxUses, maxContentTokens} =
-    let parameters =
-          maybe [] (\value -> ["max_uses" Aeson..= value]) maxUses
-            <> maybe [] (\value -> ["max_content_tokens" Aeson..= value]) maxContentTokens
-    in Aeson.object $
-        [ "type" Aeson..= Aeson.String "openrouter:web_fetch"
-        ]
-        <> if null parameters
-          then []
-          else ["parameters" Aeson..= Aeson.object parameters]
-  toJSON DatetimeTool =
-    Aeson.object
-      [ "type" Aeson..= Aeson.String "openrouter:datetime"
-      ]
-
-serverTools :: Config -> [ServerTool]
-serverTools Config{webSearch, webSearchMaxResults, webFetch, webFetchMaxUses, webFetchMaxContentTokens, datetime} =
-  catMaybes
-    [ if webSearch then Just (WebSearchTool webSearchMaxResults) else Nothing
-    , if webFetch then Just (WebFetchTool webFetchMaxUses webFetchMaxContentTokens) else Nothing
-    , if datetime then Just DatetimeTool else Nothing
-    ]
 
 -- | OpenAI-compatible function tool schema exposed to the model.
 data FunctionTool = FunctionTool
@@ -295,9 +249,9 @@ instance Aeson.ToJSON FunctionTool where
           ]
       ]
 
-toolSpecs :: [ServerTool] -> [FunctionTool] -> Maybe [ToolSpec]
-toolSpecs server function =
-  case map ServerToolSpec server <> map FunctionToolSpec function of
+toolSpecs :: [FunctionTool] -> Maybe [ToolSpec]
+toolSpecs function =
+  case map FunctionToolSpec function of
     [] -> Nothing
     specs -> Just specs
 

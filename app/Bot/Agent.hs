@@ -28,10 +28,16 @@ import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
+import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
+import Data.Char (digitToInt, isHexDigit)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.Encoding.Error as TextEncoding
 import qualified Data.Text.IO as Text
+import Data.Time
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import Network.HTTP.Req
 import System.Directory
 import System.Exit (ExitCode)
 import System.FilePath
@@ -40,6 +46,7 @@ import System.IO.Error (userError)
 import System.Posix.Signals (signalProcess, signalProcessGroup, sigKILL)
 import System.Process (ProcessHandle, createProcess, shell, std_out, std_err, create_group, StdStream(..), getPid, waitForProcess)
 import System.Timeout (timeout)
+import qualified Text.URI as URI
 
 -- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
 runAgent
@@ -168,6 +175,9 @@ defaultTools =
   [ listDirectoryTool
   , readFileTool
   , queryChatLogTool
+  , webSearchTool
+  , webFetchTool
+  , datetimeTool
   , generateImageTool
   , sendReplyTool
   , mentionUserTool
@@ -258,6 +268,211 @@ queryChatLogTool = Tool
           entries <- ChatLog.queryChat context.message (fromInteger (max 0 limit)) includeBotMessages
           pure (toolText (jsonText entries))
   }
+
+webSearchTool :: IOE :> es => Tool es
+webSearchTool = Tool
+  { name = "web_search"
+  , description = "Search the web for current information. Returns a JSON object with the query and a results array containing title, url, and snippet."
+  , parameters = objectSchema
+      [ fieldText "query" "Search query."
+      , fieldInteger "max_results" "Maximum number of results to return. Defaults to 5 and is capped at 20."
+      ]
+      ["query"]
+  , allowed = everyone
+  , run = \_ args ->
+      case AesonTypes.parseEither webSearchArgs args of
+        Left err ->
+          pure (toolText (Text.pack err))
+        Right (query, maxResults) -> do
+          results <- liftIO (duckDuckGoSearch query maxResults)
+          pure (toolText (jsonText (Aeson.object
+            [ "query" Aeson..= query
+            , "source" Aeson..= Aeson.String "duckduckgo_html"
+            , "results" Aeson..= results
+            ])))
+  }
+
+webFetchTool :: IOE :> es => Tool es
+webFetchTool = Tool
+  { name = "web_fetch"
+  , description = "Fetch a web page by URL and return extracted readable text. Supports http and https URLs."
+  , parameters = objectSchema
+      [ fieldText "url" "HTTP or HTTPS URL to fetch."
+      , fieldInteger "max_content_tokens" "Approximate maximum content characters to return. Defaults to 50000."
+      ]
+      ["url"]
+  , allowed = everyone
+  , run = \_ args ->
+      case AesonTypes.parseEither webFetchArgs args of
+        Left err ->
+          pure (toolText (Text.pack err))
+        Right (url, maxContentTokens) -> do
+          page <- liftIO (fetchWebPage url maxContentTokens)
+          pure (toolText (jsonText page))
+  }
+
+datetimeTool :: IOE :> es => Tool es
+datetimeTool = Tool
+  { name = "datetime"
+  , description = "Return the current date and time in UTC and in the bot host's local timezone."
+  , parameters = objectSchema [] []
+  , allowed = everyone
+  , run = \_ _ -> do
+      now <- liftIO getCurrentTime
+      zone <- liftIO getCurrentTimeZone
+      let localTime = utcToLocalTime zone now
+      pure (toolText (jsonText (Aeson.object
+        [ "utc" Aeson..= Text.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now)
+        , "local" Aeson..= Text.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S" localTime)
+        , "timezone_name" Aeson..= Text.pack (timeZoneName zone)
+        , "timezone_offset_minutes" Aeson..= timeZoneMinutes zone
+        , "unix_time" Aeson..= (realToFrac (utcTimeToPOSIXSeconds now) :: Double)
+        ])))
+  }
+
+duckDuckGoSearch :: Text -> Int -> IO [Aeson.Value]
+duckDuckGoSearch query maxResults = do
+  response <- runReq defaultHttpConfig $
+    req GET
+      (https "html.duckduckgo.com" /: "html")
+      NoReqBody
+      bsResponse
+      ("q" =: query <> webRequestOptions)
+  let html = decodeResponseBody (responseBody response)
+      anchors = mapMaybe parseSearchAnchor (Text.lines html)
+      snippets = mapMaybe parseSearchSnippet (Text.lines html)
+  pure (take maxResults (zipWithSearchSnippets anchors snippets))
+
+parseSearchAnchor :: Text -> Maybe (Text, Text)
+parseSearchAnchor line = do
+  guard ("result__a" `Text.isInfixOf` line)
+  href <- extractHtmlAttr "href" line
+  let title = htmlToPlainText line
+      url = normalizeDuckDuckGoUrl href
+  guard (not (Text.null title) && not (Text.null url))
+  pure (title, url)
+
+parseSearchSnippet :: Text -> Maybe Text
+parseSearchSnippet line = do
+  guard ("result__snippet" `Text.isInfixOf` line)
+  let snippet = htmlToPlainText line
+  guard (not (Text.null snippet))
+  pure snippet
+
+zipWithSearchSnippets :: [(Text, Text)] -> [Text] -> [Aeson.Value]
+zipWithSearchSnippets results snippets =
+  [ Aeson.object
+      [ "title" Aeson..= title
+      , "url" Aeson..= url
+      , "snippet" Aeson..= snippet
+      ]
+  | ((title, url), snippet) <- zip results (snippets <> repeat "")
+  ]
+
+fetchWebPage :: Text -> Int -> IO Aeson.Value
+fetchWebPage rawUrl maxContentTokens = do
+  uri <- URI.mkURI rawUrl
+  case useURI uri of
+    Nothing ->
+      Exception.throwIO (userError [i|Unsupported URL: #{rawUrl}. Use an http or https URL.|])
+    Just (Left (url, options)) ->
+      fetch url options
+    Just (Right (url, options)) ->
+      fetch url options
+  where
+    fetch :: Url scheme -> Option scheme -> IO Aeson.Value
+    fetch url options = do
+      response <- runReq defaultHttpConfig $
+        req GET url NoReqBody bsResponse (options <> webRequestOptions)
+      let contentType = TextEncoding.decodeUtf8With TextEncoding.lenientDecode <$> responseHeader response "Content-Type"
+          body = htmlToPlainText (decodeResponseBody (responseBody response))
+          text = Text.take maxContentTokens body
+      pure (Aeson.object
+        [ "url" Aeson..= rawUrl
+        , "status" Aeson..= responseStatusCode response
+        , "content_type" Aeson..= contentType
+        , "content" Aeson..= text
+        , "truncated" Aeson..= (Text.length text < Text.length body)
+        ])
+
+webRequestOptions :: Option scheme
+webRequestOptions =
+  header "User-Agent" "cosmobot/0.1 (+https://github.com/ksqsf/cosmobot)"
+    <> responseTimeout (15 * 1_000_000)
+
+decodeResponseBody :: ByteString.ByteString -> Text
+decodeResponseBody =
+  TextEncoding.decodeUtf8With TextEncoding.lenientDecode
+
+normalizeDuckDuckGoUrl :: Text -> Text
+normalizeDuckDuckGoUrl rawHref =
+  let href = htmlDecode rawHref
+      absolute =
+        if "//" `Text.isPrefixOf` href
+          then "https:" <> href
+          else href
+  in maybe absolute percentDecodeText (queryTextParam "uddg" absolute)
+
+queryTextParam :: Text -> Text -> Maybe Text
+queryTextParam key text =
+  case Text.breakOn (key <> "=") text of
+    (_, rest)
+      | Text.null rest -> Nothing
+      | otherwise ->
+          Just $
+            Text.takeWhile (/= '&') $
+              Text.drop (Text.length key + 1) rest
+
+extractHtmlAttr :: Text -> Text -> Maybe Text
+extractHtmlAttr name html =
+  extractWith "\"" <|> extractWith "'"
+  where
+    extractWith quote =
+      let marker = name <> "=" <> quote
+          (_, rest) = Text.breakOn marker html
+      in if Text.null rest
+        then Nothing
+        else Just $
+          Text.takeWhile (/= Text.head quote) $
+            Text.drop (Text.length marker) rest
+
+htmlToPlainText :: Text -> Text
+htmlToPlainText =
+  Text.unwords . Text.words . htmlDecode . stripHtmlTags
+
+stripHtmlTags :: Text -> Text
+stripHtmlTags =
+  Text.pack . reverse . fst . Text.foldl' step ([], False)
+  where
+    step (acc, inTag) char =
+      case (char, inTag) of
+        ('<', _) -> (' ' : acc, True)
+        ('>', _) -> (' ' : acc, False)
+        (_, True) -> (acc, True)
+        _ -> (char : acc, False)
+
+htmlDecode :: Text -> Text
+htmlDecode =
+  Text.replace "&#39;" "'"
+    . Text.replace "&quot;" "\""
+    . Text.replace "&apos;" "'"
+    . Text.replace "&gt;" ">"
+    . Text.replace "&lt;" "<"
+    . Text.replace "&amp;" "&"
+
+percentDecodeText :: Text -> Text
+percentDecodeText =
+  Text.pack . go . Text.unpack
+  where
+    go ('%' : a : b : rest)
+      | isHexDigit a && isHexDigit b =
+          chr (digitToInt a * 16 + digitToInt b) : go rest
+    go ('+' : rest) =
+      ' ' : go rest
+    go (char : rest) =
+      char : go rest
+    go [] =
+      []
 
 generateImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
 generateImageTool = Tool
@@ -635,6 +850,28 @@ queryChatLogArgs =
     limit <- o Aeson..: Key.fromText "limit"
     includeBotMessages <- fromMaybe False <$> o Aeson..:? Key.fromText "include_bot_messages"
     pure (limit, includeBotMessages)
+
+webSearchArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int)
+webSearchArgs =
+  Aeson.withObject "web search arguments" $ \o -> do
+    query <- Text.strip <$> o Aeson..: Key.fromText "query"
+    maxResults <- fromMaybe 5 <$> o Aeson..:? Key.fromText "max_results"
+    when (Text.null query) do
+      fail "query must not be empty."
+    when (maxResults <= 0) do
+      fail "max_results must be positive."
+    pure (query, min 20 maxResults)
+
+webFetchArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int)
+webFetchArgs =
+  Aeson.withObject "web fetch arguments" $ \o -> do
+    url <- Text.strip <$> o Aeson..: Key.fromText "url"
+    maxContentTokens <- fromMaybe 50000 <$> o Aeson..:? Key.fromText "max_content_tokens"
+    when (Text.null url) do
+      fail "url must not be empty."
+    when (maxContentTokens <= 0) do
+      fail "max_content_tokens must be positive."
+    pure (url, min 200000 maxContentTokens)
 
 runBashArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int)
 runBashArgs =
