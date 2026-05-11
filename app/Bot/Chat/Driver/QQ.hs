@@ -32,7 +32,8 @@ import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
-import Control.Concurrent (forkIO)
+import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
+import qualified Control.Exception as Exception
 import qualified Control.Concurrent.Chan as Chan
 import qualified Control.Concurrent.MVar as MVar
 import qualified Data.Aeson as Aeson
@@ -128,40 +129,109 @@ runQQ
   -> Eff es a
 runQQ cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
   eventChan <- liftIO Chan.newChan
-  pendingResponses <- liftIO (MVar.newMVar Map.empty)
-  actionCounter <- liftIO (MVar.newMVar (1 :: Integer))
-  sendLock <- liftIO (MVar.newMVar ())
-  liftIO $ WS.runClient cfg.host cfg.port (websocketPath cfg) $ \conn ->
-    runInIO $ do
-      _ <- liftIO $ forkIO $ runInIO $
-        readFrames eventChan pendingResponses conn
-      interpret
+  actionChan <- liftIO Chan.newChan
+  worker <- liftIO $ forkIO $ runInIO $
+    qqConnectionLoop cfg eventChan actionChan
+  liftIO $ runInIO
+    (interpret
         (\_ -> \case
-          ReceiveEvent -> liftIO (Chan.readChan eventChan)
+          ReceiveEvent ->
+            liftIO (Chan.readChan eventChan)
           SendAction value -> do
-            echo <- liftIO (nextActionEcho actionCounter)
             responseVar <- liftIO MVar.newEmptyMVar
-            let echoedValue = addActionEcho echo value
-            result <- (Right <$> liftIO do
-                MVar.modifyMVar_ pendingResponses \pending ->
-                  pure (Map.insert echo responseVar pending)
-                MVar.withMVar sendLock \_ ->
-                  WS.sendTextData conn (Aeson.encode echoedValue)
-                Timeout.timeout qqActionTimeoutMicroseconds (MVar.takeMVar responseVar))
-              `catch` \(err :: SomeException) -> do
-                logInfo "QQ action failed" (show err :: String)
-                pure (Left ())
-            liftIO $ MVar.modifyMVar_ pendingResponses \pending ->
-              pure (Map.delete echo pending)
+            liftIO $ Chan.writeChan actionChan (ActionRequest value responseVar)
+            result <- liftIO $ Timeout.timeout qqActionTimeoutMicroseconds (MVar.takeMVar responseVar)
             case result of
-              Right (Just response) ->
+              Just response ->
                 pure response
-              Right Nothing -> do
+              Nothing -> do
                 logInfo_ "QQ action timed out"
-                pure failedActionResponse
-              Left () ->
                 pure failedActionResponse)
         inner
+    )
+    `Exception.finally` killThread worker
+
+data ActionRequest = ActionRequest !Aeson.Value !(MVar.MVar ActionResponse)
+
+qqConnectionLoop
+  :: (IOE :> es, Log :> es)
+  => Config
+  -> Chan.Chan Event
+  -> Chan.Chan ActionRequest
+  -> Eff es ()
+qqConnectionLoop cfg eventChan actionChan =
+  forever do
+    result <- (Right <$> do
+      withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+        liftIO $ WS.runClient cfg.host cfg.port (websocketPath cfg) \conn ->
+          runInIO (runConnection eventChan actionChan conn)
+      ) `catch` \(err :: SomeException) ->
+        pure (Left err)
+    case result of
+      Right () ->
+        logInfo_ "QQ websocket disconnected; reconnecting"
+      Left err ->
+        logInfo "QQ websocket failed; reconnecting" (show err :: String)
+    liftIO $ threadDelay qqReconnectDelayMicroseconds
+
+runConnection
+  :: (IOE :> es, Log :> es)
+  => Chan.Chan Event
+  -> Chan.Chan ActionRequest
+  -> WS.Connection
+  -> Eff es ()
+runConnection eventChan actionChan conn = do
+  pendingResponses <- liftIO (MVar.newMVar Map.empty)
+  actionCounter <- liftIO (MVar.newMVar (1 :: Integer))
+  done <- liftIO MVar.newEmptyMVar
+  readerThread <- forkConnectionThread done (readFrames eventChan pendingResponses conn)
+  sender <- forkConnectionThread done (sendActions actionChan pendingResponses actionCounter conn)
+  reason <- liftIO (MVar.takeMVar done)
+  liftIO (killThread readerThread)
+  liftIO (killThread sender)
+  failPendingResponses pendingResponses
+  logInfo "QQ websocket connection ended" (show reason :: String)
+
+forkConnectionThread
+  :: (IOE :> es, Log :> es)
+  => MVar.MVar SomeException
+  -> Eff es ()
+  -> Eff es ThreadId
+forkConnectionThread done action =
+  withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+    liftIO $ forkIO do
+      result <- Exception.try (runInIO action)
+      case result of
+        Left err ->
+          void (MVar.tryPutMVar done err)
+        Right () ->
+          void (MVar.tryPutMVar done (toException ThreadKilled))
+
+sendActions
+  :: (IOE :> es, Log :> es)
+  => Chan.Chan ActionRequest
+  -> PendingResponses
+  -> MVar.MVar Integer
+  -> WS.Connection
+  -> Eff es ()
+sendActions actionChan pendingResponses actionCounter conn =
+  forever do
+    ActionRequest value responseVar <- liftIO (Chan.readChan actionChan)
+    echo <- liftIO (nextActionEcho actionCounter)
+    let echoedValue = addActionEcho echo value
+    liftIO $ MVar.modifyMVar_ pendingResponses \pending ->
+      pure (Map.insert echo responseVar pending)
+    (liftIO (WS.sendTextData conn (Aeson.encode echoedValue)) `catch` \(err :: SomeException) -> do
+      liftIO $ MVar.modifyMVar_ pendingResponses \pending ->
+        pure (Map.delete echo pending)
+      void $ liftIO (MVar.tryPutMVar responseVar failedActionResponse)
+      throwIO err)
+
+failPendingResponses :: IOE :> es => PendingResponses -> Eff es ()
+failPendingResponses pendingResponses = do
+  pending <- liftIO $ MVar.modifyMVar pendingResponses \pending ->
+    pure (Map.empty, pending)
+  traverse_ (liftIO . flip MVar.tryPutMVar failedActionResponse) pending
 
 websocketPath :: Config -> String
 websocketPath Config{path, token = Nothing} = path
@@ -256,6 +326,10 @@ failedActionResponse =
 qqActionTimeoutMicroseconds :: Int
 qqActionTimeoutMicroseconds =
   40 * 1000000
+
+qqReconnectDelayMicroseconds :: Int
+qqReconnectDelayMicroseconds =
+  5 * 1000000
 
 -- | Raw OneBot action response.
 data ActionResponse = ActionResponse
