@@ -43,6 +43,7 @@ data ChatKind
 -- | Driver-provided facts that are not inherent in the raw message payload.
 data MessageDigest = MessageDigest
   { chatIsAllowed :: !Bool
+  , senderIsAllowed :: !Bool
   , senderIsSuperuser :: !Bool
   , mentionsBot :: !Bool
   }
@@ -52,6 +53,7 @@ emptyMessageDigest :: MessageDigest
 emptyMessageDigest =
   MessageDigest
     { chatIsAllowed = False
+    , senderIsAllowed = False
     , senderIsSuperuser = False
     , mentionsBot = False
     }
@@ -83,6 +85,7 @@ incomingMessageLogLine message =
     , "kind=" <> show message.kind
     , "chat=" <> showMaybe message.chatId
     , "chat_allowed=" <> show message.digest.chatIsAllowed
+    , "sender_allowed=" <> show message.digest.senderIsAllowed
     , "sender=" <> showMaybe message.senderId
     , "username=" <> fromMaybe "-" message.senderUsername
     , "superuser=" <> show message.digest.senderIsSuperuser

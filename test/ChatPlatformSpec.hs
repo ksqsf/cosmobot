@@ -13,9 +13,11 @@ main =
   defaultMain $
     testGroup "chat platforms"
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      , testCase "QQ superuser is also allowed sender" testQqSuperuserIsAlsoAllowedSender
       , testCase "QQ self message is ignored" testQqSelfMessageIsIgnored
       , testCase "QQ forwarded messages merge all node text" testQqForwardedMessagesMergeAllNodeText
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
+      , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
       ]
@@ -25,6 +27,23 @@ testQqUserMessageConvertsToIncomingMessage = do
   let incoming = QQ.eventToIncomingMessage (qqMessageEvent 10001)
   ((.platform) <$> incoming) @?= Just PlatformQQ
   ((.text) <$> incoming) @?= Just "hello"
+
+testQqSuperuserIsAlsoAllowedSender :: IO ()
+testQqSuperuserIsAlsoAllowedSender = do
+  let cfg = QQ.Config
+        { QQ.host = ""
+        , QQ.port = 0
+        , QQ.path = ""
+        , QQ.token = Nothing
+        , QQ.botQQ = Nothing
+        , QQ.allowedGroups = []
+        , QQ.allowedUsers = []
+        , QQ.superusers = [10001]
+        }
+      incoming = fromMaybe (error "expected incoming QQ message") $
+        QQ.eventToIncomingMessageWith cfg (qqMessageEvent 10001)
+  incoming.digest.senderIsAllowed @?= True
+  incoming.digest.senderIsSuperuser @?= True
 
 testQqSelfMessageIsIgnored :: IO ()
 testQqSelfMessageIsIgnored =
@@ -63,6 +82,21 @@ testTelegramUserMessageConvertsToIncomingMessage = do
   let incoming = Telegram.updateToIncomingMessage (telegramUpdate False)
   ((.platform) <$> incoming) @?= Just PlatformTelegram
   ((.text) <$> incoming) @?= Just "hello"
+
+testTelegramSuperuserIsAlsoAllowedPrivateSender :: IO ()
+testTelegramSuperuserIsAlsoAllowedPrivateSender = do
+  let cfg = Telegram.Config
+        { Telegram.botToken = ""
+        , Telegram.botIds = []
+        , Telegram.botUsernames = []
+        , Telegram.allowedChatIds = []
+        , Telegram.allowedChatAliases = []
+        , Telegram.superusers = ["alice"]
+        }
+      incoming = fromMaybe (error "expected incoming Telegram message") $
+        Telegram.updateToIncomingMessageWith cfg (telegramUpdateWithMessage privateTelegramMessage)
+  incoming.digest.senderIsAllowed @?= True
+  incoming.digest.senderIsSuperuser @?= True
 
 testTelegramBotMessageIsIgnored :: IO ()
 testTelegramBotMessageIsIgnored =
@@ -182,6 +216,19 @@ telegramChat =
     , username = Nothing
     , firstName = Nothing
     , lastName = Nothing
+    }
+
+privateTelegramMessage :: Telegram.Message
+privateTelegramMessage =
+  (telegramMessage False)
+    { Telegram.chat = Telegram.Chat
+        { id = 10001
+        , type_ = Telegram.ChatTypePrivate
+        , title = Nothing
+        , username = Just "alice"
+        , firstName = Just "Alice"
+        , lastName = Nothing
+        }
     }
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a

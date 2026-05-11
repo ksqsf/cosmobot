@@ -10,14 +10,15 @@ port = 3001
 path = "/"
 token = "xxx"
 bot_qq = 0
+superusers = []
 allowed_groups = []
 allowed_users = []
 
 [driver.telegram]
 bot_token = ""
 bot_id = ""
-allowed_groups = []
-allowed_users = []
+superusers = []
+allowed_chats = []
 
 [llm]
 endpoint = "https://openrouter.ai/api/v1"
@@ -32,6 +33,9 @@ image_generation_quality = "medium"
 image_generation_size = "1024x1024"
 image_generation_output_format = "webp"
 image_generation_output_compression = 80
+
+[memory]
+dir = "memory"
 
 [tool]
 datetime = false
@@ -50,9 +54,6 @@ brave_api_key = ""
 
 [handler.saucenao]
 api_key = ""
-
-[memory]
-dir = "memory"
 
 [handler.ask]
 command = "!ask"

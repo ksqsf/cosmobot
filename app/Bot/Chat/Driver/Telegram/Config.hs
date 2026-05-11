@@ -24,8 +24,8 @@ import Toml.Schema
 data FileConfig = FileConfig
   { botToken :: !Text
   , botId    :: !(Maybe TelegramBotId)
-  , allowedGroups :: ![TelegramChatRef]
-  , allowedUsers :: ![Text]
+  , allowedChats :: ![TelegramChatRef]
+  , superusers :: ![Text]
   }
   deriving (Show)
 
@@ -55,14 +55,14 @@ instance FromValue TelegramChatRef where
     TomlValue.Text' _ value ->
       pure (TelegramChatUsername (normalizeUsername value))
     _ ->
-      fail "driver.telegram.allowed_groups entries must be integer chat ids or username/title strings"
+      fail "driver.telegram.allowed_chats entries must be integer chat ids or username/title strings"
 
 instance FromValue FileConfig where
   fromValue = parseTableFromValue $ FileConfig
     <$> reqKey "bot_token"
     <*> optKey "bot_id"
-    <*> fmap (fromMaybe []) (optKey "allowed_groups")
-    <*> fmap (fromMaybe []) (optKey "allowed_users")
+    <*> fmap (fromMaybe []) (optKey "allowed_chats")
+    <*> fmap (fromMaybe []) (optKey "superusers")
 
 normalizeUsername :: Text -> Text
 normalizeUsername =
@@ -96,7 +96,7 @@ toRuntimeConfig cfg =
     { botToken = cfg.botToken
     , botIds = telegramBotIds cfg.botId
     , botUsernames = telegramBotUsernames cfg.botId
-    , allowedChatIds = telegramChatIds cfg.allowedGroups
-    , allowedChatAliases = telegramChatAliases cfg.allowedGroups
-    , allowedUsers = map normalizeUsername cfg.allowedUsers
+    , allowedChatIds = telegramChatIds cfg.allowedChats
+    , allowedChatAliases = telegramChatAliases cfg.allowedChats
+    , superusers = map normalizeUsername cfg.superusers
     }

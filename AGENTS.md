@@ -41,7 +41,7 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 
 - When changing handler behavior, check route predicates and combinators in `Bot.Core.Route` first.
 - When adding config, update `Bot.Config`, `config.example.toml`, and all call sites that consume `BotConfig`.
-- Keep `config.toml` section ownership explicit: chat platform settings live under `[driver.qq]` and `[driver.telegram]`; handler settings live under `[handler.saucenao]` and `[handler.ask]`. Driver chat access belongs in `allowed_groups` and privileged sender access belongs in `allowed_users`. Do not reintroduce top-level `[qq]`, `[telegram]`, `[saucenao]`, `[handlers.*]`, or handler-owned platform whitelist sections.
+- Keep `config.toml` section ownership explicit: chat platform settings live under `[driver.qq]` and `[driver.telegram]`; handler settings live under `[handler.saucenao]` and `[handler.ask]`. QQ conversation access belongs in `allowed_groups` and `allowed_users`; Telegram conversation access belongs in `allowed_chats`; administrator access belongs in each driver's `superusers`. Do not reintroduce top-level `[qq]`, `[telegram]`, `[saucenao]`, `[handlers.*]`, or handler-owned platform whitelist sections.
 - When adding `[llm]` config, update `Bot.Config`, `Bot.Effect.LLM.Config`, OpenAI-compatible request serialization when applicable, and `config.example.toml`.
 - When adding a new module, update `cosmobot.cabal` for the executable and relevant test suites. Prefer shared `common` module-list stanzas over copying the same `other-modules` block into multiple components.
 - When adding an agent tool, update `defaultTools`, define a small parser using `AesonTypes.parseEither`, and add focused tests in `test/AgentSpec.hs`.

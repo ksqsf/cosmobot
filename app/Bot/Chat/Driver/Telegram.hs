@@ -26,6 +26,7 @@ module Bot.Chat.Driver.Telegram
   , runTelegram
   , incomingMessages
   , updateToIncomingMessage
+  , updateToIncomingMessageWith
   , getMe
   , getUpdates
   , sendMessage
@@ -80,7 +81,7 @@ data Config = Config
   , botUsernames :: ![Text]
   , allowedChatIds :: ![Integer]
   , allowedChatAliases :: ![Text]
-  , allowedUsers :: ![Text]
+  , superusers :: ![Text]
   }
   deriving (Show)
 
@@ -268,21 +269,25 @@ defaultMessageConfig =
     , botUsernames = []
     , allowedChatIds = []
     , allowedChatAliases = []
-    , allowedUsers = []
+    , superusers = []
     }
 
 telegramMessageDigest :: Config -> Message -> MessageDigest
 telegramMessageDigest cfg message =
   MessageDigest
-    { chatIsAllowed =
-        message.chat.id `elem` cfg.allowedChatIds ||
-        any (`elem` cfg.allowedChatAliases) (telegramChatAliases message.chat)
-    , senderIsSuperuser =
-        maybe False (`elem` cfg.allowedUsers) (normalizeUsername <$> (message.from >>= (.username)))
+    { chatIsAllowed = chatAllowed
+    , senderIsAllowed = telegramChatKind message.chat.type_ == ChatPrivate && (chatAllowed || senderSuperuser)
+    , senderIsSuperuser = senderSuperuser
     , mentionsBot =
         any (`elem` cfg.botIds) (messageMentionIds message) ||
         any (`elem` cfg.botUsernames) (messageMentionUsernames message)
     }
+  where
+    chatAllowed =
+      message.chat.id `elem` cfg.allowedChatIds ||
+        any (`elem` cfg.allowedChatAliases) (telegramChatAliases message.chat)
+    senderSuperuser =
+      maybe False (`elem` cfg.superusers) (normalizeUsername <$> (message.from >>= (.username)))
 
 telegramChatAliases :: Chat -> [Text]
 telegramChatAliases chat =

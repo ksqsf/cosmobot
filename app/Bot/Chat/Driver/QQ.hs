@@ -17,6 +17,7 @@ module Bot.Chat.Driver.QQ
   , eventsStream
   , incomingMessages
   , eventToIncomingMessage
+  , eventToIncomingMessageWith
   , forwardedMessagesText
   , readActionResponse
   , replyTo
@@ -62,6 +63,7 @@ data Config = Config
   , botQQ :: !(Maybe Integer)
   , allowedGroups :: ![Integer]
   , allowedUsers :: ![Integer]
+  , superusers :: ![Integer]
   }
   deriving (Show)
 
@@ -617,15 +619,22 @@ defaultMessageConfig =
     , botQQ = Nothing
     , allowedGroups = []
     , allowedUsers = []
+    , superusers = []
     }
 
 qqMessageDigest :: Config -> Event -> MessageDigest
 qqMessageDigest cfg event =
   MessageDigest
     { chatIsAllowed = maybe False (`elem` cfg.allowedGroups) event.groupId
-    , senderIsSuperuser = maybe False (`elem` cfg.allowedUsers) event.userId
+    , senderIsAllowed = senderAllowed
+    , senderIsSuperuser = senderSuperuser
     , mentionsBot = maybe False (`elem` maybe [] mentionIds event.message) cfg.botQQ
     }
+  where
+    senderAllowed =
+      maybe False (\userId -> userId `elem` cfg.allowedUsers || userId `elem` cfg.superusers) event.userId
+    senderSuperuser =
+      maybe False (`elem` cfg.superusers) event.userId
 
 isSelfMessage :: Event -> Bool
 isSelfMessage event =

@@ -146,7 +146,7 @@ mentionsConfiguredBot message =
 -- | Whether a private message may start a conversation.
 isAllowedPrivate :: IncomingMessage -> Bool
 isAllowedPrivate message =
-  message.kind == ChatPrivate && message.digest.senderIsSuperuser
+  message.kind == ChatPrivate && message.digest.senderIsAllowed
 
 -- | Whether the message sender may use privileged routes/tools.
 isSuperuser :: IncomingMessage -> Bool
