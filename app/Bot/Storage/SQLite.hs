@@ -85,6 +85,8 @@ migrate store = withStore store \db -> do
     "CREATE TABLE IF NOT EXISTS chat_log (id INTEGER PRIMARY KEY AUTOINCREMENT, platform_key TEXT NOT NULL, kind_key TEXT NOT NULL, chat_id INTEGER, is_bot INTEGER NOT NULL, entry_json TEXT NOT NULL)"
   SQLite.exec db
     "CREATE INDEX IF NOT EXISTS chat_log_chat_idx ON chat_log(platform_key, kind_key, chat_id, id)"
+  SQLite.exec db
+    "CREATE INDEX IF NOT EXISTS chat_log_visible_idx ON chat_log(platform_key, kind_key, chat_id, is_bot, id)"
 
 ensureColumn :: SQLite.Database -> Text -> Text -> Text -> IO ()
 ensureColumn db table column definition = do

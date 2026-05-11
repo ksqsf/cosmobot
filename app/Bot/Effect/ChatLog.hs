@@ -84,22 +84,26 @@ runChatLog
   -> Eff (ChatLog : es) a
   -> Eff es a
 runChatLog sqliteStore inner = do
-  ref <- liftIO (IORef.newIORef [] :: IO (IORef.IORef [ChatLogRecord]))
+  memoryRef <- case sqliteStore of
+    Nothing ->
+      Just <$> liftIO (IORef.newIORef [] :: IO (IORef.IORef [ChatLogRecord]))
+    Just _ ->
+      pure Nothing
   interpret
     (\_ -> \case
       RecordMessage message -> do
         let record = userRecord message
-        liftIO $ IORef.modifyIORef' ref (record :)
+        traverse_ (appendMemoryRecord record) memoryRef
         persistRecord sqliteStore record
       RecordBotMessage context messageId body -> do
         let record = botRecord context messageId body
-        liftIO $ IORef.modifyIORef' ref (record :)
+        traverse_ (appendMemoryRecord record) memoryRef
         persistRecord sqliteStore record
       QueryChat message limit includeBotMessages -> do
         case sqliteStore of
           Just store -> liftIO (queryStored store message limit includeBotMessages)
           Nothing -> do
-            records <- liftIO (IORef.readIORef ref)
+            records <- maybe (pure []) (liftIO . IORef.readIORef) memoryRef
             pure
               $ map (sanitizeChatLogEntry . chatLogEntry)
               $ reverse
@@ -107,6 +111,14 @@ runChatLog sqliteStore inner = do
               $ filter (visible includeBotMessages)
               $ filter (sameChat message) records)
     inner
+
+appendMemoryRecord :: IOE :> es => ChatLogRecord -> IORef.IORef [ChatLogRecord] -> Eff es ()
+appendMemoryRecord record ref =
+  liftIO $ IORef.modifyIORef' ref (take maxInMemoryChatLogRecords . (record :))
+
+maxInMemoryChatLogRecords :: Int
+maxInMemoryChatLogRecords =
+  5000
 
 data ChatLogRecord = ChatLogRecord
   { message :: !IncomingMessage
