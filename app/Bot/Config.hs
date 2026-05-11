@@ -233,6 +233,7 @@ data LLMFileConfig = LLMFileConfig
   , imageGenerationAspectRatio :: !(Maybe Text)
   , imageGenerationBackground :: !(Maybe Text)
   , imageGenerationOutputFormat :: !(Maybe Text)
+  , imageGenerationOutputCompression :: !(Maybe Int)
   , imageGenerationModeration :: !(Maybe Text)
   }
   deriving (Show)
@@ -327,6 +328,7 @@ instance FromValue LLMFileConfig where
     <*> optKey "image_generation_aspect_ratio"
     <*> optKey "image_generation_background"
     <*> optKey "image_generation_output_format"
+    <*> optKey "image_generation_output_compression"
     <*> optKey "image_generation_moderation"
 
 instance FromValue ToolFileConfig where
@@ -436,6 +438,7 @@ toBotConfig cfg =
         , imageGenerationAspectRatio = cfg.llm.imageGenerationAspectRatio
         , imageGenerationBackground = cfg.llm.imageGenerationBackground
         , imageGenerationOutputFormat = cfg.llm.imageGenerationOutputFormat
+        , imageGenerationOutputCompression = cfg.llm.imageGenerationOutputCompression
         , imageGenerationModeration = cfg.llm.imageGenerationModeration
         }
     , tool = Agent.ToolConfig

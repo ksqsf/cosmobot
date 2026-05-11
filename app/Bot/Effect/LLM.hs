@@ -59,6 +59,7 @@ data Config = Config
   , imageGenerationAspectRatio :: !(Maybe Text)
   , imageGenerationBackground :: !(Maybe Text)
   , imageGenerationOutputFormat :: !(Maybe Text)
+  , imageGenerationOutputCompression :: !(Maybe Int)
   , imageGenerationModeration :: !(Maybe Text)
   }
   deriving (Show)
@@ -78,6 +79,7 @@ defaultConfig = Config
   , imageGenerationAspectRatio = Nothing
   , imageGenerationBackground = Nothing
   , imageGenerationOutputFormat = Nothing
+  , imageGenerationOutputCompression = Nothing
   , imageGenerationModeration = Nothing
   }
 
@@ -250,7 +252,7 @@ toolSpecs function =
     specs -> Just specs
 
 imageGenerationConfig :: Config -> Maybe Aeson.Value
-imageGenerationConfig Config{imageGenerationQuality, imageGenerationSize, imageGenerationAspectRatio, imageGenerationBackground, imageGenerationOutputFormat, imageGenerationModeration} =
+imageGenerationConfig Config{imageGenerationQuality, imageGenerationSize, imageGenerationAspectRatio, imageGenerationBackground, imageGenerationOutputFormat, imageGenerationOutputCompression, imageGenerationModeration} =
   case fields of
     [] -> Nothing
     _  -> Just (Aeson.object fields)
@@ -261,6 +263,7 @@ imageGenerationConfig Config{imageGenerationQuality, imageGenerationSize, imageG
         <> maybe [] (\value -> ["aspect_ratio" Aeson..= value]) imageGenerationAspectRatio
         <> maybe [] (\value -> ["background" Aeson..= value]) imageGenerationBackground
         <> maybe [] (\value -> ["output_format" Aeson..= value]) imageGenerationOutputFormat
+        <> maybe [] (\value -> ["output_compression" Aeson..= value]) imageGenerationOutputCompression
         <> maybe [] (\value -> ["moderation" Aeson..= value]) imageGenerationModeration
 
 llmRequestLogLine :: Text -> ChatCompletionRequest -> Text

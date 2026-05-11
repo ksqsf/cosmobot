@@ -27,7 +27,8 @@ image_generation_api_key = ""
 image_generation_model = "openai/gpt-5-image-mini"
 image_generation_quality = "medium"
 image_generation_size = "1024x1024"
-image_generation_output_format = "png"
+image_generation_output_format = "webp"
+image_generation_output_compression = 80
 
 [tool]
 datetime = false
