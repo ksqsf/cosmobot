@@ -3,6 +3,7 @@ Module      : Bot.Effect.Scheduler
 Description : Delayed bot actions as an incoming message stream
 Stability   : experimental
 -}
+{-# LANGUAGE OverloadedLabels #-}
 
 module Bot.Effect.Scheduler
   ( Scheduler
@@ -24,6 +25,7 @@ import qualified Control.Concurrent.MVar as MVar
 import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 import GHC.Clock (getMonotonicTimeNSec)
+import Optics ((%~), (.~))
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 
@@ -44,6 +46,7 @@ data SchedulerState = SchedulerState
   { nextScheduleId :: !Integer
   , pendingMessages :: !(Map Integer PendingMessage)
   }
+  deriving (Generic)
 
 -- | In-process delayed message scheduler.
 data Scheduler :: Effect where
@@ -110,7 +113,7 @@ runScheduler inner = do
                 pure (Map.lookup scheduleId schedulerState.pendingMessages)
               when (isJust stillExists) do
                 MVar.modifyMVar_ schedulerStateVar \schedulerState ->
-                  pure schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}
+                  pure (schedulerState & #pendingMessages %~ Map.delete scheduleId)
                 STM.atomically (TBQueue.writeTBQueue queue message)
             pure True
       DeleteScheduledMessage message scheduleId ->
@@ -141,10 +144,10 @@ registerPendingMessage schedulerStateVar delaySeconds message = do
               , dueAtNanoseconds = now + delayNanoseconds
               , message = message
               }
-            nextState = schedulerState
-              { nextScheduleId = scheduleId + 1
-              , pendingMessages = Map.insert scheduleId pendingMessage schedulerState.pendingMessages
-              }
+            nextState =
+              schedulerState
+                & #nextScheduleId .~ scheduleId + 1
+                & #pendingMessages %~ Map.insert scheduleId pendingMessage
         pure (nextState, Just scheduleId)
 
 deletePendingMessage :: MVar.MVar SchedulerState -> IncomingMessage -> Integer -> IO Bool
@@ -155,7 +158,7 @@ deletePendingMessage schedulerStateVar message scheduleId =
         pure (schedulerState, False)
       Just schedule
         | sameMessageOwner message schedule.message ->
-            pure (schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}, True)
+            pure (schedulerState & #pendingMessages %~ Map.delete scheduleId, True)
         | otherwise ->
             pure (schedulerState, False)
 

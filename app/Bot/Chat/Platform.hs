@@ -7,6 +7,8 @@ Stability   : experimental
 
 module Bot.Chat.Platform
   ( replyToPlatform
+  , editPlatformMessage
+  , platformReplyStreamStyle
   , getPlatformMessageContent
   , getPlatformSenderMemberInfo
   , getPlatformMemberInfo
@@ -17,6 +19,7 @@ where
 
 import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
+import qualified Bot.Effect.Chat as Chat
 import Bot.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -25,6 +28,8 @@ import qualified Data.List as List
 data ChatPlatformDriver es = ChatPlatformDriver
   { platform :: !ChatPlatform
   , replyTo :: IncomingMessage -> Text -> Eff es (Maybe Integer)
+  , editMessage :: IncomingMessage -> Integer -> Text -> Eff es Bool
+  , replyStreamStyle :: IncomingMessage -> Eff es Chat.ReplyStreamStyle
   , getMessageContent :: IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
   , getSenderMemberInfo :: IncomingMessage -> Eff es (Maybe Aeson.Value)
   , getMemberInfo :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
@@ -46,6 +51,8 @@ qqDriver
 qqDriver = ChatPlatformDriver
   { platform = PlatformQQ
   , replyTo = QQ.replyTo
+  , editMessage = \_ _ _ -> pure False
+  , replyStreamStyle = \_ -> pure (Chat.ChunkedReply qqStreamingMessageLimit)
   , getMessageContent = \_ messageId -> QQ.getMessageContent messageId
   , getSenderMemberInfo = \message ->
       case (message.kind, message.chatId, message.senderId) of
@@ -74,6 +81,8 @@ telegramDriver
 telegramDriver = ChatPlatformDriver
   { platform = PlatformTelegram
   , replyTo = Telegram.replyTo
+  , editMessage = Telegram.editMessage
+  , replyStreamStyle = \_ -> pure (Chat.EditableReply telegramEditChunkChars)
   , getMessageContent = Telegram.getMessageContent
   , getSenderMemberInfo = \message ->
       case (message.kind, message.chatId, message.senderId) of
@@ -122,6 +131,34 @@ replyToPlatform
 replyToPlatform message body =
   withPlatformDriver message "chat reply" \driver ->
     driver.replyTo message body
+
+editPlatformMessage
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
+  => IncomingMessage
+  -> Integer
+  -> Text
+  -> Eff es Bool
+editPlatformMessage message messageId body =
+  fromMaybe False <$> withPlatformDriver message "chat edit" \driver ->
+    Just <$> driver.editMessage message messageId body
+
+platformReplyStreamStyle
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
+  => IncomingMessage
+  -> Eff es Chat.ReplyStreamStyle
+platformReplyStreamStyle message =
+  fromMaybe defaultReplyStreamStyle <$> withPlatformDriver message "reply stream style" \driver ->
+    Just <$> driver.replyStreamStyle message
+
+defaultReplyStreamStyle :: Chat.ReplyStreamStyle
+defaultReplyStreamStyle =
+  Chat.ChunkedReply qqStreamingMessageLimit
+
+telegramEditChunkChars :: Int
+telegramEditChunkChars = 50
+
+qqStreamingMessageLimit :: Int
+qqStreamingMessageLimit = 4000
 
 getPlatformMessageContent
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)

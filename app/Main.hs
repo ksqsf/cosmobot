@@ -42,10 +42,25 @@ main = do
     Scheduler.runScheduler .
     Telegram.runTelegram cfg.telegram .
     QQ.runQQ cfg.qq .
-    Chat.runChatWith ChatPlatform.replyToPlatform ChatPlatform.getPlatformMessageContent ChatPlatform.getPlatformSenderMemberInfo ChatPlatform.getPlatformMemberInfo ChatPlatform.listPlatformGroupMembers ChatPlatform.mentionPlatformUser .
+    runPlatformChat .
     LLM.runLLM cfg.llm $ do
       logInfo_ "Cosmobot stand by!"
       consumeWith (routes cfg sqliteStore conversations) (recordedIncomingMessages incomingMessages)
+
+runPlatformChat
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
+  => Eff (Chat.Chat : es) a
+  -> Eff es a
+runPlatformChat =
+  Chat.runChatWith
+    ChatPlatform.replyToPlatform
+    ChatPlatform.editPlatformMessage
+    ChatPlatform.platformReplyStreamStyle
+    ChatPlatform.getPlatformMessageContent
+    ChatPlatform.getPlatformSenderMemberInfo
+    ChatPlatform.getPlatformMemberInfo
+    ChatPlatform.listPlatformGroupMembers
+    ChatPlatform.mentionPlatformUser
 
 routes
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)

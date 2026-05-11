@@ -112,7 +112,7 @@ withScratchpadPath label action = do
 runScratchpad :: Storage.SQLiteStore -> IORef.IORef [Text] -> IncomingMessage -> IO ()
 runScratchpad store replies incoming =
   runEff $
-    Chat.runChatWith reply fetch fetchSenderMember fetchMember listMembers mention $
+    Chat.runChatWith reply edit replyStreamStyle fetch fetchSenderMember fetchMember listMembers mention $
       runHandlers (scratchpadHandlers store) incoming
   where
     reply _ body = do
@@ -120,6 +120,10 @@ runScratchpad store replies incoming =
       pure (Just 1)
     fetch _ _ =
       pure Nothing
+    edit _ _ _ =
+      pure False
+    replyStreamStyle _ =
+      pure (Chat.ChunkedReply 1800)
     fetchSenderMember _ =
       pure Nothing
     fetchMember _ _ =

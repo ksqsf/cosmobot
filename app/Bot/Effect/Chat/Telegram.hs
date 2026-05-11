@@ -20,6 +20,7 @@ module Bot.Effect.Chat.Telegram
   , PhotoSize (..)
   , ParseMode (..)
   , SendMessageRequest (..)
+  , EditMessageTextRequest (..)
   , SendPhotoRequest (..)
   , runTelegram
   , incomingMessages
@@ -30,6 +31,7 @@ module Bot.Effect.Chat.Telegram
   , sendPhoto
   , uploadPhoto
   , replyTo
+  , editMessage
   , getMessageContent
   , forwardMessage
   , deleteMessage
@@ -844,6 +846,37 @@ instance TelegramRequest SendMessageRequest where
   type TelegramResponse SendMessageRequest = Message
   telegramMethod _ = "sendMessage"
 
+-- | Request payload for Telegram @editMessageText@.
+data EditMessageTextRequest = EditMessageTextRequest
+  { chatId                :: !Integer
+  , messageId             :: !Integer
+  , text                  :: !Text
+  , parseMode             :: !(Maybe ParseMode)
+  , disableWebPagePreview :: !(Maybe Bool)
+  } deriving (Show, Generic)
+
+instance Aeson.ToJSON EditMessageTextRequest where
+  toJSON EditMessageTextRequest{..} = Aeson.object $
+    [ "chat_id" Aeson..= chatId
+    , "message_id" Aeson..= messageId
+    , "text" Aeson..= text
+    ]
+    <> maybeField "parse_mode" parseMode
+    <> maybeField "disable_web_page_preview" disableWebPagePreview
+
+instance Aeson.FromJSON EditMessageTextRequest where
+  parseJSON = Aeson.withObject "EditMessageTextRequest" $ \o -> do
+    chatId <- o Aeson..: "chat_id"
+    messageId <- o Aeson..: "message_id"
+    text <- o Aeson..: "text"
+    parseMode <- o Aeson..:? "parse_mode"
+    disableWebPagePreview <- o Aeson..:? "disable_web_page_preview"
+    pure EditMessageTextRequest{..}
+
+instance TelegramRequest EditMessageTextRequest where
+  type TelegramResponse EditMessageTextRequest = Message
+  telegramMethod _ = "editMessageText"
+
 -- | Request payload for Telegram @sendPhoto@.
 data SendPhotoRequest = SendPhotoRequest
   { chatId              :: !Integer
@@ -1059,6 +1092,22 @@ replyTo message body =
       pure (Just sent.messageId)
     _ ->
       pure Nothing
+
+-- | Edit a Telegram text message previously sent by this bot.
+editMessage :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es Bool
+editMessage message messageId body =
+  case (message.platform, message.chatId) of
+    (PlatformTelegram, Just chatId) -> do
+      void $ callTelegram EditMessageTextRequest
+        { chatId = chatId
+        , messageId = messageId
+        , text = body
+        , parseMode = Nothing
+        , disableWebPagePreview = Just True
+        }
+      pure True
+    _ ->
+      pure False
 
 -- | Reply with an HTML mention for a Telegram user id.
 mentionUser :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)

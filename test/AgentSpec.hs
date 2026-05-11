@@ -16,6 +16,7 @@ import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Unique
+import qualified Streaming.Prelude as S
 import System.Directory
 import System.FilePath
 import Test.Tasty
@@ -41,6 +42,8 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
+      , testCase "agent streaming yields answer chunks" testAgentStreamingYieldsAnswerChunks
+      , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "web_fetch max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "conversation replies keep parent and child snapshots" testConversationRepliesKeepSnapshots
       , testCase "conversation branches do not overwrite siblings" testConversationBranchesDoNotOverwriteSiblings
@@ -83,6 +86,40 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= [(Just 42, "hello\n[image] https://example.test/image.png")])
   IORef.readIORef remembered >>= (@?= [Just 42])
+
+testAgentStreamingYieldsAnswerChunks :: IO ()
+testAgentStreamingYieldsAnswerChunks = do
+  answers <- IORef.newIORef [LLM.ChatAnswer "streamed answer" []]
+  chunks <- IORef.newIORef ([] :: [Text])
+  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
+    S.mapM_
+      (\chunk -> liftIO $ IORef.modifyIORef' chunks (<> [chunk]))
+      (Agent.runAgentStreaming 4 agentContext Agent.defaultTools (startWithUser "stream it"))
+  answer @?= "streamed answer"
+  IORef.readIORef chunks >>= (@?= ["streamed answer"])
+
+testChatStreamingChunksRepliesAndYieldsUpdates :: IO ()
+testChatStreamingChunksRepliesAndYieldsUpdates = do
+  replies <- IORef.newIORef ([] :: [Text])
+  updates <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
+  nextReplyId <- IORef.newIORef (1 :: Integer)
+  (responseId, result) <- runEff $
+    Chat.runChatWith
+      (recordReply replies nextReplyId)
+      noopEdit
+      (\_ -> pure (Chat.ChunkedReply 4))
+      noopFetch
+      noopSenderMember
+      noopMember
+      noopMembers
+      noopMention $
+        S.mapM_
+          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.answer)]))
+          (Chat.streamReplyTo testMessage id (S.each ["ab", "cd", "ef"] $> "abcdef"))
+  responseId @?= Just 1
+  result @?= "abcdef"
+  IORef.readIORef replies >>= (@?= ["abcd", "ef"])
+  IORef.readIORef updates >>= (@?= [(Nothing, "ab"), (Just 1, "abcd"), (Just 1, "abcdef"), (Just 1, "abcdef")])
 
 testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do
@@ -301,10 +338,15 @@ runAgentWith answers chatMock action =
     Scheduler.runScheduler $
       LLM.runLLMWith
         (\_ -> pure "unused text answer")
+        (\_ emit -> liftIO (emit "unused text stream answer") $> "unused text stream answer")
         (\_ -> pure "unused image answer")
-        (\_ _ -> liftIO (popAnswer answers)) $
+        (\_ _ -> liftIO (popAnswer answers))
+        (\_ _ emit -> do
+            answer <- liftIO (popAnswer answers)
+            liftIO (emit answer.content)
+            pure answer) $
         ChatLog.runChatLog Nothing $
-          Chat.runChatWith (mockReply chatMock) noopFetch noopSenderMember noopMember noopMembers noopMention action
+          Chat.runChatWith (mockReply chatMock) noopEdit noopReplyStreamStyle noopFetch noopSenderMember noopMember noopMembers noopMention action
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
 runTestLog action = do
@@ -355,9 +397,23 @@ mockReply ChatMock{replies, replyId} _ body = do
   traverse_ (\ref -> liftIO $ IORef.modifyIORef' ref (<> [body])) replies
   pure replyId
 
+recordReply :: IOE :> es => IORef.IORef [Text] -> IORef.IORef Integer -> IncomingMessage -> Text -> Eff es (Maybe Integer)
+recordReply replies nextReplyId _ body = do
+  liftIO $ IORef.modifyIORef' replies (<> [body])
+  liftIO $ IORef.atomicModifyIORef' nextReplyId \replyId ->
+    (replyId + 1, Just replyId)
+
 noopFetch :: IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
 noopFetch _ _ =
   pure Nothing
+
+noopEdit :: IncomingMessage -> Integer -> Text -> Eff es Bool
+noopEdit _ _ _ =
+  pure False
+
+noopReplyStreamStyle :: IncomingMessage -> Eff es Chat.ReplyStreamStyle
+noopReplyStreamStyle _ =
+  pure (Chat.ChunkedReply 1800)
 
 noopSenderMember :: IncomingMessage -> Eff es (Maybe Aeson.Value)
 noopSenderMember _ =

@@ -11,21 +11,21 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - `app/Bot/Config.hs` parses `config.toml` into normalized runtime config. Optional sections generally have `default...Config` values and are normalized in `toBotConfig`.
 - `app/Bot/Filter.hs` defines route combinators. Handlers compose `RouteHandler`s and usually fork long-running work with `forkEff`.
 - `app/Bot/Handler/*` owns user-visible command behavior. Handlers should decide admission, gather message context, and call effects or domain modules.
-- `app/Bot/Handler/Ask.hs` owns ask/draw/private/mention/reply conversation flow. New conversations are created by `startConversation`; continuations append user turns to stored conversations.
-- `app/Bot/Conversation.hs` owns conversation values and the mutable conversation store. Persisted conversations are keyed by bot reply message id; `rememberConversationFrom` keeps replies in the same logical conversation.
-- `app/Bot/Agent.hs` owns the LLM/tool loop and built-in tool implementations. This module is already large; prefer extracting cohesive tool families instead of adding more unrelated helpers here.
+- `app/Bot/Handler/Ask.hs` owns ask/draw/private/mention/reply conversation flow and `!halt` handling. New conversations are created by `startConversation`; continuations append user turns to stored conversations. It should not branch on concrete chat platforms; streaming reply presentation belongs behind the `Chat` effect.
+- `app/Bot/Conversation.hs` owns conversation values and the mutable conversation store. Persisted conversations are keyed by bot reply message id; active streaming conversations are also keyed by bot reply message id so continuations can wait for completion or `!halt`.
+- `app/Bot/Agent.hs` owns the LLM/tool loop and built-in tool implementations. The streaming path returns `Stream (Of Text) (Eff es) (Text, Conversation)` and consumes `LLM.askWithToolsStreaming` directly. This module is already large; prefer extracting cohesive tool families instead of adding more unrelated helpers here.
 - `app/Bot/Agent/Tool.hs` owns tool/context/config record types shared by the agent loop and handlers.
 - `app/Bot/Effect/*` modules define effect boundaries for chat platforms, chat log, LLM, and scheduler.
-- `app/Bot/Effect/LLM.hs` owns the OpenAI-compatible request/response JSON, chat message representation, image-generation request shaping, and request-level LLM options such as `reasoning_effort`.
+- `app/Bot/Effect/LLM.hs` owns the OpenAI-compatible request/response JSON, SSE streaming transport, chat message representation, image-generation request shaping, and request-level LLM options such as `reasoning_effort`. Public streaming APIs return `Stream (Of Text) (Eff es) result`.
 - `app/Bot/ReplyBody.hs` owns shared reply-body directives such as `[image] ...`; chat backends parse these directives before sending platform messages.
 - `app/Bot/Image.hs` owns shared non-effect image helpers such as generated image compression and temporary image cleanup.
-- `app/Bot/Chat/Platform.hs` adapts normalized `Chat` effects to concrete QQ/Telegram backends.
+- `app/Bot/Chat/Platform.hs` adapts normalized `Chat` effects to concrete QQ/Telegram backends, including per-platform streaming reply strategy selection.
 - `app/Bot/Storage/SQLite.hs` is the SQLite persistence layer. Reuse `JsonCollection` helpers for scoped JSON state instead of creating bespoke SQL unless needed.
 - `app/Bot/Memory.hs` owns per-sender and per-chat persistent memory files.
 
 ## Boundaries
 
-- Use `effectful` for application effects and `streaming` for incoming message streams.
+- Use `effectful` for application effects and `streaming` for incoming and LLM text streams.
 - Do not conflate chat identity and sender identity. Features scoped to people should normally key by `platform` and `senderId`; features scoped to conversations/chats should use `platform` and `chatId`.
 - Keep persisted user-visible state scoped defensively. If a required identity is missing, prefer a clear rejection over guessing.
 - Keep platform-specific API details in QQ/Telegram drivers or `Bot.Chat.Platform`, not in handlers or agent tools.

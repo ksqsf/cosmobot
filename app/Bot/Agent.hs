@@ -12,6 +12,7 @@ module Bot.Agent
   , defaultToolConfig
   , ToolResult (..)
   , runAgent
+  , runAgentStreaming
   , defaultTools
   )
 where
@@ -50,36 +51,48 @@ import System.IO.Error (userError)
 import System.Posix.Signals (signalProcess, signalProcessGroup, sigKILL)
 import System.Process (ProcessHandle, createProcess, shell, std_out, std_err, create_group, StdStream(..), getPid, waitForProcess)
 import System.Timeout (timeout)
+import qualified Streaming.Prelude as S
 import qualified Text.URI as URI
 
 -- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
 runAgent
-  :: (LLM.LLM :> es, Log :> es)
+  :: (LLM.LLM :> es, Log :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
   -> Conversation
   -> Eff es (Text, Conversation)
 runAgent maxTurns context tools conversation =
+  S.mapM_ (\_ -> pure ()) (runAgentStreaming maxTurns context tools conversation)
+
+-- | Run an LLM/tool loop, streaming assistant text chunks from the final model turn.
+runAgentStreaming
+  :: (LLM.LLM :> es, Log :> es, IOE :> es)
+  => Int
+  -> AgentContext es
+  -> [Tool es]
+  -> Conversation
+  -> Stream (Of Text) (Eff es) (Text, Conversation)
+runAgentStreaming maxTurns context tools conversation =
   loop (max 1 maxTurns) 0 (closeInterruptedToolCalls conversation)
   where
     exposedTools = filter (`toolAllowed` context) tools
 
     loop turnsLeft webFetchUses current = do
-      answer <- LLM.askWithTools (map toolSchema exposedTools) current.messages
+      answer <- LLM.askWithToolsStreaming (map toolSchema exposedTools) current.messages
       let answered = appendMessage (LLM.assistantAnswer answer) current
       case answer.toolCalls of
         [] ->
           pure (answer.content, answered)
         calls
           | turnsLeft <= 1 -> do
-              logInfo "Agent tool turn limit reached" calls
+              lift $ logInfo "Agent tool turn limit reached" calls
               let paused = appendMessages (map pausedToolResult calls) answered
               pure (toolLimitMessage answer.content calls, paused)
           | otherwise -> do
-              (results, nextWebFetchUses) <- executeCalls webFetchUses calls
+              (results, nextWebFetchUses) <- lift $ executeCalls webFetchUses calls
               let next = appendMessages (map fst results) answered
-              traverse_ (\messageId -> context.remember messageId next) (concatMap snd results)
+              lift $ traverse_ (\messageId -> context.remember messageId next) (concatMap snd results)
               loop (turnsLeft - 1) nextWebFetchUses next
 
     executeCalls webFetchUses [] =

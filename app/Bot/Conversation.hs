@@ -8,10 +8,15 @@ Stability   : experimental
 module Bot.Conversation
   ( -- * Store
     ConversationStore
+  , ActiveConversationHandle
   , newConversationStore
   , lookupConversation
   , rememberConversation
   , rememberConversationFrom
+  , rememberActiveConversation
+  , updateActiveConversation
+  , finishActiveConversation
+  , haltConversation
 
     -- * Conversation values
   , Conversation (..)
@@ -35,10 +40,13 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
 import qualified Data.IORef as IORef
 import qualified Data.Map.Strict as Map
+import qualified Control.Concurrent.MVar as MVar
+import Control.Concurrent (ThreadId, killThread)
 
 -- | Mutable conversation index, optionally mirrored into SQLite.
 data ConversationStore = ConversationStore
   { unConversationStore :: IORef.IORef ConversationState
+  , activeConversationStore :: IORef.IORef (Map Integer ActiveConversation)
   , sqliteStore :: !(Maybe Storage.SQLiteStore)
   }
 
@@ -59,6 +67,16 @@ data ConversationNode = ConversationNode
   , conversation :: !Conversation
   }
 
+data ActiveConversation = ActiveConversation
+  { activeMessageId :: !Integer
+  , activeParentMessageId :: !(Maybe Integer)
+  , activeCurrent :: !(IORef.IORef Conversation)
+  , activeDone :: !(MVar.MVar Conversation)
+  , activeThreadId :: !ThreadId
+  }
+
+newtype ActiveConversationHandle = ActiveConversationHandle ActiveConversation
+
 instance Aeson.ToJSON Conversation where
   toJSON Conversation{messages} =
     Aeson.object
@@ -74,7 +92,8 @@ newConversationStore :: Maybe Storage.SQLiteStore -> IO ConversationStore
 newConversationStore sqliteStore = do
   conversationState <- maybe emptyConversationState loadStoredConversations sqliteStore
   ref <- IORef.newIORef conversationState
-  pure ConversationStore{unConversationStore = ref, sqliteStore}
+  activeRef <- IORef.newIORef Map.empty
+  pure ConversationStore{unConversationStore = ref, activeConversationStore = activeRef, sqliteStore}
 
 emptyConversationState :: IO ConversationState
 emptyConversationState =
@@ -218,8 +237,70 @@ assistantContext answer =
 
 -- | Look up the conversation associated with a bot reply message id.
 lookupConversation :: IOE :> es => ConversationStore -> Integer -> Eff es (Maybe Conversation)
-lookupConversation ConversationStore{unConversationStore = ref} messageId =
-  liftIO $ fmap (.conversation) . Map.lookup messageId . (.conversations) <$> IORef.readIORef ref
+lookupConversation ConversationStore{unConversationStore = ref, activeConversationStore = activeRef} messageId = do
+  finished <- liftIO $ fmap (.conversation) . Map.lookup messageId . (.conversations) <$> IORef.readIORef ref
+  case finished of
+    Just conversation ->
+      pure (Just conversation)
+    Nothing -> do
+      active <- liftIO $ Map.lookup messageId <$> IORef.readIORef activeRef
+      traverse (liftIO . MVar.readMVar . (.activeDone)) active
+
+rememberActiveConversation
+  :: IOE :> es
+  => ConversationStore
+  -> Maybe Integer
+  -> Maybe Integer
+  -> ThreadId
+  -> Conversation
+  -> Eff es (Maybe ActiveConversationHandle)
+rememberActiveConversation _ _ Nothing _ _ =
+  pure Nothing
+rememberActiveConversation ConversationStore{activeConversationStore = activeRef} parentMessageId (Just messageId) threadId conversation = do
+  current <- liftIO (IORef.newIORef conversation)
+  done <- liftIO MVar.newEmptyMVar
+  let active = ActiveConversation
+        { activeMessageId = messageId
+        , activeParentMessageId = parentMessageId
+        , activeCurrent = current
+        , activeDone = done
+        , activeThreadId = threadId
+        }
+  liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
+    (Map.insert messageId active activeMap, ())
+  pure (Just (ActiveConversationHandle active))
+
+updateActiveConversation :: IOE :> es => ActiveConversationHandle -> Conversation -> Eff es ()
+updateActiveConversation (ActiveConversationHandle active) conversation =
+  liftIO $ IORef.writeIORef active.activeCurrent conversation
+
+finishActiveConversation
+  :: (IOE :> es, Log :> es)
+  => ConversationStore
+  -> ActiveConversationHandle
+  -> Conversation
+  -> Eff es ()
+finishActiveConversation store@ConversationStore{activeConversationStore = activeRef} (ActiveConversationHandle active) conversation = do
+  updateActiveConversation (ActiveConversationHandle active) conversation
+  rememberConversationFrom store active.activeParentMessageId (Just active.activeMessageId) conversation
+  void $ liftIO (MVar.tryPutMVar active.activeDone conversation)
+  liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
+    (Map.delete active.activeMessageId activeMap, ())
+
+haltConversation :: (IOE :> es, Log :> es) => ConversationStore -> Integer -> Eff es Bool
+haltConversation store@ConversationStore{activeConversationStore = activeRef} messageId = do
+  active <- liftIO $ Map.lookup messageId <$> IORef.readIORef activeRef
+  case active of
+    Nothing ->
+      pure False
+    Just activeConversation -> do
+      conversation <- liftIO (IORef.readIORef activeConversation.activeCurrent)
+      liftIO (killThread activeConversation.activeThreadId)
+      rememberConversationFrom store activeConversation.activeParentMessageId (Just activeConversation.activeMessageId) conversation
+      void $ liftIO (MVar.tryPutMVar activeConversation.activeDone conversation)
+      liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
+        (Map.delete messageId activeMap, ())
+      pure True
 
 -- | Associate a bot reply message id with a conversation and persist it.
 rememberConversation :: (IOE :> es, Log :> es) => ConversationStore -> Maybe Integer -> Conversation -> Eff es ()

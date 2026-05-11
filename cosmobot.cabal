@@ -80,6 +80,7 @@ common app-deps
                     , effectful
                     , log-effectful
                     , streaming
+                    , transformers
                     , stm
                     , bytestring
                     , base64-bytestring
@@ -88,6 +89,9 @@ common app-deps
                     , unix
                     , modern-uri
                     , req
+                    , http-client
+                    , http-client-tls
+                    , optics
                     , time
                     , process
     hs-source-dirs:   app
@@ -135,9 +139,7 @@ executable cosmobot
     -- other-extensions:
 
     -- Other library packages from which modules are imported.
-    build-depends:    http-client
-                    , optics
-                    , log-base
+    build-depends:    log-base
                     , aeson-optics
                     , dotenv
                     , websockets
