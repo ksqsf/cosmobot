@@ -16,6 +16,7 @@ main =
       , testCase "QQ self message is ignored" testQqSelfMessageIsIgnored
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
+      , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
       ]
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
@@ -42,6 +43,30 @@ testTelegramBotMessageIsIgnored =
     "Telegram bot messages are ignored"
     (isNothing (Telegram.updateToIncomingMessage (telegramUpdate True)))
 
+testTelegramReferencedMessageIncludesSenderIdentity :: IO ()
+testTelegramReferencedMessageIncludesSenderIdentity = do
+  let referencedSender = Telegram.User
+        { Telegram.id = 10001
+        , Telegram.isBot = False
+        , Telegram.firstName = "Bob"
+        , Telegram.lastName = Just "Smith"
+        , Telegram.username = Just "bob"
+        }
+  let referenced = (telegramMessage False)
+        { Telegram.messageId = 70001
+        , Telegram.from = Just referencedSender
+        , Telegram.text = Just "quoted"
+        }
+      messageWithReply = (telegramMessage False){Telegram.replyToMessage = Just referenced}
+      incoming = fromMaybe (error "expected incoming Telegram message") $
+        Telegram.updateToIncomingMessage (telegramUpdateWithMessage messageWithReply)
+  fetched <- runEff $ runTestLog $
+    Telegram.runTelegram (Telegram.Config "dummy-token") $
+      Telegram.getMessageContent incoming 70001
+  (fetched <&> (.senderDisplayName)) @?= Just (Just "Bob Smith")
+  (fetched <&> (.senderIdentifier)) @?= Just (Just "@bob")
+  (fetched <&> (.text)) @?= Just "quoted"
+
 qqMessageEvent :: Integer -> QQ.Event
 qqMessageEvent userId =
   QQ.Event
@@ -65,9 +90,13 @@ qqBotUserId =
 
 telegramUpdate :: Bool -> Telegram.Update
 telegramUpdate fromBot =
+  telegramUpdateWithMessage (telegramMessage fromBot)
+
+telegramUpdateWithMessage :: Telegram.Message -> Telegram.Update
+telegramUpdateWithMessage message =
   Telegram.Update
     { updateId = 1
-    , message = Just (telegramMessage fromBot)
+    , message = Just message
     , editedMessage = Nothing
     , channelPost = Nothing
     , editedChannelPost = Nothing
@@ -109,3 +138,8 @@ telegramChat =
     , firstName = Nothing
     , lastName = Nothing
     }
+
+runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
+runTestLog action = do
+  logger <- liftIO $ mkLogger "chat-platform-spec" \_ -> pure ()
+  runLog "chat-platform-spec" logger LogTrace action

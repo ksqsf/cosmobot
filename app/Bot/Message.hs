@@ -86,6 +86,8 @@ showMaybe =
 -- | Minimal content fetched for a message referenced by reply.
 data ReferencedMessage = ReferencedMessage
   { messageId :: !(Maybe Integer)
+  , senderDisplayName :: !(Maybe Text)
+  , senderIdentifier :: !(Maybe Text)
   , text      :: !Text
   , imageUrls :: ![Text]
   }

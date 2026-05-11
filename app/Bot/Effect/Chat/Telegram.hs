@@ -277,6 +277,8 @@ getMessageContent message messageId =
               imageUrls <- traverse fileUrl (messageImageFileIds referenced)
               pure $ Just ReferencedMessage
                 { messageId = Just referenced.messageId
+                , senderDisplayName = telegramMessageSenderDisplayName referenced
+                , senderIdentifier = telegramMessageSenderIdentifier referenced
                 , text = messageText referenced
                 , imageUrls = imageUrls
                 }
@@ -292,6 +294,19 @@ entityMentionUsername text entity
       normalizeUsername <$> entityText text entity
   | otherwise =
       Nothing
+
+telegramMessageSenderDisplayName :: Message -> Maybe Text
+telegramMessageSenderDisplayName message =
+  telegramUserFullName <$> message.from
+
+telegramMessageSenderIdentifier :: Message -> Maybe Text
+telegramMessageSenderIdentifier message =
+  message.from <&> \user ->
+    maybe (show user.id) ("@" <>) user.username
+
+telegramUserFullName :: User -> Text
+telegramUserFullName user =
+  Text.unwords (filter (not . Text.null) [user.firstName, fromMaybe "" user.lastName])
 
 entityText :: Text -> MessageEntity -> Maybe Text
 entityText text entity =

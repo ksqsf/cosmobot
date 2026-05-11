@@ -275,16 +275,38 @@ startConversation memoryCfg cfg message prompt imageUrls = do
 
 promptWithReferencedContext :: Text -> Maybe ReferencedMessage -> [Text] -> Text
 promptWithReferencedContext prompt referenced imageUrls =
-  case (promptOrImageDefault prompt imageUrls, Text.strip . (.text) <$> referenced) of
-    ("", Just quotedText) | not (Text.null quotedText) ->
+  case (promptOrImageDefault prompt imageUrls, referenced >>= referencedMessageContext) of
+    ("", Just quotedContext) ->
       [i|请根据被回复消息回答。
 
 被回复消息：
-#{quotedText}|]
-    (userPrompt, Just quotedText) | not (Text.null quotedText) ->
+#{quotedContext}|]
+    (userPrompt, Just quotedContext) ->
       [i|#{userPrompt}
 
 被回复消息：
-#{quotedText}|]
+#{quotedContext}|]
     (userPrompt, _) ->
       userPrompt
+
+referencedMessageContext :: ReferencedMessage -> Maybe Text
+referencedMessageContext referenced =
+  if null contextLines
+    then Nothing
+    else Just (Text.unlines contextLines)
+  where
+    contextLines =
+      referencedSenderLine referenced <> referencedTextLines referenced
+
+referencedSenderLine :: ReferencedMessage -> [Text]
+referencedSenderLine referenced =
+  [ "被回复用户：" <> Text.intercalate " " (catMaybes [referenced.senderDisplayName, parenthesized <$> referenced.senderIdentifier])
+  | isJust referenced.senderDisplayName || isJust referenced.senderIdentifier
+  ]
+  where
+    parenthesized value =
+      "(" <> value <> ")"
+
+referencedTextLines :: ReferencedMessage -> [Text]
+referencedTextLines referenced =
+  [ text | let text = Text.strip referenced.text, not (Text.null text) ]

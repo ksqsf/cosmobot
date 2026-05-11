@@ -374,9 +374,30 @@ referencedMessageFromValue = Aeson.parseMaybe $
     messageId <- o Aeson..:? "message_id"
     message <- o Aeson..:? "message"
     rawMessage <- o Aeson..:? "raw_message"
+    sender <- o Aeson..:? "sender"
     let text = fromMaybe "" ((message >>= messageText) <|> rawMessage)
     let imageUrls = maybe [] messageImageUrls message
+    let senderDisplayName = sender >>= qqSenderDisplayName
+    let senderIdentifier = sender >>= qqSenderIdentifier
     pure ReferencedMessage{..}
+
+qqSenderDisplayName :: Aeson.Value -> Maybe Text
+qqSenderDisplayName = Aeson.parseMaybe $
+  Aeson.withObject "QQSender" $ \o -> do
+    nickname <- o Aeson..:? "nickname"
+    card <- o Aeson..:? "card"
+    maybe (fail "QQ sender has no display name") pure (nonEmptyText nickname <|> nonEmptyText card)
+
+qqSenderIdentifier :: Aeson.Value -> Maybe Text
+qqSenderIdentifier = Aeson.parseMaybe $
+  Aeson.withObject "QQSender" $ \o -> do
+    userId <- o Aeson..: "user_id"
+    pure (show (userId :: Integer))
+
+nonEmptyText :: Maybe Text -> Maybe Text
+nonEmptyText value =
+  Text.strip <$> value >>= \text ->
+    text <$ guard (not (Text.null text))
 
 replyMessage :: IOE :> es => IncomingMessage -> Text -> Eff es Aeson.Value
 replyMessage message body =
