@@ -20,7 +20,7 @@ import Bot.Handler.Typing
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as SQLiteStorage
-import Control.Concurrent (forkIO)
+import Control.Concurrent (ThreadId, forkIO, killThread)
 import qualified Control.Concurrent.STM as STM
 import qualified Control.Concurrent.STM.TBQueue as TBQueue
 import Log.Backend.StandardOutput
@@ -74,11 +74,39 @@ mergeIncomingMessages
   -> Stream (Of IncomingMessage) (Eff es) ()
 mergeIncomingMessages streams = do
   queue <- S.lift (liftIO (TBQueue.newTBQueueIO incomingMessageQueueCapacity :: IO (TBQueue.TBQueue IncomingMessage)))
-  S.lift $ withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
-    traverse_ (forkIO . runInIO . pump queue) streams
+  pumpThreads <- S.lift $ withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
+    traverse (forkIO . runInIO . pump queue) streams
+  readMerged queue `streamFinally` cleanupPumpThreads pumpThreads
+
+readMerged
+  :: IOE :> es
+  => TBQueue.TBQueue IncomingMessage
+  -> Stream (Of IncomingMessage) (Eff es) ()
+readMerged queue =
   forever do
     message <- S.lift (liftIO (STM.atomically (TBQueue.readTBQueue queue)))
     S.yield message
+
+cleanupPumpThreads :: IOE :> es => [ThreadId] -> Eff es ()
+cleanupPumpThreads =
+  traverse_ (liftIO . killThread)
+
+streamFinally
+  :: Stream (Of a) (Eff es) r
+  -> Eff es ()
+  -> Stream (Of a) (Eff es) r
+streamFinally stream cleanup =
+  go stream
+  where
+    go current = do
+      next <- S.lift (S.next current `onException` cleanup)
+      case next of
+        Left result -> do
+          S.lift cleanup
+          pure result
+        Right (item, rest) -> do
+          S.yield item
+          go rest
 
 pump
   :: (Log :> es, IOE :> es)
