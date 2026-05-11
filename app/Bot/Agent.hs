@@ -7,6 +7,9 @@ Stability   : experimental
 module Bot.Agent
   ( Tool (..)
   , AgentContext (..)
+  , ToolConfig (..)
+  , WebSearchApi (..)
+  , defaultToolConfig
   , ToolResult (..)
   , runAgent
   , defaultTools
@@ -157,6 +160,18 @@ everyone :: AgentContext es -> Bool
 everyone _ =
   True
 
+webSearchEnabled :: AgentContext es -> Bool
+webSearchEnabled context =
+  context.toolConfig.webSearchEnable
+
+webFetchEnabled :: AgentContext es -> Bool
+webFetchEnabled context =
+  context.toolConfig.webFetch
+
+datetimeEnabled :: AgentContext es -> Bool
+datetimeEnabled context =
+  context.toolConfig.datetime
+
 superuserOnly :: AgentContext es -> Bool
 superuserOnly =
   (.superuser)
@@ -278,16 +293,17 @@ webSearchTool = Tool
       , fieldInteger "max_results" "Maximum number of results to return. Defaults to 5 and is capped at 20."
       ]
       ["query"]
-  , allowed = everyone
-  , run = \_ args ->
-      case AesonTypes.parseEither webSearchArgs args of
+  , allowed = webSearchEnabled
+  , run = \context args ->
+      case AesonTypes.parseEither (webSearchArgs context.toolConfig.webSearchMaxResults) args of
         Left err ->
           pure (toolText (Text.pack err))
         Right (query, maxResults) -> do
-          results <- liftIO (duckDuckGoSearch query maxResults)
+          let searchConfig = context.toolConfig
+          results <- liftIO (webSearch searchConfig query maxResults)
           pure (toolText (jsonText (Aeson.object
             [ "query" Aeson..= query
-            , "source" Aeson..= Aeson.String "duckduckgo_html"
+            , "source" Aeson..= webSearchSource searchConfig.webSearchApi
             , "results" Aeson..= results
             ])))
   }
@@ -301,7 +317,7 @@ webFetchTool = Tool
       , fieldInteger "max_content_tokens" "Approximate maximum content characters to return. Defaults to 50000."
       ]
       ["url"]
-  , allowed = everyone
+  , allowed = webFetchEnabled
   , run = \_ args ->
       case AesonTypes.parseEither webFetchArgs args of
         Left err ->
@@ -316,7 +332,7 @@ datetimeTool = Tool
   { name = "datetime"
   , description = "Return the current date and time in UTC and in the bot host's local timezone."
   , parameters = objectSchema [] []
-  , allowed = everyone
+  , allowed = datetimeEnabled
   , run = \_ _ -> do
       now <- liftIO getCurrentTime
       zone <- liftIO getCurrentTimeZone
@@ -329,6 +345,102 @@ datetimeTool = Tool
         , "unix_time" Aeson..= (realToFrac (utcTimeToPOSIXSeconds now) :: Double)
         ])))
   }
+
+webSearch :: ToolConfig -> Text -> Int -> IO [Aeson.Value]
+webSearch cfg query maxResults =
+  case cfg.webSearchApi of
+    WebSearchTavily ->
+      case cfg.tavilyApiKey of
+        Nothing -> Exception.throwIO (userError "Tavily search is not configured: set tool.web_search.tavily_api_key.")
+        Just key -> tavilySearch key query maxResults
+    WebSearchBrave ->
+      case cfg.braveApiKey of
+        Nothing -> Exception.throwIO (userError "Brave search is not configured: set tool.web_search.brave_api_key.")
+        Just key -> braveSearch key query maxResults
+    WebSearchDDG ->
+      duckDuckGoSearch query maxResults
+
+webSearchSource :: WebSearchApi -> Text
+webSearchSource = \case
+  WebSearchTavily -> "tavily"
+  WebSearchBrave -> "brave"
+  WebSearchDDG -> "duckduckgo_html"
+
+tavilySearch :: Text -> Text -> Int -> IO [Aeson.Value]
+tavilySearch apiKey query maxResults = do
+  response <- runReq defaultHttpConfig $
+    req POST
+      (https "api.tavily.com" /: "search")
+      (ReqBodyJson (Aeson.object
+        [ "query" Aeson..= query
+        , "max_results" Aeson..= maxResults
+        , "search_depth" Aeson..= Aeson.String "basic"
+        , "include_answer" Aeson..= False
+        , "include_raw_content" Aeson..= False
+        ]))
+      jsonResponse
+      ( header "Authorization" (ByteString.pack [i|Bearer #{apiKey}|])
+          <> webRequestOptions
+      )
+  either (Exception.throwIO . userError) pure $
+    AesonTypes.parseEither parseTavilyResults (responseBody response)
+
+braveSearch :: Text -> Text -> Int -> IO [Aeson.Value]
+braveSearch apiKey query maxResults = do
+  response <- runReq defaultHttpConfig $
+    req GET
+      (https "api.search.brave.com" /: "res" /: "v1" /: "web" /: "search")
+      NoReqBody
+      jsonResponse
+      ( "q" =: query
+          <> "count" =: maxResults
+          <> header "X-Subscription-Token" (TextEncoding.encodeUtf8 apiKey)
+          <> webRequestOptions
+      )
+  either (Exception.throwIO . userError) pure $
+    AesonTypes.parseEither parseBraveResults (responseBody response)
+
+parseTavilyResults :: Aeson.Value -> AesonTypes.Parser [Aeson.Value]
+parseTavilyResults =
+  Aeson.withObject "Tavily search response" $ \o -> do
+    results <- o Aeson..: Key.fromText "results"
+    traverse parseResult results
+  where
+    parseResult =
+      Aeson.withObject "Tavily result" $ \o -> do
+        title <- o Aeson..: Key.fromText "title"
+        url <- o Aeson..: Key.fromText "url"
+        snippet <- fromMaybe "" <$> o Aeson..:? Key.fromText "content"
+        pure (searchResult title url snippet)
+
+parseBraveResults :: Aeson.Value -> AesonTypes.Parser [Aeson.Value]
+parseBraveResults =
+  Aeson.withObject "Brave search response" $ \o -> do
+    web <- o Aeson..:? Key.fromText "web"
+    case web of
+      Nothing ->
+        pure []
+      Just webObject ->
+        Aeson.withObject "Brave web results" parseWeb webObject
+  where
+    parseWeb o = do
+      results <- fromMaybe [] <$> o Aeson..:? Key.fromText "results"
+      traverse parseResult results
+
+    parseResult =
+      Aeson.withObject "Brave result" $ \o -> do
+        title <- o Aeson..: Key.fromText "title"
+        url <- o Aeson..: Key.fromText "url"
+        snippet <- fromMaybe "" <$> o Aeson..:? Key.fromText "description"
+        pure (searchResult title url snippet)
+
+searchResult :: Text -> Text -> Text -> Aeson.Value
+searchResult title url snippet =
+  Aeson.object
+    [ "title" Aeson..= title
+    , "url" Aeson..= url
+    , "snippet" Aeson..= snippet
+    ]
 
 duckDuckGoSearch :: Text -> Int -> IO [Aeson.Value]
 duckDuckGoSearch query maxResults = do
@@ -851,11 +963,11 @@ queryChatLogArgs =
     includeBotMessages <- fromMaybe False <$> o Aeson..:? Key.fromText "include_bot_messages"
     pure (limit, includeBotMessages)
 
-webSearchArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int)
-webSearchArgs =
+webSearchArgs :: Maybe Int -> Aeson.Value -> AesonTypes.Parser (Text, Int)
+webSearchArgs configuredDefault =
   Aeson.withObject "web search arguments" $ \o -> do
     query <- Text.strip <$> o Aeson..: Key.fromText "query"
-    maxResults <- fromMaybe 5 <$> o Aeson..:? Key.fromText "max_results"
+    maxResults <- fromMaybe (fromMaybe 5 configuredDefault) <$> o Aeson..:? Key.fromText "max_results"
     when (Text.null query) do
       fail "query must not be empty."
     when (maxResults <= 0) do

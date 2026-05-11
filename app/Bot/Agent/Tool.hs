@@ -7,6 +7,9 @@ Stability   : experimental
 module Bot.Agent.Tool
   ( Tool (..)
   , AgentContext (..)
+  , ToolConfig (..)
+  , WebSearchApi (..)
+  , defaultToolConfig
   , ToolResult (..)
   , toolText
   , toolMessage
@@ -18,6 +21,39 @@ import qualified Bot.Memory as Memory
 import Bot.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+
+-- | Runtime configuration for agent tools.
+data ToolConfig = ToolConfig
+  { webSearchEnable :: !Bool
+  , webSearchApi :: !WebSearchApi
+  , webSearchMaxResults :: !(Maybe Int)
+  , braveApiKey :: !(Maybe Text)
+  , tavilyApiKey :: !(Maybe Text)
+  , webFetch :: !Bool
+  , webFetchMaxUses :: !(Maybe Int)
+  , webFetchMaxContentTokens :: !(Maybe Int)
+  , datetime :: !Bool
+  }
+  deriving (Show)
+
+data WebSearchApi
+  = WebSearchTavily
+  | WebSearchBrave
+  | WebSearchDDG
+  deriving (Eq, Show)
+
+defaultToolConfig :: ToolConfig
+defaultToolConfig = ToolConfig
+  { webSearchEnable = False
+  , webSearchApi = WebSearchTavily
+  , webSearchMaxResults = Nothing
+  , braveApiKey = Nothing
+  , tavilyApiKey = Nothing
+  , webFetch = False
+  , webFetchMaxUses = Nothing
+  , webFetchMaxContentTokens = Nothing
+  , datetime = False
+  }
 
 -- | Tool definition exposed to the LLM function-calling API.
 data Tool es = Tool
@@ -33,6 +69,7 @@ data AgentContext es = AgentContext
   { message :: IncomingMessage
   , superuser :: !Bool
   , askCommand :: !Text
+  , toolConfig :: !ToolConfig
   , memoryConfig :: !(Maybe Memory.MemoryConfig)
   , remember :: Maybe Integer -> Conversation -> Eff es ()
   , recordBotMessage :: Maybe Integer -> Text -> Eff es ()

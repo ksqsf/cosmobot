@@ -50,12 +50,6 @@ data Config = Config
   { endpoint :: !Text
   , apiKey   :: !(Maybe Text)
   , model    :: !Text
-  , webSearch :: !Bool
-  , webSearchMaxResults :: !(Maybe Int)
-  , webFetch :: !Bool
-  , webFetchMaxUses :: !(Maybe Int)
-  , webFetchMaxContentTokens :: !(Maybe Int)
-  , datetime :: !Bool
   , imageGeneration :: !Bool
   , imageGenerationModel :: !(Maybe Text)
   , imageGenerationQuality :: !(Maybe Text)
@@ -73,12 +67,6 @@ defaultConfig = Config
   { endpoint = "https://openrouter.ai/api/v1"
   , apiKey   = Nothing
   , model    = "openai/gpt-4o-mini"
-  , webSearch = False
-  , webSearchMaxResults = Nothing
-  , webFetch = False
-  , webFetchMaxUses = Nothing
-  , webFetchMaxContentTokens = Nothing
-  , datetime = False
   , imageGeneration = False
   , imageGenerationModel = Nothing
   , imageGenerationQuality = Nothing

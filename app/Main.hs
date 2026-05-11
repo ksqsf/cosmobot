@@ -57,7 +57,7 @@ routes cfg sqliteStore conversations =
   scratchpadHandlers sqliteStore
     <> typingHandlers cfg.handlers.ask
     <> saucenaoHandlers cfg.saucenao cfg.handlers.ask
-    <> askHandlers cfg.memory cfg.handlers.ask conversations
+    <> askHandlers cfg.memory cfg.tool cfg.handlers.ask conversations
 
 incomingMessages
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)

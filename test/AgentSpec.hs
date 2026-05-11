@@ -291,6 +291,7 @@ agentContext =
     { message = testMessage
     , superuser = False
     , askCommand = "!ask"
+    , toolConfig = Agent.defaultToolConfig
     , memoryConfig = Nothing
     , remember = \_ _ -> pure ()
     , recordBotMessage = \_ _ -> pure ()

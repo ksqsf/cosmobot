@@ -28,6 +28,7 @@ where
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
+import qualified Bot.Agent as Agent
 import qualified Bot.Memory as Memory
 import Bot.Message
 import Bot.Prelude
@@ -44,6 +45,7 @@ data BotConfig = BotConfig
   { qq       :: !QQ.Config
   , telegram :: !Telegram.Config
   , llm      :: !LLM.Config
+  , tool     :: !Agent.ToolConfig
   , saucenao :: !SaucenaoConfig
   , memory   :: !Memory.MemoryConfig
   , handlers :: !HandlersConfig
@@ -92,6 +94,7 @@ data FileConfig = FileConfig
   , qq       :: !QQFileConfig
   , telegram :: !TelegramFileConfig
   , llm      :: !LLMFileConfig
+  , tool     :: !ToolFileConfig
   , saucenao :: !SaucenaoConfig
   , memory   :: !MemoryFileConfig
   , handlers :: !HandlersConfig
@@ -105,6 +108,7 @@ instance FromValue FileConfig where
     <*> reqKey "qq"
     <*> reqKey "telegram"
     <*> reqKey "llm"
+    <*> fmap (fromMaybe defaultToolFileConfig) (optKey "tool")
     <*> fmap (fromMaybe defaultSaucenaoConfig) (optKey "saucenao")
     <*> fmap (fromMaybe defaultMemoryFileConfig) (optKey "memory")
     <*> reqKey "handlers"
@@ -220,12 +224,6 @@ data LLMFileConfig = LLMFileConfig
   { endpoint :: !Text
   , apiKey   :: !(Maybe Text)
   , model    :: !Text
-  , webSearch :: !Bool
-  , webSearchMaxResults :: !(Maybe Int)
-  , webFetch :: !Bool
-  , webFetchMaxUses :: !(Maybe Int)
-  , webFetchMaxContentTokens :: !(Maybe Int)
-  , datetime :: !Bool
   , imageGeneration :: !Bool
   , imageGenerationModel :: !(Maybe Text)
   , imageGenerationQuality :: !(Maybe Text)
@@ -236,6 +234,42 @@ data LLMFileConfig = LLMFileConfig
   , imageGenerationModeration :: !(Maybe Text)
   }
   deriving (Show)
+
+data ToolFileConfig = ToolFileConfig
+  { webSearch :: !WebSearchFileConfig
+  , webFetch :: !Bool
+  , webFetchMaxUses :: !(Maybe Int)
+  , webFetchMaxContentTokens :: !(Maybe Int)
+  , datetime :: !Bool
+  }
+  deriving (Show)
+
+data WebSearchFileConfig = WebSearchFileConfig
+  { enable :: !Bool
+  , api :: !Agent.WebSearchApi
+  , maxResults :: !(Maybe Int)
+  , braveApiKey :: !(Maybe Text)
+  , tavilyApiKey :: !(Maybe Text)
+  }
+  deriving (Show)
+
+defaultToolFileConfig :: ToolFileConfig
+defaultToolFileConfig = ToolFileConfig
+  { webSearch = defaultWebSearchFileConfig
+  , webFetch = Agent.defaultToolConfig.webFetch
+  , webFetchMaxUses = Agent.defaultToolConfig.webFetchMaxUses
+  , webFetchMaxContentTokens = Agent.defaultToolConfig.webFetchMaxContentTokens
+  , datetime = Agent.defaultToolConfig.datetime
+  }
+
+defaultWebSearchFileConfig :: WebSearchFileConfig
+defaultWebSearchFileConfig = WebSearchFileConfig
+  { enable = Agent.defaultToolConfig.webSearchEnable
+  , api = Agent.defaultToolConfig.webSearchApi
+  , maxResults = Agent.defaultToolConfig.webSearchMaxResults
+  , braveApiKey = Agent.defaultToolConfig.braveApiKey
+  , tavilyApiKey = Agent.defaultToolConfig.tavilyApiKey
+  }
 
 -- | SauceNAO integration settings.
 newtype SaucenaoConfig = SaucenaoConfig
@@ -272,12 +306,6 @@ instance FromValue LLMFileConfig where
     <$> fmap (fromMaybe LLM.defaultConfig.endpoint) (optKey "endpoint")
     <*> optToken "api_key"
     <*> reqKey "model"
-    <*> fmap (fromMaybe LLM.defaultConfig.webSearch) (optKey "web_search")
-    <*> optKey "web_search_max_results"
-    <*> fmap (fromMaybe LLM.defaultConfig.webFetch) (optKey "web_fetch")
-    <*> optKey "web_fetch_max_uses"
-    <*> optKey "web_fetch_max_content_tokens"
-    <*> fmap (fromMaybe LLM.defaultConfig.datetime) (optKey "datetime")
     <*> fmap (fromMaybe LLM.defaultConfig.imageGeneration) (optKey "image_generation")
     <*> optKey "image_generation_model"
     <*> optKey "image_generation_quality"
@@ -286,6 +314,44 @@ instance FromValue LLMFileConfig where
     <*> optKey "image_generation_background"
     <*> optKey "image_generation_output_format"
     <*> optKey "image_generation_moderation"
+
+instance FromValue ToolFileConfig where
+  fromValue = parseTableFromValue do
+    webSearch <- fromMaybe defaultToolFileConfig.webSearch <$> optKey "web_search"
+    webFetch <- fromMaybe defaultToolFileConfig.webFetch <$> optKey "web_fetch"
+    webFetchMaxUses <- optKey "web_fetch_max_uses"
+    webFetchMaxContentTokens <- optKey "web_fetch_max_content_tokens"
+    datetime <- fromMaybe defaultToolFileConfig.datetime <$> optKey "datetime"
+    pure ToolFileConfig
+      { webSearch = webSearch
+      , webFetch = webFetch
+      , webFetchMaxUses = webFetchMaxUses
+      , webFetchMaxContentTokens = webFetchMaxContentTokens
+      , datetime = datetime
+      }
+
+instance FromValue WebSearchFileConfig where
+  fromValue = parseTableFromValue do
+    enable <- fromMaybe defaultWebSearchFileConfig.enable <$> optKey "enable"
+    api <- maybe (pure defaultWebSearchFileConfig.api) parseWebSearchApi =<< optKey "api"
+    maxResults <- optKey "max_results"
+    braveApiKey <- optToken "brave_api_key"
+    tavilyApiKey <- optToken "tavily_api_key"
+    pure WebSearchFileConfig
+      { enable = enable
+      , api = api
+      , maxResults = maxResults
+      , braveApiKey = braveApiKey
+      , tavilyApiKey = tavilyApiKey
+      }
+
+parseWebSearchApi :: Text -> ParseTable l Agent.WebSearchApi
+parseWebSearchApi value =
+  case Text.toLower (Text.strip value) of
+    "tavily" -> pure Agent.WebSearchTavily
+    "brave"  -> pure Agent.WebSearchBrave
+    "ddg"    -> pure Agent.WebSearchDDG
+    _        -> fail "tool.web_search.api must be one of: tavily, brave, ddg"
 
 instance FromValue HandlersConfig where
   fromValue = parseTableFromValue $ HandlersConfig
@@ -340,12 +406,6 @@ toBotConfig cfg =
         { endpoint = cfg.llm.endpoint
         , apiKey   = cfg.llm.apiKey
         , model    = cfg.llm.model
-        , webSearch = cfg.llm.webSearch
-        , webSearchMaxResults = cfg.llm.webSearchMaxResults
-        , webFetch = cfg.llm.webFetch
-        , webFetchMaxUses = cfg.llm.webFetchMaxUses
-        , webFetchMaxContentTokens = cfg.llm.webFetchMaxContentTokens
-        , datetime = cfg.llm.datetime
         , imageGeneration = cfg.llm.imageGeneration
         , imageGenerationModel = cfg.llm.imageGenerationModel
         , imageGenerationQuality = cfg.llm.imageGenerationQuality
@@ -354,6 +414,17 @@ toBotConfig cfg =
         , imageGenerationBackground = cfg.llm.imageGenerationBackground
         , imageGenerationOutputFormat = cfg.llm.imageGenerationOutputFormat
         , imageGenerationModeration = cfg.llm.imageGenerationModeration
+        }
+    , tool = Agent.ToolConfig
+        { webSearchEnable = cfg.tool.webSearch.enable
+        , webSearchApi = cfg.tool.webSearch.api
+        , webSearchMaxResults = cfg.tool.webSearch.maxResults
+        , braveApiKey = cfg.tool.webSearch.braveApiKey
+        , tavilyApiKey = cfg.tool.webSearch.tavilyApiKey
+        , webFetch = cfg.tool.webFetch
+        , webFetchMaxUses = cfg.tool.webFetchMaxUses
+        , webFetchMaxContentTokens = cfg.tool.webFetchMaxContentTokens
+        , datetime = cfg.tool.datetime
         }
     , saucenao = cfg.saucenao
     , memory = Memory.MemoryConfig
