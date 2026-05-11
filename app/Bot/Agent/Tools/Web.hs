@@ -22,7 +22,6 @@ import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextEncoding
-import Data.Char (digitToInt, isHexDigit)
 import Network.HTTP.Req
 import System.IO.Error (userError)
 import qualified Text.URI as URI
@@ -75,14 +74,11 @@ webSearch cfg query maxResults =
       case cfg.braveApiKey of
         Nothing -> Exception.throwIO (userError "Brave search is not configured: set tool.web_search.brave_api_key.")
         Just key -> braveSearch key query maxResults
-    WebSearchDDG ->
-      duckDuckGoSearch query maxResults
 
 webSearchSource :: WebSearchApi -> Text
 webSearchSource = \case
   WebSearchTavily -> "tavily"
   WebSearchBrave -> "brave"
-  WebSearchDDG -> "duckduckgo_html"
 
 tavilySearch :: Text -> Text -> Int -> IO [Aeson.Value]
 tavilySearch apiKey query maxResults = do
@@ -160,45 +156,6 @@ searchResult title url snippet =
     , "snippet" Aeson..= snippet
     ]
 
-duckDuckGoSearch :: Text -> Int -> IO [Aeson.Value]
-duckDuckGoSearch query maxResults = do
-  response <- runReq defaultHttpConfig $
-    req GET
-      (https "html.duckduckgo.com" /: "html")
-      NoReqBody
-      bsResponse
-      ("q" =: query <> webRequestOptions)
-  let html = decodeResponseBody (responseBody response)
-      anchors = mapMaybe parseSearchAnchor (Text.lines html)
-      snippets = mapMaybe parseSearchSnippet (Text.lines html)
-  pure (take maxResults (zipWithSearchSnippets anchors snippets))
-
-parseSearchAnchor :: Text -> Maybe (Text, Text)
-parseSearchAnchor line = do
-  guard ("result__a" `Text.isInfixOf` line)
-  href <- extractHtmlAttr "href" line
-  let title = Html.htmlToPlainText line
-      url = normalizeDuckDuckGoUrl href
-  guard (not (Text.null title) && not (Text.null url))
-  pure (title, url)
-
-parseSearchSnippet :: Text -> Maybe Text
-parseSearchSnippet line = do
-  guard ("result__snippet" `Text.isInfixOf` line)
-  let snippet = Html.htmlToPlainText line
-  guard (not (Text.null snippet))
-  pure snippet
-
-zipWithSearchSnippets :: [(Text, Text)] -> [Text] -> [Aeson.Value]
-zipWithSearchSnippets results snippets =
-  [ Aeson.object
-      [ "title" Aeson..= title
-      , "url" Aeson..= url
-      , "snippet" Aeson..= snippet
-      ]
-  | ((title, url), snippet) <- zip results (snippets <> repeat "")
-  ]
-
 fetchWebPage :: Text -> Int -> IO Aeson.Value
 fetchWebPage rawUrl maxContentTokens = do
   uri <- URI.mkURI rawUrl
@@ -237,52 +194,6 @@ webRequestOptions =
 decodeResponseBody :: ByteString.ByteString -> Text
 decodeResponseBody =
   TextEncoding.decodeUtf8With TextEncoding.lenientDecode
-
-normalizeDuckDuckGoUrl :: Text -> Text
-normalizeDuckDuckGoUrl rawHref =
-  let href = Html.htmlDecode rawHref
-      absolute =
-        if "//" `Text.isPrefixOf` href
-          then "https:" <> href
-          else href
-  in maybe absolute percentDecodeText (queryTextParam "uddg" absolute)
-
-queryTextParam :: Text -> Text -> Maybe Text
-queryTextParam key text =
-  case Text.breakOn (key <> "=") text of
-    (_, rest)
-      | Text.null rest -> Nothing
-      | otherwise ->
-          Just $
-            Text.takeWhile (/= '&') $
-              Text.drop (Text.length key + 1) rest
-
-extractHtmlAttr :: Text -> Text -> Maybe Text
-extractHtmlAttr name html =
-  extractWith "\"" <|> extractWith "'"
-  where
-    extractWith quote =
-      let marker = name <> "=" <> quote
-          (_, rest) = Text.breakOn marker html
-      in if Text.null rest
-        then Nothing
-        else Just $
-          Text.takeWhile (/= Text.head quote) $
-            Text.drop (Text.length marker) rest
-
-percentDecodeText :: Text -> Text
-percentDecodeText =
-  Text.pack . go . Text.unpack
-  where
-    go ('%' : a : b : rest)
-      | isHexDigit a && isHexDigit b =
-          chr (digitToInt a * 16 + digitToInt b) : go rest
-    go ('+' : rest) =
-      ' ' : go rest
-    go (char : rest) =
-      char : go rest
-    go [] =
-      []
 
 webSearchArgs :: Maybe Int -> Aeson.Value -> AesonTypes.Parser (Text, Int)
 webSearchArgs configuredDefault =

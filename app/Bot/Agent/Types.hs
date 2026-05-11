@@ -39,7 +39,6 @@ data ToolConfig = ToolConfig
 data WebSearchApi
   = WebSearchTavily
   | WebSearchBrave
-  | WebSearchDDG
   deriving (Eq, Show)
 
 defaultToolConfig :: ToolConfig

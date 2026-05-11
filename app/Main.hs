@@ -1,6 +1,5 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-partial-type-signatures #-}
 
 -- | Cosmobot executable wiring configuration, effects, platforms, and routes.
 module Main (main) where

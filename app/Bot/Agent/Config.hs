@@ -107,7 +107,6 @@ parseWebSearchApi value =
   case Text.toLower (Text.strip value) of
     "tavily" -> pure Agent.WebSearchTavily
     "brave"  -> pure Agent.WebSearchBrave
-    "ddg"    -> pure Agent.WebSearchDDG
     _        -> fail "tool.web_search.api must be one of: tavily, brave, ddg"
 
 toToolConfig :: FileConfig -> Agent.ToolConfig
