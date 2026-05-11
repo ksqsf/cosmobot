@@ -267,8 +267,8 @@ askConversation memoryCfg toolCfg cfg conversations parentMessageId threadId mes
   ChatLog.recordBotMessage message responseId answer
   active <- liftIO (IORef.readIORef activeReply.activeRef)
   case active of
-    Just handle ->
-      finishActiveConversation conversations handle answeredConversation
+    Just activeHandle ->
+      finishActiveConversation conversations activeHandle answeredConversation
     Nothing ->
       rememberConversationFrom conversations parentMessageId responseId answeredConversation
   pure (answer, answeredConversation)
@@ -314,9 +314,10 @@ recordReplyUpdate
   => ActiveReplyState
   -> Chat.ReplyStreamUpdate
   -> Eff es ()
-recordReplyUpdate state update = do
-  refreshActiveConversation state update.answer
-  registerActiveIfNeeded state update.responseId update.answer
+recordReplyUpdate activeState update = do
+  refreshActiveConversation activeState update.answer
+  registerActiveIfNeeded activeState update.responseId update.answer
+  registerActiveAliases activeState update.sentResponseIds
 
 registerActiveIfNeeded
   :: IOE :> es
@@ -324,20 +325,29 @@ registerActiveIfNeeded
   -> Maybe Integer
   -> Text
   -> Eff es ()
-registerActiveIfNeeded state responseId current = do
-  existing <- liftIO (IORef.readIORef state.activeRef)
+registerActiveIfNeeded activeState responseId current = do
+  existing <- liftIO (IORef.readIORef activeState.activeRef)
   when (isNothing existing) do
-    handle <- rememberActiveConversation state.conversations state.parentMessageId responseId state.threadId (appendAssistant current state.baseConversation)
-    liftIO $ IORef.writeIORef state.activeRef handle
+    activeHandle <- rememberActiveConversation activeState.conversations activeState.parentMessageId responseId activeState.threadId (appendAssistant current activeState.baseConversation)
+    liftIO $ IORef.writeIORef activeState.activeRef activeHandle
+
+registerActiveAliases
+  :: IOE :> es
+  => ActiveReplyState
+  -> [Integer]
+  -> Eff es ()
+registerActiveAliases activeState responseIds = do
+  active <- liftIO (IORef.readIORef activeState.activeRef)
+  traverse_ (\activeHandle -> traverse_ (addActiveConversationMessage activeState.conversations activeHandle) responseIds) active
 
 refreshActiveConversation
   :: IOE :> es
   => ActiveReplyState
   -> Text
   -> Eff es ()
-refreshActiveConversation state current = do
-  active <- liftIO (IORef.readIORef state.activeRef)
-  traverse_ (`updateActiveConversation` appendAssistant current state.baseConversation) active
+refreshActiveConversation activeState current = do
+  active <- liftIO (IORef.readIORef activeState.activeRef)
+  traverse_ (`updateActiveConversation` appendAssistant current activeState.baseConversation) active
 
 drawConversation
   :: (LLM.LLM :> es, Log :> es)

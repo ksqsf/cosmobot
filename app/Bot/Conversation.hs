@@ -14,6 +14,7 @@ module Bot.Conversation
   , rememberConversation
   , rememberConversationFrom
   , rememberActiveConversation
+  , addActiveConversationMessage
   , updateActiveConversation
   , finishActiveConversation
   , haltConversation
@@ -70,6 +71,7 @@ data ConversationNode = ConversationNode
 data ActiveConversation = ActiveConversation
   { activeMessageId :: !Integer
   , activeParentMessageId :: !(Maybe Integer)
+  , activeMessageIds :: !(IORef.IORef [Integer])
   , activeCurrent :: !(IORef.IORef Conversation)
   , activeDone :: !(MVar.MVar Conversation)
   , activeThreadId :: !ThreadId
@@ -257,11 +259,13 @@ rememberActiveConversation
 rememberActiveConversation _ _ Nothing _ _ =
   pure Nothing
 rememberActiveConversation ConversationStore{activeConversationStore = activeRef} parentMessageId (Just messageId) threadId conversation = do
+  messageIds <- liftIO (IORef.newIORef [messageId])
   current <- liftIO (IORef.newIORef conversation)
   done <- liftIO MVar.newEmptyMVar
   let active = ActiveConversation
         { activeMessageId = messageId
         , activeParentMessageId = parentMessageId
+        , activeMessageIds = messageIds
         , activeCurrent = current
         , activeDone = done
         , activeThreadId = threadId
@@ -269,6 +273,17 @@ rememberActiveConversation ConversationStore{activeConversationStore = activeRef
   liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
     (Map.insert messageId active activeMap, ())
   pure (Just (ActiveConversationHandle active))
+
+addActiveConversationMessage :: IOE :> es => ConversationStore -> ActiveConversationHandle -> Integer -> Eff es ()
+addActiveConversationMessage ConversationStore{activeConversationStore = activeRef} (ActiveConversationHandle active) messageId = do
+  liftIO $ IORef.atomicModifyIORef' active.activeMessageIds \messageIds ->
+    let next =
+          if messageId `elem` messageIds
+            then messageIds
+            else messageId : messageIds
+    in (next, ())
+  liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
+    (Map.insert messageId active activeMap, ())
 
 updateActiveConversation :: IOE :> es => ActiveConversationHandle -> Conversation -> Eff es ()
 updateActiveConversation (ActiveConversationHandle active) conversation =
@@ -282,10 +297,11 @@ finishActiveConversation
   -> Eff es ()
 finishActiveConversation store@ConversationStore{activeConversationStore = activeRef} (ActiveConversationHandle active) conversation = do
   updateActiveConversation (ActiveConversationHandle active) conversation
-  rememberConversationFrom store active.activeParentMessageId (Just active.activeMessageId) conversation
+  messageIds <- liftIO (IORef.readIORef active.activeMessageIds)
+  traverse_ (\messageId -> rememberConversationFrom store active.activeParentMessageId (Just messageId) conversation) messageIds
   void $ liftIO (MVar.tryPutMVar active.activeDone conversation)
   liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
-    (Map.delete active.activeMessageId activeMap, ())
+    (foldl' (flip Map.delete) activeMap messageIds, ())
 
 haltConversation :: (IOE :> es, Log :> es) => ConversationStore -> Integer -> Eff es Bool
 haltConversation store@ConversationStore{activeConversationStore = activeRef} messageId = do
@@ -295,11 +311,12 @@ haltConversation store@ConversationStore{activeConversationStore = activeRef} me
       pure False
     Just activeConversation -> do
       conversation <- liftIO (IORef.readIORef activeConversation.activeCurrent)
+      messageIds <- liftIO (IORef.readIORef activeConversation.activeMessageIds)
       liftIO (killThread activeConversation.activeThreadId)
-      rememberConversationFrom store activeConversation.activeParentMessageId (Just activeConversation.activeMessageId) conversation
+      traverse_ (\activeMessageId -> rememberConversationFrom store activeConversation.activeParentMessageId (Just activeMessageId) conversation) messageIds
       void $ liftIO (MVar.tryPutMVar activeConversation.activeDone conversation)
       liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
-        (Map.delete messageId activeMap, ())
+        (foldl' (flip Map.delete) activeMap messageIds, ())
       pure True
 
 -- | Associate a bot reply message id with a conversation and persist it.

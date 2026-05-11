@@ -10,6 +10,7 @@ import qualified Bot.Memory as Memory
 import qualified Bot.Storage.SQLite as Storage
 import Bot.Message
 import Bot.Prelude
+import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
@@ -44,6 +45,7 @@ main =
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "agent streaming yields answer chunks" testAgentStreamingYieldsAnswerChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
+      , testCase "chunked active conversation aliases every sent reply" testChunkedActiveConversationAliasesEverySentReply
       , testCase "web_fetch max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "conversation replies keep parent and child snapshots" testConversationRepliesKeepSnapshots
       , testCase "conversation branches do not overwrite siblings" testConversationBranchesDoNotOverwriteSiblings
@@ -100,8 +102,8 @@ testAgentStreamingYieldsAnswerChunks = do
 
 testChatStreamingChunksRepliesAndYieldsUpdates :: IO ()
 testChatStreamingChunksRepliesAndYieldsUpdates = do
-  replies <- IORef.newIORef ([] :: [Text])
-  updates <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
+  replies <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
+  updates <- IORef.newIORef ([] :: [(Maybe Integer, [Integer], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $
     Chat.runChatWith
@@ -114,12 +116,29 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
       noopMembers
       noopMention $
         S.mapM_
-          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.answer)]))
+          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
           (Chat.streamReplyTo testMessage id (S.each ["ab", "cd", "ef"] $> "abcdef"))
   responseId @?= Just 1
   result @?= "abcdef"
-  IORef.readIORef replies >>= (@?= ["abcd", "ef"])
-  IORef.readIORef updates >>= (@?= [(Nothing, "ab"), (Just 1, "abcd"), (Just 1, "abcdef"), (Just 1, "abcdef")])
+  IORef.readIORef replies >>= (@?= [(Just 300, "abcd"), (Just 1, "ef")])
+  IORef.readIORef updates >>= (@?= [(Nothing, [], "ab"), (Just 1, [1], "abcd"), (Just 1, [], "abcdef"), (Just 1, [2], "abcdef")])
+
+testChunkedActiveConversationAliasesEverySentReply :: IO ()
+testChunkedActiveConversationAliasesEverySentReply = runEff $ runTestLog do
+  store <- liftIO (newConversationStore Nothing)
+  threadId <- liftIO $ forkIO (threadDelay 60_000_000)
+  let baseConversation = startWithUser "hello"
+      partialConversation = appendAssistant "partial answer" baseConversation
+  active <- fromMaybe (error "expected active conversation") <$> rememberActiveConversation store Nothing (Just 1) threadId baseConversation
+  addActiveConversationMessage store active 2
+  updateActiveConversation active partialConversation
+  halted <- haltConversation store 2
+  firstLookup <- lookupConversation store 1
+  secondLookup <- lookupConversation store 2
+  liftIO do
+    halted @?= True
+    (show firstLookup :: String) @?= show (Just partialConversation)
+    (show secondLookup :: String) @?= show (Just partialConversation)
 
 testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do
@@ -397,9 +416,9 @@ mockReply ChatMock{replies, replyId} _ body = do
   traverse_ (\ref -> liftIO $ IORef.modifyIORef' ref (<> [body])) replies
   pure replyId
 
-recordReply :: IOE :> es => IORef.IORef [Text] -> IORef.IORef Integer -> IncomingMessage -> Text -> Eff es (Maybe Integer)
-recordReply replies nextReplyId _ body = do
-  liftIO $ IORef.modifyIORef' replies (<> [body])
+recordReply :: IOE :> es => IORef.IORef [(Maybe Integer, Text)] -> IORef.IORef Integer -> IncomingMessage -> Text -> Eff es (Maybe Integer)
+recordReply replies nextReplyId message body = do
+  liftIO $ IORef.modifyIORef' replies (<> [(message.messageId, body)])
   liftIO $ IORef.atomicModifyIORef' nextReplyId \replyId ->
     (replyId + 1, Just replyId)
 
