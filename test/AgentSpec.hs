@@ -46,6 +46,7 @@ main =
       , testCase "conversation branches do not overwrite siblings" testConversationBranchesDoNotOverwriteSiblings
       , testCase "conversation branches persist through SQLite reload" testConversationBranchesPersistThroughSQLiteReload
       , testCase "memory tool manages current sender memory" testMemoryToolManagesCurrentSenderMemory
+      , testCase "memory tool manages current chat memory" testMemoryToolManagesCurrentChatMemory
       , testCase "memory tool enforces non-superuser length limit" testMemoryToolEnforcesLengthLimit
       , testCase "run_bash captures stdout and stderr" testRunBashCapturesStdoutAndStderr
       , testCase "run_bash kills timed out process" testRunBashKillsTimedOutProcess
@@ -184,7 +185,21 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
   (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
     Agent.runAgent 8 (agentContext{Agent.memoryConfig = Just (Memory.MemoryConfig dir)}) Agent.defaultTools (startWithUser "remember this")
   answer @?= "done"
-  exists <- doesFileExist (dir </> "telegram" </> "200.md")
+  exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
+  exists @?= False
+
+testMemoryToolManagesCurrentChatMemory :: IO ()
+testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
+  answers <- IORef.newIORef
+    [ LLM.ChatAnswer "" [toolCall "call-1" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
+    , LLM.ChatAnswer "" [toolCall "call-2" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
+    , LLM.ChatAnswer "" [toolCall "call-3" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    , LLM.ChatAnswer "done" []
+    ]
+  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
+    Agent.runAgent 8 (agentContext{Agent.memoryConfig = Just (Memory.MemoryConfig dir)}) Agent.defaultTools (startWithUser "remember this chat")
+  answer @?= "done"
+  exists <- doesFileExist (dir </> "telegram" </> "chat" </> "100.md")
   exists @?= False
 
 testMemoryToolEnforcesLengthLimit :: IO ()
@@ -197,7 +212,7 @@ testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
   (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
     Agent.runAgent 4 (agentContext{Agent.memoryConfig = Just (Memory.MemoryConfig dir)}) Agent.defaultTools (startWithUser "remember too much")
   answer @?= "rejected"
-  exists <- doesFileExist (dir </> "telegram" </> "200.md")
+  exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
   exists @?= False
 
 testRunBashCapturesStdoutAndStderr :: IO ()

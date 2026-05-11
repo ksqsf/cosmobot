@@ -279,8 +279,9 @@ promptOrImageDefault prompt imageUrls
 
 startConversation :: IOE :> es => Memory.MemoryConfig -> AskHandlerConfig -> IncomingMessage -> Text -> [Text] -> Eff es Conversation
 startConversation memoryCfg cfg message prompt imageUrls = do
-  memory <- Memory.loadSenderMemory memoryCfg message
-  let systemPrompt = maybe cfg.systemPrompt (Memory.memorySystemPrompt cfg.systemPrompt) memory
+  senderMemory <- Memory.loadSenderMemory memoryCfg message
+  chatMemory <- Memory.loadChatMemory memoryCfg message
+  let systemPrompt = Memory.memorySystemPrompt cfg.systemPrompt senderMemory chatMemory
   pure (startWithSystemAndUserContext systemPrompt prompt imageUrls)
 
 promptWithReferencedContext :: Text -> Maybe ReferencedMessage -> [Text] -> Text

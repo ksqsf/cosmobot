@@ -220,6 +220,7 @@ defaultTools =
   , deleteScheduledAgentActionTool
   , listCurrentUserSchedulesTool
   , manageMemoryTool
+  , manageChatMemoryTool
   , runBashTool
   ]
 
@@ -242,7 +243,29 @@ manageMemoryTool = Tool
             Left err ->
               pure (toolText (Text.pack err))
             Right (action, memory) ->
-              runMemoryAction cfg context action memory
+              runMemoryAction senderMemoryScope cfg context action memory
+  }
+
+manageChatMemoryTool :: IOE :> es => Tool es
+manageChatMemoryTool = Tool
+  { name = "manage_current_chat_memory"
+  , description = "View, replace, or clear the persistent MEMORY.md for the current chat/conversation. Use this when the user asks to view or clear chat memory, or when durable preferences, facts, norms, recurring instructions, or context apply to this chat as a whole rather than only to the current sender. Keep memory concise: non-superusers must stay within 1000 characters; if an update is rejected, summarize it shorter and try again."
+  , parameters = objectSchema
+      [ fieldText "action" "One of: view, replace, clear."
+      , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
+      ]
+      ["action"]
+  , allowed = everyone
+  , run = \context args ->
+      case context.memoryConfig of
+        Nothing ->
+          pure (toolText "Memory is not configured.")
+        Just cfg ->
+          case AesonTypes.parseEither memoryArgs args of
+            Left err ->
+              pure (toolText (Text.pack err))
+            Right (action, memory) ->
+              runMemoryAction chatMemoryScope cfg context action memory
   }
 
 listDirectoryTool :: IOE :> es => Tool es
@@ -907,6 +930,35 @@ data MemoryAction
   | MemoryReplace
   | MemoryClear
 
+data MemoryScope es = MemoryScope
+  { missingMessage :: !Text
+  , updatedMessage :: !Text
+  , clearedMessage :: !Text
+  , loadMemory :: Memory.MemoryConfig -> IncomingMessage -> Eff es (Maybe Text)
+  , replaceMemory :: Memory.MemoryConfig -> IncomingMessage -> Text -> Eff es (Either Text ())
+  , clearMemory :: Memory.MemoryConfig -> IncomingMessage -> Eff es (Either Text ())
+  }
+
+senderMemoryScope :: IOE :> es => MemoryScope es
+senderMemoryScope = MemoryScope
+  { missingMessage = "No memory is stored for the current sender."
+  , updatedMessage = "Memory updated."
+  , clearedMessage = "Memory cleared."
+  , loadMemory = Memory.loadSenderMemory
+  , replaceMemory = Memory.replaceSenderMemory
+  , clearMemory = Memory.clearSenderMemory
+  }
+
+chatMemoryScope :: IOE :> es => MemoryScope es
+chatMemoryScope = MemoryScope
+  { missingMessage = "No memory is stored for the current chat."
+  , updatedMessage = "Chat memory updated."
+  , clearedMessage = "Chat memory cleared."
+  , loadMemory = Memory.loadChatMemory
+  , replaceMemory = Memory.replaceChatMemory
+  , clearMemory = Memory.clearChatMemory
+  }
+
 memoryArgs :: Aeson.Value -> AesonTypes.Parser (MemoryAction, Maybe Text)
 memoryArgs =
   Aeson.withObject "memory arguments" $ \o -> do
@@ -925,12 +977,12 @@ memoryArgs =
       fail "memory is required when action is replace"
     pure (action, memory)
 
-runMemoryAction :: IOE :> es => Memory.MemoryConfig -> AgentContext es -> MemoryAction -> Maybe Text -> Eff es ToolResult
-runMemoryAction cfg context action memory =
+runMemoryAction :: IOE :> es => MemoryScope es -> Memory.MemoryConfig -> AgentContext es -> MemoryAction -> Maybe Text -> Eff es ToolResult
+runMemoryAction scope cfg context action memory =
   case action of
     MemoryView -> do
-      current <- Memory.loadSenderMemory cfg context.message
-      pure (toolText (fromMaybe "No memory is stored for the current sender." current))
+      current <- scope.loadMemory cfg context.message
+      pure (toolText (fromMaybe scope.missingMessage current))
     MemoryReplace ->
       case memory of
         Nothing ->
@@ -939,11 +991,11 @@ runMemoryAction cfg context action memory =
           | not context.superuser && Text.length content > Memory.memoryLimitChars ->
               pure (toolText [i|Memory update rejected: memory is #{Text.length content} characters, over the #{Memory.memoryLimitChars} character limit. Please summarize it more concisely and try again.|])
           | otherwise -> do
-              result <- Memory.replaceSenderMemory cfg context.message content
-              pure (toolText (either identity (const "Memory updated.") result))
+              result <- scope.replaceMemory cfg context.message content
+              pure (toolText (either identity (const scope.updatedMessage) result))
     MemoryClear -> do
-      result <- Memory.clearSenderMemory cfg context.message
-      pure (toolText (either identity (const "Memory cleared.") result))
+      result <- scope.clearMemory cfg context.message
+      pure (toolText (either identity (const scope.clearedMessage) result))
 
 scheduledAgentMessage :: AgentContext es -> Int -> Text -> IncomingMessage
 scheduledAgentMessage context delaySeconds prompt =
