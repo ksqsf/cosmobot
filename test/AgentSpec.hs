@@ -7,6 +7,7 @@ import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Memory as Memory
+import qualified Bot.Storage.SQLite as Storage
 import Bot.Message
 import Bot.Prelude
 import qualified Control.Exception as Exception
@@ -40,6 +41,8 @@ main =
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "conversation replies keep parent and child snapshots" testConversationRepliesKeepSnapshots
+      , testCase "conversation branches do not overwrite siblings" testConversationBranchesDoNotOverwriteSiblings
+      , testCase "conversation branches persist through SQLite reload" testConversationBranchesPersistThroughSQLiteReload
       , testCase "memory tool manages current sender memory" testMemoryToolManagesCurrentSenderMemory
       , testCase "memory tool enforces non-superuser length limit" testMemoryToolEnforcesLengthLimit
       ]
@@ -89,6 +92,55 @@ testConversationRepliesKeepSnapshots = runEff $ runTestLog do
     (show firstLookup :: String) @?= show (Just firstConversation)
     (show secondLookup :: String) @?= show (Just secondConversation)
 
+testConversationBranchesDoNotOverwriteSiblings :: IO ()
+testConversationBranchesDoNotOverwriteSiblings = runEff $ runTestLog do
+  store <- liftIO (newConversationStore Nothing)
+  let root = appendAssistant "root answer" (startWithUser "root")
+      branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
+      branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
+      branchA2 = appendAssistant "A second answer" (appendUser "A second follow-up" branchA)
+  rememberConversation store (Just 1) root
+  rememberConversationFrom store (Just 1) (Just 2) branchA
+  rememberConversationFrom store (Just 1) (Just 3) branchB
+  rememberConversationFrom store (Just 2) (Just 4) branchA2
+  rootLookup <- lookupConversation store 1
+  branchALookup <- lookupConversation store 2
+  branchBLookup <- lookupConversation store 3
+  branchA2Lookup <- lookupConversation store 4
+  liftIO do
+    (show rootLookup :: String) @?= show (Just root)
+    (show branchALookup :: String) @?= show (Just branchA)
+    (show branchBLookup :: String) @?= show (Just branchB)
+    (show branchA2Lookup :: String) @?= show (Just branchA2)
+
+testConversationBranchesPersistThroughSQLiteReload :: IO ()
+testConversationBranchesPersistThroughSQLiteReload =
+  withSQLiteTempPath "conversation-branches" \path -> runEff $ runTestLog do
+    sqliteStore <- liftIO (Storage.openSQLiteStore path)
+    store <- liftIO (newConversationStore (Just sqliteStore))
+    let root = appendAssistant "root answer" (startWithUser "root")
+        branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
+        branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
+    rememberConversation store (Just 1) root
+    rememberConversationFrom store (Just 1) (Just 2) branchA
+    rememberConversationFrom store (Just 1) (Just 3) branchB
+
+    reloaded <- liftIO (newConversationStore (Just sqliteStore))
+    branchAAfterReload <- lookupConversation reloaded 2
+    branchBAfterReload <- lookupConversation reloaded 3
+    let branchA2 = appendAssistant "A second answer" (appendUser "A second follow-up" branchA)
+    rememberConversationFrom reloaded (Just 2) (Just 4) branchA2
+    rows <- liftIO (Storage.loadConversationRows sqliteStore)
+    branchA2AfterReload <- lookupConversation reloaded 4
+
+    liftIO do
+      (show branchAAfterReload :: String) @?= show (Just branchA)
+      (show branchBAfterReload :: String) @?= show (Just branchB)
+      (show branchA2AfterReload :: String) @?= show (Just branchA2)
+      map (.messageId) rows @?= [1, 2, 3, 4]
+      map (.parentMessageId) rows @?= [Nothing, Just 1, Just 1, Just 2]
+      assertBool "all nodes in the reloaded tree keep the same conversation id" (sameConversationIds rows)
+
 testMemoryToolManagesCurrentSenderMemory :: IO ()
 testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
@@ -125,6 +177,28 @@ withMemoryTempDir action = do
     (createDirectory dir $> dir)
     removeDirectoryRecursive
     action
+
+withSQLiteTempPath :: String -> (FilePath -> IO a) -> IO a
+withSQLiteTempPath label action = do
+  root <- getTemporaryDirectory
+  unique <- hashUnique <$> newUnique
+  let path = root </> [i|cosmobot-#{label}-#{unique}.sqlite|]
+  Exception.bracket_
+    (removeIfExists path)
+    (removeIfExists path)
+    (action path)
+
+removeIfExists :: FilePath -> IO ()
+removeIfExists path =
+  removeFile path `Exception.catch` \(_ :: IOException) -> pure ()
+
+sameConversationIds :: [Storage.ConversationRow] -> Bool
+sameConversationIds rows =
+  case map (.conversationId) rows of
+    [] ->
+      True
+    firstId : rest ->
+      isJust firstId && all (== firstId) rest
 
 runAgentWith
   :: IORef.IORef [LLM.ChatAnswer]
