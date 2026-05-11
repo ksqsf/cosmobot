@@ -100,19 +100,22 @@ common test-deps
     build-depends:    tasty
                     , tasty-hunit
 
-executable cosmobot
-    -- Import common warning flags.
-    import:           warnings
-                    , threaded
-                    , language
-                    , app-deps
-
-    -- .hs or .lhs file containing the Main module.
-    main-is:          Main.hs
-
-    -- Modules included in this executable, other than Main.
+common bot-core-modules
     other-modules:
         Bot.Prelude
+        Bot.Core.Message
+        Bot.Effect.Chat
+        Bot.Core.ReplyBody
+
+common bot-chat-driver-modules
+    other-modules:
+        Bot.Chat.Driver.Types
+        Bot.Chat.Driver.QQ
+        Bot.Chat.Driver.Telegram
+        Bot.Util.Multipart
+
+common bot-agent-modules
+    other-modules:
         Bot.Agent
         Bot.Agent.Tools
         Bot.Agent.Tools.Chat
@@ -125,27 +128,36 @@ executable cosmobot
         Bot.Agent.Tools.Time
         Bot.Agent.Tools.Web
         Bot.Agent.Types
-        Bot.Chat.Driver
-        Bot.Chat.Driver.Types
-        Bot.Config
         Bot.Core.Conversation
+        Bot.Effect.ChatLog
+        Bot.Effect.LLM
+        Bot.Effect.Scheduler
+        Bot.Memory
+        Bot.Storage.SQLite
         Bot.Util.Html
         Bot.Util.Image
-        Bot.Core.Message
-        Bot.Memory
-        Bot.Util.Multipart
-        Bot.Core.ReplyBody
-        Bot.Storage.SQLite
+
+executable cosmobot
+    -- Import common warning flags.
+    import:           warnings
+                    , threaded
+                    , language
+                    , app-deps
+                    , bot-core-modules
+                    , bot-chat-driver-modules
+                    , bot-agent-modules
+
+    -- .hs or .lhs file containing the Main module.
+    main-is:          Main.hs
+
+    -- Modules included in this executable, other than Main.
+    other-modules:
+        Bot.Chat.Driver
+        Bot.Config
         Bot.Core.Filter
         Bot.Handler.Ask
         Bot.Handler.Scratchpad
         Bot.Handler.Typing
-        Bot.Effect.Chat
-        Bot.Effect.ChatLog
-        Bot.Chat.Driver.QQ
-        Bot.Chat.Driver.Telegram
-        Bot.Effect.LLM
-        Bot.Effect.Scheduler
         Bot.Handler.Saucenao
 
     -- LANGUAGE extensions used by modules in this package.
@@ -163,14 +175,11 @@ test-suite filter-spec
                     , language
                     , app-deps
                     , test-deps
+                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          FilterSpec.hs
     other-modules:
-        Bot.Prelude
-        Bot.Core.Message
         Bot.Core.Filter
-        Bot.Effect.Chat
-        Bot.Core.ReplyBody
     hs-source-dirs:   test
 
 test-suite scratchpad-spec
@@ -178,14 +187,11 @@ test-suite scratchpad-spec
                     , language
                     , app-deps
                     , test-deps
+                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          ScratchpadSpec.hs
     other-modules:
         Bot.Core.Filter
-        Bot.Prelude
-        Bot.Core.Message
-        Bot.Effect.Chat
-        Bot.Core.ReplyBody
         Bot.Storage.SQLite
         Bot.Handler.Scratchpad
     hs-source-dirs:   test
@@ -195,17 +201,10 @@ test-suite chat-platform-spec
                     , language
                     , app-deps
                     , test-deps
+                    , bot-core-modules
+                    , bot-chat-driver-modules
     type:             exitcode-stdio-1.0
     main-is:          ChatPlatformSpec.hs
-    other-modules:
-        Bot.Prelude
-        Bot.Core.Message
-        Bot.Effect.Chat
-        Bot.Core.ReplyBody
-        Bot.Chat.Driver.Types
-        Bot.Chat.Driver.QQ
-        Bot.Chat.Driver.Telegram
-        Bot.Util.Multipart
     build-depends:    base64-bytestring
                     , http-client
                     , req
@@ -217,11 +216,10 @@ test-suite scheduler-spec
                     , language
                     , app-deps
                     , test-deps
+                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          SchedulerSpec.hs
     other-modules:
-        Bot.Prelude
-        Bot.Core.Message
         Bot.Effect.Scheduler
     hs-source-dirs:   test
 
@@ -231,33 +229,10 @@ test-suite agent-spec
                     , language
                     , app-deps
                     , test-deps
+                    , bot-core-modules
+                    , bot-agent-modules
     type:             exitcode-stdio-1.0
     main-is:          AgentSpec.hs
-    other-modules:
-        Bot.Agent
-        Bot.Agent.Tools
-        Bot.Agent.Tools.Chat
-        Bot.Agent.Tools.Common
-        Bot.Agent.Tools.Files
-        Bot.Agent.Tools.Image
-        Bot.Agent.Tools.Memory
-        Bot.Agent.Tools.Schedule
-        Bot.Agent.Tools.Shell
-        Bot.Agent.Tools.Time
-        Bot.Agent.Tools.Web
-        Bot.Agent.Types
-        Bot.Core.Conversation
-        Bot.Effect.Chat
-        Bot.Effect.ChatLog
-        Bot.Effect.LLM
-        Bot.Effect.Scheduler
-        Bot.Util.Html
-        Bot.Util.Image
-        Bot.Core.Message
-        Bot.Memory
-        Bot.Prelude
-        Bot.Core.ReplyBody
-        Bot.Storage.SQLite
     build-depends:    http-client
                     , process
                     , req
@@ -268,13 +243,10 @@ test-suite chat-log-spec
                     , language
                     , app-deps
                     , test-deps
+                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          ChatLogSpec.hs
     other-modules:
-        Bot.Effect.Chat
         Bot.Effect.ChatLog
-        Bot.Core.Message
-        Bot.Prelude
-        Bot.Core.ReplyBody
         Bot.Storage.SQLite
     hs-source-dirs:   test

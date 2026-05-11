@@ -91,13 +91,11 @@ loadConfig path = do
 data FileConfig = FileConfig
   { log      :: !LogFileConfig
   , storage  :: !StorageFileConfig
-  , qq       :: !QQFileConfig
-  , telegram :: !TelegramFileConfig
+  , driver   :: !DriverFileConfig
   , llm      :: !LLMFileConfig
   , tool     :: !ToolFileConfig
-  , saucenao :: !SaucenaoConfig
   , memory   :: !MemoryFileConfig
-  , handlers :: !HandlersConfig
+  , handler  :: !HandlerFileConfig
   }
   deriving (Show)
 
@@ -105,13 +103,33 @@ instance FromValue FileConfig where
   fromValue = parseTableFromValue $ FileConfig
     <$> fmap (fromMaybe defaultLogFileConfig) (optKey "log")
     <*> fmap (fromMaybe defaultStorageFileConfig) (optKey "storage")
-    <*> reqKey "qq"
-    <*> reqKey "telegram"
+    <*> reqKey "driver"
     <*> reqKey "llm"
     <*> fmap (fromMaybe defaultToolFileConfig) (optKey "tool")
-    <*> fmap (fromMaybe defaultSaucenaoConfig) (optKey "saucenao")
     <*> fmap (fromMaybe defaultMemoryFileConfig) (optKey "memory")
-    <*> reqKey "handlers"
+    <*> reqKey "handler"
+
+data DriverFileConfig = DriverFileConfig
+  { qq       :: !QQFileConfig
+  , telegram :: !TelegramFileConfig
+  }
+  deriving (Show)
+
+instance FromValue DriverFileConfig where
+  fromValue = parseTableFromValue $ DriverFileConfig
+    <$> reqKey "qq"
+    <*> reqKey "telegram"
+
+data HandlerFileConfig = HandlerFileConfig
+  { saucenao :: !SaucenaoConfig
+  , ask      :: !AskHandlerConfig
+  }
+  deriving (Show)
+
+instance FromValue HandlerFileConfig where
+  fromValue = parseTableFromValue $ HandlerFileConfig
+    <$> fmap (fromMaybe defaultSaucenaoConfig) (optKey "saucenao")
+    <*> reqKey "ask"
 
 newtype LogFileConfig = LogFileConfig
   { level :: LogLevel
@@ -212,7 +230,7 @@ instance FromValue TelegramChatRef where
     TomlValue.Text' _ value ->
       pure (TelegramChatUsername (normalizeUsername value))
     _ ->
-      fail "handlers.ask.telegram_chat_whitelist entries must be integer chat ids or username strings"
+      fail "handler.ask.telegram_chat_whitelist entries must be integer chat ids or username strings"
 
 instance FromValue TelegramFileConfig where
   fromValue = parseTableFromValue $ TelegramFileConfig
@@ -417,15 +435,20 @@ normalizeToken = \case
 
 toBotConfig :: FileConfig -> BotConfig
 toBotConfig cfg =
+  let
+    qqFileConfig = cfg.driver.qq
+    telegramFileConfig = cfg.driver.telegram
+    handlersFileConfig = HandlersConfig cfg.handler.ask
+  in
   BotConfig
     { qq = QQ.Config
-        { host  = cfg.qq.host
-        , port  = cfg.qq.port
-        , path  = cfg.qq.path
-        , token = cfg.qq.token
+        { host  = qqFileConfig.host
+        , port  = qqFileConfig.port
+        , path  = qqFileConfig.path
+        , token = qqFileConfig.token
         }
     , telegram = Telegram.Config
-        { botToken = cfg.telegram.botToken
+        { botToken = telegramFileConfig.botToken
         }
     , llm = LLM.Config
         { endpoint = cfg.llm.endpoint
@@ -455,11 +478,11 @@ toBotConfig cfg =
         , webFetchMaxContentTokens = cfg.tool.webFetch.maxContentTokens
         , datetime = cfg.tool.datetime
         }
-    , saucenao = cfg.saucenao
+    , saucenao = cfg.handler.saucenao
     , memory = Memory.MemoryConfig
         { dir = cfg.memory.dir
         }
-    , handlers = withPlatformConfig cfg.qq cfg.telegram cfg.handlers
+    , handlers = withPlatformConfig qqFileConfig telegramFileConfig handlersFileConfig
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath
     }

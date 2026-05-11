@@ -39,8 +39,9 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 
 - When changing handler behavior, check route predicates in `Bot.Config` and `Bot.Core.Filter` first.
 - When adding config, update `Bot.Config`, `config.example.toml`, and all call sites that consume `BotConfig`.
+- Keep `config.toml` section ownership explicit: chat platform settings live under `[driver.qq]` and `[driver.telegram]`; handler settings live under `[handler.saucenao]` and `[handler.ask]`. Do not reintroduce top-level `[qq]`, `[telegram]`, `[saucenao]`, or `[handlers.*]` sections.
 - When adding `[llm]` config, update `Bot.Config`, `Bot.Effect.LLM.Config`, OpenAI-compatible request serialization when applicable, and `config.example.toml`.
-- When adding a new module, update `cosmobot.cabal` for the executable and relevant test suites.
+- When adding a new module, update `cosmobot.cabal` for the executable and relevant test suites. Prefer shared `common` module-list stanzas over copying the same `other-modules` block into multiple components.
 - When adding an agent tool, update `defaultTools`, define a small parser using `AesonTypes.parseEither`, and add focused tests in `test/AgentSpec.hs`.
 - For IO inside effects, keep signatures explicit with `IOE :> es`; use `liftIO` only at the boundary.
 - For route work that may call LLM or platform APIs, follow the existing `forkEff` pattern so the stream consumer stays responsive.

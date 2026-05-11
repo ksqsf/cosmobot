@@ -4,7 +4,7 @@ level = "info"
 [storage]
 sqlite_path = "cosmobot.sqlite3"
 
-[qq]
+[driver.qq]
 host = "127.0.0.1"
 port = 3001
 path = "/"
@@ -12,7 +12,7 @@ token = "xxx"
 bot_qq = 0
 superusers = []
 
-[telegram]
+[driver.telegram]
 bot_token = ""
 bot_id = ""
 superusers = []
@@ -46,13 +46,13 @@ max_results = 5
 tavily_api_key = ""
 brave_api_key = ""
 
-[saucenao]
+[handler.saucenao]
 api_key = ""
 
 [memory]
 dir = "memory"
 
-[handlers.ask]
+[handler.ask]
 command = "!ask"
 draw_command = "!draw"
 agent_max_turns = 4
