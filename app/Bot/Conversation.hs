@@ -91,17 +91,17 @@ loadStoredConversations store = do
       assignedRows =
         assignMissingConversationIds decodedRows
       conversations =
-        foldl' insertConversation Map.empty assignedRows
+        foldl' insertStoredConversation Map.empty assignedRows
       nextConversationId =
         1 + foldl' max 0 (map (.storedConversationId) assignedRows)
   pure ConversationState{nextConversationId, conversations}
 
-insertConversation :: Map Integer ConversationNode -> StoredConversation -> Map Integer ConversationNode
-insertConversation acc StoredConversation{storedMessageId, storedConversationId, storedParentMessageId, storedConversation} =
+insertStoredConversation :: Map Integer ConversationNode -> StoredConversation -> Map Integer ConversationNode
+insertStoredConversation acc StoredConversation{storedMessageId, storedConversationId, storedParentMessageId, storedPayload} =
   Map.insert storedMessageId ConversationNode
     { conversationId = storedConversationId
     , parentMessageId = storedParentMessageId
-    , conversation = storedConversation
+    , conversation = storedConversationFromPayload acc storedParentMessageId storedPayload
     }
     acc
 
@@ -109,19 +109,41 @@ data StoredConversation = StoredConversation
   { storedMessageId :: !Integer
   , storedConversationId :: !Integer
   , storedParentMessageId :: !(Maybe Integer)
-  , storedConversation :: !Conversation
+  , storedPayload :: !StoredConversationPayload
   }
+
+data StoredConversationPayload
+  = StoredConversationSnapshot !Conversation
+  | StoredConversationMessages ![LLM.ChatMessage]
 
 decodeStoredConversation :: Storage.ConversationRow -> Maybe StoredConversation
 decodeStoredConversation row = do
-  conversation <- decodeConversation row.conversationJson
+  payload <- decodeConversationPayload row
   let conversationId = fromMaybe 0 row.conversationId
   pure StoredConversation
     { storedMessageId = row.messageId
     , storedConversationId = conversationId
     , storedParentMessageId = row.parentMessageId
-    , storedConversation = conversation
+    , storedPayload = payload
     }
+
+decodeConversationPayload :: Storage.ConversationRow -> Maybe StoredConversationPayload
+decodeConversationPayload row =
+  case row.payloadKind of
+    Storage.ConversationPayloadMessages ->
+      StoredConversationMessages <$> decodeMessages row.payloadJson
+    Storage.ConversationPayloadSnapshot ->
+      StoredConversationSnapshot <$> decodeConversation row.payloadJson
+
+storedConversationFromPayload :: Map Integer ConversationNode -> Maybe Integer -> StoredConversationPayload -> Conversation
+storedConversationFromPayload _ _ (StoredConversationSnapshot conversation) =
+  conversation
+storedConversationFromPayload acc parentMessageId (StoredConversationMessages messages) =
+  case parentMessageId >>= (`Map.lookup` acc) of
+    Nothing ->
+      Conversation messages
+    Just parent ->
+      Conversation (parent.conversation.messages <> messages)
 
 assignMissingConversationIds :: [StoredConversation] -> [StoredConversation]
 assignMissingConversationIds rows =
@@ -135,6 +157,10 @@ assignMissingConversationIds rows =
 
 decodeConversation :: Text -> Maybe Conversation
 decodeConversation =
+  either (const Nothing) Just . Aeson.eitherDecodeStrict' . TextEncoding.encodeUtf8
+
+decodeMessages :: Text -> Maybe [LLM.ChatMessage]
+decodeMessages =
   either (const Nothing) Just . Aeson.eitherDecodeStrict' . TextEncoding.encodeUtf8
 
 -- | Start a conversation with a single user text message.
@@ -211,9 +237,11 @@ rememberConversationFrom
 rememberConversationFrom _ _ Nothing _ =
   pure ()
 rememberConversationFrom ConversationStore{unConversationStore = ref, sqliteStore} parentMessageId (Just messageId) conversation = do
-  conversationId <- liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
+  (conversationId, storageParentMessageId, storedMessages) <- liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
     let conversationId = conversationIdFor conversationState parentMessageId messageId
         node = ConversationNode{conversationId, parentMessageId, conversation}
+        (storageParentMessageId, storedMessages) =
+          conversationMessagesForStorage conversationState parentMessageId conversation
         nextConversationId =
           if conversationId < conversationState.nextConversationId
             then conversationState.nextConversationId
@@ -222,10 +250,10 @@ rememberConversationFrom ConversationStore{unConversationStore = ref, sqliteStor
           { nextConversationId = nextConversationId
           , conversations = Map.insert messageId node conversationState.conversations
           }
-    in (nextState, conversationId)
+    in (nextState, (conversationId, storageParentMessageId, storedMessages))
   traverse_
     ( \store ->
-        liftIO (Storage.saveConversationJson store messageId conversationId parentMessageId (conversationJson conversation))
+        liftIO (Storage.saveConversationMessages store messageId conversationId storageParentMessageId (messagesJson storedMessages))
           `catch` \(err :: SomeException) ->
             logInfo "Failed to persist conversation" (show err :: String)
     )
@@ -241,6 +269,35 @@ conversationIdFor conversationState parentMessageId messageId =
     existingConversationId =
       (.conversationId) <$> Map.lookup messageId conversationState.conversations
 
-conversationJson :: Conversation -> Text
-conversationJson =
+messagesJson :: [LLM.ChatMessage] -> Text
+messagesJson =
   TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+
+conversationMessagesForStorage :: ConversationState -> Maybe Integer -> Conversation -> (Maybe Integer, [LLM.ChatMessage])
+conversationMessagesForStorage conversationState parentMessageId conversation =
+  case parentMessageId >>= (`Map.lookup` conversationState.conversations) of
+    Just parent
+      | Just suffix <- conversationSuffix parent.conversation conversation ->
+          (parentMessageId, suffix)
+      | otherwise ->
+          (Nothing, conversation.messages)
+    Nothing ->
+      (parentMessageId, conversation.messages)
+
+conversationSuffix :: Conversation -> Conversation -> Maybe [LLM.ChatMessage]
+conversationSuffix parent child
+  | parentJson == childPrefixJson =
+      Just (drop parentLength child.messages)
+  | otherwise =
+      Nothing
+  where
+    parentLength =
+      length parent.messages
+    parentJson =
+      map messageJson parent.messages
+    childPrefixJson =
+      map messageJson (take parentLength child.messages)
+
+messageJson :: LLM.ChatMessage -> LazyByteString.ByteString
+messageJson =
+  Aeson.encode

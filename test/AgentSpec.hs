@@ -14,6 +14,7 @@ import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Unique
 import System.Directory
 import System.FilePath
@@ -141,6 +142,8 @@ testConversationBranchesPersistThroughSQLiteReload =
       (show branchA2AfterReload :: String) @?= show (Just branchA2)
       map (.messageId) rows @?= [1, 2, 3, 4]
       map (.parentMessageId) rows @?= [Nothing, Just 1, Just 1, Just 2]
+      map (.payloadKind) rows @?= replicate 4 Storage.ConversationPayloadMessages
+      map payloadMessageCount rows @?= [2, 2, 2, 2]
       assertBool "all nodes in the reloaded tree keep the same conversation id" (sameConversationIds rows)
 
 testMemoryToolManagesCurrentSenderMemory :: IO ()
@@ -228,6 +231,14 @@ sameConversationIds rows =
       True
     firstId : rest ->
       isJust firstId && all (== firstId) rest
+
+payloadMessageCount :: Storage.ConversationRow -> Int
+payloadMessageCount row =
+  case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 row.payloadJson) :: Either String [LLM.ChatMessage] of
+    Left err ->
+      error (Text.pack err)
+    Right messages ->
+      length messages
 
 toolOutputs :: Conversation -> [Text]
 toolOutputs (Conversation messages) =

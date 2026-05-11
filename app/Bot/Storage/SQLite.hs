@@ -10,6 +10,7 @@ module Bot.Storage.SQLite
   , JsonCollection (..)
   , StoredState (..)
   , ConversationRow (..)
+  , ConversationPayloadKind (..)
   , declareJsonCollection
   , loadJsonCollection
   , appendJsonCollection
@@ -17,7 +18,7 @@ module Bot.Storage.SQLite
   , deleteJsonCollectionRows
   , clearJsonCollection
   , loadConversationRows
-  , saveConversationJson
+  , saveConversationMessages
   , saveChatLogEntry
   , queryChatLogEntries
   )
@@ -56,8 +57,14 @@ data ConversationRow = ConversationRow
   { messageId :: !Integer
   , conversationId :: !(Maybe Integer)
   , parentMessageId :: !(Maybe Integer)
-  , conversationJson :: !Text
+  , payloadJson :: !Text
+  , payloadKind :: !ConversationPayloadKind
   }
+  deriving (Eq, Show)
+
+data ConversationPayloadKind
+  = ConversationPayloadMessages
+  | ConversationPayloadSnapshot
   deriving (Eq, Show)
 
 -- | Open the database, configure connection pragmas, and run migrations.
@@ -80,9 +87,12 @@ configure db = do
 migrate :: SQLiteStore -> IO ()
 migrate store = withStore store \db -> do
   SQLite.exec db
-    "CREATE TABLE IF NOT EXISTS conversations (message_id INTEGER PRIMARY KEY, conversation_id INTEGER, parent_message_id INTEGER, conversation_json TEXT NOT NULL)"
-  ensureColumn db "conversations" "conversation_id" "INTEGER"
-  ensureColumn db "conversations" "parent_message_id" "INTEGER"
+    "CREATE TABLE IF NOT EXISTS conversation_nodes (message_id INTEGER PRIMARY KEY, conversation_id INTEGER, parent_message_id INTEGER, messages_json TEXT NOT NULL)"
+  SQLite.exec db
+    "CREATE INDEX IF NOT EXISTS conversation_nodes_parent_idx ON conversation_nodes(parent_message_id)"
+  whenM (tableExists db "conversations") do
+    ensureColumn db "conversations" "conversation_id" "INTEGER"
+    ensureColumn db "conversations" "parent_message_id" "INTEGER"
   SQLite.exec db
     "CREATE TABLE IF NOT EXISTS chat_log (id INTEGER PRIMARY KEY AUTOINCREMENT, platform_key TEXT NOT NULL, kind_key TEXT NOT NULL, chat_id INTEGER, is_bot INTEGER NOT NULL, entry_json TEXT NOT NULL)"
   SQLite.exec db
@@ -107,6 +117,15 @@ tableColumnNames db table =
         SQLite.Row -> do
           name <- columnText stmt 1
           rows (name : acc) stmt
+
+tableExists :: SQLite.Database -> Text -> IO Bool
+tableExists db table =
+  withStatement db "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1" [SQLite.SQLText table] \stmt ->
+    SQLite.step stmt >>= \case
+      SQLite.Row ->
+        pure True
+      SQLite.Done ->
+        pure False
 
 declareJsonCollection :: SQLiteStore -> JsonCollection a -> IO ()
 declareJsonCollection store collection = do
@@ -252,9 +271,35 @@ validIdentifier identifier =
     validRest char =
       char == '_' || (isAscii char && isAlphaNum char)
 
--- | Load persisted conversation JSON keyed by bot message id.
+-- | Load persisted conversation nodes keyed by bot message id.
 loadConversationRows :: SQLiteStore -> IO [ConversationRow]
-loadConversationRows store = withStore store \db ->
+loadConversationRows store = withStore store \db -> do
+  nodeRows <- loadConversationNodeRows db
+  legacyRows <-
+    ifM (tableExists db "conversations")
+      (loadLegacyConversationRows db)
+      (pure [])
+  let nodeMessageIds = map (.messageId) nodeRows
+  pure (sortOn (.messageId) (nodeRows <> filter (\row -> row.messageId `notElem` nodeMessageIds) legacyRows))
+
+loadConversationNodeRows :: SQLite.Database -> IO [ConversationRow]
+loadConversationNodeRows db =
+  withStatement db "SELECT message_id, conversation_id, parent_message_id, messages_json FROM conversation_nodes ORDER BY message_id ASC" [] \stmt ->
+    rows [] stmt
+  where
+    rows acc stmt =
+      SQLite.step stmt >>= \case
+        SQLite.Done ->
+          pure (reverse acc)
+        SQLite.Row -> do
+          messageId <- columnInteger stmt 0
+          conversationId <- columnMaybeInteger stmt 1
+          parentMessageId <- columnMaybeInteger stmt 2
+          payloadJson <- columnText stmt 3
+          rows (ConversationRow{messageId, conversationId, parentMessageId, payloadJson, payloadKind = ConversationPayloadMessages} : acc) stmt
+
+loadLegacyConversationRows :: SQLite.Database -> IO [ConversationRow]
+loadLegacyConversationRows db =
   withStatement db "SELECT message_id, conversation_id, parent_message_id, conversation_json FROM conversations ORDER BY message_id ASC" [] \stmt ->
     rows [] stmt
   where
@@ -266,18 +311,18 @@ loadConversationRows store = withStore store \db ->
           messageId <- columnInteger stmt 0
           conversationId <- columnMaybeInteger stmt 1
           parentMessageId <- columnMaybeInteger stmt 2
-          conversationJson <- columnText stmt 3
-          rows (ConversationRow{messageId, conversationId, parentMessageId, conversationJson} : acc) stmt
+          payloadJson <- columnText stmt 3
+          rows (ConversationRow{messageId, conversationId, parentMessageId, payloadJson, payloadKind = ConversationPayloadSnapshot} : acc) stmt
 
--- | Upsert a serialized conversation for a bot message id.
-saveConversationJson :: SQLiteStore -> Integer -> Integer -> Maybe Integer -> Text -> IO ()
-saveConversationJson store messageId conversationId parentMessageId conversationJson = withStore store \db ->
+-- | Upsert serialized messages for one conversation node.
+saveConversationMessages :: SQLiteStore -> Integer -> Integer -> Maybe Integer -> Text -> IO ()
+saveConversationMessages store messageId conversationId parentMessageId messagesJson = withStore store \db ->
   withStatement db
-    "INSERT OR REPLACE INTO conversations(message_id, conversation_id, parent_message_id, conversation_json) VALUES (?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO conversation_nodes(message_id, conversation_id, parent_message_id, messages_json) VALUES (?, ?, ?, ?)"
     [ SQLite.SQLInteger (fromIntegral messageId)
     , SQLite.SQLInteger (fromIntegral conversationId)
     , maybe SQLite.SQLNull (SQLite.SQLInteger . fromIntegral) parentMessageId
-    , SQLite.SQLText conversationJson
+    , SQLite.SQLText messagesJson
     ]
     stepDone
 
