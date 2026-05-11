@@ -30,12 +30,15 @@ import Bot.Message
 import Bot.Prelude
 import Control.Concurrent (forkIO)
 import qualified Control.Concurrent.Chan as Chan
+import qualified Control.Concurrent.MVar as MVar
 import qualified Data.Aeson as Aeson
-import qualified Data.ByteString as ByteString
-import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Lazy as LazyByteString
 import Data.List (isInfixOf)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
 import qualified Network.WebSockets as WS
@@ -84,21 +87,31 @@ runQQ
   -> Eff es a
 runQQ cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
   eventChan <- liftIO Chan.newChan
-  responseChan <- liftIO Chan.newChan
+  pendingResponses <- liftIO (MVar.newMVar Map.empty)
+  actionCounter <- liftIO (MVar.newMVar (1 :: Integer))
+  sendLock <- liftIO (MVar.newMVar ())
   liftIO $ WS.runClient cfg.host cfg.port (websocketPath cfg) $ \conn ->
     runInIO $ do
       _ <- liftIO $ forkIO $ runInIO $
-        readFrames eventChan responseChan conn
+        readFrames eventChan pendingResponses conn
       interpret
         (\_ -> \case
           ReceiveEvent -> liftIO (Chan.readChan eventChan)
           SendAction value -> do
+            echo <- liftIO (nextActionEcho actionCounter)
+            responseVar <- liftIO MVar.newEmptyMVar
+            let echoedValue = addActionEcho echo value
             result <- (Right <$> liftIO do
-                WS.sendTextData conn (Aeson.encode value)
-                Timeout.timeout qqActionTimeoutMicroseconds (Chan.readChan responseChan))
+                MVar.modifyMVar_ pendingResponses \pending ->
+                  pure (Map.insert echo responseVar pending)
+                MVar.withMVar sendLock \_ ->
+                  WS.sendTextData conn (Aeson.encode echoedValue)
+                Timeout.timeout qqActionTimeoutMicroseconds (MVar.takeMVar responseVar))
               `catch` \(err :: SomeException) -> do
                 logInfo "QQ action failed" (show err :: String)
                 pure (Left ())
+            liftIO $ MVar.modifyMVar_ pendingResponses \pending ->
+              pure (Map.delete echo pending)
             case result of
               Right (Just response) ->
                 pure response
@@ -151,10 +164,10 @@ incomingMessages = do
 readFrames
   :: (IOE :> es, Log :> es)
   => Chan.Chan Event
-  -> Chan.Chan ActionResponse
+  -> PendingResponses
   -> WS.Connection
   -> Eff es ()
-readFrames eventChan responseChan conn = forever do
+readFrames eventChan pendingResponses conn = forever do
   value <- readValue conn
   case Aeson.fromJSON value of
     Aeson.Success event ->
@@ -162,7 +175,7 @@ readFrames eventChan responseChan conn = forever do
     Aeson.Error _ ->
       case Aeson.fromJSON value of
         Aeson.Success response ->
-          liftIO $ Chan.writeChan responseChan response
+          dispatchActionResponse pendingResponses response
         Aeson.Error err ->
           logInfo_ [i|Ignoring malformed QQ frame: #{Text.pack err}|]
 
@@ -196,6 +209,7 @@ failedActionResponse =
     , retcode = Nothing
     , data_ = Nothing
     , message = Just "action failed"
+    , echo = Nothing
     }
 
 qqActionTimeoutMicroseconds :: Int
@@ -208,6 +222,7 @@ data ActionResponse = ActionResponse
   , retcode :: !(Maybe Integer)
   , data_   :: !(Maybe Aeson.Value)
   , message :: !(Maybe Text)
+  , echo    :: !(Maybe Text)
   }
   deriving (Show, Generic)
 
@@ -217,7 +232,48 @@ instance Aeson.FromJSON ActionResponse where
     retcode <- o Aeson..:? "retcode"
     data_ <- o Aeson..:? "data"
     message <- o Aeson..:? "message"
+    echo <- parseEcho o
     pure ActionResponse{..}
+    where
+      parseEcho o =
+        (o Aeson..:? "echo" :: Aeson.Parser (Maybe Text)) >>= \case
+          Just value -> pure (Just value)
+          Nothing -> do
+            raw <- o Aeson..:? "echo"
+            pure (TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode <$> (raw :: Maybe Aeson.Value))
+
+type PendingResponses = MVar.MVar (Map Text (MVar.MVar ActionResponse))
+
+nextActionEcho :: MVar.MVar Integer -> IO Text
+nextActionEcho counter =
+  MVar.modifyMVar counter \value ->
+    pure (value + 1, [i|cosmobot-#{value}|])
+
+addActionEcho :: Text -> Aeson.Value -> Aeson.Value
+addActionEcho echo value =
+  case value of
+    Aeson.Object obj ->
+      Aeson.Object (KeyMap.insert "echo" (Aeson.String echo) obj)
+    _ ->
+      value
+
+dispatchActionResponse
+  :: (IOE :> es, Log :> es)
+  => PendingResponses
+  -> ActionResponse
+  -> Eff es ()
+dispatchActionResponse pendingResponses response =
+  case response.echo of
+    Nothing ->
+      logInfo_ "Ignoring QQ action response without echo"
+    Just echo -> do
+      waiter <- liftIO $ MVar.withMVar pendingResponses \pending ->
+        pure (Map.lookup echo pending)
+      case waiter of
+        Nothing ->
+          logInfo "Ignoring QQ action response with unknown echo" echo
+        Just responseVar ->
+          void $ liftIO (MVar.tryPutMVar responseVar response)
 
 -- | Reply to a QQ private or group message.
 replyTo :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe Integer)
