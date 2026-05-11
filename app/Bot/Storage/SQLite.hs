@@ -9,6 +9,7 @@ module Bot.Storage.SQLite
   , openSQLiteStore
   , JsonCollection (..)
   , StoredState (..)
+  , ConversationRow (..)
   , declareJsonCollection
   , loadJsonCollection
   , appendJsonCollection
@@ -29,7 +30,6 @@ import qualified Control.Exception as Exception
 import Data.Char (isAlpha, isAlphaNum, isAscii)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Database.SQLite3 as SQLite
@@ -49,6 +49,13 @@ data JsonCollection a = JsonCollection
 data StoredState a = StoredState
   { rowId :: !Integer
   , value :: !a
+  }
+  deriving (Eq, Show)
+
+data ConversationRow = ConversationRow
+  { messageId :: !Integer
+  , conversationId :: !(Maybe Integer)
+  , conversationJson :: !Text
   }
   deriving (Eq, Show)
 
@@ -72,11 +79,30 @@ configure db = do
 migrate :: SQLiteStore -> IO ()
 migrate store = withStore store \db -> do
   SQLite.exec db
-    "CREATE TABLE IF NOT EXISTS conversations (message_id INTEGER PRIMARY KEY, conversation_json TEXT NOT NULL)"
+    "CREATE TABLE IF NOT EXISTS conversations (message_id INTEGER PRIMARY KEY, conversation_id INTEGER, conversation_json TEXT NOT NULL)"
+  ensureColumn db "conversations" "conversation_id" "INTEGER"
   SQLite.exec db
     "CREATE TABLE IF NOT EXISTS chat_log (id INTEGER PRIMARY KEY AUTOINCREMENT, platform_key TEXT NOT NULL, kind_key TEXT NOT NULL, chat_id INTEGER, is_bot INTEGER NOT NULL, entry_json TEXT NOT NULL)"
   SQLite.exec db
     "CREATE INDEX IF NOT EXISTS chat_log_chat_idx ON chat_log(platform_key, kind_key, chat_id, id)"
+
+ensureColumn :: SQLite.Database -> Text -> Text -> Text -> IO ()
+ensureColumn db table column definition = do
+  columns <- tableColumnNames db table
+  unless (column `elem` columns) $
+    SQLite.exec db [i|ALTER TABLE #{table} ADD COLUMN #{column} #{definition}|]
+
+tableColumnNames :: SQLite.Database -> Text -> IO [Text]
+tableColumnNames db table =
+  withStatement db [i|PRAGMA table_info(#{table})|] [] (rows [])
+  where
+    rows acc stmt =
+      SQLite.step stmt >>= \case
+        SQLite.Done ->
+          pure (reverse acc)
+        SQLite.Row -> do
+          name <- columnText stmt 1
+          rows (name : acc) stmt
 
 declareJsonCollection :: SQLiteStore -> JsonCollection a -> IO ()
 declareJsonCollection store collection = do
@@ -223,26 +249,28 @@ validIdentifier identifier =
       char == '_' || (isAscii char && isAlphaNum char)
 
 -- | Load persisted conversation JSON keyed by bot message id.
-loadConversationRows :: SQLiteStore -> IO (Map Integer Text)
+loadConversationRows :: SQLiteStore -> IO [ConversationRow]
 loadConversationRows store = withStore store \db ->
-  withStatement db "SELECT message_id, conversation_json FROM conversations" [] \stmt ->
-    rows Map.empty stmt
+  withStatement db "SELECT message_id, conversation_id, conversation_json FROM conversations ORDER BY message_id ASC" [] \stmt ->
+    rows [] stmt
   where
     rows acc stmt =
       SQLite.step stmt >>= \case
         SQLite.Done ->
-          pure acc
+          pure (reverse acc)
         SQLite.Row -> do
           messageId <- columnInteger stmt 0
-          json <- columnText stmt 1
-          rows (Map.insert messageId json acc) stmt
+          conversationId <- columnMaybeInteger stmt 1
+          conversationJson <- columnText stmt 2
+          rows (ConversationRow{messageId, conversationId, conversationJson} : acc) stmt
 
 -- | Upsert a serialized conversation for a bot message id.
-saveConversationJson :: SQLiteStore -> Integer -> Text -> IO ()
-saveConversationJson store messageId conversationJson = withStore store \db ->
+saveConversationJson :: SQLiteStore -> Integer -> Integer -> Text -> IO ()
+saveConversationJson store messageId conversationId conversationJson = withStore store \db ->
   withStatement db
-    "INSERT OR REPLACE INTO conversations(message_id, conversation_json) VALUES (?, ?)"
+    "INSERT OR REPLACE INTO conversations(message_id, conversation_id, conversation_json) VALUES (?, ?, ?)"
     [ SQLite.SQLInteger (fromIntegral messageId)
+    , SQLite.SQLInteger (fromIntegral conversationId)
     , SQLite.SQLText conversationJson
     ]
     stepDone
@@ -327,6 +355,13 @@ columnInteger stmt index =
     SQLite.SQLInteger value -> pure (fromIntegral value)
     SQLite.SQLText value -> maybe (pure 0) pure (readMaybe (toString value))
     _ -> pure 0
+
+columnMaybeInteger :: SQLite.Statement -> Int -> IO (Maybe Integer)
+columnMaybeInteger stmt index =
+  SQLite.column stmt (SQLite.ColumnIndex index) >>= \case
+    SQLite.SQLInteger value -> pure (Just (fromIntegral value))
+    SQLite.SQLText value -> pure (readMaybe (toString value))
+    _ -> pure Nothing
 
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =

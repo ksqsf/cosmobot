@@ -51,14 +51,10 @@ newtype Conversation = Conversation
   }
   deriving (Show, Generic)
 
-data ConversationEntry = ConversationEntry
-  { conversationId :: !Integer
-  , conversation :: !Conversation
-  }
-
 data ConversationState = ConversationState
   { nextConversationId :: !Integer
-  , conversations :: !(Map Integer ConversationEntry)
+  , messageConversations :: !(Map Integer Integer)
+  , conversations :: !(Map Integer Conversation)
   }
 
 instance Aeson.ToJSON Conversation where
@@ -74,19 +70,66 @@ instance Aeson.FromJSON Conversation where
 -- | Create a store and preload persisted conversations when storage exists.
 newConversationStore :: Maybe Storage.SQLiteStore -> IO ConversationStore
 newConversationStore sqliteStore = do
-  conversations <- maybe (pure Map.empty) loadStoredConversations sqliteStore
-  let entries = Map.fromList
-        [ (messageId, ConversationEntry{conversationId, conversation})
-        | ((messageId, conversation), conversationId) <- zip (Map.toList conversations) [1..]
-        ]
-      nextConversationId = fromIntegral (Map.size entries) + 1
-  ref <- IORef.newIORef ConversationState{nextConversationId, conversations = entries}
+  conversationState <- maybe emptyConversationState loadStoredConversations sqliteStore
+  ref <- IORef.newIORef conversationState
   conversationLocks <- MVar.newMVar Map.empty
   pure ConversationStore{unConversationStore = ref, sqliteStore, conversationLocks}
 
-loadStoredConversations :: Storage.SQLiteStore -> IO (Map Integer Conversation)
-loadStoredConversations store =
-  Map.mapMaybe decodeConversation <$> Storage.loadConversationRows store
+emptyConversationState :: IO ConversationState
+emptyConversationState =
+  pure ConversationState
+    { nextConversationId = 1
+    , messageConversations = Map.empty
+    , conversations = Map.empty
+    }
+
+loadStoredConversations :: Storage.SQLiteStore -> IO ConversationState
+loadStoredConversations store = do
+  rows <- Storage.loadConversationRows store
+  let decodedRows =
+        mapMaybe decodeStoredConversation rows
+      assignedRows =
+        assignMissingConversationIds decodedRows
+      messageConversations =
+        Map.fromList
+          [ (messageId, conversationId)
+          | StoredConversation{messageId, conversationId} <- assignedRows
+          ]
+      conversations =
+        foldl' insertConversation Map.empty assignedRows
+      nextConversationId =
+        1 + foldl' max 0 (map (.conversationId) assignedRows)
+  pure ConversationState{nextConversationId, messageConversations, conversations}
+
+insertConversation :: Map Integer Conversation -> StoredConversation -> Map Integer Conversation
+insertConversation acc StoredConversation{conversationId, conversation} =
+  Map.insert conversationId conversation acc
+
+data StoredConversation = StoredConversation
+  { messageId :: !Integer
+  , conversationId :: !Integer
+  , conversation :: !Conversation
+  }
+
+decodeStoredConversation :: Storage.ConversationRow -> Maybe StoredConversation
+decodeStoredConversation row = do
+  conversation <- decodeConversation row.conversationJson
+  let conversationId = fromMaybe 0 row.conversationId
+  pure StoredConversation
+    { messageId = row.messageId
+    , conversationId = conversationId
+    , conversation = conversation
+    }
+
+assignMissingConversationIds :: [StoredConversation] -> [StoredConversation]
+assignMissingConversationIds rows =
+  zipWith assign rows [1..]
+  where
+    maxExistingId =
+      foldl' max 0 [ cid | StoredConversation{conversationId = cid} <- rows, cid > 0 ]
+    assign row fallbackId
+      | row.conversationId > 0 = row
+      | otherwise = row{conversationId = maxExistingId + fallbackId}
 
 decodeConversation :: Text -> Maybe Conversation
 decodeConversation =
@@ -148,7 +191,11 @@ assistantContext answer =
 -- | Look up the conversation associated with a bot reply message id.
 lookupConversation :: IOE :> es => ConversationStore -> Integer -> Eff es (Maybe Conversation)
 lookupConversation ConversationStore{unConversationStore = ref} messageId =
-  liftIO $ fmap (.conversation) . Map.lookup messageId . (.conversations) <$> IORef.readIORef ref
+  liftIO do
+    conversationState <- IORef.readIORef ref
+    pure do
+      conversationId <- Map.lookup messageId conversationState.messageConversations
+      Map.lookup conversationId conversationState.conversations
 
 -- | Associate a bot reply message id with a conversation and persist it.
 rememberConversation :: (IOE :> es, Log :> es) => ConversationStore -> Maybe Integer -> Conversation -> Eff es ()
@@ -166,29 +213,21 @@ rememberConversationFrom
 rememberConversationFrom _ _ Nothing _ =
   pure ()
 rememberConversationFrom ConversationStore{unConversationStore = ref, sqliteStore} parentMessageId (Just messageId) conversation = do
-  liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
+  conversationId <- liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
     let conversationId = conversationIdFor conversationState parentMessageId messageId
-        entry = ConversationEntry{conversationId, conversation}
         nextConversationId =
           if conversationId < conversationState.nextConversationId
             then conversationState.nextConversationId
             else conversationId + 1
-        updatedConversations =
-          Map.map
-            ( \existing ->
-                if existing.conversationId == conversationId
-                  then existing{conversation = conversation}
-                  else existing
-            )
-            conversationState.conversations
         nextState = conversationState
           { nextConversationId = nextConversationId
-          , conversations = Map.insert messageId entry updatedConversations
+          , messageConversations = Map.insert messageId conversationId conversationState.messageConversations
+          , conversations = Map.insert conversationId conversation conversationState.conversations
           }
-    in (nextState, ())
+    in (nextState, conversationId)
   traverse_
     ( \store ->
-        liftIO (Storage.saveConversationJson store messageId (conversationJson conversation))
+        liftIO (Storage.saveConversationJson store messageId conversationId (conversationJson conversation))
           `catch` \(err :: SomeException) ->
             logInfo "Failed to persist conversation" (show err :: String)
     )
@@ -200,16 +239,16 @@ conversationIdFor conversationState parentMessageId messageId =
   where
     parentConversationId =
       parentMessageId >>= \parentId ->
-        (.conversationId) <$> Map.lookup parentId conversationState.conversations
+        Map.lookup parentId conversationState.messageConversations
     existingConversationId =
-      (.conversationId) <$> Map.lookup messageId conversationState.conversations
+      Map.lookup messageId conversationState.messageConversations
 
 -- | Run an action under the lock for the conversation containing this bot message.
 withConversationLock :: IOE :> es => ConversationStore -> Integer -> Eff es a -> Eff es a
 withConversationLock ConversationStore{unConversationStore = ref, conversationLocks} messageId action = do
   conversationId <- liftIO do
     conversationState <- IORef.readIORef ref
-    pure ((.conversationId) <$> Map.lookup messageId conversationState.conversations)
+    pure (Map.lookup messageId conversationState.messageConversations)
   case conversationId of
     Nothing ->
       action
