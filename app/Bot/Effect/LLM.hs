@@ -159,6 +159,8 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
       (options <> header "Authorization" (ByteString.pack [i|Bearer #{requestApiKey}|]))
   let body = responseBody response
   logInfo "LLM response" (llmResponseLogLine requestEndpoint requestModel body)
+  when imageRequest do
+    logImageResponseUrls body
   case chatCompletionText body of
     Just answer -> pure answer
     Nothing     -> throwIO (LLMException [i|OpenAI response had no text choices: #{show body :: String}|])
@@ -506,6 +508,18 @@ chatCompletionText response =
       Just answer ->
         Just (Text.strip (answer <> maybe "" ("\n" <>) imageText))
       Nothing -> imageText
+
+logImageResponseUrls :: Log :> es => ChatCompletionResponse -> Eff es ()
+logImageResponseUrls response =
+  case responseImageUrls response of
+    [] ->
+      logInfo_ "LLM image response contained no image URLs"
+    urls ->
+      traverse_ (logInfo "LLM image response URL") urls
+
+responseImageUrls :: ChatCompletionResponse -> [Text]
+responseImageUrls response =
+  foldMap (mapMaybe imageValueUrl . fromMaybe [] . (.message.images)) response.choices
 
 chatCompletionAnswer :: ChatCompletionResponse -> ChatAnswer
 chatCompletionAnswer response =
