@@ -16,6 +16,7 @@ module Bot.Effect.Chat
   , runChatWith
 
     -- * Reply rendering
+  , imageDirective
   , renderReplyBody
   , replyImageUrls
   )
@@ -23,8 +24,8 @@ where
 
 import Bot.Message
 import Bot.Prelude
+import Bot.ReplyBody
 import qualified Data.Aeson as Aeson
-import qualified Data.Text as Text
 
 -- | Platform-independent chat operations used by handlers and tools.
 data Chat :: Effect where
@@ -107,23 +108,3 @@ runChatWith reply fetch fetchSenderMember fetchMember listMembers mention = inte
     listMembers message
   MentionUser message userId body ->
     mention message userId body
-
--- | Remove image directives from a reply body before storing it as text.
-renderReplyBody :: Text -> Text
-renderReplyBody body =
-  Text.strip (Text.unlines (filter (not . isImageLine) (Text.lines body)))
-
--- | Extract image URLs from @\[image\] ...@ reply directives.
-replyImageUrls :: Text -> [Text]
-replyImageUrls body =
-  mapMaybe imageLineUrl (Text.lines body)
-
-isImageLine :: Text -> Bool
-isImageLine =
-  isJust . imageLineUrl
-
-imageLineUrl :: Text -> Maybe Text
-imageLineUrl line =
-  let marker = "[image] "
-      stripped = Text.strip line
-  in Text.strip <$> Text.stripPrefix marker stripped

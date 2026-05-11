@@ -35,23 +35,17 @@ module Bot.Effect.LLM
 where
 
 import Bot.Prelude hiding (ask)
-import qualified Control.Exception as Exception
+import qualified Bot.Image as Image
+import qualified Bot.ReplyBody as ReplyBody
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as AesonTypes
-import qualified Data.ByteString as StrictByteString
-import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Network.HTTP.Req
-import System.Directory (getTemporaryDirectory, removeFile)
-import System.Exit (ExitCode(..))
-import System.FilePath ((<.>))
-import System.IO (hClose, openBinaryTempFile)
 import System.IO.Error (ioError, userError)
-import System.Process (readProcessWithExitCode)
 import qualified Text.URI as URI
 
 -- | Runtime configuration for the OpenAI-compatible chat endpoint.
@@ -173,7 +167,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
   logInfo "LLM response" (llmResponseLogLine requestEndpoint requestModel body)
   case chatCompletionText body of
     Just answer
-      | imageRequest -> compressImageDirectives cfg answer
+      | imageRequest -> compressImageAnswer (imageCompressionConfig cfg) answer
       | otherwise -> pure answer
     Nothing     -> throwIO (LLMException [i|OpenAI response had no text choices: #{show body :: String}|])
 
@@ -282,6 +276,19 @@ imageGenerationConfig Config{imageGenerationQuality, imageGenerationSize, imageG
         <> maybe [] (\value -> ["output_format" Aeson..= value]) imageGenerationOutputFormat
         <> maybe [] (\value -> ["output_compression" Aeson..= value]) imageGenerationOutputCompression
         <> maybe [] (\value -> ["moderation" Aeson..= value]) imageGenerationModeration
+
+imageCompressionConfig :: Config -> Image.ImageCompressionConfig
+imageCompressionConfig Config{imageGenerationOutputFormat, imageGenerationOutputCompression} =
+  Image.ImageCompressionConfig
+    { outputFormat = imageGenerationOutputFormat
+    , outputCompression = imageGenerationOutputCompression
+    }
+
+compressImageAnswer :: (IOE :> es, Log :> es) => Image.ImageCompressionConfig -> Text -> Eff es Text
+compressImageAnswer cfg =
+  ReplyBody.traverseReplyImageUrls \ref -> do
+    compressed <- Image.compressDataImageReference cfg ref
+    pure (fromMaybe ref compressed)
 
 llmRequestLogLine :: Text -> ChatCompletionRequest -> Text
 llmRequestLogLine endpoint request =
@@ -524,87 +531,6 @@ chatCompletionText response =
         Just (Text.strip (answer <> maybe "" ("\n" <>) imageText))
       Nothing -> imageText
 
-responseImageUrls :: ChatCompletionResponse -> [Text]
-responseImageUrls response =
-  foldMap (mapMaybe imageValueUrl . fromMaybe [] . (.message.images)) response.choices
-
-compressImageDirectives :: (IOE :> es, Log :> es) => Config -> Text -> Eff es Text
-compressImageDirectives cfg answer =
-  Text.unlines <$> traverse compressLine (Text.lines answer)
-  where
-    compressLine line =
-      case Text.stripPrefix "[image] " (Text.strip line) of
-        Nothing ->
-          pure line
-        Just imageRef ->
-          case targetImageFormat cfg of
-            Nothing ->
-              pure line
-            Just format ->
-              compressDataImage format cfg.imageGenerationOutputCompression imageRef >>= \case
-                Nothing ->
-                  pure line
-                Just compressedRef ->
-                  pure ("[image] " <> compressedRef)
-
-targetImageFormat :: Config -> Maybe Text
-targetImageFormat cfg =
-  case Text.toLower . Text.strip <$> cfg.imageGenerationOutputFormat of
-    Just "jpeg" -> Just "jpg"
-    Just "jpg"  -> Just "jpg"
-    Just "webp" -> Just "webp"
-    _           -> Nothing
-
-compressDataImage :: (IOE :> es, Log :> es) => Text -> Maybe Int -> Text -> Eff es (Maybe Text)
-compressDataImage format quality imageRef =
-  case decodeDataImage imageRef of
-    Nothing ->
-      pure Nothing
-    Just bytes -> do
-      result <- liftIO (convertDataImage format quality bytes) `catch` \(err :: SomeException) -> do
-        logInfo "Image compression failed" (show err :: String)
-        pure Nothing
-      traverse_ (logInfo "Compressed image response URL") result
-      pure result
-
-decodeDataImage :: Text -> Maybe StrictByteString.ByteString
-decodeDataImage imageRef = do
-  let (_, encodedWithMarker) = Text.breakOn ";base64," imageRef
-  encoded <- Text.stripPrefix ";base64," encodedWithMarker
-  either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
-
-convertDataImage :: Text -> Maybe Int -> StrictByteString.ByteString -> IO (Maybe Text)
-convertDataImage format quality bytes = do
-  dir <- getTemporaryDirectory
-  (inputPath, inputHandle) <- openBinaryTempFile dir ("cosmobot-image-input" <.> "png")
-  StrictByteString.hPut inputHandle bytes
-  hClose inputHandle
-  (outputPath, outputHandle) <- openBinaryTempFile dir ("cosmobot-image-output" <.> Text.unpack format)
-  hClose outputHandle
-  let args =
-        [ inputPath
-        , "-auto-orient"
-        , "-strip"
-        ]
-          <> maybe [] (\value -> ["-quality", show (clampImageQuality value)]) quality
-          <> [outputPath]
-  (code, _out, _err) <- readProcessWithExitCode "magick" args ""
-  ignoreRemoveFile inputPath
-  case code of
-    ExitSuccess ->
-      pure (Just ("file://" <> Text.pack outputPath))
-    ExitFailure _ -> do
-      ignoreRemoveFile outputPath
-      pure Nothing
-
-clampImageQuality :: Int -> Int
-clampImageQuality =
-  min 100 . max 1
-
-ignoreRemoveFile :: FilePath -> IO ()
-ignoreRemoveFile path =
-  removeFile path `Exception.catch` \(_ :: SomeException) -> pure ()
-
 chatCompletionAnswer :: ChatCompletionResponse -> ChatAnswer
 chatCompletionAnswer response =
   case viaNonEmpty head response.choices of
@@ -629,7 +555,7 @@ imageUrlsText :: Maybe [Aeson.Value] -> Maybe Text
 imageUrlsText images =
   case mapMaybe imageValueUrl (fromMaybe [] images) of
     []   -> Nothing
-    urls -> Just (Text.unlines (map ("[image] " <>) urls))
+    urls -> Just (Text.unlines (map ReplyBody.imageDirective urls))
 
 imageValueUrl :: Aeson.Value -> Maybe Text
 imageValueUrl = \case

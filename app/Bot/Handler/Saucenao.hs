@@ -15,6 +15,7 @@ import qualified Bot.Effect.Chat as Chat
 import Bot.Filter
 import Bot.Message
 import Bot.Prelude
+import qualified Bot.ReplyBody as ReplyBody
 import Control.Concurrent (forkIO)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
@@ -250,4 +251,4 @@ renderResult result = do
     [ "相似度：" <> similarityText <> "%"
     , link
     ]
-      <> [ "[image] " <> thumbnail | thumbnail <- maybeToList match.thumbnail ]
+      <> [ ReplyBody.imageDirective thumbnail | thumbnail <- maybeToList match.thumbnail ]

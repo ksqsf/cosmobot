@@ -114,8 +114,10 @@ executable cosmobot
         Bot.Chat.Platform
         Bot.Config
         Bot.Conversation
+        Bot.Image
         Bot.Message
         Bot.Memory
+        Bot.ReplyBody
         Bot.Storage.SQLite
         Bot.Filter
         Bot.Handler.Ask
@@ -153,6 +155,7 @@ test-suite filter-spec
         Bot.Message
         Bot.Filter
         Bot.Effect.Chat
+        Bot.ReplyBody
     hs-source-dirs:   test
 
 test-suite scratchpad-spec
@@ -167,6 +170,7 @@ test-suite scratchpad-spec
         Bot.Prelude
         Bot.Message
         Bot.Effect.Chat
+        Bot.ReplyBody
         Bot.Storage.SQLite
         Bot.Handler.Scratchpad
     hs-source-dirs:   test
@@ -182,6 +186,7 @@ test-suite chat-platform-spec
         Bot.Prelude
         Bot.Message
         Bot.Effect.Chat
+        Bot.ReplyBody
         Bot.Effect.Chat.QQ
         Bot.Effect.Chat.Telegram
     build-depends:    base64-bytestring
@@ -219,9 +224,11 @@ test-suite agent-spec
         Bot.Effect.ChatLog
         Bot.Effect.LLM
         Bot.Effect.Scheduler
+        Bot.Image
         Bot.Message
         Bot.Memory
         Bot.Prelude
+        Bot.ReplyBody
         Bot.Storage.SQLite
     build-depends:    http-client
                     , process
@@ -240,5 +247,6 @@ test-suite chat-log-spec
         Bot.Effect.ChatLog
         Bot.Message
         Bot.Prelude
+        Bot.ReplyBody
         Bot.Storage.SQLite
     hs-source-dirs:   test

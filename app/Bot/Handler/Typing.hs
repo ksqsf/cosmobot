@@ -13,10 +13,11 @@ where
 import Bot.Config
 import qualified Bot.Effect.Chat as Chat
 import Bot.Filter
+import qualified Bot.Image as Image
 import Bot.Message
 import Bot.Prelude
+import qualified Bot.ReplyBody as ReplyBody
 import Control.Concurrent (forkIO)
-import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
@@ -80,7 +81,7 @@ sendRankImage titleSuffix failureMessage fetchRows message =
     logInfo "Fetched typing rank rows" (title, length rows)
     imagePath <- liftIO (renderRankImage title rows)
     logInfo "Rendered typing rank image" imagePath
-    sent <- Chat.replyTo message ("[image] file://" <> Text.pack imagePath)
+    sent <- Chat.replyTo message (ReplyBody.imageDirective ("file://" <> Text.pack imagePath))
       `finally` cleanupRankFiles imagePath
     logInfo "Sent typing rank image" sent
     when (isNothing sent) do
@@ -88,15 +89,12 @@ sendRankImage titleSuffix failureMessage fetchRows message =
   where
     handleError action =
       action `catch` \(err :: SomeException) -> do
-        logInfo "Failed to render typing rank" (show err :: String)
+        logAttention "Failed to render typing rank" (show err :: String)
         void $ Chat.replyTo message failureMessage
 
 cleanupRankFiles :: IOE :> es => FilePath -> Eff es ()
 cleanupRankFiles pngPath =
-  traverse_ removeIfExists [pngPath, replaceExtension pngPath "typ"]
-  where
-    removeIfExists path =
-      liftIO (removeFile path) `catch` \(_ :: SomeException) -> pure ()
+  liftIO (Image.removeFilesIfExists [pngPath, replaceExtension pngPath "typ"])
 
 rankTitle :: Text -> IO Text
 rankTitle suffix = do
@@ -284,10 +282,7 @@ renderRankImage title rows = do
 
 cleanupRenderFiles :: FilePath -> FilePath -> IO ()
 cleanupRenderFiles typstPath pngPath =
-  traverse_ removeIfExists [typstPath, pngPath]
-  where
-    removeIfExists path =
-      removeFile path `Exception.catch` \(_ :: SomeException) -> pure ()
+  Image.removeFilesIfExists [typstPath, pngPath]
 
 typstDocument :: Text -> [[Text]] -> Text
 typstDocument title rows =

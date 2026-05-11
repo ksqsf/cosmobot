@@ -25,6 +25,7 @@ import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Memory as Memory
 import Bot.Message
 import Bot.Prelude
+import qualified Bot.ReplyBody as ReplyBody
 import Control.Concurrent (forkIO)
 import qualified Control.Concurrent.MVar as MVar
 import qualified Control.Exception as Exception
@@ -1087,7 +1088,7 @@ replyBodyWithImages :: Text -> [Text] -> Text
 replyBodyWithImages text imageUrls =
   Text.strip $ Text.unlines $
     [ text | not (Text.null text) ]
-      <> map ("[image] " <>) imageUrls
+      <> map ReplyBody.imageDirective imageUrls
 
 resolveSafePath :: IOE :> es => Text -> Eff es FilePath
 resolveSafePath rawPath = do
