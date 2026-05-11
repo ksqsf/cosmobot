@@ -249,26 +249,32 @@ askConversation
   -> Eff es (Text, Conversation)
 askConversation memoryCfg toolCfg cfg conversations parentMessageId threadId message conversation = do
   activeReply <- newActiveReply conversations parentMessageId threadId conversation
+  let cleanupActiveReply =
+        liftIO (IORef.readIORef activeReply.activeRef)
+          >>= traverse_ (finishActiveConversationCurrent conversations)
   (responseId, (answer, answeredConversation)) <-
-    S.mapM_
-      (recordReplyUpdate activeReply)
-      (Chat.streamReplyTo message fst (Agent.runAgentStreaming cfg.agentMaxTurns context Agent.defaultTools conversation))
-      `catch` \(err :: SomeException) -> do
-        case Exception.fromException err of
-          Just Exception.ThreadKilled ->
-            throwIO err
-          _ -> do
-            logAttention "LLM request failed" (show err :: String)
-            responseId <- Chat.replyTo message "LLM request failed."
-            pure (responseId, ("LLM request failed.", conversation))
-  ChatLog.recordBotMessage message responseId answer
-  active <- liftIO (IORef.readIORef activeReply.activeRef)
-  case active of
-    Just activeHandle ->
-      finishActiveConversation conversations activeHandle answeredConversation
-    Nothing ->
-      rememberConversationFrom conversations parentMessageId responseId answeredConversation
-  pure (answer, answeredConversation)
+    ( S.mapM_
+        (recordReplyUpdate activeReply)
+        (Chat.streamReplyTo message fst (Agent.runAgentStreaming cfg.agentMaxTurns context Agent.defaultTools conversation))
+        `catch` \(err :: SomeException) -> do
+          case Exception.fromException err of
+            Just Exception.ThreadKilled ->
+              throwIO err
+            _ -> do
+              logAttention "LLM request failed" (show err :: String)
+              responseId <- Chat.replyTo message "LLM request failed."
+              pure (responseId, ("LLM request failed.", conversation))
+    ) `onException` cleanupActiveReply
+  ( do
+      ChatLog.recordBotMessage message responseId answer
+      active <- liftIO (IORef.readIORef activeReply.activeRef)
+      case active of
+        Just activeHandle ->
+          finishActiveConversation conversations activeHandle answeredConversation
+        Nothing ->
+          rememberConversationFrom conversations parentMessageId responseId answeredConversation
+      pure (answer, answeredConversation)
+    ) `onException` cleanupActiveReply
   where
     context =
       Agent.AgentContext

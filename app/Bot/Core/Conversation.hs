@@ -17,6 +17,7 @@ module Bot.Core.Conversation
   , addActiveConversationMessage
   , updateActiveConversation
   , finishActiveConversation
+  , finishActiveConversationCurrent
   , haltConversation
 
     -- * Conversation values
@@ -302,6 +303,15 @@ finishActiveConversation store@ConversationStore{activeConversationStore = activ
   void $ liftIO (MVar.tryPutMVar active.activeDone conversation)
   liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
     (foldl' (flip Map.delete) activeMap messageIds, ())
+
+finishActiveConversationCurrent
+  :: (IOE :> es, Log :> es)
+  => ConversationStore
+  -> ActiveConversationHandle
+  -> Eff es ()
+finishActiveConversationCurrent store (ActiveConversationHandle active) = do
+  conversation <- liftIO (IORef.readIORef active.activeCurrent)
+  finishActiveConversation store (ActiveConversationHandle active) conversation
 
 haltConversation :: (IOE :> es, Log :> es) => ConversationStore -> Integer -> Eff es Bool
 haltConversation store@ConversationStore{activeConversationStore = activeRef} messageId = do
