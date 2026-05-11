@@ -22,7 +22,8 @@ import Bot.Message
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as SQLiteStorage
 import Control.Concurrent (forkIO)
-import qualified Control.Concurrent.Chan as Chan
+import qualified Control.Concurrent.STM as STM
+import qualified Control.Concurrent.STM.TBQueue as TBQueue
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
 import Log.Backend.StandardOutput
@@ -228,22 +229,26 @@ mergeIncomingMessages
   => [Stream (Of IncomingMessage) (Eff es) ()]
   -> Stream (Of IncomingMessage) (Eff es) ()
 mergeIncomingMessages streams = do
-  chan <- S.lift (liftIO Chan.newChan)
+  queue <- S.lift (liftIO (TBQueue.newTBQueueIO incomingMessageQueueCapacity :: IO (TBQueue.TBQueue IncomingMessage)))
   S.lift $ withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
-    traverse_ (forkIO . runInIO . pump chan) streams
+    traverse_ (forkIO . runInIO . pump queue) streams
   forever do
-    message <- S.lift (liftIO (Chan.readChan chan))
+    message <- S.lift (liftIO (STM.atomically (TBQueue.readTBQueue queue)))
     S.yield message
 
 pump
   :: (Log :> es, IOE :> es)
-  => Chan.Chan IncomingMessage
+  => TBQueue.TBQueue IncomingMessage
   -> Stream (Of IncomingMessage) (Eff es) ()
   -> Eff es ()
-pump chan stream =
-  S.mapM_ (liftIO . Chan.writeChan chan) stream
+pump queue stream =
+  S.mapM_ (liftIO . STM.atomically . TBQueue.writeTBQueue queue) stream
     `catch` \(err :: SomeException) ->
       logInfo "Incoming message stream stopped" (show err :: String)
+
+incomingMessageQueueCapacity :: Natural
+incomingMessageQueueCapacity =
+  1024
 
 runBotLog :: IOE :> es => LogLevel -> Eff (Log : es) a -> Eff es a
 runBotLog level inner = withStdOutLogger $ \logger ->

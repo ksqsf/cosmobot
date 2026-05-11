@@ -77,6 +77,7 @@ common app-deps
                     , effectful
                     , log-effectful
                     , streaming
+                    , stm
                     , bytestring
                     , aeson
                     , string-interpolate

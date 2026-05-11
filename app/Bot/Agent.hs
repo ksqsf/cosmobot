@@ -410,8 +410,10 @@ scheduleAgentActionTool = Tool
         Left err ->
           pure (toolText (Text.pack err))
         Right (delaySeconds, prompt) -> do
-          Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
-          pure (toolText [i|Scheduled agent action in #{delaySeconds} seconds.|])
+          scheduled <- Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
+          if scheduled
+            then pure (toolText [i|Scheduled agent action in #{delaySeconds} seconds.|])
+            else pure (toolText "Could not schedule agent action: scheduler is at capacity.")
   }
 
 deleteScheduledAgentActionTool :: Scheduler.Scheduler :> es => Tool es

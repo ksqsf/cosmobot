@@ -22,7 +22,7 @@ main =
 
 testScheduledMessagesAreScopedByCurrentUser :: IO ()
 testScheduledMessagesAreScopedByCurrentUser = runEff $ Scheduler.runScheduler do
-  Scheduler.scheduleMessage 60 (messageFrom 200 "!ask remind me")
+  _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask remind me")
   ownSchedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
   otherSchedules <- Scheduler.listScheduledMessages (messageFrom 201 "what schedules?")
   liftIO $ length ownSchedules @?= 1
@@ -32,13 +32,13 @@ testScheduledMessagesAreScopedByCurrentUser = runEff $ Scheduler.runScheduler do
 
 testScheduledMessagesAreScopedByCurrentChat :: IO ()
 testScheduledMessagesAreScopedByCurrentChat = runEff $ Scheduler.runScheduler do
-  Scheduler.scheduleMessage 60 (messageFrom 200 "!ask private")
+  _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask private")
   schedules <- Scheduler.listScheduledMessages (messageFromChat 200 101 "what schedules?")
   liftIO $ length schedules @?= 0
 
 testUsernameScopedSchedule :: IO ()
 testUsernameScopedSchedule = runEff $ Scheduler.runScheduler do
-  Scheduler.scheduleMessage 60 (messageFromUsername "alice" "!ask by username")
+  _ <- Scheduler.scheduleMessage 60 (messageFromUsername "alice" "!ask by username")
   ownSchedules <- Scheduler.listScheduledMessages (messageFromUsername "alice" "what schedules?")
   otherSchedules <- Scheduler.listScheduledMessages (messageFromUsername "bob" "what schedules?")
   liftIO $ length ownSchedules @?= 1
@@ -46,21 +46,21 @@ testUsernameScopedSchedule = runEff $ Scheduler.runScheduler do
 
 testScheduleIdsIncrease :: IO ()
 testScheduleIdsIncrease = runEff $ Scheduler.runScheduler do
-  Scheduler.scheduleMessage 60 (messageFrom 200 "!ask first")
-  Scheduler.scheduleMessage 60 (messageFrom 200 "!ask second")
+  _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask first")
+  _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask second")
   schedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
   liftIO $ map (.scheduleId) schedules @?= [1, 2]
 
 testScheduledStreamYieldsOriginalMessage :: IO ()
 testScheduledStreamYieldsOriginalMessage = runEff $ Scheduler.runScheduler do
   let scheduled = messageFrom 200 "!ask now"
-  Scheduler.scheduleMessage 0 scheduled
+  _ <- Scheduler.scheduleMessage 0 scheduled
   delivered <- S.head_ Scheduler.scheduledMessages
   liftIO $ ((.text) <$> delivered) @?= Just scheduled.text
 
 testElapsedScheduleLeavesPendingList :: IO ()
 testElapsedScheduleLeavesPendingList = runEff $ Scheduler.runScheduler do
-  Scheduler.scheduleMessage 0 (messageFrom 200 "!ask now")
+  _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask now")
   _ <- S.head_ Scheduler.scheduledMessages
   schedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
   liftIO $ length schedules @?= 0

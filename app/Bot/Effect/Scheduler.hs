@@ -18,7 +18,8 @@ where
 import Bot.Message
 import Bot.Prelude
 import Control.Concurrent (forkIO, threadDelay)
-import qualified Control.Concurrent.Chan as Chan
+import qualified Control.Concurrent.STM as STM
+import qualified Control.Concurrent.STM.TBQueue as TBQueue
 import qualified Control.Concurrent.MVar as MVar
 import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
@@ -49,7 +50,7 @@ data Scheduler :: Effect where
   ScheduleMessage
     :: Int
     -> IncomingMessage
-    -> Scheduler m ()
+    -> Scheduler m Bool
   ListScheduledMessages
     :: IncomingMessage
     -> Scheduler m [ScheduledMessage]
@@ -63,7 +64,7 @@ data Scheduler :: Effect where
 type instance DispatchOf Scheduler = Dynamic
 
 -- | Re-inject a message into the incoming stream after a delay in seconds.
-scheduleMessage :: Scheduler :> es => Int -> IncomingMessage -> Eff es ()
+scheduleMessage :: Scheduler :> es => Int -> IncomingMessage -> Eff es Bool
 scheduleMessage delaySeconds message =
   send (ScheduleMessage delaySeconds message)
 
@@ -93,28 +94,27 @@ runScheduler
   => Eff (Scheduler : es) a
   -> Eff es a
 runScheduler inner = do
-  chan <- liftIO (Chan.newChan :: IO (Chan.Chan IncomingMessage))
+  queue <- liftIO (TBQueue.newTBQueueIO scheduledMessageQueueCapacity :: IO (TBQueue.TBQueue IncomingMessage))
   schedulerStateVar <- liftIO (MVar.newMVar (SchedulerState 1 Map.empty))
   interpret
     (\_ -> \case
       ScheduleMessage delaySeconds message -> do
-        scheduleId <- liftIO $ registerPendingMessage schedulerStateVar delaySeconds message
-        void $ liftIO $ forkIO do
-          threadDelay (max 0 delaySeconds * 1000000)
-          stillExists <- liftIO $ MVar.withMVar schedulerStateVar $ \schedulerState -> pure (Map.lookup scheduleId schedulerState.pendingMessages)
-          when (isJust stillExists) $ do
-            MVar.modifyMVar_ schedulerStateVar \schedulerState ->
-              pure schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}
-            Chan.writeChan chan message
-      DeleteScheduledMessage message scheduleId -> do
-        scheduleMb <- liftIO $ MVar.withMVar schedulerStateVar $ \schedulerState -> pure (Map.lookup scheduleId schedulerState.pendingMessages)
-        case scheduleMb of
-          Nothing -> pure False
-          Just schedule -> do
-            if sameMessageOwner message schedule.message
-              then do liftIO $ MVar.modifyMVar_ schedulerStateVar $ \schedulerState -> pure schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}
-                      pure True
-              else pure False
+        registered <- liftIO $ registerPendingMessage schedulerStateVar delaySeconds message
+        case registered of
+          Nothing ->
+            pure False
+          Just scheduleId -> do
+            void $ liftIO $ forkIO do
+              threadDelay (max 0 delaySeconds * 1000000)
+              stillExists <- MVar.withMVar schedulerStateVar \schedulerState ->
+                pure (Map.lookup scheduleId schedulerState.pendingMessages)
+              when (isJust stillExists) do
+                MVar.modifyMVar_ schedulerStateVar \schedulerState ->
+                  pure schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}
+                STM.atomically (TBQueue.writeTBQueue queue message)
+            pure True
+      DeleteScheduledMessage message scheduleId ->
+        liftIO $ deletePendingMessage schedulerStateVar message scheduleId
       ListScheduledMessages message -> do
         now <- liftIO getMonotonicTimeNSec
         pending <- liftIO $ MVar.withMVar schedulerStateVar (pure . Map.elems . (.pendingMessages))
@@ -124,25 +124,40 @@ runScheduler inner = do
           , sameMessageOwner message pendingMessage.message
           ]
       ReceiveScheduledMessage ->
-        liftIO (Chan.readChan chan))
+        liftIO (STM.atomically (TBQueue.readTBQueue queue)))
     inner
 
-registerPendingMessage :: MVar.MVar SchedulerState -> Int -> IncomingMessage -> IO Integer
+registerPendingMessage :: MVar.MVar SchedulerState -> Int -> IncomingMessage -> IO (Maybe Integer)
 registerPendingMessage schedulerStateVar delaySeconds message = do
   now <- getMonotonicTimeNSec
   MVar.modifyMVar schedulerStateVar \schedulerState -> do
-    let scheduleId = schedulerState.nextScheduleId
-        delayNanoseconds = fromIntegral (max 0 delaySeconds) * nanosecondsPerSecond
-        pendingMessage = PendingMessage
-          { scheduleId = scheduleId
-          , dueAtNanoseconds = now + delayNanoseconds
-          , message = message
-          }
-        nextState = schedulerState
-          { nextScheduleId = scheduleId + 1
-          , pendingMessages = Map.insert scheduleId pendingMessage schedulerState.pendingMessages
-          }
-    pure (nextState, scheduleId)
+    if Map.size schedulerState.pendingMessages >= maxPendingScheduledMessages
+      then pure (schedulerState, Nothing)
+      else do
+        let scheduleId = schedulerState.nextScheduleId
+            delayNanoseconds = fromIntegral (max 0 delaySeconds) * nanosecondsPerSecond
+            pendingMessage = PendingMessage
+              { scheduleId = scheduleId
+              , dueAtNanoseconds = now + delayNanoseconds
+              , message = message
+              }
+            nextState = schedulerState
+              { nextScheduleId = scheduleId + 1
+              , pendingMessages = Map.insert scheduleId pendingMessage schedulerState.pendingMessages
+              }
+        pure (nextState, Just scheduleId)
+
+deletePendingMessage :: MVar.MVar SchedulerState -> IncomingMessage -> Integer -> IO Bool
+deletePendingMessage schedulerStateVar message scheduleId =
+  MVar.modifyMVar schedulerStateVar \schedulerState ->
+    case Map.lookup scheduleId schedulerState.pendingMessages of
+      Nothing ->
+        pure (schedulerState, False)
+      Just schedule
+        | sameMessageOwner message schedule.message ->
+            pure (schedulerState{pendingMessages = Map.delete scheduleId schedulerState.pendingMessages}, True)
+        | otherwise ->
+            pure (schedulerState, False)
 
 scheduledMessage :: Word64 -> PendingMessage -> ScheduledMessage
 scheduledMessage now pending =
@@ -178,3 +193,11 @@ sameSender left right =
 nanosecondsPerSecond :: Word64
 nanosecondsPerSecond =
   1000000000
+
+scheduledMessageQueueCapacity :: Natural
+scheduledMessageQueueCapacity =
+  1024
+
+maxPendingScheduledMessages :: Int
+maxPendingScheduledMessages =
+  1024
