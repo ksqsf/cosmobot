@@ -60,11 +60,11 @@ runAgent
   -> Conversation
   -> Eff es (Text, Conversation)
 runAgent maxTurns context tools conversation =
-  loop (max 1 maxTurns) (closeInterruptedToolCalls conversation)
+  loop (max 1 maxTurns) 0 (closeInterruptedToolCalls conversation)
   where
     exposedTools = filter (`toolAllowed` context) tools
 
-    loop turnsLeft current = do
+    loop turnsLeft webFetchUses current = do
       answer <- LLM.askWithTools (map toolSchema exposedTools) current.messages
       let answered = appendMessage (LLM.assistantAnswer answer) current
       case answer.toolCalls of
@@ -76,16 +76,32 @@ runAgent maxTurns context tools conversation =
               let paused = appendMessages (map pausedToolResult calls) answered
               pure (toolLimitMessage answer.content calls, paused)
           | otherwise -> do
-              results <- traverse execute calls
+              (results, nextWebFetchUses) <- executeCalls webFetchUses calls
               let next = appendMessages (map fst results) answered
               traverse_ (\messageId -> context.remember messageId next) (concatMap snd results)
-              loop (turnsLeft - 1) next
+              loop (turnsLeft - 1) nextWebFetchUses next
 
-    execute call = do
+    executeCalls webFetchUses [] =
+      pure ([], webFetchUses)
+    executeCalls webFetchUses (call : calls) = do
+      (result, nextWebFetchUses) <- execute webFetchUses call
+      (rest, finalWebFetchUses) <- executeCalls nextWebFetchUses calls
+      pure (result : rest, finalWebFetchUses)
+
+    execute webFetchUses call = do
       let callName = call.name
-      result <- runTool context tools call `catch` \(err :: SomeException) ->
-        pure (toolText [i|Tool #{callName} failed: #{show err :: String}|])
-      pure (LLM.toolResult call result.content, result.messageIds)
+          webFetchCall = callName == "web_fetch"
+          webFetchLimit = context.toolConfig.webFetchMaxUses
+      result <-
+        if webFetchCall && maybe False (webFetchUses >=) webFetchLimit
+          then pure (toolText [i|web_fetch use limit reached for this agent run: #{webFetchUses}.|])
+          else runTool context tools call `catch` \(err :: SomeException) ->
+            pure (toolText [i|Tool #{callName} failed: #{show err :: String}|])
+      let nextWebFetchUses =
+            if webFetchCall && maybe True (webFetchUses <) webFetchLimit
+              then webFetchUses + 1
+              else webFetchUses
+      pure ((LLM.toolResult call result.content, result.messageIds), nextWebFetchUses)
 
 toolLimitMessage :: Text -> [LLM.ToolCall] -> Text
 toolLimitMessage content calls
@@ -314,12 +330,12 @@ webFetchTool = Tool
   , description = "Fetch a web page by URL and return extracted readable text. Supports http and https URLs."
   , parameters = objectSchema
       [ fieldText "url" "HTTP or HTTPS URL to fetch."
-      , fieldInteger "max_content_tokens" "Approximate maximum content characters to return. Defaults to 50000."
+      , fieldInteger "max_content_tokens" "Approximate maximum content tokens to return. Defaults to the configured tool.web_fetch.max_content_tokens or 50000."
       ]
       ["url"]
   , allowed = webFetchEnabled
-  , run = \_ args ->
-      case AesonTypes.parseEither webFetchArgs args of
+  , run = \context args ->
+      case AesonTypes.parseEither (webFetchArgs context.toolConfig.webFetchMaxContentTokens) args of
         Left err ->
           pure (toolText (Text.pack err))
         Right (url, maxContentTokens) -> do
@@ -498,7 +514,7 @@ fetchWebPage rawUrl maxContentTokens = do
         req GET url NoReqBody bsResponse (options <> webRequestOptions)
       let contentType = TextEncoding.decodeUtf8With TextEncoding.lenientDecode <$> responseHeader response "Content-Type"
           body = htmlToPlainText (decodeResponseBody (responseBody response))
-          text = Text.take maxContentTokens body
+          text = takeApproxTokens maxContentTokens body
       pure (Aeson.object
         [ "url" Aeson..= rawUrl
         , "status" Aeson..= responseStatusCode response
@@ -506,6 +522,10 @@ fetchWebPage rawUrl maxContentTokens = do
         , "content" Aeson..= text
         , "truncated" Aeson..= (Text.length text < Text.length body)
         ])
+
+takeApproxTokens :: Int -> Text -> Text
+takeApproxTokens maxTokens =
+  Text.take (maxTokens * 4)
 
 webRequestOptions :: Option scheme
 webRequestOptions =
@@ -974,11 +994,11 @@ webSearchArgs configuredDefault =
       fail "max_results must be positive."
     pure (query, min 20 maxResults)
 
-webFetchArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int)
-webFetchArgs =
+webFetchArgs :: Maybe Int -> Aeson.Value -> AesonTypes.Parser (Text, Int)
+webFetchArgs configuredDefault =
   Aeson.withObject "web fetch arguments" $ \o -> do
     url <- Text.strip <$> o Aeson..: Key.fromText "url"
-    maxContentTokens <- fromMaybe 50000 <$> o Aeson..:? Key.fromText "max_content_tokens"
+    maxContentTokens <- fromMaybe (fromMaybe 50000 configuredDefault) <$> o Aeson..:? Key.fromText "max_content_tokens"
     when (Text.null url) do
       fail "url must not be empty."
     when (maxContentTokens <= 0) do

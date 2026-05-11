@@ -41,6 +41,7 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
+      , testCase "web_fetch max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "conversation replies keep parent and child snapshots" testConversationRepliesKeepSnapshots
       , testCase "conversation branches do not overwrite siblings" testConversationBranchesDoNotOverwriteSiblings
       , testCase "conversation branches persist through SQLite reload" testConversationBranchesPersistThroughSQLiteReload
@@ -81,6 +82,32 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= [(Just 42, "hello\n[image] https://example.test/image.png")])
   IORef.readIORef remembered >>= (@?= [Just 42])
+
+testWebFetchMaxUsesLimitsCalls :: IO ()
+testWebFetchMaxUsesLimitsCalls = do
+  answers <- IORef.newIORef
+    [ LLM.ChatAnswer ""
+        [ toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test/1" :: Text)])
+        , toolCall "call-2" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test/2" :: Text)])
+        ]
+    , LLM.ChatAnswer "done" []
+    ]
+  fetches <- IORef.newIORef (0 :: Int)
+  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
+    Agent.runAgent 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True, Agent.webFetchMaxUses = Just 1}}) [fakeWebFetchTool fetches] (startWithUser "fetch twice")
+  answer @?= "done"
+  IORef.readIORef fetches >>= (@?= 1)
+
+fakeWebFetchTool :: IOE :> es => IORef.IORef Int -> Agent.Tool es
+fakeWebFetchTool fetches = Agent.Tool
+  { name = "web_fetch"
+  , description = "fake web fetch"
+  , parameters = Aeson.object []
+  , allowed = const True
+  , run = \_ _ -> do
+      liftIO $ IORef.modifyIORef' fetches (+ 1)
+      pure (Agent.ToolResult "fetched" [])
+  }
 
 testConversationRepliesKeepSnapshots :: IO ()
 testConversationRepliesKeepSnapshots = runEff $ runTestLog do

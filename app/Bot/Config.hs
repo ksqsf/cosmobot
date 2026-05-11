@@ -237,10 +237,15 @@ data LLMFileConfig = LLMFileConfig
 
 data ToolFileConfig = ToolFileConfig
   { webSearch :: !WebSearchFileConfig
-  , webFetch :: !Bool
-  , webFetchMaxUses :: !(Maybe Int)
-  , webFetchMaxContentTokens :: !(Maybe Int)
+  , webFetch :: !WebFetchFileConfig
   , datetime :: !Bool
+  }
+  deriving (Show)
+
+data WebFetchFileConfig = WebFetchFileConfig
+  { enable :: !Bool
+  , maxUses :: !(Maybe Int)
+  , maxContentTokens :: !(Maybe Int)
   }
   deriving (Show)
 
@@ -256,10 +261,15 @@ data WebSearchFileConfig = WebSearchFileConfig
 defaultToolFileConfig :: ToolFileConfig
 defaultToolFileConfig = ToolFileConfig
   { webSearch = defaultWebSearchFileConfig
-  , webFetch = Agent.defaultToolConfig.webFetch
-  , webFetchMaxUses = Agent.defaultToolConfig.webFetchMaxUses
-  , webFetchMaxContentTokens = Agent.defaultToolConfig.webFetchMaxContentTokens
+  , webFetch = defaultWebFetchFileConfig
   , datetime = Agent.defaultToolConfig.datetime
+  }
+
+defaultWebFetchFileConfig :: WebFetchFileConfig
+defaultWebFetchFileConfig = WebFetchFileConfig
+  { enable = Agent.defaultToolConfig.webFetch
+  , maxUses = Agent.defaultToolConfig.webFetchMaxUses
+  , maxContentTokens = Agent.defaultToolConfig.webFetchMaxContentTokens
   }
 
 defaultWebSearchFileConfig :: WebSearchFileConfig
@@ -319,15 +329,22 @@ instance FromValue ToolFileConfig where
   fromValue = parseTableFromValue do
     webSearch <- fromMaybe defaultToolFileConfig.webSearch <$> optKey "web_search"
     webFetch <- fromMaybe defaultToolFileConfig.webFetch <$> optKey "web_fetch"
-    webFetchMaxUses <- optKey "web_fetch_max_uses"
-    webFetchMaxContentTokens <- optKey "web_fetch_max_content_tokens"
     datetime <- fromMaybe defaultToolFileConfig.datetime <$> optKey "datetime"
     pure ToolFileConfig
       { webSearch = webSearch
       , webFetch = webFetch
-      , webFetchMaxUses = webFetchMaxUses
-      , webFetchMaxContentTokens = webFetchMaxContentTokens
       , datetime = datetime
+      }
+
+instance FromValue WebFetchFileConfig where
+  fromValue = parseTableFromValue do
+    enable <- fromMaybe defaultWebFetchFileConfig.enable <$> optKey "enable"
+    maxUses <- optKey "max_uses"
+    maxContentTokens <- optKey "max_content_tokens"
+    pure WebFetchFileConfig
+      { enable = enable
+      , maxUses = maxUses
+      , maxContentTokens = maxContentTokens
       }
 
 instance FromValue WebSearchFileConfig where
@@ -421,9 +438,9 @@ toBotConfig cfg =
         , webSearchMaxResults = cfg.tool.webSearch.maxResults
         , braveApiKey = cfg.tool.webSearch.braveApiKey
         , tavilyApiKey = cfg.tool.webSearch.tavilyApiKey
-        , webFetch = cfg.tool.webFetch
-        , webFetchMaxUses = cfg.tool.webFetchMaxUses
-        , webFetchMaxContentTokens = cfg.tool.webFetchMaxContentTokens
+        , webFetch = cfg.tool.webFetch.enable
+        , webFetchMaxUses = cfg.tool.webFetch.maxUses
+        , webFetchMaxContentTokens = cfg.tool.webFetch.maxContentTokens
         , datetime = cfg.tool.datetime
         }
     , saucenao = cfg.saucenao

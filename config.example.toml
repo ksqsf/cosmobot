@@ -28,10 +28,12 @@ image_generation_size = "1024x1024"
 image_generation_output_format = "png"
 
 [tool]
-web_fetch = false
-web_fetch_max_uses = 5
-web_fetch_max_content_tokens = 50000
 datetime = false
+
+[tool.web_fetch]
+enable = false
+max_uses = 5
+max_content_tokens = 50000
 
 [tool.web_search]
 enable = false
