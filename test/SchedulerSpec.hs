@@ -18,6 +18,8 @@ main =
       , testCase "schedule ids increase in insertion order" testScheduleIdsIncrease
       , testCase "scheduled stream yields original message" testScheduledStreamYieldsOriginalMessage
       , testCase "elapsed schedule leaves pending list" testElapsedScheduleLeavesPendingList
+      , testCase "same due time yields messages in schedule id order" testSameDueTimeYieldsInScheduleIdOrder
+      , testCase "deleted elapsed schedule is not delivered" testDeletedElapsedScheduleIsNotDelivered
       ]
 
 testScheduledMessagesAreScopedByCurrentUser :: IO ()
@@ -64,6 +66,28 @@ testElapsedScheduleLeavesPendingList = runEff $ Scheduler.runScheduler do
   _ <- S.head_ Scheduler.scheduledMessages
   schedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
   liftIO $ length schedules @?= 0
+
+testSameDueTimeYieldsInScheduleIdOrder :: IO ()
+testSameDueTimeYieldsInScheduleIdOrder = runEff $ Scheduler.runScheduler do
+  _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask first")
+  _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask second")
+  _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask third")
+  firstMessage <- S.head_ Scheduler.scheduledMessages
+  secondMessage <- S.head_ Scheduler.scheduledMessages
+  thirdMessage <- S.head_ Scheduler.scheduledMessages
+  liftIO $ map (fmap (.text)) [firstMessage, secondMessage, thirdMessage] @?= map Just ["!ask first", "!ask second", "!ask third"]
+
+testDeletedElapsedScheduleIsNotDelivered :: IO ()
+testDeletedElapsedScheduleIsNotDelivered = runEff $ Scheduler.runScheduler do
+  _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask deleted")
+  _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask delivered")
+  deleted <- Scheduler.deleteScheduledMessage (messageFrom 200 "delete") 1
+  delivered <- S.head_ Scheduler.scheduledMessages
+  schedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
+  liftIO do
+    deleted @?= True
+    ((.text) <$> delivered) @?= Just "!ask delivered"
+    map (.scheduleId) schedules @?= []
 
 messageFrom :: Integer -> Text -> IncomingMessage
 messageFrom senderId text =

@@ -51,6 +51,8 @@ main =
       , testCase "conversation replies keep parent and child snapshots" testConversationRepliesKeepSnapshots
       , testCase "conversation branches do not overwrite siblings" testConversationBranchesDoNotOverwriteSiblings
       , testCase "conversation branches persist through SQLite reload" testConversationBranchesPersistThroughSQLiteReload
+      , testCase "conversation cache miss loads evicted parent from SQLite" testConversationCacheMissLoadsEvictedParent
+      , testCase "conversation JSON remains list compatible" testConversationJsonRemainsListCompatible
       , testCase "memory tool manages current sender memory" testMemoryToolManagesCurrentSenderMemory
       , testCase "memory tool manages current chat memory" testMemoryToolManagesCurrentChatMemory
       , testCase "memory tool enforces non-superuser length limit" testMemoryToolEnforcesLengthLimit
@@ -232,6 +234,41 @@ testConversationBranchesPersistThroughSQLiteReload =
       map (.payloadKind) rows @?= replicate 4 Storage.ConversationPayloadMessages
       map payloadMessageCount rows @?= [2, 2, 2, 2]
       assertBool "all nodes in the reloaded tree keep the same conversation id" (sameConversationIds rows)
+
+testConversationCacheMissLoadsEvictedParent :: IO ()
+testConversationCacheMissLoadsEvictedParent =
+  withSQLiteTempPath "conversation-cache-miss" \path -> runEff $ runTestLog do
+    sqliteStore <- liftIO (Storage.openSQLiteStore path)
+    store <- liftIO (newConversationStore (Just sqliteStore))
+    let root = appendAssistant "root answer" (startWithUser "root")
+        child = appendAssistant "child answer" (appendUser "child follow-up" root)
+    rememberConversation store (Just 1) root
+    for_ [1000..1512] \messageId ->
+      rememberConversation store (Just messageId) (startWithUser [i|filler #{messageId}|])
+    rememberConversationFrom store (Just 1) (Just 2) child
+    rootLookup <- lookupConversation store 1
+    childLookup <- lookupConversation store 2
+    rows <- liftIO (Storage.loadConversationRows sqliteStore)
+    let childRow = find ((== 2) . (.messageId)) rows
+    liftIO do
+      (show rootLookup :: String) @?= show (Just root)
+      (show childLookup :: String) @?= show (Just child)
+      ((.parentMessageId) <$> childRow) @?= Just (Just 1)
+      (payloadMessageCount <$> childRow) @?= Just 2
+
+testConversationJsonRemainsListCompatible :: IO ()
+testConversationJsonRemainsListCompatible = do
+  let conversation = appendAssistant "answer" (appendUser "follow-up" (startWithUser "hello"))
+      encoded = Aeson.encode conversation
+      decoded = Aeson.eitherDecode encoded :: Either String Conversation
+      encodedValue = Aeson.eitherDecode encoded :: Either String Aeson.Value
+  case decoded of
+    Left err ->
+      assertFailure err
+    Right roundTripped ->
+      (show roundTripped :: String) @?= show conversation
+  encodedValue @?=
+    Right (Aeson.object ["messages" Aeson..= Foldable.toList conversation.messages])
 
 testMemoryToolManagesCurrentSenderMemory :: IO ()
 testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
