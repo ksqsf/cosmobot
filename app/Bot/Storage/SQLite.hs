@@ -18,6 +18,8 @@ module Bot.Storage.SQLite
   , deleteJsonCollectionRows
   , clearJsonCollection
   , loadConversationRows
+  , loadConversationRow
+  , loadNextConversationId
   , saveConversationMessages
   , saveChatLogEntry
   , queryChatLogEntries
@@ -282,6 +284,26 @@ loadConversationRows store = withStore store \db -> do
   let nodeMessageIds = map (.messageId) nodeRows
   pure (sortOn (.messageId) (nodeRows <> filter (\row -> row.messageId `notElem` nodeMessageIds) legacyRows))
 
+loadConversationRow :: SQLiteStore -> Integer -> IO (Maybe ConversationRow)
+loadConversationRow store messageId = withStore store \db -> do
+  nodeRow <- loadConversationNodeRow db messageId
+  case nodeRow of
+    Just row ->
+      pure (Just row)
+    Nothing ->
+      ifM (tableExists db "conversations")
+        (loadLegacyConversationRow db messageId)
+        (pure Nothing)
+
+loadNextConversationId :: SQLiteStore -> IO Integer
+loadNextConversationId store = withStore store \db -> do
+  nodeMax <- maxConversationId db "conversation_nodes"
+  legacyMax <-
+    ifM (tableExists db "conversations")
+      (maxConversationId db "conversations")
+      (pure 0)
+  pure (max nodeMax legacyMax + 1)
+
 loadConversationNodeRows :: SQLite.Database -> IO [ConversationRow]
 loadConversationNodeRows db =
   withStatement db "SELECT message_id, conversation_id, parent_message_id, messages_json FROM conversation_nodes ORDER BY message_id ASC" [] \stmt ->
@@ -298,6 +320,19 @@ loadConversationNodeRows db =
           payloadJson <- columnText stmt 3
           rows (ConversationRow{messageId, conversationId, parentMessageId, payloadJson, payloadKind = ConversationPayloadMessages} : acc) stmt
 
+loadConversationNodeRow :: SQLite.Database -> Integer -> IO (Maybe ConversationRow)
+loadConversationNodeRow db targetMessageId =
+  withStatement db "SELECT message_id, conversation_id, parent_message_id, messages_json FROM conversation_nodes WHERE message_id = ? LIMIT 1" [SQLite.SQLInteger (fromIntegral targetMessageId)] \stmt ->
+    SQLite.step stmt >>= \case
+      SQLite.Done ->
+        pure Nothing
+      SQLite.Row -> do
+        messageId <- columnInteger stmt 0
+        conversationId <- columnMaybeInteger stmt 1
+        parentMessageId <- columnMaybeInteger stmt 2
+        payloadJson <- columnText stmt 3
+        pure (Just ConversationRow{messageId, conversationId, parentMessageId, payloadJson, payloadKind = ConversationPayloadMessages})
+
 loadLegacyConversationRows :: SQLite.Database -> IO [ConversationRow]
 loadLegacyConversationRows db =
   withStatement db "SELECT message_id, conversation_id, parent_message_id, conversation_json FROM conversations ORDER BY message_id ASC" [] \stmt ->
@@ -313,6 +348,28 @@ loadLegacyConversationRows db =
           parentMessageId <- columnMaybeInteger stmt 2
           payloadJson <- columnText stmt 3
           rows (ConversationRow{messageId, conversationId, parentMessageId, payloadJson, payloadKind = ConversationPayloadSnapshot} : acc) stmt
+
+loadLegacyConversationRow :: SQLite.Database -> Integer -> IO (Maybe ConversationRow)
+loadLegacyConversationRow db targetMessageId =
+  withStatement db "SELECT message_id, conversation_id, parent_message_id, conversation_json FROM conversations WHERE message_id = ? LIMIT 1" [SQLite.SQLInteger (fromIntegral targetMessageId)] \stmt ->
+    SQLite.step stmt >>= \case
+      SQLite.Done ->
+        pure Nothing
+      SQLite.Row -> do
+        messageId <- columnInteger stmt 0
+        conversationId <- columnMaybeInteger stmt 1
+        parentMessageId <- columnMaybeInteger stmt 2
+        payloadJson <- columnText stmt 3
+        pure (Just ConversationRow{messageId, conversationId, parentMessageId, payloadJson, payloadKind = ConversationPayloadSnapshot})
+
+maxConversationId :: SQLite.Database -> Text -> IO Integer
+maxConversationId db table =
+  withStatement db [i|SELECT COALESCE(MAX(conversation_id), 0) FROM #{table}|] [] \stmt ->
+    SQLite.step stmt >>= \case
+      SQLite.Done ->
+        pure 0
+      SQLite.Row ->
+        columnInteger stmt 0
 
 -- | Upsert serialized messages for one conversation node.
 saveConversationMessages :: SQLiteStore -> Integer -> Integer -> Maybe Integer -> Text -> IO ()
