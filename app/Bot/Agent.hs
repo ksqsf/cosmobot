@@ -18,6 +18,7 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Memory as Memory
 import Bot.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -48,6 +49,7 @@ data AgentContext es = AgentContext
   { message :: IncomingMessage
   , superuser :: !Bool
   , askCommand :: !Text
+  , memoryConfig :: !(Maybe Memory.MemoryConfig)
   , remember :: Maybe Integer -> Conversation -> Eff es ()
   , recordBotMessage :: Maybe Integer -> Text -> Eff es ()
   }
@@ -203,8 +205,31 @@ defaultTools =
   , scheduleAgentActionTool
   , deleteScheduledAgentActionTool
   , listCurrentUserSchedulesTool
+  , manageMemoryTool
   , runBashTool
   ]
+
+manageMemoryTool :: IOE :> es => Tool es
+manageMemoryTool = Tool
+  { name = "manage_current_sender_memory"
+  , description = "View, replace, or clear the persistent MEMORY.md for the current message sender. Use this when the sender asks to view or clear memory, or when the sender gives durable preferences such as a preferred name, style, language, stable personal facts, or recurring instructions. Keep memory concise: non-superusers must stay within 1000 characters; if an update is rejected, summarize it shorter and try again."
+  , parameters = objectSchema
+      [ fieldText "action" "One of: view, replace, clear."
+      , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
+      ]
+      ["action"]
+  , allowed = everyone
+  , run = \context args ->
+      case context.memoryConfig of
+        Nothing ->
+          pure (toolText "Memory is not configured.")
+        Just cfg ->
+          case AesonTypes.parseEither memoryArgs args of
+            Left err ->
+              pure (toolText (Text.pack err))
+            Right (action, memory) ->
+              runMemoryAction cfg context action memory
+  }
 
 listDirectoryTool :: IOE :> es => Tool es
 listDirectoryTool = Tool
@@ -482,6 +507,49 @@ scheduledActionArgs =
     delaySeconds <- o Aeson..: Key.fromText "delay_seconds"
     prompt <- o Aeson..: Key.fromText "prompt"
     pure (delaySeconds, prompt)
+
+data MemoryAction
+  = MemoryView
+  | MemoryReplace
+  | MemoryClear
+
+memoryArgs :: Aeson.Value -> AesonTypes.Parser (MemoryAction, Maybe Text)
+memoryArgs =
+  Aeson.withObject "memory arguments" $ \o -> do
+    actionText <- Text.toLower . Text.strip <$> o Aeson..: Key.fromText "action"
+    memory <- fmap Text.strip <$> o Aeson..:? Key.fromText "memory"
+    action <- case actionText of
+      "view" ->
+        pure MemoryView
+      "replace" ->
+        pure MemoryReplace
+      "clear" ->
+        pure MemoryClear
+      _ ->
+        fail "action must be one of: view, replace, clear"
+    when (actionText == "replace" && maybe True Text.null memory) do
+      fail "memory is required when action is replace"
+    pure (action, memory)
+
+runMemoryAction :: IOE :> es => Memory.MemoryConfig -> AgentContext es -> MemoryAction -> Maybe Text -> Eff es ToolResult
+runMemoryAction cfg context action memory =
+  case action of
+    MemoryView -> do
+      current <- Memory.loadSenderMemory cfg context.message
+      pure (toolText (fromMaybe "No memory is stored for the current sender." current))
+    MemoryReplace ->
+      case memory of
+        Nothing ->
+          pure (toolText "memory is required when action is replace")
+        Just content
+          | not context.superuser && Text.length content > Memory.memoryLimitChars ->
+              pure (toolText [i|Memory update rejected: memory is #{Text.length content} characters, over the #{Memory.memoryLimitChars} character limit. Please summarize it more concisely and try again.|])
+          | otherwise -> do
+              result <- Memory.replaceSenderMemory cfg context.message content
+              pure (toolText (either identity (const "Memory updated.") result))
+    MemoryClear -> do
+      result <- Memory.clearSenderMemory cfg context.message
+      pure (toolText (either identity (const "Memory cleared.") result))
 
 scheduledAgentMessage :: AgentContext es -> Int -> Text -> IncomingMessage
 scheduledAgentMessage context delaySeconds prompt =

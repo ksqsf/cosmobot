@@ -11,6 +11,7 @@ module Bot.Config
   , AskHandlerConfig (..)
   , TelegramChatRef (..)
   , SaucenaoConfig (..)
+  , Memory.MemoryConfig (..)
   , loadConfig
 
     -- * Handler predicates
@@ -27,6 +28,7 @@ where
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
+import qualified Bot.Memory as Memory
 import Bot.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -43,6 +45,7 @@ data BotConfig = BotConfig
   , telegram :: !Telegram.Config
   , llm      :: !LLM.Config
   , saucenao :: !SaucenaoConfig
+  , memory   :: !Memory.MemoryConfig
   , handlers :: !HandlersConfig
   , logLevel :: !LogLevel
   , sqlitePath :: !FilePath
@@ -89,6 +92,7 @@ data FileConfig = FileConfig
   , telegram :: !TelegramFileConfig
   , llm      :: !LLMFileConfig
   , saucenao :: !SaucenaoConfig
+  , memory   :: !MemoryFileConfig
   , handlers :: !HandlersConfig
   }
   deriving (Show)
@@ -101,6 +105,7 @@ instance FromValue FileConfig where
     <*> reqKey "telegram"
     <*> reqKey "llm"
     <*> fmap (fromMaybe defaultSaucenaoConfig) (optKey "saucenao")
+    <*> fmap (fromMaybe defaultMemoryFileConfig) (optKey "memory")
     <*> reqKey "handlers"
 
 newtype LogFileConfig = LogFileConfig
@@ -246,6 +251,21 @@ instance FromValue SaucenaoConfig where
   fromValue = parseTableFromValue $ SaucenaoConfig
     <$> optToken "api_key"
 
+newtype MemoryFileConfig = MemoryFileConfig
+  { dir :: FilePath
+  }
+  deriving (Show)
+
+defaultMemoryFileConfig :: MemoryFileConfig
+defaultMemoryFileConfig = MemoryFileConfig
+  { dir = "memory"
+  }
+
+instance FromValue MemoryFileConfig where
+  fromValue = parseTableFromValue do
+    dir <- fromMaybe defaultMemoryFileConfig.dir <$> optKey "dir"
+    pure MemoryFileConfig{dir}
+
 instance FromValue LLMFileConfig where
   fromValue = parseTableFromValue $ LLMFileConfig
     <$> fmap (fromMaybe LLM.defaultConfig.endpoint) (optKey "endpoint")
@@ -333,6 +353,9 @@ toBotConfig cfg =
         , imageGenerationModeration = cfg.llm.imageGenerationModeration
         }
     , saucenao = cfg.saucenao
+    , memory = Memory.MemoryConfig
+        { dir = cfg.memory.dir
+        }
     , handlers = withPlatformConfig cfg.qq cfg.telegram cfg.handlers
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath

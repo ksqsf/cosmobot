@@ -36,6 +36,9 @@ image_generation_output_format = "png"
 [saucenao]
 api_key = ""
 
+[memory]
+dir = "memory"
+
 [handlers.ask]
 command = "!ask"
 draw_command = "!draw"

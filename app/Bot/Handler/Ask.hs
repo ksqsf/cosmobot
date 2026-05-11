@@ -18,6 +18,7 @@ import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Filter
+import qualified Bot.Memory as Memory
 import Bot.Message
 import Bot.Prelude
 import Control.Concurrent (forkIO)
@@ -26,34 +27,37 @@ import qualified Data.Text as Text
 -- | Routes for ask, draw, private, mention, and reply continuation flows.
 askHandlers
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
+  => Memory.MemoryConfig
+  -> AskHandlerConfig
   -> ConversationStore
   -> [RouteHandler es]
-askHandlers cfg conversations =
-  [ drawRoute cfg conversations
-  , askRoute cfg conversations
-  , privateRoute cfg conversations
-  , mentionRoute cfg conversations
-  , continueRoute cfg conversations
+askHandlers memoryCfg cfg conversations =
+  [ drawRoute memoryCfg cfg conversations
+  , askRoute memoryCfg cfg conversations
+  , privateRoute memoryCfg cfg conversations
+  , mentionRoute memoryCfg cfg conversations
+  , continueRoute memoryCfg cfg conversations
   ]
 
 drawRoute
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
+  => Memory.MemoryConfig
+  -> AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
-drawRoute cfg conversations =
+drawRoute memoryCfg cfg conversations =
   routeStop (command cfg.drawCommand <* matching (canStartConversation cfg)) $ \message prompt ->
-    forkEff (startDrawConversation "matched draw route" cfg conversations message prompt)
+    forkEff (startDrawConversation "matched draw route" memoryCfg cfg conversations message prompt)
 
 askRoute
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
+  => Memory.MemoryConfig
+  -> AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
-askRoute cfg conversations =
+askRoute memoryCfg cfg conversations =
   routeStop (command cfg.command <* matching (canStartConversation cfg)) $ \message prompt ->
-    forkEff (startAskConversation "matched ask route" cfg conversations message prompt)
+    forkEff (startAskConversation "matched ask route" memoryCfg cfg conversations message prompt)
 
 forkEff :: IOE :> es => Eff es () -> Eff es ()
 forkEff action =
@@ -62,12 +66,13 @@ forkEff action =
 
 privateRoute
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
+  => Memory.MemoryConfig
+  -> AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
-privateRoute cfg conversations =
+privateRoute memoryCfg cfg conversations =
   routeStop privateMessage $ \message prompt ->
-    forkEff (startAskConversation "matched private ask route" cfg conversations message prompt)
+    forkEff (startAskConversation "matched private ask route" memoryCfg cfg conversations message prompt)
   where
     privateMessage =
       promptOrImages
@@ -78,12 +83,13 @@ privateRoute cfg conversations =
 
 mentionRoute
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
+  => Memory.MemoryConfig
+  -> AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
-mentionRoute cfg conversations =
+mentionRoute memoryCfg cfg conversations =
   routeStop mentionMessage $ \message prompt ->
-    forkEff (startAskConversation "matched bot mention route" cfg conversations message prompt)
+    forkEff (startAskConversation "matched bot mention route" memoryCfg cfg conversations message prompt)
   where
     mentionMessage =
       promptOrImages
@@ -95,10 +101,11 @@ mentionRoute cfg conversations =
 
 continueRoute
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
+  => Memory.MemoryConfig
+  -> AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
-continueRoute cfg conversations =
+continueRoute memoryCfg cfg conversations =
   routeStop continuedMessage \message parentId ->
     forkEff $ withConversationLock conversations parentId do
       parent <- lookupConversation conversations parentId
@@ -108,9 +115,9 @@ continueRoute cfg conversations =
               logTrace "Ignoring reply to unknown conversation message" parentId
               logInfo "Ignoring unknown conversation reply" parentId
           | otherwise ->
-              startConversationFromReply cfg conversations message parentId
+              startConversationFromReply memoryCfg cfg conversations message parentId
         Just conversation ->
-          continueConversation cfg conversations message parentId conversation
+          continueConversation memoryCfg cfg conversations message parentId conversation
   where
     continuedMessage =
       replyToMessage <* notCommand cfg.command <* notCommand cfg.drawCommand
@@ -118,19 +125,20 @@ continueRoute cfg conversations =
 startAskConversation
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => Text
+  -> Memory.MemoryConfig
   -> AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
   -> Text
   -> Eff es ()
-startAskConversation label cfg conversations message prompt = do
+startAskConversation label memoryCfg cfg conversations message prompt = do
   logTrace label message
   logInfo label (incomingMessageLogLine message)
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
-  let conversation = startConversation cfg contextPrompt contextImages
-  (answer, answeredConversation) <- askConversation cfg conversations Nothing message conversation
+  conversation <- startConversation memoryCfg cfg message contextPrompt contextImages
+  (answer, answeredConversation) <- askConversation memoryCfg cfg conversations Nothing message conversation
   responseId <- Chat.replyTo message answer
   ChatLog.recordBotMessage message responseId answer
   rememberConversation conversations responseId answeredConversation
@@ -138,18 +146,19 @@ startAskConversation label cfg conversations message prompt = do
 startDrawConversation
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => Text
+  -> Memory.MemoryConfig
   -> AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
   -> Text
   -> Eff es ()
-startDrawConversation label cfg conversations message prompt = do
+startDrawConversation label memoryCfg cfg conversations message prompt = do
   logTrace label message
   logInfo label (incomingMessageLogLine message)
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
-  let conversation = startConversation cfg contextPrompt contextImages
+  conversation <- startConversation memoryCfg cfg message contextPrompt contextImages
   answer <- drawConversation conversation
   responseId <- Chat.replyTo message answer
   ChatLog.recordBotMessage message responseId answer
@@ -164,51 +173,54 @@ fetchReferencedMessage message =
 
 startConversationFromReply
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
+  => Memory.MemoryConfig
+  -> AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
   -> Integer
   -> Eff es ()
-startConversationFromReply cfg conversations message parentId = do
+startConversationFromReply memoryCfg cfg conversations message parentId = do
   logTrace "starting conversation from mentioned reply" message
   logInfo "starting conversation from mentioned reply" (incomingMessageLogLine message)
   referenced <- Chat.getMessageContent message parentId
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let prompt = promptWithReferencedContext message.text referenced contextImages
   unless (Text.null prompt && null contextImages) do
-    let conversation = startConversation cfg prompt contextImages
-    (answer, answeredConversation) <- askConversation cfg conversations (Just parentId) message conversation
+    conversation <- startConversation memoryCfg cfg message prompt contextImages
+    (answer, answeredConversation) <- askConversation memoryCfg cfg conversations (Just parentId) message conversation
     responseId <- Chat.replyTo message answer
     ChatLog.recordBotMessage message responseId answer
     rememberConversationFrom conversations (Just parentId) responseId answeredConversation
 
 continueConversation
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
+  => Memory.MemoryConfig
+  -> AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
   -> Integer
   -> Conversation
   -> Eff es ()
-continueConversation cfg conversations message parentId conversation = do
+continueConversation memoryCfg cfg conversations message parentId conversation = do
   logTrace "continuing conversation" message
   logInfo "continuing conversation" (incomingMessageLogLine message)
   let nextConversation =
         appendUserContext (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
-  (answer, answeredConversation) <- askConversation cfg conversations (Just parentId) message nextConversation
+  (answer, answeredConversation) <- askConversation memoryCfg cfg conversations (Just parentId) message nextConversation
   responseId <- Chat.replyTo message answer
   ChatLog.recordBotMessage message responseId answer
   rememberConversationFrom conversations (Just parentId) responseId answeredConversation
 
 askConversation
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
+  => Memory.MemoryConfig
+  -> AskHandlerConfig
   -> ConversationStore
   -> Maybe Integer
   -> IncomingMessage
   -> Conversation
   -> Eff es (Text, Conversation)
-askConversation cfg conversations parentMessageId message conversation =
+askConversation memoryCfg cfg conversations parentMessageId message conversation =
   Agent.runAgent cfg.agentMaxTurns context Agent.defaultTools conversation `catch` \(err :: SomeException) -> do
     logInfo "LLM request failed" (show err :: String)
     pure ("LLM request failed.", conversation)
@@ -218,6 +230,7 @@ askConversation cfg conversations parentMessageId message conversation =
         { message = message
         , superuser = isSuperuser cfg message
         , askCommand = cfg.command
+        , memoryConfig = Just memoryCfg
         , remember = rememberConversationFrom conversations parentMessageId
         , recordBotMessage = ChatLog.recordBotMessage message
         }
@@ -243,9 +256,11 @@ promptOrImageDefault prompt imageUrls
   where
     stripped = Text.strip prompt
 
-startConversation :: AskHandlerConfig -> Text -> [Text] -> Conversation
-startConversation cfg prompt imageUrls =
-  startWithSystemAndUserContext cfg.systemPrompt prompt imageUrls
+startConversation :: IOE :> es => Memory.MemoryConfig -> AskHandlerConfig -> IncomingMessage -> Text -> [Text] -> Eff es Conversation
+startConversation memoryCfg cfg message prompt imageUrls = do
+  memory <- Memory.loadSenderMemory memoryCfg message
+  let systemPrompt = maybe cfg.systemPrompt (Memory.memorySystemPrompt cfg.systemPrompt) memory
+  pure (startWithSystemAndUserContext systemPrompt prompt imageUrls)
 
 promptWithReferencedContext :: Text -> Maybe ReferencedMessage -> [Text] -> Text
 promptWithReferencedContext prompt referenced imageUrls =

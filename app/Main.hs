@@ -57,7 +57,7 @@ routes cfg sqliteStore conversations =
   scratchpadHandlers sqliteStore
     <> typingHandlers cfg.handlers.ask
     <> saucenaoHandlers cfg.saucenao cfg.handlers.ask
-    <> askHandlers cfg.handlers.ask conversations
+    <> askHandlers cfg.memory cfg.handlers.ask conversations
 
 data ChatPlatformDriver es = ChatPlatformDriver
   { platform :: !ChatPlatform

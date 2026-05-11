@@ -6,10 +6,16 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Memory as Memory
 import Bot.Message
 import Bot.Prelude
+import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
+import qualified Data.Text as Text
+import Data.Unique
+import System.Directory
+import System.FilePath
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -34,6 +40,8 @@ main =
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "conversation replies share latest context" testConversationRepliesShareLatestContext
+      , testCase "memory tool manages current sender memory" testMemoryToolManagesCurrentSenderMemory
+      , testCase "memory tool enforces non-superuser length limit" testMemoryToolEnforcesLengthLimit
       ]
 
 testScheduleToolCreatesQueryableSchedule :: IO ()
@@ -81,6 +89,43 @@ testConversationRepliesShareLatestContext = runEff $ runTestLog do
     (show firstLookup :: String) @?= show (Just secondConversation)
     (show secondLookup :: String) @?= show (Just secondConversation)
 
+testMemoryToolManagesCurrentSenderMemory :: IO ()
+testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
+  answers <- IORef.newIORef
+    [ LLM.ChatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
+    , LLM.ChatAnswer "" [toolCall "call-2" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
+    , LLM.ChatAnswer "" [toolCall "call-3" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    , LLM.ChatAnswer "done" []
+    ]
+  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
+    Agent.runAgent 8 (agentContext{Agent.memoryConfig = Just (Memory.MemoryConfig dir)}) Agent.defaultTools (startWithUser "remember this")
+  answer @?= "done"
+  exists <- doesFileExist (dir </> "telegram" </> "200.md")
+  exists @?= False
+
+testMemoryToolEnforcesLengthLimit :: IO ()
+testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
+  let longMemory = Text.replicate 1001 "x"
+  answers <- IORef.newIORef
+    [ LLM.ChatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
+    , LLM.ChatAnswer "rejected" []
+    ]
+  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
+    Agent.runAgent 4 (agentContext{Agent.memoryConfig = Just (Memory.MemoryConfig dir)}) Agent.defaultTools (startWithUser "remember too much")
+  answer @?= "rejected"
+  exists <- doesFileExist (dir </> "telegram" </> "200.md")
+  exists @?= False
+
+withMemoryTempDir :: (FilePath -> IO a) -> IO a
+withMemoryTempDir action = do
+  root <- getTemporaryDirectory
+  unique <- hashUnique <$> newUnique
+  let dir = root </> [i|cosmobot-memory-test-#{unique}|]
+  Exception.bracket
+    (createDirectory dir $> dir)
+    removeDirectoryRecursive
+    action
+
 runAgentWith
   :: IORef.IORef [LLM.ChatAnswer]
   -> ChatMock
@@ -124,6 +169,7 @@ agentContext =
     { message = testMessage
     , superuser = False
     , askCommand = "!ask"
+    , memoryConfig = Nothing
     , remember = \_ _ -> pure ()
     , recordBotMessage = \_ _ -> pure ()
     }

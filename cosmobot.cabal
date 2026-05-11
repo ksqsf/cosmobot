@@ -103,6 +103,7 @@ executable cosmobot
         Bot.Config
         Bot.Conversation
         Bot.Message
+        Bot.Memory
         Bot.Storage.SQLite
         Bot.Filter
         Bot.Handler.Ask
@@ -210,6 +211,7 @@ test-suite agent-spec
         Bot.Effect.LLM
         Bot.Effect.Scheduler
         Bot.Message
+        Bot.Memory
         Bot.Prelude
         Bot.Storage.SQLite
     build-depends:    http-client
