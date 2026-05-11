@@ -82,12 +82,14 @@ common app-deps
                     , streaming
                     , stm
                     , bytestring
+                    , base64-bytestring
                     , aeson
                     , string-interpolate
                     , unix
                     , modern-uri
                     , req
                     , time
+                    , process
     hs-source-dirs:   app
 
 common test-deps
@@ -134,10 +136,8 @@ executable cosmobot
     build-depends:    http-client
                     , optics
                     , log-base
-                    , base64-bytestring
                     , aeson-optics
                     , dotenv
-                    , process
                     , websockets
                     , toml-parser
 
