@@ -51,6 +51,7 @@ data Config = Config
   , apiKey   :: !(Maybe Text)
   , model    :: !Text
   , imageGeneration :: !Bool
+  , imageGenerationEndpoint :: !(Maybe Text)
   , imageGenerationModel :: !(Maybe Text)
   , imageGenerationQuality :: !(Maybe Text)
   , imageGenerationSize :: !(Maybe Text)
@@ -68,6 +69,7 @@ defaultConfig = Config
   , apiKey   = Nothing
   , model    = "openai/gpt-4o-mini"
   , imageGeneration = False
+  , imageGenerationEndpoint = Nothing
   , imageGenerationModel = Nothing
   , imageGenerationQuality = Nothing
   , imageGenerationSize = Nothing
@@ -133,6 +135,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
       pure "Image generation is not configured: set llm.image_generation = true."
   | otherwise = do
   let imageRequest = forceImage
+      requestEndpoint = if imageRequest then fromMaybe endpoint cfg.imageGenerationEndpoint else endpoint
       requestModel = if imageRequest then fromMaybe model cfg.imageGenerationModel else model
       request = ChatCompletionRequest
         { model = requestModel
@@ -141,8 +144,8 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
         , modalities = if imageRequest then Just ["image", "text"] else Nothing
         , imageConfig = if imageRequest then imageGenerationConfig cfg else Nothing
         }
-  logInfo "LLM request" (llmRequestLogLine endpoint request)
-  (url, options) <- liftIO (chatCompletionsUrl endpoint)
+  logInfo "LLM request" (llmRequestLogLine requestEndpoint request)
+  (url, options) <- liftIO (chatCompletionsUrl requestEndpoint)
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
       url
@@ -150,7 +153,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
       jsonResponse
       (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
   let body = responseBody response
-  logInfo "LLM response" (llmResponseLogLine endpoint requestModel body)
+  logInfo "LLM response" (llmResponseLogLine requestEndpoint requestModel body)
   case chatCompletionText body of
     Just answer -> pure answer
     Nothing     -> throwIO (LLMException [i|OpenAI response had no text choices: #{show body :: String}|])
