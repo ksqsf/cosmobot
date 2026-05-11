@@ -23,6 +23,7 @@ import Bot.Core.Message
 import Bot.Prelude
 import Control.Concurrent (ThreadId, myThreadId)
 import qualified Control.Exception as Exception
+import qualified Data.Foldable as Foldable
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Streaming.Prelude as S
@@ -357,7 +358,7 @@ drawConversation
   => Conversation
   -> Eff es Text
 drawConversation conversation =
-  LLM.askImageWithHistory conversation.messages `catch` \(err :: SomeException) -> do
+  LLM.askImageWithHistory (Foldable.toList conversation.messages) `catch` \(err :: SomeException) -> do
     logInfo "LLM image request failed" (show err :: String)
     pure "Image generation failed."
 

@@ -38,6 +38,8 @@ import qualified Bot.Storage.SQLite as Storage
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Foldable as Foldable
+import qualified Data.Sequence as Seq
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
 import qualified Data.IORef as IORef
@@ -54,7 +56,7 @@ data ConversationStore = ConversationStore
 
 -- | Ordered chat history sent to the LLM.
 newtype Conversation = Conversation
-  { messages :: [LLM.ChatMessage]
+  { messages :: Seq.Seq LLM.ChatMessage
   }
   deriving (Show, Generic)
 
@@ -84,12 +86,12 @@ newtype ActiveConversationHandle = ActiveConversationHandle ActiveConversation
 instance Aeson.ToJSON Conversation where
   toJSON Conversation{messages} =
     Aeson.object
-      [ "messages" Aeson..= messages
+      [ "messages" Aeson..= Foldable.toList messages
       ]
 
 instance Aeson.FromJSON Conversation where
   parseJSON = Aeson.withObject "Conversation" $ \o ->
-    Conversation <$> o Aeson..: "messages"
+    Conversation . Seq.fromList <$> o Aeson..: "messages"
 
 -- | Create a store with a bounded in-memory cache of persisted conversations.
 newConversationStore :: Maybe Storage.SQLiteStore -> IO ConversationStore
@@ -142,9 +144,9 @@ storedConversationFromPayload _ (StoredConversationSnapshot conversation) =
 storedConversationFromPayload parentNode (StoredConversationMessages messages) =
   case parentNode of
     Nothing ->
-      Conversation messages
+      Conversation (Seq.fromList messages)
     Just parent ->
-      Conversation (parent.conversation.messages <> messages)
+      Conversation (parent.conversation.messages <> Seq.fromList messages)
 
 decodeConversation :: Text -> Maybe Conversation
 decodeConversation =
@@ -172,7 +174,7 @@ startWithSystemAndUser systemPrompt prompt =
 -- | Start with a system prompt plus user text and image context.
 startWithSystemAndUserContext :: Text -> Text -> [Text] -> Conversation
 startWithSystemAndUserContext systemPrompt prompt imageUrls =
-  Conversation (systemMessages <> [LLM.userWithImages prompt imageUrls])
+  Conversation (Seq.fromList (systemMessages <> [LLM.userWithImages prompt imageUrls]))
   where
     systemMessages
       | Text.null systemPrompt = []
@@ -186,12 +188,12 @@ appendUser prompt =
 -- | Append a user turn with optional image context.
 appendUserContext :: Text -> [Text] -> Conversation -> Conversation
 appendUserContext prompt imageUrls (Conversation history) =
-  Conversation (history <> [LLM.userWithImages prompt imageUrls])
+  Conversation (history Seq.|> LLM.userWithImages prompt imageUrls)
 
 -- | Append an assistant reply, preserving generated image references as context.
 appendAssistant :: Text -> Conversation -> Conversation
 appendAssistant answer (Conversation history) =
-  Conversation (history <> assistantContext answer)
+  Conversation (history <> Seq.fromList (assistantContext answer))
 
 assistantContext :: Text -> [LLM.ChatMessage]
 assistantContext answer =
@@ -426,23 +428,31 @@ conversationMessagesForStorage parentMessageId parentNode conversation =
       | Just suffix <- conversationSuffix parent.conversation conversation ->
           (parentMessageId, suffix)
       | otherwise ->
-          (Nothing, conversation.messages)
+          (Nothing, conversationMessagesList conversation)
     Nothing ->
-      (parentMessageId, conversation.messages)
+      (parentMessageId, conversationMessagesList conversation)
 
 conversationSuffix :: Conversation -> Conversation -> Maybe [LLM.ChatMessage]
 conversationSuffix parent child
   | parentJson == childPrefixJson =
-      Just (drop parentLength child.messages)
+      Just (drop parentLength childMessages)
   | otherwise =
       Nothing
   where
+    parentMessages =
+      conversationMessagesList parent
+    childMessages =
+      conversationMessagesList child
     parentLength =
-      length parent.messages
+      length parentMessages
     parentJson =
-      map messageJson parent.messages
+      map messageJson parentMessages
     childPrefixJson =
-      map messageJson (take parentLength child.messages)
+      map messageJson (take parentLength childMessages)
+
+conversationMessagesList :: Conversation -> [LLM.ChatMessage]
+conversationMessagesList =
+  Foldable.toList . (.messages)
 
 messageJson :: LLM.ChatMessage -> LazyByteString.ByteString
 messageJson =

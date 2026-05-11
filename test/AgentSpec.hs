@@ -13,6 +13,7 @@ import Bot.Prelude
 import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
+import qualified Data.Foldable as Foldable
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -343,7 +344,7 @@ payloadMessageCount row =
 toolOutputs :: Conversation -> [Text]
 toolOutputs (Conversation messages) =
   [ text
-  | message <- messages
+  | message <- Foldable.toList messages
   , message.role == "tool"
   , Just (LLM.TextContent text) <- [message.content]
   ]

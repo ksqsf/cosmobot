@@ -23,6 +23,8 @@ import Bot.Agent.Types
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.Foldable as Foldable
+import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Streaming.Prelude as S
@@ -52,7 +54,7 @@ runAgentStreaming maxTurns context tools conversation =
     exposedTools = filter (`toolAllowed` context) tools
 
     loop turnsLeft webFetchUses current = do
-      answer <- LLM.askWithToolsStreaming (map toolSchema exposedTools) current.messages
+      answer <- LLM.askWithToolsStreaming (map toolSchema exposedTools) (Foldable.toList current.messages)
       let answered = appendMessage (LLM.assistantAnswer answer) current
       case answer.toolCalls of
         [] ->
@@ -115,7 +117,7 @@ pausedToolResult call =
 
 closeInterruptedToolCalls :: Conversation -> Conversation
 closeInterruptedToolCalls (Conversation messages) =
-  Conversation (go messages)
+  Conversation (Seq.fromList (go (Foldable.toList messages)))
   where
     go [] = []
     go (message : rest)
@@ -161,8 +163,8 @@ toolAllowed tool context =
 
 appendMessage :: LLM.ChatMessage -> Conversation -> Conversation
 appendMessage message (Conversation messages) =
-  Conversation (messages <> [message])
+  Conversation (messages Seq.|> message)
 
 appendMessages :: [LLM.ChatMessage] -> Conversation -> Conversation
 appendMessages newMessages (Conversation messages) =
-  Conversation (messages <> newMessages)
+  Conversation (messages <> Seq.fromList newMessages)
