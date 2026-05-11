@@ -134,6 +134,8 @@ platformDirectory = \case
     Just "qq"
   PlatformTelegram ->
     Just "telegram"
+  PlatformMatrix ->
+    Just "matrix"
 
 nonEmptyMemory :: Text -> Maybe Text
 nonEmptyMemory text =

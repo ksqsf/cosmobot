@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Data.Aeson as Aeson
+import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
@@ -20,6 +21,8 @@ main =
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
+      , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
+      , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
       ]
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
@@ -128,6 +131,30 @@ testTelegramReferencedMessageIncludesSenderIdentity = do
   (fetched <&> (.senderIdentifier)) @?= Just (Just "@bob")
   (fetched <&> (.text)) @?= Just "quoted"
 
+testMatrixMessageConvertsToIncomingMessage :: IO ()
+testMatrixMessageConvertsToIncomingMessage = do
+  let incoming = Matrix.eventToIncomingMessage matrixRoomEvent
+  ((.platform) <$> incoming) @?= Just PlatformMatrix
+  ((.chatAliases) <$> incoming) @?= Just ["!room:example.org"]
+  ((.senderUsername) <$> incoming) @?= Just (Just "@alice:example.org")
+  ((.text) <$> incoming) @?= Just "hello"
+
+testMatrixSuperuserIsMarkedInDigest :: IO ()
+testMatrixSuperuserIsMarkedInDigest = do
+  let cfg = Matrix.Config
+        { Matrix.homeserver = "https://matrix.example.org"
+        , Matrix.accessToken = Nothing
+        , Matrix.userId = Just "@bot:example.org"
+        , Matrix.allowedRooms = ["!room:example.org"]
+        , Matrix.superusers = ["@alice:example.org"]
+        }
+      incoming = fromMaybe (error "expected incoming Matrix message") $
+        Matrix.eventToIncomingMessageWith cfg matrixMentionRoomEvent
+  incoming.digest.chatIsAllowed @?= True
+  incoming.digest.senderIsAllowed @?= True
+  incoming.digest.senderIsSuperuser @?= True
+  incoming.digest.mentionsBot @?= True
+
 qqMessageEvent :: Integer -> QQ.Event
 qqMessageEvent userId =
   QQ.Event
@@ -228,6 +255,38 @@ privateTelegramMessage =
         , username = Just "alice"
         , firstName = Just "Alice"
         , lastName = Nothing
+        }
+    }
+
+matrixRoomEvent :: Matrix.RoomEvent
+matrixRoomEvent =
+  Matrix.RoomEvent
+    { Matrix.roomId = "!room:example.org"
+    , Matrix.event = Matrix.Event
+        { Matrix.type_ = "m.room.message"
+        , Matrix.sender = "@alice:example.org"
+        , Matrix.eventId = Just "$event:example.org"
+        , Matrix.content = Matrix.EventContent
+            { Matrix.msgtype = Just "m.text"
+            , Matrix.body = Just "hello"
+            }
+        , Matrix.raw = Aeson.Null
+        }
+    }
+
+matrixMentionRoomEvent :: Matrix.RoomEvent
+matrixMentionRoomEvent =
+  Matrix.RoomEvent
+    { Matrix.roomId = "!room:example.org"
+    , Matrix.event = Matrix.Event
+        { Matrix.content = Matrix.EventContent
+            { Matrix.msgtype = Just "m.text"
+            , Matrix.body = Just "hello @bot:example.org"
+            }
+        , Matrix.type_ = "m.room.message"
+        , Matrix.sender = "@alice:example.org"
+        , Matrix.eventId = Just "$event:example.org"
+        , Matrix.raw = Aeson.Null
         }
     }
 

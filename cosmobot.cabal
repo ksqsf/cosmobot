@@ -111,6 +111,7 @@ common bot-chat-driver-modules
     other-modules:
         Bot.Chat.Driver.Types
         Bot.Chat.Driver.QQ
+        Bot.Chat.Driver.Matrix
         Bot.Chat.Driver.Telegram
         Bot.Util.Multipart
 
@@ -154,6 +155,7 @@ executable cosmobot
     other-modules:
         Bot.Agent.Config
         Bot.Chat.Driver
+        Bot.Chat.Driver.Matrix.Config
         Bot.Chat.Driver.QQ.Config
         Bot.Chat.Driver.Telegram.Config
         Bot.Config

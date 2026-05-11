@@ -17,6 +17,8 @@ where
 
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.QQ.Config as QQConfig
+import qualified Bot.Chat.Driver.Matrix as Matrix
+import qualified Bot.Chat.Driver.Matrix.Config as MatrixConfig
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import qualified Bot.Chat.Driver.Telegram.Config as TelegramConfig
 import qualified Bot.Effect.LLM as LLM
@@ -43,6 +45,7 @@ import Toml.Schema
 data BotConfig = BotConfig
   { qq       :: !QQ.Config
   , telegram :: !Telegram.Config
+  , matrix   :: !Matrix.Config
   , llm      :: !LLM.Config
   , tool     :: !Agent.ToolConfig
   , saucenao :: !SaucenaoConfig
@@ -88,6 +91,7 @@ instance FromValue FileConfig where
 data DriverFileConfig = DriverFileConfig
   { qq       :: !QQConfig.FileConfig
   , telegram :: !TelegramConfig.FileConfig
+  , matrix   :: !MatrixConfig.FileConfig
   }
   deriving (Show)
 
@@ -95,6 +99,7 @@ instance FromValue DriverFileConfig where
   fromValue = parseTableFromValue $ DriverFileConfig
     <$> reqKey "qq"
     <*> reqKey "telegram"
+    <*> fmap (fromMaybe MatrixConfig.defaultFileConfig) (optKey "matrix")
 
 data HandlerFileConfig = HandlerFileConfig
   { saucenao :: !SaucenaoConfig
@@ -162,6 +167,7 @@ toBotConfig cfg =
   BotConfig
     { qq = QQConfig.toRuntimeConfig qqFileConfig
     , telegram = TelegramConfig.toRuntimeConfig telegramFileConfig
+    , matrix = MatrixConfig.toRuntimeConfig cfg.driver.matrix
     , llm = LLMConfig.toRuntimeConfig cfg.llm
     , tool = AgentConfig.toToolConfig cfg.tool
     , saucenao = cfg.handler.saucenao

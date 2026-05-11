@@ -20,6 +20,13 @@ bot_id = ""
 superusers = []
 allowed_chats = []
 
+[driver.matrix]
+homeserver = "https://matrix.org"
+access_token = ""
+user_id = "@bot:matrix.org"
+superusers = []
+allowed_rooms = []
+
 [llm]
 endpoint = "https://openrouter.ai/api/v1"
 api_key = ""

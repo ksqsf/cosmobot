@@ -20,9 +20,10 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - `app/Bot/Effect/LLM.hs` owns the OpenAI-compatible request/response JSON, SSE streaming transport, chat message representation, image-generation request shaping, and request-level LLM options such as `reasoning_effort`. Public streaming APIs return `Stream (Of Text) (Eff es) result`.
 - `app/Bot/Core/ReplyBody.hs` owns shared reply-body directives such as `[image] ...`; chat backends parse these directives before sending platform messages.
 - `app/Bot/Util/Image.hs` owns shared non-effect image helpers such as generated image compression and temporary image cleanup.
-- `app/Bot/Chat/Driver.hs` is the adapter entry point for concrete chat backends. It runs QQ/Telegram platform effects internally and exposes one unified `Chat` interpreter plus platform incoming-message streams to executable wiring.
+- `app/Bot/Chat/Driver.hs` is the adapter entry point for concrete chat backends. It runs QQ/Telegram/Matrix platform effects internally and exposes one unified `Chat` interpreter plus platform incoming-message streams to executable wiring.
 - `app/Bot/Chat/Driver/QQ.hs` owns the QQ/OneBot effect, websocket transport, OneBot/NapCat-specific message parsing, and QQ chat driver fragment. When resolving referenced QQ messages, handle forwarded-message nodes by fetching `get_forward_msg` and merging the text from every forwarded node in order.
 - `app/Bot/Chat/Driver/Telegram.hs` owns the Telegram effect, Bot API transport/types, Telegram update parsing, and Telegram chat driver fragment.
+- `app/Bot/Chat/Driver/Matrix.hs` owns the Matrix effect, Client-Server API transport/types, Matrix event parsing, and Matrix chat driver fragment.
 - `app/Bot/Storage/SQLite.hs` is the SQLite persistence layer. Reuse `JsonCollection` helpers for scoped JSON state instead of creating bespoke SQL unless needed.
 - `app/Bot/Memory.hs` owns per-sender and per-chat persistent memory files.
 
@@ -31,7 +32,7 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - Use `effectful` for application effects and `streaming` for incoming and LLM text streams.
 - Do not conflate chat identity and sender identity. Features scoped to people should normally key by `platform` and `senderId`; features scoped to conversations/chats should use `platform` and `chatId`.
 - Keep persisted user-visible state scoped defensively. If a required identity is missing, prefer a clear rejection over guessing.
-- Keep platform-specific API details in `Bot.Chat.Driver.QQ`, `Bot.Chat.Driver.Telegram`, or dispatch glue in `Bot.Chat.Driver`; do not leak them into handlers or agent tools.
+- Keep platform-specific API details in `Bot.Chat.Driver.QQ`, `Bot.Chat.Driver.Telegram`, `Bot.Chat.Driver.Matrix`, or dispatch glue in `Bot.Chat.Driver`; do not leak them into handlers or agent tools.
 - Keep route admission logic and route combinators in `Bot.Core.Route`; handlers should compose those predicates instead of reimplementing them.
 - Chat drivers decide platform-specific message digest fields such as allowed chat, superuser sender, and configured-bot mention. Do not put platform whitelists or mention parsing in handler config.
 - Prefer structured parsers/APIs (`aeson`, `Toml.Schema`, SQLite helpers) over ad hoc text manipulation.
@@ -41,7 +42,7 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 
 - When changing handler behavior, check route predicates and combinators in `Bot.Core.Route` first.
 - When adding config, update `Bot.Config`, `config.example.toml`, and all call sites that consume `BotConfig`.
-- Keep `config.toml` section ownership explicit: chat platform settings live under `[driver.qq]` and `[driver.telegram]`; handler settings live under `[handler.saucenao]` and `[handler.ask]`. QQ conversation access belongs in `allowed_groups` and `allowed_users`; Telegram conversation access belongs in `allowed_chats`; administrator access belongs in each driver's `superusers`. Do not reintroduce top-level `[qq]`, `[telegram]`, `[saucenao]`, `[handlers.*]`, or handler-owned platform whitelist sections.
+- Keep `config.toml` section ownership explicit: chat platform settings live under `[driver.qq]`, `[driver.telegram]`, and `[driver.matrix]`; handler settings live under `[handler.saucenao]` and `[handler.ask]`. QQ conversation access belongs in `allowed_groups` and `allowed_users`; Telegram conversation access belongs in `allowed_chats`; Matrix conversation access belongs in `allowed_rooms`; administrator access belongs in each driver's `superusers`. Do not reintroduce top-level `[qq]`, `[telegram]`, `[matrix]`, `[saucenao]`, `[handlers.*]`, or handler-owned platform whitelist sections.
 - When adding `[llm]` config, update `Bot.Config`, `Bot.Effect.LLM.Config`, OpenAI-compatible request serialization when applicable, and `config.example.toml`.
 - When adding a new module, update `cosmobot.cabal` for the executable and relevant test suites. Prefer shared `common` module-list stanzas over copying the same `other-modules` block into multiple components.
 - When adding an agent tool, update `defaultTools`, define a small parser using `AesonTypes.parseEither`, and add focused tests in `test/AgentSpec.hs`.

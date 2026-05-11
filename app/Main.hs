@@ -38,7 +38,7 @@ main = do
     ChatLog.runChatLog maybeSQLiteStore .
     Scheduler.runScheduler $
       LLM.runLLM cfg.llm $
-        ChatDriver.runChatDrivers cfg.qq cfg.telegram \chatMessageStreams -> do
+        ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix \chatMessageStreams -> do
           logInfo_ "Cosmobot stand by!"
           let messageStreams =
                 chatMessageStreams <> [Scheduler.scheduledMessages]

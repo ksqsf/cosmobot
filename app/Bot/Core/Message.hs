@@ -30,6 +30,8 @@ data ChatPlatform
   -- ^ Tencent QQ via a OneBot-compatible gateway.
   | PlatformTelegram
   -- ^ Telegram Bot API.
+  | PlatformMatrix
+  -- ^ Matrix Client-Server API.
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 -- | Coarse chat shape shared across platforms.
