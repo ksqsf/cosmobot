@@ -107,14 +107,16 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $
     Chat.runChatWith
-      (recordReply replies nextReplyId)
-      noopEdit
-      (\_ -> pure (Chat.ChunkedReply 4))
-      noopFetch
-      noopSenderMember
-      noopMember
-      noopMembers
-      noopMention $
+      Chat.ChatHandlers
+        { handleReplyTo = recordReply replies nextReplyId
+        , handleEditMessage = noopEdit
+        , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 4)
+        , handleGetMessageContent = noopFetch
+        , handleGetSenderMemberInfo = noopSenderMember
+        , handleGetMemberInfo = noopMember
+        , handleListGroupMembers = noopMembers
+        , handleMentionUser = noopMention
+        } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
           (Chat.streamReplyTo testMessage id (S.each ["ab", "cd", "ef"] $> "abcdef"))
@@ -365,7 +367,18 @@ runAgentWith answers chatMock action =
             liftIO (emit answer.content)
             pure answer) $
         ChatLog.runChatLog Nothing $
-          Chat.runChatWith (mockReply chatMock) noopEdit noopReplyStreamStyle noopFetch noopSenderMember noopMember noopMembers noopMention action
+          Chat.runChatWith
+            Chat.ChatHandlers
+              { handleReplyTo = mockReply chatMock
+              , handleEditMessage = noopEdit
+              , handleReplyStreamStyle = noopReplyStreamStyle
+              , handleGetMessageContent = noopFetch
+              , handleGetSenderMemberInfo = noopSenderMember
+              , handleGetMemberInfo = noopMember
+              , handleListGroupMembers = noopMembers
+              , handleMentionUser = noopMention
+              }
+            action
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
 runTestLog action = do

@@ -17,6 +17,7 @@ module Bot.Effect.Chat
   , getMemberInfo
   , listGroupMembers
   , mentionUser
+  , ChatHandlers (..)
   , runChatWith
 
     -- * Reply rendering
@@ -299,31 +300,35 @@ mentionUser message userId body =
   send (MentionUser message userId body)
 
 -- | Interpret chat operations by delegating each operation to platform code.
+data ChatHandlers es = ChatHandlers
+  { handleReplyTo :: IncomingMessage -> Text -> Eff es (Maybe Integer)
+  , handleEditMessage :: IncomingMessage -> Integer -> Text -> Eff es Bool
+  , handleReplyStreamStyle :: IncomingMessage -> Eff es ReplyStreamStyle
+  , handleGetMessageContent :: IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
+  , handleGetSenderMemberInfo :: IncomingMessage -> Eff es (Maybe Aeson.Value)
+  , handleGetMemberInfo :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+  , handleListGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
+  , handleMentionUser :: IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
+  }
+
 runChatWith
-  :: (IncomingMessage -> Text -> Eff es (Maybe Integer))
-  -> (IncomingMessage -> Integer -> Text -> Eff es Bool)
-  -> (IncomingMessage -> Eff es ReplyStreamStyle)
-  -> (IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage))
-  -> (IncomingMessage -> Eff es (Maybe Aeson.Value))
-  -> (IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value))
-  -> (IncomingMessage -> Eff es (Maybe Aeson.Value))
-  -> (IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer))
+  :: ChatHandlers es
   -> Eff (Chat : es) a
   -> Eff es a
-runChatWith reply edit streamStyle fetch fetchSenderMember fetchMember listMembers mention = interpret $ \_ -> \case
+runChatWith handlers = interpret $ \_ -> \case
   ReplyTo message body ->
-    reply message body
+    handlers.handleReplyTo message body
   EditMessage message messageId body ->
-    edit message messageId body
+    handlers.handleEditMessage message messageId body
   ReplyStreamStyle message ->
-    streamStyle message
+    handlers.handleReplyStreamStyle message
   GetMessageContent message messageId ->
-    fetch message messageId
+    handlers.handleGetMessageContent message messageId
   GetSenderMemberInfo message ->
-    fetchSenderMember message
+    handlers.handleGetSenderMemberInfo message
   GetMemberInfo message userId ->
-    fetchMember message userId
+    handlers.handleGetMemberInfo message userId
   ListGroupMembers message ->
-    listMembers message
+    handlers.handleListGroupMembers message
   MentionUser message userId body ->
-    mention message userId body
+    handlers.handleMentionUser message userId body

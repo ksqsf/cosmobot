@@ -116,7 +116,7 @@ executable cosmobot
         Bot.Agent
         Bot.Agent.Tools
         Bot.Agent.Types
-        Bot.Chat.Platform
+        Bot.Chat.Driver
         Bot.Config
         Bot.Core.Conversation
         Bot.Util.Html

@@ -1,12 +1,13 @@
 {-|
-Module      : Bot.Chat.Platform
+Module      : Bot.Chat.Driver
 Description : Platform-specific chat driver dispatch
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Chat.Platform
-  ( replyToPlatform
+module Bot.Chat.Driver
+  ( runChatDrivers
+  , replyToPlatform
   , editPlatformMessage
   , platformReplyStreamStyle
   , getPlatformMessageContent
@@ -203,3 +204,19 @@ mentionPlatformUser
 mentionPlatformUser message userId body =
   withPlatformDriver message "chat mention" \driver ->
     driver.mentionUser message userId body
+
+runChatDrivers
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
+  => Eff (Chat.Chat : es) a
+  -> Eff es a
+runChatDrivers =
+  Chat.runChatWith Chat.ChatHandlers
+    { handleReplyTo = replyToPlatform
+    , handleEditMessage = editPlatformMessage
+    , handleReplyStreamStyle = platformReplyStreamStyle
+    , handleGetMessageContent = getPlatformMessageContent
+    , handleGetSenderMemberInfo = getPlatformSenderMemberInfo
+    , handleGetMemberInfo = getPlatformMemberInfo
+    , handleListGroupMembers = listPlatformGroupMembers
+    , handleMentionUser = mentionPlatformUser
+    }

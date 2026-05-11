@@ -19,7 +19,7 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - `app/Bot/Effect/LLM.hs` owns the OpenAI-compatible request/response JSON, SSE streaming transport, chat message representation, image-generation request shaping, and request-level LLM options such as `reasoning_effort`. Public streaming APIs return `Stream (Of Text) (Eff es) result`.
 - `app/Bot/ReplyBody.hs` owns shared reply-body directives such as `[image] ...`; chat backends parse these directives before sending platform messages.
 - `app/Bot/Image.hs` owns shared non-effect image helpers such as generated image compression and temporary image cleanup.
-- `app/Bot/Chat/Platform.hs` adapts normalized `Chat` effects to concrete QQ/Telegram backends, including per-platform streaming reply strategy selection.
+- `app/Bot/Chat/Driver.hs` adapts normalized `Chat` effects to concrete QQ/Telegram backends, including per-platform streaming reply strategy selection.
 - `app/Bot/Effect/Chat/QQ.hs` owns OneBot/NapCat-specific message parsing. When resolving referenced QQ messages, handle forwarded-message nodes by fetching `get_forward_msg` and merging the text from every forwarded node in order.
 - `app/Bot/Storage/SQLite.hs` is the SQLite persistence layer. Reuse `JsonCollection` helpers for scoped JSON state instead of creating bespoke SQL unless needed.
 - `app/Bot/Memory.hs` owns per-sender and per-chat persistent memory files.
@@ -29,7 +29,7 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - Use `effectful` for application effects and `streaming` for incoming and LLM text streams.
 - Do not conflate chat identity and sender identity. Features scoped to people should normally key by `platform` and `senderId`; features scoped to conversations/chats should use `platform` and `chatId`.
 - Keep persisted user-visible state scoped defensively. If a required identity is missing, prefer a clear rejection over guessing.
-- Keep platform-specific API details in QQ/Telegram drivers or `Bot.Chat.Platform`, not in handlers or agent tools.
+- Keep platform-specific API details in QQ/Telegram drivers or `Bot.Chat.Driver`, not in handlers or agent tools.
 - Keep route admission logic in `Bot.Config` and `Bot.Filter`; handlers should compose those predicates instead of reimplementing them.
 - Prefer structured parsers/APIs (`aeson`, `Toml.Schema`, SQLite helpers) over ad hoc text manipulation.
 - Add abstractions only when they reduce real duplication or isolate a growing responsibility.

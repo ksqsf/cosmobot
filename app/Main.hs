@@ -7,7 +7,7 @@ module Main (main) where
 
 import Bot.Config
 import Bot.Core.Conversation
-import qualified Bot.Chat.Platform as ChatPlatform
+import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Chat.QQ as QQ
@@ -42,25 +42,10 @@ main = do
     Scheduler.runScheduler .
     Telegram.runTelegram cfg.telegram .
     QQ.runQQ cfg.qq .
-    runPlatformChat .
+    ChatDriver.runChatDrivers .
     LLM.runLLM cfg.llm $ do
       logInfo_ "Cosmobot stand by!"
       consumeWith (routes cfg sqliteStore conversations) (recordedIncomingMessages incomingMessages)
-
-runPlatformChat
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
-  => Eff (Chat.Chat : es) a
-  -> Eff es a
-runPlatformChat =
-  Chat.runChatWith
-    ChatPlatform.replyToPlatform
-    ChatPlatform.editPlatformMessage
-    ChatPlatform.platformReplyStreamStyle
-    ChatPlatform.getPlatformMessageContent
-    ChatPlatform.getPlatformSenderMemberInfo
-    ChatPlatform.getPlatformMemberInfo
-    ChatPlatform.listPlatformGroupMembers
-    ChatPlatform.mentionPlatformUser
 
 routes
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
