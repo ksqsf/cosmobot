@@ -48,7 +48,7 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 
 ## Known Pressure Points
 
-- `Bot.Agent` mixes the loop, permission checks, tool schemas, tool implementations, web fetch/search helpers, memory tool plumbing, scheduler tools, and shell execution. The likely split is `Bot.Agent.Core` plus `Bot.Agent.Tools.*` modules grouped by domain.
+- `Bot.Agent.Tools` is an aggregator only; tool implementations live in `Bot.Agent.Tools.*` modules grouped by domain. Keep shared tool schema/argument helpers in `Bot.Agent.Tools.Common`.
 - `Bot.Effect.LLM` mixes the effect API, OpenAI-compatible transport, chat message JSON, and tool-call JSON. The likely split is transport/request types versus public effect/message types.
 - `Bot.Config` is a single large parser and normalizer. If config grows further, split file-section parsers into focused modules or at least group each section as a compact block with defaults, parser, and normalization together.
 - `Bot.Handler.Ask` has several similar route constructors with repeated capability constraints. Be careful when extending it; small helper records may be better than longer argument lists.

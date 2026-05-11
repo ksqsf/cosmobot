@@ -115,6 +115,15 @@ executable cosmobot
         Bot.Prelude
         Bot.Agent
         Bot.Agent.Tools
+        Bot.Agent.Tools.Chat
+        Bot.Agent.Tools.Common
+        Bot.Agent.Tools.Files
+        Bot.Agent.Tools.Image
+        Bot.Agent.Tools.Memory
+        Bot.Agent.Tools.Schedule
+        Bot.Agent.Tools.Shell
+        Bot.Agent.Tools.Time
+        Bot.Agent.Tools.Web
         Bot.Agent.Types
         Bot.Chat.Driver
         Bot.Chat.Driver.Types
@@ -227,6 +236,15 @@ test-suite agent-spec
     other-modules:
         Bot.Agent
         Bot.Agent.Tools
+        Bot.Agent.Tools.Chat
+        Bot.Agent.Tools.Common
+        Bot.Agent.Tools.Files
+        Bot.Agent.Tools.Image
+        Bot.Agent.Tools.Memory
+        Bot.Agent.Tools.Schedule
+        Bot.Agent.Tools.Shell
+        Bot.Agent.Tools.Time
+        Bot.Agent.Tools.Web
         Bot.Agent.Types
         Bot.Core.Conversation
         Bot.Effect.Chat
