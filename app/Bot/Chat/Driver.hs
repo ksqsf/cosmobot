@@ -146,7 +146,7 @@ runChatDrivers qqConfig telegramConfig action =
   Telegram.runTelegram telegramConfig .
   QQ.runQQ qqConfig .
   Chat.runChatWith chatHandlers $
-    action incomingMessageStreams
+    action (incomingMessageStreams qqConfig telegramConfig)
 
 chatHandlers
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
@@ -164,8 +164,10 @@ chatHandlers = Chat.ChatHandlers
 
 incomingMessageStreams
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Log :> es, IOE :> es)
-  => IncomingMessageStreams es
-incomingMessageStreams =
-  [ QQ.incomingMessages
-  , Telegram.incomingMessages
+  => QQ.Config
+  -> Telegram.Config
+  -> IncomingMessageStreams es
+incomingMessageStreams qqConfig telegramConfig =
+  [ QQ.incomingMessages qqConfig
+  , Telegram.incomingMessages telegramConfig
   ]

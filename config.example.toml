@@ -10,12 +10,14 @@ port = 3001
 path = "/"
 token = "xxx"
 bot_qq = 0
-superusers = []
+allowed_groups = []
+allowed_users = []
 
 [driver.telegram]
 bot_token = ""
 bot_id = ""
-superusers = []
+allowed_groups = []
+allowed_users = []
 
 [llm]
 endpoint = "https://openrouter.ai/api/v1"
@@ -56,5 +58,3 @@ dir = "memory"
 command = "!ask"
 draw_command = "!draw"
 agent_max_turns = 4
-qq_group_whitelist = []
-telegram_chat_whitelist = []

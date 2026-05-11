@@ -12,7 +12,7 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
-import Bot.Core.Filter
+import Bot.Core.Route
 import Bot.Handler.Ask
 import Bot.Handler.Saucenao
 import Bot.Handler.Scratchpad
@@ -55,7 +55,7 @@ routes
   -> [RouteHandler es]
 routes cfg sqliteStore conversations =
   scratchpadHandlers sqliteStore
-    <> typingHandlers cfg.handlers.ask
+    <> typingHandlers
     <> saucenaoHandlers cfg.saucenao
     <> askHandlers cfg.memory cfg.tool cfg.handlers.ask conversations
 

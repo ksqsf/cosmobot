@@ -19,20 +19,23 @@ module Bot.Core.Route
   , promptOrImages
   , (<&&>)
 
-    -- * Route guards
-  , RouteGuard (..)
-  , allowWhen
-
     -- * Routing
-  , RouteResult (..)
+  , Route (..)
+  , RouteDecision (..)
+  , RouteHelp (..)
+  , isAllowedGroup
+  , isAllowedPrivate
+  , isSuperuser
+  , canStartConversation
+  , canStartFromReply
+  , mentionsConfiguredBot
   , RouteHandler
-  , route
-  , routeStop
-  , routeStopGuarded
-  , routeStopGuardedWith
-  , routeWith
-  , routeWithGuard
-  , runRouteResult
+  , continueOn
+  , stopOn
+  , requireAuth
+  , withHelp
+  , runRouteDecision
+  , runRoute
   , runHandlers
   , consumeWith
   )
@@ -130,102 +133,132 @@ promptOrImages =
       then Nothing
       else Just prompt
 
--- | Authorization predicate applied only after a route filter has matched.
-newtype RouteGuard = RouteGuard
-  { runRouteGuard :: IncomingMessage -> Bool
+-- | Whether a group message is from an explicitly allowed chat.
+isAllowedGroup :: IncomingMessage -> Bool
+isAllowedGroup message =
+  message.kind == ChatGroup && message.digest.chatIsAllowed
+
+-- | Whether the message mentions the configured bot identity.
+mentionsConfiguredBot :: IncomingMessage -> Bool
+mentionsConfiguredBot message =
+  message.digest.mentionsBot
+
+-- | Whether a private message may start a conversation.
+isAllowedPrivate :: IncomingMessage -> Bool
+isAllowedPrivate message =
+  message.kind == ChatPrivate && message.digest.senderIsSuperuser
+
+-- | Whether the message sender may use privileged routes/tools.
+isSuperuser :: IncomingMessage -> Bool
+isSuperuser message =
+  message.digest.senderIsSuperuser
+
+-- | General admission predicate for starting a new conversation.
+canStartConversation :: IncomingMessage -> Bool
+canStartConversation message =
+  case message.kind of
+    ChatPrivate -> isAllowedPrivate message
+    ChatGroup   -> isAllowedGroup message || mentionsConfiguredBot message
+    _           -> False
+
+-- | Admission predicate for starting from a reply to an unknown message.
+canStartFromReply :: IncomingMessage -> Bool
+canStartFromReply message =
+  case message.kind of
+    ChatPrivate -> isAllowedPrivate message
+    ChatGroup   -> isAllowedGroup message && mentionsConfiguredBot message
+    _           -> False
+
+-- | The routing algebra: skip, handle and continue, or handle and stop.
+data RouteDecision es
+  = Skip
+  | ContinueWith (Eff es ())
+  | StopWith (Eff es ())
+
+-- | Metadata that can be folded into user-visible help without inspecting the route function.
+data RouteHelp = RouteHelp
+  { label       :: !Text
+  , description :: !Text
+  }
+  deriving (Eq, Show)
+
+-- | A route is an executable decision function plus optional help metadata.
+data Route es = Route
+  { help   :: !(Maybe RouteHelp)
+  , decide :: IncomingMessage -> Eff es (RouteDecision es)
   }
 
--- | Build a route guard from a message predicate.
-allowWhen :: (IncomingMessage -> Bool) -> RouteGuard
-allowWhen =
-  RouteGuard
+type RouteHandler es = Route es
 
--- | A handler decision and the action to run for matched messages.
-data RouteResult es
-  = MatchedAndContinue (Eff es ())
-  | MatchedAndStop (Eff es ())
-  | UnmatchedAndContinue
-  | UnmatchedAndStop
+continueOn :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> Route es
+continueOn =
+  onMatch ContinueWith
 
--- | A route inspects a message and decides whether routing should continue.
-type RouteHandler es = IncomingMessage -> Eff es (RouteResult es)
+stopOn :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> Route es
+stopOn =
+  onMatch StopWith
 
--- | Build a route that continues after a successful match.
-route :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> RouteHandler es
-route =
-  routeWith MatchedAndContinue UnmatchedAndContinue
-
--- | Build a route that stops after a successful match.
-routeStop :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> RouteHandler es
-routeStop =
-  routeWith MatchedAndStop UnmatchedAndContinue
-
--- | Build a stopping route with an authorization guard.
---
--- If the filter does not match, routing continues. If the filter matches but
--- the guard rejects the message, routing stops without running the handler.
-routeStopGuarded :: MessageFilter a -> RouteGuard -> (IncomingMessage -> a -> Eff es ()) -> RouteHandler es
-routeStopGuarded filt routeGuard =
-  routeStopGuardedWith filt routeGuard (\_ -> pure ())
-
--- | Build a stopping route with an authorization guard and rejection action.
---
--- The rejection action is only run when the route filter matched but the guard
--- rejected the message.
-routeStopGuardedWith
-  :: MessageFilter a
-  -> RouteGuard
-  -> (IncomingMessage -> Eff es ())
-  -> (IncomingMessage -> a -> Eff es ())
-  -> RouteHandler es
-routeStopGuardedWith =
-  routeWithGuard MatchedAndStop UnmatchedAndContinue
-
--- | General route builder for custom match/miss decisions.
-routeWith
-  :: (Eff es () -> RouteResult es)
-  -> RouteResult es
+onMatch
+  :: (Eff es () -> RouteDecision es)
   -> MessageFilter a
   -> (IncomingMessage -> a -> Eff es ())
-  -> RouteHandler es
-routeWith matched unmatched (MessageFilter filt) handler message =
-  pure case filt message of
-    Just value -> matched (handler message value)
-    Nothing    -> unmatched
+  -> Route es
+onMatch matched (MessageFilter filt) handler =
+  Route
+    { help = Nothing
+    , decide = \message ->
+        pure case filt message of
+          Nothing ->
+            Skip
+          Just value ->
+            matched (handler message value)
+    }
 
--- | General guarded route builder for custom match/miss decisions.
-routeWithGuard
-  :: (Eff es () -> RouteResult es)
-  -> RouteResult es
-  -> MessageFilter a
-  -> RouteGuard
+requireAuth
+  :: (IncomingMessage -> Bool)
   -> (IncomingMessage -> Eff es ())
-  -> (IncomingMessage -> a -> Eff es ())
-  -> RouteHandler es
-routeWithGuard matched unmatched (MessageFilter filt) (RouteGuard authorized) rejected handler message =
-  pure case filt message of
-    Nothing ->
-      unmatched
-    Just value
-      | authorized message ->
-          matched (handler message value)
-      | otherwise ->
-          MatchedAndStop (rejected message)
+  -> Route es
+  -> Route es
+requireAuth allowed denied route =
+  route
+    { decide = \message -> do
+        decision <- route.decide message
+        pure case decision of
+          Skip ->
+            Skip
+          ContinueWith action
+            | allowed message ->
+                ContinueWith action
+            | otherwise ->
+                StopWith (denied message)
+          StopWith action
+            | allowed message ->
+                StopWith action
+            | otherwise ->
+                StopWith (denied message)
+    }
+
+withHelp :: RouteHelp -> Route es -> Route es
+withHelp help route =
+  route{help = Just help}
 
 -- | Execute a route action and return whether routing should continue.
-runRouteResult :: RouteResult es -> Eff es Bool
-runRouteResult = \case
-  MatchedAndContinue action -> action $> True
-  MatchedAndStop action     -> action $> False
-  UnmatchedAndContinue      -> pure True
-  UnmatchedAndStop          -> pure False
+runRouteDecision :: RouteDecision es -> Eff es Bool
+runRouteDecision = \case
+  Skip                -> pure True
+  ContinueWith action -> action $> True
+  StopWith action     -> action $> False
+
+runRoute :: Route es -> IncomingMessage -> Eff es (RouteDecision es)
+runRoute route message =
+  route.decide message
 
 -- | Run handlers left-to-right until one asks the router to stop.
 runHandlers :: [RouteHandler es] -> IncomingMessage -> Eff es ()
 runHandlers [] _ =
   pure ()
 runHandlers (handler : handlers) message = do
-  continue <- handler message >>= runRouteResult
+  continue <- runRoute handler message >>= runRouteDecision
   when continue (runHandlers handlers message)
 
 -- | Consume a message stream with a fixed handler pipeline.

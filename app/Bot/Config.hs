@@ -9,7 +9,6 @@ module Bot.Config
     BotConfig (..)
   , HandlersConfig (..)
   , AskHandlerConfig (..)
-  , TelegramChatRef (..)
   , SaucenaoConfig (..)
   , Memory.MemoryConfig (..)
   , loadConfig
@@ -24,11 +23,9 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.LLM.Config as LLMConfig
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.Agent.Config as AgentConfig
-import qualified Bot.Handler.Ask.Config as AskConfig
 import Bot.Handler.Ask.Config
   ( AskHandlerConfig (..)
   , HandlersConfig (..)
-  , TelegramChatRef (..)
   )
 import qualified Bot.Handler.Saucenao.Config as SaucenaoConfig
 import Bot.Handler.Saucenao.Config
@@ -161,7 +158,6 @@ toBotConfig cfg =
   let
     qqFileConfig = cfg.driver.qq
     telegramFileConfig = cfg.driver.telegram
-    handlersFileConfig = AskConfig.HandlersConfig cfg.handler.ask
   in
   BotConfig
     { qq = QQConfig.toRuntimeConfig qqFileConfig
@@ -170,28 +166,7 @@ toBotConfig cfg =
     , tool = AgentConfig.toToolConfig cfg.tool
     , saucenao = cfg.handler.saucenao
     , memory = MemoryConfig.toMemoryConfig cfg.memory
-    , handlers = withPlatformConfig qqFileConfig telegramFileConfig handlersFileConfig
+    , handlers = HandlersConfig cfg.handler.ask
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath
-    }
-
-withPlatformConfig
-  :: QQConfig.FileConfig
-  -> TelegramConfig.FileConfig
-  -> AskConfig.HandlersConfig
-  -> AskConfig.HandlersConfig
-withPlatformConfig qq telegram (AskConfig.HandlersConfig askCfg) =
-  AskConfig.HandlersConfig AskConfig.AskHandlerConfig
-    { name = askCfg.name
-    , command = askCfg.command
-    , drawCommand = askCfg.drawCommand
-    , qqGroupWhitelist = askCfg.qqGroupWhitelist
-    , telegramChatWhitelist = askCfg.telegramChatWhitelist
-    , qqSuperusers = qq.superusers
-    , telegramSuperusers = map TelegramConfig.normalizeUsername telegram.superusers
-    , botQQ = qq.botQQ
-    , botTelegramIds = TelegramConfig.telegramBotIds telegram.botId
-    , botTelegramUsernames = TelegramConfig.telegramBotUsernames telegram.botId
-    , systemPrompt = askCfg.systemPrompt
-    , agentMaxTurns = askCfg.agentMaxTurns
     }

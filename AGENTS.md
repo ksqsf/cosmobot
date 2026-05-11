@@ -9,10 +9,10 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - `app/Main.hs` wires config, storage, effects, platforms, routes, and incoming message streams.
 - `app/Bot/Core/Message.hs` defines the normalized message identity shared by platforms, filters, handlers, tools, storage, and memory.
 - `app/Bot/Config.hs` parses top-level `config.toml` sections into normalized runtime config. Concrete section parsers belong next to the driver, effect, handler, tool, or memory domain that owns them.
-- `app/Bot/Core/Filter.hs` defines route combinators. Handlers compose `RouteHandler`s and usually fork long-running work with `forkEff`.
+- `app/Bot/Core/Route.hs` defines route combinators and shared admission predicates over normalized message digests. Handlers compose `RouteHandler`s and usually fork long-running work with `forkEff`.
 - `app/Bot/Handler/*` owns user-visible command behavior. Handlers should decide admission, gather message context, and call effects or domain modules.
 - `app/Bot/Handler/Ask.hs` owns ask/draw/private/mention/reply conversation flow and `!halt` handling. New conversations are created by `startConversation`; continuations append user turns to stored conversations. It should not branch on concrete chat platforms; streaming reply presentation belongs behind the `Chat` effect.
-- `app/Bot/Handler/Ask/Config.hs` owns ask handler config, admission predicates, and Telegram chat whitelist parsing.
+- `app/Bot/Handler/Ask/Config.hs` owns only ask handler config parsing.
 - `app/Bot/Core/Conversation.hs` owns conversation values and the mutable conversation store. Persisted conversations are keyed by bot reply message id; active streaming conversations are also keyed by bot reply message id so continuations can wait for completion or `!halt`.
 - `app/Bot/Agent.hs` owns the LLM/tool loop and built-in tool implementations. The streaming path returns `Stream (Of Text) (Eff es) (Text, Conversation)` and consumes `LLM.askWithToolsStreaming` directly. This module is already large; prefer extracting cohesive tool families instead of adding more unrelated helpers here.
 - `app/Bot/Agent/Types.hs` owns tool/context/config record types shared by the agent loop and handlers.
@@ -32,15 +32,16 @@ Data enters as platform-specific events, becomes `IncomingMessage`, flows throug
 - Do not conflate chat identity and sender identity. Features scoped to people should normally key by `platform` and `senderId`; features scoped to conversations/chats should use `platform` and `chatId`.
 - Keep persisted user-visible state scoped defensively. If a required identity is missing, prefer a clear rejection over guessing.
 - Keep platform-specific API details in `Bot.Chat.Driver.QQ`, `Bot.Chat.Driver.Telegram`, or dispatch glue in `Bot.Chat.Driver`; do not leak them into handlers or agent tools.
-- Keep route admission logic in `Bot.Handler.Ask.Config` and route combinators in `Bot.Core.Filter`; handlers should compose those predicates instead of reimplementing them.
+- Keep route admission logic and route combinators in `Bot.Core.Route`; handlers should compose those predicates instead of reimplementing them.
+- Chat drivers decide platform-specific message digest fields such as allowed chat, superuser sender, and configured-bot mention. Do not put platform whitelists or mention parsing in handler config.
 - Prefer structured parsers/APIs (`aeson`, `Toml.Schema`, SQLite helpers) over ad hoc text manipulation.
 - Add abstractions only when they reduce real duplication or isolate a growing responsibility.
 
 ## Change Rules
 
-- When changing handler behavior, check route predicates in `Bot.Handler.Ask.Config` and route combinators in `Bot.Core.Filter` first.
+- When changing handler behavior, check route predicates and combinators in `Bot.Core.Route` first.
 - When adding config, update `Bot.Config`, `config.example.toml`, and all call sites that consume `BotConfig`.
-- Keep `config.toml` section ownership explicit: chat platform settings live under `[driver.qq]` and `[driver.telegram]`; handler settings live under `[handler.saucenao]` and `[handler.ask]`. Do not reintroduce top-level `[qq]`, `[telegram]`, `[saucenao]`, or `[handlers.*]` sections.
+- Keep `config.toml` section ownership explicit: chat platform settings live under `[driver.qq]` and `[driver.telegram]`; handler settings live under `[handler.saucenao]` and `[handler.ask]`. Driver chat access belongs in `allowed_groups` and privileged sender access belongs in `allowed_users`. Do not reintroduce top-level `[qq]`, `[telegram]`, `[saucenao]`, `[handlers.*]`, or handler-owned platform whitelist sections.
 - When adding `[llm]` config, update `Bot.Config`, `Bot.Effect.LLM.Config`, OpenAI-compatible request serialization when applicable, and `config.example.toml`.
 - When adding a new module, update `cosmobot.cabal` for the executable and relevant test suites. Prefer shared `common` module-list stanzas over copying the same `other-modules` block into multiple components.
 - When adding an agent tool, update `defaultTools`, define a small parser using `AesonTypes.parseEither`, and add focused tests in `test/AgentSpec.hs`.

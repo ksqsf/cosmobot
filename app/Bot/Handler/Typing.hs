@@ -11,8 +11,7 @@ module Bot.Handler.Typing
 where
 
 import qualified Bot.Effect.Chat as Chat
-import Bot.Core.Filter
-import Bot.Handler.Ask.Config
+import Bot.Core.Route
 import qualified Bot.Util.Html as Html
 import qualified Bot.Util.Image as Image
 import Bot.Core.Message
@@ -41,25 +40,24 @@ tigerRankCommand = "!hbcj"
 -- | Routes that render typing leaderboard snapshots.
 typingHandlers
   :: (Chat.Chat :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
-  -> [RouteHandler es]
-typingHandlers cfg =
-  [ rankRoute cfg championshipRankCommand "锦标赛成绩" "锦标赛排行榜生成失败。" fetchChampionshipRows
-  , rankRoute cfg tigerRankCommand "虎杯成绩" "虎杯成绩生成失败。" fetchTigerRows
+  => [RouteHandler es]
+typingHandlers =
+  [ rankRoute championshipRankCommand "锦标赛成绩" "锦标赛排行榜生成失败。" fetchChampionshipRows
+  , rankRoute tigerRankCommand "虎杯成绩" "虎杯成绩生成失败。" fetchTigerRows
   ]
 
 rankRoute
   :: (Chat.Chat :> es, Log :> es, IOE :> es)
-  => AskHandlerConfig
-  -> Text
+  => Text
   -> Text
   -> Text
   -> IO [[Text]]
   -> RouteHandler es
-rankRoute cfg commandText titleSuffix failureMessage fetchRows =
-  routeStop (command commandText <* matching (canStartConversation cfg)) \message _ -> do
-    logInfo "matched typing rank route" (commandText <> " " <> incomingMessageLogLine message)
-    forkEff (sendRankImage titleSuffix failureMessage fetchRows message)
+rankRoute commandText titleSuffix failureMessage fetchRows =
+  requireAuth canStartConversation (\_ -> pure ()) $
+    stopOn (command commandText) \message _ -> do
+      logInfo "matched typing rank route" (commandText <> " " <> incomingMessageLogLine message)
+      forkEff (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage
   :: (Chat.Chat :> es, Log :> es, IOE :> es)

@@ -11,7 +11,7 @@ module Bot.Handler.Saucenao
 where
 
 import qualified Bot.Effect.Chat as Chat
-import Bot.Core.Filter
+import Bot.Core.Route
 import Bot.Core.Message
 import Bot.Handler.Saucenao.Config
 import Bot.Util.Multipart
@@ -46,7 +46,7 @@ saucenaoRoute
   => SaucenaoConfig
   -> RouteHandler es
 saucenaoRoute saucenaoCfg =
-  routeStop (command saucenaoCommand) \message _ -> do
+  stopOn (command saucenaoCommand) \message _ -> do
     logInfo "matched saucenao route" (incomingMessageLogLine message)
     forkEff (sendSaucenaoResults saucenaoCfg message)
 

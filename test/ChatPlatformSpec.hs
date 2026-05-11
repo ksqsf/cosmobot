@@ -88,7 +88,7 @@ testTelegramReferencedMessageIncludesSenderIdentity = do
       incoming = fromMaybe (error "expected incoming Telegram message") $
         Telegram.updateToIncomingMessage (telegramUpdateWithMessage messageWithReply)
   fetched <- runEff $ runTestLog $
-    Telegram.runTelegram (Telegram.Config "dummy-token") $
+    Telegram.runTelegram (Telegram.Config "dummy-token" [] [] [] [] []) $
       Telegram.getMessageContent incoming 70001
   (fetched <&> (.senderDisplayName)) @?= Just (Just "Bob Smith")
   (fetched <&> (.senderIdentifier)) @?= Just (Just "@bob")

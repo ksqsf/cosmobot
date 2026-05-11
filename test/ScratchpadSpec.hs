@@ -3,7 +3,7 @@ module Main (main) where
 import qualified Bot.Effect.Chat as Chat
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
-import Bot.Core.Filter
+import Bot.Core.Route
 import Bot.Handler.Scratchpad
 import Bot.Core.Message
 import Bot.Prelude
@@ -152,6 +152,8 @@ messageFrom senderId text =
     { platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just 100
+    , chatAliases = []
+    , digest = emptyMessageDigest
     , senderId = Just senderId
     , senderUsername = Just "alice"
     , messageId = Just 300

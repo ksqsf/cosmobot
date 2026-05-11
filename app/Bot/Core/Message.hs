@@ -8,6 +8,8 @@ module Bot.Core.Message
   ( -- * Chat identity
     ChatPlatform (..)
   , ChatKind (..)
+  , MessageDigest (..)
+  , emptyMessageDigest
 
     -- * Incoming messages
   , IncomingMessage (..)
@@ -38,11 +40,29 @@ data ChatKind
   | ChatUnknown Text
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
+-- | Driver-provided facts that are not inherent in the raw message payload.
+data MessageDigest = MessageDigest
+  { chatIsAllowed :: !Bool
+  , senderIsSuperuser :: !Bool
+  , mentionsBot :: !Bool
+  }
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+emptyMessageDigest :: MessageDigest
+emptyMessageDigest =
+  MessageDigest
+    { chatIsAllowed = False
+    , senderIsSuperuser = False
+    , mentionsBot = False
+    }
+
 -- | Platform-normalized message consumed by handlers.
 data IncomingMessage = IncomingMessage
   { platform  :: !ChatPlatform
   , kind      :: !ChatKind
   , chatId    :: !(Maybe Integer)
+  , chatAliases :: ![Text]
+  , digest    :: !MessageDigest
   , senderId  :: !(Maybe Integer)
   , senderUsername :: !(Maybe Text)
   , messageId :: !(Maybe Integer)
@@ -62,11 +82,14 @@ incomingMessageLogLine message =
     [ "platform=" <> show message.platform
     , "kind=" <> show message.kind
     , "chat=" <> showMaybe message.chatId
+    , "chat_allowed=" <> show message.digest.chatIsAllowed
     , "sender=" <> showMaybe message.senderId
     , "username=" <> fromMaybe "-" message.senderUsername
+    , "superuser=" <> show message.digest.senderIsSuperuser
     , "message=" <> showMaybe message.messageId
     , "reply_to=" <> showMaybe message.replyToMessageId
     , "mentions=" <> show (length message.mentions + length message.mentionUsernames)
+    , "mentions_bot=" <> show message.digest.mentionsBot
     , "images=" <> show (length message.imageUrls)
     , "text=" <> previewText 80 message.text
     ]

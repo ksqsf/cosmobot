@@ -59,6 +59,9 @@ data Config = Config
   , port  :: !Int
   , path  :: !String
   , token :: !(Maybe Text)
+  , botQQ :: !(Maybe Integer)
+  , allowedGroups :: ![Integer]
+  , allowedUsers :: ![Integer]
   }
   deriving (Show)
 
@@ -179,10 +182,10 @@ eventsStream = do
   eventsStream
 
 -- | Stream OneBot message events as platform-independent messages.
-incomingMessages :: (QQ :> es, Log :> es) => Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages = do
+incomingMessages :: (QQ :> es, Log :> es) => Config -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages cfg = do
   event <- S.lift receiveEvent
-  case eventToIncomingMessage event of
+  case eventToIncomingMessageWith cfg event of
     Nothing -> do
       let Event{postType} = event
       S.lift $ logTrace_ [i|Ignoring QQ event: #{postType}|]
@@ -191,7 +194,7 @@ incomingMessages = do
       S.lift $ logTrace "incoming qq message" message
       S.lift $ logInfo "incoming qq message" (incomingMessageLogLine message)
       S.yield message
-  incomingMessages
+  incomingMessages cfg
 
 -- ---------------------------------------------------------------------------
 -- OneBot v11 events
@@ -580,13 +583,19 @@ instance Aeson.FromJSON Event where
         pure Event{..}
 
 eventToIncomingMessage :: Event -> Maybe IncomingMessage
-eventToIncomingMessage event
+eventToIncomingMessage =
+  eventToIncomingMessageWith defaultMessageConfig
+
+eventToIncomingMessageWith :: Config -> Event -> Maybe IncomingMessage
+eventToIncomingMessageWith cfg event
   | event.postType /= "message" = Nothing
   | isSelfMessage event = Nothing
   | otherwise = Just IncomingMessage
       { platform  = PlatformQQ
       , kind      = oneBotChatKind event.messageType
       , chatId    = event.groupId <|> event.userId
+      , chatAliases = []
+      , digest = qqMessageDigest cfg event
       , senderId  = event.userId
       , senderUsername = Nothing
       , messageId = event.messageId
@@ -597,6 +606,26 @@ eventToIncomingMessage event
       , text      = fromMaybe "" ((event.message >>= messageText) <|> event.rawMessage)
       , raw       = event.rawEvent
       }
+
+defaultMessageConfig :: Config
+defaultMessageConfig =
+  Config
+    { host = ""
+    , port = 0
+    , path = ""
+    , token = Nothing
+    , botQQ = Nothing
+    , allowedGroups = []
+    , allowedUsers = []
+    }
+
+qqMessageDigest :: Config -> Event -> MessageDigest
+qqMessageDigest cfg event =
+  MessageDigest
+    { chatIsAllowed = maybe False (`elem` cfg.allowedGroups) event.groupId
+    , senderIsSuperuser = maybe False (`elem` cfg.allowedUsers) event.userId
+    , mentionsBot = maybe False (`elem` maybe [] mentionIds event.message) cfg.botQQ
+    }
 
 isSelfMessage :: Event -> Bool
 isSelfMessage event =

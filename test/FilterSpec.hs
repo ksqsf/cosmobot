@@ -2,7 +2,7 @@ module Main (main) where
 
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
-import Bot.Core.Filter
+import Bot.Core.Route
 import Bot.Core.Message
 import Bot.Prelude
 import Test.Tasty
@@ -17,8 +17,9 @@ main =
       , testCase "promptOrImages accepts images without text" testPromptOrImages
       , testCase "fromGroups matches only allowed group chats" testFromGroups
       , testCase "notReply rejects replies" testNotReply
-      , testCase "routeStop prevents later handlers" testRouteStopPreventsLaterHandlers
+      , testCase "stopping matched route prevents later handlers" testStoppingMatchedRoutePreventsLaterHandlers
       , testCase "route continues to later handlers" testRouteContinueRunsLaterHandlers
+      , testCase "restricted route stops after access failure" testRestrictedRouteStopsAfterAccessFailure
       ]
 
 testCommandFilter :: IO ()
@@ -51,8 +52,8 @@ testNotReply = do
   assertBool "non-reply matches" (isJust (applyFilter notReply (message "hello")))
   assertBool "reply does not match" (isNothing (applyFilter notReply (message "hello"){replyToMessageId = Just 1}))
 
-testRouteStopPreventsLaterHandlers :: IO ()
-testRouteStopPreventsLaterHandlers = do
+testStoppingMatchedRoutePreventsLaterHandlers :: IO ()
+testStoppingMatchedRoutePreventsLaterHandlers = do
   calls <- IORef.newIORef ([] :: [Text])
   runEff $ runHandlers
     [ appendStopCall calls "first"
@@ -71,13 +72,27 @@ testRouteContinueRunsLaterHandlers = do
     (message "hello")
   IORef.readIORef calls >>= (@?= ["first", "second"])
 
+testRestrictedRouteStopsAfterAccessFailure :: IO ()
+testRestrictedRouteStopsAfterAccessFailure = do
+  calls <- IORef.newIORef ([] :: [Text])
+  runEff $ runHandlers
+    [ requireAuth
+        (const False)
+        (\_ -> liftIO $ IORef.modifyIORef' calls (<> ["denied"]))
+        (stopOn (command "!exec") \_ _ ->
+          liftIO $ IORef.modifyIORef' calls (<> ["exec"]))
+    , appendStopCall calls "fallback"
+    ]
+    (message "!exec whoami")
+  IORef.readIORef calls >>= (@?= ["denied"])
+
 appendContinueCall :: IORef.IORef [Text] -> Text -> RouteHandler '[IOE]
 appendContinueCall calls label =
-  appendCall route calls label
+  appendCall continueOn calls label
 
 appendStopCall :: IORef.IORef [Text] -> Text -> RouteHandler '[IOE]
 appendStopCall calls label =
-  appendCall routeStop calls label
+  appendCall stopOn calls label
 
 appendCall
   :: (MessageFilter IncomingMessage -> (IncomingMessage -> IncomingMessage -> Eff '[IOE] ()) -> RouteHandler '[IOE])
@@ -110,6 +125,8 @@ messageFromWithImages senderId text imageUrls =
     { platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just 100
+    , chatAliases = []
+    , digest = emptyMessageDigest
     , senderId = Just senderId
     , senderUsername = Just "alice"
     , messageId = Just 300

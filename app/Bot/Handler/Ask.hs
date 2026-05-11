@@ -16,7 +16,7 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
-import Bot.Core.Filter
+import Bot.Core.Route
 import Bot.Handler.Ask.Config
 import qualified Bot.Memory as Memory
 import Bot.Core.Message
@@ -51,8 +51,9 @@ drawRoute
   -> ConversationStore
   -> RouteHandler es
 drawRoute memoryCfg cfg conversations =
-  routeStop (command cfg.drawCommand <* matching (canStartConversation cfg)) $ \message prompt ->
-    forkEff (startDrawConversation "matched draw route" memoryCfg cfg conversations message prompt)
+  requireAuth canStartConversation (\_ -> pure ()) $
+    stopOn (command cfg.drawCommand) \message prompt ->
+      forkEff (startDrawConversation "matched draw route" memoryCfg cfg conversations message prompt)
 
 askRoute
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
@@ -62,15 +63,16 @@ askRoute
   -> ConversationStore
   -> RouteHandler es
 askRoute memoryCfg toolCfg cfg conversations =
-  routeStop (askPrefix cfg <* matching (canStartConversation cfg)) $ \message prompt ->
-    forkEff (startAskConversation "matched ask route" memoryCfg toolCfg cfg conversations message prompt)
+  requireAuth canStartConversation (\_ -> pure ()) $
+    stopOn (askPrefix cfg) \message prompt ->
+      forkEff (startAskConversation "matched ask route" memoryCfg toolCfg cfg conversations message prompt)
 
 haltRoute
   :: (Chat.Chat :> es, Log :> es, IOE :> es)
   => ConversationStore
   -> RouteHandler es
 haltRoute conversations =
-  routeStop (command "!halt" *> replyToMessage) \_message parentId -> do
+  stopOn (command "!halt" *> replyToMessage) \_message parentId -> do
     halted <- haltConversation conversations parentId
     if halted
       then logInfo_ "halted"
@@ -84,12 +86,12 @@ privateRoute
   -> ConversationStore
   -> RouteHandler es
 privateRoute memoryCfg toolCfg cfg conversations =
-  routeStop privateMessage $ \message prompt ->
+  stopOn privateMessage \message prompt ->
     forkEff (startAskConversation "matched private ask route" memoryCfg toolCfg cfg conversations message prompt)
   where
     privateMessage =
       promptOrImages
-        <* matching (isAllowedPrivate cfg)
+        <* matching isAllowedPrivate
         <* notReply
         <* notAskPrefix cfg
         <* notCommand cfg.drawCommand
@@ -102,13 +104,13 @@ mentionRoute
   -> ConversationStore
   -> RouteHandler es
 mentionRoute memoryCfg toolCfg cfg conversations =
-  routeStop mentionMessage $ \message prompt ->
+  stopOn mentionMessage \message prompt ->
     forkEff (startAskConversation "matched bot mention route" memoryCfg toolCfg cfg conversations message prompt)
   where
     mentionMessage =
       promptOrImages
-        <* matching (isAllowedGroup cfg)
-        <* matching (mentionsBot cfg)
+        <* matching isAllowedGroup
+        <* matching mentionsConfiguredBot
         <* notReply
         <* notAskPrefix cfg
         <* notCommand cfg.drawCommand
@@ -121,12 +123,12 @@ continueRoute
   -> ConversationStore
   -> RouteHandler es
 continueRoute memoryCfg toolCfg cfg conversations =
-  routeStop continuedMessage \message parentId ->
+  stopOn continuedMessage \message parentId ->
     forkEff do
       parent <- lookupConversation conversations parentId
       case parent of
         Nothing
-          | not (canStartFromReply cfg message) -> do
+          | not (canStartFromReply message) -> do
               logTrace "Ignoring reply to unknown conversation message" parentId
               logInfo "Ignoring unknown conversation reply" parentId
           | otherwise ->
@@ -271,7 +273,7 @@ askConversation memoryCfg toolCfg cfg conversations parentMessageId threadId mes
     context =
       Agent.AgentContext
         { message = message
-        , superuser = isSuperuser cfg message
+        , superuser = isSuperuser message
         , askCommand = cfg.command
         , toolConfig = toolCfg
         , memoryConfig = Just memoryCfg
@@ -353,9 +355,6 @@ drawConversation conversation =
     logInfo "LLM image request failed" (show err :: String)
     pure "Image generation failed."
 
-mentionsBot :: AskHandlerConfig -> IncomingMessage -> Bool
-mentionsBot cfg message =
-  mentionsConfiguredBot cfg message
 
 promptOrImageDefault :: Text -> [Text] -> Text
 promptOrImageDefault prompt imageUrls

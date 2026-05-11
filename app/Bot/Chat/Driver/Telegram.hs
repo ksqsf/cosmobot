@@ -74,8 +74,13 @@ import System.IO (hClose, openTempFile)
 -- ---------------------------------------------------------------------------
 
 -- | Telegram Bot API credentials.
-newtype Config = Config
-  { botToken :: Text
+data Config = Config
+  { botToken :: !Text
+  , botIds :: ![Integer]
+  , botUsernames :: ![Text]
+  , allowedChatIds :: ![Integer]
+  , allowedChatAliases :: ![Text]
+  , allowedUsers :: ![Text]
   }
   deriving (Show)
 
@@ -195,9 +200,9 @@ updatesStream :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of Update) (E
 updatesStream = updatesStream' 0
 
 -- | Poll Telegram updates and yield platform-independent messages.
-incomingMessages :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages = S.for updatesStream $ \update ->
-  case updateToIncomingMessage update of
+incomingMessages :: (Telegram :> es, Log :> es, IOE :> es) => Config -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages cfg = S.for updatesStream $ \update ->
+  case updateToIncomingMessageWith cfg update of
     Nothing -> do
       S.lift $ logTrace_ [i|Ignoring Telegram event|]
       S.lift $ logInfo_ "Ignoring Telegram event"
@@ -217,6 +222,8 @@ resolveIncomingMessageImages message = do
     { platform = message.platform
     , kind = message.kind
     , chatId = message.chatId
+    , chatAliases = message.chatAliases
+    , digest = message.digest
     , senderId = message.senderId
     , senderUsername = message.senderUsername
     , messageId = message.messageId
@@ -229,13 +236,19 @@ resolveIncomingMessageImages message = do
     }
 
 updateToIncomingMessage :: Update -> Maybe IncomingMessage
-updateToIncomingMessage Update{message = telegramMessage} = do
+updateToIncomingMessage =
+  updateToIncomingMessageWith defaultMessageConfig
+
+updateToIncomingMessageWith :: Config -> Update -> Maybe IncomingMessage
+updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
   message <- telegramMessage
   guard (not (isBotMessage message))
   pure IncomingMessage
     { platform  = PlatformTelegram
     , kind      = telegramChatKind message.chat.type_
     , chatId    = Just message.chat.id
+    , chatAliases = telegramChatAliases message.chat
+    , digest = telegramMessageDigest cfg message
     , senderId  = (.id) <$> message.from
     , senderUsername = message.from >>= (.username)
     , messageId = Just message.messageId
@@ -246,6 +259,34 @@ updateToIncomingMessage Update{message = telegramMessage} = do
     , text      = messageText message
     , raw       = Aeson.toJSON message
     }
+
+defaultMessageConfig :: Config
+defaultMessageConfig =
+  Config
+    { botToken = ""
+    , botIds = []
+    , botUsernames = []
+    , allowedChatIds = []
+    , allowedChatAliases = []
+    , allowedUsers = []
+    }
+
+telegramMessageDigest :: Config -> Message -> MessageDigest
+telegramMessageDigest cfg message =
+  MessageDigest
+    { chatIsAllowed =
+        message.chat.id `elem` cfg.allowedChatIds ||
+        any (`elem` cfg.allowedChatAliases) (telegramChatAliases message.chat)
+    , senderIsSuperuser =
+        maybe False (`elem` cfg.allowedUsers) (normalizeUsername <$> (message.from >>= (.username)))
+    , mentionsBot =
+        any (`elem` cfg.botIds) (messageMentionIds message) ||
+        any (`elem` cfg.botUsernames) (messageMentionUsernames message)
+    }
+
+telegramChatAliases :: Chat -> [Text]
+telegramChatAliases chat =
+  map normalizeUsername (catMaybes [chat.username, chat.title])
 
 isBotMessage :: Message -> Bool
 isBotMessage message =

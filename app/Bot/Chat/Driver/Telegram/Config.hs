@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Chat.Driver.Telegram.Config
   ( FileConfig (..)
   , TelegramBotId (..)
+  , TelegramChatRef (..)
   , normalizeUsername
   , telegramBotIds
   , telegramBotUsernames
@@ -23,7 +24,8 @@ import Toml.Schema
 data FileConfig = FileConfig
   { botToken :: !Text
   , botId    :: !(Maybe TelegramBotId)
-  , superusers :: ![Text]
+  , allowedGroups :: ![TelegramChatRef]
+  , allowedUsers :: ![Text]
   }
   deriving (Show)
 
@@ -31,6 +33,11 @@ data TelegramBotId
   = TelegramBotNumeric !Integer
   | TelegramBotUsername !Text
   deriving (Show)
+
+data TelegramChatRef
+  = TelegramChatNumeric !Integer
+  | TelegramChatUsername !Text
+  deriving (Eq, Show)
 
 instance FromValue TelegramBotId where
   fromValue = \case
@@ -41,11 +48,21 @@ instance FromValue TelegramBotId where
     _ ->
       fail "driver.telegram.bot_id must be an integer id or a username string"
 
+instance FromValue TelegramChatRef where
+  fromValue = \case
+    TomlValue.Integer' _ value ->
+      pure (TelegramChatNumeric value)
+    TomlValue.Text' _ value ->
+      pure (TelegramChatUsername (normalizeUsername value))
+    _ ->
+      fail "driver.telegram.allowed_groups entries must be integer chat ids or username/title strings"
+
 instance FromValue FileConfig where
   fromValue = parseTableFromValue $ FileConfig
     <$> reqKey "bot_token"
     <*> optKey "bot_id"
-    <*> fmap (fromMaybe []) (optKey "superusers")
+    <*> fmap (fromMaybe []) (optKey "allowed_groups")
+    <*> fmap (fromMaybe []) (optKey "allowed_users")
 
 normalizeUsername :: Text -> Text
 normalizeUsername =
@@ -61,8 +78,25 @@ telegramBotUsernames = \case
   Just (TelegramBotUsername username) -> [normalizeUsername username]
   _ -> []
 
+telegramChatIds :: [TelegramChatRef] -> [Integer]
+telegramChatIds =
+  mapMaybe \case
+    TelegramChatNumeric chatId -> Just chatId
+    _ -> Nothing
+
+telegramChatAliases :: [TelegramChatRef] -> [Text]
+telegramChatAliases =
+  mapMaybe \case
+    TelegramChatUsername username -> Just (normalizeUsername username)
+    _ -> Nothing
+
 toRuntimeConfig :: FileConfig -> Telegram.Config
 toRuntimeConfig cfg =
   Telegram.Config
     { botToken = cfg.botToken
+    , botIds = telegramBotIds cfg.botId
+    , botUsernames = telegramBotUsernames cfg.botId
+    , allowedChatIds = telegramChatIds cfg.allowedGroups
+    , allowedChatAliases = telegramChatAliases cfg.allowedGroups
+    , allowedUsers = map normalizeUsername cfg.allowedUsers
     }

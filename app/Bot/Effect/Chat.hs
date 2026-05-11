@@ -253,11 +253,13 @@ chunkReplyTarget stream = do
   pure (maybe stream.message (replyTargetMessage stream.message) previous)
 
 replyTargetMessage :: IncomingMessage -> Integer -> IncomingMessage
-replyTargetMessage IncomingMessage{platform, kind, chatId, senderId, senderUsername, replyToMessageId, mentions, mentionUsernames, imageUrls, text, raw} responseId =
+replyTargetMessage IncomingMessage{platform, kind, chatId, chatAliases, digest, senderId, senderUsername, replyToMessageId, mentions, mentionUsernames, imageUrls, text, raw} responseId =
   IncomingMessage
     { platform = platform
     , kind = kind
     , chatId = chatId
+    , chatAliases = chatAliases
+    , digest = digest
     , senderId = senderId
     , senderUsername = senderUsername
     , messageId = Just responseId

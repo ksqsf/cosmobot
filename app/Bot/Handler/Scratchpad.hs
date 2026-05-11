@@ -11,7 +11,7 @@ module Bot.Handler.Scratchpad
 where
 
 import qualified Bot.Effect.Chat as Chat
-import Bot.Core.Filter
+import Bot.Core.Route
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as Storage
@@ -60,7 +60,7 @@ scratchpadRoute
   -> ScratchpadCommand
   -> RouteHandler es
 scratchpadRoute store commandText commandKind =
-  routeStop (command commandText) \message args ->
+  stopOn (command commandText) \message args ->
     handleScratchpadCommand store commandKind message args
 
 handleScratchpadCommand
