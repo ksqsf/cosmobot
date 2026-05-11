@@ -21,6 +21,7 @@ superusers = []
 endpoint = "https://openrouter.ai/api/v1"
 api_key = ""
 model = "openai/gpt-4o-mini"
+reasoning_effort = "low"
 image_generation = false
 image_generation_endpoint = ""
 image_generation_api_key = ""

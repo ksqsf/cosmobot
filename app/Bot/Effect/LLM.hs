@@ -59,6 +59,7 @@ data Config = Config
   { endpoint :: !Text
   , apiKey   :: !(Maybe Text)
   , model    :: !Text
+  , reasoningEffort :: !Text
   , imageGeneration :: !Bool
   , imageGenerationEndpoint :: !(Maybe Text)
   , imageGenerationApiKey :: !(Maybe Text)
@@ -79,6 +80,7 @@ defaultConfig = Config
   { endpoint = "https://openrouter.ai/api/v1"
   , apiKey   = Nothing
   , model    = "openai/gpt-4o-mini"
+  , reasoningEffort = "low"
   , imageGeneration = False
   , imageGenerationEndpoint = Nothing
   , imageGenerationApiKey = Nothing
@@ -153,6 +155,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
       requestModel = if imageRequest then fromMaybe model cfg.imageGenerationModel else model
       request = ChatCompletionRequest
         { model = requestModel
+        , reasoningEffort = if imageRequest then Nothing else Just cfg.reasoningEffort
         , messages = imagePromptMessages imageRequest messages
         , tools = Nothing
         , modalities = if imageRequest then Just ["image", "text"] else Nothing
@@ -177,9 +180,10 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
 askOpenAIWithTools :: (IOE :> es, Log :> es) => Config -> [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
 askOpenAIWithTools Config{apiKey = Nothing} _ _ =
   pure (ChatAnswer "LLM is not configured: set llm.api_key." [])
-askOpenAIWithTools Config{endpoint, apiKey = Just key, model} functionTools messages = do
+askOpenAIWithTools Config{endpoint, apiKey = Just key, model, reasoningEffort} functionTools messages = do
   let request = ChatCompletionRequest
         { model = model
+        , reasoningEffort = Just reasoningEffort
         , messages = messages
         , tools = toolSpecs functionTools
         , modalities = Nothing
@@ -212,6 +216,7 @@ instance Exception LLMException
 
 data ChatCompletionRequest = ChatCompletionRequest
   { model       :: !Text
+  , reasoningEffort :: !(Maybe Text)
   , messages    :: ![ChatMessage]
   , tools       :: !(Maybe [ToolSpec])
   , modalities  :: !(Maybe [Text])
@@ -220,11 +225,12 @@ data ChatCompletionRequest = ChatCompletionRequest
   deriving (Show, Generic)
 
 instance Aeson.ToJSON ChatCompletionRequest where
-  toJSON ChatCompletionRequest{model, messages, tools, modalities, imageConfig} =
+  toJSON ChatCompletionRequest{model, reasoningEffort, messages, tools, modalities, imageConfig} =
     Aeson.object $
       [ "model" Aeson..= model
       , "messages" Aeson..= messages
       ]
+      <> maybe [] (\value -> ["reasoning_effort" Aeson..= value]) reasoningEffort
       <> maybe [] (\value -> ["tools" Aeson..= value]) tools
       <> maybe [] (\value -> ["modalities" Aeson..= value]) modalities
       <> maybe [] (\value -> ["image_config" Aeson..= value]) imageConfig

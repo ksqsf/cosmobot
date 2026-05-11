@@ -224,6 +224,7 @@ data LLMFileConfig = LLMFileConfig
   { endpoint :: !Text
   , apiKey   :: !(Maybe Text)
   , model    :: !Text
+  , reasoningEffort :: !Text
   , imageGeneration :: !Bool
   , imageGenerationEndpoint :: !(Maybe Text)
   , imageGenerationApiKey :: !(Maybe Text)
@@ -319,6 +320,7 @@ instance FromValue LLMFileConfig where
     <$> fmap (fromMaybe LLM.defaultConfig.endpoint) (optKey "endpoint")
     <*> optToken "api_key"
     <*> reqKey "model"
+    <*> fmap (fromMaybe LLM.defaultConfig.reasoningEffort) (optKey "reasoning_effort")
     <*> fmap (fromMaybe LLM.defaultConfig.imageGeneration) (optKey "image_generation")
     <*> optKey "image_generation_endpoint"
     <*> optToken "image_generation_api_key"
@@ -429,6 +431,7 @@ toBotConfig cfg =
         { endpoint = cfg.llm.endpoint
         , apiKey   = cfg.llm.apiKey
         , model    = cfg.llm.model
+        , reasoningEffort = cfg.llm.reasoningEffort
         , imageGeneration = cfg.llm.imageGeneration
         , imageGenerationEndpoint = cfg.llm.imageGenerationEndpoint
         , imageGenerationApiKey = cfg.llm.imageGenerationApiKey
