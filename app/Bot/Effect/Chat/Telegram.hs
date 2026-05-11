@@ -47,7 +47,8 @@ module Bot.Effect.Chat.Telegram
 where
 
 import qualified Bot.Effect.Chat as ChatEffect
-import Bot.Message
+import Bot.Util.Multipart
+import Bot.Core.Message
 import Control.Concurrent (threadDelay)
 import Data.List (maximum)
 import Bot.Prelude
@@ -459,14 +460,6 @@ sendPhotoParts SendPhotoRequest{..} path =
     <> maybePart "parse_mode" (parseModeText <$> parseMode)
     <> maybePart "disable_notification" (boolText <$> disableNotification)
     <> maybePart "reply_to_message_id" (show <$> replyToMessageId)
-
-textPart :: Text -> Text -> Multipart.Part
-textPart name value =
-  Multipart.partBS name (TextEncoding.encodeUtf8 value)
-
-maybePart :: Text -> Maybe Text -> [Multipart.Part]
-maybePart name =
-  maybe [] \value -> [textPart name value]
 
 boolText :: Bool -> Text
 boolText True  = "true"

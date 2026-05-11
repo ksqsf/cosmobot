@@ -3,7 +3,7 @@ module Main (main) where
 import qualified Data.Aeson as Aeson
 import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import Test.Tasty
 import Test.Tasty.HUnit

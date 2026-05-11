@@ -1,10 +1,10 @@
 {-|
-Module      : Bot.ReplyBody
+Module      : Bot.Core.ReplyBody
 Description : Reply body directives shared by chat backends
 Stability   : experimental
 -}
 
-module Bot.ReplyBody
+module Bot.Core.ReplyBody
   ( imageDirective
   , renderReplyBody
   , replyImageUrls

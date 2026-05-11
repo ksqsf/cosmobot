@@ -2,8 +2,8 @@ module Main (main) where
 
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
-import Bot.Filter
-import Bot.Message
+import Bot.Core.Filter
+import Bot.Core.Message
 import Bot.Prelude
 import Test.Tasty
 import Test.Tasty.HUnit

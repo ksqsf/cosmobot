@@ -16,7 +16,7 @@ module Bot.Effect.ChatLog
   )
 where
 
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Storage.SQLite as Storage

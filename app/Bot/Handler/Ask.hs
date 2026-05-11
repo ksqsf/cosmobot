@@ -12,16 +12,16 @@ where
 
 import qualified Bot.Agent as Agent
 import Bot.Config
-import Bot.Conversation
+import Bot.Core.Conversation
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
-import Bot.Filter
+import Bot.Core.Filter
 import qualified Bot.Memory as Memory
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
-import Control.Concurrent (ThreadId, forkIO, myThreadId)
+import Control.Concurrent (ThreadId, myThreadId)
 import qualified Control.Exception as Exception
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
@@ -64,11 +64,6 @@ askRoute
 askRoute memoryCfg toolCfg cfg conversations =
   routeStop (askPrefix cfg <* matching (canStartConversation cfg)) $ \message prompt ->
     forkEff (startAskConversation "matched ask route" memoryCfg toolCfg cfg conversations message prompt)
-
-forkEff :: IOE :> es => Eff es () -> Eff es ()
-forkEff action =
-  withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
-    void $ liftIO $ forkIO (runInIO action)
 
 haltRoute
   :: (Chat.Chat :> es, Log :> es, IOE :> es)

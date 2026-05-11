@@ -3,9 +3,9 @@ module Main (main) where
 import qualified Bot.Effect.Chat as Chat
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
-import Bot.Filter
+import Bot.Core.Filter
 import Bot.Handler.Scratchpad
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as Storage
 import qualified Control.Exception as Exception

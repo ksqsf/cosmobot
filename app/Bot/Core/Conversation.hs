@@ -1,11 +1,11 @@
 {-|
-Module      : Bot.Conversation
+Module      : Bot.Core.Conversation
 Description : In-memory conversation graph
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Conversation
+module Bot.Core.Conversation
   ( -- * Store
     ConversationStore
   , ActiveConversationHandle

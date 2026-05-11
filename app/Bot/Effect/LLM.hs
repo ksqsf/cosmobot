@@ -38,8 +38,8 @@ module Bot.Effect.LLM
 where
 
 import Bot.Prelude hiding (ask)
-import qualified Bot.Image as Image
-import qualified Bot.ReplyBody as ReplyBody
+import qualified Bot.Util.Image as Image
+import qualified Bot.Core.ReplyBody as ReplyBody
 import Control.Concurrent (forkIO, killThread)
 import qualified Control.Concurrent.Chan as Chan
 import qualified Control.Exception as Exception
@@ -469,38 +469,38 @@ streamChatCompletion endpoint apiKey request emit = do
   let initial = StreamState "" "" Map.empty
   streamStateAnswer <$> (processBody bodyReader initial `finally` liftIO (HTTP.responseClose response))
   where
-    processBody bodyReader state = do
+    processBody bodyReader streamState = do
       chunk <- liftIO (HTTP.brRead bodyReader)
       if StrictByteString.null chunk
-        then processSseText True "" state
+        then processSseText True "" streamState
         else do
           let text = TextEncoding.decodeUtf8With TextEncoding.lenientDecode chunk
-          next <- processSseText False text state
+          next <- processSseText False text streamState
           processBody bodyReader next
 
-    processSseText flush text state = do
-      let buffered = state.pendingLine <> text
+    processSseText flush text streamState = do
+      let buffered = streamState.pendingLine <> text
           lines_ = Text.splitOn "\n" buffered
           completeLines =
             if flush then lines_ else dropLast lines_
           pendingLine =
             if flush then "" else lastOrEmpty lines_
-      next <- foldlM processSseLine state{pendingLine = pendingLine} completeLines
+      next <- foldlM processSseLine streamState{pendingLine = pendingLine} completeLines
       pure next
 
-    processSseLine state rawLine =
+    processSseLine streamState rawLine =
       case Text.strip <$> Text.stripPrefix "data:" (Text.stripStart rawLine) of
         Nothing ->
-          pure state
+          pure streamState
         Just "[DONE]" ->
-          pure state
+          pure streamState
         Just payload ->
           case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 payload) of
             Left err -> do
               logAttention "Ignoring malformed LLM stream chunk" (Text.pack err)
-              pure state
+              pure streamState
             Right chunk ->
-              applyStreamChunk emit state chunk
+              applyStreamChunk emit streamState chunk
 
 streamingHttpRequest :: Text -> Text -> ChatCompletionRequest -> IO HTTP.Request
 streamingHttpRequest endpoint apiKey request = do
@@ -542,10 +542,10 @@ emptyPartialToolCall :: PartialToolCall
 emptyPartialToolCall = PartialToolCall Nothing Nothing ""
 
 streamStateAnswer :: StreamState -> ChatAnswer
-streamStateAnswer state =
+streamStateAnswer streamState =
   ChatAnswer
-    { content = Text.strip state.contentAccumulator
-    , toolCalls = mapMaybe completePartialToolCall (Map.elems state.toolAccumulator)
+    { content = Text.strip streamState.contentAccumulator
+    , toolCalls = mapMaybe completePartialToolCall (Map.elems streamState.toolAccumulator)
     }
 
 completePartialToolCall :: PartialToolCall -> Maybe ToolCall
@@ -559,8 +559,8 @@ completePartialToolCall PartialToolCall{partialId, partialName, partialArguments
     }
 
 applyStreamChunk :: IOE :> es => (Text -> IO ()) -> StreamState -> ChatCompletionStreamChunk -> Eff es StreamState
-applyStreamChunk emit state chunk =
-  foldlM applyStreamChoice state chunk.choices
+applyStreamChunk emit streamState chunk =
+  foldlM applyStreamChoice streamState chunk.choices
   where
     applyStreamChoice acc StreamChoice{delta} = do
       let contentDelta = fromMaybe "" delta.content
@@ -620,9 +620,9 @@ data ToolCallDelta = ToolCallDelta
 instance Aeson.FromJSON ToolCallDelta where
   parseJSON = Aeson.withObject "ToolCallDelta" $ \o -> do
     index <- o Aeson..: "index"
-    id <- o Aeson..:? "id"
+    callId <- o Aeson..:? "id"
     function <- o Aeson..:? "function"
-    pure ToolCallDelta{index, id, function}
+    pure ToolCallDelta{index, id = callId, function}
 
 data FunctionDelta = FunctionDelta
   { name :: !(Maybe Text)

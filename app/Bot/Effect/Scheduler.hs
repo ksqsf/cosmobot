@@ -16,7 +16,7 @@ module Bot.Effect.Scheduler
   )
 where
 
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Concurrent.STM as STM

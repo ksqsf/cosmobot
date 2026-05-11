@@ -11,8 +11,8 @@ module Bot.Handler.Scratchpad
 where
 
 import qualified Bot.Effect.Chat as Chat
-import Bot.Filter
-import Bot.Message
+import Bot.Core.Filter
+import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as Storage
 import qualified Data.Aeson as Aeson

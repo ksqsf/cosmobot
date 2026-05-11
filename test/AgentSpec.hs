@@ -1,14 +1,14 @@
 module Main (main) where
 
 import qualified Bot.Agent as Agent
-import Bot.Conversation
+import Bot.Core.Conversation
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Memory as Memory
 import qualified Bot.Storage.SQLite as Storage
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Exception as Exception

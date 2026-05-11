@@ -12,12 +12,12 @@ where
 
 import Bot.Config
 import qualified Bot.Effect.Chat as Chat
-import Bot.Filter
-import qualified Bot.Image as Image
-import Bot.Message
+import Bot.Core.Filter
+import qualified Bot.Util.Html as Html
+import qualified Bot.Util.Image as Image
+import Bot.Core.Message
 import Bot.Prelude
-import qualified Bot.ReplyBody as ReplyBody
-import Control.Concurrent (forkIO)
+import qualified Bot.Core.ReplyBody as ReplyBody
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
@@ -60,11 +60,6 @@ rankRoute cfg commandText titleSuffix failureMessage fetchRows =
   routeStop (command commandText <* matching (canStartConversation cfg)) \message _ -> do
     logInfo "matched typing rank route" (commandText <> " " <> incomingMessageLogLine message)
     forkEff (sendRankImage titleSuffix failureMessage fetchRows message)
-
-forkEff :: IOE :> es => Eff es () -> Eff es ()
-forkEff action =
-  withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
-    void $ liftIO $ forkIO (runInIO action)
 
 sendRankImage
   :: (Chat.Chat :> es, Log :> es, IOE :> es)
@@ -243,26 +238,8 @@ cleanCell :: Text -> Text
 cleanCell =
   Text.unwords
     . Text.words
-    . htmlEntities
-    . stripTags
-
-stripTags :: Text -> Text
-stripTags input =
-  case Text.breakOn "<" input of
-    (before, "") ->
-      before
-    (before, rest) ->
-      let afterTag = Text.drop 1 (snd (Text.breakOn ">" rest))
-      in before <> " " <> stripTags afterTag
-
-htmlEntities :: Text -> Text
-htmlEntities =
-  Text.replace "&nbsp;" " "
-    . Text.replace "&amp;" "&"
-    . Text.replace "&lt;" "<"
-    . Text.replace "&gt;" ">"
-    . Text.replace "&quot;" "\""
-    . Text.replace "&#39;" "'"
+    . Html.htmlDecode
+    . Html.stripHtmlTags
 
 renderRankImage :: Text -> [[Text]] -> IO FilePath
 renderRankImage title rows = do

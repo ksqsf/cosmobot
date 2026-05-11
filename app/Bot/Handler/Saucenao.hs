@@ -12,11 +12,11 @@ where
 
 import Bot.Config
 import qualified Bot.Effect.Chat as Chat
-import Bot.Filter
-import Bot.Message
+import Bot.Core.Filter
+import Bot.Core.Message
+import Bot.Util.Multipart
 import Bot.Prelude
-import qualified Bot.ReplyBody as ReplyBody
-import Control.Concurrent (forkIO)
+import qualified Bot.Core.ReplyBody as ReplyBody
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
@@ -51,11 +51,6 @@ saucenaoRoute saucenaoCfg askCfg =
   routeStop (command saucenaoCommand <* matching (canStartConversation askCfg)) \message _ -> do
     logInfo "matched saucenao route" (incomingMessageLogLine message)
     forkEff (sendSaucenaoResults saucenaoCfg message)
-
-forkEff :: IOE :> es => Eff es () -> Eff es ()
-forkEff action =
-  withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
-    void $ liftIO $ forkIO (runInIO action)
 
 sendSaucenaoResults
   :: (Chat.Chat :> es, Log :> es, IOE :> es)
@@ -171,14 +166,6 @@ isWebP :: ByteString.ByteString -> Bool
 isWebP imageBytes =
   ByteString.pack [0x52, 0x49, 0x46, 0x46] `ByteString.isPrefixOf` imageBytes &&
     ByteString.pack [0x57, 0x45, 0x42, 0x50] == ByteString.take 4 (ByteString.drop 8 imageBytes)
-
-textPart :: Text -> Text -> Multipart.Part
-textPart name value =
-  Multipart.partBS name (TextEncoding.encodeUtf8 value)
-
-maybePart :: Text -> Maybe Text -> [Multipart.Part]
-maybePart name =
-  maybe [] \value -> [textPart name value]
 
 saucenaoRequestOptions :: Option scheme
 saucenaoRequestOptions =

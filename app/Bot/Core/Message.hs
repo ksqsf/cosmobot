@@ -1,10 +1,10 @@
 {-|
-Module      : Bot.Message
+Module      : Bot.Core.Message
 Description : Unified incoming message types
 Stability   : experimental
 -}
 
-module Bot.Message
+module Bot.Core.Message
   ( -- * Chat identity
     ChatPlatform (..)
   , ChatKind (..)

@@ -114,16 +114,19 @@ executable cosmobot
     other-modules:
         Bot.Prelude
         Bot.Agent
-        Bot.Agent.Tool
+        Bot.Agent.Tools
+        Bot.Agent.Types
         Bot.Chat.Platform
         Bot.Config
-        Bot.Conversation
-        Bot.Image
-        Bot.Message
+        Bot.Core.Conversation
+        Bot.Util.Html
+        Bot.Util.Image
+        Bot.Core.Message
         Bot.Memory
-        Bot.ReplyBody
+        Bot.Util.Multipart
+        Bot.Core.ReplyBody
         Bot.Storage.SQLite
-        Bot.Filter
+        Bot.Core.Filter
         Bot.Handler.Ask
         Bot.Handler.Scratchpad
         Bot.Handler.Typing
@@ -154,10 +157,10 @@ test-suite filter-spec
     main-is:          FilterSpec.hs
     other-modules:
         Bot.Prelude
-        Bot.Message
-        Bot.Filter
+        Bot.Core.Message
+        Bot.Core.Filter
         Bot.Effect.Chat
-        Bot.ReplyBody
+        Bot.Core.ReplyBody
     hs-source-dirs:   test
 
 test-suite scratchpad-spec
@@ -168,11 +171,11 @@ test-suite scratchpad-spec
     type:             exitcode-stdio-1.0
     main-is:          ScratchpadSpec.hs
     other-modules:
-        Bot.Filter
+        Bot.Core.Filter
         Bot.Prelude
-        Bot.Message
+        Bot.Core.Message
         Bot.Effect.Chat
-        Bot.ReplyBody
+        Bot.Core.ReplyBody
         Bot.Storage.SQLite
         Bot.Handler.Scratchpad
     hs-source-dirs:   test
@@ -186,11 +189,12 @@ test-suite chat-platform-spec
     main-is:          ChatPlatformSpec.hs
     other-modules:
         Bot.Prelude
-        Bot.Message
+        Bot.Core.Message
         Bot.Effect.Chat
-        Bot.ReplyBody
+        Bot.Core.ReplyBody
         Bot.Effect.Chat.QQ
         Bot.Effect.Chat.Telegram
+        Bot.Util.Multipart
     build-depends:    base64-bytestring
                     , http-client
                     , req
@@ -206,7 +210,7 @@ test-suite scheduler-spec
     main-is:          SchedulerSpec.hs
     other-modules:
         Bot.Prelude
-        Bot.Message
+        Bot.Core.Message
         Bot.Effect.Scheduler
     hs-source-dirs:   test
 
@@ -220,17 +224,19 @@ test-suite agent-spec
     main-is:          AgentSpec.hs
     other-modules:
         Bot.Agent
-        Bot.Agent.Tool
-        Bot.Conversation
+        Bot.Agent.Tools
+        Bot.Agent.Types
+        Bot.Core.Conversation
         Bot.Effect.Chat
         Bot.Effect.ChatLog
         Bot.Effect.LLM
         Bot.Effect.Scheduler
-        Bot.Image
-        Bot.Message
+        Bot.Util.Html
+        Bot.Util.Image
+        Bot.Core.Message
         Bot.Memory
         Bot.Prelude
-        Bot.ReplyBody
+        Bot.Core.ReplyBody
         Bot.Storage.SQLite
     build-depends:    http-client
                     , process
@@ -247,8 +253,8 @@ test-suite chat-log-spec
     other-modules:
         Bot.Effect.Chat
         Bot.Effect.ChatLog
-        Bot.Message
+        Bot.Core.Message
         Bot.Prelude
-        Bot.ReplyBody
+        Bot.Core.ReplyBody
         Bot.Storage.SQLite
     hs-source-dirs:   test

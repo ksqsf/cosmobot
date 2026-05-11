@@ -1,11 +1,11 @@
 {-|
-Module      : Bot.Image
+Module      : Bot.Util.Image
 Description : Shared image helpers
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Image
+module Bot.Util.Image
   ( ImageCompressionConfig (..)
   , removeFilesIfExists
   , compressDataImageReference

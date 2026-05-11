@@ -1,7 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Effect.Scheduler as Scheduler
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Streaming.Prelude as S

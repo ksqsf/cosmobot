@@ -27,7 +27,7 @@ module Bot.Effect.Chat.QQ
 where
 
 import qualified Bot.Effect.Chat as Chat
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import Control.Concurrent (forkIO)
 import qualified Control.Concurrent.Chan as Chan

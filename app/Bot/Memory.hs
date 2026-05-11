@@ -19,7 +19,7 @@ module Bot.Memory
   )
 where
 
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO

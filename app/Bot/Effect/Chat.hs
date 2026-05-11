@@ -26,9 +26,9 @@ module Bot.Effect.Chat
   )
 where
 
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
-import Bot.ReplyBody
+import Bot.Core.ReplyBody
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text

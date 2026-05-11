@@ -30,7 +30,7 @@ import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
 import qualified Bot.Agent as Agent
 import qualified Bot.Memory as Memory
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes

@@ -14,6 +14,7 @@ module Bot.Prelude
   , module Effectful.Fail
   , Stream
   , Of
+  , forkEff
   )
 where
 
@@ -22,6 +23,7 @@ where
 -- ---------------------------------------------------------------------------
 
 import Relude
+import Control.Concurrent (forkIO)
 
 -- ---------------------------------------------------------------------------
 -- String
@@ -44,3 +46,12 @@ import Effectful.Fail
 -- ---------------------------------------------------------------------------
 
 import Streaming (Stream, Of)
+
+-- ---------------------------------------------------------------------------
+-- Helpers
+-- ---------------------------------------------------------------------------
+
+forkEff :: IOE :> es => Eff es () -> Eff es ()
+forkEff action =
+  withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
+    void $ liftIO $ forkIO (runInIO action)

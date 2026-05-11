@@ -1,10 +1,10 @@
 {-|
-Module      : Bot.Agent.Tool
+Module      : Bot.Agent.Types
 Description : Agent tool and context types
 Stability   : experimental
 -}
 
-module Bot.Agent.Tool
+module Bot.Agent.Types
   ( Tool (..)
   , AgentContext (..)
   , ToolConfig (..)
@@ -16,9 +16,9 @@ module Bot.Agent.Tool
   )
 where
 
-import Bot.Conversation
+import Bot.Core.Conversation
 import qualified Bot.Memory as Memory
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 

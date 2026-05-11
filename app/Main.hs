@@ -6,7 +6,7 @@
 module Main (main) where
 
 import Bot.Config
-import Bot.Conversation
+import Bot.Core.Conversation
 import qualified Bot.Chat.Platform as ChatPlatform
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
@@ -14,12 +14,12 @@ import qualified Bot.Effect.Chat.QQ as QQ
 import qualified Bot.Effect.Chat.Telegram as Telegram
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Scheduler as Scheduler
-import Bot.Filter
+import Bot.Core.Filter
 import Bot.Handler.Ask
 import Bot.Handler.Saucenao
 import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as SQLiteStorage
 import Control.Concurrent (forkIO)

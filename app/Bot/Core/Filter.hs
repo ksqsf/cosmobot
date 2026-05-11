@@ -1,10 +1,10 @@
 {-|
-Module      : Bot.Filter
+Module      : Bot.Core.Filter
 Description : Composable message filters and routes
 Stability   : experimental
 -}
 
-module Bot.Filter
+module Bot.Core.Filter
   ( -- * Message filters
     MessageFilter (..)
   , anything
@@ -31,7 +31,7 @@ module Bot.Filter
   )
 where
 
-import Bot.Message
+import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Streaming.Prelude as S
