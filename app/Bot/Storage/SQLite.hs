@@ -55,6 +55,7 @@ data StoredState a = StoredState
 data ConversationRow = ConversationRow
   { messageId :: !Integer
   , conversationId :: !(Maybe Integer)
+  , parentMessageId :: !(Maybe Integer)
   , conversationJson :: !Text
   }
   deriving (Eq, Show)
@@ -79,14 +80,15 @@ configure db = do
 migrate :: SQLiteStore -> IO ()
 migrate store = withStore store \db -> do
   SQLite.exec db
-    "CREATE TABLE IF NOT EXISTS conversations (message_id INTEGER PRIMARY KEY, conversation_id INTEGER, conversation_json TEXT NOT NULL)"
+    "CREATE TABLE IF NOT EXISTS conversations (message_id INTEGER PRIMARY KEY, conversation_id INTEGER, parent_message_id INTEGER, conversation_json TEXT NOT NULL)"
   ensureColumn db "conversations" "conversation_id" "INTEGER"
+  ensureColumn db "conversations" "parent_message_id" "INTEGER"
   SQLite.exec db
     "CREATE TABLE IF NOT EXISTS chat_log (id INTEGER PRIMARY KEY AUTOINCREMENT, platform_key TEXT NOT NULL, kind_key TEXT NOT NULL, chat_id INTEGER, is_bot INTEGER NOT NULL, entry_json TEXT NOT NULL)"
   SQLite.exec db
     "CREATE INDEX IF NOT EXISTS chat_log_chat_idx ON chat_log(platform_key, kind_key, chat_id, id)"
   SQLite.exec db
-    "CREATE INDEX IF NOT EXISTS chat_log_visible_idx ON chat_log(platform_key, kind_key, chat_id, is_bot, id)"
+    "DROP INDEX IF EXISTS chat_log_visible_idx"
 
 ensureColumn :: SQLite.Database -> Text -> Text -> Text -> IO ()
 ensureColumn db table column definition = do
@@ -253,7 +255,7 @@ validIdentifier identifier =
 -- | Load persisted conversation JSON keyed by bot message id.
 loadConversationRows :: SQLiteStore -> IO [ConversationRow]
 loadConversationRows store = withStore store \db ->
-  withStatement db "SELECT message_id, conversation_id, conversation_json FROM conversations ORDER BY message_id ASC" [] \stmt ->
+  withStatement db "SELECT message_id, conversation_id, parent_message_id, conversation_json FROM conversations ORDER BY message_id ASC" [] \stmt ->
     rows [] stmt
   where
     rows acc stmt =
@@ -263,16 +265,18 @@ loadConversationRows store = withStore store \db ->
         SQLite.Row -> do
           messageId <- columnInteger stmt 0
           conversationId <- columnMaybeInteger stmt 1
-          conversationJson <- columnText stmt 2
-          rows (ConversationRow{messageId, conversationId, conversationJson} : acc) stmt
+          parentMessageId <- columnMaybeInteger stmt 2
+          conversationJson <- columnText stmt 3
+          rows (ConversationRow{messageId, conversationId, parentMessageId, conversationJson} : acc) stmt
 
 -- | Upsert a serialized conversation for a bot message id.
-saveConversationJson :: SQLiteStore -> Integer -> Integer -> Text -> IO ()
-saveConversationJson store messageId conversationId conversationJson = withStore store \db ->
+saveConversationJson :: SQLiteStore -> Integer -> Integer -> Maybe Integer -> Text -> IO ()
+saveConversationJson store messageId conversationId parentMessageId conversationJson = withStore store \db ->
   withStatement db
-    "INSERT OR REPLACE INTO conversations(message_id, conversation_id, conversation_json) VALUES (?, ?, ?)"
+    "INSERT OR REPLACE INTO conversations(message_id, conversation_id, parent_message_id, conversation_json) VALUES (?, ?, ?, ?)"
     [ SQLite.SQLInteger (fromIntegral messageId)
     , SQLite.SQLInteger (fromIntegral conversationId)
+    , maybe SQLite.SQLNull (SQLite.SQLInteger . fromIntegral) parentMessageId
     , SQLite.SQLText conversationJson
     ]
     stepDone

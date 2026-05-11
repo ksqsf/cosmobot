@@ -101,6 +101,8 @@ executable cosmobot
     other-modules:
         Bot.Prelude
         Bot.Agent
+        Bot.Agent.Tool
+        Bot.Chat.Platform
         Bot.Config
         Bot.Conversation
         Bot.Message
@@ -206,6 +208,7 @@ test-suite agent-spec
     main-is:          AgentSpec.hs
     other-modules:
         Bot.Agent
+        Bot.Agent.Tool
         Bot.Conversation
         Bot.Effect.Chat
         Bot.Effect.ChatLog

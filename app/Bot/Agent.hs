@@ -14,6 +14,7 @@ module Bot.Agent
 where
 
 import Bot.Conversation
+import Bot.Agent.Tool
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
@@ -34,39 +35,6 @@ import System.IO.Error (userError)
 import System.Posix.Signals (signalProcess, sigKILL)
 import System.Process (createProcess, shell, std_out, std_err, StdStream(..), getPid, waitForProcess)
 import System.Timeout (timeout)
-
--- | Tool definition exposed to the LLM function-calling API.
-data Tool es = Tool
-  { name        :: !Text
-  , description :: !Text
-  , parameters  :: !Aeson.Value
-  , allowed     :: AgentContext es -> Bool
-  , run         :: AgentContext es -> Aeson.Value -> Eff es ToolResult
-  }
-
--- | Per-message capabilities and permissions made available to tools.
-data AgentContext es = AgentContext
-  { message :: IncomingMessage
-  , superuser :: !Bool
-  , askCommand :: !Text
-  , memoryConfig :: !(Maybe Memory.MemoryConfig)
-  , remember :: Maybe Integer -> Conversation -> Eff es ()
-  , recordBotMessage :: Maybe Integer -> Text -> Eff es ()
-  }
-
--- | Text returned to the LLM plus any bot message ids produced by a tool.
-data ToolResult = ToolResult
-  { content    :: !Text
-  , messageIds :: ![Maybe Integer]
-  }
-
-toolText :: Text -> ToolResult
-toolText content =
-  ToolResult content []
-
-toolMessage :: Maybe Integer -> Text -> ToolResult
-toolMessage messageId content =
-  ToolResult content [messageId]
 
 -- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
 runAgent

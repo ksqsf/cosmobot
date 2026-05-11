@@ -107,7 +107,7 @@ continueRoute
   -> RouteHandler es
 continueRoute memoryCfg cfg conversations =
   routeStop continuedMessage \message parentId ->
-    forkEff $ withConversationLock conversations parentId do
+    forkEff do
       parent <- lookupConversation conversations parentId
       case parent of
         Nothing
