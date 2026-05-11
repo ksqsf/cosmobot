@@ -13,6 +13,7 @@ main =
   defaultMain $
     testGroup "filter"
       [ testCase "command strips prefix and rejects other commands" testCommandFilter
+      , testCase "prefixedText keeps the matched prefix in prompt" testPrefixedTextFilter
       , testCase "promptOrImages accepts images without text" testPromptOrImages
       , testCase "fromGroups matches only allowed group chats" testFromGroups
       , testCase "notReply rejects replies" testNotReply
@@ -26,6 +27,12 @@ testCommandFilter = do
       unmatched = applyFilter (command "!ask") (message "!draw hello")
   matched @?= Just "hello"
   unmatched @?= Nothing
+
+testPrefixedTextFilter :: IO ()
+testPrefixedTextFilter = do
+  applyFilter (prefixedText "krkr") (message "krkr这是什么") @?= Just "krkr这是什么"
+  applyFilter (prefixedText "krkr") (message "krkr 这是什么") @?= Just "krkr 这是什么"
+  applyFilter (prefixedText "krkr") (message "hello krkr") @?= Nothing
 
 testPromptOrImages :: IO ()
 testPromptOrImages = do

@@ -12,6 +12,7 @@ module Bot.Filter
   , rejecting
   , fromGroups
   , command
+  , prefixedText
   , notCommand
   , notReply
   , replyToMessage
@@ -47,6 +48,12 @@ instance Applicative MessageFilter where
   pure value = MessageFilter \_ -> Just value
   MessageFilter left <*> MessageFilter right =
     MessageFilter \message -> left message <*> right message
+
+instance Alternative MessageFilter where
+  empty =
+    MessageFilter \_ -> Nothing
+  MessageFilter left <|> MessageFilter right =
+    MessageFilter \message -> left message <|> right message
 
 infixl 4 <&&>
 
@@ -85,6 +92,12 @@ command :: Text -> MessageFilter Text
 command prefix =
   MessageFilter $ \message ->
     Text.strip <$> Text.stripPrefix prefix message.text
+
+-- | Match a text prefix and keep the full stripped message text.
+prefixedText :: Text -> MessageFilter Text
+prefixedText prefix =
+  MessageFilter $ \message ->
+    Text.strip message.text <$ guard (not (Text.null prefix) && prefix `Text.isPrefixOf` message.text)
 
 -- | Reject messages starting with a command prefix.
 notCommand :: Text -> MessageFilter IncomingMessage

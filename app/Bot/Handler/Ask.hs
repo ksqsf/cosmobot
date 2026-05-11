@@ -56,7 +56,7 @@ askRoute
   -> ConversationStore
   -> RouteHandler es
 askRoute memoryCfg cfg conversations =
-  routeStop (command cfg.command <* matching (canStartConversation cfg)) $ \message prompt ->
+  routeStop (askPrefix cfg <* matching (canStartConversation cfg)) $ \message prompt ->
     forkEff (startAskConversation "matched ask route" memoryCfg cfg conversations message prompt)
 
 forkEff :: IOE :> es => Eff es () -> Eff es ()
@@ -78,7 +78,7 @@ privateRoute memoryCfg cfg conversations =
       promptOrImages
         <* matching (isAllowedPrivate cfg)
         <* notReply
-        <* notCommand cfg.command
+        <* notAskPrefix cfg
         <* notCommand cfg.drawCommand
 
 mentionRoute
@@ -96,7 +96,7 @@ mentionRoute memoryCfg cfg conversations =
         <* matching (isAllowedGroup cfg)
         <* matching (mentionsBot cfg)
         <* notReply
-        <* notCommand cfg.command
+        <* notAskPrefix cfg
         <* notCommand cfg.drawCommand
 
 continueRoute
@@ -120,7 +120,18 @@ continueRoute memoryCfg cfg conversations =
           continueConversation memoryCfg cfg conversations message parentId conversation
   where
     continuedMessage =
-      replyToMessage <* notCommand cfg.command <* notCommand cfg.drawCommand
+      replyToMessage <* notAskPrefix cfg <* notCommand cfg.drawCommand
+
+askPrefix :: AskHandlerConfig -> MessageFilter Text
+askPrefix cfg =
+  command cfg.command <|> maybe empty prefixedText cfg.name
+
+notAskPrefix :: AskHandlerConfig -> MessageFilter IncomingMessage
+notAskPrefix cfg =
+  let MessageFilter matches = askPrefix cfg
+  in
+  rejecting \message ->
+    isJust (matches message)
 
 startAskConversation
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)

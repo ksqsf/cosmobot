@@ -60,7 +60,8 @@ newtype HandlersConfig = HandlersConfig
 
 -- | Admission, identity, and prompt settings for the ask handler.
 data AskHandlerConfig = AskHandlerConfig
-  { command          :: !Text
+  { name             :: !(Maybe Text)
+  , command          :: !Text
   , drawCommand      :: !Text
   , qqGroupWhitelist :: ![Integer]
   , telegramChatWhitelist :: ![TelegramChatRef]
@@ -292,6 +293,7 @@ instance FromValue HandlersConfig where
 
 instance FromValue AskHandlerConfig where
   fromValue = parseTableFromValue do
+    name <- optKey "name"
     command <- reqKey "command"
     drawCommand <- fromMaybe "!draw" <$> optKey "draw_command"
     qqGroupWhitelist <- reqKey "qq_group_whitelist"
@@ -299,7 +301,8 @@ instance FromValue AskHandlerConfig where
     systemPrompt <- reqKey "system_prompt"
     agentMaxTurns <- fromMaybe 4 <$> optKey "agent_max_turns"
     pure AskHandlerConfig
-      { command = command
+      { name = name
+      , command = command
       , drawCommand = drawCommand
       , qqGroupWhitelist = qqGroupWhitelist
       , telegramChatWhitelist = telegramChatWhitelist
@@ -364,7 +367,8 @@ toBotConfig cfg =
 withPlatformConfig :: QQFileConfig -> TelegramFileConfig -> HandlersConfig -> HandlersConfig
 withPlatformConfig qq telegram (HandlersConfig askCfg) =
   HandlersConfig AskHandlerConfig
-    { command = askCfg.command
+    { name = askCfg.name
+    , command = askCfg.command
     , drawCommand = askCfg.drawCommand
     , qqGroupWhitelist = askCfg.qqGroupWhitelist
     , telegramChatWhitelist = askCfg.telegramChatWhitelist
