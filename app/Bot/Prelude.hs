@@ -24,6 +24,7 @@ where
 
 import Relude
 import Control.Concurrent (forkIO)
+import qualified Control.Exception as Exception
 
 -- ---------------------------------------------------------------------------
 -- String
@@ -51,7 +52,16 @@ import Streaming (Stream, Of)
 -- Helpers
 -- ---------------------------------------------------------------------------
 
-forkEff :: IOE :> es => Eff es () -> Eff es ()
+forkEff :: (IOE :> es, Log :> es) => Eff es () -> Eff es ()
 forkEff action =
   withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
-    void $ liftIO $ forkIO (runInIO action)
+    void $ liftIO $ forkIO do
+      result <- Exception.try (runInIO action)
+      case result of
+        Right () ->
+          pure ()
+        Left err
+          | Just Exception.ThreadKilled <- Exception.fromException err ->
+              pure ()
+          | otherwise ->
+              runInIO (logAttention "Forked action failed" (show err :: String))
