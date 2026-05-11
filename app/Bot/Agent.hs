@@ -262,7 +262,7 @@ queryChatLogTool = Tool
 generateImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
 generateImageTool = Tool
   { name = "generate_image"
-  , description = "Generate an actual image from a prompt and send it to the current chat. Use this when the user asks to draw, create, or generate an image, including scheduled future image requests. After using this tool, keep the final answer brief and do not repeat the image URL."
+  , description = "Generate an actual image from a prompt and send it to the current chat. Use this when the user *literally* asks to *draw*, *create*, or *generate* an image, including scheduled future image requests. After using this tool, keep the final answer brief and do not repeat the image URL. Never use this when the user is merely asking for, finding, or searching for an image; instead, use the web search tool."
   , parameters = objectSchema
       [ fieldText "prompt" "Image generation prompt. Include the user's visual requirements, style, subject, text, and constraints."
       ]
