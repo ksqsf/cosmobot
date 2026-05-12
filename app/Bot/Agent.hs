@@ -20,6 +20,8 @@ where
 import Bot.Core.Conversation
 import Bot.Agent.Tools (defaultTools)
 import Bot.Agent.Types
+import Bot.Core.Message (IncomingMessage (..))
+import qualified Bot.Effect.AgentTrace as AgentTrace
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -27,11 +29,12 @@ import qualified Data.Foldable as Foldable
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Unique (hashUnique, newUnique)
 import qualified Streaming.Prelude as S
 
 -- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
 runAgent
-  :: (LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (AgentTrace.AgentTrace :> es, LLM.LLM :> es, Log :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
@@ -42,7 +45,7 @@ runAgent maxTurns context tools conversation =
 
 -- | Run an LLM/tool loop, streaming assistant text chunks from the final model turn.
 runAgentStreaming
-  :: (LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (AgentTrace.AgentTrace :> es, LLM.LLM :> es, Log :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
@@ -50,9 +53,17 @@ runAgentStreaming
   -> Stream (Of Text) (Eff es) (Text, Conversation)
 runAgentStreaming maxTurns context tools conversation = do
   agentRun <- lift (startAgentRun context tools)
+  let initialMessage = context.message
+  lift $ AgentTrace.recordEvent AgentTrace.AgentRunStarted
+    { runId = agentRun.runId
+    , messageId = initialMessage.messageId
+    , maxTurns = max 1 maxTurns
+    , exposedTools = map (.name) agentRun.exposedTools
+    }
   agentLoop agentRun AgentState
     { turnsLeft = max 1 maxTurns
     , conversation = closeInterruptedToolCalls conversation
+    , turn = 1
     }
 
 -- | Per-agent-run tool environment.
@@ -63,7 +74,8 @@ runAgentStreaming maxTurns context tools conversation = do
 -- each tool gets one 'start' call here, so tools may keep state local to this
 -- agent run without putting it in 'AgentContext'.
 data AgentRun es = AgentRun
-  { context      :: AgentContext es
+  { runId       :: !Text
+  , context      :: AgentContext es
   , tools        :: [Tool es]
   , exposedTools :: [Tool es]
   , runningTools :: [RunningTool es]
@@ -73,6 +85,7 @@ data AgentRun es = AgentRun
 data AgentState = AgentState
   { turnsLeft    :: !Int
   , conversation :: !Conversation
+  , turn         :: !Int
   }
 
 -- | A completed tool call as both an LLM-visible message and any chat message
@@ -83,11 +96,14 @@ data ToolExecution = ToolExecution
   }
 
 -- | Select tools visible to this request and start their per-run runners.
-startAgentRun :: AgentContext es -> [Tool es] -> Eff es (AgentRun es)
+startAgentRun :: IOE :> es => AgentContext es -> [Tool es] -> Eff es (AgentRun es)
 startAgentRun context tools = do
+  unique <- liftIO newUnique
   let exposedTools = filter (`toolAllowed` context) tools
+      runId = [i|agent-#{hashUnique unique}|]
+  context.recordRunId runId
   runningTools <- traverse (startToolRun context) exposedTools
-  pure AgentRun{context, tools, exposedTools, runningTools}
+  pure AgentRun{runId, context, tools, exposedTools, runningTools}
 
 -- | Main agent loop.
 --
@@ -96,34 +112,45 @@ startAgentRun context tools = do
 -- tools, the assistant tool-call message is appended first, then matching tool
 -- result messages are appended before the next model turn.
 agentLoop
-  :: (LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (AgentTrace.AgentTrace :> es, LLM.LLM :> es, Log :> es, IOE :> es)
   => AgentRun es
   -> AgentState
   -> Stream (Of Text) (Eff es) (Text, Conversation)
 agentLoop agentRun agentState = do
-  answer <- askNext agentRun agentState.conversation
+  answer <- askNext agentRun agentState.turn agentState.conversation
+  lift $ AgentTrace.recordEvent (modelTurnFinished agentRun.runId agentState.turn answer)
   let answered = appendMessage (LLM.assistantAnswer answer) agentState.conversation
   case answer of
     LLM.ChatFinalAnswer{content} ->
+      lift (recordAgentFinished agentRun.runId "answered" content agentState.turn) *>
       pure (content, answered)
     LLM.ChatToolRequest{content, toolCalls}
       | agentState.turnsLeft <= 1 ->
-          handleToolLimit content toolCalls answered
+          handleToolLimit agentRun.runId agentState.turn content toolCalls answered
       | otherwise -> do
           unless (Text.null content) (S.yield content)
-          next <- lift (continueWithToolCalls agentRun answered toolCalls)
-          agentLoop agentRun agentState{turnsLeft = agentState.turnsLeft - 1, conversation = next}
+          next <- lift (continueWithToolCalls agentRun agentState.turn answered toolCalls)
+          agentLoop agentRun agentState{turnsLeft = agentState.turnsLeft - 1, conversation = next, turn = agentState.turn + 1}
 
 -- | Ask the LLM for the next assistant message.
 askNext
-  :: (LLM.LLM :> es, IOE :> es)
+  :: (AgentTrace.AgentTrace :> es, LLM.LLM :> es, IOE :> es)
   => AgentRun es
+  -> Int
   -> Conversation
   -> Stream (Of Text) (Eff es) LLM.ChatAnswer
-askNext agentRun conversation =
+askNext agentRun turn conversation =
+  let messages = Foldable.toList conversation.messages
+  in
+  lift (AgentTrace.recordEvent AgentTrace.ModelTurnStarted
+    { runId = agentRun.runId
+    , turn = turn
+    , messageCount = length messages
+    , exposedTools = map (.name) agentRun.exposedTools
+    }) *>
   LLM.askWithToolsStreaming
     (map toolSchema agentRun.exposedTools)
-    (Foldable.toList conversation.messages)
+    messages
 
 -- | Pause before executing another tool turn.
 --
@@ -132,26 +159,31 @@ askNext agentRun conversation =
 -- therefore append synthetic "paused" tool results so the saved conversation is
 -- valid when the user later continues.
 handleToolLimit
-  :: Log :> es
+  :: (AgentTrace.AgentTrace :> es, Log :> es)
   => Text
+  -> Int
+  -> Text
   -> NonEmpty LLM.ToolCall
   -> Conversation
   -> Stream (Of Text) (Eff es) (Text, Conversation)
-handleToolLimit content calls answered = do
+handleToolLimit runId turn content calls answered = do
   lift $ logInfo "Agent tool turn limit reached" calls
   let paused = appendMessages (toList (fmap pausedToolResult calls)) answered
-  pure (toolLimitMessage content calls, paused)
+      message = toolLimitMessage content calls
+  lift $ recordAgentFinished runId "tool_limit" message turn
+  pure (message, paused)
 
 -- | Execute requested tools, append their tool-result messages, and persist
 -- aliases for any chat messages emitted by tools.
 continueWithToolCalls
-  :: IOE :> es
+  :: (AgentTrace.AgentTrace :> es, IOE :> es)
   => AgentRun es
+  -> Int
   -> Conversation
   -> NonEmpty LLM.ToolCall
   -> Eff es Conversation
-continueWithToolCalls agentRun answered calls = do
-  executions <- traverse (executeToolCall agentRun) calls
+continueWithToolCalls agentRun turn answered calls = do
+  executions <- traverse (executeToolCall agentRun turn) calls
   let next = appendMessages (toList (fmap (.message) executions)) answered
   traverse_ (\messageId -> agentRun.context.remember messageId next) (concatMap (.messageIds) (toList executions))
   pure next
@@ -160,12 +192,28 @@ continueWithToolCalls agentRun answered calls = do
 --
 -- Tool failures must still produce a tool result message; otherwise the next
 -- LLM request would contain an assistant tool call without its required result.
-executeToolCall :: IOE :> es => AgentRun es -> LLM.ToolCall -> Eff es ToolExecution
-executeToolCall agentRun call = do
+executeToolCall :: (AgentTrace.AgentTrace :> es, IOE :> es) => AgentRun es -> Int -> LLM.ToolCall -> Eff es ToolExecution
+executeToolCall agentRun turn call = do
   let callName = call.name
-  result <-
-    runToolCall agentRun call `catch` \(err :: SomeException) ->
-      pure (toolText [i|Tool #{callName} failed: #{show err :: String}|])
+      tracedCall = toolCallTrace call
+  AgentTrace.recordEvent AgentTrace.ToolCallStarted
+    { runId = agentRun.runId
+    , turn = turn
+    , toolCall = tracedCall
+    }
+  (status, result) <-
+    ((\result -> ("ok", result)) <$> runToolCall agentRun call) `catch` \(err :: SomeException) ->
+      pure ("failed", toolText [i|Tool #{callName} failed: #{show err :: String}|])
+  AgentTrace.recordEvent AgentTrace.ToolCallFinished
+    { runId = agentRun.runId
+    , turn = turn
+    , toolCallId = call.id
+    , toolName = callName
+    , status = status
+    , result = result.content
+    , resultLength = Text.length result.content
+    , messageIds = result.messageIds
+    }
   pure ToolExecution
     { message = LLM.toolResult call result.content
     , messageIds = result.messageIds
@@ -190,6 +238,42 @@ toolLimitMessage content calls
 toolCallList :: NonEmpty LLM.ToolCall -> Text
 toolCallList calls =
   Text.intercalate ", " (toList (fmap (.name) calls))
+
+modelTurnFinished :: Text -> Int -> LLM.ChatAnswer -> AgentTrace.AgentTraceEvent
+modelTurnFinished runId turn = \case
+  LLM.ChatFinalAnswer{content} ->
+    AgentTrace.ModelTurnFinished
+      { runId = runId
+      , turn = turn
+      , answerKind = "final"
+      , contentLength = Text.length content
+      , toolCalls = []
+      }
+  LLM.ChatToolRequest{content, toolCalls} ->
+    AgentTrace.ModelTurnFinished
+      { runId = runId
+      , turn = turn
+      , answerKind = "tool_request"
+      , contentLength = Text.length content
+      , toolCalls = toList (fmap toolCallTrace toolCalls)
+      }
+
+toolCallTrace :: LLM.ToolCall -> AgentTrace.ToolCallTrace
+toolCallTrace call =
+  AgentTrace.ToolCallTrace
+    { id = call.id
+    , name = call.name
+    , arguments = call.arguments
+    }
+
+recordAgentFinished :: AgentTrace.AgentTrace :> es => Text -> Text -> Text -> Int -> Eff es ()
+recordAgentFinished runId status finalText turnsUsed =
+  AgentTrace.recordEvent AgentTrace.AgentRunFinished
+    { runId = runId
+    , status = status
+    , finalLength = Text.length finalText
+    , turnsUsed = turnsUsed
+    }
 
 -- | Synthetic tool result used when a real tool call is deliberately skipped.
 pausedToolResult :: LLM.ToolCall -> LLM.ChatMessage

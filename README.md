@@ -12,7 +12,7 @@ Cosmobot 是一个小型 AI agent 框架，接受来自 QQ/OneBot、Telegram 和
 - 支持简易的管理员鉴权。
 - 内置 agent 工具：文件读取、目录列表、聊天记录查询、网页搜索/抓取、时间、图片生成、消息发送、群成员查询、计划任务、记忆管理等。
 - 内置多种简单命令工具：todo 列表、saucenao 搜图等。
-- 支持使用 SQLite 持久化聊天记录、会话、计划任务等。
+- 支持使用 SQLite 持久化聊天记录、agent trace、会话、计划任务等。
 
 ## 构建
 
@@ -103,6 +103,17 @@ Todo 按 `platform + senderId` 隔离：
 
 需要在 `[handler.saucenao]` 中配置 `api_key`。当前只返回相似度大于 `90%` 的结果。
 
+### Audit
+
+Audit 命令仅限各平台 `superusers` 使用：
+
+- `!audit`：输出最近 50 条 agent tool use，按从旧到新的顺序排列。
+- 回复一条 agent conversation 消息并发送 `!audit`：输出该 conversation 对应的完整 agent trace。
+- 回复一条 agent conversation 消息并发送 `!audit all`：输出该 conversation tree 中所有消息关联的 agent trace。
+- `!audit <id>`：输出某条 tool use 的详细信息，包括参数和结果。
+
+列表中的 `id` 是 cosmobot 的 audit id，用来查询详情；`request` 是 LLM tool-call request id，即模型返回的 tool call id。
+
 ## Agent 工具
 
 内置工具由 `Bot.Agent.Tools` 聚合，具体实现按领域放在 `Bot.Agent.Tools.*`：
@@ -117,3 +128,7 @@ Todo 按 `platform + senderId` 隔离：
 - `Shell`：受控 shell 执行。
 
 部分工具需要配置开关或 API key。例如网页搜索需要启用 `[tool.web_search]`，并选择 `tavily` 或 `brave`。
+
+## Agent Trace
+
+Agent 运行时会记录结构化 trace event：run start/finish、model turn start/finish、tool call start/finish。可以使用 `!audit` 命令查询。

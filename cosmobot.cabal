@@ -131,6 +131,7 @@ common bot-agent-modules
         Bot.Agent.Tools.Web
         Bot.Agent.Types
         Bot.Core.Conversation
+        Bot.Effect.AgentTrace
         Bot.Effect.ChatLog
         Bot.Effect.LLM
         Bot.Effect.Memory
@@ -165,6 +166,7 @@ executable cosmobot
         Bot.Effect.LLM.Config
         Bot.Handler.Ask
         Bot.Handler.Ask.Config
+        Bot.Handler.Audit
         Bot.Handler.Scratchpad
         Bot.Handler.Saucenao.Config
         Bot.Handler.Typing

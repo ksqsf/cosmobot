@@ -3,6 +3,7 @@ module Main (main) where
 import qualified Bot.Agent as Agent
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Core.Conversation
+import qualified Bot.Effect.AgentTrace as AgentTrace
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
@@ -28,6 +29,7 @@ import Test.Tasty.HUnit
 
 type AgentStack =
   '[ Chat.Chat
+   , AgentTrace.AgentTrace
    , ChatLog.ChatLog
    , LLM.LLM
    , Memory.Memory
@@ -49,6 +51,7 @@ main =
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "agent streaming yields answer chunks" testAgentStreamingYieldsAnswerChunks
       , testCase "agent streaming yields tool request content" testAgentStreamingYieldsToolRequestContent
+      , testCase "agent trace records model and tool events" testAgentTraceRecordsModelAndToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "chunked active conversation aliases every sent reply" testChunkedActiveConversationAliasesEverySentReply
@@ -123,6 +126,39 @@ testAgentStreamingYieldsToolRequestContent = do
   answer @?= "done"
   IORef.readIORef fetches >>= (@?= 1)
   IORef.readIORef chunks >>= (@?= ["checking", "done"])
+
+testAgentTraceRecordsModelAndToolEvents :: IO ()
+testAgentTraceRecordsModelAndToolEvents = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])]
+    , chatAnswer "done" []
+    ]
+  fetches <- IORef.newIORef (0 :: Int)
+  events <- runAgentWith answers (ChatMock Nothing Nothing) do
+    _ <- Agent.runAgent 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches] (startWithUser "fetch it")
+    allEvents <- AgentTrace.queryAll
+    pure allEvents
+  map traceEventName events @?=
+    [ "AgentRunStarted"
+    , "ModelTurnStarted"
+    , "ModelTurnFinished"
+    , "ToolCallStarted"
+    , "ToolCallFinished"
+    , "ModelTurnStarted"
+    , "ModelTurnFinished"
+    , "AgentRunFinished"
+    ]
+  [status | AgentTrace.ToolCallFinished{status} <- events] @?= ["ok"]
+
+traceEventName :: AgentTrace.AgentTraceEvent -> Text
+traceEventName = \case
+  AgentTrace.AgentRunStarted{} -> "AgentRunStarted"
+  AgentTrace.ModelTurnStarted{} -> "ModelTurnStarted"
+  AgentTrace.ModelTurnFinished{} -> "ModelTurnFinished"
+  AgentTrace.ToolCallStarted{} -> "ToolCallStarted"
+  AgentTrace.ToolCallFinished{} -> "ToolCallFinished"
+  AgentTrace.AgentRunFinished{} -> "AgentRunFinished"
+  AgentTrace.AgentConversationLinked{} -> "AgentConversationLinked"
 
 testChatAnswerJsonRemainsObjectCompatible :: IO ()
 testChatAnswerJsonRemainsObjectCompatible = do
@@ -460,18 +496,19 @@ runAgentWithMemory memoryCfg answers chatMock action =
                   pure ()
               pure answer) $
           ChatLog.runChatLog Nothing $
-            Chat.runChatWith
-              Chat.ChatHandlers
-                { handleReplyTo = mockReply chatMock
-                , handleEditMessage = noopEdit
-                , handleReplyStreamStyle = noopReplyStreamStyle
-                , handleGetMessageContent = noopFetch
-                , handleGetSenderMemberInfo = noopSenderMember
-                , handleGetMemberInfo = noopMember
-                , handleListGroupMembers = noopMembers
-                , handleMentionUser = noopMention
-                }
-              action
+            AgentTrace.runAgentTrace Nothing $
+              Chat.runChatWith
+                Chat.ChatHandlers
+                  { handleReplyTo = mockReply chatMock
+                  , handleEditMessage = noopEdit
+                  , handleReplyStreamStyle = noopReplyStreamStyle
+                  , handleGetMessageContent = noopFetch
+                  , handleGetSenderMemberInfo = noopSenderMember
+                  , handleGetMemberInfo = noopMember
+                  , handleListGroupMembers = noopMembers
+                  , handleMentionUser = noopMention
+                  }
+                action
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
 runTestLog action = do
@@ -509,6 +546,7 @@ agentContext =
     , superuser = False
     , askCommand = "!ask"
     , toolConfig = Agent.defaultToolConfig
+    , recordRunId = \_ -> pure ()
     , remember = \_ _ -> pure ()
     , recordBotMessage = \_ _ -> pure ()
     }

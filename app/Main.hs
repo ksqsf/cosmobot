@@ -9,12 +9,14 @@ import Bot.Config
 import Bot.Core.Conversation
 import Bot.Core.Route
 import qualified Bot.Chat.Driver as ChatDriver
+import qualified Bot.Effect.AgentTrace as AgentTrace
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Handler.Ask
+import Bot.Handler.Audit
 import Bot.Handler.Saucenao
 import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
@@ -31,6 +33,7 @@ main = do
   conversations <- newConversationStore maybeSQLiteStore
   runEff $
     runBotLog cfg.logLevel .
+    AgentTrace.runAgentTrace maybeSQLiteStore .
     ChatLog.runChatLog maybeSQLiteStore .
     Memory.runMemory cfg.memory .
     Scheduler.runScheduler .
@@ -46,13 +49,14 @@ main = do
         (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
 routes
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, AgentTrace.AgentTrace :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => BotConfig
   -> SQLiteStorage.SQLiteStore
   -> ConversationStore
   -> [RouteHandler es]
 routes cfg sqliteStore conversations =
-  scratchpadHandlers sqliteStore
+  auditHandlers conversations
+    <> scratchpadHandlers sqliteStore
     <> typingHandlers
     <> saucenaoHandlers cfg.saucenao
     <> askHandlers cfg.tool cfg.handlers.ask conversations

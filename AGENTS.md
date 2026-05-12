@@ -6,7 +6,7 @@ cosmobot is a unified chatbot framework. It is intentionally small enough to kee
 
 Data enters through a concrete chat driver, is normalized into `IncomingMessage`, and passes through route admission. If no route matches, the message is ignored. If a route matches, it enters a handler for user-facing behavior.
 
-Handlers do not provide real capabilities themselves. A handler applies command or conversation policy, then calls effects such as `Chat`, `LLM`, `Scheduler`, or chat-log effects. Effect interpreters provide the concrete capability: they may call platform APIs, run LLM requests, use `IOE`, or read/write through Storage or Memory systems.
+Handlers do not provide real capabilities themselves. A handler applies command or conversation policy, then calls effects such as `Chat`, `LLM`, `Scheduler`, `AgentTrace`, or chat-log effects. Effect interpreters provide the concrete capability: they may call platform APIs, run LLM requests, use `IOE`, or read/write through Storage or Memory systems.
 
 Keep this direction of dependency intact:
 
@@ -14,7 +14,7 @@ platform event -> core message -> route -> optional handler -> effects -> concre
 
 When a handler invokes the agent path, the nested flow is:
 
-handler -> LLM effect -> agent loop -> LLM transport -> optional tool calls -> agent result -> handler reply
+handler -> LLM effect -> agent loop -> LLM transport -> optional tool calls -> agent trace -> agent result -> handler reply
 
 ## Architecture
 
@@ -29,13 +29,13 @@ Read the system in layers:
    A handler is where a matched message becomes user-visible behavior: ask a question, continue a conversation, halt a stream, run a command, or reject an invalid request. Handlers make policy decisions and call effects. They should not perform platform transport, persistence, or LLM HTTP work directly.
 
 3. `Effect` is the capability boundary.
-   Effects express what handlers need: send chat messages, read chat logs, call an LLM, schedule work, and so on. Interpreters decide how those capabilities are implemented. An interpreter may use `IOE`, call a platform API, run the OpenAI-compatible transport, or read/write through Storage or Memory.
+   Effects express what handlers need: send chat messages, read chat logs, call an LLM, schedule work, record agent trace events, and so on. Interpreters decide how those capabilities are implemented. An interpreter may use `IOE`, call a platform API, run the OpenAI-compatible transport, or read/write through Storage or Memory.
 
 4. `Chat`, `Storage`, `Memory`, and LLM transport are infrastructure.
    Chat drivers translate between concrete platforms and the normalized chat model. Storage owns durable persistence mechanics. Memory owns persistent user/chat memory files. LLM transport owns request/response JSON and streaming protocol details. These modules are allowed to know external APIs and file/database formats because they are the boundary to those systems.
 
 5. `Agent` is a domain engine used behind the LLM capability.
-   The agent loop is not a message-routing layer. It is invoked by handler behavior through the LLM/agent path, manages conversation context, consumes LLM streaming responses, and handles tool calls requested by the model. Tool implementations are agent internals grouped by domain, not top-level message handlers.
+   The agent loop is not a message-routing layer. It is invoked by handler behavior through the LLM/agent path, manages conversation context, consumes LLM streaming responses, records trace events, and handles tool calls requested by the model. Tool implementations are agent internals grouped by domain, not top-level message handlers.
 
 6. `Main` is the composition root.
    `app/Main.hs` reads config, creates storage, installs effect interpreters, starts chat drivers, registers routes, and connects incoming streams. It should stay mostly declarative: construct the graph, then run it.
@@ -45,10 +45,10 @@ The split exists so changes land where their reason lives:
 - New platform behavior belongs in `Bot.Chat.Driver.*` and wiring, not in handlers.
 - New user-visible commands belong in `Bot.Handler.*`, route composition, and focused tests.
 - New agent tools belong in `Bot.Agent.Tools.*` and the agent tests, not in route admission.
-- New persistent state belongs near Storage, Memory, or the domain that owns the state rules.
+- New persistent state belongs near Storage, Memory, AgentTrace, or the domain that owns the state rules.
 - New LLM wire behavior belongs in `Bot.Effect.LLM` and the agent path, not embedded inside a handler.
 
-Concrete module ownership should follow those layers. Put shared message, route, conversation, and reply-body concepts in `Bot.Core.*`; user-visible flows in `Bot.Handler.*`; LLM transport and request shaping in `Bot.Effect.LLM`; platform adapters in `Bot.Chat.Driver.*`; SQLite mechanics in `Bot.Storage.SQLite`; and persistent memory behavior in `Bot.Memory` or `Bot.Effect.Memory`.
+Concrete module ownership should follow those layers. Put shared message, route, conversation, and reply-body concepts in `Bot.Core.*`; user-visible flows in `Bot.Handler.*`; LLM transport and request shaping in `Bot.Effect.LLM`; agent trace events and query views in `Bot.Effect.AgentTrace`; platform adapters in `Bot.Chat.Driver.*`; SQLite mechanics in `Bot.Storage.SQLite`; and persistent memory behavior in `Bot.Memory` or `Bot.Effect.Memory`.
 
 ## Design Rules
 
@@ -89,6 +89,8 @@ For handler behavior, start from route admission in `Bot.Core.Route`. Handlers s
 For platform behavior, keep API and transport details in `Bot.Chat.Driver.QQ`, `Bot.Chat.Driver.Telegram`, `Bot.Chat.Driver.Matrix`, or dispatch glue in `Bot.Chat.Driver`. Do not leak platform-specific request/response types into handlers or agent tools.
 
 For agent tools, put implementations in the appropriate `Bot.Agent.Tools.*` module, keep shared schema and argument helpers in `Bot.Agent.Tools.Common`, update `defaultTools`, parse arguments with `AesonTypes.parseEither`, and add focused coverage in `test/AgentSpec.hs`.
+
+For agent trace and audit behavior, keep trace event capture in `Bot.Agent` through `Bot.Effect.AgentTrace`; keep user-visible audit commands in `Bot.Handler.Audit`; keep SQLite table mechanics in `Bot.Storage.SQLite`. Do not put audit formatting or query policy inside tool implementations.
 
 For persistence, prefer Storage or Memory ownership over handler-local files or bespoke SQL. Keep keying rules close to the state they persist, and use normalized identities.
 

@@ -68,6 +68,7 @@ data AgentContext es = AgentContext
   , superuser :: !Bool
   , askCommand :: !Text
   , toolConfig :: !ToolConfig
+  , recordRunId :: Text -> Eff es ()
   , remember :: Maybe Integer -> Conversation -> Eff es ()
   , recordBotMessage :: Maybe Integer -> Text -> Eff es ()
   }

@@ -11,6 +11,7 @@ module Bot.Storage.SQLite
   , StoredState (..)
   , ConversationRow (..)
   , ConversationPayloadKind (..)
+  , AgentTraceRow (..)
   , declareJsonCollection
   , loadJsonCollection
   , appendJsonCollection
@@ -19,10 +20,16 @@ module Bot.Storage.SQLite
   , clearJsonCollection
   , loadConversationRows
   , loadConversationRow
+  , loadConversationMessageIds
   , loadNextConversationId
   , saveConversationMessages
   , saveChatLogEntry
   , queryChatLogEntries
+  , saveAgentTraceEvent
+  , queryAgentTraceEvents
+  , queryRecentAgentTraceEvents
+  , queryAgentTraceEventsForMessage
+  , queryAgentTraceEventsForMessages
   )
 where
 
@@ -35,6 +42,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Time (getCurrentTime)
 import qualified Database.SQLite3 as SQLite
 import System.IO.Error (userError)
 
@@ -69,6 +77,13 @@ data ConversationPayloadKind
   | ConversationPayloadSnapshot
   deriving (Eq, Show)
 
+data AgentTraceRow a = AgentTraceRow
+  { id :: !Integer
+  , occurredAt :: !UTCTime
+  , event :: !a
+  }
+  deriving (Eq, Show)
+
 -- | Open the database, configure connection pragmas, and run migrations.
 openSQLiteStore :: FilePath -> IO SQLiteStore
 openSQLiteStore path = do
@@ -101,6 +116,19 @@ migrate store = withStore store \db -> do
     "CREATE INDEX IF NOT EXISTS chat_log_chat_idx ON chat_log(platform_key, kind_key, chat_id, id)"
   SQLite.exec db
     "DROP INDEX IF EXISTS chat_log_visible_idx"
+  SQLite.exec db
+    "CREATE TABLE IF NOT EXISTS agent_trace (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, event_json TEXT NOT NULL)"
+  ensureColumn db "agent_trace" "occurred_at" "TEXT"
+  ensureColumn db "agent_trace" "linked_message_id" "INTEGER"
+  ensureColumn db "agent_trace" "parent_message_id" "INTEGER"
+  SQLite.exec db
+    "CREATE INDEX IF NOT EXISTS agent_trace_run_idx ON agent_trace(run_id, id)"
+  SQLite.exec db
+    "CREATE INDEX IF NOT EXISTS agent_trace_message_idx ON agent_trace(linked_message_id, parent_message_id, id)"
+  SQLite.exec db
+    "CREATE INDEX IF NOT EXISTS agent_trace_linked_message_idx ON agent_trace(linked_message_id, id)"
+  SQLite.exec db
+    "CREATE INDEX IF NOT EXISTS agent_trace_parent_message_idx ON agent_trace(parent_message_id, id)"
 
 ensureColumn :: SQLite.Database -> Text -> Text -> Text -> IO ()
 ensureColumn db table column definition = do
@@ -295,6 +323,27 @@ loadConversationRow store messageId = withStore store \db -> do
         (loadLegacyConversationRow db messageId)
         (pure Nothing)
 
+loadConversationMessageIds :: SQLiteStore -> Integer -> IO [Integer]
+loadConversationMessageIds store messageId = withStore store \db -> do
+  target <- loadConversationNodeRow db messageId
+    >>= \case
+      Just row ->
+        pure (Just row)
+      Nothing ->
+        ifM (tableExists db "conversations")
+          (loadLegacyConversationRow db messageId)
+          (pure Nothing)
+  case target >>= (.conversationId) of
+    Nothing ->
+      pure []
+    Just conversationId -> do
+      nodeIds <- loadConversationNodeMessageIds db conversationId
+      legacyIds <-
+        ifM (tableExists db "conversations")
+          (loadLegacyConversationMessageIds db conversationId)
+          (pure [])
+      pure (ordNub (nodeIds <> legacyIds))
+
 loadNextConversationId :: SQLiteStore -> IO Integer
 loadNextConversationId store = withStore store \db -> do
   nodeMax <- maxConversationId db "conversation_nodes"
@@ -333,6 +382,19 @@ loadConversationNodeRow db targetMessageId =
         payloadJson <- columnText stmt 3
         pure (Just ConversationRow{messageId, conversationId, parentMessageId, payloadJson, payloadKind = ConversationPayloadMessages})
 
+loadConversationNodeMessageIds :: SQLite.Database -> Integer -> IO [Integer]
+loadConversationNodeMessageIds db conversationId =
+  withStatement db "SELECT message_id FROM conversation_nodes WHERE conversation_id = ? ORDER BY message_id ASC" [SQLite.SQLInteger (fromIntegral conversationId)] \stmt ->
+    rows [] stmt
+  where
+    rows acc stmt =
+      SQLite.step stmt >>= \case
+        SQLite.Done ->
+          pure (reverse acc)
+        SQLite.Row -> do
+          messageId <- columnInteger stmt 0
+          rows (messageId : acc) stmt
+
 loadLegacyConversationRows :: SQLite.Database -> IO [ConversationRow]
 loadLegacyConversationRows db =
   withStatement db "SELECT message_id, conversation_id, parent_message_id, conversation_json FROM conversations ORDER BY message_id ASC" [] \stmt ->
@@ -361,6 +423,19 @@ loadLegacyConversationRow db targetMessageId =
         parentMessageId <- columnMaybeInteger stmt 2
         payloadJson <- columnText stmt 3
         pure (Just ConversationRow{messageId, conversationId, parentMessageId, payloadJson, payloadKind = ConversationPayloadSnapshot})
+
+loadLegacyConversationMessageIds :: SQLite.Database -> Integer -> IO [Integer]
+loadLegacyConversationMessageIds db conversationId =
+  withStatement db "SELECT message_id FROM conversations WHERE conversation_id = ? ORDER BY message_id ASC" [SQLite.SQLInteger (fromIntegral conversationId)] \stmt ->
+    rows [] stmt
+  where
+    rows acc stmt =
+      SQLite.step stmt >>= \case
+        SQLite.Done ->
+          pure (reverse acc)
+        SQLite.Row -> do
+          messageId <- columnInteger stmt 0
+          rows (messageId : acc) stmt
 
 maxConversationId :: SQLite.Database -> Text -> IO Integer
 maxConversationId db table =
@@ -432,6 +507,103 @@ queryChatLogEntries store platformKey kindKey chatId includeBotMessages limit = 
                   Left _ -> acc
           rows acc' stmt
 
+-- | Persist one agent trace event.
+saveAgentTraceEvent :: SQLiteStore -> Text -> UTCTime -> Maybe Integer -> Maybe Integer -> Aeson.Value -> IO ()
+saveAgentTraceEvent store runId occurredAt linkedMessageId parentMessageId event = withStore store \db ->
+  withStatement db
+    "INSERT INTO agent_trace(run_id, occurred_at, linked_message_id, parent_message_id, event_json) VALUES (?, ?, ?, ?, ?)"
+    [ SQLite.SQLText runId
+    , SQLite.SQLText (show occurredAt)
+    , maybe SQLite.SQLNull (SQLite.SQLInteger . fromIntegral) linkedMessageId
+    , maybe SQLite.SQLNull (SQLite.SQLInteger . fromIntegral) parentMessageId
+    , SQLite.SQLText (jsonText event)
+    ]
+    stepDone
+
+-- | Return all agent trace events for one run in insertion order.
+queryAgentTraceEvents :: Aeson.FromJSON a => SQLiteStore -> Text -> IO [AgentTraceRow a]
+queryAgentTraceEvents store runId = withStore store \db ->
+  queryAgentTraceRows db runId
+
+queryAgentTraceRows :: Aeson.FromJSON a => SQLite.Database -> Text -> IO [AgentTraceRow a]
+queryAgentTraceRows db runId =
+  withStatement db
+    "SELECT id, occurred_at, event_json FROM agent_trace WHERE run_id = ? ORDER BY id ASC"
+    [SQLite.SQLText runId]
+    (rows [])
+  where
+    rows acc stmt =
+      SQLite.step stmt >>= \case
+        SQLite.Done ->
+          pure (reverse acc)
+        SQLite.Row -> do
+          rowId <- columnInteger stmt 0
+          occurredAt <- columnUTCTime stmt 1
+          json <- columnText stmt 2
+          case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 json) of
+            Right value ->
+              rows (AgentTraceRow{id = rowId, occurredAt, event = value} : acc) stmt
+            Left _ ->
+              rows acc stmt
+
+-- | Return recent agent trace events in insertion order.
+queryRecentAgentTraceEvents :: Aeson.FromJSON a => SQLiteStore -> Int -> IO [AgentTraceRow a]
+queryRecentAgentTraceEvents store limit = withStore store \db ->
+  withStatement db
+    "SELECT id, occurred_at, event_json FROM agent_trace ORDER BY id DESC LIMIT ?"
+    [SQLite.SQLInteger (fromIntegral (max 0 limit))]
+    (rows [])
+  where
+    rows acc stmt =
+      SQLite.step stmt >>= \case
+        SQLite.Done ->
+          pure acc
+        SQLite.Row -> do
+          rowId <- columnInteger stmt 0
+          occurredAt <- columnUTCTime stmt 1
+          json <- columnText stmt 2
+          case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 json) of
+            Right value ->
+              rows (AgentTraceRow{id = rowId, occurredAt, event = value} : acc) stmt
+            Left _ ->
+              rows acc stmt
+
+-- | Return trace events for runs linked to one conversation message.
+queryAgentTraceEventsForMessage :: Aeson.FromJSON a => SQLiteStore -> Integer -> IO [AgentTraceRow a]
+queryAgentTraceEventsForMessage store messageId =
+  queryAgentTraceEventsForMessages store [messageId]
+
+-- | Return trace events for runs linked to any conversation message.
+queryAgentTraceEventsForMessages :: Aeson.FromJSON a => SQLiteStore -> [Integer] -> IO [AgentTraceRow a]
+queryAgentTraceEventsForMessages _ [] =
+  pure []
+queryAgentTraceEventsForMessages store messageIds = withStore store \db -> do
+  runIds <- linkedRunIds db
+  concat <$> traverse (queryAgentTraceRows db) runIds
+  where
+    uniqueIds =
+      ordNub messageIds
+    placeholders =
+      Text.intercalate ", " (replicate (length uniqueIds) "?")
+    params =
+      map (SQLite.SQLInteger . fromIntegral) uniqueIds
+    linkedRunIds db =
+      withStatement db
+        [i|SELECT DISTINCT run_id FROM agent_trace WHERE linked_message_id IN (#{placeholders})
+           UNION
+           SELECT DISTINCT run_id FROM agent_trace WHERE parent_message_id IN (#{placeholders})
+           ORDER BY run_id ASC|]
+        (params <> params)
+        (rows [])
+
+    rows acc stmt =
+      SQLite.step stmt >>= \case
+        SQLite.Done ->
+          pure (reverse acc)
+        SQLite.Row -> do
+          runId <- columnText stmt 0
+          rows (runId : acc) stmt
+
 withStore :: SQLiteStore -> (SQLite.Database -> IO a) -> IO a
 withStore SQLiteStore{database, lock} action =
   MVar.withMVar lock \_ ->
@@ -470,6 +642,11 @@ columnMaybeInteger stmt index =
     SQLite.SQLInteger value -> pure (Just (fromIntegral value))
     SQLite.SQLText value -> pure (readMaybe (toString value))
     _ -> pure Nothing
+
+columnUTCTime :: SQLite.Statement -> Int -> IO UTCTime
+columnUTCTime stmt index = do
+  raw <- columnText stmt index
+  maybe getCurrentTime pure (readMaybe (toString raw))
 
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =

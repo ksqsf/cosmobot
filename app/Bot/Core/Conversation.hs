@@ -11,6 +11,7 @@ module Bot.Core.Conversation
   , ActiveConversationHandle
   , newConversationStore
   , lookupConversation
+  , lookupConversationMessageIds
   , rememberConversation
   , rememberConversationFrom
   , rememberActiveConversation
@@ -219,6 +220,23 @@ lookupConversation store@ConversationStore{activeConversationStore = activeRef} 
     Nothing -> do
       active <- liftIO $ Map.lookup messageId <$> IORef.readIORef activeRef
       traverse (liftIO . MVar.readMVar . (.activeDone)) active
+
+lookupConversationMessageIds :: IOE :> es => ConversationStore -> Integer -> Eff es [Integer]
+lookupConversationMessageIds store@ConversationStore{unConversationStore = ref, sqliteStore, activeConversationStore = activeRef} messageId = do
+  active <- liftIO $ Map.lookup messageId <$> IORef.readIORef activeRef
+  case active of
+    Just activeConversation ->
+      liftIO (IORef.readIORef activeConversation.activeMessageIds)
+    Nothing -> do
+      node <- lookupConversationNode store messageId
+      case node of
+        Nothing ->
+          maybe (pure []) (liftIO . flip Storage.loadConversationMessageIds messageId) sqliteStore
+        Just target ->
+          liftIO do
+            cached <- Map.toList . (.conversations) <$> IORef.readIORef ref
+            stored <- maybe (pure []) (`Storage.loadConversationMessageIds` messageId) sqliteStore
+            pure (ordNub (stored <> [nodeMessageId | (nodeMessageId, cachedNode) <- cached, cachedNode.conversationId == target.conversationId]))
 
 rememberActiveConversation
   :: IOE :> es
