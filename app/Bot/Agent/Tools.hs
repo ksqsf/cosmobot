@@ -10,6 +10,7 @@ module Bot.Agent.Tools
 where
 
 import Bot.Agent.Tools.Chat
+import Bot.Agent.Tools.Emacs
 import Bot.Agent.Tools.Files
 import Bot.Agent.Tools.Image
 import Bot.Agent.Tools.Memory
@@ -47,4 +48,5 @@ defaultTools =
   , manageMemoryTool
   , manageChatMemoryTool
   , runBashTool
+  , emacsEvalTool
   ]

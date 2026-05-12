@@ -127,6 +127,7 @@ Audit 命令仅限各平台 `superusers` 使用：
 - `Schedule`：计划任务。
 - `Memory`：个人/群聊记忆管理。
 - `Shell`：受控 shell 执行。
+- `Emacs`：通过 `emacsclient --socket-name cosmobot --eval` 在 cosmobot 管理的 Emacs daemon 中执行 Emacs Lisp。
 
 部分工具需要配置开关或 API key。例如网页搜索需要启用 `[tool.web_search]`，并选择 `tavily` 或 `brave`。
 
