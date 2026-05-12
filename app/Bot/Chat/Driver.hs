@@ -7,7 +7,7 @@ Stability   : experimental
 
 module Bot.Chat.Driver
   ( runChatDrivers
-  , incomingMessageStreams
+  , incomingMessages
   )
 where
 
@@ -18,14 +18,12 @@ import Bot.Chat.Driver.Types
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
+import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
 
 type ChatDriverEffects es =
   Chat.Chat : QQ.QQ : Telegram.Telegram : Matrix.Matrix : es
-
-type IncomingMessageStreams es =
-  [Stream (Of IncomingMessage) (Eff es) ()]
 
 chatPlatformDrivers
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, IOE :> es)
@@ -149,6 +147,16 @@ runChatDrivers qqConfig telegramConfig matrixConfig =
   QQ.runQQ qqConfig .
   Chat.runChatWith chatHandlers
 
+incomingMessages
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages =
+  StreamUtil.mergeStreams
+    [ QQ.incomingMessages
+    , Telegram.incomingMessages
+    , Matrix.incomingMessages
+    ]
+
 chatHandlers
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
   => Chat.ChatHandlers es
@@ -162,15 +170,3 @@ chatHandlers = Chat.ChatHandlers
   , handleListGroupMembers = listPlatformGroupMembers
   , handleMentionUser = mentionPlatformUser
   }
-
-incomingMessageStreams
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
-  => QQ.Config
-  -> Telegram.Config
-  -> Matrix.Config
-  -> IncomingMessageStreams es
-incomingMessageStreams qqConfig telegramConfig matrixConfig =
-  [ QQ.incomingMessages qqConfig
-  , Telegram.incomingMessages telegramConfig
-  , Matrix.incomingMessages matrixConfig
-  ]

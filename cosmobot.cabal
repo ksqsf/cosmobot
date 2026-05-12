@@ -82,6 +82,7 @@ common app-deps
                     , streaming
                     , transformers
                     , stm
+                    , async
                     , bytestring
                     , base64-bytestring
                     , aeson

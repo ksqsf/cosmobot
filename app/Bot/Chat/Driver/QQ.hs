@@ -107,10 +107,14 @@ qqStreamingMessageLimit = 4000
 
 -- | Low-level OneBot transport effect.
 data QQ :: Effect where
+  QQConfig :: QQ m Config
   ReceiveEvent :: QQ m Event
   SendAction :: Aeson.Value -> QQ m ActionResponse
 
 type instance DispatchOf QQ = Dynamic
+
+qqConfig :: QQ :> es => Eff es Config
+qqConfig = send QQConfig
 
 -- | Receive one raw OneBot event from the websocket reader.
 receiveEvent :: QQ :> es => Eff es Event
@@ -135,6 +139,8 @@ runQQ cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
   liftIO $ runInIO
     (interpret
         (\_ -> \case
+          QQConfig ->
+            pure cfg
           ReceiveEvent ->
             liftIO (Chan.readChan eventChan)
           SendAction value -> do
@@ -254,8 +260,9 @@ eventsStream = do
   eventsStream
 
 -- | Stream OneBot message events as platform-independent messages.
-incomingMessages :: (QQ :> es, Log :> es) => Config -> Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages cfg = do
+incomingMessages :: (QQ :> es, Log :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages = do
+  cfg <- S.lift qqConfig
   event <- S.lift receiveEvent
   case eventToIncomingMessageWith cfg event of
     Nothing -> do
@@ -266,7 +273,7 @@ incomingMessages cfg = do
       S.lift $ logTrace "incoming qq message" message
       S.lift $ logInfo "incoming qq message" (incomingMessageLogLine message)
       S.yield message
-  incomingMessages cfg
+  incomingMessages
 
 -- ---------------------------------------------------------------------------
 -- OneBot v11 events

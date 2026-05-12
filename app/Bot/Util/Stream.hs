@@ -10,7 +10,7 @@ module Bot.Util.Stream
 where
 
 import Bot.Prelude
-import Control.Concurrent (ThreadId, forkIO, killThread)
+import qualified Control.Concurrent.Async as Async
 import qualified Control.Exception as Exception
 import qualified Control.Concurrent.STM as STM
 import qualified Control.Concurrent.STM.TBQueue as TBQueue
@@ -31,9 +31,9 @@ mergeStreams
 mergeStreams streams = do
   queue <- S.lift (liftIO (TBQueue.newTBQueueIO streamQueueCapacity :: IO (TBQueue.TBQueue (MergeEvent a))))
   shuttingDown <- S.lift (liftIO (STM.newTVarIO False))
-  pumpThreads <- S.lift $ withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-    traverse (liftIO . forkIO . runInIO . pump shuttingDown queue) streams
-  readMerged (length streams) queue `streamFinally` cleanupPumpThreads shuttingDown pumpThreads
+  pumps <- S.lift $ withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+    traverse (liftIO . Async.async . runInIO . pump shuttingDown queue) streams
+  readMerged (length streams) queue `streamFinally` cleanupPumps shuttingDown pumps
 
 streamQueueCapacity :: Natural
 streamQueueCapacity =
@@ -101,10 +101,10 @@ streamFinally stream cleanup =
           S.yield item
           go rest
 
-cleanupPumpThreads :: IOE :> es => STM.TVar Bool -> [ThreadId] -> Eff es ()
-cleanupPumpThreads shuttingDown pumpThreads = do
+cleanupPumps :: IOE :> es => STM.TVar Bool -> [Async.Async ()] -> Eff es ()
+cleanupPumps shuttingDown pumps = do
   liftIO $ STM.atomically (STM.writeTVar shuttingDown True)
-  traverse_ (liftIO . killThread) pumpThreads
+  traverse_ (liftIO . Async.cancel) pumps
 
 pump
   :: (Log :> es, IOE :> es)
@@ -115,13 +115,18 @@ pump
 pump shuttingDown queue stream =
   (S.mapM_ (writeMergeEvent queue . MergeItem) stream *> writeMergeEvent queue MergeDone)
     `catch` \(err :: SomeException) ->
-      if Just Exception.ThreadKilled == Exception.fromException err
+      if isStreamCancelled err
         then do
           isShuttingDown <- liftIO $ STM.readTVarIO shuttingDown
           unless isShuttingDown (writeMergeEvent queue MergeDone)
         else do
           logInfo "Merged stream input stopped" (show err :: String)
           writeMergeEvent queue (MergeFailed err)
+
+isStreamCancelled :: SomeException -> Bool
+isStreamCancelled err =
+  Just Exception.ThreadKilled == Exception.fromException err
+    || Just Async.AsyncCancelled == Exception.fromException err
 
 writeMergeEvent :: IOE :> es => TBQueue.TBQueue (MergeEvent a) -> MergeEvent a -> Eff es ()
 writeMergeEvent queue =

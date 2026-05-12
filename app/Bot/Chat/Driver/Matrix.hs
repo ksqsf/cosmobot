@@ -69,10 +69,14 @@ matrixStreamingMessageLimit :: Int
 matrixStreamingMessageLimit = 4000
 
 data Matrix :: Effect where
+  MatrixConfig :: Matrix m Config
   Sync :: Maybe Text -> Matrix m (Maybe SyncResponse)
   SendText :: Text -> Text -> Matrix m (Maybe SendMessageResponse)
 
 type instance DispatchOf Matrix = Dynamic
+
+matrixConfig :: Matrix :> es => Eff es Config
+matrixConfig = send MatrixConfig
 
 sync :: Matrix :> es => Maybe Text -> Eff es (Maybe SyncResponse)
 sync =
@@ -90,6 +94,8 @@ runMatrix
 runMatrix cfg inner = withReqManager \manager ->
   interpret
     ( \_ -> \case
+        MatrixConfig ->
+          pure cfg
         Sync since ->
           traverse (syncCall manager cfg since) cfg.accessToken
         SendText roomId body ->
@@ -97,19 +103,19 @@ runMatrix cfg inner = withReqManager \manager ->
     )
     inner
 
-incomingMessages :: (Matrix :> es, Log :> es, IOE :> es) => Config -> Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages cfg
-  | isNothing cfg.accessToken = pure ()
-  | otherwise = syncLoop Nothing
+incomingMessages :: (Matrix :> es, Log :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages = do
+  cfg <- S.lift matrixConfig
+  unless (isNothing cfg.accessToken) (syncLoop cfg Nothing)
   where
-    syncLoop since = do
+    syncLoop cfg since = do
       result <- S.lift $ sync since `catch` \(err :: SomeException) -> do
         logInfo "Matrix sync failed, retrying" (show err :: String)
         liftIO $ threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
         Nothing ->
-          syncLoop since
+          syncLoop cfg since
         Just response -> do
           let events = syncEvents response
           S.lift $ logInfo "Matrix sync batch" (length events)
@@ -122,7 +128,7 @@ incomingMessages cfg
                 S.lift $ logTrace "incoming Matrix message" message
                 S.lift $ logInfo "incoming Matrix message" (incomingMessageLogLine message)
                 S.yield message
-          syncLoop (Just response.nextBatch)
+          syncLoop cfg (Just response.nextBatch)
 
 syncEvents :: SyncResponse -> [RoomEvent]
 syncEvents response =

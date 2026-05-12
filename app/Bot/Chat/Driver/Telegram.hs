@@ -128,6 +128,7 @@ class (Aeson.ToJSON req, Aeson.FromJSON (TelegramResponse req)) => TelegramReque
 
 -- | Telegram Bot API effect.
 data Telegram :: Effect where
+  TelegramConfig :: Telegram m Config
   CallTelegram
     :: TelegramRequest req
     => req -> Telegram m (TelegramResponse req)
@@ -140,6 +141,9 @@ data Telegram :: Effect where
     -> Telegram m Message
 
 type instance DispatchOf Telegram = Dynamic
+
+telegramConfig :: Telegram :> es => Eff es Config
+telegramConfig = send TelegramConfig
 
 callTelegram
   :: (Telegram :> es, TelegramRequest req)
@@ -162,6 +166,8 @@ runTelegram
 runTelegram cfg inner = withReqManager $ \manager ->
   interpret
     ( \_ -> \case
+        TelegramConfig ->
+          pure cfg
         CallTelegram request ->
           apiCall manager cfg (telegramMethod request) request
         FileUrl fileId -> do
@@ -201,8 +207,9 @@ updatesStream :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of Update) (E
 updatesStream = updatesStream' 0
 
 -- | Poll Telegram updates and yield platform-independent messages.
-incomingMessages :: (Telegram :> es, Log :> es, IOE :> es) => Config -> Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages cfg = S.for updatesStream $ \update ->
+incomingMessages :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages = S.for updatesStream $ \update -> do
+  cfg <- S.lift telegramConfig
   case updateToIncomingMessageWith cfg update of
     Nothing -> do
       S.lift $ logTrace_ [i|Ignoring Telegram event|]
