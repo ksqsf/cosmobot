@@ -7,6 +7,7 @@ Stability   : experimental
 
 module Bot.Chat.Driver
   ( runChatDrivers
+  , incomingMessageStreams
   )
 where
 
@@ -25,9 +26,6 @@ type ChatDriverEffects es =
 
 type IncomingMessageStreams es =
   [Stream (Of IncomingMessage) (Eff es) ()]
-
-type ChatDriverAction es a =
-  IncomingMessageStreams (ChatDriverEffects es) -> Eff (ChatDriverEffects es) a
 
 chatPlatformDrivers
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, IOE :> es)
@@ -143,14 +141,13 @@ runChatDrivers
   => QQ.Config
   -> Telegram.Config
   -> Matrix.Config
-  -> ChatDriverAction es a
+  -> Eff (ChatDriverEffects es) a
   -> Eff es a
-runChatDrivers qqConfig telegramConfig matrixConfig action =
+runChatDrivers qqConfig telegramConfig matrixConfig =
   Matrix.runMatrix matrixConfig .
   Telegram.runTelegram telegramConfig .
   QQ.runQQ qqConfig .
-  Chat.runChatWith chatHandlers $
-    action (incomingMessageStreams qqConfig telegramConfig matrixConfig)
+  Chat.runChatWith chatHandlers
 
 chatHandlers
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)

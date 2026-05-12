@@ -38,15 +38,16 @@ main = do
     runBotLog cfg.logLevel .
     ChatLog.runChatLog maybeSQLiteStore .
     Memory.runMemory cfg.memory .
-    Scheduler.runScheduler $
-      LLM.runLLM cfg.llm $
-        ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix \chatMessageStreams -> do
-          logInfo_ "Cosmobot stand by!"
-          let messageStreams =
-                chatMessageStreams <> [Scheduler.scheduledMessages]
-          consumeWith
-            (routes cfg sqliteStore conversations)
-            (recordedIncomingMessages (mergeIncomingMessages messageStreams))
+    Scheduler.runScheduler .
+    LLM.runLLM cfg.llm .
+    ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix $ do
+      logInfo_ "Cosmobot stand by!"
+      let messageStreams =
+            ChatDriver.incomingMessageStreams cfg.qq cfg.telegram cfg.matrix <>
+            [Scheduler.scheduledMessages]
+      consumeWith
+        (routes cfg sqliteStore conversations)
+        (recordedIncomingMessages (mergeIncomingMessages messageStreams))
 
 routes
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
