@@ -36,7 +36,7 @@ runBashTool = Tool
       ]
       ["script"]
   , allowed = superuserOnly
-  , run = \_ args ->
+  , start = \_ -> pure \args ->
       withParsedToolArgs runBashArgs args \(script, timeoutSeconds) -> do
         result <- liftIO $ runBashSafe timeoutSeconds (Text.unpack script)
         pure (toolText result)

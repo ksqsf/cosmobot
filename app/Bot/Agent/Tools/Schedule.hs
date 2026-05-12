@@ -30,7 +30,7 @@ scheduleAgentActionTool = Tool
       ]
       ["delay_seconds", "prompt"]
   , allowed = everyone
-  , run = \context args ->
+  , start = \context -> pure \args ->
       withParsedToolArgs scheduledActionArgs args \(delaySeconds, prompt) -> do
         scheduled <- Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
         if scheduled
@@ -47,11 +47,12 @@ deleteScheduledAgentActionTool = Tool
     ]
     ["schedule_id"]
   , allowed = everyone
-  , run = \context -> withIntegerArg "schedule_id" $ \scheduleId -> do
+  , start = \context -> pure \args -> withIntegerArg "schedule_id" (\scheduleId -> do
       ok <- Scheduler.deleteScheduledMessage context.message scheduleId
       if ok
         then pure (toolText [i|Schedule #{scheduleId} has been removed.|])
         else pure (toolText [i|Schedule #{scheduleId} is not available to the user.|])
+      ) args
   }
 
 listCurrentUserSchedulesTool :: Scheduler.Scheduler :> es => Tool es
@@ -60,7 +61,7 @@ listCurrentUserSchedulesTool = Tool
   , description = "List pending scheduled agent actions created by the current user in the current chat. Returns schedule ids, remaining seconds, and scheduled prompts."
   , parameters = objectSchema [] []
   , allowed = everyone
-  , run = \context _ -> do
+  , start = \context -> pure \_ -> do
       schedules <- Scheduler.listScheduledMessages context.message
       pure (toolText (jsonText (map scheduleSummary schedules)))
   }

@@ -23,7 +23,7 @@ datetimeTool = Tool
   , description = "Return the current date and time in UTC and in the bot host's local timezone."
   , parameters = objectSchema [] []
   , allowed = \context -> context.toolConfig.datetime
-  , run = \_ _ -> do
+  , start = \_ -> pure \_ -> do
       now <- liftIO getCurrentTime
       zone <- liftIO getCurrentTimeZone
       let localTime = utcToLocalTime zone now

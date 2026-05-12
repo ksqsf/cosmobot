@@ -59,7 +59,7 @@ data Tool es = Tool
   , description :: !Text
   , parameters  :: !Aeson.Value
   , allowed     :: AgentContext es -> Bool
-  , run         :: AgentContext es -> Aeson.Value -> Eff es ToolResult
+  , start       :: AgentContext es -> Eff es (Aeson.Value -> Eff es ToolResult)
   }
 
 -- | Per-message capabilities and permissions made available to tools.

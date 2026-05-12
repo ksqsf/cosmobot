@@ -25,7 +25,7 @@ generateImageTool = Tool
       ]
       ["prompt"]
   , allowed = everyone
-  , run = \context -> withTextArg "prompt" \prompt -> do
+  , start = \context -> pure \args -> withTextArg "prompt" (\prompt -> do
       generated <- LLM.askImageWithHistory [LLM.userWithImages prompt context.message.imageUrls]
       case Chat.replyImageUrls generated of
         [] ->
@@ -35,4 +35,5 @@ generateImageTool = Tool
           context.recordBotMessage sent generated
           let sentText = show sent :: String
           pure (toolMessage sent [i|Generated and sent image message id: #{sentText}|])
+      ) args
   }

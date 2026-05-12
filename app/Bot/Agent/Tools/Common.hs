@@ -16,6 +16,8 @@ module Bot.Agent.Tools.Common
   , fieldBoolean
   , objectSchema
   , jsonText
+  , UseLimit (..)
+  , newUseLimiter
   )
 where
 
@@ -25,6 +27,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 
@@ -111,3 +114,19 @@ objectSchema fields required =
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
   TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+
+data UseLimit
+  = UseAllowed
+  | UseLimitReached !Int
+
+newUseLimiter :: IOE :> es => Maybe Int -> Eff es (Eff es UseLimit)
+newUseLimiter maxUses = do
+  uses <- liftIO (IORef.newIORef 0)
+  pure do
+    currentUses <- liftIO (IORef.readIORef uses)
+    case maxUses of
+      Just limit | currentUses >= limit ->
+        pure (UseLimitReached currentUses)
+      _ -> do
+        liftIO (IORef.modifyIORef' uses (+ 1))
+        pure UseAllowed

@@ -31,7 +31,7 @@ manageMemoryTool = Tool
       ]
       ["action"]
   , allowed = everyone
-  , run = \context args ->
+  , start = \context -> pure \args ->
       withParsedToolArgs memoryArgs args \(action, memory) ->
         runMemoryAction senderMemoryScope context action memory
   }
@@ -46,7 +46,7 @@ manageChatMemoryTool = Tool
       ]
       ["action"]
   , allowed = everyone
-  , run = \context args ->
+  , start = \context -> pure \args ->
       withParsedToolArgs memoryArgs args \(action, memory) ->
         runMemoryAction chatMemoryScope context action memory
   }

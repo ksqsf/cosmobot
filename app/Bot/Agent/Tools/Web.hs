@@ -36,7 +36,7 @@ webSearchTool = Tool
       ]
       ["query"]
   , allowed = \context -> context.toolConfig.webSearchEnable
-  , run = \context args ->
+  , start = \context -> pure \args ->
       withParsedToolArgs (webSearchArgs context.toolConfig.webSearchMaxResults) args \(query, maxResults) -> do
         let searchConfig = context.toolConfig
         results <- liftIO (webSearch searchConfig query maxResults)
@@ -57,10 +57,16 @@ webFetchTool = Tool
       ]
       ["url"]
   , allowed = \context -> context.toolConfig.webFetch
-  , run = \context args ->
-      withParsedToolArgs (webFetchArgs context.toolConfig.webFetchMaxContentTokens) args \(url, maxContentTokens) -> do
-        page <- liftIO (fetchWebPage url maxContentTokens)
-        pure (toolText (jsonText page))
+  , start = \context -> do
+      checkUseLimit <- newUseLimiter context.toolConfig.webFetchMaxUses
+      pure \args ->
+        withParsedToolArgs (webFetchArgs context.toolConfig.webFetchMaxContentTokens) args \(url, maxContentTokens) -> do
+          checkUseLimit >>= \case
+            UseLimitReached currentUses ->
+              pure (toolText [i|web_fetch use limit reached for this agent run: #{currentUses}.|])
+            UseAllowed -> do
+              page <- liftIO (fetchWebPage url maxContentTokens)
+              pure (toolText (jsonText page))
   }
 
 webSearch :: ToolConfig -> Text -> Int -> IO [Aeson.Value]

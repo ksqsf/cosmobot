@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Agent as Agent
+import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Core.Conversation
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
@@ -47,6 +48,8 @@ main =
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "agent streaming yields answer chunks" testAgentStreamingYieldsAnswerChunks
+      , testCase "agent streaming yields tool request content" testAgentStreamingYieldsToolRequestContent
+      , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "chunked active conversation aliases every sent reply" testChunkedActiveConversationAliasesEverySentReply
       , testCase "web_fetch max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
@@ -65,8 +68,8 @@ main =
 testScheduleToolCreatesQueryableSchedule :: IO ()
 testScheduleToolCreatesQueryableSchedule = do
   answers <- IORef.newIORef
-    [ LLM.ChatAnswer "" [toolCall "call-1" "schedule_agent_action" (Aeson.object ["delay_seconds" Aeson..= (60 :: Int), "prompt" Aeson..= ("check oven" :: Text)])]
-    , LLM.ChatAnswer "scheduled" []
+    [ chatAnswer "" [toolCall "call-1" "schedule_agent_action" (Aeson.object ["delay_seconds" Aeson..= (60 :: Int), "prompt" Aeson..= ("check oven" :: Text)])]
+    , chatAnswer "scheduled" []
     ]
   (answer, schedules) <- runAgentWith answers (ChatMock Nothing Nothing) do
     result <- Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "remind me")
@@ -81,8 +84,8 @@ testScheduleToolCreatesQueryableSchedule = do
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do
   answers <- IORef.newIORef
-    [ LLM.ChatAnswer "" [toolCall "call-1" "send_reply_to_current_chat" (Aeson.object ["text" Aeson..= ("hello" :: Text), "image_urls" Aeson..= ["https://example.test/image.png" :: Text]])]
-    , LLM.ChatAnswer "sent" []
+    [ chatAnswer "" [toolCall "call-1" "send_reply_to_current_chat" (Aeson.object ["text" Aeson..= ("hello" :: Text), "image_urls" Aeson..= ["https://example.test/image.png" :: Text]])]
+    , chatAnswer "sent" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
   recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
@@ -96,7 +99,7 @@ testSendReplyToolUsesChatEffect = do
 
 testAgentStreamingYieldsAnswerChunks :: IO ()
 testAgentStreamingYieldsAnswerChunks = do
-  answers <- IORef.newIORef [LLM.ChatAnswer "streamed answer" []]
+  answers <- IORef.newIORef [chatAnswer "streamed answer" []]
   chunks <- IORef.newIORef ([] :: [Text])
   (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
     S.mapM_
@@ -104,6 +107,36 @@ testAgentStreamingYieldsAnswerChunks = do
       (Agent.runAgentStreaming 4 agentContext Agent.defaultTools (startWithUser "stream it"))
   answer @?= "streamed answer"
   IORef.readIORef chunks >>= (@?= ["streamed answer"])
+
+testAgentStreamingYieldsToolRequestContent :: IO ()
+testAgentStreamingYieldsToolRequestContent = do
+  answers <- IORef.newIORef
+    [ chatAnswer "checking" [toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])]
+    , chatAnswer "done" []
+    ]
+  fetches <- IORef.newIORef (0 :: Int)
+  chunks <- IORef.newIORef ([] :: [Text])
+  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
+    S.mapM_
+      (\chunk -> liftIO $ IORef.modifyIORef' chunks (<> [chunk]))
+      (Agent.runAgentStreaming 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches] (startWithUser "fetch it"))
+  answer @?= "done"
+  IORef.readIORef fetches >>= (@?= 1)
+  IORef.readIORef chunks >>= (@?= ["checking", "done"])
+
+testChatAnswerJsonRemainsObjectCompatible :: IO ()
+testChatAnswerJsonRemainsObjectCompatible = do
+  let call = toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])
+  Aeson.toJSON (chatAnswer "done" []) @?=
+    Aeson.object
+      [ "content" Aeson..= ("done" :: Text)
+      , "toolCalls" Aeson..= ([] :: [LLM.ToolCall])
+      ]
+  Aeson.toJSON (chatAnswer "checking" [call]) @?=
+    Aeson.object
+      [ "content" Aeson..= ("checking" :: Text)
+      , "toolCalls" Aeson..= [call]
+      ]
 
 testChatStreamingChunksRepliesAndYieldsUpdates :: IO ()
 testChatStreamingChunksRepliesAndYieldsUpdates = do
@@ -150,11 +183,11 @@ testChunkedActiveConversationAliasesEverySentReply = runEff $ runTestLog do
 testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do
   answers <- IORef.newIORef
-    [ LLM.ChatAnswer ""
+    [ chatAnswer ""
         [ toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test/1" :: Text)])
         , toolCall "call-2" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test/2" :: Text)])
         ]
-    , LLM.ChatAnswer "done" []
+    , chatAnswer "done" []
     ]
   fetches <- IORef.newIORef (0 :: Int)
   (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
@@ -168,9 +201,15 @@ fakeWebFetchTool fetches = Agent.Tool
   , description = "fake web fetch"
   , parameters = Aeson.object []
   , allowed = const True
-  , run = \_ _ -> do
-      liftIO $ IORef.modifyIORef' fetches (+ 1)
-      pure (Agent.ToolResult "fetched" [])
+  , start = \context -> do
+      checkUseLimit <- newUseLimiter context.toolConfig.webFetchMaxUses
+      pure \_ -> do
+        checkUseLimit >>= \case
+          UseLimitReached currentUses ->
+            pure (Agent.ToolResult [i|web_fetch use limit reached for this agent run: #{currentUses}.|] [])
+          UseAllowed -> do
+            liftIO $ IORef.modifyIORef' fetches (+ 1)
+            pure (Agent.ToolResult "fetched" [])
   }
 
 testConversationRepliesKeepSnapshots :: IO ()
@@ -275,10 +314,10 @@ testConversationJsonRemainsListCompatible = do
 testMemoryToolManagesCurrentSenderMemory :: IO ()
 testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ LLM.ChatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
-    , LLM.ChatAnswer "" [toolCall "call-2" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
-    , LLM.ChatAnswer "" [toolCall "call-3" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
-    , LLM.ChatAnswer "done" []
+    [ chatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing) do
     Agent.runAgent 8 agentContext Agent.defaultTools (startWithUser "remember this")
@@ -289,10 +328,10 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
 testMemoryToolManagesCurrentChatMemory :: IO ()
 testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ LLM.ChatAnswer "" [toolCall "call-1" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
-    , LLM.ChatAnswer "" [toolCall "call-2" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
-    , LLM.ChatAnswer "" [toolCall "call-3" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
-    , LLM.ChatAnswer "done" []
+    [ chatAnswer "" [toolCall "call-1" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing) do
     Agent.runAgent 8 agentContext Agent.defaultTools (startWithUser "remember this chat")
@@ -304,8 +343,8 @@ testMemoryToolEnforcesLengthLimit :: IO ()
 testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
   let longMemory = Text.replicate 1001 "x"
   answers <- IORef.newIORef
-    [ LLM.ChatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
-    , LLM.ChatAnswer "rejected" []
+    [ chatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
+    , chatAnswer "rejected" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing) do
     Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "remember too much")
@@ -316,8 +355,8 @@ testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
 testRunBashCapturesStdoutAndStderr :: IO ()
 testRunBashCapturesStdoutAndStderr = do
   answers <- IORef.newIORef
-    [ LLM.ChatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("printf stdout; printf stderr >&2" :: Text), "timeout_seconds" Aeson..= (5 :: Int)])]
-    , LLM.ChatAnswer "done" []
+    [ chatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("printf stdout; printf stderr >&2" :: Text), "timeout_seconds" Aeson..= (5 :: Int)])]
+    , chatAnswer "done" []
     ]
   (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing) do
     Agent.runAgent 4 superuserContext Agent.defaultTools (startWithUser "run command")
@@ -330,8 +369,8 @@ testRunBashCapturesStdoutAndStderr = do
 testRunBashKillsTimedOutProcess :: IO ()
 testRunBashKillsTimedOutProcess = do
   answers <- IORef.newIORef
-    [ LLM.ChatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("sleep 2; printf late" :: Text), "timeout_seconds" Aeson..= (1 :: Int)])]
-    , LLM.ChatAnswer "done" []
+    [ chatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("sleep 2; printf late" :: Text), "timeout_seconds" Aeson..= (1 :: Int)])]
+    , chatAnswer "done" []
     ]
   (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing) do
     Agent.runAgent 4 superuserContext Agent.defaultTools (startWithUser "run slow command")
@@ -414,7 +453,11 @@ runAgentWithMemory memoryCfg answers chatMock action =
           (\_ _ -> liftIO (popAnswer answers))
           (\_ _ emit -> do
               answer <- liftIO (popAnswer answers)
-              liftIO (emit answer.content)
+              case answer of
+                LLM.ChatFinalAnswer{content} ->
+                  liftIO (emit content)
+                LLM.ChatToolRequest{} ->
+                  pure ()
               pure answer) $
           ChatLog.runChatLog Nothing $
             Chat.runChatWith
@@ -439,9 +482,17 @@ popAnswer :: IORef.IORef [LLM.ChatAnswer] -> IO LLM.ChatAnswer
 popAnswer answers =
   IORef.atomicModifyIORef' answers \case
     [] ->
-      ([], LLM.ChatAnswer "unexpected extra LLM call" [])
+      ([], chatAnswer "unexpected extra LLM call" [])
     answer : rest ->
       (rest, answer)
+
+chatAnswer :: Text -> [LLM.ToolCall] -> LLM.ChatAnswer
+chatAnswer content calls =
+  case nonEmpty calls of
+    Nothing ->
+      LLM.ChatFinalAnswer content
+    Just toolCalls ->
+      LLM.ChatToolRequest{content, toolCalls}
 
 toolCall :: Text -> Text -> Aeson.Value -> LLM.ToolCall
 toolCall callId name arguments =

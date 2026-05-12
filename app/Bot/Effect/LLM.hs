@@ -256,7 +256,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
 
 askOpenAIWithTools :: (IOE :> es, Log :> es) => Config -> [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
 askOpenAIWithTools Config{apiKey = Nothing} _ _ =
-  pure (ChatAnswer "LLM is not configured: set llm.api_key." [])
+  pure (ChatFinalAnswer "LLM is not configured: set llm.api_key.")
 askOpenAIWithTools Config{endpoint, apiKey = Just key, model, reasoningEffort} functionTools messages = do
   let request = ChatCompletionRequest
         { model = model
@@ -296,7 +296,7 @@ askOpenAIStreaming Config{endpoint, apiKey = Just key, model, reasoningEffort} m
   logInfo "LLM streaming request" (llmRequestLogLine endpoint request)
   answer <- streamChatCompletion endpoint key request emit
   logInfo "LLM streaming response" (llmStreamResponseLogLine endpoint model answer)
-  pure answer.content
+  pure (chatAnswerContent answer)
 
 askOpenAIWithToolsStreaming
   :: (IOE :> es, Log :> es)
@@ -307,7 +307,7 @@ askOpenAIWithToolsStreaming
   -> Eff es ChatAnswer
 askOpenAIWithToolsStreaming Config{apiKey = Nothing} _ _ emit = do
   liftIO $ emit "LLM is not configured: set llm.api_key."
-  pure (ChatAnswer "LLM is not configured: set llm.api_key." [])
+  pure (ChatFinalAnswer "LLM is not configured: set llm.api_key.")
 askOpenAIWithToolsStreaming Config{endpoint, apiKey = Just key, model, reasoningEffort} functionTools messages emit = do
   let request = ChatCompletionRequest
         { model = model
@@ -453,8 +453,8 @@ llmStreamResponseLogLine endpoint model answer =
   Text.unwords
     [ "endpoint=" <> endpoint
     , "model=" <> model
-    , "content_chars=" <> show (Text.length answer.content)
-    , "tool_calls=" <> show (length answer.toolCalls)
+    , "content_chars=" <> show (Text.length (chatAnswerContent answer))
+    , "tool_calls=" <> show (length (chatAnswerToolCalls answer))
     ]
 
 streamChatCompletion
@@ -546,10 +546,9 @@ emptyPartialToolCall = PartialToolCall Nothing Nothing mempty
 
 streamStateAnswer :: StreamState -> ChatAnswer
 streamStateAnswer streamState =
-  ChatAnswer
-    { content = Text.strip (builderToStrictText streamState.contentAccumulator)
-    , toolCalls = mapMaybe completePartialToolCall (Map.elems streamState.toolAccumulator)
-    }
+  chatAnswer
+    (Text.strip (builderToStrictText streamState.contentAccumulator))
+    (mapMaybe completePartialToolCall (Map.elems streamState.toolAccumulator))
 
 completePartialToolCall :: PartialToolCall -> Maybe ToolCall
 completePartialToolCall PartialToolCall{partialId, partialName, partialArguments} = do
@@ -766,9 +765,10 @@ assistantText answer =
 
 -- | Convert a normalized answer back into transcript form.
 assistantAnswer :: ChatAnswer -> ChatMessage
-assistantAnswer ChatAnswer{content, toolCalls} =
-  ChatMessage "assistant" messageContent toolCalls Nothing
+assistantAnswer answer =
+  ChatMessage "assistant" messageContent (chatAnswerToolCalls answer) Nothing
   where
+    content = chatAnswerContent answer
     messageContent
       | Text.null content = Nothing
       | otherwise         = Just (TextContent content)
@@ -816,11 +816,44 @@ instance Aeson.FromJSON ChatMessageResponse where
       }
 
 -- | Assistant response after normalizing provider-specific response shapes.
-data ChatAnswer = ChatAnswer
-  { content   :: !Text
-  , toolCalls :: ![ToolCall]
-  }
-  deriving (Show, Generic, Aeson.ToJSON)
+data ChatAnswer
+  = ChatFinalAnswer
+      { content :: !Text
+      }
+  | ChatToolRequest
+      { content   :: !Text
+      , toolCalls :: !(NonEmpty ToolCall)
+      }
+  deriving (Show, Generic)
+
+instance Aeson.ToJSON ChatAnswer where
+  toJSON answer =
+    Aeson.object
+      [ "content" Aeson..= chatAnswerContent answer
+      , "toolCalls" Aeson..= chatAnswerToolCalls answer
+      ]
+
+chatAnswer :: Text -> [ToolCall] -> ChatAnswer
+chatAnswer content calls =
+  case nonEmpty calls of
+    Nothing ->
+      ChatFinalAnswer content
+    Just toolCalls ->
+      ChatToolRequest{content, toolCalls}
+
+chatAnswerContent :: ChatAnswer -> Text
+chatAnswerContent = \case
+  ChatFinalAnswer{content} ->
+    content
+  ChatToolRequest{content} ->
+    content
+
+chatAnswerToolCalls :: ChatAnswer -> [ToolCall]
+chatAnswerToolCalls = \case
+  ChatFinalAnswer{} ->
+    []
+  ChatToolRequest{toolCalls} ->
+    toList toolCalls
 
 -- | A single function call requested by the model.
 data ToolCall = ToolCall
@@ -874,12 +907,9 @@ chatCompletionAnswer :: ChatCompletionResponse -> ChatAnswer
 chatCompletionAnswer response =
   case viaNonEmpty head response.choices of
     Nothing ->
-      ChatAnswer "" []
+      ChatFinalAnswer ""
     Just choice ->
-      ChatAnswer
-        { content = fromMaybe "" (chatMessageText choice.message)
-        , toolCalls = choice.message.toolCalls
-        }
+      chatAnswer (fromMaybe "" (chatMessageText choice.message)) choice.message.toolCalls
 
 chatMessageText :: ChatMessageResponse -> Maybe Text
 chatMessageText message =

@@ -37,7 +37,7 @@ queryChatLogTool = Tool
       ]
       ["limit"]
   , allowed = everyone
-  , run = \context args ->
+  , start = \context -> pure \args ->
       withParsedToolArgs queryChatLogArgs args \(limit, includeBotMessages) -> do
         entries <- ChatLog.queryChat context.message (fromInteger (max 0 limit)) includeBotMessages
         pure (toolText (jsonText entries))
@@ -53,7 +53,7 @@ sendReplyTool = Tool
       ]
       []
   , allowed = everyone
-  , run = \context args ->
+  , start = \context -> pure \args ->
       withParsedToolArgs sendReplyArgs args \body -> do
         sent <- Chat.replyTo context.message body
         context.recordBotMessage sent body
@@ -71,7 +71,7 @@ mentionUserTool = Tool
       ]
       ["user_id", "text"]
   , allowed = everyone
-  , run = \context args ->
+  , start = \context -> pure \args ->
       withParsedToolArgs mentionUserArgs args \(userId, text) -> do
         sent <- Chat.mentionUser context.message userId text
         context.recordBotMessage sent text
@@ -85,7 +85,7 @@ senderMemberInfoTool = Tool
   , description = "Get platform-provided member information for the sender of the current message in the current group chat."
   , parameters = objectSchema [] []
   , allowed = everyone
-  , run = \context _ -> do
+  , start = \context -> pure \_ -> do
       info <- Chat.getSenderMemberInfo context.message
       pure (toolText (maybe "No member information is available for this message." jsonText info))
   }
@@ -99,9 +99,10 @@ memberInfoTool = Tool
       ]
       ["user_id"]
   , allowed = everyone
-  , run = \context -> withIntegerArg "user_id" \userId -> do
+  , start = \context -> pure \args -> withIntegerArg "user_id" (\userId -> do
       info <- Chat.getMemberInfo context.message userId
       pure (toolText (maybe "No member information is available for this user in the current chat." jsonText info))
+      ) args
   }
 
 listGroupMembersTool :: Chat.Chat :> es => Tool es
@@ -110,7 +111,7 @@ listGroupMembersTool = Tool
   , description = "List members in the current group chat, including platform user ids and nicknames when available. QQ groups are supported. Telegram Bot API does not expose full member lists, so Telegram may return unavailable."
   , parameters = objectSchema [] []
   , allowed = everyone
-  , run = \context _ -> do
+  , start = \context -> pure \_ -> do
       members <- Chat.listGroupMembers context.message
       pure (toolText (maybe "Group member listing is not available for this platform or chat." jsonText members))
   }
@@ -121,7 +122,7 @@ currentMentionsTool = Tool
   , description = "Return platform user ids mentioned in the current message, in message order. On QQ these are QQ numbers from at segments."
   , parameters = objectSchema [] []
   , allowed = everyone
-  , run = \context _ ->
+  , start = \context -> pure \_ ->
       pure (toolText (jsonText context.message.mentions))
   }
 

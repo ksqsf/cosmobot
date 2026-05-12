@@ -28,7 +28,7 @@ listDirectoryTool = Tool
       ]
       ["path"]
   , allowed = superuserOnly
-  , run = \_ -> withTextArg "path" \path -> do
+  , start = \_ -> pure \args -> withTextArg "path" (\path -> do
       target <- resolveSafePath path
       isDir <- liftIO (doesDirectoryExist target)
       if not isDir
@@ -36,6 +36,7 @@ listDirectoryTool = Tool
         else do
           entries <- liftIO (listDirectory target)
           pure (toolText (jsonText entries))
+      ) args
   }
 
 readFileTool :: IOE :> es => Tool es
@@ -47,12 +48,13 @@ readFileTool = Tool
       ]
       ["path"]
   , allowed = superuserOnly
-  , run = \_ -> withTextArg "path" \path -> do
+  , start = \_ -> pure \args -> withTextArg "path" (\path -> do
       target <- resolveSafePath path
       isFile <- liftIO (doesFileExist target)
       if not isFile
         then pure (toolText "Not a file.")
         else toolText <$> liftIO (Text.readFile target)
+      ) args
   }
 
 resolveSafePath :: IOE :> es => Text -> Eff es FilePath
