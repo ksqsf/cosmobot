@@ -261,7 +261,8 @@ askConversation toolCfg cfg conversations parentMessageId threadId message conve
         (Chat.streamReplyTo message fst (Agent.runAgentStreaming cfg.agentMaxTurns context Agent.defaultTools conversation))
         `catch` \(err :: SomeException) -> do
           case Exception.fromException err of
-            Just Exception.ThreadKilled ->
+            Just Exception.ThreadKilled -> do
+              traverse_ (\runId -> AgentTrace.recordEvent AgentTrace.AgentRunInterrupted{runId, reason = "halted"}) =<< liftIO (IORef.readIORef runIdRef)
               throwIO err
             _ -> do
               logAttention "LLM request failed" (show err :: String)

@@ -108,8 +108,9 @@ Todo 按 `platform + senderId` 隔离：
 Audit 命令仅限各平台 `superusers` 使用：
 
 - `!audit`：输出最近 50 条 agent tool use，按从旧到新的顺序排列。
-- 回复一条 agent conversation 消息并发送 `!audit`：输出该 conversation 对应的完整 agent trace。
-- 回复一条 agent conversation 消息并发送 `!audit all`：输出该 conversation tree 中所有消息关联的 agent trace。
+- 回复一条 agent conversation 消息并发送 `!audit`：按 tool call 输出该消息对应的 agent trace。
+- 回复一条 agent conversation 消息并发送 `!audit all`：按 tool call 输出该 conversation tree 中所有消息关联的 agent trace。
+- 回复一条 agent conversation 消息并发送 `!audit log`：输出原始 agent trace event log。
 - `!audit <id>`：输出某条 tool use 的详细信息，包括参数和结果。
 
 列表中的 `id` 是 cosmobot 的 audit id，用来查询详情；`request` 是 LLM tool-call request id，即模型返回的 tool call id。

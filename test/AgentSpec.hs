@@ -158,6 +158,7 @@ traceEventName = \case
   AgentTrace.ToolCallStarted{} -> "ToolCallStarted"
   AgentTrace.ToolCallFinished{} -> "ToolCallFinished"
   AgentTrace.AgentRunFinished{} -> "AgentRunFinished"
+  AgentTrace.AgentRunInterrupted{} -> "AgentRunInterrupted"
   AgentTrace.AgentConversationLinked{} -> "AgentConversationLinked"
 
 testChatAnswerJsonRemainsObjectCompatible :: IO ()
