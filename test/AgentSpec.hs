@@ -5,8 +5,9 @@ import Bot.Core.Conversation
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
-import qualified Bot.Memory as Memory
+import qualified Bot.Memory as MemoryStore
 import qualified Bot.Storage.SQLite as Storage
 import Bot.Core.Message
 import Bot.Prelude
@@ -28,6 +29,7 @@ type AgentStack =
   '[ Chat.Chat
    , ChatLog.ChatLog
    , LLM.LLM
+   , Memory.Memory
    , Scheduler.Scheduler
    , Log
    , IOE
@@ -278,8 +280,8 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
     , LLM.ChatAnswer "" [toolCall "call-3" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
     , LLM.ChatAnswer "done" []
     ]
-  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
-    Agent.runAgent 8 (agentContext{Agent.memoryConfig = Just (Memory.MemoryConfig dir)}) Agent.defaultTools (startWithUser "remember this")
+  (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing) do
+    Agent.runAgent 8 agentContext Agent.defaultTools (startWithUser "remember this")
   answer @?= "done"
   exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
   exists @?= False
@@ -292,8 +294,8 @@ testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
     , LLM.ChatAnswer "" [toolCall "call-3" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
     , LLM.ChatAnswer "done" []
     ]
-  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
-    Agent.runAgent 8 (agentContext{Agent.memoryConfig = Just (Memory.MemoryConfig dir)}) Agent.defaultTools (startWithUser "remember this chat")
+  (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing) do
+    Agent.runAgent 8 agentContext Agent.defaultTools (startWithUser "remember this chat")
   answer @?= "done"
   exists <- doesFileExist (dir </> "telegram" </> "chat" </> "100.md")
   exists @?= False
@@ -305,8 +307,8 @@ testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
     [ LLM.ChatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
     , LLM.ChatAnswer "rejected" []
     ]
-  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
-    Agent.runAgent 4 (agentContext{Agent.memoryConfig = Just (Memory.MemoryConfig dir)}) Agent.defaultTools (startWithUser "remember too much")
+  (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing) do
+    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "remember too much")
   answer @?= "rejected"
   exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
   exists @?= False
@@ -392,31 +394,41 @@ runAgentWith
   -> Eff AgentStack a
   -> IO a
 runAgentWith answers chatMock action =
+  runAgentWithMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") answers chatMock action
+
+runAgentWithMemory
+  :: MemoryStore.MemoryConfig
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithMemory memoryCfg answers chatMock action =
   runEff $
   runTestLog $
     Scheduler.runScheduler $
-      LLM.runLLMWith
-        (\_ -> pure "unused text answer")
-        (\_ emit -> liftIO (emit "unused text stream answer") $> "unused text stream answer")
-        (\_ -> pure "unused image answer")
-        (\_ _ -> liftIO (popAnswer answers))
-        (\_ _ emit -> do
-            answer <- liftIO (popAnswer answers)
-            liftIO (emit answer.content)
-            pure answer) $
-        ChatLog.runChatLog Nothing $
-          Chat.runChatWith
-            Chat.ChatHandlers
-              { handleReplyTo = mockReply chatMock
-              , handleEditMessage = noopEdit
-              , handleReplyStreamStyle = noopReplyStreamStyle
-              , handleGetMessageContent = noopFetch
-              , handleGetSenderMemberInfo = noopSenderMember
-              , handleGetMemberInfo = noopMember
-              , handleListGroupMembers = noopMembers
-              , handleMentionUser = noopMention
-              }
-            action
+      Memory.runMemory memoryCfg $
+        LLM.runLLMWith
+          (\_ -> pure "unused text answer")
+          (\_ emit -> liftIO (emit "unused text stream answer") $> "unused text stream answer")
+          (\_ -> pure "unused image answer")
+          (\_ _ -> liftIO (popAnswer answers))
+          (\_ _ emit -> do
+              answer <- liftIO (popAnswer answers)
+              liftIO (emit answer.content)
+              pure answer) $
+          ChatLog.runChatLog Nothing $
+            Chat.runChatWith
+              Chat.ChatHandlers
+                { handleReplyTo = mockReply chatMock
+                , handleEditMessage = noopEdit
+                , handleReplyStreamStyle = noopReplyStreamStyle
+                , handleGetMessageContent = noopFetch
+                , handleGetSenderMemberInfo = noopSenderMember
+                , handleGetMemberInfo = noopMember
+                , handleListGroupMembers = noopMembers
+                , handleMentionUser = noopMention
+                }
+              action
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
 runTestLog action = do
@@ -446,7 +458,6 @@ agentContext =
     , superuser = False
     , askCommand = "!ask"
     , toolConfig = Agent.defaultToolConfig
-    , memoryConfig = Nothing
     , remember = \_ _ -> pure ()
     , recordBotMessage = \_ _ -> pure ()
     }

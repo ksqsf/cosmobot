@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Core.Message
   ( -- * Chat identity
     ChatPlatform (..)
+  , chatPlatformKey
   , ChatKind (..)
   , MessageDigest (..)
   , emptyMessageDigest
@@ -33,6 +34,15 @@ data ChatPlatform
   | PlatformMatrix
   -- ^ Matrix Client-Server API.
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+chatPlatformKey :: ChatPlatform -> Text
+chatPlatformKey = \case
+  PlatformQQ ->
+    "qq"
+  PlatformTelegram ->
+    "telegram"
+  PlatformMatrix ->
+    "matrix"
 
 -- | Coarse chat shape shared across platforms.
 data ChatKind

@@ -132,6 +132,7 @@ common bot-agent-modules
         Bot.Core.Conversation
         Bot.Effect.ChatLog
         Bot.Effect.LLM
+        Bot.Effect.Memory
         Bot.Effect.Scheduler
         Bot.Memory
         Bot.Storage.SQLite

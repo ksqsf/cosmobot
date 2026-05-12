@@ -21,11 +21,12 @@ import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Prelude
 
 -- | Built-in tools exposed to the model after per-message permission checks.
-defaultTools :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, IOE :> es) => [Tool es]
+defaultTools :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, IOE :> es) => [Tool es]
 defaultTools =
   [ listDirectoryTool
   , readFileTool

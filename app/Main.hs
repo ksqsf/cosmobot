@@ -10,6 +10,7 @@ import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Core.Route
 import Bot.Handler.Ask
@@ -36,6 +37,7 @@ main = do
   runEff $
     runBotLog cfg.logLevel .
     ChatLog.runChatLog maybeSQLiteStore .
+    Memory.runMemory cfg.memory .
     Scheduler.runScheduler $
       LLM.runLLM cfg.llm $
         ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix \chatMessageStreams -> do
@@ -47,7 +49,7 @@ main = do
             (recordedIncomingMessages (mergeIncomingMessages messageStreams))
 
 routes
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => BotConfig
   -> SQLiteStorage.SQLiteStore
   -> ConversationStore
@@ -56,7 +58,7 @@ routes cfg sqliteStore conversations =
   scratchpadHandlers sqliteStore
     <> typingHandlers
     <> saucenaoHandlers cfg.saucenao
-    <> askHandlers cfg.memory cfg.tool cfg.handlers.ask conversations
+    <> askHandlers cfg.tool cfg.handlers.ask conversations
 
 recordedIncomingMessages
   :: ChatLog.ChatLog :> es

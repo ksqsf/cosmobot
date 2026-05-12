@@ -17,7 +17,6 @@ module Bot.Agent.Types
 where
 
 import Bot.Core.Conversation
-import qualified Bot.Memory as Memory
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -69,7 +68,6 @@ data AgentContext es = AgentContext
   , superuser :: !Bool
   , askCommand :: !Text
   , toolConfig :: !ToolConfig
-  , memoryConfig :: !(Maybe Memory.MemoryConfig)
   , remember :: Maybe Integer -> Conversation -> Eff es ()
   , recordBotMessage :: Maybe Integer -> Text -> Eff es ()
   }
