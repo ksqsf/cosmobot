@@ -11,6 +11,7 @@ module Bot.Effect.ChatLog
   , ChatLogEntry (..)
   , recordMessage
   , recordBotMessage
+  , recordIncomingMessages
   , queryChat
   , runChatLog
   )
@@ -26,6 +27,7 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Streaming.Prelude as S
 
 -- | Append-only chat log used by agent tools for local context.
 data ChatLog :: Effect where
@@ -66,6 +68,16 @@ data ChatLogEntry = ChatLogEntry
 recordMessage :: ChatLog :> es => IncomingMessage -> Eff es ()
 recordMessage message =
   send (RecordMessage message)
+
+-- | Record every incoming message passing through a stream.
+recordIncomingMessages
+  :: ChatLog :> es
+  => Stream (Of IncomingMessage) (Eff es) ()
+  -> Stream (Of IncomingMessage) (Eff es) ()
+recordIncomingMessages =
+  S.mapM \message -> do
+    recordMessage message
+    pure message
 
 -- | Record a bot reply in the same chat as its triggering message.
 recordBotMessage :: ChatLog :> es => IncomingMessage -> Maybe Integer -> Text -> Eff es ()

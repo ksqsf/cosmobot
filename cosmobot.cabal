@@ -170,6 +170,7 @@ executable cosmobot
         Bot.Handler.Typing
         Bot.Memory.Config
         Bot.Handler.Saucenao
+        Bot.Util.Stream
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -232,6 +233,19 @@ test-suite scheduler-spec
     main-is:          SchedulerSpec.hs
     other-modules:
         Bot.Effect.Scheduler
+    hs-source-dirs:   test
+
+test-suite stream-spec
+    import:           warnings
+                    , threaded
+                    , language
+                    , app-deps
+                    , test-deps
+                    , bot-core-modules
+    type:             exitcode-stdio-1.0
+    main-is:          StreamSpec.hs
+    other-modules:
+        Bot.Util.Stream
     hs-source-dirs:   test
 
 test-suite agent-spec
