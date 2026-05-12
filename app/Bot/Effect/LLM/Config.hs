@@ -10,7 +10,7 @@ module Bot.Effect.LLM.Config
   )
 where
 
-import Bot.Config.Toml
+import Bot.Util.Toml
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import Toml.Schema

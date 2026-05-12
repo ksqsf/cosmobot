@@ -11,7 +11,7 @@ module Bot.Chat.Driver.Matrix.Config
   )
 where
 
-import Bot.Config.Toml
+import Bot.Util.Toml
 import qualified Bot.Chat.Driver.Matrix as Matrix
 import Bot.Prelude
 import Toml.Schema

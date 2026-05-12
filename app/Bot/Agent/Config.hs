@@ -14,7 +14,7 @@ module Bot.Agent.Config
 where
 
 import qualified Bot.Agent.Types as Agent
-import Bot.Config.Toml
+import Bot.Util.Toml
 import Bot.Prelude
 import qualified Data.Text as Text
 import Toml.Schema

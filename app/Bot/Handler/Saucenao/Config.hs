@@ -10,7 +10,7 @@ module Bot.Handler.Saucenao.Config
   )
 where
 
-import Bot.Config.Toml
+import Bot.Util.Toml
 import Bot.Prelude
 import Toml.Schema
 

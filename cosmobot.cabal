@@ -161,7 +161,6 @@ executable cosmobot
         Bot.Chat.Driver.QQ.Config
         Bot.Chat.Driver.Telegram.Config
         Bot.Config
-        Bot.Config.Toml
         Bot.Core.Route
         Bot.Effect.LLM.Config
         Bot.Handler.Ask
@@ -172,6 +171,7 @@ executable cosmobot
         Bot.Memory.Config
         Bot.Handler.Saucenao
         Bot.Util.Stream
+        Bot.Util.Toml
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:

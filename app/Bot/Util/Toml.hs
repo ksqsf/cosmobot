@@ -1,10 +1,10 @@
 {-|
-Module      : Bot.Config.Toml
+Module      : Bot.Util.Toml
 Description : Shared TOML parsing helpers
 Stability   : experimental
 -}
 
-module Bot.Config.Toml
+module Bot.Util.Toml
   ( optToken
   , normalizeToken
   )
