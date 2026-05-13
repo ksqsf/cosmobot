@@ -173,6 +173,7 @@ runAgentAudit
   -> Eff (AgentAudit : es) a
   -> Eff es a
 runAgentAudit sqliteStore inner = do
+  processStartedAt <- liftIO getCurrentTime
   memoryRef <- case sqliteStore of
     Nothing ->
       Just <$> liftIO (IORef.newIORef [] :: IO (IORef.IORef [AgentAuditRecord]))
@@ -184,17 +185,19 @@ runAgentAudit sqliteStore inner = do
         occurredAt <- liftIO getCurrentTime
         traverse_ (appendMemoryEvent occurredAt event) memoryRef
         persistEvent sqliteStore occurredAt event
-      QueryRecentToolUses limit ->
-        toolUsesFromRecords limit <$> loadAuditRecords sqliteStore memoryRef
-      QueryToolUse auditId ->
-        find ((== auditId) . (.auditId)) . toolUsesFromRecords maxInMemoryAgentAuditEvents <$> loadAuditRecords sqliteStore memoryRef
+      QueryRecentToolUses limit -> do
+        records <- loadAuditRecords sqliteStore memoryRef
+        pure (toolUsesFromRecords limit (markStaleRunningToolUses processStartedAt records))
+      QueryToolUse auditId -> do
+        records <- loadAuditRecords sqliteStore memoryRef
+        pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords maxInMemoryAgentAuditEvents (markStaleRunningToolUses processStartedAt records)))
       QueryConversationAudit messageId ->
         case sqliteStore of
-          Just store -> liftIO (queryStoredConversationAudit store messageId)
+          Just store -> markStaleRunningToolUses processStartedAt <$> liftIO (queryStoredConversationAudit store messageId)
           Nothing -> conversationAudit messageId <$> loadAuditRecords sqliteStore memoryRef
       QueryConversationMessagesAudit messageIds ->
         case sqliteStore of
-          Just store -> liftIO (queryStoredConversationMessagesAudit store messageIds)
+          Just store -> markStaleRunningToolUses processStartedAt <$> liftIO (queryStoredConversationMessagesAudit store messageIds)
           Nothing -> conversationMessagesAudit messageIds <$> loadAuditRecords sqliteStore memoryRef
     )
     inner
@@ -224,6 +227,25 @@ persistEvent (Just store) occurredAt event =
           (Just eventLinkedMessageId, eventParentMessageId)
         _ ->
           (Nothing, Nothing)
+
+markStaleRunningToolUses :: UTCTime -> [AgentAuditRecord] -> [AgentAuditRecord]
+markStaleRunningToolUses processStartedAt records =
+  let restartedRunIds =
+        ordNub
+          [ toolUse.runId
+          | toolUse <- toolUsesFromAuditRecords records
+          , toolUse.status == ToolUseInProgress
+          , toolUse.occurredAt < processStartedAt
+          ]
+      restartedRecords =
+        [ AgentAuditRecord
+            { id = Nothing
+            , occurredAt = processStartedAt
+            , event = AgentRunInterrupted{runId, reason = "restarted"}
+            }
+        | runId <- restartedRunIds
+        ]
+  in records <> restartedRecords
 
 loadAuditRecords :: IOE :> es => Maybe Storage.SQLiteStore -> Maybe (IORef.IORef [AgentAuditRecord]) -> Eff es [AgentAuditRecord]
 loadAuditRecords sqliteStore memoryRef =
