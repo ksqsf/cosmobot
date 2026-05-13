@@ -87,7 +87,7 @@ data IncomingMessage = IncomingMessage
   , text      :: !Text
   , raw       :: !Aeson.Value
   }
-  deriving (Show, Generic, Aeson.ToJSON)
+  deriving (Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 -- | Compact one-line representation for info-level logs.
 incomingMessageLogLine :: IncomingMessage -> Text

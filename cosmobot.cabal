@@ -148,6 +148,7 @@ common bot-agent-modules
         Bot.Memory
         Bot.Storage.Prelude
         Bot.Storage.Conversation
+        Bot.Storage.Scheduler
         Bot.Util.Html
         Bot.Util.HTTP
         Bot.Util.Image
@@ -248,6 +249,9 @@ test-suite scheduler-spec
     main-is:          SchedulerSpec.hs
     other-modules:
         Bot.Effect.Scheduler
+        Bot.Effect.Storage
+        Bot.Storage.Prelude
+        Bot.Storage.Scheduler
     hs-source-dirs:   test
 
 test-suite stream-spec
@@ -307,6 +311,7 @@ benchmark message-pipeline-bench
         Bot.Effect.Scheduler
         Bot.Effect.Storage
         Bot.Storage.Prelude
+        Bot.Storage.Scheduler
         Bot.Util.Stream
     build-depends:    deepseq
                     , tasty-bench

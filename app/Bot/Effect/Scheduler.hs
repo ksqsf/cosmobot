@@ -17,7 +17,9 @@ module Bot.Effect.Scheduler
 where
 
 import Bot.Core.Message
+import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
+import qualified Bot.Storage.Scheduler as SchedulerStorage
 import Control.Concurrent (forkIO, killThread)
 import qualified Control.Concurrent.STM as STM
 import qualified Control.Concurrent.STM.TBQueue as TBQueue
@@ -25,7 +27,7 @@ import qualified Control.Concurrent.MVar as MVar
 import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import GHC.Clock (getMonotonicTimeNSec)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 import qualified System.Timeout as Timeout
@@ -39,7 +41,7 @@ data ScheduledMessage = ScheduledMessage
 
 data PendingMessage = PendingMessage
   { scheduleId :: !Integer
-  , dueAtNanoseconds :: !Word64
+  , dueAtUnixSeconds :: !Integer
   , message :: !IncomingMessage
   }
 
@@ -51,7 +53,7 @@ data SchedulerState = SchedulerState
   deriving (Generic)
 
 data PendingDue = PendingDue
-  { dueAtNanoseconds :: !Word64
+  { dueAtUnixSeconds :: !Integer
   , scheduleId :: !Integer
   }
   deriving (Eq, Ord)
@@ -101,46 +103,69 @@ deleteScheduledMessage message schedId = send (DeleteScheduledMessage message sc
 
 -- | Interpret scheduled messages with an in-memory delay queue.
 runScheduler
-  :: IOE :> es
+  :: (IOE :> es, Storage.Storage :> es)
   => Eff (Scheduler : es) a
   -> Eff es a
 runScheduler inner = do
-  queue <- liftIO (TBQueue.newTBQueueIO scheduledMessageQueueCapacity :: IO (TBQueue.TBQueue IncomingMessage))
-  schedulerStateVar <- liftIO (MVar.newMVar (SchedulerState 1 Map.empty Set.empty))
+  storedMessages <- SchedulerStorage.loadScheduledMessages
+  nextScheduleId <- SchedulerStorage.loadNextScheduleId
+  queue <- liftIO (TBQueue.newTBQueueIO scheduledMessageQueueCapacity :: IO (TBQueue.TBQueue PendingMessage))
+  schedulerStateVar <- liftIO (MVar.newMVar (schedulerStateFromStoredMessages nextScheduleId storedMessages))
   schedulerWake <- liftIO MVar.newEmptyMVar
   worker <- liftIO $ forkIO (schedulerWorker schedulerStateVar schedulerWake queue)
   interpret
     (\_ -> \case
       ScheduleMessage delaySeconds message -> do
-        void $ liftIO $ registerPendingMessage schedulerStateVar delaySeconds message
+        scheduled <- liftIO $ registerPendingMessage schedulerStateVar delaySeconds message
+        SchedulerStorage.saveScheduledMessage (storedScheduledMessage scheduled)
         liftIO (signalSchedulerWake schedulerWake)
         pure True
       DeleteScheduledMessage message scheduleId -> do
         deleted <- liftIO $ deletePendingMessage schedulerStateVar message scheduleId
         when deleted do
+          SchedulerStorage.deleteScheduledMessage scheduleId
           liftIO (signalSchedulerWake schedulerWake)
         pure deleted
       ListScheduledMessages message -> do
-        now <- liftIO getMonotonicTimeNSec
+        now <- liftIO currentUnixSeconds
         pending <- liftIO $ MVar.withMVar schedulerStateVar (pure . Map.elems . (.pendingById))
         pure
           [ scheduledMessage now pendingMessage
           | pendingMessage <- pending
           , sameMessageOwner message pendingMessage.message
           ]
-      ReceiveScheduledMessage ->
-        liftIO (STM.atomically (TBQueue.readTBQueue queue)))
+      ReceiveScheduledMessage -> do
+        pending <- liftIO (STM.atomically (TBQueue.readTBQueue queue))
+        SchedulerStorage.deleteScheduledMessage pending.scheduleId
+        pure pending.message)
     inner
     `finally` liftIO (killThread worker)
+
+schedulerStateFromStoredMessages :: Integer -> [SchedulerStorage.StoredScheduledMessage] -> SchedulerState
+schedulerStateFromStoredMessages nextScheduleId storedMessages =
+  SchedulerState
+    { nextScheduleId
+    , pendingById = Map.fromList [(pending.scheduleId, pending) | pending <- pendingMessages]
+    , pendingByDue = Set.fromList [PendingDue{dueAtUnixSeconds = pending.dueAtUnixSeconds, scheduleId = pending.scheduleId} | pending <- pendingMessages]
+    }
+  where
+    pendingMessages =
+      [ PendingMessage
+          { scheduleId = stored.scheduleId
+          , dueAtUnixSeconds = stored.dueAtUnixSeconds
+          , message = stored.message
+          }
+      | stored <- storedMessages
+      ]
 
 schedulerWorker
   :: MVar.MVar SchedulerState
   -> MVar.MVar ()
-  -> TBQueue.TBQueue IncomingMessage
+  -> TBQueue.TBQueue PendingMessage
   -> IO ()
 schedulerWorker schedulerStateVar schedulerWake queue =
   forever do
-    now <- getMonotonicTimeNSec
+    now <- currentUnixSeconds
     dueMessages <- popDueMessages schedulerStateVar now
     traverse_ (STM.atomically . TBQueue.writeTBQueue queue) dueMessages
     nextDue <- nextDueAt schedulerStateVar
@@ -151,13 +176,13 @@ schedulerWorker schedulerStateVar schedulerWake queue =
         void $ Timeout.timeout (waitMicrosecondsUntil now dueAt) (MVar.takeMVar schedulerWake)
     drainSchedulerWake schedulerWake
 
-popDueMessages :: MVar.MVar SchedulerState -> Word64 -> IO [IncomingMessage]
+popDueMessages :: MVar.MVar SchedulerState -> Integer -> IO [PendingMessage]
 popDueMessages schedulerStateVar now =
   MVar.modifyMVar schedulerStateVar \schedulerState -> do
     let (nextState, dueMessages) = popDueMessagesFromState now schedulerState
     pure (nextState, dueMessages)
 
-popDueMessagesFromState :: Word64 -> SchedulerState -> (SchedulerState, [IncomingMessage])
+popDueMessagesFromState :: Integer -> SchedulerState -> (SchedulerState, [PendingMessage])
 popDueMessagesFromState now schedulerState =
   go schedulerState []
   where
@@ -166,30 +191,30 @@ popDueMessagesFromState now schedulerState =
         Nothing ->
           (current, reverse acc)
         Just (due, rest)
-          | due.dueAtNanoseconds > now ->
+          | due.dueAtUnixSeconds > now ->
               (current, reverse acc)
           | otherwise ->
-              let (message, nextById) =
+              let (pendingMessage, nextById) =
                     case Map.lookup due.scheduleId current.pendingById of
                       Nothing ->
                         (Nothing, current.pendingById)
                       Just pending ->
-                        (Just pending.message, Map.delete due.scheduleId current.pendingById)
+                        (Just pending, Map.delete due.scheduleId current.pendingById)
                   nextState = current{pendingById = nextById, pendingByDue = rest}
-              in go nextState (maybe acc (: acc) message)
+              in go nextState (maybe acc (: acc) pendingMessage)
 
-nextDueAt :: MVar.MVar SchedulerState -> IO (Maybe Word64)
+nextDueAt :: MVar.MVar SchedulerState -> IO (Maybe Integer)
 nextDueAt schedulerStateVar =
   MVar.withMVar schedulerStateVar \schedulerState ->
-    pure ((.dueAtNanoseconds) <$> Set.lookupMin schedulerState.pendingByDue)
+    pure ((.dueAtUnixSeconds) <$> Set.lookupMin schedulerState.pendingByDue)
 
-waitMicrosecondsUntil :: Word64 -> Word64 -> Int
+waitMicrosecondsUntil :: Integer -> Integer -> Int
 waitMicrosecondsUntil now dueAt
   | dueAt <= now = 0
   | otherwise =
-      fromIntegral (min maxWaitMicroseconds ((dueAt - now + 999) `div` 1000))
+      fromIntegral (min maxWaitMicroseconds ((dueAt - now) * 1000000))
   where
-    maxWaitMicroseconds = fromIntegral (maxBound :: Int)
+    maxWaitMicroseconds = toInteger (maxBound :: Int)
 
 signalSchedulerWake :: MVar.MVar () -> IO ()
 signalSchedulerWake schedulerWake =
@@ -200,20 +225,19 @@ drainSchedulerWake schedulerWake = do
   value <- MVar.tryTakeMVar schedulerWake
   when (isJust value) (drainSchedulerWake schedulerWake)
 
-registerPendingMessage :: MVar.MVar SchedulerState -> Int -> IncomingMessage -> IO Integer
+registerPendingMessage :: MVar.MVar SchedulerState -> Int -> IncomingMessage -> IO PendingMessage
 registerPendingMessage schedulerStateVar delaySeconds message = do
-  now <- getMonotonicTimeNSec
+  now <- currentUnixSeconds
   MVar.modifyMVar schedulerStateVar \schedulerState -> do
     let scheduleId = schedulerState.nextScheduleId
-        delayNanoseconds = fromIntegral (max 0 delaySeconds) * nanosecondsPerSecond
-        dueAt = now + delayNanoseconds
+        dueAt = now + fromIntegral (max 0 delaySeconds)
         pendingMessage = PendingMessage
           { scheduleId = scheduleId
-          , dueAtNanoseconds = dueAt
+          , dueAtUnixSeconds = dueAt
           , message = message
           }
         due = PendingDue
-          { dueAtNanoseconds = dueAt
+          { dueAtUnixSeconds = dueAt
           , scheduleId = scheduleId
           }
         nextState = schedulerState
@@ -221,7 +245,7 @@ registerPendingMessage schedulerStateVar delaySeconds message = do
           , pendingById = Map.insert scheduleId pendingMessage schedulerState.pendingById
           , pendingByDue = Set.insert due schedulerState.pendingByDue
           }
-    pure (nextState, scheduleId)
+    pure (nextState, pendingMessage)
 
 deletePendingMessage :: MVar.MVar SchedulerState -> IncomingMessage -> Integer -> IO Bool
 deletePendingMessage schedulerStateVar message scheduleId =
@@ -232,7 +256,7 @@ deletePendingMessage schedulerStateVar message scheduleId =
       Just schedule
         | sameMessageOwner message schedule.message ->
             let due = PendingDue
-                  { dueAtNanoseconds = schedule.dueAtNanoseconds
+                  { dueAtUnixSeconds = schedule.dueAtUnixSeconds
                   , scheduleId = scheduleId
                   }
                 nextState = schedulerState
@@ -243,19 +267,27 @@ deletePendingMessage schedulerStateVar message scheduleId =
         | otherwise ->
             pure (schedulerState, False)
 
-scheduledMessage :: Word64 -> PendingMessage -> ScheduledMessage
+scheduledMessage :: Integer -> PendingMessage -> ScheduledMessage
 scheduledMessage now pending =
   ScheduledMessage
     { scheduleId = pending.scheduleId
-    , remainingSeconds = remainingSecondsUntil now pending.dueAtNanoseconds
+    , remainingSeconds = remainingSecondsUntil now pending.dueAtUnixSeconds
     , message = pending.message
     }
 
-remainingSecondsUntil :: Word64 -> Word64 -> Int
+storedScheduledMessage :: PendingMessage -> SchedulerStorage.StoredScheduledMessage
+storedScheduledMessage pending =
+  SchedulerStorage.StoredScheduledMessage
+    { scheduleId = pending.scheduleId
+    , dueAtUnixSeconds = pending.dueAtUnixSeconds
+    , message = pending.message
+    }
+
+remainingSecondsUntil :: Integer -> Integer -> Int
 remainingSecondsUntil now dueAt
   | dueAt <= now = 0
   | otherwise =
-      fromIntegral ((dueAt - now + nanosecondsPerSecond - 1) `div` nanosecondsPerSecond)
+      fromIntegral (dueAt - now)
 
 sameMessageOwner :: IncomingMessage -> IncomingMessage -> Bool
 sameMessageOwner left right =
@@ -274,9 +306,9 @@ sameSender left right =
     _ ->
       False
 
-nanosecondsPerSecond :: Word64
-nanosecondsPerSecond =
-  1000000000
+currentUnixSeconds :: IO Integer
+currentUnixSeconds =
+  floor <$> getPOSIXTime
 
 scheduledMessageQueueCapacity :: Natural
 scheduledMessageQueueCapacity =

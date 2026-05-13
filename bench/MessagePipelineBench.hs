@@ -193,13 +193,14 @@ mergeOnly messages = do
 schedulerDueMessages :: [IncomingMessage] -> IO Int
 schedulerDueMessages messages =
   runEff $
-    Scheduler.runScheduler do
-      traverse_ (Scheduler.scheduleMessage 0) messages
-      ref <- liftIO (IORef.newIORef 0)
-      S.mapM_
-        (\_ -> liftIO $ IORef.modifyIORef' ref (+ 1))
-        (S.take (length messages) Scheduler.scheduledMessages)
-      liftIO (IORef.readIORef ref)
+    StorageEffect.runStorageSQLitePath ":memory:" $
+      Scheduler.runScheduler do
+        traverse_ (Scheduler.scheduleMessage 0) messages
+        ref <- liftIO (IORef.newIORef 0)
+        S.mapM_
+          (\_ -> liftIO $ IORef.modifyIORef' ref (+ 1))
+          (S.take (length messages) Scheduler.scheduledMessages)
+        liftIO (IORef.readIORef ref)
 
 lastMessage :: [IncomingMessage] -> IncomingMessage
 lastMessage [] =

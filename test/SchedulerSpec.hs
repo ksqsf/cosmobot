@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Effect.Storage as StorageEffect
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -20,10 +21,12 @@ main =
       , testCase "elapsed schedule leaves pending list" testElapsedScheduleLeavesPendingList
       , testCase "same due time yields messages in schedule id order" testSameDueTimeYieldsInScheduleIdOrder
       , testCase "deleted elapsed schedule is not delivered" testDeletedElapsedScheduleIsNotDelivered
+      , testCase "pending schedules persist across scheduler restart" testPendingSchedulesPersistAcrossSchedulerRestart
+      , testCase "elapsed schedules persist across scheduler restart" testElapsedSchedulesPersistAcrossSchedulerRestart
       ]
 
 testScheduledMessagesAreScopedByCurrentUser :: IO ()
-testScheduledMessagesAreScopedByCurrentUser = runEff $ Scheduler.runScheduler do
+testScheduledMessagesAreScopedByCurrentUser = runSchedulerTest do
   _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask remind me")
   ownSchedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
   otherSchedules <- Scheduler.listScheduledMessages (messageFrom 201 "what schedules?")
@@ -33,13 +36,13 @@ testScheduledMessagesAreScopedByCurrentUser = runEff $ Scheduler.runScheduler do
   liftIO $ assertBool "remaining seconds do not exceed delay" (all ((<= 60) . (.remainingSeconds)) ownSchedules)
 
 testScheduledMessagesAreScopedByCurrentChat :: IO ()
-testScheduledMessagesAreScopedByCurrentChat = runEff $ Scheduler.runScheduler do
+testScheduledMessagesAreScopedByCurrentChat = runSchedulerTest do
   _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask private")
   schedules <- Scheduler.listScheduledMessages (messageFromChat 200 101 "what schedules?")
   liftIO $ length schedules @?= 0
 
 testUsernameScopedSchedule :: IO ()
-testUsernameScopedSchedule = runEff $ Scheduler.runScheduler do
+testUsernameScopedSchedule = runSchedulerTest do
   _ <- Scheduler.scheduleMessage 60 (messageFromUsername "alice" "!ask by username")
   ownSchedules <- Scheduler.listScheduledMessages (messageFromUsername "alice" "what schedules?")
   otherSchedules <- Scheduler.listScheduledMessages (messageFromUsername "bob" "what schedules?")
@@ -47,28 +50,28 @@ testUsernameScopedSchedule = runEff $ Scheduler.runScheduler do
   liftIO $ length otherSchedules @?= 0
 
 testScheduleIdsIncrease :: IO ()
-testScheduleIdsIncrease = runEff $ Scheduler.runScheduler do
+testScheduleIdsIncrease = runSchedulerTest do
   _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask first")
   _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask second")
   schedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
   liftIO $ map (.scheduleId) schedules @?= [1, 2]
 
 testScheduledStreamYieldsOriginalMessage :: IO ()
-testScheduledStreamYieldsOriginalMessage = runEff $ Scheduler.runScheduler do
+testScheduledStreamYieldsOriginalMessage = runSchedulerTest do
   let scheduled = messageFrom 200 "!ask now"
   _ <- Scheduler.scheduleMessage 0 scheduled
   delivered <- S.head_ Scheduler.scheduledMessages
   liftIO $ ((.text) <$> delivered) @?= Just scheduled.text
 
 testElapsedScheduleLeavesPendingList :: IO ()
-testElapsedScheduleLeavesPendingList = runEff $ Scheduler.runScheduler do
+testElapsedScheduleLeavesPendingList = runSchedulerTest do
   _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask now")
   _ <- S.head_ Scheduler.scheduledMessages
   schedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
   liftIO $ length schedules @?= 0
 
 testSameDueTimeYieldsInScheduleIdOrder :: IO ()
-testSameDueTimeYieldsInScheduleIdOrder = runEff $ Scheduler.runScheduler do
+testSameDueTimeYieldsInScheduleIdOrder = runSchedulerTest do
   _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask first")
   _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask second")
   _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask third")
@@ -78,7 +81,7 @@ testSameDueTimeYieldsInScheduleIdOrder = runEff $ Scheduler.runScheduler do
   liftIO $ map (fmap (.text)) [firstMessage, secondMessage, thirdMessage] @?= map Just ["!ask first", "!ask second", "!ask third"]
 
 testDeletedElapsedScheduleIsNotDelivered :: IO ()
-testDeletedElapsedScheduleIsNotDelivered = runEff $ Scheduler.runScheduler do
+testDeletedElapsedScheduleIsNotDelivered = runSchedulerTest do
   _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask deleted")
   _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask delivered")
   deleted <- Scheduler.deleteScheduledMessage (messageFrom 200 "delete") 1
@@ -88,6 +91,35 @@ testDeletedElapsedScheduleIsNotDelivered = runEff $ Scheduler.runScheduler do
     deleted @?= True
     ((.text) <$> delivered) @?= Just "!ask delivered"
     map (.scheduleId) schedules @?= []
+
+testPendingSchedulesPersistAcrossSchedulerRestart :: IO ()
+testPendingSchedulesPersistAcrossSchedulerRestart = runEff $ StorageEffect.runStorageSQLitePath ":memory:" do
+  Scheduler.runScheduler do
+    _ <- Scheduler.scheduleMessage 60 (messageFrom 200 "!ask persisted")
+    pure ()
+  Scheduler.runScheduler do
+    schedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
+    liftIO do
+      map (.scheduleId) schedules @?= [1]
+      map ((.text) . (.message)) schedules @?= ["!ask persisted"]
+
+testElapsedSchedulesPersistAcrossSchedulerRestart :: IO ()
+testElapsedSchedulesPersistAcrossSchedulerRestart = runEff $ StorageEffect.runStorageSQLitePath ":memory:" do
+  Scheduler.runScheduler do
+    _ <- Scheduler.scheduleMessage 0 (messageFrom 200 "!ask after restart")
+    pure ()
+  Scheduler.runScheduler do
+    delivered <- S.head_ Scheduler.scheduledMessages
+    schedules <- Scheduler.listScheduledMessages (messageFrom 200 "what schedules?")
+    liftIO do
+      ((.text) <$> delivered) @?= Just "!ask after restart"
+      length schedules @?= 0
+
+runSchedulerTest
+  :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, IOE] a
+  -> IO a
+runSchedulerTest action =
+  runEff $ StorageEffect.runStorageSQLitePath ":memory:" $ Scheduler.runScheduler action
 
 messageFrom :: Integer -> Text -> IncomingMessage
 messageFrom senderId text =
