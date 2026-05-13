@@ -242,58 +242,100 @@ askConversation
   -> Eff es (Text, Conversation)
 askConversation toolCfg cfg conversations parentMessageId threadId message conversation = do
   activeReply <- newActiveReply conversations parentMessageId threadId conversation
-  let cleanupActiveReply =
-        liftIO (IORef.readIORef activeReply.activeRef)
-          >>= traverse_ (finishActiveConversationCurrent conversations)
-      context =
-        Agent.AgentContext
-          { message = message
-          , superuser = isSuperuser message
-          , askCommand = cfg.command
-          , toolConfig = toolCfg
-          , remember = rememberConversationFrom conversations parentMessageId
-          , recordBotMessage = ChatLog.recordBotMessage message
-          }
-      observer = AgentTrace.agentTraceObserver
-  agentRun <- Agent.startAgentRun context Agent.defaultTools
-  (responseId, agentResult) <-
-    ( S.mapM_
+  let observer = AgentTrace.agentTraceObserver
+  agentRun <- Agent.startAgentRun (agentContext toolCfg cfg conversations parentMessageId message) Agent.defaultTools
+  reply <-
+    streamAgentReply cfg observer agentRun activeReply message conversation
+      `onException` discardActiveReply activeReply
+  commitAgentReply observer activeReply message reply
+    `onException` discardActiveReply activeReply
+
+data AgentReply = AgentReply
+  { responseId :: !(Maybe Integer)
+  , result :: !Agent.AgentResult
+  }
+
+agentContext
+  :: (ChatLog.ChatLog :> es, Log :> es, IOE :> es)
+  => Agent.ToolConfig
+  -> AskHandlerConfig
+  -> ConversationStore
+  -> Maybe Integer
+  -> IncomingMessage
+  -> Agent.AgentContext es
+agentContext toolCfg cfg conversations parentMessageId message =
+  Agent.AgentContext
+    { message = message
+    , superuser = isSuperuser message
+    , askCommand = cfg.command
+    , toolConfig = toolCfg
+    , remember = rememberConversationFrom conversations parentMessageId
+    , recordBotMessage = ChatLog.recordBotMessage message
+    }
+
+streamAgentReply
+  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  => AskHandlerConfig
+  -> Agent.AgentObserver es
+  -> Agent.AgentRun es
+  -> ActiveReplyState
+  -> IncomingMessage
+  -> Conversation
+  -> Eff es AgentReply
+streamAgentReply cfg observer agentRun activeReply message conversation =
+  do
+    (responseId, result) <-
+      S.mapM_
         (recordReplyUpdate activeReply)
         (Chat.streamReplyTo message (.answer) (Agent.runPreparedAgentStreaming observer cfg.agentMaxTurns agentRun conversation))
-        `catch` \(err :: SomeException) -> do
-          case Exception.fromException err of
-            Just Exception.ThreadKilled -> do
-              throwIO err
-            _ -> do
-              logAttention "LLM request failed" (show err :: String)
-              let failureMessage = llmFailureMessage err
-              responseId <- Chat.replyTo message failureMessage
-              pure (responseId, (Agent.AgentResult{runId = Agent.agentRunId agentRun, answer = failureMessage, conversation = conversation}))
-    ) `onException` cleanupActiveReply
-  ( do
-      traverse_ (observeAgentConversationLink observer agentResult parentMessageId) responseId
-      ChatLog.recordBotMessage message responseId agentResult.answer
-      active <- liftIO (IORef.readIORef activeReply.activeRef)
-      case active of
-        Just activeHandle ->
-          finishActiveConversation conversations activeHandle agentResult.conversation
-        Nothing ->
-          rememberConversationFrom conversations parentMessageId responseId agentResult.conversation
-      pure (agentResult.answer, agentResult.conversation)
-    ) `onException` cleanupActiveReply
+    pure AgentReply{responseId, result}
+  `catch` \(err :: SomeException) ->
+    case Exception.fromException err of
+      Just Exception.ThreadKilled ->
+        throwIO err
+      _ -> do
+        logAttention "LLM request failed" (show err :: String)
+        let failureMessage = llmFailureMessage err
+        responseId <- Chat.replyTo message failureMessage
+        pure AgentReply
+          { responseId
+          , result = Agent.AgentResult
+              { runId = Agent.agentRunId agentRun
+              , answer = failureMessage
+              , conversation = conversation
+              }
+          }
 
-observeAgentConversationLink
-  :: Agent.AgentObserver es
-  -> Agent.AgentResult
-  -> Maybe Integer
-  -> Integer
-  -> Eff es ()
-observeAgentConversationLink observer agentResult parentMessageId linkedMessageId =
-  AgentObservation.observeConversationLinked observer AgentObservation.ObservedConversationLink
-    { runId = agentResult.runId
+commitAgentReply
+  :: (ChatLog.ChatLog :> es, Log :> es, IOE :> es)
+  => Agent.AgentObserver es
+  -> ActiveReplyState
+  -> IncomingMessage
+  -> AgentReply
+  -> Eff es (Text, Conversation)
+commitAgentReply observer activeReply message AgentReply{responseId, result} = do
+  traverse_ (AgentObservation.observeConversationLinked observer . conversationLink result activeReply.parentMessageId) responseId
+  ChatLog.recordBotMessage message responseId result.answer
+  active <- liftIO (IORef.readIORef activeReply.activeRef)
+  case active of
+    Just activeHandle ->
+      finishActiveConversation activeReply.conversations activeHandle result.conversation
+    Nothing ->
+      rememberConversationFrom activeReply.conversations activeReply.parentMessageId responseId result.conversation
+  pure (result.answer, result.conversation)
+
+conversationLink :: Agent.AgentResult -> Maybe Integer -> Integer -> AgentObservation.ObservedConversationLink
+conversationLink result parentMessageId linkedMessageId =
+  AgentObservation.ObservedConversationLink
+    { runId = result.runId
     , parentMessageId
     , linkedMessageId
     }
+
+discardActiveReply :: (Log :> es, IOE :> es) => ActiveReplyState -> Eff es ()
+discardActiveReply activeReply =
+  liftIO (IORef.readIORef activeReply.activeRef)
+    >>= traverse_ (finishActiveConversationCurrent activeReply.conversations)
 
 data ActiveReplyState = ActiveReplyState
   { conversations :: !ConversationStore
