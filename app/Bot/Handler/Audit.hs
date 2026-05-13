@@ -73,38 +73,44 @@ renderAuditList :: [AgentAudit.ToolUseDetail] -> Text
 renderAuditList [] =
   "最近没有 agent tool use。"
 renderAuditList toolUses =
-  Text.unlines (map renderToolUseLine toolUses)
+  Text.unlines ("*Recent agent tool uses*" : map renderToolUseLine toolUses)
 
 renderToolUseLine :: AgentAudit.ToolUseDetail -> Text
 renderToolUseLine toolUse =
   let auditId = toolUse.auditId
       toolName = toolUse.toolName
+      occurredAt = timestamp toolUse.occurredAt
+      status = renderStatus toolUse.status
   in
-  Text.unwords
-    [ timestamp toolUse.occurredAt
-    , [i|id=#{auditId}|]
-    , [i|tool=#{toolName}|]
-    , renderStatus toolUse.status
-    ]
+  [i|- `#{occurredAt}` `id=#{auditId}` `tool=#{toolName}` `#{status}`|]
 
 renderAuditDetail :: AgentAudit.ToolUseDetail -> Text
 renderAuditDetail toolUse =
   let auditId = toolUse.auditId
+      occurredAt = timestamp toolUse.occurredAt
+      finishedAt = maybe "(still running)" timestamp toolUse.finishedAt
+      runId = toolUse.runId
       turn = toolUse.turn
+      toolName = toolUse.toolName
+      status = renderStatus toolUse.status
+      messageIds = show toolUse.messageIds :: Text
+      arguments = toolUse.arguments
+      result = fromMaybe "(still running)" toolUse.result
   in
   Text.unlines
-    [ [i|id: #{auditId}|]
-    , "started_at: " <> timestamp toolUse.occurredAt
-    , "finished_at: " <> maybe "(still running)" timestamp toolUse.finishedAt
-    , "run_id: " <> toolUse.runId
-    , [i|turn: #{turn}|]
-    , "tool: " <> toolUse.toolName
-    , "status: " <> renderStatus toolUse.status
-    , "message_ids: " <> show toolUse.messageIds
-    , "arguments:"
-    , toolUse.arguments
-    , "result:"
-    , fromMaybe "(still running)" toolUse.result
+    [ [i|*Audit `#{auditId}`*|]
+    , [i|- started: `#{occurredAt}`|]
+    , [i|- finished: `#{finishedAt}`|]
+    , [i|- run: `#{runId}`|]
+    , [i|- turn: `#{turn}`|]
+    , [i|- tool: `#{toolName}`|]
+    , [i|- status: `#{status}`|]
+    , [i|- message ids: `#{messageIds}`|]
+    , ""
+    , "*Arguments*"
+    , fenced "json" arguments
+    , "*Result*"
+    , fenced "" result
     ]
 
 renderConversationToolUses :: Integer -> [AgentAudit.AgentAuditRecord] -> Text
@@ -115,42 +121,42 @@ renderConversationToolUses _ records =
     [] ->
       "该 agent audit 中没有 tool use。"
     toolUses ->
-      Text.intercalate "\n" (map renderToolUseBlock toolUses)
+      Text.intercalate "\n" ("*Conversation tool uses*" : map renderToolUseBlock toolUses)
 
 renderToolUseBlock :: AgentAudit.ToolUseDetail -> Text
 renderToolUseBlock toolUse =
   let auditId = toolUse.auditId
+      toolName = toolUse.toolName
+      status = renderStatus toolUse.status
+      occurredAt = timestamp toolUse.occurredAt
+      finishedAt = maybe "(still running)" timestamp toolUse.finishedAt
+      runId = toolUse.runId
       turn = toolUse.turn
       resultChars = maybe 0 Text.length toolUse.result
+      arguments = toolUse.arguments
   in
   Text.unlines
-    [ [i|id: #{auditId}|]
-    , "started_at: " <> timestamp toolUse.occurredAt
-    , "finished_at: " <> maybe "(still running)" timestamp toolUse.finishedAt
-    , "run_id: " <> toolUse.runId
-    , [i|turn: #{turn}|]
-    , "tool: " <> toolUse.toolName
-    , "status: " <> renderStatus toolUse.status
-    , [i|result_chars: #{resultChars}|]
-    , "arguments:"
-    , toolUse.arguments
+    [ [i|- `id=#{auditId}` `tool=#{toolName}` `#{status}`|]
+    , [i|  - started: `#{occurredAt}`|]
+    , [i|  - finished: `#{finishedAt}`|]
+    , [i|  - run: `#{runId}` turn: `#{turn}` result chars: `#{resultChars}`|]
+    , "  - arguments:"
+    , indent (fenced "json" arguments)
     ]
 
 renderConversationAuditLog :: Integer -> [AgentAudit.AgentAuditRecord] -> Text
 renderConversationAuditLog parentId [] =
   [i|没有找到消息 #{parentId} 对应的 agent audit。|]
 renderConversationAuditLog _ records =
-  Text.unlines (map renderAuditRecord records)
+  Text.unlines ("*Conversation audit log*" : map renderAuditRecord records)
 
 renderAuditRecord :: AgentAudit.AgentAuditRecord -> Text
 renderAuditRecord record =
   let eventId = renderRecordId record.id
+      occurredAt = timestamp record.occurredAt
+      event = renderAuditEvent record.id record.event
   in
-  Text.unwords
-    [ timestamp record.occurredAt
-    , [i|event_id=#{eventId}|]
-    , renderAuditEvent record.id record.event
-    ]
+  [i|- `#{occurredAt}` `event_id=#{eventId}` #{event}|]
 
 renderRecordId :: Maybe Integer -> Text
 renderRecordId =
@@ -161,14 +167,14 @@ renderAuditEvent recordId = \case
   AgentAudit.ToolCallStarted{runId, turn, toolCall} ->
     let toolName = toolCall.name
         auditId = renderRecordId recordId
-    in [i|tool_started audit_id=#{auditId} run=#{runId} turn=#{turn} tool=#{toolName}|]
+    in [i|`tool_started` `audit_id=#{auditId}` `run=#{runId}` `turn=#{turn}` `tool=#{toolName}`|]
   AgentAudit.ToolCallFinished{runId, turn, toolName, status, resultLength} ->
-    [i|tool_finished run=#{runId} turn=#{turn} tool=#{toolName} status=#{status} result_chars=#{resultLength}|]
+    [i|`tool_finished` `run=#{runId}` `turn=#{turn}` `tool=#{toolName}` `status=#{status}` `result_chars=#{resultLength}`|]
   AgentAudit.AgentRunInterrupted{runId, reason} ->
-    [i|run_interrupted run=#{runId} reason=#{reason}|]
+    [i|`run_interrupted` `run=#{runId}` `reason=#{reason}`|]
   AgentAudit.AgentConversationLinked{runId, linkedMessageId, parentMessageId} ->
     let parent = show parentMessageId :: Text
-    in [i|conversation_linked run=#{runId} message=#{linkedMessageId} parent=#{parent}|]
+    in [i|`conversation_linked` `run=#{runId}` `message=#{linkedMessageId}` `parent=#{parent}`|]
 
 renderStatus :: AgentAudit.ToolUseStatus -> Text
 renderStatus = \case
@@ -182,3 +188,15 @@ renderStatus = \case
 timestamp :: FormatTime t => t -> Text
 timestamp =
   Text.pack . formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S%Q UTC"
+
+fenced :: Text -> Text -> Text
+fenced language body =
+  Text.unlines
+    [ "```" <> language
+    , body
+    , "```"
+    ]
+
+indent :: Text -> Text
+indent =
+  Text.unlines . map ("    " <>) . Text.lines
