@@ -23,11 +23,11 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Time
-import GHC.Clock (getMonotonicTimeNSec)
 import Network.HTTP.Req
-import System.Directory
+import System.Directory (removeDirectoryRecursive)
 import System.Exit
 import System.FilePath
+import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory)
 import System.Process
 import Text.Printf
 
@@ -72,22 +72,29 @@ sendRankImage titleSuffix failureMessage fetchRows message =
     title <- liftIO (rankTitle titleSuffix)
     rows <- liftIO fetchRows
     logInfo "Fetched typing rank rows" (title, length rows)
-    imagePath <- liftIO (renderRankImage title rows)
-    logInfo "Rendered typing rank image" imagePath
-    sent <- Chat.replyTo message (ReplyBody.imageDirective ("file://" <> Text.pack imagePath))
-      `finally` cleanupRankFiles imagePath
-    logInfo "Sent typing rank image" sent
-    when (isNothing sent) do
-      void $ Chat.replyTo message [i|#{title}已生成，但图片发送失败。|]
+    withRenderedRankImage title rows \imagePath -> do
+      logInfo "Rendered typing rank image" imagePath
+      sent <- Chat.replyTo message (ReplyBody.imageDirective ("file://" <> Text.pack imagePath))
+      logInfo "Sent typing rank image" sent
+      when (isNothing sent) do
+        void $ Chat.replyTo message [i|#{title}已生成，但图片发送失败。|]
   where
     handleError action =
       action `catch` \(err :: SomeException) -> do
         logAttention "Failed to render typing rank" (show err :: String)
         void $ Chat.replyTo message failureMessage
 
-cleanupRankFiles :: IOE :> es => FilePath -> Eff es ()
-cleanupRankFiles pngPath =
-  liftIO (Image.removeFilesIfExists [pngPath, replaceExtension pngPath "typ"])
+withRenderedRankImage :: IOE :> es => Text -> [[Text]] -> (FilePath -> Eff es a) -> Eff es a
+withRenderedRankImage title rows action =
+  bracket acquire release \dir -> do
+    imagePath <- liftIO (renderRankImage dir title rows)
+    action imagePath
+  where
+    acquire = liftIO do
+      tmp <- getCanonicalTemporaryDirectory
+      createTempDirectory tmp "cosmobot-typing-"
+    release =
+      liftIO . removeDirectoryRecursive
 
 rankTitle :: Text -> IO Text
 rankTitle suffix = do
@@ -239,14 +246,10 @@ cleanCell =
     . Html.htmlDecode
     . Html.stripHtmlTags
 
-renderRankImage :: Text -> [[Text]] -> IO FilePath
-renderRankImage title rows = do
-  tmp <- getTemporaryDirectory
-  let dir = tmp </> "cosmobot-typing"
-  createDirectoryIfMissing True dir
-  nonce <- getMonotonicTimeNSec
-  let typstPath = dir </> "typing-rank-" <> show nonce <.> "typ"
-      pngPath = dir </> "typing-rank-" <> show nonce <.> "png"
+renderRankImage :: FilePath -> Text -> [[Text]] -> IO FilePath
+renderRankImage dir title rows = do
+  let typstPath = dir </> "typing-rank" <.> "typ"
+      pngPath = dir </> "typing-rank" <.> "png"
   TextIO.writeFile typstPath (typstDocument title rows)
   (code, _out, err) <- readProcessWithExitCode "typst" ["compile", typstPath, pngPath] ""
   case code of

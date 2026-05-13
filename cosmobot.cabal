@@ -94,6 +94,7 @@ common app-deps
                     , http-client-tls
                     , optics
                     , time
+                    , temporary
                     , process
     hs-source-dirs:   app
 
