@@ -16,6 +16,7 @@ module Bot.Effect.LLM
   , askWithToolsStreaming
   , runLLM
   , runLLMWith
+  , LLMException (..)
 
     -- * Configuration
   , Config (..)

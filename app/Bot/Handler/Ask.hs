@@ -266,8 +266,9 @@ askConversation toolCfg cfg conversations parentMessageId threadId message conve
               throwIO err
             _ -> do
               logAttention "LLM request failed" (show err :: String)
-              responseId <- Chat.replyTo message "LLM request failed."
-              pure (responseId, ("LLM request failed.", conversation))
+              let failureMessage = llmFailureMessage err
+              responseId <- Chat.replyTo message failureMessage
+              pure (responseId, (failureMessage, conversation))
     ) `onException` cleanupActiveReply
   ( do
       traverse_ (\runId -> traverse_ (\linkedMessageId -> AgentTrace.recordEvent AgentTrace.AgentConversationLinked{runId, linkedMessageId, parentMessageId}) responseId) =<< liftIO (IORef.readIORef runIdRef)
@@ -345,6 +346,12 @@ refreshActiveConversation
 refreshActiveConversation activeState current = do
   active <- liftIO (IORef.readIORef activeState.activeRef)
   traverse_ (`updateActiveConversation` appendAssistant current activeState.baseConversation) active
+
+llmFailureMessage :: SomeException -> Text
+llmFailureMessage err =
+  case Exception.fromException err of
+    Just (LLM.LLMException message) -> message
+    Nothing -> "LLM request failed."
 
 drawConversation
   :: (LLM.LLM :> es, Log :> es)
