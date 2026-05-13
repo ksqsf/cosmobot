@@ -22,11 +22,15 @@ import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
 import qualified Bot.Storage.SQLite as SQLiteStorage
 import qualified Bot.Util.Stream as StreamUtil
+import qualified Control.Concurrent.Async as Async
+import qualified Control.Concurrent.MVar as MVar
+import qualified Control.Exception as Exception
 import Log.Backend.StandardOutput
+import qualified System.Posix.Signals as Signals
 
 -- | Start the bot using @config.toml@ from the current working directory.
 main :: IO ()
-main = do
+main = withShutdownSignal \shutdown -> do
   cfg <- loadConfig "config.toml"
   sqliteStore <- SQLiteStorage.openSQLiteStore cfg.sqlitePath
   let maybeSQLiteStore = Just sqliteStore
@@ -39,14 +43,46 @@ main = do
     Scheduler.runScheduler .
     LLM.runLLM cfg.llm .
     ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix $ do
-      logInfo_ "Cosmobot stand by!"
-      let allStreams =
-            [ ChatDriver.incomingMessages
-            , Scheduler.scheduledMessages
-            ]
-      consumeWith
-        (routes cfg sqliteStore conversations)
-        (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
+      runUntilShutdown shutdown do
+        logInfo_ "Cosmobot stand by!"
+        let allStreams =
+              [ ChatDriver.incomingMessages
+              , Scheduler.scheduledMessages
+              ]
+        consumeWith
+          (routes cfg sqliteStore conversations)
+          (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
+
+withShutdownSignal :: (MVar.MVar () -> IO ()) -> IO ()
+withShutdownSignal action =
+  Exception.bracket installHandlers restoreHandlers (action . (.shutdown))
+  where
+    installHandlers = do
+      shutdown <- MVar.newEmptyMVar
+      termHandler <- install shutdown Signals.sigTERM
+      intHandler <- install shutdown Signals.sigINT
+      pure ShutdownHandlers{shutdown, termHandler, intHandler}
+
+    install shutdown signal =
+      Signals.installHandler signal (Signals.Catch (void (MVar.tryPutMVar shutdown ()))) Nothing
+
+    restoreHandlers ShutdownHandlers{termHandler, intHandler} = do
+      void $ Signals.installHandler Signals.sigTERM termHandler Nothing
+      void $ Signals.installHandler Signals.sigINT intHandler Nothing
+
+data ShutdownHandlers = ShutdownHandlers
+  { shutdown :: !(MVar.MVar ())
+  , termHandler :: !Signals.Handler
+  , intHandler :: !Signals.Handler
+  }
+
+runUntilShutdown :: (Log :> es, IOE :> es) => MVar.MVar () -> Eff es () -> Eff es ()
+runUntilShutdown shutdown action =
+  withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+    liftIO $
+      Async.race_
+        (runInIO action)
+        (MVar.takeMVar shutdown >> runInIO (logInfo_ "Shutdown requested; stopping cosmobot."))
 
 routes
   :: (Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
