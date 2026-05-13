@@ -57,7 +57,7 @@ handleAudit conversations message args =
               records <- AgentAudit.queryConversationAudit parentId
               void $ Chat.replyTo message (renderConversationToolUses parentId records)
             Nothing -> do
-              toolUses <- AgentAudit.queryRecentToolUses 50
+              toolUses <- AgentAudit.queryRecentToolUses recentAuditLimit
               void $ Chat.replyTo message (renderAuditList toolUses)
       | otherwise ->
           void $ Chat.replyTo message "用法：!audit、!audit all、!audit log 或 !audit <id>"
@@ -68,6 +68,10 @@ handleAudit conversations message args =
 parseAuditId :: Text -> Maybe Integer
 parseAuditId =
   readMaybe . toString . Text.strip
+
+recentAuditLimit :: Int
+recentAuditLimit =
+  20
 
 renderAuditList :: [AgentAudit.ToolUseDetail] -> Text
 renderAuditList [] =
