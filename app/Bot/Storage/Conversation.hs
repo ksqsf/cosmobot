@@ -9,10 +9,8 @@ Stability   : experimental
 module Bot.Storage.Conversation
   ( ConversationStore
   , ActiveConversationHandle
-  , ConversationMessageKey (..)
   , ConversationRow (..)
   , newConversationStore
-  , conversationMessageKey
   , lookupConversation
   , lookupConversationMessageIds
   , rememberConversation
@@ -51,22 +49,15 @@ data ConversationStore = ConversationStore
 
 data ConversationState = ConversationState
   { nextConversationId :: !Integer
-  , conversations :: !(Map ConversationMessageKey ConversationNode)
+  , conversationTree :: !ConversationTree
+  , conversationIds :: !(Map ConversationMessageKey Integer)
   , recentConversationIds :: ![ConversationMessageKey]
   }
 
-data ConversationNode = ConversationNode
+data StoredConversationNode = StoredConversationNode
   { conversationId :: !Integer
-  , parentMessageKey :: !(Maybe ConversationMessageKey)
-  , conversation :: !Conversation
+  , treeNode :: !ConversationTreeNode
   }
-
-data ConversationMessageKey = ConversationMessageKey
-  { platform :: !ChatPlatform
-  , chatId :: !(Maybe Integer)
-  , messageId :: !Integer
-  }
-  deriving (Eq, Ord, Show)
 
 data ActiveConversation = ActiveConversation
   { activeMessageKey :: !ConversationMessageKey
@@ -114,21 +105,13 @@ conversationRows =
 
 newConversationStore :: IO ConversationStore
 newConversationStore = do
-  ref <- IORef.newIORef ConversationState{nextConversationId = 1, conversations = Map.empty, recentConversationIds = []}
+  ref <- IORef.newIORef ConversationState{nextConversationId = 1, conversationTree = emptyConversationTree, conversationIds = Map.empty, recentConversationIds = []}
   activeRef <- IORef.newIORef Map.empty
   pure ConversationStore{unConversationStore = ref, activeConversationStore = activeRef}
 
-conversationMessageKey :: IncomingMessage -> Integer -> ConversationMessageKey
-conversationMessageKey message messageId =
-  ConversationMessageKey
-    { platform = message.platform
-    , chatId = message.chatId
-    , messageId = messageId
-    }
-
 lookupConversation :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe Conversation)
 lookupConversation store@ConversationStore{activeConversationStore = activeRef} messageKey = do
-  finished <- fmap (.conversation) <$> lookupConversationNode store messageKey
+  finished <- fmap (.treeNode.conversation) <$> lookupConversationNode store messageKey
   case finished of
     Just conversation ->
       pure (Just conversation)
@@ -148,9 +131,9 @@ lookupConversationMessageIds store@ConversationStore{unConversationStore = ref, 
         Nothing ->
           loadConversationMessageIds messageKey
         Just target -> do
-          cached <- liftIO $ Map.toList . (.conversations) <$> IORef.readIORef ref
+          cached <- liftIO $ Map.toList . (.conversationIds) <$> IORef.readIORef ref
           stored <- loadConversationMessageIds messageKey
-          pure (ordNub (stored <> [cachedKey.messageId | (cachedKey, cachedNode) <- cached, cachedNode.conversationId == target.conversationId]))
+          pure (ordNub (stored <> [cachedKey.messageId | (cachedKey, cachedConversationId) <- cached, cachedConversationId == target.conversationId]))
 
 rememberActiveConversation
   :: IOE :> es
@@ -242,7 +225,10 @@ rememberConversationFrom store@ConversationStore{unConversationStore = ref} pare
   nextStoredConversationId <- loadNextConversationId
   (conversationId, storageParentMessageKey, storedMessages) <- liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
     let conversationId = conversationIdFor conversationState parentNode existingNode
-        node = ConversationNode{conversationId, parentMessageKey, conversation}
+        node = StoredConversationNode
+          { conversationId
+          , treeNode = ConversationTreeNode{messageKey, parentMessageKey, conversation}
+          }
         (storageParentMessageKey, storedMessages) = conversationMessagesForStorage parentMessageKey parentNode conversation
         nextConversationId = max nextStoredConversationId (if conversationId < conversationState.nextConversationId then conversationState.nextConversationId else conversationId + 1)
         nextState = conversationState{nextConversationId = nextConversationId}
@@ -252,22 +238,27 @@ rememberConversationFrom store@ConversationStore{unConversationStore = ref} pare
     `catch` \(err :: SomeException) ->
       logInfo_ [i|Failed to persist conversation: #{show err :: String}|]
 
-lookupConversationNode :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe ConversationNode)
+lookupConversationNode :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
 lookupConversationNode store messageKey =
   lookupConversationNodeMaybe store (Just messageKey)
 
-lookupConversationNodeMaybe :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Eff es (Maybe ConversationNode)
+lookupConversationNodeMaybe :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
 lookupConversationNodeMaybe _ Nothing =
   pure Nothing
 lookupConversationNodeMaybe store@ConversationStore{unConversationStore = ref} (Just messageKey) = do
-  cached <- liftIO $ Map.lookup messageKey . (.conversations) <$> IORef.readIORef ref
+  cached <- liftIO do
+    conversationState <- IORef.readIORef ref
+    pure do
+      treeNode <- lookupConversationTreeNode messageKey conversationState.conversationTree
+      conversationId <- Map.lookup messageKey conversationState.conversationIds
+      pure StoredConversationNode{conversationId, treeNode}
   case cached of
     Just node ->
       pure (Just node)
     Nothing ->
       loadConversationNodeFromStorage store [] messageKey
 
-loadConversationNodeFromStorage :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> [ConversationMessageKey] -> ConversationMessageKey -> Eff es (Maybe ConversationNode)
+loadConversationNodeFromStorage :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> [ConversationMessageKey] -> ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
 loadConversationNodeFromStorage store@ConversationStore{unConversationStore = ref} visited messageKey
   | messageKey `elem` visited =
       pure Nothing
@@ -281,9 +272,16 @@ loadConversationNodeFromStorage store@ConversationStore{unConversationStore = re
             Nothing ->
               pure Nothing
             Just parentMessageKey ->
-              liftIO (Map.lookup parentMessageKey . (.conversations) <$> IORef.readIORef ref)
+              lookupConversationNodeMaybe store (Just parentMessageKey)
                 >>= maybe (loadConversationNodeFromStorage store (messageKey : visited) parentMessageKey) (pure . Just)
-          let node = ConversationNode{conversationId = stored.storedConversationId, parentMessageKey = stored.storedParentMessageKey, conversation = storedConversationFromMessages parentNode stored.storedMessages}
+          let node = StoredConversationNode
+                { conversationId = stored.storedConversationId
+                , treeNode = ConversationTreeNode
+                    { messageKey = messageKey
+                    , parentMessageKey = stored.storedParentMessageKey
+                    , conversation = storedConversationFromMessages parentNode stored.storedMessages
+                    }
+                }
           liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
             (cacheConversationNode messageKey node conversationState, ())
           pure (Just node)
@@ -300,13 +298,13 @@ decodeStoredConversation row = do
   let conversationId = fromMaybe 0 row.conversationId
   pure StoredConversation{storedConversationId = conversationId, storedParentMessageKey = row.parentMessageKey, storedMessages = messages}
 
-storedConversationFromMessages :: Maybe ConversationNode -> [LLM.ChatMessage] -> Conversation
+storedConversationFromMessages :: Maybe StoredConversationNode -> [LLM.ChatMessage] -> Conversation
 storedConversationFromMessages parentNode messages =
   case parentNode of
     Nothing ->
       Conversation (Seq.fromList messages)
     Just parent ->
-      Conversation (parent.conversation.messages <> Seq.fromList messages)
+      Conversation (parent.treeNode.conversation.messages <> Seq.fromList messages)
 
 decodeMessages :: Text -> Maybe [LLM.ChatMessage]
 decodeMessages =
@@ -414,14 +412,16 @@ platformFromKey = \case
   _ ->
     PlatformQQ
 
-cacheConversationNode :: ConversationMessageKey -> ConversationNode -> ConversationState -> ConversationState
+cacheConversationNode :: ConversationMessageKey -> StoredConversationNode -> ConversationState -> ConversationState
 cacheConversationNode messageKey node conversationState =
   conversationState
-    { conversations = Map.restrictKeys inserted retainedIds
+    { conversationTree = ConversationTree (Map.restrictKeys insertedTree retainedIds)
+    , conversationIds = Map.restrictKeys insertedIds retainedIds
     , recentConversationIds = retainedOrder
     }
   where
-    inserted = Map.insert messageKey node conversationState.conversations
+    insertedTree = (insertConversationTreeNode node.treeNode conversationState.conversationTree).nodes
+    insertedIds = Map.insert messageKey node.conversationId conversationState.conversationIds
     nextOrder = messageKey : filter (/= messageKey) conversationState.recentConversationIds
     retainedOrder = take maxCachedConversations nextOrder
     retainedIds = Map.keysSet (Map.fromList [(key, ()) | key <- retainedOrder])
@@ -430,7 +430,7 @@ maxCachedConversations :: Int
 maxCachedConversations =
   512
 
-conversationIdFor :: ConversationState -> Maybe ConversationNode -> Maybe ConversationNode -> Integer
+conversationIdFor :: ConversationState -> Maybe StoredConversationNode -> Maybe StoredConversationNode -> Integer
 conversationIdFor conversationState parentNode existingNode =
   fromMaybe conversationState.nextConversationId (parentConversationId <|> existingConversationId)
   where
@@ -441,11 +441,11 @@ messagesJson :: [LLM.ChatMessage] -> Text
 messagesJson =
   TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
 
-conversationMessagesForStorage :: Maybe ConversationMessageKey -> Maybe ConversationNode -> Conversation -> (Maybe ConversationMessageKey, [LLM.ChatMessage])
+conversationMessagesForStorage :: Maybe ConversationMessageKey -> Maybe StoredConversationNode -> Conversation -> (Maybe ConversationMessageKey, [LLM.ChatMessage])
 conversationMessagesForStorage parentMessageKey parentNode conversation =
   case parentNode of
     Just parent
-      | Just suffix <- conversationSuffix parent.conversation conversation ->
+      | Just suffix <- conversationSuffix parent.treeNode.conversation conversation ->
           (parentMessageKey, suffix)
       | otherwise ->
           (Nothing, conversationMessagesList conversation)

@@ -23,7 +23,7 @@ cosmobot is organized around one dependency rule: user-facing behavior is writte
 Read the system in layers:
 
 1. `Core` is the shared vocabulary.
-   It defines the platform-neutral values that every other layer agrees on: incoming message identity, route admission, reply-body directives, and conversation state. Core should be small and algebraic. It should not know how QQ, Telegram, Matrix, SQLite, or an LLM API works.
+   It defines the platform-neutral values that every other layer agrees on: incoming message identity, route admission, reply-body directives, the pure `Conversation` value sent to the LLM, and the pure `ConversationTree` shape used to link replies. Core should be small and algebraic. It should not know how QQ, Telegram, Matrix, SQLite, Selda, or an LLM transport works.
 
 2. `Handler` is the use-case layer.
    A handler is where a matched message becomes user-visible behavior: ask a question, continue a conversation, halt a stream, run a command, or reject an invalid request. Handlers make policy decisions and call effects. They should not perform platform transport, persistence, or LLM HTTP work directly.
@@ -32,7 +32,7 @@ Read the system in layers:
    Effects express what handlers need: send chat messages, read chat logs, call an LLM, schedule work, record agent trace events, and so on. Interpreters decide how those capabilities are implemented. An interpreter may use `IOE`, call a platform API, run the OpenAI-compatible transport, or read/write through Storage or Memory.
 
 4. `Chat`, `Storage`, `Memory`, and LLM transport are infrastructure.
-   Chat drivers translate between concrete platforms and the normalized chat model. Storage owns durable persistence mechanics. Memory owns persistent user/chat memory files. LLM transport owns request/response JSON and streaming protocol details. These modules are allowed to know external APIs and file/database formats because they are the boundary to those systems.
+   Chat drivers translate between concrete platforms and the normalized chat model. Storage owns durable persistence mechanics, including typed Selda tables and component-owned persistence modules such as `Bot.Storage.Conversation`. Memory owns persistent user/chat memory files. LLM transport owns request/response JSON and streaming protocol details. These modules are allowed to know external APIs and file/database formats because they are the boundary to those systems.
 
 5. `Agent` is a domain engine used behind the LLM capability.
    The agent loop is not a message-routing layer. It is invoked by handler behavior through the LLM/agent path, manages conversation context, consumes LLM streaming responses, records trace events, and handles tool calls requested by the model. Tool implementations are agent internals grouped by domain, not top-level message handlers.
@@ -45,16 +45,16 @@ The split exists so changes land where their reason lives:
 - New platform behavior belongs in `Bot.Chat.Driver.*` and wiring, not in handlers.
 - New user-visible commands belong in `Bot.Handler.*`, route composition, and focused tests.
 - New agent tools belong in `Bot.Agent.Tools.*` and the agent tests, not in route admission.
-- New persistent state belongs near Storage, Memory, AgentTrace, or the domain that owns the state rules.
+- New persistent state belongs in a component-owned Storage module, Memory, AgentTrace, or the domain that owns the state rules. Keep table definitions and keying rules close to the code that queries them.
 - New LLM wire behavior belongs in `Bot.Effect.LLM` and the agent path, not embedded inside a handler.
 
-Concrete module ownership should follow those layers. Put shared message, route, conversation, and reply-body concepts in `Bot.Core.*`; user-visible flows in `Bot.Handler.*`; LLM transport and request shaping in `Bot.Effect.LLM`; agent trace events and query views in `Bot.Effect.AgentTrace`; platform adapters in `Bot.Chat.Driver.*`; SQLite mechanics in `Bot.Storage.SQLite`; and persistent memory behavior in `Bot.Memory` or `Bot.Effect.Memory`.
+Concrete module ownership should follow those layers. Put shared message, route, pure conversation/tree values, and reply-body concepts in `Bot.Core.*`; user-visible flows in `Bot.Handler.*`; LLM transport and request shaping in `Bot.Effect.LLM`; agent trace events and query views in `Bot.Effect.AgentTrace`; platform adapters in `Bot.Chat.Driver.*`; SQLite connection mechanics in `Bot.Storage.SQLite`; typed table prelude/helpers in `Bot.Storage.Prelude`; component persistence such as stored conversation nodes in `Bot.Storage.*`; and persistent memory behavior in `Bot.Memory` or `Bot.Effect.Memory`.
 
 ## Design Rules
 
 Use `effectful` for application capabilities and `streaming` for anything stream-like (incoming-message streams and LLM text streams). Keep `IOE :> es` explicit in effect interpreters and IO-bound helpers; use `liftIO` only at the boundary where real IO happens.
 
-Prefer structured APIs over string manipulation: `aeson` for JSON, `Toml.Schema` and local config parsers for TOML, and SQLite helpers such as `JsonCollection` for scoped persisted JSON state.
+Prefer structured APIs over string manipulation: `aeson` for protocol JSON, `Toml.Schema` and local config parsers for TOML, and Selda tables/queries through `Bot.Storage.Prelude` for persisted state. Avoid new JSON payload collections for queryable state; model columns explicitly so the data can be queried and migrated.
 
 Do not add indirection just to make the code look layered. Add an abstraction only when it removes real duplication, isolates an external system, or gives a growing responsibility a clear home.
 
@@ -63,6 +63,8 @@ Do not add indirection just to make the code look layered. Add an abstraction on
 Do not conflate chat identity with sender identity. Features scoped to people should normally key by `platform` and `senderId`; features scoped to conversations or rooms should key by `platform` and `chatId`.
 
 Persisted user-visible state must be scoped defensively. If a feature cannot identify the required person, chat, or platform, reject clearly instead of guessing.
+
+Message ids are not globally unique. Conversation state and any reply-indexed state should scope message ids by `platform` and the conversation chat identity, not by the bare message id.
 
 Chat drivers decide platform-specific digest fields such as allowed chat, superuser sender, and configured-bot mention. Handler config should not parse mentions or duplicate platform whitelists.
 
@@ -92,7 +94,7 @@ For agent tools, put implementations in the appropriate `Bot.Agent.Tools.*` modu
 
 For agent trace and audit behavior, keep trace event capture in `Bot.Agent` through `Bot.Effect.AgentTrace`; keep user-visible audit commands in `Bot.Handler.Audit`; keep SQLite table mechanics in `Bot.Storage.SQLite`. Do not put audit formatting or query policy inside tool implementations.
 
-For persistence, prefer Storage or Memory ownership over handler-local files or bespoke SQL. Keep keying rules close to the state they persist, and use normalized identities.
+For persistence, prefer Storage or Memory ownership over handler-local files or bespoke SQL. Keep keying rules close to the state they persist, and use normalized identities. A component that owns durable state should expose focused operations from its own module, while `Bot.Effect.Storage` stays a small effect for running storage actions rather than a registry of every table.
 
 For new modules, update `cosmobot.cabal` for the executable and relevant test suites. Prefer shared `common` module-list stanzas over copying the same `other-modules` block into multiple components.
 
@@ -102,6 +104,7 @@ Avoid broad refactors while implementing behavior. Keep architecture cleanup sep
 
 - `Bot.Effect.LLM` still carries several responsibilities: public LLM effect API, OpenAI-compatible request/response types, SSE streaming transport, tool-call JSON, and image-generation request shaping. Be careful when extending it; cohesive transport/request splits are preferable to more unrelated helpers.
 - `Bot.Handler.Ask` remains the densest user-facing flow. Conversation start, continuation, reply handling, private/mention behavior, streaming presentation, and `!halt` rules should stay platform-neutral and effect-driven.
+- Conversation persistence lives in `Bot.Storage.Conversation`. `Bot.Core.Conversation` owns the pure immutable LLM history and reply tree shape; do not move stores, tables, active stream handles, cache policy, or database ids back into Core.
 - Config ownership is distributed across focused `*.Config` modules, but `Bot.Config` is still the integration point. Keep it as assembly glue, not a place for concrete section semantics.
 - Chat drivers share a conceptual contract but necessarily differ in platform APIs. Keep normalized digest construction consistent across drivers, especially access, superuser, bot mention, sender, and chat identity fields.
 - Test suites cover several domains but still have repeated message/effect fixtures. If new tests copy more `IncomingMessage` or interpreter setup, introduce shared test helpers instead.

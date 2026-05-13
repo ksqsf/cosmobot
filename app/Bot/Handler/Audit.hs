@@ -10,6 +10,7 @@ module Bot.Handler.Audit
 where
 
 import Bot.Core.Message
+import Bot.Core.Conversation
 import Bot.Core.Route
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
