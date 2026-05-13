@@ -493,8 +493,8 @@ runAgentWithMemory memoryCfg answers chatMock action =
               case answer of
                 LLM.ChatFinalAnswer{content} ->
                   liftIO (emit content)
-                LLM.ChatToolRequest{} ->
-                  pure ()
+                LLM.ChatToolRequest{content} ->
+                  liftIO (emit content)
               pure answer) $
           ChatLog.runChatLog Nothing $
             AgentTrace.runAgentTrace Nothing $

@@ -128,7 +128,6 @@ agentLoop agentRun agentState = do
       | agentState.turnsLeft <= 1 ->
           handleToolLimit agentRun.runId agentState.turn content toolCalls answered
       | otherwise -> do
-          unless (Text.null content) (S.yield content)
           next <- lift (continueWithToolCalls agentRun agentState.turn answered toolCalls)
           agentLoop agentRun agentState{turnsLeft = agentState.turnsLeft - 1, conversation = next, turn = agentState.turn + 1}
 
