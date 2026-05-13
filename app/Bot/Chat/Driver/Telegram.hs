@@ -114,6 +114,9 @@ telegramDriver = Driver.ChatPlatformDriver
 telegramEditChunkChars :: Int
 telegramEditChunkChars = 50
 
+telegramReplyParseMode :: ParseMode
+telegramReplyParseMode = ParseModeMarkdown
+
 -- ---------------------------------------------------------------------------
 -- Typeclass
 -- ---------------------------------------------------------------------------
@@ -1179,7 +1182,7 @@ editMessage message messageId body =
         { chatId = chatId
         , messageId = messageId
         , text = body
-        , parseMode = Nothing
+        , parseMode = Just telegramReplyParseMode
         , disableWebPagePreview = Just True
         }
       pure True
@@ -1226,7 +1229,7 @@ replyTextAndImages chatId replyToMessageId body =
         , messageThreadId = Nothing
         , photo = firstImage
         , caption = nonEmptyText (ChatEffect.renderReplyBody body)
-        , parseMode = Nothing
+        , parseMode = Just telegramReplyParseMode
         , disableNotification = Nothing
         , replyToMessageId = replyToMessageId
         }
@@ -1237,7 +1240,7 @@ replyTextAndImages chatId replyToMessageId body =
       { chatId = chatId
       , messageThreadId = Nothing
       , text = text
-      , parseMode = Nothing
+      , parseMode = Just telegramReplyParseMode
       , disableNotification = Nothing
       , replyToMessageId = replyToMessageId
       }
@@ -1246,7 +1249,7 @@ replyTextAndImages chatId replyToMessageId body =
       , messageThreadId = Nothing
       , photo = photo
       , caption = caption
-      , parseMode = Nothing
+      , parseMode = telegramReplyParseMode <$ caption
       , disableNotification = Nothing
       , replyToMessageId = Nothing
       }
