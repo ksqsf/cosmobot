@@ -21,7 +21,6 @@ import Bot.Handler.Audit
 import Bot.Handler.Saucenao
 import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
-import qualified Bot.Storage.SQLite as SQLiteStorage
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Control.Concurrent.Async as Async
 import qualified Control.Concurrent.MVar as MVar
@@ -33,12 +32,10 @@ import qualified System.Posix.Signals as Signals
 main :: IO ()
 main = withShutdownSignal \shutdown -> do
   cfg <- loadConfig "config.toml"
-  sqliteStore <- SQLiteStorage.openSQLiteStore cfg.sqlitePath
-  let maybeSQLiteStore = Just sqliteStore
-  conversations <- newConversationStore maybeSQLiteStore
+  conversations <- newConversationStore
   runEff $
     runBotLog cfg.logLevel .
-    Storage.runStorageSQLite sqliteStore .
+    Storage.runStorageSQLitePath cfg.sqlitePath .
     AgentAudit.runAgentAudit .
     ChatLog.runChatLog .
     Memory.runMemory cfg.memory .

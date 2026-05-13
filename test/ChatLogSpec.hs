@@ -4,7 +4,6 @@ import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Bot.Storage.SQLite as SQLite
 import qualified Data.Aeson as Aeson
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -46,9 +45,8 @@ testImageSanitization = runChatLogTest do
   liftIO $ map (.text) entries @?= ["look", ""]
 
 runChatLogTest :: Eff '[ChatLog.ChatLog, Storage.Storage, Log, IOE] a -> IO a
-runChatLogTest action = do
-  store <- SQLite.openSQLiteStore ":memory:"
-  runEff $ runTestLog $ Storage.runStorageSQLite store $ ChatLog.runChatLog action
+runChatLogTest action =
+  runEff $ runTestLog $ Storage.runStorageSQLitePath ":memory:" $ ChatLog.runChatLog action
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
 runTestLog action = do

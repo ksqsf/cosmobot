@@ -4,6 +4,7 @@ Description : Agent tool audit log
 Stability   : experimental
 -}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedLabels #-}
 
 module Bot.Effect.AgentAudit
   ( AgentAudit
@@ -26,8 +27,12 @@ import qualified Bot.Agent.Types as Agent
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
+import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Int as Int
 import qualified Data.Map.Strict as Map
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Time (diffUTCTime, getCurrentTime)
 
 data AgentAudit :: Effect where
@@ -107,6 +112,27 @@ data ToolUseDetail = ToolUseDetail
   }
   deriving (Eq, Show)
 
+data AgentAuditRow = AgentAuditRow
+  { id :: ID AgentAuditRow
+  , run_id :: Text
+  , occurred_at :: UTCTime
+  , linked_message_id :: Maybe Int.Int64
+  , parent_message_id :: Maybe Int.Int64
+  , event_json :: Text
+  }
+  deriving (Generic)
+
+instance SqlRow AgentAuditRow
+
+agentAuditRows :: Table AgentAuditRow
+agentAuditRows =
+  table "agent_trace"
+    [ #id :- autoPrimary
+    , #run_id :- index
+    , #linked_message_id :- index
+    , #parent_message_id :- index
+    ]
+
 recordEvent :: AgentAudit :> es => AgentAuditEvent -> Eff es ()
 recordEvent event =
   send (RecordEvent event)
@@ -172,6 +198,7 @@ runAgentAudit
   -> Eff es a
 runAgentAudit inner = do
   processStartedAt <- liftIO getCurrentTime
+  ensureAgentAuditTable
   interpret
     (\_ -> \case
       RecordEvent event -> do
@@ -196,7 +223,19 @@ maxInMemoryAgentAuditEvents =
 
 persistEvent :: (IOE :> es, Log :> es, Storage.Storage :> es) => UTCTime -> AgentAuditEvent -> Eff es ()
 persistEvent occurredAt event =
-  Storage.saveAgentAuditEvent (eventRunId event) occurredAt maybeLinkedMessageId maybeParentMessageId event
+  runSelda
+    ( insert_
+        agentAuditRows
+        [ AgentAuditRow
+            { id = def
+            , run_id = eventRunId event
+            , occurred_at = occurredAt
+            , linked_message_id = fromIntegral <$> maybeLinkedMessageId
+            , parent_message_id = fromIntegral <$> maybeParentMessageId
+            , event_json = jsonText event
+            }
+        ]
+    )
     `catch` \(err :: SomeException) ->
       logInfo_ [i|Failed to persist agent audit event: #{show err :: String}|]
   where
@@ -231,24 +270,73 @@ loadStoredAuditRecords =
   queryStoredRecent maxInMemoryAgentAuditEvents
 
 queryStoredRecent :: Storage.Storage :> es => Int -> Eff es [AgentAuditRecord]
-queryStoredRecent limit =
-  map storedAuditRecord <$> Storage.queryRecentAgentAuditEvents limit
+queryStoredRecent limit = do
+  rows <- runSelda $
+    query $
+      queryLimit 0 (max 0 limit) do
+        row <- select agentAuditRows
+        order (row ! #id) descending
+        pure row
+  pure (mapMaybe storedAuditRecord (reverse rows))
 
 queryStoredConversationAudit :: Storage.Storage :> es => Integer -> Eff es [AgentAuditRecord]
 queryStoredConversationAudit messageId =
-  map storedAuditRecord <$> Storage.queryAgentAuditEventsForMessage messageId
+  queryStoredConversationMessagesAudit [messageId]
 
 queryStoredConversationMessagesAudit :: Storage.Storage :> es => [Integer] -> Eff es [AgentAuditRecord]
-queryStoredConversationMessagesAudit messageIds =
-  map storedAuditRecord <$> Storage.queryAgentAuditEventsForMessages messageIds
+queryStoredConversationMessagesAudit [] =
+  pure []
+queryStoredConversationMessagesAudit messageIds = do
+  runIds <- linkedRunIds messageIds
+  concat <$> traverse queryStoredRun runIds
 
-storedAuditRecord :: Storage.AgentAuditRow AgentAuditEvent -> AgentAuditRecord
-storedAuditRecord row =
-  AgentAuditRecord
-    { id = Just row.id
-    , occurredAt = row.occurredAt
-    , event = row.event
+ensureAgentAuditTable :: Storage.Storage :> es => Eff es ()
+ensureAgentAuditTable =
+  runSelda (tryCreateTable agentAuditRows)
+
+queryStoredRun :: Storage.Storage :> es => Text -> Eff es [AgentAuditRecord]
+queryStoredRun runId = do
+  rows <- runSelda $
+    query do
+      row <- select agentAuditRows
+      restrict (row ! #run_id .== literal runId)
+      order (row ! #id) ascending
+      pure row
+  pure (mapMaybe storedAuditRecord rows)
+
+linkedRunIds :: Storage.Storage :> es => [Integer] -> Eff es [Text]
+linkedRunIds messageIds = do
+  rows <- runSelda $
+    query do
+      row <- select agentAuditRows
+      restrict (row ! #linked_message_id `isIn` ids .|| row ! #parent_message_id `isIn` ids)
+      order (row ! #run_id) ascending
+      pure (row ! #run_id)
+  pure (ordNub rows)
+  where
+    ids =
+      map (literal . Just . toInt64) (ordNub messageIds)
+
+    toInt64 :: Integer -> Int.Int64
+    toInt64 =
+      fromIntegral
+
+storedAuditRecord :: AgentAuditRow -> Maybe AgentAuditRecord
+storedAuditRecord row = do
+  event <- decodeJsonText row.event_json
+  pure AgentAuditRecord
+    { id = Just (fromIntegral (fromId row.id))
+    , occurredAt = row.occurred_at
+    , event = event
     }
+
+jsonText :: Aeson.ToJSON a => a -> Text
+jsonText =
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+
+decodeJsonText :: Aeson.FromJSON a => Text -> Maybe a
+decodeJsonText =
+  either (const Nothing) Just . Aeson.eitherDecodeStrict' . TextEncoding.encodeUtf8
 
 toolUsesFromRecords :: Int -> [AgentAuditRecord] -> [ToolUseDetail]
 toolUsesFromRecords limit records =

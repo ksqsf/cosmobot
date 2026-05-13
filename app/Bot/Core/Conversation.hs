@@ -4,6 +4,7 @@ Description : In-memory conversation graph
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedLabels #-}
 
 module Bot.Core.Conversation
   ( -- * Store
@@ -20,9 +21,11 @@ module Bot.Core.Conversation
   , finishActiveConversation
   , finishActiveConversationCurrent
   , haltConversation
+  , loadConversationRows
 
     -- * Conversation values
   , Conversation (..)
+  , ConversationRow (..)
   , startWithUser
   , startWithUserContext
   , startWithSystemAndUser
@@ -35,14 +38,16 @@ where
 
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
-import qualified Bot.Storage.SQLite as Storage
+import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
+import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Foldable as Foldable
 import qualified Data.Sequence as Seq
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
+import qualified Data.Int as Int
 import qualified Data.IORef as IORef
 import qualified Data.Map.Strict as Map
 import qualified Control.Concurrent.MVar as MVar
@@ -52,7 +57,6 @@ import Control.Concurrent (ThreadId, killThread)
 data ConversationStore = ConversationStore
   { unConversationStore :: IORef.IORef ConversationState
   , activeConversationStore :: IORef.IORef (Map Integer ActiveConversation)
-  , sqliteStore :: !(Maybe Storage.SQLiteStore)
   }
 
 -- | Ordered chat history sent to the LLM.
@@ -84,6 +88,32 @@ data ActiveConversation = ActiveConversation
 
 newtype ActiveConversationHandle = ActiveConversationHandle ActiveConversation
 
+data ConversationRow = ConversationRow
+  { messageId :: !Integer
+  , conversationId :: !(Maybe Integer)
+  , parentMessageId :: !(Maybe Integer)
+  , messagesJson :: !Text
+  }
+  deriving (Eq, Show)
+
+data ConversationStorageRow = ConversationStorageRow
+  { message_id :: Int.Int64
+  , conversation_id :: Maybe Int.Int64
+  , parent_message_id :: Maybe Int.Int64
+  , messages_json :: Text
+  }
+  deriving (Generic)
+
+instance SqlRow ConversationStorageRow
+
+conversationRows :: Table ConversationStorageRow
+conversationRows =
+  table "conversation_nodes"
+    [ #message_id :- primary
+    , #conversation_id :- index
+    , #parent_message_id :- index
+    ]
+
 instance Aeson.ToJSON Conversation where
   toJSON Conversation{messages} =
     Aeson.object
@@ -95,18 +125,17 @@ instance Aeson.FromJSON Conversation where
     Conversation . Seq.fromList <$> o Aeson..: "messages"
 
 -- | Create a store with a bounded in-memory cache of persisted conversations.
-newConversationStore :: Maybe Storage.SQLiteStore -> IO ConversationStore
-newConversationStore sqliteStore = do
-  conversationState <- emptyConversationState sqliteStore
+newConversationStore :: IO ConversationStore
+newConversationStore = do
+  conversationState <- emptyConversationState
   ref <- IORef.newIORef conversationState
   activeRef <- IORef.newIORef Map.empty
-  pure ConversationStore{unConversationStore = ref, activeConversationStore = activeRef, sqliteStore}
+  pure ConversationStore{unConversationStore = ref, activeConversationStore = activeRef}
 
-emptyConversationState :: Maybe Storage.SQLiteStore -> IO ConversationState
-emptyConversationState sqliteStore = do
-  nextConversationId <- maybe (pure 1) Storage.loadNextConversationId sqliteStore
+emptyConversationState :: IO ConversationState
+emptyConversationState = do
   pure ConversationState
-    { nextConversationId = nextConversationId
+    { nextConversationId = 1
     , conversations = Map.empty
     , recentConversationIds = []
     }
@@ -114,44 +143,26 @@ emptyConversationState sqliteStore = do
 data StoredConversation = StoredConversation
   { storedConversationId :: !Integer
   , storedParentMessageId :: !(Maybe Integer)
-  , storedPayload :: !StoredConversationPayload
+  , storedMessages :: ![LLM.ChatMessage]
   }
 
-data StoredConversationPayload
-  = StoredConversationSnapshot !Conversation
-  | StoredConversationMessages ![LLM.ChatMessage]
-
-decodeStoredConversation :: Storage.ConversationRow -> Maybe StoredConversation
+decodeStoredConversation :: ConversationRow -> Maybe StoredConversation
 decodeStoredConversation row = do
-  payload <- decodeConversationPayload row
+  messages <- decodeMessages row.messagesJson
   let conversationId = fromMaybe 0 row.conversationId
   pure StoredConversation
     { storedConversationId = conversationId
     , storedParentMessageId = row.parentMessageId
-    , storedPayload = payload
+    , storedMessages = messages
     }
 
-decodeConversationPayload :: Storage.ConversationRow -> Maybe StoredConversationPayload
-decodeConversationPayload row =
-  case row.payloadKind of
-    Storage.ConversationPayloadMessages ->
-      StoredConversationMessages <$> decodeMessages row.payloadJson
-    Storage.ConversationPayloadSnapshot ->
-      StoredConversationSnapshot <$> decodeConversation row.payloadJson
-
-storedConversationFromPayload :: Maybe ConversationNode -> StoredConversationPayload -> Conversation
-storedConversationFromPayload _ (StoredConversationSnapshot conversation) =
-  conversation
-storedConversationFromPayload parentNode (StoredConversationMessages messages) =
+storedConversationFromMessages :: Maybe ConversationNode -> [LLM.ChatMessage] -> Conversation
+storedConversationFromMessages parentNode messages =
   case parentNode of
     Nothing ->
       Conversation (Seq.fromList messages)
     Just parent ->
       Conversation (parent.conversation.messages <> Seq.fromList messages)
-
-decodeConversation :: Text -> Maybe Conversation
-decodeConversation =
-  either (const Nothing) Just . Aeson.eitherDecodeStrict' . TextEncoding.encodeUtf8
 
 decodeMessages :: Text -> Maybe [LLM.ChatMessage]
 decodeMessages =
@@ -211,7 +222,7 @@ assistantContext answer =
       ]
 
 -- | Look up the conversation associated with a bot reply message id.
-lookupConversation :: IOE :> es => ConversationStore -> Integer -> Eff es (Maybe Conversation)
+lookupConversation :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> Integer -> Eff es (Maybe Conversation)
 lookupConversation store@ConversationStore{activeConversationStore = activeRef} messageId = do
   finished <- fmap (.conversation) <$> lookupConversationNode store messageId
   case finished of
@@ -221,8 +232,8 @@ lookupConversation store@ConversationStore{activeConversationStore = activeRef} 
       active <- liftIO $ Map.lookup messageId <$> IORef.readIORef activeRef
       traverse (liftIO . MVar.readMVar . (.activeDone)) active
 
-lookupConversationMessageIds :: IOE :> es => ConversationStore -> Integer -> Eff es [Integer]
-lookupConversationMessageIds store@ConversationStore{unConversationStore = ref, sqliteStore, activeConversationStore = activeRef} messageId = do
+lookupConversationMessageIds :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> Integer -> Eff es [Integer]
+lookupConversationMessageIds store@ConversationStore{unConversationStore = ref, activeConversationStore = activeRef} messageId = do
   active <- liftIO $ Map.lookup messageId <$> IORef.readIORef activeRef
   case active of
     Just activeConversation ->
@@ -231,11 +242,11 @@ lookupConversationMessageIds store@ConversationStore{unConversationStore = ref, 
       node <- lookupConversationNode store messageId
       case node of
         Nothing ->
-          maybe (pure []) (liftIO . flip Storage.loadConversationMessageIds messageId) sqliteStore
+          loadConversationMessageIds messageId
         Just target ->
-          liftIO do
-            cached <- Map.toList . (.conversations) <$> IORef.readIORef ref
-            stored <- maybe (pure []) (`Storage.loadConversationMessageIds` messageId) sqliteStore
+          do
+            cached <- liftIO $ Map.toList . (.conversations) <$> IORef.readIORef ref
+            stored <- loadConversationMessageIds messageId
             pure (ordNub (stored <> [nodeMessageId | (nodeMessageId, cachedNode) <- cached, cachedNode.conversationId == target.conversationId]))
 
 rememberActiveConversation
@@ -280,7 +291,7 @@ updateActiveConversation (ActiveConversationHandle active) conversation =
   liftIO $ IORef.writeIORef active.activeCurrent conversation
 
 finishActiveConversation
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, Log :> es, Storage.Storage :> es)
   => ConversationStore
   -> ActiveConversationHandle
   -> Conversation
@@ -294,7 +305,7 @@ finishActiveConversation store@ConversationStore{activeConversationStore = activ
     (foldl' (flip Map.delete) activeMap messageIds, ())
 
 finishActiveConversationCurrent
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, Log :> es, Storage.Storage :> es)
   => ConversationStore
   -> ActiveConversationHandle
   -> Eff es ()
@@ -302,7 +313,7 @@ finishActiveConversationCurrent store (ActiveConversationHandle active) = do
   conversation <- liftIO (IORef.readIORef active.activeCurrent)
   finishActiveConversation store (ActiveConversationHandle active) conversation
 
-haltConversation :: (IOE :> es, Log :> es) => ConversationStore -> Integer -> Eff es Bool
+haltConversation :: (IOE :> es, Log :> es, Storage.Storage :> es) => ConversationStore -> Integer -> Eff es Bool
 haltConversation store@ConversationStore{activeConversationStore = activeRef} messageId = do
   active <- liftIO $ Map.lookup messageId <$> IORef.readIORef activeRef
   case active of
@@ -319,13 +330,13 @@ haltConversation store@ConversationStore{activeConversationStore = activeRef} me
       pure True
 
 -- | Associate a bot reply message id with a conversation and persist it.
-rememberConversation :: (IOE :> es, Log :> es) => ConversationStore -> Maybe Integer -> Conversation -> Eff es ()
+rememberConversation :: (IOE :> es, Log :> es, Storage.Storage :> es) => ConversationStore -> Maybe Integer -> Conversation -> Eff es ()
 rememberConversation store =
   rememberConversationFrom store Nothing
 
 -- | Associate a bot reply with the same conversation as a parent bot message when known.
 rememberConversationFrom
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, Log :> es, Storage.Storage :> es)
   => ConversationStore
   -> Maybe Integer
   -> Maybe Integer
@@ -333,56 +344,51 @@ rememberConversationFrom
   -> Eff es ()
 rememberConversationFrom _ _ Nothing _ =
   pure ()
-rememberConversationFrom store@ConversationStore{unConversationStore = ref, sqliteStore} parentMessageId (Just messageId) conversation = do
-  parentNode <- liftIO (lookupConversationNodeIO store parentMessageId)
-  existingNode <- liftIO (lookupConversationNodeIO store (Just messageId))
+rememberConversationFrom store@ConversationStore{unConversationStore = ref} parentMessageId (Just messageId) conversation = do
+  ensureConversationTable
+  parentNode <- lookupConversationNodeMaybe store parentMessageId
+  existingNode <- lookupConversationNodeMaybe store (Just messageId)
+  nextStoredConversationId <- loadNextConversationId
   (conversationId, storageParentMessageId, storedMessages) <- liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
     let conversationId = conversationIdFor conversationState parentNode existingNode
         node = ConversationNode{conversationId, parentMessageId, conversation}
         (storageParentMessageId, storedMessages) =
           conversationMessagesForStorage parentMessageId parentNode conversation
         nextConversationId =
-          if conversationId < conversationState.nextConversationId
-            then conversationState.nextConversationId
-            else conversationId + 1
+          max nextStoredConversationId $
+            if conversationId < conversationState.nextConversationId
+              then conversationState.nextConversationId
+              else conversationId + 1
         nextState = conversationState
           { nextConversationId = nextConversationId
           }
         cachedState = cacheConversationNode messageId node nextState
     in (cachedState, (conversationId, storageParentMessageId, storedMessages))
-  traverse_
-    ( \sqlite ->
-        liftIO (Storage.saveConversationMessages sqlite messageId conversationId storageParentMessageId (messagesJson storedMessages))
-          `catch` \(err :: SomeException) ->
-            logInfo_ [i|Failed to persist conversation: #{show err :: String}|]
-    )
-    sqliteStore
+  saveConversationMessages messageId conversationId storageParentMessageId (messagesJson storedMessages)
+    `catch` \(err :: SomeException) ->
+      logInfo_ [i|Failed to persist conversation: #{show err :: String}|]
 
-lookupConversationNode :: IOE :> es => ConversationStore -> Integer -> Eff es (Maybe ConversationNode)
+lookupConversationNode :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> Integer -> Eff es (Maybe ConversationNode)
 lookupConversationNode store messageId =
-  liftIO (lookupConversationNodeIO store (Just messageId))
+  lookupConversationNodeMaybe store (Just messageId)
 
-lookupConversationNodeIO :: ConversationStore -> Maybe Integer -> IO (Maybe ConversationNode)
-lookupConversationNodeIO _ Nothing =
+lookupConversationNodeMaybe :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> Maybe Integer -> Eff es (Maybe ConversationNode)
+lookupConversationNodeMaybe _ Nothing =
   pure Nothing
-lookupConversationNodeIO store@ConversationStore{unConversationStore = ref, sqliteStore} (Just messageId) = do
-  cached <- Map.lookup messageId . (.conversations) <$> IORef.readIORef ref
+lookupConversationNodeMaybe store@ConversationStore{unConversationStore = ref} (Just messageId) = do
+  cached <- liftIO $ Map.lookup messageId . (.conversations) <$> IORef.readIORef ref
   case cached of
     Just node ->
       pure (Just node)
     Nothing ->
-      case sqliteStore of
-        Nothing ->
-          pure Nothing
-        Just sqlite ->
-          loadConversationNodeFromStorage store sqlite [] messageId
+      loadConversationNodeFromStorage store [] messageId
 
-loadConversationNodeFromStorage :: ConversationStore -> Storage.SQLiteStore -> [Integer] -> Integer -> IO (Maybe ConversationNode)
-loadConversationNodeFromStorage store@ConversationStore{unConversationStore = ref} sqlite visited messageId
+loadConversationNodeFromStorage :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> [Integer] -> Integer -> Eff es (Maybe ConversationNode)
+loadConversationNodeFromStorage store@ConversationStore{unConversationStore = ref} visited messageId
   | messageId `elem` visited =
       pure Nothing
   | otherwise = do
-      row <- Storage.loadConversationRow sqlite messageId
+      row <- loadConversationRow messageId
       case row >>= decodeStoredConversation of
         Nothing ->
           pure Nothing
@@ -391,20 +397,91 @@ loadConversationNodeFromStorage store@ConversationStore{unConversationStore = re
             Nothing ->
               pure Nothing
             Just parentMessageId ->
-              Map.lookup parentMessageId . (.conversations) <$> IORef.readIORef ref
+              liftIO (Map.lookup parentMessageId . (.conversations) <$> IORef.readIORef ref)
                 >>= \case
                   Just node ->
                     pure (Just node)
                   Nothing ->
-                    loadConversationNodeFromStorage store sqlite (messageId : visited) parentMessageId
+                    loadConversationNodeFromStorage store (messageId : visited) parentMessageId
           let node = ConversationNode
                 { conversationId = stored.storedConversationId
                 , parentMessageId = stored.storedParentMessageId
-                , conversation = storedConversationFromPayload parentNode stored.storedPayload
+                , conversation = storedConversationFromMessages parentNode stored.storedMessages
                 }
-          IORef.atomicModifyIORef' ref \conversationState ->
+          liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
             (cacheConversationNode messageId node conversationState, ())
           pure (Just node)
+
+ensureConversationTable :: Storage.Storage :> es => Eff es ()
+ensureConversationTable =
+  runSelda (tryCreateTable conversationRows)
+
+loadConversationRows :: Storage.Storage :> es => Eff es [ConversationRow]
+loadConversationRows = do
+  ensureConversationTable
+  rows <- runSelda $
+    query do
+      row <- select conversationRows
+      order (row ! #message_id) ascending
+      pure row
+  pure (map conversationRowFromStorage rows)
+
+loadConversationRow :: Storage.Storage :> es => Integer -> Eff es (Maybe ConversationRow)
+loadConversationRow targetMessageId = do
+  ensureConversationTable
+  rows <- runSelda $
+    query $
+      queryLimit 0 1 do
+        row <- select conversationRows
+        restrict (row ! #message_id .== literal (fromIntegral targetMessageId :: Int.Int64))
+        pure row
+  pure (conversationRowFromStorage <$> viaNonEmpty head rows)
+
+loadConversationMessageIds :: Storage.Storage :> es => Integer -> Eff es [Integer]
+loadConversationMessageIds messageId = do
+  target <- loadConversationRow messageId
+  case target >>= (.conversationId) of
+    Nothing ->
+      pure []
+    Just targetConversationId -> do
+      ensureConversationTable
+      rows <- runSelda $
+        query do
+          row <- select conversationRows
+          restrict (row ! #conversation_id .== literal (Just (fromIntegral targetConversationId :: Int.Int64)))
+          order (row ! #message_id) ascending
+          pure (row ! #message_id)
+      pure (map fromIntegral rows)
+
+loadNextConversationId :: Storage.Storage :> es => Eff es Integer
+loadNextConversationId = do
+  rows <- loadConversationRows
+  pure (Foldable.maximum (1 : [fromMaybe 0 row.conversationId + 1 | row <- rows]))
+
+saveConversationMessages :: Storage.Storage :> es => Integer -> Integer -> Maybe Integer -> Text -> Eff es ()
+saveConversationMessages messageId conversationId parentMessageId storedMessagesJson = do
+  ensureConversationTable
+  runSelda do
+    deleteFrom_ conversationRows \row ->
+      row ! #message_id .== literal (fromIntegral messageId :: Int.Int64)
+    insert_
+      conversationRows
+      [ ConversationStorageRow
+          { message_id = fromIntegral messageId
+          , conversation_id = Just (fromIntegral conversationId)
+          , parent_message_id = fromIntegral <$> parentMessageId
+          , messages_json = storedMessagesJson
+          }
+      ]
+
+conversationRowFromStorage :: ConversationStorageRow -> ConversationRow
+conversationRowFromStorage row =
+  ConversationRow
+    { messageId = fromIntegral row.message_id
+    , conversationId = fromIntegral <$> row.conversation_id
+    , parentMessageId = fromIntegral <$> row.parent_message_id
+    , messagesJson = row.messages_json
+    }
 
 cacheConversationNode :: Integer -> ConversationNode -> ConversationState -> ConversationState
 cacheConversationNode messageId node conversationState =

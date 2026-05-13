@@ -11,7 +11,6 @@ import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Memory as MemoryStore
-import qualified Bot.Storage.SQLite as Storage
 import Bot.Core.Message
 import Bot.Prelude
 import Control.Concurrent (forkIO, threadDelay)
@@ -162,8 +161,8 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
   IORef.readIORef updates >>= (@?= [(Nothing, [], "ab"), (Just 1, [1], "abcd"), (Just 1, [], "abcdef"), (Just 1, [2], "abcdef")])
 
 testChunkedActiveConversationAliasesEverySentReply :: IO ()
-testChunkedActiveConversationAliasesEverySentReply = runEff $ runTestLog do
-  store <- liftIO (newConversationStore Nothing)
+testChunkedActiveConversationAliasesEverySentReply = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+  store <- liftIO newConversationStore
   threadId <- liftIO $ forkIO (threadDelay 60_000_000)
   let baseConversation = startWithUser "hello"
       partialConversation = appendAssistant "partial answer" baseConversation
@@ -211,8 +210,8 @@ fakeWebFetchTool fetches = Agent.Tool
   }
 
 testConversationRepliesKeepSnapshots :: IO ()
-testConversationRepliesKeepSnapshots = runEff $ runTestLog do
-  store <- liftIO (newConversationStore Nothing)
+testConversationRepliesKeepSnapshots = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+  store <- liftIO newConversationStore
   let firstConversation = startWithUser "first"
       secondConversation = appendAssistant "second" firstConversation
   rememberConversation store (Just 1) firstConversation
@@ -224,8 +223,8 @@ testConversationRepliesKeepSnapshots = runEff $ runTestLog do
     (show secondLookup :: String) @?= show (Just secondConversation)
 
 testConversationBranchesDoNotOverwriteSiblings :: IO ()
-testConversationBranchesDoNotOverwriteSiblings = runEff $ runTestLog do
-  store <- liftIO (newConversationStore Nothing)
+testConversationBranchesDoNotOverwriteSiblings = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+  store <- liftIO newConversationStore
   let root = appendAssistant "root answer" (startWithUser "root")
       branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
       branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
@@ -247,53 +246,52 @@ testConversationBranchesDoNotOverwriteSiblings = runEff $ runTestLog do
 testConversationBranchesPersistThroughSQLiteReload :: IO ()
 testConversationBranchesPersistThroughSQLiteReload =
   withSQLiteTempPath "conversation-branches" \path -> runEff $ runTestLog do
-    sqliteStore <- liftIO (Storage.openSQLiteStore path)
-    store <- liftIO (newConversationStore (Just sqliteStore))
-    let root = appendAssistant "root answer" (startWithUser "root")
-        branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
-        branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
-    rememberConversation store (Just 1) root
-    rememberConversationFrom store (Just 1) (Just 2) branchA
-    rememberConversationFrom store (Just 1) (Just 3) branchB
+    StorageEffect.runStorageSQLitePath path do
+      store <- liftIO newConversationStore
+      let root = appendAssistant "root answer" (startWithUser "root")
+          branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
+          branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
+      rememberConversation store (Just 1) root
+      rememberConversationFrom store (Just 1) (Just 2) branchA
+      rememberConversationFrom store (Just 1) (Just 3) branchB
 
-    reloaded <- liftIO (newConversationStore (Just sqliteStore))
-    branchAAfterReload <- lookupConversation reloaded 2
-    branchBAfterReload <- lookupConversation reloaded 3
-    let branchA2 = appendAssistant "A second answer" (appendUser "A second follow-up" branchA)
-    rememberConversationFrom reloaded (Just 2) (Just 4) branchA2
-    rows <- liftIO (Storage.loadConversationRows sqliteStore)
-    branchA2AfterReload <- lookupConversation reloaded 4
+      reloaded <- liftIO newConversationStore
+      branchAAfterReload <- lookupConversation reloaded 2
+      branchBAfterReload <- lookupConversation reloaded 3
+      let branchA2 = appendAssistant "A second answer" (appendUser "A second follow-up" branchA)
+      rememberConversationFrom reloaded (Just 2) (Just 4) branchA2
+      rows <- loadConversationRows
+      branchA2AfterReload <- lookupConversation reloaded 4
 
-    liftIO do
-      (show branchAAfterReload :: String) @?= show (Just branchA)
-      (show branchBAfterReload :: String) @?= show (Just branchB)
-      (show branchA2AfterReload :: String) @?= show (Just branchA2)
-      map (.messageId) rows @?= [1, 2, 3, 4]
-      map (.parentMessageId) rows @?= [Nothing, Just 1, Just 1, Just 2]
-      map (.payloadKind) rows @?= replicate 4 Storage.ConversationPayloadMessages
-      map payloadMessageCount rows @?= [2, 2, 2, 2]
-      assertBool "all nodes in the reloaded tree keep the same conversation id" (sameConversationIds rows)
+      liftIO do
+        (show branchAAfterReload :: String) @?= show (Just branchA)
+        (show branchBAfterReload :: String) @?= show (Just branchB)
+        (show branchA2AfterReload :: String) @?= show (Just branchA2)
+        map (.messageId) rows @?= [1, 2, 3, 4]
+        map (.parentMessageId) rows @?= [Nothing, Just 1, Just 1, Just 2]
+        map payloadMessageCount rows @?= [2, 2, 2, 2]
+        assertBool "all nodes in the reloaded tree keep the same conversation id" (sameConversationIds rows)
 
 testConversationCacheMissLoadsEvictedParent :: IO ()
 testConversationCacheMissLoadsEvictedParent =
   withSQLiteTempPath "conversation-cache-miss" \path -> runEff $ runTestLog do
-    sqliteStore <- liftIO (Storage.openSQLiteStore path)
-    store <- liftIO (newConversationStore (Just sqliteStore))
-    let root = appendAssistant "root answer" (startWithUser "root")
-        child = appendAssistant "child answer" (appendUser "child follow-up" root)
-    rememberConversation store (Just 1) root
-    for_ [1000..1512] \messageId ->
-      rememberConversation store (Just messageId) (startWithUser [i|filler #{messageId}|])
-    rememberConversationFrom store (Just 1) (Just 2) child
-    rootLookup <- lookupConversation store 1
-    childLookup <- lookupConversation store 2
-    rows <- liftIO (Storage.loadConversationRows sqliteStore)
-    let childRow = find ((== 2) . (.messageId)) rows
-    liftIO do
-      (show rootLookup :: String) @?= show (Just root)
-      (show childLookup :: String) @?= show (Just child)
-      ((.parentMessageId) <$> childRow) @?= Just (Just 1)
-      (payloadMessageCount <$> childRow) @?= Just 2
+    StorageEffect.runStorageSQLitePath path do
+      store <- liftIO newConversationStore
+      let root = appendAssistant "root answer" (startWithUser "root")
+          child = appendAssistant "child answer" (appendUser "child follow-up" root)
+      rememberConversation store (Just 1) root
+      for_ [1000..1512] \messageId ->
+        rememberConversation store (Just messageId) (startWithUser [i|filler #{messageId}|])
+      rememberConversationFrom store (Just 1) (Just 2) child
+      rootLookup <- lookupConversation store 1
+      childLookup <- lookupConversation store 2
+      rows <- loadConversationRows
+      let childRow = find ((== 2) . (.messageId)) rows
+      liftIO do
+        (show rootLookup :: String) @?= show (Just root)
+        (show childLookup :: String) @?= show (Just child)
+        ((.parentMessageId) <$> childRow) @?= Just (Just 1)
+        (payloadMessageCount <$> childRow) @?= Just 2
 
 testConversationJsonRemainsListCompatible :: IO ()
 testConversationJsonRemainsListCompatible = do
@@ -401,7 +399,7 @@ removeIfExists :: FilePath -> IO ()
 removeIfExists path =
   removeFile path `Exception.catch` \(_ :: IOException) -> pure ()
 
-sameConversationIds :: [Storage.ConversationRow] -> Bool
+sameConversationIds :: [ConversationRow] -> Bool
 sameConversationIds rows =
   case map (.conversationId) rows of
     [] ->
@@ -409,9 +407,9 @@ sameConversationIds rows =
     firstId : rest ->
       isJust firstId && all (== firstId) rest
 
-payloadMessageCount :: Storage.ConversationRow -> Int
+payloadMessageCount :: ConversationRow -> Int
 payloadMessageCount row =
-  case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 row.payloadJson) :: Either String [LLM.ChatMessage] of
+  case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 row.messagesJson) :: Either String [LLM.ChatMessage] of
     Left err ->
       error (Text.pack err)
     Right messages ->
@@ -440,10 +438,9 @@ runAgentWithMemory
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemory memoryCfg answers chatMock action = do
-  sqliteStore <- Storage.openSQLiteStore ":memory:"
   runEff $
     runTestLog $
-      StorageEffect.runStorageSQLite sqliteStore $
+      StorageEffect.runStorageSQLitePath ":memory:" $
         Scheduler.runScheduler $
           Memory.runMemory memoryCfg $
             LLM.runLLMWith

@@ -74,7 +74,6 @@ common app-deps
                     , relude
                     , text
                     , containers
-                    , direct-sqlite
                     , directory
                     , filepath
                     , effectful
@@ -96,6 +95,8 @@ common app-deps
                     , time
                     , temporary
                     , process
+                    , selda
+                    , selda-sqlite
     hs-source-dirs:   app
 
 common test-deps
@@ -145,7 +146,7 @@ common bot-agent-modules
         Bot.Effect.Scheduler
         Bot.Effect.Storage
         Bot.Memory
-        Bot.Storage.SQLite
+        Bot.Storage.Prelude
         Bot.Util.Html
         Bot.Util.HTTP
         Bot.Util.Image
@@ -217,7 +218,7 @@ test-suite scratchpad-spec
     other-modules:
         Bot.Core.Route
         Bot.Effect.Storage
-        Bot.Storage.SQLite
+        Bot.Storage.Prelude
         Bot.Handler.Scratchpad
     hs-source-dirs:   test
 
@@ -287,7 +288,7 @@ test-suite chat-log-spec
     other-modules:
         Bot.Effect.ChatLog
         Bot.Effect.Storage
-        Bot.Storage.SQLite
+        Bot.Storage.Prelude
     hs-source-dirs:   test
 
 benchmark message-pipeline-bench
@@ -304,7 +305,7 @@ benchmark message-pipeline-bench
         Bot.Effect.ChatLog
         Bot.Effect.Scheduler
         Bot.Effect.Storage
-        Bot.Storage.SQLite
+        Bot.Storage.Prelude
         Bot.Util.Stream
     build-depends:    deepseq
                     , tasty-bench

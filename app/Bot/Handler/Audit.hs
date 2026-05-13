@@ -14,12 +14,13 @@ import Bot.Core.Conversation
 import Bot.Core.Route
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import qualified Data.Text as Text
 import Data.Time (FormatTime, defaultTimeLocale, formatTime)
 
 auditHandlers
-  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, IOE :> es)
+  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, IOE :> es)
   => ConversationStore
   -> [RouteHandler es]
 auditHandlers conversations =
@@ -28,7 +29,7 @@ auditHandlers conversations =
   ]
 
 handleAudit
-  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, IOE :> es)
+  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, IOE :> es)
   => ConversationStore
   -> IncomingMessage
   -> Text

@@ -3,6 +3,8 @@ Module      : Bot.Handler.Scratchpad
 Description : Per-sender scratchpad todo commands
 Stability   : experimental
 -}
+{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Bot.Handler.Scratchpad
   ( scratchpadHandlers
@@ -15,7 +17,8 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Route
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Data.Aeson as Aeson
+import Bot.Storage.Prelude
+import qualified Data.Int as Int
 import qualified Data.Text as Text
 
 scratchpadHandlers
@@ -40,17 +43,36 @@ data TodoItem = TodoItem
   { body :: !Text
   , done :: !Bool
   }
-  deriving stock (Eq, Generic, Show)
-  deriving anyclass (Aeson.FromJSON, Aeson.ToJSON)
+  deriving stock (Eq, Show)
 
-type StoredTodo = Storage.StoredState TodoItem
+data StoredTodo = StoredTodo
+  { rowId :: !Integer
+  , value :: !TodoItem
+  }
+  deriving (Eq, Show)
 
-todoItems :: Storage.JsonCollection TodoItem
-todoItems =
-  Storage.JsonCollection
-    { tableName = "scratchpad_todo_items"
-    , scopeColumns = ["platform_key", "sender_key"]
-    }
+data TodoRow = TodoRow
+  { id :: ID TodoRow
+  , platform_key :: Text
+  , sender_key :: Text
+  , body :: Text
+  , done :: Bool
+  }
+  deriving (Generic)
+
+instance SqlRow TodoRow
+
+todoRows :: Table TodoRow
+todoRows =
+  table "scratchpad_todos"
+    [ #id :- autoPrimary
+    , #platform_key :- index
+    , #sender_key :- index
+    ]
+
+ensureTodoTable :: Storage.Storage :> es => Eff es ()
+ensureTodoTable =
+  runSelda (tryCreateTable todoRows)
 
 scratchpadRoute
   :: (Chat.Chat :> es, Storage.Storage :> es)
@@ -107,14 +129,14 @@ handleDone platformKey senderKey message args =
   case parseSingleIndex args of
     Nothing ->
       void $ Chat.replyTo message "用法：!done <todo编号>"
-    Just index -> do
+    Just todoIndex -> do
       todos <- loadTodoList platformKey senderKey
-      case todoAt index todos of
+      case todoAt todoIndex todos of
         Nothing ->
-          void $ Chat.replyTo message [i|没有编号 #{index} 的 todo。|]
+          void $ Chat.replyTo message [i|没有编号 #{todoIndex} 的 todo。|]
         Just todo -> do
           markTodoDone platformKey senderKey todo
-          void $ Chat.replyTo message ("已完成 #" <> show index <> ": " <> todo.value.body)
+          void $ Chat.replyTo message ("已完成 #" <> show todoIndex <> ": " <> todo.value.body)
 
 handleClear
   :: (Chat.Chat :> es, Storage.Storage :> es)
@@ -159,46 +181,93 @@ renderTodoList [] =
 renderTodoList todos =
   Text.unlines (zipWith render [1 :: Int ..] todos)
   where
-    render index todo =
-      "- [" <> status todo.value <> "] " <> show index <> ". " <> todo.value.body
+    render todoIndex todo =
+      "- [" <> status todo.value <> "] " <> show todoIndex <> ". " <> todo.value.body
     status todo
       | todo.done = "X"
       | otherwise = " "
 
 loadTodoList :: Storage.Storage :> es => Text -> Text -> Eff es [StoredTodo]
-loadTodoList platformKey senderKey =
-  Storage.loadJsonCollection todoItems (todoScope platformKey senderKey)
+loadTodoList platformKey senderKey = do
+  ensureTodoTable
+  rows <- runSelda do
+    query do
+      todo <- select todoRows
+      restrict $
+        todo ! #platform_key .== literal platformKey
+          .&& todo ! #sender_key .== literal senderKey
+      order (todo ! #id) ascending
+      pure todo
+  pure (map storedTodo rows)
 
 addTodoItem :: Storage.Storage :> es => Text -> Text -> Text -> Eff es ()
-addTodoItem platformKey senderKey body =
-  Storage.appendJsonCollection todoItems (todoScope platformKey senderKey) TodoItem{body, done = False}
+addTodoItem platformKey senderKey body = do
+  ensureTodoTable
+  runSelda $
+    insert_ todoRows
+      [ TodoRow
+          { id = def
+          , platform_key = platformKey
+          , sender_key = senderKey
+          , body = body
+          , done = False
+          }
+      ]
 
 markTodoDone :: Storage.Storage :> es => Text -> Text -> StoredTodo -> Eff es ()
 markTodoDone platformKey senderKey todo = do
-  let item = todo.value
-  Storage.replaceJsonCollectionItem todoItems (todoScope platformKey senderKey) todo.rowId item{done = True}
+  ensureTodoTable
+  runSelda $
+    update_ todoRows
+      (ownedTodo platformKey senderKey todo.rowId)
+      (`with` [#done $= const (literal True)])
 
 deleteTodoRows :: Storage.Storage :> es => Text -> Text -> [Integer] -> Eff es ()
-deleteTodoRows platformKey senderKey =
-  Storage.deleteJsonCollectionRows todoItems (todoScope platformKey senderKey)
+deleteTodoRows platformKey senderKey rowIds = do
+  ensureTodoTable
+  runSelda do
+    for_ rowIds \rowId ->
+      deleteFrom_ todoRows (ownedTodo platformKey senderKey rowId)
 
 clearTodoList :: Storage.Storage :> es => Text -> Text -> Eff es ()
-clearTodoList platformKey senderKey =
-  Storage.clearJsonCollection todoItems (todoScope platformKey senderKey)
+clearTodoList platformKey senderKey = do
+  ensureTodoTable
+  runSelda $
+    deleteFrom_ todoRows \todo ->
+      todo ! #platform_key .== literal platformKey
+        .&& todo ! #sender_key .== literal senderKey
 
-todoScope :: Text -> Text -> [Text]
-todoScope platformKey senderKey =
-  [platformKey, senderKey]
+storedTodo :: TodoRow -> StoredTodo
+storedTodo todo =
+  StoredTodo
+    { rowId = fromIntegral (fromId todo.id)
+    , value = TodoItem{body = todo.body, done = todo.done}
+    }
+
+ownedTodo
+  :: forall (backend :: Type).
+     Text
+  -> Text
+  -> Integer
+  -> Row backend TodoRow
+  -> Col backend Bool
+ownedTodo platformKey senderKey rowId todo =
+  todo ! #id .== wantedId
+    .&& todo ! #platform_key .== literal platformKey
+    .&& todo ! #sender_key .== literal senderKey
+  where
+    wantedId :: Col backend (ID TodoRow)
+    wantedId = literal (toId (fromIntegral rowId :: Int.Int64))
 
 todoAt :: Int -> [StoredTodo] -> Maybe StoredTodo
-todoAt index todos
-  | index <= 0 = Nothing
-  | otherwise = viaNonEmpty head (drop (index - 1) todos)
+todoAt todoIndex todos
+  | todoIndex <= 0 = Nothing
+  | otherwise = viaNonEmpty head (drop (todoIndex - 1) todos)
 
 parseSingleIndex :: Text -> Maybe Int
 parseSingleIndex args =
   case parseIndices args of
-    [index] -> Just index
+    [todoIndex] -> Just todoIndex
     _ -> Nothing
 
 parseIndices :: Text -> [Int]

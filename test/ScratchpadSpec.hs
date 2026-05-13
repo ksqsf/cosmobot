@@ -8,7 +8,6 @@ import Bot.Core.Route
 import Bot.Handler.Scratchpad
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Bot.Storage.SQLite as Storage
 import qualified Control.Exception as Exception
 import qualified System.Directory as Directory
 import System.FilePath ((</>))
@@ -67,11 +66,9 @@ testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store ->
 testScratchpadPersistence :: IO ()
 testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
   writeReplies <- IORef.newIORef ([] :: [Text])
-  writeStore <- Storage.openSQLiteStore path
-  runScratchpad writeStore writeReplies (message "!todo persists")
+  runScratchpad path writeReplies (message "!todo persists")
   readReplies <- IORef.newIORef ([] :: [Text])
-  readStore <- Storage.openSQLiteStore path
-  runScratchpad readStore readReplies (message "!list")
+  runScratchpad path readReplies (message "!list")
   IORef.readIORef readReplies >>= (@?= ["- [ ] 1. persists\n"])
 
 testScratchpadInvalidCommands :: IO ()
@@ -97,11 +94,9 @@ testScratchpadMissingSender = withScratchpadStore "missing-sender" \store -> do
   runScratchpad store replies (messageWithoutSender "!todo unsaved")
   IORef.readIORef replies >>= (@?= ["无法识别发送者，不能保存 todo。"])
 
-withScratchpadStore :: String -> (Storage.SQLiteStore -> IO ()) -> IO ()
+withScratchpadStore :: String -> (FilePath -> IO ()) -> IO ()
 withScratchpadStore label action =
-  withScratchpadPath label \path -> do
-    store <- Storage.openSQLiteStore path
-    action store
+  withScratchpadPath label action
 
 withScratchpadPath :: String -> (FilePath -> IO ()) -> IO ()
 withScratchpadPath label action = do
@@ -110,8 +105,8 @@ withScratchpadPath label action = do
   Directory.removeFile path `Exception.catch` \(_ :: IOException) -> pure ()
   action path
 
-runScratchpad :: Storage.SQLiteStore -> IORef.IORef [Text] -> IncomingMessage -> IO ()
-runScratchpad store replies incoming =
+runScratchpad :: FilePath -> IORef.IORef [Text] -> IncomingMessage -> IO ()
+runScratchpad path replies incoming =
   runEff $
     Chat.runChatWith Chat.ChatHandlers
       { handleReplyTo = reply
@@ -123,7 +118,7 @@ runScratchpad store replies incoming =
       , handleListGroupMembers = listMembers
       , handleMentionUser = mention
       } $
-      StorageEffect.runStorageSQLite store $
+      StorageEffect.runStorageSQLitePath path $
         runHandlers scratchpadHandlers incoming
   where
     reply _ body = do
