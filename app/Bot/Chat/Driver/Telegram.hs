@@ -52,7 +52,6 @@ import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as ChatEffect
 import Bot.Util.Multipart
 import Bot.Core.Message
-import Control.Concurrent (threadDelay)
 import Data.List (maximum)
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -190,21 +189,14 @@ updatesStream'
   => Int
   -> Stream (Of Update) (Eff es) ()
 updatesStream' offset = do
-  result <- S.lift $ (Right <$> getUpdates offset) `catch` \(err :: SomeException) -> do
-    logInfo "Telegram getUpdates failed, retrying" (show err :: String)
-    liftIO $ threadDelay telegramRetryDelayMicroseconds
-    pure (Left ())
-  case result of
-    Left () ->
-      updatesStream' offset
-    Right batches -> do
-      S.lift $ logTrace_ [i|Got a batch of #{length batches} messages|]
-      S.lift $ logInfo "Telegram update batch" (length batches)
-      S.each batches
-      let nextOffset = case batches of
-            [] -> offset
-            _  -> 1 + maximum (map (fromInteger . (.updateId)) batches)
-      updatesStream' nextOffset
+  batches <- S.lift (getUpdates offset)
+  S.lift $ logTrace_ [i|Got a batch of #{length batches} messages|]
+  S.lift $ logInfo "Telegram update batch" (length batches)
+  S.each batches
+  let nextOffset = case batches of
+        [] -> offset
+        _  -> 1 + maximum (map (fromInteger . (.updateId)) batches)
+  updatesStream' nextOffset
 
 updatesStream :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of Update) (Eff es) ()
 updatesStream = updatesStream' 0
@@ -438,7 +430,7 @@ apiCall manager cfg method body = do
     ( liftIO $ runReq (telegramHttpConfig manager) $
         req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse (telegramRequestOptions method)
           <&> responseBody
-    ) `catch` \(err :: SomeException) ->
+    ) `catch` \(err :: HttpException) ->
       throwIO (APIException (sanitizeTelegramException cfg err))
   logTelegramApiResponse method
   decodeResponse resp
@@ -457,12 +449,12 @@ apiMultipartCall manager cfg method parts = do
         body <- reqBodyMultipart parts
         req POST (apiUrl cfg method) body jsonResponse (telegramRequestOptions method)
           <&> responseBody
-    ) `catch` \(err :: SomeException) ->
+    ) `catch` \(err :: HttpException) ->
       throwIO (APIException (sanitizeTelegramException cfg err))
   logTelegramApiResponse method
   decodeResponse resp
 
-sanitizeTelegramException :: Config -> SomeException -> Text
+sanitizeTelegramException :: Show err => Config -> err -> Text
 sanitizeTelegramException cfg err =
   Text.replace cfg.botToken "<telegram-token>" (show err)
 
@@ -470,8 +462,6 @@ telegramHttpConfig :: Manager -> HttpConfig
 telegramHttpConfig manager =
   defaultHttpConfig
     { httpConfigAltManager = Just manager
-    , httpConfigRetryJudge = \_ _ -> False
-    , httpConfigRetryJudgeException = \_ _ -> False
     }
 
 logTelegramApiRequest :: Log :> es => Text -> Eff es ()
@@ -525,10 +515,6 @@ telegramLongPollResponseTimeoutMicroseconds =
 telegramApiResponseTimeoutMicroseconds :: Int
 telegramApiResponseTimeoutMicroseconds =
   10 * 1000000
-
-telegramRetryDelayMicroseconds :: Int
-telegramRetryDelayMicroseconds =
-  5 * 1000000
 
 telegramRequestOptions :: Text -> Option 'Https
 telegramRequestOptions method =
