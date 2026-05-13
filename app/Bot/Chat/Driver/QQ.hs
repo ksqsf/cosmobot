@@ -33,6 +33,7 @@ import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
 import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
+import qualified Control.Concurrent.Async as Async
 import qualified Control.Exception as Exception
 import qualified Control.Concurrent.Chan as Chan
 import qualified Control.Concurrent.MVar as MVar
@@ -134,28 +135,25 @@ runQQ
 runQQ cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
   eventChan <- liftIO Chan.newChan
   actionChan <- liftIO Chan.newChan
-  worker <- liftIO $ forkIO $ runInIO $
-    qqConnectionLoop cfg eventChan actionChan
-  liftIO $ runInIO
-    (interpret
-        (\_ -> \case
-          QQConfig ->
-            pure cfg
-          ReceiveEvent ->
-            liftIO (Chan.readChan eventChan)
-          SendAction value -> do
-            responseVar <- liftIO MVar.newEmptyMVar
-            liftIO $ Chan.writeChan actionChan (ActionRequest value responseVar)
-            result <- liftIO $ Timeout.timeout qqActionTimeoutMicroseconds (MVar.takeMVar responseVar)
-            case result of
-              Just response ->
-                pure response
-              Nothing -> do
-                logInfo_ "QQ action timed out"
-                pure failedActionResponse)
-        inner
-    )
-    `Exception.finally` killThread worker
+  liftIO $ Async.withAsync (runInIO $ qqConnectionLoop cfg eventChan actionChan) \_ ->
+    runInIO $
+      interpret
+          (\_ -> \case
+            QQConfig ->
+              pure cfg
+            ReceiveEvent ->
+              liftIO (Chan.readChan eventChan)
+            SendAction value -> do
+              responseVar <- liftIO MVar.newEmptyMVar
+              liftIO $ Chan.writeChan actionChan (ActionRequest value responseVar)
+              result <- liftIO $ Timeout.timeout qqActionTimeoutMicroseconds (MVar.takeMVar responseVar)
+              case result of
+                Just response ->
+                  pure response
+                Nothing -> do
+                  logInfo_ "QQ action timed out"
+                  pure failedActionResponse)
+          inner
 
 data ActionRequest = ActionRequest !Aeson.Value !(MVar.MVar ActionResponse)
 
@@ -167,18 +165,32 @@ qqConnectionLoop
   -> Eff es ()
 qqConnectionLoop cfg eventChan actionChan =
   forever do
-    result <- (Right <$> do
-      withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-        liftIO $ WS.runClient cfg.host cfg.port (websocketPath cfg) \conn ->
-          runInIO (runConnection eventChan actionChan conn)
-      ) `catch` \(err :: SomeException) ->
-        pure (Left err)
+    result <- runQQConnectionOnce cfg eventChan actionChan
     case result of
       Right () ->
         logInfo_ "QQ websocket disconnected; reconnecting"
       Left err ->
-        logInfo "QQ websocket failed; reconnecting" (show err :: String)
+        logInfo "QQ websocket failed; reconnecting" err
     liftIO $ threadDelay qqReconnectDelayMicroseconds
+
+runQQConnectionOnce
+  :: (IOE :> es, Log :> es)
+  => Config
+  -> Chan.Chan Event
+  -> Chan.Chan ActionRequest
+  -> Eff es (Either String ())
+runQQConnectionOnce cfg eventChan actionChan =
+  (Right <$> do
+    withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+      liftIO $ WS.runClient cfg.host cfg.port (websocketPath cfg) \conn ->
+        runInIO (runConnection eventChan actionChan conn)
+  )
+    `catch` \(connectionErr :: WS.ConnectionException) ->
+      pure (Left (show connectionErr))
+    `catch` \(handshakeErr :: WS.HandshakeException) ->
+      pure (Left (show handshakeErr))
+    `catch` \(ioErr :: IOException) ->
+      pure (Left (show ioErr))
 
 runConnection
   :: (IOE :> es, Log :> es)
