@@ -12,6 +12,8 @@ module Bot.Effect.AgentTrace
   , ToolCallTrace (..)
   , ToolUseDetail (..)
   , ToolUseStatus (..)
+  , agentTraceObserver
+  , recordAgentEvent
   , toolUsesFromTraceRecords
   , recordEvent
   , queryRun
@@ -24,6 +26,8 @@ module Bot.Effect.AgentTrace
   )
 where
 
+import qualified Bot.Agent.Types as Agent
+import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as Storage
 import qualified Data.Aeson as Aeson
@@ -138,6 +142,51 @@ data ToolUseDetail = ToolUseDetail
 recordEvent :: AgentTrace :> es => AgentTraceEvent -> Eff es ()
 recordEvent event =
   send (RecordEvent event)
+
+agentTraceObserver :: AgentTrace :> es => Agent.AgentObserver es
+agentTraceObserver =
+  Agent.AgentObserver{Agent.observe = recordAgentEvent}
+
+recordAgentEvent :: AgentTrace :> es => Agent.AgentEvent -> Eff es ()
+recordAgentEvent =
+  recordEvent . agentTraceEvent
+
+agentTraceEvent :: Agent.AgentEvent -> AgentTraceEvent
+agentTraceEvent = \case
+  Agent.AgentRunStarted{runId, messageId, maxTurns, exposedTools} ->
+    AgentRunStarted{runId, messageId, maxTurns, exposedTools}
+  Agent.ModelTurnStarted{runId, turn, messageCount, exposedTools} ->
+    ModelTurnStarted{runId, turn, messageCount, exposedTools}
+  Agent.ModelTurnFinished{runId, turn, answerKind, contentLength, toolCalls} ->
+    ModelTurnFinished
+      { runId
+      , turn
+      , answerKind
+      , contentLength
+      , toolCalls = map toolCallTrace toolCalls
+      }
+  Agent.ToolCallStarted{runId, turn, toolCall} ->
+    ToolCallStarted
+      { runId
+      , turn
+      , toolCall = toolCallTrace toolCall
+      }
+  Agent.ToolCallFinished{runId, turn, toolCallId, toolName, status, result, resultLength, messageIds} ->
+    ToolCallFinished{runId, turn, toolCallId, toolName, status, result, resultLength, messageIds}
+  Agent.AgentRunFinished{runId, status, finalLength, turnsUsed} ->
+    AgentRunFinished{runId, status, finalLength, turnsUsed}
+  Agent.AgentRunInterrupted{runId, reason} ->
+    AgentRunInterrupted{runId, reason}
+  Agent.AgentConversationLinked{runId, linkedMessageId, parentMessageId} ->
+    AgentConversationLinked{runId, linkedMessageId, parentMessageId}
+
+toolCallTrace :: LLM.ToolCall -> ToolCallTrace
+toolCallTrace call =
+  ToolCallTrace
+    { id = call.id
+    , name = call.name
+    , arguments = call.arguments
+    }
 
 queryRun :: AgentTrace :> es => Text -> Eff es [AgentTraceEvent]
 queryRun runId =

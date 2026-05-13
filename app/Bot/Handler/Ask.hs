@@ -11,6 +11,7 @@ module Bot.Handler.Ask
 where
 
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Middleware.Observation as AgentObservation
 import Bot.Core.Conversation
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.AgentTrace as AgentTrace
@@ -241,7 +242,6 @@ askConversation
   -> Eff es (Text, Conversation)
 askConversation toolCfg cfg conversations parentMessageId threadId message conversation = do
   activeReply <- newActiveReply conversations parentMessageId threadId conversation
-  runIdRef <- liftIO (IORef.newIORef Nothing)
   let cleanupActiveReply =
         liftIO (IORef.readIORef activeReply.activeRef)
           >>= traverse_ (finishActiveConversationCurrent conversations)
@@ -251,36 +251,49 @@ askConversation toolCfg cfg conversations parentMessageId threadId message conve
           , superuser = isSuperuser message
           , askCommand = cfg.command
           , toolConfig = toolCfg
-          , recordRunId = \runId -> liftIO $ IORef.writeIORef runIdRef (Just runId)
           , remember = rememberConversationFrom conversations parentMessageId
           , recordBotMessage = ChatLog.recordBotMessage message
           }
-  (responseId, (answer, answeredConversation)) <-
+      observer = AgentTrace.agentTraceObserver
+  agentRun <- Agent.startAgentRun context Agent.defaultTools
+  (responseId, agentResult) <-
     ( S.mapM_
         (recordReplyUpdate activeReply)
-        (Chat.streamReplyTo message fst (Agent.runAgentStreaming cfg.agentMaxTurns context Agent.defaultTools conversation))
+        (Chat.streamReplyTo message (.answer) (Agent.runPreparedAgentStreaming observer cfg.agentMaxTurns agentRun conversation))
         `catch` \(err :: SomeException) -> do
           case Exception.fromException err of
             Just Exception.ThreadKilled -> do
-              traverse_ (\runId -> AgentTrace.recordEvent AgentTrace.AgentRunInterrupted{runId, reason = "halted"}) =<< liftIO (IORef.readIORef runIdRef)
               throwIO err
             _ -> do
               logAttention "LLM request failed" (show err :: String)
               let failureMessage = llmFailureMessage err
               responseId <- Chat.replyTo message failureMessage
-              pure (responseId, (failureMessage, conversation))
+              pure (responseId, (Agent.AgentResult{runId = Agent.agentRunId agentRun, answer = failureMessage, conversation = conversation}))
     ) `onException` cleanupActiveReply
   ( do
-      traverse_ (\runId -> traverse_ (\linkedMessageId -> AgentTrace.recordEvent AgentTrace.AgentConversationLinked{runId, linkedMessageId, parentMessageId}) responseId) =<< liftIO (IORef.readIORef runIdRef)
-      ChatLog.recordBotMessage message responseId answer
+      traverse_ (observeAgentConversationLink observer agentResult parentMessageId) responseId
+      ChatLog.recordBotMessage message responseId agentResult.answer
       active <- liftIO (IORef.readIORef activeReply.activeRef)
       case active of
         Just activeHandle ->
-          finishActiveConversation conversations activeHandle answeredConversation
+          finishActiveConversation conversations activeHandle agentResult.conversation
         Nothing ->
-          rememberConversationFrom conversations parentMessageId responseId answeredConversation
-      pure (answer, answeredConversation)
+          rememberConversationFrom conversations parentMessageId responseId agentResult.conversation
+      pure (agentResult.answer, agentResult.conversation)
     ) `onException` cleanupActiveReply
+
+observeAgentConversationLink
+  :: Agent.AgentObserver es
+  -> Agent.AgentResult
+  -> Maybe Integer
+  -> Integer
+  -> Eff es ()
+observeAgentConversationLink observer agentResult parentMessageId linkedMessageId =
+  AgentObservation.observeConversationLinked observer AgentObservation.ObservedConversationLink
+    { runId = agentResult.runId
+    , parentMessageId
+    , linkedMessageId
+    }
 
 data ActiveReplyState = ActiveReplyState
   { conversations :: !ConversationStore

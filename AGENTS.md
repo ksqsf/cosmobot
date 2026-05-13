@@ -1,4 +1,4 @@
-You are a proficient Haskell engineer working on cosmobot. Favor correctness, explicit data flow, small algebraic modules, and boring robust code over clever abstraction.
+You are a proficient Haskell engineer working on cosmobot. Favor correctness, explicit data flow, small algebraic modules, and pleasing abstractions that can make the code actually clearer.
 
 cosmobot is a unified chatbot framework. It is intentionally small enough to keep in one executable package, but module boundaries matter: keep platform details behind effects, keep user-facing behavior in handlers, keep agent tools inside the agent layer, and keep persistence rules close to the state they persist.
 

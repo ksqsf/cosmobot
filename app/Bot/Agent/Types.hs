@@ -7,9 +7,12 @@ Stability   : experimental
 module Bot.Agent.Types
   ( Tool (..)
   , AgentContext (..)
+  , AgentEvent (..)
+  , AgentObserver (..)
   , ToolConfig (..)
   , WebSearchApi (..)
   , defaultToolConfig
+  , ignoreAgentObserver
   , ToolResult (..)
   , toolText
   , toolMessage
@@ -18,6 +21,7 @@ where
 
 import Bot.Core.Conversation
 import Bot.Core.Message
+import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 
@@ -68,10 +72,73 @@ data AgentContext es = AgentContext
   , superuser :: !Bool
   , askCommand :: !Text
   , toolConfig :: !ToolConfig
-  , recordRunId :: Text -> Eff es ()
   , remember :: Maybe Integer -> Conversation -> Eff es ()
   , recordBotMessage :: Maybe Integer -> Text -> Eff es ()
   }
+
+-- | Semantic lifecycle events emitted by the agent engine.
+--
+-- Observers translate these into concrete side effects such as persistent
+-- trace rows. The loop itself should only emit these domain events.
+data AgentEvent
+  = AgentRunStarted
+      { runId :: !Text
+      , messageId :: !(Maybe Integer)
+      , maxTurns :: !Int
+      , exposedTools :: ![Text]
+      }
+  | ModelTurnStarted
+      { runId :: !Text
+      , turn :: !Int
+      , messageCount :: !Int
+      , exposedTools :: ![Text]
+      }
+  | ModelTurnFinished
+      { runId :: !Text
+      , turn :: !Int
+      , answerKind :: !Text
+      , contentLength :: !Int
+      , toolCalls :: ![LLM.ToolCall]
+      }
+  | ToolCallStarted
+      { runId :: !Text
+      , turn :: !Int
+      , toolCall :: !LLM.ToolCall
+      }
+  | ToolCallFinished
+      { runId :: !Text
+      , turn :: !Int
+      , toolCallId :: !Text
+      , toolName :: !Text
+      , status :: !Text
+      , result :: !Text
+      , resultLength :: !Int
+      , messageIds :: ![Maybe Integer]
+      }
+  | AgentRunFinished
+      { runId :: !Text
+      , status :: !Text
+      , finalLength :: !Int
+      , turnsUsed :: !Int
+      }
+  | AgentRunInterrupted
+      { runId :: !Text
+      , reason :: !Text
+      }
+  | AgentConversationLinked
+      { runId :: !Text
+      , linkedMessageId :: !Integer
+      , parentMessageId :: !(Maybe Integer)
+      }
+  deriving (Eq, Show)
+
+newtype AgentObserver es = AgentObserver
+  { observe :: AgentEvent -> Eff es ()
+  }
+
+ignoreAgentObserver :: AgentObserver es
+ignoreAgentObserver =
+  AgentObserver{observe = \_ -> pure ()}
 
 -- | Text returned to the LLM plus any bot message ids produced by a tool.
 data ToolResult = ToolResult

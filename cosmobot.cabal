@@ -119,6 +119,11 @@ common bot-chat-driver-modules
 common bot-agent-modules
     other-modules:
         Bot.Agent
+        Bot.Agent.Conversation
+        Bot.Agent.Core
+        Bot.Agent.Middleware.Observation
+        Bot.Agent.Middleware.Tools
+        Bot.Agent.ToolRegistry
         Bot.Agent.Tools
         Bot.Agent.Tools.Chat
         Bot.Agent.Tools.Common

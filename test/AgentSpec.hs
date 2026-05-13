@@ -106,7 +106,7 @@ testAgentTraceRecordsModelAndToolEvents = do
     ]
   fetches <- IORef.newIORef (0 :: Int)
   events <- runAgentWith answers (ChatMock Nothing Nothing) do
-    _ <- Agent.runAgent 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches] (startWithUser "fetch it")
+    _ <- Agent.runAgentWith AgentTrace.agentTraceObserver 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches] (startWithUser "fetch it")
     allEvents <- AgentTrace.queryAll
     pure allEvents
   map traceEventName events @?=
@@ -519,7 +519,6 @@ agentContext =
     , superuser = False
     , askCommand = "!ask"
     , toolConfig = Agent.defaultToolConfig
-    , recordRunId = \_ -> pure ()
     , remember = \_ _ -> pure ()
     , recordBotMessage = \_ _ -> pure ()
     }
