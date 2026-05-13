@@ -12,6 +12,7 @@ import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Memory as MemoryStore
 import Bot.Core.Message
+import Bot.Storage.Conversation
 import Bot.Prelude
 import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Exception as Exception
@@ -57,6 +58,7 @@ main =
       , testCase "web_fetch max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "conversation replies keep parent and child snapshots" testConversationRepliesKeepSnapshots
       , testCase "conversation branches do not overwrite siblings" testConversationBranchesDoNotOverwriteSiblings
+      , testCase "conversation lookup is scoped by chat" testConversationLookupIsScopedByChat
       , testCase "conversation branches persist through SQLite reload" testConversationBranchesPersistThroughSQLiteReload
       , testCase "conversation cache miss loads evicted parent from SQLite" testConversationCacheMissLoadsEvictedParent
       , testCase "conversation JSON remains list compatible" testConversationJsonRemainsListCompatible
@@ -166,12 +168,12 @@ testChunkedActiveConversationAliasesEverySentReply = runEff $ runTestLog $ Stora
   threadId <- liftIO $ forkIO (threadDelay 60_000_000)
   let baseConversation = startWithUser "hello"
       partialConversation = appendAssistant "partial answer" baseConversation
-  active <- fromMaybe (error "expected active conversation") <$> rememberActiveConversation store Nothing (Just 1) threadId baseConversation
-  addActiveConversationMessage store active 2
+  active <- fromMaybe (error "expected active conversation") <$> rememberActiveConversation store Nothing (Just (messageKey 1)) threadId baseConversation
+  addActiveConversationMessage store active (messageKey 2)
   updateActiveConversation active partialConversation
-  halted <- haltConversation store 2
-  firstLookup <- lookupConversation store 1
-  secondLookup <- lookupConversation store 2
+  halted <- haltConversation store (messageKey 2)
+  firstLookup <- lookupConversation store (messageKey 1)
+  secondLookup <- lookupConversation store (messageKey 2)
   liftIO do
     halted @?= True
     (show firstLookup :: String) @?= show (Just partialConversation)
@@ -214,10 +216,10 @@ testConversationRepliesKeepSnapshots = runEff $ runTestLog $ StorageEffect.runSt
   store <- liftIO newConversationStore
   let firstConversation = startWithUser "first"
       secondConversation = appendAssistant "second" firstConversation
-  rememberConversation store (Just 1) firstConversation
-  rememberConversationFrom store (Just 1) (Just 2) secondConversation
-  firstLookup <- lookupConversation store 1
-  secondLookup <- lookupConversation store 2
+  rememberConversation store (Just (messageKey 1)) firstConversation
+  rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 2)) secondConversation
+  firstLookup <- lookupConversation store (messageKey 1)
+  secondLookup <- lookupConversation store (messageKey 2)
   liftIO do
     (show firstLookup :: String) @?= show (Just firstConversation)
     (show secondLookup :: String) @?= show (Just secondConversation)
@@ -229,19 +231,36 @@ testConversationBranchesDoNotOverwriteSiblings = runEff $ runTestLog $ StorageEf
       branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
       branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
       branchA2 = appendAssistant "A second answer" (appendUser "A second follow-up" branchA)
-  rememberConversation store (Just 1) root
-  rememberConversationFrom store (Just 1) (Just 2) branchA
-  rememberConversationFrom store (Just 1) (Just 3) branchB
-  rememberConversationFrom store (Just 2) (Just 4) branchA2
-  rootLookup <- lookupConversation store 1
-  branchALookup <- lookupConversation store 2
-  branchBLookup <- lookupConversation store 3
-  branchA2Lookup <- lookupConversation store 4
+  rememberConversation store (Just (messageKey 1)) root
+  rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 2)) branchA
+  rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 3)) branchB
+  rememberConversationFrom store (Just (messageKey 2)) (Just (messageKey 4)) branchA2
+  rootLookup <- lookupConversation store (messageKey 1)
+  branchALookup <- lookupConversation store (messageKey 2)
+  branchBLookup <- lookupConversation store (messageKey 3)
+  branchA2Lookup <- lookupConversation store (messageKey 4)
   liftIO do
     (show rootLookup :: String) @?= show (Just root)
     (show branchALookup :: String) @?= show (Just branchA)
     (show branchBLookup :: String) @?= show (Just branchB)
     (show branchA2Lookup :: String) @?= show (Just branchA2)
+
+testConversationLookupIsScopedByChat :: IO ()
+testConversationLookupIsScopedByChat = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+  store <- liftIO newConversationStore
+  let chatA = testMessageInChat 100
+      chatB = testMessageInChat 200
+      keyA = conversationMessageKey chatA
+      keyB = conversationMessageKey chatB
+      conversationA = appendAssistant "answer A" (startWithUser "from chat A")
+      conversationB = appendAssistant "answer B" (startWithUser "from chat B")
+  rememberConversation store (Just (keyA 1)) conversationA
+  rememberConversation store (Just (keyB 1)) conversationB
+  lookupA <- lookupConversation store (keyA 1)
+  lookupB <- lookupConversation store (keyB 1)
+  liftIO do
+    (show lookupA :: String) @?= show (Just conversationA)
+    (show lookupB :: String) @?= show (Just conversationB)
 
 testConversationBranchesPersistThroughSQLiteReload :: IO ()
 testConversationBranchesPersistThroughSQLiteReload =
@@ -251,24 +270,24 @@ testConversationBranchesPersistThroughSQLiteReload =
       let root = appendAssistant "root answer" (startWithUser "root")
           branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
           branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
-      rememberConversation store (Just 1) root
-      rememberConversationFrom store (Just 1) (Just 2) branchA
-      rememberConversationFrom store (Just 1) (Just 3) branchB
+      rememberConversation store (Just (messageKey 1)) root
+      rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 2)) branchA
+      rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 3)) branchB
 
       reloaded <- liftIO newConversationStore
-      branchAAfterReload <- lookupConversation reloaded 2
-      branchBAfterReload <- lookupConversation reloaded 3
+      branchAAfterReload <- lookupConversation reloaded (messageKey 2)
+      branchBAfterReload <- lookupConversation reloaded (messageKey 3)
       let branchA2 = appendAssistant "A second answer" (appendUser "A second follow-up" branchA)
-      rememberConversationFrom reloaded (Just 2) (Just 4) branchA2
+      rememberConversationFrom reloaded (Just (messageKey 2)) (Just (messageKey 4)) branchA2
       rows <- loadConversationRows
-      branchA2AfterReload <- lookupConversation reloaded 4
+      branchA2AfterReload <- lookupConversation reloaded (messageKey 4)
 
       liftIO do
         (show branchAAfterReload :: String) @?= show (Just branchA)
         (show branchBAfterReload :: String) @?= show (Just branchB)
         (show branchA2AfterReload :: String) @?= show (Just branchA2)
-        map (.messageId) rows @?= [1, 2, 3, 4]
-        map (.parentMessageId) rows @?= [Nothing, Just 1, Just 1, Just 2]
+        map rowMessageId rows @?= [1, 2, 3, 4]
+        map rowParentMessageId rows @?= [Nothing, Just 1, Just 1, Just 2]
         map payloadMessageCount rows @?= [2, 2, 2, 2]
         assertBool "all nodes in the reloaded tree keep the same conversation id" (sameConversationIds rows)
 
@@ -279,18 +298,18 @@ testConversationCacheMissLoadsEvictedParent =
       store <- liftIO newConversationStore
       let root = appendAssistant "root answer" (startWithUser "root")
           child = appendAssistant "child answer" (appendUser "child follow-up" root)
-      rememberConversation store (Just 1) root
+      rememberConversation store (Just (messageKey 1)) root
       for_ [1000..1512] \messageId ->
-        rememberConversation store (Just messageId) (startWithUser [i|filler #{messageId}|])
-      rememberConversationFrom store (Just 1) (Just 2) child
-      rootLookup <- lookupConversation store 1
-      childLookup <- lookupConversation store 2
+        rememberConversation store (Just (messageKey messageId)) (startWithUser [i|filler #{messageId}|])
+      rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 2)) child
+      rootLookup <- lookupConversation store (messageKey 1)
+      childLookup <- lookupConversation store (messageKey 2)
       rows <- loadConversationRows
-      let childRow = find ((== 2) . (.messageId)) rows
+      let childRow = find ((== 2) . rowMessageId) rows
       liftIO do
         (show rootLookup :: String) @?= show (Just root)
         (show childLookup :: String) @?= show (Just child)
-        ((.parentMessageId) <$> childRow) @?= Just (Just 1)
+        (rowParentMessageId =<< childRow) @?= Just 1
         (payloadMessageCount <$> childRow) @?= Just 2
 
 testConversationJsonRemainsListCompatible :: IO ()
@@ -414,6 +433,37 @@ payloadMessageCount row =
       error (Text.pack err)
     Right messages ->
       length messages
+
+rowMessageId :: ConversationRow -> Integer
+rowMessageId row =
+  row.messageKey.messageId
+
+rowParentMessageId :: ConversationRow -> Maybe Integer
+rowParentMessageId row =
+  (.messageId) <$> row.parentMessageKey
+
+messageKey :: Integer -> ConversationMessageKey
+messageKey =
+  conversationMessageKey testMessage
+
+testMessageInChat :: Integer -> IncomingMessage
+testMessageInChat chatId =
+  IncomingMessage
+    { platform = testMessage.platform
+    , kind = testMessage.kind
+    , chatId = Just chatId
+    , chatAliases = testMessage.chatAliases
+    , digest = testMessage.digest
+    , senderId = testMessage.senderId
+    , senderUsername = testMessage.senderUsername
+    , messageId = testMessage.messageId
+    , replyToMessageId = testMessage.replyToMessageId
+    , mentions = testMessage.mentions
+    , mentionUsernames = testMessage.mentionUsernames
+    , imageUrls = testMessage.imageUrls
+    , text = testMessage.text
+    , raw = testMessage.raw
+    }
 
 toolOutputs :: Conversation -> [Text]
 toolOutputs (Conversation messages) =

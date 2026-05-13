@@ -10,12 +10,12 @@ module Bot.Handler.Audit
 where
 
 import Bot.Core.Message
-import Bot.Core.Conversation
 import Bot.Core.Route
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
+import Bot.Storage.Conversation
 import qualified Data.Text as Text
 import Data.Time (FormatTime, defaultTimeLocale, formatTime)
 
@@ -47,7 +47,7 @@ handleAudit conversations message args =
       | Text.toLower (Text.strip args) == "all" ->
           case message.replyToMessageId of
             Just parentId -> do
-              messageIds <- lookupConversationMessageIds conversations parentId
+              messageIds <- lookupConversationMessageIds conversations (conversationMessageKey message parentId)
               records <- AgentAudit.queryConversationMessagesAudit messageIds
               void $ Chat.replyTo message (renderConversationToolUses parentId records)
             Nothing ->

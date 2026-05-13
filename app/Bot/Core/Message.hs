@@ -33,7 +33,7 @@ data ChatPlatform
   -- ^ Telegram Bot API.
   | PlatformMatrix
   -- ^ Matrix Client-Server API.
-  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+  deriving (Eq, Ord, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 chatPlatformKey :: ChatPlatform -> Text
 chatPlatformKey = \case

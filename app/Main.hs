@@ -6,7 +6,6 @@ module Main (main) where
 
 import Bot.Prelude
 import Bot.Config
-import Bot.Core.Conversation
 import Bot.Core.Route
 import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Effect.AgentAudit as AgentAudit
@@ -21,6 +20,7 @@ import Bot.Handler.Audit
 import Bot.Handler.Saucenao
 import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
+import Bot.Storage.Conversation
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Control.Concurrent.Async as Async
 import qualified Control.Concurrent.MVar as MVar

@@ -147,6 +147,7 @@ common bot-agent-modules
         Bot.Effect.Storage
         Bot.Memory
         Bot.Storage.Prelude
+        Bot.Storage.Conversation
         Bot.Util.Html
         Bot.Util.HTTP
         Bot.Util.Image
