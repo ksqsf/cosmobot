@@ -110,7 +110,7 @@ incomingMessages = do
   where
     syncLoop cfg since = do
       result <- S.lift $ sync since `catch` \(err :: SomeException) -> do
-        logInfo "Matrix sync failed, retrying" (show err :: String)
+        logInfo_ [i|Matrix sync failed, retrying: #{show err :: String}|]
         liftIO $ threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
@@ -118,7 +118,7 @@ incomingMessages = do
           syncLoop cfg since
         Just response -> do
           let events = syncEvents response
-          S.lift $ logInfo "Matrix sync batch" (length events)
+          S.lift $ logInfo_ [i|Matrix sync batch: #{length events}|]
           for_ events \event ->
             case eventToIncomingMessageWith cfg event of
               Nothing -> do
@@ -126,7 +126,7 @@ incomingMessages = do
                 S.lift $ logInfo_ "Ignoring Matrix event"
               Just message -> do
                 S.lift $ logTrace "incoming Matrix message" message
-                S.lift $ logInfo "incoming Matrix message" (incomingMessageLogLine message)
+                S.lift $ logInfo_ [i|incoming Matrix message: #{incomingMessageLogLine message}|]
                 S.yield message
           syncLoop cfg (Just response.nextBatch)
 
@@ -233,7 +233,7 @@ sendMessageCall manager cfg token roomId body = do
         { msgtype = "m.text"
         , body = nonEmptyMatrixBody body
         }
-  logInfo "Matrix API request" ("send m.room.message" :: Text)
+  logInfo_ "Matrix API request: send m.room.message"
   liftIO (runReq (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)

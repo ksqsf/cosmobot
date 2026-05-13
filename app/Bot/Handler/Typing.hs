@@ -56,7 +56,7 @@ rankRoute
 rankRoute commandText titleSuffix failureMessage fetchRows =
   requireAuth canStartConversation (\_ -> pure ()) $
     stopOn (command commandText) \message _ -> do
-      logInfo "matched typing rank route" (commandText <> " " <> incomingMessageLogLine message)
+      logInfo_ [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
       forkEff (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage
@@ -68,20 +68,20 @@ sendRankImage
   -> Eff es ()
 sendRankImage titleSuffix failureMessage fetchRows message =
   handleError do
-    logInfo "Fetching typing rank rows" titleSuffix
+    logInfo_ [i|Fetching typing rank rows: #{titleSuffix}|]
     title <- liftIO (rankTitle titleSuffix)
     rows <- liftIO fetchRows
-    logInfo "Fetched typing rank rows" (title, length rows)
+    logInfo_ [i|Fetched typing rank rows: #{title}, #{length rows} rows|]
     withRenderedRankImage title rows \imagePath -> do
-      logInfo "Rendered typing rank image" imagePath
+      logInfo_ [i|Rendered typing rank image: #{imagePath}|]
       sent <- Chat.replyTo message (ReplyBody.imageDirective ("file://" <> Text.pack imagePath))
-      logInfo "Sent typing rank image" sent
+      logInfo_ [i|Sent typing rank image: #{show sent :: Text}|]
       when (isNothing sent) do
         void $ Chat.replyTo message [i|#{title}已生成，但图片发送失败。|]
   where
     handleError action =
       action `catch` \(err :: SomeException) -> do
-        logAttention "Failed to render typing rank" (show err :: String)
+        logAttention_ [i|Failed to render typing rank: #{show err :: String}|]
         void $ Chat.replyTo message failureMessage
 
 withRenderedRankImage :: IOE :> es => Text -> [[Text]] -> (FilePath -> Eff es a) -> Eff es a

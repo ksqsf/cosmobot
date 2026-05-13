@@ -57,9 +57,9 @@ compressDataImage format quality imageRef =
       pure Nothing
     Just bytes -> do
       result <- liftIO (convertDataImage format quality bytes) `catch` \(err :: SomeException) -> do
-        logAttention "Image compression failed" (show err :: String)
+        logAttention_ [i|Image compression failed: #{show err :: String}|]
         pure Nothing
-      traverse_ (logInfo "Compressed image response URL") result
+      traverse_ (\url -> logInfo_ [i|Compressed image response URL: #{url}|]) result
       pure result
 
 decodeDataImage :: Text -> Maybe StrictByteString.ByteString

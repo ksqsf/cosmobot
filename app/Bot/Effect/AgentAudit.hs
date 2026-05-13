@@ -216,7 +216,7 @@ persistEvent Nothing _ _ =
 persistEvent (Just store) occurredAt event =
   liftIO (Storage.saveAgentAuditEvent store (eventRunId event) occurredAt maybeLinkedMessageId maybeParentMessageId (Aeson.toJSON event))
     `catch` \(err :: SomeException) ->
-      logInfo "Failed to persist agent audit event" (show err :: String)
+      logInfo_ [i|Failed to persist agent audit event: #{show err :: String}|]
   where
     (maybeLinkedMessageId, maybeParentMessageId) =
       case event of

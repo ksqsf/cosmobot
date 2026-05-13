@@ -170,7 +170,7 @@ qqConnectionLoop cfg eventChan actionChan =
       Right () ->
         logInfo_ "QQ websocket disconnected; reconnecting"
       Left err ->
-        logInfo "QQ websocket failed; reconnecting" err
+        logInfo_ [i|QQ websocket failed; reconnecting: #{err}|]
     liftIO $ threadDelay qqReconnectDelayMicroseconds
 
 runQQConnectionOnce
@@ -208,7 +208,7 @@ runConnection eventChan actionChan conn = do
   liftIO (killThread readerThread)
   liftIO (killThread sender)
   failPendingResponses pendingResponses
-  logInfo "QQ websocket connection ended" (show reason :: String)
+  logInfo_ [i|QQ websocket connection ended: #{show reason :: String}|]
 
 forkConnectionThread
   :: (IOE :> es, Log :> es)
@@ -280,10 +280,10 @@ incomingMessages = do
     Nothing -> do
       let Event{postType} = event
       S.lift $ logTrace_ [i|Ignoring QQ event: #{postType}|]
-      S.lift $ logInfo "Ignoring QQ event" postType
+      S.lift $ logInfo_ [i|Ignoring QQ event: #{postType}|]
     Just message -> do
       S.lift $ logTrace "incoming qq message" message
-      S.lift $ logInfo "incoming qq message" (incomingMessageLogLine message)
+      S.lift $ logInfo_ [i|incoming qq message: #{incomingMessageLogLine message}|]
       S.yield message
   incomingMessages
 
@@ -405,7 +405,7 @@ dispatchActionResponse pendingResponses response =
         pure (Map.lookup echo pending)
       case waiter of
         Nothing ->
-          logInfo "Ignoring QQ action response with unknown echo" echo
+          logInfo_ [i|Ignoring QQ action response with unknown echo: #{echo}|]
         Just responseVar ->
           void $ liftIO (MVar.tryPutMVar responseVar response)
 

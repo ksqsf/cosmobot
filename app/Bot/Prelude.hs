@@ -64,4 +64,4 @@ forkEff action =
           | Just Exception.ThreadKilled <- Exception.fromException err ->
               pure ()
           | otherwise ->
-              runInIO (logAttention "Forked action failed" (show err :: String))
+              runInIO (logAttention_ [i|Forked action failed: #{show err :: String}|])

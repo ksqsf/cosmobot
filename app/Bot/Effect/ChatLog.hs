@@ -193,7 +193,7 @@ persistRecord (Just store) record =
         (Aeson.toJSON (sanitizeChatLogEntry (chatLogEntry record)))
     )
     `catch` \(err :: SomeException) ->
-      logInfo "Failed to persist chat log entry" (show err :: String)
+      logInfo_ [i|Failed to persist chat log entry: #{show err :: String}|]
 
 queryStored :: Storage.SQLiteStore -> IncomingMessage -> Int -> Bool -> IO [ChatLogEntry]
 queryStored store message limit includeBotMessages = do

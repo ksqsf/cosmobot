@@ -29,7 +29,7 @@ withToolLimit maxTurns program =
         case decision of
           ModelNeedsTools ToolTurnState{answered, toolContent, toolCalls}
             | agentState.turn >= max 1 maxTurns -> do
-                lift $ logInfo "Agent tool turn limit reached" toolCalls
+                lift $ logInfo_ [i|Agent tool turn limit reached: #{show toolCalls :: String}|]
                 ModelAnswered <$> handleToolLimit program.agentRun.runId agentState.turn toolContent toolCalls answered
           _ ->
             pure decision

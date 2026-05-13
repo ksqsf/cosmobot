@@ -47,7 +47,7 @@ saucenaoRoute
   -> RouteHandler es
 saucenaoRoute saucenaoCfg =
   stopOn (command saucenaoCommand) \message _ -> do
-    logInfo "matched saucenao route" (incomingMessageLogLine message)
+    logInfo_ [i|matched saucenao route: #{incomingMessageLogLine message}|]
     forkEff (sendSaucenaoResults saucenaoCfg message)
 
 sendSaucenaoResults
@@ -74,7 +74,7 @@ sendSaucenaoResults cfg message =
   where
     handleError action =
       action `catch` \(err :: SomeException) -> do
-        logInfo "SauceNAO search failed" (show err :: String)
+        logInfo_ [i|SauceNAO search failed: #{show err :: String}|]
         void $ Chat.replyTo message "SauceNAO 搜索失败。"
 
 fetchReferencedMessage

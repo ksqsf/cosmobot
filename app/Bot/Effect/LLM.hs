@@ -194,7 +194,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
         , imageConfig = if imageRequest then imageGenerationConfig cfg else Nothing
         , stream = Nothing
         }
-  logInfo "LLM request" (llmRequestLogLine requestEndpoint request)
+  logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
   (url, options) <- liftIO (Http.httpsEndpointUrl requestEndpoint ["chat", "completions"])
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
@@ -203,7 +203,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
       jsonResponse
       (options <> header "Authorization" (ByteString.pack [i|Bearer #{requestApiKey}|]))
   let body = responseBody response
-  logInfo "LLM response" (llmResponseLogLine requestEndpoint requestModel body)
+  logInfo_ ("LLM response: " <> llmResponseLogLine requestEndpoint requestModel body)
   case chatCompletionText body of
     Just answer
       | imageRequest -> compressImageAnswer (imageCompressionConfig cfg) answer
@@ -223,7 +223,7 @@ askOpenAIWithTools Config{endpoint, apiKey = Just key, model, reasoningEffort} f
         , imageConfig = Nothing
         , stream = Nothing
         }
-  logInfo "LLM request" (llmRequestLogLine endpoint request)
+  logInfo_ ("LLM request: " <> llmRequestLogLine endpoint request)
   (url, options) <- liftIO (Http.httpsEndpointUrl endpoint ["chat", "completions"])
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
@@ -232,7 +232,7 @@ askOpenAIWithTools Config{endpoint, apiKey = Just key, model, reasoningEffort} f
       jsonResponse
       (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
   let body = responseBody response
-  logInfo "LLM response" (llmResponseLogLine endpoint model body)
+  logInfo_ ("LLM response: " <> llmResponseLogLine endpoint model body)
   pure (chatCompletionAnswer body)
 
 askOpenAIStreaming
@@ -255,11 +255,11 @@ askOpenAIStreaming Config{endpoint, apiKey = Just key, model, reasoningEffort} m
         , imageConfig = Nothing
         , stream = Just True
         }
-  logInfo "LLM streaming request" (llmRequestLogLine endpoint request)
+  logInfo_ ("LLM streaming request: " <> llmRequestLogLine endpoint request)
   streamChatCompletion endpoint key request \stream ->
     consume do
       answer <- stream
-      lift $ logInfo "LLM streaming response" (llmStreamResponseLogLine endpoint model answer)
+      lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine endpoint model answer)
       pure (chatAnswerContent answer)
 
 askOpenAIWithToolsStreaming
@@ -283,11 +283,11 @@ askOpenAIWithToolsStreaming Config{endpoint, apiKey = Just key, model, reasoning
         , imageConfig = Nothing
         , stream = Just True
         }
-  logInfo "LLM streaming request" (llmRequestLogLine endpoint request)
+  logInfo_ ("LLM streaming request: " <> llmRequestLogLine endpoint request)
   streamChatCompletion endpoint key request \stream ->
     consume do
       answer <- stream
-      lift $ logInfo "LLM streaming response" (llmStreamResponseLogLine endpoint model answer)
+      lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine endpoint model answer)
       pure answer
 
 newtype LLMException = LLMException Text
@@ -463,7 +463,7 @@ streamChatCompletion endpoint apiKey request consume = do
         Just payload ->
           case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 payload) of
             Left err -> do
-              logAttention "Ignoring malformed LLM stream chunk" (Text.pack err)
+              logAttention_ [i|Ignoring malformed LLM stream chunk: #{Text.pack err}|]
               pure (streamState, outputs)
             Right value ->
               case streamPayloadError value of
@@ -472,7 +472,7 @@ streamChatCompletion endpoint apiKey request consume = do
                 Nothing ->
                   case AesonTypes.parseEither Aeson.parseJSON value of
                     Left err -> do
-                      logAttention "Ignoring malformed LLM stream chunk" (Text.pack err)
+                      logAttention_ [i|Ignoring malformed LLM stream chunk: #{Text.pack err}|]
                       pure (streamState, outputs)
                     Right chunk ->
                       let (next, chunkOutputs) = applyStreamChunk streamState chunk

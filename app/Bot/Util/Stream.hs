@@ -79,7 +79,7 @@ readMerged streamCount queue =
     finishMerged mergeState
       | mergeState.failures == streamCount
       , Just err <- mergeState.lastFailure = do
-          S.lift (logAttention "All merged stream inputs failed" (show err :: String))
+          S.lift (logAttention_ [i|All merged stream inputs failed: #{show err :: String}|])
           S.lift (liftIO (Exception.throwIO err))
       | otherwise =
           pure ()
@@ -120,7 +120,7 @@ pump shuttingDown queue stream =
           isShuttingDown <- liftIO $ STM.readTVarIO shuttingDown
           unless isShuttingDown (writeMergeEvent queue MergeDone)
         else do
-          logInfo "Merged stream input stopped" (show err :: String)
+          logInfo_ [i|Merged stream input stopped: #{show err :: String}|]
           writeMergeEvent queue (MergeFailed err)
 
 isStreamCancelled :: SomeException -> Bool

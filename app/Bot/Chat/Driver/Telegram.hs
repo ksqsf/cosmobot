@@ -191,7 +191,7 @@ updatesStream'
 updatesStream' offset = do
   batches <- S.lift (getUpdates offset)
   S.lift $ logTrace_ [i|Got a batch of #{length batches} messages|]
-  S.lift $ logInfo "Telegram update batch" (length batches)
+  S.lift $ logInfo_ [i|Telegram update batch: #{length batches}|]
   S.each batches
   let nextOffset = case batches of
         [] -> offset
@@ -212,10 +212,10 @@ incomingMessages = S.for updatesStream $ \update -> do
     Just parsedMessage -> do
       message <- S.lift $
         resolveIncomingMessageImages parsedMessage `catch` \(err :: SomeException) -> do
-          logInfo "Telegram image resolution failed" (show err :: String)
+          logInfo_ [i|Telegram image resolution failed: #{show err :: String}|]
           pure parsedMessage
       S.lift $ logTrace "incoming Telegram message" message
-      S.lift $ logInfo "incoming Telegram message" (incomingMessageLogLine message)
+      S.lift $ logInfo_ [i|incoming Telegram message: #{incomingMessageLogLine message}|]
       S.yield message
 
 resolveIncomingMessageImages :: Telegram :> es => IncomingMessage -> Eff es IncomingMessage
@@ -467,12 +467,12 @@ telegramHttpConfig manager =
 logTelegramApiRequest :: Log :> es => Text -> Eff es ()
 logTelegramApiRequest method =
   unless (method == "getUpdates") $
-    logInfo "Telegram API request" method
+    logInfo_ [i|Telegram API request: #{method}|]
 
 logTelegramApiResponse :: Log :> es => Text -> Eff es ()
 logTelegramApiResponse method =
   unless (method == "getUpdates") $
-    logInfo "Telegram API response" method
+    logInfo_ [i|Telegram API response: #{method}|]
 
 decodeResponse
   :: (IOE :> es, Aeson.FromJSON result)

@@ -128,7 +128,7 @@ continueRoute toolCfg cfg conversations =
         Nothing
           | not (canStartFromReply message) -> do
               logTrace "Ignoring reply to unknown conversation message" parentId
-              logInfo "Ignoring unknown conversation reply" parentId
+              logInfo_ [i|Ignoring unknown conversation reply: #{parentId}|]
           | otherwise ->
               startConversationFromReply toolCfg cfg conversations message parentId
         Just conversation ->
@@ -159,7 +159,7 @@ startAskConversation
   -> Eff es ()
 startAskConversation label toolCfg cfg conversations message prompt = do
   logTrace label message
-  logInfo label (incomingMessageLogLine message)
+  logInfo_ [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
@@ -177,7 +177,7 @@ startDrawConversation
   -> Eff es ()
 startDrawConversation label cfg conversations message prompt = do
   logTrace label message
-  logInfo label (incomingMessageLogLine message)
+  logInfo_ [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
@@ -204,7 +204,7 @@ startConversationFromReply
   -> Eff es ()
 startConversationFromReply toolCfg cfg conversations message parentId = do
   logTrace "starting conversation from mentioned reply" message
-  logInfo "starting conversation from mentioned reply" (incomingMessageLogLine message)
+  logInfo_ [i|starting conversation from mentioned reply: #{incomingMessageLogLine message}|]
   referenced <- Chat.getMessageContent message parentId
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let prompt = promptWithReferencedContext message.text referenced contextImages
@@ -224,7 +224,7 @@ continueConversation
   -> Eff es ()
 continueConversation toolCfg cfg conversations message parentId conversation = do
   logTrace "continuing conversation" message
-  logInfo "continuing conversation" (incomingMessageLogLine message)
+  logInfo_ [i|continuing conversation: #{incomingMessageLogLine message}|]
   let nextConversation =
         appendUserContext (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
   threadId <- liftIO myThreadId
@@ -294,7 +294,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
       Just Exception.ThreadKilled ->
         throwIO err
       _ -> do
-        logAttention "LLM request failed" (show err :: String)
+        logAttention_ [i|LLM request failed: #{show err :: String}|]
         let failureMessage = llmFailureMessage err
         responseId <- Chat.replyTo message failureMessage
         pure AgentReply
@@ -414,7 +414,7 @@ drawConversation
   -> Eff es Text
 drawConversation conversation =
   LLM.askImageWithHistory (Foldable.toList conversation.messages) `catch` \(err :: SomeException) -> do
-    logInfo "LLM image request failed" (show err :: String)
+    logInfo_ [i|LLM image request failed: #{show err :: String}|]
     pure "Image generation failed."
 
 

@@ -354,7 +354,7 @@ rememberConversationFrom store@ConversationStore{unConversationStore = ref, sqli
     ( \sqlite ->
         liftIO (Storage.saveConversationMessages sqlite messageId conversationId storageParentMessageId (messagesJson storedMessages))
           `catch` \(err :: SomeException) ->
-            logInfo "Failed to persist conversation" (show err :: String)
+            logInfo_ [i|Failed to persist conversation: #{show err :: String}|]
     )
     sqliteStore
 
