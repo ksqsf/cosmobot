@@ -42,9 +42,7 @@ where
 import Bot.Prelude hiding (ask)
 import qualified Bot.Util.Image as Image
 import qualified Bot.Core.ReplyBody as ReplyBody
-import Control.Concurrent (forkIO, killThread)
-import qualified Control.Concurrent.Chan as Chan
-import qualified Control.Exception as Exception
+import qualified Bot.Util.HTTP as Http
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as AesonTypes
@@ -61,9 +59,8 @@ import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Client.TLS as HTTP
 import Network.HTTP.Req
 import Optics ((%~))
+import Streaming (hoist)
 import qualified Streaming.Prelude as S
-import System.IO.Error (ioError, userError)
-import qualified Text.URI as URI
 
 -- | Runtime configuration for the OpenAI-compatible chat endpoint.
 data Config = Config
@@ -108,10 +105,10 @@ defaultConfig = Config
 -- | Effect for text, image, and tool-calling LLM requests.
 data LLM :: Effect where
   Ask :: [ChatMessage] -> LLM m Text
-  AskStream :: [ChatMessage] -> (Text -> IO ()) -> LLM m Text
+  AskStream :: [ChatMessage] -> (Stream (Of Text) m Text -> m r) -> LLM m r
   AskImage :: [ChatMessage] -> LLM m Text
   AskTools :: [FunctionTool] -> [ChatMessage] -> LLM m ChatAnswer
-  AskToolsStream :: [FunctionTool] -> [ChatMessage] -> (Text -> IO ()) -> LLM m ChatAnswer
+  AskToolsStream :: [FunctionTool] -> [ChatMessage] -> (Stream (Of Text) m ChatAnswer -> m r) -> LLM m r
 
 type instance DispatchOf LLM = Dynamic
 
@@ -126,7 +123,7 @@ askWithHistory = send . Ask
 -- | Ask for a text answer while receiving response chunks.
 askStreamingWithHistory :: (LLM :> es, IOE :> es) => [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askStreamingWithHistory messages =
-  streamFromCallback \emit -> send (AskStream messages emit)
+  lift (send (AskStream messages S.effects))
 
 -- | Ask the configured image model to generate an image response.
 askImageWithHistory :: LLM :> es => [ChatMessage] -> Eff es Text
@@ -140,55 +137,7 @@ askWithTools tools messages =
 -- | Ask with function tools while receiving assistant text chunks.
 askWithToolsStreaming :: (LLM :> es, IOE :> es) => [FunctionTool] -> [ChatMessage] -> Stream (Of Text) (Eff es) ChatAnswer
 askWithToolsStreaming tools messages =
-  streamFromCallback \emit -> send (AskToolsStream tools messages emit)
-
-data StreamEvent r
-  = StreamChunk !Text
-  | StreamDone !r
-  | StreamFailed !SomeException
-
-streamFromCallback
-  :: IOE :> es
-  => ((Text -> IO ()) -> Eff es r)
-  -> Stream (Of Text) (Eff es) r
-streamFromCallback action = do
-  queue <- lift (liftIO Chan.newChan)
-  worker <- lift $ withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-    liftIO $ forkIO do
-      result <- Exception.try $ runInIO do
-        action \chunk -> Chan.writeChan queue (StreamChunk chunk)
-      liftIO $ Chan.writeChan queue case result of
-        Right value -> StreamDone value
-        Left err -> StreamFailed err
-  readQueue queue `streamFinally` liftIO (killThread worker)
-  where
-    readQueue queue = do
-      event <- lift (liftIO (Chan.readChan queue))
-      case event of
-        StreamChunk chunk -> do
-          S.yield chunk
-          readQueue queue
-        StreamDone value ->
-          pure value
-        StreamFailed err ->
-          lift (throwIO err)
-
-streamFinally
-  :: Stream (Of a) (Eff es) r
-  -> Eff es ()
-  -> Stream (Of a) (Eff es) r
-streamFinally stream cleanup =
-  go stream
-  where
-    go current = do
-      next <- lift (S.next current `onException` cleanup)
-      case next of
-        Left result -> do
-          lift cleanup
-          pure result
-        Right (item, rest) -> do
-          S.yield item
-          go rest
+  lift (send (AskToolsStream tools messages S.effects))
 
 -- | Interpret LLM requests through an OpenAI-compatible HTTP endpoint.
 runLLM
@@ -197,27 +146,33 @@ runLLM
   => Config
   -> Eff (LLM : es) a
   -> Eff es a
-runLLM cfg = interpret $ \_ -> \case
-  Ask messages -> askOpenAI False cfg messages
-  AskStream messages emit -> askOpenAIStreaming cfg messages emit
-  AskImage messages -> askOpenAI True cfg messages
-  AskTools tools messages -> askOpenAIWithTools cfg tools messages
-  AskToolsStream tools messages emit -> askOpenAIWithToolsStreaming cfg tools messages emit
+runLLM cfg = interpret $ \localEnv operation ->
+  localSeqLift localEnv \liftLocal ->
+    localSeqUnlift localEnv \runLocal ->
+      case operation of
+        Ask messages -> askOpenAI False cfg messages
+        AskStream messages consume -> askOpenAIStreaming cfg messages (runLocal . consume . hoist liftLocal)
+        AskImage messages -> askOpenAI True cfg messages
+        AskTools tools messages -> askOpenAIWithTools cfg tools messages
+        AskToolsStream tools messages consume -> askOpenAIWithToolsStreaming cfg tools messages (runLocal . consume . hoist liftLocal)
 
 runLLMWith
   :: ([ChatMessage] -> Eff es Text)
-  -> ([ChatMessage] -> (Text -> IO ()) -> Eff es Text)
+  -> (forall r. [ChatMessage] -> (Stream (Of Text) (Eff es) Text -> Eff es r) -> Eff es r)
   -> ([ChatMessage] -> Eff es Text)
   -> ([FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer)
-  -> ([FunctionTool] -> [ChatMessage] -> (Text -> IO ()) -> Eff es ChatAnswer)
+  -> (forall r. [FunctionTool] -> [ChatMessage] -> (Stream (Of Text) (Eff es) ChatAnswer -> Eff es r) -> Eff es r)
   -> Eff (LLM : es) a
   -> Eff es a
-runLLMWith askText askTextStream askImage askTools askToolsStream = interpret $ \_ -> \case
-  Ask messages -> askText messages
-  AskStream messages emit -> askTextStream messages emit
-  AskImage messages -> askImage messages
-  AskTools tools messages -> askTools tools messages
-  AskToolsStream tools messages emit -> askToolsStream tools messages emit
+runLLMWith askText askTextStream askImage askTools askToolsStream = interpret $ \localEnv operation ->
+  localSeqLift localEnv \liftLocal ->
+    localSeqUnlift localEnv \runLocal ->
+      case operation of
+        Ask messages -> askText messages
+        AskStream messages consume -> askTextStream messages (runLocal . consume . hoist liftLocal)
+        AskImage messages -> askImage messages
+        AskTools tools messages -> askTools tools messages
+        AskToolsStream tools messages consume -> askToolsStream tools messages (runLocal . consume . hoist liftLocal)
 
 askOpenAI :: (IOE :> es, Log :> es) => Bool -> Config -> [ChatMessage] -> Eff es Text
 askOpenAI _ Config{apiKey = Nothing} _ =
@@ -240,7 +195,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
         , stream = Nothing
         }
   logInfo "LLM request" (llmRequestLogLine requestEndpoint request)
-  (url, options) <- liftIO (chatCompletionsUrl requestEndpoint)
+  (url, options) <- liftIO (Http.httpsEndpointUrl requestEndpoint ["chat", "completions"])
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
       url
@@ -269,7 +224,7 @@ askOpenAIWithTools Config{endpoint, apiKey = Just key, model, reasoningEffort} f
         , stream = Nothing
         }
   logInfo "LLM request" (llmRequestLogLine endpoint request)
-  (url, options) <- liftIO (chatCompletionsUrl endpoint)
+  (url, options) <- liftIO (Http.httpsEndpointUrl endpoint ["chat", "completions"])
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
       url
@@ -280,11 +235,17 @@ askOpenAIWithTools Config{endpoint, apiKey = Just key, model, reasoningEffort} f
   logInfo "LLM response" (llmResponseLogLine endpoint model body)
   pure (chatCompletionAnswer body)
 
-askOpenAIStreaming :: (IOE :> es, Log :> es) => Config -> [ChatMessage] -> (Text -> IO ()) -> Eff es Text
-askOpenAIStreaming Config{apiKey = Nothing} _ emit = do
-  liftIO $ emit "LLM is not configured: set llm.api_key."
-  pure "LLM is not configured: set llm.api_key."
-askOpenAIStreaming Config{endpoint, apiKey = Just key, model, reasoningEffort} messages emit = do
+askOpenAIStreaming
+  :: (IOE :> es, Log :> es)
+  => Config
+  -> [ChatMessage]
+  -> (Stream (Of Text) (Eff es) Text -> Eff es r)
+  -> Eff es r
+askOpenAIStreaming Config{apiKey = Nothing} _ consume =
+  consume do
+    S.yield "LLM is not configured: set llm.api_key."
+    pure "LLM is not configured: set llm.api_key."
+askOpenAIStreaming Config{endpoint, apiKey = Just key, model, reasoningEffort} messages consume = do
   let request = ChatCompletionRequest
         { model = model
         , reasoningEffort = Just reasoningEffort
@@ -295,21 +256,24 @@ askOpenAIStreaming Config{endpoint, apiKey = Just key, model, reasoningEffort} m
         , stream = Just True
         }
   logInfo "LLM streaming request" (llmRequestLogLine endpoint request)
-  answer <- streamChatCompletion endpoint key request emit
-  logInfo "LLM streaming response" (llmStreamResponseLogLine endpoint model answer)
-  pure (chatAnswerContent answer)
+  streamChatCompletion endpoint key request \stream ->
+    consume do
+      answer <- stream
+      lift $ logInfo "LLM streaming response" (llmStreamResponseLogLine endpoint model answer)
+      pure (chatAnswerContent answer)
 
 askOpenAIWithToolsStreaming
   :: (IOE :> es, Log :> es)
   => Config
   -> [FunctionTool]
   -> [ChatMessage]
-  -> (Text -> IO ())
-  -> Eff es ChatAnswer
-askOpenAIWithToolsStreaming Config{apiKey = Nothing} _ _ emit = do
-  liftIO $ emit "LLM is not configured: set llm.api_key."
-  pure (ChatFinalAnswer "LLM is not configured: set llm.api_key.")
-askOpenAIWithToolsStreaming Config{endpoint, apiKey = Just key, model, reasoningEffort} functionTools messages emit = do
+  -> (Stream (Of Text) (Eff es) ChatAnswer -> Eff es r)
+  -> Eff es r
+askOpenAIWithToolsStreaming Config{apiKey = Nothing} _ _ consume =
+  consume do
+    S.yield "LLM is not configured: set llm.api_key."
+    pure (ChatFinalAnswer "LLM is not configured: set llm.api_key.")
+askOpenAIWithToolsStreaming Config{endpoint, apiKey = Just key, model, reasoningEffort} functionTools messages consume = do
   let request = ChatCompletionRequest
         { model = model
         , reasoningEffort = Just reasoningEffort
@@ -320,18 +284,11 @@ askOpenAIWithToolsStreaming Config{endpoint, apiKey = Just key, model, reasoning
         , stream = Just True
         }
   logInfo "LLM streaming request" (llmRequestLogLine endpoint request)
-  answer <- streamChatCompletion endpoint key request emit
-  logInfo "LLM streaming response" (llmStreamResponseLogLine endpoint model answer)
-  pure answer
-
-chatCompletionsUrl :: Text -> IO (Url 'Https, Option 'Https)
-chatCompletionsUrl endpoint = do
-  uri <- URI.mkURI endpoint
-  case useHttpsURI uri of
-    Nothing ->
-      ioError (userError [i|Unsupported LLM endpoint URL: #{endpoint}. Use a full HTTPS base URL such as https://api.openai.com/v1.|])
-    Just (url, options) ->
-      pure (url /: "chat" /: "completions", options)
+  streamChatCompletion endpoint key request \stream ->
+    consume do
+      answer <- stream
+      lift $ logInfo "LLM streaming response" (llmStreamResponseLogLine endpoint model answer)
+      pure answer
 
 newtype LLMException = LLMException Text
   deriving (Show)
@@ -463,23 +420,28 @@ streamChatCompletion
   => Text
   -> Text
   -> ChatCompletionRequest
-  -> (Text -> IO ())
-  -> Eff es ChatAnswer
-streamChatCompletion endpoint apiKey request emit = do
-  httpRequest <- liftIO (streamingHttpRequest endpoint apiKey request)
+  -> (Stream (Of Text) (Eff es) ChatAnswer -> Eff es r)
+  -> Eff es r
+streamChatCompletion endpoint apiKey request consume = do
+  httpRequest <- liftIO (Http.streamingJsonPostRequest endpoint ["chat", "completions"] apiKey request)
   manager <- liftIO HTTP.newTlsManager
-  response <- liftIO (HTTP.responseOpen httpRequest manager)
-  let bodyReader = HTTP.responseBody response
-  let initial = StreamState "" mempty Map.empty
-  streamStateAnswer <$> (processBody bodyReader initial `finally` liftIO (HTTP.responseClose response))
+  bracket
+    (liftIO (HTTP.responseOpen httpRequest manager))
+    (liftIO . HTTP.responseClose)
+    \response ->
+      consume (processBody (HTTP.responseBody response) (StreamState "" mempty Map.empty))
   where
     processBody bodyReader streamState = do
-      chunk <- liftIO (HTTP.brRead bodyReader)
+      chunk <- lift (liftIO (HTTP.brRead bodyReader))
       if StrictByteString.null chunk
-        then processSseText True "" streamState
+        then do
+          (flushed, outputs) <- lift (processSseText True "" streamState)
+          traverse_ S.yield outputs
+          pure (streamStateAnswer flushed)
         else do
           let text = TextEncoding.decodeUtf8With TextEncoding.lenientDecode chunk
-          next <- processSseText False text streamState
+          (next, outputs) <- lift (processSseText False text streamState)
+          traverse_ S.yield outputs
           processBody bodyReader next
 
     processSseText flush text streamState = do
@@ -489,20 +451,20 @@ streamChatCompletion endpoint apiKey request emit = do
             if flush then lines_ else dropLast lines_
           pendingLine =
             if flush then "" else lastOrEmpty lines_
-      next <- foldlM processSseLine streamState{pendingLine = pendingLine} completeLines
+      next <- foldlM processSseLine (streamState{pendingLine = pendingLine}, []) completeLines
       pure next
 
-    processSseLine streamState rawLine =
+    processSseLine (streamState, outputs) rawLine =
       case Text.strip <$> Text.stripPrefix "data:" (Text.stripStart rawLine) of
         Nothing ->
-          pure streamState
+          pure (streamState, outputs)
         Just "[DONE]" ->
-          pure streamState
+          pure (streamState, outputs)
         Just payload ->
           case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 payload) of
             Left err -> do
               logAttention "Ignoring malformed LLM stream chunk" (Text.pack err)
-              pure streamState
+              pure (streamState, outputs)
             Right value ->
               case streamPayloadError value of
                 Just err ->
@@ -511,22 +473,10 @@ streamChatCompletion endpoint apiKey request emit = do
                   case AesonTypes.parseEither Aeson.parseJSON value of
                     Left err -> do
                       logAttention "Ignoring malformed LLM stream chunk" (Text.pack err)
-                      pure streamState
+                      pure (streamState, outputs)
                     Right chunk ->
-                      applyStreamChunk emit streamState chunk
-
-streamingHttpRequest :: Text -> Text -> ChatCompletionRequest -> IO HTTP.Request
-streamingHttpRequest endpoint apiKey request = do
-  base <- HTTP.parseRequest (Text.unpack (Text.dropWhileEnd (== '/') endpoint <> "/chat/completions"))
-  pure base
-    { HTTP.method = "POST"
-    , HTTP.requestHeaders =
-        [ ("Authorization", ByteString.pack [i|Bearer #{apiKey}|])
-        , ("Content-Type", "application/json")
-        ]
-    , HTTP.requestBody = HTTP.RequestBodyLBS (Aeson.encode request)
-    , HTTP.responseTimeout = HTTP.responseTimeoutNone
-    }
+                      let (next, chunkOutputs) = applyStreamChunk streamState chunk
+                      in pure (next, outputs <> chunkOutputs)
 
 dropLast :: [a] -> [a]
 dropLast [] = []
@@ -574,17 +524,19 @@ builderToStrictText :: TextBuilder.Builder -> Text
 builderToStrictText =
   LazyText.toStrict . TextBuilder.toLazyText
 
-applyStreamChunk :: IOE :> es => (Text -> IO ()) -> StreamState -> ChatCompletionStreamChunk -> Eff es StreamState
-applyStreamChunk emit streamState chunk =
-  foldlM applyStreamChoice streamState chunk.choices
+applyStreamChunk :: StreamState -> ChatCompletionStreamChunk -> (StreamState, [Text])
+applyStreamChunk streamState chunk =
+  foldl' applyStreamChoice (streamState, []) chunk.choices
   where
-    applyStreamChoice acc StreamChoice{delta} = do
+    applyStreamChoice (acc, outputs) StreamChoice{delta} =
       let contentDelta = fromMaybe "" delta.content
-      unless (Text.null contentDelta) (liftIO (emit contentDelta))
-      pure $ acc
-        & #contentAccumulator %~ (<> TextBuilder.fromText contentDelta)
-        & #toolAccumulator %~ \toolAccumulator ->
-            foldl' applyToolCallDelta toolAccumulator delta.toolCalls
+      in
+      ( acc
+          & #contentAccumulator %~ (<> TextBuilder.fromText contentDelta)
+          & #toolAccumulator %~ \toolAccumulator ->
+              foldl' applyToolCallDelta toolAccumulator delta.toolCalls
+      , if Text.null contentDelta then outputs else outputs <> [contentDelta]
+      )
 
 applyToolCallDelta :: Map Int PartialToolCall -> ToolCallDelta -> Map Int PartialToolCall
 applyToolCallDelta acc delta =

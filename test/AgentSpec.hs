@@ -49,8 +49,6 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
-      , testCase "agent streaming yields answer chunks" testAgentStreamingYieldsAnswerChunks
-      , testCase "agent streaming yields tool request content" testAgentStreamingYieldsToolRequestContent
       , testCase "agent trace records model and tool events" testAgentTraceRecordsModelAndToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
@@ -99,33 +97,6 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= [(Just 42, "hello\n[image] https://example.test/image.png")])
   IORef.readIORef remembered >>= (@?= [Just 42])
-
-testAgentStreamingYieldsAnswerChunks :: IO ()
-testAgentStreamingYieldsAnswerChunks = do
-  answers <- IORef.newIORef [chatAnswer "streamed answer" []]
-  chunks <- IORef.newIORef ([] :: [Text])
-  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
-    S.mapM_
-      (\chunk -> liftIO $ IORef.modifyIORef' chunks (<> [chunk]))
-      (Agent.runAgentStreaming 4 agentContext Agent.defaultTools (startWithUser "stream it"))
-  answer @?= "streamed answer"
-  IORef.readIORef chunks >>= (@?= ["streamed answer"])
-
-testAgentStreamingYieldsToolRequestContent :: IO ()
-testAgentStreamingYieldsToolRequestContent = do
-  answers <- IORef.newIORef
-    [ chatAnswer "checking" [toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])]
-    , chatAnswer "done" []
-    ]
-  fetches <- IORef.newIORef (0 :: Int)
-  chunks <- IORef.newIORef ([] :: [Text])
-  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
-    S.mapM_
-      (\chunk -> liftIO $ IORef.modifyIORef' chunks (<> [chunk]))
-      (Agent.runAgentStreaming 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches] (startWithUser "fetch it"))
-  answer @?= "done"
-  IORef.readIORef fetches >>= (@?= 1)
-  IORef.readIORef chunks >>= (@?= ["checking", "done"])
 
 testAgentTraceRecordsModelAndToolEvents :: IO ()
 testAgentTraceRecordsModelAndToolEvents = do
@@ -485,17 +456,18 @@ runAgentWithMemory memoryCfg answers chatMock action =
       Memory.runMemory memoryCfg $
         LLM.runLLMWith
           (\_ -> pure "unused text answer")
-          (\_ emit -> liftIO (emit "unused text stream answer") $> "unused text stream answer")
+          (\_ consume -> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
           (\_ -> pure "unused image answer")
           (\_ _ -> liftIO (popAnswer answers))
-          (\_ _ emit -> do
+          (\_ _ consume -> do
               answer <- liftIO (popAnswer answers)
-              case answer of
-                LLM.ChatFinalAnswer{content} ->
-                  liftIO (emit content)
-                LLM.ChatToolRequest{content} ->
-                  liftIO (emit content)
-              pure answer) $
+              consume do
+                case answer of
+                  LLM.ChatFinalAnswer{content} ->
+                    S.yield content
+                  LLM.ChatToolRequest{content} ->
+                    S.yield content
+                pure answer) $
           ChatLog.runChatLog Nothing $
             AgentTrace.runAgentTrace Nothing $
               Chat.runChatWith

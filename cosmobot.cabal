@@ -140,6 +140,7 @@ common bot-agent-modules
         Bot.Memory
         Bot.Storage.SQLite
         Bot.Util.Html
+        Bot.Util.HTTP
         Bot.Util.Image
 
 executable cosmobot
