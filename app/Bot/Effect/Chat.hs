@@ -100,6 +100,7 @@ data ReplyStream = ReplyStream
   , answerRef :: !(IORef.IORef TextAccumulator)
   , pendingRef :: !(IORef.IORef TextAccumulator)
   , lastEditRef :: !(IORef.IORef Int)
+  , lastEditedTextRef :: !(IORef.IORef Text)
   , responseIdRef :: !(IORef.IORef (Maybe Integer))
   , lastChunkResponseIdRef :: !(IORef.IORef (Maybe Integer))
   }
@@ -157,6 +158,7 @@ newReplyStream message = do
   answerRef <- liftIO (IORef.newIORef emptyTextAccumulator)
   pendingRef <- liftIO (IORef.newIORef emptyTextAccumulator)
   lastEditRef <- liftIO (IORef.newIORef 0)
+  lastEditedTextRef <- liftIO (IORef.newIORef "")
   responseIdRef <- liftIO (IORef.newIORef Nothing)
   lastChunkResponseIdRef <- liftIO (IORef.newIORef Nothing)
   pure ReplyStream
@@ -165,6 +167,7 @@ newReplyStream message = do
     , answerRef = answerRef
     , pendingRef = pendingRef
     , lastEditRef = lastEditRef
+    , lastEditedTextRef = lastEditedTextRef
     , responseIdRef = responseIdRef
     , lastChunkResponseIdRef = lastChunkResponseIdRef
     }
@@ -188,7 +191,7 @@ finishReplyStream stream answer = do
   sentResponseIds <- case stream.style of
     EditableReply _ -> do
       responseId <- ensureEditableReplyMessage stream answer
-      void $ editMessage stream.message responseId (nonEmptyAnswer answer)
+      editEditableReply stream responseId (nonEmptyAnswer answer)
       pure []
     ChunkedReply _ ->
       flushChunkedReplyFinal stream answer
@@ -201,7 +204,17 @@ pushEditableReplyChunk editChunkChars stream fullAccumulator full = do
   lastEdit <- liftIO (IORef.readIORef stream.lastEditRef)
   when (fullAccumulator.lengthChars - lastEdit >= editChunkChars) do
     edited <- editMessage stream.message responseId full
-    when edited $ liftIO (IORef.writeIORef stream.lastEditRef fullAccumulator.lengthChars)
+    when edited do
+      liftIO $ IORef.writeIORef stream.lastEditRef fullAccumulator.lengthChars
+      liftIO $ IORef.writeIORef stream.lastEditedTextRef full
+
+editEditableReply :: (Chat :> es, IOE :> es) => ReplyStream -> Integer -> Text -> Eff es ()
+editEditableReply stream responseId body = do
+  lastEditedText <- liftIO (IORef.readIORef stream.lastEditedTextRef)
+  unless (body == lastEditedText) do
+    edited <- editMessage stream.message responseId body
+    when edited do
+      liftIO $ IORef.writeIORef stream.lastEditedTextRef body
 
 ensureEditableReplyMessage :: (Chat :> es, IOE :> es) => ReplyStream -> Text -> Eff es Integer
 ensureEditableReplyMessage stream full = do
@@ -217,6 +230,7 @@ ensureEditableReplyMessage stream full = do
         Just messageId -> do
           liftIO $ IORef.writeIORef stream.responseIdRef sent
           liftIO $ IORef.writeIORef stream.lastEditRef (Text.length (initialEditableBody full))
+          liftIO $ IORef.writeIORef stream.lastEditedTextRef (initialEditableBody full)
           pure messageId
 
 initialEditableBody :: Text -> Text

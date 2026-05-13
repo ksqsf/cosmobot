@@ -18,6 +18,7 @@ import Bot.Chat.Driver.Types
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
+import qualified Control.Exception as Exception
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
@@ -53,7 +54,8 @@ withPlatformDriver message label action =
       pure Nothing
     Just driver ->
       action driver `catch` \(err :: SomeException) -> do
-        logInfo [i|#{label} failed|] (message.platform, show err :: String)
+        let platformText = show message.platform :: String
+        logInfo_ [i|#{label} failed on #{platformText}: #{Exception.displayException err}|]
         pure Nothing
 
 replyToPlatform
