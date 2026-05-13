@@ -86,7 +86,7 @@ renderToolUseLine toolUse =
       occurredAt = timestamp toolUse.occurredAt
       status = renderStatus toolUse.status
   in
-  [i|- `#{occurredAt}` `id=#{auditId}` `tool=#{toolName}` `#{status}`|]
+  [i|- #{occurredAt} id=#{auditId} tool=`#{toolName}` #{status}|]
 
 renderAuditDetail :: AgentAudit.ToolUseDetail -> Text
 renderAuditDetail toolUse =
@@ -171,14 +171,14 @@ renderAuditEvent recordId = \case
   AgentAudit.ToolCallStarted{runId, turn, toolCall} ->
     let toolName = toolCall.name
         auditId = renderRecordId recordId
-    in [i|`tool_started` `audit_id=#{auditId}` `run=#{runId}` `turn=#{turn}` `tool=#{toolName}`|]
+    in [i|started audit_id=#{auditId} run=#{runId} turn=#{turn} tool=`#{toolName}`|]
   AgentAudit.ToolCallFinished{runId, turn, toolName, status, resultLength} ->
-    [i|`tool_finished` `run=#{runId}` `turn=#{turn}` `tool=#{toolName}` `status=#{status}` `result_chars=#{resultLength}`|]
+    [i|finished run=#{runId} turn=#{turn} tool=`#{toolName}` status=#{status} result_chars=#{resultLength}|]
   AgentAudit.AgentRunInterrupted{runId, reason} ->
-    [i|`run_interrupted` `run=#{runId}` `reason=#{reason}`|]
+    [i|run run=#{runId} reason=`#{reason}`|]
   AgentAudit.AgentConversationLinked{runId, linkedMessageId, parentMessageId} ->
     let parent = show parentMessageId :: Text
-    in [i|`conversation_linked` `run=#{runId}` `message=#{linkedMessageId}` `parent=#{parent}`|]
+    in [i|`conversation_linked` run=#{runId} message=#{linkedMessageId} parent=#{parent}|]
 
 renderStatus :: AgentAudit.ToolUseStatus -> Text
 renderStatus = \case
@@ -191,7 +191,7 @@ renderStatus = \case
 
 timestamp :: FormatTime t => t -> Text
 timestamp =
-  Text.pack . formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S%Q UTC"
+  Text.pack . formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S UTC"
 
 fenced :: Text -> Text -> Text
 fenced language body =
