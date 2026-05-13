@@ -280,3 +280,22 @@ test-suite chat-log-spec
         Bot.Effect.ChatLog
         Bot.Storage.SQLite
     hs-source-dirs:   test
+
+benchmark message-pipeline-bench
+    import:           warnings
+                    , threaded
+                    , language
+                    , app-deps
+                    , test-deps
+                    , bot-core-modules
+    type:             exitcode-stdio-1.0
+    main-is:          MessagePipelineBench.hs
+    other-modules:
+        Bot.Core.Route
+        Bot.Effect.ChatLog
+        Bot.Effect.Scheduler
+        Bot.Storage.SQLite
+        Bot.Util.Stream
+    build-depends:    deepseq
+                    , tasty-bench
+    hs-source-dirs:   bench
