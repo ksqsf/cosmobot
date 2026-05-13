@@ -3,7 +3,7 @@ module Main (main) where
 import qualified Bot.Agent as Agent
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Core.Conversation
-import qualified Bot.Effect.AgentTrace as AgentTrace
+import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
@@ -29,7 +29,7 @@ import Test.Tasty.HUnit
 
 type AgentStack =
   '[ Chat.Chat
-   , AgentTrace.AgentTrace
+   , AgentAudit.AgentAudit
    , ChatLog.ChatLog
    , LLM.LLM
    , Memory.Memory
@@ -49,7 +49,7 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
-      , testCase "agent trace records model and tool events" testAgentTraceRecordsModelAndToolEvents
+      , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "chunked active conversation aliases every sent reply" testChunkedActiveConversationAliasesEverySentReply
@@ -98,39 +98,27 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef recorded >>= (@?= [(Just 42, "hello\n[image] https://example.test/image.png")])
   IORef.readIORef remembered >>= (@?= [Just 42])
 
-testAgentTraceRecordsModelAndToolEvents :: IO ()
-testAgentTraceRecordsModelAndToolEvents = do
+testAgentAuditRecordsToolEvents :: IO ()
+testAgentAuditRecordsToolEvents = do
   answers <- IORef.newIORef
     [ chatAnswer "" [toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])]
     , chatAnswer "done" []
     ]
   fetches <- IORef.newIORef (0 :: Int)
-  events <- runAgentWith answers (ChatMock Nothing Nothing) do
-    _ <- Agent.runAgentWith AgentTrace.agentTraceObserver 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches] (startWithUser "fetch it")
-    allEvents <- AgentTrace.queryAll
-    pure allEvents
-  map traceEventName events @?=
-    [ "AgentRunStarted"
-    , "ModelTurnStarted"
-    , "ModelTurnFinished"
-    , "ToolCallStarted"
-    , "ToolCallFinished"
-    , "ModelTurnStarted"
-    , "ModelTurnFinished"
-    , "AgentRunFinished"
-    ]
-  [status | AgentTrace.ToolCallFinished{status} <- events] @?= ["ok"]
-
-traceEventName :: AgentTrace.AgentTraceEvent -> Text
-traceEventName = \case
-  AgentTrace.AgentRunStarted{} -> "AgentRunStarted"
-  AgentTrace.ModelTurnStarted{} -> "ModelTurnStarted"
-  AgentTrace.ModelTurnFinished{} -> "ModelTurnFinished"
-  AgentTrace.ToolCallStarted{} -> "ToolCallStarted"
-  AgentTrace.ToolCallFinished{} -> "ToolCallFinished"
-  AgentTrace.AgentRunFinished{} -> "AgentRunFinished"
-  AgentTrace.AgentRunInterrupted{} -> "AgentRunInterrupted"
-  AgentTrace.AgentConversationLinked{} -> "AgentConversationLinked"
+  toolUses <- runAgentWith answers (ChatMock Nothing Nothing) do
+    _ <- Agent.runAgentWith AgentAudit.agentAuditObserver 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches] (startWithUser "fetch it")
+    AgentAudit.queryRecentToolUses 10
+  case toolUses of
+    [toolUse] -> do
+      toolUse.toolName @?= "web_fetch"
+      case toolUse.status of
+        AgentAudit.ToolUseFinished{status} ->
+          status @?= "ok"
+        other ->
+          assertFailure ("expected finished tool use, got " <> show other)
+      toolUse.result @?= Just "fetched"
+    _ ->
+      assertFailure [i|expected one tool use, got #{length toolUses}|]
 
 testChatAnswerJsonRemainsObjectCompatible :: IO ()
 testChatAnswerJsonRemainsObjectCompatible = do
@@ -469,7 +457,7 @@ runAgentWithMemory memoryCfg answers chatMock action =
                     S.yield content
                 pure answer) $
           ChatLog.runChatLog Nothing $
-            AgentTrace.runAgentTrace Nothing $
+            AgentAudit.runAgentAudit Nothing $
               Chat.runChatWith
                 Chat.ChatHandlers
                   { handleReplyTo = mockReply chatMock

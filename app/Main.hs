@@ -9,7 +9,7 @@ import Bot.Config
 import Bot.Core.Conversation
 import Bot.Core.Route
 import qualified Bot.Chat.Driver as ChatDriver
-import qualified Bot.Effect.AgentTrace as AgentTrace
+import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
@@ -33,7 +33,7 @@ main = do
   conversations <- newConversationStore maybeSQLiteStore
   runEff $
     runBotLog cfg.logLevel .
-    AgentTrace.runAgentTrace maybeSQLiteStore .
+    AgentAudit.runAgentAudit maybeSQLiteStore .
     ChatLog.runChatLog maybeSQLiteStore .
     Memory.runMemory cfg.memory .
     Scheduler.runScheduler .
@@ -49,7 +49,7 @@ main = do
         (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
 routes
-  :: (Chat.Chat :> es, AgentTrace.AgentTrace :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
   => BotConfig
   -> SQLiteStorage.SQLiteStore
   -> ConversationStore

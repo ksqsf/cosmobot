@@ -79,7 +79,7 @@ data AgentContext es = AgentContext
 -- | Semantic lifecycle events emitted by the agent engine.
 --
 -- Observers translate these into concrete side effects such as persistent
--- trace rows. The loop itself should only emit these domain events.
+-- audit rows. The loop itself should only emit these domain events.
 data AgentEvent
   = AgentRunStarted
       { runId :: !Text

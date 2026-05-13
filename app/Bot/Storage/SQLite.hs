@@ -11,7 +11,7 @@ module Bot.Storage.SQLite
   , StoredState (..)
   , ConversationRow (..)
   , ConversationPayloadKind (..)
-  , AgentTraceRow (..)
+  , AgentAuditRow (..)
   , declareJsonCollection
   , loadJsonCollection
   , appendJsonCollection
@@ -25,11 +25,11 @@ module Bot.Storage.SQLite
   , saveConversationMessages
   , saveChatLogEntry
   , queryChatLogEntries
-  , saveAgentTraceEvent
-  , queryAgentTraceEvents
-  , queryRecentAgentTraceEvents
-  , queryAgentTraceEventsForMessage
-  , queryAgentTraceEventsForMessages
+  , saveAgentAuditEvent
+  , queryAgentAuditEvents
+  , queryRecentAgentAuditEvents
+  , queryAgentAuditEventsForMessage
+  , queryAgentAuditEventsForMessages
   )
 where
 
@@ -77,7 +77,7 @@ data ConversationPayloadKind
   | ConversationPayloadSnapshot
   deriving (Eq, Show)
 
-data AgentTraceRow a = AgentTraceRow
+data AgentAuditRow a = AgentAuditRow
   { id :: !Integer
   , occurredAt :: !UTCTime
   , event :: !a
@@ -507,9 +507,9 @@ queryChatLogEntries store platformKey kindKey chatId includeBotMessages limit = 
                   Left _ -> acc
           rows acc' stmt
 
--- | Persist one agent trace event.
-saveAgentTraceEvent :: SQLiteStore -> Text -> UTCTime -> Maybe Integer -> Maybe Integer -> Aeson.Value -> IO ()
-saveAgentTraceEvent store runId occurredAt linkedMessageId parentMessageId event = withStore store \db ->
+-- | Persist one agent audit event.
+saveAgentAuditEvent :: SQLiteStore -> Text -> UTCTime -> Maybe Integer -> Maybe Integer -> Aeson.Value -> IO ()
+saveAgentAuditEvent store runId occurredAt linkedMessageId parentMessageId event = withStore store \db ->
   withStatement db
     "INSERT INTO agent_trace(run_id, occurred_at, linked_message_id, parent_message_id, event_json) VALUES (?, ?, ?, ?, ?)"
     [ SQLite.SQLText runId
@@ -520,13 +520,13 @@ saveAgentTraceEvent store runId occurredAt linkedMessageId parentMessageId event
     ]
     stepDone
 
--- | Return all agent trace events for one run in insertion order.
-queryAgentTraceEvents :: Aeson.FromJSON a => SQLiteStore -> Text -> IO [AgentTraceRow a]
-queryAgentTraceEvents store runId = withStore store \db ->
-  queryAgentTraceRows db runId
+-- | Return all agent audit events for one run in insertion order.
+queryAgentAuditEvents :: Aeson.FromJSON a => SQLiteStore -> Text -> IO [AgentAuditRow a]
+queryAgentAuditEvents store runId = withStore store \db ->
+  queryAgentAuditRows db runId
 
-queryAgentTraceRows :: Aeson.FromJSON a => SQLite.Database -> Text -> IO [AgentTraceRow a]
-queryAgentTraceRows db runId =
+queryAgentAuditRows :: Aeson.FromJSON a => SQLite.Database -> Text -> IO [AgentAuditRow a]
+queryAgentAuditRows db runId =
   withStatement db
     "SELECT id, occurred_at, event_json FROM agent_trace WHERE run_id = ? ORDER BY id ASC"
     [SQLite.SQLText runId]
@@ -542,13 +542,13 @@ queryAgentTraceRows db runId =
           json <- columnText stmt 2
           case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 json) of
             Right value ->
-              rows (AgentTraceRow{id = rowId, occurredAt, event = value} : acc) stmt
+              rows (AgentAuditRow{id = rowId, occurredAt, event = value} : acc) stmt
             Left _ ->
               rows acc stmt
 
--- | Return recent agent trace events in insertion order.
-queryRecentAgentTraceEvents :: Aeson.FromJSON a => SQLiteStore -> Int -> IO [AgentTraceRow a]
-queryRecentAgentTraceEvents store limit = withStore store \db ->
+-- | Return recent agent audit events in insertion order.
+queryRecentAgentAuditEvents :: Aeson.FromJSON a => SQLiteStore -> Int -> IO [AgentAuditRow a]
+queryRecentAgentAuditEvents store limit = withStore store \db ->
   withStatement db
     "SELECT id, occurred_at, event_json FROM agent_trace ORDER BY id DESC LIMIT ?"
     [SQLite.SQLInteger (fromIntegral (max 0 limit))]
@@ -564,22 +564,22 @@ queryRecentAgentTraceEvents store limit = withStore store \db ->
           json <- columnText stmt 2
           case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 json) of
             Right value ->
-              rows (AgentTraceRow{id = rowId, occurredAt, event = value} : acc) stmt
+              rows (AgentAuditRow{id = rowId, occurredAt, event = value} : acc) stmt
             Left _ ->
               rows acc stmt
 
--- | Return trace events for runs linked to one conversation message.
-queryAgentTraceEventsForMessage :: Aeson.FromJSON a => SQLiteStore -> Integer -> IO [AgentTraceRow a]
-queryAgentTraceEventsForMessage store messageId =
-  queryAgentTraceEventsForMessages store [messageId]
+-- | Return audit events for runs linked to one conversation message.
+queryAgentAuditEventsForMessage :: Aeson.FromJSON a => SQLiteStore -> Integer -> IO [AgentAuditRow a]
+queryAgentAuditEventsForMessage store messageId =
+  queryAgentAuditEventsForMessages store [messageId]
 
--- | Return trace events for runs linked to any conversation message.
-queryAgentTraceEventsForMessages :: Aeson.FromJSON a => SQLiteStore -> [Integer] -> IO [AgentTraceRow a]
-queryAgentTraceEventsForMessages _ [] =
+-- | Return audit events for runs linked to any conversation message.
+queryAgentAuditEventsForMessages :: Aeson.FromJSON a => SQLiteStore -> [Integer] -> IO [AgentAuditRow a]
+queryAgentAuditEventsForMessages _ [] =
   pure []
-queryAgentTraceEventsForMessages store messageIds = withStore store \db -> do
+queryAgentAuditEventsForMessages store messageIds = withStore store \db -> do
   runIds <- linkedRunIds db
-  concat <$> traverse (queryAgentTraceRows db) runIds
+  concat <$> traverse (queryAgentAuditRows db) runIds
   where
     uniqueIds =
       ordNub messageIds

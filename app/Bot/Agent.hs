@@ -34,7 +34,10 @@ import Bot.Agent.Conversation
   , closeInterruptedToolCalls
   )
 import Bot.Agent.Core
-import qualified Bot.Agent.Middleware.Observation as Observation
+import Bot.Agent.Middleware.Observation
+  ( withObservation
+  , withObservedRun
+  )
 import Bot.Agent.Middleware.Tools
   ( withToolFailureRecovery
   , withToolLimit
@@ -147,7 +150,7 @@ defaultAgentProgram observer maxTurns agentRun =
   emptyAgentProgram agentRun
     & withToolFailureRecovery
     & withToolLimit maxTurns
-    & Observation.withObservation observer
+    & withObservation observer
 
 -----------------------------------------------------------------------------------------
 -- * Phases
@@ -262,7 +265,7 @@ withAgentRun
   -> Stream (Of Text) (Eff es) AgentResult
 withAgentRun observer maxTurns agentRun action =
   fmap (.result) $
-  Observation.withObservedRun
+  withObservedRun
     observer
     agentRun.runId
     agentRun.context.message.messageId

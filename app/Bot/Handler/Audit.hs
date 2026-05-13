@@ -12,14 +12,14 @@ where
 import Bot.Core.Message
 import Bot.Core.Conversation
 import Bot.Core.Route
-import qualified Bot.Effect.AgentTrace as AgentTrace
+import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import Bot.Prelude
 import qualified Data.Text as Text
 import Data.Time (FormatTime, defaultTimeLocale, formatTime)
 
 auditHandlers
-  :: (AgentTrace.AgentTrace :> es, Chat.Chat :> es, IOE :> es)
+  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, IOE :> es)
   => ConversationStore
   -> [RouteHandler es]
 auditHandlers conversations =
@@ -28,7 +28,7 @@ auditHandlers conversations =
   ]
 
 handleAudit
-  :: (AgentTrace.AgentTrace :> es, Chat.Chat :> es, IOE :> es)
+  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, IOE :> es)
   => ConversationStore
   -> IncomingMessage
   -> Text
@@ -39,57 +39,55 @@ handleAudit conversations message args =
       | Text.toLower (Text.strip args) == "log" ->
           case message.replyToMessageId of
             Just parentId -> do
-              records <- AgentTrace.queryConversationTrace parentId
-              void $ Chat.replyTo message (renderConversationTraceLog parentId records)
+              records <- AgentAudit.queryConversationAudit parentId
+              void $ Chat.replyTo message (renderConversationAuditLog parentId records)
             Nothing ->
               void $ Chat.replyTo message "用法：回复一条 agent conversation 消息并发送 !audit log"
       | Text.toLower (Text.strip args) == "all" ->
           case message.replyToMessageId of
             Just parentId -> do
               messageIds <- lookupConversationMessageIds conversations parentId
-              records <- AgentTrace.queryConversationMessagesTrace messageIds
+              records <- AgentAudit.queryConversationMessagesAudit messageIds
               void $ Chat.replyTo message (renderConversationToolUses parentId records)
             Nothing ->
               void $ Chat.replyTo message "用法：回复一条 agent conversation 消息并发送 !audit all"
       | Text.null (Text.strip args) ->
           case message.replyToMessageId of
             Just parentId -> do
-              records <- AgentTrace.queryConversationTrace parentId
+              records <- AgentAudit.queryConversationAudit parentId
               void $ Chat.replyTo message (renderConversationToolUses parentId records)
             Nothing -> do
-              toolUses <- AgentTrace.queryRecentToolUses 50
+              toolUses <- AgentAudit.queryRecentToolUses 50
               void $ Chat.replyTo message (renderAuditList toolUses)
       | otherwise ->
           void $ Chat.replyTo message "用法：!audit、!audit all、!audit log 或 !audit <id>"
     Just auditId -> do
-      detail <- AgentTrace.queryToolUse auditId
+      detail <- AgentAudit.queryToolUse auditId
       void $ Chat.replyTo message (maybe [i|没有找到 audit id #{auditId}。|] renderAuditDetail detail)
 
 parseAuditId :: Text -> Maybe Integer
 parseAuditId =
   readMaybe . toString . Text.strip
 
-renderAuditList :: [AgentTrace.ToolUseDetail] -> Text
+renderAuditList :: [AgentAudit.ToolUseDetail] -> Text
 renderAuditList [] =
   "最近没有 agent tool use。"
 renderAuditList toolUses =
   Text.unlines (map renderToolUseLine toolUses)
 
-renderToolUseLine :: AgentTrace.ToolUseDetail -> Text
+renderToolUseLine :: AgentAudit.ToolUseDetail -> Text
 renderToolUseLine toolUse =
   let auditId = toolUse.auditId
       toolName = toolUse.toolName
-      toolCallId = toolUse.toolCallId
   in
   Text.unwords
     [ timestamp toolUse.occurredAt
     , [i|id=#{auditId}|]
     , [i|tool=#{toolName}|]
-    , [i|request=#{toolCallId}|]
     , renderStatus toolUse.status
     ]
 
-renderAuditDetail :: AgentTrace.ToolUseDetail -> Text
+renderAuditDetail :: AgentAudit.ToolUseDetail -> Text
 renderAuditDetail toolUse =
   let auditId = toolUse.auditId
       turn = toolUse.turn
@@ -101,7 +99,6 @@ renderAuditDetail toolUse =
     , "run_id: " <> toolUse.runId
     , [i|turn: #{turn}|]
     , "tool: " <> toolUse.toolName
-    , "tool_request_id: " <> toolUse.toolCallId
     , "status: " <> renderStatus toolUse.status
     , "message_ids: " <> show toolUse.messageIds
     , "arguments:"
@@ -110,17 +107,17 @@ renderAuditDetail toolUse =
     , fromMaybe "(still running)" toolUse.result
     ]
 
-renderConversationToolUses :: Integer -> [AgentTrace.AgentTraceRecord] -> Text
+renderConversationToolUses :: Integer -> [AgentAudit.AgentAuditRecord] -> Text
 renderConversationToolUses parentId [] =
-  [i|没有找到消息 #{parentId} 对应的 agent trace。|]
+  [i|没有找到消息 #{parentId} 对应的 agent audit。|]
 renderConversationToolUses _ records =
-  case AgentTrace.toolUsesFromTraceRecords records of
+  case AgentAudit.toolUsesFromAuditRecords records of
     [] ->
-      "该 agent trace 中没有 tool use。"
+      "该 agent audit 中没有 tool use。"
     toolUses ->
       Text.intercalate "\n" (map renderToolUseBlock toolUses)
 
-renderToolUseBlock :: AgentTrace.ToolUseDetail -> Text
+renderToolUseBlock :: AgentAudit.ToolUseDetail -> Text
 renderToolUseBlock toolUse =
   let auditId = toolUse.auditId
       turn = toolUse.turn
@@ -133,63 +130,53 @@ renderToolUseBlock toolUse =
     , "run_id: " <> toolUse.runId
     , [i|turn: #{turn}|]
     , "tool: " <> toolUse.toolName
-    , "tool_request_id: " <> toolUse.toolCallId
     , "status: " <> renderStatus toolUse.status
     , [i|result_chars: #{resultChars}|]
     , "arguments:"
     , toolUse.arguments
     ]
 
-renderConversationTraceLog :: Integer -> [AgentTrace.AgentTraceRecord] -> Text
-renderConversationTraceLog parentId [] =
-  [i|没有找到消息 #{parentId} 对应的 agent trace。|]
-renderConversationTraceLog _ records =
-  Text.unlines (map renderTraceRecord records)
+renderConversationAuditLog :: Integer -> [AgentAudit.AgentAuditRecord] -> Text
+renderConversationAuditLog parentId [] =
+  [i|没有找到消息 #{parentId} 对应的 agent audit。|]
+renderConversationAuditLog _ records =
+  Text.unlines (map renderAuditRecord records)
 
-renderTraceRecord :: AgentTrace.AgentTraceRecord -> Text
-renderTraceRecord record =
+renderAuditRecord :: AgentAudit.AgentAuditRecord -> Text
+renderAuditRecord record =
   let eventId = renderRecordId record.id
   in
   Text.unwords
     [ timestamp record.occurredAt
     , [i|event_id=#{eventId}|]
-    , renderTraceEvent record.id record.event
+    , renderAuditEvent record.id record.event
     ]
 
 renderRecordId :: Maybe Integer -> Text
 renderRecordId =
   maybe "unknown" show
 
-renderTraceEvent :: Maybe Integer -> AgentTrace.AgentTraceEvent -> Text
-renderTraceEvent recordId = \case
-  AgentTrace.AgentRunStarted{runId, maxTurns, exposedTools} ->
-    [i|run_started run=#{runId} max_turns=#{maxTurns} tools=#{Text.intercalate "," exposedTools}|]
-  AgentTrace.ModelTurnStarted{runId, turn, messageCount} ->
-    [i|model_turn_started run=#{runId} turn=#{turn} messages=#{messageCount}|]
-  AgentTrace.ModelTurnFinished{runId, turn, answerKind, contentLength, toolCalls} ->
-    [i|model_turn_finished run=#{runId} turn=#{turn} kind=#{answerKind} content_chars=#{contentLength} tool_calls=#{length toolCalls}|]
-  AgentTrace.ToolCallStarted{runId, turn, toolCall} ->
+renderAuditEvent :: Maybe Integer -> AgentAudit.AgentAuditEvent -> Text
+renderAuditEvent recordId = \case
+  AgentAudit.ToolCallStarted{runId, turn, toolCall} ->
     let toolName = toolCall.name
-        toolCallId = toolCall.id
         auditId = renderRecordId recordId
-    in [i|tool_started audit_id=#{auditId} run=#{runId} turn=#{turn} tool=#{toolName} request=#{toolCallId}|]
-  AgentTrace.ToolCallFinished{runId, turn, toolCallId, toolName, status, resultLength} ->
-    [i|tool_finished run=#{runId} turn=#{turn} tool=#{toolName} request=#{toolCallId} status=#{status} result_chars=#{resultLength}|]
-  AgentTrace.AgentRunFinished{runId, status, finalLength, turnsUsed} ->
-    [i|run_finished run=#{runId} status=#{status} final_chars=#{finalLength} turns=#{turnsUsed}|]
-  AgentTrace.AgentRunInterrupted{runId, reason} ->
+    in [i|tool_started audit_id=#{auditId} run=#{runId} turn=#{turn} tool=#{toolName}|]
+  AgentAudit.ToolCallFinished{runId, turn, toolName, status, resultLength} ->
+    [i|tool_finished run=#{runId} turn=#{turn} tool=#{toolName} status=#{status} result_chars=#{resultLength}|]
+  AgentAudit.AgentRunInterrupted{runId, reason} ->
     [i|run_interrupted run=#{runId} reason=#{reason}|]
-  AgentTrace.AgentConversationLinked{runId, linkedMessageId, parentMessageId} ->
+  AgentAudit.AgentConversationLinked{runId, linkedMessageId, parentMessageId} ->
     let parent = show parentMessageId :: Text
     in [i|conversation_linked run=#{runId} message=#{linkedMessageId} parent=#{parent}|]
 
-renderStatus :: AgentTrace.ToolUseStatus -> Text
+renderStatus :: AgentAudit.ToolUseStatus -> Text
 renderStatus = \case
-  AgentTrace.ToolUseInProgress ->
+  AgentAudit.ToolUseInProgress ->
     "running"
-  AgentTrace.ToolUseFinished{status, durationMilliseconds} ->
+  AgentAudit.ToolUseFinished{status, durationMilliseconds} ->
     [i|finished(#{status}, #{durationMilliseconds}ms)|]
-  AgentTrace.ToolUseInterrupted{reason, durationMilliseconds} ->
+  AgentAudit.ToolUseInterrupted{reason, durationMilliseconds} ->
     [i|interrupted(#{reason}, #{durationMilliseconds}ms)|]
 
 timestamp :: FormatTime t => t -> Text
