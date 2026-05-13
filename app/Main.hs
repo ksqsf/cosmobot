@@ -15,6 +15,7 @@ import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Effect.Storage as Storage
 import Bot.Handler.Ask
 import Bot.Handler.Audit
 import Bot.Handler.Saucenao
@@ -37,8 +38,9 @@ main = withShutdownSignal \shutdown -> do
   conversations <- newConversationStore maybeSQLiteStore
   runEff $
     runBotLog cfg.logLevel .
-    AgentAudit.runAgentAudit maybeSQLiteStore .
-    ChatLog.runChatLog maybeSQLiteStore .
+    Storage.runStorageSQLite sqliteStore .
+    AgentAudit.runAgentAudit .
+    ChatLog.runChatLog .
     Memory.runMemory cfg.memory .
     Scheduler.runScheduler .
     LLM.runLLM cfg.llm .
@@ -50,7 +52,7 @@ main = withShutdownSignal \shutdown -> do
               , Scheduler.scheduledMessages
               ]
         consumeWith
-          (routes cfg sqliteStore conversations)
+          (routes cfg conversations)
           (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
 withShutdownSignal :: (MVar.MVar () -> IO ()) -> IO ()
@@ -85,14 +87,13 @@ runUntilShutdown shutdown action =
         (MVar.takeMVar shutdown >> runInIO (logInfo_ "Shutdown requested; stopping cosmobot."))
 
 routes
-  :: (Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
   => BotConfig
-  -> SQLiteStorage.SQLiteStore
   -> ConversationStore
   -> [RouteHandler es]
-routes cfg sqliteStore conversations =
+routes cfg conversations =
   auditHandlers conversations
-    <> scratchpadHandlers sqliteStore
+    <> scratchpadHandlers
     <> typingHandlers
     <> saucenaoHandlers cfg.saucenao
     <> askHandlers cfg.tool cfg.handlers.ask conversations

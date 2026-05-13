@@ -475,7 +475,7 @@ saveChatLogEntry store platformKey kindKey chatId isBot entry = withStore store 
 queryChatLogEntries :: SQLiteStore -> Text -> Text -> Maybe Integer -> Bool -> Int -> IO [Aeson.Value]
 queryChatLogEntries store platformKey kindKey chatId includeBotMessages limit = withStore store \db ->
   withStatement db sql params \stmt ->
-    reverse <$> rows [] stmt
+    rows [] stmt
   where
     botClause
       | includeBotMessages = ""

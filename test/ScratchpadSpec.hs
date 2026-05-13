@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Storage as StorageEffect
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
 import Bot.Core.Route
@@ -122,7 +123,8 @@ runScratchpad store replies incoming =
       , handleListGroupMembers = listMembers
       , handleMentionUser = mention
       } $
-      runHandlers (scratchpadHandlers store) incoming
+      StorageEffect.runStorageSQLite store $
+        runHandlers scratchpadHandlers incoming
   where
     reply _ body = do
       liftIO $ IORef.modifyIORef' replies (<> [body])

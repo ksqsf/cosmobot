@@ -11,23 +11,22 @@ module Bot.Handler.Scratchpad
 where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Route
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Bot.Storage.SQLite as Storage
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 
 scratchpadHandlers
-  :: (Chat.Chat :> es, IOE :> es)
-  => Storage.SQLiteStore
-  -> [RouteHandler es]
-scratchpadHandlers store =
-  [ scratchpadRoute store "!todo" TodoCommand
-  , scratchpadRoute store "!done" DoneCommand
-  , scratchpadRoute store "!list" ListCommand
-  , scratchpadRoute store "!clear" ClearCommand
-  , scratchpadRoute store "!rm" RemoveCommand
+  :: (Chat.Chat :> es, Storage.Storage :> es)
+  => [RouteHandler es]
+scratchpadHandlers =
+  [ scratchpadRoute "!todo" TodoCommand
+  , scratchpadRoute "!done" DoneCommand
+  , scratchpadRoute "!list" ListCommand
+  , scratchpadRoute "!clear" ClearCommand
+  , scratchpadRoute "!rm" RemoveCommand
   ]
 
 data ScratchpadCommand
@@ -54,111 +53,104 @@ todoItems =
     }
 
 scratchpadRoute
-  :: (Chat.Chat :> es, IOE :> es)
-  => Storage.SQLiteStore
-  -> Text
+  :: (Chat.Chat :> es, Storage.Storage :> es)
+  => Text
   -> ScratchpadCommand
   -> RouteHandler es
-scratchpadRoute store commandText commandKind =
+scratchpadRoute commandText commandKind =
   stopOn (command commandText) \message args ->
-    handleScratchpadCommand store commandKind message args
+    handleScratchpadCommand commandKind message args
 
 handleScratchpadCommand
-  :: (Chat.Chat :> es, IOE :> es)
-  => Storage.SQLiteStore
-  -> ScratchpadCommand
+  :: (Chat.Chat :> es, Storage.Storage :> es)
+  => ScratchpadCommand
   -> IncomingMessage
   -> Text
   -> Eff es ()
-handleScratchpadCommand store commandKind message args =
+handleScratchpadCommand commandKind message args =
   case senderScope message of
     Nothing ->
       void $ Chat.replyTo message "无法识别发送者，不能保存 todo。"
     Just (platform, sender) ->
       case commandKind of
-        TodoCommand -> handleTodo store platform sender message args
-        DoneCommand -> handleDone store platform sender message args
-        ListCommand -> replyWithList store platform sender message
-        ClearCommand -> handleClear store platform sender message
-        RemoveCommand -> handleRemove store platform sender message args
+        TodoCommand -> handleTodo platform sender message args
+        DoneCommand -> handleDone platform sender message args
+        ListCommand -> replyWithList platform sender message
+        ClearCommand -> handleClear platform sender message
+        RemoveCommand -> handleRemove platform sender message args
 
 handleTodo
-  :: (Chat.Chat :> es, IOE :> es)
-  => Storage.SQLiteStore
-  -> Text
+  :: (Chat.Chat :> es, Storage.Storage :> es)
+  => Text
   -> Text
   -> IncomingMessage
   -> Text
   -> Eff es ()
-handleTodo store platformKey senderKey message args
+handleTodo platformKey senderKey message args
   | Text.null body =
-      replyWithList store platformKey senderKey message
+      replyWithList platformKey senderKey message
   | otherwise = do
-      liftIO (addTodoItem store platformKey senderKey body)
-      todos <- liftIO (loadTodoList store platformKey senderKey)
+      addTodoItem platformKey senderKey body
+      todos <- loadTodoList platformKey senderKey
       void $ Chat.replyTo message ("已添加 #" <> show (length todos) <> ": " <> body)
   where
     body = Text.strip args
 
 handleDone
-  :: (Chat.Chat :> es, IOE :> es)
-  => Storage.SQLiteStore
-  -> Text
+  :: (Chat.Chat :> es, Storage.Storage :> es)
+  => Text
   -> Text
   -> IncomingMessage
   -> Text
   -> Eff es ()
-handleDone store platformKey senderKey message args =
+handleDone platformKey senderKey message args =
   case parseSingleIndex args of
     Nothing ->
       void $ Chat.replyTo message "用法：!done <todo编号>"
     Just index -> do
-      todos <- liftIO (loadTodoList store platformKey senderKey)
+      todos <- loadTodoList platformKey senderKey
       case todoAt index todos of
         Nothing ->
           void $ Chat.replyTo message [i|没有编号 #{index} 的 todo。|]
         Just todo -> do
-          liftIO (markTodoDone store platformKey senderKey todo)
+          markTodoDone platformKey senderKey todo
           void $ Chat.replyTo message ("已完成 #" <> show index <> ": " <> todo.value.body)
 
 handleClear
-  :: (Chat.Chat :> es, IOE :> es)
-  => Storage.SQLiteStore
-  -> Text
+  :: (Chat.Chat :> es, Storage.Storage :> es)
+  => Text
   -> Text
   -> IncomingMessage
   -> Eff es ()
-handleClear store platformKey senderKey message = do
-  liftIO (clearTodoList store platformKey senderKey)
+handleClear platformKey senderKey message = do
+  clearTodoList platformKey senderKey
   void $ Chat.replyTo message "已清空 todo list。"
 
 handleRemove
-  :: (Chat.Chat :> es, IOE :> es)
-  => Storage.SQLiteStore
-  -> Text
+  :: (Chat.Chat :> es, Storage.Storage :> es)
+  => Text
   -> Text
   -> IncomingMessage
   -> Text
   -> Eff es ()
-handleRemove store platformKey senderKey message args =
+handleRemove platformKey senderKey message args =
   case parseIndices args of
     [] ->
       void $ Chat.replyTo message "用法：!rm <编号1> <编号2> ..."
     indices -> do
-      todos <- liftIO (loadTodoList store platformKey senderKey)
+      todos <- loadTodoList platformKey senderKey
       let rows = mapMaybe (`todoAt` todos) indices
-      liftIO (deleteTodoRows store platformKey senderKey (map (.rowId) rows))
+      deleteTodoRows platformKey senderKey (map (.rowId) rows)
       void $ Chat.replyTo message [i|已删除 #{length rows} 项。|]
 
 replyWithList
-  :: (Chat.Chat :> es, IOE :> es)
-  => Storage.SQLiteStore
-  -> Text
+  :: (Chat.Chat :> es, Storage.Storage :> es)
+  => Text
   -> Text
   -> IncomingMessage
   -> Eff es ()
-replyWithList store platformKey senderKey message = do
-  todos <- liftIO (loadTodoList store platformKey senderKey)
+replyWithList platformKey senderKey message = do
+  todos <- loadTodoList platformKey senderKey
   void $ Chat.replyTo message (renderTodoList todos)
 
 renderTodoList :: [StoredTodo] -> Text
@@ -173,26 +165,26 @@ renderTodoList todos =
       | todo.done = "X"
       | otherwise = " "
 
-loadTodoList :: Storage.SQLiteStore -> Text -> Text -> IO [StoredTodo]
-loadTodoList store platformKey senderKey =
-  Storage.loadJsonCollection store todoItems (todoScope platformKey senderKey)
+loadTodoList :: Storage.Storage :> es => Text -> Text -> Eff es [StoredTodo]
+loadTodoList platformKey senderKey =
+  Storage.loadJsonCollection todoItems (todoScope platformKey senderKey)
 
-addTodoItem :: Storage.SQLiteStore -> Text -> Text -> Text -> IO ()
-addTodoItem store platformKey senderKey body =
-  Storage.appendJsonCollection store todoItems (todoScope platformKey senderKey) TodoItem{body, done = False}
+addTodoItem :: Storage.Storage :> es => Text -> Text -> Text -> Eff es ()
+addTodoItem platformKey senderKey body =
+  Storage.appendJsonCollection todoItems (todoScope platformKey senderKey) TodoItem{body, done = False}
 
-markTodoDone :: Storage.SQLiteStore -> Text -> Text -> StoredTodo -> IO ()
-markTodoDone store platformKey senderKey todo = do
+markTodoDone :: Storage.Storage :> es => Text -> Text -> StoredTodo -> Eff es ()
+markTodoDone platformKey senderKey todo = do
   let item = todo.value
-  Storage.replaceJsonCollectionItem store todoItems (todoScope platformKey senderKey) todo.rowId item{done = True}
+  Storage.replaceJsonCollectionItem todoItems (todoScope platformKey senderKey) todo.rowId item{done = True}
 
-deleteTodoRows :: Storage.SQLiteStore -> Text -> Text -> [Integer] -> IO ()
-deleteTodoRows store platformKey senderKey =
-  Storage.deleteJsonCollectionRows store todoItems (todoScope platformKey senderKey)
+deleteTodoRows :: Storage.Storage :> es => Text -> Text -> [Integer] -> Eff es ()
+deleteTodoRows platformKey senderKey =
+  Storage.deleteJsonCollectionRows todoItems (todoScope platformKey senderKey)
 
-clearTodoList :: Storage.SQLiteStore -> Text -> Text -> IO ()
-clearTodoList store platformKey senderKey =
-  Storage.clearJsonCollection store todoItems (todoScope platformKey senderKey)
+clearTodoList :: Storage.Storage :> es => Text -> Text -> Eff es ()
+clearTodoList platformKey senderKey =
+  Storage.clearJsonCollection todoItems (todoScope platformKey senderKey)
 
 todoScope :: Text -> Text -> [Text]
 todoScope platformKey senderKey =

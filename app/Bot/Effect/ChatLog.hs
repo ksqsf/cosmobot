@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Effect.ChatLog
-Description : In-memory chat log
+Description : Chat log effect
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -20,11 +20,10 @@ where
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Effect.Chat as Chat
-import qualified Bot.Storage.SQLite as Storage
+import qualified Bot.Effect.Storage as Storage
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Streaming.Prelude as S
@@ -89,48 +88,22 @@ queryChat :: ChatLog :> es => IncomingMessage -> Int -> Bool -> Eff es [ChatLogE
 queryChat message limit includeBotMessages =
   send (QueryChat message limit includeBotMessages)
 
--- | Interpret chat logging in memory, optionally backed by SQLite.
+-- | Interpret chat logging through the storage capability.
 runChatLog
-  :: (IOE :> es, Log :> es)
-  => Maybe Storage.SQLiteStore
-  -> Eff (ChatLog : es) a
+  :: (IOE :> es, Log :> es, Storage.Storage :> es)
+  => Eff (ChatLog : es) a
   -> Eff es a
-runChatLog sqliteStore inner = do
-  memoryRef <- case sqliteStore of
-    Nothing ->
-      Just <$> liftIO (IORef.newIORef [] :: IO (IORef.IORef [ChatLogRecord]))
-    Just _ ->
-      pure Nothing
+runChatLog inner =
   interpret
     (\_ -> \case
-      RecordMessage message -> do
-        let record = userRecord message
-        traverse_ (appendMemoryRecord record) memoryRef
-        persistRecord sqliteStore record
-      RecordBotMessage context messageId body -> do
-        let record = botRecord context messageId body
-        traverse_ (appendMemoryRecord record) memoryRef
-        persistRecord sqliteStore record
-      QueryChat message limit includeBotMessages -> do
-        case sqliteStore of
-          Just store -> liftIO (queryStored store message limit includeBotMessages)
-          Nothing -> do
-            records <- maybe (pure []) (liftIO . IORef.readIORef) memoryRef
-            pure
-              $ map (sanitizeChatLogEntry . chatLogEntry)
-              $ reverse
-              $ take (max 0 limit)
-              $ filter (visible includeBotMessages)
-              $ filter (sameChat message) records)
+      RecordMessage message ->
+        persistRecord (userRecord message)
+      RecordBotMessage context messageId body ->
+        persistRecord (botRecord context messageId body)
+      QueryChat message limit includeBotMessages ->
+        queryStored message limit includeBotMessages
+    )
     inner
-
-appendMemoryRecord :: IOE :> es => ChatLogRecord -> IORef.IORef [ChatLogRecord] -> Eff es ()
-appendMemoryRecord record ref =
-  liftIO $ IORef.modifyIORef' ref (take maxInMemoryChatLogRecords . (record :))
-
-maxInMemoryChatLogRecords :: Int
-maxInMemoryChatLogRecords =
-  5000
 
 data ChatLogRecord = ChatLogRecord
   { message :: !IncomingMessage
@@ -169,35 +142,20 @@ botMessage context messageId body =
         ]
     }
 
-sameChat :: IncomingMessage -> ChatLogRecord -> Bool
-sameChat left right =
-  left.platform == right.message.platform &&
-    left.kind == right.message.kind &&
-    left.chatId == right.message.chatId
-
-visible :: Bool -> ChatLogRecord -> Bool
-visible includeBotMessages record =
-  includeBotMessages || not record.isBot
-
-persistRecord :: (IOE :> es, Log :> es) => Maybe Storage.SQLiteStore -> ChatLogRecord -> Eff es ()
-persistRecord Nothing _ =
-  pure ()
-persistRecord (Just store) record =
-  liftIO
-    ( Storage.saveChatLogEntry
-        store
-        (platformKey record.message)
-        (kindKey record.message)
-        record.message.chatId
-        record.isBot
-        (Aeson.toJSON (sanitizeChatLogEntry (chatLogEntry record)))
-    )
+persistRecord :: (IOE :> es, Log :> es, Storage.Storage :> es) => ChatLogRecord -> Eff es ()
+persistRecord record =
+  Storage.saveChatLogEntry
+    (platformKey record.message)
+    (kindKey record.message)
+    record.message.chatId
+    record.isBot
+    (Aeson.toJSON (sanitizeChatLogEntry (chatLogEntry record)))
     `catch` \(err :: SomeException) ->
       logInfo_ [i|Failed to persist chat log entry: #{show err :: String}|]
 
-queryStored :: Storage.SQLiteStore -> IncomingMessage -> Int -> Bool -> IO [ChatLogEntry]
-queryStored store message limit includeBotMessages = do
-  values <- Storage.queryChatLogEntries store (platformKey message) (kindKey message) message.chatId includeBotMessages limit
+queryStored :: Storage.Storage :> es => IncomingMessage -> Int -> Bool -> Eff es [ChatLogEntry]
+queryStored message limit includeBotMessages = do
+  values <- Storage.queryChatLogEntries (platformKey message) (kindKey message) message.chatId includeBotMessages limit
   pure (map sanitizeChatLogEntry (mapMaybe (AesonTypes.parseMaybe Aeson.parseJSON) values))
 
 platformKey :: IncomingMessage -> Text

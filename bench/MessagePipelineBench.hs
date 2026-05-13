@@ -2,9 +2,11 @@ module Main (main) where
 
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Effect.Storage as StorageEffect
 import Bot.Core.Message
 import Bot.Core.Route
 import Bot.Prelude
+import qualified Bot.Storage.SQLite as Storage
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -110,9 +112,11 @@ routeDispatch messages = do
 chatLogRouteDispatch :: [IncomingMessage] -> IO Int
 chatLogRouteDispatch messages = do
   handled <- IORef.newIORef 0
+  store <- Storage.openSQLiteStore ":memory:"
   runEff $
     runBenchmarkLog $
-      ChatLog.runChatLog Nothing do
+      StorageEffect.runStorageSQLite store $
+      ChatLog.runChatLog do
         consumeWith
           (benchmarkHandlers handled)
           (ChatLog.recordIncomingMessages (S.each messages))
@@ -121,9 +125,11 @@ chatLogRouteDispatch messages = do
 mergedChatLogRouteDispatch :: [IncomingMessage] -> IO Int
 mergedChatLogRouteDispatch messages = do
   handled <- IORef.newIORef 0
+  store <- Storage.openSQLiteStore ":memory:"
   runEff $
     runBenchmarkLog $
-      ChatLog.runChatLog Nothing do
+      StorageEffect.runStorageSQLite store $
+      ChatLog.runChatLog do
         consumeWith
           (benchmarkHandlers handled)
           (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams (map S.each (chunks 4 messages))))
@@ -159,18 +165,22 @@ decodeJsonValues =
           value `seq` count + 1
 
 chatLogRecord :: [IncomingMessage] -> IO Int
-chatLogRecord messages =
+chatLogRecord messages = do
+  store <- Storage.openSQLiteStore ":memory:"
   runEff $
     runBenchmarkLog $
-      ChatLog.runChatLog Nothing do
+      StorageEffect.runStorageSQLite store $
+      ChatLog.runChatLog do
         traverse_ ChatLog.recordMessage messages
         pure (length messages)
 
 chatLogRecordQuery :: [IncomingMessage] -> IO Int
-chatLogRecordQuery messages =
+chatLogRecordQuery messages = do
+  store <- Storage.openSQLiteStore ":memory:"
   runEff $
     runBenchmarkLog $
-      ChatLog.runChatLog Nothing do
+      StorageEffect.runStorageSQLite store $
+      ChatLog.runChatLog do
         traverse_ ChatLog.recordMessage messages
         entries <- ChatLog.queryChat (lastMessage messages) 100 True
         pure (length entries)

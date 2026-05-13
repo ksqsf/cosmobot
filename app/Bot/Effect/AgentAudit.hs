@@ -25,9 +25,8 @@ where
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
-import qualified Bot.Storage.SQLite as Storage
+import qualified Bot.Effect.Storage as Storage
 import qualified Data.Aeson as Aeson
-import qualified Data.IORef as IORef
 import qualified Data.Map.Strict as Map
 import Data.Time (diffUTCTime, getCurrentTime)
 
@@ -168,56 +167,36 @@ queryConversationMessagesAudit messageIds =
   send (QueryConversationMessagesAudit messageIds)
 
 runAgentAudit
-  :: (IOE :> es, Log :> es)
-  => Maybe Storage.SQLiteStore
-  -> Eff (AgentAudit : es) a
+  :: (IOE :> es, Log :> es, Storage.Storage :> es)
+  => Eff (AgentAudit : es) a
   -> Eff es a
-runAgentAudit sqliteStore inner = do
+runAgentAudit inner = do
   processStartedAt <- liftIO getCurrentTime
-  memoryRef <- case sqliteStore of
-    Nothing ->
-      Just <$> liftIO (IORef.newIORef [] :: IO (IORef.IORef [AgentAuditRecord]))
-    Just _ ->
-      pure Nothing
   interpret
     (\_ -> \case
       RecordEvent event -> do
         occurredAt <- liftIO getCurrentTime
-        traverse_ (appendMemoryEvent occurredAt event) memoryRef
-        persistEvent sqliteStore occurredAt event
+        persistEvent occurredAt event
       QueryRecentToolUses limit -> do
-        records <- loadAuditRecords sqliteStore memoryRef
+        records <- loadStoredAuditRecords
         pure (toolUsesFromRecords limit (markStaleRunningToolUses processStartedAt records))
       QueryToolUse auditId -> do
-        records <- loadAuditRecords sqliteStore memoryRef
+        records <- loadStoredAuditRecords
         pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords maxInMemoryAgentAuditEvents (markStaleRunningToolUses processStartedAt records)))
       QueryConversationAudit messageId ->
-        case sqliteStore of
-          Just store -> markStaleRunningToolUses processStartedAt <$> liftIO (queryStoredConversationAudit store messageId)
-          Nothing -> conversationAudit messageId <$> loadAuditRecords sqliteStore memoryRef
+        markStaleRunningToolUses processStartedAt <$> queryStoredConversationAudit messageId
       QueryConversationMessagesAudit messageIds ->
-        case sqliteStore of
-          Just store -> markStaleRunningToolUses processStartedAt <$> liftIO (queryStoredConversationMessagesAudit store messageIds)
-          Nothing -> conversationMessagesAudit messageIds <$> loadAuditRecords sqliteStore memoryRef
+        markStaleRunningToolUses processStartedAt <$> queryStoredConversationMessagesAudit messageIds
     )
     inner
-
-appendMemoryEvent :: IOE :> es => UTCTime -> AgentAuditEvent -> IORef.IORef [AgentAuditRecord] -> Eff es ()
-appendMemoryEvent occurredAt event ref =
-  liftIO $ IORef.modifyIORef' ref \records ->
-    let nextId = maybe 1 ((+ 1) . fromMaybe 0 . (.id)) (viaNonEmpty last records)
-        record = AgentAuditRecord{occurredAt, event, id = Just nextId}
-    in take maxInMemoryAgentAuditEvents (records <> [record])
 
 maxInMemoryAgentAuditEvents :: Int
 maxInMemoryAgentAuditEvents =
   5000
 
-persistEvent :: (IOE :> es, Log :> es) => Maybe Storage.SQLiteStore -> UTCTime -> AgentAuditEvent -> Eff es ()
-persistEvent Nothing _ _ =
-  pure ()
-persistEvent (Just store) occurredAt event =
-  liftIO (Storage.saveAgentAuditEvent store (eventRunId event) occurredAt maybeLinkedMessageId maybeParentMessageId (Aeson.toJSON event))
+persistEvent :: (IOE :> es, Log :> es, Storage.Storage :> es) => UTCTime -> AgentAuditEvent -> Eff es ()
+persistEvent occurredAt event =
+  Storage.saveAgentAuditEvent (eventRunId event) occurredAt maybeLinkedMessageId maybeParentMessageId event
     `catch` \(err :: SomeException) ->
       logInfo_ [i|Failed to persist agent audit event: #{show err :: String}|]
   where
@@ -247,23 +226,21 @@ markStaleRunningToolUses processStartedAt records =
         ]
   in records <> restartedRecords
 
-loadAuditRecords :: IOE :> es => Maybe Storage.SQLiteStore -> Maybe (IORef.IORef [AgentAuditRecord]) -> Eff es [AgentAuditRecord]
-loadAuditRecords sqliteStore memoryRef =
-  case sqliteStore of
-    Just store -> liftIO (queryStoredRecent store maxInMemoryAgentAuditEvents)
-    Nothing -> maybe (pure []) (liftIO . IORef.readIORef) memoryRef
+loadStoredAuditRecords :: Storage.Storage :> es => Eff es [AgentAuditRecord]
+loadStoredAuditRecords =
+  queryStoredRecent maxInMemoryAgentAuditEvents
 
-queryStoredRecent :: Storage.SQLiteStore -> Int -> IO [AgentAuditRecord]
-queryStoredRecent store limit =
-  map storedAuditRecord <$> Storage.queryRecentAgentAuditEvents store limit
+queryStoredRecent :: Storage.Storage :> es => Int -> Eff es [AgentAuditRecord]
+queryStoredRecent limit =
+  map storedAuditRecord <$> Storage.queryRecentAgentAuditEvents limit
 
-queryStoredConversationAudit :: Storage.SQLiteStore -> Integer -> IO [AgentAuditRecord]
-queryStoredConversationAudit store messageId =
-  map storedAuditRecord <$> Storage.queryAgentAuditEventsForMessage store messageId
+queryStoredConversationAudit :: Storage.Storage :> es => Integer -> Eff es [AgentAuditRecord]
+queryStoredConversationAudit messageId =
+  map storedAuditRecord <$> Storage.queryAgentAuditEventsForMessage messageId
 
-queryStoredConversationMessagesAudit :: Storage.SQLiteStore -> [Integer] -> IO [AgentAuditRecord]
-queryStoredConversationMessagesAudit store messageIds =
-  map storedAuditRecord <$> Storage.queryAgentAuditEventsForMessages store messageIds
+queryStoredConversationMessagesAudit :: Storage.Storage :> es => [Integer] -> Eff es [AgentAuditRecord]
+queryStoredConversationMessagesAudit messageIds =
+  map storedAuditRecord <$> Storage.queryAgentAuditEventsForMessages messageIds
 
 storedAuditRecord :: Storage.AgentAuditRow AgentAuditEvent -> AgentAuditRecord
 storedAuditRecord row =
@@ -353,30 +330,6 @@ toolUsesFromAuditRecords records =
 takeLast :: Int -> [a] -> [a]
 takeLast n values =
   drop (max 0 (length values - n)) values
-
-conversationAudit :: Integer -> [AgentAuditRecord] -> [AgentAuditRecord]
-conversationAudit messageId records =
-  filter ((`elem` linkedRunIds) . eventRunId . (.event)) records
-  where
-    linkedRunIds =
-      ordNub
-        [ runId
-        | AgentAuditRecord{event = AgentConversationLinked{runId, linkedMessageId, parentMessageId}} <- records
-        , linkedMessageId == messageId || parentMessageId == Just messageId
-        ]
-
-conversationMessagesAudit :: [Integer] -> [AgentAuditRecord] -> [AgentAuditRecord]
-conversationMessagesAudit messageIds records =
-  filter ((`elem` linkedRunIds) . eventRunId . (.event)) records
-  where
-    messageIdSet =
-      ordNub messageIds
-    linkedRunIds =
-      ordNub
-        [ runId
-        | AgentAuditRecord{event = AgentConversationLinked{runId, linkedMessageId, parentMessageId}} <- records
-        , linkedMessageId `elem` messageIdSet || maybe False (`elem` messageIdSet) parentMessageId
-        ]
 
 eventRunId :: AgentAuditEvent -> Text
 eventRunId = \case

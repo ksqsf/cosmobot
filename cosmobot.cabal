@@ -143,6 +143,7 @@ common bot-agent-modules
         Bot.Effect.LLM
         Bot.Effect.Memory
         Bot.Effect.Scheduler
+        Bot.Effect.Storage
         Bot.Memory
         Bot.Storage.SQLite
         Bot.Util.Html
@@ -215,6 +216,7 @@ test-suite scratchpad-spec
     main-is:          ScratchpadSpec.hs
     other-modules:
         Bot.Core.Route
+        Bot.Effect.Storage
         Bot.Storage.SQLite
         Bot.Handler.Scratchpad
     hs-source-dirs:   test
@@ -284,6 +286,7 @@ test-suite chat-log-spec
     main-is:          ChatLogSpec.hs
     other-modules:
         Bot.Effect.ChatLog
+        Bot.Effect.Storage
         Bot.Storage.SQLite
     hs-source-dirs:   test
 
@@ -300,6 +303,7 @@ benchmark message-pipeline-bench
         Bot.Core.Route
         Bot.Effect.ChatLog
         Bot.Effect.Scheduler
+        Bot.Effect.Storage
         Bot.Storage.SQLite
         Bot.Util.Stream
     build-depends:    deepseq

@@ -9,6 +9,7 @@ import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Memory as MemoryStore
 import qualified Bot.Storage.SQLite as Storage
 import Bot.Core.Message
@@ -34,6 +35,7 @@ type AgentStack =
    , LLM.LLM
    , Memory.Memory
    , Scheduler.Scheduler
+   , StorageEffect.Storage
    , Log
    , IOE
    ]
@@ -437,39 +439,41 @@ runAgentWithMemory
   -> ChatMock
   -> Eff AgentStack a
   -> IO a
-runAgentWithMemory memoryCfg answers chatMock action =
+runAgentWithMemory memoryCfg answers chatMock action = do
+  sqliteStore <- Storage.openSQLiteStore ":memory:"
   runEff $
-  runTestLog $
-    Scheduler.runScheduler $
-      Memory.runMemory memoryCfg $
-        LLM.runLLMWith
-          (\_ -> pure "unused text answer")
-          (\_ consume -> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
-          (\_ -> pure "unused image answer")
-          (\_ _ -> liftIO (popAnswer answers))
-          (\_ _ consume -> do
-              answer <- liftIO (popAnswer answers)
-              consume do
-                case answer of
-                  LLM.ChatFinalAnswer{content} ->
-                    S.yield content
-                  LLM.ChatToolRequest{content} ->
-                    S.yield content
-                pure answer) $
-          ChatLog.runChatLog Nothing $
-            AgentAudit.runAgentAudit Nothing $
-              Chat.runChatWith
-                Chat.ChatHandlers
-                  { handleReplyTo = mockReply chatMock
-                  , handleEditMessage = noopEdit
-                  , handleReplyStreamStyle = noopReplyStreamStyle
-                  , handleGetMessageContent = noopFetch
-                  , handleGetSenderMemberInfo = noopSenderMember
-                  , handleGetMemberInfo = noopMember
-                  , handleListGroupMembers = noopMembers
-                  , handleMentionUser = noopMention
-                  }
-                action
+    runTestLog $
+      StorageEffect.runStorageSQLite sqliteStore $
+        Scheduler.runScheduler $
+          Memory.runMemory memoryCfg $
+            LLM.runLLMWith
+              (\_ -> pure "unused text answer")
+              (\_ consume -> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
+              (\_ -> pure "unused image answer")
+              (\_ _ -> liftIO (popAnswer answers))
+              (\_ _ consume -> do
+                  answer <- liftIO (popAnswer answers)
+                  consume do
+                    case answer of
+                      LLM.ChatFinalAnswer{content} ->
+                        S.yield content
+                      LLM.ChatToolRequest{content} ->
+                        S.yield content
+                    pure answer) $
+              ChatLog.runChatLog $
+                AgentAudit.runAgentAudit $
+                  Chat.runChatWith
+                    Chat.ChatHandlers
+                      { handleReplyTo = mockReply chatMock
+                      , handleEditMessage = noopEdit
+                      , handleReplyStreamStyle = noopReplyStreamStyle
+                      , handleGetMessageContent = noopFetch
+                      , handleGetSenderMemberInfo = noopSenderMember
+                      , handleGetMemberInfo = noopMember
+                      , handleListGroupMembers = noopMembers
+                      , handleMentionUser = noopMention
+                      }
+                    action
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
 runTestLog action = do
