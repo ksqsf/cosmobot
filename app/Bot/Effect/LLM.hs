@@ -502,8 +502,17 @@ streamChatCompletion endpoint apiKey request emit = do
             Left err -> do
               logAttention "Ignoring malformed LLM stream chunk" (Text.pack err)
               pure streamState
-            Right chunk ->
-              applyStreamChunk emit streamState chunk
+            Right value ->
+              case streamPayloadError value of
+                Just err ->
+                  throwIO (LLMException [i|OpenAI streaming response error: #{err}|])
+                Nothing ->
+                  case AesonTypes.parseEither Aeson.parseJSON value of
+                    Left err -> do
+                      logAttention "Ignoring malformed LLM stream chunk" (Text.pack err)
+                      pure streamState
+                    Right chunk ->
+                      applyStreamChunk emit streamState chunk
 
 streamingHttpRequest :: Text -> Text -> ChatCompletionRequest -> IO HTTP.Request
 streamingHttpRequest endpoint apiKey request = do
@@ -593,7 +602,32 @@ data ChatCompletionStreamChunk = ChatCompletionStreamChunk
 
 instance Aeson.FromJSON ChatCompletionStreamChunk where
   parseJSON = Aeson.withObject "ChatCompletionStreamChunk" $ \o ->
-    ChatCompletionStreamChunk <$> o Aeson..: "choices"
+    ChatCompletionStreamChunk . fromMaybe [] <$> o Aeson..:? "choices"
+
+streamPayloadError :: Aeson.Value -> Maybe Text
+streamPayloadError = \case
+  Aeson.Object obj ->
+    KeyMap.lookup "error" obj >>= errorValueText
+  _ ->
+    Nothing
+  where
+    errorValueText = \case
+      Aeson.String message ->
+        Just message
+      Aeson.Object obj ->
+        let message = stringField "message" obj
+            type_ = stringField "type" obj
+            code = stringField "code" obj
+        in case catMaybes [message, type_, code] of
+          []    -> Just (TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode (Aeson.Object obj))))
+          parts -> Just (Text.intercalate " " parts)
+      value ->
+        Just (TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode value)))
+
+    stringField key obj =
+      case KeyMap.lookup key obj of
+        Just (Aeson.String text) -> Just text
+        _                        -> Nothing
 
 data StreamChoice = StreamChoice
   { delta :: !StreamDelta
