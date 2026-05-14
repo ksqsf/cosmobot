@@ -11,9 +11,10 @@ module Bot.Handler.Typing
 where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Typst as Typst
 import Bot.Core.Route
+import Bot.Handler.Typing.Typst (typstDocument)
 import qualified Bot.Util.Html as Html
-import qualified Bot.Util.Image as Image
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -21,14 +22,8 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Data.Text.IO as TextIO
 import Data.Time
 import Network.HTTP.Req
-import System.Directory (removeDirectoryRecursive)
-import System.Exit
-import System.FilePath
-import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory)
-import System.Process
 import Text.Printf
 
 championshipRankCommand :: Text
@@ -39,7 +34,7 @@ tigerRankCommand = "!hbcj"
 
 -- | Routes that render typing leaderboard snapshots.
 typingHandlers
-  :: (Chat.Chat :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => [RouteHandler es]
 typingHandlers =
   [ rankRoute championshipRankCommand "锦标赛成绩" "锦标赛排行榜生成失败。" fetchChampionshipRows
@@ -47,7 +42,7 @@ typingHandlers =
   ]
 
 rankRoute
-  :: (Chat.Chat :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Text
   -> Text
   -> Text
@@ -60,7 +55,7 @@ rankRoute commandText titleSuffix failureMessage fetchRows =
       forkEff (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage
-  :: (Chat.Chat :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Text
   -> Text
   -> IO [[Text]]
@@ -72,7 +67,7 @@ sendRankImage titleSuffix failureMessage fetchRows message =
     title <- liftIO (rankTitle titleSuffix)
     rows <- liftIO fetchRows
     logInfo_ [i|Fetched typing rank rows: #{title}, #{length rows} rows|]
-    withRenderedRankImage title rows \imagePath -> do
+    Typst.withTypstPng (typstDocument title rows) \imagePath -> do
       logInfo_ [i|Rendered typing rank image: #{imagePath}|]
       sent <- Chat.replyTo message (ReplyBody.imageDirective ("file://" <> Text.pack imagePath))
       logInfo_ [i|Sent typing rank image: #{show sent :: Text}|]
@@ -83,18 +78,6 @@ sendRankImage titleSuffix failureMessage fetchRows message =
       action `catch` \(err :: SomeException) -> do
         logAttention_ [i|Failed to render typing rank: #{show err :: String}|]
         void $ Chat.replyTo message failureMessage
-
-withRenderedRankImage :: IOE :> es => Text -> [[Text]] -> (FilePath -> Eff es a) -> Eff es a
-withRenderedRankImage title rows action =
-  bracket acquire release \dir -> do
-    imagePath <- liftIO (renderRankImage dir title rows)
-    action imagePath
-  where
-    acquire = liftIO do
-      tmp <- getCanonicalTemporaryDirectory
-      createTempDirectory tmp "cosmobot-typing-"
-    release =
-      liftIO . removeDirectoryRecursive
 
 rankTitle :: Text -> IO Text
 rankTitle suffix = do
@@ -245,80 +228,6 @@ cleanCell =
     . Text.words
     . Html.htmlDecode
     . Html.stripHtmlTags
-
-renderRankImage :: FilePath -> Text -> [[Text]] -> IO FilePath
-renderRankImage dir title rows = do
-  let typstPath = dir </> "typing-rank" <.> "typ"
-      pngPath = dir </> "typing-rank" <.> "png"
-  TextIO.writeFile typstPath (typstDocument title rows)
-  (code, _out, err) <- readProcessWithExitCode "typst" ["compile", typstPath, pngPath] ""
-  case code of
-    ExitSuccess -> pure pngPath
-    ExitFailure _ -> do
-      cleanupRenderFiles typstPath pngPath
-      fail ("typst failed: " <> err)
-
-cleanupRenderFiles :: FilePath -> FilePath -> IO ()
-cleanupRenderFiles typstPath pngPath =
-  Image.removeFilesIfExists [typstPath, pngPath]
-
-typstDocument :: Text -> [[Text]] -> Text
-typstDocument title rows =
-  Text.unlines
-    [ "#let table-width = " <> tableWidth rows
-    , "#set page(width: table-width + 36pt, height: auto, margin: 18pt)"
-    , "#set text(font: (\"Droid Sans Fallback\", \"Noto Sans\", \"DejaVu Sans\"), size: 8pt)"
-    , "#align(center)[#text(size: 16pt, weight: \"bold\")[" <> typstEscape title <> "]]"
-    , "#v(8pt)"
-    , "#block(width: table-width)["
-    , "#table("
-    , "  columns: " <> tableColumns rows <> ","
-    , "  inset: 3pt,"
-    , "  stroke: rgb(\"d8dee9\"),"
-    , "  fill: (_, y) => if y == 0 { rgb(\"edf2f7\") } else if calc.rem(y, 2) == 0 { rgb(\"fbfbfb\") } else { white },"
-    , "  align: center + horizon,"
-    , cells
-    , ")"
-    , "]"
-    ]
-  where
-    cells =
-      Text.intercalate ",\n"
-        [ "  " <> typstCell cell
-        | row <- rows
-        , cell <- row
-        ]
-
-tableColumns :: [[Text]] -> Text
-tableColumns rows =
-  case maybe 0 length (viaNonEmpty head rows) of
-    14 -> "(36pt, 72pt, 42pt, 112pt, 48pt, 48pt, 48pt, 42pt, 64pt, 38pt, 52pt, 52pt, 112pt, 92pt)"
-    10 -> "(36pt, 104pt, 34pt, 58pt, 48pt, 48pt, 54pt, 58pt, 52pt, 116pt)"
-    n  -> "(" <> Text.intercalate ", " (replicate n "auto") <> ")"
-
-tableWidth :: [[Text]] -> Text
-tableWidth rows =
-  case maybe 0 length (viaNonEmpty head rows) of
-    14 -> "828pt"
-    10 -> "608pt"
-    _  -> "auto"
-
-typstCell :: Text -> Text
-typstCell cell =
-  "[" <> typstEscape cell <> "]"
-
-typstEscape :: Text -> Text
-typstEscape =
-  Text.concatMap \case
-    '\\' -> "\\\\"
-    '['  -> "\\["
-    ']'  -> "\\]"
-    '#'  -> "\\#"
-    '$'  -> "\\$"
-    '_'  -> "\\_"
-    '*'  -> "\\*"
-    '`'  -> "\\`"
-    c    -> Text.singleton c
 
 maybeText :: Show a => Maybe a -> Text
 maybeText =

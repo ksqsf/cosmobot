@@ -20,6 +20,7 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Effect.Typst as Typst
 import Bot.Core.Route
 import Bot.Handler.Ask.Config
 import qualified Bot.Memory as MemoryStore
@@ -35,7 +36,7 @@ import qualified Streaming.Prelude as S
 
 -- | Routes for ask, draw, private, mention, and reply continuation flows.
 askHandlers
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -60,7 +61,7 @@ drawRoute cfg conversations =
       forkEff (startDrawConversation "matched draw route" cfg conversations message prompt)
 
 askRoute
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -82,7 +83,7 @@ haltRoute conversations =
       else logInfo_ "couldn't halt active conversation"
 
 privateRoute
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -99,7 +100,7 @@ privateRoute toolCfg cfg conversations =
         <* notCommand cfg.drawCommand
 
 mentionRoute
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -117,7 +118,7 @@ mentionRoute toolCfg cfg conversations =
         <* notCommand cfg.drawCommand
 
 continueRoute
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -152,7 +153,7 @@ notAskPrefix cfg =
     isJust (matches message)
 
 startAskConversation
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Text
   -> Agent.ToolConfig
   -> AskHandlerConfig
@@ -198,7 +199,7 @@ fetchReferencedMessage message =
   traverse (Chat.getMessageContent message) message.replyToMessageId <&> join
 
 startConversationFromReply
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -217,7 +218,7 @@ startConversationFromReply toolCfg cfg conversations message parentId = do
     void $ askConversation toolCfg cfg conversations (Just (conversationMessageKey message parentId)) threadId message conversation
 
 continueConversation
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -234,7 +235,7 @@ continueConversation toolCfg cfg conversations message parentKey conversation = 
   void $ askConversation toolCfg cfg conversations (Just parentKey) threadId message nextConversation
 
 askConversation
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore

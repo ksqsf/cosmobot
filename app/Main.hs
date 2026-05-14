@@ -15,6 +15,7 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Effect.Typst as Typst
 import Bot.Handler.Ask
 import Bot.Handler.Audit
 import Bot.Handler.Saucenao
@@ -40,6 +41,7 @@ main = withShutdownSignal \shutdown -> do
     ChatLog.runChatLog .
     Memory.runMemory cfg.memory .
     Scheduler.runScheduler .
+    Typst.runTypst .
     LLM.runLLM cfg.llm .
     ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix $ do
       runUntilShutdown shutdown do
@@ -84,7 +86,7 @@ runUntilShutdown shutdown action =
         (MVar.takeMVar shutdown >> runInIO (logInfo_ "Shutdown requested; stopping cosmobot."))
 
 routes
-  :: (Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => BotConfig
   -> ConversationStore
   -> [RouteHandler es]

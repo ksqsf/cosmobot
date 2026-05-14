@@ -10,6 +10,7 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as StorageEffect
+import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
 import Bot.Core.Message
 import Bot.Storage.Conversation
@@ -35,6 +36,7 @@ type AgentStack =
    , LLM.LLM
    , Memory.Memory
    , Scheduler.Scheduler
+   , Typst.Typst
    , StorageEffect.Storage
    , Log
    , IOE
@@ -51,6 +53,7 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
+      , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
@@ -100,6 +103,25 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= [(Just 42, "hello\n[image] https://example.test/image.png")])
   IORef.readIORef remembered >>= (@?= [Just 42])
+
+testTypstToImageToolRendersAndSendsImage :: IO ()
+testTypstToImageToolRendersAndSendsImage = do
+  let source = "#set page(width: auto, height: auto)\nHello from Typst"
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "typst_to_image" (Aeson.object ["source" Aeson..= source, "caption" Aeson..= ("demo" :: Text)])]
+    , chatAnswer "sent" []
+    ]
+  replies <- IORef.newIORef ([] :: [Text])
+  rendered <- IORef.newIORef ([] :: [Text])
+  recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
+  remembered <- IORef.newIORef ([] :: [Maybe Integer])
+  (answer, _) <- runAgentWithTypst rendered answers (ChatMock (Just replies) (Just 43)) do
+    Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "render typst")
+  answer @?= "sent"
+  IORef.readIORef rendered >>= (@?= [source])
+  IORef.readIORef replies >>= (@?= ["[image] file:///tmp/cosmobot-agent-spec-typst.png"])
+  IORef.readIORef recorded >>= (@?= [(Just 43, "[typst image]")])
+  IORef.readIORef remembered >>= (@?= [Just 43])
 
 testAgentAuditRecordsToolEvents :: IO ()
 testAgentAuditRecordsToolEvents = do
@@ -481,6 +503,20 @@ runAgentWith
 runAgentWith answers chatMock action =
   runAgentWithMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") answers chatMock action
 
+runAgentWithTypst
+  :: IORef.IORef [Text]
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithTypst rendered answers chatMock action =
+  runAgentWithMemoryAndTypst
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    rendered
+    answers
+    chatMock
+    action
+
 runAgentWithMemory
   :: MemoryStore.MemoryConfig
   -> IORef.IORef [LLM.ChatAnswer]
@@ -488,39 +524,56 @@ runAgentWithMemory
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemory memoryCfg answers chatMock action = do
+  rendered <- IORef.newIORef ([] :: [Text])
+  runAgentWithMemoryAndTypst memoryCfg rendered answers chatMock action
+
+runAgentWithMemoryAndTypst
+  :: MemoryStore.MemoryConfig
+  -> IORef.IORef [Text]
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithMemoryAndTypst memoryCfg rendered answers chatMock action = do
   runEff $
     runTestLog $
       StorageEffect.runStorageSQLitePath ":memory:" $
-        Scheduler.runScheduler $
-          Memory.runMemory memoryCfg $
-            LLM.runLLMWith
-              (\_ -> pure "unused text answer")
-              (\_ consume -> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
-              (\_ -> pure "unused image answer")
-              (\_ _ -> liftIO (popAnswer answers))
-              (\_ _ consume -> do
-                  answer <- liftIO (popAnswer answers)
-                  consume do
-                    case answer of
-                      LLM.ChatFinalAnswer{content} ->
-                        S.yield content
-                      LLM.ChatToolRequest{content} ->
-                        S.yield content
-                    pure answer) $
-              ChatLog.runChatLog $
-                AgentAudit.runAgentAudit $
-                  Chat.runChatWith
-                    Chat.ChatHandlers
-                      { handleReplyTo = mockReply chatMock
-                      , handleEditMessage = noopEdit
-                      , handleReplyStreamStyle = noopReplyStreamStyle
-                      , handleGetMessageContent = noopFetch
-                      , handleGetSenderMemberInfo = noopSenderMember
-                      , handleGetMemberInfo = noopMember
-                      , handleListGroupMembers = noopMembers
-                      , handleMentionUser = noopMention
-                      }
-                    action
+        Typst.runTypstWith (mockTypstRender rendered) $
+          Scheduler.runScheduler $
+            Memory.runMemory memoryCfg $
+              LLM.runLLMWith
+                (\_ -> pure "unused text answer")
+                (\_ consume -> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
+                (\_ -> pure "unused image answer")
+                (\_ _ -> liftIO (popAnswer answers))
+                (\_ _ consume -> do
+                    answer <- liftIO (popAnswer answers)
+                    consume do
+                      case answer of
+                        LLM.ChatFinalAnswer{content} ->
+                          S.yield content
+                        LLM.ChatToolRequest{content} ->
+                          S.yield content
+                      pure answer) $
+                ChatLog.runChatLog $
+                  AgentAudit.runAgentAudit $
+                    Chat.runChatWith
+                      Chat.ChatHandlers
+                        { handleReplyTo = mockReply chatMock
+                        , handleEditMessage = noopEdit
+                        , handleReplyStreamStyle = noopReplyStreamStyle
+                        , handleGetMessageContent = noopFetch
+                        , handleGetSenderMemberInfo = noopSenderMember
+                        , handleGetMemberInfo = noopMember
+                        , handleListGroupMembers = noopMembers
+                        , handleMentionUser = noopMention
+                        }
+                      action
+
+mockTypstRender :: IOE :> es => IORef.IORef [Text] -> Text -> (FilePath -> Eff es r) -> Eff es r
+mockTypstRender rendered source action = do
+  liftIO $ IORef.modifyIORef' rendered (<> [source])
+  action "/tmp/cosmobot-agent-spec-typst.png"
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
 runTestLog action = do
