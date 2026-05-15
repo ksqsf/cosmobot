@@ -125,6 +125,7 @@ common bot-agent-modules
         Bot.Agent.Conversation
         Bot.Agent.Core
         Bot.Agent.Middleware.Observation
+        Bot.Agent.Middleware.Observation.Types
         Bot.Agent.Middleware.Tools
         Bot.Agent.ToolRegistry
         Bot.Agent.Tools
@@ -154,6 +155,7 @@ common bot-agent-modules
         Bot.Storage.Lifecycle
         Bot.Storage.Scheduler
         Bot.Util.Html
+        Bot.Util.HList
         Bot.Util.HTTP
         Bot.Util.Image
 

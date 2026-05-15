@@ -35,6 +35,7 @@ runBashTool = Tool
       , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the process. Defaults to 30."
       ]
       ["script"]
+  , noisy = False
   , allowed = superuserOnly
   , start = \_ -> pure \args ->
       withParsedToolArgs runBashArgs args \(script, timeoutSeconds) -> do

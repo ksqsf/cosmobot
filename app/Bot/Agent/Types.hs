@@ -3,7 +3,6 @@ Module      : Bot.Agent.Types
 Description : Agent tool and context types
 Stability   : experimental
 -}
-
 module Bot.Agent.Types
   ( Tool (..)
   , AgentContext (..)
@@ -64,6 +63,7 @@ data Tool es = Tool
   { name        :: !Text
   , description :: !Text
   , parameters  :: !Aeson.Value
+  , noisy       :: !Bool
   , allowed     :: AgentContext es -> Bool
   , start       :: AgentContext es -> Eff es (Aeson.Value -> Eff es ToolResult)
   }
@@ -135,13 +135,13 @@ data AgentEvent
       }
   deriving (Eq, Show)
 
-newtype AgentObserver es = AgentObserver
-  { observe :: AgentEvent -> Eff es ()
+newtype AgentObserver ctx es = AgentObserver
+  { observe :: AgentEvent -> Eff es ctx
   }
 
-ignoreAgentObserver :: AgentObserver es
-ignoreAgentObserver =
-  AgentObserver{observe = \_ -> pure ()}
+ignoreAgentObserver :: ctx -> AgentObserver ctx es
+ignoreAgentObserver ctx =
+  AgentObserver{observe = \_ -> pure ctx}
 
 -- | Text returned to the LLM plus any bot message ids produced by a tool.
 data ToolResult = ToolResult

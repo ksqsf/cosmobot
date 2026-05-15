@@ -28,6 +28,7 @@ typstToImageTool = Tool
       , fieldText "caption" "Optional short caption to include in the tool result for context. It is not sent as a separate message."
       ]
       ["source"]
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs typstArgs args \toolArgs -> do

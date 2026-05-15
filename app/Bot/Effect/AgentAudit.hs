@@ -23,6 +23,7 @@ module Bot.Effect.AgentAudit
   )
 where
 
+import qualified Bot.Agent.Middleware.Observation.Types as Observation
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -36,7 +37,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Time (diffUTCTime, getCurrentTime)
 
 data AgentAudit :: Effect where
-  RecordEvent :: AgentAuditEvent -> AgentAudit m ()
+  RecordEvent :: AgentAuditEvent -> AgentAudit m (Maybe Integer)
   QueryRecentToolUses :: Int -> AgentAudit m [ToolUseDetail]
   QueryToolUse :: Integer -> AgentAudit m (Maybe ToolUseDetail)
   QueryConversationAudit :: Integer -> AgentAudit m [AgentAuditRecord]
@@ -133,17 +134,17 @@ agentAuditRows =
     , #parent_message_id :- index
     ]
 
-recordEvent :: AgentAudit :> es => AgentAuditEvent -> Eff es ()
+recordEvent :: AgentAudit :> es => AgentAuditEvent -> Eff es (Maybe Integer)
 recordEvent event =
   send (RecordEvent event)
 
-agentAuditObserver :: AgentAudit :> es => Agent.AgentObserver es
+agentAuditObserver :: AgentAudit :> es => Agent.AgentObserver Observation.ObservationContext es
 agentAuditObserver =
   Agent.AgentObserver{Agent.observe = recordAgentEvent}
 
-recordAgentEvent :: AgentAudit :> es => Agent.AgentEvent -> Eff es ()
+recordAgentEvent :: AgentAudit :> es => Agent.AgentEvent -> Eff es Observation.ObservationContext
 recordAgentEvent event =
-  traverse_ recordEvent (agentAuditEvent event)
+  observationContext <$> maybe (pure Nothing) recordEvent (agentAuditEvent event)
 
 agentAuditEvent :: Agent.AgentEvent -> Maybe AgentAuditEvent
 agentAuditEvent = \case
@@ -221,10 +222,10 @@ maxInMemoryAgentAuditEvents :: Int
 maxInMemoryAgentAuditEvents =
   5000
 
-persistEvent :: (IOE :> es, Log :> es, Storage.Storage :> es) => UTCTime -> AgentAuditEvent -> Eff es ()
+persistEvent :: (IOE :> es, Log :> es, Storage.Storage :> es) => UTCTime -> AgentAuditEvent -> Eff es (Maybe Integer)
 persistEvent occurredAt event =
-  runSelda
-    ( insert_
+  (Just . fromIntegral . fromId <$> runSelda
+    ( insertWithPK
         agentAuditRows
         [ AgentAuditRow
             { id = def
@@ -235,9 +236,9 @@ persistEvent occurredAt event =
             , event_json = jsonText event
             }
         ]
-    )
+    ))
     `catch` \(err :: SomeException) ->
-      logInfo_ [i|Failed to persist agent audit event: #{show err :: String}|]
+      logInfo_ [i|Failed to persist agent audit event: #{show err :: String}|] $> Nothing
   where
     (maybeLinkedMessageId, maybeParentMessageId) =
       case event of
@@ -245,6 +246,10 @@ persistEvent occurredAt event =
           (Just eventLinkedMessageId, eventParentMessageId)
         _ ->
           (Nothing, Nothing)
+
+observationContext :: Maybe Integer -> Observation.ObservationContext
+observationContext auditId =
+  Observation.ObservationContext{Observation.auditToolUseId = auditId}
 
 markStaleRunningToolUses :: UTCTime -> [AgentAuditRecord] -> [AgentAuditRecord]
 markStaleRunningToolUses processStartedAt records =

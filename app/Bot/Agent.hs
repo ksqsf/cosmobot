@@ -3,20 +3,23 @@ Module      : Bot.Agent
 Description : Agent loop and extensible tool framework
 Stability   : experimental
 -}
+{-# LANGUAGE DataKinds #-}
 
 module Bot.Agent
   ( Tool (..)
   , AgentContext (..)
   , AgentEvent (..)
   , AgentObserver (..)
+  , AgentProgram
   , AgentRun
   , AgentResult (..)
   , ToolConfig (..)
   , WebSearchApi (..)
   , defaultToolConfig
-  , ignoreAgentObserver
   , startAgentRun
   , agentRunId
+  , defaultAgentProgram
+  , runAgentProgramStreaming
   , runPreparedAgentStreaming
   , ToolResult (..)
   , toolText
@@ -25,8 +28,6 @@ module Bot.Agent
   , toolMessageWithImages
   , runAgent
   , runAgentStreaming
-  , runAgentWith
-  , runAgentStreamingWith
   , defaultTools
   )
 where
@@ -39,12 +40,13 @@ import Bot.Agent.Conversation
   )
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation
-  ( withObservation
-  , withObservedRun
+  ( ObservationContext
+  , withObservation
   )
 import Bot.Agent.Middleware.Tools
   ( withToolFailureRecovery
   , withToolLimit
+  , withToolMessage
   )
 import Bot.Agent.ToolRegistry
   ( startToolRun
@@ -54,9 +56,10 @@ import Bot.Agent.ToolRegistry
 import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import Bot.Agent.Tools (defaultTools)
 import Bot.Agent.Types
-import Bot.Core.Message (IncomingMessage (..))
+import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+import qualified Bot.Util.HList as HList
 import qualified Data.Foldable as Foldable
 import qualified Data.Text as Text
 import Data.Unique (hashUnique, newUnique)
@@ -86,45 +89,28 @@ runAgentStreaming
   -> Conversation
   -> Stream (Of Text) (Eff es) (Text, Conversation)
 runAgentStreaming maxTurns context tools conversation = do
-  result <- runAgentStreamingWith ignoreAgentObserver maxTurns context tools conversation
-  pure (result.answer, result.conversation)
-
-runAgentWith
-  :: (LLM.LLM :> es, Log :> es, IOE :> es)
-  => AgentObserver es
-  -> Int
-  -> AgentContext es
-  -> [Tool es]
-  -> Conversation
-  -> Eff es AgentResult
-runAgentWith observer maxTurns context tools conversation = do
-  agentRun <- startAgentRun context tools
-  S.mapM_ (\_ -> pure ()) (runPreparedAgentStreaming observer maxTurns agentRun conversation)
-
-runAgentStreamingWith
-  :: (LLM.LLM :> es, Log :> es, IOE :> es)
-  => AgentObserver es
-  -> Int
-  -> AgentContext es
-  -> [Tool es]
-  -> Conversation
-  -> Stream (Of Text) (Eff es) AgentResult
-runAgentStreamingWith observer maxTurns context tools conversation = do
   agentRun <- lift (startAgentRun context tools)
-  runPreparedAgentStreaming observer maxTurns agentRun conversation
+  result <- runPreparedAgentStreaming maxTurns agentRun conversation
+  pure (result.answer, result.conversation)
 
 runPreparedAgentStreaming
   :: (LLM.LLM :> es, Log :> es, IOE :> es)
-  => AgentObserver es
-  -> Int
+  => Int
   -> AgentRun es
   -> Conversation
   -> Stream (Of Text) (Eff es) AgentResult
-runPreparedAgentStreaming observer maxTurns agentRun conversation = do
-  let normalizedMaxTurns = max 1 maxTurns
-      program = defaultAgentProgram observer normalizedMaxTurns agentRun
-  withAgentRun observer normalizedMaxTurns agentRun do
-    runAgentLoop program (runModelPhase program) (runToolTurn program) (initialAgentState conversation)
+runPreparedAgentStreaming maxTurns agentRun conversation =
+  runAgentProgramStreaming (plainAgentProgram maxTurns agentRun) conversation
+
+runAgentProgramStreaming
+  :: (LLM.LLM :> es, IOE :> es)
+  => AgentProgram '[] es
+  -> Conversation
+  -> Stream (Of Text) (Eff es) AgentResult
+runAgentProgramStreaming program conversation =
+  fmap (.result) $
+    program.aroundAgentRun HList.HNil do
+      runAgentLoop program HList.HNil (runModelPhase program) (runToolTurn program) (initialAgentState conversation)
 
 agentRunId :: AgentRun es -> Text
 agentRunId =
@@ -150,12 +136,21 @@ initialAgentState conversation =
     , turn = 1
     }
 
-defaultAgentProgram :: (Log :> es, IOE :> es) => AgentObserver es -> Int -> AgentRun es -> AgentProgram es
+defaultAgentProgram :: (Chat.Chat :> es, Log :> es, IOE :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[] es
 defaultAgentProgram observer maxTurns agentRun =
-  emptyAgentProgram agentRun
-    & withToolFailureRecovery
-    & withToolLimit maxTurns
-    & withObservation observer
+  ( withToolLimit maxTurns
+  . withObservation observer
+  . withToolMessage
+  . withToolFailureRecovery
+  )
+    (emptyAgentProgram agentRun)
+
+plainAgentProgram :: (Log :> es, IOE :> es) => Int -> AgentRun es -> AgentProgram '[] es
+plainAgentProgram maxTurns agentRun =
+  ( withToolLimit maxTurns
+  . withToolFailureRecovery
+  )
+    (emptyAgentProgram agentRun)
 
 -----------------------------------------------------------------------------------------
 -- * Phases
@@ -163,16 +158,16 @@ defaultAgentProgram observer maxTurns agentRun =
 
 runModelPhase
   :: (LLM.LLM :> es, IOE :> es)
-  => AgentProgram es
+  => AgentProgram context es
   -> AgentState
   -> Stream (Of Text) (Eff es) ModelDecision
 runModelPhase program agentState = do
   answer <- askNext program.agentRun agentState
   modelDecision program.agentRun agentState answer
 
-runToolTurn :: AgentProgram es -> ToolTurn es
+runToolTurn :: AgentProgram '[] es -> ToolTurn es
 runToolTurn program toolState =
-  program.aroundToolTurn toolState (toolPhase program toolState)
+  program.aroundToolTurn HList.HNil toolState (toolPhase program toolState)
 
 modelDecision
   :: AgentRun es
@@ -191,7 +186,7 @@ modelDecision agentRun agentState answer =
 
 -- | Interpret one tool phase and advance to the next model phase.
 toolPhase
-  :: AgentProgram es
+  :: AgentProgram '[] es
   -> ToolTurnState
   -> Eff es AgentState
 toolPhase program ToolTurnState{agentState, answered, toolCalls} = do
@@ -253,7 +248,7 @@ replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
 -- | Execute requested tools, append their tool-result messages, and persist
 -- aliases for any chat messages emitted by tools.
 continueWithToolCalls
-  :: AgentProgram es
+  :: AgentProgram '[] es
   -> Int
   -> Conversation
   -> NonEmpty LLM.ToolCall
@@ -269,9 +264,9 @@ continueWithToolCalls program turn answered calls = do
 --
 -- Tool failures must still produce a tool result message; otherwise the next
 -- LLM request would contain an assistant tool call without its required result.
-executeToolCall :: AgentProgram es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], [Maybe Integer])
+executeToolCall :: AgentProgram '[] es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], [Maybe Integer])
 executeToolCall program turn call = do
-  result <- program.aroundToolCall turn call do
+  result <- program.aroundToolCall turn call HList.HNil do
     ToolRegistry.runToolCall program.agentRun.context program.agentRun.tools program.agentRun.runningTools call
   pure (LLM.toolResult call result.content, toolImageContextMessages call result, result.messageIds)
 
@@ -301,21 +296,3 @@ agentCompletion agentRun status answer turnsUsed conversation =
     , finalText = answer
     , turnsUsed
     }
-
-withAgentRun
-  :: IOE :> es
-  => AgentObserver es
-  -> Int
-  -> AgentRun es
-  -> Stream (Of Text) (Eff es) AgentCompletion
-  -> Stream (Of Text) (Eff es) AgentResult
-withAgentRun observer maxTurns agentRun action =
-  fmap (.result) $
-  withObservedRun
-    observer
-    agentRun.runId
-    agentRun.context.message.messageId
-    maxTurns
-    (map (.name) agentRun.exposedTools)
-    (\completion -> (completion.status, completion.finalText, completion.turnsUsed))
-    action

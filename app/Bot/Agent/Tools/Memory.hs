@@ -30,6 +30,7 @@ manageMemoryTool = Tool
       , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
       ]
       ["action"]
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs memoryArgs args \(action, memory) ->
@@ -45,6 +46,7 @@ manageChatMemoryTool = Tool
       , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
       ]
       ["action"]
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs memoryArgs args \(action, memory) ->

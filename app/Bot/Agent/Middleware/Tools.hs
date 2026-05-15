@@ -3,10 +3,13 @@ Module      : Bot.Agent.Middleware.Tools
 Description : Tool-related agent program middleware
 Stability   : experimental
 -}
+{-# LANGUAGE DataKinds #-}
 
 module Bot.Agent.Middleware.Tools
-  ( withToolFailureRecovery
+  ( ToolLimitContext (..)
+  , withToolFailureRecovery
   , withToolLimit
+  , withToolMessage
   )
 where
 
@@ -15,32 +18,76 @@ import Bot.Agent.Conversation
   , pausedToolResult
   )
 import Bot.Agent.Core
+import Bot.Agent.Middleware.Observation.Types
 import Bot.Agent.Types
 import Bot.Core.Conversation
+import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+import qualified Bot.Util.HList as HList
 import qualified Data.Text as Text
 
-withToolLimit :: Log :> es => Int -> AgentProgram es -> AgentProgram es
+newtype ToolLimitContext = ToolLimitContext
+  { maxToolTurns :: Int
+  }
+  deriving (Eq, Show)
+
+withToolLimit :: Log :> es => Int -> AgentProgram (ToolLimitContext ': context) es -> AgentProgram context es
 withToolLimit maxTurns program =
   program
-    { aroundModelTurn = \agentState action -> do
-        decision <- program.aroundModelTurn agentState action
+    { aroundAgentRun = \context action ->
+        program.aroundAgentRun (toolLimitContext HList.:& context) action
+    , aroundModelTurn = \context agentState action -> do
+        decision <- program.aroundModelTurn (toolLimitContext HList.:& context) agentState action
         case decision of
           ModelNeedsTools ToolTurnState{answered, toolContent, toolCalls}
-            | agentState.turn >= max 1 maxTurns -> do
+            | agentState.turn >= toolLimitContext.maxToolTurns -> do
                 lift $ logInfo_ [i|Agent tool turn limit reached: #{show toolCalls :: String}|]
                 ModelAnswered <$> handleToolLimit program.agentRun.runId agentState.turn toolContent toolCalls answered
           _ ->
             pure decision
+    , aroundToolTurn = \context toolState action ->
+        program.aroundToolTurn (toolLimitContext HList.:& context) toolState action
+    , aroundToolCall = \turn call context action ->
+        program.aroundToolCall turn call (toolLimitContext HList.:& context) action
     }
+  where
+    toolLimitContext =
+      ToolLimitContext{maxToolTurns = max 1 maxTurns}
 
-withToolFailureRecovery :: IOE :> es => AgentProgram es -> AgentProgram es
+withToolFailureRecovery :: IOE :> es => AgentProgram context es -> AgentProgram context es
 withToolFailureRecovery program =
   program
-    { aroundToolCall = \turn call action ->
-        safeToolCall call (program.aroundToolCall turn call action)
+    { aroundToolCall = \turn call context action ->
+        safeToolCall call (program.aroundToolCall turn call context action)
     }
+
+withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => AgentProgram context es -> AgentProgram context es
+withToolMessage program =
+  program
+    { aroundToolCall = \turn call context action -> do
+        announceNoisyTool program call context
+        program.aroundToolCall turn call context action
+    }
+
+announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => AgentProgram context es -> LLM.ToolCall -> MiddlewareContext context -> Eff es ()
+announceNoisyTool program call context =
+  case find ((== call.name) . (.name)) program.agentRun.tools of
+    Just tool
+      | tool.noisy ->
+          void $ Chat.replyTo program.agentRun.context.message (toolMessageText call context)
+    _ ->
+      pure ()
+
+toolMessageText :: HList.Has ObservationContext context => LLM.ToolCall -> MiddlewareContext context -> Text
+toolMessageText call context =
+  case (HList.get @ObservationContext context).auditToolUseId of
+    Just auditId ->
+      [i|正在调用 #{toolName} 工具...（id=#{auditId}）|]
+    Nothing ->
+      [i|正在调用 #{toolName} 工具...|]
+  where
+    toolName = call.name
 
 -- | Pause before executing another tool turn.
 --

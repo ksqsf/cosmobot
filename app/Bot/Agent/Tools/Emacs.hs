@@ -36,6 +36,7 @@ emacsEvalTool = Tool
       , fieldInteger "timeout_seconds" "Maximum seconds to wait before returning a timeout. Defaults to 10."
       ]
       ["expression"]
+  , noisy = False
   , allowed = superuserOnly
   , start = \_ -> pure \args ->
       withParsedToolArgs emacsEvalArgs args \(expression, timeoutSeconds) -> do

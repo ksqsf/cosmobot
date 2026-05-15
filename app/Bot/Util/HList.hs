@@ -1,0 +1,35 @@
+{-|
+Module      : Bot.Util.HList
+Description : Tiny typed heterogeneous context
+Stability   : experimental
+-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
+
+module Bot.Util.HList
+  ( HList (..)
+  , Has (..)
+  )
+where
+
+import Bot.Prelude hiding (get)
+
+infixr 5 :&
+data HList fields where
+  HNil :: HList '[]
+  (:&) :: field -> HList rest -> HList (field ': rest)
+
+class Has field (fields :: [Type]) where
+  get :: HList fields -> field
+
+instance Has field (field ': rest) where
+  get (field :& _) =
+    field
+
+instance {-# OVERLAPPABLE #-} Has field rest => Has field (other ': rest) where
+  get (_ :& rest) =
+    get @field rest

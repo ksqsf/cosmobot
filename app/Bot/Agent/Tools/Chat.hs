@@ -37,6 +37,7 @@ queryChatLogTool = Tool
       , fieldBoolean "include_bot_messages" "Whether to include bot messages. Defaults to false."
       ]
       ["limit"]
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs queryChatLogArgs args \(limit, includeBotMessages) -> do
@@ -53,6 +54,7 @@ sendReplyTool = Tool
       , fieldTextArray "image_urls" "Image URLs to send as images in the same reply. The platform must be able to fetch these URLs."
       ]
       []
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs sendReplyArgs args \body -> do
@@ -71,6 +73,7 @@ mentionUserTool = Tool
       , fieldText "text" "Message text to send after the mention."
       ]
       ["user_id", "text"]
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs mentionUserArgs args \(userId, text) -> do
@@ -85,6 +88,7 @@ senderMemberInfoTool = Tool
   { name = "get_current_sender_member_info"
   , description = "Get platform-provided member information for the sender of the current message in the current group chat."
   , parameters = objectSchema [] []
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \_ -> do
       info <- Chat.getSenderMemberInfo context.message
@@ -99,6 +103,7 @@ memberInfoTool = Tool
       [ fieldInteger "user_id" "Platform user id to query in the current group."
       ]
       ["user_id"]
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args -> withIntegerArg "user_id" (\userId -> do
       info <- Chat.getMemberInfo context.message userId
@@ -114,6 +119,7 @@ userAvatarTool = Tool
       [ fieldText "user_id" "Platform user id to query. Use get_current_message_info first when the target is the current sender or a mentioned user. 0 is invalid."
       ]
       ["user_id"]
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs userAvatarArgs args \userId -> do
@@ -130,6 +136,7 @@ listGroupMembersTool = Tool
   { name = "list_group_members"
   , description = "List members in the current group chat, including platform user ids and nicknames when available. QQ groups are supported. Telegram Bot API does not expose full member lists, so Telegram may return unavailable."
   , parameters = objectSchema [] []
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \_ -> do
       members <- Chat.listGroupMembers context.message
@@ -141,6 +148,7 @@ currentMessageInfoTool = Tool
   { name = "get_current_message_info"
   , description = "Return structured metadata for the current message, including platform, chat, sender, message ids, mentions, image URLs, and text."
   , parameters = objectSchema [] []
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \_ ->
       pure (toolText (jsonText (currentMessageInfoValue context.message)))

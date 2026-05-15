@@ -281,7 +281,7 @@ agentContext toolCfg cfg conversations parentMessageKey message =
 streamAgentReply
   :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
-  -> Agent.AgentObserver es
+  -> Agent.AgentObserver AgentObservation.ObservationContext es
   -> Agent.AgentRun es
   -> ActiveReplyState
   -> IncomingMessage
@@ -289,10 +289,11 @@ streamAgentReply
   -> Eff es AgentReply
 streamAgentReply cfg observer agentRun activeReply message conversation =
   do
+    let program = Agent.defaultAgentProgram observer cfg.agentMaxTurns agentRun
     (responseId, result) <-
       S.mapM_
         (recordReplyUpdate activeReply)
-        (Chat.streamReplyTo message (.answer) (Agent.runPreparedAgentStreaming observer cfg.agentMaxTurns agentRun conversation))
+        (Chat.streamReplyTo message (.answer) (Agent.runAgentProgramStreaming program conversation))
     pure AgentReply{responseId, result}
   `catch` \(err :: SomeException) ->
     case Exception.fromException err of
@@ -313,7 +314,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
 
 commitAgentReply
   :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
-  => Agent.AgentObserver es
+  => Agent.AgentObserver AgentObservation.ObservationContext es
   -> ActiveReplyState
   -> IncomingMessage
   -> AgentReply

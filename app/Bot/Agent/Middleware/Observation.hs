@@ -3,24 +3,32 @@ Module      : Bot.Agent.Middleware.Observation
 Description : Agent lifecycle observation wrappers
 Stability   : experimental
 -}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Bot.Agent.Middleware.Observation
   ( ObservedConversationLink (..)
   , ObservedModelTurn (..)
   , ObservedToolCall (..)
+  , ObservationContext (..)
+  , emptyObservationContext
   , observeConversationLinked
   , withObservation
   , withObservedModelTurn
-  , withObservedRun
+  , withObservedAgentRun
   , withObservedToolCall
   )
 where
 
 import Bot.Agent.Core
+import Bot.Agent.Middleware.Observation.Types
+import Bot.Agent.Middleware.Tools (ToolLimitContext (..))
 import Bot.Agent.Types
 import Bot.Core.Conversation
+import Bot.Core.Message (IncomingMessage (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+import qualified Bot.Util.HList as HList
 import qualified Data.Foldable as Foldable
 import qualified Data.Text as Text
 import qualified Streaming
@@ -46,10 +54,13 @@ data ObservedConversationLink = ObservedConversationLink
   , linkedMessageId :: !Integer
   }
 
-withObservation :: IOE :> es => AgentObserver es -> AgentProgram es -> AgentProgram es
+withObservation :: (IOE :> es, HList.Has ToolLimitContext context) => AgentObserver ObservationContext es -> AgentProgram (ObservationContext ': context) es -> AgentProgram context es
 withObservation observer program =
   program
-    { aroundModelTurn = \agentState action ->
+    { aroundAgentRun = \context action ->
+        withObservedAgentRun observer (HList.get @ToolLimitContext context) program.agentRun (map (.name) program.agentRun.exposedTools) do
+          program.aroundAgentRun (emptyObservationContext HList.:& context) action
+    , aroundModelTurn = \context agentState action ->
         let turnInfo = ObservedModelTurn
               { runId = program.agentRun.runId
               , turn = agentState.turn
@@ -57,15 +68,17 @@ withObservation observer program =
               , exposedTools = map (.name) program.agentRun.exposedTools
               , finished = modelDecisionFinished program.agentRun.runId agentState.turn
               }
-        in withObservedModelTurn observer turnInfo (program.aroundModelTurn agentState action)
-    , aroundToolCall = \turn call action ->
-        let callInfo = ObservedToolCall
+        in withObservedModelTurn observer turnInfo (program.aroundModelTurn (emptyObservationContext HList.:& context) agentState action)
+    , aroundToolTurn = \context toolState action ->
+        program.aroundToolTurn (emptyObservationContext HList.:& context) toolState action
+    , aroundToolCall = \turn toolCall context action ->
+        let observedCall = ObservedToolCall
               { runId = program.agentRun.runId
               , turn = turn
-              , toolCall = call
+              , toolCall = toolCall
               }
-        in withObservedToolCall observer callInfo do
-             program.aroundToolCall turn call action
+        in withObservedToolCall observer observedCall \observation ->
+             program.aroundToolCall turn toolCall (observation HList.:& context) action
     }
   where
     modelDecisionFinished runId turn = \case
@@ -90,24 +103,27 @@ conversationMessageCount :: AgentState -> Int
 conversationMessageCount AgentState{conversation = Conversation{messages}} =
   Foldable.length messages
 
-withObservedRun
+withObservedAgentRun
   :: IOE :> es
-  => AgentObserver es
-  -> Text
-  -> Maybe Integer
-  -> Int
+  => AgentObserver ObservationContext es
+  -> ToolLimitContext
+  -> AgentRun es
   -> [Text]
-  -> (result -> (Text, Text, Int))
-  -> Stream (Of a) (Eff es) result
-  -> Stream (Of a) (Eff es) result
-withObservedRun observer runId messageId maxTurns exposedTools finish action =
+  -> Stream (Of Text) (Eff es) AgentCompletion
+  -> Stream (Of Text) (Eff es) AgentCompletion
+withObservedAgentRun observer toolLimit agentRun exposedTools action =
   catchStream
     ( do
-        lift $ observer.observe AgentRunStarted{runId, messageId, maxTurns, exposedTools}
+        lift $ void $ observer.observe AgentRunStarted
+          { runId = agentRun.runId
+          , messageId = agentRun.context.message.messageId
+          , maxTurns = toolLimit.maxToolTurns
+          , exposedTools
+          }
         result <- action
-        let (status, finalText, turnsUsed) = finish result
-        lift $ observer.observe AgentRunFinished
-          { runId
+        let AgentCompletion{status, finalText, turnsUsed} = result
+        lift $ void $ observer.observe AgentRunFinished
+          { runId = agentRun.runId
           , status
           , finalLength = Text.length finalText
           , turnsUsed
@@ -115,40 +131,40 @@ withObservedRun observer runId messageId maxTurns exposedTools finish action =
         pure result
     )
     \err -> do
-      lift $ observer.observe AgentRunInterrupted{runId, reason = interruptedReason err}
+      lift $ void $ observer.observe AgentRunInterrupted{runId = agentRun.runId, reason = interruptedReason err}
       lift $ throwIO err
 
 withObservedModelTurn
   :: IOE :> es
-  => AgentObserver es
+  => AgentObserver ObservationContext es
   -> ObservedModelTurn result
   -> Stream (Of Text) (Eff es) result
   -> Stream (Of Text) (Eff es) result
 withObservedModelTurn observer turnInfo action = do
-  lift $ observer.observe ModelTurnStarted
+  lift $ void $ observer.observe ModelTurnStarted
     { runId = turnInfo.runId
     , turn = turnInfo.turn
     , messageCount = turnInfo.messageCount
     , exposedTools = turnInfo.exposedTools
     }
   result <- action
-  lift $ observer.observe (turnInfo.finished result)
+  lift $ void $ observer.observe (turnInfo.finished result)
   pure result
 
 withObservedToolCall
   :: IOE :> es
-  => AgentObserver es
+  => AgentObserver ObservationContext es
   -> ObservedToolCall
-  -> Eff es ToolResult
+  -> (ObservationContext -> Eff es ToolResult)
   -> Eff es ToolResult
 withObservedToolCall observer callInfo action = do
-  observer.observe ToolCallStarted
+  observation <- observer.observe ToolCallStarted
     { runId = callInfo.runId
     , turn = callInfo.turn
     , toolCall = callInfo.toolCall
     }
   (status, result) <-
-    statusFromResult <$> action `catch` \(err :: SomeException) ->
+    statusFromResult <$> action observation `catch` \(err :: SomeException) ->
       if isAsyncException err
         then do
           finishToolCall observer callInfo "interrupted" (toolText "")
@@ -165,13 +181,13 @@ statusFromResult result
   | otherwise =
       ("ok", result)
 
-observeConversationLinked :: AgentObserver es -> ObservedConversationLink -> Eff es ()
+observeConversationLinked :: AgentObserver ObservationContext es -> ObservedConversationLink -> Eff es ()
 observeConversationLinked observer ObservedConversationLink{runId, parentMessageId, linkedMessageId} =
-  observer.observe AgentConversationLinked{runId, linkedMessageId, parentMessageId}
+  void $ observer.observe AgentConversationLinked{runId, linkedMessageId, parentMessageId}
 
-finishToolCall :: AgentObserver es -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
+finishToolCall :: AgentObserver ObservationContext es -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
 finishToolCall observer callInfo status result =
-  observer.observe ToolCallFinished
+  void $ observer.observe ToolCallFinished
     { runId = callInfo.runId
     , turn = callInfo.turn
     , toolCallId = callInfo.toolCall.id

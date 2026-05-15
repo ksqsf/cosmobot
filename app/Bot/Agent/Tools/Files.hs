@@ -27,6 +27,7 @@ listDirectoryTool = Tool
       [ fieldText "path" "Directory path relative to the bot working directory. Use \".\" for the working directory."
       ]
       ["path"]
+  , noisy = False
   , allowed = superuserOnly
   , start = \_ -> pure \args -> withTextArg "path" (\path -> do
       target <- resolveSafePath path
@@ -47,6 +48,7 @@ readFileTool = Tool
       [ fieldText "path" "File path relative to the bot working directory."
       ]
       ["path"]
+  , noisy = False
   , allowed = superuserOnly
   , start = \_ -> pure \args -> withTextArg "path" (\path -> do
       target <- resolveSafePath path

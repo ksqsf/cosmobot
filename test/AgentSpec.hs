@@ -64,6 +64,7 @@ main =
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
+      , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
@@ -269,7 +270,9 @@ testAgentAuditRecordsToolEvents = do
     ]
   fetches <- IORef.newIORef (0 :: Int)
   toolUses <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    _ <- Agent.runAgentWith AgentAudit.agentAuditObserver 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches] (startWithUser "fetch it")
+    agentRun <- Agent.startAgentRun (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches]
+    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun
+    _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program (startWithUser "fetch it"))
     AgentAudit.queryRecentToolUses 10
   case toolUses of
     [toolUse] -> do
@@ -282,6 +285,26 @@ testAgentAuditRecordsToolEvents = do
       toolUse.result @?= Just "fetched"
     _ ->
       assertFailure [i|expected one tool use, got #{length toolUses}|]
+
+testAskHandlerAnnouncesNoisyToolCallsWithAuditId :: IO ()
+testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "generate_image" (Aeson.object ["prompt" Aeson..= ("cat" :: Text)])]
+    , chatAnswer "done" []
+    ]
+  replies <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWith answers (ChatMock (Just replies) (Just 45) Nothing) do
+    conversations <- liftIO newConversationStore
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
+    liftIO $ waitUntil ((>= 2) . length <$> IORef.readIORef replies)
+  sent <- IORef.readIORef replies
+  case sent of
+    progress : _ ->
+      assertBool
+        [i|expected noisy tool progress message with audit id, got #{progress}|]
+        ("正在调用 generate_image 工具...（id=" `Text.isPrefixOf` progress && "）" `Text.isSuffixOf` progress)
+    _ ->
+      assertFailure [i|expected noisy tool progress reply, got #{show sent :: String}|]
 
 testChatAnswerJsonRemainsObjectCompatible :: IO ()
 testChatAnswerJsonRemainsObjectCompatible = do
@@ -361,6 +384,7 @@ fakeWebFetchTool fetches = Agent.Tool
   { name = "web_fetch"
   , description = "fake web fetch"
   , parameters = Aeson.object []
+  , noisy = False
   , allowed = const True
   , start = \context -> do
       checkUseLimit <- newUseLimiter context.toolConfig.webFetchMaxUses

@@ -24,6 +24,7 @@ generateImageTool = Tool
       [ fieldText "prompt" "Image generation prompt. Include the user's visual requirements, style, subject, text, and constraints."
       ]
       ["prompt"]
+  , noisy = True
   , allowed = everyone
   , start = \context -> pure \args -> withTextArg "prompt" (\prompt -> do
       generated <- LLM.askImageWithHistory [LLM.userWithImages prompt context.message.imageUrls]

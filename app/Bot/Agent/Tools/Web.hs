@@ -35,6 +35,7 @@ webSearchTool = Tool
       , fieldInteger "max_results" "Maximum number of results to return. Defaults to 5 and is capped at 20."
       ]
       ["query"]
+  , noisy = False
   , allowed = \context -> context.toolConfig.webSearchEnable
   , start = \context -> pure \args ->
       withParsedToolArgs (webSearchArgs context.toolConfig.webSearchMaxResults) args \(query, maxResults) -> do
@@ -56,6 +57,7 @@ webFetchTool = Tool
       , fieldInteger "max_content_tokens" "Approximate maximum content tokens to return. Defaults to the configured tool.web_fetch.max_content_tokens or 50000."
       ]
       ["url"]
+  , noisy = False
   , allowed = \context -> context.toolConfig.webFetch
   , start = \context -> do
       checkUseLimit <- newUseLimiter context.toolConfig.webFetchMaxUses

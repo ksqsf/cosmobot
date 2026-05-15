@@ -29,6 +29,7 @@ scheduleAgentActionTool = Tool
       , fieldText "prompt" "Prompt for the future agent action."
       ]
       ["delay_seconds", "prompt"]
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs scheduledActionArgs args \(delaySeconds, prompt) -> do
@@ -46,6 +47,7 @@ deleteScheduledAgentActionTool = Tool
     [ fieldInteger "schedule_id" "The schedule ID to be deleted."
     ]
     ["schedule_id"]
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \args -> withIntegerArg "schedule_id" (\scheduleId -> do
       ok <- Scheduler.deleteScheduledMessage context.message scheduleId
@@ -60,6 +62,7 @@ listCurrentUserSchedulesTool = Tool
   { name = "list_current_user_schedules"
   , description = "List pending scheduled agent actions created by the current user in the current chat. Returns schedule ids, remaining seconds, and scheduled prompts."
   , parameters = objectSchema [] []
+  , noisy = False
   , allowed = everyone
   , start = \context -> pure \_ -> do
       schedules <- Scheduler.listScheduledMessages context.message
