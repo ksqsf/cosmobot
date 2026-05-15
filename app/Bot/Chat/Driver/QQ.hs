@@ -81,7 +81,8 @@ qqDriver = Driver.ChatPlatformDriver
   , Driver.getMessageContent = \_ messageId -> getMessageContent messageId
   , Driver.getSenderMemberInfo = \message ->
       case (message.kind, message.chatId, message.senderId) of
-        (ChatGroup, Just groupId, Just userId) ->
+        (ChatGroup, Just groupId, Just rawUserId)
+          | Just userId <- parseIntegerUserId rawUserId ->
           getGroupMemberInfo groupId userId
         _ ->
           pure Nothing
@@ -94,7 +95,7 @@ qqDriver = Driver.ChatPlatformDriver
   , Driver.getUserAvatar = \message userId ->
       case message.platform of
         PlatformQQ ->
-          pure (Just (getUserAvatar userId))
+          pure (getUserAvatar <$> parseIntegerUserId userId)
         _ ->
           pure Nothing
   , Driver.listGroupMembers = \message ->
@@ -419,8 +420,8 @@ dispatchActionResponse pendingResponses response =
 -- | Reply to a QQ private or group message.
 replyTo :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe Integer)
 replyTo message body =
-  case (message.platform, message.kind, message.chatId <|> message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId) -> do
+  case (message.platform, message.kind, message.chatId, message.senderId) of
+    (PlatformQQ, ChatGroup, Just groupId, _) -> do
       qqMessage <- replyMessage message body
       responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_group_msg"
@@ -429,7 +430,8 @@ replyTo message body =
             , "message" Aeson..= qqMessage
             ]
         ])
-    (PlatformQQ, ChatPrivate, Just userId) -> do
+    (PlatformQQ, ChatPrivate, _, Just rawUserId)
+      | Just userId <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
       responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
@@ -443,8 +445,8 @@ replyTo message body =
 -- | Send a reply that mentions a QQ user where the platform supports it.
 mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
 mentionUser message userId body =
-  case (message.platform, message.kind, message.chatId <|> message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId) -> do
+  case (message.platform, message.kind, message.chatId, message.senderId) of
+    (PlatformQQ, ChatGroup, Just groupId, _) -> do
       qqMessage <- mentionMessage message userId body
       responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_group_msg"
@@ -453,7 +455,8 @@ mentionUser message userId body =
             , "message" Aeson..= qqMessage
             ]
         ])
-    (PlatformQQ, ChatPrivate, Just userId_) -> do
+    (PlatformQQ, ChatPrivate, _, Just rawUserId)
+      | Just userId_ <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
       responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
@@ -537,6 +540,14 @@ getUserAvatar userId =
 qqAvatarUrl :: Integer -> Text
 qqAvatarUrl userId =
   [i|https://q1.qlogo.cn/g?b=qq&nk=#{userId}&s=640|]
+
+parseIntegerUserId :: Text -> Maybe Integer
+parseIntegerUserId raw =
+  case reads (Text.unpack (Text.strip raw)) of
+    [(userId, "")] ->
+      Just userId
+    _ ->
+      Nothing
 
 referencedWithText :: ReferencedMessage -> Text -> ReferencedMessage
 referencedWithText ReferencedMessage{messageId, senderDisplayName, senderIdentifier, imageUrls} text =
@@ -711,7 +722,7 @@ eventToIncomingMessageWith cfg event
       , chatId    = event.groupId <|> event.userId
       , chatAliases = []
       , digest = qqMessageDigest cfg event
-      , senderId  = event.userId
+      , senderId  = Text.pack . show <$> event.userId
       , senderUsername = Nothing
       , messageId = event.messageId
       , replyToMessageId = event.message >>= replySegmentMessageId

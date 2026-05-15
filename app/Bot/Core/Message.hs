@@ -77,7 +77,7 @@ data IncomingMessage = IncomingMessage
   , chatId    :: !(Maybe Integer)
   , chatAliases :: ![Text]
   , digest    :: !MessageDigest
-  , senderId  :: !(Maybe Integer)
+  , senderId  :: !(Maybe Text)
   , senderUsername :: !(Maybe Text)
   , messageId :: !(Maybe Integer)
   , replyToMessageId :: !(Maybe Integer)

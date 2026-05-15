@@ -51,7 +51,7 @@ data ChatLogEntry = ChatLogEntry
   { platform :: !ChatPlatform
   , kind :: !ChatKind
   , chatId :: !(Maybe Integer)
-  , senderId :: !(Maybe Integer)
+  , senderId :: !(Maybe Text)
   , senderUsername :: !(Maybe Text)
   , messageId :: !(Maybe Integer)
   , replyToMessageId :: !(Maybe Integer)
@@ -115,7 +115,7 @@ data ChatLogRow = ChatLogRow
   , platform_key :: Text
   , kind_key :: Text
   , chat_id :: Maybe Int.Int64
-  , sender_id :: Maybe Int.Int64
+  , sender_id :: Maybe Text
   , sender_username :: Maybe Text
   , message_id :: Maybe Int.Int64
   , reply_to_message_id :: Maybe Int.Int64
@@ -200,7 +200,7 @@ chatLogRow entry =
     , platform_key = platformKey entry.platform
     , kind_key = kindKey entry.kind
     , chat_id = fromIntegral <$> entry.chatId
-    , sender_id = fromIntegral <$> entry.senderId
+    , sender_id = entry.senderId
     , sender_username = entry.senderUsername
     , message_id = fromIntegral <$> entry.messageId
     , reply_to_message_id = fromIntegral <$> entry.replyToMessageId
@@ -217,7 +217,7 @@ chatLogEntryFromRow context row =
     { platform = context.platform
     , kind = context.kind
     , chatId = fromIntegral <$> row.chat_id
-    , senderId = fromIntegral <$> row.sender_id
+    , senderId = row.sender_id
     , senderUsername = row.sender_username
     , messageId = fromIntegral <$> row.message_id
     , replyToMessageId = fromIntegral <$> row.reply_to_message_id

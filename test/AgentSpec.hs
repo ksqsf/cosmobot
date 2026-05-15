@@ -55,6 +55,7 @@ main =
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
+      , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
@@ -128,6 +129,19 @@ testUserAvatarToolQueriesChatEffect = do
   IORef.readIORef replies >>= (@?= ["[image] https://example.test/avatar.jpg"])
   IORef.readIORef recorded >>= (@?= [(Just 44, "[image] https://example.test/avatar.jpg")])
   IORef.readIORef remembered >>= (@?= [Just 44])
+
+testUserAvatarToolRejectsZeroUserId :: IO ()
+testUserAvatarToolRejectsZeroUserId = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "get_user_avatar" (Aeson.object ["user_id" Aeson..= (0 :: Integer)])]
+    , chatAnswer "rejected" []
+    ]
+  replies <- IORef.newIORef ([] :: [Text])
+  (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just 44) Nothing) do
+    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "avatar?")
+  answer @?= "rejected"
+  Text.unlines (toolOutputs conversation) @?= "Error in $: user_id must not be 0.\n"
+  IORef.readIORef replies >>= (@?= [])
 
 testTypstToImageToolRendersAndSendsImage :: IO ()
 testTypstToImageToolRendersAndSendsImage = do
@@ -693,7 +707,7 @@ noopMember :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
 noopMember _ _ =
   pure Nothing
 
-noopUserAvatar :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+noopUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 noopUserAvatar _ _ =
   pure Nothing
 
@@ -705,7 +719,7 @@ noopMention :: IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
 noopMention _ _ _ =
   pure Nothing
 
-mockUserAvatar :: ChatMock -> IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+mockUserAvatar :: ChatMock -> IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 mockUserAvatar ChatMock{userAvatar} _ _ =
   pure userAvatar
 
@@ -717,7 +731,7 @@ testMessage =
     , chatId = Just 100
     , chatAliases = []
     , digest = emptyMessageDigest
-    , senderId = Just 200
+    , senderId = Just "200"
     , senderUsername = Just "alice"
     , messageId = Just 300
     , replyToMessageId = Nothing

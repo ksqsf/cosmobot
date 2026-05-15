@@ -454,7 +454,7 @@ currentMessageSystemPrompt message =
     platformText = show message.platform :: String
     kindText = show message.kind :: String
     chatIdText = maybe "unavailable" show message.chatId :: String
-    senderIdText = maybe "unavailable" show message.senderId :: String
+    senderIdText = maybe "unavailable" Text.unpack message.senderId
     senderUsernameText = fromMaybe "unavailable" message.senderUsername
 
 loadScopedMemory :: Memory.Memory :> es => Either Text MemoryStore.MemoryScope -> Eff es (Maybe Text)

@@ -109,17 +109,17 @@ applyFilter (MessageFilter filt) =
 
 message :: Text -> IncomingMessage
 message =
-  messageFrom 200
+  messageFrom "200"
 
-messageFrom :: Integer -> Text -> IncomingMessage
+messageFrom :: Text -> Text -> IncomingMessage
 messageFrom senderId text =
   messageFromWithImages senderId text []
 
 messageWithImages :: Text -> [Text] -> IncomingMessage
 messageWithImages =
-  messageFromWithImages 200
+  messageFromWithImages "200"
 
-messageFromWithImages :: Integer -> Text -> [Text] -> IncomingMessage
+messageFromWithImages :: Text -> Text -> [Text] -> IncomingMessage
 messageFromWithImages senderId text imageUrls =
   IncomingMessage
     { platform = PlatformTelegram

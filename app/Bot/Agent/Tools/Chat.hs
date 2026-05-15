@@ -111,12 +111,12 @@ userAvatarTool = Tool
   { name = "get_user_avatar"
   , description = "Get avatar information for a platform user id. If user_id is omitted, this queries the sender of the current message."
   , parameters = objectSchema
-      [ fieldInteger "user_id" "Platform user id to query. Defaults to the current message sender."
+      [ fieldText "user_id" "Platform user id to query. Defaults to the current message sender. 0 is invalid."
       ]
       []
   , allowed = everyone
   , start = \context -> pure \args ->
-      withParsedToolArgs (userAvatarArgs context.message.senderId) args \userId -> do
+      withParsedToolArgs (userAvatarArgs context.message) args \userId -> do
         avatar <- Chat.getUserAvatar context.message userId
         case avatar of
           Nothing ->
@@ -160,14 +160,40 @@ mentionUserArgs =
     text <- o Aeson..: Key.fromText "text"
     pure (userId, text)
 
-userAvatarArgs :: Maybe Integer -> Aeson.Value -> AesonTypes.Parser Integer
-userAvatarArgs senderId =
+userAvatarArgs :: IncomingMessage -> Aeson.Value -> AesonTypes.Parser Text
+userAvatarArgs message =
   Aeson.withObject "user avatar arguments" $ \o ->
     o Aeson..:? Key.fromText "user_id" >>= \case
-      Just userId ->
-        pure userId
+      Just value ->
+        validateUserId =<< parseUserIdValue value
       Nothing ->
-        maybe (fail "user_id is required when the current message has no sender id.") pure senderId
+        case currentSenderAvatarId message of
+          Just userId ->
+            validateUserId userId
+          _ ->
+            fail "user_id is required when the current message has no non-zero sender id."
+
+parseUserIdValue :: Aeson.Value -> AesonTypes.Parser Text
+parseUserIdValue value =
+  (Text.strip <$> Aeson.parseJSON value)
+    <|> (Text.pack . show <$> (Aeson.parseJSON value :: AesonTypes.Parser Integer))
+
+validateUserId :: Text -> AesonTypes.Parser Text
+validateUserId userId
+  | Text.null (Text.strip userId) =
+      fail "user_id must not be empty."
+  | Text.strip userId == "0" =
+      fail "user_id must not be 0."
+  | otherwise =
+      pure (Text.strip userId)
+
+currentSenderAvatarId :: IncomingMessage -> Maybe Text
+currentSenderAvatarId message =
+  case message.platform of
+    PlatformMatrix ->
+      message.senderUsername <|> message.senderId
+    _ ->
+      message.senderId
 
 avatarUrl :: Aeson.Value -> Maybe Text
 avatarUrl =

@@ -96,7 +96,8 @@ telegramDriver = Driver.ChatPlatformDriver
   , Driver.getMessageContent = getMessageContent
   , Driver.getSenderMemberInfo = \message ->
       case (message.kind, message.chatId, message.senderId) of
-        (ChatGroup, Just chatId, Just userId) ->
+        (ChatGroup, Just chatId, Just rawUserId)
+          | Just userId <- parseIntegerUserId rawUserId ->
           Just . Aeson.toJSON <$> getChatMember chatId userId
         _ ->
           pure Nothing
@@ -109,7 +110,7 @@ telegramDriver = Driver.ChatPlatformDriver
   , Driver.getUserAvatar = \message userId ->
       case message.platform of
         PlatformTelegram ->
-          getUserAvatar userId
+          maybe (pure Nothing) getUserAvatar (parseIntegerUserId userId)
         _ ->
           pure Nothing
   , Driver.listGroupMembers = \_ ->
@@ -259,7 +260,7 @@ updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
     , chatId    = Just message.chat.id
     , chatAliases = telegramChatAliases message.chat
     , digest = telegramMessageDigest cfg message
-    , senderId  = (.id) <$> message.from
+    , senderId  = Text.pack . show . (.id) <$> message.from
     , senderUsername = message.from >>= (.username)
     , messageId = Just message.messageId
     , replyToMessageId = (.messageId) <$> message.replyToMessage
@@ -1387,3 +1388,11 @@ getUserAvatar userId = do
         , "width" Aeson..= photo.width
         , "height" Aeson..= photo.height
         ]
+
+parseIntegerUserId :: Text -> Maybe Integer
+parseIntegerUserId raw =
+  case reads (Text.unpack (Text.strip raw)) of
+    [(userId, "")] ->
+      Just userId
+    _ ->
+      Nothing

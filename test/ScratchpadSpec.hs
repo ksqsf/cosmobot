@@ -51,10 +51,10 @@ testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
 testScratchpadSenderIsolation :: IO ()
 testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
-  runScratchpad store replies (messageFrom 200 "!todo alice task")
-  runScratchpad store replies (messageFrom 201 "!todo bob task")
-  runScratchpad store replies (messageFrom 200 "!list")
-  runScratchpad store replies (messageFrom 201 "!list")
+  runScratchpad store replies (messageFrom "200" "!todo alice task")
+  runScratchpad store replies (messageFrom "201" "!todo bob task")
+  runScratchpad store replies (messageFrom "200" "!list")
+  runScratchpad store replies (messageFrom "201" "!list")
   IORef.readIORef replies
     >>= (@?=)
     [ "已添加 #1: alice task"
@@ -144,9 +144,9 @@ runScratchpad path replies incoming =
 
 message :: Text -> IncomingMessage
 message =
-  messageFrom 200
+  messageFrom "200"
 
-messageFrom :: Integer -> Text -> IncomingMessage
+messageFrom :: Text -> Text -> IncomingMessage
 messageFrom senderId text =
   IncomingMessage
     { platform = PlatformTelegram

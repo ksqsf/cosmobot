@@ -121,7 +121,7 @@ getPlatformMemberInfo message userId =
 getPlatformUserAvatar
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
   => IncomingMessage
-  -> Integer
+  -> Text
   -> Eff es (Maybe Aeson.Value)
 getPlatformUserAvatar message userId =
   withPlatformDriver message "fetch user avatar" \driver ->

@@ -41,7 +41,7 @@ data ScheduledMessageRow = ScheduledMessageRow
   , due_at_unix_seconds :: Int.Int64
   , platform_key :: Text
   , chat_id :: Maybe Int.Int64
-  , sender_id :: Maybe Int.Int64
+  , sender_id :: Maybe Text
   , sender_username :: Maybe Text
   , message_json :: Text
   }
@@ -91,7 +91,7 @@ saveScheduledMessage scheduled = do
           , due_at_unix_seconds = fromIntegral scheduled.dueAtUnixSeconds
           , platform_key = chatPlatformKey scheduled.message.platform
           , chat_id = fromIntegral <$> scheduled.message.chatId
-          , sender_id = fromIntegral <$> scheduled.message.senderId
+          , sender_id = scheduled.message.senderId
           , sender_username = scheduled.message.senderUsername
           , message_json = encodeMessage scheduled.message
           }

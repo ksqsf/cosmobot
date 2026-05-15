@@ -65,7 +65,7 @@ data Chat :: Effect where
     -> Chat m (Maybe Aeson.Value)
   GetUserAvatar
     :: IncomingMessage
-    -> Integer
+    -> Text
     -> Chat m (Maybe Aeson.Value)
   ListGroupMembers
     :: IncomingMessage
@@ -339,7 +339,7 @@ getMemberInfo message userId =
   send (GetMemberInfo message userId)
 
 -- | Fetch avatar information for a platform user id.
-getUserAvatar :: Chat :> es => IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+getUserAvatar :: Chat :> es => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 getUserAvatar message userId =
   send (GetUserAvatar message userId)
 
@@ -361,7 +361,7 @@ data ChatHandlers es = ChatHandlers
   , handleGetMessageContent :: IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
   , handleGetSenderMemberInfo :: IncomingMessage -> Eff es (Maybe Aeson.Value)
   , handleGetMemberInfo :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
-  , handleGetUserAvatar :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+  , handleGetUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   , handleListGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
   , handleMentionUser :: IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
   }

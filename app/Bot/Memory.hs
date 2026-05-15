@@ -31,7 +31,7 @@ newtype MemoryConfig = MemoryConfig
   deriving (Show)
 
 data MemoryScope
-  = SenderMemory !ChatPlatform !Integer
+  = SenderMemory !ChatPlatform !Text
   | ChatMemory !ChatPlatform !Integer
   deriving (Eq, Show)
 
@@ -79,14 +79,14 @@ clearMemory cfg scope = liftIO do
 
 memoryPath :: MemoryConfig -> MemoryScope -> FilePath
 memoryPath cfg scope =
-  cfg.dir </> platformPathPart platform </> scopeKind </> show scopeId <.> "md"
+  cfg.dir </> platformPathPart platform </> scopeKind </> Text.unpack scopeId <.> "md"
   where
     (platform, scopeKind, scopeId) =
       case scope of
         SenderMemory scopePlatform senderId ->
           (scopePlatform, "sender", senderId)
         ChatMemory scopePlatform chatId ->
-          (scopePlatform, "chat", chatId)
+          (scopePlatform, "chat", Text.pack (show chatId))
 
 platformPathPart :: ChatPlatform -> FilePath
 platformPathPart = toString . chatPlatformKey

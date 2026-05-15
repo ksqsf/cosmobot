@@ -286,6 +286,6 @@ messageSenderKey :: IncomingMessage -> Maybe Text
 messageSenderKey message =
   case message.senderId of
     Just senderId ->
-      Just ("id:" <> show senderId)
+      Just ("id:" <> senderId)
     Nothing ->
       ("username:" <>) <$> message.senderUsername
