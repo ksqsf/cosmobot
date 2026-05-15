@@ -178,6 +178,7 @@ executable cosmobot
         Bot.Config
         Bot.Core.Route
         Bot.Effect.LLM.Config
+        Bot.Handler.Admin
         Bot.Handler.Ask
         Bot.Handler.Ask.Config
         Bot.Handler.Audit
@@ -314,6 +315,19 @@ test-suite typing-spec
     other-modules:
         Bot.Prelude
         Bot.Handler.Typing.Typst
+    hs-source-dirs:   test
+
+test-suite admin-spec
+    import:           warnings
+                    , language
+                    , app-deps
+                    , test-deps
+                    , bot-core-modules
+    type:             exitcode-stdio-1.0
+    main-is:          AdminSpec.hs
+    other-modules:
+        Bot.Core.Route
+        Bot.Handler.Admin
     hs-source-dirs:   test
 
 benchmark message-pipeline-bench

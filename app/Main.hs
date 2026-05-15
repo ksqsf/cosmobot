@@ -16,6 +16,7 @@ import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
+import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Audit
 import Bot.Handler.Saucenao
@@ -92,6 +93,7 @@ routes
   -> [RouteHandler es]
 routes cfg conversations =
   auditHandlers conversations
+    <> adminHandlers
     <> scratchpadHandlers
     <> typingHandlers
     <> saucenaoHandlers cfg.saucenao
