@@ -7,12 +7,13 @@ Cosmobot 是一个小型 AI agent 框架，接受来自 QQ/OneBot、Telegram 和
 - 支持 QQ/OneBot、Telegram、Matrix 三种聊天入口。
 - 支持 OpenAI-compatible Chat Completions 和 streaming 输出接口。
 - 支持私聊和群组。
-- 支持多种触发方式：命令触发、`@`、机器人名字、
+- 支持多种触发方式：命令触发、`@`、机器人名字等。
 - 支持多轮对话、回复续聊等。
+- Agent 会在上下文过长时自动整理较早的对话历史，保留最近上下文。
 - 支持简易的管理员鉴权。
 - 内置 agent 工具：文件读取、目录列表、聊天记录查询、网页搜索/抓取、时间、图片生成、消息发送、群成员查询、计划任务、记忆管理等。
 - 内置多种简单命令工具：todo 列表、saucenao 搜图等。
-- 支持使用 SQLite 持久化聊天记录、agent trace、会话、计划任务等。
+- 支持使用 SQLite 持久化聊天记录、agent audit、会话、计划任务等。
 
 ## 构建
 
@@ -83,6 +84,14 @@ cabal run cosmobot
 
 如果 `[handler.ask]` 配置了 `name`，也可以用该前缀触发 ask flow。
 
+长对话会自动进行上下文整理：当 agent 发送给 LLM 的历史达到 50 条消息时，cosmobot 会保留最近 20 条消息，并把更早的历史总结成一条上下文摘要。触发整理时，机器人会先发送：
+
+```text
+正在整理较早的对话上下文...
+```
+
+部分耗时工具也会发送进度提示，例如图片生成工具会提示正在调用工具，并附带 audit id，方便用 `!audit <id>` 查询详情。
+
 ### Todo
 
 Todo 按 `platform + senderId` 隔离：
@@ -131,6 +140,16 @@ Audit 命令仅限各平台 `superusers` 使用：
 
 部分工具需要配置开关或 API key。例如网页搜索需要启用 `[tool.web_search]`，并选择 `tavily` 或 `brave`。
 
-## Agent Trace
+## Agent Middleware
+
+Agent 的核心循环负责模型请求、工具调用和 conversation 推进；横切行为由 `Bot.Agent.Middleware.*` 提供：
+
+- `ContextCompaction`：在历史达到 50 条消息时整理较早上下文，保留最近 20 条消息。
+- `Observation`：记录 agent run、model turn、tool call 和 conversation link 事件，并把 audit id 放入 typed middleware context。
+- `Tools`：处理工具调用失败、工具轮数限制，以及 noisy tool 的用户可见进度提示。
+
+Middleware 之间通过 typed `MiddlewareContext` 传递数据，避免把临时字段塞进 agent core 或工具上下文。
+
+## Agent Audit
 
 Agent 运行时会记录结构化 trace event：run start/finish、model turn start/finish、tool call start/finish。可以使用 `!audit` 命令查询。
