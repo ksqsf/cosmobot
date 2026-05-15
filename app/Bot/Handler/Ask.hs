@@ -230,7 +230,7 @@ continueConversation toolCfg cfg conversations message parentKey conversation = 
   logTrace "continuing conversation" message
   logInfo_ [i|continuing conversation: #{incomingMessageLogLine message}|]
   let nextConversation =
-        appendUserContext (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
+        appendSystemAndUserContext (currentMessageSystemPrompt message) (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
   threadId <- liftIO myThreadId
   void $ askConversation toolCfg cfg conversations (Just parentKey) threadId message nextConversation
 
@@ -437,8 +437,25 @@ startConversation :: Memory.Memory :> es => AskHandlerConfig -> IncomingMessage 
 startConversation cfg message prompt imageUrls = do
   senderMemory <- loadScopedMemory (MemoryStore.senderMemoryScope message)
   chatMemory <- loadScopedMemory (MemoryStore.chatMemoryScope message)
-  let systemPrompt = LLM.memorySystemPrompt cfg.systemPrompt senderMemory chatMemory
+  let systemPrompt = Text.intercalate "\n\n" (filter (not . Text.null) [LLM.memorySystemPrompt cfg.systemPrompt senderMemory chatMemory, currentMessageSystemPrompt message])
   pure (startWithSystemAndUserContext systemPrompt prompt imageUrls)
+
+currentMessageSystemPrompt :: IncomingMessage -> Text
+currentMessageSystemPrompt message =
+  Text.unlines
+    [ "Current message context:"
+    , [i|- platform: #{platformText}|]
+    , [i|- chat_kind: #{kindText}|]
+    , [i|- chat_id: #{chatIdText}|]
+    , [i|- sender_id: #{senderIdText}|]
+    , [i|- sender_username: #{senderUsernameText}|]
+    ]
+  where
+    platformText = show message.platform :: String
+    kindText = show message.kind :: String
+    chatIdText = maybe "unavailable" show message.chatId :: String
+    senderIdText = maybe "unavailable" show message.senderId :: String
+    senderUsernameText = fromMaybe "unavailable" message.senderUsername
 
 loadScopedMemory :: Memory.Memory :> es => Either Text MemoryStore.MemoryScope -> Eff es (Maybe Text)
 loadScopedMemory =

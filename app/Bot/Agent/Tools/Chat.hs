@@ -111,7 +111,7 @@ userAvatarTool = Tool
   { name = "get_user_avatar"
   , description = "Get avatar information for a platform user id. If user_id is omitted, this queries the sender of the current message."
   , parameters = objectSchema
-      [ fieldPositiveInteger "user_id" "Positive platform user id to query. Defaults to the current message sender. Do not pass 0."
+      [ fieldInteger "user_id" "Platform user id to query. Defaults to the current message sender."
       ]
       []
   , allowed = everyone
@@ -164,26 +164,10 @@ userAvatarArgs :: Maybe Integer -> Aeson.Value -> AesonTypes.Parser Integer
 userAvatarArgs senderId =
   Aeson.withObject "user avatar arguments" $ \o ->
     o Aeson..:? Key.fromText "user_id" >>= \case
-      Just userId | userId > 0 ->
+      Just userId ->
         pure userId
-      _ ->
-        maybe (fail "user_id must be positive, or omitted when the current message has a sender id.") pure (positiveSenderId senderId)
-
-positiveSenderId :: Maybe Integer -> Maybe Integer
-positiveSenderId senderId = do
-  userId <- senderId
-  guard (userId > 0)
-  pure userId
-
-fieldPositiveInteger :: Text -> Text -> (Text, Aeson.Value)
-fieldPositiveInteger name description =
-  ( name
-  , Aeson.object
-      [ "type" Aeson..= Aeson.String "integer"
-      , "minimum" Aeson..= (1 :: Int)
-      , "description" Aeson..= description
-      ]
-  )
+      Nothing ->
+        maybe (fail "user_id is required when the current message has no sender id.") pure senderId
 
 avatarUrl :: Aeson.Value -> Maybe Text
 avatarUrl =

@@ -20,6 +20,7 @@ module Bot.Core.Conversation
   , startWithSystemAndUserContext
   , appendUser
   , appendUserContext
+  , appendSystemAndUserContext
   , appendAssistant
   )
 where
@@ -170,6 +171,13 @@ appendUser prompt =
 appendUserContext :: Text -> [Text] -> Conversation -> Conversation
 appendUserContext prompt imageUrls (Conversation history) =
   Conversation (history Seq.|> LLM.userWithImages prompt imageUrls)
+
+appendSystemAndUserContext :: Text -> Text -> [Text] -> Conversation -> Conversation
+appendSystemAndUserContext systemPrompt prompt imageUrls conversation
+  | Text.null (Text.strip systemPrompt) =
+      appendUserContext prompt imageUrls conversation
+appendSystemAndUserContext systemPrompt prompt imageUrls (Conversation history) =
+  Conversation (history Seq.|> LLM.systemText systemPrompt Seq.|> LLM.userWithImages prompt imageUrls)
 
 -- | Append an assistant reply.
 --
