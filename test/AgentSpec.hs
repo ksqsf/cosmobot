@@ -3,6 +3,7 @@ module Main (main) where
 import qualified Bot.Agent as Agent
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Core.Conversation
+import Bot.Core.Route (runHandlers)
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
@@ -13,6 +14,8 @@ import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
 import Bot.Core.Message
+import Bot.Handler.Ask (askHandlers)
+import Bot.Handler.Ask.Config (AskHandlerConfig (..))
 import Bot.Storage.Conversation
 import Bot.Prelude
 import Control.Concurrent (forkIO, threadDelay)
@@ -57,6 +60,8 @@ main =
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
+      , testCase "agent request prepends current message system context" testAgentRequestPrependsCurrentMessageSystemContext
+      , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
@@ -126,6 +131,7 @@ testUserAvatarToolQueriesChatEffect = do
   answer @?= "found"
   Text.unlines (toolOutputs conversation) @?= jsonText avatar <> "\n"
   imageContextUrls conversation @?= ["https://example.test/avatar.jpg"]
+  -- The avatar tool should emit the avatar as a chat image, not only return JSON to the model.
   IORef.readIORef replies >>= (@?= ["[image] https://example.test/avatar.jpg"])
   IORef.readIORef recorded >>= (@?= [(Just 44, "[image] https://example.test/avatar.jpg")])
   IORef.readIORef remembered >>= (@?= [Just 44])
@@ -161,6 +167,56 @@ testTypstToImageToolRendersAndSendsImage = do
   IORef.readIORef replies >>= (@?= ["[image] file:///tmp/cosmobot-agent-spec-typst.png"])
   IORef.readIORef recorded >>= (@?= [(Just 43, "[typst image]")])
   IORef.readIORef remembered >>= (@?= [Just 43])
+
+testAgentRequestPrependsCurrentMessageSystemContext :: IO ()
+testAgentRequestPrependsCurrentMessageSystemContext = do
+  answers <- IORef.newIORef [chatAnswer "done" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 4
+      (agentContext
+        { Agent.systemContext = Text.unlines
+            [ "Current message context:"
+            , "- platform: PlatformQQ"
+            , "- bot_id: 2044933066"
+            , "- sender_id: 295947730"
+            ]
+        })
+      Agent.defaultTools
+      (startWithUser "hello")
+  requests <- IORef.readIORef captured
+  case viaNonEmpty head requests >>= viaNonEmpty head of
+    Just message -> do
+      message.role @?= "system"
+      case message.content of
+        Just (LLM.TextContent content) -> do
+          assertBool "system context contains bot id" ("- bot_id: 2044933066" `Text.isInfixOf` content)
+          assertBool "system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
+        other ->
+          assertFailure [i|expected text system content, got #{show other :: String}|]
+    Nothing ->
+      assertFailure "expected captured LLM request messages"
+
+testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds :: IO ()
+testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
+  answers <- IORef.newIORef [chatAnswer "done" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    conversations <- liftIO newConversationStore
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
+    liftIO $ waitUntil (not . null <$> IORef.readIORef captured)
+  requests <- IORef.readIORef captured
+  case viaNonEmpty head requests >>= viaNonEmpty head of
+    Just message -> do
+      message.role @?= "system"
+      case message.content of
+        Just (LLM.TextContent content) -> do
+          assertBool "ask handler system context contains configured bot id" ("- bot_id: 2044933066" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
+        other ->
+          assertFailure [i|expected text system content, got #{show other :: String}|]
+    Nothing ->
+      assertFailure "expected captured ask-handler LLM request messages"
 
 testAgentAuditRecordsToolEvents :: IO ()
 testAgentAuditRecordsToolEvents = do
@@ -552,6 +608,22 @@ runAgentWith
 runAgentWith answers chatMock action =
   runAgentWithMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") answers chatMock action
 
+runAgentCapturingMessages
+  :: IORef.IORef [[LLM.ChatMessage]]
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentCapturingMessages captured answers chatMock action = do
+  rendered <- IORef.newIORef ([] :: [Text])
+  runAgentWithMemoryAndTypstAndCapture
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    rendered
+    (Just captured)
+    answers
+    chatMock
+    action
+
 runAgentWithTypst
   :: IORef.IORef [Text]
   -> IORef.IORef [LLM.ChatAnswer]
@@ -559,9 +631,10 @@ runAgentWithTypst
   -> Eff AgentStack a
   -> IO a
 runAgentWithTypst rendered answers chatMock action =
-  runAgentWithMemoryAndTypst
+  runAgentWithMemoryAndTypstAndCapture
     (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
     rendered
+    Nothing
     answers
     chatMock
     action
@@ -584,6 +657,17 @@ runAgentWithMemoryAndTypst
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemoryAndTypst memoryCfg rendered answers chatMock action = do
+  runAgentWithMemoryAndTypstAndCapture memoryCfg rendered Nothing answers chatMock action
+
+runAgentWithMemoryAndTypstAndCapture
+  :: MemoryStore.MemoryConfig
+  -> IORef.IORef [Text]
+  -> Maybe (IORef.IORef [[LLM.ChatMessage]])
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithMemoryAndTypstAndCapture memoryCfg rendered captured answers chatMock action = do
   runEff $
     runTestLog $
       StorageEffect.runStorageSQLitePath ":memory:" $
@@ -591,11 +675,12 @@ runAgentWithMemoryAndTypst memoryCfg rendered answers chatMock action = do
           Scheduler.runScheduler $
             Memory.runMemory memoryCfg $
               LLM.runLLMWith
-                (\_ -> pure "unused text answer")
-                (\_ consume -> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
-                (\_ -> pure "unused image answer")
-                (\_ _ -> liftIO (popAnswer answers))
-                (\_ _ consume -> do
+                (\messages -> captureMessages captured messages >> pure "unused text answer")
+                (\messages consume -> captureMessages captured messages >> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
+                (\messages -> captureMessages captured messages >> pure "unused image answer")
+                (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
+                (\_ messages consume -> do
+                    captureMessages captured messages
                     answer <- liftIO (popAnswer answers)
                     consume do
                       case answer of
@@ -619,6 +704,10 @@ runAgentWithMemoryAndTypst memoryCfg rendered answers chatMock action = do
                         , handleMentionUser = noopMention
                         }
                       action
+
+captureMessages :: IOE :> es => Maybe (IORef.IORef [[LLM.ChatMessage]]) -> [LLM.ChatMessage] -> Eff es ()
+captureMessages captured messages =
+  traverse_ (\ref -> liftIO $ IORef.modifyIORef' ref (<> [messages])) captured
 
 mockTypstRender :: IOE :> es => IORef.IORef [Text] -> Text -> (FilePath -> Eff es r) -> Eff es r
 mockTypstRender rendered source action = do
@@ -743,6 +832,52 @@ testMessage =
     , raw = Aeson.Null
     }
 
+askHandlerConfig :: AskHandlerConfig
+askHandlerConfig =
+  AskHandlerConfig
+    { name = Just "krkr"
+    , command = "!ask"
+    , drawCommand = "!draw"
+    , systemPrompt = "base system prompt"
+    , agentMaxTurns = 4
+    , botIds = [(PlatformQQ, "2044933066")]
+    }
+
+askHandlerMessage :: IncomingMessage
+askHandlerMessage =
+  IncomingMessage
+    { platform = PlatformQQ
+    , kind = ChatGroup
+    , chatId = Just 906230260
+    , chatAliases = []
+    , digest = emptyMessageDigest
+        { chatIsAllowed = True
+        , senderIsAllowed = True
+        , senderIsSuperuser = True
+        }
+    , senderId = Just "295947730"
+    , senderUsername = Nothing
+    , messageId = Just 294869878
+    , replyToMessageId = Nothing
+    , mentions = []
+    , mentionUsernames = []
+    , imageUrls = []
+    , text = "krkr 看下我的头像"
+    , raw = Aeson.Null
+    }
+
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
   decodeUtf8 . toStrict . Aeson.encode
+
+waitUntil :: IO Bool -> IO ()
+waitUntil predicate =
+  go (50 :: Int)
+  where
+    go 0 =
+      assertFailure "timed out waiting for condition"
+    go remaining = do
+      done <- predicate
+      unless done do
+        threadDelay 20_000
+        go (remaining - 1)

@@ -106,14 +106,14 @@ memberInfoTool = Tool
       ) args
   }
 
-userAvatarTool :: Chat.Chat :> es => Tool es
+userAvatarTool :: (Chat.Chat :> es, Log :> es) => Tool es
 userAvatarTool = Tool
   { name = "get_user_avatar"
-  , description = "Get avatar information for a platform user id. If user_id is omitted, this queries the sender of the current message."
+  , description = "Get avatar information for a platform user id and send the avatar image to the current chat."
   , parameters = objectSchema
-      [ fieldText "user_id" "Platform user id to query. Defaults to the current message sender. 0 is invalid."
+      [ fieldText "user_id" "Platform user id to query. Use get_current_message_info first when the target is the current sender or a mentioned user. 0 is invalid."
       ]
-      []
+      ["user_id"]
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs (userAvatarArgs context.message) args \userId -> do
@@ -219,7 +219,7 @@ avatarUrl =
   AesonTypes.parseMaybe $
     Aeson.withObject "user avatar" (Aeson..: Key.fromText "avatar_url")
 
-userAvatarResult :: Chat.Chat :> es => AgentContext es -> Aeson.Value -> Eff es ToolResult
+userAvatarResult :: (Chat.Chat :> es, Log :> es) => AgentContext es -> Aeson.Value -> Eff es ToolResult
 userAvatarResult context value =
   case avatarUrl value of
     Nothing ->
@@ -227,6 +227,7 @@ userAvatarResult context value =
     Just url -> do
       let body = ReplyBody.imageDirective url
       sent <- Chat.replyTo context.message body
+      logInfo_ [i|get_user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
       context.recordBotMessage sent body
       pure (toolMessageWithImages sent (jsonText value) [url])
 

@@ -395,8 +395,34 @@ llmRequestLogLine endpoint request =
     ]
 
 logLLMRequestMessages :: Log :> es => ChatCompletionRequest -> Eff es ()
-logLLMRequestMessages request =
+logLLMRequestMessages request = do
+  logTrace_ ("LLM request first message: " <> firstMessagePreview request.messages)
   logTrace_ ("LLM request messages: " <> jsonText request.messages)
+
+firstMessagePreview :: [ChatMessage] -> Text
+firstMessagePreview [] =
+  "<none>"
+firstMessagePreview (message : _) =
+  Text.unwords
+    [ "role=" <> message.role
+    , "content=" <> previewMessageContent message.content
+    ]
+
+previewMessageContent :: Maybe MessageContent -> Text
+previewMessageContent = \case
+  Nothing ->
+    "<none>"
+  Just (TextContent text) ->
+    previewText 500 text
+  Just (PartsContent parts) ->
+    previewText 500 (jsonText parts)
+
+previewText :: Int -> Text -> Text
+previewText maxChars text =
+  let oneLine = Text.unwords (Text.words text)
+  in if Text.length oneLine > maxChars
+    then Text.take maxChars oneLine <> "..."
+    else oneLine
 
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
