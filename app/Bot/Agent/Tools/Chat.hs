@@ -116,7 +116,7 @@ userAvatarTool = Tool
       ["user_id"]
   , allowed = everyone
   , start = \context -> pure \args ->
-      withParsedToolArgs (userAvatarArgs context.message) args \userId -> do
+      withParsedToolArgs userAvatarArgs args \userId -> do
         avatar <- Chat.getUserAvatar context.message userId
         case avatar of
           Nothing ->
@@ -179,18 +179,11 @@ mentionUserArgs =
     text <- o Aeson..: Key.fromText "text"
     pure (userId, text)
 
-userAvatarArgs :: IncomingMessage -> Aeson.Value -> AesonTypes.Parser Text
-userAvatarArgs message =
-  Aeson.withObject "user avatar arguments" $ \o ->
-    o Aeson..:? Key.fromText "user_id" >>= \case
-      Just value ->
-        validateUserId =<< parseUserIdValue value
-      Nothing ->
-        case currentSenderAvatarId message of
-          Just userId ->
-            validateUserId userId
-          _ ->
-            fail "user_id is required when the current message has no non-zero sender id."
+userAvatarArgs :: Aeson.Value -> AesonTypes.Parser Text
+userAvatarArgs =
+  Aeson.withObject "user avatar arguments" $ \o -> do
+    userId <- o Aeson..: Key.fromText "user_id"
+    validateUserId =<< parseUserIdValue userId
 
 parseUserIdValue :: Aeson.Value -> AesonTypes.Parser Text
 parseUserIdValue value =
@@ -205,14 +198,6 @@ validateUserId userId
       fail "user_id must not be 0."
   | otherwise =
       pure (Text.strip userId)
-
-currentSenderAvatarId :: IncomingMessage -> Maybe Text
-currentSenderAvatarId message =
-  case message.platform of
-    PlatformMatrix ->
-      message.senderUsername <|> message.senderId
-    _ ->
-      message.senderId
 
 avatarUrl :: Aeson.Value -> Maybe Text
 avatarUrl =

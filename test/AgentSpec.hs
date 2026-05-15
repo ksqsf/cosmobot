@@ -58,6 +58,7 @@ main =
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
+      , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
@@ -120,7 +121,7 @@ testUserAvatarToolQueriesChatEffect = do
         , "avatar_url" Aeson..= ("https://example.test/avatar.jpg" :: Text)
         ]
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "get_user_avatar" (Aeson.object [])]
+    [ chatAnswer "" [toolCall "call-1" "get_user_avatar" (Aeson.object ["user_id" Aeson..= ("200" :: Text)])]
     , chatAnswer "found" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -135,6 +136,19 @@ testUserAvatarToolQueriesChatEffect = do
   IORef.readIORef replies >>= (@?= ["[image] https://example.test/avatar.jpg"])
   IORef.readIORef recorded >>= (@?= [(Just 44, "[image] https://example.test/avatar.jpg")])
   IORef.readIORef remembered >>= (@?= [Just 44])
+
+testUserAvatarToolRequiresUserId :: IO ()
+testUserAvatarToolRequiresUserId = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "get_user_avatar" (Aeson.object [])]
+    , chatAnswer "rejected" []
+    ]
+  replies <- IORef.newIORef ([] :: [Text])
+  (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just 44) Nothing) do
+    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "avatar?")
+  answer @?= "rejected"
+  Text.unlines (toolOutputs conversation) @?= "Error in $: key \"user_id\" not found\n"
+  IORef.readIORef replies >>= (@?= [])
 
 testUserAvatarToolRejectsZeroUserId :: IO ()
 testUserAvatarToolRejectsZeroUserId = do
