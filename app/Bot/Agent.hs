@@ -19,6 +19,9 @@ module Bot.Agent
   , agentRunId
   , runPreparedAgentStreaming
   , ToolResult (..)
+  , toolText
+  , toolTextWithImages
+  , toolMessage
   , runAgent
   , runAgentStreaming
   , runAgentWith
@@ -54,6 +57,7 @@ import Bot.Core.Message (IncomingMessage (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Foldable as Foldable
+import qualified Data.Text as Text
 import Data.Unique (hashUnique, newUnique)
 import qualified Streaming.Prelude as S
 
@@ -229,19 +233,34 @@ continueWithToolCalls
   -> Eff es Conversation
 continueWithToolCalls program turn answered calls = do
   executions <- traverse (executeToolCall program turn) calls
-  let next = appendMessages (toList (fmap fst executions)) answered
-  traverse_ (\messageId -> program.agentRun.context.remember messageId next) (concatMap snd (toList executions))
+  let executionList = toList executions
+      next = appendMessages (map (\(resultMessage, _, _) -> resultMessage) executionList <> concatMap (\(_, imageMessages, _) -> imageMessages) executionList) answered
+  traverse_ (\messageId -> program.agentRun.context.remember messageId next) (concatMap (\(_, _, messageIds) -> messageIds) executionList)
   pure next
 
 -- | Run one tool call and convert failures into tool-visible text.
 --
 -- Tool failures must still produce a tool result message; otherwise the next
 -- LLM request would contain an assistant tool call without its required result.
-executeToolCall :: AgentProgram es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [Maybe Integer])
+executeToolCall :: AgentProgram es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], [Maybe Integer])
 executeToolCall program turn call = do
   result <- program.aroundToolCall turn call do
     ToolRegistry.runToolCall program.agentRun.context program.agentRun.tools program.agentRun.runningTools call
-  pure (LLM.toolResult call result.content, result.messageIds)
+  pure (LLM.toolResult call result.content, toolImageContextMessages call result, result.messageIds)
+
+toolImageContextMessages :: LLM.ToolCall -> ToolResult -> [LLM.ChatMessage]
+toolImageContextMessages call result =
+  [ LLM.userWithImages (toolImageContextText call result) result.imageUrls
+  | not (null result.imageUrls)
+  ]
+
+toolImageContextText :: LLM.ToolCall -> ToolResult -> Text
+toolImageContextText call result =
+  Text.strip [i|Image context returned by tool #{toolName}:
+#{toolContent}|]
+  where
+    toolName = call.name
+    toolContent = result.content
 
 -----------------------------------------------------------------------------------------
 -- * Completion

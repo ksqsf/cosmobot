@@ -15,6 +15,7 @@ module Bot.Agent.Types
   , ignoreAgentObserver
   , ToolResult (..)
   , toolText
+  , toolTextWithImages
   , toolMessage
   )
 where
@@ -143,13 +144,18 @@ ignoreAgentObserver =
 -- | Text returned to the LLM plus any bot message ids produced by a tool.
 data ToolResult = ToolResult
   { content    :: !Text
+  , imageUrls  :: ![Text]
   , messageIds :: ![Maybe Integer]
   }
 
 toolText :: Text -> ToolResult
 toolText content =
-  ToolResult content []
+  ToolResult content [] []
+
+toolTextWithImages :: Text -> [Text] -> ToolResult
+toolTextWithImages content imageUrls =
+  ToolResult content imageUrls []
 
 toolMessage :: Maybe Integer -> Text -> ToolResult
 toolMessage messageId content =
-  ToolResult content [messageId]
+  ToolResult content [] [messageId]

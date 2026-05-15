@@ -121,6 +121,7 @@ testUserAvatarToolQueriesChatEffect = do
     Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "avatar?")
   answer @?= "found"
   Text.unlines (toolOutputs conversation) @?= jsonText avatar <> "\n"
+  imageContextUrls conversation @?= ["https://example.test/avatar.jpg"]
 
 testTypstToImageToolRendersAndSendsImage :: IO ()
 testTypstToImageToolRendersAndSendsImage = do
@@ -246,10 +247,10 @@ fakeWebFetchTool fetches = Agent.Tool
       pure \_ -> do
         checkUseLimit >>= \case
           UseLimitReached currentUses ->
-            pure (Agent.ToolResult [i|web_fetch use limit reached for this agent run: #{currentUses}.|] [])
+            pure (Agent.toolText [i|web_fetch use limit reached for this agent run: #{currentUses}.|])
           UseAllowed -> do
             liftIO $ IORef.modifyIORef' fetches (+ 1)
-            pure (Agent.ToolResult "fetched" [])
+            pure (Agent.toolText "fetched")
   }
 
 testConversationRepliesKeepSnapshots :: IO ()
@@ -512,6 +513,15 @@ toolOutputs (Conversation messages) =
   | message <- Foldable.toList messages
   , message.role == "tool"
   , Just (LLM.TextContent text) <- [message.content]
+  ]
+
+imageContextUrls :: Conversation -> [Text]
+imageContextUrls (Conversation messages) =
+  [ url
+  | message <- Foldable.toList messages
+  , message.role == "user"
+  , Just (LLM.PartsContent parts) <- [message.content]
+  , LLM.ImageUrlPart url <- parts
   ]
 
 runAgentWith

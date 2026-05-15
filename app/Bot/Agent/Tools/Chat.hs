@@ -118,7 +118,11 @@ userAvatarTool = Tool
   , start = \context -> pure \args ->
       withParsedToolArgs (userAvatarArgs context.message.senderId) args \userId -> do
         avatar <- Chat.getUserAvatar context.message userId
-        pure (toolText (maybe "No avatar is available for this user on this platform." jsonText avatar))
+        pure case avatar of
+          Nothing ->
+            toolText "No avatar is available for this user on this platform."
+          Just value ->
+            toolTextWithImages (jsonText value) (maybeToList (avatarUrl value))
   }
 
 listGroupMembersTool :: Chat.Chat :> es => Tool es
@@ -164,6 +168,11 @@ userAvatarArgs senderId =
         pure userId
       Nothing ->
         maybe (fail "user_id is required when the current message has no sender id.") pure senderId
+
+avatarUrl :: Aeson.Value -> Maybe Text
+avatarUrl =
+  AesonTypes.parseMaybe $
+    Aeson.withObject "user avatar" (Aeson..: Key.fromText "avatar_url")
 
 sendReplyArgs :: Aeson.Value -> AesonTypes.Parser Text
 sendReplyArgs =
