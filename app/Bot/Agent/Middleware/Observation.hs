@@ -176,8 +176,8 @@ withObservedToolCall observer callInfo action = do
 
 statusFromResult :: ToolResult -> (Text, ToolResult)
 statusFromResult result
-  | "Tool " `Text.isPrefixOf` result.content && " failed: " `Text.isInfixOf` result.content =
-      ("failed", result)
+  | Just failure <- toolResultFailure result =
+      (agentFailureStatus failure, result)
   | otherwise =
       ("ok", result)
 
@@ -193,9 +193,9 @@ finishToolCall observer callInfo status result =
     , toolCallId = callInfo.toolCall.id
     , toolName = callInfo.toolCall.name
     , status = status
-    , result = result.content
-    , resultLength = Text.length result.content
-    , messageIds = result.messageIds
+    , result = toolResultContent result
+    , resultLength = Text.length (toolResultContent result)
+    , messageIds = toolResultMessageIds result
     }
 
 catchStream

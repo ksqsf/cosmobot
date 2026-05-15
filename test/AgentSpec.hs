@@ -75,6 +75,7 @@ main =
       , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
+      , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "chunked active conversation aliases every sent reply" testChunkedActiveConversationAliasesEverySentReply
@@ -364,6 +365,27 @@ testAgentAuditRecordsToolEvents = do
         other ->
           assertFailure ("expected finished tool use, got " <> show other)
       toolUse.result @?= Just "fetched"
+    _ ->
+      assertFailure [i|expected one tool use, got #{length toolUses}|]
+
+testAgentAuditRecordsStructuredToolFailureCategory :: IO ()
+testAgentAuditRecordsStructuredToolFailureCategory = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("echo nope" :: Text)])]
+    , chatAnswer "done" []
+    ]
+  toolUses <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    agentRun <- Agent.startAgentRun agentContext Agent.defaultTools
+    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun
+    _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program (startWithUser "run command"))
+    AgentAudit.queryRecentToolUses 10
+  case toolUses of
+    [toolUse] ->
+      case toolUse.status of
+        AgentAudit.ToolUseFinished{status} ->
+          status @?= "permission_denied"
+        other ->
+          assertFailure ("expected finished tool use, got " <> show other)
     _ ->
       assertFailure [i|expected one tool use, got #{length toolUses}|]
 

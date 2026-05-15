@@ -11,6 +11,7 @@ module Bot.Handler.Ask
 where
 
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Failure as AgentFailure
 import qualified Bot.Agent.Middleware.Observation as AgentObservation
 import Bot.Core.Conversation
 import qualified Bot.Effect.Chat as Chat
@@ -414,7 +415,7 @@ refreshActiveConversation activeState current = do
 
 llmFailureMessage :: SomeException -> Text
 llmFailureMessage err =
-  "LLM request failed: " <> LLM.llmExceptionSummary err
+  "LLM request failed: " <> (AgentFailure.agentFailureFromException err).userMessage
 
 drawConversation
   :: (LLM.LLM :> es, Log :> es)
@@ -423,7 +424,7 @@ drawConversation
 drawConversation conversation =
   LLM.askImageWithHistory (Foldable.toList conversation.messages) `catch` \(err :: SomeException) -> do
     logInfo_ [i|LLM image request failed: #{show err :: String}|]
-    pure ("Image generation failed: " <> LLM.llmExceptionSummary err)
+    pure ("Image generation failed: " <> (AgentFailure.agentFailureFromException err).userMessage)
 
 
 promptOrImageDefault :: Text -> [Text] -> Text

@@ -13,6 +13,9 @@ module Bot.Agent
   , AgentProgram
   , AgentRun
   , AgentResult (..)
+  , AgentFailureCategory (..)
+  , AgentFailure (..)
+  , AgentException (..)
   , ToolConfig (..)
   , WebSearchApi (..)
   , defaultToolConfig
@@ -24,6 +27,7 @@ module Bot.Agent
   , ToolResult (..)
   , toolText
   , toolTextWithImages
+  , toolFailure
   , toolMessage
   , toolMessageWithImages
   , runAgent
@@ -263,23 +267,24 @@ continueWithToolCalls program turn answered calls = do
   executions <- traverse (executeToolCall program turn) calls
   let executionList = toList executions
       next = appendMessages (map (\(resultMessage, _, _) -> resultMessage) executionList <> concatMap (\(_, imageMessages, _) -> imageMessages) executionList) answered
-  traverse_ (\messageId -> program.agentRun.context.remember messageId next) (concatMap (\(_, _, messageIds) -> messageIds) executionList)
+  traverse_ (\messageId -> program.agentRun.context.remember messageId next) (concatMap (\(_, _, result) -> toolResultMessageIds result) executionList)
   pure next
 
 -- | Run one tool call and convert failures into tool-visible text.
 --
 -- Tool failures must still produce a tool result message; otherwise the next
 -- LLM request would contain an assistant tool call without its required result.
-executeToolCall :: AgentProgram '[] es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], [Maybe Integer])
+executeToolCall :: AgentProgram '[] es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], ToolResult)
 executeToolCall program turn call = do
   result <- program.aroundToolCall turn call HList.HNil do
     ToolRegistry.runToolCall program.agentRun.context program.agentRun.tools program.agentRun.runningTools call
-  pure (LLM.toolResult call result.content, toolImageContextMessages call result, result.messageIds)
+  pure (LLM.toolResult call (toolResultContent result), toolImageContextMessages call result, result)
 
 toolImageContextMessages :: LLM.ToolCall -> ToolResult -> [LLM.ChatMessage]
 toolImageContextMessages call result =
-  [ LLM.userWithImages (toolImageContextText call result) result.imageUrls
-  | not (null result.imageUrls)
+  [ LLM.userWithImages (toolImageContextText call result) imageUrls
+  | let imageUrls = toolResultImageUrls result
+  , not (null imageUrls)
   ]
 
 toolImageContextText :: LLM.ToolCall -> ToolResult -> Text
@@ -288,7 +293,7 @@ toolImageContextText call result =
 #{toolContent}|]
   where
     toolName = call.name
-    toolContent = result.content
+    toolContent = toolResultContent result
 
 -----------------------------------------------------------------------------------------
 -- * Completion

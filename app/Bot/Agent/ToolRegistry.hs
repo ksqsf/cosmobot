@@ -52,13 +52,13 @@ runToolCall context tools runningTools call =
     Nothing ->
       case find ((== call.name) . (.name)) tools of
         Just tool | not (toolAllowed tool context) ->
-          pure (toolText [i|Permission denied for tool: #{callName}|])
+          pure (toolFailure (permissionDeniedFailure [i|Permission denied for tool: #{callName}|] [i|Tool #{callName} is not allowed in this agent context.|]).failure)
         _ ->
-          pure (toolText [i|Unknown tool: #{callName}|])
+          pure (toolFailure (permanentArgumentFailure [i|Unknown tool: #{callName}|] [i|The model requested an unknown tool: #{callName}|]).failure)
     Just tool ->
       case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 call.arguments) of
         Left err ->
-          pure (toolText [i|Invalid JSON arguments for #{callName}: #{err}|])
+          pure (toolFailure (permanentArgumentFailure [i|Invalid JSON arguments for #{callName}: #{err}|] [i|Invalid JSON arguments for #{callName}: #{err}|]).failure)
         Right args ->
           tool.run args
   where

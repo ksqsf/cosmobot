@@ -45,7 +45,10 @@ withParsedToolArgs
   -> (a -> Eff es ToolResult)
   -> Eff es ToolResult
 withParsedToolArgs parser args action =
-  either (pure . toolText . Text.pack) action (AesonTypes.parseEither parser args)
+  either (pure . argumentFailure . Text.pack) action (AesonTypes.parseEither parser args)
+  where
+    argumentFailure err =
+      toolFailure (permanentArgumentFailure err err).failure
 
 withTextArg :: Text -> (Text -> Eff es ToolResult) -> Aeson.Value -> Eff es ToolResult
 withTextArg key action args =

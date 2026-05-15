@@ -117,7 +117,10 @@ safeToolCall call action =
   action `catch` \(err :: SomeException) ->
     if isAsyncException err
       then throwIO err
-      else pure (toolText [i|Tool #{callName} failed: #{show err :: String}|])
+      else do
+        let failure = agentFailureFromException err
+            message = failure.userMessage
+        pure (toolFailure failure{userMessage = [i|Tool #{callName} failed: #{message}|]})
   where
     callName = call.name
 

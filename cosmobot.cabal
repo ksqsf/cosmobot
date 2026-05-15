@@ -124,6 +124,7 @@ common bot-agent-modules
         Bot.Agent
         Bot.Agent.Conversation
         Bot.Agent.Core
+        Bot.Agent.Failure
         Bot.Agent.Middleware.ContextCompaction
         Bot.Agent.Middleware.Observation
         Bot.Agent.Middleware.Observation.Types

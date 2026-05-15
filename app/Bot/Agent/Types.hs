@@ -8,6 +8,13 @@ module Bot.Agent.Types
   , AgentContext (..)
   , AgentEvent (..)
   , AgentObserver (..)
+  , AgentFailureCategory (..)
+  , AgentFailure (..)
+  , AgentException (..)
+  , agentFailureFromException
+  , agentFailureStatus
+  , permanentArgumentFailure
+  , permissionDeniedFailure
   , ToolConfig (..)
   , WebSearchApi (..)
   , defaultToolConfig
@@ -15,11 +22,17 @@ module Bot.Agent.Types
   , ToolResult (..)
   , toolText
   , toolTextWithImages
+  , toolFailure
   , toolMessage
   , toolMessageWithImages
+  , toolResultContent
+  , toolResultImageUrls
+  , toolResultMessageIds
+  , toolResultFailure
   )
 where
 
+import Bot.Agent.Failure
 import Bot.Core.Conversation
 import Bot.Core.Message
 import qualified Bot.Effect.LLM as LLM
@@ -143,25 +156,63 @@ ignoreAgentObserver :: ctx -> AgentObserver ctx es
 ignoreAgentObserver ctx =
   AgentObserver{observe = \_ -> pure ctx}
 
--- | Text returned to the LLM plus any bot message ids produced by a tool.
-data ToolResult = ToolResult
-  { content    :: !Text
-  , imageUrls  :: ![Text]
-  , messageIds :: ![Maybe Integer]
-  }
+-- | One tool call outcome. Failures are still returned as tool results because
+-- OpenAI-compatible history requires every requested tool call to have a
+-- corresponding tool-result message.
+data ToolResult
+  = ToolSucceeded
+      { content :: !Text
+      , imageUrls :: ![Text]
+      , messageIds :: ![Maybe Integer]
+      }
+  | ToolFailed
+      { failure :: !AgentFailure
+      }
 
 toolText :: Text -> ToolResult
 toolText content =
-  ToolResult content [] []
+  ToolSucceeded content [] []
 
 toolTextWithImages :: Text -> [Text] -> ToolResult
 toolTextWithImages content imageUrls =
-  ToolResult content imageUrls []
+  ToolSucceeded content imageUrls []
+
+toolFailure :: AgentFailure -> ToolResult
+toolFailure failure =
+  ToolFailed failure
 
 toolMessage :: Maybe Integer -> Text -> ToolResult
 toolMessage messageId content =
-  ToolResult content [] [messageId]
+  ToolSucceeded content [] [messageId]
 
 toolMessageWithImages :: Maybe Integer -> Text -> [Text] -> ToolResult
 toolMessageWithImages messageId content imageUrls =
-  ToolResult content imageUrls [messageId]
+  ToolSucceeded content imageUrls [messageId]
+
+toolResultContent :: ToolResult -> Text
+toolResultContent = \case
+  ToolSucceeded{content} ->
+    content
+  ToolFailed{failure} ->
+    failure.userMessage
+
+toolResultImageUrls :: ToolResult -> [Text]
+toolResultImageUrls = \case
+  ToolSucceeded{imageUrls} ->
+    imageUrls
+  ToolFailed{} ->
+    []
+
+toolResultMessageIds :: ToolResult -> [Maybe Integer]
+toolResultMessageIds = \case
+  ToolSucceeded{messageIds} ->
+    messageIds
+  ToolFailed{} ->
+    []
+
+toolResultFailure :: ToolResult -> Maybe AgentFailure
+toolResultFailure = \case
+  ToolSucceeded{} ->
+    Nothing
+  ToolFailed{failure} ->
+    Just failure
