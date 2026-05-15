@@ -147,6 +147,8 @@ common bot-agent-modules
         Bot.Effect.AgentAudit
         Bot.Effect.ChatLog
         Bot.Effect.LLM
+        Bot.Effect.LLM.Retry
+        Bot.Effect.LLM.Transport
         Bot.Effect.Memory
         Bot.Effect.Scheduler
         Bot.Effect.Skills
