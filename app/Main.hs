@@ -100,4 +100,5 @@ routes cfg conversations =
 runBotLog :: IOE :> es => LogLevel -> Eff (Log : es) a -> Eff es a
 runBotLog level inner = withStdOutLogger $ \logger ->
   runLog "cosmobot" logger level $ do
+    logInfo_ [i|Log level: #{show level :: String}|]
     logExceptions inner

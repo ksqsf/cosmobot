@@ -28,9 +28,9 @@ httpsEndpointUrl endpoint path = do
     Just (url, options) ->
       pure (foldl' (/:) url path, options)
 
-streamingJsonPostRequest :: Aeson.ToJSON body => Text -> [Text] -> Text -> body -> IO HTTP.Request
-streamingJsonPostRequest endpoint path apiKey body = do
-  base <- HTTP.parseRequest (Text.unpack (Text.dropWhileEnd (== '/') endpoint <> "/" <> Text.intercalate "/" path))
+streamingJsonPostRequest :: Aeson.ToJSON body => Text -> [Text] -> Text -> Int -> body -> IO HTTP.Request
+streamingJsonPostRequest endpoint path apiKey timeoutMicros body = do
+  base <- HTTP.parseRequest (Text.unpack (endpointText endpoint path))
   pure base
     { HTTP.method = "POST"
     , HTTP.requestHeaders =
@@ -38,5 +38,11 @@ streamingJsonPostRequest endpoint path apiKey body = do
         , ("Content-Type", "application/json")
         ]
     , HTTP.requestBody = HTTP.RequestBodyLBS (Aeson.encode body)
-    , HTTP.responseTimeout = HTTP.responseTimeoutNone
+    , HTTP.responseTimeout = HTTP.responseTimeoutMicro timeoutMicros
     }
+
+endpointText :: Text -> [Text] -> Text
+endpointText endpoint path =
+  case path of
+    [] -> Text.dropWhileEnd (== '/') endpoint
+    _  -> Text.dropWhileEnd (== '/') endpoint <> "/" <> Text.intercalate "/" path

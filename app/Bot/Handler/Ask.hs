@@ -444,12 +444,12 @@ startConversation cfg message prompt imageUrls = do
 currentMessageSystemPrompt :: AskHandlerConfig -> IncomingMessage -> Text
 currentMessageSystemPrompt cfg message =
   Text.unlines
-    [ "Current message context:"
+    [ "Current message:"
     , [i|- platform: #{platformText}|]
-    , [i|- bot_id: #{botIdText}|]
+    , [i|- bot_id: #{botIdText} (cosmobot's own platform user id)|]
     , [i|- chat_kind: #{kindText}|]
     , [i|- chat_id: #{chatIdText}|]
-    , [i|- sender_id: #{senderIdText}|]
+    , [i|- sender_id: #{senderIdText} (the platform user id of the user who sent this message)|]
     , [i|- sender_username: #{senderUsernameText}|]
     ]
   where

@@ -200,9 +200,10 @@ testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
       Agent.defaultTools
       (startWithSystemAndUser "base system prompt" "hello")
   requests <- IORef.readIORef captured
-  case viaNonEmpty head requests >>= viaNonEmpty head of
-    Just message -> do
+  case viaNonEmpty head requests of
+    Just (message : secondMessage : _) -> do
       message.role @?= "system"
+      assertBool "second request message is not system" (secondMessage.role /= "system")
       case message.content of
         Just (LLM.TextContent content) -> do
           assertBool "system context preserves configured prompt" ("base system prompt" `Text.isInfixOf` content)
@@ -210,8 +211,8 @@ testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
           assertBool "system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
         other ->
           assertFailure [i|expected text system content, got #{show other :: String}|]
-    Nothing ->
-      assertFailure "expected captured LLM request messages"
+    other ->
+      assertFailure [i|expected at least two captured LLM request messages, got #{show (requestRoles <$> other) :: String}|]
 
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds :: IO ()
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
@@ -222,18 +223,19 @@ testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
     liftIO $ waitUntil (not . null <$> IORef.readIORef captured)
   requests <- IORef.readIORef captured
-  case viaNonEmpty head requests >>= viaNonEmpty head of
-    Just message -> do
+  case viaNonEmpty head requests of
+    Just (message : secondMessage : _) -> do
       message.role @?= "system"
+      assertBool "second request message is not system" (secondMessage.role /= "system")
       case message.content of
         Just (LLM.TextContent content) -> do
           assertBool "ask handler system context preserves configured prompt" ("base system prompt" `Text.isInfixOf` content)
-          assertBool "ask handler system context contains configured bot id" ("- bot_id: 2044933066" `Text.isInfixOf` content)
-          assertBool "ask handler system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains configured bot id" ("- bot_id: 2044933066 (cosmobot's own platform user id)" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains sender id" ("- sender_id: 295947730 (the platform user id of the user who sent this message)" `Text.isInfixOf` content)
         other ->
           assertFailure [i|expected text system content, got #{show other :: String}|]
-    Nothing ->
-      assertFailure "expected captured ask-handler LLM request messages"
+    other ->
+      assertFailure [i|expected at least two captured ask-handler LLM request messages, got #{show (requestRoles <$> other) :: String}|]
 
 testAskHandlerSystemContextUsesMessageBotId :: IO ()
 testAskHandlerSystemContextUsesMessageBotId = do
@@ -246,17 +248,18 @@ testAskHandlerSystemContextUsesMessageBotId = do
     runHandlers (askHandlers Agent.defaultToolConfig cfg conversations) message
     liftIO $ waitUntil (not . null <$> IORef.readIORef captured)
   requests <- IORef.readIORef captured
-  case viaNonEmpty head requests >>= viaNonEmpty head of
-    Just message -> do
+  case viaNonEmpty head requests of
+    Just (message : secondMessage : _) -> do
       message.role @?= "system"
+      assertBool "second request message is not system" (secondMessage.role /= "system")
       case message.content of
         Just (LLM.TextContent content) -> do
-          assertBool "ask handler system context contains message bot id" ("- bot_id: 2044933066" `Text.isInfixOf` content)
-          assertBool "ask handler system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains message bot id" ("- bot_id: 2044933066 (cosmobot's own platform user id)" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains sender id" ("- sender_id: 295947730 (the platform user id of the user who sent this message)" `Text.isInfixOf` content)
         other ->
           assertFailure [i|expected text system content, got #{show other :: String}|]
-    Nothing ->
-      assertFailure "expected captured ask-handler LLM request messages"
+    other ->
+      assertFailure [i|expected at least two captured ask-handler LLM request messages, got #{show (requestRoles <$> other) :: String}|]
 
 testAgentAuditRecordsToolEvents :: IO ()
 testAgentAuditRecordsToolEvents = do
@@ -639,6 +642,10 @@ imageContextUrls (Conversation messages) =
   , Just (LLM.PartsContent parts) <- [message.content]
   , LLM.ImageUrlPart url <- parts
   ]
+
+requestRoles :: [LLM.ChatMessage] -> [Text]
+requestRoles =
+  map (.role)
 
 runAgentWith
   :: IORef.IORef [LLM.ChatAnswer]

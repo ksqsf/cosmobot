@@ -13,17 +13,21 @@ where
 import Bot.Util.Toml
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+import qualified Toml.Semantics.Types as TomlValue
 import Toml.Schema
 
 data FileConfig = FileConfig
-  { endpoint :: !Text
+  { baseUrl :: !Text
   , apiKey   :: !(Maybe Text)
   , model    :: !Text
   , reasoningEffort :: !Text
+  , requestTimeout :: !Int
   , imageGeneration :: !Bool
-  , imageGenerationEndpoint :: !(Maybe Text)
+  , imageGenerationApi :: !LLM.ImageGenerationApi
+  , imageGenerationBaseUrl :: !(Maybe Text)
   , imageGenerationApiKey :: !(Maybe Text)
   , imageGenerationModel :: !(Maybe Text)
+  , imageGenerationTimeout :: !Int
   , imageGenerationQuality :: !(Maybe Text)
   , imageGenerationSize :: !(Maybe Text)
   , imageGenerationAspectRatio :: !(Maybe Text)
@@ -34,35 +38,73 @@ data FileConfig = FileConfig
   }
   deriving (Show)
 
+newtype FileImageGenerationApi = FileImageGenerationApi
+  { toRuntimeImageGenerationApi :: LLM.ImageGenerationApi
+  }
+  deriving (Show)
+
 instance FromValue FileConfig where
-  fromValue = parseTableFromValue $ FileConfig
-    <$> fmap (fromMaybe LLM.defaultConfig.endpoint) (optKey "endpoint")
-    <*> optToken "api_key"
-    <*> reqKey "model"
-    <*> fmap (fromMaybe LLM.defaultConfig.reasoningEffort) (optKey "reasoning_effort")
-    <*> fmap (fromMaybe LLM.defaultConfig.imageGeneration) (optKey "image_generation")
-    <*> optKey "image_generation_endpoint"
-    <*> optToken "image_generation_api_key"
-    <*> optKey "image_generation_model"
-    <*> optKey "image_generation_quality"
-    <*> optKey "image_generation_size"
-    <*> optKey "image_generation_aspect_ratio"
-    <*> optKey "image_generation_background"
-    <*> optKey "image_generation_output_format"
-    <*> optKey "image_generation_output_compression"
-    <*> optKey "image_generation_moderation"
+  fromValue = parseTableFromValue do
+    baseUrl <- fmap (fromMaybe LLM.defaultConfig.baseUrl) (optKey "base_url")
+    apiKey <- optToken "api_key"
+    model <- reqKey "model"
+    reasoningEffort <- fmap (fromMaybe LLM.defaultConfig.reasoningEffort) (optKey "reasoning_effort")
+    requestTimeout <- fmap (fromMaybe LLM.defaultConfig.requestTimeout) (optKey "timeout")
+    imageGeneration <- fmap (fromMaybe LLM.defaultConfig.imageGeneration) (optKey "image_generation")
+    imageGenerationApiConfig <- (optKey "image_generation_api" :: ParseTable l (Maybe FileImageGenerationApi))
+    let imageGenerationApi =
+          maybe
+            LLM.defaultConfig.imageGenerationApi
+            (\FileImageGenerationApi{toRuntimeImageGenerationApi} -> toRuntimeImageGenerationApi)
+            imageGenerationApiConfig
+    imageGenerationBaseUrl <- optKey "image_generation_base_url"
+    imageGenerationApiKey <- optToken "image_generation_api_key"
+    imageGenerationModel <- optKey "image_generation_model"
+    imageGenerationTimeout <- fmap (fromMaybe LLM.defaultConfig.imageGenerationTimeout) (optKey "image_generation_timeout")
+    imageGenerationQuality <- optKey "image_generation_quality"
+    imageGenerationSize <- optKey "image_generation_size"
+    imageGenerationAspectRatio <- optKey "image_generation_aspect_ratio"
+    imageGenerationBackground <- optKey "image_generation_background"
+    imageGenerationOutputFormat <- optKey "image_generation_output_format"
+    imageGenerationOutputCompression <- optKey "image_generation_output_compression"
+    imageGenerationModeration <- optKey "image_generation_moderation"
+    when (requestTimeout <= 0) (fail "llm.timeout must be positive")
+    when (imageGenerationTimeout <= 0) (fail "llm.image_generation_timeout must be positive")
+    pure FileConfig
+      { baseUrl = baseUrl
+      , apiKey = apiKey
+      , model = model
+      , reasoningEffort = reasoningEffort
+      , requestTimeout = requestTimeout
+      , imageGeneration = imageGeneration
+      , imageGenerationApi = imageGenerationApi
+      , imageGenerationBaseUrl = imageGenerationBaseUrl
+      , imageGenerationApiKey = imageGenerationApiKey
+      , imageGenerationModel = imageGenerationModel
+      , imageGenerationTimeout = imageGenerationTimeout
+      , imageGenerationQuality = imageGenerationQuality
+      , imageGenerationSize = imageGenerationSize
+      , imageGenerationAspectRatio = imageGenerationAspectRatio
+      , imageGenerationBackground = imageGenerationBackground
+      , imageGenerationOutputFormat = imageGenerationOutputFormat
+      , imageGenerationOutputCompression = imageGenerationOutputCompression
+      , imageGenerationModeration = imageGenerationModeration
+      }
 
 toRuntimeConfig :: FileConfig -> LLM.Config
 toRuntimeConfig cfg =
   LLM.Config
-    { endpoint = cfg.endpoint
+    { baseUrl = cfg.baseUrl
     , apiKey = cfg.apiKey
     , model = cfg.model
     , reasoningEffort = cfg.reasoningEffort
+    , requestTimeout = cfg.requestTimeout
     , imageGeneration = cfg.imageGeneration
-    , imageGenerationEndpoint = cfg.imageGenerationEndpoint
+    , imageGenerationApi = cfg.imageGenerationApi
+    , imageGenerationBaseUrl = cfg.imageGenerationBaseUrl
     , imageGenerationApiKey = cfg.imageGenerationApiKey
     , imageGenerationModel = cfg.imageGenerationModel
+    , imageGenerationTimeout = cfg.imageGenerationTimeout
     , imageGenerationQuality = cfg.imageGenerationQuality
     , imageGenerationSize = cfg.imageGenerationSize
     , imageGenerationAspectRatio = cfg.imageGenerationAspectRatio
@@ -71,3 +113,13 @@ toRuntimeConfig cfg =
     , imageGenerationOutputCompression = cfg.imageGenerationOutputCompression
     , imageGenerationModeration = cfg.imageGenerationModeration
     }
+
+instance FromValue FileImageGenerationApi where
+  fromValue = \case
+    TomlValue.Text' _ value ->
+      case value of
+        "chat_completions" -> pure (FileImageGenerationApi LLM.ImageGenerationChatCompletions)
+        "images" -> pure (FileImageGenerationApi LLM.ImageGenerationImages)
+        _ -> fail "llm.image_generation_api must be \"chat_completions\" or \"images\""
+    _ ->
+      fail "llm.image_generation_api must be a string"
