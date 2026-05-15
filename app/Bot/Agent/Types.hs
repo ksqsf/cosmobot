@@ -72,6 +72,7 @@ data Tool es = Tool
 data AgentContext es = AgentContext
   { message :: IncomingMessage
   , superuser :: !Bool
+  , systemContext :: !Text
   , askCommand :: !Text
   , toolConfig :: !ToolConfig
   , remember :: Maybe Integer -> Conversation -> Eff es ()

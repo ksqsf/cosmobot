@@ -230,7 +230,7 @@ continueConversation toolCfg cfg conversations message parentKey conversation = 
   logTrace "continuing conversation" message
   logInfo_ [i|continuing conversation: #{incomingMessageLogLine message}|]
   let nextConversation =
-        appendSystemAndUserContext (currentMessageSystemPrompt cfg message) (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
+        appendUserContext (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
   threadId <- liftIO myThreadId
   void $ askConversation toolCfg cfg conversations (Just parentKey) threadId message nextConversation
 
@@ -271,6 +271,7 @@ agentContext toolCfg cfg conversations parentMessageKey message =
   Agent.AgentContext
     { message = message
     , superuser = isSuperuser message
+    , systemContext = currentMessageSystemPrompt cfg message
     , askCommand = cfg.command
     , toolConfig = toolCfg
     , remember = \messageId -> rememberConversationFrom conversations parentMessageKey (conversationMessageKey message <$> messageId)
@@ -437,7 +438,7 @@ startConversation :: Memory.Memory :> es => AskHandlerConfig -> IncomingMessage 
 startConversation cfg message prompt imageUrls = do
   senderMemory <- loadScopedMemory (MemoryStore.senderMemoryScope message)
   chatMemory <- loadScopedMemory (MemoryStore.chatMemoryScope message)
-  let systemPrompt = Text.intercalate "\n\n" (filter (not . Text.null) [LLM.memorySystemPrompt cfg.systemPrompt senderMemory chatMemory, currentMessageSystemPrompt cfg message])
+  let systemPrompt = LLM.memorySystemPrompt cfg.systemPrompt senderMemory chatMemory
   pure (startWithSystemAndUserContext systemPrompt prompt imageUrls)
 
 currentMessageSystemPrompt :: AskHandlerConfig -> IncomingMessage -> Text

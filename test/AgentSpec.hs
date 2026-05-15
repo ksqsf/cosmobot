@@ -659,6 +659,7 @@ agentContext =
   Agent.AgentContext
     { message = testMessage
     , superuser = False
+    , systemContext = ""
     , askCommand = "!ask"
     , toolConfig = Agent.defaultToolConfig
     , remember = \_ _ -> pure ()

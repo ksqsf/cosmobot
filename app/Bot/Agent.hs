@@ -58,6 +58,7 @@ import Bot.Core.Message (IncomingMessage (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Foldable as Foldable
+import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import Data.Unique (hashUnique, newUnique)
 import qualified Streaming.Prelude as S
@@ -218,7 +219,14 @@ askNext
 askNext agentRun agentState =
   LLM.askWithToolsStreaming
     (map toolSchema agentRun.exposedTools)
-    (Foldable.toList agentState.conversation.messages)
+    (agentRequestMessages agentRun.context agentState.conversation)
+
+agentRequestMessages :: AgentContext es -> Conversation -> [LLM.ChatMessage]
+agentRequestMessages context (Conversation messages)
+  | Text.null (Text.strip context.systemContext) =
+      Foldable.toList messages
+  | otherwise =
+      Foldable.toList (LLM.systemText context.systemContext Seq.<| messages)
 
 -----------------------------------------------------------------------------------------
 -- * Tool execution
