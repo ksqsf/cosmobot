@@ -30,6 +30,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Unique
+import qualified Network.HTTP.Client as HTTP
 import qualified Streaming.Prelude as S
 import System.Directory
 import System.FilePath
@@ -89,6 +90,7 @@ main =
       , testCase "memory tool enforces non-superuser length limit" testMemoryToolEnforcesLengthLimit
       , testCase "run_bash captures stdout and stderr" testRunBashCapturesStdoutAndStderr
       , testCase "run_bash kills timed out process" testRunBashKillsTimedOutProcess
+      , testCase "LLM response timeout summary is concise" testLLMResponseTimeoutSummaryIsConcise
       ]
 
 testScheduleToolCreatesQueryableSchedule :: IO ()
@@ -658,6 +660,12 @@ testRunBashKillsTimedOutProcess = do
   let output = Text.unlines (toolOutputs conversation)
   assertBool ("timeout is reported in: " <> Text.unpack output) ("Script timed out after 1 seconds and was killed." `Text.isInfixOf` output)
   assertBool ("post-timeout output is not included in: " <> Text.unpack output) (not ("late" `Text.isInfixOf` output))
+
+testLLMResponseTimeoutSummaryIsConcise :: IO ()
+testLLMResponseTimeoutSummaryIsConcise = do
+  request <- HTTP.parseRequest "https://api.example.test/v1/chat/completions"
+  let err = toException (HTTP.HttpExceptionRequest request HTTP.ResponseTimeout)
+  LLM.llmExceptionSummary err @?= "ResponseTimeout"
 
 withMemoryTempDir :: (FilePath -> IO a) -> IO a
 withMemoryTempDir action = do

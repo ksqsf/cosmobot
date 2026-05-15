@@ -414,9 +414,7 @@ refreshActiveConversation activeState current = do
 
 llmFailureMessage :: SomeException -> Text
 llmFailureMessage err =
-  case Exception.fromException err of
-    Just (LLM.LLMException message) -> message
-    Nothing -> "LLM request failed."
+  "LLM request failed: " <> LLM.llmExceptionSummary err
 
 drawConversation
   :: (LLM.LLM :> es, Log :> es)
@@ -425,7 +423,7 @@ drawConversation
 drawConversation conversation =
   LLM.askImageWithHistory (Foldable.toList conversation.messages) `catch` \(err :: SomeException) -> do
     logInfo_ [i|LLM image request failed: #{show err :: String}|]
-    pure "Image generation failed."
+    pure ("Image generation failed: " <> LLM.llmExceptionSummary err)
 
 
 promptOrImageDefault :: Text -> [Text] -> Text

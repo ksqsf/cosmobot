@@ -17,6 +17,7 @@ module Bot.Effect.LLM
   , runLLM
   , runLLMWith
   , LLMException (..)
+  , llmExceptionSummary
 
     -- * Configuration
   , Config (..)
@@ -45,6 +46,7 @@ import Bot.Prelude hiding (ask)
 import qualified Bot.Util.Image as Image
 import qualified Bot.Core.ReplyBody as ReplyBody
 import qualified Bot.Util.HTTP as Http
+import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as AesonTypes
@@ -227,23 +229,24 @@ askOpenAI cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} 
         , imageConfig = Nothing
         , stream = Nothing
         }
-  logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
-  logLLMRequestMessages request
-  (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-  response <- liftIO $ runReq defaultHttpConfig $
-    req POST
-      url
-      (ReqBodyJson request)
-      jsonResponse
-      ( options
-          <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
-          <> requestTimeoutOption
-      )
-  let body = responseBody response
-  logInfo_ ("LLM response: " <> llmResponseLogLine requestEndpoint model body)
-  case chatCompletionText body of
-    Just answer -> pure answer
-    Nothing     -> throwIO (LLMException [i|OpenAI response had no text choices: #{show body :: String}|])
+  retryLLMRequest "LLM request" do
+    logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
+    logLLMRequestMessages request
+    (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
+    response <- liftIO $ runReq defaultHttpConfig $
+      req POST
+        url
+        (ReqBodyJson request)
+        jsonResponse
+        ( options
+            <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
+            <> requestTimeoutOption
+        )
+    let body = responseBody response
+    logInfo_ ("LLM response: " <> llmResponseLogLine requestEndpoint model body)
+    case chatCompletionText body of
+      Just answer -> pure answer
+      Nothing     -> throwIO (LLMException "OpenAI response was empty: no text or image output.")
 
 askImageOpenAI :: (IOE :> es, Log :> es) => Config -> [ChatMessage] -> Eff es Text
 askImageOpenAI cfg@Config{imageGeneration, imageGenerationApi} messages
@@ -273,23 +276,24 @@ askImageChatCompletionsOpenAI cfg@Config{apiKey, imageGenerationBaseUrl, imageGe
             , imageConfig = imageGenerationConfig cfg
             , stream = Nothing
             }
-      logInfo_ ("LLM image chat request: " <> llmRequestLogLine requestEndpoint request)
-      logLLMRequestMessages request
-      (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-      response <- liftIO $ runReq defaultHttpConfig $
-        req POST
-          url
-          (ReqBodyJson request)
-          jsonResponse
-          ( options
-              <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
-              <> responseTimeout (secondsToMicros imageGenerationTimeout)
-          )
-      let body = responseBody response
-      logInfo_ ("LLM image chat response: " <> llmResponseLogLine requestEndpoint requestModel body)
-      case chatCompletionText body of
-        Just answer -> compressImageAnswer (imageCompressionConfig cfg) answer
-        Nothing -> throwIO (LLMException [i|OpenAI image chat response had no images: #{show body :: String}|])
+      retryLLMRequest "LLM image chat request" do
+        logInfo_ ("LLM image chat request: " <> llmRequestLogLine requestEndpoint request)
+        logLLMRequestMessages request
+        (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
+        response <- liftIO $ runReq defaultHttpConfig $
+          req POST
+            url
+            (ReqBodyJson request)
+            jsonResponse
+            ( options
+                <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
+                <> responseTimeout (secondsToMicros imageGenerationTimeout)
+            )
+        let body = responseBody response
+        logInfo_ ("LLM image chat response: " <> llmResponseLogLine requestEndpoint requestModel body)
+        case chatCompletionText body of
+          Just answer -> compressImageAnswer (imageCompressionConfig cfg) answer
+          Nothing -> throwIO (LLMException "OpenAI image chat response was empty: no text or image output.")
   where
     requestApiKey = imageGenerationApiKey <|> apiKey
 
@@ -304,22 +308,23 @@ askImageGenerationsOpenAI cfg@Config{apiKey, imageGenerationBaseUrl, imageGenera
           requestEndpoint = endpointText requestBaseUrl requestPath
           requestModel = fromMaybe cfg.model imageGenerationModel
           request = imageGenerationRequest cfg requestModel (imagePromptFromMessages messages)
-      logInfo_ ("LLM image request: " <> imageRequestLogLine requestEndpoint imageGenerationTimeout request)
-      (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-      response <- liftIO $ runReq defaultHttpConfig $
-        req POST
-          url
-          (ReqBodyJson request)
-          jsonResponse
-          ( options
-              <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
-              <> responseTimeout (secondsToMicros imageGenerationTimeout)
-          )
-      let body = responseBody response
-      logInfo_ ("LLM image response: " <> imageResponseLogLine requestEndpoint request.model body)
-      case imageGenerationResponseText cfg body of
-        Just answer -> pure answer
-        Nothing -> throwIO (LLMException [i|Image generation response had no images: #{show body :: String}|])
+      retryLLMRequest "LLM image request" do
+        logInfo_ ("LLM image request: " <> imageRequestLogLine requestEndpoint imageGenerationTimeout request)
+        (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
+        response <- liftIO $ runReq defaultHttpConfig $
+          req POST
+            url
+            (ReqBodyJson request)
+            jsonResponse
+            ( options
+                <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
+                <> responseTimeout (secondsToMicros imageGenerationTimeout)
+            )
+        let body = responseBody response
+        logInfo_ ("LLM image response: " <> imageResponseLogLine requestEndpoint request.model body)
+        case imageGenerationResponseText cfg body of
+          Just answer -> pure answer
+          Nothing -> throwIO (LLMException "Image generation response was empty: no image output.")
   where
     requestApiKey = imageGenerationApiKey <|> apiKey
 
@@ -337,21 +342,22 @@ askOpenAIWithTools cfg@Config{apiKey = Just key, model, reasoningEffort, request
         , imageConfig = Nothing
         , stream = Nothing
         }
-  logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
-  logLLMRequestMessages request
-  (url, options) <- liftIO (Http.httpsEndpointUrl cfg.baseUrl chatCompletionsPath)
-  response <- liftIO $ runReq defaultHttpConfig $
-    req POST
-      url
-      (ReqBodyJson request)
-      jsonResponse
-      ( options
-          <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
-          <> responseTimeout (secondsToMicros requestTimeout)
-      )
-  let body = responseBody response
-  logInfo_ ("LLM response: " <> llmResponseLogLine requestEndpoint model body)
-  pure (chatCompletionAnswer body)
+  retryLLMRequest "LLM request" do
+    logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
+    logLLMRequestMessages request
+    (url, options) <- liftIO (Http.httpsEndpointUrl cfg.baseUrl chatCompletionsPath)
+    response <- liftIO $ runReq defaultHttpConfig $
+      req POST
+        url
+        (ReqBodyJson request)
+        jsonResponse
+        ( options
+            <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
+            <> responseTimeout (secondsToMicros requestTimeout)
+        )
+    let body = responseBody response
+    logInfo_ ("LLM response: " <> llmResponseLogLine requestEndpoint model body)
+    validateChatAnswer (chatCompletionAnswer body)
 
 askOpenAIStreaming
   :: (IOE :> es, Log :> es)
@@ -374,13 +380,15 @@ askOpenAIStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, request
         , imageConfig = Nothing
         , stream = Just True
         }
-  logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
-  logLLMRequestMessages request
-  streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request \stream ->
-    consume do
-      answer <- stream
-      lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
-      pure (chatAnswerContent answer)
+  retryLLMRequest "LLM streaming request" do
+    logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
+    logLLMRequestMessages request
+    streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request \stream ->
+      consume do
+        answer <- stream
+        checked <- lift (validateChatAnswer answer)
+        lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model checked)
+        pure (chatAnswerContent checked)
 
 askOpenAIWithToolsStreaming
   :: (IOE :> es, Log :> es)
@@ -404,17 +412,101 @@ askOpenAIWithToolsStreaming cfg@Config{apiKey = Just key, model, reasoningEffort
         , imageConfig = Nothing
         , stream = Just True
         }
-  logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
-  logLLMRequestMessages request
-  streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request \stream ->
-    consume do
-      answer <- stream
-      lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
-      pure answer
+  retryLLMRequest "LLM streaming request" do
+    logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
+    logLLMRequestMessages request
+    streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request \stream ->
+      consume do
+        answer <- stream
+        checked <- lift (validateChatAnswer answer)
+        lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model checked)
+        pure checked
 
 newtype LLMException = LLMException Text
   deriving (Show)
 instance Exception LLMException
+
+llmExceptionSummary :: SomeException -> Text
+llmExceptionSummary err =
+  case Exception.fromException err of
+    Just (LLMException message) ->
+      message
+    Nothing ->
+      case Exception.fromException err of
+        Just httpErr ->
+          httpExceptionSummary httpErr
+        Nothing ->
+          Text.pack (Exception.displayException err)
+
+httpExceptionSummary :: HTTP.HttpException -> Text
+httpExceptionSummary = \case
+  HTTP.HttpExceptionRequest _ content ->
+    httpExceptionContentSummary content
+  HTTP.InvalidUrlException _ reason ->
+    "InvalidUrlException: " <> Text.pack reason
+
+httpExceptionContentSummary :: HTTP.HttpExceptionContent -> Text
+httpExceptionContentSummary = \case
+  HTTP.ResponseTimeout ->
+    "ResponseTimeout"
+  HTTP.ConnectionTimeout ->
+    "ConnectionTimeout"
+  HTTP.ConnectionFailure err ->
+    "ConnectionFailure: " <> Text.pack (Exception.displayException err)
+  HTTP.NoResponseDataReceived ->
+    "NoResponseDataReceived"
+  HTTP.ConnectionClosed ->
+    "ConnectionClosed"
+  content ->
+    Text.pack (show content)
+
+maxLLMRequestAttempts :: Int
+maxLLMRequestAttempts =
+  3
+
+retryLLMRequest :: (IOE :> es, Log :> es) => Text -> Eff es a -> Eff es a
+retryLLMRequest label action =
+  go (1 :: Int)
+  where
+    go attempt =
+      action `catch` \(err :: SomeException) ->
+        if attempt < maxLLMRequestAttempts && retryableLLMFailure err
+          then do
+            logAttention_ [i|#{label} failed with #{llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
+            go (attempt + 1)
+          else
+            throwIO err
+
+retryableLLMFailure :: SomeException -> Bool
+retryableLLMFailure err =
+  retryableHTTPFailure err || retryableEmptyResponse err
+
+retryableHTTPFailure :: SomeException -> Bool
+retryableHTTPFailure err =
+  case Exception.fromException err of
+    Just (HTTP.HttpExceptionRequest _ HTTP.ResponseTimeout) ->
+      True
+    Just (HTTP.HttpExceptionRequest _ HTTP.ConnectionTimeout) ->
+      True
+    _ ->
+      False
+
+retryableEmptyResponse :: SomeException -> Bool
+retryableEmptyResponse err =
+  case Exception.fromException err of
+    Just (LLMException message) ->
+      "empty" `Text.isInfixOf` Text.toLower message
+    Nothing ->
+      False
+
+validateChatAnswer :: IOE :> es => ChatAnswer -> Eff es ChatAnswer
+validateChatAnswer answer =
+  case answer of
+    ChatFinalAnswer{content}
+      | Text.null (Text.strip content) ->
+          throwIO (LLMException "OpenAI response was empty: no text, image, or tool call output.")
+    _ ->
+      pure answer
 
 data ChatCompletionRequest = ChatCompletionRequest
   { model       :: !Text
