@@ -10,6 +10,7 @@ module Bot.Agent.Tools.Chat
   , mentionUserTool
   , senderMemberInfoTool
   , memberInfoTool
+  , userAvatarTool
   , listGroupMembersTool
   , currentMentionsTool
   )
@@ -105,6 +106,21 @@ memberInfoTool = Tool
       ) args
   }
 
+userAvatarTool :: Chat.Chat :> es => Tool es
+userAvatarTool = Tool
+  { name = "get_user_avatar"
+  , description = "Get avatar information for a platform user id. If user_id is omitted, this queries the sender of the current message."
+  , parameters = objectSchema
+      [ fieldInteger "user_id" "Platform user id to query. Defaults to the current message sender."
+      ]
+      []
+  , allowed = everyone
+  , start = \context -> pure \args ->
+      withParsedToolArgs (userAvatarArgs context.message.senderId) args \userId -> do
+        avatar <- Chat.getUserAvatar context.message userId
+        pure (toolText (maybe "No avatar is available for this user on this platform." jsonText avatar))
+  }
+
 listGroupMembersTool :: Chat.Chat :> es => Tool es
 listGroupMembersTool = Tool
   { name = "list_group_members"
@@ -139,6 +155,15 @@ mentionUserArgs =
     userId <- o Aeson..: Key.fromText "user_id"
     text <- o Aeson..: Key.fromText "text"
     pure (userId, text)
+
+userAvatarArgs :: Maybe Integer -> Aeson.Value -> AesonTypes.Parser Integer
+userAvatarArgs senderId =
+  Aeson.withObject "user avatar arguments" $ \o ->
+    o Aeson..:? Key.fromText "user_id" >>= \case
+      Just userId ->
+        pure userId
+      Nothing ->
+        maybe (fail "user_id is required when the current message has no sender id.") pure senderId
 
 sendReplyArgs :: Aeson.Value -> AesonTypes.Parser Text
 sendReplyArgs =

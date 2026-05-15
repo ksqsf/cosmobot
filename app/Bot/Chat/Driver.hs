@@ -118,6 +118,15 @@ getPlatformMemberInfo message userId =
   withPlatformDriver message "fetch member info" \driver ->
     driver.getMemberInfo message userId
 
+getPlatformUserAvatar
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  => IncomingMessage
+  -> Integer
+  -> Eff es (Maybe Aeson.Value)
+getPlatformUserAvatar message userId =
+  withPlatformDriver message "fetch user avatar" \driver ->
+    driver.getUserAvatar message userId
+
 listPlatformGroupMembers
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
   => IncomingMessage
@@ -169,6 +178,7 @@ chatHandlers = Chat.ChatHandlers
   , handleGetMessageContent = getPlatformMessageContent
   , handleGetSenderMemberInfo = getPlatformSenderMemberInfo
   , handleGetMemberInfo = getPlatformMemberInfo
+  , handleGetUserAvatar = getPlatformUserAvatar
   , handleListGroupMembers = listPlatformGroupMembers
   , handleMentionUser = mentionPlatformUser
   }

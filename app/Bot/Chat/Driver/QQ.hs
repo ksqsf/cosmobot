@@ -22,6 +22,7 @@ module Bot.Chat.Driver.QQ
   , readActionResponse
   , replyTo
   , getMessageContent
+  , getUserAvatar
   , getGroupMemberInfo
   , getGroupMemberList
   , mentionUser
@@ -88,6 +89,12 @@ qqDriver = Driver.ChatPlatformDriver
       case (message.kind, message.chatId) of
         (ChatGroup, Just groupId) ->
           getGroupMemberInfo groupId userId
+        _ ->
+          pure Nothing
+  , Driver.getUserAvatar = \message userId ->
+      case message.platform of
+        PlatformQQ ->
+          pure (Just (getUserAvatar userId))
         _ ->
           pure Nothing
   , Driver.listGroupMembers = \message ->
@@ -517,6 +524,19 @@ getGroupMemberList groupId =
         , "no_cache" Aeson..= False
         ]
     ])
+
+-- | Return a stable QQ avatar URL for a user id.
+getUserAvatar :: Integer -> Aeson.Value
+getUserAvatar userId =
+  Aeson.object
+    [ "platform" Aeson..= ("qq" :: Text)
+    , "user_id" Aeson..= userId
+    , "avatar_url" Aeson..= qqAvatarUrl userId
+    ]
+
+qqAvatarUrl :: Integer -> Text
+qqAvatarUrl userId =
+  [i|https://q1.qlogo.cn/g?b=qq&nk=#{userId}&s=640|]
 
 referencedWithText :: ReferencedMessage -> Text -> ReferencedMessage
 referencedWithText ReferencedMessage{messageId, senderDisplayName, senderIdentifier, imageUrls} text =

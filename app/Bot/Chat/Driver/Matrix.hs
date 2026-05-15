@@ -61,6 +61,7 @@ matrixDriver = Driver.ChatPlatformDriver
   , Driver.getMessageContent = \_ _ -> pure Nothing
   , Driver.getSenderMemberInfo = \_ -> pure Nothing
   , Driver.getMemberInfo = \_ _ -> pure Nothing
+  , Driver.getUserAvatar = \_ _ -> pure Nothing
   , Driver.listGroupMembers = \_ -> pure Nothing
   , Driver.mentionUser = \_ _ _ -> pure Nothing
   }

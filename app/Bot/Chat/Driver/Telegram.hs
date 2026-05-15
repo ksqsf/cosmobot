@@ -44,6 +44,7 @@ module Bot.Chat.Driver.Telegram
   , banChatMember
   , unbanChatMember
   , leaveChat
+  , getUserAvatar
   , mentionUser
   )
 where
@@ -103,6 +104,12 @@ telegramDriver = Driver.ChatPlatformDriver
       case (message.kind, message.chatId) of
         (ChatGroup, Just chatId) ->
           Just . Aeson.toJSON <$> getChatMember chatId userId
+        _ ->
+          pure Nothing
+  , Driver.getUserAvatar = \message userId ->
+      case message.platform of
+        PlatformTelegram ->
+          getUserAvatar userId
         _ ->
           pure Nothing
   , Driver.listGroupMembers = \_ ->
@@ -332,7 +339,11 @@ messageImageFileIds message =
 
 largestPhotoFileId :: [PhotoSize] -> Maybe Text
 largestPhotoFileId =
-  fmap (.fileId) . viaNonEmpty largest
+  fmap (.fileId) . largestPhoto
+
+largestPhoto :: [PhotoSize] -> Maybe PhotoSize
+largestPhoto =
+  viaNonEmpty largest
   where
     largest photos =
       let MaxPhotoSize photo = sconcat (fmap MaxPhotoSize photos)
@@ -846,6 +857,34 @@ instance TelegramRequest GetFileRequest where
   type TelegramResponse GetFileRequest = File
   telegramMethod _ = "getFile"
 
+data GetUserProfilePhotosRequest = GetUserProfilePhotosRequest
+  { userId :: !Integer
+  , offset :: !(Maybe Int)
+  , limit  :: !(Maybe Int)
+  } deriving (Show, Generic)
+
+instance Aeson.ToJSON GetUserProfilePhotosRequest where
+  toJSON GetUserProfilePhotosRequest{..} = Aeson.object $
+    [ "user_id" Aeson..= userId
+    ]
+    <> maybeField "offset" offset
+    <> maybeField "limit" limit
+
+instance TelegramRequest GetUserProfilePhotosRequest where
+  type TelegramResponse GetUserProfilePhotosRequest = UserProfilePhotos
+  telegramMethod _ = "getUserProfilePhotos"
+
+data UserProfilePhotos = UserProfilePhotos
+  { totalCount :: !Integer
+  , photos     :: ![[PhotoSize]]
+  } deriving (Show, Generic)
+
+instance Aeson.FromJSON UserProfilePhotos where
+  parseJSON = Aeson.withObject "UserProfilePhotos" $ \o -> do
+    totalCount <- o Aeson..: "total_count"
+    photos <- o Aeson..: "photos"
+    pure UserProfilePhotos{..}
+
 data File = File
   { fileId       :: !Text
   , fileUniqueId :: !Text
@@ -1326,3 +1365,25 @@ unbanChatMember chatId userId =
 leaveChat :: Telegram :> es => Integer -> Eff es Bool
 leaveChat chatId =
   callTelegram $ LeaveChatRequest{..}
+
+-- | Fetch the latest Telegram profile photo for a user id.
+getUserAvatar :: Telegram :> es => Integer -> Eff es (Maybe Aeson.Value)
+getUserAvatar userId = do
+  profilePhotos <- callTelegram GetUserProfilePhotosRequest
+    { userId = userId
+    , offset = Nothing
+    , limit = Just 1
+    }
+  case profilePhotos.photos >>= maybeToList . largestPhoto of
+    [] ->
+      pure Nothing
+    photo : _ -> do
+      avatarUrl <- fileUrl photo.fileId
+      pure $ Just $ Aeson.object
+        [ "platform" Aeson..= ("telegram" :: Text)
+        , "user_id" Aeson..= userId
+        , "avatar_url" Aeson..= avatarUrl
+        , "file_id" Aeson..= photo.fileId
+        , "width" Aeson..= photo.width
+        , "height" Aeson..= photo.height
+        ]

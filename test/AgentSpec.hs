@@ -45,6 +45,7 @@ type AgentStack =
 data ChatMock = ChatMock
   { replies :: !(Maybe (IORef.IORef [Text]))
   , replyId :: !(Maybe Integer)
+  , userAvatar :: !(Maybe Aeson.Value)
   }
 
 main :: IO ()
@@ -53,6 +54,7 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
+      , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
@@ -78,7 +80,7 @@ testScheduleToolCreatesQueryableSchedule = do
     [ chatAnswer "" [toolCall "call-1" "schedule_agent_action" (Aeson.object ["delay_seconds" Aeson..= (60 :: Int), "prompt" Aeson..= ("check oven" :: Text)])]
     , chatAnswer "scheduled" []
     ]
-  (answer, schedules) <- runAgentWith answers (ChatMock Nothing Nothing) do
+  (answer, schedules) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     result <- Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "remind me")
     pending <- Scheduler.listScheduledMessages testMessage
     pure (fst result, pending)
@@ -97,12 +99,28 @@ testSendReplyToolUsesChatEffect = do
   replies <- IORef.newIORef ([] :: [Text])
   recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
   remembered <- IORef.newIORef ([] :: [Maybe Integer])
-  (answer, _) <- runAgentWith answers (ChatMock (Just replies) (Just 42)) do
+  (answer, _) <- runAgentWith answers (ChatMock (Just replies) (Just 42) Nothing) do
     Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "send it")
   answer @?= "sent"
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= [(Just 42, "hello\n[image] https://example.test/image.png")])
   IORef.readIORef remembered >>= (@?= [Just 42])
+
+testUserAvatarToolQueriesChatEffect :: IO ()
+testUserAvatarToolQueriesChatEffect = do
+  let avatar = Aeson.object
+        [ "platform" Aeson..= ("telegram" :: Text)
+        , "user_id" Aeson..= (200 :: Integer)
+        , "avatar_url" Aeson..= ("https://example.test/avatar.jpg" :: Text)
+        ]
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "get_user_avatar" (Aeson.object [])]
+    , chatAnswer "found" []
+    ]
+  (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing (Just avatar)) do
+    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "avatar?")
+  answer @?= "found"
+  Text.unlines (toolOutputs conversation) @?= jsonText avatar <> "\n"
 
 testTypstToImageToolRendersAndSendsImage :: IO ()
 testTypstToImageToolRendersAndSendsImage = do
@@ -115,7 +133,7 @@ testTypstToImageToolRendersAndSendsImage = do
   rendered <- IORef.newIORef ([] :: [Text])
   recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
   remembered <- IORef.newIORef ([] :: [Maybe Integer])
-  (answer, _) <- runAgentWithTypst rendered answers (ChatMock (Just replies) (Just 43)) do
+  (answer, _) <- runAgentWithTypst rendered answers (ChatMock (Just replies) (Just 43) Nothing) do
     Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "render typst")
   answer @?= "sent"
   IORef.readIORef rendered >>= (@?= [source])
@@ -130,7 +148,7 @@ testAgentAuditRecordsToolEvents = do
     , chatAnswer "done" []
     ]
   fetches <- IORef.newIORef (0 :: Int)
-  toolUses <- runAgentWith answers (ChatMock Nothing Nothing) do
+  toolUses <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     _ <- Agent.runAgentWith AgentAudit.agentAuditObserver 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches] (startWithUser "fetch it")
     AgentAudit.queryRecentToolUses 10
   case toolUses of
@@ -173,6 +191,7 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
         , handleGetMessageContent = noopFetch
         , handleGetSenderMemberInfo = noopSenderMember
         , handleGetMemberInfo = noopMember
+        , handleGetUserAvatar = noopUserAvatar
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
         } $
@@ -211,7 +230,7 @@ testWebFetchMaxUsesLimitsCalls = do
     , chatAnswer "done" []
     ]
   fetches <- IORef.newIORef (0 :: Int)
-  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing) do
+  (answer, _) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True, Agent.webFetchMaxUses = Just 1}}) [fakeWebFetchTool fetches] (startWithUser "fetch twice")
   answer @?= "done"
   IORef.readIORef fetches >>= (@?= 1)
@@ -356,7 +375,7 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
     , chatAnswer "" [toolCall "call-3" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
     , chatAnswer "done" []
     ]
-  (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing) do
+  (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 8 agentContext Agent.defaultTools (startWithUser "remember this")
   answer @?= "done"
   exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
@@ -370,7 +389,7 @@ testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
     , chatAnswer "" [toolCall "call-3" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
     , chatAnswer "done" []
     ]
-  (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing) do
+  (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 8 agentContext Agent.defaultTools (startWithUser "remember this chat")
   answer @?= "done"
   exists <- doesFileExist (dir </> "telegram" </> "chat" </> "100.md")
@@ -383,7 +402,7 @@ testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
     [ chatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
     , chatAnswer "rejected" []
     ]
-  (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing) do
+  (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "remember too much")
   answer @?= "rejected"
   exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
@@ -395,7 +414,7 @@ testRunBashCapturesStdoutAndStderr = do
     [ chatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("printf stdout; printf stderr >&2" :: Text), "timeout_seconds" Aeson..= (5 :: Int)])]
     , chatAnswer "done" []
     ]
-  (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing) do
+  (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 4 superuserContext Agent.defaultTools (startWithUser "run command")
   answer @?= "done"
   let output = Text.unlines (toolOutputs conversation)
@@ -409,7 +428,7 @@ testRunBashKillsTimedOutProcess = do
     [ chatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("sleep 2; printf late" :: Text), "timeout_seconds" Aeson..= (1 :: Int)])]
     , chatAnswer "done" []
     ]
-  (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing) do
+  (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 4 superuserContext Agent.defaultTools (startWithUser "run slow command")
   answer @?= "done"
   let output = Text.unlines (toolOutputs conversation)
@@ -565,6 +584,7 @@ runAgentWithMemoryAndTypst memoryCfg rendered answers chatMock action = do
                         , handleGetMessageContent = noopFetch
                         , handleGetSenderMemberInfo = noopSenderMember
                         , handleGetMemberInfo = noopMember
+                        , handleGetUserAvatar = mockUserAvatar chatMock
                         , handleListGroupMembers = noopMembers
                         , handleMentionUser = noopMention
                         }
@@ -657,6 +677,10 @@ noopMember :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
 noopMember _ _ =
   pure Nothing
 
+noopUserAvatar :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+noopUserAvatar _ _ =
+  pure Nothing
+
 noopMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
 noopMembers _ =
   pure Nothing
@@ -664,6 +688,10 @@ noopMembers _ =
 noopMention :: IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
 noopMention _ _ _ =
   pure Nothing
+
+mockUserAvatar :: ChatMock -> IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+mockUserAvatar ChatMock{userAvatar} _ _ =
+  pure userAvatar
 
 testMessage :: IncomingMessage
 testMessage =

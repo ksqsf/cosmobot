@@ -115,6 +115,7 @@ runScratchpad path replies incoming =
       , handleGetMessageContent = fetch
       , handleGetSenderMemberInfo = fetchSenderMember
       , handleGetMemberInfo = fetchMember
+      , handleGetUserAvatar = fetchUserAvatar
       , handleListGroupMembers = listMembers
       , handleMentionUser = mention
       } $
@@ -133,6 +134,8 @@ runScratchpad path replies incoming =
     fetchSenderMember _ =
       pure Nothing
     fetchMember _ _ =
+      pure Nothing
+    fetchUserAvatar _ _ =
       pure Nothing
     listMembers _ =
       pure Nothing

@@ -43,6 +43,7 @@ defaultTools =
   , mentionUserTool
   , senderMemberInfoTool
   , memberInfoTool
+  , userAvatarTool
   , listGroupMembersTool
   , currentMentionsTool
   , scheduleAgentActionTool

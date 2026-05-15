@@ -15,6 +15,7 @@ module Bot.Effect.Chat
   , getMessageContent
   , getSenderMemberInfo
   , getMemberInfo
+  , getUserAvatar
   , listGroupMembers
   , mentionUser
   , ChatHandlers (..)
@@ -59,6 +60,10 @@ data Chat :: Effect where
     :: IncomingMessage
     -> Chat m (Maybe Aeson.Value)
   GetMemberInfo
+    :: IncomingMessage
+    -> Integer
+    -> Chat m (Maybe Aeson.Value)
+  GetUserAvatar
     :: IncomingMessage
     -> Integer
     -> Chat m (Maybe Aeson.Value)
@@ -333,6 +338,11 @@ getMemberInfo :: Chat :> es => IncomingMessage -> Integer -> Eff es (Maybe Aeson
 getMemberInfo message userId =
   send (GetMemberInfo message userId)
 
+-- | Fetch avatar information for a platform user id.
+getUserAvatar :: Chat :> es => IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+getUserAvatar message userId =
+  send (GetUserAvatar message userId)
+
 -- | List group members when the platform exposes such an API.
 listGroupMembers :: Chat :> es => IncomingMessage -> Eff es (Maybe Aeson.Value)
 listGroupMembers message =
@@ -351,6 +361,7 @@ data ChatHandlers es = ChatHandlers
   , handleGetMessageContent :: IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
   , handleGetSenderMemberInfo :: IncomingMessage -> Eff es (Maybe Aeson.Value)
   , handleGetMemberInfo :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+  , handleGetUserAvatar :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
   , handleListGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
   , handleMentionUser :: IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
   }
@@ -372,6 +383,8 @@ runChatWith handlers = interpret $ \_ -> \case
     handlers.handleGetSenderMemberInfo message
   GetMemberInfo message userId ->
     handlers.handleGetMemberInfo message userId
+  GetUserAvatar message userId ->
+    handlers.handleGetUserAvatar message userId
   ListGroupMembers message ->
     handlers.handleListGroupMembers message
   MentionUser message userId body ->
