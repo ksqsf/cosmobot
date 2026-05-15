@@ -24,6 +24,7 @@ main =
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
+      , testCase "Telegram CommonMark formatting emits UTF-16 entities" testTelegramCommonMarkFormattingEmitsUtf16Entities
       , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
@@ -159,6 +160,18 @@ testTelegramReferencedMessageIncludesSenderIdentity = do
   (fetched <&> (.senderIdentifier)) @?= Just (Just "@bob")
   (fetched <&> (.text)) @?= Just "quoted"
 
+testTelegramCommonMarkFormattingEmitsUtf16Entities :: IO ()
+testTelegramCommonMarkFormattingEmitsUtf16Entities = do
+  let formatted = Telegram.formatTelegramMarkdown "**你👍あ** and [リンク](https://example.test) `值`"
+  formatted.formattedText @?= "你👍あ and リンク 值"
+  assertEntity formatted "bold" 0 4 Nothing Nothing
+  assertEntity formatted "text_link" 9 3 (Just "https://example.test") Nothing
+  assertEntity formatted "code" 13 1 Nothing Nothing
+
+  let pre = Telegram.formatTelegramMarkdown "```haskell\nmain = putStrLn \"こんにちは👍\"\n```"
+  pre.formattedText @?= "main = putStrLn \"こんにちは👍\""
+  assertEntity pre "pre" 0 25 Nothing (Just "haskell")
+
 testTelegramOkFalseBecomesTelegramExceptionDescription :: IO ()
 testTelegramOkFalseBecomesTelegramExceptionDescription = do
   let raw = ByteStringChar8.pack "{\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: can't parse entities\"}"
@@ -174,6 +187,22 @@ testTelegramFailureReplyIsConcise :: IO ()
 testTelegramFailureReplyIsConcise =
   Telegram.telegramFailureReplyText (Telegram.TelegramException "Bad Request: message is too long")
     @?= "Telegram request failed: Bad Request: message is too long"
+
+assertEntity :: Telegram.TelegramFormatted -> Text -> Integer -> Integer -> Maybe Text -> Maybe Text -> Assertion
+assertEntity formatted type_ offset entityLength url language =
+  case find matches formatted.formattedEntities of
+    Just _ ->
+      pure ()
+    Nothing ->
+      let actual = formatted.formattedEntities
+      in assertFailure [i|expected Telegram entity #{show (type_, offset, entityLength, url, language) :: String}, got #{show actual :: String}|]
+  where
+    matches entity =
+      entity.type_ == type_
+        && entity.offset == offset
+        && entity.length == entityLength
+        && entity.url == url
+        && entity.language == language
 
 testMatrixMessageConvertsToIncomingMessage :: IO ()
 testMatrixMessageConvertsToIncomingMessage = do

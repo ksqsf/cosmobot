@@ -74,6 +74,7 @@ common app-deps
                     , relude
                     , text
                     , containers
+                    , commonmark
                     , directory
                     , filepath
                     , effectful

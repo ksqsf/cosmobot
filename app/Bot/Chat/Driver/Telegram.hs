@@ -3,6 +3,8 @@ Module      : Bot.Chat.Driver.Telegram
 Description : Telegram effects
 Stability   : experimental
 -}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -23,9 +25,11 @@ module Bot.Chat.Driver.Telegram
   , SendMessageRequest (..)
   , EditMessageTextRequest (..)
   , SendPhotoRequest (..)
+  , TelegramFormatted (..)
   , TelegramException (..)
   , TelegramResult
   , parseTelegramResult
+  , formatTelegramMarkdown
   , telegramFailureReplyText
   , runTelegram
   , incomingMessages
@@ -58,12 +62,16 @@ import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as ChatEffect
 import Bot.Util.Multipart
 import Bot.Core.Message
+import Commonmark hiding (escapeHtml)
+import qualified Commonmark.Entity as Commonmark
 import Data.List (maximum)
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Char as Char
 import qualified Data.Text.Encoding as TextEncoding
 import Network.HTTP.Client (Manager)
 import qualified Network.HTTP.Client as HTTP
@@ -130,9 +138,6 @@ telegramEditChunkChars = 50
 
 telegramMessageTextLimit :: Int
 telegramMessageTextLimit = 4096
-
-telegramReplyParseMode :: ParseMode
-telegramReplyParseMode = ParseModeMarkdown
 
 -- ---------------------------------------------------------------------------
 -- Typeclass
@@ -330,8 +335,8 @@ messageMentionIds message =
   mapMaybe entityMentionUserId (messageEntities message)
 
 entityMentionUserId :: MessageEntity -> Maybe Integer
-entityMentionUserId entity =
-  (.id) <$> entity.user
+entityMentionUserId messageEntity =
+  (.id) <$> messageEntity.user
 
 messageMentionUsernames :: Message -> [Text]
 messageMentionUsernames message =
@@ -392,11 +397,11 @@ getMessageContent message messageId =
       pure Nothing
 
 entityMentionUsername :: Text -> MessageEntity -> Maybe Text
-entityMentionUsername text entity
-  | Just username <- entity.user >>= (.username) =
+entityMentionUsername text messageEntity
+  | Just username <- messageEntity.user >>= (.username) =
       Just (normalizeUsername username)
-  | entity.type_ == "mention" =
-      normalizeUsername <$> entityText text entity
+  | messageEntity.type_ == "mention" =
+      normalizeUsername <$> entityText text messageEntity
   | otherwise =
       Nothing
 
@@ -414,8 +419,8 @@ telegramUserFullName user =
   Text.unwords (filter (not . Text.null) [user.firstName, fromMaybe "" user.lastName])
 
 entityText :: Text -> MessageEntity -> Maybe Text
-entityText text entity =
-  let piece = Text.take (fromInteger entity.length) (Text.drop (fromInteger entity.offset) text)
+entityText text messageEntity =
+  let piece = Text.take (fromInteger messageEntity.length) (Text.drop (fromInteger messageEntity.offset) text)
   in if Text.null piece
     then Nothing
     else Just piece
@@ -570,8 +575,13 @@ sendPhotoParts SendPhotoRequest{..} path =
     <> maybePart "message_thread_id" (show <$> messageThreadId)
     <> maybePart "caption" caption
     <> maybePart "parse_mode" (parseModeText <$> parseMode)
+    <> maybePart "caption_entities" (jsonText <$> captionEntities)
     <> maybePart "disable_notification" (boolText <$> disableNotification)
     <> maybePart "reply_to_message_id" (show <$> replyToMessageId)
+
+jsonText :: Aeson.ToJSON a => a -> Text
+jsonText =
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
 
 boolText :: Bool -> Text
 boolText True  = "true"
@@ -581,6 +591,130 @@ parseModeText :: ParseMode -> Text
 parseModeText ParseModeMarkdown   = "Markdown"
 parseModeText ParseModeMarkdownV2 = "MarkdownV2"
 parseModeText ParseModeHTML       = "HTML"
+
+-- ---------------------------------------------------------------------------
+-- Formatting
+-- ---------------------------------------------------------------------------
+
+data TelegramFormatted = TelegramFormatted
+  { formattedText :: !Text
+  , formattedEntities :: ![MessageEntity]
+  }
+  deriving (Show)
+
+instance Semigroup TelegramFormatted where
+  left <> right =
+    TelegramFormatted
+      { formattedText = left.formattedText <> right.formattedText
+      , formattedEntities = left.formattedEntities <> map (shiftEntity (utf16Length left.formattedText)) right.formattedEntities
+      }
+
+instance Monoid TelegramFormatted where
+  mempty = TelegramFormatted "" []
+
+instance Rangeable TelegramFormatted where
+  ranged _ = id
+
+instance HasAttributes TelegramFormatted where
+  addAttributes _ = id
+
+instance ToPlainText TelegramFormatted where
+  toPlainText = (.formattedText)
+
+instance IsInline TelegramFormatted where
+  lineBreak = formattedTextOnly "\n"
+  softBreak = formattedTextOnly "\n"
+  str = formattedTextOnly
+  entity raw =
+    formattedTextOnly (fromMaybe raw (Commonmark.lookupEntity (Text.drop 1 raw)))
+  escapedChar = formattedTextOnly . Text.singleton
+  emph = wrapFormattedEntity "italic" Nothing Nothing
+  strong = wrapFormattedEntity "bold" Nothing Nothing
+  link target _title = wrapFormattedEntity "text_link" (Just target) Nothing
+  image target _title description =
+    if Text.null description.formattedText
+      then formattedTextOnly target
+      else description
+  code text = wrapFormattedEntity "code" Nothing Nothing (formattedTextOnly text)
+  rawInline _ text = formattedTextOnly text
+
+instance IsBlock TelegramFormatted TelegramFormatted where
+  paragraph body = body <> formattedTextOnly "\n\n"
+  plain = id
+  thematicBreak = formattedTextOnly "---\n\n"
+  blockQuote body = body
+  codeBlock info text =
+    wrapFormattedEntity "pre" Nothing (nonEmptyText (Text.takeWhile (not . Char.isSpace) info)) (formattedTextOnly text)
+      <> formattedTextOnly "\n\n"
+  heading _ body =
+    wrapFormattedEntity "bold" Nothing Nothing body <> formattedTextOnly "\n\n"
+  rawBlock _ text = formattedTextOnly text
+  referenceLinkDefinition _ _ = mempty
+  list _ _ items =
+    mconcat (zipWith renderItem [(1 :: Int)..] items) <> formattedTextOnly "\n"
+    where
+      renderItem _ item =
+        formattedTextOnly "- " <> item
+
+formatTelegramMarkdown :: Text -> TelegramFormatted
+formatTelegramMarkdown input =
+  case commonmark "telegram-message" input of
+    Left _ ->
+      formattedTextOnly input
+    Right formatted ->
+      trimFormattedEnd formatted
+
+formattedTextOnly :: Text -> TelegramFormatted
+formattedTextOnly text =
+  TelegramFormatted text []
+
+wrapFormattedEntity :: Text -> Maybe Text -> Maybe Text -> TelegramFormatted -> TelegramFormatted
+wrapFormattedEntity type_ url language body
+  | Text.null body.formattedText = body
+  | otherwise =
+      body
+        { formattedEntities =
+            MessageEntity
+              { type_ = type_
+              , offset = 0
+              , length = utf16Length body.formattedText
+              , url = url
+              , language = language
+              , user = Nothing
+              }
+            : body.formattedEntities
+        }
+
+shiftEntity :: Integer -> MessageEntity -> MessageEntity
+shiftEntity shift MessageEntity{type_, offset, length = entityLength, url, language, user} =
+  MessageEntity{type_, offset = offset + shift, length = entityLength, url, language, user}
+
+trimFormattedEnd :: TelegramFormatted -> TelegramFormatted
+trimFormattedEnd formatted =
+  let trimmedText = Text.dropWhileEnd Char.isSpace formatted.formattedText
+      trimmedLength = utf16Length trimmedText
+  in TelegramFormatted
+      { formattedText = trimmedText
+      , formattedEntities = mapMaybe (trimEntityToLength trimmedLength) formatted.formattedEntities
+      }
+
+trimEntityToLength :: Integer -> MessageEntity -> Maybe MessageEntity
+trimEntityToLength textLength messageEntity@MessageEntity{type_, offset, length = entityLength, url, language, user}
+  | offset >= textLength =
+      Nothing
+  | entityEnd <= textLength =
+      Just messageEntity
+  | otherwise =
+      let nextLength = textLength - offset
+      in if nextLength <= 0
+        then Nothing
+        else Just MessageEntity{type_, offset, length = nextLength, url, language, user}
+  where
+    entityEnd = offset + entityLength
+
+utf16Length :: Text -> Integer
+utf16Length =
+  (`div` 2) . fromIntegral . ByteString.length . TextEncoding.encodeUtf16LE
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -718,6 +852,8 @@ data MessageEntity = MessageEntity
   { type_  :: !Text
   , offset :: !Integer
   , length :: !Integer
+  , url    :: !(Maybe Text)
+  , language :: !(Maybe Text)
   , user   :: !(Maybe User)
   } deriving (Show, Generic)
 
@@ -726,18 +862,22 @@ instance Aeson.FromJSON MessageEntity where
     type_ <- o Aeson..: "type"
     offset <- o Aeson..: "offset"
     entityLength <- o Aeson..: "length"
+    url <- o Aeson..:? "url"
+    language <- o Aeson..:? "language"
     user <- o Aeson..:? "user"
     pure MessageEntity{length = entityLength, ..}
 
 instance Aeson.ToJSON MessageEntity where
-  toJSON entity = Aeson.object $
+  toJSON messageEntity = Aeson.object $
     [ "type" Aeson..= type_
     , "offset" Aeson..= offset
-    , "length" Aeson..= entity.length
+    , "length" Aeson..= messageEntity.length
     ]
+    <> maybeField "url" url
+    <> maybeField "language" language
     <> maybeField "user" user
     where
-      MessageEntity{type_, offset, user} = entity
+      MessageEntity{type_, offset, url, language, user} = messageEntity
 
 -- | Telegram chat kind.
 data ChatType
@@ -951,6 +1091,7 @@ data SendMessageRequest = SendMessageRequest
   , messageThreadId     :: !(Maybe Integer)
   , text                :: !Text
   , parseMode           :: !(Maybe ParseMode)
+  , entities            :: !(Maybe [MessageEntity])
   , disableNotification :: !(Maybe Bool)
   , replyToMessageId    :: !(Maybe Integer)
   } deriving (Show, Generic)
@@ -962,6 +1103,7 @@ instance Aeson.ToJSON SendMessageRequest where
     ]
     <> maybeField "message_thread_id" messageThreadId
     <> maybeField "parse_mode" parseMode
+    <> maybeField "entities" entities
     <> maybeField "disable_notification" disableNotification
     <> maybeField "reply_to_message_id" replyToMessageId
 
@@ -971,6 +1113,7 @@ instance Aeson.FromJSON SendMessageRequest where
     messageThreadId <- o Aeson..:? "message_thread_id"
     text <- o Aeson..: "text"
     parseMode <- o Aeson..:? "parse_mode"
+    entities <- o Aeson..:? "entities"
     disableNotification <- o Aeson..:? "disable_notification"
     replyToMessageId <- o Aeson..:? "reply_to_message_id"
     pure SendMessageRequest{..}
@@ -985,6 +1128,7 @@ data EditMessageTextRequest = EditMessageTextRequest
   , messageId             :: !Integer
   , text                  :: !Text
   , parseMode             :: !(Maybe ParseMode)
+  , entities              :: !(Maybe [MessageEntity])
   , disableWebPagePreview :: !(Maybe Bool)
   } deriving (Show, Generic)
 
@@ -995,6 +1139,7 @@ instance Aeson.ToJSON EditMessageTextRequest where
     , "text" Aeson..= text
     ]
     <> maybeField "parse_mode" parseMode
+    <> maybeField "entities" entities
     <> maybeField "disable_web_page_preview" disableWebPagePreview
 
 instance Aeson.FromJSON EditMessageTextRequest where
@@ -1003,6 +1148,7 @@ instance Aeson.FromJSON EditMessageTextRequest where
     messageId <- o Aeson..: "message_id"
     text <- o Aeson..: "text"
     parseMode <- o Aeson..:? "parse_mode"
+    entities <- o Aeson..:? "entities"
     disableWebPagePreview <- o Aeson..:? "disable_web_page_preview"
     pure EditMessageTextRequest{..}
 
@@ -1017,6 +1163,7 @@ data SendPhotoRequest = SendPhotoRequest
   , photo               :: !Text
   , caption             :: !(Maybe Text)
   , parseMode           :: !(Maybe ParseMode)
+  , captionEntities     :: !(Maybe [MessageEntity])
   , disableNotification :: !(Maybe Bool)
   , replyToMessageId    :: !(Maybe Integer)
   } deriving (Show, Generic)
@@ -1029,6 +1176,7 @@ instance Aeson.ToJSON SendPhotoRequest where
     <> maybeField "message_thread_id" messageThreadId
     <> maybeField "caption" caption
     <> maybeField "parse_mode" parseMode
+    <> maybeField "caption_entities" captionEntities
     <> maybeField "disable_notification" disableNotification
     <> maybeField "reply_to_message_id" replyToMessageId
 
@@ -1039,6 +1187,7 @@ instance Aeson.FromJSON SendPhotoRequest where
     photo <- o Aeson..: "photo"
     caption <- o Aeson..:? "caption"
     parseMode <- o Aeson..:? "parse_mode"
+    captionEntities <- o Aeson..:? "caption_entities"
     disableNotification <- o Aeson..:? "disable_notification"
     replyToMessageId <- o Aeson..:? "reply_to_message_id"
     pure SendPhotoRequest{..}
@@ -1234,6 +1383,7 @@ sendTelegramFailureReply chatId replyToMessageId err =
     , messageThreadId = Nothing
     , text = telegramFailureReplyText err
     , parseMode = Nothing
+    , entities = Nothing
     , disableNotification = Nothing
     , replyToMessageId = replyToMessageId
     }
@@ -1247,11 +1397,13 @@ editMessage :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es Bo
 editMessage message messageId body =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
+      let formatted = formatTelegramMarkdown body
       void $ callTelegram EditMessageTextRequest
         { chatId = chatId
         , messageId = messageId
-        , text = body
-        , parseMode = Just telegramReplyParseMode
+        , text = formatted.formattedText
+        , parseMode = Nothing
+        , entities = Just formatted.formattedEntities
         , disableWebPagePreview = Just True
         }
       pure True
@@ -1277,6 +1429,7 @@ mentionUser message userId body =
         , messageThreadId = Nothing
         , text = telegramMentionHtml userId body
         , parseMode = Just ParseModeHTML
+        , entities = Nothing
         , disableNotification = Nothing
         , replyToMessageId = message.messageId
         }
@@ -1302,23 +1455,28 @@ replyTextAndImages chatId replyToMessageId body =
   case ChatEffect.replyImageUrls body of
     [] -> sendText (ChatEffect.renderReplyBody body)
     firstImage : restImages -> do
+      let formattedCaption = nonEmptyText (ChatEffect.renderReplyBody body) <&> formatTelegramMarkdown
       firstSent <- sendImageRequest SendPhotoRequest
         { chatId = chatId
         , messageThreadId = Nothing
         , photo = firstImage
-        , caption = nonEmptyText (ChatEffect.renderReplyBody body)
-        , parseMode = Just telegramReplyParseMode
+        , caption = (.formattedText) <$> formattedCaption
+        , parseMode = Nothing
+        , captionEntities = (.formattedEntities) <$> formattedCaption
         , disableNotification = Nothing
         , replyToMessageId = replyToMessageId
         }
       traverse_ (sendImage Nothing) restImages
       pure firstSent
   where
-    sendText text = sendMessage SendMessageRequest
+    sendText text =
+      let formatted = formatTelegramMarkdown text
+      in sendMessage SendMessageRequest
       { chatId = chatId
       , messageThreadId = Nothing
-      , text = text
-      , parseMode = Just telegramReplyParseMode
+      , text = formatted.formattedText
+      , parseMode = Nothing
+      , entities = Just formatted.formattedEntities
       , disableNotification = Nothing
       , replyToMessageId = replyToMessageId
       }
@@ -1327,7 +1485,8 @@ replyTextAndImages chatId replyToMessageId body =
       , messageThreadId = Nothing
       , photo = photo
       , caption = caption
-      , parseMode = telegramReplyParseMode <$ caption
+      , parseMode = Nothing
+      , captionEntities = Nothing
       , disableNotification = Nothing
       , replyToMessageId = Nothing
       }
