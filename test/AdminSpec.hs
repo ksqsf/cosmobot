@@ -9,6 +9,7 @@ import Bot.Handler.Admin.Config
 import qualified Bot.Lifecycle as Lifecycle
 import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as LifecycleStorage
+import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
 import Test.Tasty
@@ -20,7 +21,8 @@ main =
     testGroup "admin"
       [ testCase "ping replies pong for any sender" testPingRepliesPong
       , testCase "upgrade rejects non-superusers" testUpgradeRejectsNonSuperuser
-      , testCase "upgrade starts configured script and queues startup reply for superusers" testUpgradeStartsConfiguredScript
+      , testCase "upgrade reports script exit status" testUpgradeReportsScriptExitStatus
+      , testCase "upgrade reports nonzero script exit status" testUpgradeReportsNonzeroScriptExitStatus
       , testCase "lifecycle startup replies are deleted after drain" testLifecycleStartupRepliesAreDeletedAfterDrain
       ]
 
@@ -38,16 +40,31 @@ testUpgradeRejectsNonSuperuser = do
   IORef.readIORef replies >>= (@?= ["只有 superuser 可以执行 upgrade。"])
   assertBool "no startup actions queued" (null actions)
 
-testUpgradeStartsConfiguredScript :: IO ()
-testUpgradeStartsConfiguredScript = do
+testUpgradeReportsScriptExitStatus :: IO ()
+testUpgradeReportsScriptExitStatus = do
   replies <- IORef.newIORef ([] :: [Text])
-  actions <- runAdmin upgradeConfig replies (messageWith "!upgrade" emptyMessageDigest{senderIsSuperuser = True})
-  IORef.readIORef replies >>= (@?= ["已启动 upgrade 脚本：/bin/true"])
-  case actions of
-    [LifecycleStorage.StartupReply{body}] ->
-      body @?= "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
+  actions <- runAdminSettled upgradeConfig replies (messageWith "!upgrade" emptyMessageDigest{senderIsSuperuser = True})
+  captured <- IORef.readIORef replies
+  case captured of
+    [started, exited] -> do
+      started @?= "已启动 upgrade 脚本：/bin/true"
+      exited @?= "upgrade 脚本已退出，exitcode=0。"
     _ ->
-      assertFailure [i|unexpected startup actions: #{show actions :: String}|]
+      assertFailure [i|unexpected replies: #{show captured :: String}|]
+  assertBool "startup action deleted after script return" (null actions)
+
+testUpgradeReportsNonzeroScriptExitStatus :: IO ()
+testUpgradeReportsNonzeroScriptExitStatus = do
+  replies <- IORef.newIORef ([] :: [Text])
+  actions <- runAdminSettled (upgradeConfigFor "/bin/false") replies (messageWith "!upgrade" emptyMessageDigest{senderIsSuperuser = True})
+  captured <- IORef.readIORef replies
+  case captured of
+    [started, exited] -> do
+      started @?= "已启动 upgrade 脚本：/bin/false"
+      exited @?= "upgrade 脚本已退出，exitcode=1。"
+    _ ->
+      assertFailure [i|unexpected replies: #{show captured :: String}|]
+  assertBool "startup action deleted after script failure" (null actions)
 
 testLifecycleStartupRepliesAreDeletedAfterDrain :: IO ()
 testLifecycleStartupRepliesAreDeletedAfterDrain = do
@@ -56,7 +73,7 @@ testLifecycleStartupRepliesAreDeletedAfterDrain = do
     runTestLog $
       StorageEffect.runStorageSQLitePath ":memory:" $
         Chat.runChatWith (chatHandlers replies) do
-          LifecycleStorage.enqueueStartupReply message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
+          void $ LifecycleStorage.enqueueStartupReply "test-startup-reply" message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
           Lifecycle.runLifecycle (pure ())
           LifecycleStorage.loadStartupActions
   IORef.readIORef replies >>= (@?= ["cosmobot 重启完成啦 (｡•̀ᴗ-)✧"])
@@ -64,17 +81,31 @@ testLifecycleStartupRepliesAreDeletedAfterDrain = do
 
 upgradeConfig :: AdminConfig
 upgradeConfig =
+  upgradeConfigFor "/bin/true"
+
+upgradeConfigFor :: FilePath -> AdminConfig
+upgradeConfigFor script =
   defaultAdminConfig
-    { upgrade = Just UpgradeConfig{script = "/bin/true"}
+    { upgrade = Just UpgradeConfig{script}
     }
 
 runAdmin :: AdminConfig -> IORef.IORef [Text] -> IncomingMessage -> IO [LifecycleStorage.StoredStartupAction]
 runAdmin cfg replies incoming =
+  runAdminWithDelay 0 cfg replies incoming
+
+runAdminSettled :: AdminConfig -> IORef.IORef [Text] -> IncomingMessage -> IO [LifecycleStorage.StoredStartupAction]
+runAdminSettled cfg replies incoming =
+  runAdminWithDelay 100_000 cfg replies incoming
+
+runAdminWithDelay :: Int -> AdminConfig -> IORef.IORef [Text] -> IncomingMessage -> IO [LifecycleStorage.StoredStartupAction]
+runAdminWithDelay delayMicros cfg replies incoming =
   runEff $
-    StorageEffect.runStorageSQLitePath ":memory:" $
-      Chat.runChatWith (chatHandlers replies) do
-          runHandlers (adminHandlers cfg) incoming
-          LifecycleStorage.loadStartupActions
+    runTestLog $
+      StorageEffect.runStorageSQLitePath ":memory:" $
+        Chat.runChatWith (chatHandlers replies) do
+            runHandlers (adminHandlers cfg) incoming
+            liftIO $ when (delayMicros > 0) (threadDelay delayMicros)
+            LifecycleStorage.loadStartupActions
 
 chatHandlers :: IOE :> es => IORef.IORef [Text] -> Chat.ChatHandlers es
 chatHandlers replies =

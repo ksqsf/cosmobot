@@ -19,11 +19,11 @@ import Bot.Prelude
 import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.Int as Int
 import qualified Data.Text.Encoding as TextEncoding
 
 data StoredStartupAction = StartupReply
   { actionId :: !Integer
+  , actionKey :: !Text
   , message :: !IncomingMessage
   , body :: !Text
   }
@@ -31,6 +31,7 @@ data StoredStartupAction = StartupReply
 
 data LifecycleActionRow = LifecycleActionRow
   { id :: ID LifecycleActionRow
+  , action_key :: Text
   , action_kind :: Text
   , message_json :: Text
   , body :: Text
@@ -43,22 +44,30 @@ lifecycleActions :: Table LifecycleActionRow
 lifecycleActions =
   table "lifecycle_actions"
     [ #id :- autoPrimary
+    , #action_key :- unique
     , #action_kind :- index
     ]
 
-enqueueStartupReply :: Storage.Storage :> es => IncomingMessage -> Text -> Eff es ()
-enqueueStartupReply message body = do
+enqueueStartupReply :: Storage.Storage :> es => Text -> IncomingMessage -> Text -> Eff es StoredStartupAction
+enqueueStartupReply actionKey message body = do
   ensureLifecycleActionsTable
   runSelda $
     insert_
       lifecycleActions
       [ LifecycleActionRow
           { id = def
+          , action_key = actionKey
           , action_kind = "startup_reply"
           , message_json = encodeMessage message
           , body
           }
       ]
+  pure StartupReply
+    { actionId = 0
+    , actionKey
+    , message
+    , body
+    }
 
 loadStartupActions :: Storage.Storage :> es => Eff es [StoredStartupAction]
 loadStartupActions = do
@@ -73,10 +82,9 @@ loadStartupActions = do
 deleteStartupAction :: Storage.Storage :> es => StoredStartupAction -> Eff es ()
 deleteStartupAction action = do
   ensureLifecycleActionsTable
-  let rowId = toId (fromIntegral action.actionId :: Int.Int64)
   runSelda $
     deleteFrom_ lifecycleActions \row ->
-      row ! #id .== literal rowId
+      row ! #action_key .== literal action.actionKey
 
 ensureLifecycleActionsTable :: Storage.Storage :> es => Eff es ()
 ensureLifecycleActionsTable =
@@ -88,6 +96,7 @@ startupActionFromRow row
       message <- decodeMessage row.message_json
       pure StartupReply
         { actionId = fromIntegral (fromId row.id)
+        , actionKey = row.action_key
         , message
         , body = row.body
         }
