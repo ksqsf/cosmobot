@@ -9,6 +9,7 @@ module Bot.Effect.Chat
     Chat
   , replyTo
   , editMessage
+  , deleteMessage
   , ReplyStreamStyle (..)
   , ReplyStreamUpdate (..)
   , streamReplyTo
@@ -49,6 +50,10 @@ data Chat :: Effect where
     -> Integer
     -> Text
     -> Chat m Bool
+  DeleteMessage
+    :: IncomingMessage
+    -> Integer
+    -> Chat m Bool
   ReplyStreamStyle
     :: IncomingMessage
     -> Chat m ReplyStreamStyle
@@ -87,6 +92,11 @@ replyTo message body =
 editMessage :: Chat :> es => IncomingMessage -> Integer -> Text -> Eff es Bool
 editMessage message messageId body =
   send (EditMessage message messageId body)
+
+-- | Delete or recall a previously sent message when the platform supports it.
+deleteMessage :: Chat :> es => IncomingMessage -> Integer -> Eff es Bool
+deleteMessage message messageId =
+  send (DeleteMessage message messageId)
 
 data ReplyStreamStyle
   = EditableReply !Int
@@ -357,6 +367,7 @@ mentionUser message userId body =
 data ChatHandlers es = ChatHandlers
   { handleReplyTo :: IncomingMessage -> Text -> Eff es (Maybe Integer)
   , handleEditMessage :: IncomingMessage -> Integer -> Text -> Eff es Bool
+  , handleDeleteMessage :: IncomingMessage -> Integer -> Eff es Bool
   , handleReplyStreamStyle :: IncomingMessage -> Eff es ReplyStreamStyle
   , handleGetMessageContent :: IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
   , handleGetSenderMemberInfo :: IncomingMessage -> Eff es (Maybe Aeson.Value)
@@ -375,6 +386,8 @@ runChatWith handlers = interpret $ \_ -> \case
     handlers.handleReplyTo message body
   EditMessage message messageId body ->
     handlers.handleEditMessage message messageId body
+  DeleteMessage message messageId ->
+    handlers.handleDeleteMessage message messageId
   ReplyStreamStyle message ->
     handlers.handleReplyStreamStyle message
   GetMessageContent message messageId ->

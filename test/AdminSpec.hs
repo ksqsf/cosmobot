@@ -29,6 +29,7 @@ runAdmin replies incoming =
     Chat.runChatWith Chat.ChatHandlers
       { handleReplyTo = reply
       , handleEditMessage = edit
+      , handleDeleteMessage = delete
       , handleReplyStreamStyle = replyStreamStyle
       , handleGetMessageContent = fetch
       , handleGetSenderMemberInfo = fetchSenderMember
@@ -43,6 +44,8 @@ runAdmin replies incoming =
       liftIO $ IORef.modifyIORef' replies (<> [body])
       pure (Just 1)
     edit _ _ _ =
+      pure False
+    delete _ _ =
       pure False
     replyStreamStyle _ =
       pure (Chat.ChunkedReply 1800)

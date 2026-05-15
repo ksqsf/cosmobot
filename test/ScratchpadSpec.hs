@@ -111,6 +111,7 @@ runScratchpad path replies incoming =
     Chat.runChatWith Chat.ChatHandlers
       { handleReplyTo = reply
       , handleEditMessage = edit
+      , handleDeleteMessage = delete
       , handleReplyStreamStyle = replyStreamStyle
       , handleGetMessageContent = fetch
       , handleGetSenderMemberInfo = fetchSenderMember
@@ -128,6 +129,8 @@ runScratchpad path replies incoming =
     fetch _ _ =
       pure Nothing
     edit _ _ _ =
+      pure False
+    delete _ _ =
       pure False
     replyStreamStyle _ =
       pure (Chat.ChunkedReply 1800)

@@ -307,6 +307,7 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
         , handleEditMessage = noopEdit
+        , handleDeleteMessage = noopDelete
         , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 4)
         , handleGetMessageContent = noopFetch
         , handleGetSenderMemberInfo = noopSenderMember
@@ -742,6 +743,7 @@ runAgentWithMemoryAndTypstAndCapture memoryCfg rendered captured answers chatMoc
                       Chat.ChatHandlers
                         { handleReplyTo = mockReply chatMock
                         , handleEditMessage = noopEdit
+                        , handleDeleteMessage = noopDelete
                         , handleReplyStreamStyle = noopReplyStreamStyle
                         , handleGetMessageContent = noopFetch
                         , handleGetSenderMemberInfo = noopSenderMember
@@ -830,6 +832,10 @@ noopFetch _ _ =
 
 noopEdit :: IncomingMessage -> Integer -> Text -> Eff es Bool
 noopEdit _ _ _ =
+  pure False
+
+noopDelete :: IncomingMessage -> Integer -> Eff es Bool
+noopDelete _ _ =
   pure False
 
 noopReplyStreamStyle :: IncomingMessage -> Eff es Chat.ReplyStreamStyle

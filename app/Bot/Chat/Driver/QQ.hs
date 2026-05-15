@@ -21,6 +21,7 @@ module Bot.Chat.Driver.QQ
   , forwardedMessagesText
   , readActionResponse
   , replyTo
+  , deleteMessage
   , getMessageContent
   , getUserAvatar
   , getGroupMemberInfo
@@ -77,6 +78,7 @@ qqDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformQQ
   , Driver.replyTo = replyTo
   , Driver.editMessage = \_ _ _ -> pure False
+  , Driver.deleteMessage = deleteMessage
   , Driver.replyStreamStyle = \_ -> pure (Chat.ChunkedReply qqStreamingMessageLimit)
   , Driver.getMessageContent = \_ messageId -> getMessageContent messageId
   , Driver.getSenderMemberInfo = \message ->
@@ -474,6 +476,25 @@ responseMessageId response =
       Just value -> Aeson.parseMaybe Aeson.parseJSON value
       Nothing    -> Nothing
     _ -> Nothing
+
+-- | Delete a QQ message by OneBot message id.
+deleteMessage :: QQ :> es => IncomingMessage -> Integer -> Eff es Bool
+deleteMessage message messageId =
+  case message.platform of
+    PlatformQQ -> do
+      response <- sendAction (Aeson.object
+        [ "action" Aeson..= Aeson.String "delete_msg"
+        , "params" Aeson..= Aeson.object
+            [ "message_id" Aeson..= messageId
+            ]
+        ])
+      pure (actionSucceeded response)
+    _ ->
+      pure False
+
+actionSucceeded :: ActionResponse -> Bool
+actionSucceeded response =
+  response.status == Just "ok" || response.retcode == Just 0
 
 -- | Fetch message text and image references by QQ message id.
 getMessageContent :: QQ :> es => Integer -> Eff es (Maybe ReferencedMessage)

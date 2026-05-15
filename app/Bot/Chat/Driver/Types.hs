@@ -18,6 +18,7 @@ data ChatPlatformDriver es = ChatPlatformDriver
   { platform :: !ChatPlatform
   , replyTo :: IncomingMessage -> Text -> Eff es (Maybe Integer)
   , editMessage :: IncomingMessage -> Integer -> Text -> Eff es Bool
+  , deleteMessage :: IncomingMessage -> Integer -> Eff es Bool
   , replyStreamStyle :: IncomingMessage -> Eff es Chat.ReplyStreamStyle
   , getMessageContent :: IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
   , getSenderMemberInfo :: IncomingMessage -> Eff es (Maybe Aeson.Value)

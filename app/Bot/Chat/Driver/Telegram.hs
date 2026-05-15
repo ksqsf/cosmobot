@@ -34,6 +34,7 @@ module Bot.Chat.Driver.Telegram
   , uploadPhoto
   , replyTo
   , editMessage
+  , deleteMessageFor
   , getMessageContent
   , forwardMessage
   , deleteMessage
@@ -92,6 +93,7 @@ telegramDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformTelegram
   , Driver.replyTo = replyTo
   , Driver.editMessage = editMessage
+  , Driver.deleteMessage = deleteMessageFor
   , Driver.replyStreamStyle = \_ -> pure (ChatEffect.EditableReply telegramEditChunkChars)
   , Driver.getMessageContent = getMessageContent
   , Driver.getSenderMemberInfo = \message ->
@@ -1213,6 +1215,15 @@ editMessage message messageId body =
         , disableWebPagePreview = Just True
         }
       pure True
+    _ ->
+      pure False
+
+-- | Delete a Telegram message in the current chat when the bot has permission.
+deleteMessageFor :: Telegram :> es => IncomingMessage -> Integer -> Eff es Bool
+deleteMessageFor message messageId =
+  case (message.platform, message.chatId) of
+    (PlatformTelegram, Just chatId) ->
+      deleteMessage chatId messageId
     _ ->
       pure False
 

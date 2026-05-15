@@ -77,6 +77,15 @@ editPlatformMessage message messageId body =
   fromMaybe False <$> withPlatformDriver message "chat edit" \driver ->
     Just <$> driver.editMessage message messageId body
 
+deletePlatformMessage
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  => IncomingMessage
+  -> Integer
+  -> Eff es Bool
+deletePlatformMessage message messageId =
+  fromMaybe False <$> withPlatformDriver message "chat delete" \driver ->
+    Just <$> driver.deleteMessage message messageId
+
 platformReplyStreamStyle
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
   => IncomingMessage
@@ -174,6 +183,7 @@ chatHandlers
 chatHandlers = Chat.ChatHandlers
   { handleReplyTo = replyToPlatform
   , handleEditMessage = editPlatformMessage
+  , handleDeleteMessage = deletePlatformMessage
   , handleReplyStreamStyle = platformReplyStreamStyle
   , handleGetMessageContent = getPlatformMessageContent
   , handleGetSenderMemberInfo = getPlatformSenderMemberInfo

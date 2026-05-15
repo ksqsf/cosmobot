@@ -21,6 +21,7 @@ module Bot.Chat.Driver.Matrix
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , replyTo
+  , deleteMessage
   )
 where
 
@@ -30,7 +31,9 @@ import Bot.Core.Message
 import Bot.Prelude
 import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString.Char8 as ByteString
+import qualified Data.IORef as IORef
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import GHC.Clock (getMonotonicTimeNSec)
@@ -57,6 +60,7 @@ matrixDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformMatrix
   , Driver.replyTo = replyTo
   , Driver.editMessage = \_ _ _ -> pure False
+  , Driver.deleteMessage = deleteMessage
   , Driver.replyStreamStyle = \_ -> pure (Chat.ChunkedReply matrixStreamingMessageLimit)
   , Driver.getMessageContent = \_ _ -> pure Nothing
   , Driver.getSenderMemberInfo = \_ -> pure Nothing
@@ -73,6 +77,7 @@ data Matrix :: Effect where
   MatrixConfig :: Matrix m Config
   Sync :: Maybe Text -> Matrix m (Maybe SyncResponse)
   SendText :: Text -> Text -> Matrix m (Maybe SendMessageResponse)
+  DeleteEvent :: Text -> Integer -> Maybe Text -> Matrix m Bool
 
 type instance DispatchOf Matrix = Dynamic
 
@@ -87,22 +92,40 @@ sendText :: Matrix :> es => Text -> Text -> Eff es (Maybe SendMessageResponse)
 sendText roomId body =
   send (SendText roomId body)
 
+deleteEvent :: Matrix :> es => Text -> Integer -> Maybe Text -> Eff es Bool
+deleteEvent roomId messageId eventId =
+  send (DeleteEvent roomId messageId eventId)
+
 runMatrix
   :: (IOE :> es, Log :> es)
   => Config
   -> Eff (Matrix : es) a
   -> Eff es a
-runMatrix cfg inner = withReqManager \manager ->
+runMatrix cfg inner = withReqManager \manager -> do
+  eventIds <- liftIO (IORef.newIORef (Map.empty :: Map Integer Text))
   interpret
     ( \_ -> \case
         MatrixConfig ->
           pure cfg
         Sync since ->
           traverse (syncCall manager cfg since) cfg.accessToken
-        SendText roomId body ->
-          traverse (\token -> sendMessageCall manager cfg token roomId body) cfg.accessToken
+        SendText roomId body -> do
+          response <- traverse (\token -> sendMessageCall manager cfg token roomId body) cfg.accessToken
+          traverse_ (rememberMatrixEvent eventIds) response
+          pure response
+        DeleteEvent roomId messageId knownEventId -> do
+          stored <- liftIO (IORef.readIORef eventIds)
+          case knownEventId <|> Map.lookup messageId stored of
+            Nothing ->
+              pure False
+            Just eventId ->
+              maybe (pure False) (\token -> redactEventCall manager cfg token roomId eventId $> True) cfg.accessToken
     )
     inner
+
+rememberMatrixEvent :: IOE :> es => IORef.IORef (Map Integer Text) -> SendMessageResponse -> Eff es ()
+rememberMatrixEvent eventIds response =
+  liftIO $ IORef.modifyIORef' eventIds (Map.insert (stableTextId response.eventId) response.eventId)
 
 incomingMessages :: (Matrix :> es, Log :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
@@ -146,6 +169,23 @@ replyTo message body =
       pure (stableTextId . (.eventId) <$> response)
     _ ->
       pure Nothing
+
+deleteMessage :: Matrix :> es => IncomingMessage -> Integer -> Eff es Bool
+deleteMessage message messageId =
+  case (message.platform, viaNonEmpty head message.chatAliases) of
+    (PlatformMatrix, Just roomId) ->
+      deleteEvent roomId messageId (currentRawEventId message messageId)
+    _ ->
+      pure False
+
+currentRawEventId :: IncomingMessage -> Integer -> Maybe Text
+currentRawEventId message messageId = do
+  guard (message.messageId == Just messageId)
+  matrixRawEventId message.raw
+
+matrixRawEventId :: Aeson.Value -> Maybe Text
+matrixRawEventId =
+  Aeson.parseMaybe (Aeson.withObject "Matrix event" (Aeson..: "event_id"))
 
 eventToIncomingMessage :: RoomEvent -> Maybe IncomingMessage
 eventToIncomingMessage =
@@ -243,6 +283,24 @@ sendMessageCall manager cfg token roomId body = do
   liftIO (runReq (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)
+      (ReqBodyJson request)
+      jsonResponse
+      options)
+    <&> responseBody
+
+redactEventCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Text -> Eff es RedactEventResponse
+redactEventCall manager cfg token roomId eventId = do
+  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+  txnId <- liftIO (show <$> getMonotonicTimeNSec)
+  let options =
+        baseOptions
+          <> matrixAuth token
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+      request = RedactEventRequest{reason = Nothing}
+  logInfo_ "Matrix API request: redact event"
+  liftIO (runReq (matrixHttpConfig manager) $
+    req PUT
+      (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "redact" /: eventId /: txnId)
       (ReqBodyJson request)
       jsonResponse
       options)
@@ -380,6 +438,11 @@ data SendMessageRequest = SendMessageRequest
   }
   deriving (Show, Generic, Aeson.ToJSON)
 
+data RedactEventRequest = RedactEventRequest
+  { reason :: Maybe Text
+  }
+  deriving (Show, Generic, Aeson.ToJSON)
+
 newtype SendMessageResponse = SendMessageResponse
   { eventId :: Text
   }
@@ -388,6 +451,15 @@ newtype SendMessageResponse = SendMessageResponse
 instance Aeson.FromJSON SendMessageResponse where
   parseJSON = Aeson.withObject "SendMessageResponse" \o ->
     SendMessageResponse <$> o Aeson..: "event_id"
+
+newtype RedactEventResponse = RedactEventResponse
+  { redactionEventId :: Text
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON RedactEventResponse where
+  parseJSON = Aeson.withObject "RedactEventResponse" \o ->
+    RedactEventResponse <$> o Aeson..: "event_id"
 
 matrixSyncTimeoutMilliseconds :: Int
 matrixSyncTimeoutMilliseconds = 30000
