@@ -20,7 +20,7 @@ data FileConfig = FileConfig
   , port  :: !Int
   , path  :: !String
   , token :: !(Maybe Text)
-  , botQQ :: !(Maybe Integer)
+  , botId :: !(Maybe Integer)
   , allowedGroups :: ![Integer]
   , allowedUsers :: ![Integer]
   , superusers :: ![Integer]
@@ -33,7 +33,7 @@ instance FromValue FileConfig where
     <*> reqKey "port"
     <*> reqKey "path"
     <*> optToken "token"
-    <*> optKey "bot_qq"
+    <*> optKey "bot_id"
     <*> fmap (fromMaybe []) (optKey "allowed_groups")
     <*> fmap (fromMaybe []) (optKey "allowed_users")
     <*> fmap (fromMaybe []) (optKey "superusers")
@@ -45,7 +45,7 @@ toRuntimeConfig cfg =
     , port = cfg.port
     , path = cfg.path
     , token = cfg.token
-    , botQQ = cfg.botQQ
+    , botQQ = cfg.botId
     , allowedGroups = cfg.allowedGroups
     , allowedUsers = cfg.allowedUsers
     , superusers = cfg.superusers

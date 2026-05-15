@@ -9,7 +9,7 @@ host = "127.0.0.1"
 port = 3001
 path = "/"
 token = "xxx"
-bot_qq = 0
+bot_id = 0
 superusers = []
 allowed_groups = []
 allowed_users = []
@@ -23,7 +23,7 @@ allowed_chats = []
 [driver.matrix]
 homeserver = "https://matrix.org"
 access_token = ""
-user_id = "@bot:matrix.org"
+bot_id = "@bot:matrix.org"
 superusers = []
 allowed_rooms = []
 

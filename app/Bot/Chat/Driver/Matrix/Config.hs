@@ -19,7 +19,7 @@ import Toml.Schema
 data FileConfig = FileConfig
   { homeserver :: !Text
   , accessToken :: !(Maybe Text)
-  , userId :: !(Maybe Text)
+  , botId :: !(Maybe Text)
   , allowedRooms :: ![Text]
   , superusers :: ![Text]
   }
@@ -29,7 +29,7 @@ defaultFileConfig :: FileConfig
 defaultFileConfig = FileConfig
   { homeserver = "https://matrix.org"
   , accessToken = Nothing
-  , userId = Nothing
+  , botId = Nothing
   , allowedRooms = []
   , superusers = []
   }
@@ -38,7 +38,7 @@ instance FromValue FileConfig where
   fromValue = parseTableFromValue $ FileConfig
     <$> fmap (fromMaybe defaultFileConfig.homeserver) (optKey "homeserver")
     <*> optToken "access_token"
-    <*> optKey "user_id"
+    <*> optKey "bot_id"
     <*> fmap (fromMaybe []) (optKey "allowed_rooms")
     <*> fmap (fromMaybe []) (optKey "superusers")
 
@@ -47,7 +47,7 @@ toRuntimeConfig cfg =
   Matrix.Config
     { homeserver = cfg.homeserver
     , accessToken = cfg.accessToken
-    , userId = cfg.userId
+    , userId = cfg.botId
     , allowedRooms = cfg.allowedRooms
     , superusers = cfg.superusers
     }

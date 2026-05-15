@@ -11,6 +11,7 @@ module Bot.Handler.Ask.Config
 where
 
 import Bot.Prelude
+import Bot.Core.Message (ChatPlatform)
 import Toml.Schema
 
 -- | Configuration for all handler groups.
@@ -26,6 +27,7 @@ data AskHandlerConfig = AskHandlerConfig
   , drawCommand      :: !Text
   , systemPrompt     :: !Text
   , agentMaxTurns    :: !Int
+  , botIds           :: ![(ChatPlatform, Text)]
   }
   deriving (Show)
 
@@ -46,4 +48,5 @@ instance FromValue AskHandlerConfig where
       , drawCommand = drawCommand
       , systemPrompt = systemPrompt
       , agentMaxTurns = agentMaxTurns
+      , botIds = []
       }

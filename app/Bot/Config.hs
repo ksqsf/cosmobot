@@ -25,6 +25,7 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.LLM.Config as LLMConfig
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.Agent.Config as AgentConfig
+import Bot.Core.Message (ChatPlatform (..))
 import Bot.Handler.Ask.Config
   ( AskHandlerConfig (..)
   , HandlersConfig (..)
@@ -36,6 +37,7 @@ import Bot.Handler.Saucenao.Config
 import qualified Bot.Memory as Memory
 import qualified Bot.Memory.Config as MemoryConfig
 import Bot.Prelude
+import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import qualified Toml.Semantics.Types as TomlValue
 import qualified Toml
@@ -163,16 +165,37 @@ toBotConfig cfg =
   let
     qqFileConfig = cfg.driver.qq
     telegramFileConfig = cfg.driver.telegram
+    matrixFileConfig = cfg.driver.matrix
+    askConfig = cfg.handler.ask
+      { botIds = configuredBotIds qqFileConfig telegramFileConfig matrixFileConfig
+      }
   in
   BotConfig
     { qq = QQConfig.toRuntimeConfig qqFileConfig
     , telegram = TelegramConfig.toRuntimeConfig telegramFileConfig
-    , matrix = MatrixConfig.toRuntimeConfig cfg.driver.matrix
+    , matrix = MatrixConfig.toRuntimeConfig matrixFileConfig
     , llm = LLMConfig.toRuntimeConfig cfg.llm
     , tool = AgentConfig.toToolConfig cfg.tool
     , saucenao = cfg.handler.saucenao
     , memory = MemoryConfig.toMemoryConfig cfg.memory
-    , handlers = HandlersConfig cfg.handler.ask
+    , handlers = HandlersConfig askConfig
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath
     }
+
+configuredBotIds :: QQConfig.FileConfig -> TelegramConfig.FileConfig -> MatrixConfig.FileConfig -> [(ChatPlatform, Text)]
+configuredBotIds qqCfg telegramCfg matrixCfg =
+  catMaybes
+    [ (PlatformQQ,) . Text.pack . show <$> qqCfg.botId
+    , (PlatformTelegram,) <$> telegramBotIdText telegramCfg.botId
+    , (PlatformMatrix,) <$> matrixCfg.botId
+    ]
+
+telegramBotIdText :: Maybe TelegramConfig.TelegramBotId -> Maybe Text
+telegramBotIdText = \case
+  Just (TelegramConfig.TelegramBotNumeric botId) ->
+    Just (Text.pack (show botId))
+  Just (TelegramConfig.TelegramBotUsername username) ->
+    Just (TelegramConfig.normalizeUsername username)
+  Nothing ->
+    Nothing
