@@ -23,6 +23,10 @@ module Bot.Chat.Driver.Telegram
   , SendMessageRequest (..)
   , EditMessageTextRequest (..)
   , SendPhotoRequest (..)
+  , TelegramException (..)
+  , TelegramResult
+  , parseTelegramResult
+  , telegramFailureReplyText
   , runTelegram
   , incomingMessages
   , updateToIncomingMessage
@@ -62,6 +66,7 @@ import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Text.Encoding as TextEncoding
 import Network.HTTP.Client (Manager)
+import qualified Network.HTTP.Client as HTTP
 import Network.HTTP.Req
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Streaming as S
@@ -441,14 +446,14 @@ apiCall
   -> Eff es result
 apiCall manager cfg method body = do
   logTelegramApiRequest method
-  resp :: Response <-
+  resp :: TelegramResult <-
     ( liftIO $ runReq (telegramHttpConfig manager) $
         req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse (telegramRequestOptions method)
           <&> responseBody
     ) `catch` \(err :: HttpException) ->
-      throwIO (APIException (sanitizeTelegramException cfg err))
+      throwIO (TelegramException (telegramExceptionMessage cfg err))
   logTelegramApiResponse method
-  decodeResponse resp
+  parseTelegramResult resp
 
 apiMultipartCall
   :: (IOE :> es, Log :> es, Aeson.FromJSON result)
@@ -459,15 +464,25 @@ apiMultipartCall
   -> Eff es result
 apiMultipartCall manager cfg method parts = do
   logTelegramApiRequest method
-  resp :: Response <-
+  resp :: TelegramResult <-
     ( liftIO $ runReq (telegramHttpConfig manager) do
         body <- reqBodyMultipart parts
         req POST (apiUrl cfg method) body jsonResponse (telegramRequestOptions method)
           <&> responseBody
     ) `catch` \(err :: HttpException) ->
-      throwIO (APIException (sanitizeTelegramException cfg err))
+      throwIO (TelegramException (telegramExceptionMessage cfg err))
   logTelegramApiResponse method
-  decodeResponse resp
+  parseTelegramResult resp
+
+telegramExceptionMessage :: Config -> HttpException -> Text
+telegramExceptionMessage cfg err =
+  case err of
+    VanillaHttpException (HTTP.HttpExceptionRequest _ (HTTP.StatusCodeException _ body)) ->
+      case Aeson.eitherDecodeStrict body of
+        Right result -> telegramResultError result
+        Left _ -> sanitizeTelegramException cfg err
+    _ ->
+      sanitizeTelegramException cfg err
 
 sanitizeTelegramException :: Show err => Config -> err -> Text
 sanitizeTelegramException cfg err =
@@ -489,32 +504,38 @@ logTelegramApiResponse method =
   unless (method == "getUpdates") $
     logInfo_ [i|Telegram API response: #{method}|]
 
-decodeResponse
+parseTelegramResult
   :: (IOE :> es, Aeson.FromJSON result)
-  => Response
+  => TelegramResult
   -> Eff es result
-decodeResponse resp =
+parseTelegramResult resp =
   case resp of
-    Err desc -> throwIO (APIException desc)
+    Err desc -> throwIO (TelegramException desc)
     Ok value -> case Aeson.fromJSON value of
       Aeson.Success x  -> pure x
-      Aeson.Error  err -> throwIO (APIException (Text.pack err))
+      Aeson.Error  err -> throwIO (TelegramException (Text.pack err))
 
-newtype APIException = APIException Text
+newtype TelegramException = TelegramException Text
   deriving (Show)
-instance Exception APIException
+instance Exception TelegramException where
+  displayException (TelegramException message) = Text.unpack message
 
-data Response
+data TelegramResult
   = Ok  Aeson.Value
   | Err Text
   deriving (Show, Generic)
 
-instance Aeson.FromJSON Response where
-  parseJSON = Aeson.withObject "Response" $ \o -> do
+instance Aeson.FromJSON TelegramResult where
+  parseJSON = Aeson.withObject "TelegramResult" $ \o -> do
     ok <- o Aeson..: "ok"
     if ok
       then Ok <$> o Aeson..: "result"
       else Err <$> o Aeson..: "description"
+
+telegramResultError :: TelegramResult -> Text
+telegramResultError = \case
+  Ok _ -> "Telegram API returned ok result in an HTTP error response."
+  Err desc -> desc
 
 maybeField :: Aeson.ToJSON value => Aeson.Key -> Maybe value -> [Aeson.Pair]
 maybeField key =
@@ -1197,10 +1218,26 @@ replyTo :: (Telegram :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (May
 replyTo message body =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
-      sent <- replyTextAndImages chatId message.messageId body
+      sent <- replyTextAndImages chatId message.messageId body `catch` \(err :: TelegramException) ->
+        sendTelegramFailureReply chatId message.messageId err
       pure (Just sent.messageId)
     _ ->
       pure Nothing
+
+sendTelegramFailureReply :: Telegram :> es => Integer -> Maybe Integer -> TelegramException -> Eff es Message
+sendTelegramFailureReply chatId replyToMessageId err =
+  sendMessage SendMessageRequest
+    { chatId = chatId
+    , messageThreadId = Nothing
+    , text = telegramFailureReplyText err
+    , parseMode = Nothing
+    , disableNotification = Nothing
+    , replyToMessageId = replyToMessageId
+    }
+
+telegramFailureReplyText :: TelegramException -> Text
+telegramFailureReplyText (TelegramException message) =
+  "Telegram request failed: " <> message
 
 -- | Edit a Telegram text message previously sent by this bot.
 editMessage :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es Bool

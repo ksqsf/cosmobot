@@ -6,6 +6,8 @@ import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
 import Bot.Prelude
+import qualified Control.Exception as Exception
+import qualified Data.ByteString.Char8 as ByteStringChar8
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -22,6 +24,8 @@ main =
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
+      , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
+      , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
       ]
@@ -154,6 +158,22 @@ testTelegramReferencedMessageIncludesSenderIdentity = do
   (fetched <&> (.senderDisplayName)) @?= Just (Just "Bob Smith")
   (fetched <&> (.senderIdentifier)) @?= Just (Just "@bob")
   (fetched <&> (.text)) @?= Just "quoted"
+
+testTelegramOkFalseBecomesTelegramExceptionDescription :: IO ()
+testTelegramOkFalseBecomesTelegramExceptionDescription = do
+  let raw = ByteStringChar8.pack "{\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: can't parse entities\"}"
+      parsed = either (error . toText) id (Aeson.eitherDecodeStrict raw :: Either String Telegram.TelegramResult)
+  result <- Exception.try (runEff (Telegram.parseTelegramResult parsed)) :: IO (Either Telegram.TelegramException Telegram.Message)
+  case result of
+    Left (Telegram.TelegramException message) ->
+      message @?= "Bad Request: can't parse entities"
+    Right _ ->
+      assertFailure "expected TelegramException"
+
+testTelegramFailureReplyIsConcise :: IO ()
+testTelegramFailureReplyIsConcise =
+  Telegram.telegramFailureReplyText (Telegram.TelegramException "Bad Request: message is too long")
+    @?= "Telegram request failed: Bad Request: message is too long"
 
 testMatrixMessageConvertsToIncomingMessage :: IO ()
 testMatrixMessageConvertsToIncomingMessage = do
