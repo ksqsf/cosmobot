@@ -23,6 +23,7 @@ import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Foldable as Foldable
 import qualified Data.IORef as IORef
+import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Unique
@@ -62,6 +63,8 @@ main =
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
+      , testCase "agent compacts old conversation context before model turn" testAgentCompactsOldConversationContextBeforeModelTurn
+      , testCase "agent announces context compaction" testAgentAnnouncesContextCompaction
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
@@ -214,6 +217,46 @@ testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
           assertFailure [i|expected text system content, got #{show other :: String}|]
     other ->
       assertFailure [i|expected at least two captured LLM request messages, got #{show (requestRoles <$> other) :: String}|]
+
+testAgentCompactsOldConversationContextBeforeModelTurn :: IO ()
+testAgentCompactsOldConversationContextBeforeModelTurn = do
+  answers <- IORef.newIORef [chatAnswer "done" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  let longConversation =
+        Conversation (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 4 agentContext [] longConversation
+  requests <- IORef.readIORef captured
+  case requests of
+    [_summaryRequest, compactedRequest] ->
+      case compactedRequest of
+        summaryMessage : remainingMessages -> do
+          summaryMessage.role @?= "system"
+          case summaryMessage.content of
+            Just (LLM.TextContent content) ->
+              assertBool "compacted summary is included" ("The earlier conversation was compacted." `Text.isInfixOf` content)
+            other ->
+              assertFailure [i|expected compacted summary text, got #{show other :: String}|]
+          length remainingMessages @?= 20
+          map (.role) remainingMessages @?= replicate 20 "user"
+        other ->
+          assertFailure [i|expected compacted request messages, got #{show other :: String}|]
+    other ->
+      assertFailure [i|expected summary request and compacted model request, got #{length other}|]
+
+testAgentAnnouncesContextCompaction :: IO ()
+testAgentAnnouncesContextCompaction = do
+  answers <- IORef.newIORef [chatAnswer "done" []]
+  replies <- IORef.newIORef ([] :: [Text])
+  let longConversation =
+        Conversation (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
+  _ <- runAgentWith answers (ChatMock (Just replies) (Just 46) Nothing) do
+    agentRun <- Agent.startAgentRun agentContext []
+    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun
+    _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program longConversation)
+    pure ()
+  sent <- IORef.readIORef replies
+  sent @?= ["正在整理较早的对话上下文..."]
 
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds :: IO ()
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do

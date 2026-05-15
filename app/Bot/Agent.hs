@@ -39,6 +39,10 @@ import Bot.Agent.Conversation
   , closeInterruptedToolCalls
   )
 import Bot.Agent.Core
+import Bot.Agent.Middleware.ContextCompaction
+  ( withContextCompaction
+  , withContextCompactionNotice
+  )
 import Bot.Agent.Middleware.Observation
   ( ObservationContext
   , withObservation
@@ -136,18 +140,20 @@ initialAgentState conversation =
     , turn = 1
     }
 
-defaultAgentProgram :: (Chat.Chat :> es, Log :> es, IOE :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[] es
+defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[] es
 defaultAgentProgram observer maxTurns agentRun =
   ( withToolLimit maxTurns
   . withObservation observer
   . withToolMessage
+  . withContextCompactionNotice
   . withToolFailureRecovery
   )
     (emptyAgentProgram agentRun)
 
-plainAgentProgram :: (Log :> es, IOE :> es) => Int -> AgentRun es -> AgentProgram '[] es
+plainAgentProgram :: (LLM.LLM :> es, Log :> es, IOE :> es) => Int -> AgentRun es -> AgentProgram '[] es
 plainAgentProgram maxTurns agentRun =
   ( withToolLimit maxTurns
+  . withContextCompaction
   . withToolFailureRecovery
   )
     (emptyAgentProgram agentRun)

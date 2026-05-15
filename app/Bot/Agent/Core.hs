@@ -91,7 +91,7 @@ data AgentProgram (context :: [Type]) es = AgentProgram
     -- Use this for model-side middleware such as conversation compaction,
     -- timing, auditing, or exception-aware behavior around the streamed model
     -- request plus decision.
-  , aroundModelTurn :: MiddlewareContext context -> AgentState -> Stream (Of Text) (Eff es) ModelDecision -> Stream (Of Text) (Eff es) ModelDecision
+  , aroundModelTurn :: MiddlewareContext context -> AgentState -> (AgentState -> Stream (Of Text) (Eff es) ModelDecision) -> Stream (Of Text) (Eff es) ModelDecision
     -- | Wrap the whole tool phase.
     --
     -- Use this for cleanup, timing, timeout, auditing, or exception-aware
@@ -116,7 +116,7 @@ emptyAgentProgram agentRun =
   AgentProgram
     { agentRun
     , aroundAgentRun = \_ action -> action
-    , aroundModelTurn = \_ _ action -> action
+    , aroundModelTurn = \_ agentState action -> action agentState
     , aroundToolTurn = \_ _ action -> action
     , aroundToolCall = \_ _ _ action -> action
     }
@@ -129,7 +129,7 @@ runAgentLoop
   -> AgentState
   -> Stream (Of Text) (Eff es) AgentCompletion
 runAgentLoop program context modelTurn toolTurn agentState = do
-  program.aroundModelTurn context agentState (modelTurn agentState) >>= \case
+  program.aroundModelTurn context agentState modelTurn >>= \case
     ModelAnswered completion ->
       pure completion
     ModelNeedsTools toolState -> do
