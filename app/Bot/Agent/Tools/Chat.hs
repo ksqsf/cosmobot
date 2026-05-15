@@ -12,7 +12,7 @@ module Bot.Agent.Tools.Chat
   , memberInfoTool
   , userAvatarTool
   , listGroupMembersTool
-  , currentMentionsTool
+  , currentMessageInfoTool
   )
 where
 
@@ -136,21 +136,33 @@ listGroupMembersTool = Tool
       pure (toolText (maybe "Group member listing is not available for this platform or chat." jsonText members))
   }
 
-currentMentionsTool :: Tool es
-currentMentionsTool = Tool
-  { name = "get_current_message_mentions"
-  , description = "Return platform user ids mentioned in the current message. QQ mentions are numeric ids; Matrix mentions are text user ids."
+currentMessageInfoTool :: Tool es
+currentMessageInfoTool = Tool
+  { name = "get_current_message_info"
+  , description = "Return structured metadata for the current message, including platform, chat, sender, message ids, mentions, image URLs, and text."
   , parameters = objectSchema [] []
   , allowed = everyone
   , start = \context -> pure \_ ->
-      pure (toolText (jsonText (currentMentionsValue context.message)))
+      pure (toolText (jsonText (currentMessageInfoValue context.message)))
   }
 
-currentMentionsValue :: IncomingMessage -> Aeson.Value
-currentMentionsValue message =
+currentMessageInfoValue :: IncomingMessage -> Aeson.Value
+currentMessageInfoValue message =
   Aeson.object
-    [ "user_ids" Aeson..= map (Text.pack . show) message.mentions
-    , "text_user_ids" Aeson..= message.mentionUsernames
+    [ "platform" Aeson..= chatPlatformKey message.platform
+    , "chat_kind" Aeson..= (show message.kind :: Text)
+    , "chat_id" Aeson..= message.chatId
+    , "chat_aliases" Aeson..= message.chatAliases
+    , "message_id" Aeson..= message.messageId
+    , "reply_to_message_id" Aeson..= message.replyToMessageId
+    , "sender_id" Aeson..= message.senderId
+    , "sender_username" Aeson..= message.senderUsername
+    , "mentions" Aeson..= Aeson.object
+        [ "user_ids" Aeson..= map (Text.pack . show) message.mentions
+        , "text_user_ids" Aeson..= message.mentionUsernames
+        ]
+    , "image_urls" Aeson..= message.imageUrls
+    , "text" Aeson..= message.text
     ]
 
 queryChatLogArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Bool)

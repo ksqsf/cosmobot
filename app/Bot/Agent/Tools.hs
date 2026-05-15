@@ -45,7 +45,7 @@ defaultTools =
   , memberInfoTool
   , userAvatarTool
   , listGroupMembersTool
-  , currentMentionsTool
+  , currentMessageInfoTool
   , scheduleAgentActionTool
   , deleteScheduledAgentActionTool
   , listCurrentUserSchedulesTool
