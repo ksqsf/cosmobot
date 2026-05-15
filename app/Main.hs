@@ -7,6 +7,7 @@ module Main (main) where
 import Bot.Prelude
 import Bot.Config
 import Bot.Core.Route
+import qualified Bot.Lifecycle as Lifecycle
 import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
@@ -46,15 +47,16 @@ main = withShutdownSignal \shutdown -> do
     Typst.runTypst .
     LLM.runLLM cfg.llm .
     ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix $ do
-      runUntilShutdown shutdown do
-        logInfo_ "Cosmobot stand by!"
-        let allStreams =
-              [ ChatDriver.incomingMessages
-              , Scheduler.scheduledMessages
-              ]
-        consumeWith
-          (routes cfg conversations)
-          (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
+      Lifecycle.runLifecycle $
+        runUntilShutdown shutdown do
+          logInfo_ "Cosmobot stand by!"
+          let allStreams =
+                [ ChatDriver.incomingMessages
+                , Scheduler.scheduledMessages
+                ]
+          consumeWith
+            (routes cfg conversations)
+            (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
 withShutdownSignal :: (MVar.MVar () -> IO ()) -> IO ()
 withShutdownSignal action =

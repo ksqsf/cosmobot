@@ -151,6 +151,7 @@ common bot-agent-modules
         Bot.Memory
         Bot.Storage.Prelude
         Bot.Storage.Conversation
+        Bot.Storage.Lifecycle
         Bot.Storage.Scheduler
         Bot.Util.Html
         Bot.Util.HTTP
@@ -181,6 +182,7 @@ executable cosmobot
         Bot.Effect.LLM.Config
         Bot.Handler.Admin
         Bot.Handler.Admin.Config
+        Bot.Lifecycle
         Bot.Handler.Ask
         Bot.Handler.Ask.Config
         Bot.Handler.Audit
@@ -331,8 +333,12 @@ test-suite admin-spec
     main-is:          AdminSpec.hs
     other-modules:
         Bot.Core.Route
+        Bot.Effect.Storage
         Bot.Handler.Admin
         Bot.Handler.Admin.Config
+        Bot.Lifecycle
+        Bot.Storage.Lifecycle
+        Bot.Storage.Prelude
     build-depends:    toml-parser
     hs-source-dirs:   test
 
