@@ -10,9 +10,11 @@ import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
+import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
 import Bot.Handler.Ask (askHandlers)
 import Bot.Handler.Ask.Config (AskHandlerConfig (..))
@@ -26,6 +28,7 @@ import qualified Data.IORef as IORef
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.IO as TextIO
 import Data.Unique
 import qualified Streaming.Prelude as S
 import System.Directory
@@ -38,6 +41,7 @@ type AgentStack =
    , AgentAudit.AgentAudit
    , ChatLog.ChatLog
    , LLM.LLM
+   , Skills.Skills
    , Memory.Memory
    , Scheduler.Scheduler
    , Typst.Typst
@@ -67,6 +71,7 @@ main =
       , testCase "agent announces context compaction" testAgentAnnouncesContextCompaction
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
+      , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
@@ -304,6 +309,37 @@ testAskHandlerSystemContextUsesMessageBotId = do
           assertFailure [i|expected text system content, got #{show other :: String}|]
     other ->
       assertFailure [i|expected at least two captured ask-handler LLM request messages, got #{show (requestRoles <$> other) :: String}|]
+
+testAskHandlerInjectsStartupSkillMetadata :: IO ()
+testAskHandlerInjectsStartupSkillMetadata = withTempDir "skills-test" \skillsDir -> do
+  createDirectoryIfMissing True (skillsDir </> "haskell")
+  TextIO.writeFile (skillsDir </> "haskell" </> "SKILL.md") $
+    Text.unlines
+      [ "---"
+      , "name: haskell-refactor"
+      , "description: Improve Haskell modules safely."
+      , "---"
+      , "Full skill body is loaded only when needed."
+      ]
+  answers <- IORef.newIORef [chatAnswer "done" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  _ <- runAgentCapturingMessagesWithSkills (SkillsStore.SkillsConfig skillsDir) captured answers (ChatMock Nothing Nothing Nothing) do
+    conversations <- liftIO newConversationStore
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
+    liftIO $ waitUntil (not . null <$> IORef.readIORef captured)
+  requests <- IORef.readIORef captured
+  case viaNonEmpty head requests of
+    Just (message : _) ->
+      case message.content of
+        Just (LLM.TextContent content) -> do
+          assertBool "skill metadata block is included" ("<SKILLS>" `Text.isInfixOf` content)
+          assertBool "skill name is included" ("haskell-refactor" `Text.isInfixOf` content)
+          assertBool "skill description is included" ("Improve Haskell modules safely." `Text.isInfixOf` content)
+          assertBool "skill path is included" (Text.pack (skillsDir </> "haskell" </> "SKILL.md") `Text.isInfixOf` content)
+        other ->
+          assertFailure [i|expected text system content, got #{show other :: String}|]
+    other ->
+      assertFailure [i|expected captured ask-handler LLM request messages, got #{show (requestRoles <$> other) :: String}|]
 
 testAgentAuditRecordsToolEvents :: IO ()
 testAgentAuditRecordsToolEvents = do
@@ -625,9 +661,13 @@ testRunBashKillsTimedOutProcess = do
 
 withMemoryTempDir :: (FilePath -> IO a) -> IO a
 withMemoryTempDir action = do
+  withTempDir "memory-test" action
+
+withTempDir :: String -> (FilePath -> IO a) -> IO a
+withTempDir label action = do
   root <- getTemporaryDirectory
   unique <- hashUnique <$> newUnique
-  let dir = root </> [i|cosmobot-memory-test-#{unique}|]
+  let dir = root </> [i|cosmobot-#{label}-#{unique}|]
   Exception.bracket
     (createDirectory dir $> dir)
     removeDirectoryRecursive
@@ -739,6 +779,24 @@ runAgentCapturingMessages captured answers chatMock action = do
     chatMock
     action
 
+runAgentCapturingMessagesWithSkills
+  :: SkillsStore.SkillsConfig
+  -> IORef.IORef [[LLM.ChatMessage]]
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentCapturingMessagesWithSkills skillsCfg captured answers chatMock action = do
+  rendered <- IORef.newIORef ([] :: [Text])
+  runAgentWithMemorySkillsAndTypstAndCapture
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    skillsCfg
+    rendered
+    (Just captured)
+    answers
+    chatMock
+    action
+
 runAgentWithTypst
   :: IORef.IORef [Text]
   -> IORef.IORef [LLM.ChatAnswer]
@@ -783,43 +841,60 @@ runAgentWithMemoryAndTypstAndCapture
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemoryAndTypstAndCapture memoryCfg rendered captured answers chatMock action = do
+  runAgentWithMemorySkillsAndTypstAndCapture memoryCfg defaultTestSkillsConfig rendered captured answers chatMock action
+
+runAgentWithMemorySkillsAndTypstAndCapture
+  :: MemoryStore.MemoryConfig
+  -> SkillsStore.SkillsConfig
+  -> IORef.IORef [Text]
+  -> Maybe (IORef.IORef [[LLM.ChatMessage]])
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithMemorySkillsAndTypstAndCapture memoryCfg skillsCfg rendered captured answers chatMock action = do
   runEff $
     runTestLog $
       StorageEffect.runStorageSQLitePath ":memory:" $
         Typst.runTypstWith (mockTypstRender rendered) $
           Scheduler.runScheduler $
             Memory.runMemory memoryCfg $
-              LLM.runLLMWith
-                (\messages -> captureMessages captured messages >> pure "unused text answer")
-                (\messages consume -> captureMessages captured messages >> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
-                (\messages -> captureMessages captured messages >> pure "unused image answer")
-                (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
-                (\_ messages consume -> do
-                    captureMessages captured messages
-                    answer <- liftIO (popAnswer answers)
-                    consume do
-                      case answer of
-                        LLM.ChatFinalAnswer{content} ->
-                          S.yield content
-                        LLM.ChatToolRequest{content} ->
-                          S.yield content
-                      pure answer) $
-                ChatLog.runChatLog $
-                  AgentAudit.runAgentAudit $
-                    Chat.runChatWith
-                      Chat.ChatHandlers
-                        { handleReplyTo = mockReply chatMock
-                        , handleEditMessage = noopEdit
-                        , handleDeleteMessage = noopDelete
-                        , handleReplyStreamStyle = noopReplyStreamStyle
-                        , handleGetMessageContent = noopFetch
-                        , handleGetSenderMemberInfo = noopSenderMember
-                        , handleGetMemberInfo = noopMember
-                        , handleGetUserAvatar = mockUserAvatar chatMock
-                        , handleListGroupMembers = noopMembers
-                        , handleMentionUser = noopMention
-                        }
-                      action
+              Skills.runSkills skillsCfg $
+                LLM.runLLMWith
+                  (\messages -> captureMessages captured messages >> pure "unused text answer")
+                  (\messages consume -> captureMessages captured messages >> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
+                  (\messages -> captureMessages captured messages >> pure "unused image answer")
+                  (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
+                  (\_ messages consume -> do
+                      captureMessages captured messages
+                      answer <- liftIO (popAnswer answers)
+                      consume do
+                        case answer of
+                          LLM.ChatFinalAnswer{content} ->
+                            S.yield content
+                          LLM.ChatToolRequest{content} ->
+                            S.yield content
+                        pure answer) $
+                  ChatLog.runChatLog $
+                    AgentAudit.runAgentAudit $
+                      Chat.runChatWith
+                        Chat.ChatHandlers
+                          { handleReplyTo = mockReply chatMock
+                          , handleEditMessage = noopEdit
+                          , handleDeleteMessage = noopDelete
+                          , handleReplyStreamStyle = noopReplyStreamStyle
+                          , handleGetMessageContent = noopFetch
+                          , handleGetSenderMemberInfo = noopSenderMember
+                          , handleGetMemberInfo = noopMember
+                          , handleGetUserAvatar = mockUserAvatar chatMock
+                          , handleListGroupMembers = noopMembers
+                          , handleMentionUser = noopMention
+                          }
+                        action
+
+defaultTestSkillsConfig :: SkillsStore.SkillsConfig
+defaultTestSkillsConfig =
+  SkillsStore.SkillsConfig "/tmp/cosmobot-agent-spec-unused-skills"
 
 captureMessages :: IOE :> es => Maybe (IORef.IORef [[LLM.ChatMessage]]) -> [LLM.ChatMessage] -> Eff es ()
 captureMessages captured messages =

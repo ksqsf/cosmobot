@@ -12,6 +12,7 @@ module Bot.Config
   , AskHandlerConfig (..)
   , SaucenaoConfig (..)
   , Memory.MemoryConfig (..)
+  , Skills.SkillsConfig (..)
   , loadConfig
   )
 where
@@ -44,6 +45,8 @@ import Bot.Handler.ShutUp.Config
   )
 import qualified Bot.Memory as Memory
 import qualified Bot.Memory.Config as MemoryConfig
+import qualified Bot.Skills as Skills
+import qualified Bot.Skills.Config as SkillsConfig
 import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
@@ -60,6 +63,7 @@ data BotConfig = BotConfig
   , tool     :: !Agent.ToolConfig
   , saucenao :: !SaucenaoConfig
   , memory   :: !Memory.MemoryConfig
+  , skills   :: !Skills.SkillsConfig
   , handlers :: !HandlersConfig
   , logLevel :: !LogLevel
   , sqlitePath :: !FilePath
@@ -92,6 +96,7 @@ data FileConfig = FileConfig
   , llm      :: !LLMConfig.FileConfig
   , tool     :: !AgentConfig.FileConfig
   , memory   :: !MemoryConfig.FileConfig
+  , skills   :: !SkillsConfig.FileConfig
   , handler  :: !HandlerFileConfig
   }
   deriving (Show)
@@ -104,6 +109,7 @@ instance FromValue FileConfig where
     <*> reqKey "llm"
     <*> fmap (fromMaybe AgentConfig.defaultFileConfig) (optKey "tool")
     <*> fmap (fromMaybe MemoryConfig.defaultFileConfig) (optKey "memory")
+    <*> fmap (fromMaybe SkillsConfig.defaultFileConfig) (optKey "skills")
     <*> reqKey "handler"
 
 data DriverFileConfig = DriverFileConfig
@@ -198,6 +204,7 @@ toBotConfig cfg =
     , tool = AgentConfig.toToolConfig cfg.tool
     , saucenao = cfg.handler.saucenao
     , memory = MemoryConfig.toMemoryConfig cfg.memory
+    , skills = SkillsConfig.toSkillsConfig cfg.skills
     , handlers = HandlersConfig cfg.handler.admin askConfig cfg.handler.shutup
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath

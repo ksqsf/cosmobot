@@ -33,6 +33,7 @@ module Bot.Effect.LLM
   , userText
   , userWithImages
   , systemText
+  , contextSystemPrompt
   , memorySystemPrompt
   , assistantText
   , assistantAnswer
@@ -996,8 +997,13 @@ systemText prompt =
 
 memorySystemPrompt :: Text -> Maybe Text -> Maybe Text -> Text
 memorySystemPrompt systemPrompt senderMemory chatMemory =
+  contextSystemPrompt systemPrompt "" senderMemory chatMemory
+
+contextSystemPrompt :: Text -> Text -> Maybe Text -> Maybe Text -> Text
+contextSystemPrompt systemPrompt skillsPrompt senderMemory chatMemory =
   Text.strip $ Text.intercalate "\n\n" $
     [ systemPrompt | not (Text.null (Text.strip systemPrompt)) ] <>
+    [ skills | let skills = Text.strip skillsPrompt, not (Text.null skills) ] <>
     memoryBlock "current chat" "this chat" chatMemory <>
     memoryBlock "current message sender" "this sender" senderMemory
 

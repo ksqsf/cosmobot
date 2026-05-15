@@ -15,6 +15,7 @@ import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import Bot.Handler.Admin
@@ -43,6 +44,7 @@ main = withShutdownSignal \shutdown -> do
     AgentAudit.runAgentAudit .
     ChatLog.runChatLog .
     Memory.runMemory cfg.memory .
+    Skills.runSkills cfg.skills .
     Scheduler.runScheduler .
     Typst.runTypst .
     LLM.runLLM cfg.llm .
@@ -90,7 +92,7 @@ runUntilShutdown shutdown action =
         (MVar.takeMVar shutdown >> runInIO (logInfo_ "Shutdown requested; stopping cosmobot."))
 
 routes
-  :: (Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
   => BotConfig
   -> ConversationStore
   -> [RouteHandler es]

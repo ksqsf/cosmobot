@@ -148,9 +148,11 @@ common bot-agent-modules
         Bot.Effect.LLM
         Bot.Effect.Memory
         Bot.Effect.Scheduler
+        Bot.Effect.Skills
         Bot.Effect.Storage
         Bot.Effect.Typst
         Bot.Memory
+        Bot.Skills
         Bot.Storage.Prelude
         Bot.Storage.Conversation
         Bot.Storage.Lifecycle
@@ -196,6 +198,7 @@ executable cosmobot
         Bot.Handler.Typing
         Bot.Handler.Typing.Typst
         Bot.Memory.Config
+        Bot.Skills.Config
         Bot.Handler.Saucenao
         Bot.Util.Stream
         Bot.Util.Toml

@@ -47,6 +47,9 @@ image_generation_output_compression = 80
 [memory]
 dir = "memory"
 
+[skills]
+dir = "skills"
+
 [tool]
 datetime = false
 
