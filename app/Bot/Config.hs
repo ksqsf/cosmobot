@@ -28,11 +28,14 @@ import qualified Bot.Agent.Config as AgentConfig
 import Bot.Core.Message (ChatPlatform (..))
 import Bot.Handler.Ask.Config
   ( AskHandlerConfig (..)
-  , HandlersConfig (..)
   )
 import qualified Bot.Handler.Saucenao.Config as SaucenaoConfig
 import Bot.Handler.Saucenao.Config
   ( SaucenaoConfig (..)
+  )
+import qualified Bot.Handler.ShutUp.Config as ShutUpConfig
+import Bot.Handler.ShutUp.Config
+  ( ShutUpConfig (..)
   )
 import qualified Bot.Memory as Memory
 import qualified Bot.Memory.Config as MemoryConfig
@@ -55,6 +58,13 @@ data BotConfig = BotConfig
   , handlers :: !HandlersConfig
   , logLevel :: !LogLevel
   , sqlitePath :: !FilePath
+  }
+  deriving (Show)
+
+-- | Configuration for all handler groups.
+data HandlersConfig = HandlersConfig
+  { ask :: !AskHandlerConfig
+  , shutup :: !ShutUpConfig
   }
   deriving (Show)
 
@@ -106,6 +116,7 @@ instance FromValue DriverFileConfig where
 data HandlerFileConfig = HandlerFileConfig
   { saucenao :: !SaucenaoConfig
   , ask      :: !AskHandlerConfig
+  , shutup   :: !ShutUpConfig
   }
   deriving (Show)
 
@@ -113,6 +124,7 @@ instance FromValue HandlerFileConfig where
   fromValue = parseTableFromValue $ HandlerFileConfig
     <$> fmap (fromMaybe SaucenaoConfig.defaultSaucenaoConfig) (optKey "saucenao")
     <*> reqKey "ask"
+    <*> fmap (fromMaybe ShutUpConfig.defaultShutUpConfig) (optKey "shutup")
 
 newtype LogFileConfig = LogFileConfig
   { level :: LogLevel
@@ -178,7 +190,7 @@ toBotConfig cfg =
     , tool = AgentConfig.toToolConfig cfg.tool
     , saucenao = cfg.handler.saucenao
     , memory = MemoryConfig.toMemoryConfig cfg.memory
-    , handlers = HandlersConfig askConfig
+    , handlers = HandlersConfig askConfig cfg.handler.shutup
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath
     }

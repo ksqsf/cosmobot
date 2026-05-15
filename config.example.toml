@@ -65,6 +65,9 @@ brave_api_key = ""
 [handler.saucenao]
 api_key = ""
 
+[handler.shutup]
+delete_patterns = []
+
 [handler.ask]
 command = "!ask"
 draw_command = "!draw"

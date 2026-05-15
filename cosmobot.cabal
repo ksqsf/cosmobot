@@ -97,6 +97,7 @@ common app-deps
                     , process
                     , selda
                     , selda-sqlite
+                    , regex-tdfa
     hs-source-dirs:   app
 
 common test-deps
@@ -184,6 +185,8 @@ executable cosmobot
         Bot.Handler.Audit
         Bot.Handler.Scratchpad
         Bot.Handler.Saucenao.Config
+        Bot.Handler.ShutUp
+        Bot.Handler.ShutUp.Config
         Bot.Handler.Typing
         Bot.Handler.Typing.Typst
         Bot.Memory.Config
@@ -328,6 +331,21 @@ test-suite admin-spec
     other-modules:
         Bot.Core.Route
         Bot.Handler.Admin
+    hs-source-dirs:   test
+
+test-suite shutup-spec
+    import:           warnings
+                    , language
+                    , app-deps
+                    , test-deps
+                    , bot-core-modules
+    type:             exitcode-stdio-1.0
+    main-is:          ShutUpSpec.hs
+    other-modules:
+        Bot.Core.Route
+        Bot.Handler.ShutUp
+        Bot.Handler.ShutUp.Config
+    build-depends:    toml-parser
     hs-source-dirs:   test
 
 benchmark message-pipeline-bench

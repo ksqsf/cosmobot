@@ -20,6 +20,7 @@ import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Audit
 import Bot.Handler.Saucenao
+import Bot.Handler.ShutUp
 import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
 import Bot.Storage.Conversation
@@ -92,7 +93,8 @@ routes
   -> ConversationStore
   -> [RouteHandler es]
 routes cfg conversations =
-  auditHandlers conversations
+  shutUpHandlers cfg.handlers.shutup
+    <> auditHandlers conversations
     <> adminHandlers
     <> scratchpadHandlers
     <> typingHandlers
