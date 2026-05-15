@@ -117,11 +117,17 @@ testUserAvatarToolQueriesChatEffect = do
     [ chatAnswer "" [toolCall "call-1" "get_user_avatar" (Aeson.object [])]
     , chatAnswer "found" []
     ]
-  (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing (Just avatar)) do
-    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "avatar?")
+  replies <- IORef.newIORef ([] :: [Text])
+  recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
+  remembered <- IORef.newIORef ([] :: [Maybe Integer])
+  (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just 44) (Just avatar)) do
+    Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "avatar?")
   answer @?= "found"
   Text.unlines (toolOutputs conversation) @?= jsonText avatar <> "\n"
   imageContextUrls conversation @?= ["https://example.test/avatar.jpg"]
+  IORef.readIORef replies >>= (@?= ["[image] https://example.test/avatar.jpg"])
+  IORef.readIORef recorded >>= (@?= [(Just 44, "[image] https://example.test/avatar.jpg")])
+  IORef.readIORef remembered >>= (@?= [Just 44])
 
 testTypstToImageToolRendersAndSendsImage :: IO ()
 testTypstToImageToolRendersAndSendsImage = do

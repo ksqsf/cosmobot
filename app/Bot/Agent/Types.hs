@@ -17,6 +17,7 @@ module Bot.Agent.Types
   , toolText
   , toolTextWithImages
   , toolMessage
+  , toolMessageWithImages
   )
 where
 
@@ -159,3 +160,7 @@ toolTextWithImages content imageUrls =
 toolMessage :: Maybe Integer -> Text -> ToolResult
 toolMessage messageId content =
   ToolResult content [] [messageId]
+
+toolMessageWithImages :: Maybe Integer -> Text -> [Text] -> ToolResult
+toolMessageWithImages messageId content imageUrls =
+  ToolResult content imageUrls [messageId]

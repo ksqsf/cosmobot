@@ -111,18 +111,18 @@ userAvatarTool = Tool
   { name = "get_user_avatar"
   , description = "Get avatar information for a platform user id. If user_id is omitted, this queries the sender of the current message."
   , parameters = objectSchema
-      [ fieldInteger "user_id" "Platform user id to query. Defaults to the current message sender."
+      [ fieldPositiveInteger "user_id" "Positive platform user id to query. Defaults to the current message sender. Do not pass 0."
       ]
       []
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs (userAvatarArgs context.message.senderId) args \userId -> do
         avatar <- Chat.getUserAvatar context.message userId
-        pure case avatar of
+        case avatar of
           Nothing ->
-            toolText "No avatar is available for this user on this platform."
+            pure (toolText "No avatar is available for this user on this platform.")
           Just value ->
-            toolTextWithImages (jsonText value) (maybeToList (avatarUrl value))
+            userAvatarResult context value
   }
 
 listGroupMembersTool :: Chat.Chat :> es => Tool es
@@ -164,15 +164,42 @@ userAvatarArgs :: Maybe Integer -> Aeson.Value -> AesonTypes.Parser Integer
 userAvatarArgs senderId =
   Aeson.withObject "user avatar arguments" $ \o ->
     o Aeson..:? Key.fromText "user_id" >>= \case
-      Just userId ->
+      Just userId | userId > 0 ->
         pure userId
-      Nothing ->
-        maybe (fail "user_id is required when the current message has no sender id.") pure senderId
+      _ ->
+        maybe (fail "user_id must be positive, or omitted when the current message has a sender id.") pure (positiveSenderId senderId)
+
+positiveSenderId :: Maybe Integer -> Maybe Integer
+positiveSenderId senderId = do
+  userId <- senderId
+  guard (userId > 0)
+  pure userId
+
+fieldPositiveInteger :: Text -> Text -> (Text, Aeson.Value)
+fieldPositiveInteger name description =
+  ( name
+  , Aeson.object
+      [ "type" Aeson..= Aeson.String "integer"
+      , "minimum" Aeson..= (1 :: Int)
+      , "description" Aeson..= description
+      ]
+  )
 
 avatarUrl :: Aeson.Value -> Maybe Text
 avatarUrl =
   AesonTypes.parseMaybe $
     Aeson.withObject "user avatar" (Aeson..: Key.fromText "avatar_url")
+
+userAvatarResult :: Chat.Chat :> es => AgentContext es -> Aeson.Value -> Eff es ToolResult
+userAvatarResult context value =
+  case avatarUrl value of
+    Nothing ->
+      pure (toolText (jsonText value))
+    Just url -> do
+      let body = ReplyBody.imageDirective url
+      sent <- Chat.replyTo context.message body
+      context.recordBotMessage sent body
+      pure (toolMessageWithImages sent (jsonText value) [url])
 
 sendReplyArgs :: Aeson.Value -> AesonTypes.Parser Text
 sendReplyArgs =

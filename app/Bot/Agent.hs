@@ -22,6 +22,7 @@ module Bot.Agent
   , toolText
   , toolTextWithImages
   , toolMessage
+  , toolMessageWithImages
   , runAgent
   , runAgentStreaming
   , runAgentWith
