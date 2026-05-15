@@ -60,7 +60,7 @@ main =
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
-      , testCase "agent request prepends current message system context" testAgentRequestPrependsCurrentMessageSystemContext
+      , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
@@ -168,8 +168,8 @@ testTypstToImageToolRendersAndSendsImage = do
   IORef.readIORef recorded >>= (@?= [(Just 43, "[typst image]")])
   IORef.readIORef remembered >>= (@?= [Just 43])
 
-testAgentRequestPrependsCurrentMessageSystemContext :: IO ()
-testAgentRequestPrependsCurrentMessageSystemContext = do
+testAgentRequestMergesCurrentMessageContextIntoSystemPrompt :: IO ()
+testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
   answers <- IORef.newIORef [chatAnswer "done" []]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
@@ -183,13 +183,14 @@ testAgentRequestPrependsCurrentMessageSystemContext = do
             ]
         })
       Agent.defaultTools
-      (startWithUser "hello")
+      (startWithSystemAndUser "base system prompt" "hello")
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests >>= viaNonEmpty head of
     Just message -> do
       message.role @?= "system"
       case message.content of
         Just (LLM.TextContent content) -> do
+          assertBool "system context preserves configured prompt" ("base system prompt" `Text.isInfixOf` content)
           assertBool "system context contains bot id" ("- bot_id: 2044933066" `Text.isInfixOf` content)
           assertBool "system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
         other ->
@@ -211,6 +212,7 @@ testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
       message.role @?= "system"
       case message.content of
         Just (LLM.TextContent content) -> do
+          assertBool "ask handler system context preserves configured prompt" ("base system prompt" `Text.isInfixOf` content)
           assertBool "ask handler system context contains configured bot id" ("- bot_id: 2044933066" `Text.isInfixOf` content)
           assertBool "ask handler system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
         other ->

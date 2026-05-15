@@ -58,7 +58,6 @@ import Bot.Core.Message (IncomingMessage (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Foldable as Foldable
-import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import Data.Unique (hashUnique, newUnique)
 import qualified Streaming.Prelude as S
@@ -222,11 +221,30 @@ askNext agentRun agentState =
     (agentRequestMessages agentRun.context agentState.conversation)
 
 agentRequestMessages :: AgentContext es -> Conversation -> [LLM.ChatMessage]
-agentRequestMessages context (Conversation messages)
-  | Text.null (Text.strip context.systemContext) =
-      Foldable.toList messages
+agentRequestMessages context (Conversation messages) =
+  mergeSystemContext context.systemContext (Foldable.toList messages)
+
+mergeSystemContext :: Text -> [LLM.ChatMessage] -> [LLM.ChatMessage]
+mergeSystemContext context messages
+  | Text.null strippedContext = messages
   | otherwise =
-      Foldable.toList (LLM.systemText context.systemContext Seq.<| messages)
+      case messages of
+        firstMessage : rest
+          | firstMessage.role == "system"
+          , Just (LLM.TextContent systemPrompt) <- firstMessage.content ->
+              replaceMessageContent (Just (LLM.TextContent (joinSystemPrompts systemPrompt strippedContext))) firstMessage : rest
+        _ ->
+          LLM.systemText strippedContext : messages
+  where
+    strippedContext = Text.strip context
+
+joinSystemPrompts :: Text -> Text -> Text
+joinSystemPrompts systemPrompt context =
+  Text.strip $ Text.intercalate "\n\n" [systemPrompt, context]
+
+replaceMessageContent :: Maybe LLM.MessageContent -> LLM.ChatMessage -> LLM.ChatMessage
+replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
+  LLM.ChatMessage role content toolCalls toolCallId
 
 -----------------------------------------------------------------------------------------
 -- * Tool execution
