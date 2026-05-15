@@ -291,6 +291,7 @@ telegramMessageDigest cfg message =
     , mentionsBot =
         any (`elem` cfg.botIds) (messageMentionIds message) ||
         any (`elem` cfg.botUsernames) (messageMentionUsernames message)
+    , botId = listToMaybe (map (Text.pack . show) cfg.botIds <> cfg.botUsernames)
     }
   where
     chatAllowed =

@@ -753,6 +753,7 @@ qqMessageDigest cfg event =
     , senderIsAllowed = senderAllowed
     , senderIsSuperuser = senderSuperuser
     , mentionsBot = maybe False (`elem` eventMentionIds event) cfg.botQQ
+    , botId = Text.pack . show <$> (event.selfId <|> cfg.botQQ)
     }
   where
     senderAllowed =

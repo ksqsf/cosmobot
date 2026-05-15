@@ -454,11 +454,12 @@ currentMessageSystemPrompt cfg message =
     ]
   where
     platformText = show message.platform :: String
-    botIdText = maybe "unavailable" Text.unpack (listToMaybe [botId | (platform, botId) <- cfg.botIds, platform == message.platform])
+    botIdText = maybe "unavailable" Text.unpack (message.digest.botId <|> configuredBotId)
     kindText = show message.kind :: String
     chatIdText = maybe "unavailable" show message.chatId :: String
     senderIdText = maybe "unavailable" Text.unpack message.senderId
     senderUsernameText = fromMaybe "unavailable" message.senderUsername
+    configuredBotId = listToMaybe [botId | (platform, botId) <- cfg.botIds, platform == message.platform]
 
 loadScopedMemory :: Memory.Memory :> es => Either Text MemoryStore.MemoryScope -> Eff es (Maybe Text)
 loadScopedMemory =

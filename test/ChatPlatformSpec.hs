@@ -31,6 +31,7 @@ testQqUserMessageConvertsToIncomingMessage = do
   let incoming = QQ.eventToIncomingMessage (qqMessageEvent 10001)
   ((.platform) <$> incoming) @?= Just PlatformQQ
   ((.text) <$> incoming) @?= Just "hello"
+  ((.digest.botId) <$> incoming) @?= Just (Just "424242")
 
 testQqSuperuserIsAlsoAllowedSender :: IO ()
 testQqSuperuserIsAlsoAllowedSender = do

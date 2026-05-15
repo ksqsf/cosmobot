@@ -58,8 +58,28 @@ data MessageDigest = MessageDigest
   , senderIsAllowed :: !Bool
   , senderIsSuperuser :: !Bool
   , mentionsBot :: !Bool
+  , botId :: !(Maybe Text)
   }
-  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+  deriving (Eq, Show, Generic)
+
+instance Aeson.ToJSON MessageDigest where
+  toJSON MessageDigest{chatIsAllowed, senderIsAllowed, senderIsSuperuser, mentionsBot, botId} =
+    Aeson.object
+      [ "chatIsAllowed" Aeson..= chatIsAllowed
+      , "senderIsAllowed" Aeson..= senderIsAllowed
+      , "senderIsSuperuser" Aeson..= senderIsSuperuser
+      , "mentionsBot" Aeson..= mentionsBot
+      , "botId" Aeson..= botId
+      ]
+
+instance Aeson.FromJSON MessageDigest where
+  parseJSON = Aeson.withObject "MessageDigest" \o ->
+    MessageDigest
+      <$> o Aeson..: "chatIsAllowed"
+      <*> o Aeson..: "senderIsAllowed"
+      <*> o Aeson..: "senderIsSuperuser"
+      <*> o Aeson..: "mentionsBot"
+      <*> o Aeson..:? "botId"
 
 emptyMessageDigest :: MessageDigest
 emptyMessageDigest =
@@ -68,6 +88,7 @@ emptyMessageDigest =
     , senderIsAllowed = False
     , senderIsSuperuser = False
     , mentionsBot = False
+    , botId = Nothing
     }
 
 -- | Platform-normalized message consumed by handlers.
@@ -101,6 +122,7 @@ incomingMessageLogLine message =
     , "sender=" <> showMaybe message.senderId
     , "username=" <> fromMaybe "-" message.senderUsername
     , "superuser=" <> show message.digest.senderIsSuperuser
+    , "bot=" <> showMaybe message.digest.botId
     , "message=" <> showMaybe message.messageId
     , "reply_to=" <> showMaybe message.replyToMessageId
     , "mentions=" <> show (length message.mentions + length message.mentionUsernames)

@@ -63,6 +63,7 @@ main =
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
+      , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
@@ -228,6 +229,29 @@ testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
         Just (LLM.TextContent content) -> do
           assertBool "ask handler system context preserves configured prompt" ("base system prompt" `Text.isInfixOf` content)
           assertBool "ask handler system context contains configured bot id" ("- bot_id: 2044933066" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
+        other ->
+          assertFailure [i|expected text system content, got #{show other :: String}|]
+    Nothing ->
+      assertFailure "expected captured ask-handler LLM request messages"
+
+testAskHandlerSystemContextUsesMessageBotId :: IO ()
+testAskHandlerSystemContextUsesMessageBotId = do
+  answers <- IORef.newIORef [chatAnswer "done" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    conversations <- liftIO newConversationStore
+    let cfg = askHandlerConfig{botIds = []}
+        message = askHandlerMessage{digest = askHandlerMessage.digest{botId = Just "2044933066"}}
+    runHandlers (askHandlers Agent.defaultToolConfig cfg conversations) message
+    liftIO $ waitUntil (not . null <$> IORef.readIORef captured)
+  requests <- IORef.readIORef captured
+  case viaNonEmpty head requests >>= viaNonEmpty head of
+    Just message -> do
+      message.role @?= "system"
+      case message.content of
+        Just (LLM.TextContent content) -> do
+          assertBool "ask handler system context contains message bot id" ("- bot_id: 2044933066" `Text.isInfixOf` content)
           assertBool "ask handler system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
         other ->
           assertFailure [i|expected text system content, got #{show other :: String}|]

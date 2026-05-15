@@ -181,6 +181,7 @@ matrixMessageDigest cfg roomId event =
     , senderIsAllowed = senderSuperuser
     , senderIsSuperuser = senderSuperuser
     , mentionsBot = maybe False (\botId -> botId `elem` event.content.mentions || botId `Text.isInfixOf` eventText) cfg.userId
+    , botId = cfg.userId
     }
   where
     roomAllowed =
