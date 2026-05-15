@@ -49,7 +49,7 @@ defaultTools =
   , scheduleAgentActionTool
   , deleteScheduledAgentActionTool
   , listCurrentUserSchedulesTool
-  , manageMemoryTool
+  , manageSenderMemoryTool
   , manageChatMemoryTool
   , runBashTool
   , emacsEvalTool

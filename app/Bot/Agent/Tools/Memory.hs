@@ -5,7 +5,7 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Tools.Memory
-  ( manageMemoryTool
+  ( manageSenderMemoryTool
   , manageChatMemoryTool
   )
 where
@@ -21,8 +21,8 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
-manageMemoryTool :: Memory.Memory :> es => Tool es
-manageMemoryTool = Tool
+manageSenderMemoryTool :: Memory.Memory :> es => Tool es
+manageSenderMemoryTool = Tool
   { name = "manage_current_sender_memory"
   , description = "View, replace, or clear the persistent MEMORY.md for the current message sender. Use this when the sender asks to view or clear memory, or when the sender gives durable preferences such as a preferred name, style, language, stable personal facts, or recurring instructions. Keep memory concise: non-superusers must stay within 1000 characters; if an update is rejected, summarize it shorter and try again."
   , parameters = objectSchema
@@ -30,7 +30,7 @@ manageMemoryTool = Tool
       , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
       ]
       ["action"]
-  , noisy = False
+  , noisy = True
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs memoryArgs args \(action, memory) ->
@@ -46,7 +46,7 @@ manageChatMemoryTool = Tool
       , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
       ]
       ["action"]
-  , noisy = False
+  , noisy = True
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs memoryArgs args \(action, memory) ->
