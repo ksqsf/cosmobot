@@ -726,7 +726,7 @@ eventToIncomingMessageWith cfg event
       , senderUsername = Nothing
       , messageId = event.messageId
       , replyToMessageId = event.message >>= replySegmentMessageId
-      , mentions  = maybe [] mentionIds event.message
+      , mentions  = eventMentionIds event
       , mentionUsernames = []
       , imageUrls = maybe [] messageImageUrls event.message
       , text      = fromMaybe "" ((event.message >>= messageText) <|> event.rawMessage)
@@ -752,7 +752,7 @@ qqMessageDigest cfg event =
     { chatIsAllowed = maybe False (`elem` cfg.allowedGroups) event.groupId
     , senderIsAllowed = senderAllowed
     , senderIsSuperuser = senderSuperuser
-    , mentionsBot = maybe False (`elem` maybe [] mentionIds event.message) cfg.botQQ
+    , mentionsBot = maybe False (`elem` eventMentionIds event) cfg.botQQ
     }
   where
     senderAllowed =
@@ -776,7 +776,7 @@ oneBotChatKind = \case
 
 messageText :: Aeson.Value -> Maybe Text
 messageText = \case
-  Aeson.String text -> Just (Text.strip text)
+  Aeson.String text -> Just (Text.strip (rawMessageText text))
   Aeson.Array segments -> Just (Text.strip (foldMap segmentText segments))
   _ -> Nothing
 
@@ -874,12 +874,56 @@ segmentText = \case
     , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj
     , Just (Aeson.String text) <- KeyMap.lookup "text" data_ ->
         text
+    | Just (Aeson.String "at") <- KeyMap.lookup "type" obj
+    , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj
+    , Just value <- KeyMap.lookup "qq" data_
+    , Just qq <- mentionValueText value ->
+        "@" <> qq
   _ -> ""
+
+rawMessageText :: Text -> Text
+rawMessageText text =
+  case Text.breakOn "[CQ:at" text of
+    (before, "") ->
+      before
+    (before, rest) ->
+      let afterStart = Text.drop (Text.length "[CQ:at") rest
+          (segment, afterSegment) = Text.breakOn "]" afterStart
+          renderedMention = maybe "" ("@" <>) (rawMentionValue segment)
+          next = Text.drop 1 afterSegment
+      in before <> renderedMention <> rawMessageText next
 
 mentionIds :: Aeson.Value -> [Integer]
 mentionIds = \case
   Aeson.Array segments -> mapMaybe mentionSegmentId (toList segments)
   _ -> []
+
+eventMentionIds :: Event -> [Integer]
+eventMentionIds event =
+  case maybe [] mentionIds event.message of
+    [] -> maybe [] rawMentionIds event.rawMessage
+    ids -> ids
+
+rawMentionIds :: Text -> [Integer]
+rawMentionIds text =
+  case Text.breakOn "[CQ:at" text of
+    (_, "") ->
+      []
+    (_, rest) ->
+      let afterStart = Text.drop (Text.length "[CQ:at") rest
+          (segment, afterSegment) = Text.breakOn "]" afterStart
+          next = Text.drop 1 afterSegment
+      in maybeToList (rawMentionId segment) <> rawMentionIds next
+
+rawMentionId :: Text -> Maybe Integer
+rawMentionId segment = do
+  value <- rawMentionValue segment
+  readMaybe (Text.unpack value)
+
+rawMentionValue :: Text -> Maybe Text
+rawMentionValue segment = do
+  field <- find (Text.isPrefixOf "qq=") (Text.splitOn "," segment)
+  pure (Text.drop (Text.length "qq=") field)
 
 mentionSegmentId :: Aeson.Value -> Maybe Integer
 mentionSegmentId = \case
@@ -894,6 +938,11 @@ parseQQ :: Aeson.Value -> Maybe Integer
 parseQQ = \case
   Aeson.String "all" -> Nothing
   value -> parseReplyId value
+
+mentionValueText :: Aeson.Value -> Maybe Text
+mentionValueText = \case
+  Aeson.String qq -> Just qq
+  value -> Text.pack . show <$> parseReplyId value
 
 replySegmentMessageId :: Aeson.Value -> Maybe Integer
 replySegmentMessageId = \case

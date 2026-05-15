@@ -139,12 +139,19 @@ listGroupMembersTool = Tool
 currentMentionsTool :: Tool es
 currentMentionsTool = Tool
   { name = "get_current_message_mentions"
-  , description = "Return platform user ids mentioned in the current message, in message order. On QQ these are QQ numbers from at segments."
+  , description = "Return platform user ids mentioned in the current message. QQ mentions are numeric ids; Matrix mentions are text user ids."
   , parameters = objectSchema [] []
   , allowed = everyone
   , start = \context -> pure \_ ->
-      pure (toolText (jsonText context.message.mentions))
+      pure (toolText (jsonText (currentMentionsValue context.message)))
   }
+
+currentMentionsValue :: IncomingMessage -> Aeson.Value
+currentMentionsValue message =
+  Aeson.object
+    [ "user_ids" Aeson..= map (Text.pack . show) message.mentions
+    , "text_user_ids" Aeson..= message.mentionUsernames
+    ]
 
 queryChatLogArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Bool)
 queryChatLogArgs =

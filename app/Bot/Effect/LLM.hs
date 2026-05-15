@@ -195,6 +195,7 @@ askOpenAI forceImage cfg@Config{endpoint, apiKey = Just key, model} messages
         , stream = Nothing
         }
   logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
+  logLLMRequestMessages "LLM request" request
   (url, options) <- liftIO (Http.httpsEndpointUrl requestEndpoint ["chat", "completions"])
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
@@ -224,6 +225,7 @@ askOpenAIWithTools Config{endpoint, apiKey = Just key, model, reasoningEffort} f
         , stream = Nothing
         }
   logInfo_ ("LLM request: " <> llmRequestLogLine endpoint request)
+  logLLMRequestMessages "LLM request" request
   (url, options) <- liftIO (Http.httpsEndpointUrl endpoint ["chat", "completions"])
   response <- liftIO $ runReq defaultHttpConfig $
     req POST
@@ -256,6 +258,7 @@ askOpenAIStreaming Config{endpoint, apiKey = Just key, model, reasoningEffort} m
         , stream = Just True
         }
   logInfo_ ("LLM streaming request: " <> llmRequestLogLine endpoint request)
+  logLLMRequestMessages "LLM streaming request" request
   streamChatCompletion endpoint key request \stream ->
     consume do
       answer <- stream
@@ -284,6 +287,7 @@ askOpenAIWithToolsStreaming Config{endpoint, apiKey = Just key, model, reasoning
         , stream = Just True
         }
   logInfo_ ("LLM streaming request: " <> llmRequestLogLine endpoint request)
+  logLLMRequestMessages "LLM streaming request" request
   streamChatCompletion endpoint key request \stream ->
     consume do
       answer <- stream
@@ -389,6 +393,14 @@ llmRequestLogLine endpoint request =
     , "image_config=" <> show (isJust request.imageConfig)
     , "stream=" <> show (fromMaybe False request.stream)
     ]
+
+logLLMRequestMessages :: Log :> es => Text -> ChatCompletionRequest -> Eff es ()
+logLLMRequestMessages label request =
+  logTrace_ (label <> " messages: " <> jsonText request.messages)
+
+jsonText :: Aeson.ToJSON a => a -> Text
+jsonText =
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
 
 llmResponseLogLine :: Text -> Text -> ChatCompletionResponse -> Text
 llmResponseLogLine endpoint model response =

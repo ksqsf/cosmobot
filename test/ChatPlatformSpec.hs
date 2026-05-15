@@ -16,6 +16,7 @@ main =
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
       , testCase "QQ superuser is also allowed sender" testQqSuperuserIsAlsoAllowedSender
       , testCase "QQ self message is ignored" testQqSelfMessageIsIgnored
+      , testCase "QQ CQ mention string keeps mentioned user ids" testQqCQMentionStringKeepsMentionedUserIds
       , testCase "QQ forwarded messages merge all node text" testQqForwardedMessagesMergeAllNodeText
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
@@ -53,6 +54,28 @@ testQqSelfMessageIsIgnored =
   assertBool
     "QQ messages sent by the bot itself are ignored"
     (isNothing (QQ.eventToIncomingMessage (qqMessageEvent qqBotUserId)))
+
+testQqCQMentionStringKeepsMentionedUserIds :: IO ()
+testQqCQMentionStringKeepsMentionedUserIds = do
+  let cfg = QQ.Config
+        { QQ.host = ""
+        , QQ.port = 0
+        , QQ.path = ""
+        , QQ.token = Nothing
+        , QQ.botQQ = Just qqBotUserId
+        , QQ.allowedGroups = []
+        , QQ.allowedUsers = []
+        , QQ.superusers = []
+        }
+      event = (qqMessageEvent 10001)
+        { QQ.message = Just (Aeson.String "[CQ:at,qq=123456] hi [CQ:at,qq=424242]")
+        , QQ.rawMessage = Just "[CQ:at,qq=123456] hi [CQ:at,qq=424242]"
+        }
+      incoming = fromMaybe (error "expected incoming QQ message") $
+        QQ.eventToIncomingMessageWith cfg event
+  incoming.mentions @?= [123456, qqBotUserId]
+  incoming.text @?= "@123456 hi @424242"
+  incoming.digest.mentionsBot @?= True
 
 testQqForwardedMessagesMergeAllNodeText :: IO ()
 testQqForwardedMessagesMergeAllNodeText =
@@ -269,6 +292,7 @@ matrixRoomEvent =
         , Matrix.content = Matrix.EventContent
             { Matrix.msgtype = Just "m.text"
             , Matrix.body = Just "hello"
+            , Matrix.mentions = []
             }
         , Matrix.raw = Aeson.Null
         }
@@ -282,6 +306,7 @@ matrixMentionRoomEvent =
         { Matrix.content = Matrix.EventContent
             { Matrix.msgtype = Just "m.text"
             , Matrix.body = Just "hello @bot:example.org"
+            , Matrix.mentions = []
             }
         , Matrix.type_ = "m.room.message"
         , Matrix.sender = "@alice:example.org"

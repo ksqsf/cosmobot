@@ -168,7 +168,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, event} = do
     , messageId = stableTextId <$> event.eventId
     , replyToMessageId = Nothing
     , mentions = []
-    , mentionUsernames = matrixMentions cfg body
+    , mentionUsernames = matrixMentions cfg event.content body
     , imageUrls = []
     , text = Text.strip body
     , raw = event.raw
@@ -180,7 +180,7 @@ matrixMessageDigest cfg roomId event =
     { chatIsAllowed = roomAllowed
     , senderIsAllowed = senderSuperuser
     , senderIsSuperuser = senderSuperuser
-    , mentionsBot = maybe False (`Text.isInfixOf` eventText) cfg.userId
+    , mentionsBot = maybe False (\botId -> botId `elem` event.content.mentions || botId `Text.isInfixOf` eventText) cfg.userId
     }
   where
     roomAllowed =
@@ -190,12 +190,16 @@ matrixMessageDigest cfg roomId event =
     eventText =
       fromMaybe "" event.content.body
 
-matrixMentions :: Config -> Text -> [Text]
-matrixMentions cfg body =
-  [ userId
-  | Just userId <- [cfg.userId]
-  , userId `Text.isInfixOf` body
-  ]
+matrixMentions :: Config -> EventContent -> Text -> [Text]
+matrixMentions cfg content body =
+  case content.mentions of
+    [] ->
+      [ userId
+      | Just userId <- [cfg.userId]
+      , userId `Text.isInfixOf` body
+      ]
+    mentions ->
+      mentions
 
 isOwnEvent :: Config -> Event -> Bool
 isOwnEvent cfg event =
@@ -339,20 +343,35 @@ instance Aeson.FromJSON Event where
         type_ <- o Aeson..: "type"
         sender <- o Aeson..: "sender"
         eventId <- o Aeson..:? "event_id"
-        content <- o Aeson..:? "content" Aeson..!= EventContent Nothing Nothing
+        content <- o Aeson..:? "content" Aeson..!= EventContent Nothing Nothing []
         pure Event{type_, sender, eventId, content, raw = value}
 
 data EventContent = EventContent
   { msgtype :: !(Maybe Text)
   , body :: !(Maybe Text)
+  , mentions :: ![Text]
   }
   deriving (Show, Generic)
 
 instance Aeson.FromJSON EventContent where
-  parseJSON = Aeson.withObject "EventContent" \o ->
-    EventContent
-      <$> o Aeson..:? "msgtype"
-      <*> o Aeson..:? "body"
+  parseJSON = Aeson.withObject "EventContent" \o -> do
+    msgtype <- o Aeson..:? "msgtype"
+    body <- o Aeson..:? "body"
+    mentions <- o Aeson..:? "m.mentions" Aeson..!= MatrixMentions []
+    pure EventContent
+      { msgtype
+      , body
+      , mentions = mentions.userIds
+      }
+
+newtype MatrixMentions = MatrixMentions
+  { userIds :: [Text]
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON MatrixMentions where
+  parseJSON = Aeson.withObject "MatrixMentions" \o ->
+    MatrixMentions <$> o Aeson..:? "user_ids" Aeson..!= []
 
 data SendMessageRequest = SendMessageRequest
   { msgtype :: !Text
