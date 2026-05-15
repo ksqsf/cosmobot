@@ -99,7 +99,7 @@ telegramDriver = Driver.ChatPlatformDriver
   , Driver.replyTo = replyTo
   , Driver.editMessage = editMessage
   , Driver.deleteMessage = deleteMessageFor
-  , Driver.replyStreamStyle = \_ -> pure (ChatEffect.EditableReply telegramEditChunkChars)
+  , Driver.replyStreamStyle = \_ -> pure (ChatEffect.EditableReply telegramEditChunkChars telegramMessageTextLimit)
   , Driver.getMessageContent = getMessageContent
   , Driver.getSenderMemberInfo = \message ->
       case (message.kind, message.chatId, message.senderId) of
@@ -127,6 +127,9 @@ telegramDriver = Driver.ChatPlatformDriver
 
 telegramEditChunkChars :: Int
 telegramEditChunkChars = 50
+
+telegramMessageTextLimit :: Int
+telegramMessageTextLimit = 4096
 
 telegramReplyParseMode :: ParseMode
 telegramReplyParseMode = ParseModeMarkdown

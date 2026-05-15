@@ -99,7 +99,7 @@ deleteMessage message messageId =
   send (DeleteMessage message messageId)
 
 data ReplyStreamStyle
-  = EditableReply !Int
+  = EditableReply !Int !Int
   | ChunkedReply !Int
 
 data ReplyStreamUpdate = ReplyStreamUpdate
@@ -193,8 +193,8 @@ pushReplyStreamChunk stream chunk = do
     let new = appendTextAccumulator chunk old in (new, new)
   let full = textAccumulatorText fullAccumulator
   sentResponseIds <- case stream.style of
-    EditableReply editChunkChars ->
-      pushEditableReplyChunk editChunkChars stream fullAccumulator full $> []
+    EditableReply editChunkChars messageLimit ->
+      pushEditableReplyChunk editChunkChars messageLimit stream fullAccumulator full
     ChunkedReply messageLimit ->
       pushChunkedReplyChunk messageLimit stream chunk
   responseId <- liftIO (IORef.readIORef stream.responseIdRef)
@@ -204,32 +204,49 @@ finishReplyStream :: (Chat :> es, IOE :> es) => ReplyStream -> Text -> Eff es (M
 finishReplyStream stream answer = do
   liftIO $ IORef.writeIORef stream.answerRef (singletonTextAccumulator answer)
   sentResponseIds <- case stream.style of
-    EditableReply _ -> do
-      responseId <- ensureEditableReplyMessage stream answer
-      editEditableReply stream responseId (nonEmptyAnswer answer)
-      pure []
+    EditableReply _ messageLimit ->
+      finishEditableReplyStream messageLimit stream answer
     ChunkedReply _ ->
       flushChunkedReplyFinal stream answer
   responseId <- liftIO (IORef.readIORef stream.responseIdRef)
   pure (responseId, sentResponseIds)
 
-pushEditableReplyChunk :: (Chat :> es, IOE :> es) => Int -> ReplyStream -> TextAccumulator -> Text -> Eff es ()
-pushEditableReplyChunk editChunkChars stream fullAccumulator full = do
-  responseId <- ensureEditableReplyMessage stream full
+pushEditableReplyChunk :: (Chat :> es, IOE :> es) => Int -> Int -> ReplyStream -> TextAccumulator -> Text -> Eff es [Integer]
+pushEditableReplyChunk editChunkChars messageLimit stream fullAccumulator full = do
+  responseId <- ensureEditableReplyMessage stream (editableReplyBody messageLimit full)
   lastEdit <- liftIO (IORef.readIORef stream.lastEditRef)
   when (fullAccumulator.lengthChars - lastEdit >= editChunkChars) do
-    edited <- editMessage stream.message responseId full
-    when edited do
-      liftIO $ IORef.writeIORef stream.lastEditRef fullAccumulator.lengthChars
-      liftIO $ IORef.writeIORef stream.lastEditedTextRef full
+    let body = editableReplyBody messageLimit full
+    void (editEditableReply stream responseId body)
+    liftIO $ IORef.writeIORef stream.lastEditRef fullAccumulator.lengthChars
+  pure []
 
-editEditableReply :: (Chat :> es, IOE :> es) => ReplyStream -> Integer -> Text -> Eff es ()
+finishEditableReplyStream :: (Chat :> es, IOE :> es) => Int -> ReplyStream -> Text -> Eff es [Integer]
+finishEditableReplyStream messageLimit stream answer = do
+  let finalAnswer = nonEmptyAnswer answer
+      (editableBody, overflow) = Text.splitAt messageLimit finalAnswer
+  responseId <- ensureEditableReplyMessage stream editableBody
+  void (editEditableReply stream responseId editableBody)
+  if Text.null overflow
+    then pure []
+    else do
+      liftIO $ IORef.writeIORef stream.pendingRef (singletonTextAccumulator overflow)
+      flushChunkedReplyFinalFrom (editableChunkReplyTarget stream responseId) stream finalAnswer
+
+editableReplyBody :: Int -> Text -> Text
+editableReplyBody messageLimit =
+  Text.take messageLimit . initialEditableBody
+
+editEditableReply :: (Chat :> es, IOE :> es) => ReplyStream -> Integer -> Text -> Eff es Bool
 editEditableReply stream responseId body = do
   lastEditedText <- liftIO (IORef.readIORef stream.lastEditedTextRef)
-  unless (body == lastEditedText) do
-    edited <- editMessage stream.message responseId body
-    when edited do
-      liftIO $ IORef.writeIORef stream.lastEditedTextRef body
+  if body == lastEditedText
+    then pure False
+    else do
+      edited <- editMessage stream.message responseId body
+      when edited do
+        liftIO $ IORef.writeIORef stream.lastEditedTextRef body
+      pure edited
 
 ensureEditableReplyMessage :: (Chat :> es, IOE :> es) => ReplyStream -> Text -> Eff es Integer
 ensureEditableReplyMessage stream full = do
@@ -276,22 +293,48 @@ flushChunkedReplySegments messageLimit stream pending =
       pure []
 
 flushChunkedReplyFinal :: (Chat :> es, IOE :> es) => ReplyStream -> Text -> Eff es [Integer]
-flushChunkedReplyFinal stream answer = do
+flushChunkedReplyFinal stream answer =
+  flushChunkedReplyFinalFrom (chunkReplyTarget stream) stream answer
+
+flushChunkedReplyFinalFrom :: (Chat :> es, IOE :> es) => Eff es IncomingMessage -> ReplyStream -> Text -> Eff es [Integer]
+flushChunkedReplyFinalFrom targetAction stream answer = do
   pending <- liftIO (IORef.readIORef stream.pendingRef)
   responseId <- liftIO (IORef.readIORef stream.responseIdRef)
   case (pending.lengthChars == 0, responseId) of
     (False, _) -> do
-      target <- chunkReplyTarget stream
-      sent <- replyTo target (textAccumulatorText pending)
-      registerChunkReplyMessage stream sent
+      sent <- flushChunkedReplyText targetAction stream pending
       liftIO $ IORef.writeIORef stream.pendingRef emptyTextAccumulator
-      pure (maybeToList sent)
+      pure sent
     (True, Nothing) -> do
       sent <- replyTo stream.message (nonEmptyAnswer answer)
       registerChunkReplyMessage stream sent
       pure (maybeToList sent)
     (True, Just _) ->
       pure []
+
+flushChunkedReplyText :: (Chat :> es, IOE :> es) => Eff es IncomingMessage -> ReplyStream -> TextAccumulator -> Eff es [Integer]
+flushChunkedReplyText targetAction stream pending = do
+  case stream.style of
+    EditableReply _ messageLimit ->
+      flushWithLimit messageLimit
+    ChunkedReply messageLimit ->
+      flushWithLimit messageLimit
+  where
+    flushWithLimit messageLimit =
+      if pending.lengthChars > messageLimit
+        then do
+          let pendingText = textAccumulatorText pending
+              (segment, rest) = Text.splitAt messageLimit pendingText
+          target <- targetAction
+          sent <- replyTo target segment
+          registerChunkReplyMessage stream sent
+          later <- flushChunkedReplyText (chunkReplyTarget stream) stream (singletonTextAccumulator rest)
+          pure (maybeToList sent <> later)
+        else do
+          target <- targetAction
+          sent <- replyTo target (textAccumulatorText pending)
+          registerChunkReplyMessage stream sent
+          pure (maybeToList sent)
 
 registerFirstReplyMessage :: IOE :> es => ReplyStream -> Maybe Integer -> Eff es ()
 registerFirstReplyMessage stream sent = do
@@ -308,6 +351,11 @@ chunkReplyTarget :: IOE :> es => ReplyStream -> Eff es IncomingMessage
 chunkReplyTarget stream = do
   previous <- liftIO (IORef.readIORef stream.lastChunkResponseIdRef)
   pure (maybe stream.message (replyTargetMessage stream.message) previous)
+
+editableChunkReplyTarget :: IOE :> es => ReplyStream -> Integer -> Eff es IncomingMessage
+editableChunkReplyTarget stream responseId = do
+  previous <- liftIO (IORef.readIORef stream.lastChunkResponseIdRef)
+  pure (replyTargetMessage stream.message (fromMaybe responseId previous))
 
 replyTargetMessage :: IncomingMessage -> Integer -> IncomingMessage
 replyTargetMessage IncomingMessage{platform, kind, chatId, chatAliases, digest, senderId, senderUsername, replyToMessageId, mentions, mentionUsernames, imageUrls, text, raw} responseId =

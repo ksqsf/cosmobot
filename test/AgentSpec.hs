@@ -79,6 +79,7 @@ main =
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
+      , testCase "editable chat streaming splits long replies and yields aliases" testEditableChatStreamingSplitsLongReplies
       , testCase "chunked active conversation aliases every sent reply" testChunkedActiveConversationAliasesEverySentReply
       , testCase "web_fetch max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "conversation replies keep parent and child snapshots" testConversationRepliesKeepSnapshots
@@ -467,6 +468,35 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
   result @?= "abcdef"
   IORef.readIORef replies >>= (@?= [(Just 300, "abcd"), (Just 1, "ef")])
   IORef.readIORef updates >>= (@?= [(Nothing, [], "ab"), (Just 1, [1], "abcd"), (Just 1, [], "abcdef"), (Just 1, [2], "abcdef")])
+
+testEditableChatStreamingSplitsLongReplies :: IO ()
+testEditableChatStreamingSplitsLongReplies = do
+  replies <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
+  edits <- IORef.newIORef ([] :: [(Integer, Text)])
+  updates <- IORef.newIORef ([] :: [(Maybe Integer, [Integer], Text)])
+  nextReplyId <- IORef.newIORef (1 :: Integer)
+  (responseId, result) <- runEff $
+    Chat.runChatWith
+      Chat.ChatHandlers
+        { handleReplyTo = recordReply replies nextReplyId
+        , handleEditMessage = recordEdit edits
+        , handleDeleteMessage = noopDelete
+        , handleReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 4)
+        , handleGetMessageContent = noopFetch
+        , handleGetSenderMemberInfo = noopSenderMember
+        , handleGetMemberInfo = noopMember
+        , handleGetUserAvatar = noopUserAvatar
+        , handleListGroupMembers = noopMembers
+        , handleMentionUser = noopMention
+        } $
+        S.mapM_
+          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
+          (Chat.streamReplyTo testMessage id (S.each ["ab", "cd", "ef", "gh", "ij", "kl"] $> "abcdefghijkl"))
+  responseId @?= Just 1
+  result @?= "abcdefghijkl"
+  IORef.readIORef replies >>= (@?= [(Just 300, "ab"), (Just 1, "efgh"), (Just 2, "ijkl")])
+  IORef.readIORef edits >>= (@?= [(1, "abcd")])
+  IORef.readIORef updates >>= (@?= [(Just 1, [], "ab"), (Just 1, [], "abcd"), (Just 1, [], "abcdef"), (Just 1, [], "abcdefgh"), (Just 1, [], "abcdefghij"), (Just 1, [], "abcdefghijkl"), (Just 1, [2, 3], "abcdefghijkl")])
 
 testChunkedActiveConversationAliasesEverySentReply :: IO ()
 testChunkedActiveConversationAliasesEverySentReply = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
@@ -1025,6 +1055,11 @@ noopFetch _ _ =
 noopEdit :: IncomingMessage -> Integer -> Text -> Eff es Bool
 noopEdit _ _ _ =
   pure False
+
+recordEdit :: IOE :> es => IORef.IORef [(Integer, Text)] -> IncomingMessage -> Integer -> Text -> Eff es Bool
+recordEdit edits _ messageId body = do
+  liftIO $ IORef.modifyIORef' edits (<> [(messageId, body)])
+  pure True
 
 noopDelete :: IncomingMessage -> Integer -> Eff es Bool
 noopDelete _ _ =
