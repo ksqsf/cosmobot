@@ -5,7 +5,9 @@ Stability   : experimental
 -}
 
 module Bot.Util.Stream
-  ( mergeStreams
+  ( bracketStream
+  , mergeStreams
+  , streamFinally
   )
 where
 
@@ -16,6 +18,15 @@ import qualified Control.Concurrent.STM as STM
 import qualified Control.Concurrent.STM.TBQueue as TBQueue
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
+
+bracketStream
+  :: Eff es resource
+  -> (resource -> Eff es ())
+  -> (resource -> Stream (Of item) (Eff es) result)
+  -> Stream (Of item) (Eff es) result
+bracketStream acquire release use = do
+  resource <- S.lift acquire
+  use resource `streamFinally` release resource
 
 -- | Merge several streams into one stream through a bounded FIFO queue.
 --

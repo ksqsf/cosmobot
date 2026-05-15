@@ -45,6 +45,7 @@ import Bot.Prelude
 import qualified Bot.Util.Image as Image
 import qualified Bot.Core.ReplyBody as ReplyBody
 import qualified Bot.Util.HTTP as Http
+import qualified Bot.Util.Stream as StreamUtil
 import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -289,13 +290,11 @@ askOpenAIStreaming
   :: (IOE :> es, Log :> es)
   => Config
   -> [ChatMessage]
-  -> (Stream (Of Text) (Eff es) Text -> Eff es r)
-  -> Eff es r
-askOpenAIStreaming Config{apiKey = Nothing} _ consume =
-  consume do
-    S.yield "LLM is not configured: set llm.api_key."
-    pure "LLM is not configured: set llm.api_key."
-askOpenAIStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} messages consume = do
+  -> Stream (Of Text) (Eff es) Text
+askOpenAIStreaming Config{apiKey = Nothing} _ = do
+  S.yield "LLM is not configured: set llm.api_key."
+  pure "LLM is not configured: set llm.api_key."
+askOpenAIStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} messages = do
   let requestEndpoint = chatCompletionsEndpoint cfg
       request = ChatCompletionRequest
         { model = model
@@ -306,27 +305,22 @@ askOpenAIStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, request
         , imageConfig = Nothing
         , stream = Just True
         }
-  do
-    logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
-    logLLMRequestMessages request
-    streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request \stream ->
-      consume do
-        answer <- stream
-        lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
-        pure (chatAnswerContent answer)
+  lift $ logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
+  lift $ logLLMRequestMessages request
+  answer <- streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
+  lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
+  pure (chatAnswerContent answer)
 
 askOpenAIWithToolsStreaming
   :: (IOE :> es, Log :> es)
   => Config
   -> [FunctionTool]
   -> [ChatMessage]
-  -> (Stream (Of Text) (Eff es) ChatAnswer -> Eff es r)
-  -> Eff es r
-askOpenAIWithToolsStreaming Config{apiKey = Nothing} _ _ consume =
-  consume do
-    S.yield "LLM is not configured: set llm.api_key."
-    pure (ChatFinalAnswer "LLM is not configured: set llm.api_key.")
-askOpenAIWithToolsStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} functionTools messages consume = do
+  -> Stream (Of Text) (Eff es) ChatAnswer
+askOpenAIWithToolsStreaming Config{apiKey = Nothing} _ _ = do
+  S.yield "LLM is not configured: set llm.api_key."
+  pure (ChatFinalAnswer "LLM is not configured: set llm.api_key.")
+askOpenAIWithToolsStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} functionTools messages = do
   let requestEndpoint = chatCompletionsEndpoint cfg
       request = ChatCompletionRequest
         { model = model
@@ -337,14 +331,11 @@ askOpenAIWithToolsStreaming cfg@Config{apiKey = Just key, model, reasoningEffort
         , imageConfig = Nothing
         , stream = Just True
         }
-  do
-    logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
-    logLLMRequestMessages request
-    streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request \stream ->
-      consume do
-        answer <- stream
-        lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
-        pure answer
+  lift $ logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
+  lift $ logLLMRequestMessages request
+  answer <- streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
+  lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
+  pure answer
 
 newtype LLMException = LLMException Text
   deriving (Show)
@@ -664,16 +655,15 @@ streamChatCompletion
   -> Text
   -> Int
   -> ChatCompletionRequest
-  -> (Stream (Of Text) (Eff es) ChatAnswer -> Eff es r)
-  -> Eff es r
-streamChatCompletion baseUrl path apiKey timeoutMicros request consume = do
+  -> Stream (Of Text) (Eff es) ChatAnswer
+streamChatCompletion baseUrl path apiKey timeoutMicros request = do
   httpRequest <- liftIO (Http.streamingJsonPostRequest baseUrl path apiKey timeoutMicros request)
   manager <- liftIO HTTP.newTlsManager
-  bracket
+  StreamUtil.bracketStream
     (liftIO (HTTP.responseOpen httpRequest manager))
     (liftIO . HTTP.responseClose)
     \response ->
-      consume (processBody (HTTP.responseBody response) (StreamState "" mempty Map.empty))
+      processBody (HTTP.responseBody response) (StreamState "" mempty Map.empty)
   where
     processBody bodyReader streamState = do
       chunk <- lift (liftIO (HTTP.brRead bodyReader))

@@ -77,6 +77,7 @@ main =
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
+      , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "chunked active conversation aliases every sent reply" testChunkedActiveConversationAliasesEverySentReply
       , testCase "web_fetch max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
@@ -422,6 +423,23 @@ testChatAnswerJsonRemainsObjectCompatible = do
       [ "content" Aeson..= ("checking" :: Text)
       , "toolCalls" Aeson..= [call]
       ]
+
+testLLMStreamingEffectPreservesYieldedChunks :: IO ()
+testLLMStreamingEffectPreservesYieldedChunks = do
+  chunks S.:> answer <- runEff $
+    LLM.runLLMWith
+      (\_ -> pure "unused text answer")
+      (\_ -> S.each ["he", "llo"] $> "hello")
+      (\_ -> pure "unused image answer")
+      (\_ _ -> pure (chatAnswer "unused tool answer" []))
+      (\_ _ -> S.each ["to", "ol"] $> chatAnswer "tool" []) do
+        S.toList (LLM.askWithToolsStreaming [] [LLM.userText "hello"])
+  chunks @?= ["to", "ol"]
+  case answer of
+    LLM.ChatFinalAnswer{content} ->
+      content @?= "tool"
+    other ->
+      assertFailure [i|expected final streaming answer, got #{show other :: String}|]
 
 testChatStreamingChunksRepliesAndYieldsUpdates :: IO ()
 testChatStreamingChunksRepliesAndYieldsUpdates = do
@@ -892,19 +910,21 @@ runAgentWithMemorySkillsAndTypstAndCapture memoryCfg skillsCfg rendered captured
               Skills.runSkills skillsCfg $
                 LLM.runLLMWith
                   (\messages -> captureMessages captured messages >> pure "unused text answer")
-                  (\messages consume -> captureMessages captured messages >> consume (S.yield "unused text stream answer" $> "unused text stream answer"))
+                  (\messages -> do
+                      lift $ captureMessages captured messages
+                      S.yield "unused text stream answer"
+                      pure "unused text stream answer")
                   (\messages -> captureMessages captured messages >> pure "unused image answer")
                   (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
-                  (\_ messages consume -> do
-                      captureMessages captured messages
+                  (\_ messages -> do
+                      lift $ captureMessages captured messages
                       answer <- liftIO (popAnswer answers)
-                      consume do
-                        case answer of
-                          LLM.ChatFinalAnswer{content} ->
-                            S.yield content
-                          LLM.ChatToolRequest{content} ->
-                            S.yield content
-                        pure answer) $
+                      case answer of
+                        LLM.ChatFinalAnswer{content} ->
+                          S.yield content
+                        LLM.ChatToolRequest{content} ->
+                          S.yield content
+                      pure answer) $
                   ChatLog.runChatLog $
                     AgentAudit.runAgentAudit $
                       Chat.runChatWith

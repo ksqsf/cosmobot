@@ -7,6 +7,7 @@ Stability   : experimental
 
 module Bot.Effect.LLM.Retry
   ( retryLLMRequest
+  , retryLLMStreamRequest
   , validateChatAnswer
   , validateChatAnswerStream
   , validateTextStream
@@ -18,6 +19,7 @@ import qualified Bot.Effect.LLM.Transport as Transport
 import qualified Control.Exception as Exception
 import qualified Data.Text as Text
 import qualified Network.HTTP.Client as HTTP
+import qualified Streaming.Prelude as S
 
 maxLLMRequestAttempts :: Int
 maxLLMRequestAttempts =
@@ -35,6 +37,34 @@ retryLLMRequest label action =
             go (attempt + 1)
           else
             throwIO err
+
+retryLLMStreamRequest
+  :: (IOE :> es, Log :> es)
+  => Text
+  -> Eff es (Stream (Of Text) (Eff es) r)
+  -> Stream (Of Text) (Eff es) r
+retryLLMStreamRequest label makeStream =
+  go (1 :: Int)
+  where
+    go attempt = do
+      stream <- lift makeStream
+      consume attempt stream
+
+    consume attempt stream = do
+      next <- lift $
+        S.next stream `catch` \(err :: SomeException) ->
+          if attempt < maxLLMRequestAttempts && retryableLLMFailure err
+            then do
+              logAttention_ [i|#{label} failed with #{Transport.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
+              S.next (go (attempt + 1))
+            else
+              throwIO err
+      case next of
+        Left result ->
+          pure result
+        Right (chunk, rest) -> do
+          S.yield chunk
+          consume attempt rest
 
 retryableLLMFailure :: SomeException -> Bool
 retryableLLMFailure err =

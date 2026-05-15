@@ -164,6 +164,7 @@ common bot-agent-modules
         Bot.Util.HList
         Bot.Util.HTTP
         Bot.Util.Image
+        Bot.Util.Stream
 
 executable cosmobot
     -- Import common warning flags.
@@ -203,7 +204,6 @@ executable cosmobot
         Bot.Memory.Config
         Bot.Skills.Config
         Bot.Handler.Saucenao
-        Bot.Util.Stream
         Bot.Util.Toml
 
     -- LANGUAGE extensions used by modules in this package.
