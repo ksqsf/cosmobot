@@ -46,17 +46,17 @@ main = withShutdownSignal \shutdown -> do
     Scheduler.runScheduler .
     Typst.runTypst .
     LLM.runLLM cfg.llm .
-    ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix $ do
-      Lifecycle.runLifecycle $
-        runUntilShutdown shutdown do
-          logInfo_ "Cosmobot stand by!"
-          let allStreams =
-                [ ChatDriver.incomingMessages
-                , Scheduler.scheduledMessages
-                ]
-          consumeWith
-            (routes cfg conversations)
-            (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
+    ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix .
+    Lifecycle.runLifecycle $
+      runUntilShutdown shutdown do
+        logInfo_ "Cosmobot stand by!"
+        let allStreams =
+              [ ChatDriver.incomingMessages
+              , Scheduler.scheduledMessages
+              ]
+        consumeWith
+          (routes cfg conversations)
+          (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
 withShutdownSignal :: (MVar.MVar () -> IO ()) -> IO ()
 withShutdownSignal action =
