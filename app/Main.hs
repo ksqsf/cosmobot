@@ -95,7 +95,7 @@ routes
 routes cfg conversations =
   shutUpHandlers cfg.handlers.shutup
     <> auditHandlers conversations
-    <> adminHandlers
+    <> adminHandlers cfg.handlers.admin
     <> scratchpadHandlers
     <> typingHandlers
     <> saucenaoHandlers cfg.saucenao

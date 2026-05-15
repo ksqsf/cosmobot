@@ -180,6 +180,7 @@ executable cosmobot
         Bot.Core.Route
         Bot.Effect.LLM.Config
         Bot.Handler.Admin
+        Bot.Handler.Admin.Config
         Bot.Handler.Ask
         Bot.Handler.Ask.Config
         Bot.Handler.Audit
@@ -331,6 +332,8 @@ test-suite admin-spec
     other-modules:
         Bot.Core.Route
         Bot.Handler.Admin
+        Bot.Handler.Admin.Config
+    build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite shutup-spec

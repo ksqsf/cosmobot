@@ -4,6 +4,7 @@ import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Core.Route
 import Bot.Handler.Admin
+import Bot.Handler.Admin.Config
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
@@ -15,16 +16,42 @@ main =
   defaultMain $
     testGroup "admin"
       [ testCase "ping replies pong for any sender" testPingRepliesPong
+      , testCase "upgrade rejects non-superusers" testUpgradeRejectsNonSuperuser
+      , testCase "upgrade runs configured script for superusers" testUpgradeRunsConfiguredScript
       ]
 
 testPingRepliesPong :: IO ()
 testPingRepliesPong = do
   replies <- IORef.newIORef ([] :: [Text])
-  runAdmin replies message
+  runAdmin defaultAdminConfig replies message
   IORef.readIORef replies >>= (@?= ["pong"])
 
-runAdmin :: IORef.IORef [Text] -> IncomingMessage -> IO ()
-runAdmin replies incoming =
+testUpgradeRejectsNonSuperuser :: IO ()
+testUpgradeRejectsNonSuperuser = do
+  replies <- IORef.newIORef ([] :: [Text])
+  runAdmin upgradeConfig replies (message{text = "!upgrade"} :: IncomingMessage)
+  IORef.readIORef replies >>= (@?= ["只有 superuser 可以执行 upgrade。"])
+
+testUpgradeRunsConfiguredScript :: IO ()
+testUpgradeRunsConfiguredScript = do
+  replies <- IORef.newIORef ([] :: [Text])
+  runAdmin upgradeConfig replies ((message{text = "!upgrade", digest = emptyMessageDigest{senderIsSuperuser = True}}) :: IncomingMessage)
+  captured <- IORef.readIORef replies
+  case captured of
+    [started, finished] -> do
+      started @?= "开始执行 upgrade 脚本：/bin/true"
+      finished @?= "upgrade 脚本执行成功。"
+    _ ->
+      assertFailure [i|unexpected replies: #{show captured :: String}|]
+
+upgradeConfig :: AdminConfig
+upgradeConfig =
+  defaultAdminConfig
+    { upgrade = Just UpgradeConfig{script = "/bin/true"}
+    }
+
+runAdmin :: AdminConfig -> IORef.IORef [Text] -> IncomingMessage -> IO ()
+runAdmin cfg replies incoming =
   runEff $
     Chat.runChatWith Chat.ChatHandlers
       { handleReplyTo = reply
@@ -38,7 +65,7 @@ runAdmin replies incoming =
       , handleListGroupMembers = listMembers
       , handleMentionUser = mention
       } $
-      runHandlers adminHandlers incoming
+      runHandlers (adminHandlers cfg) incoming
   where
     reply _ body = do
       liftIO $ IORef.modifyIORef' replies (<> [body])

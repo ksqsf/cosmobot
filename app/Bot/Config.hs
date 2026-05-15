@@ -8,6 +8,7 @@ module Bot.Config
   ( -- * Top-level configuration
     BotConfig (..)
   , HandlersConfig (..)
+  , AdminConfig (..)
   , AskHandlerConfig (..)
   , SaucenaoConfig (..)
   , Memory.MemoryConfig (..)
@@ -26,6 +27,10 @@ import qualified Bot.Effect.LLM.Config as LLMConfig
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.Agent.Config as AgentConfig
 import Bot.Core.Message (ChatPlatform (..))
+import Bot.Handler.Admin.Config
+  ( AdminConfig (..)
+  )
+import qualified Bot.Handler.Admin.Config as AdminConfig
 import Bot.Handler.Ask.Config
   ( AskHandlerConfig (..)
   )
@@ -63,7 +68,8 @@ data BotConfig = BotConfig
 
 -- | Configuration for all handler groups.
 data HandlersConfig = HandlersConfig
-  { ask :: !AskHandlerConfig
+  { admin :: !AdminConfig
+  , ask :: !AskHandlerConfig
   , shutup :: !ShutUpConfig
   }
   deriving (Show)
@@ -114,7 +120,8 @@ instance FromValue DriverFileConfig where
     <*> fmap (fromMaybe MatrixConfig.defaultFileConfig) (optKey "matrix")
 
 data HandlerFileConfig = HandlerFileConfig
-  { saucenao :: !SaucenaoConfig
+  { admin   :: !AdminConfig
+  , saucenao :: !SaucenaoConfig
   , ask      :: !AskHandlerConfig
   , shutup   :: !ShutUpConfig
   }
@@ -122,7 +129,8 @@ data HandlerFileConfig = HandlerFileConfig
 
 instance FromValue HandlerFileConfig where
   fromValue = parseTableFromValue $ HandlerFileConfig
-    <$> fmap (fromMaybe SaucenaoConfig.defaultSaucenaoConfig) (optKey "saucenao")
+    <$> fmap (fromMaybe AdminConfig.defaultAdminConfig) (optKey "admin")
+    <*> fmap (fromMaybe SaucenaoConfig.defaultSaucenaoConfig) (optKey "saucenao")
     <*> reqKey "ask"
     <*> fmap (fromMaybe ShutUpConfig.defaultShutUpConfig) (optKey "shutup")
 
@@ -190,7 +198,7 @@ toBotConfig cfg =
     , tool = AgentConfig.toToolConfig cfg.tool
     , saucenao = cfg.handler.saucenao
     , memory = MemoryConfig.toMemoryConfig cfg.memory
-    , handlers = HandlersConfig askConfig cfg.handler.shutup
+    , handlers = HandlersConfig cfg.handler.admin askConfig cfg.handler.shutup
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath
     }
