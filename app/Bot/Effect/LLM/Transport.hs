@@ -67,6 +67,7 @@ import qualified Network.HTTP.Client.TLS as HTTP
 import Network.HTTP.Req
 import Optics ((%~))
 import qualified Streaming.Prelude as S
+import qualified System.Timeout as Timeout
 
 -- | Runtime configuration for OpenAI-compatible LLM endpoints.
 data Config = Config
@@ -141,13 +142,40 @@ secondsToMicros :: Int -> Int
 secondsToMicros seconds =
   seconds * 1000000
 
+llmHttpConfig :: HttpConfig
+llmHttpConfig =
+  defaultHttpConfig
+    { httpConfigRetryJudge = \_ _ -> False
+    , httpConfigRetryJudgeException = \_ _ -> False
+    }
+
+runTimedLLMReq :: Text -> Int -> Req a -> IO a
+runTimedLLMReq label timeoutSeconds action = do
+  result <- Timeout.timeout (secondsToMicros timeoutSeconds) (runReq llmHttpConfig action)
+  case result of
+    Just value ->
+      pure value
+    Nothing ->
+      Exception.throwIO (LLMException [i|#{label} timed out after #{timeoutSeconds} seconds.|])
+
+llmJsonPost
+  :: (Aeson.ToJSON request, Aeson.FromJSON response)
+  => Text
+  -> Int
+  -> Url 'Https
+  -> request
+  -> Option 'Https
+  -> IO (JsonResponse response)
+llmJsonPost label timeoutSeconds url request options =
+  runTimedLLMReq label timeoutSeconds $
+    reqCb POST url (ReqBodyJson request) jsonResponse options \httpRequest ->
+      pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
+
 askOpenAI :: (IOE :> es, Log :> es) => Config -> [ChatMessage] -> Eff es Text
 askOpenAI Config{apiKey = Nothing} _ =
   pure "LLM is not configured: set llm.api_key."
 askOpenAI cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} messages = do
   let requestEndpoint = chatCompletionsEndpoint cfg
-      timeoutMicros = secondsToMicros requestTimeout
-      requestTimeoutOption = responseTimeout timeoutMicros
       requestPath = chatCompletionsPath
       requestBaseUrl = cfg.baseUrl
       request = ChatCompletionRequest
@@ -163,15 +191,9 @@ askOpenAI cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} 
     logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
     logLLMRequestMessages request
     (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-    response <- liftIO $ runReq defaultHttpConfig $
-      req POST
-        url
-        (ReqBodyJson request)
-        jsonResponse
-        ( options
-            <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
-            <> requestTimeoutOption
-        )
+    response <- liftIO $
+      llmJsonPost "LLM request" requestTimeout url request
+        (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
     let body = responseBody response
     logInfo_ ("LLM response: " <> llmResponseLogLine requestEndpoint model body)
     case chatCompletionText body of
@@ -210,15 +232,9 @@ askImageChatCompletionsOpenAI cfg@Config{apiKey, imageGenerationBaseUrl, imageGe
         logInfo_ ("LLM image chat request: " <> llmRequestLogLine requestEndpoint request)
         logLLMRequestMessages request
         (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-        response <- liftIO $ runReq defaultHttpConfig $
-          req POST
-            url
-            (ReqBodyJson request)
-            jsonResponse
-            ( options
-                <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
-                <> responseTimeout (secondsToMicros imageGenerationTimeout)
-            )
+        response <- liftIO $
+          llmJsonPost "LLM image chat request" imageGenerationTimeout url request
+            (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
         let body = responseBody response
         logInfo_ ("LLM image chat response: " <> llmResponseLogLine requestEndpoint requestModel body)
         case chatCompletionText body of
@@ -241,15 +257,9 @@ askImageGenerationsOpenAI cfg@Config{apiKey, imageGenerationBaseUrl, imageGenera
       do
         logInfo_ ("LLM image request: " <> imageRequestLogLine requestEndpoint imageGenerationTimeout request)
         (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-        response <- liftIO $ runReq defaultHttpConfig $
-          req POST
-            url
-            (ReqBodyJson request)
-            jsonResponse
-            ( options
-                <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
-                <> responseTimeout (secondsToMicros imageGenerationTimeout)
-            )
+        response <- liftIO $
+          llmJsonPost "LLM image request" imageGenerationTimeout url request
+            (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
         let body = responseBody response
         logInfo_ ("LLM image response: " <> imageResponseLogLine requestEndpoint request.model body)
         case imageGenerationResponseText cfg body of
@@ -276,15 +286,9 @@ askOpenAIWithTools cfg@Config{apiKey = Just key, model, reasoningEffort, request
     logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
     logLLMRequestMessages request
     (url, options) <- liftIO (Http.httpsEndpointUrl cfg.baseUrl chatCompletionsPath)
-    response <- liftIO $ runReq defaultHttpConfig $
-      req POST
-        url
-        (ReqBodyJson request)
-        jsonResponse
-        ( options
-            <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
-            <> responseTimeout (secondsToMicros requestTimeout)
-        )
+    response <- liftIO $
+      llmJsonPost "LLM request" requestTimeout url request
+        (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
     let body = responseBody response
     logInfo_ ("LLM response: " <> llmResponseLogLine requestEndpoint model body)
     pure (chatCompletionAnswer body)
