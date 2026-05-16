@@ -12,6 +12,7 @@ module Bot.Effect.LLM
   , askWithHistory
   , askStreamingWithHistory
   , askImageWithHistory
+  , askImageStreamingWithHistory
   , askWithTools
   , askWithToolsStreaming
   , runLLM
@@ -73,6 +74,7 @@ data LLM :: Effect where
   Ask :: [ChatMessage] -> LLM m Text
   AskStream :: [ChatMessage] -> LLM m (Stream (Of Text) m Text)
   AskImage :: [ChatMessage] -> LLM m Text
+  AskImageStream :: [ChatMessage] -> LLM m (Stream (Of Text) m Text)
   AskTools :: [FunctionTool] -> [ChatMessage] -> LLM m ChatAnswer
   AskToolsStream :: [FunctionTool] -> [ChatMessage] -> LLM m (Stream (Of Text) m ChatAnswer)
 
@@ -94,7 +96,14 @@ askStreamingWithHistory messages = do
 
 -- | Ask the configured image model to generate an image response.
 askImageWithHistory :: LLM :> es => [ChatMessage] -> Eff es Text
-askImageWithHistory = send . AskImage
+askImageWithHistory messages =
+  S.effects (askImageStreamingWithHistory messages)
+
+-- | Ask the configured image model to generate an image response over the streaming transport.
+askImageStreamingWithHistory :: LLM :> es => [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageStreamingWithHistory messages = do
+  stream <- lift (send (AskImageStream messages))
+  stream
 
 -- | Ask with function tools and return both text and tool calls.
 askWithTools :: LLM :> es => [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
@@ -126,6 +135,11 @@ runLLM cfg = interpret $ \localEnv operation ->
               pure (Retry.validateTextStream (Transport.askOpenAIStreaming cfg messages))
       AskImage messages ->
         Retry.retryLLMRequest "LLM image request" (Transport.askImageOpenAI cfg messages)
+      AskImageStream messages ->
+        pure $
+          liftLocalStream liftLocal $
+            Retry.retryLLMStreamRequest "LLM image streaming request" $
+              pure (Retry.validateTextStream (Transport.askImageOpenAIStreaming cfg messages))
       AskTools tools messages ->
         Retry.retryLLMRequest "LLM request" (Transport.askOpenAIWithTools cfg tools messages >>= Retry.validateChatAnswer)
       AskToolsStream tools messages ->
@@ -148,8 +162,15 @@ runLLMWith askText askTextStream askImage askTools askToolsStream = interpret $ 
       Ask messages -> askText messages
       AskStream messages -> pure (liftLocalStream liftLocal (askTextStream messages))
       AskImage messages -> askImage messages
+      AskImageStream messages -> pure (liftLocalStream liftLocal (textResultStream (askImage messages)))
       AskTools tools messages -> askTools tools messages
       AskToolsStream tools messages -> pure (liftLocalStream liftLocal (askToolsStream tools messages))
+
+textResultStream :: Monad m => m Text -> Stream (Of Text) m Text
+textResultStream action = do
+  answer <- lift action
+  S.yield answer
+  pure answer
 
 liftLocalStream
   :: Monad m

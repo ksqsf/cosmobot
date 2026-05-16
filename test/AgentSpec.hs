@@ -89,6 +89,9 @@ main =
       , testCase "reply body parses structured content" testReplyBodyParsesStructuredContent
       , testCase "reply segment adapter folds deltas into messages" testReplySegmentAdapterFoldsDeltasIntoMessages
       , testCase "LLM tool request content streams immediately when enabled" testLLMToolRequestContentStreamsImmediatelyWhenEnabled
+      , testCase "LLM image stream request asks only for final image" testLLMImageStreamRequestAsksOnlyForFinalImage
+      , testCase "LLM image stream completed event yields final image" testLLMImageStreamCompletedEventYieldsFinalImage
+      , testCase "LLM image stream ignores partial event without final image" testLLMImageStreamIgnoresPartialEventWithoutFinalImage
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "editable segmented replies open a new tail after tool messages" testEditableSegmentedRepliesOpenNewTail
@@ -548,6 +551,50 @@ testLLMToolRequestContentStreamsImmediatelyWhenEnabled = do
       assertFailure [i|expected tool request stream result, got #{show other :: String}|]
     Left err ->
       assertFailure (Text.unpack err)
+
+testLLMImageStreamRequestAsksOnlyForFinalImage :: IO ()
+testLLMImageStreamRequestAsksOnlyForFinalImage =
+  LLMTransport.imageGenerationStreamingRequestPayload imageStreamTestConfig "gpt-image-2" "draw this"
+    @?=
+      Aeson.object
+        [ "model" Aeson..= ("gpt-image-2" :: Text)
+        , "prompt" Aeson..= ("draw this" :: Text)
+        , "stream" Aeson..= True
+        , "partial_images" Aeson..= (0 :: Int)
+        ]
+
+testLLMImageStreamCompletedEventYieldsFinalImage :: IO ()
+testLLMImageStreamCompletedEventYieldsFinalImage =
+  case LLMTransport.imageGenerationStreamTextFromPayloads imageStreamTestConfig [completed] of
+    Right answer ->
+      answer @?= "[image] data:image/png;base64,final-image\n"
+    Left err ->
+      assertFailure (Text.unpack err)
+  where
+    completed =
+      Aeson.object
+        [ "type" Aeson..= ("image_generation.completed" :: Text)
+        , "b64_json" Aeson..= ("final-image" :: Text)
+        ]
+
+testLLMImageStreamIgnoresPartialEventWithoutFinalImage :: IO ()
+testLLMImageStreamIgnoresPartialEventWithoutFinalImage =
+  case LLMTransport.imageGenerationStreamTextFromPayloads imageStreamTestConfig [partial] of
+    Left err ->
+      err @?= "Image generation streaming response was empty: no image output."
+    Right answer ->
+      assertFailure [i|expected empty stream error, got #{answer}|]
+  where
+    partial =
+      Aeson.object
+        [ "type" Aeson..= ("image_generation.partial_image" :: Text)
+        , "b64_json" Aeson..= ("partial-image" :: Text)
+        , "partial_image_index" Aeson..= (0 :: Int)
+        ]
+
+imageStreamTestConfig :: LLM.Config
+imageStreamTestConfig =
+  LLM.defaultConfig
 
 testLLMStreamingEffectPreservesYieldedChunks :: IO ()
 testLLMStreamingEffectPreservesYieldedChunks = do

@@ -93,6 +93,7 @@ common app-deps
                     , req
                     , http-client
                     , http-client-tls
+                    , http-types
                     , optics
                     , time
                     , temporary
