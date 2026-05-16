@@ -13,6 +13,7 @@ module Bot.Agent
   , AgentProgram
   , AgentRun
   , AgentResult (..)
+  , AgentStreamOutput (..)
   , AgentFailureCategory (..)
   , AgentFailure (..)
   , AgentException (..)
@@ -95,7 +96,7 @@ runAgentStreaming
   -> AgentContext es
   -> [Tool es]
   -> Conversation
-  -> Stream (Of Text) (Eff es) (Text, Conversation)
+  -> Stream (Of AgentStreamOutput) (Eff es) (Text, Conversation)
 runAgentStreaming maxTurns context tools conversation = do
   agentRun <- lift (startAgentRun context tools)
   result <- runPreparedAgentStreaming maxTurns agentRun conversation
@@ -106,7 +107,7 @@ runPreparedAgentStreaming
   => Int
   -> AgentRun es
   -> Conversation
-  -> Stream (Of Text) (Eff es) AgentResult
+  -> Stream (Of AgentStreamOutput) (Eff es) AgentResult
 runPreparedAgentStreaming maxTurns agentRun conversation =
   runAgentProgramStreaming (plainAgentProgram maxTurns agentRun) conversation
 
@@ -114,7 +115,7 @@ runAgentProgramStreaming
   :: (LLM.LLM :> es, IOE :> es)
   => AgentProgram '[] es
   -> Conversation
-  -> Stream (Of Text) (Eff es) AgentResult
+  -> Stream (Of AgentStreamOutput) (Eff es) AgentResult
 runAgentProgramStreaming program conversation =
   fmap (.result) $
     program.aroundAgentRun HList.HNil do
@@ -170,7 +171,7 @@ runModelPhase
   :: (LLM.LLM :> es, IOE :> es)
   => AgentProgram context es
   -> AgentState
-  -> Stream (Of Text) (Eff es) ModelDecision
+  -> Stream (Of AgentStreamOutput) (Eff es) ModelDecision
 runModelPhase program agentState = do
   answer <- askNext program.agentRun agentState
   modelDecision program.agentRun agentState answer
@@ -183,12 +184,15 @@ modelDecision
   :: AgentRun es
   -> AgentState
   -> LLM.ChatAnswer
-  -> Stream (Of Text) (Eff es) ModelDecision
+  -> Stream (Of AgentStreamOutput) (Eff es) ModelDecision
 modelDecision agentRun agentState answer =
   case answer of
     LLM.ChatFinalAnswer{content} ->
       pure (ModelAnswered (agentCompletion agentRun "answered" content agentState.turn answered))
-    LLM.ChatToolRequest{content, toolCalls} ->
+    LLM.ChatToolRequest{content, toolCalls} -> do
+      let strippedContent = Text.strip content
+      unless (Text.null strippedContent) do
+        S.yield (AgentIntermediateMessage strippedContent answered)
       pure (ModelNeedsTools ToolTurnState{agentState, answered, toolContent = content, toolCalls})
   where
     answered =
@@ -219,11 +223,22 @@ askNext
   :: (LLM.LLM :> es, IOE :> es)
   => AgentRun es
   -> AgentState
-  -> Stream (Of Text) (Eff es) LLM.ChatAnswer
-askNext agentRun agentState =
-  LLM.askWithToolsStreaming
-    (map toolSchema agentRun.exposedTools)
-    (agentRequestMessages agentRun.context agentState.conversation)
+  -> Stream (Of AgentStreamOutput) (Eff es) LLM.ChatAnswer
+askNext agentRun agentState = do
+  translateLLMStream $
+    LLM.askWithToolsStreaming
+      (map toolSchema agentRun.exposedTools)
+      (agentRequestMessages agentRun.context agentState.conversation)
+
+translateLLMStream :: Stream (Of Text) (Eff es) LLM.ChatAnswer -> Stream (Of AgentStreamOutput) (Eff es) LLM.ChatAnswer
+translateLLMStream stream = do
+  next <- lift (S.next stream)
+  case next of
+    Left answer ->
+      pure answer
+    Right (chunk, rest) -> do
+      S.yield (AgentAnswerDelta chunk)
+      translateLLMStream rest
 
 agentRequestMessages :: AgentContext es -> Conversation -> [LLM.ChatMessage]
 agentRequestMessages context (Conversation messages) =

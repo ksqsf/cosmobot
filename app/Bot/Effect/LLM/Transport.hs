@@ -38,6 +38,9 @@ module Bot.Effect.LLM.Transport
   , askImageOpenAI
   , askOpenAIWithTools
   , askOpenAIWithToolsStreaming
+
+    -- * Streaming parser
+  , chatStreamTextFromPayloads
   )
 where
 
@@ -307,7 +310,7 @@ askOpenAIStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, request
         }
   lift $ logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
   lift $ logLLMRequestMessages request
-  answer <- streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
+  answer <- streamChatCompletion True cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
   lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
   pure (chatAnswerContent answer)
 
@@ -333,7 +336,7 @@ askOpenAIWithToolsStreaming cfg@Config{apiKey = Just key, model, reasoningEffort
         }
   lift $ logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
   lift $ logLLMRequestMessages request
-  answer <- streamChatCompletion cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
+  answer <- streamChatCompletion False cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
   lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
   pure answer
 
@@ -650,20 +653,21 @@ llmStreamResponseLogLine endpoint model answer =
 
 streamChatCompletion
   :: (IOE :> es, Log :> es)
-  => Text
+  => Bool
+  -> Text
   -> [Text]
   -> Text
   -> Int
   -> ChatCompletionRequest
   -> Stream (Of Text) (Eff es) ChatAnswer
-streamChatCompletion baseUrl path apiKey timeoutMicros request = do
+streamChatCompletion emitContentDeltas baseUrl path apiKey timeoutMicros request = do
   httpRequest <- liftIO (Http.streamingJsonPostRequest baseUrl path apiKey timeoutMicros request)
   manager <- liftIO HTTP.newTlsManager
   StreamUtil.bracketStream
     (liftIO (HTTP.responseOpen httpRequest manager))
     (liftIO . HTTP.responseClose)
     \response ->
-      processBody (HTTP.responseBody response) (StreamState "" mempty Map.empty)
+      processBody (HTTP.responseBody response) emptyStreamState
   where
     processBody bodyReader streamState = do
       chunk <- lift (liftIO (HTTP.brRead bodyReader))
@@ -671,6 +675,7 @@ streamChatCompletion baseUrl path apiKey timeoutMicros request = do
         then do
           (flushed, outputs) <- lift (processSseText True "" streamState)
           traverse_ S.yield outputs
+          traverse_ S.yield (finishStreamOutputs emitContentDeltas flushed)
           pure (streamStateAnswer flushed)
         else do
           let text = TextEncoding.decodeUtf8With TextEncoding.lenientDecode chunk
@@ -709,7 +714,7 @@ streamChatCompletion baseUrl path apiKey timeoutMicros request = do
                       logAttention_ [i|Ignoring malformed LLM stream chunk: #{Text.pack err}|]
                       pure (streamState, outputs)
                     Right chunk ->
-                      let (next, chunkOutputs) = applyStreamChunk streamState chunk
+                      let (next, chunkOutputs) = applyStreamChunk emitContentDeltas streamState chunk
                       in pure (next, outputs <> chunkOutputs)
 
 dropLast :: [a] -> [a]
@@ -725,8 +730,13 @@ data StreamState = StreamState
   { pendingLine :: !Text
   , contentAccumulator :: !TextBuilder.Builder
   , toolAccumulator :: !(Map Int PartialToolCall)
+  , pendingContentOutputs :: ![Text]
   }
   deriving (Generic)
+
+emptyStreamState :: StreamState
+emptyStreamState =
+  StreamState "" mempty Map.empty []
 
 data PartialToolCall = PartialToolCall
   { partialId :: !(Maybe Text)
@@ -758,8 +768,8 @@ builderToStrictText :: TextBuilder.Builder -> Text
 builderToStrictText =
   LazyText.toStrict . TextBuilder.toLazyText
 
-applyStreamChunk :: StreamState -> ChatCompletionStreamChunk -> (StreamState, [Text])
-applyStreamChunk streamState chunk =
+applyStreamChunk :: Bool -> StreamState -> ChatCompletionStreamChunk -> (StreamState, [Text])
+applyStreamChunk emitContentDeltas streamState chunk =
   foldl' applyStreamChoice (streamState, []) chunk.choices
   where
     applyStreamChoice (acc, outputs) StreamChoice{delta} =
@@ -767,10 +777,28 @@ applyStreamChunk streamState chunk =
       in
       ( acc
           & #contentAccumulator %~ (<> TextBuilder.fromText contentDelta)
-          & #toolAccumulator %~ \toolAccumulator ->
-              foldl' applyToolCallDelta toolAccumulator delta.toolCalls
-      , if Text.null contentDelta then outputs else outputs <> [contentDelta]
+          & #toolAccumulator %~ (\toolAccumulator ->
+              foldl' applyToolCallDelta toolAccumulator delta.toolCalls)
+          & #pendingContentOutputs %~ appendPendingContent contentDelta
+      , if emitContentDeltas && not (Text.null contentDelta)
+          then outputs
+          else outputs
       )
+
+appendPendingContent :: Text -> [Text] -> [Text]
+appendPendingContent content chunks
+  | Text.null content = chunks
+  | otherwise = chunks <> [content]
+
+finishStreamOutputs :: Bool -> StreamState -> [Text]
+finishStreamOutputs emitContentDeltas streamState
+  | emitContentDeltas = []
+  | otherwise =
+      case streamStateAnswer streamState of
+        ChatFinalAnswer{} ->
+          streamState.pendingContentOutputs
+        ChatToolRequest{} ->
+          []
 
 applyToolCallDelta :: Map Int PartialToolCall -> ToolCallDelta -> Map Int PartialToolCall
 applyToolCallDelta acc delta =
@@ -1066,6 +1094,30 @@ chatAnswer content calls =
       ChatFinalAnswer content
     Just toolCalls ->
       ChatToolRequest{content, toolCalls}
+
+-- | Convert decoded OpenAI-compatible SSE payloads into final-answer text
+-- chunks and the completed assistant turn.
+--
+-- When 'emitContentDeltas' is false, text is yielded only after the full turn
+-- is known to be a final answer. Tool-request content remains in the returned
+-- 'ChatToolRequest' and is not yielded as final-answer text.
+chatStreamTextFromPayloads :: Bool -> [Aeson.Value] -> Either Text ([Text], ChatAnswer)
+chatStreamTextFromPayloads emitContentDeltas payloads = do
+  chunks <- traverse parseChunk payloads
+  let (finalState, outputs) =
+        foldl'
+          (\(state, collected) chunk ->
+              let (nextState, chunkOutputs) = applyStreamChunk emitContentDeltas state chunk
+              in (nextState, collected <> chunkOutputs)
+          )
+          (emptyStreamState, [])
+          chunks
+  pure (outputs <> finishStreamOutputs emitContentDeltas finalState, streamStateAnswer finalState)
+  where
+    parseChunk value =
+      case AesonTypes.parseEither Aeson.parseJSON value of
+        Left err -> Left (Text.pack err)
+        Right chunk -> Right chunk
 
 chatAnswerContent :: ChatAnswer -> Text
 chatAnswerContent = \case

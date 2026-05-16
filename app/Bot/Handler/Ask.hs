@@ -281,7 +281,7 @@ agentContext toolCfg cfg conversations parentMessageKey message =
     }
 
 streamAgentReply
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Storage.Storage :> es, Log :> es, IOE :> es)
   => AskHandlerConfig
   -> Agent.AgentObserver AgentObservation.ObservationContext es
   -> Agent.AgentRun es
@@ -295,7 +295,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
     (responseId, result) <-
       S.mapM_
         (recordReplyUpdate activeReply)
-        (Chat.streamReplyTo message (.answer) (Agent.runAgentProgramStreaming program conversation))
+        (Chat.streamReplyTo message (.answer) (agentReplyTextStream observer activeReply message agentRun (Agent.runAgentProgramStreaming program conversation)))
     pure AgentReply{responseId, result}
   `catch` \(err :: SomeException) ->
     case Exception.fromException err of
@@ -313,6 +313,49 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
               , conversation = conversation
               }
           }
+
+agentReplyTextStream
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  => Agent.AgentObserver AgentObservation.ObservationContext es
+  -> ActiveReplyState
+  -> IncomingMessage
+  -> Agent.AgentRun es
+  -> Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
+  -> Stream (Of Text) (Eff es) Agent.AgentResult
+agentReplyTextStream observer activeReply message agentRun stream = do
+  next <- lift (S.next stream)
+  case next of
+    Left result ->
+      pure result
+    Right (Agent.AgentAnswerDelta chunk, rest) -> do
+      S.yield chunk
+      agentReplyTextStream observer activeReply message agentRun rest
+    Right (Agent.AgentIntermediateMessage body snapshot, rest) -> do
+      lift (sendIntermediateAgentMessage observer activeReply message agentRun body snapshot)
+      agentReplyTextStream observer activeReply message agentRun rest
+
+sendIntermediateAgentMessage
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  => Agent.AgentObserver AgentObservation.ObservationContext es
+  -> ActiveReplyState
+  -> IncomingMessage
+  -> Agent.AgentRun es
+  -> Text
+  -> Conversation
+  -> Eff es ()
+sendIntermediateAgentMessage observer activeReply message agentRun body conversation = do
+  responseId <- Chat.replyTo message body
+  ChatLog.recordBotMessage message responseId body
+  rememberConversationFrom activeReply.conversations activeReply.parentMessageKey (conversationMessageKey message <$> responseId) conversation
+  traverse_ (AgentObservation.observeConversationLinked observer . intermediateConversationLink agentRun activeReply) responseId
+
+intermediateConversationLink :: Agent.AgentRun es -> ActiveReplyState -> Integer -> AgentObservation.ObservedConversationLink
+intermediateConversationLink agentRun activeReply linkedMessageId =
+  AgentObservation.ObservedConversationLink
+    { runId = Agent.agentRunId agentRun
+    , parentMessageId = activeReply.parentMessageKey <&> (.messageId)
+    , linkedMessageId
+    }
 
 commitAgentReply
   :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)

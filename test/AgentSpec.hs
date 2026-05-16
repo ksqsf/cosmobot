@@ -8,6 +8,7 @@ import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.LLM.Transport as LLMTransport
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
@@ -74,9 +75,11 @@ main =
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
+      , testCase "agent separates tool request content from final answer stream" testAgentSeparatesToolRequestContent
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
+      , testCase "LLM tool request content is not streamed as final answer text" testLLMToolRequestContentIsNotStreamedAsFinalAnswerText
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "editable chat streaming splits long replies and yields aliases" testEditableChatStreamingSplitsLongReplies
@@ -411,6 +414,29 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
     _ ->
       assertFailure [i|expected noisy tool progress reply, got #{show sent :: String}|]
 
+testAgentSeparatesToolRequestContent :: IO ()
+testAgentSeparatesToolRequestContent = do
+  answers <- IORef.newIORef
+    [ chatAnswer "我先查看当前消息。" [toolCall "call-1" "get_current_message_info" (Aeson.object [])]
+    , chatAnswer "done" []
+    ]
+  outputs S.:> result <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    S.toList (Agent.runAgentStreaming 4 agentContext Agent.defaultTools (startWithUser "inspect"))
+  fst result @?= "done"
+  case outputs of
+    [Agent.AgentIntermediateMessage progress snapshot, Agent.AgentAnswerDelta finalChunk] -> do
+      progress @?= "我先查看当前消息。"
+      finalChunk @?= "done"
+      case viaNonEmpty last (conversationMessagesList snapshot) of
+        Just LLM.ChatMessage{role, content = Just (LLM.TextContent content), toolCalls} -> do
+          role @?= "assistant"
+          content @?= "我先查看当前消息。"
+          map (.name) toolCalls @?= ["get_current_message_info"]
+        other ->
+          assertFailure [i|expected assistant tool request snapshot, got #{show other :: String}|]
+    other ->
+      assertFailure [i|expected separated intermediate and final output, got #{showSeparatedOutputs other}|]
+
 testChatAnswerJsonRemainsObjectCompatible :: IO ()
 testChatAnswerJsonRemainsObjectCompatible = do
   let call = toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])
@@ -424,6 +450,36 @@ testChatAnswerJsonRemainsObjectCompatible = do
       [ "content" Aeson..= ("checking" :: Text)
       , "toolCalls" Aeson..= [call]
       ]
+
+testLLMToolRequestContentIsNotStreamedAsFinalAnswerText :: IO ()
+testLLMToolRequestContentIsNotStreamedAsFinalAnswerText = do
+  let payloads =
+        [ streamPayload (Aeson.object ["content" Aeson..= ("我先查看当前消息。" :: Text)])
+        , streamPayload
+            ( Aeson.object
+                [ "tool_calls" Aeson..=
+                    [ Aeson.object
+                        [ "index" Aeson..= (0 :: Int)
+                        , "id" Aeson..= ("call-1" :: Text)
+                        , "function" Aeson..=
+                            Aeson.object
+                              [ "name" Aeson..= ("get_current_message_info" :: Text)
+                              , "arguments" Aeson..= ("{}" :: Text)
+                              ]
+                        ]
+                    ]
+                ]
+            )
+        ]
+  case LLMTransport.chatStreamTextFromPayloads False payloads of
+    Right (outputs, LLM.ChatToolRequest{content, toolCalls}) -> do
+      outputs @?= []
+      content @?= "我先查看当前消息。"
+      map (.name) (toList toolCalls) @?= ["get_current_message_info"]
+    Right other ->
+      assertFailure [i|expected tool request stream result, got #{show other :: String}|]
+    Left err ->
+      assertFailure (Text.unpack err)
 
 testLLMStreamingEffectPreservesYieldedChunks :: IO ()
 testLLMStreamingEffectPreservesYieldedChunks = do
@@ -820,6 +876,21 @@ toolOutputs (Conversation messages) =
   , Just (LLM.TextContent text) <- [message.content]
   ]
 
+conversationMessagesList :: Conversation -> [LLM.ChatMessage]
+conversationMessagesList (Conversation messages) =
+  Foldable.toList messages
+
+showSeparatedOutputs :: [Agent.AgentStreamOutput] -> String
+showSeparatedOutputs =
+  show . map render
+  where
+    render :: Agent.AgentStreamOutput -> (String, Text)
+    render = \case
+      Agent.AgentAnswerDelta text ->
+        ("answer", text)
+      Agent.AgentIntermediateMessage text _ ->
+        ("intermediate", text)
+
 imageContextUrls :: Conversation -> [Text]
 imageContextUrls (Conversation messages) =
   [ url
@@ -952,8 +1023,8 @@ runAgentWithMemorySkillsAndTypstAndCapture memoryCfg skillsCfg rendered captured
                       case answer of
                         LLM.ChatFinalAnswer{content} ->
                           S.yield content
-                        LLM.ChatToolRequest{content} ->
-                          S.yield content
+                        LLM.ChatToolRequest{} ->
+                          pure ()
                       pure answer) $
                   ChatLog.runChatLog $
                     AgentAudit.runAgentAudit $
@@ -1149,6 +1220,16 @@ askHandlerMessage =
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
   decodeUtf8 . toStrict . Aeson.encode
+
+streamPayload :: Aeson.Value -> Aeson.Value
+streamPayload delta =
+  Aeson.object
+    [ "choices" Aeson..=
+        [ Aeson.object
+            [ "delta" Aeson..= delta
+            ]
+        ]
+    ]
 
 waitUntil :: IO Bool -> IO ()
 waitUntil predicate =

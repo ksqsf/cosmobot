@@ -41,8 +41,8 @@ retryLLMRequest label action =
 retryLLMStreamRequest
   :: (IOE :> es, Log :> es)
   => Text
-  -> Eff es (Stream (Of Text) (Eff es) r)
-  -> Stream (Of Text) (Eff es) r
+  -> Eff es (Stream (Of a) (Eff es) r)
+  -> Stream (Of a) (Eff es) r
 retryLLMStreamRequest label makeStream =
   go (1 :: Int)
   where
@@ -95,7 +95,7 @@ validateTextStream stream = do
     then lift $ throwIO (Transport.LLMException "OpenAI response was empty: no text output.")
     else pure answer
 
-validateChatAnswerStream :: IOE :> es => Stream (Of Text) (Eff es) Transport.ChatAnswer -> Stream (Of Text) (Eff es) Transport.ChatAnswer
+validateChatAnswerStream :: IOE :> es => Stream (Of a) (Eff es) Transport.ChatAnswer -> Stream (Of a) (Eff es) Transport.ChatAnswer
 validateChatAnswerStream stream = do
   answer <- stream
   lift (validateChatAnswer answer)

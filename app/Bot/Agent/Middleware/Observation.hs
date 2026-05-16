@@ -109,8 +109,8 @@ withObservedAgentRun
   -> ToolLimitContext
   -> AgentRun es
   -> [Text]
-  -> Stream (Of Text) (Eff es) AgentCompletion
-  -> Stream (Of Text) (Eff es) AgentCompletion
+  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
+  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
 withObservedAgentRun observer toolLimit agentRun exposedTools action =
   catchStream
     ( do
@@ -138,8 +138,8 @@ withObservedModelTurn
   :: IOE :> es
   => AgentObserver ObservationContext es
   -> ObservedModelTurn result
-  -> Stream (Of Text) (Eff es) result
-  -> Stream (Of Text) (Eff es) result
+  -> Stream (Of AgentStreamOutput) (Eff es) result
+  -> Stream (Of AgentStreamOutput) (Eff es) result
 withObservedModelTurn observer turnInfo action = do
   lift $ void $ observer.observe ModelTurnStarted
     { runId = turnInfo.runId

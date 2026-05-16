@@ -9,6 +9,7 @@ module Bot.Agent.Core
   ( AgentCompletion (..)
   , AgentProgram (..)
   , AgentResult (..)
+  , AgentStreamOutput (..)
   , AgentRun (..)
   , AgentState (..)
   , ModelDecision (..)
@@ -33,6 +34,10 @@ data AgentResult = AgentResult
   , answer :: !Text
   , conversation :: !Conversation
   }
+
+data AgentStreamOutput
+  = AgentAnswerDelta !Text
+  | AgentIntermediateMessage !Text !Conversation
 
 data AgentCompletion = AgentCompletion
   { result :: !AgentResult
@@ -67,7 +72,7 @@ data ModelDecision
   | ModelNeedsTools !ToolTurnState
 
 type ModelTurn es =
-  AgentState -> Stream (Of Text) (Eff es) ModelDecision
+  AgentState -> Stream (Of AgentStreamOutput) (Eff es) ModelDecision
 
 type ToolTurn es =
   ToolTurnState -> Eff es AgentState
@@ -85,13 +90,13 @@ data AgentProgram (context :: [Type]) es = AgentProgram
   { -- | Immutable per-run tool and request context.
     agentRun :: AgentRun es
     -- | Wrap one complete agent run.
-  , aroundAgentRun :: MiddlewareContext context -> Stream (Of Text) (Eff es) AgentCompletion -> Stream (Of Text) (Eff es) AgentCompletion
+  , aroundAgentRun :: MiddlewareContext context -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
     -- | Wrap one complete model phase.
     --
     -- Use this for model-side middleware such as conversation compaction,
     -- timing, auditing, or exception-aware behavior around the streamed model
     -- request plus decision.
-  , aroundModelTurn :: MiddlewareContext context -> AgentState -> (AgentState -> Stream (Of Text) (Eff es) ModelDecision) -> Stream (Of Text) (Eff es) ModelDecision
+  , aroundModelTurn :: MiddlewareContext context -> AgentState -> (AgentState -> Stream (Of AgentStreamOutput) (Eff es) ModelDecision) -> Stream (Of AgentStreamOutput) (Eff es) ModelDecision
     -- | Wrap the whole tool phase.
     --
     -- Use this for cleanup, timing, timeout, auditing, or exception-aware
@@ -127,7 +132,7 @@ runAgentLoop
   -> ModelTurn es
   -> ToolTurn es
   -> AgentState
-  -> Stream (Of Text) (Eff es) AgentCompletion
+  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
 runAgentLoop program context modelTurn toolTurn agentState = do
   program.aroundModelTurn context agentState modelTurn >>= \case
     ModelAnswered completion ->

@@ -101,7 +101,7 @@ askWithTools :: LLM :> es => [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswe
 askWithTools tools messages =
   send (AskTools tools messages)
 
--- | Ask with function tools while receiving assistant text chunks.
+-- | Ask with function tools while receiving final-answer text chunks.
 askWithToolsStreaming :: (LLM :> es, IOE :> es) => [FunctionTool] -> [ChatMessage] -> Stream (Of Text) (Eff es) ChatAnswer
 askWithToolsStreaming tools messages = do
   stream <- lift (send (AskToolsStream tools messages))

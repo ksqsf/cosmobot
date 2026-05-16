@@ -101,7 +101,7 @@ handleToolLimit
   -> Text
   -> NonEmpty LLM.ToolCall
   -> Conversation
-  -> Stream (Of Text) (Eff es) AgentCompletion
+  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
 handleToolLimit runId turn content calls answered = do
   let paused = appendMessages (toList (fmap pausedToolResult calls)) answered
       message = toolLimitMessage content calls
