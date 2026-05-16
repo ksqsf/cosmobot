@@ -13,6 +13,7 @@ module Bot.Effect.Chat
   , ReplyStreamStyle (..)
   , ReplyStreamUpdate (..)
   , streamReplyTo
+  , streamReplySegmentsTo
   , getMessageContent
   , getSenderMemberInfo
   , getMemberInfo
@@ -166,6 +167,73 @@ streamReplyTo message finalAnswer input = do
           update <- lift (pushReplyStreamChunk replyStream chunk)
           S.yield update
           go replyStream rest
+
+streamReplySegmentsTo
+  :: (Chat :> es, IOE :> es)
+  => IncomingMessage
+  -> (r -> Text)
+  -> Stream (Of ReplySegmentEvent) (Eff es) r
+  -> Stream (Of ReplyStreamUpdate) (Eff es) (Maybe Integer, r)
+streamReplySegmentsTo message finalAnswer input =
+  go Nothing False input
+  where
+    go current sawText stream = do
+      next <- lift (S.next stream)
+      case next of
+        Left result -> do
+          responseId <- finishAtEnd current sawText result
+          pure (responseId, result)
+        Right (event, rest) ->
+          case event of
+            ReplySegmentDelta chunk -> do
+              let openedSegment = isNothing current
+              replyStream <- lift (maybe (newReplyStream message) pure current)
+              pushed <- lift (pushReplyStreamChunk replyStream chunk)
+              let update =
+                    if openedSegment
+                      then pushed{sentResponseIds = maybeToList pushed.responseId <> pushed.sentResponseIds}
+                      else pushed
+              S.yield update
+              go (Just replyStream) True rest
+            ReplySegmentBoundary -> do
+              responseId <- closeSegment current
+              go Nothing (sawText || isJust responseId) rest
+            ReplySegmentMessage{} -> do
+              responseId <- closeSegment current
+              go Nothing (sawText || isJust responseId) rest
+
+    finishAtEnd current sawText result =
+      case current of
+        Just replyStream ->
+          closeSegmentUpdate replyStream
+        Nothing
+          | sawText ->
+              pure Nothing
+          | otherwise -> do
+              let answer = finalAnswer result
+              if Text.null (Text.strip answer)
+                then pure Nothing
+                else do
+                  replyStream <- lift (newReplyStream message)
+                  closeSegmentUpdateWith replyStream answer
+
+    closeSegment current =
+      case current of
+        Nothing ->
+          pure Nothing
+        Just replyStream ->
+          closeSegmentUpdate replyStream
+
+    closeSegmentUpdate replyStream = do
+      answer <- lift (textAccumulatorText <$> liftIO (IORef.readIORef replyStream.answerRef))
+      closeSegmentUpdateWith replyStream answer
+
+    closeSegmentUpdateWith replyStream answer = do
+      (responseId, sentResponseIds) <- lift (finishReplyStream replyStream answer)
+      finalText <- lift (textAccumulatorText <$> liftIO (IORef.readIORef replyStream.answerRef))
+      let update = ReplyStreamUpdate{responseId, sentResponseIds, answer = finalText}
+      S.yield update
+      pure responseId
 
 newReplyStream :: (Chat :> es, IOE :> es) => IncomingMessage -> Eff es ReplyStream
 newReplyStream message = do

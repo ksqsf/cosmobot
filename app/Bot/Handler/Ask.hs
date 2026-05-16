@@ -296,7 +296,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
     (responseId, result) <-
       S.mapM_
         (recordReplyUpdate activeReply)
-        (Chat.streamReplyTo message (.answer) (agentReplyTextStream observer activeReply message agentRun (agentReplySegments (Agent.runAgentProgramStreaming program conversation))))
+        (Chat.streamReplySegmentsTo message (.answer) (agentReplySegmentStream observer activeReply message agentRun (Agent.runAgentProgramStreaming program conversation)))
     pure AgentReply{responseId, result}
   `catch` \(err :: SomeException) ->
     case Exception.fromException err of
@@ -315,47 +315,27 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
               }
           }
 
-agentReplyTextStream
+agentReplySegmentStream
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
   => Agent.AgentObserver AgentObservation.ObservationContext es
   -> ActiveReplyState
   -> IncomingMessage
   -> Agent.AgentRun es
-  -> Stream (Of (ReplyBody.ReplySegmentEvent, Maybe Conversation)) (Eff es) Agent.AgentResult
-  -> Stream (Of Text) (Eff es) Agent.AgentResult
-agentReplyTextStream observer activeReply message agentRun stream = do
-  next <- lift (S.next stream)
-  case next of
-    Left result ->
-      pure result
-    Right ((ReplyBody.ReplySegmentDelta chunk, _), rest) -> do
-      S.yield chunk
-      agentReplyTextStream observer activeReply message agentRun rest
-    Right ((ReplyBody.ReplySegmentMessage content, Just snapshot), rest) -> do
-      lift (sendIntermediateAgentMessage observer activeReply message agentRun (ReplyBody.replyContentToBody content) snapshot)
-      agentReplyTextStream observer activeReply message agentRun rest
-    Right ((ReplyBody.ReplySegmentMessage{}, Nothing), rest) ->
-      agentReplyTextStream observer activeReply message agentRun rest
-    Right ((ReplyBody.ReplySegmentBoundary, _), rest) ->
-      agentReplyTextStream observer activeReply message agentRun rest
-
-agentReplySegments
-  :: Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
-  -> Stream (Of (ReplyBody.ReplySegmentEvent, Maybe Conversation)) (Eff es) Agent.AgentResult
-agentReplySegments stream = do
+  -> Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
+  -> Stream (Of ReplyBody.ReplySegmentEvent) (Eff es) Agent.AgentResult
+agentReplySegmentStream observer activeReply message agentRun stream = do
   next <- lift (S.next stream)
   case next of
     Left result ->
       pure result
     Right (Agent.AgentAnswerDelta chunk, rest) -> do
-      S.yield (ReplyBody.ReplySegmentDelta chunk, Nothing)
-      agentReplySegments rest
+      S.yield (ReplyBody.ReplySegmentDelta chunk)
+      agentReplySegmentStream observer activeReply message agentRun rest
     Right (Agent.AgentIntermediateMessage body snapshot, rest) -> do
-      S.yield
-        ( ReplyBody.ReplySegmentMessage (ReplyBody.replyContentFromBody body)
-        , Just snapshot
-        )
-      agentReplySegments rest
+      let content = ReplyBody.replyContentFromBody body
+      S.yield (ReplyBody.ReplySegmentMessage content)
+      lift (sendIntermediateAgentMessage observer activeReply message agentRun (ReplyBody.replyContentToBody content) snapshot)
+      agentReplySegmentStream observer activeReply message agentRun rest
 
 sendIntermediateAgentMessage
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)

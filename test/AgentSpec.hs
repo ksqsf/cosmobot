@@ -85,6 +85,8 @@ main =
       , testCase "LLM tool request content is not streamed as final answer text" testLLMToolRequestContentIsNotStreamedAsFinalAnswerText
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
+      , testCase "editable segmented replies open a new tail after tool messages" testEditableSegmentedRepliesOpenNewTail
+      , testCase "segmented replies flush final open segment" testSegmentedRepliesFlushFinalOpenSegment
       , testCase "editable chat streaming splits long replies and yields aliases" testEditableChatStreamingSplitsLongReplies
       , testCase "chunked active conversation aliases every sent reply" testChunkedActiveConversationAliasesEverySentReply
       , testCase "web_fetch max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
@@ -564,6 +566,77 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
   result @?= "abcdef"
   IORef.readIORef replies >>= (@?= [(Just 300, "abcd"), (Just 1, "ef")])
   IORef.readIORef updates >>= (@?= [(Nothing, [], "ab"), (Just 1, [1], "abcd"), (Just 1, [], "abcdef"), (Just 1, [2], "abcdef")])
+
+testEditableSegmentedRepliesOpenNewTail :: IO ()
+testEditableSegmentedRepliesOpenNewTail = do
+  replies <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
+  edits <- IORef.newIORef ([] :: [(Integer, Text)])
+  updates <- IORef.newIORef ([] :: [(Maybe Integer, [Integer], Text)])
+  nextReplyId <- IORef.newIORef (1 :: Integer)
+  (responseId, result) <- runEff $
+    Chat.runChatWith
+      Chat.ChatHandlers
+        { handleReplyTo = recordReply replies nextReplyId
+        , handleEditMessage = recordEdit edits
+        , handleDeleteMessage = noopDelete
+        , handleReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 100)
+        , handleGetMessageContent = noopFetch
+        , handleGetSenderMemberInfo = noopSenderMember
+        , handleGetMemberInfo = noopMember
+        , handleGetUserAvatar = noopUserAvatar
+        , handleListGroupMembers = noopMembers
+        , handleMentionUser = noopMention
+        } $
+        S.mapM_
+          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
+          ( Chat.streamReplySegmentsTo
+              testMessage
+              id
+              ( S.each
+                  [ ReplyBody.ReplySegmentDelta "ab"
+                  , ReplyBody.ReplySegmentMessage ReplyBody.ReplyContent{text = "tool", images = []}
+                  , ReplyBody.ReplySegmentDelta "cd"
+                  , ReplyBody.ReplySegmentDelta "ef"
+                  ]
+                  $> "cdef"
+              )
+          )
+  responseId @?= Just 2
+  result @?= "cdef"
+  IORef.readIORef replies >>= (@?= [(Just 300, "ab"), (Just 300, "cd")])
+  IORef.readIORef edits >>= (@?= [(2, "cdef")])
+  IORef.readIORef updates >>= (@?= [(Just 1, [1], "ab"), (Just 1, [], "ab"), (Just 2, [2], "cd"), (Just 2, [], "cdef"), (Just 2, [], "cdef")])
+
+testSegmentedRepliesFlushFinalOpenSegment :: IO ()
+testSegmentedRepliesFlushFinalOpenSegment = do
+  replies <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
+  updates <- IORef.newIORef ([] :: [(Maybe Integer, [Integer], Text)])
+  nextReplyId <- IORef.newIORef (1 :: Integer)
+  (responseId, result) <- runEff $
+    Chat.runChatWith
+      Chat.ChatHandlers
+        { handleReplyTo = recordReply replies nextReplyId
+        , handleEditMessage = noopEdit
+        , handleDeleteMessage = noopDelete
+        , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 100)
+        , handleGetMessageContent = noopFetch
+        , handleGetSenderMemberInfo = noopSenderMember
+        , handleGetMemberInfo = noopMember
+        , handleGetUserAvatar = noopUserAvatar
+        , handleListGroupMembers = noopMembers
+        , handleMentionUser = noopMention
+        } $
+        S.mapM_
+          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
+          ( Chat.streamReplySegmentsTo
+              testMessage
+              id
+              (S.each [ReplyBody.ReplySegmentDelta "last ", ReplyBody.ReplySegmentDelta "segment"] $> "last segment")
+          )
+  responseId @?= Just 1
+  result @?= "last segment"
+  IORef.readIORef replies >>= (@?= [(Just 300, "last segment")])
+  IORef.readIORef updates >>= (@?= [(Nothing, [], "last "), (Nothing, [], "last segment"), (Just 1, [1], "last segment")])
 
 testEditableChatStreamingSplitsLongReplies :: IO ()
 testEditableChatStreamingSplitsLongReplies = do
