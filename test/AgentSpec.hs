@@ -487,6 +487,9 @@ testReplySegmentAdapterFoldsDeltasIntoMessages = do
       , ReplyBody.ReplyContent{text = "tool request", images = ["https://example.test/tool.png"]}
       , ReplyBody.ReplyContent{text = "final answer", images = []}
       ]
+  ReplyBody.replyContentToBody
+    (ReplyBody.replyContentFromBody "tool request\n[image] https://example.test/tool.png")
+    @?= "tool request\n[image] https://example.test/tool.png"
 
 testLLMToolRequestContentIsNotStreamedAsFinalAnswerText :: IO ()
 testLLMToolRequestContentIsNotStreamedAsFinalAnswerText = do
