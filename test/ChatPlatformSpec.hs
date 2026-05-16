@@ -25,7 +25,10 @@ main =
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
       , testCase "Telegram CommonMark formatting emits UTF-16 entities" testTelegramCommonMarkFormattingEmitsUtf16Entities
+      , testCase "Telegram CommonMark extensions render supported Telegram formatting" testTelegramCommonMarkExtensionsRenderSupportedTelegramFormatting
+      , testCase "Telegram CommonMark extensions render footnotes and math" testTelegramCommonMarkExtensionsRenderFootnotesAndMath
       , testCase "Telegram CommonMark list items keep line breaks" testTelegramCommonMarkListItemsKeepLineBreaks
+      , testCase "Telegram CommonMark nested lists keep continuation indentation" testTelegramCommonMarkNestedListsKeepContinuationIndentation
       , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
@@ -173,6 +176,31 @@ testTelegramCommonMarkFormattingEmitsUtf16Entities = do
   pre.formattedText @?= "main = putStrLn \"こんにちは👍\""
   assertEntity pre "pre" 0 25 Nothing (Just "haskell")
 
+testTelegramCommonMarkExtensionsRenderSupportedTelegramFormatting :: IO ()
+testTelegramCommonMarkExtensionsRenderSupportedTelegramFormatting = do
+  let strike = Telegram.formatTelegramMarkdown "~~old~~ and **new**"
+  strike.formattedText @?= "old and new"
+  assertEntity strike "strikethrough" 0 3 Nothing Nothing
+  assertEntity strike "bold" 8 3 Nothing Nothing
+
+  let tasks = Telegram.formatTelegramMarkdown "- [ ] todo\n- [x] **done**"
+  tasks.formattedText @?= "☐ todo\n☑ done"
+  assertEntity tasks "bold" 9 4 Nothing Nothing
+
+testTelegramCommonMarkExtensionsRenderFootnotesAndMath :: IO ()
+testTelegramCommonMarkExtensionsRenderFootnotesAndMath = do
+  let footnotes = Telegram.formatTelegramMarkdown "note[^a]\n\n[^a]: **detail**"
+  footnotes.formattedText @?= "note[1]\n\n[1]: detail"
+  assertEntity footnotes "bold" 14 6 Nothing Nothing
+
+  let math = Telegram.formatTelegramMarkdown "Use $x^2$ and $$y$$"
+  math.formattedText @?= "Use x^2 and y"
+  assertEntity math "code" 4 3 Nothing Nothing
+  assertEntity math "pre" 12 1 Nothing Nothing
+
+  let rule = Telegram.formatTelegramMarkdown "a\n\n---\n\nb"
+  rule.formattedText @?= "a\n\n────────\n\nb"
+
 testTelegramCommonMarkListItemsKeepLineBreaks :: IO ()
 testTelegramCommonMarkListItemsKeepLineBreaks = do
   let formatted = Telegram.formatTelegramMarkdown "- first\n- second\n- **third**"
@@ -182,6 +210,12 @@ testTelegramCommonMarkListItemsKeepLineBreaks = do
   let ordered = Telegram.formatTelegramMarkdown "3. first\n4. second\n5. **third**"
   ordered.formattedText @?= "3. first\n4. second\n5. third"
   assertEntity ordered "bold" 22 5 Nothing Nothing
+
+testTelegramCommonMarkNestedListsKeepContinuationIndentation :: IO ()
+testTelegramCommonMarkNestedListsKeepContinuationIndentation = do
+  let formatted = Telegram.formatTelegramMarkdown "- parent\n  - child\n  - **bold**\n- next"
+  formatted.formattedText @?= "• parent\n  • child\n  • bold\n• next"
+  assertEntity formatted "bold" 23 4 Nothing Nothing
 
 testTelegramOkFalseBecomesTelegramExceptionDescription :: IO ()
 testTelegramOkFalseBecomesTelegramExceptionDescription = do

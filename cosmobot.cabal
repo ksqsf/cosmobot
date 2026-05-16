@@ -75,6 +75,7 @@ common app-deps
                     , text
                     , containers
                     , commonmark
+                    , commonmark-extensions
                     , directory
                     , filepath
                     , effectful

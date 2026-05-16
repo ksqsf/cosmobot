@@ -4,6 +4,7 @@ Description : Telegram effects
 Stability   : experimental
 -}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -64,6 +65,16 @@ import Bot.Util.Multipart
 import Bot.Core.Message
 import Commonmark hiding (escapeHtml)
 import qualified Commonmark.Entity as Commonmark
+import Commonmark.Extensions
+  ( HasFootnote (..)
+  , HasMath (..)
+  , HasStrikethrough (..)
+  , HasTaskList (..)
+  , footnoteSpec
+  , mathSpec
+  , strikethroughSpec
+  , taskListSpec
+  )
 import Data.List (maximum)
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -600,7 +611,7 @@ data TelegramFormatted = TelegramFormatted
   { formattedText :: !Text
   , formattedEntities :: ![MessageEntity]
   }
-  deriving (Show)
+  deriving (Show, Typeable)
 
 instance Semigroup TelegramFormatted where
   left <> right =
@@ -640,8 +651,8 @@ instance IsInline TelegramFormatted where
 
 instance IsBlock TelegramFormatted TelegramFormatted where
   paragraph body = body <> formattedTextOnly "\n\n"
-  plain = id
-  thematicBreak = formattedTextOnly "---\n\n"
+  plain body = body <> formattedTextOnly "\n"
+  thematicBreak = formattedTextOnly "────────\n\n"
   blockQuote body = body
   codeBlock info text =
     wrapFormattedEntity "pre" Nothing (nonEmptyText (Text.takeWhile (not . Char.isSpace) info)) (formattedTextOnly text)
@@ -654,7 +665,37 @@ instance IsBlock TelegramFormatted TelegramFormatted where
     mconcat (zipWith renderItem [(1 :: Int)..] items) <> formattedTextOnly "\n"
     where
       renderItem index item =
-        formattedTextOnly (listItemPrefix listType index) <> trimFormattedEnd item <> formattedTextOnly "\n"
+        formattedTextOnly (listItemPrefix listType index)
+          <> indentFormattedContinuation "  " (trimFormattedEnd item)
+          <> formattedTextOnly "\n"
+
+instance HasStrikethrough TelegramFormatted where
+  strikethrough = wrapFormattedEntity "strikethrough" Nothing Nothing
+
+instance HasMath TelegramFormatted where
+  inlineMath text =
+    wrapFormattedEntity "code" Nothing Nothing (formattedTextOnly text)
+  displayMath text =
+    wrapFormattedEntity "pre" Nothing Nothing (formattedTextOnly text)
+
+instance HasTaskList TelegramFormatted TelegramFormatted where
+  taskList _ _ items =
+    mconcat (map renderItem items) <> formattedTextOnly "\n"
+    where
+      renderItem (checked, item) =
+        formattedTextOnly (taskListItemPrefix checked)
+          <> indentFormattedContinuation "  " (trimFormattedEnd item)
+          <> formattedTextOnly "\n"
+
+instance HasFootnote TelegramFormatted TelegramFormatted where
+  footnote number _label body =
+    formattedTextOnly ("[" <> show number <> "]: ")
+      <> indentFormattedContinuation "    " (trimFormattedEnd body)
+      <> formattedTextOnly "\n"
+  footnoteList =
+    mconcat
+  footnoteRef number _label _body =
+    formattedTextOnly ("[" <> number <> "]")
 
 listItemPrefix :: ListType -> Int -> Text
 listItemPrefix (BulletList _) _ =
@@ -670,9 +711,23 @@ orderedItemPrefix OneParen number =
 orderedItemPrefix TwoParens number =
   "(" <> show number <> ") "
 
+taskListItemPrefix :: Bool -> Text
+taskListItemPrefix False =
+  "☐ "
+taskListItemPrefix True =
+  "☑ "
+
+telegramMarkdownSyntax :: SyntaxSpec Identity TelegramFormatted TelegramFormatted
+telegramMarkdownSyntax =
+  strikethroughSpec
+    <> mathSpec
+    <> taskListSpec
+    <> footnoteSpec
+    <> defaultSyntaxSpec
+
 formatTelegramMarkdown :: Text -> TelegramFormatted
 formatTelegramMarkdown input =
-  case commonmark "telegram-message" input of
+  case runIdentity (commonmarkWith telegramMarkdownSyntax "telegram-message" input) of
     Left _ ->
       formattedTextOnly input
     Right formatted ->
@@ -725,6 +780,49 @@ trimEntityToLength textLength messageEntity@MessageEntity{type_, offset, length 
         else Just MessageEntity{type_, offset, length = nextLength, url, language, user}
   where
     entityEnd = offset + entityLength
+
+indentFormattedContinuation :: Text -> TelegramFormatted -> TelegramFormatted
+indentFormattedContinuation indent formatted
+  | Text.null indent = formatted
+  | otherwise =
+      TelegramFormatted
+        { formattedText = Text.intercalate ("\n" <> indent) (Text.splitOn "\n" formatted.formattedText)
+        , formattedEntities = map (indentEntity formatted.formattedText indentLength) formatted.formattedEntities
+        }
+  where
+    indentLength = utf16Length indent
+
+indentEntity :: Text -> Integer -> MessageEntity -> MessageEntity
+indentEntity text indentLength MessageEntity{type_, offset, length = entityLength, url, language, user} =
+  MessageEntity
+    { type_ = type_
+    , offset = offset + indentLength * newlinesBefore
+    , length = entityLength + indentLength * newlinesInside
+    , url = url
+    , language = language
+    , user = user
+    }
+  where
+    newlinesBefore = countNewlinesBeforeUtf16Offset offset text
+    newlinesInside =
+      countNewlinesBeforeUtf16Offset (offset + entityLength) text - newlinesBefore
+
+countNewlinesBeforeUtf16Offset :: Integer -> Text -> Integer
+countNewlinesBeforeUtf16Offset limit =
+  go 0 0 . Text.unpack
+  where
+    go _ count [] = count
+    go position count (char : rest)
+      | nextPosition > limit = count
+      | otherwise =
+          go nextPosition (if char == '\n' then count + 1 else count) rest
+      where
+        nextPosition = position + utf16CharLength char
+
+utf16CharLength :: Char -> Integer
+utf16CharLength char
+  | Char.ord char > 0xffff = 2
+  | otherwise = 1
 
 utf16Length :: Text -> Integer
 utf16Length =
