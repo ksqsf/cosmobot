@@ -259,7 +259,13 @@ askConversation toolCfg cfg conversations parentMessageKey threadId message conv
 
 data AgentReply = AgentReply
   { responseId :: !(Maybe Integer)
+  , answer :: !Text
   , result :: !Agent.AgentResult
+  }
+
+data AgentReplyResult = AgentReplyResult
+  { replyAnswer :: !Text
+  , agentResult :: !Agent.AgentResult
   }
 
 agentContext
@@ -293,11 +299,11 @@ streamAgentReply
 streamAgentReply cfg observer agentRun activeReply message conversation =
   do
     let program = Agent.defaultAgentProgram observer cfg.agentMaxTurns agentRun
-    (responseId, result) <-
+    (responseId, replyResult) <-
       S.mapM_
         (recordReplyUpdate activeReply)
-        (Chat.streamReplySegmentsTo message (.answer) (agentReplySegmentStream observer activeReply message agentRun (Agent.runAgentProgramStreaming program conversation)))
-    pure AgentReply{responseId, result}
+        (Chat.streamReplySegmentsTo message (.replyAnswer) (agentReplySegmentStream (Agent.runAgentProgramStreaming program conversation)))
+    pure AgentReply{responseId, answer = replyResult.replyAnswer, result = replyResult.agentResult}
   `catch` \(err :: SomeException) ->
     case Exception.fromException err of
       Just Exception.ThreadKilled ->
@@ -308,57 +314,33 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
         responseId <- Chat.replyTo message failureMessage
         pure AgentReply
           { responseId
+          , answer = failureMessage
           , result = Agent.AgentResult
               { runId = Agent.agentRunId agentRun
-              , answer = failureMessage
               , conversation = conversation
               }
           }
 
 agentReplySegmentStream
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
-  => Agent.AgentObserver AgentObservation.ObservationContext es
-  -> ActiveReplyState
-  -> IncomingMessage
-  -> Agent.AgentRun es
-  -> Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
-  -> Stream (Of ReplyBody.ReplySegmentEvent) (Eff es) Agent.AgentResult
-agentReplySegmentStream observer activeReply message agentRun stream = do
-  next <- lift (S.next stream)
-  case next of
-    Left result ->
-      pure result
-    Right (Agent.AgentAnswerDelta chunk, rest) -> do
-      S.yield (ReplyBody.ReplySegmentDelta chunk)
-      agentReplySegmentStream observer activeReply message agentRun rest
-    Right (Agent.AgentIntermediateMessage body snapshot, rest) -> do
-      let content = ReplyBody.replyContentFromBody body
-      S.yield (ReplyBody.ReplySegmentMessage content)
-      lift (sendIntermediateAgentMessage observer activeReply message agentRun (ReplyBody.replyContentToBody content) snapshot)
-      agentReplySegmentStream observer activeReply message agentRun rest
-
-sendIntermediateAgentMessage
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
-  => Agent.AgentObserver AgentObservation.ObservationContext es
-  -> ActiveReplyState
-  -> IncomingMessage
-  -> Agent.AgentRun es
-  -> Text
-  -> Conversation
-  -> Eff es ()
-sendIntermediateAgentMessage observer activeReply message agentRun body conversation = do
-  responseId <- Chat.replyTo message body
-  ChatLog.recordBotMessage message responseId body
-  rememberConversationFrom activeReply.conversations activeReply.parentMessageKey (conversationMessageKey message <$> responseId) conversation
-  traverse_ (AgentObservation.observeConversationLinked observer . intermediateConversationLink agentRun activeReply) responseId
-
-intermediateConversationLink :: Agent.AgentRun es -> ActiveReplyState -> Integer -> AgentObservation.ObservedConversationLink
-intermediateConversationLink agentRun activeReply linkedMessageId =
-  AgentObservation.ObservedConversationLink
-    { runId = Agent.agentRunId agentRun
-    , parentMessageId = activeReply.parentMessageKey <&> (.messageId)
-    , linkedMessageId
-    }
+  :: Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
+  -> Stream (Of ReplyBody.ReplySegmentEvent) (Eff es) AgentReplyResult
+agentReplySegmentStream =
+  go ""
+  where
+    go answer stream = do
+      next <- lift (S.next stream)
+      case next of
+        Left result ->
+          pure AgentReplyResult
+            { replyAnswer = Text.strip answer
+            , agentResult = result
+            }
+        Right (Agent.AgentContentDelta chunk, rest) -> do
+          S.yield (ReplyBody.ReplySegmentDelta chunk)
+          go (answer <> chunk) rest
+        Right (Agent.AgentToolCallNotification{}, rest) -> do
+          S.yield ReplyBody.ReplySegmentBoundary
+          go answer rest
 
 commitAgentReply
   :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
@@ -367,16 +349,16 @@ commitAgentReply
   -> IncomingMessage
   -> AgentReply
   -> Eff es (Text, Conversation)
-commitAgentReply observer activeReply message AgentReply{responseId, result} = do
+commitAgentReply observer activeReply message AgentReply{responseId, answer, result} = do
   traverse_ (AgentObservation.observeConversationLinked observer . conversationLink result (activeReply.parentMessageKey <&> (.messageId))) responseId
-  ChatLog.recordBotMessage message responseId result.answer
+  ChatLog.recordBotMessage message responseId answer
   active <- liftIO (IORef.readIORef activeReply.activeRef)
   case active of
     Just activeHandle ->
       finishActiveConversation activeReply.conversations activeHandle result.conversation
     Nothing ->
       rememberConversationFrom activeReply.conversations activeReply.parentMessageKey (conversationMessageKey message <$> responseId) result.conversation
-  pure (result.answer, result.conversation)
+  pure (answer, result.conversation)
 
 conversationLink :: Agent.AgentResult -> Maybe Integer -> Integer -> AgentObservation.ObservedConversationLink
 conversationLink result parentMessageId linkedMessageId =

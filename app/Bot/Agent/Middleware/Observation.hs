@@ -82,12 +82,12 @@ withObservation observer program =
     }
   where
     modelDecisionFinished runId turn = \case
-      ModelAnswered AgentCompletion{result} ->
+      ModelAnswered AgentCompletion{finalText} ->
         ModelTurnFinished
           { runId = runId
           , turn = turn
           , answerKind = "final"
-          , contentLength = Text.length result.answer
+          , contentLength = Text.length finalText
           , toolCalls = []
           }
       ModelNeedsTools ToolTurnState{toolContent, toolCalls} ->

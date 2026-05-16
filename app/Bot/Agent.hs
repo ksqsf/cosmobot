@@ -86,21 +86,22 @@ runAgent
   -> [Tool es]
   -> Conversation
   -> Eff es (Text, Conversation)
-runAgent maxTurns context tools conversation =
-  S.mapM_ (\_ -> pure ()) (runAgentStreaming maxTurns context tools conversation)
+runAgent maxTurns context tools conversation = do
+  outputs S.:> result <- S.toList (runAgentStreaming maxTurns context tools conversation)
+  pure (agentStreamAnswer outputs, result)
 
--- | Run an LLM/tool loop, streaming assistant text chunks from the final model turn.
+-- | Run an LLM/tool loop, streaming assistant content chunks.
 runAgentStreaming
   :: (LLM.LLM :> es, Log :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
   -> Conversation
-  -> Stream (Of AgentStreamOutput) (Eff es) (Text, Conversation)
+  -> Stream (Of AgentStreamOutput) (Eff es) Conversation
 runAgentStreaming maxTurns context tools conversation = do
   agentRun <- lift (startAgentRun context tools)
   result <- runPreparedAgentStreaming maxTurns agentRun conversation
-  pure (result.answer, result.conversation)
+  pure result.conversation
 
 runPreparedAgentStreaming
   :: (LLM.LLM :> es, Log :> es, IOE :> es)
@@ -190,9 +191,7 @@ modelDecision agentRun agentState answer =
     LLM.ChatFinalAnswer{content} ->
       pure (ModelAnswered (agentCompletion agentRun "answered" content agentState.turn answered))
     LLM.ChatToolRequest{content, toolCalls} -> do
-      let strippedContent = Text.strip content
-      unless (Text.null strippedContent) do
-        S.yield (AgentIntermediateMessage strippedContent answered)
+      S.yield (AgentToolCallNotification toolCalls)
       pure (ModelNeedsTools ToolTurnState{agentState, answered, toolContent = content, toolCalls})
   where
     answered =
@@ -225,20 +224,18 @@ askNext
   -> AgentState
   -> Stream (Of AgentStreamOutput) (Eff es) LLM.ChatAnswer
 askNext agentRun agentState = do
-  translateLLMStream $
+  S.map AgentContentDelta $
     LLM.askWithToolsStreaming
       (map toolSchema agentRun.exposedTools)
       (agentRequestMessages agentRun.context agentState.conversation)
 
-translateLLMStream :: Stream (Of Text) (Eff es) LLM.ChatAnswer -> Stream (Of AgentStreamOutput) (Eff es) LLM.ChatAnswer
-translateLLMStream stream = do
-  next <- lift (S.next stream)
-  case next of
-    Left answer ->
-      pure answer
-    Right (chunk, rest) -> do
-      S.yield (AgentAnswerDelta chunk)
-      translateLLMStream rest
+agentStreamAnswer :: [AgentStreamOutput] -> Text
+agentStreamAnswer =
+  Text.strip . foldMap \case
+    AgentContentDelta chunk ->
+      chunk
+    AgentToolCallNotification{} ->
+      ""
 
 agentRequestMessages :: AgentContext es -> Conversation -> [LLM.ChatMessage]
 agentRequestMessages context (Conversation messages) =
@@ -317,7 +314,7 @@ toolImageContextText call result =
 agentCompletion :: AgentRun es -> Text -> Text -> Int -> Conversation -> AgentCompletion
 agentCompletion agentRun status answer turnsUsed conversation =
   AgentCompletion
-    { result = AgentResult{runId = agentRun.runId, answer, conversation}
+    { result = AgentResult{runId = agentRun.runId, conversation}
     , status
     , finalText = answer
     , turnsUsed

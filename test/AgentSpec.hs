@@ -59,6 +59,11 @@ data ChatMock = ChatMock
   , userAvatar :: !(Maybe Aeson.Value)
   }
 
+data StreamingAnswer = StreamingAnswer
+  { chunks :: ![Text]
+  , answer :: !LLM.ChatAnswer
+  }
+
 main :: IO ()
 main =
   defaultMain $
@@ -76,13 +81,14 @@ main =
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
-      , testCase "agent separates tool request content from final answer stream" testAgentSeparatesToolRequestContent
+      , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
+      , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "reply body parses structured content" testReplyBodyParsesStructuredContent
       , testCase "reply segment adapter folds deltas into messages" testReplySegmentAdapterFoldsDeltasIntoMessages
-      , testCase "LLM tool request content is not streamed as final answer text" testLLMToolRequestContentIsNotStreamedAsFinalAnswerText
+      , testCase "LLM tool request content streams immediately when enabled" testLLMToolRequestContentStreamsImmediatelyWhenEnabled
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "editable segmented replies open a new tail after tool messages" testEditableSegmentedRepliesOpenNewTail
@@ -419,24 +425,44 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
     _ ->
       assertFailure [i|expected noisy tool progress reply, got #{show sent :: String}|]
 
-testAgentSeparatesToolRequestContent :: IO ()
-testAgentSeparatesToolRequestContent = do
+testAskHandlerFlushesStreamedContentBeforeToolCalls :: IO ()
+testAskHandlerFlushesStreamedContentBeforeToolCalls = do
+  answers <- IORef.newIORef
+    [ StreamingAnswer
+        { chunks = ["我会", "查天气"]
+        , answer = chatAnswer "我会查天气" [toolCall "call-1" "get_weather" (Aeson.object ["location" Aeson..= ("Berlin" :: Text)])]
+        }
+    , StreamingAnswer
+        { chunks = ["我已经查", "到天气"]
+        , answer = chatAnswer "我已经查到天气" []
+        }
+    ]
+  replies <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWithStreamingAnswers answers (ChatMock (Just replies) (Just 46) Nothing) do
+    conversations <- liftIO newConversationStore
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
+    liftIO $ waitUntil ((>= 2) . length <$> IORef.readIORef replies)
+  IORef.readIORef replies >>= (@?= ["我会查天气", "我已经查到天气"])
+
+testAgentStreamsToolRequestContentBeforeToolNotification :: IO ()
+testAgentStreamsToolRequestContentBeforeToolNotification = do
   answers <- IORef.newIORef
     [ chatAnswer "我先查看当前消息。" [toolCall "call-1" "get_current_message_info" (Aeson.object [])]
     , chatAnswer "done" []
     ]
   outputs S.:> result <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     S.toList (Agent.runAgentStreaming 4 agentContext Agent.defaultTools (startWithUser "inspect"))
-  fst result @?= "done"
+  streamAnswerText outputs @?= "我先查看当前消息。done"
   case outputs of
-    [Agent.AgentIntermediateMessage progress snapshot, Agent.AgentAnswerDelta finalChunk] -> do
+    [Agent.AgentContentDelta progress, Agent.AgentToolCallNotification toolCalls, Agent.AgentContentDelta finalChunk] -> do
       progress @?= "我先查看当前消息。"
+      map (.name) (toList toolCalls) @?= ["get_current_message_info"]
       finalChunk @?= "done"
-      case viaNonEmpty last (conversationMessagesList snapshot) of
-        Just LLM.ChatMessage{role, content = Just (LLM.TextContent content), toolCalls} -> do
+      case find ((not . null) . (.toolCalls)) (conversationMessagesList result) of
+        Just LLM.ChatMessage{role, content = Just (LLM.TextContent content), toolCalls = savedToolCalls} -> do
           role @?= "assistant"
           content @?= "我先查看当前消息。"
-          map (.name) toolCalls @?= ["get_current_message_info"]
+          map (.name) savedToolCalls @?= ["get_current_message_info"]
         other ->
           assertFailure [i|expected assistant tool request snapshot, got #{show other :: String}|]
     other ->
@@ -493,8 +519,8 @@ testReplySegmentAdapterFoldsDeltasIntoMessages = do
     (ReplyBody.replyContentFromBody "tool request\n[image] https://example.test/tool.png")
     @?= "tool request\n[image] https://example.test/tool.png"
 
-testLLMToolRequestContentIsNotStreamedAsFinalAnswerText :: IO ()
-testLLMToolRequestContentIsNotStreamedAsFinalAnswerText = do
+testLLMToolRequestContentStreamsImmediatelyWhenEnabled :: IO ()
+testLLMToolRequestContentStreamsImmediatelyWhenEnabled = do
   let payloads =
         [ streamPayload (Aeson.object ["content" Aeson..= ("我先查看当前消息。" :: Text)])
         , streamPayload
@@ -513,9 +539,9 @@ testLLMToolRequestContentIsNotStreamedAsFinalAnswerText = do
                 ]
             )
         ]
-  case LLMTransport.chatStreamTextFromPayloads False payloads of
+  case LLMTransport.chatStreamTextFromPayloads True payloads of
     Right (outputs, LLM.ChatToolRequest{content, toolCalls}) -> do
-      outputs @?= []
+      outputs @?= ["我先查看当前消息。"]
       content @?= "我先查看当前消息。"
       map (.name) (toList toolCalls) @?= ["get_current_message_info"]
     Right other ->
@@ -999,10 +1025,18 @@ showSeparatedOutputs =
   where
     render :: Agent.AgentStreamOutput -> (String, Text)
     render = \case
-      Agent.AgentAnswerDelta text ->
-        ("answer", text)
-      Agent.AgentIntermediateMessage text _ ->
-        ("intermediate", text)
+      Agent.AgentContentDelta text ->
+        ("content", text)
+      Agent.AgentToolCallNotification calls ->
+        ("tool", Text.intercalate ", " (toList (fmap (.name) calls)))
+
+streamAnswerText :: [Agent.AgentStreamOutput] -> Text
+streamAnswerText =
+  Text.strip . foldMap \case
+    Agent.AgentContentDelta text ->
+      text
+    Agent.AgentToolCallNotification{} ->
+      ""
 
 imageContextUrls :: Conversation -> [Text]
 imageContextUrls (Conversation messages) =
@@ -1136,9 +1170,50 @@ runAgentWithMemorySkillsAndTypstAndCapture memoryCfg skillsCfg rendered captured
                       case answer of
                         LLM.ChatFinalAnswer{content} ->
                           S.yield content
-                        LLM.ChatToolRequest{} ->
-                          pure ()
+                        LLM.ChatToolRequest{content}
+                          | Text.null content -> pure ()
+                          | otherwise -> S.yield content
                       pure answer) $
+                  ChatLog.runChatLog $
+                    AgentAudit.runAgentAudit $
+                      Chat.runChatWith
+                        Chat.ChatHandlers
+                          { handleReplyTo = mockReply chatMock
+                          , handleEditMessage = noopEdit
+                          , handleDeleteMessage = noopDelete
+                          , handleReplyStreamStyle = noopReplyStreamStyle
+                          , handleGetMessageContent = noopFetch
+                          , handleGetSenderMemberInfo = noopSenderMember
+                          , handleGetMemberInfo = noopMember
+                          , handleGetUserAvatar = mockUserAvatar chatMock
+                          , handleListGroupMembers = noopMembers
+                          , handleMentionUser = noopMention
+                          }
+                        action
+
+runAgentWithStreamingAnswers
+  :: IORef.IORef [StreamingAnswer]
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithStreamingAnswers answers chatMock action = do
+  rendered <- IORef.newIORef ([] :: [Text])
+  runEff $
+    runTestLog $
+      StorageEffect.runStorageSQLitePath ":memory:" $
+        Typst.runTypstWith (mockTypstRender rendered) $
+          Scheduler.runScheduler $
+            Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") $
+              Skills.runSkills defaultTestSkillsConfig $
+                LLM.runLLMWith
+                  (\_ -> pure "unused text answer")
+                  (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
+                  (\_ -> pure "unused image answer")
+                  (\_ _ -> (.answer) <$> liftIO (popStreamingAnswer answers))
+                  (\_ _ -> do
+                      streamingAnswer <- liftIO (popStreamingAnswer answers)
+                      traverse_ S.yield streamingAnswer.chunks
+                      pure streamingAnswer.answer) $
                   ChatLog.runChatLog $
                     AgentAudit.runAgentAudit $
                       Chat.runChatWith
@@ -1179,6 +1254,14 @@ popAnswer answers =
   IORef.atomicModifyIORef' answers \case
     [] ->
       ([], chatAnswer "unexpected extra LLM call" [])
+    answer : rest ->
+      (rest, answer)
+
+popStreamingAnswer :: IORef.IORef [StreamingAnswer] -> IO StreamingAnswer
+popStreamingAnswer answers =
+  IORef.atomicModifyIORef' answers \case
+    [] ->
+      ([], StreamingAnswer{chunks = ["unexpected extra LLM call"], answer = chatAnswer "unexpected extra LLM call" []})
     answer : rest ->
       (rest, answer)
 

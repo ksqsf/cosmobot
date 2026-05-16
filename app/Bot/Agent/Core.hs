@@ -31,13 +31,12 @@ import qualified Bot.Util.HList as HList
 
 data AgentResult = AgentResult
   { runId :: !Text
-  , answer :: !Text
   , conversation :: !Conversation
   }
 
 data AgentStreamOutput
-  = AgentAnswerDelta !Text
-  | AgentIntermediateMessage !Text !Conversation
+  = AgentContentDelta !Text
+  | AgentToolCallNotification !(NonEmpty LLM.ToolCall)
 
 data AgentCompletion = AgentCompletion
   { result :: !AgentResult

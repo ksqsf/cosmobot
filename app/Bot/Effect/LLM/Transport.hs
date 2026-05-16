@@ -336,7 +336,7 @@ askOpenAIWithToolsStreaming cfg@Config{apiKey = Just key, model, reasoningEffort
         }
   lift $ logInfo_ ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
   lift $ logLLMRequestMessages request
-  answer <- streamChatCompletion False cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
+  answer <- streamChatCompletion True cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
   lift $ logInfo_ ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
   pure answer
 
@@ -781,7 +781,7 @@ applyStreamChunk emitContentDeltas streamState chunk =
               foldl' applyToolCallDelta toolAccumulator delta.toolCalls)
           & #pendingContentOutputs %~ appendPendingContent contentDelta
       , if emitContentDeltas && not (Text.null contentDelta)
-          then outputs
+          then outputs <> [contentDelta]
           else outputs
       )
 
@@ -1095,19 +1095,19 @@ chatAnswer content calls =
     Just toolCalls ->
       ChatToolRequest{content, toolCalls}
 
--- | Convert decoded OpenAI-compatible SSE payloads into final-answer text
--- chunks and the completed assistant turn.
+-- | Convert decoded OpenAI-compatible SSE payloads into streamed assistant
+-- content chunks and the completed assistant turn.
 --
 -- When 'emitContentDeltas' is false, text is yielded only after the full turn
 -- is known to be a final answer. Tool-request content remains in the returned
--- 'ChatToolRequest' and is not yielded as final-answer text.
+-- 'ChatToolRequest' and is not yielded.
 chatStreamTextFromPayloads :: Bool -> [Aeson.Value] -> Either Text ([Text], ChatAnswer)
 chatStreamTextFromPayloads emitContentDeltas payloads = do
   chunks <- traverse parseChunk payloads
   let (finalState, outputs) =
         foldl'
-          (\(state, collected) chunk ->
-              let (nextState, chunkOutputs) = applyStreamChunk emitContentDeltas state chunk
+          (\(streamState, collected) chunk ->
+              let (nextState, chunkOutputs) = applyStreamChunk emitContentDeltas streamState chunk
               in (nextState, collected <> chunkOutputs)
           )
           (emptyStreamState, [])

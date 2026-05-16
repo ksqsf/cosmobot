@@ -26,6 +26,7 @@ import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Util.HList as HList
 import qualified Data.Text as Text
+import qualified Streaming.Prelude as S
 
 newtype ToolLimitContext = ToolLimitContext
   { maxToolTurns :: Int
@@ -102,11 +103,12 @@ handleToolLimit
   -> NonEmpty LLM.ToolCall
   -> Conversation
   -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
-handleToolLimit runId turn content calls answered = do
+handleToolLimit runId turn _content calls answered = do
   let paused = appendMessages (toList (fmap pausedToolResult calls)) answered
-      message = toolLimitMessage content calls
+      message = toolLimitMessage calls
+  S.yield (AgentContentDelta message)
   pure AgentCompletion
-    { result = AgentResult{runId, answer = message, conversation = paused}
+    { result = AgentResult{runId, conversation = paused}
     , status = "tool_limit"
     , finalText = message
     , turnsUsed = turn
@@ -125,20 +127,11 @@ safeToolCall call action =
     callName = call.name
 
 -- | User-facing pause text returned when the tool-turn budget is exhausted.
-toolLimitMessage :: Text -> NonEmpty LLM.ToolCall -> Text
-toolLimitMessage content calls
-  | Text.null stripped =
-      [i|已暂停：本次 agent 工具调用轮数已用完，尚未执行下一步工具调用：#{toolCallList calls}
+toolLimitMessage :: NonEmpty LLM.ToolCall -> Text
+toolLimitMessage calls =
+  [i|已暂停：本次 agent 工具调用轮数已用完，尚未执行下一步工具调用：#{toolCallList calls}
 
 如果需要继续，请直接回复下一条消息。|]
-  | otherwise =
-      [i|#{stripped}
-
-已暂停：本次 agent 工具调用轮数已用完，尚未执行下一步工具调用：#{toolCallList calls}
-
-如果需要继续，请直接回复下一条消息。|]
-  where
-    stripped = Text.strip content
 
 toolCallList :: NonEmpty LLM.ToolCall -> Text
 toolCallList calls =
