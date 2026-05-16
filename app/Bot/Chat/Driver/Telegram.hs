@@ -145,7 +145,7 @@ telegramDriver = Driver.ChatPlatformDriver
   }
 
 telegramEditChunkChars :: Int
-telegramEditChunkChars = 50
+telegramEditChunkChars = 512
 
 telegramMessageTextLimit :: Int
 telegramMessageTextLimit = 4096
