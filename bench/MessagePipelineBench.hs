@@ -242,7 +242,7 @@ syntheticMessage index =
         , senderIsSuperuser = index `mod` 97 == 0
         , mentionsBot = index `mod` 11 == 0
         }
-    , senderId = Just (fromIntegral (1000 + index `mod` 256))
+    , senderId = Just (show (fromIntegral (1000 + index `mod` 256)))
     , senderUsername = Just ("user" <> show (index `mod` 256))
     , messageId = Just (fromIntegral index)
     , replyToMessageId = if index `mod` 13 == 0 then Just (fromIntegral (max 1 (index - 1))) else Nothing
