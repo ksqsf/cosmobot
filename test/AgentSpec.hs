@@ -81,6 +81,7 @@ main =
       , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "reply body parses structured content" testReplyBodyParsesStructuredContent
+      , testCase "reply segment adapter folds deltas into messages" testReplySegmentAdapterFoldsDeltasIntoMessages
       , testCase "LLM tool request content is not streamed as final answer text" testLLMToolRequestContentIsNotStreamedAsFinalAnswerText
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
@@ -470,6 +471,22 @@ testReplyBodyParsesStructuredContent = do
   ReplyBody.renderReplyBody "hello\n[image] https://example.test/a.png\nworld" @?= "hello\nworld"
   ReplyBody.replyImageUrls "hello\n[image] https://example.test/a.png\n[image] file:///tmp/b.png" @?=
     ["https://example.test/a.png", "file:///tmp/b.png"]
+
+testReplySegmentAdapterFoldsDeltasIntoMessages :: IO ()
+testReplySegmentAdapterFoldsDeltasIntoMessages = do
+  ReplyBody.replySegmentMessages
+    [ ReplyBody.ReplySegmentDelta "hello"
+    , ReplyBody.ReplySegmentDelta " world"
+    , ReplyBody.ReplySegmentBoundary
+    , ReplyBody.ReplySegmentMessage ReplyBody.ReplyContent{text = "tool request", images = ["https://example.test/tool.png"]}
+    , ReplyBody.ReplySegmentDelta "final"
+    , ReplyBody.ReplySegmentDelta " answer"
+    ]
+    @?=
+      [ ReplyBody.ReplyContent{text = "hello world", images = []}
+      , ReplyBody.ReplyContent{text = "tool request", images = ["https://example.test/tool.png"]}
+      , ReplyBody.ReplyContent{text = "final answer", images = []}
+      ]
 
 testLLMToolRequestContentIsNotStreamedAsFinalAnswerText :: IO ()
 testLLMToolRequestContentIsNotStreamedAsFinalAnswerText = do

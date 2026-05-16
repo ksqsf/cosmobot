@@ -6,9 +6,11 @@ Stability   : experimental
 
 module Bot.Core.ReplyBody
   ( ReplyContent (..)
+  , ReplySegmentEvent (..)
   , imageDirective
   , replyContentFromBody
   , replyContentToBody
+  , replySegmentMessages
   , renderReplyBody
   , replyImageUrls
   , traverseReplyImageUrls
@@ -22,6 +24,12 @@ data ReplyContent = ReplyContent
   { text :: !Text
   , images :: ![Text]
   }
+  deriving (Eq, Show)
+
+data ReplySegmentEvent
+  = ReplySegmentDelta !Text
+  | ReplySegmentMessage !ReplyContent
+  | ReplySegmentBoundary
   deriving (Eq, Show)
 
 imageDirective :: Text -> Text
@@ -46,6 +54,27 @@ replyContentToBody ReplyContent{text, images} =
       [text | not (Text.null (Text.strip text))]
     imageLines =
       map imageDirective images
+
+replySegmentMessages :: [ReplySegmentEvent] -> [ReplyContent]
+replySegmentMessages =
+  finish . foldl' step (mempty, [])
+  where
+    step (pending, messages) = \case
+      ReplySegmentDelta chunk ->
+        (pending <> chunk, messages)
+      ReplySegmentMessage content ->
+        ("", messages <> maybeToList (textReplyContent pending) <> [content])
+      ReplySegmentBoundary ->
+        ("", messages <> maybeToList (textReplyContent pending))
+
+    finish (pending, messages) =
+      messages <> maybeToList (textReplyContent pending)
+
+    textReplyContent pending =
+      let text = Text.strip pending
+      in if Text.null text
+        then Nothing
+        else Just ReplyContent{text, images = []}
 
 -- | Remove image directives from a reply body before storing it as text.
 renderReplyBody :: Text -> Text
