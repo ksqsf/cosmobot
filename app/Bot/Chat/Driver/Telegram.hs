@@ -650,11 +650,25 @@ instance IsBlock TelegramFormatted TelegramFormatted where
     wrapFormattedEntity "bold" Nothing Nothing body <> formattedTextOnly "\n\n"
   rawBlock _ text = formattedTextOnly text
   referenceLinkDefinition _ _ = mempty
-  list _ _ items =
+  list listType _ items =
     mconcat (zipWith renderItem [(1 :: Int)..] items) <> formattedTextOnly "\n"
     where
-      renderItem _ item =
-        formattedTextOnly "- " <> item
+      renderItem index item =
+        formattedTextOnly (listItemPrefix listType index) <> trimFormattedEnd item <> formattedTextOnly "\n"
+
+listItemPrefix :: ListType -> Int -> Text
+listItemPrefix (BulletList _) _ =
+  "• "
+listItemPrefix (OrderedList start _ delimiter) index =
+  orderedItemPrefix delimiter (start + index - 1)
+
+orderedItemPrefix :: DelimiterType -> Int -> Text
+orderedItemPrefix Period number =
+  show number <> ". "
+orderedItemPrefix OneParen number =
+  show number <> ") "
+orderedItemPrefix TwoParens number =
+  "(" <> show number <> ") "
 
 formatTelegramMarkdown :: Text -> TelegramFormatted
 formatTelegramMarkdown input =

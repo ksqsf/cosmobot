@@ -25,6 +25,7 @@ main =
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
       , testCase "Telegram CommonMark formatting emits UTF-16 entities" testTelegramCommonMarkFormattingEmitsUtf16Entities
+      , testCase "Telegram CommonMark list items keep line breaks" testTelegramCommonMarkListItemsKeepLineBreaks
       , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
@@ -171,6 +172,16 @@ testTelegramCommonMarkFormattingEmitsUtf16Entities = do
   let pre = Telegram.formatTelegramMarkdown "```haskell\nmain = putStrLn \"こんにちは👍\"\n```"
   pre.formattedText @?= "main = putStrLn \"こんにちは👍\""
   assertEntity pre "pre" 0 25 Nothing (Just "haskell")
+
+testTelegramCommonMarkListItemsKeepLineBreaks :: IO ()
+testTelegramCommonMarkListItemsKeepLineBreaks = do
+  let formatted = Telegram.formatTelegramMarkdown "- first\n- second\n- **third**"
+  formatted.formattedText @?= "• first\n• second\n• third"
+  assertEntity formatted "bold" 19 5 Nothing Nothing
+
+  let ordered = Telegram.formatTelegramMarkdown "3. first\n4. second\n5. **third**"
+  ordered.formattedText @?= "3. first\n4. second\n5. third"
+  assertEntity ordered "bold" 22 5 Nothing Nothing
 
 testTelegramOkFalseBecomesTelegramExceptionDescription :: IO ()
 testTelegramOkFalseBecomesTelegramExceptionDescription = do
