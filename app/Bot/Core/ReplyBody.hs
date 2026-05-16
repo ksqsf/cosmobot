@@ -5,7 +5,10 @@ Stability   : experimental
 -}
 
 module Bot.Core.ReplyBody
-  ( imageDirective
+  ( ReplyContent (..)
+  , imageDirective
+  , replyContentFromBody
+  , replyContentToBody
   , renderReplyBody
   , replyImageUrls
   , traverseReplyImageUrls
@@ -15,19 +18,44 @@ where
 import Bot.Prelude
 import qualified Data.Text as Text
 
+data ReplyContent = ReplyContent
+  { text :: !Text
+  , images :: ![Text]
+  }
+  deriving (Eq, Show)
+
 imageDirective :: Text -> Text
 imageDirective ref =
   "[image] " <> ref
 
+replyContentFromBody :: Text -> ReplyContent
+replyContentFromBody body =
+  ReplyContent
+    { text = Text.strip (Text.unlines textLines)
+    , images = mapMaybe imageLineUrl lines_
+    }
+  where
+    lines_ = Text.lines body
+    textLines = filter (not . isImageLine) lines_
+
+replyContentToBody :: ReplyContent -> Text
+replyContentToBody ReplyContent{text, images} =
+  Text.strip (Text.unlines (textLines <> imageLines))
+  where
+    textLines =
+      [text | not (Text.null (Text.strip text))]
+    imageLines =
+      map imageDirective images
+
 -- | Remove image directives from a reply body before storing it as text.
 renderReplyBody :: Text -> Text
-renderReplyBody body =
-  Text.strip (Text.unlines (filter (not . isImageLine) (Text.lines body)))
+renderReplyBody =
+  (.text) . replyContentFromBody
 
 -- | Extract image URLs from @\[image\] ...@ reply directives.
 replyImageUrls :: Text -> [Text]
-replyImageUrls body =
-  mapMaybe imageLineUrl (Text.lines body)
+replyImageUrls =
+  (.images) . replyContentFromBody
 
 traverseReplyImageUrls :: Applicative f => (Text -> f Text) -> Text -> f Text
 traverseReplyImageUrls update body =

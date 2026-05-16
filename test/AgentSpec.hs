@@ -3,6 +3,7 @@ module Main (main) where
 import qualified Bot.Agent as Agent
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Core.Conversation
+import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Route (runHandlers)
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
@@ -79,6 +80,7 @@ main =
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
+      , testCase "reply body parses structured content" testReplyBodyParsesStructuredContent
       , testCase "LLM tool request content is not streamed as final answer text" testLLMToolRequestContentIsNotStreamedAsFinalAnswerText
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
@@ -450,6 +452,24 @@ testChatAnswerJsonRemainsObjectCompatible = do
       [ "content" Aeson..= ("checking" :: Text)
       , "toolCalls" Aeson..= [call]
       ]
+
+testReplyBodyParsesStructuredContent :: IO ()
+testReplyBodyParsesStructuredContent = do
+  ReplyBody.replyContentFromBody
+    (Text.unlines ["hello", "[image] https://example.test/a.png", "world", "  [image] file:///tmp/b.png  "])
+    @?= ReplyBody.ReplyContent
+      { text = "hello\nworld"
+      , images = ["https://example.test/a.png", "file:///tmp/b.png"]
+      }
+  ReplyBody.replyContentToBody
+    ReplyBody.ReplyContent
+      { text = "hello"
+      , images = ["https://example.test/a.png", "file:///tmp/b.png"]
+      }
+    @?= "hello\n[image] https://example.test/a.png\n[image] file:///tmp/b.png"
+  ReplyBody.renderReplyBody "hello\n[image] https://example.test/a.png\nworld" @?= "hello\nworld"
+  ReplyBody.replyImageUrls "hello\n[image] https://example.test/a.png\n[image] file:///tmp/b.png" @?=
+    ["https://example.test/a.png", "file:///tmp/b.png"]
 
 testLLMToolRequestContentIsNotStreamedAsFinalAnswerText :: IO ()
 testLLMToolRequestContentIsNotStreamedAsFinalAnswerText = do
