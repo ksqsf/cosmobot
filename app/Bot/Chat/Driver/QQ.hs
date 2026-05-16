@@ -39,6 +39,7 @@ import qualified Control.Concurrent.Async as Async
 import qualified Control.Exception as Exception
 import qualified Control.Concurrent.Chan as Chan
 import qualified Control.Concurrent.MVar as MVar
+import qualified Data.IORef as IORef
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as Aeson
@@ -49,6 +50,7 @@ import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
+import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import qualified Network.WebSockets as WS
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
@@ -212,11 +214,14 @@ runConnection eventChan actionChan conn = do
   pendingResponses <- liftIO (MVar.newMVar Map.empty)
   actionCounter <- liftIO (MVar.newMVar (1 :: Integer))
   done <- liftIO MVar.newEmptyMVar
-  readerThread <- forkConnectionThread done (readFrames eventChan pendingResponses conn)
+  lastFrameAt <- liftIO (getCurrentTime >>= IORef.newIORef)
+  readerThread <- forkConnectionThread done (readFrames eventChan pendingResponses lastFrameAt conn)
   sender <- forkConnectionThread done (sendActions actionChan pendingResponses actionCounter conn)
+  monitor <- forkConnectionThread done (monitorConnectionHeartbeat lastFrameAt)
   reason <- liftIO (MVar.takeMVar done)
   liftIO (killThread readerThread)
   liftIO (killThread sender)
+  liftIO (killThread monitor)
   failPendingResponses pendingResponses
   logInfo_ [i|QQ websocket connection ended: #{show reason :: String}|]
 
@@ -287,10 +292,13 @@ incomingMessages = do
   cfg <- S.lift qqConfig
   event <- S.lift receiveEvent
   case eventToIncomingMessageWith cfg event of
-    Nothing -> do
-      let Event{postType} = event
-      S.lift $ logTrace_ [i|Ignoring QQ event: #{postType}|]
-      S.lift $ logInfo_ [i|Ignoring QQ event: #{postType}|]
+    Nothing
+      | isHeartbeatEvent event ->
+          S.lift $ logTrace_ "Ignoring QQ heartbeat event"
+      | otherwise -> do
+          let Event{postType} = event
+          S.lift $ logTrace_ [i|Ignoring QQ event: #{postType}|]
+          S.lift $ logInfo_ [i|Ignoring QQ event: #{postType}|]
     Just message -> do
       S.lift $ logTrace "incoming qq message" message
       S.lift $ logInfo_ [i|incoming qq message: #{incomingMessageLogLine message}|]
@@ -305,12 +313,16 @@ readFrames
   :: (IOE :> es, Log :> es)
   => Chan.Chan Event
   -> PendingResponses
+  -> IORef.IORef UTCTime
   -> WS.Connection
   -> Eff es ()
-readFrames eventChan pendingResponses conn = forever do
+readFrames eventChan pendingResponses lastFrameAt conn = forever do
   value <- readValue conn
+  liftIO (getCurrentTime >>= IORef.writeIORef lastFrameAt)
   case Aeson.fromJSON value of
-    Aeson.Success event ->
+    Aeson.Success event -> do
+      when (isHeartbeatEvent event) do
+        logTrace_ "QQ websocket heartbeat received"
       liftIO $ Chan.writeChan eventChan event
     Aeson.Error _ ->
       case Aeson.fromJSON value of
@@ -342,6 +354,16 @@ readValue conn = do
       logInfo_ [i|Ignoring malformed QQ frame: #{Text.pack err}|]
       readValue conn
 
+monitorConnectionHeartbeat :: (IOE :> es, Log :> es) => IORef.IORef UTCTime -> Eff es ()
+monitorConnectionHeartbeat lastFrameAt = forever do
+  liftIO $ threadDelay qqHeartbeatCheckMicroseconds
+  now <- liftIO getCurrentTime
+  lastSeen <- liftIO (IORef.readIORef lastFrameAt)
+  let silence = diffUTCTime now lastSeen
+  when (silence > qqHeartbeatTimeout) do
+    logInfo_ [i|QQ websocket heartbeat timed out after #{show silence :: String}; reconnecting|]
+    throwIO (QQHeartbeatTimeout silence)
+
 failedActionResponse :: ActionResponse
 failedActionResponse =
   ActionResponse
@@ -359,6 +381,19 @@ qqActionTimeoutMicroseconds =
 qqReconnectDelayMicroseconds :: Int
 qqReconnectDelayMicroseconds =
   5 * 1000000
+
+qqHeartbeatCheckMicroseconds :: Int
+qqHeartbeatCheckMicroseconds =
+  15 * 1000000
+
+qqHeartbeatTimeout :: NominalDiffTime
+qqHeartbeatTimeout =
+  90
+
+newtype QQHeartbeatTimeout = QQHeartbeatTimeout NominalDiffTime
+  deriving (Show)
+
+instance Exception QQHeartbeatTimeout
 
 -- | Raw OneBot action response.
 data ActionResponse = ActionResponse
@@ -732,6 +767,15 @@ instance Aeson.FromJSON Event where
 eventToIncomingMessage :: Event -> Maybe IncomingMessage
 eventToIncomingMessage =
   eventToIncomingMessageWith defaultMessageConfig
+
+isHeartbeatEvent :: Event -> Bool
+isHeartbeatEvent event =
+  event.postType == "meta_event"
+    && case event.rawEvent of
+      Aeson.Object obj ->
+        KeyMap.lookup "meta_event_type" obj == Just (Aeson.String "heartbeat")
+      _ ->
+        False
 
 eventToIncomingMessageWith :: Config -> Event -> Maybe IncomingMessage
 eventToIncomingMessageWith cfg event
