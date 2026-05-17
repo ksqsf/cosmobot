@@ -49,7 +49,7 @@ editImageTool = Tool
   , description = "Edit one or more existing images with the configured image edit model and send the result to the current chat. Use this when the user asks to modify, restyle, inpaint, combine, or use attached/reference images to create an edited image. Omit image_urls to edit images attached to the current message. Use mask_image_url only when the user supplies an explicit mask image; the mask applies to the first input image."
   , parameters = objectSchema
       [ fieldText "prompt" "Image edit instruction. Describe exactly what should change and what should stay preserved."
-      , fieldTextArray "image_urls" "Optional input image URLs or data image references. Omit this to use the images attached to the current user message. GPT image edit models accept up to 16 input images."
+      , fieldTextArray "image_urls" "Optional input image URLs or data image references. Omit this to use the images attached to the current user message. GPT image edit models accept up to 16 input images. Only base64, https://, or file:// is supported."
       , fieldText "mask_image_url" "Optional mask image URL or data image reference. The mask must match the first input image size and format and contain an alpha channel."
       ]
       ["prompt"]
