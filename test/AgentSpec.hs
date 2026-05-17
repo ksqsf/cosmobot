@@ -25,6 +25,7 @@ import Bot.Prelude
 import Control.Concurrent (forkIO, threadDelay)
 import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Foldable as Foldable
 import qualified Data.IORef as IORef
 import qualified Data.Sequence as Seq
@@ -105,6 +106,7 @@ main =
       , testCase "conversation lookup is scoped by chat" testConversationLookupIsScopedByChat
       , testCase "conversation branches persist through SQLite reload" testConversationBranchesPersistThroughSQLiteReload
       , testCase "conversation cache miss loads evicted parent from SQLite" testConversationCacheMissLoadsEvictedParent
+      , testCase "conversation omits base64 generated image context" testConversationOmitsBase64GeneratedImageContext
       , testCase "conversation JSON remains list compatible" testConversationJsonRemainsListCompatible
       , testCase "memory tool manages current sender memory" testMemoryToolManagesCurrentSenderMemory
       , testCase "memory tool manages current chat memory" testMemoryToolManagesCurrentChatMemory
@@ -907,6 +909,15 @@ testConversationCacheMissLoadsEvictedParent =
         (show childLookup :: String) @?= show (Just child)
         (rowParentMessageId =<< childRow) @?= Just 1
         (payloadMessageCount <$> childRow) @?= Just 2
+
+testConversationOmitsBase64GeneratedImageContext :: IO ()
+testConversationOmitsBase64GeneratedImageContext = do
+  let base64Image = "data:image/png;base64,AAAA"
+      conversation = appendAssistant (ReplyBody.imageDirective base64Image) (startWithUser "draw")
+      encoded = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode conversation))
+  imageContextUrls conversation @?= []
+  assertBool "conversation history should not retain base64 image payloads" (not (base64Image `Text.isInfixOf` encoded))
+  assertBool "conversation history should keep a small generated-image marker" ("Generated image." `Text.isInfixOf` encoded)
 
 testConversationJsonRemainsListCompatible :: IO ()
 testConversationJsonRemainsListCompatible = do

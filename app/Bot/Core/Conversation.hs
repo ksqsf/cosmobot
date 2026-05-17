@@ -187,10 +187,11 @@ assistantContext answer =
   where
     answerText = Chat.renderReplyBody answer
     imageUrls = Chat.replyImageUrls answer
+    contextImageUrls = filter (not . Chat.isBase64ImageRef) imageUrls
     assistantTextContext =
       [ LLM.assistantText answerText | not (Text.null answerText) ] <>
       [ LLM.assistantText "Generated image." | Text.null answerText && not (null imageUrls) ]
     imageContext =
-      [ LLM.userWithImages "The previous assistant response generated this image. Use it as visual context for follow-up questions." imageUrls
-      | not (null imageUrls)
+      [ LLM.userWithImages "The previous assistant response generated this image. Use it as visual context for follow-up questions." contextImageUrls
+      | not (null contextImageUrls)
       ]

@@ -287,8 +287,9 @@ askImageGenerationsOpenAIStreaming cfg@Config{apiKey, imageGenerationBaseUrl, im
         lift (logInfo_ ("LLM image response: " <> imageResponseLogLine requestEndpoint request.model body))
         case imageGenerationResponseText cfg body of
           Just answer -> do
-            S.yield answer
-            pure answer
+            compressed <- lift (compressImageAnswer (imageCompressionConfig cfg) answer)
+            S.yield compressed
+            pure compressed
           Nothing ->
             lift (throwIO (LLMException "Image generation response was empty: no image output."))
   where

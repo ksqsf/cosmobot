@@ -13,6 +13,7 @@ module Bot.Core.ReplyBody
   , replySegmentMessages
   , renderReplyBody
   , replyImageUrls
+  , isBase64ImageRef
   , traverseReplyImageUrls
   )
 where
@@ -85,6 +86,11 @@ renderReplyBody =
 replyImageUrls :: Text -> [Text]
 replyImageUrls =
   (.images) . replyContentFromBody
+
+isBase64ImageRef :: Text -> Bool
+isBase64ImageRef ref =
+  "data:image/" `Text.isPrefixOf` Text.strip ref &&
+    ";base64," `Text.isInfixOf` ref
 
 traverseReplyImageUrls :: Applicative f => (Text -> f Text) -> Text -> f Text
 traverseReplyImageUrls update body =

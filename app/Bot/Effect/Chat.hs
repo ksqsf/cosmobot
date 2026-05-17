@@ -27,6 +27,7 @@ module Bot.Effect.Chat
   , imageDirective
   , renderReplyBody
   , replyImageUrls
+  , isBase64ImageRef
   )
 where
 

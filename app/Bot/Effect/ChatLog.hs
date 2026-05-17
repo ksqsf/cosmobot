@@ -359,7 +359,7 @@ sanitizeChatLogEntry ChatLogEntry{..} =
 
 sanitizeImageRef :: Text -> Text
 sanitizeImageRef ref
-  | isBase64ImageRef ref = "[Picture]"
+  | Chat.isBase64ImageRef ref = "[Picture]"
   | otherwise = ref
 
 sanitizeImageText :: Text -> Text
@@ -368,18 +368,13 @@ sanitizeImageText text =
 
 sanitizeImageLine :: Text -> Text
 sanitizeImageLine line
-  | isBase64ImageRef stripped = "[Picture]"
+  | Chat.isBase64ImageRef stripped = "[Picture]"
   | Just ref <- Text.stripPrefix "[image] " stripped
-  , isBase64ImageRef ref = "[image] [Picture]"
+  , Chat.isBase64ImageRef ref = "[image] [Picture]"
   | isBase64ImageRefInfix stripped = "[Picture]"
   | otherwise = line
   where
     stripped = Text.strip line
-
-isBase64ImageRef :: Text -> Bool
-isBase64ImageRef ref =
-  "data:image/" `Text.isPrefixOf` Text.strip ref &&
-    ";base64," `Text.isInfixOf` ref
 
 isBase64ImageRefInfix :: Text -> Bool
 isBase64ImageRefInfix text =
