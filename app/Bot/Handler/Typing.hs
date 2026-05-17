@@ -15,6 +15,7 @@ import qualified Bot.Effect.Typst as Typst
 import Bot.Core.Route
 import Bot.Handler.Typing.Typst (typstDocument)
 import qualified Bot.Util.Html as Html
+import qualified Bot.Util.HTTP as Http
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -102,7 +103,7 @@ fetchChampionshipRows = do
 
 fetchChampionshipPage :: IO Text
 fetchChampionshipPage = do
-  body <- runReq defaultHttpConfig $
+  body <- Http.runReqWithoutRequiredEMS $
     responseBody <$> req GET url NoReqBody bsResponse mempty
   pure (TextEncoding.decodeUtf8Lenient body)
   where
@@ -113,7 +114,7 @@ fetchChampionshipPage = do
 fetchTigerRows :: IO [[Text]]
 fetchTigerRows = do
   date <- currentDateText
-  value <- runReq defaultHttpConfig $
+  value <- Http.runReqWithoutRequiredEMS $
     responseBody <$> req GET (tigerLeaderboardUrl date) NoReqBody jsonResponse ("limit" =: (50 :: Int))
   maybe (fail "tiger leaderboard response had unexpected shape") pure
     (AesonTypes.parseMaybe tigerRows value)

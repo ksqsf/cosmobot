@@ -13,6 +13,7 @@ where
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import qualified Bot.Util.Html as Html
+import qualified Bot.Util.HTTP as Http
 import Bot.Prelude
 import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
@@ -90,7 +91,7 @@ webSearchSource = \case
 
 tavilySearch :: Text -> Text -> Int -> IO [Aeson.Value]
 tavilySearch apiKey query maxResults = do
-  response <- runReq defaultHttpConfig $
+  response <- Http.runReqWithoutRequiredEMS $
     req POST
       (https "api.tavily.com" /: "search")
       (ReqBodyJson (Aeson.object
@@ -109,7 +110,7 @@ tavilySearch apiKey query maxResults = do
 
 braveSearch :: Text -> Text -> Int -> IO [Aeson.Value]
 braveSearch apiKey query maxResults = do
-  response <- runReq defaultHttpConfig $
+  response <- Http.runReqWithoutRequiredEMS $
     req GET
       (https "api.search.brave.com" /: "res" /: "v1" /: "web" /: "search")
       NoReqBody
@@ -177,7 +178,7 @@ fetchWebPage rawUrl maxContentTokens = do
   where
     fetch :: Url scheme -> Option scheme -> IO Aeson.Value
     fetch url options = do
-      response <- runReq defaultHttpConfig $
+      response <- Http.runReqWithoutRequiredEMS $
         req GET url NoReqBody bsResponse (options <> webRequestOptions)
       let contentType = TextEncoding.decodeUtf8With TextEncoding.lenientDecode <$> responseHeader response "Content-Type"
           body = Html.htmlToPlainText (decodeResponseBody (responseBody response))

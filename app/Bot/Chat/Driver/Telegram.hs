@@ -61,6 +61,7 @@ where
 
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as ChatEffect
+import qualified Bot.Util.HTTP as Http
 import Bot.Util.Multipart
 import Bot.Core.Message
 import Commonmark hiding (escapeHtml)
@@ -199,7 +200,8 @@ runTelegram
   => Config
   -> Eff (Telegram : es) a
   -> Eff es a
-runTelegram cfg inner = withReqManager $ \manager ->
+runTelegram cfg inner = do
+  manager <- liftIO Http.newNoRequiredEmsTlsManager
   interpret
     ( \_ -> \case
         TelegramConfig ->
@@ -513,9 +515,7 @@ sanitizeTelegramException cfg err =
 
 telegramHttpConfig :: Manager -> HttpConfig
 telegramHttpConfig manager =
-  defaultHttpConfig
-    { httpConfigAltManager = Just manager
-    }
+  Http.noRequiredEmsHttpConfig manager
 
 logTelegramApiRequest :: Log :> es => Text -> Eff es ()
 logTelegramApiRequest method =

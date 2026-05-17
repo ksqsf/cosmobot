@@ -96,6 +96,8 @@ common app-deps
                     , req
                     , http-client
                     , http-client-tls
+                    , crypton-connection
+                    , tls
                     , http-types
                     , optics
                     , time
@@ -123,6 +125,7 @@ common bot-chat-driver-modules
         Bot.Chat.Driver.QQ
         Bot.Chat.Driver.Matrix
         Bot.Chat.Driver.Telegram
+        Bot.Util.HTTP
         Bot.Util.Multipart
 
 common bot-agent-modules

@@ -29,6 +29,7 @@ import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
+import qualified Bot.Util.HTTP as Http
 import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
@@ -101,7 +102,8 @@ runMatrix
   => Config
   -> Eff (Matrix : es) a
   -> Eff es a
-runMatrix cfg inner = withReqManager \manager -> do
+runMatrix cfg inner = do
+  manager <- liftIO Http.newNoRequiredEmsTlsManager
   eventIds <- liftIO (IORef.newIORef (Map.empty :: Map MessageId Text))
   interpret
     ( \_ -> \case
@@ -321,7 +323,7 @@ matrixAuth token =
 
 matrixHttpConfig :: Manager -> HttpConfig
 matrixHttpConfig manager =
-  defaultHttpConfig
+  (Http.noRequiredEmsHttpConfig manager)
     { httpConfigAltManager = Just manager
     , httpConfigRetryJudge = \_ _ -> False
     , httpConfigRetryJudgeException = \_ _ -> False

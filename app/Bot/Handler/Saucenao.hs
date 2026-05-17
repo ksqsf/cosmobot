@@ -14,6 +14,7 @@ import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Route
 import Bot.Core.Message
 import Bot.Handler.Saucenao.Config
+import qualified Bot.Util.HTTP as Http
 import Bot.Util.Multipart
 import Bot.Prelude
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -109,7 +110,7 @@ data SearchResult = SearchResult
 searchImage :: SaucenaoConfig -> Text -> IO (Maybe SearchResult)
 searchImage cfg imageUrl = do
   imageBytes <- downloadImage imageUrl
-  value <- runReq defaultHttpConfig $
+  value <- Http.runReqWithoutRequiredEMS $
     responseBody <$> do
       body <- reqBodyMultipart (multipartParts cfg imageBytes)
       req POST saucenaoUrl body jsonResponse saucenaoRequestOptions
@@ -131,7 +132,7 @@ downloadImage imageUrl
       case useHttpsURI uri of
         Nothing ->
           ioError (userError [i|Unsupported SauceNAO image URL: #{imageUrl}|])
-        Just (url, options) -> runReq defaultHttpConfig $
+        Just (url, options) -> Http.runReqWithoutRequiredEMS $
           responseBody <$> req GET url NoReqBody bsResponse (options <> saucenaoRequestOptions)
 
 multipartParts :: SaucenaoConfig -> ByteString.ByteString -> [Multipart.Part]

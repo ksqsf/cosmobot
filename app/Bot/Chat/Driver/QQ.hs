@@ -599,7 +599,7 @@ getUserAvatar userId =
 
 qqAvatarUrl :: Integer -> Text
 qqAvatarUrl userId =
-  [i|https://q1.qlogo.cn/g?b=qq&nk=#{userId}&s=640|]
+  [i|https://q.qlogo.cn/g?b=qq&nk=#{userId}&s=640|]
 
 parseIntegerUserId :: Text -> Maybe Integer
 parseIntegerUserId raw =

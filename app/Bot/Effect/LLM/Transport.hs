@@ -68,7 +68,6 @@ import qualified Data.Text.Lazy as LazyText
 import qualified Data.Text.Lazy.Builder as TextBuilder
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
-import qualified Network.HTTP.Client.TLS as HTTP
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import Network.HTTP.Req
 import Optics ((%~))
@@ -156,16 +155,17 @@ secondsToMicros :: Int -> Int
 secondsToMicros seconds =
   seconds * 1000000
 
-llmHttpConfig :: HttpConfig
-llmHttpConfig =
-  defaultHttpConfig
+llmHttpConfig :: HTTP.Manager -> HttpConfig
+llmHttpConfig manager =
+  (Http.noRequiredEmsHttpConfig manager)
     { httpConfigRetryJudge = \_ _ -> False
     , httpConfigRetryJudgeException = \_ _ -> False
     }
 
 runTimedLLMReq :: Text -> Int -> Req a -> IO a
 runTimedLLMReq label timeoutSeconds action = do
-  result <- Timeout.timeout (secondsToMicros timeoutSeconds) (runReq llmHttpConfig action)
+  manager <- Http.newNoRequiredEmsTlsManager
+  result <- Timeout.timeout (secondsToMicros timeoutSeconds) (runReq (llmHttpConfig manager) action)
   case result of
     Just value ->
       pure value
@@ -887,7 +887,7 @@ sseJsonPostRequest baseUrl path apiKey timeoutMicros request = do
 
 streamHttpResponseBody :: IOE :> es => HTTP.Request -> Stream (Of StrictByteString.ByteString) (Eff es) ()
 streamHttpResponseBody httpRequest = do
-  manager <- liftIO HTTP.newTlsManager
+  manager <- liftIO Http.newNoRequiredEmsTlsManager
   StreamUtil.bracketStream
     (liftIO (HTTP.responseOpen httpRequest manager))
     (liftIO . HTTP.responseClose)
