@@ -294,16 +294,18 @@ executeToolCall program turn call = do
 
 toolImageContextMessages :: LLM.ToolCall -> ToolResult -> [LLM.ChatMessage]
 toolImageContextMessages call result =
-  [ LLM.userWithImages (toolImageContextText call) imageUrls
+  [ LLM.userWithImages (toolImageContextText call result) imageUrls
   | let imageUrls = toolResultImageUrls result
   , not (null imageUrls)
   ]
 
-toolImageContextText :: LLM.ToolCall -> Text
-toolImageContextText call =
-  [i|Image context returned by tool #{toolName}. See the preceding tool result for details.|]
+toolImageContextText :: LLM.ToolCall -> ToolResult -> Text
+toolImageContextText call result =
+  Text.strip [i|Image context returned by tool #{toolName}:
+#{toolContent}|]
   where
     toolName = call.name
+    toolContent = toolResultContent result
 
 -----------------------------------------------------------------------------------------
 -- * Completion
