@@ -6,6 +6,7 @@ Stability   : experimental
 
 module Bot.Agent.Tools.Chat
   ( queryChatLogTool
+  , queryCurrentSenderChatLogTool
   , sendReplyTool
   , mentionUserTool
   , senderMemberInfoTool
@@ -43,6 +44,27 @@ queryChatLogTool = Tool
       withParsedToolArgs queryChatLogArgs args \(limit, includeBotMessages) -> do
         entries <- ChatLog.queryChat context.message (fromInteger (max 0 limit)) includeBotMessages
         pure (toolText (jsonText entries))
+  }
+
+queryCurrentSenderChatLogTool :: ChatLog.ChatLog :> es => Tool es
+queryCurrentSenderChatLogTool = Tool
+  { name = "query_current_sender_chatlog"
+  , description = "Return messages from the current sender in the current chat whose text matches any keyword group. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
+  , parameters = objectSchema
+      [ fieldTextArrayArray "keywords" "Keyword groups. Each inner array is joined with '%' and wrapped with '%' for ordered fuzzy matching."
+      , fieldIntegerMax "limit" 100 "Maximum number of matching messages to return. Must be <= 100."
+      ]
+      ["keywords", "limit"]
+  , noisy = False
+  , allowed = everyone
+  , start = \context -> pure \args ->
+      withParsedToolArgs queryCurrentSenderChatLogArgs args \(keywords, limit) ->
+        case currentSenderChatLogScopeError context.message of
+          Just message ->
+            pure (toolFailure (permanentArgumentFailure message message).failure)
+          Nothing -> do
+            entries <- ChatLog.queryCurrentSenderChatLog context.message keywords limit
+            pure (toolText (jsonText entries))
   }
 
 sendReplyTool :: Chat.Chat :> es => Tool es
@@ -180,6 +202,26 @@ queryChatLogArgs =
     includeBotMessages <- fromMaybe False <$> o Aeson..:? Key.fromText "include_bot_messages"
     pure (limit, includeBotMessages)
 
+queryCurrentSenderChatLogArgs :: Aeson.Value -> AesonTypes.Parser ([[Text]], Int)
+queryCurrentSenderChatLogArgs =
+  Aeson.withObject "query current sender chat log arguments" $ \o -> do
+    keywords <- o Aeson..: Key.fromText "keywords"
+    limit <- o Aeson..: Key.fromText "limit"
+    when (limit < 0) do
+      fail "limit must be >= 0."
+    when (limit > 100) do
+      fail "limit must be <= 100."
+    pure (keywords, limit)
+
+currentSenderChatLogScopeError :: IncomingMessage -> Maybe Text
+currentSenderChatLogScopeError message
+  | isNothing message.senderId =
+      Just "Current message has no sender_id; cannot query sender-scoped chat log."
+  | isNothing message.chatId =
+      Just "Current message has no chat_id; cannot query chat-scoped chat log."
+  | otherwise =
+      Nothing
+
 mentionUserArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Text)
 mentionUserArgs =
   Aeson.withObject "mention user arguments" $ \o -> do
@@ -239,3 +281,29 @@ replyBodyWithImages text imageUrls =
   Text.strip $ Text.unlines $
     [ text | not (Text.null text) ]
       <> map ReplyBody.imageDirective imageUrls
+
+fieldTextArrayArray :: Text -> Text -> (Text, Aeson.Value)
+fieldTextArrayArray name description =
+  ( name
+  , Aeson.object
+      [ "type" Aeson..= Aeson.String "array"
+      , "items" Aeson..= Aeson.object
+          [ "type" Aeson..= Aeson.String "array"
+          , "items" Aeson..= Aeson.object
+              [ "type" Aeson..= Aeson.String "string"
+              ]
+          ]
+      , "description" Aeson..= description
+      ]
+  )
+
+fieldIntegerMax :: Text -> Int -> Text -> (Text, Aeson.Value)
+fieldIntegerMax name maximum description =
+  ( name
+  , Aeson.object
+      [ "type" Aeson..= Aeson.String "integer"
+      , "minimum" Aeson..= (0 :: Int)
+      , "maximum" Aeson..= maximum
+      , "description" Aeson..= description
+      ]
+  )

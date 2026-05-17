@@ -14,6 +14,7 @@ module Bot.Effect.ChatLog
   , recordBotMessage
   , recordIncomingMessages
   , queryChat
+  , queryCurrentSenderChatLog
   , runChatLog
   )
 where
@@ -42,6 +43,11 @@ data ChatLog :: Effect where
     :: IncomingMessage
     -> Int
     -> Bool
+    -> ChatLog m [ChatLogEntry]
+  QueryCurrentSenderChatLog
+    :: IncomingMessage
+    -> [[Text]]
+    -> Int
     -> ChatLog m [ChatLogEntry]
 
 type instance DispatchOf ChatLog = Dynamic
@@ -88,6 +94,11 @@ queryChat :: ChatLog :> es => IncomingMessage -> Int -> Bool -> Eff es [ChatLogE
 queryChat message limit includeBotMessages =
   send (QueryChat message limit includeBotMessages)
 
+-- | Query current sender's messages in the current chat, newest first.
+queryCurrentSenderChatLog :: ChatLog :> es => IncomingMessage -> [[Text]] -> Int -> Eff es [ChatLogEntry]
+queryCurrentSenderChatLog message keywords limit =
+  send (QueryCurrentSenderChatLog message keywords limit)
+
 -- | Interpret chat logging through the storage capability.
 runChatLog
   :: (IOE :> es, Log :> es, Storage.Storage :> es)
@@ -102,6 +113,8 @@ runChatLog inner =
         persistRecord (botRecord context messageId body)
       QueryChat message limit includeBotMessages ->
         queryStored message limit includeBotMessages
+      QueryCurrentSenderChatLog message keywords limit ->
+        queryCurrentSenderStored message keywords limit
     )
     inner
 
@@ -136,6 +149,7 @@ chatLogRows =
     , #platform_key :- index
     , #kind_key :- index
     , #chat_id :- index
+    , #sender_id :- index
     ]
 
 ensureChatLogTable :: Storage.Storage :> es => Eff es ()
@@ -193,6 +207,26 @@ queryStored message limitCount includeBotMessages = do
         pure row
   pure (map (chatLogEntryFromRow message) (reverse rows))
 
+queryCurrentSenderStored :: Storage.Storage :> es => IncomingMessage -> [[Text]] -> Int -> Eff es [ChatLogEntry]
+queryCurrentSenderStored message keywords limitCount = do
+  ensureChatLogTable
+  case (message.chatId, message.senderId, keywordLikePatterns keywords) of
+    (Just _, Just _, patterns@(_ : _)) -> do
+      rows <- runSelda $
+        query $
+          queryLimit 0 (boundedChatLogLimit limitCount) do
+            row <- select chatLogRows
+            restrict (currentSenderChatLogMatches message patterns row)
+            order (row ! #id) descending
+            pure row
+      pure (map (chatLogEntryFromRow message) rows)
+    _ ->
+      pure []
+
+boundedChatLogLimit :: Int -> Int
+boundedChatLogLimit =
+  min 100 . max 0
+
 chatLogRow :: ChatLogEntry -> ChatLogRow
 chatLogRow entry =
   ChatLogRow
@@ -246,6 +280,31 @@ botVisibilityMatches True _ =
   true
 botVisibilityMatches False row =
   row ! #is_bot .== literal False
+
+currentSenderChatLogMatches :: forall (backend :: Type). IncomingMessage -> [Text] -> Row backend ChatLogRow -> Col backend Bool
+currentSenderChatLogMatches message patterns row =
+  chatLogMatches message False row
+    .&& senderIdMatches message.senderId row
+    .&& keywordPatternsMatch patterns row
+
+senderIdMatches :: forall (backend :: Type). Maybe Text -> Row backend ChatLogRow -> Col backend Bool
+senderIdMatches Nothing _ =
+  false
+senderIdMatches (Just senderId) row =
+  row ! #sender_id .== literal (Just senderId)
+
+keywordPatternsMatch :: forall (backend :: Type). [Text] -> Row backend ChatLogRow -> Col backend Bool
+keywordPatternsMatch [] _ =
+  false
+keywordPatternsMatch (pattern : rest) row =
+  foldl' (.||) (row ! #body_text `like` literal pattern)
+    [ row ! #body_text `like` literal nextPattern
+    | nextPattern <- rest
+    ]
+
+keywordLikePatterns :: [[Text]] -> [Text]
+keywordLikePatterns =
+  map \keyword -> "%" <> Text.intercalate "%" keyword <> "%"
 
 platformKey :: ChatPlatform -> Text
 platformKey =

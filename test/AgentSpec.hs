@@ -70,6 +70,7 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
+      , testCase "current sender chatlog tool queries matching sender messages" testCurrentSenderChatLogToolQueriesChatLog
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
@@ -144,6 +145,22 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= [(Just 42, "hello\n[image] https://example.test/image.png")])
   IORef.readIORef remembered >>= (@?= [Just 42])
+
+testCurrentSenderChatLogToolQueriesChatLog :: IO ()
+testCurrentSenderChatLogToolQueriesChatLog = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "query_current_sender_chatlog" (Aeson.object ["keywords" Aeson..= ([["needle"] :: [Text]] :: [[Text]]), "limit" Aeson..= (10 :: Int)])]
+    , chatAnswer "found" []
+    ]
+  (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    ChatLog.recordMessage (chatLogMessage 301 "200" 100 "older needle")
+    ChatLog.recordMessage (chatLogMessage 302 "201" 100 "other sender needle")
+    ChatLog.recordMessage (chatLogMessage 303 "200" 101 "other chat needle")
+    ChatLog.recordMessage (chatLogMessage 304 "200" 100 "newer needle")
+    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "search my history")
+  answer @?= "found"
+  entries <- decodeSingleChatLogToolOutput conversation
+  map (.text) entries @?= ["newer needle", "older needle"]
 
 testUserAvatarToolQueriesChatEffect :: IO ()
 testUserAvatarToolQueriesChatEffect = do
@@ -1054,6 +1071,15 @@ testMessageInChat chatId =
     , raw = testMessage.raw
     }
 
+chatLogMessage :: Integer -> Text -> Integer -> Text -> IncomingMessage
+chatLogMessage messageId senderId chatId text =
+  testMessage
+    { messageId = Just messageId
+    , senderId = Just senderId
+    , chatId = Just chatId
+    , text = text
+    }
+
 toolOutputs :: Conversation -> [Text]
 toolOutputs (Conversation messages) =
   [ text
@@ -1076,6 +1102,18 @@ showSeparatedOutputs =
         ("content", text)
       Agent.AgentToolCallNotification calls ->
         ("tool", Text.intercalate ", " (toList (fmap (.name) calls)))
+
+decodeSingleChatLogToolOutput :: Conversation -> IO [ChatLog.ChatLogEntry]
+decodeSingleChatLogToolOutput conversation =
+  case toolOutputs conversation of
+    [output] ->
+      case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 output) of
+        Left err ->
+          assertFailure err >> pure []
+        Right entries ->
+          pure entries
+    outputs ->
+      assertFailure [i|expected one tool output, got #{length outputs}|] >> pure []
 
 streamAnswerText :: [Agent.AgentStreamOutput] -> Text
 streamAnswerText =

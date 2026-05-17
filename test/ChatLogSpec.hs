@@ -13,6 +13,7 @@ main =
   defaultMain $
     testGroup "chat log"
       [ testCase "queries current chat in chronological order" testQueryCurrentChat
+      , testCase "queries current sender chat log newest first by keyword groups" testQueryCurrentSenderChatLog
       , testCase "bot messages are hidden unless requested" testBotMessageVisibility
       , testCase "base64 image references are sanitized" testImageSanitization
       ]
@@ -24,6 +25,19 @@ testQueryCurrentChat = runChatLogTest do
   ChatLog.recordMessage (messageFromChat 102 201 "other chat")
   entries <- ChatLog.queryChat (messageFromChat 999 200 "query") 10 False
   liftIO $ map (.text) entries @?= ["first", "second"]
+
+testQueryCurrentSenderChatLog :: IO ()
+testQueryCurrentSenderChatLog = runChatLogTest do
+  ChatLog.recordMessage (messageFromChat 100 200 "older alpha beta")
+  ChatLog.recordMessage (messageFromSenderInChat "201" 101 200 "other sender alpha beta")
+  ChatLog.recordMessage (messageFromChat 102 201 "other chat alpha beta")
+  ChatLog.recordMessage (messageFromChat 103 200 "middle alpha then beta")
+  ChatLog.recordMessage (messageFromChat 104 200 "new beta then alpha")
+  ChatLog.recordMessage (messageFromChat 105 200 "new alpha gamma")
+  entries <- ChatLog.queryCurrentSenderChatLog (messageFromChat 999 200 "query") [["alpha", "beta"], ["gamma"]] 10
+  limited <- ChatLog.queryCurrentSenderChatLog (messageFromChat 999 200 "query") [["alpha", "beta"], ["gamma"]] 2
+  liftIO $ map (.text) entries @?= ["new alpha gamma", "middle alpha then beta", "older alpha beta"]
+  liftIO $ map (.text) limited @?= ["new alpha gamma", "middle alpha then beta"]
 
 testBotMessageVisibility :: IO ()
 testBotMessageVisibility = runChatLogTest do
@@ -74,6 +88,13 @@ messageFromChatWithImages messageId chatId text imageUrls =
     , imageUrls = imageUrls
     , text = text
     , raw = Aeson.Null
+    }
+
+messageFromSenderInChat :: Text -> Integer -> Integer -> Text -> IncomingMessage
+messageFromSenderInChat sender messageId chatId text =
+  (messageFromChat messageId chatId text)
+    { senderId = Just sender
+    , senderUsername = Nothing
     }
 
 base64Image :: Text

@@ -34,6 +34,7 @@ defaultTools =
   [ listDirectoryTool
   , readFileTool
   , queryChatLogTool
+  , queryCurrentSenderChatLogTool
   , webSearchTool
   , webFetchTool
   , datetimeTool
