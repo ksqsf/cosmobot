@@ -193,7 +193,7 @@ startDrawConversation label cfg conversations message prompt = do
   conversation <- startConversation cfg message input
   answer <- drawConversation conversation
   responseId <- Chat.replyTo message answer
-  ChatLog.recordBotMessage message responseId answer
+  ChatLog.recordSelfMessage message answer
   rememberConversation conversations (conversationMessageKey message <$> responseId) (appendAssistant answer conversation)
 
 fetchReferencedMessage
@@ -255,7 +255,7 @@ askConversation
 askConversation toolCfg cfg conversations parentMessageKey threadId message input conversation = do
   activeReply <- newActiveReply conversations parentMessageKey message threadId conversation
   let observer = AgentAudit.agentAuditObserver
-  agentRun <- Agent.startAgentRun (agentContext toolCfg cfg conversations parentMessageKey message input) Agent.defaultTools
+  agentRun <- Agent.startAgentRunWithHooks (agentContext toolCfg cfg message input) (agentHooks conversations parentMessageKey message) Agent.defaultTools
   reply <-
     streamAgentReply cfg observer agentRun activeReply message conversation
       `onException` discardActiveReply activeReply
@@ -274,15 +274,12 @@ data AgentReplyResult = AgentReplyResult
   }
 
 agentContext
-  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
-  => Agent.ToolConfig
+  :: Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
-  -> Maybe ConversationMessageKey
   -> IncomingMessage
   -> MessageInput
   -> Agent.AgentContext es
-agentContext toolCfg cfg conversations parentMessageKey message input =
+agentContext toolCfg cfg message input =
   Agent.AgentContext
     { message = message
     , input = input
@@ -290,8 +287,18 @@ agentContext toolCfg cfg conversations parentMessageKey message input =
     , systemContext = currentMessageSystemPrompt cfg message
     , askCommand = cfg.command
     , toolConfig = toolCfg
-    , remember = \messageId -> rememberConversationFrom conversations parentMessageKey (conversationMessageKey message <$> messageId)
-    , recordBotMessage = ChatLog.recordBotMessage message
+    }
+
+agentHooks
+  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  => ConversationStore
+  -> Maybe ConversationMessageKey
+  -> IncomingMessage
+  -> Agent.AgentHooks es
+agentHooks conversations parentMessageKey message =
+  Agent.AgentHooks
+    { rememberToolMessage = \messageId -> rememberConversationFrom conversations parentMessageKey (conversationMessageKey message <$> messageId)
+    , recordSelfMessage = ChatLog.recordSelfMessage message
     }
 
 streamAgentReply
@@ -358,7 +365,7 @@ commitAgentReply
   -> Eff es (Text, Conversation)
 commitAgentReply observer activeReply message AgentReply{responseId, answer, result} = do
   traverse_ (AgentObservation.observeConversationLinked observer . conversationLink result (activeReply.parentMessageKey <&> (.messageId))) responseId
-  ChatLog.recordBotMessage message responseId answer
+  ChatLog.recordSelfMessage message answer
   active <- liftIO (IORef.readIORef activeReply.activeRef)
   case active of
     Just activeHandle ->

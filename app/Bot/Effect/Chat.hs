@@ -22,6 +22,7 @@ module Bot.Effect.Chat
   , mentionUser
   , ChatHandlers (..)
   , runChatWith
+  , runChatRecordingSelfMessages
 
     -- * Reply rendering
   , imageDirective
@@ -517,3 +518,23 @@ runChatWith handlers = interpret $ \_ -> \case
     handlers.handleListGroupMembers message
   MentionUser message userId body ->
     handlers.handleMentionUser message userId body
+
+-- | Locally override chat sending so self messages can be recorded while all
+-- platform operations still delegate to the outer 'Chat' interpreter.
+runChatRecordingSelfMessages
+  :: Chat :> es
+  => (Text -> Eff es ())
+  -> Eff es a
+  -> Eff es a
+runChatRecordingSelfMessages recordSelf =
+  interpose $ \localEnv -> \case
+    operation@(ReplyTo _ body) -> do
+      sent <- passthrough localEnv operation
+      recordSelf body
+      pure sent
+    operation@(MentionUser _ _ body) -> do
+      sent <- passthrough localEnv operation
+      recordSelf body
+      pure sent
+    operation ->
+      passthrough localEnv operation

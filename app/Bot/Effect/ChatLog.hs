@@ -11,7 +11,7 @@ module Bot.Effect.ChatLog
   ( ChatLog
   , ChatLogEntry (..)
   , recordMessage
-  , recordBotMessage
+  , recordSelfMessage
   , recordIncomingMessages
   , queryChat
   , queryCurrentSenderChatLog
@@ -34,9 +34,8 @@ data ChatLog :: Effect where
   RecordMessage
     :: IncomingMessage
     -> ChatLog m ()
-  RecordBotMessage
+  RecordSelfMessage
     :: IncomingMessage
-    -> Maybe MessageId
     -> Text
     -> ChatLog m ()
   QueryChat
@@ -84,10 +83,10 @@ recordIncomingMessages =
     recordMessage message
     pure message
 
--- | Record a bot reply in the same chat as its triggering message.
-recordBotMessage :: ChatLog :> es => IncomingMessage -> Maybe MessageId -> Text -> Eff es ()
-recordBotMessage context messageId body =
-  send (RecordBotMessage context messageId body)
+-- | Record a logical self reply in the same chat as its triggering message.
+recordSelfMessage :: ChatLog :> es => IncomingMessage -> Text -> Eff es ()
+recordSelfMessage context body =
+  send (RecordSelfMessage context body)
 
 -- | Query recent messages from the current chat in chronological order.
 queryChat :: ChatLog :> es => IncomingMessage -> Int -> Bool -> Eff es [ChatLogEntry]
@@ -109,8 +108,8 @@ runChatLog inner =
     (\_ -> \case
       RecordMessage message ->
         persistRecord (userRecord message)
-      RecordBotMessage context messageId body ->
-        persistRecord (botRecord context messageId body)
+      RecordSelfMessage context body ->
+        persistRecord (selfRecord context body)
       QueryChat message limit includeBotMessages ->
         queryStored message limit includeBotMessages
       QueryCurrentSenderChatLog message keywords limit ->
@@ -160,14 +159,14 @@ userRecord :: IncomingMessage -> ChatLogRecord
 userRecord message =
   ChatLogRecord message False
 
-botRecord :: IncomingMessage -> Maybe MessageId -> Text -> ChatLogRecord
-botRecord context messageId body =
+selfRecord :: IncomingMessage -> Text -> ChatLogRecord
+selfRecord context body =
   ChatLogRecord
-    (botMessage context messageId body)
+    (selfMessage context body)
     True
 
-botMessage :: IncomingMessage -> Maybe MessageId -> Text -> IncomingMessage
-botMessage context messageId body =
+selfMessage :: IncomingMessage -> Text -> IncomingMessage
+selfMessage context body =
   IncomingMessage
     { platform = context.platform
     , kind = context.kind
@@ -176,7 +175,7 @@ botMessage context messageId body =
     , digest = emptyMessageDigest
     , senderId = Nothing
     , senderUsername = Nothing
-    , messageId = messageId
+    , messageId = Nothing
     , replyToMessageId = context.messageId
     , mentions = []
     , mentionUsernames = []

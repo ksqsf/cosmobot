@@ -81,7 +81,6 @@ sendReplyTool = Tool
   , start = \context -> pure \args ->
       withParsedToolArgs sendReplyArgs args \body -> do
         sent <- Chat.replyTo context.message body
-        context.recordBotMessage sent body
         let sentText = show sent :: String
         pure (toolMessage sent [i|Sent message id: #{sentText}|])
   }
@@ -100,7 +99,6 @@ mentionUserTool = Tool
   , start = \context -> pure \args ->
       withParsedToolArgs mentionUserArgs args \(userId, text) -> do
         sent <- Chat.mentionUser context.message userId text
-        context.recordBotMessage sent text
         let sentText = show sent :: String
         pure (toolMessage sent [i|Sent mention message id: #{sentText}|])
   }
@@ -263,7 +261,6 @@ userAvatarResult context value =
       let body = ReplyBody.imageDirective url
       sent <- Chat.replyTo context.message body
       logInfo_ [i|get_user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
-      context.recordBotMessage sent body
       pure (toolMessageWithImages sent (jsonText value) [url])
 
 sendReplyArgs :: Aeson.Value -> AesonTypes.Parser Text

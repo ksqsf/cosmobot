@@ -38,7 +38,6 @@ generateImageTool = Tool
           pure (toolText generated)
         _ -> do
           sent <- Chat.replyTo context.message generated
-          context.recordBotMessage sent generated
           let sentText = show sent :: String
           pure (toolMessage sent [i|Generated and sent image message id: #{sentText}|])
       ) args
@@ -68,7 +67,6 @@ editImageTool = Tool
               pure (toolText edited)
             _ -> do
               sent <- Chat.replyTo context.message edited
-              context.recordBotMessage sent edited
               let sentText = show sent :: String
               pure (toolMessage sent [i|Edited and sent image message id: #{sentText}|])
   }

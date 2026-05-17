@@ -148,13 +148,13 @@ testSendReplyToolUsesChatEffect = do
     , chatAnswer "sent" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
-  recorded <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWith answers (ChatMock (Just replies) (Just "42") Nothing) do
-    Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "send it")
+    Agent.runAgentWithHooks 4 agentContext (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "send it")
   answer @?= "sent"
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
-  IORef.readIORef recorded >>= (@?= [(Just "42", "hello\n[image] https://example.test/image.png")])
+  IORef.readIORef recorded >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef remembered >>= (@?= [Just "42"])
 
 testCurrentSenderChatLogToolQueriesChatLog :: IO ()
@@ -185,16 +185,16 @@ testUserAvatarToolQueriesChatEffect = do
     , chatAnswer "found" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
-  recorded <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just "44") (Just avatar)) do
-    Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "avatar?")
+    Agent.runAgentWithHooks 4 agentContext (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "avatar?")
   answer @?= "found"
   Text.unlines (toolOutputs conversation) @?= jsonText avatar <> "\n"
   imageContextUrls conversation @?= ["https://example.test/avatar.jpg"]
   -- The avatar tool should emit the avatar as a chat image, not only return JSON to the model.
   IORef.readIORef replies >>= (@?= ["[image] https://example.test/avatar.jpg"])
-  IORef.readIORef recorded >>= (@?= [(Just "44", "[image] https://example.test/avatar.jpg")])
+  IORef.readIORef recorded >>= (@?= ["[image] https://example.test/avatar.jpg"])
   IORef.readIORef remembered >>= (@?= [Just "44"])
 
 testUserAvatarToolRequiresUserId :: IO ()
@@ -232,14 +232,14 @@ testTypstToImageToolRendersAndSendsImage = do
     ]
   replies <- IORef.newIORef ([] :: [Text])
   rendered <- IORef.newIORef ([] :: [Text])
-  recorded <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWithTypst rendered answers (ChatMock (Just replies) (Just "43") Nothing) do
-    Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "render typst")
+    Agent.runAgentWithHooks 4 agentContext (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "render typst")
   answer @?= "sent"
   IORef.readIORef rendered >>= (@?= [source])
   IORef.readIORef replies >>= (@?= ["[image] file:///tmp/cosmobot-agent-spec-typst.png"])
-  IORef.readIORef recorded >>= (@?= [(Just "43", "[typst image]")])
+  IORef.readIORef recorded >>= (@?= ["[image] file:///tmp/cosmobot-agent-spec-typst.png"])
   IORef.readIORef remembered >>= (@?= [Just "43"])
 
 testEditImageToolEditsCurrentMessageImageAndSendsResult :: IO ()
@@ -254,14 +254,14 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult = do
     ]
   editCalls <- IORef.newIORef ([] :: [ImageEditCall])
   replies <- IORef.newIORef ([] :: [Text])
-  recorded <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "47") Nothing) do
-    Agent.runAgent 4 ((agentContextWith recorded remembered){Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) Agent.defaultTools (startWithUser "edit this")
+    Agent.runAgentWithHooks 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "edit this")
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage)])
   IORef.readIORef replies >>= (@?= [editedImage])
-  IORef.readIORef recorded >>= (@?= [(Just "47", editedImage)])
+  IORef.readIORef recorded >>= (@?= [editedImage])
 
 testAskHandlerPassesReferencedImagesToEditImageTool :: IO ()
 testAskHandlerPassesReferencedImagesToEditImageTool = do
@@ -1555,19 +1555,17 @@ agentContext =
     , systemContext = ""
     , askCommand = "!ask"
     , toolConfig = Agent.defaultToolConfig
-    , remember = \_ _ -> pure ()
-    , recordBotMessage = \_ _ -> pure ()
     }
 
 superuserContext :: Agent.AgentContext es
 superuserContext =
   agentContext{Agent.superuser = True}
 
-agentContextWith :: IOE :> es => IORef.IORef [(Maybe MessageId, Text)] -> IORef.IORef [Maybe MessageId] -> Agent.AgentContext es
-agentContextWith recorded remembered =
-  agentContext
-    { Agent.remember = \messageId _ -> liftIO $ IORef.modifyIORef' remembered (<> [messageId])
-    , Agent.recordBotMessage = \messageId body -> liftIO $ IORef.modifyIORef' recorded (<> [(messageId, body)])
+agentHooksWith :: IOE :> es => IORef.IORef [Text] -> IORef.IORef [Maybe MessageId] -> Agent.AgentHooks es
+agentHooksWith recorded remembered =
+  Agent.AgentHooks
+    { Agent.rememberToolMessage = \messageId _ -> liftIO $ IORef.modifyIORef' remembered (<> [messageId])
+    , Agent.recordSelfMessage = \body -> liftIO $ IORef.modifyIORef' recorded (<> [body])
     }
 
 mockReply :: IOE :> es => ChatMock -> IncomingMessage -> Text -> Eff es (Maybe MessageId)

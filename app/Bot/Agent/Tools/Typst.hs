@@ -34,7 +34,6 @@ typstToImageTool = Tool
       withParsedToolArgs typstArgs args \toolArgs -> do
         Typst.withTypstPng toolArgs.source \imagePath -> do
           sent <- Chat.replyTo context.message (Chat.imageDirective ("file://" <> Text.pack imagePath))
-          context.recordBotMessage sent "[typst image]"
           let sentText = show sent :: String
               captionText :: Text
               captionText =

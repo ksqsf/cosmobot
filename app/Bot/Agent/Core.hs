@@ -55,6 +55,7 @@ data AgentCompletion = AgentCompletion
 data AgentRun es = AgentRun
   { runId       :: !Text
   , context      :: AgentContext es
+  , hooks        :: AgentHooks es
   , tools        :: [Tool es]
   , exposedTools :: [Tool es]
   , runningTools :: [RunningTool es]

@@ -6,6 +6,8 @@ Stability   : experimental
 module Bot.Agent.Types
   ( Tool (..)
   , AgentContext (..)
+  , AgentHooks (..)
+  , ignoreAgentHooks
   , AgentEvent (..)
   , AgentObserver (..)
   , AgentFailureCategory (..)
@@ -89,9 +91,20 @@ data AgentContext es = AgentContext
   , systemContext :: !Text
   , askCommand :: !Text
   , toolConfig :: !ToolConfig
-  , remember :: Maybe MessageId -> Conversation -> Eff es ()
-  , recordBotMessage :: Maybe MessageId -> Text -> Eff es ()
   }
+
+-- | Handler-owned side effects attached to one agent run.
+data AgentHooks es = AgentHooks
+  { rememberToolMessage :: Maybe MessageId -> Conversation -> Eff es ()
+  , recordSelfMessage :: Text -> Eff es ()
+  }
+
+ignoreAgentHooks :: AgentHooks es
+ignoreAgentHooks =
+  AgentHooks
+    { rememberToolMessage = \_ _ -> pure ()
+    , recordSelfMessage = \_ -> pure ()
+    }
 
 -- | Semantic lifecycle events emitted by the agent engine.
 --

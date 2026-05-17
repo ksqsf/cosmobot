@@ -8,6 +8,7 @@ Stability   : experimental
 module Bot.Agent
   ( Tool (..)
   , AgentContext (..)
+  , AgentHooks (..)
   , AgentEvent (..)
   , AgentObserver (..)
   , AgentProgram
@@ -21,6 +22,7 @@ module Bot.Agent
   , WebSearchApi (..)
   , defaultToolConfig
   , startAgentRun
+  , startAgentRunWithHooks
   , agentRunId
   , defaultAgentProgram
   , runAgentProgramStreaming
@@ -32,7 +34,9 @@ module Bot.Agent
   , toolMessage
   , toolMessageWithImages
   , runAgent
+  , runAgentWithHooks
   , runAgentStreaming
+  , runAgentStreamingWithHooks
   , defaultTools
   )
 where
@@ -80,26 +84,48 @@ import qualified Streaming.Prelude as S
 
 -- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
 runAgent
-  :: (LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
   -> Conversation
   -> Eff es (Text, Conversation)
-runAgent maxTurns context tools conversation = do
-  outputs S.:> result <- S.toList (runAgentStreaming maxTurns context tools conversation)
+runAgent maxTurns context =
+  runAgentWithHooks maxTurns context ignoreAgentHooks
+
+runAgentWithHooks
+  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  => Int
+  -> AgentContext es
+  -> AgentHooks es
+  -> [Tool es]
+  -> Conversation
+  -> Eff es (Text, Conversation)
+runAgentWithHooks maxTurns context hooks tools conversation = do
+  outputs S.:> result <- S.toList (runAgentStreamingWithHooks maxTurns context hooks tools conversation)
   pure (agentStreamAnswer outputs, result)
 
 -- | Run an LLM/tool loop, streaming assistant content chunks.
 runAgentStreaming
-  :: (LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
   -> Conversation
   -> Stream (Of AgentStreamOutput) (Eff es) Conversation
-runAgentStreaming maxTurns context tools conversation = do
-  agentRun <- lift (startAgentRun context tools)
+runAgentStreaming maxTurns context =
+  runAgentStreamingWithHooks maxTurns context ignoreAgentHooks
+
+runAgentStreamingWithHooks
+  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  => Int
+  -> AgentContext es
+  -> AgentHooks es
+  -> [Tool es]
+  -> Conversation
+  -> Stream (Of AgentStreamOutput) (Eff es) Conversation
+runAgentStreamingWithHooks maxTurns context hooks tools conversation = do
+  agentRun <- lift (startAgentRunWithHooks context hooks tools)
   result <- runPreparedAgentStreaming maxTurns agentRun conversation
   pure result.conversation
 
@@ -131,13 +157,17 @@ agentRunId =
 -----------------------------------------------------------------------------------------
 
 -- | Select tools visible to this request and start their per-run runners.
-startAgentRun :: IOE :> es => AgentContext es -> [Tool es] -> Eff es (AgentRun es)
-startAgentRun context tools = do
+startAgentRun :: (Chat.Chat :> es, IOE :> es) => AgentContext es -> [Tool es] -> Eff es (AgentRun es)
+startAgentRun context =
+  startAgentRunWithHooks context ignoreAgentHooks
+
+startAgentRunWithHooks :: (Chat.Chat :> es, IOE :> es) => AgentContext es -> AgentHooks es -> [Tool es] -> Eff es (AgentRun es)
+startAgentRunWithHooks context hooks tools = do
   unique <- liftIO newUnique
   let exposedTools = filter (`toolAllowed` context) tools
       runId = [i|agent-#{hashUnique unique}|]
-  runningTools <- traverse (startToolRun context) exposedTools
-  pure AgentRun{runId, context, tools, exposedTools, runningTools}
+  runningTools <- traverse (startToolRun context hooks) exposedTools
+  pure AgentRun{runId, context, hooks, tools, exposedTools, runningTools}
 
 initialAgentState :: Conversation -> AgentState
 initialAgentState conversation =
@@ -279,7 +309,7 @@ continueWithToolCalls program turn answered calls = do
   executions <- traverse (executeToolCall program turn) calls
   let executionList = toList executions
       next = appendMessages (map (\(resultMessage, _, _) -> resultMessage) executionList <> concatMap (\(_, imageMessages, _) -> imageMessages) executionList) answered
-  traverse_ (\messageId -> program.agentRun.context.remember messageId next) (concatMap (\(_, _, result) -> toolResultMessageIds result) executionList)
+  traverse_ (\messageId -> program.agentRun.hooks.rememberToolMessage messageId next) (concatMap (\(_, _, result) -> toolResultMessageIds result) executionList)
   pure next
 
 -- | Run one tool call and convert failures into tool-visible text.
