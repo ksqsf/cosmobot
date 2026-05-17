@@ -27,6 +27,7 @@ data FileConfig = FileConfig
   , imageGenerationBaseUrl :: !(Maybe Text)
   , imageGenerationApiKey :: !(Maybe Text)
   , imageGenerationModel :: !(Maybe Text)
+  , imageGenerationModelCanEdit :: !Bool
   , imageGenerationTimeout :: !Int
   , imageGenerationQuality :: !(Maybe Text)
   , imageGenerationSize :: !(Maybe Text)
@@ -60,6 +61,7 @@ instance FromValue FileConfig where
     imageGenerationBaseUrl <- optKey "image_generation_base_url"
     imageGenerationApiKey <- optToken "image_generation_api_key"
     imageGenerationModel <- optKey "image_generation_model"
+    imageGenerationModelCanEdit <- fmap (fromMaybe LLM.defaultConfig.imageGenerationModelCanEdit) (optKey "image_generation_model_can_edit")
     imageGenerationTimeout <- fmap (fromMaybe LLM.defaultConfig.imageGenerationTimeout) (optKey "image_generation_timeout")
     imageGenerationQuality <- optKey "image_generation_quality"
     imageGenerationSize <- optKey "image_generation_size"
@@ -81,6 +83,7 @@ instance FromValue FileConfig where
       , imageGenerationBaseUrl = imageGenerationBaseUrl
       , imageGenerationApiKey = imageGenerationApiKey
       , imageGenerationModel = imageGenerationModel
+      , imageGenerationModelCanEdit = imageGenerationModelCanEdit
       , imageGenerationTimeout = imageGenerationTimeout
       , imageGenerationQuality = imageGenerationQuality
       , imageGenerationSize = imageGenerationSize
@@ -104,6 +107,7 @@ toRuntimeConfig cfg =
     , imageGenerationBaseUrl = cfg.imageGenerationBaseUrl
     , imageGenerationApiKey = cfg.imageGenerationApiKey
     , imageGenerationModel = cfg.imageGenerationModel
+    , imageGenerationModelCanEdit = cfg.imageGenerationModelCanEdit
     , imageGenerationTimeout = cfg.imageGenerationTimeout
     , imageGenerationQuality = cfg.imageGenerationQuality
     , imageGenerationSize = cfg.imageGenerationSize

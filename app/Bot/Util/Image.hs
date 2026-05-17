@@ -8,6 +8,7 @@ Stability   : experimental
 module Bot.Util.Image
   ( ImageCompressionConfig (..)
   , removeFilesIfExists
+  , decodeDataImageReference
   , compressDataImageReference
   )
 where
@@ -52,7 +53,7 @@ targetImageFormat cfg =
 
 compressDataImage :: (IOE :> es, Log :> es) => Text -> Maybe Int -> Text -> Eff es (Maybe Text)
 compressDataImage format quality imageRef =
-  case decodeDataImage imageRef of
+  case decodeDataImageReference imageRef of
     Nothing ->
       pure Nothing
     Just bytes -> do
@@ -62,8 +63,8 @@ compressDataImage format quality imageRef =
       traverse_ (\url -> logInfo_ [i|Compressed image response URL: #{url}|]) result
       pure result
 
-decodeDataImage :: Text -> Maybe StrictByteString.ByteString
-decodeDataImage imageRef = do
+decodeDataImageReference :: Text -> Maybe StrictByteString.ByteString
+decodeDataImageReference imageRef = do
   let (_, encodedWithMarker) = Text.breakOn ";base64," imageRef
   encoded <- Text.stripPrefix ";base64," encodedWithMarker
   either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))

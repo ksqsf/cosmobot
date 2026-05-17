@@ -66,6 +66,7 @@ agent_max_turns = 4
 - `[llm].timeout` 用于普通文本 LLM 请求。非 streaming 请求按总耗时限制；streaming 请求按等待首段或下一段数据的 idle 时间限制。
 - `[llm].image_generation_timeout` 用于图片生成请求。`image_generation_api = "images"` 时，`/v1/images/generations` 会使用 streaming 调用，并按整次图片生成总耗时限制；同时 HTTP 读等待也使用同一个值作为 idle timeout。
 - `image_generation_api = "chat_completions"` 的图片生成仍按非 streaming JSON 请求处理，`image_generation_timeout` 表示总耗时限制。
+- `[llm].image_generation_model_can_edit` 控制 `edit_image` 是否允许调用 `/v1/images/edits`。只有确认当前 `image_generation_model` 和兼容端点支持图片编辑接口时才设为 `true`。
 
 ## 运行
 

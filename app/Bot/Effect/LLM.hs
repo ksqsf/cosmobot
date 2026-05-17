@@ -13,6 +13,7 @@ module Bot.Effect.LLM
   , askStreamingWithHistory
   , askImageWithHistory
   , askImageStreamingWithHistory
+  , askImageEdit
   , askWithTools
   , askWithToolsStreaming
   , runLLM
@@ -75,6 +76,7 @@ data LLM :: Effect where
   AskStream :: [ChatMessage] -> LLM m (Stream (Of Text) m Text)
   AskImage :: [ChatMessage] -> LLM m Text
   AskImageStream :: [ChatMessage] -> LLM m (Stream (Of Text) m Text)
+  AskImageEdit :: Text -> [Text] -> Maybe Text -> LLM m Text
   AskTools :: [FunctionTool] -> [ChatMessage] -> LLM m ChatAnswer
   AskToolsStream :: [FunctionTool] -> [ChatMessage] -> LLM m (Stream (Of Text) m ChatAnswer)
 
@@ -104,6 +106,11 @@ askImageStreamingWithHistory :: LLM :> es => [ChatMessage] -> Stream (Of Text) (
 askImageStreamingWithHistory messages = do
   stream <- lift (send (AskImageStream messages))
   stream
+
+-- | Ask the configured image model to edit one or more input images.
+askImageEdit :: LLM :> es => Text -> [Text] -> Maybe Text -> Eff es Text
+askImageEdit prompt imageRefs maskRef =
+  send (AskImageEdit prompt imageRefs maskRef)
 
 -- | Ask with function tools and return both text and tool calls.
 askWithTools :: LLM :> es => [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
@@ -140,6 +147,8 @@ runLLM cfg = interpret $ \localEnv operation ->
           liftLocalStream liftLocal $
             Retry.retryLLMStreamRequest "LLM image streaming request" $
               pure (Retry.validateTextStream (Transport.askImageOpenAIStreaming cfg messages))
+      AskImageEdit prompt imageRefs maskRef ->
+        Retry.retryLLMRequest "LLM image edit request" (Transport.askImageEditOpenAI cfg prompt imageRefs maskRef)
       AskTools tools messages ->
         Retry.retryLLMRequest "LLM request" (Transport.askOpenAIWithTools cfg tools messages >>= Retry.validateChatAnswer)
       AskToolsStream tools messages ->
@@ -152,17 +161,19 @@ runLLMWith
   :: ([ChatMessage] -> Eff es Text)
   -> ([ChatMessage] -> Stream (Of Text) (Eff es) Text)
   -> ([ChatMessage] -> Eff es Text)
+  -> (Text -> [Text] -> Maybe Text -> Eff es Text)
   -> ([FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer)
   -> ([FunctionTool] -> [ChatMessage] -> Stream (Of Text) (Eff es) ChatAnswer)
   -> Eff (LLM : es) a
   -> Eff es a
-runLLMWith askText askTextStream askImage askTools askToolsStream = interpret $ \localEnv operation ->
+runLLMWith askText askTextStream askImage askImageEditRequest askTools askToolsStream = interpret $ \localEnv operation ->
   localSeqLift localEnv \liftLocal ->
     case operation of
       Ask messages -> askText messages
       AskStream messages -> pure (liftLocalStream liftLocal (askTextStream messages))
       AskImage messages -> askImage messages
       AskImageStream messages -> pure (liftLocalStream liftLocal (textResultStream (askImage messages)))
+      AskImageEdit prompt imageRefs maskRef -> askImageEditRequest prompt imageRefs maskRef
       AskTools tools messages -> askTools tools messages
       AskToolsStream tools messages -> pure (liftLocalStream liftLocal (askToolsStream tools messages))
 

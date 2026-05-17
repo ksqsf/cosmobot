@@ -39,6 +39,7 @@ defaultTools =
   , webFetchTool
   , datetimeTool
   , generateImageTool
+  , editImageTool
   , typstToImageTool
   , sendReplyTool
   , mentionUserTool

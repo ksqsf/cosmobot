@@ -37,6 +37,7 @@ module Bot.Effect.LLM.Transport
   , askOpenAIStreaming
   , askImageOpenAI
   , askImageOpenAIStreaming
+  , askImageEditOpenAI
   , askOpenAIWithTools
   , askOpenAIWithToolsStreaming
 
@@ -66,12 +67,15 @@ import qualified Data.Text.Encoding.Error as TextEncoding
 import qualified Data.Text.Lazy as LazyText
 import qualified Data.Text.Lazy.Builder as TextBuilder
 import qualified Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Network.HTTP.Client.TLS as HTTP
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import Network.HTTP.Req
 import Optics ((%~))
 import qualified Streaming.Prelude as S
+import System.IO.Error (ioError, userError)
 import qualified System.Timeout as Timeout
+import qualified Text.URI as URI
 
 -- | Runtime configuration for OpenAI-compatible LLM endpoints.
 data Config = Config
@@ -85,6 +89,7 @@ data Config = Config
   , imageGenerationBaseUrl :: !(Maybe Text)
   , imageGenerationApiKey :: !(Maybe Text)
   , imageGenerationModel :: !(Maybe Text)
+  , imageGenerationModelCanEdit :: !Bool
   , imageGenerationTimeout :: !Int
   , imageGenerationQuality :: !(Maybe Text)
   , imageGenerationSize :: !(Maybe Text)
@@ -114,6 +119,7 @@ defaultConfig = Config
   , imageGenerationBaseUrl = Nothing
   , imageGenerationApiKey = Nothing
   , imageGenerationModel = Nothing
+  , imageGenerationModelCanEdit = False
   , imageGenerationTimeout = 300
   , imageGenerationQuality = Nothing
   , imageGenerationSize = Nothing
@@ -131,6 +137,10 @@ chatCompletionsPath =
 imageGenerationsPath :: [Text]
 imageGenerationsPath =
   ["images", "generations"]
+
+imageEditsPath :: [Text]
+imageEditsPath =
+  ["images", "edits"]
 
 chatCompletionsEndpoint :: Config -> Text
 chatCompletionsEndpoint Config{baseUrl} =
@@ -185,6 +195,20 @@ llmJsonPost label timeoutSeconds url request options =
     reqCb POST url (ReqBodyJson request) jsonResponse options \httpRequest ->
       pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
 
+llmMultipartPost
+  :: Aeson.FromJSON response
+  => Text
+  -> Int
+  -> Url 'Https
+  -> [Multipart.Part]
+  -> Option 'Https
+  -> IO (JsonResponse response)
+llmMultipartPost label timeoutSeconds url parts options =
+  runTimedLLMReq label timeoutSeconds do
+    body <- reqBodyMultipart parts
+    reqCb POST url body jsonResponse options \httpRequest ->
+      pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
+
 askOpenAI :: (IOE :> es, Log :> es) => Config -> [ChatMessage] -> Eff es Text
 askOpenAI Config{apiKey = Nothing} _ =
   pure "LLM is not configured: set llm.api_key."
@@ -226,6 +250,39 @@ askImageOpenAIStreaming cfg@Config{imageGeneration, imageGenerationApi} messages
       askImageGenerationsOpenAIStreaming cfg messages
   | otherwise =
       yieldTextResult (askImageChatCompletionsOpenAI cfg messages)
+
+askImageEditOpenAI :: (IOE :> es, Log :> es) => Config -> Text -> [Text] -> Maybe Text -> Eff es Text
+askImageEditOpenAI cfg@Config{imageGeneration, imageGenerationModelCanEdit, apiKey, imageGenerationBaseUrl, imageGenerationApiKey, imageGenerationModel, imageGenerationTimeout} prompt imageRefs maskRef
+  | not imageGeneration =
+      pure "Image editing is not configured: set llm.image_generation = true."
+  | not imageGenerationModelCanEdit =
+      pure "Image editing is not configured for this image model: set llm.image_generation_model_can_edit = true only when the configured image model and endpoint support /images/edits."
+  | null imageRefs =
+      pure "Image editing requires at least one input image."
+  | otherwise =
+      case requestApiKey of
+        Nothing ->
+          pure "Image editing is not configured: set llm.image_generation_api_key or llm.api_key."
+        Just key -> do
+          let requestBaseUrl = fromMaybe cfg.baseUrl imageGenerationBaseUrl
+              requestPath = imageEditsPath
+              requestEndpoint = endpointText requestBaseUrl requestPath
+              requestModel = fromMaybe cfg.model imageGenerationModel
+          imageUploads <- liftIO (traverse (uncurry (imageUploadFromReference imageGenerationTimeout)) (zip [1 :: Int ..] imageRefs))
+          maskUpload <- liftIO (traverse (imageUploadFromReference imageGenerationTimeout 0) maskRef)
+          let parts = imageEditMultipartParts cfg requestModel prompt imageUploads maskUpload
+          logInfo_ ("LLM image edit request: " <> imageEditRequestLogLine requestEndpoint imageGenerationTimeout requestModel prompt imageUploads maskUpload)
+          (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
+          response <- liftIO $
+            llmMultipartPost "LLM image edit request" imageGenerationTimeout url parts
+              (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
+          let body = responseBody response
+          logInfo_ ("LLM image edit response: " <> imageResponseLogLine requestEndpoint requestModel body)
+          case imageGenerationResponseText cfg body of
+            Just answer -> compressImageAnswer (imageCompressionConfig cfg) answer
+            Nothing -> throwIO (LLMException "Image edit response was empty: no image output.")
+  where
+    requestApiKey = imageGenerationApiKey <|> apiKey
 
 yieldTextResult :: Monad m => m Text -> Stream (Of Text) m Text
 yieldTextResult action = do
@@ -560,6 +617,97 @@ imageGenerationRequest Config{imageGenerationQuality, imageGenerationSize, image
           else Nothing
     }
 
+data ImageUpload = ImageUpload
+  { filename :: !FilePath
+  , bytes :: !StrictByteString.ByteString
+  }
+
+imageUploadFromReference :: Int -> Int -> Text -> IO ImageUpload
+imageUploadFromReference timeoutSeconds index imageRef = do
+  bytes <- imageBytesFromReference timeoutSeconds imageRef
+  pure ImageUpload
+    { filename = "image-" <> show index <> "." <> imageExtension bytes
+    , bytes = bytes
+    }
+
+imageBytesFromReference :: Int -> Text -> IO StrictByteString.ByteString
+imageBytesFromReference timeoutSeconds imageRef
+  | Just bytes <- Image.decodeDataImageReference stripped =
+      pure bytes
+  | Just path <- Text.stripPrefix "file://" stripped =
+      StrictByteString.readFile (Text.unpack path)
+  | otherwise =
+      downloadImageReference timeoutSeconds stripped
+  where
+    stripped = Text.strip imageRef
+
+downloadImageReference :: Int -> Text -> IO StrictByteString.ByteString
+downloadImageReference timeoutSeconds imageRef = do
+  uri <- URI.mkURI imageRef
+  case useHttpsURI uri of
+    Nothing ->
+      ioError (userError [i|Unsupported image reference URL for image edit: #{imageRef}. Use HTTPS, file://, or data:image/...;base64.|])
+    Just (url, options) ->
+      runTimedLLMReq "LLM image edit input download" timeoutSeconds $
+        responseBody <$> req GET url NoReqBody bsResponse options
+
+imageEditMultipartParts :: Config -> Text -> Text -> [ImageUpload] -> Maybe ImageUpload -> [Multipart.Part]
+imageEditMultipartParts cfg model prompt imageUploads maskUpload =
+  textFields
+    <> map (imageUploadPart "image[]") imageUploads
+    <> maybe [] (\upload -> [imageUploadPart "mask" upload]) maskUpload
+  where
+    textFields =
+      [ multipartTextPart "model" model
+      , multipartTextPart "prompt" prompt
+      ]
+        <> maybeTextPart "quality" cfg.imageGenerationQuality
+        <> maybeTextPart "size" cfg.imageGenerationSize
+        <> maybeTextPart "background" (imageEditBackground model cfg.imageGenerationBackground)
+        <> maybeTextPart "output_format" cfg.imageGenerationOutputFormat
+        <> maybeIntPart "output_compression" cfg.imageGenerationOutputCompression
+        <> maybeTextPart "moderation" cfg.imageGenerationModeration
+
+imageUploadPart :: Text -> ImageUpload -> Multipart.Part
+imageUploadPart fieldName upload =
+  Multipart.partFileRequestBody fieldName upload.filename (HTTP.RequestBodyBS upload.bytes)
+
+multipartTextPart :: Text -> Text -> Multipart.Part
+multipartTextPart name value =
+  Multipart.partBS name (TextEncoding.encodeUtf8 value)
+
+maybeTextPart :: Text -> Maybe Text -> [Multipart.Part]
+maybeTextPart name =
+  maybe [] \value -> [multipartTextPart name value]
+
+maybeIntPart :: Text -> Maybe Int -> [Multipart.Part]
+maybeIntPart name =
+  maybe [] \value -> [multipartTextPart name (show value)]
+
+-- gpt-image-2 rejects transparent backgrounds; omit that unsupported option
+-- while preserving other model/config combinations.
+imageEditBackground :: Text -> Maybe Text -> Maybe Text
+imageEditBackground model background =
+  case Text.toLower . Text.strip <$> background of
+    Just "transparent" | isGptImage2 model -> Nothing
+    _ -> background
+
+isGptImage2 :: Text -> Bool
+isGptImage2 model =
+  "gpt-image-2" `Text.isSuffixOf` Text.toLower (Text.strip model)
+
+imageExtension :: StrictByteString.ByteString -> FilePath
+imageExtension bytes
+  | StrictByteString.pack [0x89, 0x50, 0x4e, 0x47] `StrictByteString.isPrefixOf` bytes = "png"
+  | StrictByteString.pack [0xff, 0xd8, 0xff] `StrictByteString.isPrefixOf` bytes = "jpg"
+  | isWebP bytes = "webp"
+  | otherwise = "png"
+
+isWebP :: StrictByteString.ByteString -> Bool
+isWebP bytes =
+  StrictByteString.pack [0x52, 0x49, 0x46, 0x46] `StrictByteString.isPrefixOf` bytes &&
+    StrictByteString.pack [0x57, 0x45, 0x42, 0x50] == StrictByteString.take 4 (StrictByteString.drop 8 bytes)
+
 imageGenerationStreamingRequestPayload :: Config -> Text -> Text -> Aeson.Value
 imageGenerationStreamingRequestPayload cfg model prompt =
   Aeson.toJSON (imageGenerationRequest cfg model prompt (Just True))
@@ -625,6 +773,17 @@ imageRequestLogLine endpoint timeoutSeconds request =
     [ "endpoint=" <> endpoint
     , "model=" <> request.model
     , "prompt_chars=" <> show (Text.length request.prompt)
+    , "timeout_seconds=" <> show timeoutSeconds
+    ]
+
+imageEditRequestLogLine :: Text -> Int -> Text -> Text -> [ImageUpload] -> Maybe ImageUpload -> Text
+imageEditRequestLogLine endpoint timeoutSeconds model prompt imageUploads maskUpload =
+  Text.unwords
+    [ "endpoint=" <> endpoint
+    , "model=" <> model
+    , "prompt_chars=" <> show (Text.length prompt)
+    , "images=" <> show (length imageUploads)
+    , "mask=" <> show (isJust maskUpload)
     , "timeout_seconds=" <> show timeoutSeconds
     ]
 

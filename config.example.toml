@@ -38,6 +38,7 @@ image_generation_api = "chat_completions"
 image_generation_base_url = "https://openrouter.ai/api/v1"
 image_generation_api_key = ""
 image_generation_model = "openai/gpt-5-image-mini"
+image_generation_model_can_edit = false
 image_generation_timeout = 300
 image_generation_quality = "medium"
 image_generation_size = "1024x1024"

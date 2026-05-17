@@ -65,6 +65,13 @@ data StreamingAnswer = StreamingAnswer
   , answer :: !LLM.ChatAnswer
   }
 
+data ImageEditCall = ImageEditCall
+  { prompt :: !Text
+  , imageRefs :: ![Text]
+  , maskRef :: !(Maybe Text)
+  }
+  deriving (Eq, Show)
+
 main :: IO ()
 main =
   defaultMain $
@@ -76,6 +83,7 @@ main =
       , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
+      , testCase "edit_image tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "agent compacts old conversation context before model turn" testAgentCompactsOldConversationContextBeforeModelTurn
       , testCase "agent announces context compaction" testAgentAnnouncesContextCompaction
@@ -232,6 +240,27 @@ testTypstToImageToolRendersAndSendsImage = do
   IORef.readIORef replies >>= (@?= ["[image] file:///tmp/cosmobot-agent-spec-typst.png"])
   IORef.readIORef recorded >>= (@?= [(Just 43, "[typst image]")])
   IORef.readIORef remembered >>= (@?= [Just 43])
+
+testEditImageToolEditsCurrentMessageImageAndSendsResult :: IO ()
+testEditImageToolEditsCurrentMessageImageAndSendsResult = do
+  let inputImage = "https://example.test/input.png"
+      maskImage = "https://example.test/mask.png"
+      editedImage = "[image] data:image/png;base64,edited"
+      message = testMessageWithImages [inputImage]
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "edit_image" (Aeson.object ["prompt" Aeson..= ("make it brighter" :: Text), "mask_image_url" Aeson..= maskImage])]
+    , chatAnswer "done" []
+    ]
+  editCalls <- IORef.newIORef ([] :: [ImageEditCall])
+  replies <- IORef.newIORef ([] :: [Text])
+  recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
+  remembered <- IORef.newIORef ([] :: [Maybe Integer])
+  (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just 47) Nothing) do
+    Agent.runAgent 4 ((agentContextWith recorded remembered){Agent.message = message}) Agent.defaultTools (startWithUser "edit this")
+  answer @?= "done"
+  IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage)])
+  IORef.readIORef replies >>= (@?= [editedImage])
+  IORef.readIORef recorded >>= (@?= [(Just 47, editedImage)])
 
 testAgentRequestMergesCurrentMessageContextIntoSystemPrompt :: IO ()
 testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
@@ -622,6 +651,7 @@ testLLMStreamingEffectPreservesYieldedChunks = do
       (\_ -> pure "unused text answer")
       (\_ -> S.each ["he", "llo"] $> "hello")
       (\_ -> pure "unused image answer")
+      (\_ _ _ -> pure "unused image edit answer")
       (\_ _ -> pure (chatAnswer "unused tool answer" []))
       (\_ _ -> S.each ["to", "ol"] $> chatAnswer "tool" []) do
         S.toList (LLM.askWithToolsStreaming [] [LLM.userText "hello"])
@@ -1082,6 +1112,25 @@ testMessageInChat chatId =
     , raw = testMessage.raw
     }
 
+testMessageWithImages :: [Text] -> IncomingMessage
+testMessageWithImages imageUrls =
+  IncomingMessage
+    { platform = testMessage.platform
+    , kind = testMessage.kind
+    , chatId = testMessage.chatId
+    , chatAliases = testMessage.chatAliases
+    , digest = testMessage.digest
+    , senderId = testMessage.senderId
+    , senderUsername = testMessage.senderUsername
+    , messageId = testMessage.messageId
+    , replyToMessageId = testMessage.replyToMessageId
+    , mentions = testMessage.mentions
+    , mentionUsernames = testMessage.mentionUsernames
+    , imageUrls = imageUrls
+    , text = testMessage.text
+    , raw = testMessage.raw
+    }
+
 chatLogMessage :: Integer -> Text -> Integer -> Text -> IncomingMessage
 chatLogMessage messageId senderId chatId text =
   testMessage
@@ -1154,6 +1203,27 @@ runAgentWith
   -> IO a
 runAgentWith answers chatMock action =
   runAgentWithMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") answers chatMock action
+
+runAgentWithImageEdit
+  :: IORef.IORef [LLM.ChatAnswer]
+  -> IORef.IORef [ImageEditCall]
+  -> Text
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithImageEdit answers editCalls editAnswer chatMock action = do
+  rendered <- IORef.newIORef ([] :: [Text])
+  runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    defaultTestSkillsConfig
+    rendered
+    Nothing
+    answers
+    chatMock
+    (\prompt imageRefs maskRef -> do
+        IORef.modifyIORef' editCalls (<> [ImageEditCall{prompt, imageRefs, maskRef}])
+        pure editAnswer)
+    action
 
 runAgentCapturingMessages
   :: IORef.IORef [[LLM.ChatMessage]]
@@ -1245,6 +1315,27 @@ runAgentWithMemorySkillsAndTypstAndCapture
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemorySkillsAndTypstAndCapture memoryCfg skillsCfg rendered captured answers chatMock action = do
+  runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit
+    memoryCfg
+    skillsCfg
+    rendered
+    captured
+    answers
+    chatMock
+    (\_ _ _ -> pure "unused image edit answer")
+    action
+
+runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit
+  :: MemoryStore.MemoryConfig
+  -> SkillsStore.SkillsConfig
+  -> IORef.IORef [Text]
+  -> Maybe (IORef.IORef [[LLM.ChatMessage]])
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> (Text -> [Text] -> Maybe Text -> IO Text)
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit memoryCfg skillsCfg rendered captured answers chatMock imageEdit action = do
   runEff $
     runTestLog $
       StorageEffect.runStorageSQLitePath ":memory:" $
@@ -1259,6 +1350,7 @@ runAgentWithMemorySkillsAndTypstAndCapture memoryCfg skillsCfg rendered captured
                       S.yield "unused text stream answer"
                       pure "unused text stream answer")
                   (\messages -> captureMessages captured messages >> pure "unused image answer")
+                  (\prompt imageRefs maskRef -> liftIO (imageEdit prompt imageRefs maskRef))
                   (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
                   (\_ messages -> do
                       lift $ captureMessages captured messages
@@ -1305,6 +1397,7 @@ runAgentWithStreamingAnswers answers chatMock action = do
                   (\_ -> pure "unused text answer")
                   (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
                   (\_ -> pure "unused image answer")
+                  (\_ _ _ -> pure "unused image edit answer")
                   (\_ _ -> (.answer) <$> liftIO (popStreamingAnswer answers))
                   (\_ _ -> do
                       streamingAnswer <- liftIO (popStreamingAnswer answers)
