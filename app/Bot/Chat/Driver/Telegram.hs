@@ -288,8 +288,8 @@ updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
     , digest = telegramMessageDigest cfg message
     , senderId  = Text.pack . show . (.id) <$> message.from
     , senderUsername = message.from >>= (.username)
-    , messageId = Just message.messageId
-    , replyToMessageId = (.messageId) <$> message.replyToMessage
+    , messageId = Just (integerMessageId message.messageId)
+    , replyToMessageId = integerMessageId . (.messageId) <$> message.replyToMessage
     , mentions  = messageMentionIds message
     , mentionUsernames = messageMentionUsernames message
     , imageUrls = messageImageFileIds message
@@ -388,24 +388,28 @@ photoArea photo =
   photo.width * photo.height
 
 -- | Resolve the content of a replied-to Telegram message when available locally.
-getMessageContent :: Telegram :> es => IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
+getMessageContent :: Telegram :> es => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
 getMessageContent message messageId =
-  case Aeson.fromJSON message.raw :: Aeson.Result Message of
-    Aeson.Success telegramMessage ->
-      case telegramMessage.replyToMessage of
-        Just referenced
-          | referenced.messageId == messageId -> do
-              imageUrls <- traverse fileUrl (messageImageFileIds referenced)
-              pure $ Just ReferencedMessage
-                { messageId = Just referenced.messageId
-                , senderDisplayName = telegramMessageSenderDisplayName referenced
-                , senderIdentifier = telegramMessageSenderIdentifier referenced
-                , text = messageText referenced
-                , imageUrls = imageUrls
-                }
-        _ -> pure Nothing
-    Aeson.Error _ ->
+  case messageIdInteger messageId of
+    Nothing ->
       pure Nothing
+    Just rawMessageId ->
+      case Aeson.fromJSON message.raw :: Aeson.Result Message of
+        Aeson.Success telegramMessage ->
+          case telegramMessage.replyToMessage of
+            Just referenced
+              | referenced.messageId == rawMessageId -> do
+                  imageUrls <- traverse fileUrl (messageImageFileIds referenced)
+                  pure $ Just ReferencedMessage
+                    { messageId = Just (integerMessageId referenced.messageId)
+                    , senderDisplayName = telegramMessageSenderDisplayName referenced
+                    , senderIdentifier = telegramMessageSenderIdentifier referenced
+                    , text = messageText referenced
+                    , imageUrls = imageUrls
+                    }
+            _ -> pure Nothing
+        Aeson.Error _ ->
+          pure Nothing
 
 entityMentionUsername :: Text -> MessageEntity -> Maybe Text
 entityMentionUsername text messageEntity
@@ -1478,13 +1482,14 @@ uploadPhoto request path =
   send (UploadPhoto request path)
 
 -- | Reply to a Telegram chat, including image directives in the body.
-replyTo :: (Telegram :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe Integer)
+replyTo :: (Telegram :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
-      sent <- replyTextAndImages chatId message.messageId body `catch` \(err :: TelegramException) ->
-        sendTelegramFailureReply chatId message.messageId err
-      pure (Just sent.messageId)
+      let replyToMessageId = messageIdInteger =<< message.messageId
+      sent <- replyTextAndImages chatId replyToMessageId body `catch` \(err :: TelegramException) ->
+        sendTelegramFailureReply chatId replyToMessageId err
+      pure (Just (integerMessageId sent.messageId))
     _ ->
       pure Nothing
 
@@ -1505,14 +1510,14 @@ telegramFailureReplyText (TelegramException message) =
   "Telegram request failed: " <> message
 
 -- | Edit a Telegram text message previously sent by this bot.
-editMessage :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es Bool
+editMessage :: Telegram :> es => IncomingMessage -> MessageId -> Text -> Eff es Bool
 editMessage message messageId body =
-  case (message.platform, message.chatId) of
-    (PlatformTelegram, Just chatId) -> do
+  case (message.platform, message.chatId, messageIdInteger messageId) of
+    (PlatformTelegram, Just chatId, Just rawMessageId) -> do
       let formatted = formatTelegramMarkdown body
       void $ callTelegram EditMessageTextRequest
         { chatId = chatId
-        , messageId = messageId
+        , messageId = rawMessageId
         , text = formatted.formattedText
         , parseMode = Nothing
         , entities = Just formatted.formattedEntities
@@ -1523,19 +1528,20 @@ editMessage message messageId body =
       pure False
 
 -- | Delete a Telegram message in the current chat when the bot has permission.
-deleteMessageFor :: Telegram :> es => IncomingMessage -> Integer -> Eff es Bool
+deleteMessageFor :: Telegram :> es => IncomingMessage -> MessageId -> Eff es Bool
 deleteMessageFor message messageId =
-  case (message.platform, message.chatId) of
-    (PlatformTelegram, Just chatId) ->
-      deleteMessage chatId messageId
+  case (message.platform, message.chatId, messageIdInteger messageId) of
+    (PlatformTelegram, Just chatId, Just rawMessageId) ->
+      deleteMessage chatId rawMessageId
     _ ->
       pure False
 
 -- | Reply with an HTML mention for a Telegram user id.
-mentionUser :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
+mentionUser :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
 mentionUser message userId body =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
+      let replyToMessageId = messageIdInteger =<< message.messageId
       sent <- sendMessage SendMessageRequest
         { chatId = chatId
         , messageThreadId = Nothing
@@ -1543,9 +1549,9 @@ mentionUser message userId body =
         , parseMode = Just ParseModeHTML
         , entities = Nothing
         , disableNotification = Nothing
-        , replyToMessageId = message.messageId
+        , replyToMessageId = replyToMessageId
         }
-      pure (Just sent.messageId)
+      pure (Just (integerMessageId sent.messageId))
     _ ->
       pure Nothing
 

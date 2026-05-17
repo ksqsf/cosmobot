@@ -159,7 +159,7 @@ testTelegramReferencedMessageIncludesSenderIdentity = do
         Telegram.updateToIncomingMessage (telegramUpdateWithMessage messageWithReply)
   fetched <- runEff $ runTestLog $
     Telegram.runTelegram (Telegram.Config "dummy-token" [] [] [] [] []) $
-      Telegram.getMessageContent incoming 70001
+      Telegram.getMessageContent incoming ("70001")
   (fetched <&> (.senderDisplayName)) @?= Just (Just "Bob Smith")
   (fetched <&> (.senderIdentifier)) @?= Just (Just "@bob")
   (fetched <&> (.text)) @?= Just "quoted"

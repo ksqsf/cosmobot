@@ -125,7 +125,7 @@ runScratchpad path replies incoming =
   where
     reply _ body = do
       liftIO $ IORef.modifyIORef' replies (<> [body])
-      pure (Just 1)
+      pure (Just "1")
     fetch _ _ =
       pure Nothing
     edit _ _ _ =
@@ -159,7 +159,7 @@ messageFrom senderId text =
     , digest = emptyMessageDigest
     , senderId = Just senderId
     , senderUsername = Just "alice"
-    , messageId = Just 300
+    , messageId = Just "300"
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []

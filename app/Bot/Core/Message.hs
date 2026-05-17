@@ -5,8 +5,15 @@ Stability   : experimental
 -}
 
 module Bot.Core.Message
-  ( -- * Chat identity
-    ChatPlatform (..)
+  ( -- * Message identity
+    MessageId (..)
+  , messageIdText
+  , textMessageId
+  , integerMessageId
+  , messageIdInteger
+
+    -- * Chat identity
+  , ChatPlatform (..)
   , chatPlatformKey
   , ChatKind (..)
   , MessageDigest (..)
@@ -27,7 +34,41 @@ where
 
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
+
+-- | Message id scoped by its source platform/chat context.
+newtype MessageId = MessageId Text
+  deriving (Eq, Ord, Show, Generic)
+
+instance IsString MessageId where
+  fromString =
+    MessageId . Text.pack
+
+instance Aeson.ToJSON MessageId where
+  toJSON =
+    Aeson.String . messageIdText
+
+instance Aeson.FromJSON MessageId where
+  parseJSON value =
+    (textMessageId <$> (Aeson.parseJSON value :: AesonTypes.Parser Text))
+      <|> (integerMessageId <$> (Aeson.parseJSON value :: AesonTypes.Parser Integer))
+
+messageIdText :: MessageId -> Text
+messageIdText (MessageId value) =
+  value
+
+textMessageId :: Text -> MessageId
+textMessageId =
+  MessageId
+
+integerMessageId :: Integer -> MessageId
+integerMessageId =
+  MessageId . show
+
+messageIdInteger :: MessageId -> Maybe Integer
+messageIdInteger =
+  readMaybe . Text.unpack . messageIdText
 
 -- | Chat platform backends supported by the unified message layer.
 data ChatPlatform
@@ -104,8 +145,8 @@ data IncomingMessage = IncomingMessage
   , digest    :: !MessageDigest
   , senderId  :: !(Maybe Text)
   , senderUsername :: !(Maybe Text)
-  , messageId :: !(Maybe Integer)
-  , replyToMessageId :: !(Maybe Integer)
+  , messageId :: !(Maybe MessageId)
+  , replyToMessageId :: !(Maybe MessageId)
   , mentions  :: ![Integer]
   , mentionUsernames :: ![Text]
   , imageUrls :: ![Text]
@@ -157,8 +198,8 @@ incomingMessageLogLine message =
     , "username=" <> fromMaybe "-" message.senderUsername
     , "superuser=" <> show message.digest.senderIsSuperuser
     , "bot=" <> showMaybe message.digest.botId
-    , "message=" <> showMaybe message.messageId
-    , "reply_to=" <> showMaybe message.replyToMessageId
+    , "message=" <> showMaybeMessageId message.messageId
+    , "reply_to=" <> showMaybeMessageId message.replyToMessageId
     , "mentions=" <> show (length message.mentions + length message.mentionUsernames)
     , "mentions_bot=" <> show message.digest.mentionsBot
     , "images=" <> show (length message.imageUrls)
@@ -177,9 +218,13 @@ showMaybe :: Show a => Maybe a -> Text
 showMaybe =
   maybe "-" show
 
+showMaybeMessageId :: Maybe MessageId -> Text
+showMaybeMessageId =
+  maybe "-" messageIdText
+
 -- | Minimal content fetched for a message referenced by reply.
 data ReferencedMessage = ReferencedMessage
-  { messageId :: !(Maybe Integer)
+  { messageId :: !(Maybe MessageId)
   , senderDisplayName :: !(Maybe Text)
   , senderIdentifier :: !(Maybe Text)
   , text      :: !Text

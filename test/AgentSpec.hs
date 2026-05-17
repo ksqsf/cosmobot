@@ -56,7 +56,7 @@ type AgentStack =
 
 data ChatMock = ChatMock
   { replies :: !(Maybe (IORef.IORef [Text]))
-  , replyId :: !(Maybe Integer)
+  , replyId :: !(Maybe MessageId)
   , userAvatar :: !(Maybe Aeson.Value)
   }
 
@@ -148,14 +148,14 @@ testSendReplyToolUsesChatEffect = do
     , chatAnswer "sent" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
-  recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
-  remembered <- IORef.newIORef ([] :: [Maybe Integer])
-  (answer, _) <- runAgentWith answers (ChatMock (Just replies) (Just 42) Nothing) do
+  recorded <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  remembered <- IORef.newIORef ([] :: [Maybe MessageId])
+  (answer, _) <- runAgentWith answers (ChatMock (Just replies) (Just "42") Nothing) do
     Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "send it")
   answer @?= "sent"
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
-  IORef.readIORef recorded >>= (@?= [(Just 42, "hello\n[image] https://example.test/image.png")])
-  IORef.readIORef remembered >>= (@?= [Just 42])
+  IORef.readIORef recorded >>= (@?= [(Just "42", "hello\n[image] https://example.test/image.png")])
+  IORef.readIORef remembered >>= (@?= [Just "42"])
 
 testCurrentSenderChatLogToolQueriesChatLog :: IO ()
 testCurrentSenderChatLogToolQueriesChatLog = do
@@ -185,17 +185,17 @@ testUserAvatarToolQueriesChatEffect = do
     , chatAnswer "found" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
-  recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
-  remembered <- IORef.newIORef ([] :: [Maybe Integer])
-  (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just 44) (Just avatar)) do
+  recorded <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  remembered <- IORef.newIORef ([] :: [Maybe MessageId])
+  (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just "44") (Just avatar)) do
     Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "avatar?")
   answer @?= "found"
   Text.unlines (toolOutputs conversation) @?= jsonText avatar <> "\n"
   imageContextUrls conversation @?= ["https://example.test/avatar.jpg"]
   -- The avatar tool should emit the avatar as a chat image, not only return JSON to the model.
   IORef.readIORef replies >>= (@?= ["[image] https://example.test/avatar.jpg"])
-  IORef.readIORef recorded >>= (@?= [(Just 44, "[image] https://example.test/avatar.jpg")])
-  IORef.readIORef remembered >>= (@?= [Just 44])
+  IORef.readIORef recorded >>= (@?= [(Just "44", "[image] https://example.test/avatar.jpg")])
+  IORef.readIORef remembered >>= (@?= [Just "44"])
 
 testUserAvatarToolRequiresUserId :: IO ()
 testUserAvatarToolRequiresUserId = do
@@ -204,7 +204,7 @@ testUserAvatarToolRequiresUserId = do
     , chatAnswer "rejected" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
-  (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just 44) Nothing) do
+  (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just "44") Nothing) do
     Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "avatar?")
   answer @?= "rejected"
   Text.unlines (toolOutputs conversation) @?= "Error in $: key \"user_id\" not found\n"
@@ -217,7 +217,7 @@ testUserAvatarToolRejectsZeroUserId = do
     , chatAnswer "rejected" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
-  (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just 44) Nothing) do
+  (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just "44") Nothing) do
     Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "avatar?")
   answer @?= "rejected"
   Text.unlines (toolOutputs conversation) @?= "Error in $: user_id must not be 0.\n"
@@ -232,15 +232,15 @@ testTypstToImageToolRendersAndSendsImage = do
     ]
   replies <- IORef.newIORef ([] :: [Text])
   rendered <- IORef.newIORef ([] :: [Text])
-  recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
-  remembered <- IORef.newIORef ([] :: [Maybe Integer])
-  (answer, _) <- runAgentWithTypst rendered answers (ChatMock (Just replies) (Just 43) Nothing) do
+  recorded <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  remembered <- IORef.newIORef ([] :: [Maybe MessageId])
+  (answer, _) <- runAgentWithTypst rendered answers (ChatMock (Just replies) (Just "43") Nothing) do
     Agent.runAgent 4 (agentContextWith recorded remembered) Agent.defaultTools (startWithUser "render typst")
   answer @?= "sent"
   IORef.readIORef rendered >>= (@?= [source])
   IORef.readIORef replies >>= (@?= ["[image] file:///tmp/cosmobot-agent-spec-typst.png"])
-  IORef.readIORef recorded >>= (@?= [(Just 43, "[typst image]")])
-  IORef.readIORef remembered >>= (@?= [Just 43])
+  IORef.readIORef recorded >>= (@?= [(Just "43", "[typst image]")])
+  IORef.readIORef remembered >>= (@?= [Just "43"])
 
 testEditImageToolEditsCurrentMessageImageAndSendsResult :: IO ()
 testEditImageToolEditsCurrentMessageImageAndSendsResult = do
@@ -254,14 +254,14 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult = do
     ]
   editCalls <- IORef.newIORef ([] :: [ImageEditCall])
   replies <- IORef.newIORef ([] :: [Text])
-  recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
-  remembered <- IORef.newIORef ([] :: [Maybe Integer])
-  (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just 47) Nothing) do
+  recorded <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  remembered <- IORef.newIORef ([] :: [Maybe MessageId])
+  (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "47") Nothing) do
     Agent.runAgent 4 ((agentContextWith recorded remembered){Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) Agent.defaultTools (startWithUser "edit this")
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage)])
   IORef.readIORef replies >>= (@?= [editedImage])
-  IORef.readIORef recorded >>= (@?= [(Just 47, editedImage)])
+  IORef.readIORef recorded >>= (@?= [(Just "47", editedImage)])
 
 testAskHandlerPassesReferencedImagesToEditImageTool :: IO ()
 testAskHandlerPassesReferencedImagesToEditImageTool = do
@@ -269,14 +269,14 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
       editedImage = "[image] data:image/png;base64,edited"
       prompt = "make the replied image brighter"
       referenced = ReferencedMessage
-        { messageId = Just 70001
+        { messageId = Just "70001"
         , senderDisplayName = Just "Bob"
         , senderIdentifier = Just "10001"
         , text = ""
         , imageUrls = [referencedImage]
         }
       message = askHandlerMessage
-        { replyToMessageId = Just 70001
+        { replyToMessageId = Just "70001"
         , imageUrls = []
         , text = "krkr 把回复里的图调亮"
         }
@@ -286,7 +286,7 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
     ]
   editCalls <- IORef.newIORef ([] :: [ImageEditCall])
   replies <- IORef.newIORef ([] :: [Text])
-  _ <- runAgentWithImageEditAndReferencedMessage answers editCalls editedImage (Just referenced) (ChatMock (Just replies) (Just 47) Nothing) do
+  _ <- runAgentWithImageEditAndReferencedMessage answers editCalls editedImage (Just referenced) (ChatMock (Just replies) (Just "47") Nothing) do
     conversations <- liftIO newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) message
     liftIO $ waitUntil ((>= 3) . length <$> IORef.readIORef replies)
@@ -355,7 +355,7 @@ testAgentAnnouncesContextCompaction = do
   replies <- IORef.newIORef ([] :: [Text])
   let longConversation =
         Conversation (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
-  _ <- runAgentWith answers (ChatMock (Just replies) (Just 46) Nothing) do
+  _ <- runAgentWith answers (ChatMock (Just replies) (Just "46") Nothing) do
     agentRun <- Agent.startAgentRun agentContext []
     let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun
     _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program longConversation)
@@ -493,7 +493,7 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
     , chatAnswer "done" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
-  _ <- runAgentWith answers (ChatMock (Just replies) (Just 45) Nothing) do
+  _ <- runAgentWith answers (ChatMock (Just replies) (Just "45") Nothing) do
     conversations <- liftIO newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
     liftIO $ waitUntil ((>= 2) . length <$> IORef.readIORef replies)
@@ -519,7 +519,7 @@ testAskHandlerFlushesStreamedContentBeforeToolCalls = do
         }
     ]
   replies <- IORef.newIORef ([] :: [Text])
-  _ <- runAgentWithStreamingAnswers answers (ChatMock (Just replies) (Just 46) Nothing) do
+  _ <- runAgentWithStreamingAnswers answers (ChatMock (Just replies) (Just "46") Nothing) do
     conversations <- liftIO newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
     liftIO $ waitUntil ((>= 2) . length <$> IORef.readIORef replies)
@@ -694,8 +694,8 @@ testLLMStreamingEffectPreservesYieldedChunks = do
 
 testChatStreamingChunksRepliesAndYieldsUpdates :: IO ()
 testChatStreamingChunksRepliesAndYieldsUpdates = do
-  replies <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
-  updates <- IORef.newIORef ([] :: [(Maybe Integer, [Integer], Text)])
+  replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $
     Chat.runChatWith
@@ -714,16 +714,16 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
           (Chat.streamReplyTo testMessage id (S.each ["ab", "cd", "ef"] $> "abcdef"))
-  responseId @?= Just 1
+  responseId @?= Just "1"
   result @?= "abcdef"
-  IORef.readIORef replies >>= (@?= [(Just 300, "abcd"), (Just 1, "ef")])
-  IORef.readIORef updates >>= (@?= [(Nothing, [], "ab"), (Just 1, [1], "abcd"), (Just 1, [], "abcdef"), (Just 1, [2], "abcdef")])
+  IORef.readIORef replies >>= (@?= [(Just "300", "abcd"), (Just "1", "ef")])
+  IORef.readIORef updates >>= (@?= [(Nothing, [], "ab"), (Just "1", ["1"], "abcd"), (Just "1", [], "abcdef"), (Just "1", ["2"], "abcdef")])
 
 testEditableSegmentedRepliesOpenNewTail :: IO ()
 testEditableSegmentedRepliesOpenNewTail = do
-  replies <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
-  edits <- IORef.newIORef ([] :: [(Integer, Text)])
-  updates <- IORef.newIORef ([] :: [(Maybe Integer, [Integer], Text)])
+  replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  edits <- IORef.newIORef ([] :: [(MessageId, Text)])
+  updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $
     Chat.runChatWith
@@ -753,16 +753,16 @@ testEditableSegmentedRepliesOpenNewTail = do
                   $> "cdef"
               )
           )
-  responseId @?= Just 2
+  responseId @?= Just "2"
   result @?= "cdef"
-  IORef.readIORef replies >>= (@?= [(Just 300, "ab"), (Just 300, "cd")])
-  IORef.readIORef edits >>= (@?= [(2, "cdef")])
-  IORef.readIORef updates >>= (@?= [(Just 1, [1], "ab"), (Just 1, [], "ab"), (Just 2, [2], "cd"), (Just 2, [], "cdef"), (Just 2, [], "cdef")])
+  IORef.readIORef replies >>= (@?= [(Just "300", "ab"), (Just "300", "cd")])
+  IORef.readIORef edits >>= (@?= [("2", "cdef")])
+  IORef.readIORef updates >>= (@?= [(Just "1", ["1"], "ab"), (Just "1", [], "ab"), (Just "2", ["2"], "cd"), (Just "2", [], "cdef"), (Just "2", [], "cdef")])
 
 testSegmentedRepliesFlushFinalOpenSegment :: IO ()
 testSegmentedRepliesFlushFinalOpenSegment = do
-  replies <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
-  updates <- IORef.newIORef ([] :: [(Maybe Integer, [Integer], Text)])
+  replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $
     Chat.runChatWith
@@ -785,16 +785,16 @@ testSegmentedRepliesFlushFinalOpenSegment = do
               id
               (S.each [ReplyBody.ReplySegmentDelta "last ", ReplyBody.ReplySegmentDelta "segment"] $> "last segment")
           )
-  responseId @?= Just 1
+  responseId @?= Just "1"
   result @?= "last segment"
-  IORef.readIORef replies >>= (@?= [(Just 300, "last segment")])
-  IORef.readIORef updates >>= (@?= [(Nothing, [], "last "), (Nothing, [], "last segment"), (Just 1, [1], "last segment")])
+  IORef.readIORef replies >>= (@?= [(Just "300", "last segment")])
+  IORef.readIORef updates >>= (@?= [(Nothing, [], "last "), (Nothing, [], "last segment"), (Just "1", ["1"], "last segment")])
 
 testEditableChatStreamingSplitsLongReplies :: IO ()
 testEditableChatStreamingSplitsLongReplies = do
-  replies <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
-  edits <- IORef.newIORef ([] :: [(Integer, Text)])
-  updates <- IORef.newIORef ([] :: [(Maybe Integer, [Integer], Text)])
+  replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  edits <- IORef.newIORef ([] :: [(MessageId, Text)])
+  updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $
     Chat.runChatWith
@@ -813,11 +813,11 @@ testEditableChatStreamingSplitsLongReplies = do
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
           (Chat.streamReplyTo testMessage id (S.each ["ab", "cd", "ef", "gh", "ij", "kl"] $> "abcdefghijkl"))
-  responseId @?= Just 1
+  responseId @?= Just "1"
   result @?= "abcdefghijkl"
-  IORef.readIORef replies >>= (@?= [(Just 300, "ab"), (Just 1, "efgh"), (Just 2, "ijkl")])
-  IORef.readIORef edits >>= (@?= [(1, "abcd")])
-  IORef.readIORef updates >>= (@?= [(Just 1, [], "ab"), (Just 1, [], "abcd"), (Just 1, [], "abcdef"), (Just 1, [], "abcdefgh"), (Just 1, [], "abcdefghij"), (Just 1, [], "abcdefghijkl"), (Just 1, [2, 3], "abcdefghijkl")])
+  IORef.readIORef replies >>= (@?= [(Just "300", "ab"), (Just "1", "efgh"), (Just "2", "ijkl")])
+  IORef.readIORef edits >>= (@?= [("1", "abcd")])
+  IORef.readIORef updates >>= (@?= [(Just "1", [], "ab"), (Just "1", [], "abcd"), (Just "1", [], "abcdef"), (Just "1", [], "abcdefgh"), (Just "1", [], "abcdefghij"), (Just "1", [], "abcdefghijkl"), (Just "1", ["2", "3"], "abcdefghijkl")])
 
 testChunkedActiveConversationAliasesEverySentReply :: IO ()
 testChunkedActiveConversationAliasesEverySentReply = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
@@ -912,10 +912,10 @@ testConversationLookupIsScopedByChat = runEff $ runTestLog $ StorageEffect.runSt
       keyB = conversationMessageKey chatB
       conversationA = appendAssistant "answer A" (startWithUser "from chat A")
       conversationB = appendAssistant "answer B" (startWithUser "from chat B")
-  rememberConversation store (Just (keyA 1)) conversationA
-  rememberConversation store (Just (keyB 1)) conversationB
-  lookupA <- lookupConversation store (keyA 1)
-  lookupB <- lookupConversation store (keyB 1)
+  rememberConversation store (Just (keyA "1")) conversationA
+  rememberConversation store (Just (keyB "1")) conversationB
+  lookupA <- lookupConversation store (keyA "1")
+  lookupB <- lookupConversation store (keyB "1")
   liftIO do
     (show lookupA :: String) @?= show (Just conversationA)
     (show lookupB :: String) @?= show (Just conversationB)
@@ -944,8 +944,8 @@ testConversationBranchesPersistThroughSQLiteReload =
         (show branchAAfterReload :: String) @?= show (Just branchA)
         (show branchBAfterReload :: String) @?= show (Just branchB)
         (show branchA2AfterReload :: String) @?= show (Just branchA2)
-        map rowMessageId rows @?= [1, 2, 3, 4]
-        map rowParentMessageId rows @?= [Nothing, Just 1, Just 1, Just 2]
+        map rowMessageId rows @?= ["1", "2", "3", "4"]
+        map rowParentMessageId rows @?= [Nothing, Just "1", Just "1", Just "2"]
         map payloadMessageCount rows @?= [2, 2, 2, 2]
         assertBool "all nodes in the reloaded tree keep the same conversation id" (sameConversationIds rows)
 
@@ -963,11 +963,11 @@ testConversationCacheMissLoadsEvictedParent =
       rootLookup <- lookupConversation store (messageKey 1)
       childLookup <- lookupConversation store (messageKey 2)
       rows <- loadConversationRows
-      let childRow = find ((== 2) . rowMessageId) rows
+      let childRow = find ((== "2") . rowMessageId) rows
       liftIO do
         (show rootLookup :: String) @?= show (Just root)
         (show childLookup :: String) @?= show (Just child)
-        (rowParentMessageId =<< childRow) @?= Just 1
+        (rowParentMessageId =<< childRow) @?= Just "1"
         (payloadMessageCount <$> childRow) @?= Just 2
 
 testConversationOmitsBase64GeneratedImageContext :: IO ()
@@ -1111,17 +1111,17 @@ payloadMessageCount row =
     Right messages ->
       length messages
 
-rowMessageId :: ConversationRow -> Integer
+rowMessageId :: ConversationRow -> MessageId
 rowMessageId row =
   row.messageKey.messageId
 
-rowParentMessageId :: ConversationRow -> Maybe Integer
+rowParentMessageId :: ConversationRow -> Maybe MessageId
 rowParentMessageId row =
   (.messageId) <$> row.parentMessageKey
 
 messageKey :: Integer -> ConversationMessageKey
 messageKey =
-  conversationMessageKey testMessage
+  conversationMessageKey testMessage . integerMessageId
 
 testMessageInChat :: Integer -> IncomingMessage
 testMessageInChat chatId =
@@ -1164,7 +1164,7 @@ testMessageWithImages imageUrls =
 chatLogMessage :: Integer -> Text -> Integer -> Text -> IncomingMessage
 chatLogMessage messageId senderId chatId text =
   testMessage
-    { messageId = Just messageId
+    { messageId = Just (integerMessageId messageId)
     , senderId = Just senderId
     , chatId = Just chatId
     , text = text
@@ -1563,38 +1563,38 @@ superuserContext :: Agent.AgentContext es
 superuserContext =
   agentContext{Agent.superuser = True}
 
-agentContextWith :: IOE :> es => IORef.IORef [(Maybe Integer, Text)] -> IORef.IORef [Maybe Integer] -> Agent.AgentContext es
+agentContextWith :: IOE :> es => IORef.IORef [(Maybe MessageId, Text)] -> IORef.IORef [Maybe MessageId] -> Agent.AgentContext es
 agentContextWith recorded remembered =
   agentContext
     { Agent.remember = \messageId _ -> liftIO $ IORef.modifyIORef' remembered (<> [messageId])
     , Agent.recordBotMessage = \messageId body -> liftIO $ IORef.modifyIORef' recorded (<> [(messageId, body)])
     }
 
-mockReply :: IOE :> es => ChatMock -> IncomingMessage -> Text -> Eff es (Maybe Integer)
+mockReply :: IOE :> es => ChatMock -> IncomingMessage -> Text -> Eff es (Maybe MessageId)
 mockReply ChatMock{replies, replyId} _ body = do
   traverse_ (\ref -> liftIO $ IORef.modifyIORef' ref (<> [body])) replies
   pure replyId
 
-recordReply :: IOE :> es => IORef.IORef [(Maybe Integer, Text)] -> IORef.IORef Integer -> IncomingMessage -> Text -> Eff es (Maybe Integer)
+recordReply :: IOE :> es => IORef.IORef [(Maybe MessageId, Text)] -> IORef.IORef Integer -> IncomingMessage -> Text -> Eff es (Maybe MessageId)
 recordReply replies nextReplyId message body = do
   liftIO $ IORef.modifyIORef' replies (<> [(message.messageId, body)])
   liftIO $ IORef.atomicModifyIORef' nextReplyId \replyId ->
-    (replyId + 1, Just replyId)
+    (replyId + 1, Just (integerMessageId replyId))
 
-noopFetch :: IncomingMessage -> Integer -> Eff es (Maybe ReferencedMessage)
+noopFetch :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
 noopFetch _ _ =
   pure Nothing
 
-noopEdit :: IncomingMessage -> Integer -> Text -> Eff es Bool
+noopEdit :: IncomingMessage -> MessageId -> Text -> Eff es Bool
 noopEdit _ _ _ =
   pure False
 
-recordEdit :: IOE :> es => IORef.IORef [(Integer, Text)] -> IncomingMessage -> Integer -> Text -> Eff es Bool
+recordEdit :: IOE :> es => IORef.IORef [(MessageId, Text)] -> IncomingMessage -> MessageId -> Text -> Eff es Bool
 recordEdit edits _ messageId body = do
   liftIO $ IORef.modifyIORef' edits (<> [(messageId, body)])
   pure True
 
-noopDelete :: IncomingMessage -> Integer -> Eff es Bool
+noopDelete :: IncomingMessage -> MessageId -> Eff es Bool
 noopDelete _ _ =
   pure False
 
@@ -1618,7 +1618,7 @@ noopMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
 noopMembers _ =
   pure Nothing
 
-noopMention :: IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
+noopMention :: IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
 noopMention _ _ _ =
   pure Nothing
 
@@ -1636,7 +1636,7 @@ testMessage =
     , digest = emptyMessageDigest
     , senderId = Just "200"
     , senderUsername = Just "alice"
-    , messageId = Just 300
+    , messageId = Just "300"
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []
@@ -1670,7 +1670,7 @@ askHandlerMessage =
         }
     , senderId = Just "295947730"
     , senderUsername = Nothing
-    , messageId = Just 294869878
+    , messageId = Just "294869878"
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []

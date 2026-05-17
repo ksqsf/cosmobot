@@ -25,7 +25,7 @@ import Bot.Agent.Middleware.Observation.Types
 import Bot.Agent.Middleware.Tools (ToolLimitContext (..))
 import Bot.Agent.Types
 import Bot.Core.Conversation
-import Bot.Core.Message (IncomingMessage (..))
+import Bot.Core.Message (IncomingMessage (..), MessageId)
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Util.HList as HList
@@ -50,8 +50,8 @@ data ObservedToolCall = ObservedToolCall
 
 data ObservedConversationLink = ObservedConversationLink
   { runId :: !Text
-  , parentMessageId :: !(Maybe Integer)
-  , linkedMessageId :: !Integer
+  , parentMessageId :: !(Maybe MessageId)
+  , linkedMessageId :: !MessageId
   }
 
 withObservation :: (IOE :> es, HList.Has ToolLimitContext context) => AgentObserver ObservationContext es -> AgentProgram (ObservationContext ': context) es -> AgentProgram context es

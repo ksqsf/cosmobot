@@ -89,8 +89,8 @@ data AgentContext es = AgentContext
   , systemContext :: !Text
   , askCommand :: !Text
   , toolConfig :: !ToolConfig
-  , remember :: Maybe Integer -> Conversation -> Eff es ()
-  , recordBotMessage :: Maybe Integer -> Text -> Eff es ()
+  , remember :: Maybe MessageId -> Conversation -> Eff es ()
+  , recordBotMessage :: Maybe MessageId -> Text -> Eff es ()
   }
 
 -- | Semantic lifecycle events emitted by the agent engine.
@@ -100,7 +100,7 @@ data AgentContext es = AgentContext
 data AgentEvent
   = AgentRunStarted
       { runId :: !Text
-      , messageId :: !(Maybe Integer)
+      , messageId :: !(Maybe MessageId)
       , maxTurns :: !Int
       , exposedTools :: ![Text]
       }
@@ -130,7 +130,7 @@ data AgentEvent
       , status :: !Text
       , result :: !Text
       , resultLength :: !Int
-      , messageIds :: ![Maybe Integer]
+      , messageIds :: ![Maybe MessageId]
       }
   | AgentRunFinished
       { runId :: !Text
@@ -144,8 +144,8 @@ data AgentEvent
       }
   | AgentConversationLinked
       { runId :: !Text
-      , linkedMessageId :: !Integer
-      , parentMessageId :: !(Maybe Integer)
+      , linkedMessageId :: !MessageId
+      , parentMessageId :: !(Maybe MessageId)
       }
   deriving (Eq, Show)
 
@@ -164,7 +164,7 @@ data ToolResult
   = ToolSucceeded
       { content :: !Text
       , imageUrls :: ![Text]
-      , messageIds :: ![Maybe Integer]
+      , messageIds :: ![Maybe MessageId]
       }
   | ToolFailed
       { failure :: !AgentFailure
@@ -182,11 +182,11 @@ toolFailure :: AgentFailure -> ToolResult
 toolFailure failure =
   ToolFailed failure
 
-toolMessage :: Maybe Integer -> Text -> ToolResult
+toolMessage :: Maybe MessageId -> Text -> ToolResult
 toolMessage messageId content =
   ToolSucceeded content [] [messageId]
 
-toolMessageWithImages :: Maybe Integer -> Text -> [Text] -> ToolResult
+toolMessageWithImages :: Maybe MessageId -> Text -> [Text] -> ToolResult
 toolMessageWithImages messageId content imageUrls =
   ToolSucceeded content imageUrls [messageId]
 
@@ -204,7 +204,7 @@ toolResultImageUrls = \case
   ToolFailed{} ->
     []
 
-toolResultMessageIds :: ToolResult -> [Maybe Integer]
+toolResultMessageIds :: ToolResult -> [Maybe MessageId]
 toolResultMessageIds = \case
   ToolSucceeded{messageIds} ->
     messageIds

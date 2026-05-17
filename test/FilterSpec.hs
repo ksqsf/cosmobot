@@ -50,7 +50,7 @@ testFromGroups = do
 testNotReply :: IO ()
 testNotReply = do
   assertBool "non-reply matches" (isJust (applyFilter notReply (message "hello")))
-  assertBool "reply does not match" (isNothing (applyFilter notReply (message "hello"){replyToMessageId = Just 1}))
+  assertBool "reply does not match" (isNothing (applyFilter notReply (message "hello"){replyToMessageId = Just "1"}))
 
 testStoppingMatchedRoutePreventsLaterHandlers :: IO ()
 testStoppingMatchedRoutePreventsLaterHandlers = do
@@ -129,7 +129,7 @@ messageFromWithImages senderId text imageUrls =
     , digest = emptyMessageDigest
     , senderId = Just senderId
     , senderUsername = Just "alice"
-    , messageId = Just 300
+    , messageId = Just "300"
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []

@@ -135,7 +135,7 @@ continueRoute toolCfg cfg conversations =
         Nothing
           | not (canStartFromReply message) -> do
               logTrace "Ignoring reply to unknown conversation message" parentId
-              logInfo_ [i|Ignoring unknown conversation reply: #{parentId}|]
+              logInfo_ [i|Ignoring unknown conversation reply: #{messageIdText parentId}|]
           | otherwise ->
               startConversationFromReply toolCfg cfg conversations message parentId
         Just conversation ->
@@ -209,7 +209,7 @@ startConversationFromReply
   -> AskHandlerConfig
   -> ConversationStore
   -> IncomingMessage
-  -> Integer
+  -> MessageId
   -> Eff es ()
 startConversationFromReply toolCfg cfg conversations message parentId = do
   logTrace "starting conversation from mentioned reply" message
@@ -263,7 +263,7 @@ askConversation toolCfg cfg conversations parentMessageKey threadId message inpu
     `onException` discardActiveReply activeReply
 
 data AgentReply = AgentReply
-  { responseId :: !(Maybe Integer)
+  { responseId :: !(Maybe MessageId)
   , answer :: !Text
   , result :: !Agent.AgentResult
   }
@@ -367,7 +367,7 @@ commitAgentReply observer activeReply message AgentReply{responseId, answer, res
       rememberConversationFrom activeReply.conversations activeReply.parentMessageKey (conversationMessageKey message <$> responseId) result.conversation
   pure (answer, result.conversation)
 
-conversationLink :: Agent.AgentResult -> Maybe Integer -> Integer -> AgentObservation.ObservedConversationLink
+conversationLink :: Agent.AgentResult -> Maybe MessageId -> MessageId -> AgentObservation.ObservedConversationLink
 conversationLink result parentMessageId linkedMessageId =
   AgentObservation.ObservedConversationLink
     { runId = result.runId
@@ -421,7 +421,7 @@ recordReplyUpdate activeState update = do
 registerActiveIfNeeded
   :: IOE :> es
   => ActiveReplyState
-  -> Maybe Integer
+  -> Maybe MessageId
   -> Text
   -> Eff es ()
 registerActiveIfNeeded activeState responseId current = do
@@ -433,7 +433,7 @@ registerActiveIfNeeded activeState responseId current = do
 registerActiveAliases
   :: IOE :> es
   => ActiveReplyState
-  -> [Integer]
+  -> [MessageId]
   -> Eff es ()
 registerActiveAliases activeState responseIds = do
   active <- liftIO (IORef.readIORef activeState.activeRef)

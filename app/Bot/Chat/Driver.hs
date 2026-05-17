@@ -62,7 +62,7 @@ replyToPlatform
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Text
-  -> Eff es (Maybe Integer)
+  -> Eff es (Maybe MessageId)
 replyToPlatform message body =
   withPlatformDriver message "chat reply" \driver ->
     driver.replyTo message body
@@ -70,7 +70,7 @@ replyToPlatform message body =
 editPlatformMessage
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
   => IncomingMessage
-  -> Integer
+  -> MessageId
   -> Text
   -> Eff es Bool
 editPlatformMessage message messageId body =
@@ -80,7 +80,7 @@ editPlatformMessage message messageId body =
 deletePlatformMessage
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
   => IncomingMessage
-  -> Integer
+  -> MessageId
   -> Eff es Bool
 deletePlatformMessage message messageId =
   fromMaybe False <$> withPlatformDriver message "chat delete" \driver ->
@@ -104,7 +104,7 @@ defaultChunkedReplyLimit = 4000
 getPlatformMessageContent
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
   => IncomingMessage
-  -> Integer
+  -> MessageId
   -> Eff es (Maybe ReferencedMessage)
 getPlatformMessageContent message messageId =
   withPlatformDriver message "fetch referenced message" \driver ->
@@ -149,7 +149,7 @@ mentionPlatformUser
   => IncomingMessage
   -> Integer
   -> Text
-  -> Eff es (Maybe Integer)
+  -> Eff es (Maybe MessageId)
 mentionPlatformUser message userId body =
   withPlatformDriver message "chat mention" \driver ->
     driver.mentionUser message userId body

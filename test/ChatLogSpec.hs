@@ -43,7 +43,7 @@ testBotMessageVisibility :: IO ()
 testBotMessageVisibility = runChatLogTest do
   let context = messageFromChat 100 200 "user"
   ChatLog.recordMessage context
-  ChatLog.recordBotMessage context (Just 300) "bot reply"
+  ChatLog.recordBotMessage context (Just "300") "bot reply"
   userOnly <- ChatLog.queryChat context 10 False
   withBot <- ChatLog.queryChat context 10 True
   liftIO $ map (.text) userOnly @?= ["user"]
@@ -53,7 +53,7 @@ testBotMessageVisibility = runChatLogTest do
 testImageSanitization :: IO ()
 testImageSanitization = runChatLogTest do
   ChatLog.recordMessage (messageFromChatWithImages 100 200 "look" [base64Image])
-  ChatLog.recordBotMessage (messageFromChat 100 200 "user") (Just 300) ("[image] " <> base64Image)
+  ChatLog.recordBotMessage (messageFromChat 100 200 "user") (Just "300") ("[image] " <> base64Image)
   entries <- ChatLog.queryChat (messageFromChat 999 200 "query") 10 True
   liftIO $ map (.imageUrls) entries @?= [["[Picture]"], ["[Picture]"]]
   liftIO $ map (.text) entries @?= ["look", ""]
@@ -81,7 +81,7 @@ messageFromChatWithImages messageId chatId text imageUrls =
     , digest = emptyMessageDigest
     , senderId = Just "200"
     , senderUsername = Just "alice"
-    , messageId = Just messageId
+    , messageId = Just (integerMessageId messageId)
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []

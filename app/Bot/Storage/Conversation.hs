@@ -82,10 +82,10 @@ data ConversationStorageRow = ConversationStorageRow
   { id :: ID ConversationStorageRow
   , platform_key :: Text
   , chat_id :: Maybe Int.Int64
-  , message_id :: Int.Int64
+  , message_id :: Text
   , conversation_id :: Maybe Int.Int64
   , parent_chat_id :: Maybe Int.Int64
-  , parent_message_id :: Maybe Int.Int64
+  , parent_message_id :: Maybe Text
   , messages_json :: Text
   }
   deriving (Generic)
@@ -119,7 +119,7 @@ lookupConversation store@ConversationStore{activeConversationStore = activeRef} 
       active <- liftIO $ Map.lookup messageKey <$> IORef.readIORef activeRef
       traverse (liftIO . MVar.readMVar . (.activeDone)) active
 
-lookupConversationMessageIds :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es [Integer]
+lookupConversationMessageIds :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es [MessageId]
 lookupConversationMessageIds store@ConversationStore{unConversationStore = ref, activeConversationStore = activeRef} messageKey = do
   active <- liftIO $ Map.lookup messageKey <$> IORef.readIORef activeRef
   case active of
@@ -335,7 +335,7 @@ loadConversationRow targetMessageKey = do
         pure row
   pure (conversationRowFromStorage <$> viaNonEmpty head rows)
 
-loadConversationMessageIds :: Storage.Storage :> es => ConversationMessageKey -> Eff es [Integer]
+loadConversationMessageIds :: Storage.Storage :> es => ConversationMessageKey -> Eff es [MessageId]
 loadConversationMessageIds messageKey = do
   target <- loadConversationRow messageKey
   case target >>= (.conversationId) of
@@ -346,9 +346,9 @@ loadConversationMessageIds messageKey = do
         query do
           row <- select conversationRows
           restrict (row ! #conversation_id .== literal (Just (fromIntegral targetConversationId :: Int.Int64)))
-          order (row ! #message_id) ascending
+          order (row ! #id) ascending
           pure (row ! #message_id)
-      pure (map fromIntegral rows)
+      pure (map textMessageId rows)
 
 loadNextConversationId :: Storage.Storage :> es => Eff es Integer
 loadNextConversationId = do
@@ -367,22 +367,22 @@ saveConversationMessages messageKey conversationId parentMessageKey storedMessag
           { id = def
           , platform_key = chatPlatformKey messageKey.platform
           , chat_id = fromIntegral <$> messageKey.chatId
-          , message_id = fromIntegral messageKey.messageId
+          , message_id = messageIdText messageKey.messageId
           , conversation_id = Just (fromIntegral conversationId)
           , parent_chat_id = fromIntegral <$> (parentMessageKey >>= (.chatId))
-          , parent_message_id = fromIntegral <$> (parentMessageKey <&> (.messageId))
+          , parent_message_id = messageIdText <$> (parentMessageKey <&> (.messageId))
           , messages_json = storedMessagesJson
           }
       ]
 
 conversationRowFromStorage :: ConversationStorageRow -> ConversationRow
 conversationRowFromStorage row =
-  let messageKey = ConversationMessageKey{platform = platformFromKey row.platform_key, chatId = fromIntegral <$> row.chat_id, messageId = fromIntegral row.message_id}
+  let messageKey = ConversationMessageKey{platform = platformFromKey row.platform_key, chatId = fromIntegral <$> row.chat_id, messageId = textMessageId row.message_id}
   in ConversationRow
     { messageKey = messageKey
     , conversationId = fromIntegral <$> row.conversation_id
     , parentMessageKey = do
-        parentMessageId <- fromIntegral <$> row.parent_message_id
+        parentMessageId <- textMessageId <$> row.parent_message_id
         pure ConversationMessageKey
           { platform = messageKey.platform
           , chatId = fromIntegral <$> row.parent_chat_id
@@ -395,7 +395,7 @@ conversationKeyMatches :: forall (backend :: Type). ConversationMessageKey -> Ro
 conversationKeyMatches key row =
   row ! #platform_key .== literal (chatPlatformKey key.platform)
     .&& nullableIntegerMatches key.chatId (row ! #chat_id)
-    .&& row ! #message_id .== literal (fromIntegral key.messageId :: Int.Int64)
+    .&& row ! #message_id .== literal (messageIdText key.messageId)
 
 nullableIntegerMatches :: forall (backend :: Type). Maybe Integer -> Col backend (Maybe Int.Int64) -> Col backend Bool
 nullableIntegerMatches Nothing column =

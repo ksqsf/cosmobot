@@ -26,23 +26,23 @@ main =
 
 testMatchingMessageIsDeleted :: IO ()
 testMatchingMessageIsDeleted = do
-  deleted <- IORef.newIORef ([] :: [Integer])
+  deleted <- IORef.newIORef ([] :: [MessageId])
   later <- IORef.newIORef False
   cfg <- either assertFailure pure (compiledConfig ["spam[[:space:]]+message"])
   runShutUp deleted later cfg (messageWithText "this is a spam message")
-  IORef.readIORef deleted >>= (@?= [300])
+  IORef.readIORef deleted >>= (@?= ["300"])
   IORef.readIORef later >>= (@?= False)
 
 testNonmatchingMessageContinues :: IO ()
 testNonmatchingMessageContinues = do
-  deleted <- IORef.newIORef ([] :: [Integer])
+  deleted <- IORef.newIORef ([] :: [MessageId])
   later <- IORef.newIORef False
   cfg <- either assertFailure pure (compiledConfig ["spam[[:space:]]+message"])
   runShutUp deleted later cfg (messageWithText "ordinary message")
   IORef.readIORef deleted >>= (@?= [])
   IORef.readIORef later >>= (@?= True)
 
-runShutUp :: IORef.IORef [Integer] -> IORef.IORef Bool -> ShutUpConfig -> IncomingMessage -> IO ()
+runShutUp :: IORef.IORef [MessageId] -> IORef.IORef Bool -> ShutUpConfig -> IncomingMessage -> IO ()
 runShutUp deleted later cfg incoming =
   runEff $
     Chat.runChatWith Chat.ChatHandlers
@@ -84,7 +84,7 @@ messageWithText body =
     , digest = emptyMessageDigest
     , senderId = Just "200"
     , senderUsername = Just "alice"
-    , messageId = Just 300
+    , messageId = Just "300"
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []

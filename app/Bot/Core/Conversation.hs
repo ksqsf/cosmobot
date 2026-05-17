@@ -74,11 +74,11 @@ instance Aeson.FromJSON Conversation where
 data ConversationMessageKey = ConversationMessageKey
   { platform :: !ChatPlatform
   , chatId :: !(Maybe Integer)
-  , messageId :: !Integer
+  , messageId :: !MessageId
   }
   deriving (Eq, Ord, Show)
 
-conversationMessageKey :: IncomingMessage -> Integer -> ConversationMessageKey
+conversationMessageKey :: IncomingMessage -> MessageId -> ConversationMessageKey
 conversationMessageKey message messageId =
   ConversationMessageKey
     { platform = message.platform

@@ -36,7 +36,7 @@ data ChatLog :: Effect where
     -> ChatLog m ()
   RecordBotMessage
     :: IncomingMessage
-    -> Maybe Integer
+    -> Maybe MessageId
     -> Text
     -> ChatLog m ()
   QueryChat
@@ -59,8 +59,8 @@ data ChatLogEntry = ChatLogEntry
   , chatId :: !(Maybe Integer)
   , senderId :: !(Maybe Text)
   , senderUsername :: !(Maybe Text)
-  , messageId :: !(Maybe Integer)
-  , replyToMessageId :: !(Maybe Integer)
+  , messageId :: !(Maybe MessageId)
+  , replyToMessageId :: !(Maybe MessageId)
   , isBot :: !Bool
   , mentions :: ![Integer]
   , mentionUsernames :: ![Text]
@@ -85,7 +85,7 @@ recordIncomingMessages =
     pure message
 
 -- | Record a bot reply in the same chat as its triggering message.
-recordBotMessage :: ChatLog :> es => IncomingMessage -> Maybe Integer -> Text -> Eff es ()
+recordBotMessage :: ChatLog :> es => IncomingMessage -> Maybe MessageId -> Text -> Eff es ()
 recordBotMessage context messageId body =
   send (RecordBotMessage context messageId body)
 
@@ -130,8 +130,8 @@ data ChatLogRow = ChatLogRow
   , chat_id :: Maybe Int.Int64
   , sender_id :: Maybe Text
   , sender_username :: Maybe Text
-  , message_id :: Maybe Int.Int64
-  , reply_to_message_id :: Maybe Int.Int64
+  , message_id :: Maybe Text
+  , reply_to_message_id :: Maybe Text
   , is_bot :: Bool
   , mentions :: Text
   , mention_usernames :: Text
@@ -160,13 +160,13 @@ userRecord :: IncomingMessage -> ChatLogRecord
 userRecord message =
   ChatLogRecord message False
 
-botRecord :: IncomingMessage -> Maybe Integer -> Text -> ChatLogRecord
+botRecord :: IncomingMessage -> Maybe MessageId -> Text -> ChatLogRecord
 botRecord context messageId body =
   ChatLogRecord
     (botMessage context messageId body)
     True
 
-botMessage :: IncomingMessage -> Maybe Integer -> Text -> IncomingMessage
+botMessage :: IncomingMessage -> Maybe MessageId -> Text -> IncomingMessage
 botMessage context messageId body =
   IncomingMessage
     { platform = context.platform
@@ -236,8 +236,8 @@ chatLogRow entry =
     , chat_id = fromIntegral <$> entry.chatId
     , sender_id = entry.senderId
     , sender_username = entry.senderUsername
-    , message_id = fromIntegral <$> entry.messageId
-    , reply_to_message_id = fromIntegral <$> entry.replyToMessageId
+    , message_id = messageIdText <$> entry.messageId
+    , reply_to_message_id = messageIdText <$> entry.replyToMessageId
     , is_bot = entry.isBot
     , mentions = encodeIntegerList entry.mentions
     , mention_usernames = encodeTextList entry.mentionUsernames
@@ -253,8 +253,8 @@ chatLogEntryFromRow context row =
     , chatId = fromIntegral <$> row.chat_id
     , senderId = row.sender_id
     , senderUsername = row.sender_username
-    , messageId = fromIntegral <$> row.message_id
-    , replyToMessageId = fromIntegral <$> row.reply_to_message_id
+    , messageId = textMessageId <$> row.message_id
+    , replyToMessageId = textMessageId <$> row.reply_to_message_id
     , isBot = row.is_bot
     , mentions = decodeIntegerList row.mentions
     , mentionUsernames = decodeTextList row.mention_usernames

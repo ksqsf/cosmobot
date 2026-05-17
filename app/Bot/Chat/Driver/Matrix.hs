@@ -77,7 +77,7 @@ data Matrix :: Effect where
   MatrixConfig :: Matrix m Config
   Sync :: Maybe Text -> Matrix m (Maybe SyncResponse)
   SendText :: Text -> Text -> Matrix m (Maybe SendMessageResponse)
-  DeleteEvent :: Text -> Integer -> Maybe Text -> Matrix m Bool
+  DeleteEvent :: Text -> MessageId -> Maybe Text -> Matrix m Bool
 
 type instance DispatchOf Matrix = Dynamic
 
@@ -92,7 +92,7 @@ sendText :: Matrix :> es => Text -> Text -> Eff es (Maybe SendMessageResponse)
 sendText roomId body =
   send (SendText roomId body)
 
-deleteEvent :: Matrix :> es => Text -> Integer -> Maybe Text -> Eff es Bool
+deleteEvent :: Matrix :> es => Text -> MessageId -> Maybe Text -> Eff es Bool
 deleteEvent roomId messageId eventId =
   send (DeleteEvent roomId messageId eventId)
 
@@ -102,7 +102,7 @@ runMatrix
   -> Eff (Matrix : es) a
   -> Eff es a
 runMatrix cfg inner = withReqManager \manager -> do
-  eventIds <- liftIO (IORef.newIORef (Map.empty :: Map Integer Text))
+  eventIds <- liftIO (IORef.newIORef (Map.empty :: Map MessageId Text))
   interpret
     ( \_ -> \case
         MatrixConfig ->
@@ -123,9 +123,9 @@ runMatrix cfg inner = withReqManager \manager -> do
     )
     inner
 
-rememberMatrixEvent :: IOE :> es => IORef.IORef (Map Integer Text) -> SendMessageResponse -> Eff es ()
+rememberMatrixEvent :: IOE :> es => IORef.IORef (Map MessageId Text) -> SendMessageResponse -> Eff es ()
 rememberMatrixEvent eventIds response =
-  liftIO $ IORef.modifyIORef' eventIds (Map.insert (stableTextId response.eventId) response.eventId)
+  liftIO $ IORef.modifyIORef' eventIds (Map.insert (textMessageId response.eventId) response.eventId)
 
 incomingMessages :: (Matrix :> es, Log :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
@@ -161,16 +161,16 @@ syncEvents response =
   , event <- room.timeline.events
   ]
 
-replyTo :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe Integer)
+replyTo :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
       response <- sendText roomId (Chat.renderReplyBody body)
-      pure (stableTextId . (.eventId) <$> response)
+      pure (textMessageId . (.eventId) <$> response)
     _ ->
       pure Nothing
 
-deleteMessage :: Matrix :> es => IncomingMessage -> Integer -> Eff es Bool
+deleteMessage :: Matrix :> es => IncomingMessage -> MessageId -> Eff es Bool
 deleteMessage message messageId =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) ->
@@ -178,7 +178,7 @@ deleteMessage message messageId =
     _ ->
       pure False
 
-currentRawEventId :: IncomingMessage -> Integer -> Maybe Text
+currentRawEventId :: IncomingMessage -> MessageId -> Maybe Text
 currentRawEventId message messageId = do
   guard (message.messageId == Just messageId)
   matrixRawEventId message.raw
@@ -205,7 +205,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, event} = do
     , digest = matrixMessageDigest cfg roomId event
     , senderId = Just event.sender
     , senderUsername = Just event.sender
-    , messageId = stableTextId <$> event.eventId
+    , messageId = textMessageId <$> event.eventId
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = matrixMentions cfg event.content body

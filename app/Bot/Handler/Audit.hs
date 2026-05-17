@@ -99,7 +99,7 @@ renderAuditDetail toolUse =
       turn = toolUse.turn
       toolName = toolUse.toolName
       status = renderStatus toolUse.status
-      messageIds = show toolUse.messageIds :: Text
+      messageIds = renderMessageIds toolUse.messageIds
       arguments = toolUse.arguments
       result = fromMaybe "(still running)" toolUse.result
   in
@@ -119,9 +119,9 @@ renderAuditDetail toolUse =
     , fenced "" result
     ]
 
-renderConversationToolUses :: Integer -> [AgentAudit.AgentAuditRecord] -> Text
+renderConversationToolUses :: MessageId -> [AgentAudit.AgentAuditRecord] -> Text
 renderConversationToolUses parentId [] =
-  [i|没有找到消息 #{parentId} 对应的 agent audit。|]
+  [i|没有找到消息 #{messageIdText parentId} 对应的 agent audit。|]
 renderConversationToolUses _ records =
   case AgentAudit.toolUsesFromAuditRecords records of
     [] ->
@@ -150,9 +150,9 @@ renderToolUseBlock toolUse =
     , indent (fenced "json" arguments)
     ]
 
-renderConversationAuditLog :: Integer -> [AgentAudit.AgentAuditRecord] -> Text
+renderConversationAuditLog :: MessageId -> [AgentAudit.AgentAuditRecord] -> Text
 renderConversationAuditLog parentId [] =
-  [i|没有找到消息 #{parentId} 对应的 agent audit。|]
+  [i|没有找到消息 #{messageIdText parentId} 对应的 agent audit。|]
 renderConversationAuditLog _ records =
   Text.unlines ("*Conversation audit log*" : map renderAuditRecord records)
 
@@ -179,8 +179,12 @@ renderAuditEvent recordId = \case
   AgentAudit.AgentRunInterrupted{runId, reason} ->
     [i|run run=#{runId} reason=`#{reason}`|]
   AgentAudit.AgentConversationLinked{runId, linkedMessageId, parentMessageId} ->
-    let parent = show parentMessageId :: Text
-    in [i|`conversation_linked` run=#{runId} message=#{linkedMessageId} parent=#{parent}|]
+    let parent = maybe "-" messageIdText parentMessageId
+    in [i|`conversation_linked` run=#{runId} message=#{messageIdText linkedMessageId} parent=#{parent}|]
+
+renderMessageIds :: [Maybe MessageId] -> Text
+renderMessageIds messageIds =
+  "[" <> Text.intercalate ", " (map (maybe "null" messageIdText) messageIds) <> "]"
 
 renderStatus :: AgentAudit.ToolUseStatus -> Text
 renderStatus = \case

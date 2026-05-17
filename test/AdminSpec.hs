@@ -124,7 +124,7 @@ chatHandlers replies =
   where
     reply _ body = do
       liftIO $ IORef.modifyIORef' replies (<> [body])
-      pure (Just 1)
+      pure (Just "1")
     edit _ _ _ =
       pure False
     delete _ _ =
@@ -163,7 +163,7 @@ messageWith body digest =
     , digest = digest
     , senderId = Just "200"
     , senderUsername = Just "alice"
-    , messageId = Just 300
+    , messageId = Just "300"
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []

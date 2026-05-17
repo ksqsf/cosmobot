@@ -455,12 +455,12 @@ dispatchActionResponse pendingResponses response =
           void $ liftIO (MVar.tryPutMVar responseVar response)
 
 -- | Reply to a QQ private or group message.
-replyTo :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe Integer)
+replyTo :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
   case (message.platform, message.kind, message.chatId, message.senderId) of
     (PlatformQQ, ChatGroup, Just groupId, _) -> do
       qqMessage <- replyMessage message body
-      responseMessageId <$> sendAction (Aeson.object
+      fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_group_msg"
         , "params" Aeson..= Aeson.object
             [ "group_id" Aeson..= groupId
@@ -470,7 +470,7 @@ replyTo message body =
     (PlatformQQ, ChatPrivate, _, Just rawUserId)
       | Just userId <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
-      responseMessageId <$> sendAction (Aeson.object
+      fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
         , "params" Aeson..= Aeson.object
             [ "user_id" Aeson..= userId
@@ -480,12 +480,12 @@ replyTo message body =
     _ -> pure Nothing
 
 -- | Send a reply that mentions a QQ user where the platform supports it.
-mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Integer -> Text -> Eff es (Maybe Integer)
+mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
 mentionUser message userId body =
   case (message.platform, message.kind, message.chatId, message.senderId) of
     (PlatformQQ, ChatGroup, Just groupId, _) -> do
       qqMessage <- mentionMessage message userId body
-      responseMessageId <$> sendAction (Aeson.object
+      fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_group_msg"
         , "params" Aeson..= Aeson.object
             [ "group_id" Aeson..= groupId
@@ -495,7 +495,7 @@ mentionUser message userId body =
     (PlatformQQ, ChatPrivate, _, Just rawUserId)
       | Just userId_ <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
-      responseMessageId <$> sendAction (Aeson.object
+      fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
         , "params" Aeson..= Aeson.object
             [ "user_id" Aeson..= userId_
@@ -513,14 +513,14 @@ responseMessageId response =
     _ -> Nothing
 
 -- | Delete a QQ message by OneBot message id.
-deleteMessage :: QQ :> es => IncomingMessage -> Integer -> Eff es Bool
+deleteMessage :: QQ :> es => IncomingMessage -> MessageId -> Eff es Bool
 deleteMessage message messageId =
-  case message.platform of
-    PlatformQQ -> do
+  case (message.platform, messageIdInteger messageId) of
+    (PlatformQQ, Just rawMessageId) -> do
       response <- sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "delete_msg"
         , "params" Aeson..= Aeson.object
-            [ "message_id" Aeson..= messageId
+            [ "message_id" Aeson..= rawMessageId
             ]
         ])
       pure (actionSucceeded response)
@@ -532,19 +532,23 @@ actionSucceeded response =
   response.status == Just "ok" || response.retcode == Just 0
 
 -- | Fetch message text and image references by QQ message id.
-getMessageContent :: QQ :> es => Integer -> Eff es (Maybe ReferencedMessage)
+getMessageContent :: QQ :> es => MessageId -> Eff es (Maybe ReferencedMessage)
 getMessageContent messageId = do
-  response <- sendAction (Aeson.object
-    [ "action" Aeson..= Aeson.String "get_msg"
-    , "params" Aeson..= Aeson.object
-        [ "message_id" Aeson..= messageId
-        ]
-    ])
-  case response.data_ of
+  case messageIdInteger messageId of
     Nothing ->
       pure Nothing
-    Just value ->
-      traverse (appendForwardedMessageText (referencedMessageForwardIds value)) (referencedMessageFromValue value)
+    Just rawMessageId -> do
+      response <- sendAction (Aeson.object
+        [ "action" Aeson..= Aeson.String "get_msg"
+        , "params" Aeson..= Aeson.object
+            [ "message_id" Aeson..= rawMessageId
+            ]
+        ])
+      case response.data_ of
+        Nothing ->
+          pure Nothing
+        Just value ->
+          traverse (appendForwardedMessageText (referencedMessageForwardIds value)) (referencedMessageFromValue value)
 
 appendForwardedMessageText :: QQ :> es => [Text] -> ReferencedMessage -> Eff es ReferencedMessage
 appendForwardedMessageText forwardIds referenced = do
@@ -612,10 +616,11 @@ referencedWithText ReferencedMessage{messageId, senderDisplayName, senderIdentif
 referencedMessageFromValue :: Aeson.Value -> Maybe ReferencedMessage
 referencedMessageFromValue = Aeson.parseMaybe $
   Aeson.withObject "ReferencedMessage" $ \o -> do
-    messageId <- o Aeson..:? "message_id"
+    rawMessageId <- o Aeson..:? "message_id"
     message <- o Aeson..:? "message"
     rawMessage <- o Aeson..:? "raw_message"
     sender <- o Aeson..:? "sender"
+    let messageId = integerMessageId <$> (rawMessageId :: Maybe Integer)
     let text = fromMaybe "" ((message >>= messageText) <|> rawMessage)
     let imageUrls = maybe [] messageImageUrls message
     let senderDisplayName = sender >>= qqSenderDisplayName
@@ -652,7 +657,7 @@ replyMessage message body =
       ( [ Aeson.object
             [ "type" Aeson..= Aeson.String "reply"
             , "data" Aeson..= Aeson.object
-                [ "id" Aeson..= (show messageId :: Text)
+                [ "id" Aeson..= messageIdText messageId
                 ]
             ]
         ] <>
@@ -670,7 +675,7 @@ mentionMessage message userId body =
         ( [ Aeson.object
               [ "type" Aeson..= Aeson.String "reply"
               , "data" Aeson..= Aeson.object
-                  [ "id" Aeson..= messageId
+                  [ "id" Aeson..= messageIdText messageId
                   ]
               ]
           ] <> mentionContent userId text
@@ -789,8 +794,8 @@ eventToIncomingMessageWith cfg event
       , digest = qqMessageDigest cfg event
       , senderId  = Text.pack . show <$> event.userId
       , senderUsername = Nothing
-      , messageId = event.messageId
-      , replyToMessageId = event.message >>= replySegmentMessageId
+      , messageId = integerMessageId <$> event.messageId
+      , replyToMessageId = integerMessageId <$> (event.message >>= replySegmentMessageId)
       , mentions  = eventMentionIds event
       , mentionUsernames = []
       , imageUrls = maybe [] messageImageUrls event.message

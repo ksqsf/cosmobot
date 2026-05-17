@@ -120,7 +120,7 @@ notReply =
   rejecting (isJust . (.replyToMessageId))
 
 -- | Extract the referenced message id from replies.
-replyToMessage :: MessageFilter Integer
+replyToMessage :: MessageFilter MessageId
 replyToMessage =
   MessageFilter (.replyToMessageId)
 

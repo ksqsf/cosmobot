@@ -25,13 +25,13 @@ where
 
 import qualified Bot.Agent.Middleware.Observation.Types as Observation
 import qualified Bot.Agent.Types as Agent
+import Bot.Core.Message
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
 import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.Int as Int
 import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time (diffUTCTime, getCurrentTime)
@@ -40,8 +40,8 @@ data AgentAudit :: Effect where
   RecordEvent :: AgentAuditEvent -> AgentAudit m (Maybe Integer)
   QueryRecentToolUses :: Int -> AgentAudit m [ToolUseDetail]
   QueryToolUse :: Integer -> AgentAudit m (Maybe ToolUseDetail)
-  QueryConversationAudit :: Integer -> AgentAudit m [AgentAuditRecord]
-  QueryConversationMessagesAudit :: [Integer] -> AgentAudit m [AgentAuditRecord]
+  QueryConversationAudit :: MessageId -> AgentAudit m [AgentAuditRecord]
+  QueryConversationMessagesAudit :: [MessageId] -> AgentAudit m [AgentAuditRecord]
 
 type instance DispatchOf AgentAudit = Dynamic
 
@@ -66,7 +66,7 @@ data AgentAuditEvent
       , status :: !Text
       , result :: !Text
       , resultLength :: !Int
-      , messageIds :: ![Maybe Integer]
+      , messageIds :: ![Maybe MessageId]
       }
   | AgentRunInterrupted
       { runId :: !Text
@@ -74,8 +74,8 @@ data AgentAuditEvent
       }
   | AgentConversationLinked
       { runId :: !Text
-      , linkedMessageId :: !Integer
-      , parentMessageId :: !(Maybe Integer)
+      , linkedMessageId :: !MessageId
+      , parentMessageId :: !(Maybe MessageId)
       }
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
@@ -109,7 +109,7 @@ data ToolUseDetail = ToolUseDetail
   , arguments :: !Text
   , status :: !ToolUseStatus
   , result :: !(Maybe Text)
-  , messageIds :: ![Maybe Integer]
+  , messageIds :: ![Maybe MessageId]
   }
   deriving (Eq, Show)
 
@@ -117,8 +117,8 @@ data AgentAuditRow = AgentAuditRow
   { id :: ID AgentAuditRow
   , run_id :: Text
   , occurred_at :: UTCTime
-  , linked_message_id :: Maybe Int.Int64
-  , parent_message_id :: Maybe Int.Int64
+  , linked_message_id :: Maybe Text
+  , parent_message_id :: Maybe Text
   , event_json :: Text
   }
   deriving (Generic)
@@ -185,11 +185,11 @@ queryToolUse :: AgentAudit :> es => Integer -> Eff es (Maybe ToolUseDetail)
 queryToolUse auditId =
   send (QueryToolUse auditId)
 
-queryConversationAudit :: AgentAudit :> es => Integer -> Eff es [AgentAuditRecord]
+queryConversationAudit :: AgentAudit :> es => MessageId -> Eff es [AgentAuditRecord]
 queryConversationAudit messageId =
   send (QueryConversationAudit messageId)
 
-queryConversationMessagesAudit :: AgentAudit :> es => [Integer] -> Eff es [AgentAuditRecord]
+queryConversationMessagesAudit :: AgentAudit :> es => [MessageId] -> Eff es [AgentAuditRecord]
 queryConversationMessagesAudit messageIds =
   send (QueryConversationMessagesAudit messageIds)
 
@@ -231,8 +231,8 @@ persistEvent occurredAt event =
             { id = def
             , run_id = eventRunId event
             , occurred_at = occurredAt
-            , linked_message_id = fromIntegral <$> maybeLinkedMessageId
-            , parent_message_id = fromIntegral <$> maybeParentMessageId
+            , linked_message_id = messageIdText <$> maybeLinkedMessageId
+            , parent_message_id = messageIdText <$> maybeParentMessageId
             , event_json = jsonText event
             }
         ]
@@ -284,11 +284,11 @@ queryStoredRecent limit = do
         pure row
   pure (mapMaybe storedAuditRecord (reverse rows))
 
-queryStoredConversationAudit :: Storage.Storage :> es => Integer -> Eff es [AgentAuditRecord]
+queryStoredConversationAudit :: Storage.Storage :> es => MessageId -> Eff es [AgentAuditRecord]
 queryStoredConversationAudit messageId =
   queryStoredConversationMessagesAudit [messageId]
 
-queryStoredConversationMessagesAudit :: Storage.Storage :> es => [Integer] -> Eff es [AgentAuditRecord]
+queryStoredConversationMessagesAudit :: Storage.Storage :> es => [MessageId] -> Eff es [AgentAuditRecord]
 queryStoredConversationMessagesAudit [] =
   pure []
 queryStoredConversationMessagesAudit messageIds = do
@@ -309,7 +309,7 @@ queryStoredRun runId = do
       pure row
   pure (mapMaybe storedAuditRecord rows)
 
-linkedRunIds :: Storage.Storage :> es => [Integer] -> Eff es [Text]
+linkedRunIds :: Storage.Storage :> es => [MessageId] -> Eff es [Text]
 linkedRunIds messageIds = do
   rows <- runSelda $
     query do
@@ -320,11 +320,7 @@ linkedRunIds messageIds = do
   pure (ordNub rows)
   where
     ids =
-      map (literal . Just . toInt64) (ordNub messageIds)
-
-    toInt64 :: Integer -> Int.Int64
-    toInt64 =
-      fromIntegral
+      map (literal . Just . messageIdText) (ordNub messageIds)
 
 storedAuditRecord :: AgentAuditRow -> Maybe AgentAuditRecord
 storedAuditRecord row = do
