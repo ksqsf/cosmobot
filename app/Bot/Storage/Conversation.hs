@@ -428,7 +428,7 @@ cacheConversationNode messageKey node conversationState =
 
 maxCachedConversations :: Int
 maxCachedConversations =
-  512
+  32
 
 conversationIdFor :: ConversationState -> Maybe StoredConversationNode -> Maybe StoredConversationNode -> Integer
 conversationIdFor conversationState parentNode existingNode =
