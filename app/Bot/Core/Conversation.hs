@@ -16,10 +16,13 @@ module Bot.Core.Conversation
   , conversationTreeEntries
   , startWithUser
   , startWithUserContext
+  , startWithUserInput
   , startWithSystemAndUser
   , startWithSystemAndUserContext
+  , startWithSystemAndUserInput
   , appendUser
   , appendUserContext
+  , appendUserInput
   , appendAssistant
   )
 where
@@ -134,7 +137,11 @@ startWithUser prompt =
 -- them as part of the same user turn, not as independent bot state.
 startWithUserContext :: Text -> [Text] -> Conversation
 startWithUserContext prompt imageUrls =
-  startWithSystemAndUserContext "" prompt imageUrls
+  startWithUserInput (inputWithImages prompt imageUrls)
+
+startWithUserInput :: MessageInput -> Conversation
+startWithUserInput =
+  startWithSystemAndUserInput ""
 
 -- | Start with a system prompt followed by a text-only user prompt.
 --
@@ -151,7 +158,11 @@ startWithSystemAndUser systemPrompt prompt =
 -- and any image context.
 startWithSystemAndUserContext :: Text -> Text -> [Text] -> Conversation
 startWithSystemAndUserContext systemPrompt prompt imageUrls =
-  Conversation (Seq.fromList (systemMessages <> [LLM.userWithImages prompt imageUrls]))
+  startWithSystemAndUserInput systemPrompt (inputWithImages prompt imageUrls)
+
+startWithSystemAndUserInput :: Text -> MessageInput -> Conversation
+startWithSystemAndUserInput systemPrompt input =
+  Conversation (Seq.fromList (systemMessages <> [LLM.userWithImages input.text (messageInputImageUrls input)]))
   where
     systemMessages
       | Text.null systemPrompt = []
@@ -169,7 +180,11 @@ appendUser prompt =
 -- this value.
 appendUserContext :: Text -> [Text] -> Conversation -> Conversation
 appendUserContext prompt imageUrls (Conversation history) =
-  Conversation (history Seq.|> LLM.userWithImages prompt imageUrls)
+  appendUserInput (inputWithImages prompt imageUrls) (Conversation history)
+
+appendUserInput :: MessageInput -> Conversation -> Conversation
+appendUserInput input (Conversation history) =
+  Conversation (history Seq.|> LLM.userWithImages input.text (messageInputImageUrls input))
 
 -- | Append an assistant reply.
 --

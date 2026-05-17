@@ -15,6 +15,10 @@ module Bot.Core.Message
     -- * Incoming messages
   , IncomingMessage (..)
   , incomingMessageLogLine
+  , MessageInput (..)
+  , MessageInputAttachment (..)
+  , inputWithImages
+  , messageInputImageUrls
 
     -- * Referenced messages
   , ReferencedMessage (..)
@@ -109,6 +113,36 @@ data IncomingMessage = IncomingMessage
   , raw       :: !Aeson.Value
   }
   deriving (Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+-- | Normalized user-provided input for one handler/agent turn.
+--
+-- The attachment type is intentionally algebraic so non-image inputs such as
+-- documents can be added without threading another parallel field through the
+-- handler and agent layers.
+data MessageInput = MessageInput
+  { text :: !Text
+  , attachments :: ![MessageInputAttachment]
+  }
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+data MessageInputAttachment
+  = MessageInputImageUrl !Text
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+inputWithImages :: Text -> [Text] -> MessageInput
+inputWithImages text imageUrls =
+  MessageInput
+    { text = text
+    , attachments = map MessageInputImageUrl imageUrls
+    }
+
+messageInputImageUrls :: MessageInput -> [Text]
+messageInputImageUrls MessageInput{attachments} =
+  [ url
+  | MessageInputImageUrl rawUrl <- attachments
+  , let url = Text.strip rawUrl
+  , not (Text.null url)
+  ]
 
 -- | Compact one-line representation for info-level logs.
 incomingMessageLogLine :: IncomingMessage -> Text

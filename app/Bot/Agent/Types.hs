@@ -84,6 +84,7 @@ data Tool es = Tool
 -- | Per-message capabilities and permissions made available to tools.
 data AgentContext es = AgentContext
   { message :: IncomingMessage
+  , input :: !MessageInput
   , superuser :: !Bool
   , systemContext :: !Text
   , askCommand :: !Text

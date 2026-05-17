@@ -84,6 +84,7 @@ main =
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "edit_image tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
+      , testCase "ask handler passes referenced images to edit_image tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "agent compacts old conversation context before model turn" testAgentCompactsOldConversationContextBeforeModelTurn
       , testCase "agent announces context compaction" testAgentAnnouncesContextCompaction
@@ -256,11 +257,40 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult = do
   recorded <- IORef.newIORef ([] :: [(Maybe Integer, Text)])
   remembered <- IORef.newIORef ([] :: [Maybe Integer])
   (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just 47) Nothing) do
-    Agent.runAgent 4 ((agentContextWith recorded remembered){Agent.message = message}) Agent.defaultTools (startWithUser "edit this")
+    Agent.runAgent 4 ((agentContextWith recorded remembered){Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) Agent.defaultTools (startWithUser "edit this")
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage)])
   IORef.readIORef replies >>= (@?= [editedImage])
   IORef.readIORef recorded >>= (@?= [(Just 47, editedImage)])
+
+testAskHandlerPassesReferencedImagesToEditImageTool :: IO ()
+testAskHandlerPassesReferencedImagesToEditImageTool = do
+  let referencedImage = "https://example.test/replied.png"
+      editedImage = "[image] data:image/png;base64,edited"
+      prompt = "make the replied image brighter"
+      referenced = ReferencedMessage
+        { messageId = Just 70001
+        , senderDisplayName = Just "Bob"
+        , senderIdentifier = Just "10001"
+        , text = ""
+        , imageUrls = [referencedImage]
+        }
+      message = askHandlerMessage
+        { replyToMessageId = Just 70001
+        , imageUrls = []
+        , text = "krkr 把回复里的图调亮"
+        }
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "edit_image" (Aeson.object ["prompt" Aeson..= prompt])]
+    , chatAnswer "done" []
+    ]
+  editCalls <- IORef.newIORef ([] :: [ImageEditCall])
+  replies <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWithImageEditAndReferencedMessage answers editCalls editedImage (Just referenced) (ChatMock (Just replies) (Just 47) Nothing) do
+    conversations <- liftIO newConversationStore
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) message
+    liftIO $ waitUntil ((>= 3) . length <$> IORef.readIORef replies)
+  IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [referencedImage] Nothing])
 
 testAgentRequestMergesCurrentMessageContextIntoSystemPrompt :: IO ()
 testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
@@ -1225,6 +1255,29 @@ runAgentWithImageEdit answers editCalls editAnswer chatMock action = do
         pure editAnswer)
     action
 
+runAgentWithImageEditAndReferencedMessage
+  :: IORef.IORef [LLM.ChatAnswer]
+  -> IORef.IORef [ImageEditCall]
+  -> Text
+  -> Maybe ReferencedMessage
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithImageEditAndReferencedMessage answers editCalls editAnswer referencedMessage chatMock action = do
+  rendered <- IORef.newIORef ([] :: [Text])
+  runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    defaultTestSkillsConfig
+    rendered
+    Nothing
+    answers
+    chatMock
+    referencedMessage
+    (\prompt imageRefs maskRef -> do
+        IORef.modifyIORef' editCalls (<> [ImageEditCall{prompt, imageRefs, maskRef}])
+        pure editAnswer)
+    action
+
 runAgentCapturingMessages
   :: IORef.IORef [[LLM.ChatMessage]]
   -> IORef.IORef [LLM.ChatAnswer]
@@ -1336,6 +1389,29 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit memoryCfg skillsCfg rendered captured answers chatMock imageEdit action = do
+  runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced
+    memoryCfg
+    skillsCfg
+    rendered
+    captured
+    answers
+    chatMock
+    Nothing
+    imageEdit
+    action
+
+runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced
+  :: MemoryStore.MemoryConfig
+  -> SkillsStore.SkillsConfig
+  -> IORef.IORef [Text]
+  -> Maybe (IORef.IORef [[LLM.ChatMessage]])
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> Maybe ReferencedMessage
+  -> (Text -> [Text] -> Maybe Text -> IO Text)
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced memoryCfg skillsCfg rendered captured answers chatMock referencedMessage imageEdit action = do
   runEff $
     runTestLog $
       StorageEffect.runStorageSQLitePath ":memory:" $
@@ -1370,7 +1446,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit memoryCfg skillsCfg rende
                           , handleEditMessage = noopEdit
                           , handleDeleteMessage = noopDelete
                           , handleReplyStreamStyle = noopReplyStreamStyle
-                          , handleGetMessageContent = noopFetch
+                          , handleGetMessageContent = \_ _ -> pure referencedMessage
                           , handleGetSenderMemberInfo = noopSenderMember
                           , handleGetMemberInfo = noopMember
                           , handleGetUserAvatar = mockUserAvatar chatMock
@@ -1474,6 +1550,7 @@ agentContext :: Agent.AgentContext es
 agentContext =
   Agent.AgentContext
     { message = testMessage
+    , input = inputWithImages testMessage.text testMessage.imageUrls
     , superuser = False
     , systemContext = ""
     , askCommand = "!ask"

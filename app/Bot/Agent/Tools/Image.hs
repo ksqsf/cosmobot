@@ -32,7 +32,7 @@ generateImageTool = Tool
   , noisy = True
   , allowed = everyone
   , start = \context -> pure \args -> withTextArg "prompt" (\prompt -> do
-      generated <- LLM.askImageWithHistory [LLM.userWithImages prompt context.message.imageUrls]
+      generated <- LLM.askImageWithHistory [LLM.userWithImages prompt (contextDefaultImageUrls context)]
       case Chat.replyImageUrls generated of
         [] ->
           pure (toolText generated)
@@ -94,8 +94,12 @@ parseEditImageArgs =
 editImageInputRefs :: AgentContext es -> EditImageArgs -> [Text]
 editImageInputRefs context editArgs =
   if null editArgs.imageUrls
-    then filter (not . Text.null) (map Text.strip context.message.imageUrls)
+    then contextDefaultImageUrls context
     else editArgs.imageUrls
+
+contextDefaultImageUrls :: AgentContext es -> [Text]
+contextDefaultImageUrls context =
+  messageInputImageUrls context.input
 
 validateEditImageRefs :: [Text] -> Maybe AgentFailure
 validateEditImageRefs imageRefs

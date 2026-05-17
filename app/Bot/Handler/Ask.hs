@@ -170,9 +170,10 @@ startAskConversation label toolCfg cfg conversations message prompt = do
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
-  conversation <- startConversation cfg message contextPrompt contextImages
+  let input = inputWithImages contextPrompt contextImages
+  conversation <- startConversation cfg message input
   threadId <- liftIO myThreadId
-  void $ askConversation toolCfg cfg conversations Nothing threadId message conversation
+  void $ askConversation toolCfg cfg conversations Nothing threadId message input conversation
 
 startDrawConversation
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
@@ -188,7 +189,8 @@ startDrawConversation label cfg conversations message prompt = do
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
-  conversation <- startConversation cfg message contextPrompt contextImages
+  let input = inputWithImages contextPrompt contextImages
+  conversation <- startConversation cfg message input
   answer <- drawConversation conversation
   responseId <- Chat.replyTo message answer
   ChatLog.recordBotMessage message responseId answer
@@ -216,9 +218,10 @@ startConversationFromReply toolCfg cfg conversations message parentId = do
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let prompt = promptWithReferencedContext message.text referenced contextImages
   unless (Text.null prompt && null contextImages) do
-    conversation <- startConversation cfg message prompt contextImages
+    let input = inputWithImages prompt contextImages
+    conversation <- startConversation cfg message input
     threadId <- liftIO myThreadId
-    void $ askConversation toolCfg cfg conversations (Just (conversationMessageKey message parentId)) threadId message conversation
+    void $ askConversation toolCfg cfg conversations (Just (conversationMessageKey message parentId)) threadId message input conversation
 
 continueConversation
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
@@ -232,10 +235,11 @@ continueConversation
 continueConversation toolCfg cfg conversations message parentKey conversation = do
   logTrace "continuing conversation" message
   logInfo_ [i|continuing conversation: #{incomingMessageLogLine message}|]
+  let input = inputWithImages (promptOrImageDefault message.text message.imageUrls) message.imageUrls
   let nextConversation =
-        appendUserContext (promptOrImageDefault message.text message.imageUrls) message.imageUrls conversation
+        appendUserInput input conversation
   threadId <- liftIO myThreadId
-  void $ askConversation toolCfg cfg conversations (Just parentKey) threadId message nextConversation
+  void $ askConversation toolCfg cfg conversations (Just parentKey) threadId message input nextConversation
 
 askConversation
   :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
@@ -245,12 +249,13 @@ askConversation
   -> Maybe ConversationMessageKey
   -> ThreadId
   -> IncomingMessage
+  -> MessageInput
   -> Conversation
   -> Eff es (Text, Conversation)
-askConversation toolCfg cfg conversations parentMessageKey threadId message conversation = do
+askConversation toolCfg cfg conversations parentMessageKey threadId message input conversation = do
   activeReply <- newActiveReply conversations parentMessageKey message threadId conversation
   let observer = AgentAudit.agentAuditObserver
-  agentRun <- Agent.startAgentRun (agentContext toolCfg cfg conversations parentMessageKey message) Agent.defaultTools
+  agentRun <- Agent.startAgentRun (agentContext toolCfg cfg conversations parentMessageKey message input) Agent.defaultTools
   reply <-
     streamAgentReply cfg observer agentRun activeReply message conversation
       `onException` discardActiveReply activeReply
@@ -275,10 +280,12 @@ agentContext
   -> ConversationStore
   -> Maybe ConversationMessageKey
   -> IncomingMessage
+  -> MessageInput
   -> Agent.AgentContext es
-agentContext toolCfg cfg conversations parentMessageKey message =
+agentContext toolCfg cfg conversations parentMessageKey message input =
   Agent.AgentContext
     { message = message
+    , input = input
     , superuser = isSuperuser message
     , systemContext = currentMessageSystemPrompt cfg message
     , askCommand = cfg.command
@@ -463,13 +470,13 @@ promptOrImageDefault prompt imageUrls
   where
     stripped = Text.strip prompt
 
-startConversation :: (Memory.Memory :> es, Skills.Skills :> es) => AskHandlerConfig -> IncomingMessage -> Text -> [Text] -> Eff es Conversation
-startConversation cfg message prompt imageUrls = do
+startConversation :: (Memory.Memory :> es, Skills.Skills :> es) => AskHandlerConfig -> IncomingMessage -> MessageInput -> Eff es Conversation
+startConversation cfg message input = do
   skillsPrompt <- Skills.skillsSystemPrompt
   senderMemory <- loadScopedMemory (MemoryStore.senderMemoryScope message)
   chatMemory <- loadScopedMemory (MemoryStore.chatMemoryScope message)
   let systemPrompt = LLM.contextSystemPrompt cfg.systemPrompt skillsPrompt senderMemory chatMemory
-  pure (startWithSystemAndUserContext systemPrompt prompt imageUrls)
+  pure (startWithSystemAndUserInput systemPrompt input)
 
 currentMessageSystemPrompt :: AskHandlerConfig -> IncomingMessage -> Text
 currentMessageSystemPrompt cfg message =
