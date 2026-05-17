@@ -21,6 +21,7 @@ module Bot.Chat.Driver.QQ
   , forwardedMessagesText
   , readActionResponse
   , replyTo
+  , replyMessage
   , deleteMessage
   , getMessageContent
   , getUserAvatar
@@ -51,10 +52,13 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
 import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
+import Network.HTTP.Req
 import qualified Network.WebSockets as WS
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
+import System.IO.Error (ioError, userError)
 import qualified System.Timeout as Timeout
+import qualified Text.URI as URI
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -99,7 +103,7 @@ qqDriver = Driver.ChatPlatformDriver
   , Driver.getUserAvatar = \message userId ->
       case message.platform of
         PlatformQQ ->
-          pure (getUserAvatar <$> parseIntegerUserId userId)
+          traverse getUserAvatar (parseIntegerUserId userId)
         _ ->
           pure Nothing
   , Driver.listGroupMembers = \message ->
@@ -588,18 +592,57 @@ getGroupMemberList groupId =
         ]
     ])
 
--- | Return a stable QQ avatar URL for a user id.
-getUserAvatar :: Integer -> Aeson.Value
-getUserAvatar userId =
-  Aeson.object
-    [ "platform" Aeson..= ("qq" :: Text)
-    , "user_id" Aeson..= userId
-    , "avatar_url" Aeson..= qqAvatarUrl userId
-    ]
+-- | Fetch a QQ avatar and return it as a data image reference.
+getUserAvatar :: IOE :> es => Integer -> Eff es Aeson.Value
+getUserAvatar userId = do
+  avatar <- liftIO (downloadQqAvatar (qqAvatarUrl userId))
+  pure $
+    Aeson.object
+      [ "platform" Aeson..= ("qq" :: Text)
+      , "user_id" Aeson..= userId
+      , "avatar_url" Aeson..= avatar
+      ]
 
 qqAvatarUrl :: Integer -> Text
 qqAvatarUrl userId =
-  [i|https://q1.qlogo.cn/g?b=qq&nk=#{userId}&s=640|]
+  [i|http://q1.qlogo.cn/g?b=qq&nk=#{userId}&s=640|]
+
+downloadQqAvatar :: Text -> IO Text
+downloadQqAvatar imageUrl = do
+  uri <- URI.mkURI imageUrl
+  case useURI uri of
+    Nothing ->
+      ioError (userError [i|Unsupported QQ avatar URL: #{imageUrl}|])
+    Just (Left (url, options)) ->
+      fetch url options
+    Just (Right (url, options)) ->
+      fetch url options
+  where
+    fetch :: Url scheme -> Option scheme -> IO Text
+    fetch url options = do
+      response <- runReq defaultHttpConfig $
+        req GET url NoReqBody bsResponse (options <> qqAvatarRequestOptions)
+      let contentType = dataImageContentType (responseHeader response "Content-Type")
+          encoded = TextEncoding.decodeUtf8 (Base64.encode (responseBody response))
+      pure [i|data:#{contentType};base64,#{encoded}|]
+
+qqAvatarRequestOptions :: Option scheme
+qqAvatarRequestOptions =
+  header "User-Agent" "cosmobot/0.1 (+https://github.com/ksqsf/cosmobot)"
+    <> responseTimeout (15 * 1_000_000)
+
+dataImageContentType :: Maybe ByteString.ByteString -> Text
+dataImageContentType rawHeader
+  | "image/" `Text.isPrefixOf` contentType =
+      contentType
+  | otherwise =
+      "image/jpeg"
+  where
+    contentType =
+      Text.toLower $
+        Text.strip $
+          Text.takeWhile (/= ';') $
+            maybe "" TextEncoding.decodeUtf8 rawHeader
 
 parseIntegerUserId :: Text -> Maybe Integer
 parseIntegerUserId raw =
@@ -728,12 +771,22 @@ imageSegmentValue file =
 
 qqImageFile :: IOE :> es => Text -> Eff es Text
 qqImageFile url =
-  case Text.stripPrefix "file://" url of
+  case dataImageBase64Payload url of
+    Just encoded ->
+      pure ("base64://" <> encoded)
     Nothing ->
-      pure url
-    Just path -> do
-      bytes <- liftIO (ByteString.readFile (Text.unpack path))
-      pure ("base64://" <> TextEncoding.decodeUtf8 (Base64.encode bytes))
+      case Text.stripPrefix "file://" url of
+        Nothing ->
+          pure url
+        Just path -> do
+          bytes <- liftIO (ByteString.readFile (Text.unpack path))
+          pure ("base64://" <> TextEncoding.decodeUtf8 (Base64.encode bytes))
+
+dataImageBase64Payload :: Text -> Maybe Text
+dataImageBase64Payload imageRef = do
+  rest <- Text.stripPrefix "data:image/" (Text.strip imageRef)
+  let (_, encodedWithMarker) = Text.breakOn ";base64," rest
+  Text.stripPrefix ";base64," encodedWithMarker
 
 -- | Raw OneBot event fields needed by the message parser.
 data Event = Event

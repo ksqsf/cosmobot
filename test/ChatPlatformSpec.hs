@@ -5,6 +5,7 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
+import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Prelude
 import qualified Control.Exception as Exception
 import qualified Data.ByteString.Char8 as ByteStringChar8
@@ -20,6 +21,7 @@ main =
       , testCase "QQ self message is ignored" testQqSelfMessageIsIgnored
       , testCase "QQ CQ mention string keeps mentioned user ids" testQqCQMentionStringKeepsMentionedUserIds
       , testCase "QQ forwarded messages merge all node text" testQqForwardedMessagesMergeAllNodeText
+      , testCase "QQ data image reply uses OneBot base64 file" testQqDataImageReplyUsesOneBotBase64File
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
@@ -109,6 +111,28 @@ testQqForwardedMessagesMergeAllNodeText =
               ]
           , Aeson.object
               [ "raw_message" Aeson..= ("third" :: Text)
+              ]
+          ]
+      ]
+
+testQqDataImageReplyUsesOneBotBase64File :: IO ()
+testQqDataImageReplyUsesOneBotBase64File = do
+  let incoming = fromMaybe (error "expected incoming QQ message") $
+        QQ.eventToIncomingMessage (qqMessageEvent 10001)
+  message <- runEff $
+    QQ.replyMessage incoming (ReplyBody.imageDirective "data:image/png;base64,AAAA")
+  message @?=
+    Aeson.toJSON
+      [ Aeson.object
+          [ "type" Aeson..= Aeson.String "reply"
+          , "data" Aeson..= Aeson.object
+              [ "id" Aeson..= ("80001" :: Text)
+              ]
+          ]
+      , Aeson.object
+          [ "type" Aeson..= Aeson.String "image"
+          , "data" Aeson..= Aeson.object
+              [ "file" Aeson..= ("base64://AAAA" :: Text)
               ]
           ]
       ]
