@@ -91,7 +91,7 @@ webSearchSource = \case
 
 tavilySearch :: Text -> Text -> Int -> IO [Aeson.Value]
 tavilySearch apiKey query maxResults = do
-  response <- Http.runReqWithoutRequiredEMS $
+  response <- Http.runReq $
     req POST
       (https "api.tavily.com" /: "search")
       (ReqBodyJson (Aeson.object
@@ -110,7 +110,7 @@ tavilySearch apiKey query maxResults = do
 
 braveSearch :: Text -> Text -> Int -> IO [Aeson.Value]
 braveSearch apiKey query maxResults = do
-  response <- Http.runReqWithoutRequiredEMS $
+  response <- Http.runReq $
     req GET
       (https "api.search.brave.com" /: "res" /: "v1" /: "web" /: "search")
       NoReqBody
@@ -178,7 +178,7 @@ fetchWebPage rawUrl maxContentTokens = do
   where
     fetch :: Url scheme -> Option scheme -> IO Aeson.Value
     fetch url options = do
-      response <- Http.runReqWithoutRequiredEMS $
+      response <- Http.runReq $
         req GET url NoReqBody bsResponse (options <> webRequestOptions)
       let contentType = TextEncoding.decodeUtf8With TextEncoding.lenientDecode <$> responseHeader response "Content-Type"
           body = Html.htmlToPlainText (decodeResponseBody (responseBody response))

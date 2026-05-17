@@ -103,7 +103,7 @@ runMatrix
   -> Eff (Matrix : es) a
   -> Eff es a
 runMatrix cfg inner = do
-  manager <- liftIO Http.newNoRequiredEmsTlsManager
+  manager <- liftIO Http.newTlsManager
   eventIds <- liftIO (IORef.newIORef (Map.empty :: Map MessageId Text))
   interpret
     ( \_ -> \case
@@ -266,7 +266,10 @@ syncCall manager cfg since token = do
           <> responseTimeout matrixSyncResponseTimeoutMicroseconds
           <> "timeout" =: matrixSyncTimeoutMilliseconds
           <> maybe mempty ("since" =:) since
-  liftIO (runReq (matrixHttpConfig manager) (req GET (baseUrl /: "_matrix" /: "client" /: "v3" /: "sync") NoReqBody jsonResponse options))
+  liftIO
+    ( Http.runReqWithConfig (matrixHttpConfig manager) $
+        req GET (baseUrl /: "_matrix" /: "client" /: "v3" /: "sync") NoReqBody jsonResponse options
+    )
     <&> responseBody
 
 sendMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Text -> Eff es SendMessageResponse
@@ -282,7 +285,7 @@ sendMessageCall manager cfg token roomId body = do
         , body = nonEmptyMatrixBody body
         }
   logInfo_ "Matrix API request: send m.room.message"
-  liftIO (runReq (matrixHttpConfig manager) $
+  liftIO (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson request)
@@ -300,7 +303,7 @@ redactEventCall manager cfg token roomId eventId = do
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
       request = RedactEventRequest{reason = Nothing}
   logInfo_ "Matrix API request: redact event"
-  liftIO (runReq (matrixHttpConfig manager) $
+  liftIO (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "redact" /: eventId /: txnId)
       (ReqBodyJson request)
@@ -323,9 +326,8 @@ matrixAuth token =
 
 matrixHttpConfig :: Manager -> HttpConfig
 matrixHttpConfig manager =
-  (Http.noRequiredEmsHttpConfig manager)
-    { httpConfigAltManager = Just manager
-    , httpConfigRetryJudge = \_ _ -> False
+  (Http.httpConfig manager)
+    { httpConfigRetryJudge = \_ _ -> False
     , httpConfigRetryJudgeException = \_ _ -> False
     }
 

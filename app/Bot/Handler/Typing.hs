@@ -103,7 +103,7 @@ fetchChampionshipRows = do
 
 fetchChampionshipPage :: IO Text
 fetchChampionshipPage = do
-  body <- Http.runReqWithoutRequiredEMS $
+  body <- Http.runReq $
     responseBody <$> req GET url NoReqBody bsResponse mempty
   pure (TextEncoding.decodeUtf8Lenient body)
   where
@@ -114,7 +114,7 @@ fetchChampionshipPage = do
 fetchTigerRows :: IO [[Text]]
 fetchTigerRows = do
   date <- currentDateText
-  value <- Http.runReqWithoutRequiredEMS $
+  value <- Http.runReq $
     responseBody <$> req GET (tigerLeaderboardUrl date) NoReqBody jsonResponse ("limit" =: (50 :: Int))
   maybe (fail "tiger leaderboard response had unexpected shape") pure
     (AesonTypes.parseMaybe tigerRows value)

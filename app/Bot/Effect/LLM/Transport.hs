@@ -157,15 +157,16 @@ secondsToMicros seconds =
 
 llmHttpConfig :: HTTP.Manager -> HttpConfig
 llmHttpConfig manager =
-  (Http.noRequiredEmsHttpConfig manager)
+  (Http.httpConfig manager)
     { httpConfigRetryJudge = \_ _ -> False
     , httpConfigRetryJudgeException = \_ _ -> False
     }
 
 runTimedLLMReq :: Text -> Int -> Req a -> IO a
 runTimedLLMReq label timeoutSeconds action = do
-  manager <- Http.newNoRequiredEmsTlsManager
-  result <- Timeout.timeout (secondsToMicros timeoutSeconds) (runReq (llmHttpConfig manager) action)
+  manager <- Http.newTlsManager
+  result <- Timeout.timeout (secondsToMicros timeoutSeconds) $
+    Http.runReqWithConfig (llmHttpConfig manager) action
   case result of
     Just value ->
       pure value
@@ -887,7 +888,7 @@ sseJsonPostRequest baseUrl path apiKey timeoutMicros request = do
 
 streamHttpResponseBody :: IOE :> es => HTTP.Request -> Stream (Of StrictByteString.ByteString) (Eff es) ()
 streamHttpResponseBody httpRequest = do
-  manager <- liftIO Http.newNoRequiredEmsTlsManager
+  manager <- liftIO Http.newTlsManager
   StreamUtil.bracketStream
     (liftIO (HTTP.responseOpen httpRequest manager))
     (liftIO . HTTP.responseClose)

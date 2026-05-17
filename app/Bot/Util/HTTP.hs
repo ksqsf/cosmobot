@@ -6,9 +6,10 @@ Stability   : experimental
 
 module Bot.Util.HTTP
   ( httpsEndpointUrl
-  , newNoRequiredEmsTlsManager
-  , noRequiredEmsHttpConfig
-  , runReqWithoutRequiredEMS
+  , newTlsManager
+  , httpConfig
+  , runReq
+  , runReqWithConfig
   , streamingJsonPostRequest
   )
 where
@@ -20,7 +21,8 @@ import qualified Data.Text as Text
 import Network.Connection (TLSSettings (..))
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Client.TLS as HTTPTLS
-import Network.HTTP.Req
+import Network.HTTP.Req hiding (runReq)
+import qualified Network.HTTP.Req as Req
 import qualified Network.TLS as TLS
 import System.IO.Error (ioError, userError)
 import qualified Text.URI as URI
@@ -34,27 +36,33 @@ httpsEndpointUrl endpoint path = do
     Just (url, options) ->
       pure (foldl' (/:) url path, options)
 
-newNoRequiredEmsTlsManager :: IO HTTP.Manager
-newNoRequiredEmsTlsManager =
-  HTTPTLS.newTlsManagerWith (HTTPTLS.mkManagerSettings noRequiredEmsTlsSettings Nothing)
+newTlsManager :: IO HTTP.Manager
+newTlsManager =
+  HTTPTLS.newTlsManagerWith (HTTPTLS.mkManagerSettings tlsSettings Nothing)
 
-noRequiredEmsHttpConfig :: HTTP.Manager -> HttpConfig
-noRequiredEmsHttpConfig manager =
+httpConfig :: HTTP.Manager -> HttpConfig
+httpConfig manager =
   defaultHttpConfig
     { httpConfigAltManager = Just manager
     }
 
-runReqWithoutRequiredEMS :: Req a -> IO a
-runReqWithoutRequiredEMS action = do
-  manager <- newNoRequiredEmsTlsManager
-  runReq (noRequiredEmsHttpConfig manager) action
+runReq :: Req a -> IO a
+runReq action = do
+  manager <- newTlsManager
+  runReqWithConfig (httpConfig manager) action
 
-noRequiredEmsTlsSettings :: TLSSettings
-noRequiredEmsTlsSettings =
+runReqWithConfig :: HttpConfig -> Req a -> IO a
+runReqWithConfig =
+  Req.runReq
+
+tlsSettings :: TLSSettings
+tlsSettings =
   TLSSettingsSimple
     { settingDisableCertificateValidation = False
     , settingDisableSession = False
     , settingUseServerName = True
+    -- Some endpoints in normal bot operation still do not negotiate Extended
+    -- Main Secret, so the project default allows but does not require it.
     , settingClientSupported =
         TLS.defaultSupported
           { TLS.supportedExtendedMainSecret = TLS.AllowEMS

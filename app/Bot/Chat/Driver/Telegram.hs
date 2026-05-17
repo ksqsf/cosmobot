@@ -201,7 +201,7 @@ runTelegram
   -> Eff (Telegram : es) a
   -> Eff es a
 runTelegram cfg inner = do
-  manager <- liftIO Http.newNoRequiredEmsTlsManager
+  manager <- liftIO Http.newTlsManager
   interpret
     ( \_ -> \case
         TelegramConfig ->
@@ -472,7 +472,7 @@ apiCall
 apiCall manager cfg method body = do
   logTelegramApiRequest method
   resp :: TelegramResult <-
-    ( liftIO $ runReq (telegramHttpConfig manager) $
+    ( liftIO $ Http.runReqWithConfig (telegramHttpConfig manager) $
         req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse (telegramRequestOptions method)
           <&> responseBody
     ) `catch` \(err :: HttpException) ->
@@ -490,7 +490,7 @@ apiMultipartCall
 apiMultipartCall manager cfg method parts = do
   logTelegramApiRequest method
   resp :: TelegramResult <-
-    ( liftIO $ runReq (telegramHttpConfig manager) do
+    ( liftIO $ Http.runReqWithConfig (telegramHttpConfig manager) do
         body <- reqBodyMultipart parts
         req POST (apiUrl cfg method) body jsonResponse (telegramRequestOptions method)
           <&> responseBody
@@ -515,7 +515,7 @@ sanitizeTelegramException cfg err =
 
 telegramHttpConfig :: Manager -> HttpConfig
 telegramHttpConfig manager =
-  Http.noRequiredEmsHttpConfig manager
+  Http.httpConfig manager
 
 logTelegramApiRequest :: Log :> es => Text -> Eff es ()
 logTelegramApiRequest method =

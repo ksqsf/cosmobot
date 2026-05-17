@@ -110,7 +110,7 @@ data SearchResult = SearchResult
 searchImage :: SaucenaoConfig -> Text -> IO (Maybe SearchResult)
 searchImage cfg imageUrl = do
   imageBytes <- downloadImage imageUrl
-  value <- Http.runReqWithoutRequiredEMS $
+  value <- Http.runReq $
     responseBody <$> do
       body <- reqBodyMultipart (multipartParts cfg imageBytes)
       req POST saucenaoUrl body jsonResponse saucenaoRequestOptions
@@ -132,7 +132,7 @@ downloadImage imageUrl
       case useHttpsURI uri of
         Nothing ->
           ioError (userError [i|Unsupported SauceNAO image URL: #{imageUrl}|])
-        Just (url, options) -> Http.runReqWithoutRequiredEMS $
+        Just (url, options) -> Http.runReq $
           responseBody <$> req GET url NoReqBody bsResponse (options <> saucenaoRequestOptions)
 
 multipartParts :: SaucenaoConfig -> ByteString.ByteString -> [Multipart.Part]
