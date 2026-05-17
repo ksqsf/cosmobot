@@ -53,6 +53,9 @@ common warnings
 common threaded
     ghc-options: -threaded
 
+common rtsopts
+    ghc-options: -rtsopts
+
 common language
     default-language: GHC2021
     default-extensions:
@@ -173,6 +176,7 @@ executable cosmobot
     -- Import common warning flags.
     import:           warnings
                     , threaded
+                    , rtsopts
                     , language
                     , app-deps
                     , bot-core-modules
