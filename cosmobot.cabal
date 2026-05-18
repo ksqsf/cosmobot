@@ -206,6 +206,7 @@ executable cosmobot
         Bot.Handler.Ask
         Bot.Handler.Ask.Config
         Bot.Handler.Audit
+        Bot.Handler.Safebooru
         Bot.Handler.Scratchpad
         Bot.Handler.Saucenao.Config
         Bot.Handler.ShutUp
@@ -376,6 +377,24 @@ test-suite shutup-spec
         Bot.Handler.ShutUp
         Bot.Handler.ShutUp.Config
     build-depends:    toml-parser
+    hs-source-dirs:   test
+
+test-suite safebooru-spec
+    import:           warnings
+                    , threaded
+                    , language
+                    , app-deps
+                    , test-deps
+                    , bot-core-modules
+    type:             exitcode-stdio-1.0
+    main-is:          SafebooruSpec.hs
+    other-modules:
+        Bot.Core.Route
+        Bot.Effect.Storage
+        Bot.Handler.Safebooru
+        Bot.Storage.Prelude
+        Bot.Util.HTTP
+    build-depends:    log-base
     hs-source-dirs:   test
 
 benchmark message-pipeline-bench

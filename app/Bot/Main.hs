@@ -22,6 +22,7 @@ import qualified Bot.Effect.Typst as Typst
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Audit
+import Bot.Handler.Safebooru
 import Bot.Handler.Saucenao
 import Bot.Handler.ShutUp
 import Bot.Handler.Scratchpad
@@ -107,6 +108,7 @@ routes cfg conversations =
     <> adminHandlers cfg.handlers.admin
     <> scratchpadHandlers
     <> typingHandlers
+    <> safebooruHandlers
     <> saucenaoHandlers cfg.saucenao
     <> askHandlers cfg.tool cfg.handlers.ask conversations
 
