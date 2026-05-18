@@ -17,6 +17,7 @@ import qualified Data.Aeson as Aeson
 data ChatPlatformDriver es = ChatPlatformDriver
   { platform :: !ChatPlatform
   , replyTo :: IncomingMessage -> Text -> Eff es (Maybe MessageId)
+  , uploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
   , editMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
   , deleteMessage :: IncomingMessage -> MessageId -> Eff es Bool
   , replyStreamStyle :: IncomingMessage -> Eff es Chat.ReplyStreamStyle

@@ -21,6 +21,7 @@ module Bot.Chat.Driver.Matrix
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , replyTo
+  , uploadFile
   , deleteMessage
   )
 where
@@ -42,6 +43,8 @@ import Network.HTTP.Client (Manager)
 import Network.HTTP.Req
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
+import System.Directory (getFileSize)
+import System.FilePath (takeFileName)
 import System.IO.Error (ioError, userError)
 import qualified Text.URI as URI
 
@@ -55,11 +58,12 @@ data Config = Config
   deriving (Show)
 
 matrixDriver
-  :: Matrix :> es
+  :: (Matrix :> es, IOE :> es)
   => Driver.ChatPlatformDriver es
 matrixDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformMatrix
   , Driver.replyTo = replyTo
+  , Driver.uploadFile = uploadFile
   , Driver.editMessage = \_ _ _ -> pure False
   , Driver.deleteMessage = deleteMessage
   , Driver.replyStreamStyle = \_ -> pure (Chat.ChunkedReply matrixStreamingMessageLimit)
@@ -78,6 +82,8 @@ data Matrix :: Effect where
   MatrixConfig :: Matrix m Config
   Sync :: Maybe Text -> Matrix m (Maybe SyncResponse)
   SendText :: Text -> Text -> Matrix m (Maybe SendMessageResponse)
+  UploadMedia :: FilePath -> Text -> Matrix m MatrixUploadResponse
+  SendFileMessage :: Text -> MatrixFileMessage -> Matrix m (Maybe SendMessageResponse)
   DeleteEvent :: Text -> MessageId -> Maybe Text -> Matrix m Bool
 
 type instance DispatchOf Matrix = Dynamic
@@ -92,6 +98,14 @@ sync =
 sendText :: Matrix :> es => Text -> Text -> Eff es (Maybe SendMessageResponse)
 sendText roomId body =
   send (SendText roomId body)
+
+uploadMedia :: Matrix :> es => FilePath -> Text -> Eff es MatrixUploadResponse
+uploadMedia path fileName =
+  send (UploadMedia path fileName)
+
+sendFileMessage :: Matrix :> es => Text -> MatrixFileMessage -> Eff es (Maybe SendMessageResponse)
+sendFileMessage roomId message =
+  send (SendFileMessage roomId message)
 
 deleteEvent :: Matrix :> es => Text -> MessageId -> Maybe Text -> Eff es Bool
 deleteEvent roomId messageId eventId =
@@ -113,6 +127,12 @@ runMatrix cfg inner = do
           traverse (syncCall manager cfg since) cfg.accessToken
         SendText roomId body -> do
           response <- traverse (\token -> sendMessageCall manager cfg token roomId body) cfg.accessToken
+          traverse_ (rememberMatrixEvent eventIds) response
+          pure response
+        UploadMedia path fileName ->
+          maybe (throwIO (userError "Matrix access token is not configured.")) (uploadMediaCall manager cfg path fileName) cfg.accessToken
+        SendFileMessage roomId message -> do
+          response <- traverse (\token -> sendFileMessageCall manager cfg token roomId message) cfg.accessToken
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         DeleteEvent roomId messageId knownEventId -> do
@@ -171,6 +191,31 @@ replyTo message body =
       pure (textMessageId . (.eventId) <$> response)
     _ ->
       pure Nothing
+
+uploadFile :: (Matrix :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+uploadFile message path =
+  case (message.platform, viaNonEmpty head message.chatAliases) of
+    (PlatformMatrix, Just roomId) -> do
+      let fileName = matrixUploadFileName path
+      size <- liftIO (getFileSize path)
+      uploaded <- uploadMedia path fileName
+      response <- sendFileMessage roomId MatrixFileMessage
+        { body = fileName
+        , filename = fileName
+        , url = uploaded.contentUri
+        , info = MatrixFileInfo
+            { mimetype = "application/octet-stream"
+            , size = size
+            }
+        }
+      pure (Right (textMessageId . (.eventId) <$> response))
+    _ ->
+      pure (Left "Matrix file upload requires a Matrix room id.")
+
+matrixUploadFileName :: FilePath -> Text
+matrixUploadFileName path =
+  let name = Text.pack (takeFileName path)
+  in if Text.null name then "file" else name
 
 deleteMessage :: Matrix :> es => IncomingMessage -> MessageId -> Eff es Bool
 deleteMessage message messageId =
@@ -289,6 +334,41 @@ sendMessageCall manager cfg token roomId body = do
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson request)
+      jsonResponse
+      options)
+    <&> responseBody
+
+uploadMediaCall :: (IOE :> es, Log :> es) => Manager -> Config -> FilePath -> Text -> Text -> Eff es MatrixUploadResponse
+uploadMediaCall manager cfg path fileName token = do
+  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+  let options =
+        baseOptions
+          <> matrixAuth token
+          <> header "Content-Type" "application/octet-stream"
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+          <> "filename" =: fileName
+  logInfo_ "Matrix API request: upload media"
+  liftIO (Http.runReqWithConfig (matrixHttpConfig manager) $
+    req POST
+      (baseUrl /: "_matrix" /: "media" /: "v3" /: "upload")
+      (ReqBodyFile path)
+      jsonResponse
+      options)
+    <&> responseBody
+
+sendFileMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> MatrixFileMessage -> Eff es SendMessageResponse
+sendFileMessageCall manager cfg token roomId message = do
+  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+  txnId <- liftIO (show <$> getMonotonicTimeNSec)
+  let options =
+        baseOptions
+          <> matrixAuth token
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+  logInfo_ "Matrix API request: send m.file"
+  liftIO (Http.runReqWithConfig (matrixHttpConfig manager) $
+    req PUT
+      (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)
+      (ReqBodyJson message)
       jsonResponse
       options)
     <&> responseBody
@@ -441,6 +521,39 @@ data SendMessageRequest = SendMessageRequest
   , body :: !Text
   }
   deriving (Show, Generic, Aeson.ToJSON)
+
+newtype MatrixUploadResponse = MatrixUploadResponse
+  { contentUri :: Text
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON MatrixUploadResponse where
+  parseJSON = Aeson.withObject "MatrixUploadResponse" \o ->
+    MatrixUploadResponse <$> o Aeson..: "content_uri"
+
+data MatrixFileInfo = MatrixFileInfo
+  { mimetype :: !Text
+  , size :: !Integer
+  }
+  deriving (Show, Generic, Aeson.ToJSON)
+
+data MatrixFileMessage = MatrixFileMessage
+  { body :: !Text
+  , filename :: !Text
+  , url :: !Text
+  , info :: !MatrixFileInfo
+  }
+  deriving (Show, Generic)
+
+instance Aeson.ToJSON MatrixFileMessage where
+  toJSON MatrixFileMessage{body, filename, url, info} =
+    Aeson.object
+      [ "msgtype" Aeson..= ("m.file" :: Text)
+      , "body" Aeson..= body
+      , "filename" Aeson..= filename
+      , "url" Aeson..= url
+      , "info" Aeson..= info
+      ]
 
 data RedactEventRequest = RedactEventRequest
   { reason :: Maybe Text

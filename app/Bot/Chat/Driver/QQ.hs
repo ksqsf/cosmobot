@@ -27,6 +27,7 @@ module Bot.Chat.Driver.QQ
   , getGroupMemberInfo
   , getGroupMemberList
   , mentionUser
+  , uploadFile
   )
 where
 
@@ -54,6 +55,7 @@ import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
 import qualified Network.WebSockets as WS
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
+import System.FilePath (takeFileName)
 import qualified System.Timeout as Timeout
 
 -- ---------------------------------------------------------------------------
@@ -79,6 +81,7 @@ qqDriver
 qqDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformQQ
   , Driver.replyTo = replyTo
+  , Driver.uploadFile = uploadFile
   , Driver.editMessage = \_ _ _ -> pure False
   , Driver.deleteMessage = deleteMessage
   , Driver.replyStreamStyle = \_ -> pure (Chat.ChunkedReply qqStreamingMessageLimit)
@@ -503,6 +506,50 @@ mentionUser message userId body =
             ]
         ])
     _ -> pure Nothing
+
+-- | Upload a file through NapCat. The path is interpreted by NapCat, so when
+-- NapCat runs in Docker it must be visible inside that container.
+uploadFile :: QQ :> es => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+uploadFile message path =
+  case (message.platform, message.kind, message.chatId, message.senderId) of
+    (PlatformQQ, ChatGroup, Just groupId, _) ->
+      uploadQqFile "upload_group_file"
+        [ "group_id" Aeson..= groupId
+        , "file" Aeson..= path
+        , "name" Aeson..= qqUploadFileName path
+        ]
+    (PlatformQQ, ChatPrivate, _, Just rawUserId)
+      | Just userId <- parseIntegerUserId rawUserId ->
+      uploadQqFile "upload_private_file"
+        [ "user_id" Aeson..= userId
+        , "file" Aeson..= path
+        , "name" Aeson..= qqUploadFileName path
+        ]
+    _ ->
+      pure (Left "QQ file upload requires a QQ group or private chat with a known target.")
+
+uploadQqFile :: QQ :> es => Text -> [Aeson.Pair] -> Eff es (Either Text (Maybe MessageId))
+uploadQqFile action params = do
+  response <- sendAction (Aeson.object
+    [ "action" Aeson..= Aeson.String action
+    , "params" Aeson..= Aeson.object params
+    ])
+  if actionSucceeded response
+    then pure (Right Nothing)
+    else pure (Left (qqUploadFailureText action response))
+
+qqUploadFileName :: FilePath -> Text
+qqUploadFileName path =
+  let name = Text.pack (takeFileName path)
+  in if Text.null name then "file" else name
+
+qqUploadFailureText :: Text -> ActionResponse -> Text
+qqUploadFailureText action response =
+  [i|QQ #{action} failed: status=#{statusText}, retcode=#{retcodeText}, message=#{responseMessage}. Make sure the file path is accessible from the NapCat container.|]
+  where
+    statusText = show response.status :: String
+    retcodeText = show response.retcode :: String
+    responseMessage = fromMaybe "" response.message
 
 responseMessageId :: ActionResponse -> Maybe Integer
 responseMessageId response =

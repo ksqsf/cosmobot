@@ -67,6 +67,26 @@ replyToPlatform message body =
   withPlatformDriver message "chat reply" \driver ->
     driver.replyTo message body
 
+uploadFileToPlatform
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  => IncomingMessage
+  -> FilePath
+  -> Eff es (Either Text (Maybe MessageId))
+uploadFileToPlatform message path =
+  case platformDriver message of
+    Nothing ->
+      let platformText = show message.platform :: String
+      in pure (Left [i|No chat driver is registered for #{platformText}.|])
+    Just driver ->
+      driver.uploadFile message path `catch` \(err :: SomeException) ->
+        if isAsyncException err
+          then throwIO err
+          else do
+            let platformText = show message.platform :: String
+                messageText = [i|File upload failed on #{platformText}: #{Exception.displayException err}|]
+            logInfo_ messageText
+            pure (Left messageText)
+
 editPlatformMessage
   :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
   => IncomingMessage
@@ -182,6 +202,7 @@ chatHandlers
   => Chat.ChatHandlers es
 chatHandlers = Chat.ChatHandlers
   { handleReplyTo = replyToPlatform
+  , handleUploadFile = uploadFileToPlatform
   , handleEditMessage = editPlatformMessage
   , handleDeleteMessage = deletePlatformMessage
   , handleReplyStreamStyle = platformReplyStreamStyle

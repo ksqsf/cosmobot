@@ -8,6 +8,7 @@ module Bot.Effect.Chat
   ( -- * Effect
     Chat
   , replyTo
+  , uploadFile
   , editMessage
   , deleteMessage
   , ReplyStreamStyle (..)
@@ -48,6 +49,10 @@ data Chat :: Effect where
     :: IncomingMessage
     -> Text
     -> Chat m (Maybe MessageId)
+  UploadFile
+    :: IncomingMessage
+    -> FilePath
+    -> Chat m (Either Text (Maybe MessageId))
   EditMessage
     :: IncomingMessage
     -> MessageId
@@ -90,6 +95,11 @@ type instance DispatchOf Chat = Dynamic
 replyTo :: Chat :> es => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
   send (ReplyTo message body)
+
+-- | Upload a local file to the chat containing the incoming message.
+uploadFile :: Chat :> es => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+uploadFile message path =
+  send (UploadFile message path)
 
 -- | Edit a previously sent message when the platform supports it.
 editMessage :: Chat :> es => IncomingMessage -> MessageId -> Text -> Eff es Bool
@@ -482,6 +492,7 @@ mentionUser message userId body =
 -- | Interpret chat operations by delegating each operation to platform code.
 data ChatHandlers es = ChatHandlers
   { handleReplyTo :: IncomingMessage -> Text -> Eff es (Maybe MessageId)
+  , handleUploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
   , handleEditMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
   , handleDeleteMessage :: IncomingMessage -> MessageId -> Eff es Bool
   , handleReplyStreamStyle :: IncomingMessage -> Eff es ReplyStreamStyle
@@ -500,6 +511,8 @@ runChatWith
 runChatWith handlers = interpret $ \_ -> \case
   ReplyTo message body ->
     handlers.handleReplyTo message body
+  UploadFile message path ->
+    handlers.handleUploadFile message path
   EditMessage message messageId body ->
     handlers.handleEditMessage message messageId body
   DeleteMessage message messageId ->

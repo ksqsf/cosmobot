@@ -26,6 +26,7 @@ module Bot.Chat.Driver.Telegram
   , SendMessageRequest (..)
   , EditMessageTextRequest (..)
   , SendPhotoRequest (..)
+  , SendDocumentRequest (..)
   , TelegramFormatted (..)
   , TelegramException (..)
   , TelegramResult
@@ -41,6 +42,7 @@ module Bot.Chat.Driver.Telegram
   , sendMessage
   , sendPhoto
   , uploadPhoto
+  , uploadFile
   , replyTo
   , editMessage
   , deleteMessageFor
@@ -93,7 +95,7 @@ import qualified Streaming as S
 import qualified Streaming.Prelude as S
 import System.Directory (createDirectoryIfMissing, removeFile)
 import qualified Data.Text as Text
-import System.FilePath ((<.>))
+import System.FilePath ((<.>), takeFileName)
 import System.IO (hClose, openTempFile)
 
 -- ---------------------------------------------------------------------------
@@ -117,6 +119,7 @@ telegramDriver
 telegramDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformTelegram
   , Driver.replyTo = replyTo
+  , Driver.uploadFile = uploadFile
   , Driver.editMessage = editMessage
   , Driver.deleteMessage = deleteMessageFor
   , Driver.replyStreamStyle = \_ -> pure (ChatEffect.EditableReply telegramEditChunkChars telegramMessageTextLimit)
@@ -176,6 +179,10 @@ data Telegram :: Effect where
     :: SendPhotoRequest
     -> FilePath
     -> Telegram m Message
+  UploadDocument
+    :: SendDocumentRequest
+    -> FilePath
+    -> Telegram m Message
 
 type instance DispatchOf Telegram = Dynamic
 
@@ -213,6 +220,8 @@ runTelegram cfg inner = do
           pure (telegramFileUrl cfg file.filePath)
         UploadPhoto request path ->
           apiMultipartCall manager cfg "sendPhoto" (sendPhotoParts request path)
+        UploadDocument request path ->
+          apiMultipartCall manager cfg "sendDocument" (sendDocumentParts request path)
     )
     inner
 
@@ -593,6 +602,23 @@ sendPhotoParts SendPhotoRequest{..} path =
     <> maybePart "caption_entities" (jsonText <$> captionEntities)
     <> maybePart "disable_notification" (boolText <$> disableNotification)
     <> maybePart "reply_to_message_id" (show <$> replyToMessageId)
+
+sendDocumentParts :: SendDocumentRequest -> FilePath -> [Multipart.Part]
+sendDocumentParts SendDocumentRequest{..} path =
+  [ textPart "chat_id" (show chatId)
+  , Multipart.partFileRequestBodyM "document" (telegramUploadFileName path) (HTTP.streamFile path)
+  ]
+    <> maybePart "message_thread_id" (show <$> messageThreadId)
+    <> maybePart "caption" caption
+    <> maybePart "parse_mode" (parseModeText <$> parseMode)
+    <> maybePart "caption_entities" (jsonText <$> captionEntities)
+    <> maybePart "disable_notification" (boolText <$> disableNotification)
+    <> maybePart "reply_to_message_id" (show <$> replyToMessageId)
+
+telegramUploadFileName :: FilePath -> FilePath
+telegramUploadFileName path =
+  let name = takeFileName path
+  in if null name then "file" else name
 
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
@@ -1312,6 +1338,17 @@ instance TelegramRequest SendPhotoRequest where
   type TelegramResponse SendPhotoRequest = Message
   telegramMethod _ = "sendPhoto"
 
+-- | Request payload for Telegram @sendDocument@ multipart uploads.
+data SendDocumentRequest = SendDocumentRequest
+  { chatId              :: !Integer
+  , messageThreadId     :: !(Maybe Integer)
+  , caption             :: !(Maybe Text)
+  , parseMode           :: !(Maybe ParseMode)
+  , captionEntities     :: !(Maybe [MessageEntity])
+  , disableNotification :: !(Maybe Bool)
+  , replyToMessageId    :: !(Maybe Integer)
+  } deriving (Show, Generic)
+
 data ForwardMessageRequest = ForwardMessageRequest
   { chatId     :: !Integer
   , fromChatId :: !Integer
@@ -1481,6 +1518,11 @@ uploadPhoto :: Telegram :> es => SendPhotoRequest -> FilePath -> Eff es Message
 uploadPhoto request path =
   send (UploadPhoto request path)
 
+-- | Upload a local document file through multipart/form-data.
+uploadDocument :: Telegram :> es => SendDocumentRequest -> FilePath -> Eff es Message
+uploadDocument request path =
+  send (UploadDocument request path)
+
 -- | Reply to a Telegram chat, including image directives in the body.
 replyTo :: (Telegram :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
@@ -1554,6 +1596,25 @@ mentionUser message userId body =
       pure (Just (integerMessageId sent.messageId))
     _ ->
       pure Nothing
+
+-- | Send a file to a Telegram chat as a document.
+uploadFile :: Telegram :> es => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+uploadFile message path =
+  case (message.platform, message.chatId) of
+    (PlatformTelegram, Just chatId) -> do
+      let replyToMessageId = messageIdInteger =<< message.messageId
+      sent <- uploadDocument SendDocumentRequest
+        { chatId = chatId
+        , messageThreadId = Nothing
+        , caption = Nothing
+        , parseMode = Nothing
+        , captionEntities = Nothing
+        , disableNotification = Nothing
+        , replyToMessageId = replyToMessageId
+        } path
+      pure (Right (Just (integerMessageId sent.messageId)))
+    _ ->
+      pure (Left "Telegram file upload requires a Telegram chat id.")
 
 telegramMentionHtml :: Integer -> Text -> Text
 telegramMentionHtml userId body =

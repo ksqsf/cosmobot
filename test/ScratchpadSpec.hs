@@ -110,6 +110,7 @@ runScratchpad path replies incoming =
   runEff $
     Chat.runChatWith Chat.ChatHandlers
       { handleReplyTo = reply
+      , handleUploadFile = upload
       , handleEditMessage = edit
       , handleDeleteMessage = delete
       , handleReplyStreamStyle = replyStreamStyle
@@ -126,6 +127,8 @@ runScratchpad path replies incoming =
     reply _ body = do
       liftIO $ IORef.modifyIORef' replies (<> [body])
       pure (Just "1")
+    upload _ _ =
+      pure (Right Nothing)
     fetch _ _ =
       pure Nothing
     edit _ _ _ =

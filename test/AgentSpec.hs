@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Tools.Chat as ChatTools
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Core.Conversation
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -78,6 +79,9 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
+      , testCase "send file tool uploads via chat effect" testSendFileToolUploadsViaChatEffect
+      , testCase "send file tool reports upload failure" testSendFileToolReportsUploadFailure
+      , testCase "send file tool is noisy and superuser-only" testSendFileToolIsNoisyAndSuperuserOnly
       , testCase "current sender chatlog tool queries matching sender messages" testCurrentSenderChatLogToolQueriesChatLog
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
@@ -156,6 +160,66 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef remembered >>= (@?= [Just "42"])
+
+testSendFileToolUploadsViaChatEffect :: IO ()
+testSendFileToolUploadsViaChatEffect = do
+  uploads <- IORef.newIORef ([] :: [FilePath])
+  replies <- IORef.newIORef ([] :: [Text])
+  result <- runSendFileTool replies \_ path -> do
+    liftIO $ IORef.modifyIORef' uploads (<> [path])
+    pure (Right (Just "900"))
+  case result of
+    Agent.ToolSucceeded{messageIds} ->
+      messageIds @?= [Just "900"]
+    Agent.ToolFailed{failure} ->
+      assertFailure [i|expected file upload success, got #{show failure :: String}|]
+  IORef.readIORef uploads >>= (@?= ["/tmp/report.txt"])
+  IORef.readIORef replies >>= (@?= [])
+
+testSendFileToolReportsUploadFailure :: IO ()
+testSendFileToolReportsUploadFailure = do
+  replies <- IORef.newIORef ([] :: [Text])
+  result <- runSendFileTool replies \_ _ ->
+    pure (Left "upload failed")
+  case result of
+    Agent.ToolFailed{failure} -> do
+      failure.userMessage @?= "发送文件失败：upload failed"
+      failure.category @?= Agent.ExternalServiceUnavailable
+    Agent.ToolSucceeded{} ->
+      assertFailure "expected file upload failure"
+  IORef.readIORef replies >>= (@?= ["发送文件失败：upload failed"])
+
+testSendFileToolIsNoisyAndSuperuserOnly :: IO ()
+testSendFileToolIsNoisyAndSuperuserOnly = do
+  let tool = ChatTools.sendFileTool :: Agent.Tool '[Chat.Chat, IOE]
+  tool.noisy @?= True
+  tool.allowed agentContext @?= False
+  tool.allowed superuserContext @?= True
+
+runSendFileTool
+  :: IORef.IORef [Text]
+  -> (IncomingMessage -> FilePath -> Eff '[IOE] (Either Text (Maybe MessageId)))
+  -> IO Agent.ToolResult
+runSendFileTool replies upload =
+  runEff $
+    Chat.runChatWith
+      Chat.ChatHandlers
+        { handleReplyTo = \_ body -> do
+            liftIO $ IORef.modifyIORef' replies (<> [body])
+            pure (Just "901")
+        , handleUploadFile = upload
+        , handleEditMessage = noopEdit
+        , handleDeleteMessage = noopDelete
+        , handleReplyStreamStyle = noopReplyStreamStyle
+        , handleGetMessageContent = noopFetch
+        , handleGetSenderMemberInfo = noopSenderMember
+        , handleGetMemberInfo = noopMember
+        , handleGetUserAvatar = noopUserAvatar
+        , handleListGroupMembers = noopMembers
+        , handleMentionUser = noopMention
+        } do
+        runner <- ChatTools.sendFileTool.start superuserContext
+        runner (Aeson.object ["path" Aeson..= ("file:///tmp/report.txt" :: Text)])
 
 testCurrentSenderChatLogToolQueriesChatLog :: IO ()
 testCurrentSenderChatLogToolQueriesChatLog = do
@@ -701,6 +765,7 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
+        , handleUploadFile = noopUpload
         , handleEditMessage = noopEdit
         , handleDeleteMessage = noopDelete
         , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 4)
@@ -729,6 +794,7 @@ testEditableSegmentedRepliesOpenNewTail = do
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
+        , handleUploadFile = noopUpload
         , handleEditMessage = recordEdit edits
         , handleDeleteMessage = noopDelete
         , handleReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 100)
@@ -768,6 +834,7 @@ testSegmentedRepliesFlushFinalOpenSegment = do
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
+        , handleUploadFile = noopUpload
         , handleEditMessage = noopEdit
         , handleDeleteMessage = noopDelete
         , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 100)
@@ -800,6 +867,7 @@ testEditableChatStreamingSplitsLongReplies = do
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
+        , handleUploadFile = noopUpload
         , handleEditMessage = recordEdit edits
         , handleDeleteMessage = noopDelete
         , handleReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 4)
@@ -1443,6 +1511,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced memoryCfg sk
                       Chat.runChatWith
                         Chat.ChatHandlers
                           { handleReplyTo = mockReply chatMock
+                          , handleUploadFile = noopUpload
                           , handleEditMessage = noopEdit
                           , handleDeleteMessage = noopDelete
                           , handleReplyStreamStyle = noopReplyStreamStyle
@@ -1484,6 +1553,7 @@ runAgentWithStreamingAnswers answers chatMock action = do
                       Chat.runChatWith
                         Chat.ChatHandlers
                           { handleReplyTo = mockReply chatMock
+                          , handleUploadFile = noopUpload
                           , handleEditMessage = noopEdit
                           , handleDeleteMessage = noopDelete
                           , handleReplyStreamStyle = noopReplyStreamStyle
@@ -1582,6 +1652,10 @@ recordReply replies nextReplyId message body = do
 noopFetch :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
 noopFetch _ _ =
   pure Nothing
+
+noopUpload :: IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+noopUpload _ _ =
+  pure (Right Nothing)
 
 noopEdit :: IncomingMessage -> MessageId -> Text -> Eff es Bool
 noopEdit _ _ _ =

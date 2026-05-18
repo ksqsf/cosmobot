@@ -8,6 +8,7 @@ module Bot.Agent.Tools.Chat
   ( queryChatLogTool
   , queryCurrentSenderChatLogTool
   , sendReplyTool
+  , sendFileTool
   , mentionUserTool
   , senderMemberInfoTool
   , memberInfoTool
@@ -83,6 +84,33 @@ sendReplyTool = Tool
         sent <- Chat.replyTo context.message body
         let sentText = show sent :: String
         pure (toolMessage sent [i|Sent message id: #{sentText}|])
+  }
+
+sendFileTool :: Chat.Chat :> es => Tool es
+sendFileTool = Tool
+  { name = "send_file_to_current_chat"
+  , description = "Send a local file to the same chat as the current user message. The path must be readable by the bot for Telegram and Matrix. For QQ/NapCat, the path is passed to NapCat and must be accessible from the NapCat container. Use only when the user explicitly asks you to send a file."
+  , parameters = objectSchema
+      [ fieldText "path" "Local file path to send. A file:// prefix is accepted and stripped before upload."
+      ]
+      ["path"]
+  , noisy = True
+  , allowed = superuserOnly
+  , start = \context -> pure \args ->
+      withParsedToolArgs sendFileArgs args \path -> do
+        result <- Chat.uploadFile context.message path
+        case result of
+          Right sent -> do
+            let sentText = show sent :: String
+            pure (toolMessage sent [i|Sent file #{Text.pack path}; message id: #{sentText}|])
+          Left err -> do
+            let failureText = "发送文件失败：" <> err
+            void $ Chat.replyTo context.message failureText
+            pure (toolFailure AgentFailure
+              { category = ExternalServiceUnavailable
+              , userMessage = failureText
+              , detail = err
+              })
   }
 
 mentionUserTool :: Chat.Chat :> es => Tool es
@@ -272,6 +300,15 @@ sendReplyArgs =
     when (Text.null body) do
       fail "Either text or image_urls must be provided."
     pure body
+
+sendFileArgs :: Aeson.Value -> AesonTypes.Parser FilePath
+sendFileArgs =
+  Aeson.withObject "send file arguments" $ \o -> do
+    rawPath <- Text.strip <$> o Aeson..: Key.fromText "path"
+    let path = fromMaybe rawPath (Text.stripPrefix "file://" rawPath)
+    when (Text.null (Text.strip path)) do
+      fail "path must not be empty."
+    pure (Text.unpack path)
 
 replyBodyWithImages :: Text -> [Text] -> Text
 replyBodyWithImages text imageUrls =

@@ -42,6 +42,7 @@ defaultTools =
   , editImageTool
   , typstToImageTool
   , sendReplyTool
+  , sendFileTool
   , mentionUserTool
   , senderMemberInfoTool
   , memberInfoTool

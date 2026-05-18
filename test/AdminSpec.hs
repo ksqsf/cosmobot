@@ -111,6 +111,7 @@ chatHandlers :: IOE :> es => IORef.IORef [Text] -> Chat.ChatHandlers es
 chatHandlers replies =
   Chat.ChatHandlers
     { handleReplyTo = reply
+    , handleUploadFile = upload
     , handleEditMessage = edit
     , handleDeleteMessage = delete
     , handleReplyStreamStyle = replyStreamStyle
@@ -125,6 +126,8 @@ chatHandlers replies =
     reply _ body = do
       liftIO $ IORef.modifyIORef' replies (<> [body])
       pure (Just "1")
+    upload _ _ =
+      pure (Right Nothing)
     edit _ _ _ =
       pure False
     delete _ _ =
