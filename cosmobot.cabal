@@ -199,6 +199,7 @@ executable cosmobot
         Bot.Config
         Bot.Core.Route
         Bot.Effect.LLM.Config
+        Bot.Main
         Bot.Handler.Admin
         Bot.Handler.Admin.Config
         Bot.Lifecycle
@@ -223,6 +224,7 @@ executable cosmobot
     build-depends:    log-base
                     , aeson-optics
                     , dotenv
+                    , optparse-applicative
                     , websockets
                     , toml-parser
 
