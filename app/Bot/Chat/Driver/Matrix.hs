@@ -73,6 +73,7 @@ matrixDriver = Driver.ChatPlatformDriver
   , Driver.getUserAvatar = \_ _ -> pure Nothing
   , Driver.listGroupMembers = \_ -> pure Nothing
   , Driver.mentionUser = \_ _ _ -> pure Nothing
+  , Driver.setMemberTitle = \_ _ _ -> pure False
   }
 
 matrixStreamingMessageLimit :: Int

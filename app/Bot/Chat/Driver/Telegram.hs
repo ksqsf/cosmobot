@@ -146,6 +146,7 @@ telegramDriver = Driver.ChatPlatformDriver
   , Driver.listGroupMembers = \_ ->
       pure Nothing
   , Driver.mentionUser = mentionUser
+  , Driver.setMemberTitle = \_ _ _ -> pure False
   }
 
 telegramEditChunkChars :: Int

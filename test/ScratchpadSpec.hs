@@ -120,6 +120,7 @@ runScratchpad path replies incoming =
       , handleGetUserAvatar = fetchUserAvatar
       , handleListGroupMembers = listMembers
       , handleMentionUser = mention
+      , handleSetMemberTitle = setMemberTitle
       } $
       StorageEffect.runStorageSQLitePath path $
         runHandlers scratchpadHandlers incoming
@@ -147,6 +148,8 @@ runScratchpad path replies incoming =
       pure Nothing
     mention _ _ _ =
       pure Nothing
+    setMemberTitle _ _ _ =
+      pure False
 
 message :: Text -> IncomingMessage
 message =

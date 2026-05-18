@@ -775,6 +775,7 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
         , handleGetUserAvatar = noopUserAvatar
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
+        , handleSetMemberTitle = noopSetMemberTitle
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -804,6 +805,7 @@ testEditableSegmentedRepliesOpenNewTail = do
         , handleGetUserAvatar = noopUserAvatar
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
+        , handleSetMemberTitle = noopSetMemberTitle
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -844,6 +846,7 @@ testSegmentedRepliesFlushFinalOpenSegment = do
         , handleGetUserAvatar = noopUserAvatar
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
+        , handleSetMemberTitle = noopSetMemberTitle
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -877,6 +880,7 @@ testEditableChatStreamingSplitsLongReplies = do
         , handleGetUserAvatar = noopUserAvatar
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
+        , handleSetMemberTitle = noopSetMemberTitle
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -1521,6 +1525,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced memoryCfg sk
                           , handleGetUserAvatar = mockUserAvatar chatMock
                           , handleListGroupMembers = noopMembers
                           , handleMentionUser = noopMention
+                          , handleSetMemberTitle = noopSetMemberTitle
                           }
                         action
 
@@ -1563,6 +1568,7 @@ runAgentWithStreamingAnswers answers chatMock action = do
                           , handleGetUserAvatar = mockUserAvatar chatMock
                           , handleListGroupMembers = noopMembers
                           , handleMentionUser = noopMention
+                          , handleSetMemberTitle = noopSetMemberTitle
                           }
                         action
 
@@ -1693,6 +1699,10 @@ noopMembers _ =
 noopMention :: IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
 noopMention _ _ _ =
   pure Nothing
+
+noopSetMemberTitle :: IncomingMessage -> Integer -> Text -> Eff es Bool
+noopSetMemberTitle _ _ _ =
+  pure False
 
 mockUserAvatar :: ChatMock -> IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 mockUserAvatar ChatMock{userAvatar} _ _ =

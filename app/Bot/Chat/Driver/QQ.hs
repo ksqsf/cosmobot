@@ -28,6 +28,7 @@ module Bot.Chat.Driver.QQ
   , getGroupMemberList
   , mentionUser
   , uploadFile
+  , setGroupMemberTitle
   )
 where
 
@@ -112,6 +113,7 @@ qqDriver = Driver.ChatPlatformDriver
         _ ->
           pure Nothing
   , Driver.mentionUser = mentionUser
+  , Driver.setMemberTitle = setGroupMemberTitle
   }
 
 qqStreamingMessageLimit :: Int
@@ -634,6 +636,24 @@ getGroupMemberList groupId =
         , "no_cache" Aeson..= False
         ]
     ])
+
+-- | Set a QQ group member's special title through OneBot/NapCat.
+setGroupMemberTitle :: QQ :> es => IncomingMessage -> Integer -> Text -> Eff es Bool
+setGroupMemberTitle message userId title =
+  case (message.platform, message.kind, message.chatId) of
+    (PlatformQQ, ChatGroup, Just groupId) -> do
+      response <- sendAction (Aeson.object
+        [ "action" Aeson..= Aeson.String "set_group_special_title"
+        , "params" Aeson..= Aeson.object
+            [ "group_id" Aeson..= groupId
+            , "user_id" Aeson..= userId
+            , "special_title" Aeson..= title
+            , "duration" Aeson..= (-1 :: Integer)
+            ]
+        ])
+      pure (actionSucceeded response)
+    _ ->
+      pure False
 
 -- | Return a stable QQ avatar URL for a user id.
 getUserAvatar :: Integer -> Aeson.Value

@@ -21,6 +21,7 @@ module Bot.Effect.Chat
   , getUserAvatar
   , listGroupMembers
   , mentionUser
+  , setMemberTitle
   , ChatHandlers (..)
   , runChatWith
   , runChatRecordingSelfMessages
@@ -88,6 +89,11 @@ data Chat :: Effect where
     -> Integer
     -> Text
     -> Chat m (Maybe MessageId)
+  SetMemberTitle
+    :: IncomingMessage
+    -> Integer
+    -> Text
+    -> Chat m Bool
 
 type instance DispatchOf Chat = Dynamic
 
@@ -489,6 +495,11 @@ mentionUser :: Chat :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe
 mentionUser message userId body =
   send (MentionUser message userId body)
 
+-- | Set a platform-specific title for a group member when supported.
+setMemberTitle :: Chat :> es => IncomingMessage -> Integer -> Text -> Eff es Bool
+setMemberTitle message userId title =
+  send (SetMemberTitle message userId title)
+
 -- | Interpret chat operations by delegating each operation to platform code.
 data ChatHandlers es = ChatHandlers
   { handleReplyTo :: IncomingMessage -> Text -> Eff es (Maybe MessageId)
@@ -502,6 +513,7 @@ data ChatHandlers es = ChatHandlers
   , handleGetUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   , handleListGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
   , handleMentionUser :: IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
+  , handleSetMemberTitle :: IncomingMessage -> Integer -> Text -> Eff es Bool
   }
 
 runChatWith
@@ -531,6 +543,8 @@ runChatWith handlers = interpret $ \_ -> \case
     handlers.handleListGroupMembers message
   MentionUser message userId body ->
     handlers.handleMentionUser message userId body
+  SetMemberTitle message userId title ->
+    handlers.handleSetMemberTitle message userId title
 
 -- | Locally override chat sending so self messages can be recorded while all
 -- platform operations still delegate to the outer 'Chat' interpreter.

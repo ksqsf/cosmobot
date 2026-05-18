@@ -59,6 +59,7 @@ runShutUp deleted later cfg incoming =
       , handleGetUserAvatar = \_ _ -> pure Nothing
       , handleListGroupMembers = \_ -> pure Nothing
       , handleMentionUser = \_ _ _ -> pure Nothing
+      , handleSetMemberTitle = \_ _ _ -> pure False
       } $
       runHandlers (shutUpHandlers cfg <> [laterRoute]) incoming
   where

@@ -19,6 +19,7 @@ import qualified Bot.Storage.Lifecycle as Lifecycle
 import qualified Control.Concurrent.MVar as MVar
 import qualified Control.Concurrent as Concurrent
 import qualified Control.Exception as Exception
+import qualified Data.Char as Char
 import qualified Data.Text as Text
 import qualified Data.Unique as Unique
 import qualified System.Exit as Exit
@@ -27,7 +28,9 @@ import qualified System.Process as Process
 
 adminHandlers :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
 adminHandlers cfg =
-  pingRoute : maybeToList (upgradeRoute <$> cfg.upgrade)
+  [ pingRoute
+  , titleRoute
+  ] <> maybeToList (upgradeRoute <$> cfg.upgrade)
 
 pingRoute :: Chat.Chat :> es => RouteHandler es
 pingRoute =
@@ -36,6 +39,40 @@ pingRoute =
 handlePing :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 handlePing message _ =
   void $ Chat.replyTo message "pong"
+
+titleRoute :: Chat.Chat :> es => RouteHandler es
+titleRoute =
+  requireAuth
+    isSuperuser
+    (\message -> void $ Chat.replyTo message "只有 superuser 可以设置 title。")
+    (stopOn (command "!title") handleTitle)
+
+handleTitle :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
+handleTitle message rawArgs =
+  case parseTitleArgs rawArgs of
+    Nothing ->
+      void $ Chat.replyTo message "用法：!title <id> <title>"
+    Just (userId, title)
+      | message.kind /= ChatGroup ->
+          void $ Chat.replyTo message "只能在群聊中设置 title。"
+      | isNothing message.chatId ->
+          void $ Chat.replyTo message "无法识别当前群聊，不能设置 title。"
+      | otherwise -> do
+          set <- Chat.setMemberTitle message userId title
+          void $ Chat.replyTo message $
+            if set
+              then [i|已设置 #{userId} 的 title：#{title}|]
+              else "设置 title 失败：当前平台可能不支持，或 bot 权限不足。"
+
+parseTitleArgs :: Text -> Maybe (Integer, Text)
+parseTitleArgs rawArgs = do
+  let args = Text.strip rawArgs
+      (rawUserId, rawTitle) = Text.break Char.isSpace args
+      title = Text.strip rawTitle
+  guard (not (Text.null rawUserId) && not (Text.null title))
+  userId <- readMaybe (Text.unpack rawUserId)
+  guard (userId > 0)
+  pure (userId, title)
 
 upgradeRoute :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
 upgradeRoute cfg =

@@ -174,6 +174,16 @@ mentionPlatformUser message userId body =
   withPlatformDriver message "chat mention" \driver ->
     driver.mentionUser message userId body
 
+setPlatformMemberTitle
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  => IncomingMessage
+  -> Integer
+  -> Text
+  -> Eff es Bool
+setPlatformMemberTitle message userId title =
+  fromMaybe False <$> withPlatformDriver message "set member title" \driver ->
+    Just <$> driver.setMemberTitle message userId title
+
 runChatDrivers
   :: (Log :> es, IOE :> es)
   => QQ.Config
@@ -212,4 +222,5 @@ chatHandlers = Chat.ChatHandlers
   , handleGetUserAvatar = getPlatformUserAvatar
   , handleListGroupMembers = listPlatformGroupMembers
   , handleMentionUser = mentionPlatformUser
+  , handleSetMemberTitle = setPlatformMemberTitle
   }
