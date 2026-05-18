@@ -55,6 +55,7 @@ import qualified Bot.Util.HTTP as Http
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Encode.Pretty as AesonPretty
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as StrictByteString
@@ -437,13 +438,24 @@ llmExceptionSummary :: SomeException -> Text
 llmExceptionSummary err =
   case Exception.fromException err of
     Just (LLMException message) ->
-      message
+      "LLM error: " <> message
     Nothing ->
       case Exception.fromException err of
         Just httpErr ->
-          httpExceptionSummary httpErr
+          "HTTP error: " <> httpExceptionSummary httpErr
         Nothing ->
-          Text.pack (Exception.displayException err)
+          case Exception.fromException err of
+            Just reqErr ->
+              reqHttpExceptionSummary reqErr
+            Nothing ->
+              "Unexpected error: " <> previewText 500 (Text.pack (Exception.displayException err))
+
+reqHttpExceptionSummary :: HttpException -> Text
+reqHttpExceptionSummary = \case
+  VanillaHttpException httpErr ->
+    "HTTP error: " <> httpExceptionSummary httpErr
+  JsonHttpException message ->
+    "HTTP error: JSON response decode failed: " <> previewText 500 (Text.pack message)
 
 httpExceptionSummary :: HTTP.HttpException -> Text
 httpExceptionSummary = \case
@@ -464,8 +476,38 @@ httpExceptionContentSummary = \case
     "NoResponseDataReceived"
   HTTP.ConnectionClosed ->
     "ConnectionClosed"
+  HTTP.StatusCodeException response body ->
+    statusResponseSummary response <> httpBodySummarySuffix body
   content ->
     Text.pack (show content)
+
+statusResponseSummary :: HTTP.Response body -> Text
+statusResponseSummary response =
+  Text.unwords (filter (not . Text.null) [show (HTTPStatus.statusCode status), statusMessage])
+  where
+    status = HTTP.responseStatus response
+    statusMessage = TextEncoding.decodeUtf8With TextEncoding.lenientDecode (HTTPStatus.statusMessage status)
+
+httpBodySummarySuffix :: StrictByteString.ByteString -> Text
+httpBodySummarySuffix body =
+  maybe "" ("\n" <>) (httpBodySummary body)
+
+httpBodySummary :: StrictByteString.ByteString -> Maybe Text
+httpBodySummary body =
+  case Aeson.eitherDecodeStrict' body of
+    Right value ->
+      Just (previewMultilineText 4000 (prettyJson value))
+    Left _ ->
+      previewMultilineText 4000 <$> nonEmptyText (TextEncoding.decodeUtf8With TextEncoding.lenientDecode body)
+
+prettyJson :: Aeson.Value -> Text
+prettyJson =
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . AesonPretty.encodePretty
+
+previewMultilineText :: Int -> Text -> Text
+previewMultilineText maxChars text
+  | Text.length text > maxChars = Text.take maxChars text <> "\n..."
+  | otherwise = text
 
 data ChatCompletionRequest = ChatCompletionRequest
   { model       :: !Text

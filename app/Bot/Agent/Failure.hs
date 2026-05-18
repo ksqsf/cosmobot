@@ -97,7 +97,7 @@ classifyException err =
         Nothing ->
           AgentFailure
             { category = ExternalServiceUnavailable
-            , userMessage = Text.pack (Exception.displayException err)
+            , userMessage = LLM.llmExceptionSummary err
             , detail = Text.pack (show err)
             }
 
@@ -105,9 +105,9 @@ httpFailure :: HTTP.HttpException -> AgentFailure
 httpFailure httpErr =
   case httpErr of
     HTTP.HttpExceptionRequest _ HTTP.ResponseTimeout ->
-      transient "ResponseTimeout"
+      transient (LLM.llmExceptionSummary (toException httpErr))
     HTTP.HttpExceptionRequest _ HTTP.ConnectionTimeout ->
-      transient "ConnectionTimeout"
+      transient (LLM.llmExceptionSummary (toException httpErr))
     _ ->
       AgentFailure
         { category = ExternalServiceUnavailable
@@ -129,7 +129,7 @@ llmFailure message =
         if "empty" `Text.isInfixOf` Text.toLower message
           then TransientFailure
           else ExternalServiceUnavailable
-    , userMessage = message
+    , userMessage = "LLM error: " <> message
     , detail = message
     }
 

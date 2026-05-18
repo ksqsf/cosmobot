@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Tools.Chat as ChatTools
+import qualified Bot.Agent.Types as AgentTypes
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Core.Conversation
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -35,6 +36,10 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Unique
 import qualified Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Client.Internal as HTTPInternal
+import qualified Network.HTTP.Req as Req
+import qualified Network.HTTP.Types.Status as HTTPStatus
+import qualified Network.HTTP.Types.Version as HTTPVersion
 import qualified Streaming.Prelude as S
 import System.Directory
 import System.FilePath
@@ -127,6 +132,9 @@ main =
       , testCase "run_bash captures stdout and stderr" testRunBashCapturesStdoutAndStderr
       , testCase "run_bash kills timed out process" testRunBashKillsTimedOutProcess
       , testCase "LLM response timeout summary is concise" testLLMResponseTimeoutSummaryIsConcise
+      , testCase "LLM exception summary describes LLM errors" testLLMExceptionSummaryDescribesLLMErrors
+      , testCase "LLM status error summary is concise" testLLMStatusErrorSummaryIsConcise
+      , testCase "agent failure summarizes Req HTTP errors" testAgentFailureSummarizesReqHttpErrors
       ]
 
 testScheduleToolCreatesQueryableSchedule :: IO ()
@@ -1137,7 +1145,60 @@ testLLMResponseTimeoutSummaryIsConcise :: IO ()
 testLLMResponseTimeoutSummaryIsConcise = do
   request <- HTTP.parseRequest "https://api.example.test/v1/chat/completions"
   let err = toException (HTTP.HttpExceptionRequest request HTTP.ResponseTimeout)
-  LLM.llmExceptionSummary err @?= "ResponseTimeout"
+  LLM.llmExceptionSummary err @?= "HTTP error: ResponseTimeout"
+
+testLLMExceptionSummaryDescribesLLMErrors :: IO ()
+testLLMExceptionSummaryDescribesLLMErrors =
+  LLM.llmExceptionSummary (toException (LLM.LLMException "OpenAI response was empty: no text output."))
+    @?= "LLM error: OpenAI response was empty: no text output."
+
+testLLMStatusErrorSummaryIsConcise :: IO ()
+testLLMStatusErrorSummaryIsConcise = do
+  err <- expiredQQImageReqException
+  let summary = LLM.llmExceptionSummary err
+  assertBool "summary includes status" ("HTTP error: 400 Bad Request\n{" `Text.isPrefixOf` summary)
+  assertBool "summary includes provider error JSON" ("\"error\"" `Text.isInfixOf` summary)
+  assertBool "summary includes provider message" ("Error while downloading https://multimedia.nt.qq.com.cn/download" `Text.isInfixOf` summary)
+  assertBool "summary omits the request dump" (not ("responseOriginalRequest" `Text.isInfixOf` summary))
+
+testAgentFailureSummarizesReqHttpErrors :: IO ()
+testAgentFailureSummarizesReqHttpErrors = do
+  err <- expiredQQImageReqException
+  let summary = LLM.llmExceptionSummary err
+  let failure = AgentTypes.agentFailureFromException err
+  failure.userMessage @?= summary
+
+expiredQQImageReqException :: IO SomeException
+expiredQQImageReqException = do
+  request <- HTTP.parseRequest "https://api.example.test/v1/chat/completions"
+  let response = HTTPInternal.Response
+        { HTTPInternal.responseStatus = HTTPStatus.status400
+        , HTTPInternal.responseVersion = HTTPVersion.http11
+        , HTTPInternal.responseHeaders = []
+        , HTTPInternal.responseBody = ()
+        , HTTPInternal.responseCookieJar = HTTP.createCookieJar []
+        , HTTPInternal.responseClose' = HTTPInternal.ResponseClose (pure ())
+        , HTTPInternal.responseOriginalRequest = request
+        , HTTPInternal.responseEarlyHints = []
+        }
+      httpErr = HTTP.HttpExceptionRequest request (HTTP.StatusCodeException response expiredQQImageErrorBody)
+  pure (toException (Req.VanillaHttpException httpErr))
+
+expiredQQImageErrorBody :: ByteString
+expiredQQImageErrorBody =
+  LazyByteString.toStrict $
+    Aeson.encode $
+      Aeson.object
+        [ "error" Aeson..= Text.unlines
+            [ "Error: Current provider response failed: {'detail': '{"
+            , "  \"error\": {"
+            , "    \"message\": \"Error while downloading https://multimedia.nt.qq.com.cn/download?appid=1407&rkey=secret. Upstream status code: 400.\","
+            , "    \"param\": \"url\","
+            , "    \"code\": \"invalid_value\""
+            , "  }"
+            , "}'}"
+            ]
+        ]
 
 withMemoryTempDir :: (FilePath -> IO a) -> IO a
 withMemoryTempDir action = do

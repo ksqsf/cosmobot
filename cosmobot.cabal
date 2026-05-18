@@ -90,6 +90,7 @@ common app-deps
                     , bytestring
                     , base64-bytestring
                     , aeson
+                    , aeson-pretty
                     , string-interpolate
                     , unix
                     , modern-uri
