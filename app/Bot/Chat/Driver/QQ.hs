@@ -224,11 +224,13 @@ runConnection eventChan actionChan conn = do
   sender <- forkConnectionThread done (sendActions actionChan pendingResponses actionCounter conn)
   monitor <- forkConnectionThread done (monitorConnectionHeartbeat lastFrameAt)
   reason <- liftIO (MVar.takeMVar done)
-  liftIO (killThread readerThread)
-  liftIO (killThread sender)
-  liftIO (killThread monitor)
+  logInfo_ [i|QQ websocket connection ending: #{show reason :: String}|]
+  closeWebSocketForReconnect conn
+  stopConnectionThread "reader" readerThread
+  stopConnectionThread "sender" sender
+  stopConnectionThread "heartbeat monitor" monitor
   failPendingResponses pendingResponses
-  logInfo_ [i|QQ websocket connection ended: #{show reason :: String}|]
+  logInfo_ "QQ websocket connection ended"
 
 forkConnectionThread
   :: (IOE :> es, Log :> es)
@@ -270,6 +272,26 @@ failPendingResponses pendingResponses = do
   pending <- liftIO $ MVar.modifyMVar pendingResponses \pending ->
     pure (Map.empty, pending)
   traverse_ (liftIO . flip MVar.tryPutMVar failedActionResponse) pending
+
+closeWebSocketForReconnect :: (IOE :> es, Log :> es) => WS.Connection -> Eff es ()
+closeWebSocketForReconnect conn = do
+  result <- liftIO $
+    Timeout.timeout qqConnectionCloseTimeoutMicroseconds
+      (Exception.try (WS.sendClose conn ("reconnect" :: Text)) :: IO (Either SomeException ()))
+  case result of
+    Nothing ->
+      logInfo_ "QQ websocket close timed out during reconnect"
+    Just (Left err) ->
+      logTrace_ [i|QQ websocket close during reconnect failed: #{show err :: String}|]
+    Just (Right ()) ->
+      pure ()
+
+stopConnectionThread :: (IOE :> es, Log :> es) => Text -> ThreadId -> Eff es ()
+stopConnectionThread label threadId = do
+  result <- liftIO $
+    Timeout.timeout qqConnectionThreadStopTimeoutMicroseconds (killThread threadId)
+  when (isNothing result) $
+    logInfo_ [i|QQ websocket #{label} thread did not stop before reconnect; continuing|]
 
 websocketPath :: Config -> String
 websocketPath Config{path, token = Nothing} = path
@@ -386,6 +408,14 @@ qqActionTimeoutMicroseconds =
 qqReconnectDelayMicroseconds :: Int
 qqReconnectDelayMicroseconds =
   5 * 1000000
+
+qqConnectionCloseTimeoutMicroseconds :: Int
+qqConnectionCloseTimeoutMicroseconds =
+  2 * 1000000
+
+qqConnectionThreadStopTimeoutMicroseconds :: Int
+qqConnectionThreadStopTimeoutMicroseconds =
+  2 * 1000000
 
 qqHeartbeatCheckMicroseconds :: Int
 qqHeartbeatCheckMicroseconds =
