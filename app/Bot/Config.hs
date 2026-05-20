@@ -23,8 +23,7 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Matrix.Config as MatrixConfig
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import qualified Bot.Chat.Driver.Telegram.Config as TelegramConfig
-import qualified Bot.Effect.LLM as LLM
-import qualified Bot.Effect.LLM.Config as LLMConfig
+import qualified Bot.LLM.OpenAI.Config as LLMConfig
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.Agent.Config as AgentConfig
 import Bot.Core.Message (ChatPlatform (..))
@@ -59,7 +58,7 @@ data BotConfig = BotConfig
   { qq       :: !QQ.Config
   , telegram :: !Telegram.Config
   , matrix   :: !Matrix.Config
-  , llm      :: !LLM.Config
+  , llm      :: !LLMConfig.Config
   , tool     :: !Agent.ToolConfig
   , saucenao :: !SaucenaoConfig
   , memory   :: !Memory.MemoryConfig

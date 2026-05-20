@@ -19,6 +19,7 @@ import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
+import qualified Bot.LLM.OpenAI as OpenAI
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Audit
@@ -59,7 +60,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . Skills.runSkills cfg.skills
                . Scheduler.runScheduler
                . Typst.runTypst
-               . LLM.runLLM cfg.llm
+               . OpenAI.runLLM cfg.llm
                . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix
                . Lifecycle.runLifecycle
   runStack do

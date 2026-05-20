@@ -1,11 +1,11 @@
 {-|
-Module      : Bot.Effect.LLM.Retry
+Module      : Bot.LLM.OpenAI.Retry
 Description : LLM retry and response validation policy
 Stability   : experimental
 -}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Bot.Effect.LLM.Retry
+module Bot.LLM.OpenAI.Retry
   ( retryLLMRequest
   , retryLLMStreamRequest
   , validateChatAnswer
@@ -15,7 +15,7 @@ module Bot.Effect.LLM.Retry
 where
 
 import Bot.Prelude
-import qualified Bot.Effect.LLM.Transport as Transport
+import qualified Bot.LLM.Types as LLM
 import qualified Data.Text as Text
 import qualified Network.HTTP.Client as HTTP
 import qualified Streaming.Prelude as S
@@ -32,7 +32,7 @@ retryLLMRequest label action =
       action `catchSync` \err ->
         if attempt < maxLLMRequestAttempts && retryableLLMFailure err
           then do
-            logAttention_ [i|#{label} failed with #{Transport.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
+            logAttention_ [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
             go (attempt + 1)
           else
             throwIO err
@@ -54,7 +54,7 @@ retryLLMStreamRequest label makeStream =
         S.next stream `catchSync` \err ->
           if attempt < maxLLMRequestAttempts && retryableLLMFailure err
             then do
-              logAttention_ [i|#{label} failed with #{Transport.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
+              logAttention_ [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
               S.next (go (attempt + 1))
             else
               throwIO err
@@ -82,7 +82,7 @@ retryableHTTPFailure err =
 retryableEmptyResponse :: SomeException -> Bool
 retryableEmptyResponse err =
   case fromException err of
-    Just (Transport.LLMException message) ->
+    Just (LLM.LLMException message) ->
       "empty" `Text.isInfixOf` Text.toLower message
     Nothing ->
       False
@@ -91,19 +91,19 @@ validateTextStream :: IOE :> es => Stream (Of Text) (Eff es) Text -> Stream (Of 
 validateTextStream stream = do
   answer <- stream
   if Text.null (Text.strip answer)
-    then lift $ throwIO (Transport.LLMException "OpenAI response was empty: no text output.")
+    then lift $ throwIO (LLM.LLMException "OpenAI response was empty: no text output.")
     else pure answer
 
-validateChatAnswerStream :: IOE :> es => Stream (Of a) (Eff es) Transport.ChatAnswer -> Stream (Of a) (Eff es) Transport.ChatAnswer
+validateChatAnswerStream :: IOE :> es => Stream (Of a) (Eff es) LLM.ChatAnswer -> Stream (Of a) (Eff es) LLM.ChatAnswer
 validateChatAnswerStream stream = do
   answer <- stream
   lift (validateChatAnswer answer)
 
-validateChatAnswer :: IOE :> es => Transport.ChatAnswer -> Eff es Transport.ChatAnswer
+validateChatAnswer :: IOE :> es => LLM.ChatAnswer -> Eff es LLM.ChatAnswer
 validateChatAnswer answer =
   case answer of
-    Transport.ChatFinalAnswer{content}
+    LLM.ChatFinalAnswer{content}
       | Text.null (Text.strip content) ->
-          throwIO (Transport.LLMException "OpenAI response was empty: no text, image, or tool call output.")
+          throwIO (LLM.LLMException "OpenAI response was empty: no text, image, or tool call output.")
     _ ->
       pure answer

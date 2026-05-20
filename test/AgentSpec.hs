@@ -11,7 +11,9 @@ import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
-import qualified Bot.Effect.LLM.Transport as LLMTransport
+import qualified Bot.LLM.OpenAI.Config as LLMConfig
+import qualified Bot.LLM.OpenAI.Transport as LLMTransport
+import qualified Bot.LLM.Test as LLMTest
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
@@ -750,14 +752,14 @@ testLLMImageStreamIgnoresPartialEventWithoutFinalImage =
         , "partial_image_index" Aeson..= (0 :: Int)
         ]
 
-imageStreamTestConfig :: LLM.Config
+imageStreamTestConfig :: LLMConfig.Config
 imageStreamTestConfig =
-  LLM.defaultConfig
+  LLMConfig.defaultConfig
 
 testLLMStreamingEffectPreservesYieldedChunks :: IO ()
 testLLMStreamingEffectPreservesYieldedChunks = do
   chunks S.:> answer <- runEff $
-    LLM.runLLMWith
+    LLMTest.runLLMWith
       (\_ -> pure "unused text answer")
       (\_ -> S.each ["he", "llo"] $> "hello")
       (\_ -> pure "unused image answer")
@@ -1559,7 +1561,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced memoryCfg sk
                         Scheduler.runScheduler $
                           Memory.runMemory memoryCfg $
                             Skills.runSkills skillsCfg $
-                              LLM.runLLMWith
+                              LLMTest.runLLMWith
                                 (\messages -> captureMessages captured messages >> pure "unused text answer")
                                 (\messages -> do
                                     lift $ captureMessages captured messages
@@ -1619,7 +1621,7 @@ runAgentWithStreamingAnswers answers chatMock action = do
                         Scheduler.runScheduler $
                           Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") $
                             Skills.runSkills defaultTestSkillsConfig $
-                              LLM.runLLMWith
+                              LLMTest.runLLMWith
                                 (\_ -> pure "unused text answer")
                                 (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
                                 (\_ -> pure "unused image answer")
