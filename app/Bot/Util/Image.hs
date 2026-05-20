@@ -57,7 +57,7 @@ compressDataImage format quality imageRef =
     Nothing ->
       pure Nothing
     Just bytes -> do
-      result <- (convertDataImage format quality bytes) `catch` \(err :: SomeException) -> do
+      result <- (convertDataImage format quality bytes) `catchSync` \err -> do
         logAttention_ [i|Image compression failed: #{show err :: String}|]
         pure Nothing
       traverse_ (\url -> logInfo_ [i|Compressed image response URL: #{url}|]) result
@@ -99,4 +99,4 @@ clampImageQuality =
 
 removeIfExists :: (Fail :> es, FileSystem :> es) => FilePath -> Eff es ()
 removeIfExists path =
-  removeFile path `catch` \(_ :: SomeException) -> pure ()
+  removeFile path `catchSync` \_ -> pure ()

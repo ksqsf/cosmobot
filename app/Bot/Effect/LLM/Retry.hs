@@ -29,7 +29,7 @@ retryLLMRequest label action =
   go (1 :: Int)
   where
     go attempt =
-      action `catch` \(err :: SomeException) ->
+      action `catchSync` \err ->
         if attempt < maxLLMRequestAttempts && retryableLLMFailure err
           then do
             logAttention_ [i|#{label} failed with #{Transport.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
@@ -51,7 +51,7 @@ retryLLMStreamRequest label makeStream =
 
     consume attempt stream = do
       next <- lift $
-        S.next stream `catch` \(err :: SomeException) ->
+        S.next stream `catchSync` \err ->
           if attempt < maxLLMRequestAttempts && retryableLLMFailure err
             then do
               logAttention_ [i|#{label} failed with #{Transport.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]

@@ -12,9 +12,8 @@ module Bot.Util.Stream
 where
 
 import Bot.Prelude
-import qualified Control.Concurrent.Async as Async
-import qualified Control.Concurrent.STM as STM
-import qualified Control.Concurrent.STM.TBQueue as TBQueue
+import qualified Effectful.Concurrent.Async as Async
+import qualified Effectful.Concurrent.STM as STM
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 
@@ -35,15 +34,13 @@ bracketStream acquire release use = do
 -- with this project's GHC 9.6 toolchain. Keep this small local version until
 -- that dependency chain is usable here.
 mergeStreams
-  :: (Log :> es, IOE :> es)
+  :: (Log :> es, Concurrent :> es)
   => [Stream (Of a) (Eff es) ()]
   -> Stream (Of a) (Eff es) ()
 mergeStreams streams = do
-  queue <- S.lift (liftIO (TBQueue.newTBQueueIO streamQueueCapacity :: IO (TBQueue.TBQueue (MergeEvent a))))
-  shuttingDown <- S.lift (liftIO (STM.newTVarIO False))
-  pumps <- S.lift $ withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-    traverse (liftIO . Async.async . runInIO . pump shuttingDown queue) streams
-  readMerged (length streams) queue `streamFinally` cleanupPumps shuttingDown pumps
+  queue <- S.lift (STM.newTBQueueIO streamQueueCapacity)
+  pumps <- S.lift $ traverse (Async.async . pump queue) streams
+  readMerged (length streams) queue `streamFinally` cleanupPumps pumps
 
 streamQueueCapacity :: Natural
 streamQueueCapacity =
@@ -61,9 +58,9 @@ data MergeState = MergeState
   }
 
 readMerged
-  :: (Log :> es, IOE :> es)
+  :: (Log :> es, Concurrent :> es)
   => Int
-  -> TBQueue.TBQueue (MergeEvent a)
+  -> STM.TBQueue (MergeEvent a)
   -> Stream (Of a) (Eff es) ()
 readMerged streamCount queue =
   go MergeState{remaining = streamCount, failures = 0, lastFailure = Nothing}
@@ -72,7 +69,7 @@ readMerged streamCount queue =
       | mergeState.remaining <= 0 =
           finishMerged mergeState
       | otherwise = do
-          event <- S.lift (liftIO (STM.atomically (TBQueue.readTBQueue queue)))
+          event <- S.lift (STM.atomically (STM.readTBQueue queue))
           case event of
             MergeItem item -> do
               S.yield item
@@ -81,8 +78,7 @@ readMerged streamCount queue =
               go mergeState{remaining = mergeState.remaining - 1}
             MergeFailed err ->
               go mergeState
-                { remaining = mergeState.remaining - 1
-                , failures = mergeState.failures + 1
+                { failures = mergeState.failures + 1
                 , lastFailure = Just err
                 }
 
@@ -111,33 +107,22 @@ streamFinally stream cleanup =
           S.yield item
           go rest
 
-cleanupPumps :: IOE :> es => STM.TVar Bool -> [Async.Async ()] -> Eff es ()
-cleanupPumps shuttingDown pumps = do
-  liftIO $ STM.atomically (STM.writeTVar shuttingDown True)
-  traverse_ (liftIO . Async.cancel) pumps
+cleanupPumps :: Concurrent :> es => [Async.Async ()] -> Eff es ()
+cleanupPumps pumps =
+  traverse_ Async.cancel pumps
 
 pump
-  :: (Log :> es, IOE :> es)
-  => STM.TVar Bool
-  -> TBQueue.TBQueue (MergeEvent a)
+  :: (Log :> es, Concurrent :> es)
+  => STM.TBQueue (MergeEvent a)
   -> Stream (Of a) (Eff es) ()
   -> Eff es ()
-pump shuttingDown queue stream =
+pump queue stream =
   (S.mapM_ (writeMergeEvent queue . MergeItem) stream *> writeMergeEvent queue MergeDone)
-    `catch` \(err :: SomeException) ->
-      if isStreamCancelled err
-        then do
-          isShuttingDown <- liftIO $ STM.readTVarIO shuttingDown
-          unless isShuttingDown (writeMergeEvent queue MergeDone)
-        else do
-          logInfo_ [i|Merged stream input stopped: #{show err :: String}|]
-          writeMergeEvent queue (MergeFailed err)
+    `catchSync` \err -> do
+      logInfo_ [i|Merged stream input stopped: #{show err :: String}|]
+      writeMergeEvent queue (MergeFailed err)
+    `finally` writeMergeEvent queue MergeDone
 
-isStreamCancelled :: SomeException -> Bool
-isStreamCancelled err =
-  Just ThreadKilled == fromException err
-    || Just Async.AsyncCancelled == fromException err
-
-writeMergeEvent :: IOE :> es => TBQueue.TBQueue (MergeEvent a) -> MergeEvent a -> Eff es ()
+writeMergeEvent :: Concurrent :> es => STM.TBQueue (MergeEvent a) -> MergeEvent a -> Eff es ()
 writeMergeEvent queue =
-  liftIO . STM.atomically . TBQueue.writeTBQueue queue
+  STM.atomically . STM.writeTBQueue queue

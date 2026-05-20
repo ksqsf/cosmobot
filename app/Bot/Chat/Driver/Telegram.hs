@@ -257,7 +257,7 @@ incomingMessages = S.for updatesStream $ \update -> do
       S.lift $ logInfo_ "Ignoring Telegram event"
     Just parsedMessage -> do
       message <- S.lift $
-        resolveIncomingMessageImages parsedMessage `catch` \(err :: SomeException) -> do
+        resolveIncomingMessageImages parsedMessage `catchSync` \err -> do
           logInfo_ [i|Telegram image resolution failed: #{show err :: String}|]
           pure parsedMessage
       S.lift $ logTrace "incoming Telegram message" message
@@ -1702,7 +1702,7 @@ uploadTemporaryPhoto request bytes = do
   uploadPhoto request path `finally` cleanup path
   where
     cleanup path =
-      liftIO (removeFile path) `catch` \(_ :: SomeException) -> pure ()
+      liftIO (removeFile path) `catchSync` \_ -> pure ()
 
 telegramTempDir :: FilePath
 telegramTempDir =

@@ -155,7 +155,7 @@ incomingMessages = do
   unless (isNothing cfg.accessToken) (syncLoop cfg Nothing)
   where
     syncLoop cfg since = do
-      result <- S.lift $ sync since `catch` \(err :: SomeException) -> do
+      result <- S.lift $ sync since `catchSync` \err -> do
         logInfo_ [i|Matrix sync failed, retrying: #{show err :: String}|]
         threadDelay matrixRetryDelayMicroseconds
         pure Nothing

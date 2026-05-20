@@ -5,8 +5,9 @@ import qualified Bot.Effect.Storage as StorageEffect
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import Effectful.Timeout (Timeout, runTimeout)
 import qualified Streaming.Prelude as S
-import Test.Tasty
+import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit
 
 main :: IO ()
@@ -93,7 +94,7 @@ testDeletedElapsedScheduleIsNotDelivered = runSchedulerTest do
     map (.scheduleId) schedules @?= []
 
 testPendingSchedulesPersistAcrossSchedulerRestart :: IO ()
-testPendingSchedulesPersistAcrossSchedulerRestart = runEff $ StorageEffect.runStorageSQLitePath ":memory:" do
+testPendingSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runConcurrent $ StorageEffect.runStorageSQLitePath ":memory:" do
   Scheduler.runScheduler do
     _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask persisted")
     pure ()
@@ -104,7 +105,7 @@ testPendingSchedulesPersistAcrossSchedulerRestart = runEff $ StorageEffect.runSt
       map ((.text) . (.message)) schedules @?= ["!ask persisted"]
 
 testElapsedSchedulesPersistAcrossSchedulerRestart :: IO ()
-testElapsedSchedulesPersistAcrossSchedulerRestart = runEff $ StorageEffect.runStorageSQLitePath ":memory:" do
+testElapsedSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runConcurrent $ StorageEffect.runStorageSQLitePath ":memory:" do
   Scheduler.runScheduler do
     _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "!ask after restart")
     pure ()
@@ -116,10 +117,10 @@ testElapsedSchedulesPersistAcrossSchedulerRestart = runEff $ StorageEffect.runSt
       length schedules @?= 0
 
 runSchedulerTest
-  :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, IOE] a
+  :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, Concurrent, Timeout, IOE] a
   -> IO a
 runSchedulerTest action =
-  runEff $ StorageEffect.runStorageSQLitePath ":memory:" $ Scheduler.runScheduler action
+  runEff $ runTimeout $ runConcurrent $ StorageEffect.runStorageSQLitePath ":memory:" $ Scheduler.runScheduler action
 
 messageFrom :: Text -> Text -> IncomingMessage
 messageFrom senderId text =

@@ -350,7 +350,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
         (recordReplyUpdate activeReply)
         (Chat.streamReplySegmentsTo message (.replyAnswer) (agentReplySegmentStream (Agent.runAgentProgramStreaming program conversation)))
     pure AgentReply{responseId, answer = replyResult.replyAnswer, result = replyResult.agentResult}
-  `catch` \(err :: SomeException) ->
+  `catchSync` \err ->
     case fromException err of
       Just ThreadKilled ->
         throwIO err
@@ -496,7 +496,7 @@ drawConversation
   => Conversation
   -> Eff es Text
 drawConversation conversation =
-  LLM.askImageWithHistory (Foldable.toList conversation.messages) `catch` \(err :: SomeException) -> do
+  LLM.askImageWithHistory (Foldable.toList conversation.messages) `catchSync` \err -> do
     logInfo_ [i|LLM image request failed: #{show err :: String}|]
     pure ("Image generation failed: " <> (AgentFailure.agentFailureFromException err).userMessage)
 

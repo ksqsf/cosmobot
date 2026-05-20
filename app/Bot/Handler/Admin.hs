@@ -86,7 +86,7 @@ handleUpgrade cfg message = do
   let scriptPath = cfg.script
   actionKey <- liftIO newLifecycleActionKey
   startupAction <- Lifecycle.enqueueStartupReply actionKey message "cosmobot 回来啦 (｡•̀ᴗ-)✧"
-  result <- try @SomeException (liftIO (startUpgradeScript scriptPath))
+  result <- trySync (liftIO (startUpgradeScript scriptPath))
   case result of
     Right running -> do
       void $ Chat.replyTo message [i|已启动 upgrade 脚本：#{Text.pack scriptPath}|]

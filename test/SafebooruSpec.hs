@@ -78,13 +78,14 @@ testPublicRouteAndCommandBoundary = do
 
 runSafebooruFlow
   :: IORef.IORef [Text]
-  -> Eff '[StorageEffect.Storage, Chat.Chat, Log, IOE] ()
+  -> Eff '[Concurrent, StorageEffect.Storage, Chat.Chat, Log, IOE] ()
   -> IO ()
 runSafebooruFlow replies action =
   runEff $
     runTestLog $
       Chat.runChatWith (chatHandlers replies) $
-        StorageEffect.runStorageSQLitePath ":memory:" action
+        StorageEffect.runStorageSQLitePath ":memory:" $
+          runConcurrent action
 
 chatHandlers :: IOE :> es => IORef.IORef [Text] -> Chat.ChatHandlers es
 chatHandlers replies =

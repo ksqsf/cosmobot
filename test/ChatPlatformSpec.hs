@@ -220,10 +220,10 @@ testTelegramOkFalseBecomesTelegramExceptionDescription :: IO ()
 testTelegramOkFalseBecomesTelegramExceptionDescription = do
   let raw = ByteStringChar8.pack "{\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: can't parse entities\"}"
       parsed = either (error . toText) id (Aeson.eitherDecodeStrict raw :: Either String Telegram.TelegramResult)
-  result <- try (runEff (Telegram.parseTelegramResult parsed)) :: IO (Either Telegram.TelegramException Telegram.Message)
+  result <- runEff (trySync (Telegram.parseTelegramResult parsed)) :: IO (Either SomeException Telegram.Message)
   case result of
-    Left (Telegram.TelegramException message) ->
-      message @?= "Bad Request: can't parse entities"
+    Left err ->
+      toText (displayException err) @?= "Bad Request: can't parse entities"
     Right _ ->
       assertFailure "expected TelegramException"
 

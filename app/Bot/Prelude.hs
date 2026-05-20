@@ -71,6 +71,7 @@ spawnTask action = void $ forkIO do
   try action >>= \case
     Right () -> pure ()
     Left err
-      | Just ThreadKilled <- fromException err ->
-        pure ()
+      | Just ThreadKilled <- fromException err -> do
+        tid <- myThreadId
+        logInfo_ [i|Thread #{tid} was killed|]
       | otherwise -> logAttention_ [i|Forked action failed: #{show err :: String}|]

@@ -237,7 +237,7 @@ persistEvent occurredAt event =
             }
         ]
     ))
-    `catch` \(err :: SomeException) ->
+    `catchSync` \err ->
       logInfo_ [i|Failed to persist agent audit event: #{show err :: String}|] $> Nothing
   where
     (maybeLinkedMessageId, maybeParentMessageId) =

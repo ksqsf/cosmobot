@@ -52,7 +52,13 @@ Concrete module ownership should follow those layers. Put shared message, route,
 
 ## Design Rules
 
-Use `effectful` for application capabilities and `streaming` for anything stream-like (incoming-message streams and LLM text streams). Keep `IOE :> es` explicit in effect interpreters and IO-bound helpers; use `liftIO` only at the boundary where real IO happens.
+Use `effectful` for application capabilities and `streaming` for anything stream-like (incoming-message streams and LLM text streams). Work in `Eff es` under all circumstances. Avoid `IO` and avoid adding `IOE :> es` unless the code is truly interpreting an external boundary that cannot be expressed through a narrower effect.
+
+Reuse capabilities from `effectful` whenever they exist. Prefer effectful `forkIO`, `IORef`, `Process`, `FileSystem`, `Concurrent`, `Timeout`, `STM`, and related APIs over `base` or raw `IO` versions. Before introducing a new side effect, consult the `effectful` module hierarchy and documentation for an existing effect or interpreter.
+
+Never catch asynchronous exceptions for control flow or classification. Do not write code that catches `SomeException`, inspects `AsyncException`, or special-cases `ThreadKilled`. Use `trySync`, `catchSync`, and related synchronous-exception helpers when recovering from ordinary failures; let async exceptions propagate while cleanup is handled by structured cleanup primitives.
+
+Do not import `Control.Exception`. Do not import `Control.Concurrent` for concurrency that `effectful` can express. Use `Effectful.Exception` through `Bot.Prelude` and the appropriate `Effectful.Concurrent.*` modules instead.
 
 Prefer structured APIs over string manipulation: `aeson` for protocol JSON, `Toml.Schema` and local config parsers for TOML, and Selda tables/queries through `Bot.Storage.Prelude` for persisted state. Avoid new JSON payload collections for queryable state; model columns explicitly so the data can be queried and migrated.
 

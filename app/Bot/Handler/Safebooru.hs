@@ -161,7 +161,7 @@ sendSafebooruImages search message request =
       else void $ Chat.replyTo message (renderImageLinks links)
   where
     handleError action =
-      action `catch` \(err :: SomeException) -> do
+      action `catchSync` \err -> do
         logInfo_ [i|Safebooru search failed: #{show err :: String}|]
         void $ Chat.replyTo message "Safebooru 搜索失败。"
 

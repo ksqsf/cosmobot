@@ -116,7 +116,7 @@ handleToolLimit runId turn _content calls answered = do
 
 safeToolCall :: LLM.ToolCall -> Eff es ToolResult -> Eff es ToolResult
 safeToolCall call action =
-  action `catch` \(err :: SomeException) ->
+  action `catchSync` \err ->
     if isAsyncException err
       then throwIO err
       else do

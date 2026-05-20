@@ -76,7 +76,7 @@ sendRankImage titleSuffix failureMessage fetchRows message =
         void $ Chat.replyTo message [i|#{title}已生成，但图片发送失败。|]
   where
     handleError action =
-      action `catch` \(err :: SomeException) -> do
+      action `catchSync` \err -> do
         logAttention_ [i|Failed to render typing rank: #{show err :: String}|]
         void $ Chat.replyTo message failureMessage
 

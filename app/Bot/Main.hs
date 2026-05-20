@@ -98,6 +98,8 @@ runGracefulTermination inner = do
   shutdown <- MVar.newEmptyMVar
   _termHandler <- installHandler shutdown Signals.sigTERM
   _intHandler  <- installHandler shutdown Signals.sigINT
+
+  -- inner will be canceled by asynchronous exceptions
   race_ inner (MVar.takeMVar shutdown)
 
   where

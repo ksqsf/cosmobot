@@ -161,7 +161,7 @@ withObservedToolCall observer callInfo action = do
     , toolCall = callInfo.toolCall
     }
   (status, result) <-
-    statusFromResult <$> action observation `catch` \(err :: SomeException) ->
+    statusFromResult <$> action observation `catchSync` \err ->
       if isAsyncException err
         then do
           finishToolCall observer callInfo "interrupted" (toolText "")

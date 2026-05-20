@@ -24,8 +24,6 @@ import Bot.Handler.Ask (askHandlers)
 import Bot.Handler.Ask.Config (AskHandlerConfig (..))
 import Bot.Storage.Conversation
 import Bot.Prelude
-import Control.Concurrent (forkIO, threadDelay)
-import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Foldable as Foldable
@@ -35,6 +33,10 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Unique
+import Effectful.FileSystem (FileSystem, runFileSystem)
+import qualified Effectful.FileSystem as FS
+import Effectful.Process (Process, runProcess)
+import Effectful.Timeout (Timeout, runTimeout)
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Client.Internal as HTTPInternal
 import qualified Network.HTTP.Req as Req
@@ -43,7 +45,7 @@ import qualified Network.HTTP.Types.Version as HTTPVersion
 import qualified Streaming.Prelude as S
 import System.Directory
 import System.FilePath
-import Test.Tasty
+import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit
 
 type AgentStack =
@@ -57,6 +59,12 @@ type AgentStack =
    , Typst.Typst
    , StorageEffect.Storage
    , Log
+   , Prim
+   , Fail
+   , Concurrent
+   , Timeout
+   , Process
+   , FileSystem
    , IOE
    ]
 
@@ -359,9 +367,9 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
   editCalls <- IORef.newIORef ([] :: [ImageEditCall])
   replies <- IORef.newIORef ([] :: [Text])
   _ <- runAgentWithImageEditAndReferencedMessage answers editCalls editedImage (Just referenced) (ChatMock (Just replies) (Just "47") Nothing) do
-    conversations <- liftIO newConversationStore
+    conversations <- newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) message
-    liftIO $ waitUntil ((>= 3) . length <$> IORef.readIORef replies)
+    waitUntil (liftIO $ (>= 3) . length <$> IORef.readIORef replies)
   IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [referencedImage] Nothing])
 
 testAgentRequestMergesCurrentMessageContextIntoSystemPrompt :: IO ()
@@ -440,9 +448,9 @@ testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
   answers <- IORef.newIORef [chatAnswer "done" []]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    conversations <- liftIO newConversationStore
+    conversations <- newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
-    liftIO $ waitUntil (not . null <$> IORef.readIORef captured)
+    waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just (message : secondMessage : _) -> do
@@ -463,11 +471,11 @@ testAskHandlerSystemContextUsesMessageBotId = do
   answers <- IORef.newIORef [chatAnswer "done" []]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    conversations <- liftIO newConversationStore
+    conversations <- newConversationStore
     let cfg = askHandlerConfig{botIds = []}
         message = askHandlerMessage{digest = askHandlerMessage.digest{botId = Just "2044933066"}}
     runHandlers (askHandlers Agent.defaultToolConfig cfg conversations) message
-    liftIO $ waitUntil (not . null <$> IORef.readIORef captured)
+    waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just (message : secondMessage : _) -> do
@@ -496,9 +504,9 @@ testAskHandlerInjectsStartupSkillMetadata = withTempDir "skills-test" \skillsDir
   answers <- IORef.newIORef [chatAnswer "done" []]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   _ <- runAgentCapturingMessagesWithSkills (SkillsStore.SkillsConfig skillsDir) captured answers (ChatMock Nothing Nothing Nothing) do
-    conversations <- liftIO newConversationStore
+    conversations <- newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
-    liftIO $ waitUntil (not . null <$> IORef.readIORef captured)
+    waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just (message : _) ->
@@ -566,9 +574,9 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
     ]
   replies <- IORef.newIORef ([] :: [Text])
   _ <- runAgentWith answers (ChatMock (Just replies) (Just "45") Nothing) do
-    conversations <- liftIO newConversationStore
+    conversations <- newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
-    liftIO $ waitUntil ((>= 2) . length <$> IORef.readIORef replies)
+    waitUntil (liftIO $ (>= 2) . length <$> IORef.readIORef replies)
   sent <- IORef.readIORef replies
   case sent of
     progress : _ ->
@@ -592,9 +600,9 @@ testAskHandlerFlushesStreamedContentBeforeToolCalls = do
     ]
   replies <- IORef.newIORef ([] :: [Text])
   _ <- runAgentWithStreamingAnswers answers (ChatMock (Just replies) (Just "46") Nothing) do
-    conversations <- liftIO newConversationStore
+    conversations <- newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
-    liftIO $ waitUntil ((>= 2) . length <$> IORef.readIORef replies)
+    waitUntil (liftIO $ (>= 2) . length <$> IORef.readIORef replies)
   IORef.readIORef replies >>= (@?= ["我会查天气", "我已经查到天气"])
 
 testAgentStreamsToolRequestContentBeforeToolNotification :: IO ()
@@ -769,7 +777,7 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
   replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
   updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
-  (responseId, result) <- runEff $
+  (responseId, result) <- runEff $ runPrim $
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
@@ -799,7 +807,7 @@ testEditableSegmentedRepliesOpenNewTail = do
   edits <- IORef.newIORef ([] :: [(MessageId, Text)])
   updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
-  (responseId, result) <- runEff $
+  (responseId, result) <- runEff $ runPrim $
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
@@ -840,7 +848,7 @@ testSegmentedRepliesFlushFinalOpenSegment = do
   replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
   updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
-  (responseId, result) <- runEff $
+  (responseId, result) <- runEff $ runPrim $
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
@@ -874,7 +882,7 @@ testEditableChatStreamingSplitsLongReplies = do
   edits <- IORef.newIORef ([] :: [(MessageId, Text)])
   updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
-  (responseId, result) <- runEff $
+  (responseId, result) <- runEff $ runPrim $
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
@@ -900,9 +908,9 @@ testEditableChatStreamingSplitsLongReplies = do
   IORef.readIORef updates >>= (@?= [(Just "1", [], "ab"), (Just "1", [], "abcd"), (Just "1", [], "abcdef"), (Just "1", [], "abcdefgh"), (Just "1", [], "abcdefghij"), (Just "1", [], "abcdefghijkl"), (Just "1", ["2", "3"], "abcdefghijkl")])
 
 testChunkedActiveConversationAliasesEverySentReply :: IO ()
-testChunkedActiveConversationAliasesEverySentReply = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
-  store <- liftIO newConversationStore
-  threadId <- liftIO $ forkIO (threadDelay 60_000_000)
+testChunkedActiveConversationAliasesEverySentReply = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+  store <- newConversationStore
+  threadId <- forkIO (threadDelay 60_000_000)
   let baseConversation = startWithUser "hello"
       partialConversation = appendAssistant "partial answer" baseConversation
   active <- fromMaybe (error "expected active conversation") <$> rememberActiveConversation store Nothing (Just (messageKey 1)) threadId baseConversation
@@ -950,8 +958,8 @@ fakeWebFetchTool fetches = Agent.Tool
   }
 
 testConversationRepliesKeepSnapshots :: IO ()
-testConversationRepliesKeepSnapshots = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
-  store <- liftIO newConversationStore
+testConversationRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+  store <- newConversationStore
   let firstConversation = startWithUser "first"
       secondConversation = appendAssistant "second" firstConversation
   rememberConversation store (Just (messageKey 1)) firstConversation
@@ -963,8 +971,8 @@ testConversationRepliesKeepSnapshots = runEff $ runTestLog $ StorageEffect.runSt
     (show secondLookup :: String) @?= show (Just secondConversation)
 
 testConversationBranchesDoNotOverwriteSiblings :: IO ()
-testConversationBranchesDoNotOverwriteSiblings = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
-  store <- liftIO newConversationStore
+testConversationBranchesDoNotOverwriteSiblings = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+  store <- newConversationStore
   let root = appendAssistant "root answer" (startWithUser "root")
       branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
       branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
@@ -984,8 +992,8 @@ testConversationBranchesDoNotOverwriteSiblings = runEff $ runTestLog $ StorageEf
     (show branchA2Lookup :: String) @?= show (Just branchA2)
 
 testConversationLookupIsScopedByChat :: IO ()
-testConversationLookupIsScopedByChat = runEff $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
-  store <- liftIO newConversationStore
+testConversationLookupIsScopedByChat = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+  store <- newConversationStore
   let chatA = testMessageInChat 100
       chatB = testMessageInChat 200
       keyA = conversationMessageKey chatA
@@ -1002,9 +1010,9 @@ testConversationLookupIsScopedByChat = runEff $ runTestLog $ StorageEffect.runSt
 
 testConversationBranchesPersistThroughSQLiteReload :: IO ()
 testConversationBranchesPersistThroughSQLiteReload =
-  withSQLiteTempPath "conversation-branches" \path -> runEff $ runTestLog do
+  withSQLiteTempPath "conversation-branches" \path -> runEff $ runConcurrent $ runPrim $ runTestLog do
     StorageEffect.runStorageSQLitePath path do
-      store <- liftIO newConversationStore
+      store <- newConversationStore
       let root = appendAssistant "root answer" (startWithUser "root")
           branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
           branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
@@ -1012,7 +1020,7 @@ testConversationBranchesPersistThroughSQLiteReload =
       rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 2)) branchA
       rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 3)) branchB
 
-      reloaded <- liftIO newConversationStore
+      reloaded <- newConversationStore
       branchAAfterReload <- lookupConversation reloaded (messageKey 2)
       branchBAfterReload <- lookupConversation reloaded (messageKey 3)
       let branchA2 = appendAssistant "A second answer" (appendUser "A second follow-up" branchA)
@@ -1031,9 +1039,9 @@ testConversationBranchesPersistThroughSQLiteReload =
 
 testConversationCacheMissLoadsEvictedParent :: IO ()
 testConversationCacheMissLoadsEvictedParent =
-  withSQLiteTempPath "conversation-cache-miss" \path -> runEff $ runTestLog do
+  withSQLiteTempPath "conversation-cache-miss" \path -> runEff $ runConcurrent $ runPrim $ runTestLog do
     StorageEffect.runStorageSQLitePath path do
-      store <- liftIO newConversationStore
+      store <- newConversationStore
       let root = appendAssistant "root answer" (startWithUser "root")
           child = appendAssistant "child answer" (appendUser "child follow-up" root)
       rememberConversation store (Just (messageKey 1)) root
@@ -1206,27 +1214,19 @@ withMemoryTempDir action = do
 
 withTempDir :: String -> (FilePath -> IO a) -> IO a
 withTempDir label action = do
-  root <- getTemporaryDirectory
-  unique <- hashUnique <$> newUnique
-  let dir = root </> [i|cosmobot-#{label}-#{unique}|]
-  bracket
-    (createDirectory dir $> dir)
-    removeDirectoryRecursive
-    action
+  runEff $ runFileSystem do
+    root <- FS.getTemporaryDirectory
+    unique <- liftIO (hashUnique <$> newUnique)
+    let dir = root </> [i|cosmobot-#{label}-#{unique}|]
+    bracket
+      (FS.createDirectory dir $> dir)
+      FS.removeDirectoryRecursive
+      (liftIO . action)
 
 withSQLiteTempPath :: String -> (FilePath -> IO a) -> IO a
-withSQLiteTempPath label action = do
-  root <- getTemporaryDirectory
-  unique <- hashUnique <$> newUnique
-  let path = root </> [i|cosmobot-#{label}-#{unique}.sqlite|]
-  bracket_
-    (removeIfExists path)
-    (removeIfExists path)
-    (action path)
-
-removeIfExists :: FilePath -> IO ()
-removeIfExists path =
-  removeFile path `catch` \(_ :: IOException) -> pure ()
+withSQLiteTempPath label action =
+  withTempDir label \dir ->
+    action (dir </> "test.sqlite")
 
 sameConversationIds :: [ConversationRow] -> Bool
 sameConversationIds rows =
@@ -1545,50 +1545,58 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced memoryCfg skillsCfg rendered captured answers chatMock referencedMessage imageEdit action = do
-  runEff $
-    runTestLog $
-      StorageEffect.runStorageSQLitePath ":memory:" $
-        Typst.runTypstWith (mockTypstRender rendered) $
-          Scheduler.runScheduler $
-            Memory.runMemory memoryCfg $
-              Skills.runSkills skillsCfg $
-                LLM.runLLMWith
-                  (\messages -> captureMessages captured messages >> pure "unused text answer")
-                  (\messages -> do
-                      lift $ captureMessages captured messages
-                      S.yield "unused text stream answer"
-                      pure "unused text stream answer")
-                  (\messages -> captureMessages captured messages >> pure "unused image answer")
-                  (\prompt imageRefs maskRef -> liftIO (imageEdit prompt imageRefs maskRef))
-                  (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
-                  (\_ messages -> do
-                      lift $ captureMessages captured messages
-                      answer <- liftIO (popAnswer answers)
-                      case answer of
-                        LLM.ChatFinalAnswer{content} ->
-                          S.yield content
-                        LLM.ChatToolRequest{content}
-                          | Text.null content -> pure ()
-                          | otherwise -> S.yield content
-                      pure answer) $
-                  ChatLog.runChatLog $
-                    AgentAudit.runAgentAudit $
-                      Chat.runChatWith
-                        Chat.ChatHandlers
-                          { handleReplyTo = mockReply chatMock
-                          , handleUploadFile = noopUpload
-                          , handleEditMessage = noopEdit
-                          , handleDeleteMessage = noopDelete
-                          , handleReplyStreamStyle = noopReplyStreamStyle
-                          , handleGetMessageContent = \_ _ -> pure referencedMessage
-                          , handleGetSenderMemberInfo = noopSenderMember
-                          , handleGetMemberInfo = noopMember
-                          , handleGetUserAvatar = mockUserAvatar chatMock
-                          , handleListGroupMembers = noopMembers
-                          , handleMentionUser = noopMention
-                          , handleSetMemberTitle = noopSetMemberTitle
-                          }
-                        action
+  result <-
+    runEff $
+      runFileSystem $
+        runProcess $
+          runTimeout $
+            runConcurrent $
+              runFail $
+                runPrim $
+                  runTestLog $
+                    StorageEffect.runStorageSQLitePath ":memory:" $
+                      Typst.runTypstWith (mockTypstRender rendered) $
+                        Scheduler.runScheduler $
+                          Memory.runMemory memoryCfg $
+                            Skills.runSkills skillsCfg $
+                              LLM.runLLMWith
+                                (\messages -> captureMessages captured messages >> pure "unused text answer")
+                                (\messages -> do
+                                    lift $ captureMessages captured messages
+                                    S.yield "unused text stream answer"
+                                    pure "unused text stream answer")
+                                (\messages -> captureMessages captured messages >> pure "unused image answer")
+                                (\prompt imageRefs maskRef -> liftIO (imageEdit prompt imageRefs maskRef))
+                                (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
+                                (\_ messages -> do
+                                    lift $ captureMessages captured messages
+                                    answer <- liftIO (popAnswer answers)
+                                    case answer of
+                                      LLM.ChatFinalAnswer{content} ->
+                                        S.yield content
+                                      LLM.ChatToolRequest{content}
+                                        | Text.null content -> pure ()
+                                        | otherwise -> S.yield content
+                                    pure answer) $
+                                ChatLog.runChatLog $
+                                  AgentAudit.runAgentAudit $
+                                    Chat.runChatWith
+                                      Chat.ChatHandlers
+                                        { handleReplyTo = mockReply chatMock
+                                        , handleUploadFile = noopUpload
+                                        , handleEditMessage = noopEdit
+                                        , handleDeleteMessage = noopDelete
+                                        , handleReplyStreamStyle = noopReplyStreamStyle
+                                        , handleGetMessageContent = \_ _ -> pure referencedMessage
+                                        , handleGetSenderMemberInfo = noopSenderMember
+                                        , handleGetMemberInfo = noopMember
+                                        , handleGetUserAvatar = mockUserAvatar chatMock
+                                        , handleListGroupMembers = noopMembers
+                                        , handleMentionUser = noopMention
+                                        , handleSetMemberTitle = noopSetMemberTitle
+                                        }
+                                      action
+  either assertFailure pure result
 
 runAgentWithStreamingAnswers
   :: IORef.IORef [StreamingAnswer]
@@ -1597,41 +1605,49 @@ runAgentWithStreamingAnswers
   -> IO a
 runAgentWithStreamingAnswers answers chatMock action = do
   rendered <- IORef.newIORef ([] :: [Text])
-  runEff $
-    runTestLog $
-      StorageEffect.runStorageSQLitePath ":memory:" $
-        Typst.runTypstWith (mockTypstRender rendered) $
-          Scheduler.runScheduler $
-            Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") $
-              Skills.runSkills defaultTestSkillsConfig $
-                LLM.runLLMWith
-                  (\_ -> pure "unused text answer")
-                  (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
-                  (\_ -> pure "unused image answer")
-                  (\_ _ _ -> pure "unused image edit answer")
-                  (\_ _ -> (.answer) <$> liftIO (popStreamingAnswer answers))
-                  (\_ _ -> do
-                      streamingAnswer <- liftIO (popStreamingAnswer answers)
-                      traverse_ S.yield streamingAnswer.chunks
-                      pure streamingAnswer.answer) $
-                  ChatLog.runChatLog $
-                    AgentAudit.runAgentAudit $
-                      Chat.runChatWith
-                        Chat.ChatHandlers
-                          { handleReplyTo = mockReply chatMock
-                          , handleUploadFile = noopUpload
-                          , handleEditMessage = noopEdit
-                          , handleDeleteMessage = noopDelete
-                          , handleReplyStreamStyle = noopReplyStreamStyle
-                          , handleGetMessageContent = noopFetch
-                          , handleGetSenderMemberInfo = noopSenderMember
-                          , handleGetMemberInfo = noopMember
-                          , handleGetUserAvatar = mockUserAvatar chatMock
-                          , handleListGroupMembers = noopMembers
-                          , handleMentionUser = noopMention
-                          , handleSetMemberTitle = noopSetMemberTitle
-                          }
-                        action
+  result <-
+    runEff $
+      runFileSystem $
+        runProcess $
+          runTimeout $
+            runConcurrent $
+              runFail $
+                runPrim $
+                  runTestLog $
+                    StorageEffect.runStorageSQLitePath ":memory:" $
+                      Typst.runTypstWith (mockTypstRender rendered) $
+                        Scheduler.runScheduler $
+                          Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") $
+                            Skills.runSkills defaultTestSkillsConfig $
+                              LLM.runLLMWith
+                                (\_ -> pure "unused text answer")
+                                (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
+                                (\_ -> pure "unused image answer")
+                                (\_ _ _ -> pure "unused image edit answer")
+                                (\_ _ -> (.answer) <$> liftIO (popStreamingAnswer answers))
+                                (\_ _ -> do
+                                    streamingAnswer <- liftIO (popStreamingAnswer answers)
+                                    traverse_ S.yield streamingAnswer.chunks
+                                    pure streamingAnswer.answer) $
+                                ChatLog.runChatLog $
+                                  AgentAudit.runAgentAudit $
+                                    Chat.runChatWith
+                                      Chat.ChatHandlers
+                                        { handleReplyTo = mockReply chatMock
+                                        , handleUploadFile = noopUpload
+                                        , handleEditMessage = noopEdit
+                                        , handleDeleteMessage = noopDelete
+                                        , handleReplyStreamStyle = noopReplyStreamStyle
+                                        , handleGetMessageContent = noopFetch
+                                        , handleGetSenderMemberInfo = noopSenderMember
+                                        , handleGetMemberInfo = noopMember
+                                        , handleGetUserAvatar = mockUserAvatar chatMock
+                                        , handleListGroupMembers = noopMembers
+                                        , handleMentionUser = noopMention
+                                        , handleSetMemberTitle = noopSetMemberTitle
+                                        }
+                                      action
+  either assertFailure pure result
 
 defaultTestSkillsConfig :: SkillsStore.SkillsConfig
 defaultTestSkillsConfig =
@@ -1836,12 +1852,12 @@ streamPayload delta =
         ]
     ]
 
-waitUntil :: IO Bool -> IO ()
+waitUntil :: (Concurrent :> es, IOE :> es) => Eff es Bool -> Eff es ()
 waitUntil predicate =
   go (50 :: Int)
   where
     go 0 =
-      assertFailure "timed out waiting for condition"
+      liftIO $ assertFailure "timed out waiting for condition"
     go remaining = do
       done <- predicate
       unless done do

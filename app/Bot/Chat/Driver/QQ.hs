@@ -256,7 +256,7 @@ sendActions actionChan pendingResponses actionCounter conn =
     let echoedValue = addActionEcho echo value
     MVar.modifyMVar_ pendingResponses \pending ->
       pure (Map.insert echo responseVar pending)
-    (liftIO (WS.sendTextData conn (Aeson.encode echoedValue)) `catch` \(err :: SomeException) -> do
+    (liftIO (WS.sendTextData conn (Aeson.encode echoedValue)) `catchSync` \err -> do
       MVar.modifyMVar_ pendingResponses \pending ->
         pure (Map.delete echo pending)
       void $ MVar.tryPutMVar responseVar failedActionResponse
@@ -271,7 +271,7 @@ failPendingResponses pendingResponses = do
 closeWebSocketForReconnect :: (IOE :> es, Log :> es, Timeout :> es) => WS.Connection -> Eff es ()
 closeWebSocketForReconnect conn = do
   result <- timeout qqConnectionCloseTimeoutMicroseconds $
-    try @SomeException (liftIO $ WS.sendClose conn ("reconnect" :: Text))
+    trySync (liftIO $ WS.sendClose conn ("reconnect" :: Text))
   case result of
     Nothing ->
       logInfo_ "QQ websocket close timed out during reconnect"

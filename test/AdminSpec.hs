@@ -9,7 +9,6 @@ import Bot.Handler.Admin.Config
 import qualified Bot.Lifecycle as Lifecycle
 import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as LifecycleStorage
-import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
 import Test.Tasty
@@ -164,8 +163,9 @@ runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incomin
     runTestLog $
       StorageEffect.runStorageSQLitePath ":memory:" $
         Chat.runChatWith (chatHandlers replies titleCalls titleResult) do
-          runHandlers (adminHandlers cfg) incoming
-          liftIO $ when (delayMicros > 0) (threadDelay delayMicros)
+          runConcurrent do
+            runHandlers (adminHandlers cfg) incoming
+            when (delayMicros > 0) (threadDelay delayMicros)
           LifecycleStorage.loadStartupActions
 
 chatHandlers

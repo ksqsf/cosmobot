@@ -3,28 +3,32 @@ module Main (main) where
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Data.Aeson as Aeson
-import qualified Data.IORef as IORef
 import Bot.Core.Route
 import Bot.Handler.Scratchpad
 import Bot.Core.Message
 import Bot.Prelude
 import Effectful.FileSystem
+import qualified Effectful.Prim.IORef as IORef
 import System.FilePath ((</>))
-import Test.Tasty
+import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit
 
 main :: IO ()
 main =
   defaultMain $
     testGroup "scratchpad"
-      [ testCase "todo command flow" testScratchpadTodoFlow
-      , testCase "todo lists are scoped by sender" testScratchpadSenderIsolation
-      , testCase "todo list persists through SQLite" testScratchpadPersistence
-      , testCase "invalid commands reply with usage or missing item" testScratchpadInvalidCommands
-      , testCase "messages without sender are rejected" testScratchpadMissingSender
+      [ effTestCase "todo command flow" testScratchpadTodoFlow
+      , effTestCase "todo lists are scoped by sender" testScratchpadSenderIsolation
+      , effTestCase "todo list persists through SQLite" testScratchpadPersistence
+      , effTestCase "invalid commands reply with usage or missing item" testScratchpadInvalidCommands
+      , effTestCase "messages without sender are rejected" testScratchpadMissingSender
       ]
 
-testScratchpadTodoFlow :: IOE :> es => Eff es ()
+effTestCase :: TestName -> Eff '[Prim, FileSystem, IOE] () -> TestTree
+effTestCase name =
+  testCase name . runEff . runFileSystem . runPrim
+
+testScratchpadTodoFlow :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (message "!todo buy milk")
@@ -35,8 +39,9 @@ testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
   runScratchpad store replies (message "!todo")
   runScratchpad store replies (message "!clear")
   runScratchpad store replies (message "!list")
-  IORef.readIORef replies
-    >>= (@?=)
+  actual <- IORef.readIORef replies
+  liftIO $
+    actual @?=
     [ "已添加 #1: buy milk"
     , "已添加 #2: write tests"
     , "已完成 #1: buy milk"
@@ -47,30 +52,32 @@ testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
     , "todo list 为空。"
     ]
 
-testScratchpadSenderIsolation :: IOE :> es => Eff es ()
+testScratchpadSenderIsolation :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (messageFrom "200" "!todo alice task")
   runScratchpad store replies (messageFrom "201" "!todo bob task")
   runScratchpad store replies (messageFrom "200" "!list")
   runScratchpad store replies (messageFrom "201" "!list")
-  IORef.readIORef replies
-    >>= (@?=)
+  actual <- IORef.readIORef replies
+  liftIO $
+    actual @?=
     [ "已添加 #1: alice task"
     , "已添加 #1: bob task"
     , "- [ ] 1. alice task\n"
     , "- [ ] 1. bob task\n"
     ]
 
-testScratchpadPersistence :: Eff '[IOE] ()
+testScratchpadPersistence :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
   writeReplies <- IORef.newIORef ([] :: [Text])
   runScratchpad path writeReplies (message "!todo persists")
   readReplies <- IORef.newIORef ([] :: [Text])
   runScratchpad path readReplies (message "!list")
-  IORef.readIORef readReplies >>= (@?= ["- [ ] 1. persists\n"])
+  actual <- IORef.readIORef readReplies
+  liftIO $ actual @?= ["- [ ] 1. persists\n"]
 
-testScratchpadInvalidCommands :: IOE :> es => Eff es ()
+testScratchpadInvalidCommands :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadInvalidCommands = withScratchpadStore "invalid-commands" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (message "!done")
@@ -78,54 +85,55 @@ testScratchpadInvalidCommands = withScratchpadStore "invalid-commands" \store ->
   runScratchpad store replies (message "!todo only task")
   runScratchpad store replies (message "!done 2")
   runScratchpad store replies (message "!rm")
-  IORef.readIORef replies
-    >>= (@?=)
-      [ "用法：!done <todo编号>"
-      , "用法：!done <todo编号>"
-      , "已添加 #1: only task"
-      , "没有编号 2 的 todo。"
-      , "用法：!rm <编号1> <编号2> ..."
-      ]
+  actual <- IORef.readIORef replies
+  liftIO $
+    actual @?=
+    [ "用法：!done <todo编号>"
+    , "用法：!done <todo编号>"
+    , "已添加 #1: only task"
+    , "没有编号 2 的 todo。"
+    , "用法：!rm <编号1> <编号2> ..."
+    ]
 
-testScratchpadMissingSender :: IOE :> es => Eff es ()
+testScratchpadMissingSender :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadMissingSender = withScratchpadStore "missing-sender" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (messageWithoutSender "!todo unsaved")
-  IORef.readIORef replies >>= (@?= ["无法识别发送者，不能保存 todo。"])
+  actual <- IORef.readIORef replies
+  liftIO $ actual @?= ["无法识别发送者，不能保存 todo。"]
 
-withScratchpadStore :: String -> (FilePath -> Eff es ()) -> Eff es ()
+withScratchpadStore :: (FileSystem :> es, IOE :> es) => String -> (FilePath -> Eff es ()) -> Eff es ()
 withScratchpadStore label action =
   withScratchpadPath label action
 
-withScratchpadPath :: IOE :> IO => String -> (FilePath -> Eff es ()) -> Eff es ()
+withScratchpadPath :: (FileSystem :> es, IOE :> es) => String -> (FilePath -> Eff es ()) -> Eff es ()
 withScratchpadPath label action = do
   tmp <- getTemporaryDirectory
   let path = tmp </> ("cosmobot-scratchpad-spec-" <> label <> ".sqlite")
   removeFile path `catch` \(_ :: IOException) -> pure ()
   action path
 
-runScratchpad :: IOE :> es => FilePath -> IORef.IORef [Text] -> IncomingMessage -> Eff es ()
+runScratchpad :: (IOE :> es, Prim :> es) => FilePath -> IORef.IORef [Text] -> IncomingMessage -> Eff es ()
 runScratchpad path replies incoming =
-  runEff $
-    Chat.runChatWith Chat.ChatHandlers
-      { handleReplyTo = reply
-      , handleUploadFile = upload
-      , handleEditMessage = edit
-      , handleDeleteMessage = delete
-      , handleReplyStreamStyle = replyStreamStyle
-      , handleGetMessageContent = fetch
-      , handleGetSenderMemberInfo = fetchSenderMember
-      , handleGetMemberInfo = fetchMember
-      , handleGetUserAvatar = fetchUserAvatar
-      , handleListGroupMembers = listMembers
-      , handleMentionUser = mention
-      , handleSetMemberTitle = setMemberTitle
-      } $
-      StorageEffect.runStorageSQLitePath path $
-        runHandlers scratchpadHandlers incoming
+  Chat.runChatWith Chat.ChatHandlers
+    { handleReplyTo = reply
+    , handleUploadFile = upload
+    , handleEditMessage = edit
+    , handleDeleteMessage = delete
+    , handleReplyStreamStyle = replyStreamStyle
+    , handleGetMessageContent = fetch
+    , handleGetSenderMemberInfo = fetchSenderMember
+    , handleGetMemberInfo = fetchMember
+    , handleGetUserAvatar = fetchUserAvatar
+    , handleListGroupMembers = listMembers
+    , handleMentionUser = mention
+    , handleSetMemberTitle = setMemberTitle
+    } $
+    StorageEffect.runStorageSQLitePath path $
+      runHandlers scratchpadHandlers incoming
   where
     reply _ body = do
-      liftIO $ IORef.modifyIORef' replies (<> [body])
+      IORef.modifyIORef' replies (<> [body])
       pure (Just "1")
     upload _ _ =
       pure (Right Nothing)

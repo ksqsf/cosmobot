@@ -53,7 +53,7 @@ withPlatformDriver message label action =
     Nothing ->
       pure Nothing
     Just driver ->
-      action driver `catch` \(err :: SomeException) -> do
+      action driver `catchSync` \err -> do
         let platformText = show message.platform :: String
         logInfo_ [i|#{label} failed on #{platformText}: #{displayException err}|]
         pure Nothing
@@ -78,7 +78,7 @@ uploadFileToPlatform message path =
       let platformText = show message.platform :: String
       in pure (Left [i|No chat driver is registered for #{platformText}.|])
     Just driver ->
-      driver.uploadFile message path `catch` \(err :: SomeException) ->
+      driver.uploadFile message path `catchSync` \err ->
         if isAsyncException err
           then throwIO err
           else do

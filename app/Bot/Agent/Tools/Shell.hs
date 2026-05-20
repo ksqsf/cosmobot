@@ -113,12 +113,12 @@ killProcessTree ph = do
     killPid pid =
       ignoreIO $
         (liftIO $ signalProcessGroup sigKILL (fromIntegral pid))
-          `catch` \(_ :: SomeException) ->
+          `catchSync` \_ ->
             (liftIO $ signalProcess sigKILL pid)
 
 ignoreIO :: IOE :> es => Eff es () -> Eff es ()
 ignoreIO action =
-  action `catch` \(_ :: SomeException) -> pure ()
+  action `catchSync` \_ -> pure ()
 
 formatBashResult :: Show exitCode => exitCode -> Text -> Text -> Text
 formatBashResult exitCode stdoutText stderrText =

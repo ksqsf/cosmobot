@@ -191,7 +191,7 @@ persistRecord :: (IOE :> es, Log :> es, Storage.Storage :> es) => ChatLogRecord 
 persistRecord record = do
   ensureChatLogTable
   runSelda (insert_ chatLogRows [chatLogRow (sanitizeChatLogEntry (chatLogEntry record))])
-    `catch` \(err :: SomeException) ->
+    `catchSync` \err ->
       logInfo_ [i|Failed to persist chat log entry: #{show err :: String}|]
 
 queryStored :: Storage.Storage :> es => IncomingMessage -> Int -> Bool -> Eff es [ChatLogEntry]

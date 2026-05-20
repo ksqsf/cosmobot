@@ -28,12 +28,11 @@ runStartupActions
 runStartupActions = do
   actions <- LifecycleStorage.loadStartupActions
   for_ actions \action@LifecycleStorage.StartupReply{actionId, message, body} -> do
-    result <- try @SomeException (Chat.replyTo message body)
-    LifecycleStorage.deleteStartupAction action
+    result <- trySync $ Chat.replyTo message body `finally` LifecycleStorage.deleteStartupAction action
     case result of
-      Right response ->
+      Right response -> do
         logInfo_ [i|Ran startup reply lifecycle action #{actionId}; response=#{show response :: Text}|]
-      Left err ->
+      Left err -> do
         logAttention_ [i|Startup reply lifecycle action #{actionId} failed and was deleted: #{show err :: String}|]
 
 runShutdownActions :: Log :> es => Eff es ()
