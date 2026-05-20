@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Chat.Driver.QQ
-Description : QQ/NapCat OneBot v11 websocket effect
+Description : QQ/NapCat OneBot v11 chat driver
 Stability   : experimental
 -}
 {-# LANGUAGE RecordWildCards #-}

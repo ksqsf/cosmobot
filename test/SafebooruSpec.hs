@@ -4,6 +4,7 @@ import Bot.Core.Message
 import Bot.Core.Route
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Storage as StorageEffect
+import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Handler.Safebooru
 import Bot.Prelude
 import qualified Control.Concurrent as Concurrent
@@ -84,7 +85,7 @@ runSafebooruFlow replies action =
   runEff $
     runTestLog $
       Chat.runChatWith (chatHandlers replies) $
-        StorageEffect.runStorageSQLitePath ":memory:" $
+        StorageSQLite.runStorageSQLitePath ":memory:" $
           runConcurrent action
 
 chatHandlers :: IOE :> es => IORef.IORef [Text] -> Chat.ChatHandlers es

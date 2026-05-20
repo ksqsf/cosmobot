@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Chat.Driver.Matrix
-Description : Matrix Client-Server API effect
+Description : Matrix Client-Server chat driver
 Stability   : experimental
 -}
 {-# LANGUAGE OverloadedLabels #-}

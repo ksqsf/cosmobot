@@ -1,7 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Effect.Chat as Chat
-import qualified Bot.Effect.Storage as StorageEffect
+import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
 import Bot.Core.Route
 import Bot.Handler.Scratchpad
@@ -129,7 +129,7 @@ runScratchpad path replies incoming =
     , handleMentionUser = mention
     , handleSetMemberTitle = setMemberTitle
     } $
-    StorageEffect.runStorageSQLitePath path $
+    StorageSQLite.runStorageSQLitePath path $
       runHandlers scratchpadHandlers incoming
   where
     reply _ body = do

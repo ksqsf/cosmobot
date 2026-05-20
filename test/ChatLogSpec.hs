@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -61,7 +62,7 @@ testImageSanitization = runChatLogTest do
 
 runChatLogTest :: Eff '[ChatLog.ChatLog, Storage.Storage, Log, IOE] a -> IO a
 runChatLogTest action =
-  runEff $ runTestLog $ Storage.runStorageSQLitePath ":memory:" $ ChatLog.runChatLog action
+  runEff $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ ChatLog.runChatLog action
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
 runTestLog action = do

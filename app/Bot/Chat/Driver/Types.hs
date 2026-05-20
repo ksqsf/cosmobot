@@ -10,7 +10,7 @@ module Bot.Chat.Driver.Types
 where
 
 import Bot.Core.Message
-import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Chat.Types as Chat
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 

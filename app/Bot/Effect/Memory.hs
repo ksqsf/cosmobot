@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Effect.Memory
-Description : Application effect for persistent memory
+Description : Persistent memory capability facade
 Stability   : experimental
 -}
 

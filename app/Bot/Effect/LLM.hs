@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Effect.LLM
-Description : Query LLM
+Description : LLM capability facade
 Stability   : experimental
 -}
 

@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Effect.Skills
-Description : Application effect for startup-loaded skill metadata
+Description : Startup skill metadata capability facade
 Stability   : experimental
 -}
 

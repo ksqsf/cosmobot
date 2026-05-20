@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Chat.Driver.Telegram
-Description : Telegram effects
+Description : Telegram chat driver
 Stability   : experimental
 -}
 {-# LANGUAGE FlexibleInstances #-}

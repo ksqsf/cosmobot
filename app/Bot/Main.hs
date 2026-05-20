@@ -29,6 +29,8 @@ import Bot.Handler.ShutUp
 import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
 import Bot.Storage.Conversation
+import qualified Bot.Storage.SQLite as StorageSQLite
+import qualified Bot.System.Typst.CLI as TypstCLI
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Effectful.Concurrent.MVar as MVar
 import Log.Backend.StandardOutput
@@ -53,13 +55,13 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . runProcess
                . runConcurrent
                . runBotLog cfg.logLevel
-               . Storage.runStorageSQLitePath cfg.sqlitePath
+               . StorageSQLite.runStorageSQLitePath cfg.sqlitePath
                . AgentAudit.runAgentAudit
                . ChatLog.runChatLog
                . Memory.runMemory cfg.memory
                . Skills.runSkills cfg.skills
                . Scheduler.runScheduler
-               . Typst.runTypst
+               . TypstCLI.runTypst
                . OpenAI.runLLM cfg.llm
                . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix
                . Lifecycle.runLifecycle

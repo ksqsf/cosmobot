@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as StorageEffect
+import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -94,7 +95,7 @@ testDeletedElapsedScheduleIsNotDelivered = runSchedulerTest do
     map (.scheduleId) schedules @?= []
 
 testPendingSchedulesPersistAcrossSchedulerRestart :: IO ()
-testPendingSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runConcurrent $ StorageEffect.runStorageSQLitePath ":memory:" do
+testPendingSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runConcurrent $ StorageSQLite.runStorageSQLitePath ":memory:" do
   Scheduler.runScheduler do
     _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask persisted")
     pure ()
@@ -105,7 +106,7 @@ testPendingSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runCon
       map ((.text) . (.message)) schedules @?= ["!ask persisted"]
 
 testElapsedSchedulesPersistAcrossSchedulerRestart :: IO ()
-testElapsedSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runConcurrent $ StorageEffect.runStorageSQLitePath ":memory:" do
+testElapsedSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runConcurrent $ StorageSQLite.runStorageSQLitePath ":memory:" do
   Scheduler.runScheduler do
     _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "!ask after restart")
     pure ()
@@ -120,7 +121,7 @@ runSchedulerTest
   :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, Concurrent, Timeout, IOE] a
   -> IO a
 runSchedulerTest action =
-  runEff $ runTimeout $ runConcurrent $ StorageEffect.runStorageSQLitePath ":memory:" $ Scheduler.runScheduler action
+  runEff $ runTimeout $ runConcurrent $ StorageSQLite.runStorageSQLitePath ":memory:" $ Scheduler.runScheduler action
 
 messageFrom :: Text -> Text -> IncomingMessage
 messageFrom senderId text =

@@ -25,6 +25,8 @@ import Bot.Core.Message
 import Bot.Handler.Ask (askHandlers)
 import Bot.Handler.Ask.Config (AskHandlerConfig (..))
 import Bot.Storage.Conversation
+import qualified Bot.Storage.SQLite as StorageSQLite
+import qualified Bot.System.Typst.Test as TypstTest
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -985,7 +987,7 @@ testEditableChatStreamingSplitsLongReplies = do
   IORef.readIORef updates >>= (@?= [(Just "1", [], "ab"), (Just "1", [], "abcd"), (Just "1", [], "abcdef"), (Just "1", [], "abcdefgh"), (Just "1", [], "abcdefghij"), (Just "1", [], "abcdefghijkl"), (Just "1", ["2", "3"], "abcdefghijkl")])
 
 testChunkedActiveConversationAliasesEverySentReply :: IO ()
-testChunkedActiveConversationAliasesEverySentReply = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+testChunkedActiveConversationAliasesEverySentReply = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
   store <- newConversationStore
   threadId <- forkIO (threadDelay 60_000_000)
   let baseConversation = startWithUser "hello"
@@ -1035,7 +1037,7 @@ fakeWebFetchTool fetches = Agent.Tool
   }
 
 testConversationRepliesKeepSnapshots :: IO ()
-testConversationRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+testConversationRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
   store <- newConversationStore
   let firstConversation = startWithUser "first"
       secondConversation = appendAssistant "second" firstConversation
@@ -1048,7 +1050,7 @@ testConversationRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTes
     (show secondLookup :: String) @?= show (Just secondConversation)
 
 testConversationBranchesDoNotOverwriteSiblings :: IO ()
-testConversationBranchesDoNotOverwriteSiblings = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+testConversationBranchesDoNotOverwriteSiblings = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
   store <- newConversationStore
   let root = appendAssistant "root answer" (startWithUser "root")
       branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
@@ -1069,7 +1071,7 @@ testConversationBranchesDoNotOverwriteSiblings = runEff $ runConcurrent $ runPri
     (show branchA2Lookup :: String) @?= show (Just branchA2)
 
 testConversationLookupIsScopedByChat :: IO ()
-testConversationLookupIsScopedByChat = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageEffect.runStorageSQLitePath ":memory:" do
+testConversationLookupIsScopedByChat = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
   store <- newConversationStore
   let chatA = testMessageInChat 100
       chatB = testMessageInChat 200
@@ -1088,7 +1090,7 @@ testConversationLookupIsScopedByChat = runEff $ runConcurrent $ runPrim $ runTes
 testConversationBranchesPersistThroughSQLiteReload :: IO ()
 testConversationBranchesPersistThroughSQLiteReload =
   withSQLiteTempPath "conversation-branches" \path -> runEff $ runConcurrent $ runPrim $ runTestLog do
-    StorageEffect.runStorageSQLitePath path do
+    StorageSQLite.runStorageSQLitePath path do
       store <- newConversationStore
       let root = appendAssistant "root answer" (startWithUser "root")
           branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
@@ -1117,7 +1119,7 @@ testConversationBranchesPersistThroughSQLiteReload =
 testConversationCacheMissLoadsEvictedParent :: IO ()
 testConversationCacheMissLoadsEvictedParent =
   withSQLiteTempPath "conversation-cache-miss" \path -> runEff $ runConcurrent $ runPrim $ runTestLog do
-    StorageEffect.runStorageSQLitePath path do
+    StorageSQLite.runStorageSQLitePath path do
       store <- newConversationStore
       let root = appendAssistant "root answer" (startWithUser "root")
           child = appendAssistant "child answer" (appendUser "child follow-up" root)
@@ -1731,8 +1733,8 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
               runFail $
                 runPrim $
                   runTestLog $
-                    StorageEffect.runStorageSQLitePath ":memory:" $
-                      Typst.runTypstWith (mockTypstRender rendered) $
+                    StorageSQLite.runStorageSQLitePath ":memory:" $
+                      TypstTest.runTypstWith (mockTypstRender rendered) $
                         Scheduler.runScheduler $
                           Memory.runMemory memoryCfg $
                             Skills.runSkills skillsCfg $
@@ -1791,8 +1793,8 @@ runAgentWithStreamingAnswers answers chatMock action = do
               runFail $
                 runPrim $
                   runTestLog $
-                    StorageEffect.runStorageSQLitePath ":memory:" $
-                      Typst.runTypstWith (mockTypstRender rendered) $
+                    StorageSQLite.runStorageSQLitePath ":memory:" $
+                      TypstTest.runTypstWith (mockTypstRender rendered) $
                         Scheduler.runScheduler $
                           Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") $
                             Skills.runSkills defaultTestSkillsConfig $

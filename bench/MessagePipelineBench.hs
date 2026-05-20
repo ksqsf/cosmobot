@@ -2,7 +2,7 @@ module Main (main) where
 
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Scheduler as Scheduler
-import qualified Bot.Effect.Storage as StorageEffect
+import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Core.Route
 import Bot.Prelude
@@ -12,6 +12,7 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
 import qualified Data.List as List
 import qualified Data.Text as Text
+import Effectful.Timeout (runTimeout)
 import qualified Streaming.Prelude as S
 import Test.Tasty.Bench
 
@@ -30,8 +31,8 @@ forceMessage IncomingMessage{platform, kind, chatId, chatAliases, digest, sender
     `seq` forceDigest digest
     `seq` rnf senderId
     `seq` rnf senderUsername
-    `seq` rnf messageId
-    `seq` rnf replyToMessageId
+    `seq` forceMaybeMessageId messageId
+    `seq` forceMaybeMessageId replyToMessageId
     `seq` rnf mentions
     `seq` rnf mentionUsernames
     `seq` rnf imageUrls
@@ -57,6 +58,10 @@ forceDigest MessageDigest{chatIsAllowed, senderIsAllowed, senderIsSuperuser, men
     `seq` rnf senderIsAllowed
     `seq` rnf senderIsSuperuser
     `seq` rnf mentionsBot
+
+forceMaybeMessageId :: Maybe MessageId -> ()
+forceMaybeMessageId =
+  maybe () (rnf . messageIdText)
 
 main :: IO ()
 main =
@@ -113,7 +118,7 @@ chatLogRouteDispatch messages = do
   handled <- IORef.newIORef 0
   runEff $
     runBenchmarkLog $
-      StorageEffect.runStorageSQLitePath ":memory:" $
+      StorageSQLite.runStorageSQLitePath ":memory:" $
       ChatLog.runChatLog do
         consumeWith
           (benchmarkHandlers handled)
@@ -124,13 +129,14 @@ mergedChatLogRouteDispatch :: [IncomingMessage] -> IO Int
 mergedChatLogRouteDispatch messages = do
   handled <- IORef.newIORef 0
   runEff $
-    runBenchmarkLog $
-      StorageEffect.runStorageSQLitePath ":memory:" $
-      ChatLog.runChatLog do
-        consumeWith
-          (benchmarkHandlers handled)
-          (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams (map S.each (chunks 4 messages))))
-        liftIO (IORef.readIORef handled)
+    runConcurrent $
+      runBenchmarkLog $
+        StorageSQLite.runStorageSQLitePath ":memory:" $
+        ChatLog.runChatLog do
+          consumeWith
+            (benchmarkHandlers handled)
+            (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams (map S.each (chunks 4 messages))))
+          liftIO (IORef.readIORef handled)
 
 routeFilterScore :: [IncomingMessage] -> Int
 routeFilterScore =
@@ -165,7 +171,7 @@ chatLogRecord :: [IncomingMessage] -> IO Int
 chatLogRecord messages = do
   runEff $
     runBenchmarkLog $
-      StorageEffect.runStorageSQLitePath ":memory:" $
+      StorageSQLite.runStorageSQLitePath ":memory:" $
       ChatLog.runChatLog do
         traverse_ ChatLog.recordMessage messages
         pure (length messages)
@@ -174,7 +180,7 @@ chatLogRecordQuery :: [IncomingMessage] -> IO Int
 chatLogRecordQuery messages = do
   runEff $
     runBenchmarkLog $
-      StorageEffect.runStorageSQLitePath ":memory:" $
+      StorageSQLite.runStorageSQLitePath ":memory:" $
       ChatLog.runChatLog do
         traverse_ ChatLog.recordMessage messages
         entries <- ChatLog.queryChat (lastMessage messages) 100 True
@@ -184,23 +190,26 @@ mergeOnly :: [IncomingMessage] -> IO Int
 mergeOnly messages = do
   seen <- IORef.newIORef 0
   runEff $
-    runBenchmarkLog $
-      S.mapM_
-        (\_ -> liftIO $ IORef.modifyIORef' seen (+ 1))
-        (StreamUtil.mergeStreams (map S.each (chunks 4 messages)))
+    runConcurrent $
+      runBenchmarkLog $
+        S.mapM_
+          (\_ -> liftIO $ IORef.modifyIORef' seen (+ 1))
+          (StreamUtil.mergeStreams (map S.each (chunks 4 messages)))
   IORef.readIORef seen
 
 schedulerDueMessages :: [IncomingMessage] -> IO Int
 schedulerDueMessages messages =
   runEff $
-    StorageEffect.runStorageSQLitePath ":memory:" $
-      Scheduler.runScheduler do
-        traverse_ (Scheduler.scheduleMessage 0) messages
-        ref <- liftIO (IORef.newIORef 0)
-        S.mapM_
-          (\_ -> liftIO $ IORef.modifyIORef' ref (+ 1))
-          (S.take (length messages) Scheduler.scheduledMessages)
-        liftIO (IORef.readIORef ref)
+    runTimeout $
+      runConcurrent $
+        StorageSQLite.runStorageSQLitePath ":memory:" $
+          Scheduler.runScheduler do
+            traverse_ (Scheduler.scheduleMessage 0) messages
+            ref <- liftIO (IORef.newIORef 0)
+            S.mapM_
+              (\_ -> liftIO $ IORef.modifyIORef' ref (+ 1))
+              (S.take (length messages) Scheduler.scheduledMessages)
+            liftIO (IORef.readIORef ref)
 
 lastMessage :: [IncomingMessage] -> IncomingMessage
 lastMessage [] =
@@ -242,10 +251,10 @@ syntheticMessage index =
         , senderIsSuperuser = index `mod` 97 == 0
         , mentionsBot = index `mod` 11 == 0
         }
-    , senderId = Just (show (fromIntegral (1000 + index `mod` 256)))
+    , senderId = Just (show (1000 + index `mod` 256))
     , senderUsername = Just ("user" <> show (index `mod` 256))
-    , messageId = Just (fromIntegral index)
-    , replyToMessageId = if index `mod` 13 == 0 then Just (fromIntegral (max 1 (index - 1))) else Nothing
+    , messageId = Just (integerMessageId (fromIntegral index))
+    , replyToMessageId = if index `mod` 13 == 0 then Just (integerMessageId (fromIntegral (max 1 (index - 1)))) else Nothing
     , mentions = if index `mod` 17 == 0 then [42] else []
     , mentionUsernames = if index `mod` 19 == 0 then ["cosmobot"] else []
     , imageUrls = if index `mod` 23 == 0 then ["https://example.test/image.png"] else []

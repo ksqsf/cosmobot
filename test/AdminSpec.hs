@@ -1,7 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Effect.Chat as Chat
-import qualified Bot.Effect.Storage as StorageEffect
+import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Core.Route
 import Bot.Handler.Admin
@@ -110,7 +110,7 @@ testLifecycleStartupRepliesAreDeletedAfterDrain = do
   replies <- IORef.newIORef ([] :: [Text])
   remaining <- runEff $
     runTestLog $
-      StorageEffect.runStorageSQLitePath ":memory:" $
+      StorageSQLite.runStorageSQLitePath ":memory:" $
         Chat.runChatWith (chatHandlers replies Nothing False) do
           void $ LifecycleStorage.enqueueStartupReply "test-startup-reply" message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
           Lifecycle.runLifecycle (pure ())
@@ -161,7 +161,7 @@ runAdminWithDelayAndTitle
 runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incoming =
   runEff $
     runTestLog $
-      StorageEffect.runStorageSQLitePath ":memory:" $
+      StorageSQLite.runStorageSQLitePath ":memory:" $
         Chat.runChatWith (chatHandlers replies titleCalls titleResult) do
           runConcurrent do
             runHandlers (adminHandlers cfg) incoming
