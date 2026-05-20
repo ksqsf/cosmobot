@@ -26,10 +26,6 @@ generateAudioTool = Tool
   , description = "Generate speech or other audio from a prompt and send it to the current chat. Use this when the user asks to create, synthesize, speak, narrate, or generate an audio clip. After using this tool, keep the final answer brief and do not repeat the audio reference."
   , parameters = objectSchema
       [ fieldText "prompt" "Audio generation prompt. Include the requested words, narration style, tone, language, and sound requirements."
-      , fieldText "voice" "Optional provider-supported voice control, such as alloy, verse, aria, or another configured voice."
-      , fieldText "format" "Optional provider-supported output format, such as mp3, wav, opus, flac, or pcm."
-      , fieldNumber "speed" "Optional provider-supported speaking speed."
-      , fieldText "instructions" "Optional provider-supported voice or delivery instructions."
       ]
       ["prompt"]
   , noisy = True
@@ -54,33 +50,7 @@ parseGenerateAudioArgs :: Aeson.Value -> AesonTypes.Parser GenerateAudioArgs
 parseGenerateAudioArgs =
   Aeson.withObject "generate_audio arguments" \o -> do
     prompt <- Text.strip <$> o Aeson..: Key.fromText "prompt"
-    options <- parseAudioRequestOptions o
     pure GenerateAudioArgs
       { prompt = prompt
-      , options = options
+      , options = LLM.defaultAudioRequestOptions
       }
-
-parseAudioRequestOptions :: Aeson.Object -> AesonTypes.Parser LLM.AudioRequestOptions
-parseAudioRequestOptions o = do
-  voice <- optionalTextField "voice"
-  responseFormat <- optionalTextField "format"
-  speed <- o Aeson..:? Key.fromText "speed"
-  instructions <- optionalTextField "instructions"
-  pure LLM.AudioRequestOptions{voice, responseFormat, speed, instructions}
-  where
-    optionalTextField name =
-      (fmap Text.strip <$> o Aeson..:? Key.fromText name) <&> (>>= nonEmptyText)
-
-fieldNumber :: Text -> Text -> (Text, Aeson.Value)
-fieldNumber name description =
-  ( name
-  , Aeson.object
-      [ "type" Aeson..= Aeson.String "number"
-      , "description" Aeson..= description
-      ]
-  )
-
-nonEmptyText :: Text -> Maybe Text
-nonEmptyText text =
-  let stripped = Text.strip text
-  in if Text.null stripped then Nothing else Just stripped

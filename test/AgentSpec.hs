@@ -122,7 +122,7 @@ main =
       , testCase "edit_image tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
       , testCase "ask handler passes referenced images to edit_image tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "generate_image tool passes image request options" testGenerateImageToolPassesImageRequestOptions
-      , testCase "generate_audio tool passes audio request options and sends audio" testGenerateAudioToolPassesAudioRequestOptions
+      , testCase "generate_audio tool uses configured audio options and sends audio" testGenerateAudioToolUsesConfiguredAudioOptions
       , testCase "edit_image tool passes image request options" testEditImageToolPassesImageRequestOptions
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "agent compacts old conversation context before model turn" testAgentCompactsOldConversationContextBeforeModelTurn
@@ -424,15 +424,10 @@ testGenerateImageToolPassesImageRequestOptions = do
   IORef.readIORef replies >>= (@?= [generatedImage])
   IORef.readIORef recorded >>= (@?= [generatedImage])
 
-testGenerateAudioToolPassesAudioRequestOptions :: IO ()
-testGenerateAudioToolPassesAudioRequestOptions = do
+testGenerateAudioToolUsesConfiguredAudioOptions :: IO ()
+testGenerateAudioToolUsesConfiguredAudioOptions = do
   let generatedAudio = "data:audio/mp3;base64,generated"
-      expectedOptions = LLM.AudioRequestOptions
-        { voice = Just "verse"
-        , responseFormat = Just "mp3"
-        , speed = Just 1.25
-        , instructions = Just "speak warmly"
-        }
+      expectedOptions = LLM.defaultAudioRequestOptions
       args =
         Aeson.object
           [ "prompt" Aeson..= ("say hello" :: Text)
