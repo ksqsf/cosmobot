@@ -56,7 +56,7 @@ defaultTools =
   , webSearchTool
   , webFetchTool
   , datetimeTool
-  , generateAudioTool
+  -- , generateAudioTool  -- useless now
   , generateImageTool
   , editImageTool
   , typstToImageTool
