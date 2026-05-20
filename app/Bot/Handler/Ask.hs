@@ -30,16 +30,39 @@ import qualified Bot.Memory as MemoryStore
 import Bot.Core.Message
 import Bot.Prelude
 import Bot.Storage.Conversation
-import Control.Concurrent (ThreadId, myThreadId)
-import qualified Control.Exception as Exception
 import qualified Data.Foldable as Foldable
-import qualified Data.IORef as IORef
+import qualified Effectful.Prim.IORef as IORef
 import qualified Data.Text as Text
 import qualified Streaming.Prelude as S
+import Effectful.Timeout
+import Effectful.Process
+import Effectful.FileSystem
+
+type HandlerEffects es =
+  ( Chat.Chat :> es
+  , ChatLog.ChatLog :> es
+  , AgentAudit.AgentAudit :> es
+  , LLM.LLM :> es
+  , Memory.Memory :> es
+  , Concurrent :> es
+  , Skills.Skills :> es
+  , Scheduler.Scheduler :> es
+  , Storage.Storage :> es
+  , Typst.Typst :> es
+  , Log :> es
+  , Prim :> es
+  , Process :> es
+  , FileSystem :> es
+  , Concurrent :> es
+  , Fail :> es
+  , Timeout :> es
+  , IOE :> es
+  )
 
 -- | Routes for ask, draw, private, mention, and reply continuation flows.
 askHandlers
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
+  => ChatLog.ChatLog :> es
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -54,17 +77,19 @@ askHandlers toolCfg cfg conversations =
   ]
 
 drawRoute
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
+  => ChatLog.ChatLog :> es
   => AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
 drawRoute cfg conversations =
   requireAuth canStartConversation (\_ -> pure ()) $
     stopOn (command cfg.drawCommand) \message prompt ->
-      forkEff (startDrawConversation "matched draw route" cfg conversations message prompt)
+      spawnTask (startDrawConversation "matched draw route" cfg conversations message prompt)
 
 askRoute
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
+  => IOE :> es
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -72,10 +97,15 @@ askRoute
 askRoute toolCfg cfg conversations =
   requireAuth canStartConversation (\_ -> pure ()) $
     stopOn (askPrefix cfg) \message prompt ->
-      forkEff (startAskConversation "matched ask route" toolCfg cfg conversations message prompt)
+      spawnTask (startAskConversation "matched ask route" toolCfg cfg conversations message prompt)
 
 haltRoute
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: Chat.Chat :> es
+  => Storage.Storage :> es
+  => Log :> es
+  => Prim :> es
+  => Concurrent :> es
+  => IOE :> es
   => ConversationStore
   -> RouteHandler es
 haltRoute conversations =
@@ -86,14 +116,15 @@ haltRoute conversations =
       else logInfo_ "couldn't halt active conversation"
 
 privateRoute
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
+  => Concurrent :> es
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
 privateRoute toolCfg cfg conversations =
   stopOn privateMessage \message prompt ->
-    forkEff (startAskConversation "matched private ask route" toolCfg cfg conversations message prompt)
+    spawnTask (startAskConversation "matched private ask route" toolCfg cfg conversations message prompt)
   where
     privateMessage =
       promptOrImages
@@ -103,14 +134,14 @@ privateRoute toolCfg cfg conversations =
         <* notCommand cfg.drawCommand
 
 mentionRoute
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
 mentionRoute toolCfg cfg conversations =
   stopOn mentionMessage \message prompt ->
-    forkEff (startAskConversation "matched bot mention route" toolCfg cfg conversations message prompt)
+    spawnTask (startAskConversation "matched bot mention route" toolCfg cfg conversations message prompt)
   where
     mentionMessage =
       promptOrImages
@@ -121,14 +152,14 @@ mentionRoute toolCfg cfg conversations =
         <* notCommand cfg.drawCommand
 
 continueRoute
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
   -> RouteHandler es
 continueRoute toolCfg cfg conversations =
   stopOn continuedMessage \message parentId ->
-    forkEff do
+    spawnTask do
       let parentKey = conversationMessageKey message parentId
       parent <- lookupConversation conversations parentKey
       case parent of
@@ -156,7 +187,7 @@ notAskPrefix cfg =
     isJust (matches message)
 
 startAskConversation
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
   => Text
   -> Agent.ToolConfig
   -> AskHandlerConfig
@@ -172,11 +203,12 @@ startAskConversation label toolCfg cfg conversations message prompt = do
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
   let input = inputWithImages contextPrompt contextImages
   conversation <- startConversation cfg message input
-  threadId <- liftIO myThreadId
+  threadId <- myThreadId
   void $ askConversation toolCfg cfg conversations Nothing threadId message input conversation
 
 startDrawConversation
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
+  => ChatLog.ChatLog :> es
   => Text
   -> AskHandlerConfig
   -> ConversationStore
@@ -204,7 +236,7 @@ fetchReferencedMessage message =
   traverse (Chat.getMessageContent message) message.replyToMessageId <&> join
 
 startConversationFromReply
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -220,11 +252,11 @@ startConversationFromReply toolCfg cfg conversations message parentId = do
   unless (Text.null prompt && null contextImages) do
     let input = inputWithImages prompt contextImages
     conversation <- startConversation cfg message input
-    threadId <- liftIO myThreadId
+    threadId <- myThreadId
     void $ askConversation toolCfg cfg conversations (Just (conversationMessageKey message parentId)) threadId message input conversation
 
 continueConversation
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -238,11 +270,11 @@ continueConversation toolCfg cfg conversations message parentKey conversation = 
   let input = inputWithImages (promptOrImageDefault message.text message.imageUrls) message.imageUrls
   let nextConversation =
         appendUserInput input conversation
-  threadId <- liftIO myThreadId
+  threadId <- myThreadId
   void $ askConversation toolCfg cfg conversations (Just parentKey) threadId message input nextConversation
 
 askConversation
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ConversationStore
@@ -290,7 +322,7 @@ agentContext toolCfg cfg message input =
     }
 
 agentHooks
-  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, Prim :> es)
   => ConversationStore
   -> Maybe ConversationMessageKey
   -> IncomingMessage
@@ -302,7 +334,7 @@ agentHooks conversations parentMessageKey message =
     }
 
 streamAgentReply
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Storage.Storage :> es, Log :> es, Prim :> es, Concurrent :> es)
   => AskHandlerConfig
   -> Agent.AgentObserver AgentObservation.ObservationContext es
   -> Agent.AgentRun es
@@ -319,8 +351,8 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
         (Chat.streamReplySegmentsTo message (.replyAnswer) (agentReplySegmentStream (Agent.runAgentProgramStreaming program conversation)))
     pure AgentReply{responseId, answer = replyResult.replyAnswer, result = replyResult.agentResult}
   `catch` \(err :: SomeException) ->
-    case Exception.fromException err of
-      Just Exception.ThreadKilled ->
+    case fromException err of
+      Just ThreadKilled ->
         throwIO err
       _ -> do
         logAttention_ [i|LLM request failed: #{show err :: String}|]
@@ -357,7 +389,7 @@ agentReplySegmentStream =
           go answer rest
 
 commitAgentReply
-  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, Prim :> es, Concurrent :> es)
   => Agent.AgentObserver AgentObservation.ObservationContext es
   -> ActiveReplyState
   -> IncomingMessage
@@ -366,7 +398,7 @@ commitAgentReply
 commitAgentReply observer activeReply message AgentReply{responseId, answer, result} = do
   traverse_ (AgentObservation.observeConversationLinked observer . conversationLink result (activeReply.parentMessageKey <&> (.messageId))) responseId
   ChatLog.recordSelfMessage message answer
-  active <- liftIO (IORef.readIORef activeReply.activeRef)
+  active <- (IORef.readIORef activeReply.activeRef)
   case active of
     Just activeHandle ->
       finishActiveConversation activeReply.conversations activeHandle result.conversation
@@ -382,9 +414,9 @@ conversationLink result parentMessageId linkedMessageId =
     , linkedMessageId
     }
 
-discardActiveReply :: (Storage.Storage :> es, Log :> es, IOE :> es) => ActiveReplyState -> Eff es ()
+discardActiveReply :: (Storage.Storage :> es, Log :> es, Prim :> es, Concurrent :> es) => ActiveReplyState -> Eff es ()
 discardActiveReply activeReply =
-  liftIO (IORef.readIORef activeReply.activeRef)
+  IORef.readIORef activeReply.activeRef
     >>= traverse_ (finishActiveConversationCurrent activeReply.conversations)
 
 data ActiveReplyState = ActiveReplyState
@@ -397,7 +429,7 @@ data ActiveReplyState = ActiveReplyState
   }
 
 newActiveReply
-  :: IOE :> es
+  :: Prim :> es
   => ConversationStore
   -> Maybe ConversationMessageKey
   -> IncomingMessage
@@ -405,7 +437,7 @@ newActiveReply
   -> Conversation
   -> Eff es ActiveReplyState
 newActiveReply conversations parentMessageKey message threadId baseConversation = do
-  activeRef <- liftIO (IORef.newIORef Nothing)
+  activeRef <- IORef.newIORef Nothing
   pure ActiveReplyState
     { conversations = conversations
     , parentMessageKey = parentMessageKey
@@ -416,7 +448,7 @@ newActiveReply conversations parentMessageKey message threadId baseConversation 
     }
 
 recordReplyUpdate
-  :: IOE :> es
+  :: (Prim :> es, Concurrent :> es)
   => ActiveReplyState
   -> Chat.ReplyStreamUpdate
   -> Eff es ()
@@ -426,33 +458,33 @@ recordReplyUpdate activeState update = do
   registerActiveAliases activeState update.sentResponseIds
 
 registerActiveIfNeeded
-  :: IOE :> es
+  :: (Prim :> es, Concurrent :> es)
   => ActiveReplyState
   -> Maybe MessageId
   -> Text
   -> Eff es ()
 registerActiveIfNeeded activeState responseId current = do
-  existing <- liftIO (IORef.readIORef activeState.activeRef)
+  existing <- IORef.readIORef activeState.activeRef
   when (isNothing existing) do
     activeHandle <- rememberActiveConversation activeState.conversations activeState.parentMessageKey (conversationMessageKey activeState.message <$> responseId) activeState.threadId (appendAssistant current activeState.baseConversation)
-    liftIO $ IORef.writeIORef activeState.activeRef activeHandle
+    IORef.writeIORef activeState.activeRef activeHandle
 
 registerActiveAliases
-  :: IOE :> es
+  :: Prim :> es
   => ActiveReplyState
   -> [MessageId]
   -> Eff es ()
 registerActiveAliases activeState responseIds = do
-  active <- liftIO (IORef.readIORef activeState.activeRef)
+  active <- IORef.readIORef activeState.activeRef
   traverse_ (\activeHandle -> traverse_ (addActiveConversationMessage activeState.conversations activeHandle . conversationMessageKey activeState.message) responseIds) active
 
 refreshActiveConversation
-  :: IOE :> es
+  :: Prim :> es
   => ActiveReplyState
   -> Text
   -> Eff es ()
 refreshActiveConversation activeState current = do
-  active <- liftIO (IORef.readIORef activeState.activeRef)
+  active <- IORef.readIORef activeState.activeRef
   traverse_ (`updateActiveConversation` appendAssistant current activeState.baseConversation) active
 
 llmFailureMessage :: SomeException -> Text

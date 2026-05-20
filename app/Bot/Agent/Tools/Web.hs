@@ -15,7 +15,6 @@ import Bot.Agent.Types
 import qualified Bot.Util.Html as Html
 import qualified Bot.Util.HTTP as Http
 import Bot.Prelude
-import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
@@ -41,7 +40,7 @@ webSearchTool = Tool
   , start = \context -> pure \args ->
       withParsedToolArgs (webSearchArgs context.toolConfig.webSearchMaxResults) args \(query, maxResults) -> do
         let searchConfig = context.toolConfig
-        results <- liftIO (webSearch searchConfig query maxResults)
+        results <- webSearch searchConfig query maxResults
         pure (toolText (jsonText (Aeson.object
           [ "query" Aeson..= query
           , "source" Aeson..= webSearchSource searchConfig.webSearchApi
@@ -68,20 +67,20 @@ webFetchTool = Tool
             UseLimitReached currentUses ->
               pure (toolText [i|web_fetch use limit reached for this agent run: #{currentUses}.|])
             UseAllowed -> do
-              page <- liftIO (fetchWebPage url maxContentTokens)
+              page <- fetchWebPage url maxContentTokens
               pure (toolText (jsonText page))
   }
 
-webSearch :: ToolConfig -> Text -> Int -> IO [Aeson.Value]
+webSearch :: (IOE :> es) => ToolConfig -> Text -> Int -> Eff es [Aeson.Value]
 webSearch cfg query maxResults =
   case cfg.webSearchApi of
     WebSearchTavily ->
       case cfg.tavilyApiKey of
-        Nothing -> Exception.throwIO (userError "Tavily search is not configured: set tool.web_search.tavily_api_key.")
+        Nothing -> throwIO (userError "Tavily search is not configured: set tool.web_search.tavily_api_key.")
         Just key -> tavilySearch key query maxResults
     WebSearchBrave ->
       case cfg.braveApiKey of
-        Nothing -> Exception.throwIO (userError "Brave search is not configured: set tool.web_search.brave_api_key.")
+        Nothing -> throwIO (userError "Brave search is not configured: set tool.web_search.brave_api_key.")
         Just key -> braveSearch key query maxResults
 
 webSearchSource :: WebSearchApi -> Text
@@ -89,9 +88,9 @@ webSearchSource = \case
   WebSearchTavily -> "tavily"
   WebSearchBrave -> "brave"
 
-tavilySearch :: Text -> Text -> Int -> IO [Aeson.Value]
+tavilySearch :: IOE :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
 tavilySearch apiKey query maxResults = do
-  response <- Http.runReq $
+  response <- liftIO . Http.runReq $
     req POST
       (https "api.tavily.com" /: "search")
       (ReqBodyJson (Aeson.object
@@ -105,12 +104,12 @@ tavilySearch apiKey query maxResults = do
       ( header "Authorization" (ByteString.pack [i|Bearer #{apiKey}|])
           <> webRequestOptions
       )
-  either (Exception.throwIO . userError) pure $
+  either (throwIO . userError) pure $
     AesonTypes.parseEither parseTavilyResults (responseBody response)
 
-braveSearch :: Text -> Text -> Int -> IO [Aeson.Value]
+braveSearch :: IOE :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
 braveSearch apiKey query maxResults = do
-  response <- Http.runReq $
+  response <- liftIO . Http.runReq $
     req GET
       (https "api.search.brave.com" /: "res" /: "v1" /: "web" /: "search")
       NoReqBody
@@ -120,7 +119,7 @@ braveSearch apiKey query maxResults = do
           <> header "X-Subscription-Token" (TextEncoding.encodeUtf8 apiKey)
           <> webRequestOptions
       )
-  either (Exception.throwIO . userError) pure $
+  either (throwIO . userError) pure $
     AesonTypes.parseEither parseBraveResults (responseBody response)
 
 parseTavilyResults :: Aeson.Value -> AesonTypes.Parser [Aeson.Value]
@@ -165,19 +164,19 @@ searchResult title url snippet =
     , "snippet" Aeson..= snippet
     ]
 
-fetchWebPage :: Text -> Int -> IO Aeson.Value
+fetchWebPage :: IOE :> es => Text -> Int -> Eff es Aeson.Value
 fetchWebPage rawUrl maxContentTokens = do
   uri <- URI.mkURI rawUrl
   case useURI uri of
     Nothing ->
-      Exception.throwIO (userError [i|Unsupported URL: #{rawUrl}. Use an http or https URL.|])
+      throwIO (userError [i|Unsupported URL: #{rawUrl}. Use an http or https URL.|])
     Just (Left (url, options)) ->
       fetch url options
     Just (Right (url, options)) ->
       fetch url options
   where
-    fetch :: Url scheme -> Option scheme -> IO Aeson.Value
-    fetch url options = do
+    fetch :: IOE :> es => Url scheme -> Option scheme -> Eff es Aeson.Value
+    fetch url options = liftIO do
       response <- Http.runReq $
         req GET url NoReqBody bsResponse (options <> webRequestOptions)
       let contentType = TextEncoding.decodeUtf8With TextEncoding.lenientDecode <$> responseHeader response "Content-Type"

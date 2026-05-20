@@ -22,7 +22,6 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import Bot.Storage.Prelude
 import qualified Bot.Util.HTTP as Http
-import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Char as Char
@@ -77,13 +76,13 @@ safebooruLinkRows =
 
 -- | Routes for public Safebooru image commands.
 safebooruHandlers
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es, Concurrent :> es, Fail :> es)
   => [RouteHandler es]
 safebooruHandlers =
-  safebooruHandlersWith (liftIO . searchSafebooruImageLinks)
+  safebooruHandlersWith (searchSafebooruImageLinks)
 
 safebooruHandlersWith
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es, Concurrent :> es)
   => SafebooruSearch es
   -> [RouteHandler es]
 safebooruHandlersWith search =
@@ -91,7 +90,7 @@ safebooruHandlersWith search =
   ]
 
 safebooruRoute
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, Concurrent :> es, IOE :> es)
   => SafebooruSearch es
   -> RouteHandler es
 safebooruRoute search =
@@ -101,7 +100,7 @@ safebooruRoute search =
         void $ Chat.replyTo message err
       Right request -> do
         logInfo_ [i|matched safebooru route: #{incomingMessageLogLine message}|]
-        forkEff (sendSafebooruImages search message request)
+        spawnTask (sendSafebooruImages search message request)
 
 ballCommandArgs :: MessageFilter Text
 ballCommandArgs =
@@ -205,9 +204,9 @@ replaceStoredLinks keyword links = do
         [ SafebooruLinkRow
             { id = def
             , keyword = keyword
-            , link = link
+            , link = imglink
             }
-        | link <- links
+        | imglink <- links
         ]
 
 drawStoredLinks :: (Storage.Storage :> es, IOE :> es) => Text -> Int -> Eff es [Text]
@@ -279,9 +278,9 @@ uniqueTexts :: [Text] -> [Text]
 uniqueTexts =
   reverse . snd . foldl' step (Set.empty, [])
   where
-    step (seen, retained) link
-      | link `Set.member` seen = (seen, retained)
-      | otherwise              = (Set.insert link seen, link : retained)
+    step (seen, retained) imglink
+      | imglink `Set.member` seen = (seen, retained)
+      | otherwise                 = (Set.insert imglink seen, imglink : retained)
 
 normalizeKeyword :: Text -> Text
 normalizeKeyword =
@@ -291,11 +290,11 @@ renderImageLinks :: [Text] -> Text
 renderImageLinks =
   Text.unlines . fmap ReplyBody.imageDirective
 
-searchSafebooruImageLinks :: Text -> IO [Text]
+searchSafebooruImageLinks :: (Fail :> es, IOE :> es) => Text -> Eff es [Text]
 searchSafebooruImageLinks keyword = do
-  value <- Http.runReq $
+  value <- liftIO . Http.runReq $
     responseBody <$> req GET safebooruUrl NoReqBody jsonResponse (safebooruOptions keyword)
-  either (Exception.throwIO . userError) pure $
+  either (throwIO . userError) pure $
     AesonTypes.parseEither parseSafebooruImageLinks value
 
 safebooruUrl :: Url 'Https

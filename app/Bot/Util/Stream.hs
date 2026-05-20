@@ -13,7 +13,6 @@ where
 
 import Bot.Prelude
 import qualified Control.Concurrent.Async as Async
-import qualified Control.Exception as Exception
 import qualified Control.Concurrent.STM as STM
 import qualified Control.Concurrent.STM.TBQueue as TBQueue
 import qualified Streaming as S
@@ -91,7 +90,7 @@ readMerged streamCount queue =
       | mergeState.failures == streamCount
       , Just err <- mergeState.lastFailure = do
           S.lift (logAttention_ [i|All merged stream inputs failed: #{show err :: String}|])
-          S.lift (liftIO (Exception.throwIO err))
+          S.lift (throwIO err)
       | otherwise =
           pure ()
 
@@ -136,8 +135,8 @@ pump shuttingDown queue stream =
 
 isStreamCancelled :: SomeException -> Bool
 isStreamCancelled err =
-  Just Exception.ThreadKilled == Exception.fromException err
-    || Just Async.AsyncCancelled == Exception.fromException err
+  Just ThreadKilled == fromException err
+    || Just Async.AsyncCancelled == fromException err
 
 writeMergeEvent :: IOE :> es => TBQueue.TBQueue (MergeEvent a) -> MergeEvent a -> Eff es ()
 writeMergeEvent queue =

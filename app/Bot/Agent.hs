@@ -139,7 +139,7 @@ runPreparedAgentStreaming maxTurns agentRun conversation =
   runAgentProgramStreaming (plainAgentProgram maxTurns agentRun) conversation
 
 runAgentProgramStreaming
-  :: (LLM.LLM :> es, IOE :> es)
+  :: (LLM.LLM :> es)
   => AgentProgram '[] es
   -> Conversation
   -> Stream (Of AgentStreamOutput) (Eff es) AgentResult
@@ -176,7 +176,7 @@ initialAgentState conversation =
     , turn = 1
     }
 
-defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[] es
+defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, Prim :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[] es
 defaultAgentProgram observer maxTurns agentRun =
   ( withToolLimit maxTurns
   . withObservation observer
@@ -199,7 +199,7 @@ plainAgentProgram maxTurns agentRun =
 -----------------------------------------------------------------------------------------
 
 runModelPhase
-  :: (LLM.LLM :> es, IOE :> es)
+  :: (LLM.LLM :> es)
   => AgentProgram context es
   -> AgentState
   -> Stream (Of AgentStreamOutput) (Eff es) ModelDecision
@@ -249,7 +249,7 @@ advanceAfterTools agentState conversation =
 
 -- | Ask the LLM for the next assistant message.
 askNext
-  :: (LLM.LLM :> es, IOE :> es)
+  :: (LLM.LLM :> es)
   => AgentRun es
   -> AgentState
   -> Stream (Of AgentStreamOutput) (Eff es) LLM.ChatAnswer

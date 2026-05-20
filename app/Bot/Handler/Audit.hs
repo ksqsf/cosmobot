@@ -21,7 +21,7 @@ import qualified Data.Text as Text
 import Data.Time (FormatTime, defaultTimeLocale, formatTime)
 
 auditHandlers
-  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, IOE :> es)
+  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, Prim :> es)
   => ConversationStore
   -> [RouteHandler es]
 auditHandlers conversations =
@@ -30,7 +30,7 @@ auditHandlers conversations =
   ]
 
 handleAudit
-  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, IOE :> es)
+  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, Prim :> es)
   => ConversationStore
   -> IncomingMessage
   -> Text

@@ -79,9 +79,9 @@ data HandlersConfig = HandlersConfig
   deriving (Show)
 
 -- | Read and normalize the TOML configuration used by the executable.
-loadConfig :: FilePath -> IO BotConfig
+loadConfig :: (IOE :> es, Fail :> es) => FilePath -> Eff es BotConfig
 loadConfig path = do
-  content <- TextIO.readFile path
+  content <- liftIO $ TextIO.readFile path
   case Toml.decode content of
     Toml.Failure errors ->
       fail [i|Failed to parse #{path}: #{unlines (map toText errors)}|]

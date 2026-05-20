@@ -69,6 +69,9 @@ import Bot.Effect.LLM.Transport
 import qualified Bot.Effect.LLM.Retry as Retry
 import qualified Bot.Effect.LLM.Transport as Transport
 import qualified Streaming.Prelude as S
+import Effectful.Timeout
+import Effectful.Process
+import Effectful.FileSystem
 
 -- | Effect for text, image, and tool-calling LLM requests.
 data LLM :: Effect where
@@ -118,14 +121,18 @@ askWithTools tools messages =
   send (AskTools tools messages)
 
 -- | Ask with function tools while receiving assistant content chunks.
-askWithToolsStreaming :: (LLM :> es, IOE :> es) => [FunctionTool] -> [ChatMessage] -> Stream (Of Text) (Eff es) ChatAnswer
+askWithToolsStreaming :: (LLM :> es) => [FunctionTool] -> [ChatMessage] -> Stream (Of Text) (Eff es) ChatAnswer
 askWithToolsStreaming tools messages = do
   stream <- lift (send (AskToolsStream tools messages))
   stream
 
 -- | Interpret LLM requests through an OpenAI-compatible HTTP endpoint.
 runLLM
-  :: IOE :> es
+  :: ( Fail :> es
+     , Timeout :> es
+     , FileSystem :> es
+     , Process :> es
+     , IOE :> es)
   => Log :> es
   => Config
   -> Eff (LLM : es) a

@@ -1209,7 +1209,7 @@ withTempDir label action = do
   root <- getTemporaryDirectory
   unique <- hashUnique <$> newUnique
   let dir = root </> [i|cosmobot-#{label}-#{unique}|]
-  Exception.bracket
+  bracket
     (createDirectory dir $> dir)
     removeDirectoryRecursive
     action
@@ -1219,14 +1219,14 @@ withSQLiteTempPath label action = do
   root <- getTemporaryDirectory
   unique <- hashUnique <$> newUnique
   let path = root </> [i|cosmobot-#{label}-#{unique}.sqlite|]
-  Exception.bracket_
+  bracket_
     (removeIfExists path)
     (removeIfExists path)
     (action path)
 
 removeIfExists :: FilePath -> IO ()
 removeIfExists path =
-  removeFile path `Exception.catch` \(_ :: IOException) -> pure ()
+  removeFile path `catch` \(_ :: IOException) -> pure ()
 
 sameConversationIds :: [ConversationRow] -> Bool
 sameConversationIds rows =

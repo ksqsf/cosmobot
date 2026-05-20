@@ -35,7 +35,7 @@ tigerRankCommand = "!hbcj"
 
 -- | Routes that render typing leaderboard snapshots.
 typingHandlers
-  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es, Concurrent :> es)
   => [RouteHandler es]
 typingHandlers =
   [ rankRoute championshipRankCommand "锦标赛成绩" "锦标赛排行榜生成失败。" fetchChampionshipRows
@@ -43,7 +43,7 @@ typingHandlers =
   ]
 
 rankRoute
-  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es, Concurrent :> es)
   => Text
   -> Text
   -> Text
@@ -53,7 +53,7 @@ rankRoute commandText titleSuffix failureMessage fetchRows =
   requireAuth canStartConversation (\_ -> pure ()) $
     stopOn (command commandText) \message _ -> do
       logInfo_ [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
-      forkEff (sendRankImage titleSuffix failureMessage fetchRows message)
+      spawnTask (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage
   :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es)

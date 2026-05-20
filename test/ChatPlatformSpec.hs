@@ -6,7 +6,6 @@ import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Control.Exception as Exception
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -221,7 +220,7 @@ testTelegramOkFalseBecomesTelegramExceptionDescription :: IO ()
 testTelegramOkFalseBecomesTelegramExceptionDescription = do
   let raw = ByteStringChar8.pack "{\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: can't parse entities\"}"
       parsed = either (error . toText) id (Aeson.eitherDecodeStrict raw :: Either String Telegram.TelegramResult)
-  result <- Exception.try (runEff (Telegram.parseTelegramResult parsed)) :: IO (Either Telegram.TelegramException Telegram.Message)
+  result <- try (runEff (Telegram.parseTelegramResult parsed)) :: IO (Either Telegram.TelegramException Telegram.Message)
   case result of
     Left (Telegram.TelegramException message) ->
       message @?= "Bad Request: can't parse entities"

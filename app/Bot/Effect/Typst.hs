@@ -21,7 +21,8 @@ import System.Exit
 import System.FilePath
 import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory)
 import System.IO.Error (userError)
-import System.Process
+import Effectful.Process
+import Effectful.FileSystem (FileSystem)
 
 -- | Render Typst source into a PNG available for the duration of a continuation.
 data Typst :: Effect where
@@ -37,7 +38,7 @@ withTypstPng source action =
   send (WithTypstPng source action)
 
 runTypst
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, Log :> es, Fail :> es, FileSystem :> es, Process :> es)
   => Eff (Typst : es) a
   -> Eff es a
 runTypst = interpret $ \localEnv operation ->
@@ -57,7 +58,7 @@ runTypstWith render = interpret $ \localEnv operation ->
       render source (runLocal . action)
 
 withRenderedTypstPng
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, Log :> es, Fail :> es, FileSystem :> es, Process :> es)
   => Text
   -> (FilePath -> Eff es a)
   -> Eff es a
@@ -72,18 +73,18 @@ withRenderedTypstPng source action =
     release =
       liftIO . removeDirectoryRecursive
 
-renderTypstPng :: (IOE :> es, Log :> es) => FilePath -> Text -> Eff es FilePath
+renderTypstPng :: (IOE :> es, Log :> es, Fail :> es, FileSystem :> es, Process :> es) => FilePath -> Text -> Eff es FilePath
 renderTypstPng dir source = do
   let typstPath = dir </> "document" <.> "typ"
       pngPath = dir </> "document" <.> "png"
   liftIO $ TextIO.writeFile typstPath source
   logInfo_ [i|Rendering Typst document: #{typstPath}|]
-  (code, _out, err) <- liftIO $
+  (code, _out, err) <- 
     readProcessWithExitCode "typst" ["compile", "--root", dir, typstPath, pngPath] ""
   case code of
     ExitSuccess -> do
       logInfo_ [i|Rendered Typst PNG: #{pngPath}|]
       pure pngPath
     ExitFailure _ -> do
-      liftIO $ Image.removeFilesIfExists [typstPath, pngPath]
+      Image.removeFilesIfExists [typstPath, pngPath]
       throwIO (userError ("typst failed: " <> err))

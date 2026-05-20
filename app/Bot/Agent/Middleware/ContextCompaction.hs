@@ -34,17 +34,17 @@ compactionNoticeMessage :: Text
 compactionNoticeMessage =
   "正在整理较早的对话上下文..."
 
-withContextCompaction :: (LLM.LLM :> es, IOE :> es) => AgentProgram context es -> AgentProgram context es
+withContextCompaction :: (LLM.LLM :> es) => AgentProgram context es -> AgentProgram context es
 withContextCompaction program =
   withContextCompactionUsing (\_ -> pure ()) program
 
-withContextCompactionNotice :: (Chat.Chat :> es, LLM.LLM :> es, IOE :> es) => AgentProgram context es -> AgentProgram context es
+withContextCompactionNotice :: (Chat.Chat :> es, LLM.LLM :> es) => AgentProgram context es -> AgentProgram context es
 withContextCompactionNotice program =
   withContextCompactionUsing
     (\_ -> void $ Chat.replyTo program.agentRun.context.message compactionNoticeMessage)
     program
 
-withContextCompactionUsing :: (LLM.LLM :> es, IOE :> es) => (AgentState -> Eff es ()) -> AgentProgram context es -> AgentProgram context es
+withContextCompactionUsing :: (LLM.LLM :> es) => (AgentState -> Eff es ()) -> AgentProgram context es -> AgentProgram context es
 withContextCompactionUsing notify program =
   program
     { aroundModelTurn = \context agentState action -> do

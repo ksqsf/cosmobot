@@ -18,10 +18,10 @@ import Bot.Chat.Driver.Types
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Control.Exception as Exception
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
+import Effectful.Timeout
 
 type ChatDriverEffects es =
   Chat.Chat : QQ.QQ : Telegram.Telegram : Matrix.Matrix : es
@@ -55,7 +55,7 @@ withPlatformDriver message label action =
     Just driver ->
       action driver `catch` \(err :: SomeException) -> do
         let platformText = show message.platform :: String
-        logInfo_ [i|#{label} failed on #{platformText}: #{Exception.displayException err}|]
+        logInfo_ [i|#{label} failed on #{platformText}: #{displayException err}|]
         pure Nothing
 
 replyToPlatform
@@ -83,7 +83,7 @@ uploadFileToPlatform message path =
           then throwIO err
           else do
             let platformText = show message.platform :: String
-                messageText = [i|File upload failed on #{platformText}: #{Exception.displayException err}|]
+                messageText = [i|File upload failed on #{platformText}: #{displayException err}|]
             logInfo_ messageText
             pure (Left messageText)
 
@@ -185,7 +185,7 @@ setPlatformMemberTitle message userId title =
     Just <$> driver.setMemberTitle message userId title
 
 runChatDrivers
-  :: (Log :> es, IOE :> es)
+  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, IOE :> es)
   => QQ.Config
   -> Telegram.Config
   -> Matrix.Config
@@ -198,7 +198,13 @@ runChatDrivers qqConfig telegramConfig matrixConfig =
   Chat.runChatWith chatHandlers
 
 incomingMessages
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: QQ.QQ :> es
+  => Telegram.Telegram :> es
+  => Matrix.Matrix :> es
+  => Log :> es
+  => Concurrent :> es
+  => Fail :> es
+  => IOE :> es
   => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages =
   StreamUtil.mergeStreams

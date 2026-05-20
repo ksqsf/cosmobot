@@ -27,9 +27,26 @@ import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Typst as Typst
 import Bot.Prelude
+import Effectful.Timeout
+import Effectful.Process
+import Effectful.FileSystem
 
 -- | Built-in tools exposed to the model after per-message permission checks.
-defaultTools :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Scheduler.Scheduler :> es, Typst.Typst :> es, Log :> es, IOE :> es) => [Tool es]
+defaultTools
+  :: Chat.Chat :> es
+  => ChatLog.ChatLog :> es
+  => LLM.LLM :> es
+  => Memory.Memory :> es
+  => Scheduler.Scheduler :> es
+  => Typst.Typst :> es
+  => Fail :> es
+  => Concurrent :> es
+  => Timeout :> es
+  => Log :> es
+  => Process :> es
+  => FileSystem :> es
+  => IOE :> es
+  => [Tool es]
 defaultTools =
   [ listDirectoryTool
   , readFileTool

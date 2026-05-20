@@ -35,7 +35,7 @@ saucenaoCommand =
 
 -- | Routes for SauceNAO reverse image search commands.
 saucenaoHandlers
-  :: (Chat.Chat :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Log :> es, IOE :> es, Concurrent :> es)
   => SaucenaoConfig
   -> [RouteHandler es]
 saucenaoHandlers saucenaoCfg =
@@ -43,13 +43,13 @@ saucenaoHandlers saucenaoCfg =
   ]
 
 saucenaoRoute
-  :: (Chat.Chat :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Log :> es, IOE :> es, Concurrent :> es)
   => SaucenaoConfig
   -> RouteHandler es
 saucenaoRoute saucenaoCfg =
   stopOn (command saucenaoCommand) \message _ -> do
     logInfo_ [i|matched saucenao route: #{incomingMessageLogLine message}|]
-    forkEff (sendSaucenaoResults saucenaoCfg message)
+    spawnTask (sendSaucenaoResults saucenaoCfg message)
 
 sendSaucenaoResults
   :: (Chat.Chat :> es, Log :> es, IOE :> es)

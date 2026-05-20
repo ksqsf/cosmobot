@@ -31,7 +31,6 @@ import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Util.HTTP as Http
-import Control.Concurrent (threadDelay)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString.Char8 as ByteString
@@ -150,7 +149,7 @@ rememberMatrixEvent :: IOE :> es => IORef.IORef (Map MessageId Text) -> SendMess
 rememberMatrixEvent eventIds response =
   liftIO $ IORef.modifyIORef' eventIds (Map.insert (textMessageId response.eventId) response.eventId)
 
-incomingMessages :: (Matrix :> es, Log :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (Matrix :> es, Log :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
   cfg <- S.lift matrixConfig
   unless (isNothing cfg.accessToken) (syncLoop cfg Nothing)
@@ -158,7 +157,7 @@ incomingMessages = do
     syncLoop cfg since = do
       result <- S.lift $ sync since `catch` \(err :: SomeException) -> do
         logInfo_ [i|Matrix sync failed, retrying: #{show err :: String}|]
-        liftIO $ threadDelay matrixRetryDelayMicroseconds
+        threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
         Nothing ->

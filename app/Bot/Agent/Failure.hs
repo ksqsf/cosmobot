@@ -22,7 +22,6 @@ where
 
 import Bot.Prelude
 import qualified Bot.Effect.LLM as LLM
-import qualified Control.Exception as Exception
 import qualified Data.Text as Text
 import qualified Network.HTTP.Client as HTTP
 
@@ -79,7 +78,7 @@ uncertainSideEffectFailure =
 
 agentFailureFromException :: SomeException -> AgentFailure
 agentFailureFromException err =
-  case Exception.fromException err of
+  case fromException err of
     Just (AgentException failure) ->
       failure
     Nothing ->
@@ -87,11 +86,11 @@ agentFailureFromException err =
 
 classifyException :: SomeException -> AgentFailure
 classifyException err =
-  case Exception.fromException err of
+  case fromException err of
     Just httpErr ->
       httpFailure httpErr
     Nothing ->
-      case Exception.fromException err of
+      case fromException err of
         Just (LLM.LLMException message) ->
           llmFailure message
         Nothing ->

@@ -8,8 +8,7 @@ import Bot.Core.Route
 import Bot.Handler.Scratchpad
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Control.Exception as Exception
-import qualified System.Directory as Directory
+import Effectful.FileSystem
 import System.FilePath ((</>))
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -25,7 +24,7 @@ main =
       , testCase "messages without sender are rejected" testScratchpadMissingSender
       ]
 
-testScratchpadTodoFlow :: IO ()
+testScratchpadTodoFlow :: IOE :> es => Eff es ()
 testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (message "!todo buy milk")
@@ -48,7 +47,7 @@ testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
     , "todo list 为空。"
     ]
 
-testScratchpadSenderIsolation :: IO ()
+testScratchpadSenderIsolation :: IOE :> es => Eff es ()
 testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (messageFrom "200" "!todo alice task")
@@ -63,7 +62,7 @@ testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store ->
     , "- [ ] 1. bob task\n"
     ]
 
-testScratchpadPersistence :: IO ()
+testScratchpadPersistence :: Eff '[IOE] ()
 testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
   writeReplies <- IORef.newIORef ([] :: [Text])
   runScratchpad path writeReplies (message "!todo persists")
@@ -71,7 +70,7 @@ testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
   runScratchpad path readReplies (message "!list")
   IORef.readIORef readReplies >>= (@?= ["- [ ] 1. persists\n"])
 
-testScratchpadInvalidCommands :: IO ()
+testScratchpadInvalidCommands :: IOE :> es => Eff es ()
 testScratchpadInvalidCommands = withScratchpadStore "invalid-commands" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (message "!done")
@@ -88,24 +87,24 @@ testScratchpadInvalidCommands = withScratchpadStore "invalid-commands" \store ->
       , "用法：!rm <编号1> <编号2> ..."
       ]
 
-testScratchpadMissingSender :: IO ()
+testScratchpadMissingSender :: IOE :> es => Eff es ()
 testScratchpadMissingSender = withScratchpadStore "missing-sender" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (messageWithoutSender "!todo unsaved")
   IORef.readIORef replies >>= (@?= ["无法识别发送者，不能保存 todo。"])
 
-withScratchpadStore :: String -> (FilePath -> IO ()) -> IO ()
+withScratchpadStore :: String -> (FilePath -> Eff es ()) -> Eff es ()
 withScratchpadStore label action =
   withScratchpadPath label action
 
-withScratchpadPath :: String -> (FilePath -> IO ()) -> IO ()
+withScratchpadPath :: IOE :> IO => String -> (FilePath -> Eff es ()) -> Eff es ()
 withScratchpadPath label action = do
-  tmp <- Directory.getTemporaryDirectory
+  tmp <- getTemporaryDirectory
   let path = tmp </> ("cosmobot-scratchpad-spec-" <> label <> ".sqlite")
-  Directory.removeFile path `Exception.catch` \(_ :: IOException) -> pure ()
+  removeFile path `catch` \(_ :: IOException) -> pure ()
   action path
 
-runScratchpad :: FilePath -> IORef.IORef [Text] -> IncomingMessage -> IO ()
+runScratchpad :: IOE :> es => FilePath -> IORef.IORef [Text] -> IncomingMessage -> Eff es ()
 runScratchpad path replies incoming =
   runEff $
     Chat.runChatWith Chat.ChatHandlers

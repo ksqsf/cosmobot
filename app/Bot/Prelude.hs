@@ -8,13 +8,16 @@ module Bot.Prelude
   ( module Relude
   , module Data.String.Interpolate
   , module Effectful
+  , module Effectful.Concurrent
+  , module Effectful.Concurrent.Async
   , module Effectful.Dispatch.Dynamic
   , module Effectful.Log
   , module Effectful.Exception
   , module Effectful.Fail
+  , module Effectful.Prim.IORef
   , Stream
   , Of
-  , forkEff
+  , spawnTask
   )
 where
 
@@ -22,9 +25,17 @@ where
 -- Prelude
 -- ---------------------------------------------------------------------------
 
-import Relude
-import Control.Concurrent (forkIO)
-import qualified Control.Exception as Exception
+import Relude hiding
+  ( newIORef
+  , readIORef
+  , writeIORef
+  , modifyIORef
+  , modifyIORef'
+  , atomicWriteIORef
+  , atomicModifyIORef
+  , atomicModifyIORef'
+  , IORef
+  )
 
 -- ---------------------------------------------------------------------------
 -- String
@@ -37,10 +48,13 @@ import Data.String.Interpolate
 -- ---------------------------------------------------------------------------
 
 import Effectful
+import Effectful.Concurrent
+import Effectful.Concurrent.Async
 import Effectful.Dispatch.Dynamic
 import Effectful.Log
 import Effectful.Exception
 import Effectful.Fail
+import Effectful.Prim.IORef
 
 -- ---------------------------------------------------------------------------
 -- Streams
@@ -52,16 +66,11 @@ import Streaming (Stream, Of)
 -- Helpers
 -- ---------------------------------------------------------------------------
 
-forkEff :: (IOE :> es, Log :> es) => Eff es () -> Eff es ()
-forkEff action =
-  withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
-    void $ liftIO $ forkIO do
-      result <- Exception.try (runInIO action)
-      case result of
-        Right () ->
-          pure ()
-        Left err
-          | Just Exception.ThreadKilled <- Exception.fromException err ->
-              pure ()
-          | otherwise ->
-              runInIO (logAttention_ [i|Forked action failed: #{show err :: String}|])
+spawnTask :: (Log :> es, Concurrent :> es) => Eff es () -> Eff es ()
+spawnTask action = void $ forkIO do
+  try action >>= \case
+    Right () -> pure ()
+    Left err
+      | Just ThreadKilled <- fromException err ->
+        pure ()
+      | otherwise -> logAttention_ [i|Forked action failed: #{show err :: String}|]

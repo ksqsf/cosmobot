@@ -12,22 +12,21 @@ where
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Prelude
-import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import System.Exit (ExitCode (..))
-import System.IO (hClose)
 import System.IO.Error (userError)
-import System.Process (StdStream (..), proc, readCreateProcessWithExitCode, waitForProcess, createProcess, std_err, std_out)
-import System.Timeout (timeout)
+import Effectful.Process (Process, StdStream (..), proc, readCreateProcessWithExitCode, waitForProcess, createProcess, std_err, std_out)
+import Effectful.Timeout
+import Effectful.FileSystem.IO (FileSystem, hClose)
 
 emacsSocketName :: String
 emacsSocketName =
   "cosmobot"
 
-emacsEvalTool :: IOE :> es => Tool es
+emacsEvalTool :: (Process :> es, Timeout :> es, Concurrent :> es, IOE :> es, FileSystem :> es) => Tool es
 emacsEvalTool = Tool
   { name = "emacs_eval"
   , description = "Evaluate Emacs Lisp in a cosmobot-owned, persistent Emacs 30 daemon for coding, scripting, reading/writing files, starting subprocesses, managing terminals, recording temporary memory in buffers, etc. Prefer it to other tools if it uses less tokens, and always use it if there are multiple operations that can be batched."
@@ -40,11 +39,11 @@ emacsEvalTool = Tool
   , allowed = superuserOnly
   , start = \_ -> pure \args ->
       withParsedToolArgs emacsEvalArgs args \(expression, timeoutSeconds) -> do
-        result <- liftIO $ runEmacsEval timeoutSeconds expression
+        result <- runEmacsEval timeoutSeconds expression
         pure (toolText result)
   }
 
-runEmacsEval :: Int -> Text -> IO Text
+runEmacsEval :: (Process :> es, Timeout :> es, FileSystem :> es) => Int -> Text -> Eff es Text
 runEmacsEval timeoutSeconds expression = do
   firstAttempt <- tryEval timeoutSeconds expression
   case firstAttempt of
@@ -52,21 +51,21 @@ runEmacsEval timeoutSeconds expression = do
       pure result
     Left _ -> do
       startEmacsDaemon timeoutSeconds
-      either Exception.throwIO pure =<< tryEval timeoutSeconds expression
+      either throwIO pure =<< tryEval timeoutSeconds expression
 
-tryEval :: Int -> Text -> IO (Either SomeException Text)
+tryEval :: (Timeout :> es, Process :> es) => Int -> Text -> Eff es (Either SomeException Text)
 tryEval timeoutSeconds expression =
-  Exception.try do
+  try do
     let effectiveTimeout = max 1 timeoutSeconds
         process = proc "emacsclient" ["--socket-name", emacsSocketName, "--eval", Text.unpack expression]
     outcome <- timeout (effectiveTimeout * 1_000_000) (readCreateProcessWithExitCode process "")
     case outcome of
       Nothing ->
-        Exception.throwIO (userError [i|emacs_eval timed out after #{effectiveTimeout} seconds.|])
+        throwIO (userError [i|emacs_eval timed out after #{effectiveTimeout} seconds.|])
       Just (exitCode, stdoutText, stderrText) ->
         pure (formatProcessResult "emacsclient" exitCode (Text.pack stdoutText) (Text.pack stderrText))
 
-startEmacsDaemon :: Int -> IO ()
+startEmacsDaemon :: (Process :> es, Timeout :> es, FileSystem :> es) => Int -> Eff es ()
 startEmacsDaemon timeoutSeconds = do
   let effectiveTimeout = max 1 timeoutSeconds
   (_, outHandle, errHandle, processHandle) <- createProcess
@@ -79,11 +78,11 @@ startEmacsDaemon timeoutSeconds = do
   traverse_ hClose errHandle
   case outcome of
     Nothing ->
-      Exception.throwIO (userError [i|emacs daemon startup timed out after #{effectiveTimeout} seconds.|])
+      throwIO (userError [i|emacs daemon startup timed out after #{effectiveTimeout} seconds.|])
     Just ExitSuccess ->
       pure ()
     Just exitCode ->
-      Exception.throwIO (userError [i|emacs daemon startup failed: #{show exitCode :: String}|])
+      throwIO (userError [i|emacs daemon startup failed: #{show exitCode :: String}|])
 
 formatProcessResult :: Text -> ExitCode -> Text -> Text -> Text
 formatProcessResult commandName exitCode stdoutText stderrText =

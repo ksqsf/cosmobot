@@ -56,7 +56,7 @@ withToolLimit maxTurns program =
     toolLimitContext =
       ToolLimitContext{maxToolTurns = max 1 maxTurns}
 
-withToolFailureRecovery :: IOE :> es => AgentProgram context es -> AgentProgram context es
+withToolFailureRecovery :: AgentProgram context es -> AgentProgram context es
 withToolFailureRecovery program =
   program
     { aroundToolCall = \turn call context action ->
@@ -114,7 +114,7 @@ handleToolLimit runId turn _content calls answered = do
     , turnsUsed = turn
     }
 
-safeToolCall :: IOE :> es => LLM.ToolCall -> Eff es ToolResult -> Eff es ToolResult
+safeToolCall :: LLM.ToolCall -> Eff es ToolResult -> Eff es ToolResult
 safeToolCall call action =
   action `catch` \(err :: SomeException) ->
     if isAsyncException err

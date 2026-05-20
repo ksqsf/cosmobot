@@ -29,22 +29,21 @@ import Bot.Core.Conversation
 import Bot.Core.Message
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Storage as Storage
-import Bot.Prelude
+import Bot.Prelude hiding (newIORef, readIORef, atomicModifyIORef, writeIORef, atomicModifyIORef')
 import Bot.Storage.Prelude
-import Control.Concurrent (ThreadId, killThread)
-import qualified Control.Concurrent.MVar as MVar
+import qualified Effectful.Concurrent.MVar as MVar
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Foldable as Foldable
 import qualified Data.Int as Int
-import qualified Data.IORef as IORef
+import Effectful.Prim.IORef
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text.Encoding as TextEncoding
 
 data ConversationStore = ConversationStore
-  { unConversationStore :: IORef.IORef ConversationState
-  , activeConversationStore :: IORef.IORef (Map ConversationMessageKey ActiveConversation)
+  { unConversationStore :: IORef ConversationState
+  , activeConversationStore :: IORef (Map ConversationMessageKey ActiveConversation)
   }
 
 data ConversationState = ConversationState
@@ -62,8 +61,8 @@ data StoredConversationNode = StoredConversationNode
 data ActiveConversation = ActiveConversation
   { activeMessageKey :: !ConversationMessageKey
   , activeParentMessageKey :: !(Maybe ConversationMessageKey)
-  , activeMessageKeys :: !(IORef.IORef [ConversationMessageKey])
-  , activeCurrent :: !(IORef.IORef Conversation)
+  , activeMessageKeys :: !(IORef [ConversationMessageKey])
+  , activeCurrent :: !(IORef Conversation)
   , activeDone :: !(MVar.MVar Conversation)
   , activeThreadId :: !ThreadId
   }
@@ -103,40 +102,40 @@ conversationRows =
     , #parent_message_id :- index
     ]
 
-newConversationStore :: IO ConversationStore
+newConversationStore :: Prim :> es => Eff es ConversationStore
 newConversationStore = do
-  ref <- IORef.newIORef ConversationState{nextConversationId = 1, conversationTree = emptyConversationTree, conversationIds = Map.empty, recentConversationIds = []}
-  activeRef <- IORef.newIORef Map.empty
+  ref <- newIORef ConversationState{nextConversationId = 1, conversationTree = emptyConversationTree, conversationIds = Map.empty, recentConversationIds = []}
+  activeRef <- newIORef Map.empty
   pure ConversationStore{unConversationStore = ref, activeConversationStore = activeRef}
 
-lookupConversation :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe Conversation)
+lookupConversation :: (Prim :> es, Concurrent :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe Conversation)
 lookupConversation store@ConversationStore{activeConversationStore = activeRef} messageKey = do
   finished <- fmap (.treeNode.conversation) <$> lookupConversationNode store messageKey
   case finished of
     Just conversation ->
       pure (Just conversation)
     Nothing -> do
-      active <- liftIO $ Map.lookup messageKey <$> IORef.readIORef activeRef
-      traverse (liftIO . MVar.readMVar . (.activeDone)) active
+      active <- Map.lookup messageKey <$> readIORef activeRef
+      traverse (MVar.readMVar . (.activeDone)) active
 
-lookupConversationMessageIds :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es [MessageId]
+lookupConversationMessageIds :: (Prim :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es [MessageId]
 lookupConversationMessageIds store@ConversationStore{unConversationStore = ref, activeConversationStore = activeRef} messageKey = do
-  active <- liftIO $ Map.lookup messageKey <$> IORef.readIORef activeRef
+  active <- Map.lookup messageKey <$> readIORef activeRef
   case active of
     Just activeConversation ->
-      map (.messageId) <$> liftIO (IORef.readIORef activeConversation.activeMessageKeys)
+      map (.messageId) <$> readIORef activeConversation.activeMessageKeys
     Nothing -> do
       node <- lookupConversationNode store messageKey
       case node of
         Nothing ->
           loadConversationMessageIds messageKey
         Just target -> do
-          cached <- liftIO $ Map.toList . (.conversationIds) <$> IORef.readIORef ref
+          cached <- Map.toList . (.conversationIds) <$> readIORef ref
           stored <- loadConversationMessageIds messageKey
           pure (ordNub (stored <> [cachedKey.messageId | (cachedKey, cachedConversationId) <- cached, cachedConversationId == target.conversationId]))
 
 rememberActiveConversation
-  :: IOE :> es
+  :: (Prim :> es, Concurrent :> es)
   => ConversationStore
   -> Maybe ConversationMessageKey
   -> Maybe ConversationMessageKey
@@ -146,71 +145,71 @@ rememberActiveConversation
 rememberActiveConversation _ _ Nothing _ _ =
   pure Nothing
 rememberActiveConversation ConversationStore{activeConversationStore = activeRef} parentMessageKey (Just messageKey) threadId conversation = do
-  messageKeys <- liftIO (IORef.newIORef [messageKey])
-  current <- liftIO (IORef.newIORef conversation)
-  done <- liftIO MVar.newEmptyMVar
+  messageKeys <- newIORef [messageKey]
+  current <- newIORef conversation
+  done <- MVar.newEmptyMVar
   let active = ActiveConversation{activeMessageKey = messageKey, activeParentMessageKey = parentMessageKey, activeMessageKeys = messageKeys, activeCurrent = current, activeDone = done, activeThreadId = threadId}
-  liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
+  atomicModifyIORef' activeRef \activeMap ->
     (Map.insert messageKey active activeMap, ())
   pure (Just (ActiveConversationHandle active))
 
-addActiveConversationMessage :: IOE :> es => ConversationStore -> ActiveConversationHandle -> ConversationMessageKey -> Eff es ()
+addActiveConversationMessage :: Prim :> es => ConversationStore -> ActiveConversationHandle -> ConversationMessageKey -> Eff es ()
 addActiveConversationMessage ConversationStore{activeConversationStore = activeRef} (ActiveConversationHandle active) messageKey = do
-  liftIO $ IORef.atomicModifyIORef' active.activeMessageKeys \messageKeys ->
+  atomicModifyIORef' active.activeMessageKeys \messageKeys ->
     let next = if messageKey `elem` messageKeys then messageKeys else messageKey : messageKeys
     in (next, ())
-  liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
+  atomicModifyIORef' activeRef \activeMap ->
     (Map.insert messageKey active activeMap, ())
 
-updateActiveConversation :: IOE :> es => ActiveConversationHandle -> Conversation -> Eff es ()
+updateActiveConversation :: Prim :> es => ActiveConversationHandle -> Conversation -> Eff es ()
 updateActiveConversation (ActiveConversationHandle active) conversation =
-  liftIO $ IORef.writeIORef active.activeCurrent conversation
+  writeIORef active.activeCurrent conversation
 
 finishActiveConversation
-  :: (IOE :> es, Log :> es, Storage.Storage :> es)
+  :: (Prim :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
   => ConversationStore
   -> ActiveConversationHandle
   -> Conversation
   -> Eff es ()
 finishActiveConversation store@ConversationStore{activeConversationStore = activeRef} (ActiveConversationHandle active) conversation = do
   updateActiveConversation (ActiveConversationHandle active) conversation
-  messageKeys <- liftIO (IORef.readIORef active.activeMessageKeys)
+  messageKeys <- readIORef active.activeMessageKeys
   traverse_ (\messageKey -> rememberConversationFrom store active.activeParentMessageKey (Just messageKey) conversation) messageKeys
-  void $ liftIO (MVar.tryPutMVar active.activeDone conversation)
-  liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
+  void $ MVar.tryPutMVar active.activeDone conversation
+  atomicModifyIORef' activeRef \activeMap ->
     (foldl' (flip Map.delete) activeMap messageKeys, ())
 
 finishActiveConversationCurrent
-  :: (IOE :> es, Log :> es, Storage.Storage :> es)
+  :: (Prim :> es, Log :> es, Storage.Storage :> es, Concurrent :> es)
   => ConversationStore
   -> ActiveConversationHandle
   -> Eff es ()
 finishActiveConversationCurrent store (ActiveConversationHandle active) = do
-  conversation <- liftIO (IORef.readIORef active.activeCurrent)
+  conversation <- readIORef active.activeCurrent
   finishActiveConversation store (ActiveConversationHandle active) conversation
 
-haltConversation :: (IOE :> es, Log :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es Bool
+haltConversation :: (Prim :> es, Log :> es, Storage.Storage :> es, Concurrent :> es) => ConversationStore -> ConversationMessageKey -> Eff es Bool
 haltConversation store@ConversationStore{activeConversationStore = activeRef} messageKey = do
-  active <- liftIO $ Map.lookup messageKey <$> IORef.readIORef activeRef
+  active <- Map.lookup messageKey <$> readIORef activeRef
   case active of
     Nothing ->
       pure False
     Just activeConversation -> do
-      conversation <- liftIO (IORef.readIORef activeConversation.activeCurrent)
-      messageKeys <- liftIO (IORef.readIORef activeConversation.activeMessageKeys)
-      liftIO (killThread activeConversation.activeThreadId)
+      conversation <- readIORef activeConversation.activeCurrent
+      messageKeys <- readIORef activeConversation.activeMessageKeys
+      killThread activeConversation.activeThreadId
       traverse_ (\activeMessageKey -> rememberConversationFrom store activeConversation.activeParentMessageKey (Just activeMessageKey) conversation) messageKeys
-      void $ liftIO (MVar.tryPutMVar activeConversation.activeDone conversation)
-      liftIO $ IORef.atomicModifyIORef' activeRef \activeMap ->
+      void $ MVar.tryPutMVar activeConversation.activeDone conversation
+      atomicModifyIORef' activeRef \activeMap ->
         (foldl' (flip Map.delete) activeMap messageKeys, ())
       pure True
 
-rememberConversation :: (IOE :> es, Log :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Conversation -> Eff es ()
+rememberConversation :: (Prim :> es, Log :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Conversation -> Eff es ()
 rememberConversation store =
   rememberConversationFrom store Nothing
 
 rememberConversationFrom
-  :: (IOE :> es, Log :> es, Storage.Storage :> es)
+  :: (Prim :> es, Log :> es, Storage.Storage :> es)
   => ConversationStore
   -> Maybe ConversationMessageKey
   -> Maybe ConversationMessageKey
@@ -223,7 +222,7 @@ rememberConversationFrom store@ConversationStore{unConversationStore = ref} pare
   parentNode <- lookupConversationNodeMaybe store parentMessageKey
   existingNode <- lookupConversationNodeMaybe store (Just messageKey)
   nextStoredConversationId <- loadNextConversationId
-  (conversationId, storageParentMessageKey, storedMessages) <- liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
+  (conversationId, storageParentMessageKey, storedMessages) <- atomicModifyIORef' ref \conversationState ->
     let conversationId = conversationIdFor conversationState parentNode existingNode
         node = StoredConversationNode
           { conversationId
@@ -238,16 +237,16 @@ rememberConversationFrom store@ConversationStore{unConversationStore = ref} pare
     `catch` \(err :: SomeException) ->
       logInfo_ [i|Failed to persist conversation: #{show err :: String}|]
 
-lookupConversationNode :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
+lookupConversationNode :: (Prim :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
 lookupConversationNode store messageKey =
   lookupConversationNodeMaybe store (Just messageKey)
 
-lookupConversationNodeMaybe :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
+lookupConversationNodeMaybe :: (Prim :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
 lookupConversationNodeMaybe _ Nothing =
   pure Nothing
 lookupConversationNodeMaybe store@ConversationStore{unConversationStore = ref} (Just messageKey) = do
-  cached <- liftIO do
-    conversationState <- IORef.readIORef ref
+  cached <- do
+    conversationState <- readIORef ref
     pure do
       treeNode <- lookupConversationTreeNode messageKey conversationState.conversationTree
       conversationId <- Map.lookup messageKey conversationState.conversationIds
@@ -258,7 +257,7 @@ lookupConversationNodeMaybe store@ConversationStore{unConversationStore = ref} (
     Nothing ->
       loadConversationNodeFromStorage store [] messageKey
 
-loadConversationNodeFromStorage :: (IOE :> es, Storage.Storage :> es) => ConversationStore -> [ConversationMessageKey] -> ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
+loadConversationNodeFromStorage :: (Prim :> es, Storage.Storage :> es) => ConversationStore -> [ConversationMessageKey] -> ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
 loadConversationNodeFromStorage store@ConversationStore{unConversationStore = ref} visited messageKey
   | messageKey `elem` visited =
       pure Nothing
@@ -282,7 +281,7 @@ loadConversationNodeFromStorage store@ConversationStore{unConversationStore = re
                     , conversation = storedConversationFromMessages parentNode stored.storedMessages
                     }
                 }
-          liftIO $ IORef.atomicModifyIORef' ref \conversationState ->
+          atomicModifyIORef' ref \conversationState ->
             (cacheConversationNode messageKey node conversationState, ())
           pure (Just node)
 

@@ -16,7 +16,6 @@ where
 
 import Bot.Prelude
 import qualified Bot.Effect.LLM.Transport as Transport
-import qualified Control.Exception as Exception
 import qualified Data.Text as Text
 import qualified Network.HTTP.Client as HTTP
 import qualified Streaming.Prelude as S
@@ -72,7 +71,7 @@ retryableLLMFailure err =
 
 retryableHTTPFailure :: SomeException -> Bool
 retryableHTTPFailure err =
-  case Exception.fromException err of
+  case fromException err of
     Just (HTTP.HttpExceptionRequest _ HTTP.ResponseTimeout) ->
       True
     Just (HTTP.HttpExceptionRequest _ HTTP.ConnectionTimeout) ->
@@ -82,7 +81,7 @@ retryableHTTPFailure err =
 
 retryableEmptyResponse :: SomeException -> Bool
 retryableEmptyResponse err =
-  case Exception.fromException err of
+  case fromException err of
     Just (Transport.LLMException message) ->
       "empty" `Text.isInfixOf` Text.toLower message
     Nothing ->

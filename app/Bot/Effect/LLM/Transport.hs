@@ -53,7 +53,6 @@ import qualified Bot.Util.Image as Image
 import qualified Bot.Core.ReplyBody as ReplyBody
 import qualified Bot.Util.HTTP as Http
 import qualified Bot.Util.Stream as StreamUtil
-import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Encode.Pretty as AesonPretty
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -74,8 +73,10 @@ import Network.HTTP.Req
 import Optics ((%~))
 import qualified Streaming.Prelude as S
 import System.IO.Error (ioError, userError)
-import qualified System.Timeout as Timeout
+import qualified Effectful.Timeout as Timeout
 import qualified Text.URI as URI
+import Effectful.FileSystem (FileSystem)
+import Effectful.Process (Process)
 
 -- | Runtime configuration for OpenAI-compatible LLM endpoints.
 data Config = Config
@@ -163,21 +164,20 @@ llmHttpConfig manager =
     , httpConfigRetryJudgeException = \_ _ -> False
     }
 
-runTimedLLMReq :: Text -> Int -> Req a -> IO a
+runTimedLLMReq :: (Fail :> es, Timeout.Timeout :> es, IOE :> es) => Text -> Int -> Req a -> Eff es a
 runTimedLLMReq label timeoutSeconds action = do
-  manager <- Http.newTlsManager
+  manager <- liftIO $ Http.newTlsManager
   result <- Timeout.timeout (secondsToMicros timeoutSeconds) $
-    Http.runReqWithConfig (llmHttpConfig manager) action
+    liftIO $ Http.runReqWithConfig (llmHttpConfig manager) action
   case result of
     Just value ->
       pure value
     Nothing ->
-      Exception.throwIO (LLMException [i|#{label} timed out after #{timeoutSeconds} seconds.|])
+      throwIO (LLMException [i|#{label} timed out after #{timeoutSeconds} seconds.|])
 
-runTimedEff :: IOE :> es => Text -> Int -> Eff es a -> Eff es a
+runTimedEff :: (Timeout.Timeout :> es, IOE :> es) => Text -> Int -> Eff es a -> Eff es a
 runTimedEff label timeoutSeconds action = do
-  result <- withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-    liftIO (Timeout.timeout (secondsToMicros timeoutSeconds) (runInIO action))
+  result <- Timeout.timeout (secondsToMicros timeoutSeconds) action
   case result of
     Just value ->
       pure value
@@ -185,33 +185,46 @@ runTimedEff label timeoutSeconds action = do
       throwIO (LLMException [i|#{label} timed out after #{timeoutSeconds} seconds.|])
 
 llmJsonPost
-  :: (Aeson.ToJSON request, Aeson.FromJSON response)
+  :: ( Aeson.ToJSON request
+     , Aeson.FromJSON response
+     , Timeout.Timeout :> es
+     , Fail :> es
+     , IOE :> es
+     )
   => Text
   -> Int
   -> Url 'Https
   -> request
   -> Option 'Https
-  -> IO (JsonResponse response)
+  -> Eff es (JsonResponse response)
 llmJsonPost label timeoutSeconds url request options =
   runTimedLLMReq label timeoutSeconds $
     reqCb POST url (ReqBodyJson request) jsonResponse options \httpRequest ->
       pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
 
 llmMultipartPost
-  :: Aeson.FromJSON response
+  :: ( Aeson.FromJSON response
+     , Timeout.Timeout :> es
+     , Fail :> es
+     , IOE :> es)
   => Text
   -> Int
   -> Url 'Https
   -> [Multipart.Part]
   -> Option 'Https
-  -> IO (JsonResponse response)
+  -> Eff es (JsonResponse response)
 llmMultipartPost label timeoutSeconds url parts options =
   runTimedLLMReq label timeoutSeconds do
     body <- reqBodyMultipart parts
     reqCb POST url body jsonResponse options \httpRequest ->
       pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
 
-askOpenAI :: (IOE :> es, Log :> es) => Config -> [ChatMessage] -> Eff es Text
+askOpenAI
+  :: ( IOE :> es
+     , Timeout.Timeout :> es
+     , Fail :> es
+     , Log :> es)
+  => Config -> [ChatMessage] -> Eff es Text
 askOpenAI Config{apiKey = Nothing} _ =
   pure "LLM is not configured: set llm.api_key."
 askOpenAI cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} messages = do
@@ -231,7 +244,7 @@ askOpenAI cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} 
     logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
     logLLMRequestMessages request
     (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-    response <- liftIO $
+    response <-
       llmJsonPost "LLM request" requestTimeout url request
         (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
     let body = responseBody response
@@ -240,11 +253,11 @@ askOpenAI cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} 
       Just answer -> pure answer
       Nothing     -> throwIO (LLMException "OpenAI response was empty: no text or image output.")
 
-askImageOpenAI :: (IOE :> es, Log :> es) => Config -> [ChatMessage] -> Eff es Text
+askImageOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> [ChatMessage] -> Eff es Text
 askImageOpenAI cfg messages =
   S.effects (askImageOpenAIStreaming cfg messages)
 
-askImageOpenAIStreaming :: (IOE :> es, Log :> es) => Config -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageOpenAIStreaming cfg@Config{imageGeneration, imageGenerationApi} messages
   | not imageGeneration =
       yieldTextResult (pure "Image generation is not configured: set llm.image_generation = true.")
@@ -253,7 +266,7 @@ askImageOpenAIStreaming cfg@Config{imageGeneration, imageGenerationApi} messages
   | otherwise =
       yieldTextResult (askImageChatCompletionsOpenAI cfg messages)
 
-askImageEditOpenAI :: (IOE :> es, Log :> es) => Config -> Text -> [Text] -> Maybe Text -> Eff es Text
+askImageEditOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> Text -> [Text] -> Maybe Text -> Eff es Text
 askImageEditOpenAI cfg@Config{imageGeneration, imageGenerationModelCanEdit, apiKey, imageGenerationBaseUrl, imageGenerationApiKey, imageGenerationModel, imageGenerationTimeout} prompt imageRefs maskRef
   | not imageGeneration =
       pure "Image editing is not configured: set llm.image_generation = true."
@@ -270,12 +283,12 @@ askImageEditOpenAI cfg@Config{imageGeneration, imageGenerationModelCanEdit, apiK
               requestPath = imageEditsPath
               requestEndpoint = endpointText requestBaseUrl requestPath
               requestModel = fromMaybe cfg.model imageGenerationModel
-          imageUploads <- liftIO (traverse (uncurry (imageUploadFromReference imageGenerationTimeout)) (zip [1 :: Int ..] imageRefs))
-          maskUpload <- liftIO (traverse (imageUploadFromReference imageGenerationTimeout 0) maskRef)
+          imageUploads <- traverse (uncurry (imageUploadFromReference imageGenerationTimeout)) (zip [1 :: Int ..] imageRefs)
+          maskUpload <- traverse (imageUploadFromReference imageGenerationTimeout 0) maskRef
           let parts = imageEditMultipartParts cfg requestModel prompt imageUploads maskUpload
           logInfo_ ("LLM image edit request: " <> imageEditRequestLogLine requestEndpoint imageGenerationTimeout requestModel prompt imageUploads maskUpload)
           (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-          response <- liftIO $
+          response <-
             llmMultipartPost "LLM image edit request" imageGenerationTimeout url parts
               (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
           let body = responseBody response
@@ -292,7 +305,7 @@ yieldTextResult action = do
   unless (Text.null (Text.strip answer)) (S.yield answer)
   pure answer
 
-askImageChatCompletionsOpenAI :: (IOE :> es, Log :> es) => Config -> [ChatMessage] -> Eff es Text
+askImageChatCompletionsOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> [ChatMessage] -> Eff es Text
 askImageChatCompletionsOpenAI cfg@Config{apiKey, imageGenerationBaseUrl, imageGenerationApiKey, imageGenerationModel, imageGenerationTimeout} messages =
   case requestApiKey of
     Nothing ->
@@ -315,7 +328,7 @@ askImageChatCompletionsOpenAI cfg@Config{apiKey, imageGenerationBaseUrl, imageGe
         logInfo_ ("LLM image chat request: " <> llmRequestLogLine requestEndpoint request)
         logLLMRequestMessages request
         (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-        response <- liftIO $
+        response <-
           llmJsonPost "LLM image chat request" imageGenerationTimeout url request
             (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
         let body = responseBody response
@@ -326,7 +339,7 @@ askImageChatCompletionsOpenAI cfg@Config{apiKey, imageGenerationBaseUrl, imageGe
   where
     requestApiKey = imageGenerationApiKey <|> apiKey
 
-askImageGenerationsOpenAIStreaming :: (IOE :> es, Log :> es) => Config -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageGenerationsOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageGenerationsOpenAIStreaming cfg@Config{apiKey, imageGenerationBaseUrl, imageGenerationApiKey, imageGenerationModel, imageGenerationTimeout} messages =
   case requestApiKey of
     Nothing ->
@@ -354,7 +367,7 @@ askImageGenerationsOpenAIStreaming cfg@Config{apiKey, imageGenerationBaseUrl, im
   where
     requestApiKey = imageGenerationApiKey <|> apiKey
 
-askOpenAIWithTools :: (IOE :> es, Log :> es) => Config -> [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
+askOpenAIWithTools :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es) => Config -> [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
 askOpenAIWithTools Config{apiKey = Nothing} _ _ =
   pure (ChatFinalAnswer "LLM is not configured: set llm.api_key.")
 askOpenAIWithTools cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} functionTools messages = do
@@ -372,7 +385,7 @@ askOpenAIWithTools cfg@Config{apiKey = Just key, model, reasoningEffort, request
     logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
     logLLMRequestMessages request
     (url, options) <- liftIO (Http.httpsEndpointUrl cfg.baseUrl chatCompletionsPath)
-    response <- liftIO $
+    response <-
       llmJsonPost "LLM request" requestTimeout url request
         (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
     let body = responseBody response
@@ -380,7 +393,7 @@ askOpenAIWithTools cfg@Config{apiKey = Just key, model, reasoningEffort, request
     pure (chatCompletionAnswer body)
 
 askOpenAIStreaming
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es)
   => Config
   -> [ChatMessage]
   -> Stream (Of Text) (Eff es) Text
@@ -405,7 +418,7 @@ askOpenAIStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, request
   pure (chatAnswerContent answer)
 
 askOpenAIWithToolsStreaming
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es)
   => Config
   -> [FunctionTool]
   -> [ChatMessage]
@@ -436,19 +449,19 @@ instance Exception LLMException
 
 llmExceptionSummary :: SomeException -> Text
 llmExceptionSummary err =
-  case Exception.fromException err of
+  case fromException err of
     Just (LLMException message) ->
       "LLM error: " <> message
     Nothing ->
-      case Exception.fromException err of
+      case fromException err of
         Just httpErr ->
           "HTTP error: " <> httpExceptionSummary httpErr
         Nothing ->
-          case Exception.fromException err of
+          case fromException err of
             Just reqErr ->
               reqHttpExceptionSummary reqErr
             Nothing ->
-              "Unexpected error: " <> previewText 500 (Text.pack (Exception.displayException err))
+              "Unexpected error: " <> previewText 500 (Text.pack (displayException err))
 
 reqHttpExceptionSummary :: HttpException -> Text
 reqHttpExceptionSummary = \case
@@ -471,7 +484,7 @@ httpExceptionContentSummary = \case
   HTTP.ConnectionTimeout ->
     "ConnectionTimeout"
   HTTP.ConnectionFailure err ->
-    "ConnectionFailure: " <> Text.pack (Exception.displayException err)
+    "ConnectionFailure: " <> Text.pack (displayException err)
   HTTP.NoResponseDataReceived ->
     "NoResponseDataReceived"
   HTTP.ConnectionClosed ->
@@ -665,7 +678,7 @@ data ImageUpload = ImageUpload
   , bytes :: !StrictByteString.ByteString
   }
 
-imageUploadFromReference :: Int -> Int -> Text -> IO ImageUpload
+imageUploadFromReference :: (Timeout.Timeout :> es, IOE :> es, Fail :> es) => Int -> Int -> Text -> Eff es ImageUpload
 imageUploadFromReference timeoutSeconds index imageRef = do
   bytes <- imageBytesFromReference timeoutSeconds imageRef
   pure ImageUpload
@@ -673,23 +686,23 @@ imageUploadFromReference timeoutSeconds index imageRef = do
     , bytes = bytes
     }
 
-imageBytesFromReference :: Int -> Text -> IO StrictByteString.ByteString
+imageBytesFromReference :: (Timeout.Timeout :> es, IOE :> es, Fail :> es) => Int -> Text -> Eff es StrictByteString.ByteString
 imageBytesFromReference timeoutSeconds imageRef
   | Just bytes <- Image.decodeDataImageReference stripped =
       pure bytes
   | Just path <- Text.stripPrefix "file://" stripped =
-      StrictByteString.readFile (Text.unpack path)
+      liftIO $ StrictByteString.readFile (Text.unpack path)
   | otherwise =
       downloadImageReference timeoutSeconds stripped
   where
     stripped = Text.strip imageRef
 
-downloadImageReference :: Int -> Text -> IO StrictByteString.ByteString
+downloadImageReference :: (Timeout.Timeout :> es, IOE :> es, Fail :> es) => Int -> Text -> Eff es StrictByteString.ByteString
 downloadImageReference timeoutSeconds imageRef = do
   uri <- URI.mkURI imageRef
   case useHttpsURI uri of
     Nothing ->
-      ioError (userError [i|Unsupported image reference URL for image edit: #{imageRef}. Use HTTPS, file://, or data:image/...;base64.|])
+      liftIO $ ioError (userError [i|Unsupported image reference URL for image edit: #{imageRef}. Use HTTPS, file://, or data:image/...;base64.|])
     Just (url, options) ->
       runTimedLLMReq "LLM image edit input download" timeoutSeconds $
         responseBody <$> req GET url NoReqBody bsResponse options
@@ -804,7 +817,7 @@ imageCompressionConfig Config{imageGenerationOutputFormat, imageGenerationOutput
     , outputCompression = imageGenerationOutputCompression
     }
 
-compressImageAnswer :: (IOE :> es, Log :> es) => Image.ImageCompressionConfig -> Text -> Eff es Text
+compressImageAnswer :: (IOE :> es, Log :> es, FileSystem :> es, Process :> es, Fail :> es) => Image.ImageCompressionConfig -> Text -> Eff es Text
 compressImageAnswer cfg =
   ReplyBody.traverseReplyImageUrls \ref -> do
     compressed <- Image.compressDataImageReference cfg ref

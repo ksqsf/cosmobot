@@ -54,7 +54,7 @@ data ObservedConversationLink = ObservedConversationLink
   , linkedMessageId :: !MessageId
   }
 
-withObservation :: (IOE :> es, HList.Has ToolLimitContext context) => AgentObserver ObservationContext es -> AgentProgram (ObservationContext ': context) es -> AgentProgram context es
+withObservation :: (HList.Has ToolLimitContext context) => AgentObserver ObservationContext es -> AgentProgram (ObservationContext ': context) es -> AgentProgram context es
 withObservation observer program =
   program
     { aroundAgentRun = \context action ->
@@ -104,8 +104,7 @@ conversationMessageCount AgentState{conversation = Conversation{messages}} =
   Foldable.length messages
 
 withObservedAgentRun
-  :: IOE :> es
-  => AgentObserver ObservationContext es
+  :: AgentObserver ObservationContext es
   -> ToolLimitContext
   -> AgentRun es
   -> [Text]
@@ -135,8 +134,7 @@ withObservedAgentRun observer toolLimit agentRun exposedTools action =
       lift $ throwIO err
 
 withObservedModelTurn
-  :: IOE :> es
-  => AgentObserver ObservationContext es
+  :: AgentObserver ObservationContext es
   -> ObservedModelTurn result
   -> Stream (Of AgentStreamOutput) (Eff es) result
   -> Stream (Of AgentStreamOutput) (Eff es) result
@@ -152,8 +150,7 @@ withObservedModelTurn observer turnInfo action = do
   pure result
 
 withObservedToolCall
-  :: IOE :> es
-  => AgentObserver ObservationContext es
+  :: AgentObserver ObservationContext es
   -> ObservedToolCall
   -> (ObservationContext -> Eff es ToolResult)
   -> Eff es ToolResult
@@ -199,8 +196,7 @@ finishToolCall observer callInfo status result =
     }
 
 catchStream
-  :: IOE :> es
-  => Stream (Of a) (Eff es) r
+  :: Stream (Of a) (Eff es) r
   -> (SomeException -> Stream (Of a) (Eff es) r)
   -> Stream (Of a) (Eff es) r
 catchStream stream handler = do

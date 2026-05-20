@@ -3,6 +3,7 @@ Module      : Bot.Handler.Admin
 Description : Public administrative utility commands
 Stability   : experimental
 -}
+{-# LANGUAGE TypeApplications #-}
 
 module Bot.Handler.Admin
   ( adminHandlers
@@ -18,7 +19,6 @@ import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as Lifecycle
 import qualified Control.Concurrent.MVar as MVar
 import qualified Control.Concurrent as Concurrent
-import qualified Control.Exception as Exception
 import qualified Data.Char as Char
 import qualified Data.Text as Text
 import qualified Data.Unique as Unique
@@ -26,7 +26,7 @@ import qualified System.Exit as Exit
 import qualified System.IO as IO
 import qualified System.Process as Process
 
-adminHandlers :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
+adminHandlers :: (Chat.Chat :> es, Concurrent :> es, Storage.Storage :> es, Log :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
 adminHandlers cfg =
   [ pingRoute
   , titleRoute
@@ -74,24 +74,24 @@ parseTitleArgs rawArgs = do
   guard (userId > 0)
   pure (userId, title)
 
-upgradeRoute :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
+upgradeRoute :: (Chat.Chat :> es, Concurrent :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
 upgradeRoute cfg =
   requireAuth
     isSuperuser
     (\message -> void $ Chat.replyTo message "只有 superuser 可以执行 upgrade。")
     (stopOn (command "!upgrade") \message _ -> handleUpgrade cfg message)
 
-handleUpgrade :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
+handleUpgrade :: (Chat.Chat :> es, Concurrent :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
 handleUpgrade cfg message = do
   let scriptPath = cfg.script
   actionKey <- liftIO newLifecycleActionKey
   startupAction <- Lifecycle.enqueueStartupReply actionKey message "cosmobot 回来啦 (｡•̀ᴗ-)✧"
-  result <- liftIO $ Exception.try (startUpgradeScript scriptPath)
+  result <- try @SomeException (liftIO (startUpgradeScript scriptPath))
   case result of
     Right running -> do
       void $ Chat.replyTo message [i|已启动 upgrade 脚本：#{Text.pack scriptPath}|]
-      forkEff (reportUpgradeScriptExit startupAction message running)
-    Left (err :: Exception.SomeException) -> do
+      spawnTask (reportUpgradeScriptExit startupAction message running)
+    Left err -> do
       Lifecycle.deleteStartupAction startupAction
       void $ Chat.replyTo message [i|upgrade 脚本启动失败：#{show err :: String}|]
 

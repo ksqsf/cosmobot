@@ -14,16 +14,16 @@ module Bot.Util.Image
 where
 
 import Bot.Prelude
-import qualified Control.Exception as Exception
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Directory (getTemporaryDirectory, removeFile)
+import Effectful.FileSystem (getTemporaryDirectory, removeFile)
+import Effectful.FileSystem.IO
 import System.Exit (ExitCode(..))
 import System.FilePath ((<.>))
-import System.IO (hClose, openBinaryTempFile)
-import System.Process (readProcessWithExitCode)
+import System.IO (openBinaryTempFile)
+import Effectful.Process (Process, readProcessWithExitCode)
 
 data ImageCompressionConfig = ImageCompressionConfig
   { outputFormat :: !(Maybe Text)
@@ -31,11 +31,11 @@ data ImageCompressionConfig = ImageCompressionConfig
   }
   deriving (Show)
 
-removeFilesIfExists :: [FilePath] -> IO ()
+removeFilesIfExists :: (IOE :> es, Fail :> es, FileSystem :> es) => [FilePath] -> Eff es ()
 removeFilesIfExists =
   traverse_ removeIfExists
 
-compressDataImageReference :: (IOE :> es, Log :> es) => ImageCompressionConfig -> Text -> Eff es (Maybe Text)
+compressDataImageReference :: (IOE :> es, Log :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageCompressionConfig -> Text -> Eff es (Maybe Text)
 compressDataImageReference cfg imageRef =
   case targetImageFormat cfg of
     Nothing ->
@@ -51,13 +51,13 @@ targetImageFormat cfg =
     Just "webp" -> Just "webp"
     _           -> Nothing
 
-compressDataImage :: (IOE :> es, Log :> es) => Text -> Maybe Int -> Text -> Eff es (Maybe Text)
+compressDataImage :: (IOE :> es, Log :> es, FileSystem :> es, Process :> es, Fail :> es) => Text -> Maybe Int -> Text -> Eff es (Maybe Text)
 compressDataImage format quality imageRef =
   case decodeDataImageReference imageRef of
     Nothing ->
       pure Nothing
     Just bytes -> do
-      result <- liftIO (convertDataImage format quality bytes) `catch` \(err :: SomeException) -> do
+      result <- (convertDataImage format quality bytes) `catch` \(err :: SomeException) -> do
         logAttention_ [i|Image compression failed: #{show err :: String}|]
         pure Nothing
       traverse_ (\url -> logInfo_ [i|Compressed image response URL: #{url}|]) result
@@ -69,13 +69,13 @@ decodeDataImageReference imageRef = do
   encoded <- Text.stripPrefix ";base64," encodedWithMarker
   either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
 
-convertDataImage :: Text -> Maybe Int -> StrictByteString.ByteString -> IO (Maybe Text)
+convertDataImage :: (IOE :> es, FileSystem :> es, Process :> es, Fail :> es) => Text -> Maybe Int -> StrictByteString.ByteString -> Eff es (Maybe Text)
 convertDataImage format quality bytes = do
   dir <- getTemporaryDirectory
-  (inputPath, inputHandle) <- openBinaryTempFile dir ("cosmobot-image-input" <.> "png")
-  StrictByteString.hPut inputHandle bytes
+  (inputPath, inputHandle) <- liftIO $ openBinaryTempFile dir ("cosmobot-image-input" <.> "png")
+  liftIO $ StrictByteString.hPut inputHandle bytes
   hClose inputHandle
-  (outputPath, outputHandle) <- openBinaryTempFile dir ("cosmobot-image-output" <.> Text.unpack format)
+  (outputPath, outputHandle) <- liftIO $ openBinaryTempFile dir ("cosmobot-image-output" <.> Text.unpack format)
   hClose outputHandle
   let args =
         [ inputPath
@@ -97,6 +97,6 @@ clampImageQuality :: Int -> Int
 clampImageQuality =
   min 100 . max 1
 
-removeIfExists :: FilePath -> IO ()
+removeIfExists :: (Fail :> es, FileSystem :> es) => FilePath -> Eff es ()
 removeIfExists path =
-  removeFile path `Exception.catch` \(_ :: SomeException) -> pure ()
+  removeFile path `catch` \(_ :: SomeException) -> pure ()
