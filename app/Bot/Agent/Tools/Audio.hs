@@ -25,7 +25,7 @@ generateAudioTool = Tool
   { name = "generate_audio"
   , description = "Generate speech or other audio from a prompt and send it to the current chat. Use this when the user asks to create, synthesize, speak, narrate, or generate an audio clip. After using this tool, keep the final answer brief and do not repeat the audio reference."
   , parameters = objectSchema
-      [ fieldText "prompt" "Audio generation prompt. Include the requested words, narration style, tone, language, and sound requirements."
+      [ fieldText "prompt" "The words to be converted into audio"
       ]
       ["prompt"]
   , noisy = True
