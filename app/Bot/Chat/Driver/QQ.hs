@@ -561,7 +561,7 @@ replyAudio :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> 
 replyAudio message audioRef caption =
   case (message.platform, message.kind, message.chatId, message.senderId) of
     (PlatformQQ, ChatGroup, Just groupId, _) -> do
-      qqMessage <- audioMessage message audioRef caption
+      qqMessage <- audioMessage audioRef caption
       response <- sendAudioMessage "send_group_msg"
         [ "group_id" Aeson..= groupId
         , "message" Aeson..= qqMessage
@@ -569,7 +569,7 @@ replyAudio message audioRef caption =
       audioResponseOrFallback response "send_group_msg"
     (PlatformQQ, ChatPrivate, _, Just rawUserId)
       | Just userId <- parseIntegerUserId rawUserId -> do
-      qqMessage <- audioMessage message audioRef caption
+      qqMessage <- audioMessage audioRef caption
       response <- sendAudioMessage "send_private_msg"
         [ "user_id" Aeson..= userId
         , "message" Aeson..= qqMessage
@@ -834,21 +834,9 @@ replyContent body imageUrls = do
     [ textSegment body | not (Text.null body) ]
       <> imageSegments
 
-audioMessage :: IOE :> es => IncomingMessage -> Text -> Maybe Text -> Eff es Aeson.Value
-audioMessage message audioRef caption =
-  Aeson.toJSON <$> maybe audioOnly withReply message.messageId
-  where
-    audioOnly =
-      audioContent audioRef caption
-    withReply messageId =
-      ( [ Aeson.object
-            [ "type" Aeson..= Aeson.String "reply"
-            , "data" Aeson..= Aeson.object
-                [ "id" Aeson..= messageIdText messageId
-                ]
-            ]
-        ] <>
-      ) <$> audioContent audioRef caption
+audioMessage :: IOE :> es => Text -> Maybe Text -> Eff es Aeson.Value
+audioMessage audioRef caption =
+  Aeson.toJSON <$> audioContent audioRef caption
 
 audioContent :: IOE :> es => Text -> Maybe Text -> Eff es [Aeson.Value]
 audioContent audioRef caption = do
