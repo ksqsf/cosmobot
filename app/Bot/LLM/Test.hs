@@ -17,8 +17,8 @@ import qualified Streaming.Prelude as S
 runLLMWith
   :: ([ChatMessage] -> Eff es Text)
   -> ([ChatMessage] -> Stream (Of Text) (Eff es) Text)
-  -> ([ChatMessage] -> Eff es Text)
-  -> (Text -> [Text] -> Maybe Text -> Eff es Text)
+  -> (LLM.ImageRequestOptions -> [ChatMessage] -> Eff es Text)
+  -> (LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Eff es Text)
   -> ([FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer)
   -> ([FunctionTool] -> [ChatMessage] -> Stream (Of Text) (Eff es) ChatAnswer)
   -> Eff (LLM.LLM : es) a
@@ -28,9 +28,9 @@ runLLMWith askText askTextStream askImage askImageEditRequest askTools askToolsS
     case operation of
       LLM.Ask messages -> askText messages
       LLM.AskStream messages -> pure (LLM.liftLocalStream liftLocal (askTextStream messages))
-      LLM.AskImage messages -> askImage messages
-      LLM.AskImageStream messages -> pure (LLM.liftLocalStream liftLocal (textResultStream (askImage messages)))
-      LLM.AskImageEdit prompt imageRefs maskRef -> askImageEditRequest prompt imageRefs maskRef
+      LLM.AskImage options messages -> askImage options messages
+      LLM.AskImageStream options messages -> pure (LLM.liftLocalStream liftLocal (textResultStream (askImage options messages)))
+      LLM.AskImageEdit options prompt imageRefs maskRef -> askImageEditRequest options prompt imageRefs maskRef
       LLM.AskTools tools messages -> askTools tools messages
       LLM.AskToolsStream tools messages -> pure (LLM.liftLocalStream liftLocal (askToolsStream tools messages))
 

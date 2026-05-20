@@ -11,8 +11,11 @@ module Bot.Effect.LLM
   , askWithHistory
   , askStreamingWithHistory
   , askImageWithHistory
+  , askImageWithHistoryWithOptions
   , askImageStreamingWithHistory
+  , askImageStreamingWithHistoryWithOptions
   , askImageEdit
+  , askImageEditWithOptions
   , askWithTools
   , askWithToolsStreaming
   , liftLocalStream
@@ -20,6 +23,8 @@ module Bot.Effect.LLM
   , llmExceptionSummary
 
     -- * Conversation values
+  , ImageRequestOptions (..)
+  , defaultImageRequestOptions
   , ChatMessage (..)
   , MessageContent (..)
   , ContentPart (..)
@@ -45,13 +50,31 @@ import qualified Streaming.Prelude as S
 data LLM :: Effect where
   Ask :: [ChatMessage] -> LLM m Text
   AskStream :: [ChatMessage] -> LLM m (Stream (Of Text) m Text)
-  AskImage :: [ChatMessage] -> LLM m Text
-  AskImageStream :: [ChatMessage] -> LLM m (Stream (Of Text) m Text)
-  AskImageEdit :: Text -> [Text] -> Maybe Text -> LLM m Text
+  AskImage :: ImageRequestOptions -> [ChatMessage] -> LLM m Text
+  AskImageStream :: ImageRequestOptions -> [ChatMessage] -> LLM m (Stream (Of Text) m Text)
+  AskImageEdit :: ImageRequestOptions -> Text -> [Text] -> Maybe Text -> LLM m Text
   AskTools :: [FunctionTool] -> [ChatMessage] -> LLM m ChatAnswer
   AskToolsStream :: [FunctionTool] -> [ChatMessage] -> LLM m (Stream (Of Text) m ChatAnswer)
 
 type instance DispatchOf LLM = Dynamic
+
+-- | Optional per-request image controls supported by image-generation providers.
+data ImageRequestOptions = ImageRequestOptions
+  { quality :: !(Maybe Text)
+  , size :: !(Maybe Text)
+  , background :: !(Maybe Text)
+  , moderation :: !(Maybe Text)
+  }
+  deriving (Eq, Show)
+
+defaultImageRequestOptions :: ImageRequestOptions
+defaultImageRequestOptions =
+  ImageRequestOptions
+    { quality = Nothing
+    , size = Nothing
+    , background = Nothing
+    , moderation = Nothing
+    }
 
 -- | Ask a one-shot text question without preserving history.
 ask :: LLM :> es => Text -> Eff es Text
@@ -70,18 +93,33 @@ askStreamingWithHistory messages = do
 -- | Ask the configured image model to generate an image response.
 askImageWithHistory :: LLM :> es => [ChatMessage] -> Eff es Text
 askImageWithHistory messages =
-  S.effects (askImageStreamingWithHistory messages)
+  askImageWithHistoryWithOptions defaultImageRequestOptions messages
+
+-- | Ask the configured image model to generate an image response with per-call options.
+askImageWithHistoryWithOptions :: LLM :> es => ImageRequestOptions -> [ChatMessage] -> Eff es Text
+askImageWithHistoryWithOptions options messages =
+  S.effects (askImageStreamingWithHistoryWithOptions options messages)
 
 -- | Ask the configured image model to generate an image response over the streaming transport.
 askImageStreamingWithHistory :: LLM :> es => [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageStreamingWithHistory messages = do
-  stream <- lift (send (AskImageStream messages))
+  askImageStreamingWithHistoryWithOptions defaultImageRequestOptions messages
+
+-- | Ask the configured image model to generate an image response over the streaming transport with per-call options.
+askImageStreamingWithHistoryWithOptions :: LLM :> es => ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageStreamingWithHistoryWithOptions options messages = do
+  stream <- lift (send (AskImageStream options messages))
   stream
 
 -- | Ask the configured image model to edit one or more input images.
 askImageEdit :: LLM :> es => Text -> [Text] -> Maybe Text -> Eff es Text
 askImageEdit prompt imageRefs maskRef =
-  send (AskImageEdit prompt imageRefs maskRef)
+  askImageEditWithOptions defaultImageRequestOptions prompt imageRefs maskRef
+
+-- | Ask the configured image model to edit one or more input images with per-call options.
+askImageEditWithOptions :: LLM :> es => ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Eff es Text
+askImageEditWithOptions options prompt imageRefs maskRef =
+  send (AskImageEdit options prompt imageRefs maskRef)
 
 -- | Ask with function tools and return both text and tool calls.
 askWithTools :: LLM :> es => [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer

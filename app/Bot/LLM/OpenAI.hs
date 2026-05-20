@@ -41,15 +41,15 @@ runLLM cfg = interpret $ \localEnv operation ->
           LLM.liftLocalStream liftLocal $
             Retry.retryLLMStreamRequest "LLM streaming request" $
               pure (Retry.validateTextStream (Transport.askOpenAIStreaming cfg messages))
-      LLM.AskImage messages ->
-        Retry.retryLLMRequest "LLM image request" (Transport.askImageOpenAI cfg messages)
-      LLM.AskImageStream messages ->
+      LLM.AskImage options messages ->
+        Retry.retryLLMRequest "LLM image request" (Transport.askImageOpenAI cfg options messages)
+      LLM.AskImageStream options messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             Retry.retryLLMStreamRequest "LLM image streaming request" $
-              pure (Retry.validateTextStream (Transport.askImageOpenAIStreaming cfg messages))
-      LLM.AskImageEdit prompt imageRefs maskRef ->
-        Retry.retryLLMRequest "LLM image edit request" (Transport.askImageEditOpenAI cfg prompt imageRefs maskRef)
+              pure (Retry.validateTextStream (Transport.askImageOpenAIStreaming cfg options messages))
+      LLM.AskImageEdit options prompt imageRefs maskRef ->
+        Retry.retryLLMRequest "LLM image edit request" (Transport.askImageEditOpenAI cfg options prompt imageRefs maskRef)
       LLM.AskTools tools messages ->
         Retry.retryLLMRequest "LLM request" (Transport.askOpenAIWithTools cfg tools messages >>= Retry.validateChatAnswer)
       LLM.AskToolsStream tools messages ->

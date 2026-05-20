@@ -48,7 +48,7 @@ agent_max_turns = 4
 - `[driver.qq]`：OneBot websocket 地址、token、机器人 QQ、允许的群/用户和管理员。
 - `[driver.telegram]`：Telegram bot token、bot id、允许的 chat 和管理员。
 - `[driver.matrix]`：Matrix homeserver、access token、用户 id、允许的 room 和管理员。
-- `[llm]`：OpenAI-compatible endpoint、API key、模型、reasoning effort，以及图片生成模型配置。
+- `[llm]`：选择聊天和图片 provider；provider 表里配置 OpenAI-compatible endpoint、API key、模型和请求参数。
 - `[memory]`：持久记忆目录。
 - `[tool]`、`[tool.web_fetch]`、`[tool.web_search]`：agent 工具开关和限制。
 - `[handler.ask]`：问答/画图命令、系统提示词和 agent 最大轮数。
@@ -61,12 +61,41 @@ agent_max_turns = 4
 - Matrix 会话权限在 `allowed_rooms`。
 - 管理员权限在各平台 driver 的 `superusers`。
 
-### LLM timeout 语义
+### LLM provider 配置
 
-- `[llm].timeout` 用于普通文本 LLM 请求。非 streaming 请求按总耗时限制；streaming 请求按等待首段或下一段数据的 idle 时间限制。
-- `[llm].image_generation_timeout` 用于图片生成请求。`image_generation_api = "images"` 时，`/v1/images/generations` 会使用 streaming 调用，并按整次图片生成总耗时限制；同时 HTTP 读等待也使用同一个值作为 idle timeout。
-- `image_generation_api = "chat_completions"` 的图片生成仍按非 streaming JSON 请求处理，`image_generation_timeout` 表示总耗时限制。
-- `[llm].image_generation_model_can_edit` 控制 `edit_image` 是否允许调用 `/v1/images/edits`。只有确认当前 `image_generation_model` 和兼容端点支持图片编辑接口时才设为 `true`。
+`[llm]` 使用 `chat = "..."` 和 `image = "..."` 选择 provider。聊天 provider 写在 `[llm.chat_provider.<name>]`，图片 provider 写在 `[llm.image_provider.<name>]`。
+
+```toml
+[llm]
+chat = "openrouter"
+image = "openai"
+
+[llm.chat_provider.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key = ""
+model = "openai/gpt-4o-mini"
+reasoning_effort = "low"
+timeout = 60
+
+[llm.image_provider.openai]
+base_url = "https://api.openai.com/v1"
+api_key = ""
+model = "gpt-image-1.5"
+can_generate = true
+can_edit = false
+timeout = 300
+quality = "medium"
+size = "1024x1024"
+aspect_ratio = "1:1"
+background = "auto"
+moderation = "auto"
+output_format = "webp"
+output_compression = 80
+```
+
+`llm.chat_provider.<name>.timeout` 用于普通文本 LLM 请求。非 streaming 请求按总耗时限制；streaming 请求按等待首段或下一段数据的 idle 时间限制。
+
+`llm.image_provider.<name>.timeout` 用于图片生成和编辑请求。`can_generate` 控制是否允许生成图片，`can_edit` 控制是否允许调用图片编辑接口；只有确认当前模型和兼容端点支持图片编辑时才设为 `true`。图片 provider 还可以配置 `quality`、`size`、`aspect_ratio`、`background`、`moderation`、`output_format` 和 `output_compression`。
 
 ## 运行
 

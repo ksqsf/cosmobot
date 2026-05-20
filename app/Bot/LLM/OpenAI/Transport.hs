@@ -23,6 +23,7 @@ module Bot.LLM.OpenAI.Transport
 where
 
 import Bot.Prelude
+import qualified Bot.Effect.LLM as LLM
 import Bot.LLM.OpenAI.Config
 import Bot.LLM.Types
 import qualified Bot.Util.Image as Image
@@ -65,8 +66,8 @@ imageEditsPath :: [Text]
 imageEditsPath =
   ["images", "edits"]
 
-chatCompletionsEndpoint :: Config -> Text
-chatCompletionsEndpoint Config{baseUrl} =
+chatCompletionsEndpoint :: ChatProviderConfig -> Text
+chatCompletionsEndpoint ChatProviderConfig{baseUrl} =
   endpointText baseUrl chatCompletionsPath
 
 endpointText :: Text -> [Text] -> Text
@@ -78,6 +79,26 @@ endpointText url path =
 secondsToMicros :: Int -> Int
 secondsToMicros seconds =
   seconds * 1000000
+
+chatNotConfiguredMessage :: Text
+chatNotConfiguredMessage =
+  "LLM chat is not configured: set llm.chat and llm.chat_provider.<name>.api_key."
+
+chatApiKeyNotConfiguredMessage :: Text
+chatApiKeyNotConfiguredMessage =
+  "LLM chat is not configured: set llm.chat_provider.<name>.api_key."
+
+imageNotConfiguredMessage :: Text
+imageNotConfiguredMessage =
+  "Image generation is not configured: set llm.image and llm.image_provider.<name>.api_key."
+
+imageEditNotConfiguredMessage :: Text
+imageEditNotConfiguredMessage =
+  "Image editing is not configured: set llm.image and llm.image_provider.<name>.api_key."
+
+imageApiKeyNotConfiguredMessage :: Text
+imageApiKeyNotConfiguredMessage =
+  "Image generation is not configured: set llm.image_provider.<name>.api_key."
 
 llmHttpConfig :: HTTP.Manager -> HttpConfig
 llmHttpConfig manager =
@@ -147,9 +168,11 @@ askOpenAI
      , Fail :> es
      , Log :> es)
   => Config -> [ChatMessage] -> Eff es Text
-askOpenAI Config{apiKey = Nothing} _ =
-  pure "LLM is not configured: set llm.api_key."
-askOpenAI cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} messages = do
+askOpenAI Config{chatProvider = Nothing} _ =
+  pure chatNotConfiguredMessage
+askOpenAI Config{chatProvider = Just ChatProviderConfig{apiKey = Nothing}} _ =
+  pure chatApiKeyNotConfiguredMessage
+askOpenAI Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Just key, model, reasoningEffort, requestTimeout}} messages = do
   let requestEndpoint = chatCompletionsEndpoint cfg
       requestPath = chatCompletionsPath
       requestBaseUrl = cfg.baseUrl
@@ -175,51 +198,49 @@ askOpenAI cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} 
       Just answer -> pure answer
       Nothing     -> throwIO (LLMException "OpenAI response was empty: no text or image output.")
 
-askImageOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> [ChatMessage] -> Eff es Text
-askImageOpenAI cfg messages =
-  S.effects (askImageOpenAIStreaming cfg messages)
+askImageOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> LLM.ImageRequestOptions -> [ChatMessage] -> Eff es Text
+askImageOpenAI cfg options messages =
+  S.effects (askImageOpenAIStreaming cfg options messages)
 
-askImageOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
-askImageOpenAIStreaming cfg@Config{imageGeneration, imageGenerationApi} messages
-  | not imageGeneration =
-      yieldTextResult (pure "Image generation is not configured: set llm.image_generation = true.")
-  | imageGenerationApi == ImageGenerationImages =
-      askImageGenerationsOpenAIStreaming cfg messages
+askImageOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageOpenAIStreaming Config{imageProvider = Nothing} _ _ =
+  yieldTextResult (pure imageNotConfiguredMessage)
+askImageOpenAIStreaming Config{imageProvider = Just provider} options messages
+  | provider.canGenerate =
+      askImageGenerationsOpenAIStreaming provider options messages
   | otherwise =
-      yieldTextResult (askImageChatCompletionsOpenAI cfg messages)
+      yieldTextResult (askImageChatCompletionsOpenAI provider options messages)
 
-askImageEditOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> Text -> [Text] -> Maybe Text -> Eff es Text
-askImageEditOpenAI cfg@Config{imageGeneration, imageGenerationModelCanEdit, apiKey, imageGenerationBaseUrl, imageGenerationApiKey, imageGenerationModel, imageGenerationTimeout} prompt imageRefs maskRef
-  | not imageGeneration =
-      pure "Image editing is not configured: set llm.image_generation = true."
-  | not imageGenerationModelCanEdit =
-      pure "Image editing is not configured for this image model: set llm.image_generation_model_can_edit = true only when the configured image model and endpoint support /images/edits."
+askImageEditOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Eff es Text
+askImageEditOpenAI Config{imageProvider = Nothing} _ _ _ _ =
+  pure imageEditNotConfiguredMessage
+askImageEditOpenAI Config{imageProvider = Just cfg@ImageProviderConfig{apiKey, model, canEdit, requestTimeout}} options prompt imageRefs maskRef
+  | not canEdit =
+      pure "Image editing is not configured for this image provider: set llm.image_provider.<name>.can_edit = true only when the configured image model and endpoint support /images/edits."
   | null imageRefs =
       pure "Image editing requires at least one input image."
   | otherwise =
-      case requestApiKey of
+      case apiKey of
         Nothing ->
-          pure "Image editing is not configured: set llm.image_generation_api_key or llm.api_key."
+          pure imageApiKeyNotConfiguredMessage
         Just key -> do
-          let requestBaseUrl = fromMaybe cfg.baseUrl imageGenerationBaseUrl
+          let requestBaseUrl = cfg.baseUrl
               requestPath = imageEditsPath
               requestEndpoint = endpointText requestBaseUrl requestPath
-              requestModel = fromMaybe cfg.model imageGenerationModel
-          imageUploads <- traverse (uncurry (imageUploadFromReference imageGenerationTimeout)) (zip [1 :: Int ..] imageRefs)
-          maskUpload <- traverse (imageUploadFromReference imageGenerationTimeout 0) maskRef
-          let parts = imageEditMultipartParts cfg requestModel prompt imageUploads maskUpload
-          logInfo_ ("LLM image edit request: " <> imageEditRequestLogLine requestEndpoint imageGenerationTimeout requestModel prompt imageUploads maskUpload)
-          (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
+              requestModel = model
+          imageUploads <- traverse (uncurry (imageUploadFromReference requestTimeout)) (zip [1 :: Int ..] imageRefs)
+          maskUpload <- traverse (imageUploadFromReference requestTimeout 0) maskRef
+          let parts = imageEditMultipartParts cfg options requestModel prompt imageUploads maskUpload
+          logInfo_ ("LLM image edit request: " <> imageEditRequestLogLine requestEndpoint requestTimeout requestModel prompt imageUploads maskUpload)
+          (url, requestOptions) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
           response <-
-            llmMultipartPost "LLM image edit request" imageGenerationTimeout url parts
-              (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
+            llmMultipartPost "LLM image edit request" requestTimeout url parts
+              (requestOptions <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
           let body = responseBody response
           logInfo_ ("LLM image edit response: " <> imageResponseLogLine requestEndpoint requestModel body)
           case imageGenerationResponseText cfg body of
             Just answer -> compressImageAnswer (imageCompressionConfig cfg) answer
             Nothing -> throwIO (LLMException "Image edit response was empty: no image output.")
-  where
-    requestApiKey = imageGenerationApiKey <|> apiKey
 
 yieldTextResult :: Monad m => m Text -> Stream (Of Text) m Text
 yieldTextResult action = do
@@ -227,57 +248,55 @@ yieldTextResult action = do
   unless (Text.null (Text.strip answer)) (S.yield answer)
   pure answer
 
-askImageChatCompletionsOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> [ChatMessage] -> Eff es Text
-askImageChatCompletionsOpenAI cfg@Config{apiKey, imageGenerationBaseUrl, imageGenerationApiKey, imageGenerationModel, imageGenerationTimeout} messages =
-  case requestApiKey of
+askImageChatCompletionsOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Eff es Text
+askImageChatCompletionsOpenAI cfg@ImageProviderConfig{apiKey, model, requestTimeout} options messages =
+  case apiKey of
     Nothing ->
-      pure "Image generation is not configured: set llm.image_generation_api_key or llm.api_key."
+      pure imageApiKeyNotConfiguredMessage
     Just key -> do
-      let requestBaseUrl = fromMaybe cfg.baseUrl imageGenerationBaseUrl
+      let requestBaseUrl = cfg.baseUrl
           requestPath = chatCompletionsPath
           requestEndpoint = endpointText requestBaseUrl requestPath
-          requestModel = fromMaybe cfg.model imageGenerationModel
+          requestModel = model
           request = ChatCompletionRequest
             { model = requestModel
             , reasoningEffort = Nothing
             , messages = imagePromptMessages True messages
             , tools = Nothing
             , modalities = Just ["image", "text"]
-            , imageConfig = imageGenerationConfig cfg
+            , imageConfig = imageGenerationConfig cfg options
             , stream = Nothing
             }
       do
         logInfo_ ("LLM image chat request: " <> llmRequestLogLine requestEndpoint request)
         logLLMRequestMessages request
-        (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
+        (url, requestOptions) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
         response <-
-          llmJsonPost "LLM image chat request" imageGenerationTimeout url request
-            (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
+          llmJsonPost "LLM image chat request" requestTimeout url request
+            (requestOptions <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
         let body = responseBody response
         logInfo_ ("LLM image chat response: " <> llmResponseLogLine requestEndpoint requestModel body)
         case chatCompletionText body of
           Just answer -> compressImageAnswer (imageCompressionConfig cfg) answer
           Nothing -> throwIO (LLMException "OpenAI image chat response was empty: no text or image output.")
-  where
-    requestApiKey = imageGenerationApiKey <|> apiKey
 
-askImageGenerationsOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
-askImageGenerationsOpenAIStreaming cfg@Config{apiKey, imageGenerationBaseUrl, imageGenerationApiKey, imageGenerationModel, imageGenerationTimeout} messages =
-  case requestApiKey of
+askImageGenerationsOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageGenerationsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, requestTimeout} options messages =
+  case apiKey of
     Nothing ->
-      yieldTextResult (pure "Image generation is not configured: set llm.image_generation_api_key or llm.api_key.")
+      yieldTextResult (pure imageApiKeyNotConfiguredMessage)
     Just key -> do
-      let requestBaseUrl = fromMaybe cfg.baseUrl imageGenerationBaseUrl
+      let requestBaseUrl = cfg.baseUrl
           requestPath = imageGenerationsPath
           requestEndpoint = endpointText requestBaseUrl requestPath
-          requestModel = fromMaybe cfg.model imageGenerationModel
-          request = imageGenerationRequest cfg requestModel (imagePromptFromMessages messages) (Just True)
+          requestModel = model
+          request = imageGenerationRequest cfg options requestModel (imagePromptFromMessages messages) (Just True)
       do
-        lift (logInfo_ ("LLM image streaming request: " <> imageRequestLogLine requestEndpoint imageGenerationTimeout request))
+        lift (logInfo_ ("LLM image streaming request: " <> imageRequestLogLine requestEndpoint requestTimeout request))
         body <- lift $
-          runTimedEff "LLM image streaming request" imageGenerationTimeout $
+          runTimedEff "LLM image streaming request" requestTimeout $
             foldImageGenerationStream $
-              streamSseJsonPost requestBaseUrl requestPath key (secondsToMicros imageGenerationTimeout) request
+              streamSseJsonPost requestBaseUrl requestPath key (secondsToMicros requestTimeout) request
         lift (logInfo_ ("LLM image response: " <> imageResponseLogLine requestEndpoint request.model body))
         case imageGenerationResponseText cfg body of
           Just answer -> do
@@ -286,13 +305,13 @@ askImageGenerationsOpenAIStreaming cfg@Config{apiKey, imageGenerationBaseUrl, im
             pure compressed
           Nothing ->
             lift (throwIO (LLMException "Image generation response was empty: no image output."))
-  where
-    requestApiKey = imageGenerationApiKey <|> apiKey
 
 askOpenAIWithTools :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es) => Config -> [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
-askOpenAIWithTools Config{apiKey = Nothing} _ _ =
-  pure (ChatFinalAnswer "LLM is not configured: set llm.api_key.")
-askOpenAIWithTools cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} functionTools messages = do
+askOpenAIWithTools Config{chatProvider = Nothing} _ _ =
+  pure (ChatFinalAnswer chatNotConfiguredMessage)
+askOpenAIWithTools Config{chatProvider = Just ChatProviderConfig{apiKey = Nothing}} _ _ =
+  pure (ChatFinalAnswer chatApiKeyNotConfiguredMessage)
+askOpenAIWithTools Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Just key, model, reasoningEffort, requestTimeout}} functionTools messages = do
   let requestEndpoint = chatCompletionsEndpoint cfg
       request = ChatCompletionRequest
         { model = model
@@ -319,10 +338,13 @@ askOpenAIStreaming
   => Config
   -> [ChatMessage]
   -> Stream (Of Text) (Eff es) Text
-askOpenAIStreaming Config{apiKey = Nothing} _ = do
-  S.yield "LLM is not configured: set llm.api_key."
-  pure "LLM is not configured: set llm.api_key."
-askOpenAIStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} messages = do
+askOpenAIStreaming Config{chatProvider = Nothing} _ = do
+  S.yield chatNotConfiguredMessage
+  pure chatNotConfiguredMessage
+askOpenAIStreaming Config{chatProvider = Just ChatProviderConfig{apiKey = Nothing}} _ = do
+  S.yield chatApiKeyNotConfiguredMessage
+  pure chatApiKeyNotConfiguredMessage
+askOpenAIStreaming Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Just key, model, reasoningEffort, requestTimeout}} messages = do
   let requestEndpoint = chatCompletionsEndpoint cfg
       request = ChatCompletionRequest
         { model = model
@@ -345,10 +367,13 @@ askOpenAIWithToolsStreaming
   -> [FunctionTool]
   -> [ChatMessage]
   -> Stream (Of Text) (Eff es) ChatAnswer
-askOpenAIWithToolsStreaming Config{apiKey = Nothing} _ _ = do
-  S.yield "LLM is not configured: set llm.api_key."
-  pure (ChatFinalAnswer "LLM is not configured: set llm.api_key.")
-askOpenAIWithToolsStreaming cfg@Config{apiKey = Just key, model, reasoningEffort, requestTimeout} functionTools messages = do
+askOpenAIWithToolsStreaming Config{chatProvider = Nothing} _ _ = do
+  S.yield chatNotConfiguredMessage
+  pure (ChatFinalAnswer chatNotConfiguredMessage)
+askOpenAIWithToolsStreaming Config{chatProvider = Just ChatProviderConfig{apiKey = Nothing}} _ _ = do
+  S.yield chatApiKeyNotConfiguredMessage
+  pure (ChatFinalAnswer chatApiKeyNotConfiguredMessage)
+askOpenAIWithToolsStreaming Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Just key, model, reasoningEffort, requestTimeout}} functionTools messages = do
   let requestEndpoint = chatCompletionsEndpoint cfg
       request = ChatCompletionRequest
         { model = model
@@ -464,37 +489,49 @@ toolSpecs function =
     [] -> Nothing
     specs -> Just specs
 
-imageGenerationConfig :: Config -> Maybe Aeson.Value
-imageGenerationConfig Config{imageGenerationQuality, imageGenerationSize, imageGenerationAspectRatio, imageGenerationBackground, imageGenerationOutputFormat, imageGenerationOutputCompression, imageGenerationModeration} =
+imageGenerationConfig :: ImageProviderConfig -> LLM.ImageRequestOptions -> Maybe Aeson.Value
+imageGenerationConfig provider options =
   case fields of
     [] -> Nothing
     _  -> Just (Aeson.object fields)
   where
+    resolved = resolvedImageRequestOptions provider options
     fields =
-      maybe [] (\value -> ["quality" Aeson..= value]) imageGenerationQuality
-        <> maybe [] (\value -> ["size" Aeson..= value]) imageGenerationSize
-        <> maybe [] (\value -> ["aspect_ratio" Aeson..= value]) imageGenerationAspectRatio
-        <> maybe [] (\value -> ["background" Aeson..= value]) imageGenerationBackground
-        <> maybe [] (\value -> ["output_format" Aeson..= value]) imageGenerationOutputFormat
-        <> maybe [] (\value -> ["output_compression" Aeson..= value]) imageGenerationOutputCompression
-        <> maybe [] (\value -> ["moderation" Aeson..= value]) imageGenerationModeration
+      maybe [] (\value -> ["quality" Aeson..= value]) resolved.quality
+        <> maybe [] (\value -> ["size" Aeson..= value]) resolved.size
+        <> maybe [] (\value -> ["aspect_ratio" Aeson..= value]) provider.aspectRatio
+        <> maybe [] (\value -> ["background" Aeson..= value]) resolved.background
+        <> maybe [] (\value -> ["output_format" Aeson..= value]) provider.outputFormat
+        <> maybe [] (\value -> ["output_compression" Aeson..= value]) provider.outputCompression
+        <> maybe [] (\value -> ["moderation" Aeson..= value]) resolved.moderation
 
-imageGenerationRequest :: Config -> Text -> Text -> Maybe Bool -> ImageGenerationRequest
-imageGenerationRequest Config{imageGenerationQuality, imageGenerationSize, imageGenerationBackground, imageGenerationOutputFormat, imageGenerationOutputCompression, imageGenerationModeration} model prompt stream =
+imageGenerationRequest :: ImageProviderConfig -> LLM.ImageRequestOptions -> Text -> Text -> Maybe Bool -> ImageGenerationRequest
+imageGenerationRequest provider options model prompt stream =
   ImageGenerationRequest
     { model = model
     , prompt = prompt
-    , quality = imageGenerationQuality
-    , size = imageGenerationSize
-    , background = imageGenerationBackground
-    , outputFormat = imageGenerationOutputFormat
-    , outputCompression = imageGenerationOutputCompression
-    , moderation = imageGenerationModeration
+    , quality = resolved.quality
+    , size = resolved.size
+    , background = resolved.background
+    , outputFormat = provider.outputFormat
+    , outputCompression = provider.outputCompression
+    , moderation = resolved.moderation
     , stream = stream
     , partialImages =
         if stream == Just True
           then Just 0
           else Nothing
+    }
+  where
+    resolved = resolvedImageRequestOptions provider options
+
+resolvedImageRequestOptions :: ImageProviderConfig -> LLM.ImageRequestOptions -> LLM.ImageRequestOptions
+resolvedImageRequestOptions provider options =
+  LLM.ImageRequestOptions
+    { quality = options.quality <|> provider.quality
+    , size = options.size <|> provider.size
+    , background = options.background <|> provider.background
+    , moderation = options.moderation <|> provider.moderation
     }
 
 data ImageUpload = ImageUpload
@@ -531,22 +568,23 @@ downloadImageReference timeoutSeconds imageRef = do
       runTimedLLMReq "LLM image edit input download" timeoutSeconds $
         responseBody <$> req GET url NoReqBody bsResponse options
 
-imageEditMultipartParts :: Config -> Text -> Text -> [ImageUpload] -> Maybe ImageUpload -> [Multipart.Part]
-imageEditMultipartParts cfg model prompt imageUploads maskUpload =
+imageEditMultipartParts :: ImageProviderConfig -> LLM.ImageRequestOptions -> Text -> Text -> [ImageUpload] -> Maybe ImageUpload -> [Multipart.Part]
+imageEditMultipartParts provider options model prompt imageUploads maskUpload =
   textFields
     <> map (imageUploadPart "image[]") imageUploads
     <> maybe [] (\upload -> [imageUploadPart "mask" upload]) maskUpload
   where
+    resolved = resolvedImageRequestOptions provider options
     textFields =
       [ multipartTextPart "model" model
       , multipartTextPart "prompt" prompt
       ]
-        <> maybeTextPart "quality" cfg.imageGenerationQuality
-        <> maybeTextPart "size" cfg.imageGenerationSize
-        <> maybeTextPart "background" (imageEditBackground model cfg.imageGenerationBackground)
-        <> maybeTextPart "output_format" cfg.imageGenerationOutputFormat
-        <> maybeIntPart "output_compression" cfg.imageGenerationOutputCompression
-        <> maybeTextPart "moderation" cfg.imageGenerationModeration
+        <> maybeTextPart "quality" resolved.quality
+        <> maybeTextPart "size" resolved.size
+        <> maybeTextPart "background" (imageEditBackground model resolved.background)
+        <> maybeTextPart "output_format" provider.outputFormat
+        <> maybeIntPart "output_compression" provider.outputCompression
+        <> maybeTextPart "moderation" resolved.moderation
 
 imageUploadPart :: Text -> ImageUpload -> Multipart.Part
 imageUploadPart fieldName upload =
@@ -588,9 +626,9 @@ isWebP bytes =
   StrictByteString.pack [0x52, 0x49, 0x46, 0x46] `StrictByteString.isPrefixOf` bytes &&
     StrictByteString.pack [0x57, 0x45, 0x42, 0x50] == StrictByteString.take 4 (StrictByteString.drop 8 bytes)
 
-imageGenerationStreamingRequestPayload :: Config -> Text -> Text -> Aeson.Value
-imageGenerationStreamingRequestPayload cfg model prompt =
-  Aeson.toJSON (imageGenerationRequest cfg model prompt (Just True))
+imageGenerationStreamingRequestPayload :: ImageProviderConfig -> LLM.ImageRequestOptions -> Text -> Text -> Aeson.Value
+imageGenerationStreamingRequestPayload cfg options model prompt =
+  Aeson.toJSON (imageGenerationRequest cfg options model prompt (Just True))
 
 imagePromptFromMessages :: [ChatMessage] -> Text
 imagePromptFromMessages messages =
@@ -620,25 +658,25 @@ nonEmptyText text =
   let stripped = Text.strip text
   in if Text.null stripped then Nothing else Just stripped
 
-imageGenerationResponseText :: Config -> ImageGenerationResponse -> Maybe Text
+imageGenerationResponseText :: ImageProviderConfig -> ImageGenerationResponse -> Maybe Text
 imageGenerationResponseText cfg response =
   case mapMaybe (imageGenerationDataRef cfg) response.data_ of
     [] -> Nothing
     refs -> Just (Text.unlines (map ReplyBody.imageDirective refs))
 
-imageGenerationDataRef :: Config -> ImageGenerationData -> Maybe Text
+imageGenerationDataRef :: ImageProviderConfig -> ImageGenerationData -> Maybe Text
 imageGenerationDataRef cfg image =
   image.url <|> (dataImageRef cfg <$> image.b64Json)
 
-dataImageRef :: Config -> Text -> Text
-dataImageRef Config{imageGenerationOutputFormat} b64 =
-  "data:image/" <> fromMaybe "png" imageGenerationOutputFormat <> ";base64," <> b64
+dataImageRef :: ImageProviderConfig -> Text -> Text
+dataImageRef ImageProviderConfig{outputFormat} b64 =
+  "data:image/" <> fromMaybe "png" outputFormat <> ";base64," <> b64
 
-imageCompressionConfig :: Config -> Image.ImageCompressionConfig
-imageCompressionConfig Config{imageGenerationOutputFormat, imageGenerationOutputCompression} =
+imageCompressionConfig :: ImageProviderConfig -> Image.ImageCompressionConfig
+imageCompressionConfig ImageProviderConfig{outputFormat, outputCompression} =
   Image.ImageCompressionConfig
-    { outputFormat = imageGenerationOutputFormat
-    , outputCompression = imageGenerationOutputCompression
+    { outputFormat = outputFormat
+    , outputCompression = outputCompression
     }
 
 compressImageAnswer :: (IOE :> es, Log :> es, FileSystem :> es, Process :> es, Fail :> es) => Image.ImageCompressionConfig -> Text -> Eff es Text
@@ -877,7 +915,7 @@ imageGenerationResponseFromStreamEvent event
   | otherwise =
       Right Nothing
 
-imageGenerationStreamTextFromPayloads :: Config -> [Aeson.Value] -> Either Text Text
+imageGenerationStreamTextFromPayloads :: ImageProviderConfig -> [Aeson.Value] -> Either Text Text
 imageGenerationStreamTextFromPayloads cfg payloads =
   case foldlM collectResponse Nothing payloads of
     Left err ->

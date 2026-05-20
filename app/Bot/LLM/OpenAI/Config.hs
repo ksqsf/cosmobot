@@ -6,8 +6,11 @@ Stability   : experimental
 
 module Bot.LLM.OpenAI.Config
   ( Config (..)
-  , ImageGenerationApi (..)
+  , ChatProviderConfig (..)
+  , ImageProviderConfig (..)
   , defaultConfig
+  , defaultChatProviderConfig
+  , defaultImageProviderConfig
   , FileConfig (..)
   , toRuntimeConfig
   )
@@ -15,170 +18,219 @@ where
 
 import Bot.Util.Toml
 import Bot.Prelude
-import qualified Toml.Semantics.Types as TomlValue
+import qualified Data.Map.Strict as Map
+import qualified Data.Text as Text
 import Toml.Schema
 
 -- | Runtime configuration for OpenAI-compatible LLM endpoints.
 data Config = Config
+  { chatProvider :: !(Maybe ChatProviderConfig)
+  , imageProvider :: !(Maybe ImageProviderConfig)
+  }
+  deriving (Eq, Show)
+
+data ChatProviderConfig = ChatProviderConfig
   { baseUrl :: !Text
-  , apiKey   :: !(Maybe Text)
-  , model    :: !Text
+  , apiKey :: !(Maybe Text)
+  , model :: !Text
   , reasoningEffort :: !Text
   , requestTimeout :: !Int
-  , imageGeneration :: !Bool
-  , imageGenerationApi :: !ImageGenerationApi
-  , imageGenerationBaseUrl :: !(Maybe Text)
-  , imageGenerationApiKey :: !(Maybe Text)
-  , imageGenerationModel :: !(Maybe Text)
-  , imageGenerationModelCanEdit :: !Bool
-  , imageGenerationTimeout :: !Int
-  , imageGenerationQuality :: !(Maybe Text)
-  , imageGenerationSize :: !(Maybe Text)
-  , imageGenerationAspectRatio :: !(Maybe Text)
-  , imageGenerationBackground :: !(Maybe Text)
-  , imageGenerationOutputFormat :: !(Maybe Text)
-  , imageGenerationOutputCompression :: !(Maybe Int)
-  , imageGenerationModeration :: !(Maybe Text)
   }
-  deriving (Show)
+  deriving (Eq, Show)
 
-data ImageGenerationApi
-  = ImageGenerationChatCompletions
-  | ImageGenerationImages
+data ImageProviderConfig = ImageProviderConfig
+  { baseUrl :: !Text
+  , apiKey :: !(Maybe Text)
+  , model :: !Text
+  , canGenerate :: !Bool
+  , canEdit :: !Bool
+  , requestTimeout :: !Int
+  , quality :: !(Maybe Text)
+  , size :: !(Maybe Text)
+  , aspectRatio :: !(Maybe Text)
+  , background :: !(Maybe Text)
+  , moderation :: !(Maybe Text)
+  , outputFormat :: !(Maybe Text)
+  , outputCompression :: !(Maybe Int)
+  }
   deriving (Eq, Show)
 
 -- | Defaults for optional LLM features.
 defaultConfig :: Config
 defaultConfig = Config
+  { chatProvider = Nothing
+  , imageProvider = Nothing
+  }
+
+defaultChatProviderConfig :: ChatProviderConfig
+defaultChatProviderConfig = ChatProviderConfig
   { baseUrl = "https://openrouter.ai/api/v1"
-  , apiKey   = Nothing
-  , model    = "openai/gpt-4o-mini"
+  , apiKey = Nothing
+  , model = "openai/gpt-4o-mini"
   , reasoningEffort = "low"
   , requestTimeout = 60
-  , imageGeneration = False
-  , imageGenerationApi = ImageGenerationChatCompletions
-  , imageGenerationBaseUrl = Nothing
-  , imageGenerationApiKey = Nothing
-  , imageGenerationModel = Nothing
-  , imageGenerationModelCanEdit = False
-  , imageGenerationTimeout = 300
-  , imageGenerationQuality = Nothing
-  , imageGenerationSize = Nothing
-  , imageGenerationAspectRatio = Nothing
-  , imageGenerationBackground = Nothing
-  , imageGenerationOutputFormat = Nothing
-  , imageGenerationOutputCompression = Nothing
-  , imageGenerationModeration = Nothing
+  }
+
+defaultImageProviderConfig :: ImageProviderConfig
+defaultImageProviderConfig = ImageProviderConfig
+  { baseUrl = "https://api.openai.com/v1"
+  , apiKey = Nothing
+  , model = "gpt-image-1.5"
+  , canGenerate = True
+  , canEdit = False
+  , requestTimeout = 300
+  , quality = Nothing
+  , size = Nothing
+  , aspectRatio = Nothing
+  , background = Nothing
+  , moderation = Nothing
+  , outputFormat = Nothing
+  , outputCompression = Nothing
   }
 
 data FileConfig = FileConfig
-  { baseUrl :: !Text
-  , apiKey   :: !(Maybe Text)
-  , model    :: !Text
-  , reasoningEffort :: !Text
-  , requestTimeout :: !Int
-  , imageGeneration :: !Bool
-  , imageGenerationApi :: !ImageGenerationApi
-  , imageGenerationBaseUrl :: !(Maybe Text)
-  , imageGenerationApiKey :: !(Maybe Text)
-  , imageGenerationModel :: !(Maybe Text)
-  , imageGenerationModelCanEdit :: !Bool
-  , imageGenerationTimeout :: !Int
-  , imageGenerationQuality :: !(Maybe Text)
-  , imageGenerationSize :: !(Maybe Text)
-  , imageGenerationAspectRatio :: !(Maybe Text)
-  , imageGenerationBackground :: !(Maybe Text)
-  , imageGenerationOutputFormat :: !(Maybe Text)
-  , imageGenerationOutputCompression :: !(Maybe Int)
-  , imageGenerationModeration :: !(Maybe Text)
+  { chatProvider :: !(Maybe ChatProviderFileConfig)
+  , imageProvider :: !(Maybe ImageProviderFileConfig)
   }
   deriving (Show)
 
-newtype FileImageGenerationApi = FileImageGenerationApi
-  { toRuntimeImageGenerationApi :: ImageGenerationApi
+data ChatProviderFileConfig = ChatProviderFileConfig
+  { baseUrl :: !Text
+  , apiKey :: !(Maybe Text)
+  , model :: !Text
+  , reasoningEffort :: !Text
+  , requestTimeout :: !Int
+  }
+  deriving (Show)
+
+data ImageProviderFileConfig = ImageProviderFileConfig
+  { baseUrl :: !Text
+  , apiKey :: !(Maybe Text)
+  , model :: !Text
+  , canGenerate :: !Bool
+  , canEdit :: !Bool
+  , requestTimeout :: !Int
+  , quality :: !(Maybe Text)
+  , size :: !(Maybe Text)
+  , aspectRatio :: !(Maybe Text)
+  , background :: !(Maybe Text)
+  , moderation :: !(Maybe Text)
+  , outputFormat :: !(Maybe Text)
+  , outputCompression :: !(Maybe Int)
   }
   deriving (Show)
 
 instance FromValue FileConfig where
   fromValue = parseTableFromValue do
-    baseUrl <- fmap (fromMaybe defaultConfig.baseUrl) (optKey "base_url")
-    apiKey <- optToken "api_key"
-    model <- reqKey "model"
-    reasoningEffort <- fmap (fromMaybe defaultConfig.reasoningEffort) (optKey "reasoning_effort")
-    requestTimeout <- fmap (fromMaybe defaultConfig.requestTimeout) (optKey "timeout")
-    imageGeneration <- fmap (fromMaybe defaultConfig.imageGeneration) (optKey "image_generation")
-    imageGenerationApiConfig <- (optKey "image_generation_api" :: ParseTable l (Maybe FileImageGenerationApi))
-    let imageGenerationApi =
-          maybe
-            defaultConfig.imageGenerationApi
-            (\FileImageGenerationApi{toRuntimeImageGenerationApi} -> toRuntimeImageGenerationApi)
-            imageGenerationApiConfig
-    imageGenerationBaseUrl <- optKey "image_generation_base_url"
-    imageGenerationApiKey <- optToken "image_generation_api_key"
-    imageGenerationModel <- optKey "image_generation_model"
-    imageGenerationModelCanEdit <- fmap (fromMaybe defaultConfig.imageGenerationModelCanEdit) (optKey "image_generation_model_can_edit")
-    imageGenerationTimeout <- fmap (fromMaybe defaultConfig.imageGenerationTimeout) (optKey "image_generation_timeout")
-    imageGenerationQuality <- optKey "image_generation_quality"
-    imageGenerationSize <- optKey "image_generation_size"
-    imageGenerationAspectRatio <- optKey "image_generation_aspect_ratio"
-    imageGenerationBackground <- optKey "image_generation_background"
-    imageGenerationOutputFormat <- optKey "image_generation_output_format"
-    imageGenerationOutputCompression <- optKey "image_generation_output_compression"
-    imageGenerationModeration <- optKey "image_generation_moderation"
-    when (requestTimeout <= 0) (fail "llm.timeout must be positive")
-    when (imageGenerationTimeout <= 0) (fail "llm.image_generation_timeout must be positive")
+    selectedChat <- optKey "chat"
+    selectedImage <- optKey "image"
+    chatProviders <- fmap (fromMaybe Map.empty) (optKey "chat_provider")
+    imageProviders <- fmap (fromMaybe Map.empty) (optKey "image_provider")
+    chatProvider <- selectedProvider "llm.chat" "llm.chat_provider" selectedChat chatProviders
+    imageProvider <- selectedProvider "llm.image" "llm.image_provider" selectedImage imageProviders
     pure FileConfig
+      { chatProvider = chatProvider
+      , imageProvider = imageProvider
+      }
+
+selectedProvider
+  :: Text
+  -> Text
+  -> Maybe Text
+  -> Map Text provider
+  -> ParseTable l (Maybe provider)
+selectedProvider selectorName tableName selected providers =
+  case Text.strip <$> selected of
+    Nothing ->
+      pure Nothing
+    Just "" ->
+      pure Nothing
+    Just name ->
+      case Map.lookup name providers of
+        Just provider ->
+          pure (Just provider)
+        Nothing ->
+          fail [i|#{selectorName} selects #{name}, but #{tableName}.#{name} is not defined|]
+
+instance FromValue ChatProviderFileConfig where
+  fromValue = parseTableFromValue do
+    baseUrl <- fmap (fromMaybe defaultChatProviderConfig.baseUrl) (optKey "base_url")
+    apiKey <- optToken "api_key"
+    model <- fmap (fromMaybe defaultChatProviderConfig.model) (optKey "model")
+    reasoningEffort <- fmap (fromMaybe defaultChatProviderConfig.reasoningEffort) (optKey "reasoning_effort")
+    requestTimeout <- fmap (fromMaybe defaultChatProviderConfig.requestTimeout) (optKey "timeout")
+    when (requestTimeout <= 0) (fail "llm.chat_provider.<name>.timeout must be positive")
+    pure ChatProviderFileConfig
       { baseUrl = baseUrl
       , apiKey = apiKey
       , model = model
       , reasoningEffort = reasoningEffort
       , requestTimeout = requestTimeout
-      , imageGeneration = imageGeneration
-      , imageGenerationApi = imageGenerationApi
-      , imageGenerationBaseUrl = imageGenerationBaseUrl
-      , imageGenerationApiKey = imageGenerationApiKey
-      , imageGenerationModel = imageGenerationModel
-      , imageGenerationModelCanEdit = imageGenerationModelCanEdit
-      , imageGenerationTimeout = imageGenerationTimeout
-      , imageGenerationQuality = imageGenerationQuality
-      , imageGenerationSize = imageGenerationSize
-      , imageGenerationAspectRatio = imageGenerationAspectRatio
-      , imageGenerationBackground = imageGenerationBackground
-      , imageGenerationOutputFormat = imageGenerationOutputFormat
-      , imageGenerationOutputCompression = imageGenerationOutputCompression
-      , imageGenerationModeration = imageGenerationModeration
+      }
+
+instance FromValue ImageProviderFileConfig where
+  fromValue = parseTableFromValue do
+    baseUrl <- fmap (fromMaybe defaultImageProviderConfig.baseUrl) (optKey "base_url")
+    apiKey <- optToken "api_key"
+    model <- fmap (fromMaybe defaultImageProviderConfig.model) (optKey "model")
+    canGenerate <- fmap (fromMaybe defaultImageProviderConfig.canGenerate) (optKey "can_generate")
+    canEdit <- fmap (fromMaybe defaultImageProviderConfig.canEdit) (optKey "can_edit")
+    requestTimeout <- fmap (fromMaybe defaultImageProviderConfig.requestTimeout) (optKey "timeout")
+    quality <- optKey "quality"
+    size <- optKey "size"
+    aspectRatio <- optKey "aspect_ratio"
+    background <- optKey "background"
+    moderation <- optKey "moderation"
+    outputFormat <- optKey "output_format"
+    outputCompression <- optKey "output_compression"
+    when (requestTimeout <= 0) (fail "llm.image_provider.<name>.timeout must be positive")
+    pure ImageProviderFileConfig
+      { baseUrl = baseUrl
+      , apiKey = apiKey
+      , model = model
+      , canGenerate = canGenerate
+      , canEdit = canEdit
+      , requestTimeout = requestTimeout
+      , quality = quality
+      , size = size
+      , aspectRatio = aspectRatio
+      , background = background
+      , moderation = moderation
+      , outputFormat = outputFormat
+      , outputCompression = outputCompression
       }
 
 toRuntimeConfig :: FileConfig -> Config
 toRuntimeConfig cfg =
   Config
+    { chatProvider = toRuntimeChatProviderConfig <$> cfg.chatProvider
+    , imageProvider = toRuntimeImageProviderConfig <$> cfg.imageProvider
+    }
+
+toRuntimeChatProviderConfig :: ChatProviderFileConfig -> ChatProviderConfig
+toRuntimeChatProviderConfig cfg =
+  ChatProviderConfig
     { baseUrl = cfg.baseUrl
     , apiKey = cfg.apiKey
     , model = cfg.model
     , reasoningEffort = cfg.reasoningEffort
     , requestTimeout = cfg.requestTimeout
-    , imageGeneration = cfg.imageGeneration
-    , imageGenerationApi = cfg.imageGenerationApi
-    , imageGenerationBaseUrl = cfg.imageGenerationBaseUrl
-    , imageGenerationApiKey = cfg.imageGenerationApiKey
-    , imageGenerationModel = cfg.imageGenerationModel
-    , imageGenerationModelCanEdit = cfg.imageGenerationModelCanEdit
-    , imageGenerationTimeout = cfg.imageGenerationTimeout
-    , imageGenerationQuality = cfg.imageGenerationQuality
-    , imageGenerationSize = cfg.imageGenerationSize
-    , imageGenerationAspectRatio = cfg.imageGenerationAspectRatio
-    , imageGenerationBackground = cfg.imageGenerationBackground
-    , imageGenerationOutputFormat = cfg.imageGenerationOutputFormat
-    , imageGenerationOutputCompression = cfg.imageGenerationOutputCompression
-    , imageGenerationModeration = cfg.imageGenerationModeration
     }
 
-instance FromValue FileImageGenerationApi where
-  fromValue = \case
-    TomlValue.Text' _ value ->
-      case value of
-        "chat_completions" -> pure (FileImageGenerationApi ImageGenerationChatCompletions)
-        "images" -> pure (FileImageGenerationApi ImageGenerationImages)
-        _ -> fail "llm.image_generation_api must be \"chat_completions\" or \"images\""
-    _ ->
-      fail "llm.image_generation_api must be a string"
+toRuntimeImageProviderConfig :: ImageProviderFileConfig -> ImageProviderConfig
+toRuntimeImageProviderConfig cfg =
+  ImageProviderConfig
+    { baseUrl = cfg.baseUrl
+    , apiKey = cfg.apiKey
+    , model = cfg.model
+    , canGenerate = cfg.canGenerate
+    , canEdit = cfg.canEdit
+    , requestTimeout = cfg.requestTimeout
+    , quality = cfg.quality
+    , size = cfg.size
+    , aspectRatio = cfg.aspectRatio
+    , background = cfg.background
+    , moderation = cfg.moderation
+    , outputFormat = cfg.outputFormat
+    , outputCompression = cfg.outputCompression
+    }

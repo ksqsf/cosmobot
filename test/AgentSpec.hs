@@ -81,10 +81,18 @@ data StreamingAnswer = StreamingAnswer
   , answer :: !LLM.ChatAnswer
   }
 
+data ImageGenerateCall = ImageGenerateCall
+  { prompt :: !Text
+  , imageRefs :: ![Text]
+  , options :: !LLM.ImageRequestOptions
+  }
+  deriving (Eq, Show)
+
 data ImageEditCall = ImageEditCall
   { prompt :: !Text
   , imageRefs :: ![Text]
   , maskRef :: !(Maybe Text)
+  , options :: !LLM.ImageRequestOptions
   }
   deriving (Eq, Show)
 
@@ -104,6 +112,8 @@ main =
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "edit_image tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
       , testCase "ask handler passes referenced images to edit_image tool" testAskHandlerPassesReferencedImagesToEditImageTool
+      , testCase "generate_image tool passes image request options" testGenerateImageToolPassesImageRequestOptions
+      , testCase "edit_image tool passes image request options" testEditImageToolPassesImageRequestOptions
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "agent compacts old conversation context before model turn" testAgentCompactsOldConversationContextBeforeModelTurn
       , testCase "agent announces context compaction" testAgentAnnouncesContextCompaction
@@ -341,7 +351,7 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult = do
   (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "47") Nothing) do
     Agent.runAgentWithHooks 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "edit this")
   answer @?= "done"
-  IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage)])
+  IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage) LLM.defaultImageRequestOptions])
   IORef.readIORef replies >>= (@?= [editedImage])
   IORef.readIORef recorded >>= (@?= [editedImage])
 
@@ -372,7 +382,72 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
     conversations <- newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) message
     waitUntil (liftIO $ (>= 3) . length <$> IORef.readIORef replies)
-  IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [referencedImage] Nothing])
+  IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [referencedImage] Nothing LLM.defaultImageRequestOptions])
+
+testGenerateImageToolPassesImageRequestOptions :: IO ()
+testGenerateImageToolPassesImageRequestOptions = do
+  let generatedImage = "[image] data:image/png;base64,generated"
+      expectedOptions = imageOptions "high" "1024x1536" "transparent" "low"
+      args =
+        Aeson.object
+          [ "prompt" Aeson..= ("draw a glass tower" :: Text)
+          , "quality" Aeson..= (" high " :: Text)
+          , "size" Aeson..= ("1024x1536" :: Text)
+          , "background" Aeson..= ("transparent" :: Text)
+          , "moderation" Aeson..= ("low" :: Text)
+          ]
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "generate_image" args]
+    , chatAnswer "done" []
+    ]
+  generateCalls <- IORef.newIORef ([] :: [ImageGenerateCall])
+  replies <- IORef.newIORef ([] :: [Text])
+  recorded <- IORef.newIORef ([] :: [Text])
+  remembered <- IORef.newIORef ([] :: [Maybe MessageId])
+  (answer, _) <- runAgentWithImageGenerate answers generateCalls generatedImage (ChatMock (Just replies) (Just "48") Nothing) do
+    Agent.runAgentWithHooks 4 agentContext (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "draw this")
+  answer @?= "done"
+  IORef.readIORef generateCalls >>= (@?= [ImageGenerateCall "draw a glass tower" [] expectedOptions])
+  IORef.readIORef replies >>= (@?= [generatedImage])
+  IORef.readIORef recorded >>= (@?= [generatedImage])
+
+testEditImageToolPassesImageRequestOptions :: IO ()
+testEditImageToolPassesImageRequestOptions = do
+  let inputImage = "https://example.test/input.png"
+      editedImage = "[image] data:image/png;base64,edited"
+      expectedOptions = imageOptions "medium" "1536x1024" "opaque" "auto"
+      message = testMessageWithImages [inputImage]
+      args =
+        Aeson.object
+          [ "prompt" Aeson..= ("make it cinematic" :: Text)
+          , "quality" Aeson..= ("medium" :: Text)
+          , "size" Aeson..= ("1536x1024" :: Text)
+          , "background" Aeson..= (" opaque " :: Text)
+          , "moderation" Aeson..= ("auto" :: Text)
+          ]
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "edit_image" args]
+    , chatAnswer "done" []
+    ]
+  editCalls <- IORef.newIORef ([] :: [ImageEditCall])
+  replies <- IORef.newIORef ([] :: [Text])
+  recorded <- IORef.newIORef ([] :: [Text])
+  remembered <- IORef.newIORef ([] :: [Maybe MessageId])
+  (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "49") Nothing) do
+    Agent.runAgentWithHooks 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "edit this")
+  answer @?= "done"
+  IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it cinematic" [inputImage] Nothing expectedOptions])
+  IORef.readIORef replies >>= (@?= [editedImage])
+  IORef.readIORef recorded >>= (@?= [editedImage])
+
+imageOptions :: Text -> Text -> Text -> Text -> LLM.ImageRequestOptions
+imageOptions quality size background moderation =
+  LLM.ImageRequestOptions
+    { quality = Just quality
+    , size = Just size
+    , background = Just background
+    , moderation = Just moderation
+    }
 
 testAgentRequestMergesCurrentMessageContextIntoSystemPrompt :: IO ()
 testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
@@ -714,7 +789,7 @@ testLLMToolRequestContentStreamsImmediatelyWhenEnabled = do
 
 testLLMImageStreamRequestAsksOnlyForFinalImage :: IO ()
 testLLMImageStreamRequestAsksOnlyForFinalImage =
-  LLMTransport.imageGenerationStreamingRequestPayload imageStreamTestConfig "gpt-image-2" "draw this"
+  LLMTransport.imageGenerationStreamingRequestPayload imageStreamTestConfig LLM.defaultImageRequestOptions "gpt-image-2" "draw this"
     @?=
       Aeson.object
         [ "model" Aeson..= ("gpt-image-2" :: Text)
@@ -752,9 +827,9 @@ testLLMImageStreamIgnoresPartialEventWithoutFinalImage =
         , "partial_image_index" Aeson..= (0 :: Int)
         ]
 
-imageStreamTestConfig :: LLMConfig.Config
+imageStreamTestConfig :: LLMConfig.ImageProviderConfig
 imageStreamTestConfig =
-  LLMConfig.defaultConfig
+  LLMConfig.defaultImageProviderConfig
 
 testLLMStreamingEffectPreservesYieldedChunks :: IO ()
 testLLMStreamingEffectPreservesYieldedChunks = do
@@ -762,8 +837,8 @@ testLLMStreamingEffectPreservesYieldedChunks = do
     LLMTest.runLLMWith
       (\_ -> pure "unused text answer")
       (\_ -> S.each ["he", "llo"] $> "hello")
-      (\_ -> pure "unused image answer")
-      (\_ _ _ -> pure "unused image edit answer")
+      (\_ _ -> pure "unused image answer")
+      (\_ _ _ _ -> pure "unused image edit answer")
       (\_ _ -> pure (chatAnswer "unused tool answer" []))
       (\_ _ -> S.each ["to", "ol"] $> chatAnswer "tool" []) do
         S.toList (LLM.askWithToolsStreaming [] [LLM.userText "hello"])
@@ -1361,6 +1436,32 @@ requestRoles :: [LLM.ChatMessage] -> [Text]
 requestRoles =
   map (.role)
 
+imageGenerateCall :: LLM.ImageRequestOptions -> LLM.ChatMessage -> ImageGenerateCall
+imageGenerateCall options message =
+  ImageGenerateCall
+    { prompt = messagePromptText message
+    , imageRefs = messageImageRefs message
+    , options = options
+    }
+
+messagePromptText :: LLM.ChatMessage -> Text
+messagePromptText message =
+  case message.content of
+    Just (LLM.TextContent text) ->
+      text
+    Just (LLM.PartsContent parts) ->
+      Text.concat [text | LLM.TextPart text <- parts]
+    Nothing ->
+      ""
+
+messageImageRefs :: LLM.ChatMessage -> [Text]
+messageImageRefs message =
+  case message.content of
+    Just (LLM.PartsContent parts) ->
+      [url | LLM.ImageUrlPart url <- parts]
+    _ ->
+      []
+
 runAgentWith
   :: IORef.IORef [LLM.ChatAnswer]
   -> ChatMock
@@ -1368,6 +1469,29 @@ runAgentWith
   -> IO a
 runAgentWith answers chatMock action =
   runAgentWithMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") answers chatMock action
+
+runAgentWithImageGenerate
+  :: IORef.IORef [LLM.ChatAnswer]
+  -> IORef.IORef [ImageGenerateCall]
+  -> Text
+  -> ChatMock
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithImageGenerate answers generateCalls generateAnswer chatMock action = do
+  rendered <- IORef.newIORef ([] :: [Text])
+  runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    defaultTestSkillsConfig
+    rendered
+    Nothing
+    answers
+    chatMock
+    Nothing
+    (\options messages -> do
+        IORef.modifyIORef' generateCalls (<> map (imageGenerateCall options) messages)
+        pure generateAnswer)
+    (\_ _ _ _ -> pure "unused image edit answer")
+    action
 
 runAgentWithImageEdit
   :: IORef.IORef [LLM.ChatAnswer]
@@ -1385,8 +1509,8 @@ runAgentWithImageEdit answers editCalls editAnswer chatMock action = do
     Nothing
     answers
     chatMock
-    (\prompt imageRefs maskRef -> do
-        IORef.modifyIORef' editCalls (<> [ImageEditCall{prompt, imageRefs, maskRef}])
+    (\options prompt imageRefs maskRef -> do
+        IORef.modifyIORef' editCalls (<> [ImageEditCall{prompt, imageRefs, maskRef, options}])
         pure editAnswer)
     action
 
@@ -1408,8 +1532,8 @@ runAgentWithImageEditAndReferencedMessage answers editCalls editAnswer reference
     answers
     chatMock
     referencedMessage
-    (\prompt imageRefs maskRef -> do
-        IORef.modifyIORef' editCalls (<> [ImageEditCall{prompt, imageRefs, maskRef}])
+    (\options prompt imageRefs maskRef -> do
+        IORef.modifyIORef' editCalls (<> [ImageEditCall{prompt, imageRefs, maskRef, options}])
         pure editAnswer)
     action
 
@@ -1503,14 +1627,15 @@ runAgentWithMemorySkillsAndTypstAndCapture
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemorySkillsAndTypstAndCapture memoryCfg skillsCfg rendered captured answers chatMock action = do
-  runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit
+  runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEdit
     memoryCfg
     skillsCfg
     rendered
     captured
     answers
     chatMock
-    (\_ _ _ -> pure "unused image edit answer")
+    (\_ _ -> pure "unused image answer")
+    (\_ _ _ _ -> pure "unused image edit answer")
     action
 
 runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit
@@ -1520,11 +1645,11 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit
   -> Maybe (IORef.IORef [[LLM.ChatMessage]])
   -> IORef.IORef [LLM.ChatAnswer]
   -> ChatMock
-  -> (Text -> [Text] -> Maybe Text -> IO Text)
+  -> (LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> IO Text)
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit memoryCfg skillsCfg rendered captured answers chatMock imageEdit action = do
-  runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced
+  runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
     memoryCfg
     skillsCfg
     rendered
@@ -1532,6 +1657,31 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEdit memoryCfg skillsCfg rende
     answers
     chatMock
     Nothing
+    (\_ _ -> pure "unused image answer")
+    imageEdit
+    action
+
+runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEdit
+  :: MemoryStore.MemoryConfig
+  -> SkillsStore.SkillsConfig
+  -> IORef.IORef [Text]
+  -> Maybe (IORef.IORef [[LLM.ChatMessage]])
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> (LLM.ImageRequestOptions -> [LLM.ChatMessage] -> IO Text)
+  -> (LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> IO Text)
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEdit memoryCfg skillsCfg rendered captured answers chatMock imageGenerate imageEdit action = do
+  runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+    memoryCfg
+    skillsCfg
+    rendered
+    captured
+    answers
+    chatMock
+    Nothing
+    imageGenerate
     imageEdit
     action
 
@@ -1543,10 +1693,35 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced
   -> IORef.IORef [LLM.ChatAnswer]
   -> ChatMock
   -> Maybe ReferencedMessage
-  -> (Text -> [Text] -> Maybe Text -> IO Text)
+  -> (LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> IO Text)
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced memoryCfg skillsCfg rendered captured answers chatMock referencedMessage imageEdit action = do
+  runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+    memoryCfg
+    skillsCfg
+    rendered
+    captured
+    answers
+    chatMock
+    referencedMessage
+    (\_ _ -> pure "unused image answer")
+    imageEdit
+    action
+
+runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+  :: MemoryStore.MemoryConfig
+  -> SkillsStore.SkillsConfig
+  -> IORef.IORef [Text]
+  -> Maybe (IORef.IORef [[LLM.ChatMessage]])
+  -> IORef.IORef [LLM.ChatAnswer]
+  -> ChatMock
+  -> Maybe ReferencedMessage
+  -> (LLM.ImageRequestOptions -> [LLM.ChatMessage] -> IO Text)
+  -> (LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> IO Text)
+  -> Eff AgentStack a
+  -> IO a
+runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced memoryCfg skillsCfg rendered captured answers chatMock referencedMessage imageGenerate imageEdit action = do
   result <-
     runEff $
       runFileSystem $
@@ -1567,8 +1742,8 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageEditAndReferenced memoryCfg sk
                                     lift $ captureMessages captured messages
                                     S.yield "unused text stream answer"
                                     pure "unused text stream answer")
-                                (\messages -> captureMessages captured messages >> pure "unused image answer")
-                                (\prompt imageRefs maskRef -> liftIO (imageEdit prompt imageRefs maskRef))
+                                (\options messages -> captureMessages captured messages >> liftIO (imageGenerate options messages))
+                                (\options prompt imageRefs maskRef -> liftIO (imageEdit options prompt imageRefs maskRef))
                                 (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
                                 (\_ messages -> do
                                     lift $ captureMessages captured messages
@@ -1624,8 +1799,8 @@ runAgentWithStreamingAnswers answers chatMock action = do
                               LLMTest.runLLMWith
                                 (\_ -> pure "unused text answer")
                                 (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
-                                (\_ -> pure "unused image answer")
-                                (\_ _ _ -> pure "unused image edit answer")
+                                (\_ _ -> pure "unused image answer")
+                                (\_ _ _ _ -> pure "unused image edit answer")
                                 (\_ _ -> (.answer) <$> liftIO (popStreamingAnswer answers))
                                 (\_ _ -> do
                                     streamingAnswer <- liftIO (popStreamingAnswer answers)

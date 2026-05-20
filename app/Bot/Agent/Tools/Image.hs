@@ -27,12 +27,16 @@ generateImageTool = Tool
   , description = "Generate an actual image from a prompt and send it to the current chat. Use this when the user *literally* asks to *draw*, *create*, or *generate* an image, including scheduled future image requests. After using this tool, keep the final answer brief and do not repeat the image URL. Never use this when the user is merely asking for, finding, or searching for an image; instead, use the web search tool."
   , parameters = objectSchema
       [ fieldText "prompt" "Image generation prompt. Include the user's visual requirements, style, subject, text, and constraints."
+      , fieldText "quality" "Optional provider-supported image quality control, such as low, medium, high, auto, standard, or hd."
+      , fieldText "size" "Optional provider-supported image size control, such as 1024x1024, 1024x1536, 1536x1024, or auto."
+      , fieldText "background" "Optional provider-supported background control, such as transparent, opaque, or auto."
+      , fieldText "moderation" "Optional provider-supported moderation control, such as auto or low."
       ]
       ["prompt"]
   , noisy = True
   , allowed = everyone
-  , start = \context -> pure \args -> withTextArg "prompt" (\prompt -> do
-      generated <- LLM.askImageWithHistory [LLM.userWithImages prompt (contextDefaultImageUrls context)]
+  , start = \context -> pure \args -> withParsedToolArgs parseGenerateImageArgs args \generateArgs -> do
+      generated <- LLM.askImageWithHistoryWithOptions generateArgs.options [LLM.userWithImages generateArgs.prompt (contextDefaultImageUrls context)]
       case Chat.replyImageUrls generated of
         [] ->
           pure (toolText generated)
@@ -40,7 +44,6 @@ generateImageTool = Tool
           sent <- Chat.replyTo context.message generated
           let sentText = show sent :: String
           pure (toolMessage sent [i|Generated and sent image message id: #{sentText}|])
-      ) args
   }
 
 editImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
@@ -51,6 +54,10 @@ editImageTool = Tool
       [ fieldText "prompt" "Image edit instruction. Describe exactly what should change and what should stay preserved."
       , fieldTextArray "image_urls" "Optional input image URLs or data image references. Omit this to use the images attached to the current user message. GPT image edit models accept up to 16 input images. Only base64, https://, or file:// is supported."
       , fieldText "mask_image_url" "Optional mask image URL or data image reference. The mask must match the first input image size and format and contain an alpha channel."
+      , fieldText "quality" "Optional provider-supported image quality control, such as low, medium, high, auto, standard, or hd."
+      , fieldText "size" "Optional provider-supported image size control, such as 1024x1024, 1024x1536, 1536x1024, or auto."
+      , fieldText "background" "Optional provider-supported background control, such as transparent, opaque, or auto."
+      , fieldText "moderation" "Optional provider-supported moderation control, such as auto or low."
       ]
       ["prompt"]
   , noisy = True
@@ -61,7 +68,7 @@ editImageTool = Tool
         Just failure ->
           pure (toolFailure failure)
         Nothing -> do
-          edited <- LLM.askImageEdit editArgs.prompt imageRefs editArgs.maskImageUrl
+          edited <- LLM.askImageEditWithOptions editArgs.options editArgs.prompt imageRefs editArgs.maskImageUrl
           case Chat.replyImageUrls edited of
             [] ->
               pure (toolText edited)
@@ -71,11 +78,27 @@ editImageTool = Tool
               pure (toolMessage sent [i|Edited and sent image message id: #{sentText}|])
   }
 
+data GenerateImageArgs = GenerateImageArgs
+  { prompt :: !Text
+  , options :: !LLM.ImageRequestOptions
+  }
+
 data EditImageArgs = EditImageArgs
   { prompt :: !Text
   , imageUrls :: ![Text]
   , maskImageUrl :: !(Maybe Text)
+  , options :: !LLM.ImageRequestOptions
   }
+
+parseGenerateImageArgs :: Aeson.Value -> AesonTypes.Parser GenerateImageArgs
+parseGenerateImageArgs =
+  Aeson.withObject "generate_image arguments" \o -> do
+    prompt <- Text.strip <$> o Aeson..: Key.fromText "prompt"
+    options <- parseImageRequestOptions o
+    pure GenerateImageArgs
+      { prompt = prompt
+      , options = options
+      }
 
 parseEditImageArgs :: Aeson.Value -> AesonTypes.Parser EditImageArgs
 parseEditImageArgs =
@@ -83,11 +106,24 @@ parseEditImageArgs =
     prompt <- Text.strip <$> o Aeson..: Key.fromText "prompt"
     imageUrls <- map Text.strip . fromMaybe [] <$> o Aeson..:? Key.fromText "image_urls"
     maskImageUrl <- fmap Text.strip <$> o Aeson..:? Key.fromText "mask_image_url"
+    options <- parseImageRequestOptions o
     pure EditImageArgs
       { prompt = prompt
       , imageUrls = filter (not . Text.null) imageUrls
       , maskImageUrl = maskImageUrl >>= nonEmptyText
+      , options = options
       }
+
+parseImageRequestOptions :: Aeson.Object -> AesonTypes.Parser LLM.ImageRequestOptions
+parseImageRequestOptions o = do
+  quality <- optionalTextField "quality"
+  size <- optionalTextField "size"
+  background <- optionalTextField "background"
+  moderation <- optionalTextField "moderation"
+  pure LLM.ImageRequestOptions{quality, size, background, moderation}
+  where
+    optionalTextField name =
+      (fmap Text.strip <$> o Aeson..:? Key.fromText name) <&> (>>= nonEmptyText)
 
 editImageInputRefs :: AgentContext es -> EditImageArgs -> [Text]
 editImageInputRefs context editArgs =
