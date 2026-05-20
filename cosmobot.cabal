@@ -143,6 +143,7 @@ common bot-agent-modules
         Bot.Agent.Middleware.Tools
         Bot.Agent.ToolRegistry
         Bot.Agent.Tools
+        Bot.Agent.Tools.Audio
         Bot.Agent.Tools.Chat
         Bot.Agent.Tools.Common
         Bot.Agent.Tools.Emacs

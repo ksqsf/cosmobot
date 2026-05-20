@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Tools.Audio as AudioTools
 import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Types as AgentTypes
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
@@ -98,6 +99,12 @@ data ImageEditCall = ImageEditCall
   }
   deriving (Eq, Show)
 
+data AudioGenerateCall = AudioGenerateCall
+  { prompt :: !Text
+  , options :: !LLM.AudioRequestOptions
+  }
+  deriving (Eq, Show)
+
 main :: IO ()
 main =
   defaultMain $
@@ -115,6 +122,7 @@ main =
       , testCase "edit_image tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
       , testCase "ask handler passes referenced images to edit_image tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "generate_image tool passes image request options" testGenerateImageToolPassesImageRequestOptions
+      , testCase "generate_audio tool passes audio request options and sends audio" testGenerateAudioToolPassesAudioRequestOptions
       , testCase "edit_image tool passes image request options" testEditImageToolPassesImageRequestOptions
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "agent compacts old conversation context before model turn" testAgentCompactsOldConversationContextBeforeModelTurn
@@ -132,6 +140,7 @@ main =
       , testCase "reply segment adapter folds deltas into messages" testReplySegmentAdapterFoldsDeltasIntoMessages
       , testCase "LLM tool request content streams immediately when enabled" testLLMToolRequestContentStreamsImmediatelyWhenEnabled
       , testCase "LLM image stream request asks only for final image" testLLMImageStreamRequestAsksOnlyForFinalImage
+      , testCase "LLM audio speech request includes provider options" testLLMAudioSpeechRequestIncludesProviderOptions
       , testCase "LLM image stream completed event yields final image" testLLMImageStreamCompletedEventYieldsFinalImage
       , testCase "LLM image stream ignores partial event without final image" testLLMImageStreamIgnoresPartialEventWithoutFinalImage
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
@@ -237,6 +246,7 @@ runSendFileTool replies upload =
         { handleReplyTo = \_ body -> do
             liftIO $ IORef.modifyIORef' replies (<> [body])
             pure (Just "901")
+        , handleReplyAudio = noopReplyAudio
         , handleUploadFile = upload
         , handleEditMessage = noopEdit
         , handleDeleteMessage = noopDelete
@@ -247,6 +257,7 @@ runSendFileTool replies upload =
         , handleGetUserAvatar = noopUserAvatar
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
+        , handleSetMemberTitle = noopSetMemberTitle
         } do
         runner <- ChatTools.sendFileTool.start superuserContext
         runner (Aeson.object ["path" Aeson..= ("file:///tmp/report.txt" :: Text)])
@@ -412,6 +423,66 @@ testGenerateImageToolPassesImageRequestOptions = do
   IORef.readIORef generateCalls >>= (@?= [ImageGenerateCall "draw a glass tower" [] expectedOptions])
   IORef.readIORef replies >>= (@?= [generatedImage])
   IORef.readIORef recorded >>= (@?= [generatedImage])
+
+testGenerateAudioToolPassesAudioRequestOptions :: IO ()
+testGenerateAudioToolPassesAudioRequestOptions = do
+  let generatedAudio = "data:audio/mp3;base64,generated"
+      expectedOptions = LLM.AudioRequestOptions
+        { voice = Just "verse"
+        , responseFormat = Just "mp3"
+        , speed = Just 1.25
+        , instructions = Just "speak warmly"
+        }
+      args =
+        Aeson.object
+          [ "prompt" Aeson..= ("say hello" :: Text)
+          , "voice" Aeson..= (" verse " :: Text)
+          , "format" Aeson..= ("mp3" :: Text)
+          , "speed" Aeson..= (1.25 :: Double)
+          , "instructions" Aeson..= (" speak warmly " :: Text)
+          ]
+  generateCalls <- IORef.newIORef ([] :: [AudioGenerateCall])
+  audioReplies <- IORef.newIORef ([] :: [(Text, Maybe Text)])
+  result <- runEff $
+    LLMTest.runLLMWith
+      (\_ -> pure "unused text answer")
+      (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
+      (\_ _ -> pure "unused image answer")
+      (\_ _ _ _ -> pure "unused image edit answer")
+      (\options messages -> do
+          liftIO $ IORef.modifyIORef' generateCalls (<> map (audioGenerateCall options) messages)
+          pure generatedAudio)
+      (\_ _ -> pure (chatAnswer "unused tool answer" []))
+      (\_ _ -> S.each ["to", "ol"] $> chatAnswer "tool" []) $
+      Chat.runChatWith
+        Chat.ChatHandlers
+          { handleReplyTo = \_ _ -> pure Nothing
+          , handleReplyAudio = \_ audioRef caption -> do
+              liftIO $ IORef.modifyIORef' audioReplies (<> [(audioRef, caption)])
+              pure (Right (Just "50"))
+          , handleUploadFile = noopUpload
+          , handleEditMessage = noopEdit
+          , handleDeleteMessage = noopDelete
+          , handleReplyStreamStyle = noopReplyStreamStyle
+          , handleGetMessageContent = noopFetch
+          , handleGetSenderMemberInfo = noopSenderMember
+          , handleGetMemberInfo = noopMember
+          , handleGetUserAvatar = noopUserAvatar
+          , handleListGroupMembers = noopMembers
+          , handleMentionUser = noopMention
+          , handleSetMemberTitle = noopSetMemberTitle
+          } do
+          runner <- AudioTools.generateAudioTool.start agentContext
+          runner args
+  case result of
+    Agent.ToolSucceeded{messageIds} ->
+      messageIds @?= [Just "50"]
+    Agent.ToolFailed{failure} ->
+      assertFailure [i|expected audio generation success, got #{show failure :: String}|]
+  IORef.readIORef generateCalls >>= (@?= [AudioGenerateCall "say hello" expectedOptions])
+  IORef.readIORef audioReplies >>= (@?= [(generatedAudio, Nothing)])
+  let tool = AudioTools.generateAudioTool :: Agent.Tool '[Chat.Chat, LLM.LLM]
+  tool.noisy @?= True
 
 testEditImageToolPassesImageRequestOptions :: IO ()
 testEditImageToolPassesImageRequestOptions = do
@@ -656,6 +727,9 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
     conversations <- newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) askHandlerMessage
     waitUntil (liftIO $ (>= 2) . length <$> IORef.readIORef replies)
+    waitUntil do
+      toolUses <- AgentAudit.queryRecentToolUses 10
+      pure (any finishedGenerateImageUse toolUses)
   sent <- IORef.readIORef replies
   case sent of
     progress : _ ->
@@ -664,6 +738,14 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
         ("正在调用 generate_image 工具...（id=" `Text.isPrefixOf` progress && "）" `Text.isSuffixOf` progress)
     _ ->
       assertFailure [i|expected noisy tool progress reply, got #{show sent :: String}|]
+
+finishedGenerateImageUse :: AgentAudit.ToolUseDetail -> Bool
+finishedGenerateImageUse toolUse =
+  toolUse.toolName == "generate_image" && isFinished toolUse.status
+  where
+    isFinished = \case
+      AgentAudit.ToolUseFinished{} -> True
+      _ -> False
 
 testAskHandlerFlushesStreamedContentBeforeToolCalls :: IO ()
 testAskHandlerFlushesStreamedContentBeforeToolCalls = do
@@ -800,6 +882,26 @@ testLLMImageStreamRequestAsksOnlyForFinalImage =
         , "partial_images" Aeson..= (0 :: Int)
         ]
 
+testLLMAudioSpeechRequestIncludesProviderOptions :: IO ()
+testLLMAudioSpeechRequestIncludesProviderOptions =
+  LLMTransport.audioSpeechRequestPayload audioSpeechTestConfig options "tts-model" "say this"
+    @?=
+      Aeson.object
+        [ "model" Aeson..= ("tts-model" :: Text)
+        , "input" Aeson..= ("say this" :: Text)
+        , "voice" Aeson..= ("verse" :: Text)
+        , "response_format" Aeson..= ("wav" :: Text)
+        , "speed" Aeson..= (1.25 :: Double)
+        , "instructions" Aeson..= ("speak warmly" :: Text)
+        ]
+  where
+    options = LLM.AudioRequestOptions
+      { LLM.voice = Just "verse"
+      , LLM.responseFormat = Just "wav"
+      , LLM.speed = Nothing
+      , LLM.instructions = Nothing
+      }
+
 testLLMImageStreamCompletedEventYieldsFinalImage :: IO ()
 testLLMImageStreamCompletedEventYieldsFinalImage =
   case LLMTransport.imageGenerationStreamTextFromPayloads imageStreamTestConfig [completed] of
@@ -833,6 +935,13 @@ imageStreamTestConfig :: LLMConfig.ImageProviderConfig
 imageStreamTestConfig =
   LLMConfig.defaultImageProviderConfig
 
+audioSpeechTestConfig :: LLMConfig.AudioProviderConfig
+audioSpeechTestConfig =
+  LLMConfig.defaultAudioProviderConfig
+    { LLMConfig.speed = Just 1.25
+    , LLMConfig.instructions = Just "speak warmly"
+    }
+
 testLLMStreamingEffectPreservesYieldedChunks :: IO ()
 testLLMStreamingEffectPreservesYieldedChunks = do
   chunks S.:> answer <- runEff $
@@ -841,6 +950,7 @@ testLLMStreamingEffectPreservesYieldedChunks = do
       (\_ -> S.each ["he", "llo"] $> "hello")
       (\_ _ -> pure "unused image answer")
       (\_ _ _ _ -> pure "unused image edit answer")
+      (\_ _ -> pure "unused audio answer")
       (\_ _ -> pure (chatAnswer "unused tool answer" []))
       (\_ _ -> S.each ["to", "ol"] $> chatAnswer "tool" []) do
         S.toList (LLM.askWithToolsStreaming [] [LLM.userText "hello"])
@@ -860,6 +970,7 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
+        , handleReplyAudio = noopReplyAudio
         , handleUploadFile = noopUpload
         , handleEditMessage = noopEdit
         , handleDeleteMessage = noopDelete
@@ -890,6 +1001,7 @@ testEditableSegmentedRepliesOpenNewTail = do
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
+        , handleReplyAudio = noopReplyAudio
         , handleUploadFile = noopUpload
         , handleEditMessage = recordEdit edits
         , handleDeleteMessage = noopDelete
@@ -931,6 +1043,7 @@ testSegmentedRepliesFlushFinalOpenSegment = do
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
+        , handleReplyAudio = noopReplyAudio
         , handleUploadFile = noopUpload
         , handleEditMessage = noopEdit
         , handleDeleteMessage = noopDelete
@@ -965,6 +1078,7 @@ testEditableChatStreamingSplitsLongReplies = do
     Chat.runChatWith
       Chat.ChatHandlers
         { handleReplyTo = recordReply replies nextReplyId
+        , handleReplyAudio = noopReplyAudio
         , handleUploadFile = noopUpload
         , handleEditMessage = recordEdit edits
         , handleDeleteMessage = noopDelete
@@ -1446,6 +1560,13 @@ imageGenerateCall options message =
     , options = options
     }
 
+audioGenerateCall :: LLM.AudioRequestOptions -> LLM.ChatMessage -> AudioGenerateCall
+audioGenerateCall options message =
+  AudioGenerateCall
+    { prompt = messagePromptText message
+    , options = options
+    }
+
 messagePromptText :: LLM.ChatMessage -> Text
 messagePromptText message =
   case message.content of
@@ -1746,6 +1867,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
                                     pure "unused text stream answer")
                                 (\options messages -> captureMessages captured messages >> liftIO (imageGenerate options messages))
                                 (\options prompt imageRefs maskRef -> liftIO (imageEdit options prompt imageRefs maskRef))
+                                (\_ messages -> captureMessages captured messages >> pure "unused audio answer")
                                 (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
                                 (\_ messages -> do
                                     lift $ captureMessages captured messages
@@ -1762,6 +1884,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
                                     Chat.runChatWith
                                       Chat.ChatHandlers
                                         { handleReplyTo = mockReply chatMock
+                                        , handleReplyAudio = noopReplyAudio
                                         , handleUploadFile = noopUpload
                                         , handleEditMessage = noopEdit
                                         , handleDeleteMessage = noopDelete
@@ -1803,6 +1926,7 @@ runAgentWithStreamingAnswers answers chatMock action = do
                                 (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
                                 (\_ _ -> pure "unused image answer")
                                 (\_ _ _ _ -> pure "unused image edit answer")
+                                (\_ _ -> pure "unused audio answer")
                                 (\_ _ -> (.answer) <$> liftIO (popStreamingAnswer answers))
                                 (\_ _ -> do
                                     streamingAnswer <- liftIO (popStreamingAnswer answers)
@@ -1813,6 +1937,7 @@ runAgentWithStreamingAnswers answers chatMock action = do
                                     Chat.runChatWith
                                       Chat.ChatHandlers
                                         { handleReplyTo = mockReply chatMock
+                                        , handleReplyAudio = noopReplyAudio
                                         , handleUploadFile = noopUpload
                                         , handleEditMessage = noopEdit
                                         , handleDeleteMessage = noopDelete
@@ -1917,6 +2042,10 @@ noopFetch _ _ =
 
 noopUpload :: IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
 noopUpload _ _ =
+  pure (Right Nothing)
+
+noopReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+noopReplyAudio _ _ _ =
   pure (Right Nothing)
 
 noopEdit :: IncomingMessage -> MessageId -> Text -> Eff es Bool

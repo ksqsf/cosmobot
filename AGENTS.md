@@ -49,8 +49,9 @@ Avoid import cycles when extracting from effects. Prefer explicit callback recor
 
 - Work in `Eff es`. Add `IOE :> es` only at real external boundaries.
 - Prefer `effectful` capabilities (`Concurrent`, `STM`, `MVar`, `IORef`, `Timeout`, `Process`, `FileSystem`) over raw `base` concurrency/process/file APIs.
+- For filesystem work, prefer `Effectful.FileSystem` and `Effectful.FileSystem.IO*`. Do not import `System.Directory` or `System.IO` for ordinary file operations, temporary-file handling, handle closing, or byte-string reads/writes when an `effectful` operation exists.
 - Do not import `Control.Exception` or `Control.Concurrent` for new code. Use `Effectful.Exception` via `Bot.Prelude` and effectful concurrency modules.
-- Never catch async exceptions for classification/control flow. Use `trySync`, `catchSync`, and structured cleanup for ordinary failure recovery.
+- Never catch async exceptions for classification/control flow. Use `trySync`, `catchSync`, and structured cleanup for ordinary failure recovery. `catchSync` never catches async exceptions, so do not write `catchSync` handlers that call `isAsyncException` or rethrow async exceptions.
 - Use structured APIs: `aeson` for JSON, `Toml.Schema`/local parsers for TOML, and Selda via `Bot.Storage.Prelude` for queryable state.
 - Do not add indirection for appearance. Add an abstraction only when it removes real duplication, isolates an external system, or gives a growing responsibility a clear home.
 - Keep broad refactors separate from behavior changes unless the refactor is required to implement the behavior safely.

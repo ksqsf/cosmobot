@@ -30,6 +30,7 @@ allowed_rooms = []
 [llm]
 chat = "openrouter"
 image = "openai"
+audio = "openai"
 
 [llm.chat_provider.openrouter]
 base_url = "https://openrouter.ai/api/v1"
@@ -52,6 +53,16 @@ background = "auto"
 moderation = "auto"
 output_format = "webp"
 output_compression = 80
+
+[llm.audio_provider.openai]
+base_url = "https://api.openai.com/v1"
+api_key = ""
+model = "gpt-4o-mini-tts"
+voice = "coral"
+response_format = "mp3"
+timeout = 300
+# speed = 1.0
+# instructions = "Speak clearly."
 
 [memory]
 dir = "memory"

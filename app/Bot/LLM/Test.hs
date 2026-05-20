@@ -19,11 +19,12 @@ runLLMWith
   -> ([ChatMessage] -> Stream (Of Text) (Eff es) Text)
   -> (LLM.ImageRequestOptions -> [ChatMessage] -> Eff es Text)
   -> (LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Eff es Text)
+  -> (LLM.AudioRequestOptions -> [ChatMessage] -> Eff es Text)
   -> ([FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer)
   -> ([FunctionTool] -> [ChatMessage] -> Stream (Of Text) (Eff es) ChatAnswer)
   -> Eff (LLM.LLM : es) a
   -> Eff es a
-runLLMWith askText askTextStream askImage askImageEditRequest askTools askToolsStream = interpret $ \localEnv operation ->
+runLLMWith askText askTextStream askImage askImageEditRequest askAudio askTools askToolsStream = interpret $ \localEnv operation ->
   localSeqLift localEnv \liftLocal ->
     case operation of
       LLM.Ask messages -> askText messages
@@ -31,6 +32,8 @@ runLLMWith askText askTextStream askImage askImageEditRequest askTools askToolsS
       LLM.AskImage options messages -> askImage options messages
       LLM.AskImageStream options messages -> pure (LLM.liftLocalStream liftLocal (textResultStream (askImage options messages)))
       LLM.AskImageEdit options prompt imageRefs maskRef -> askImageEditRequest options prompt imageRefs maskRef
+      LLM.AskAudio options messages -> askAudio options messages
+      LLM.AskAudioStream options messages -> pure (LLM.liftLocalStream liftLocal (textResultStream (askAudio options messages)))
       LLM.AskTools tools messages -> askTools tools messages
       LLM.AskToolsStream tools messages -> pure (LLM.liftLocalStream liftLocal (askToolsStream tools messages))
 

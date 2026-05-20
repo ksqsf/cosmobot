@@ -12,6 +12,8 @@ module Bot.LLM.OpenAI.Transport
   , askImageOpenAI
   , askImageOpenAIStreaming
   , askImageEditOpenAI
+  , askAudioOpenAI
+  , askAudioOpenAIStreaming
   , askOpenAIWithTools
   , askOpenAIWithToolsStreaming
 
@@ -19,6 +21,7 @@ module Bot.LLM.OpenAI.Transport
   , chatStreamTextFromPayloads
   , imageGenerationStreamingRequestPayload
   , imageGenerationStreamTextFromPayloads
+  , audioSpeechRequestPayload
   )
 where
 
@@ -52,7 +55,11 @@ import System.IO.Error (ioError, userError)
 import qualified Effectful.Timeout as Timeout
 import qualified Text.URI as URI
 import Effectful.FileSystem (FileSystem)
+import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.Process (Process)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.FilePath ((</>), (<.>))
 
 chatCompletionsPath :: [Text]
 chatCompletionsPath =
@@ -65,6 +72,10 @@ imageGenerationsPath =
 imageEditsPath :: [Text]
 imageEditsPath =
   ["images", "edits"]
+
+audioSpeechPath :: [Text]
+audioSpeechPath =
+  ["audio", "speech"]
 
 chatCompletionsEndpoint :: ChatProviderConfig -> Text
 chatCompletionsEndpoint ChatProviderConfig{baseUrl} =
@@ -99,6 +110,14 @@ imageEditNotConfiguredMessage =
 imageApiKeyNotConfiguredMessage :: Text
 imageApiKeyNotConfiguredMessage =
   "Image generation is not configured: set llm.image_provider.<name>.api_key."
+
+audioNotConfiguredMessage :: Text
+audioNotConfiguredMessage =
+  "Audio generation is not configured: set llm.audio and llm.audio_provider.<name>.api_key."
+
+audioApiKeyNotConfiguredMessage :: Text
+audioApiKeyNotConfiguredMessage =
+  "Audio generation is not configured: set llm.audio_provider.<name>.api_key."
 
 llmHttpConfig :: HTTP.Manager -> HttpConfig
 llmHttpConfig manager =
@@ -160,6 +179,23 @@ llmMultipartPost label timeoutSeconds url parts options =
   runTimedLLMReq label timeoutSeconds do
     body <- reqBodyMultipart parts
     reqCb POST url body jsonResponse options \httpRequest ->
+      pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
+
+llmBytesPost
+  :: ( Aeson.ToJSON request
+     , Timeout.Timeout :> es
+     , Fail :> es
+     , IOE :> es
+     )
+  => Text
+  -> Int
+  -> Url 'Https
+  -> request
+  -> Option 'Https
+  -> Eff es StrictByteString.ByteString
+llmBytesPost label timeoutSeconds url request options =
+  runTimedLLMReq label timeoutSeconds $
+    responseBody <$> reqCb POST url (ReqBodyJson request) bsResponse options \httpRequest ->
       pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
 
 askOpenAI
@@ -241,6 +277,33 @@ askImageEditOpenAI Config{imageProvider = Just cfg@ImageProviderConfig{apiKey, m
           case imageGenerationResponseText cfg body of
             Just answer -> compressImageAnswer (imageCompressionConfig cfg) answer
             Nothing -> throwIO (LLMException "Image edit response was empty: no image output.")
+
+askAudioOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es) => Config -> LLM.AudioRequestOptions -> [ChatMessage] -> Eff es Text
+askAudioOpenAI cfg options messages =
+  S.effects (askAudioOpenAIStreaming cfg options messages)
+
+askAudioOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es) => Config -> LLM.AudioRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askAudioOpenAIStreaming Config{audioProvider = Nothing} _ _ =
+  yieldTextResult (pure audioNotConfiguredMessage)
+askAudioOpenAIStreaming Config{audioProvider = Just AudioProviderConfig{apiKey = Nothing}} _ _ =
+  yieldTextResult (pure audioApiKeyNotConfiguredMessage)
+askAudioOpenAIStreaming Config{audioProvider = Just cfg@AudioProviderConfig{apiKey = Just key, model, requestTimeout}} options messages = do
+  let requestBaseUrl = cfg.baseUrl
+      requestPath = audioSpeechPath
+      requestEndpoint = endpointText requestBaseUrl requestPath
+      request = audioSpeechRequest cfg options model (audioPromptFromMessages messages)
+  lift $ logInfo_ ("LLM audio request: " <> audioRequestLogLine requestEndpoint requestTimeout request)
+  (url, requestOptions) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
+  bytes <- lift $
+    llmBytesPost "LLM audio request" requestTimeout url request
+      ( requestOptions
+          <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
+          <> header "Accept" "application/octet-stream"
+      )
+  ref <- lift (writeGeneratedAudio request.responseFormat bytes)
+  lift $ logInfo_ ("LLM audio response: " <> audioResponseLogLine requestEndpoint request.model request.responseFormat bytes)
+  S.yield ref
+  pure ref
 
 yieldTextResult :: Monad m => m Text -> Stream (Of Text) m Text
 yieldTextResult action = do
@@ -442,6 +505,27 @@ instance Aeson.ToJSON ImageGenerationRequest where
       <> maybe [] (\value -> ["stream" Aeson..= value]) stream
       <> maybe [] (\value -> ["partial_images" Aeson..= value]) partialImages
 
+data AudioSpeechRequest = AudioSpeechRequest
+  { model :: !Text
+  , input :: !Text
+  , voice :: !Text
+  , responseFormat :: !Text
+  , speed :: !(Maybe Double)
+  , instructions :: !(Maybe Text)
+  }
+  deriving (Show)
+
+instance Aeson.ToJSON AudioSpeechRequest where
+  toJSON AudioSpeechRequest{model, input, voice, responseFormat, speed, instructions} =
+    Aeson.object $
+      [ "model" Aeson..= model
+      , "input" Aeson..= input
+      , "voice" Aeson..= voice
+      , "response_format" Aeson..= responseFormat
+      ]
+      <> maybe [] (\value -> ["speed" Aeson..= value]) speed
+      <> maybe [] (\value -> ["instructions" Aeson..= value]) instructions
+
 data ImageGenerationResponse = ImageGenerationResponse
   { data_ :: ![ImageGenerationData]
   }
@@ -533,6 +617,50 @@ resolvedImageRequestOptions provider options =
     , background = options.background <|> provider.background
     , moderation = options.moderation <|> provider.moderation
     }
+
+audioSpeechRequest :: AudioProviderConfig -> LLM.AudioRequestOptions -> Text -> Text -> AudioSpeechRequest
+audioSpeechRequest provider options model input =
+  AudioSpeechRequest
+    { model = model
+    , input = input
+    , voice = fromMaybe provider.voice options.voice
+    , responseFormat = fromMaybe provider.responseFormat options.responseFormat
+    , speed = options.speed <|> provider.speed
+    , instructions = options.instructions <|> provider.instructions
+    }
+
+audioSpeechRequestPayload :: AudioProviderConfig -> LLM.AudioRequestOptions -> Text -> Text -> Aeson.Value
+audioSpeechRequestPayload cfg options model input =
+  Aeson.toJSON (audioSpeechRequest cfg options model input)
+
+audioPromptFromMessages :: [ChatMessage] -> Text
+audioPromptFromMessages messages =
+  case Text.strip (Text.intercalate "\n\n" (mapMaybe chatMessagePromptText messages)) of
+    "" -> "Generate speech for this message."
+    prompt -> prompt
+
+writeGeneratedAudio :: (IOE :> es, FileSystem :> es) => Text -> StrictByteString.ByteString -> Eff es Text
+writeGeneratedAudio format bytes = do
+  dir <- FileSystem.getTemporaryDirectory
+  nonce <- liftIO getMonotonicTimeNSec
+  let path = dir </> ("cosmobot-audio-" <> show nonce <.> Text.unpack (safeAudioExtension format))
+  FileSystemByteString.writeFile path bytes
+  pure ("file://" <> Text.pack path)
+
+safeAudioExtension :: Text -> Text
+safeAudioExtension format =
+  case Text.toLower (Text.strip format) of
+    "aac" -> "aac"
+    "flac" -> "flac"
+    "mp3" -> "mp3"
+    "opus" -> "opus"
+    "pcm" -> "pcm"
+    "wav" -> "wav"
+    other | Text.all validExtensionChar other && not (Text.null other) -> other
+    _ -> "mp3"
+  where
+    validExtensionChar char =
+      (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9')
 
 data ImageUpload = ImageUpload
   { filename :: !FilePath
@@ -711,6 +839,27 @@ imageResponseLogLine endpoint model response =
     [ "endpoint=" <> endpoint
     , "model=" <> model
     , "images=" <> show (length response.data_)
+    ]
+
+audioRequestLogLine :: Text -> Int -> AudioSpeechRequest -> Text
+audioRequestLogLine endpoint timeoutSeconds request =
+  Text.unwords
+    [ "endpoint=" <> endpoint
+    , "model=" <> request.model
+    , "voice=" <> request.voice
+    , "response_format=" <> request.responseFormat
+    , "input_chars=" <> show (Text.length request.input)
+    , "instructions=" <> show (isJust request.instructions)
+    , "timeout_seconds=" <> show timeoutSeconds
+    ]
+
+audioResponseLogLine :: Text -> Text -> Text -> StrictByteString.ByteString -> Text
+audioResponseLogLine endpoint model responseFormat bytes =
+  Text.unwords
+    [ "endpoint=" <> endpoint
+    , "model=" <> model
+    , "response_format=" <> responseFormat
+    , "bytes=" <> show (StrictByteString.length bytes)
     ]
 
 llmRequestLogLine :: Text -> ChatCompletionRequest -> Text

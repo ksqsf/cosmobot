@@ -21,13 +21,14 @@ import Bot.Prelude
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
+import Effectful.FileSystem (FileSystem)
 import Effectful.Timeout
 
 type ChatDriverEffects es =
   Chat.Chat : QQ.QQ : Telegram.Telegram : Matrix.Matrix : es
 
 chatPlatformDrivers
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, IOE :> es)
   => [ChatPlatformDriver es]
 chatPlatformDrivers =
   [ QQ.qqDriver
@@ -36,14 +37,14 @@ chatPlatformDrivers =
   ]
 
 platformDriver
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, IOE :> es)
   => IncomingMessage
   -> Maybe (ChatPlatformDriver es)
 platformDriver message =
   List.find ((== message.platform) . (.platform)) chatPlatformDrivers
 
 withPlatformDriver
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Text
   -> (ChatPlatformDriver es -> Eff es (Maybe a))
@@ -59,7 +60,7 @@ withPlatformDriver message label action =
         pure Nothing
 
 replyToPlatform
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Text
   -> Eff es (Maybe MessageId)
@@ -68,7 +69,7 @@ replyToPlatform message body =
     driver.replyTo message body
 
 uploadFileToPlatform
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> FilePath
   -> Eff es (Either Text (Maybe MessageId))
@@ -78,17 +79,32 @@ uploadFileToPlatform message path =
       let platformText = show message.platform :: String
       in pure (Left [i|No chat driver is registered for #{platformText}.|])
     Just driver ->
-      driver.uploadFile message path `catchSync` \err ->
-        if isAsyncException err
-          then throwIO err
-          else do
-            let platformText = show message.platform :: String
-                messageText = [i|File upload failed on #{platformText}: #{displayException err}|]
-            logInfo_ messageText
-            pure (Left messageText)
+      driver.uploadFile message path `catchSync` \err -> do
+        let platformText = show message.platform :: String
+            messageText = [i|File upload failed on #{platformText}: #{displayException err}|]
+        logInfo_ messageText
+        pure (Left messageText)
+
+replyAudioToPlatform
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  => IncomingMessage
+  -> Text
+  -> Maybe Text
+  -> Eff es (Either Text (Maybe MessageId))
+replyAudioToPlatform message audioRef caption =
+  case platformDriver message of
+    Nothing ->
+      let platformText = show message.platform :: String
+      in pure (Left [i|No chat driver is registered for #{platformText}.|])
+    Just driver ->
+      driver.replyAudio message audioRef caption `catchSync` \err -> do
+        let platformText = show message.platform :: String
+            messageText = [i|Audio send failed on #{platformText}: #{displayException err}|]
+        logInfo_ messageText
+        pure (Left messageText)
 
 editPlatformMessage
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> MessageId
   -> Text
@@ -98,7 +114,7 @@ editPlatformMessage message messageId body =
     Just <$> driver.editMessage message messageId body
 
 deletePlatformMessage
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> MessageId
   -> Eff es Bool
@@ -107,7 +123,7 @@ deletePlatformMessage message messageId =
     Just <$> driver.deleteMessage message messageId
 
 platformReplyStreamStyle
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Eff es Chat.ReplyStreamStyle
 platformReplyStreamStyle message =
@@ -122,7 +138,7 @@ defaultChunkedReplyLimit :: Int
 defaultChunkedReplyLimit = 4000
 
 getPlatformMessageContent
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> MessageId
   -> Eff es (Maybe ReferencedMessage)
@@ -131,7 +147,7 @@ getPlatformMessageContent message messageId =
     driver.getMessageContent message messageId
 
 getPlatformSenderMemberInfo
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Eff es (Maybe Aeson.Value)
 getPlatformSenderMemberInfo message =
@@ -139,7 +155,7 @@ getPlatformSenderMemberInfo message =
     driver.getSenderMemberInfo message
 
 getPlatformMemberInfo
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Eff es (Maybe Aeson.Value)
@@ -148,7 +164,7 @@ getPlatformMemberInfo message userId =
     driver.getMemberInfo message userId
 
 getPlatformUserAvatar
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Text
   -> Eff es (Maybe Aeson.Value)
@@ -157,7 +173,7 @@ getPlatformUserAvatar message userId =
     driver.getUserAvatar message userId
 
 listPlatformGroupMembers
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Eff es (Maybe Aeson.Value)
 listPlatformGroupMembers message =
@@ -165,7 +181,7 @@ listPlatformGroupMembers message =
     driver.listGroupMembers message
 
 mentionPlatformUser
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Text
@@ -175,7 +191,7 @@ mentionPlatformUser message userId body =
     driver.mentionUser message userId body
 
 setPlatformMemberTitle
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => IncomingMessage
   -> Integer
   -> Text
@@ -185,7 +201,7 @@ setPlatformMemberTitle message userId title =
     Just <$> driver.setMemberTitle message userId title
 
 runChatDrivers
-  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, IOE :> es)
+  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, FileSystem :> es, IOE :> es)
   => QQ.Config
   -> Telegram.Config
   -> Matrix.Config
@@ -214,10 +230,11 @@ incomingMessages =
     ]
 
 chatHandlers
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Log :> es, IOE :> es)
+  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
   => Chat.ChatHandlers es
 chatHandlers = Chat.ChatHandlers
   { handleReplyTo = replyToPlatform
+  , handleReplyAudio = replyAudioToPlatform
   , handleUploadFile = uploadFileToPlatform
   , handleEditMessage = editPlatformMessage
   , handleDeleteMessage = deletePlatformMessage

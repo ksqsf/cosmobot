@@ -21,6 +21,7 @@ module Bot.Chat.Driver.QQ
   , forwardedMessagesText
   , readActionResponse
   , replyTo
+  , replyAudio
   , deleteMessage
   , getMessageContent
   , getUserAvatar
@@ -80,6 +81,7 @@ qqDriver
 qqDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformQQ
   , Driver.replyTo = replyTo
+  , Driver.replyAudio = replyAudio
   , Driver.uploadFile = uploadFile
   , Driver.editMessage = \_ _ _ -> pure False
   , Driver.deleteMessage = deleteMessage
@@ -553,6 +555,44 @@ uploadFile message path =
     _ ->
       pure (Left "QQ file upload requires a QQ group or private chat with a known target.")
 
+-- | Send an audio record segment through OneBot, falling back to NapCat file
+-- upload for local files if the adapter rejects record sending.
+replyAudio :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+replyAudio message audioRef caption =
+  case (message.platform, message.kind, message.chatId, message.senderId) of
+    (PlatformQQ, ChatGroup, Just groupId, _) -> do
+      qqMessage <- audioMessage message audioRef caption
+      response <- sendAudioMessage "send_group_msg"
+        [ "group_id" Aeson..= groupId
+        , "message" Aeson..= qqMessage
+        ]
+      audioResponseOrFallback response "send_group_msg"
+    (PlatformQQ, ChatPrivate, _, Just rawUserId)
+      | Just userId <- parseIntegerUserId rawUserId -> do
+      qqMessage <- audioMessage message audioRef caption
+      response <- sendAudioMessage "send_private_msg"
+        [ "user_id" Aeson..= userId
+        , "message" Aeson..= qqMessage
+        ]
+      audioResponseOrFallback response "send_private_msg"
+    _ ->
+      pure (Left "QQ audio reply requires a QQ group or private chat with a known target.")
+  where
+    audioResponseOrFallback response action
+      | actionSucceeded response =
+          pure (Right (integerMessageId <$> responseMessageId response))
+      | Just path <- localAudioPath audioRef =
+          uploadFile message path
+      | otherwise =
+          pure (Left (qqUploadFailureText action response))
+
+sendAudioMessage :: QQ :> es => Text -> [Aeson.Pair] -> Eff es ActionResponse
+sendAudioMessage action params =
+  sendAction (Aeson.object
+    [ "action" Aeson..= Aeson.String action
+    , "params" Aeson..= Aeson.object params
+    ])
+
 uploadQqFile :: QQ :> es => Text -> [Aeson.Pair] -> Eff es (Either Text (Maybe MessageId))
 uploadQqFile action params = do
   response <- sendAction (Aeson.object
@@ -794,6 +834,42 @@ replyContent body imageUrls = do
     [ textSegment body | not (Text.null body) ]
       <> imageSegments
 
+audioMessage :: IOE :> es => IncomingMessage -> Text -> Maybe Text -> Eff es Aeson.Value
+audioMessage message audioRef caption =
+  Aeson.toJSON <$> maybe audioOnly withReply message.messageId
+  where
+    audioOnly =
+      audioContent audioRef caption
+    withReply messageId =
+      ( [ Aeson.object
+            [ "type" Aeson..= Aeson.String "reply"
+            , "data" Aeson..= Aeson.object
+                [ "id" Aeson..= messageIdText messageId
+                ]
+            ]
+        ] <>
+      ) <$> audioContent audioRef caption
+
+audioContent :: IOE :> es => Text -> Maybe Text -> Eff es [Aeson.Value]
+audioContent audioRef caption = do
+  record <- recordSegment audioRef
+  pure $
+    maybe [] (\text -> [textSegment text | not (Text.null (Text.strip text))]) caption
+      <> [record]
+
+recordSegment :: IOE :> es => Text -> Eff es Aeson.Value
+recordSegment ref =
+  recordSegmentValue <$> qqAudioFile ref
+
+recordSegmentValue :: Text -> Aeson.Value
+recordSegmentValue file =
+  Aeson.object
+    [ "type" Aeson..= Aeson.String "record"
+    , "data" Aeson..= Aeson.object
+        [ "file" Aeson..= file
+        ]
+    ]
+
 textSegment :: Text -> Aeson.Value
 textSegment body =
   Aeson.object
@@ -824,6 +900,38 @@ qqImageFile url =
     Just path -> do
       bytes <- liftIO (ByteString.readFile (Text.unpack path))
       pure ("base64://" <> TextEncoding.decodeUtf8 (Base64.encode bytes))
+
+qqAudioFile :: IOE :> es => Text -> Eff es Text
+qqAudioFile ref =
+  case localAudioPath ref of
+    Just path -> do
+      bytes <- liftIO (ByteString.readFile path)
+      pure ("base64://" <> TextEncoding.decodeUtf8 (Base64.encode bytes))
+    Nothing ->
+      pure (fromMaybe ref (dataAudioBase64 ref))
+
+localAudioPath :: Text -> Maybe FilePath
+localAudioPath ref =
+  let stripped = Text.strip ref
+  in case Text.stripPrefix "file://" stripped of
+    Just path ->
+      Just (Text.unpack path)
+    Nothing
+      | isLocalPathRef stripped ->
+          Just (Text.unpack stripped)
+      | otherwise ->
+          Nothing
+
+isLocalPathRef :: Text -> Bool
+isLocalPathRef ref =
+  "/" `Text.isPrefixOf` ref || "./" `Text.isPrefixOf` ref || "../" `Text.isPrefixOf` ref
+
+dataAudioBase64 :: Text -> Maybe Text
+dataAudioBase64 ref = do
+  rest <- Text.stripPrefix "data:audio/" (Text.strip ref)
+  let (_, encodedWithMarker) = Text.breakOn ";base64," rest
+  encoded <- Text.stripPrefix ";base64," encodedWithMarker
+  pure ("base64://" <> encoded)
 
 -- | Raw OneBot event fields needed by the message parser.
 data Event = Event

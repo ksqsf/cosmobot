@@ -16,6 +16,10 @@ module Bot.Effect.LLM
   , askImageStreamingWithHistoryWithOptions
   , askImageEdit
   , askImageEditWithOptions
+  , askAudioWithHistory
+  , askAudioWithHistoryWithOptions
+  , askAudioStreamingWithHistory
+  , askAudioStreamingWithHistoryWithOptions
   , askWithTools
   , askWithToolsStreaming
   , liftLocalStream
@@ -25,6 +29,8 @@ module Bot.Effect.LLM
     -- * Conversation values
   , ImageRequestOptions (..)
   , defaultImageRequestOptions
+  , AudioRequestOptions (..)
+  , defaultAudioRequestOptions
   , ChatMessage (..)
   , MessageContent (..)
   , ContentPart (..)
@@ -53,6 +59,8 @@ data LLM :: Effect where
   AskImage :: ImageRequestOptions -> [ChatMessage] -> LLM m Text
   AskImageStream :: ImageRequestOptions -> [ChatMessage] -> LLM m (Stream (Of Text) m Text)
   AskImageEdit :: ImageRequestOptions -> Text -> [Text] -> Maybe Text -> LLM m Text
+  AskAudio :: AudioRequestOptions -> [ChatMessage] -> LLM m Text
+  AskAudioStream :: AudioRequestOptions -> [ChatMessage] -> LLM m (Stream (Of Text) m Text)
   AskTools :: [FunctionTool] -> [ChatMessage] -> LLM m ChatAnswer
   AskToolsStream :: [FunctionTool] -> [ChatMessage] -> LLM m (Stream (Of Text) m ChatAnswer)
 
@@ -74,6 +82,24 @@ defaultImageRequestOptions =
     , size = Nothing
     , background = Nothing
     , moderation = Nothing
+    }
+
+-- | Optional per-request audio controls supported by audio-generation providers.
+data AudioRequestOptions = AudioRequestOptions
+  { voice :: !(Maybe Text)
+  , responseFormat :: !(Maybe Text)
+  , speed :: !(Maybe Double)
+  , instructions :: !(Maybe Text)
+  }
+  deriving (Eq, Show)
+
+defaultAudioRequestOptions :: AudioRequestOptions
+defaultAudioRequestOptions =
+  AudioRequestOptions
+    { voice = Nothing
+    , responseFormat = Nothing
+    , speed = Nothing
+    , instructions = Nothing
     }
 
 -- | Ask a one-shot text question without preserving history.
@@ -120,6 +146,27 @@ askImageEdit prompt imageRefs maskRef =
 askImageEditWithOptions :: LLM :> es => ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Eff es Text
 askImageEditWithOptions options prompt imageRefs maskRef =
   send (AskImageEdit options prompt imageRefs maskRef)
+
+-- | Ask the configured audio model to generate an audio response.
+askAudioWithHistory :: LLM :> es => [ChatMessage] -> Eff es Text
+askAudioWithHistory messages =
+  askAudioWithHistoryWithOptions defaultAudioRequestOptions messages
+
+-- | Ask the configured audio model to generate an audio response with per-call options.
+askAudioWithHistoryWithOptions :: LLM :> es => AudioRequestOptions -> [ChatMessage] -> Eff es Text
+askAudioWithHistoryWithOptions options messages =
+  S.effects (askAudioStreamingWithHistoryWithOptions options messages)
+
+-- | Ask the configured audio model to generate an audio response over the streaming transport.
+askAudioStreamingWithHistory :: LLM :> es => [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askAudioStreamingWithHistory messages = do
+  askAudioStreamingWithHistoryWithOptions defaultAudioRequestOptions messages
+
+-- | Ask the configured audio model to generate an audio response over the streaming transport with per-call options.
+askAudioStreamingWithHistoryWithOptions :: LLM :> es => AudioRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askAudioStreamingWithHistoryWithOptions options messages = do
+  stream <- lift (send (AskAudioStream options messages))
+  stream
 
 -- | Ask with function tools and return both text and tool calls.
 askWithTools :: LLM :> es => [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer

@@ -161,13 +161,7 @@ withObservedToolCall observer callInfo action = do
     , toolCall = callInfo.toolCall
     }
   (status, result) <-
-    statusFromResult <$> action observation `catchSync` \err ->
-      if isAsyncException err
-        then do
-          finishToolCall observer callInfo "interrupted" (toolText "")
-          throwIO err
-        else
-          throwIO err
+    statusFromResult <$> action observation
   finishToolCall observer callInfo status result
   pure result
 
@@ -211,6 +205,5 @@ catchStream stream handler = do
       catchStream rest handler
 
 interruptedReason :: SomeException -> Text
-interruptedReason err
-  | isAsyncException err = "interrupted"
-  | otherwise = "failed"
+interruptedReason _ =
+  "failed"

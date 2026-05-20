@@ -27,6 +27,7 @@ module Bot.Chat.Driver.Telegram
   , EditMessageTextRequest (..)
   , SendPhotoRequest (..)
   , SendDocumentRequest (..)
+  , SendVoiceRequest (..)
   , TelegramFormatted (..)
   , TelegramException (..)
   , TelegramResult
@@ -42,6 +43,7 @@ module Bot.Chat.Driver.Telegram
   , sendMessage
   , sendPhoto
   , uploadPhoto
+  , replyAudio
   , uploadFile
   , replyTo
   , editMessage
@@ -93,10 +95,12 @@ import Network.HTTP.Req
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
-import System.Directory (createDirectoryIfMissing, removeFile)
+import Effectful.FileSystem (FileSystem)
+import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import GHC.Clock (getMonotonicTimeNSec)
 import qualified Data.Text as Text
-import System.FilePath ((<.>), takeFileName)
-import System.IO (hClose, openTempFile)
+import System.FilePath ((</>), (<.>), takeFileName)
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -114,11 +118,12 @@ data Config = Config
   deriving (Show)
 
 telegramDriver
-  :: (Telegram :> es, IOE :> es)
+  :: (Telegram :> es, FileSystem :> es, IOE :> es)
   => Driver.ChatPlatformDriver es
 telegramDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformTelegram
   , Driver.replyTo = replyTo
+  , Driver.replyAudio = replyAudio
   , Driver.uploadFile = uploadFile
   , Driver.editMessage = editMessage
   , Driver.deleteMessage = deleteMessageFor
@@ -180,6 +185,10 @@ data Telegram :: Effect where
     :: SendPhotoRequest
     -> FilePath
     -> Telegram m Message
+  UploadVoice
+    :: SendVoiceRequest
+    -> FilePath
+    -> Telegram m Message
   UploadDocument
     :: SendDocumentRequest
     -> FilePath
@@ -221,6 +230,8 @@ runTelegram cfg inner = do
           pure (telegramFileUrl cfg file.filePath)
         UploadPhoto request path ->
           apiMultipartCall manager cfg "sendPhoto" (sendPhotoParts request path)
+        UploadVoice request path ->
+          apiMultipartCall manager cfg "sendVoice" (sendVoiceParts request path)
         UploadDocument request path ->
           apiMultipartCall manager cfg "sendDocument" (sendDocumentParts request path)
     )
@@ -608,6 +619,18 @@ sendDocumentParts :: SendDocumentRequest -> FilePath -> [Multipart.Part]
 sendDocumentParts SendDocumentRequest{..} path =
   [ textPart "chat_id" (show chatId)
   , Multipart.partFileRequestBodyM "document" (telegramUploadFileName path) (HTTP.streamFile path)
+  ]
+    <> maybePart "message_thread_id" (show <$> messageThreadId)
+    <> maybePart "caption" caption
+    <> maybePart "parse_mode" (parseModeText <$> parseMode)
+    <> maybePart "caption_entities" (jsonText <$> captionEntities)
+    <> maybePart "disable_notification" (boolText <$> disableNotification)
+    <> maybePart "reply_to_message_id" (show <$> replyToMessageId)
+
+sendVoiceParts :: SendVoiceRequest -> FilePath -> [Multipart.Part]
+sendVoiceParts SendVoiceRequest{..} path =
+  [ textPart "chat_id" (show chatId)
+  , Multipart.partFileRequestBodyM "voice" (telegramUploadFileName path) (HTTP.streamFile path)
   ]
     <> maybePart "message_thread_id" (show <$> messageThreadId)
     <> maybePart "caption" caption
@@ -1339,6 +1362,34 @@ instance TelegramRequest SendPhotoRequest where
   type TelegramResponse SendPhotoRequest = Message
   telegramMethod _ = "sendPhoto"
 
+-- | Request payload for Telegram @sendVoice@.
+data SendVoiceRequest = SendVoiceRequest
+  { chatId              :: !Integer
+  , messageThreadId     :: !(Maybe Integer)
+  , voice               :: !Text
+  , caption             :: !(Maybe Text)
+  , parseMode           :: !(Maybe ParseMode)
+  , captionEntities     :: !(Maybe [MessageEntity])
+  , disableNotification :: !(Maybe Bool)
+  , replyToMessageId    :: !(Maybe Integer)
+  } deriving (Show, Generic)
+
+instance Aeson.ToJSON SendVoiceRequest where
+  toJSON SendVoiceRequest{..} = Aeson.object $
+    [ "chat_id" Aeson..= chatId
+    , "voice" Aeson..= voice
+    ]
+    <> maybeField "message_thread_id" messageThreadId
+    <> maybeField "caption" caption
+    <> maybeField "parse_mode" parseMode
+    <> maybeField "caption_entities" captionEntities
+    <> maybeField "disable_notification" disableNotification
+    <> maybeField "reply_to_message_id" replyToMessageId
+
+instance TelegramRequest SendVoiceRequest where
+  type TelegramResponse SendVoiceRequest = Message
+  telegramMethod _ = "sendVoice"
+
 -- | Request payload for Telegram @sendDocument@ multipart uploads.
 data SendDocumentRequest = SendDocumentRequest
   { chatId              :: !Integer
@@ -1519,13 +1570,18 @@ uploadPhoto :: Telegram :> es => SendPhotoRequest -> FilePath -> Eff es Message
 uploadPhoto request path =
   send (UploadPhoto request path)
 
+-- | Upload a local voice file through multipart/form-data.
+uploadVoice :: Telegram :> es => SendVoiceRequest -> FilePath -> Eff es Message
+uploadVoice request path =
+  send (UploadVoice request path)
+
 -- | Upload a local document file through multipart/form-data.
 uploadDocument :: Telegram :> es => SendDocumentRequest -> FilePath -> Eff es Message
 uploadDocument request path =
   send (UploadDocument request path)
 
 -- | Reply to a Telegram chat, including image directives in the body.
-replyTo :: (Telegram :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
+replyTo :: (Telegram :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
@@ -1598,6 +1654,26 @@ mentionUser message userId body =
     _ ->
       pure Nothing
 
+-- | Reply with audio as a Telegram voice message.
+replyAudio :: (Telegram :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+replyAudio message audioRef caption =
+  case (message.platform, message.chatId) of
+    (PlatformTelegram, Just chatId) -> do
+      let replyToMessageId = messageIdInteger =<< message.messageId
+      sent <- sendVoiceRequest SendVoiceRequest
+        { chatId = chatId
+        , messageThreadId = Nothing
+        , voice = audioRef
+        , caption = nonEmptyText . ChatEffect.renderReplyBody =<< caption
+        , parseMode = Nothing
+        , captionEntities = Nothing
+        , disableNotification = Nothing
+        , replyToMessageId = replyToMessageId
+        }
+      pure (Right (Just (integerMessageId sent.messageId)))
+    _ ->
+      pure (Left "Telegram audio reply requires a Telegram chat id.")
+
 -- | Send a file to a Telegram chat as a document.
 uploadFile :: Telegram :> es => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
 uploadFile message path =
@@ -1630,7 +1706,7 @@ escapeHtml =
     '"' -> "&quot;"
     c   -> Text.singleton c
 
-replyTextAndImages :: (Telegram :> es, IOE :> es) => Integer -> Maybe Integer -> Text -> Eff es Message
+replyTextAndImages :: (Telegram :> es, FileSystem :> es, IOE :> es) => Integer -> Maybe Integer -> Text -> Eff es Message
 replyTextAndImages chatId replyToMessageId body =
   case ChatEffect.replyImageUrls body of
     [] -> sendText (ChatEffect.renderReplyBody body)
@@ -1671,7 +1747,7 @@ replyTextAndImages chatId replyToMessageId body =
       , replyToMessageId = Nothing
       }
 
-sendImageRequest :: (Telegram :> es, IOE :> es) => SendPhotoRequest -> Eff es Message
+sendImageRequest :: (Telegram :> es, FileSystem :> es, IOE :> es) => SendPhotoRequest -> Eff es Message
 sendImageRequest request =
   case localFilePhoto request.photo of
     Just path -> uploadPhoto request path
@@ -1680,9 +1756,34 @@ sendImageRequest request =
         Just bytes -> uploadTemporaryPhoto request bytes
         Nothing    -> sendPhoto request
 
+sendVoiceRequest :: (Telegram :> es, FileSystem :> es, IOE :> es) => SendVoiceRequest -> Eff es Message
+sendVoiceRequest request =
+  case localFileRef request.voice of
+    Just path -> uploadVoice request path
+    Nothing ->
+      case dataAudioBytes request.voice of
+        Just bytes -> uploadTemporaryVoice request bytes
+        Nothing    -> callTelegram request
+
 localFilePhoto :: Text -> Maybe FilePath
 localFilePhoto photo =
-  Text.unpack <$> Text.stripPrefix "file://" photo
+  localFileRef photo
+
+localFileRef :: Text -> Maybe FilePath
+localFileRef ref =
+  let stripped = Text.strip ref
+  in case Text.stripPrefix "file://" stripped of
+    Just path ->
+      Just (Text.unpack path)
+    Nothing
+      | isLocalPathRef stripped ->
+          Just (Text.unpack stripped)
+      | otherwise ->
+          Nothing
+
+isLocalPathRef :: Text -> Bool
+isLocalPathRef ref =
+  "/" `Text.isPrefixOf` ref || "./" `Text.isPrefixOf` ref || "../" `Text.isPrefixOf` ref
 
 dataImagePhoto :: Text -> Maybe ByteString.ByteString
 dataImagePhoto photo = do
@@ -1691,18 +1792,36 @@ dataImagePhoto photo = do
   encoded <- Text.stripPrefix ";base64," encodedWithMarker
   either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
 
-uploadTemporaryPhoto :: (Telegram :> es, IOE :> es) => SendPhotoRequest -> ByteString.ByteString -> Eff es Message
+dataAudioBytes :: Text -> Maybe ByteString.ByteString
+dataAudioBytes ref = do
+  rest <- Text.stripPrefix "data:audio/" (Text.strip ref)
+  let (_, encodedWithMarker) = Text.breakOn ";base64," rest
+  encoded <- Text.stripPrefix ";base64," encodedWithMarker
+  either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
+
+uploadTemporaryPhoto :: (Telegram :> es, FileSystem :> es, IOE :> es) => SendPhotoRequest -> ByteString.ByteString -> Eff es Message
 uploadTemporaryPhoto request bytes = do
-  path <- liftIO do
-    createDirectoryIfMissing True telegramTempDir
-    (path, fileHandle) <- openTempFile telegramTempDir ("telegram-photo" <.> "png")
-    ByteString.hPut fileHandle bytes
-    hClose fileHandle
-    pure path
+  path <- temporaryTelegramPath "telegram-photo" "png"
+  FileSystemByteString.writeFile path bytes
   uploadPhoto request path `finally` cleanup path
   where
     cleanup path =
-      liftIO (removeFile path) `catchSync` \_ -> pure ()
+      FileSystem.removeFile path `catchSync` \_ -> pure ()
+
+uploadTemporaryVoice :: (Telegram :> es, FileSystem :> es, IOE :> es) => SendVoiceRequest -> ByteString.ByteString -> Eff es Message
+uploadTemporaryVoice request bytes = do
+  path <- temporaryTelegramPath "telegram-voice" "ogg"
+  FileSystemByteString.writeFile path bytes
+  uploadVoice request path `finally` cleanup path
+  where
+    cleanup path =
+      FileSystem.removeFile path `catchSync` \_ -> pure ()
+
+temporaryTelegramPath :: (FileSystem :> es, IOE :> es) => FilePath -> FilePath -> Eff es FilePath
+temporaryTelegramPath prefix extension = do
+  FileSystem.createDirectoryIfMissing True telegramTempDir
+  nonce <- liftIO getMonotonicTimeNSec
+  pure (telegramTempDir </> (prefix <> "-" <> show nonce <.> extension))
 
 telegramTempDir :: FilePath
 telegramTempDir =

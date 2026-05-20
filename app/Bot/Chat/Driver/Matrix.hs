@@ -21,6 +21,7 @@ module Bot.Chat.Driver.Matrix
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , replyTo
+  , replyAudio
   , uploadFile
   , deleteMessage
   )
@@ -33,17 +34,22 @@ import Bot.Prelude
 import qualified Bot.Util.HTTP as Http
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.ByteString as StrictByteString
+import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.IORef as IORef
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import GHC.Clock (getMonotonicTimeNSec)
 import Network.HTTP.Client (Manager)
 import Network.HTTP.Req
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
-import System.Directory (getFileSize)
-import System.FilePath (takeFileName)
+import Effectful.FileSystem (FileSystem)
+import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import System.FilePath ((</>), (<.>), takeExtension, takeFileName)
 import System.IO.Error (ioError, userError)
 import qualified Text.URI as URI
 
@@ -57,11 +63,12 @@ data Config = Config
   deriving (Show)
 
 matrixDriver
-  :: (Matrix :> es, IOE :> es)
+  :: (Matrix :> es, FileSystem :> es, IOE :> es)
   => Driver.ChatPlatformDriver es
 matrixDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformMatrix
   , Driver.replyTo = replyTo
+  , Driver.replyAudio = replyAudio
   , Driver.uploadFile = uploadFile
   , Driver.editMessage = \_ _ _ -> pure False
   , Driver.deleteMessage = deleteMessage
@@ -192,15 +199,16 @@ replyTo message body =
     _ ->
       pure Nothing
 
-uploadFile :: (Matrix :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+uploadFile :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
 uploadFile message path =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
       let fileName = matrixUploadFileName path
-      size <- liftIO (getFileSize path)
+      size <- FileSystem.getFileSize path
       uploaded <- uploadMedia path fileName
       response <- sendFileMessage roomId MatrixFileMessage
-        { body = fileName
+        { msgtype = "m.file"
+        , body = fileName
         , filename = fileName
         , url = uploaded.contentUri
         , info = MatrixFileInfo
@@ -212,10 +220,142 @@ uploadFile message path =
     _ ->
       pure (Left "Matrix file upload requires a Matrix room id.")
 
+replyAudio :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+replyAudio message audioRef caption =
+  case (message.platform, viaNonEmpty head message.chatAliases) of
+    (PlatformMatrix, Just roomId) ->
+      sendMatrixAudio roomId audioRef caption
+    _ ->
+      pure (Left "Matrix audio reply requires a Matrix room id.")
+
+sendMatrixAudio :: (Matrix :> es, FileSystem :> es, IOE :> es) => Text -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+sendMatrixAudio roomId audioRef caption =
+  case matrixMxcRef audioRef of
+    Just contentUri -> do
+      let fileName = "audio"
+      response <- sendFileMessage roomId (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
+      pure (Right (textMessageId . (.eventId) <$> response))
+    Nothing ->
+      withMatrixAudioFile audioRef \path fileName mime -> do
+        size <- FileSystem.getFileSize path
+        uploaded <- uploadMedia path fileName
+        response <- sendFileMessage roomId (matrixAudioMessage caption fileName uploaded.contentUri mime size)
+        pure (Right (textMessageId . (.eventId) <$> response))
+
+matrixAudioMessage :: Maybe Text -> Text -> Text -> Text -> Integer -> MatrixFileMessage
+matrixAudioMessage caption fileName contentUri mime size =
+  MatrixFileMessage
+    { msgtype = "m.audio"
+    , body = fromMaybe fileName (caption >>= nonEmptyText)
+    , filename = fileName
+    , url = contentUri
+    , info = MatrixFileInfo
+        { mimetype = mime
+        , size = size
+        }
+    }
+
 matrixUploadFileName :: FilePath -> Text
 matrixUploadFileName path =
   let name = Text.pack (takeFileName path)
   in if Text.null name then "file" else name
+
+matrixMxcRef :: Text -> Maybe Text
+matrixMxcRef ref =
+  let stripped = Text.strip ref
+  in stripped <$ guard ("mxc://" `Text.isPrefixOf` stripped)
+
+withMatrixAudioFile
+  :: (FileSystem :> es, IOE :> es)
+  => Text
+  -> (FilePath -> Text -> Text -> Eff es (Either Text (Maybe MessageId)))
+  -> Eff es (Either Text (Maybe MessageId))
+withMatrixAudioFile audioRef action =
+  case matrixLocalPath audioRef of
+    Just path ->
+      action path (matrixUploadFileName path) (matrixAudioMimeType path)
+    Nothing ->
+      case matrixDataAudio audioRef of
+        Just (mime, bytes) ->
+          withTemporaryMatrixAudio mime bytes \path ->
+            action path (matrixUploadFileName path) mime
+        Nothing ->
+          pure (Left "Matrix audio reply requires a file://, data:audio/*, or mxc:// audio reference.")
+
+matrixLocalPath :: Text -> Maybe FilePath
+matrixLocalPath ref =
+  let stripped = Text.strip ref
+  in case Text.stripPrefix "file://" stripped of
+    Just path ->
+      Just (Text.unpack path)
+    Nothing
+      | isLocalPathRef stripped ->
+          Just (Text.unpack stripped)
+      | otherwise ->
+          Nothing
+
+isLocalPathRef :: Text -> Bool
+isLocalPathRef ref =
+  "/" `Text.isPrefixOf` ref || "./" `Text.isPrefixOf` ref || "../" `Text.isPrefixOf` ref
+
+matrixDataAudio :: Text -> Maybe (Text, StrictByteString.ByteString)
+matrixDataAudio ref = do
+  rest <- Text.stripPrefix "data:audio/" (Text.strip ref)
+  let (subtype, encodedWithMarker) = Text.breakOn ";base64," rest
+  encoded <- Text.stripPrefix ";base64," encodedWithMarker
+  bytes <- either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
+  pure ("audio/" <> subtype, bytes)
+
+withTemporaryMatrixAudio
+  :: (FileSystem :> es, IOE :> es)
+  => Text
+  -> StrictByteString.ByteString
+  -> (FilePath -> Eff es a)
+  -> Eff es a
+withTemporaryMatrixAudio mime bytes action = do
+  FileSystem.createDirectoryIfMissing True matrixTempDir
+  nonce <- liftIO getMonotonicTimeNSec
+  let path = matrixTempDir </> ("matrix-audio-" <> show nonce <.> matrixAudioExtension mime)
+  FileSystemByteString.writeFile path bytes
+  action path `finally` cleanup path
+  where
+    cleanup path =
+      FileSystem.removeFile path `catchSync` \_ -> pure ()
+
+matrixAudioMimeType :: FilePath -> Text
+matrixAudioMimeType path =
+  case Text.toLower (Text.pack (takeExtension path)) of
+    ".aac" -> "audio/aac"
+    ".flac" -> "audio/flac"
+    ".mp3" -> "audio/mpeg"
+    ".oga" -> "audio/ogg"
+    ".ogg" -> "audio/ogg"
+    ".opus" -> "audio/ogg"
+    ".wav" -> "audio/wav"
+    ".webm" -> "audio/webm"
+    _ -> "application/octet-stream"
+
+matrixAudioExtension :: Text -> String
+matrixAudioExtension mime =
+  case Text.toLower mime of
+    "audio/aac" -> "aac"
+    "audio/flac" -> "flac"
+    "audio/mpeg" -> "mp3"
+    "audio/mp4" -> "m4a"
+    "audio/ogg" -> "ogg"
+    "audio/wav" -> "wav"
+    "audio/webm" -> "webm"
+    _ -> "bin"
+
+matrixTempDir :: FilePath
+matrixTempDir =
+  "/tmp/cosmobot-matrix"
+
+nonEmptyText :: Text -> Maybe Text
+nonEmptyText text =
+  let stripped = Text.strip text
+  in if Text.null stripped then Nothing else Just stripped
+
 
 deleteMessage :: Matrix :> es => IncomingMessage -> MessageId -> Eff es Bool
 deleteMessage message messageId =
@@ -538,7 +678,8 @@ data MatrixFileInfo = MatrixFileInfo
   deriving (Show, Generic, Aeson.ToJSON)
 
 data MatrixFileMessage = MatrixFileMessage
-  { body :: !Text
+  { msgtype :: !Text
+  , body :: !Text
   , filename :: !Text
   , url :: !Text
   , info :: !MatrixFileInfo
@@ -546,9 +687,9 @@ data MatrixFileMessage = MatrixFileMessage
   deriving (Show, Generic)
 
 instance Aeson.ToJSON MatrixFileMessage where
-  toJSON MatrixFileMessage{body, filename, url, info} =
+  toJSON MatrixFileMessage{msgtype, body, filename, url, info} =
     Aeson.object
-      [ "msgtype" Aeson..= ("m.file" :: Text)
+      [ "msgtype" Aeson..= msgtype
       , "body" Aeson..= body
       , "filename" Aeson..= filename
       , "url" Aeson..= url

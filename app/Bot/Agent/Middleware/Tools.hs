@@ -116,13 +116,10 @@ handleToolLimit runId turn _content calls answered = do
 
 safeToolCall :: LLM.ToolCall -> Eff es ToolResult -> Eff es ToolResult
 safeToolCall call action =
-  action `catchSync` \err ->
-    if isAsyncException err
-      then throwIO err
-      else do
-        let failure = agentFailureFromException err
-            message = failure.userMessage
-        pure (toolFailure failure{userMessage = [i|Tool #{callName} failed: #{message}|]})
+  action `catchSync` \err -> do
+    let failure = agentFailureFromException err
+        message = failure.userMessage
+    pure (toolFailure failure{userMessage = [i|Tool #{callName} failed: #{message}|]})
   where
     callName = call.name
 

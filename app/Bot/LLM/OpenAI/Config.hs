@@ -8,9 +8,11 @@ module Bot.LLM.OpenAI.Config
   ( Config (..)
   , ChatProviderConfig (..)
   , ImageProviderConfig (..)
+  , AudioProviderConfig (..)
   , defaultConfig
   , defaultChatProviderConfig
   , defaultImageProviderConfig
+  , defaultAudioProviderConfig
   , FileConfig (..)
   , toRuntimeConfig
   )
@@ -26,6 +28,7 @@ import Toml.Schema
 data Config = Config
   { chatProvider :: !(Maybe ChatProviderConfig)
   , imageProvider :: !(Maybe ImageProviderConfig)
+  , audioProvider :: !(Maybe AudioProviderConfig)
   }
   deriving (Eq, Show)
 
@@ -55,11 +58,24 @@ data ImageProviderConfig = ImageProviderConfig
   }
   deriving (Eq, Show)
 
+data AudioProviderConfig = AudioProviderConfig
+  { baseUrl :: !Text
+  , apiKey :: !(Maybe Text)
+  , model :: !Text
+  , voice :: !Text
+  , responseFormat :: !Text
+  , requestTimeout :: !Int
+  , speed :: !(Maybe Double)
+  , instructions :: !(Maybe Text)
+  }
+  deriving (Eq, Show)
+
 -- | Defaults for optional LLM features.
 defaultConfig :: Config
 defaultConfig = Config
   { chatProvider = Nothing
   , imageProvider = Nothing
+  , audioProvider = Nothing
   }
 
 defaultChatProviderConfig :: ChatProviderConfig
@@ -88,9 +104,22 @@ defaultImageProviderConfig = ImageProviderConfig
   , outputCompression = Nothing
   }
 
+defaultAudioProviderConfig :: AudioProviderConfig
+defaultAudioProviderConfig = AudioProviderConfig
+  { baseUrl = "https://api.openai.com/v1"
+  , apiKey = Nothing
+  , model = "gpt-4o-mini-tts"
+  , voice = "coral"
+  , responseFormat = "mp3"
+  , requestTimeout = 300
+  , speed = Nothing
+  , instructions = Nothing
+  }
+
 data FileConfig = FileConfig
   { chatProvider :: !(Maybe ChatProviderFileConfig)
   , imageProvider :: !(Maybe ImageProviderFileConfig)
+  , audioProvider :: !(Maybe AudioProviderFileConfig)
   }
   deriving (Show)
 
@@ -120,17 +149,33 @@ data ImageProviderFileConfig = ImageProviderFileConfig
   }
   deriving (Show)
 
+data AudioProviderFileConfig = AudioProviderFileConfig
+  { baseUrl :: !Text
+  , apiKey :: !(Maybe Text)
+  , model :: !Text
+  , voice :: !Text
+  , responseFormat :: !Text
+  , requestTimeout :: !Int
+  , speed :: !(Maybe Double)
+  , instructions :: !(Maybe Text)
+  }
+  deriving (Show)
+
 instance FromValue FileConfig where
   fromValue = parseTableFromValue do
     selectedChat <- optKey "chat"
     selectedImage <- optKey "image"
+    selectedAudio <- optKey "audio"
     chatProviders <- fmap (fromMaybe Map.empty) (optKey "chat_provider")
     imageProviders <- fmap (fromMaybe Map.empty) (optKey "image_provider")
+    audioProviders <- fmap (fromMaybe Map.empty) (optKey "audio_provider")
     chatProvider <- selectedProvider "llm.chat" "llm.chat_provider" selectedChat chatProviders
     imageProvider <- selectedProvider "llm.image" "llm.image_provider" selectedImage imageProviders
+    audioProvider <- selectedProvider "llm.audio" "llm.audio_provider" selectedAudio audioProviders
     pure FileConfig
       { chatProvider = chatProvider
       , imageProvider = imageProvider
+      , audioProvider = audioProvider
       }
 
 selectedProvider
@@ -200,11 +245,35 @@ instance FromValue ImageProviderFileConfig where
       , outputCompression = outputCompression
       }
 
+instance FromValue AudioProviderFileConfig where
+  fromValue = parseTableFromValue do
+    baseUrl <- fmap (fromMaybe defaultAudioProviderConfig.baseUrl) (optKey "base_url")
+    apiKey <- optToken "api_key"
+    model <- fmap (fromMaybe defaultAudioProviderConfig.model) (optKey "model")
+    voice <- fmap (fromMaybe defaultAudioProviderConfig.voice) (optKey "voice")
+    responseFormat <- fmap (fromMaybe defaultAudioProviderConfig.responseFormat) (optKey "response_format")
+    requestTimeout <- fmap (fromMaybe defaultAudioProviderConfig.requestTimeout) (optKey "timeout")
+    speed <- optKey "speed"
+    instructions <- optKey "instructions"
+    when (requestTimeout <= 0) (fail "llm.audio_provider.<name>.timeout must be positive")
+    traverse_ (\value -> when (value <= 0) (fail "llm.audio_provider.<name>.speed must be positive")) speed
+    pure AudioProviderFileConfig
+      { baseUrl = baseUrl
+      , apiKey = apiKey
+      , model = model
+      , voice = voice
+      , responseFormat = responseFormat
+      , requestTimeout = requestTimeout
+      , speed = speed
+      , instructions = instructions
+      }
+
 toRuntimeConfig :: FileConfig -> Config
 toRuntimeConfig cfg =
   Config
     { chatProvider = toRuntimeChatProviderConfig <$> cfg.chatProvider
     , imageProvider = toRuntimeImageProviderConfig <$> cfg.imageProvider
+    , audioProvider = toRuntimeAudioProviderConfig <$> cfg.audioProvider
     }
 
 toRuntimeChatProviderConfig :: ChatProviderFileConfig -> ChatProviderConfig
@@ -233,4 +302,17 @@ toRuntimeImageProviderConfig cfg =
     , moderation = cfg.moderation
     , outputFormat = cfg.outputFormat
     , outputCompression = cfg.outputCompression
+    }
+
+toRuntimeAudioProviderConfig :: AudioProviderFileConfig -> AudioProviderConfig
+toRuntimeAudioProviderConfig cfg =
+  AudioProviderConfig
+    { baseUrl = cfg.baseUrl
+    , apiKey = cfg.apiKey
+    , model = cfg.model
+    , voice = cfg.voice
+    , responseFormat = cfg.responseFormat
+    , requestTimeout = cfg.requestTimeout
+    , speed = cfg.speed
+    , instructions = cfg.instructions
     }

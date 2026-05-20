@@ -13,11 +13,13 @@ main =
     testGroup "llm-openai-config"
       [ testCase "selects named chat provider" testSelectsNamedChatProvider
       , testCase "selects named image provider" testSelectsNamedImageProvider
+      , testCase "selects named audio provider" testSelectsNamedAudioProvider
       , testCase "blank selectors disable providers" testBlankSelectorsDisableProviders
       , testCase "missing selected provider fails clearly" testMissingSelectedProviderFailsClearly
       , testCase "provider defaults are applied" testProviderDefaultsAreApplied
       , testCase "non-positive chat timeout fails" testNonPositiveChatTimeoutFails
       , testCase "non-positive image timeout fails" testNonPositiveImageTimeoutFails
+      , testCase "non-positive audio timeout fails" testNonPositiveAudioTimeoutFails
       ]
 
 testSelectsNamedChatProvider :: IO ()
@@ -43,6 +45,7 @@ testSelectsNamedChatProvider = do
     Nothing ->
       assertFailure "expected selected chat provider"
   cfg.imageProvider @?= Nothing
+  cfg.audioProvider @?= Nothing
 
 testSelectsNamedImageProvider :: IO ()
 testSelectsNamedImageProvider = do
@@ -83,6 +86,38 @@ testSelectsNamedImageProvider = do
       provider.outputCompression @?= Just 80
     Nothing ->
       assertFailure "expected selected image provider"
+  cfg.audioProvider @?= Nothing
+
+testSelectsNamedAudioProvider :: IO ()
+testSelectsNamedAudioProvider = do
+  cfg <- parseRuntimeConfig $
+    Text.unlines
+      [ "audio = \"openai\""
+      , ""
+      , "[audio_provider.openai]"
+      , "base_url = \"https://api.openai.com/v1\""
+      , "api_key = \"audio-key\""
+      , "model = \"gpt-4o-mini-tts\""
+      , "timeout = 120"
+      , "voice = \"verse\""
+      , "response_format = \"opus\""
+      , "speed = 1.25"
+      , "instructions = \"Speak warmly.\""
+      ]
+  cfg.chatProvider @?= Nothing
+  cfg.imageProvider @?= Nothing
+  case cfg.audioProvider of
+    Just provider -> do
+      provider.baseUrl @?= "https://api.openai.com/v1"
+      provider.apiKey @?= Just "audio-key"
+      provider.model @?= "gpt-4o-mini-tts"
+      provider.voice @?= "verse"
+      provider.responseFormat @?= "opus"
+      provider.requestTimeout @?= 120
+      provider.speed @?= Just 1.25
+      provider.instructions @?= Just "Speak warmly."
+    Nothing ->
+      assertFailure "expected selected audio provider"
 
 testBlankSelectorsDisableProviders :: IO ()
 testBlankSelectorsDisableProviders = do
@@ -90,23 +125,35 @@ testBlankSelectorsDisableProviders = do
     Text.unlines
       [ "chat = \"  \""
       , "image = \"\""
+      , "audio = \" \""
       , ""
       , "[chat_provider.openrouter]"
       , "api_key = \"chat-key\""
       , ""
       , "[image_provider.openai]"
       , "api_key = \"image-key\""
+      , ""
+      , "[audio_provider.openai]"
+      , "api_key = \"audio-key\""
       ]
   cfg.chatProvider @?= Nothing
   cfg.imageProvider @?= Nothing
+  cfg.audioProvider @?= Nothing
 
 testMissingSelectedProviderFailsClearly :: IO ()
-testMissingSelectedProviderFailsClearly =
+testMissingSelectedProviderFailsClearly = do
   case parseRuntimeConfigEither "chat = \"missing\"" of
     Left err ->
       assertBool
         [i|unexpected error: #{err}|]
         ("llm.chat selects missing, but llm.chat_provider.missing is not defined" `Text.isInfixOf` Text.pack err)
+    Right cfg ->
+      assertFailure [i|expected parse failure, got #{show cfg :: String}|]
+  case parseRuntimeConfigEither "audio = \"missing\"" of
+    Left err ->
+      assertBool
+        [i|unexpected error: #{err}|]
+        ("llm.audio selects missing, but llm.audio_provider.missing is not defined" `Text.isInfixOf` Text.pack err)
     Right cfg ->
       assertFailure [i|expected parse failure, got #{show cfg :: String}|]
 
@@ -116,13 +163,17 @@ testProviderDefaultsAreApplied = do
     Text.unlines
       [ "chat = \"default_chat\""
       , "image = \"default_image\""
+      , "audio = \"default_audio\""
       , ""
       , "[chat_provider.default_chat]"
       , ""
       , "[image_provider.default_image]"
+      , ""
+      , "[audio_provider.default_audio]"
       ]
   cfg.chatProvider @?= Just LLMConfig.defaultChatProviderConfig
   cfg.imageProvider @?= Just LLMConfig.defaultImageProviderConfig
+  cfg.audioProvider @?= Just LLMConfig.defaultAudioProviderConfig
 
 testNonPositiveChatTimeoutFails :: IO ()
 testNonPositiveChatTimeoutFails =
@@ -139,6 +190,15 @@ testNonPositiveImageTimeoutFails =
     Text.unlines
       [ "image = \"bad\""
       , "[image_provider.bad]"
+      , "timeout = 0"
+      ]
+
+testNonPositiveAudioTimeoutFails :: IO ()
+testNonPositiveAudioTimeoutFails =
+  assertParseFailureContains "llm.audio_provider.<name>.timeout must be positive" $
+    Text.unlines
+      [ "audio = \"bad\""
+      , "[audio_provider.bad]"
       , "timeout = 0"
       ]
 

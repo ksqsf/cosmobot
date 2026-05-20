@@ -231,10 +231,10 @@ highSimilarityResult result
 renderResult :: Maybe SearchResult -> Maybe Text
 renderResult result = do
   match <- result
-  link <- viaNonEmpty head match.urls
+  resultUrl <- viaNonEmpty head match.urls
   let similarityText = show match.similarity :: Text
   Just $ Text.unlines $
     [ "相似度：" <> similarityText <> "%"
-    , link
+    , resultUrl
     ]
       <> [ ReplyBody.imageDirective thumbnail | thumbnail <- maybeToList match.thumbnail ]

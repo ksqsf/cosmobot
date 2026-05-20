@@ -8,6 +8,7 @@ module Bot.Effect.Chat
   ( -- * Effect
     Chat
   , replyTo
+  , replyAudio
   , uploadFile
   , editMessage
   , deleteMessage
@@ -47,6 +48,11 @@ data Chat :: Effect where
     :: IncomingMessage
     -> Text
     -> Chat m (Maybe MessageId)
+  ReplyAudio
+    :: IncomingMessage
+    -> Text
+    -> Maybe Text
+    -> Chat m (Either Text (Maybe MessageId))
   UploadFile
     :: IncomingMessage
     -> FilePath
@@ -98,6 +104,11 @@ type instance DispatchOf Chat = Dynamic
 replyTo :: Chat :> es => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
   send (ReplyTo message body)
+
+-- | Send an audio reference to the chat containing the incoming message.
+replyAudio :: Chat :> es => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+replyAudio message audioRef caption =
+  send (ReplyAudio message audioRef caption)
 
 -- | Upload a local file to the chat containing the incoming message.
 uploadFile :: Chat :> es => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
@@ -177,6 +188,7 @@ setMemberTitle message userId title =
 -- | Interpret chat operations by delegating each operation to platform code.
 data ChatHandlers es = ChatHandlers
   { handleReplyTo :: IncomingMessage -> Text -> Eff es (Maybe MessageId)
+  , handleReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
   , handleUploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
   , handleEditMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
   , handleDeleteMessage :: IncomingMessage -> MessageId -> Eff es Bool
@@ -197,6 +209,8 @@ runChatWith
 runChatWith handlers = interpret $ \_ -> \case
   ReplyTo message body ->
     handlers.handleReplyTo message body
+  ReplyAudio message audioRef caption ->
+    handlers.handleReplyAudio message audioRef caption
   UploadFile message path ->
     handlers.handleUploadFile message path
   EditMessage message messageId body ->

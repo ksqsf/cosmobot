@@ -9,6 +9,7 @@ module Bot.Agent.Tools
   )
 where
 
+import Bot.Agent.Tools.Audio
 import Bot.Agent.Tools.Chat
 import Bot.Agent.Tools.Emacs
 import Bot.Agent.Tools.Files
@@ -55,6 +56,7 @@ defaultTools =
   , webSearchTool
   , webFetchTool
   , datetimeTool
+  , generateAudioTool
   , generateImageTool
   , editImageTool
   , typstToImageTool
