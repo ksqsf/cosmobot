@@ -73,7 +73,7 @@ requestForCommand = \case
   RpcAuditRecent limit ->
     rpcRequest "audit.recent" (Aeson.object ["limit" Aeson..= limit])
   RpcAuditShow auditId ->
-    rpcRequest "audit.show" (Aeson.object ["id" Aeson..= auditId])
+    rpcRequest "audit.get" (Aeson.object ["audit_id" Aeson..= auditId])
   RpcAuditConversation messageId ->
     rpcRequest "audit.conversation" (Aeson.object ["message_id" Aeson..= messageId])
   RpcCall method params ->
@@ -81,19 +81,11 @@ requestForCommand = \case
 
 rpcRequest :: Text -> Aeson.Value -> Protocol.RpcRequest
 rpcRequest method params =
-  Protocol.RpcRequest
-    { id = "cli-1"
-    , method
-    , params
-    }
+  Protocol.rpcRequest method params "cli-1"
 
 requestValue :: Protocol.RpcRequest -> Aeson.Value
-requestValue Protocol.RpcRequest{id = requestId, method, params} =
-  Aeson.object
-    [ "id" Aeson..= requestId
-    , "method" Aeson..= method
-    , "params" Aeson..= params
-    ]
+requestValue =
+  Aeson.toJSON
 
 websocketPath :: RPCConfig.Config -> String
 websocketPath RPCConfig.Config{token} =

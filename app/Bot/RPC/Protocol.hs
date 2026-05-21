@@ -1,88 +1,104 @@
 {-|
 Module      : Bot.RPC.Protocol
-Description : JSON-RPC envelope types used by the local websocket service
+Description : JSON-RPC envelope helpers used by the local websocket service
 Stability   : experimental
 -}
 
 module Bot.RPC.Protocol
-  ( RpcRequest (..)
-  , RpcResponse (..)
-  , RpcError (..)
-  , RpcNotification (..)
+  ( RpcRequest
+  , RpcResponse
+  , RpcError
+  , RpcNotification
+  , RequestId
+  , rpcRequest
+  , requestId
+  , requestMethod
+  , requestParams
   , successResponse
   , errorResponse
+  , parseErrorResponse
+  , invalidRequestResponse
+  , rpcError
   , notification
   )
 where
 
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.KeyMap as KeyMap
+import qualified JSONRPC
 
-data RpcRequest = RpcRequest
-  { id :: !Text
-  , method :: !Text
-  , params :: !Aeson.Value
-  }
-  deriving (Eq, Show)
+type RpcRequest = JSONRPC.JSONRPCRequest
+type RpcResponse = JSONRPC.JSONRPCMessage
+type RpcError = JSONRPC.JSONRPCErrorInfo
+type RpcNotification = JSONRPC.JSONRPCNotification
+type RequestId = JSONRPC.RequestId
 
-instance Aeson.FromJSON RpcRequest where
-  parseJSON = Aeson.withObject "RpcRequest" \o ->
-    RpcRequest
-      <$> o Aeson..: "id"
-      <*> o Aeson..: "method"
-      <*> pure (fromMaybe (Aeson.Object KeyMap.empty) (KeyMap.lookup "params" o))
+rpcRequest :: Text -> Aeson.Value -> Text -> RpcRequest
+rpcRequest method params requestId_ =
+  JSONRPC.JSONRPCRequest JSONRPC.rPC_VERSION (textRequestId requestId_) method params
 
-data RpcResponse = RpcResponse
-  { id :: !Text
-  , ok :: !Bool
-  , result :: !(Maybe Aeson.Value)
-  , error :: !(Maybe RpcError)
-  }
-  deriving (Eq, Show)
+requestId :: RpcRequest -> RequestId
+requestId request =
+  request.id
 
-instance Aeson.ToJSON RpcResponse where
-  toJSON response =
-    Aeson.object $
-      [ "id" Aeson..= response.id
-      , "ok" Aeson..= response.ok
-      ]
-      <> maybe [] (\value -> ["result" Aeson..= value]) response.result
-      <> maybe [] (\value -> ["error" Aeson..= value]) response.error
+requestMethod :: RpcRequest -> Text
+requestMethod request =
+  request.method
 
-data RpcError = RpcError
-  { code :: !Text
-  , message :: !Text
-  }
-  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+requestParams :: RpcRequest -> Aeson.Value
+requestParams request =
+  request.params
 
-data RpcNotification = RpcNotification
-  { method :: !Text
-  , params :: !Aeson.Value
-  }
-  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+successResponse :: Aeson.ToJSON a => RequestId -> a -> RpcResponse
+successResponse responseId value =
+  JSONRPC.ResponseMessage $
+    JSONRPC.JSONRPCResponse JSONRPC.rPC_VERSION responseId (Aeson.toJSON value)
 
-successResponse :: Aeson.ToJSON a => Text -> a -> RpcResponse
-successResponse requestId value =
-  RpcResponse
-    { id = requestId
-    , ok = True
-    , result = Just (Aeson.toJSON value)
-    , error = Nothing
-    }
+errorResponse :: RequestId -> Text -> Text -> RpcResponse
+errorResponse responseId code message =
+  JSONRPC.ErrorMessage $
+    JSONRPC.JSONRPCError JSONRPC.rPC_VERSION responseId (rpcError code message)
 
-errorResponse :: Text -> Text -> Text -> RpcResponse
-errorResponse requestId code message =
-  RpcResponse
-    { id = requestId
-    , ok = False
-    , result = Nothing
-    , error = Just RpcError{code, message}
+parseErrorResponse :: Text -> RpcResponse
+parseErrorResponse message =
+  JSONRPC.ErrorMessage $
+    JSONRPC.JSONRPCError JSONRPC.rPC_VERSION nullRequestId $
+      JSONRPC.JSONRPCErrorInfo JSONRPC.pARSE_ERROR "Parse error" (Just (Aeson.String message))
+
+invalidRequestResponse :: Text -> RpcResponse
+invalidRequestResponse message =
+  JSONRPC.ErrorMessage $
+    JSONRPC.JSONRPCError JSONRPC.rPC_VERSION nullRequestId $
+      JSONRPC.JSONRPCErrorInfo JSONRPC.iNVALID_REQUEST "Invalid request" (Just (Aeson.String message))
+
+rpcError :: Text -> Text -> RpcError
+rpcError code message =
+  JSONRPC.JSONRPCErrorInfo
+    { JSONRPC.code = errorCodeNumber code
+    , JSONRPC.message = message
+    , JSONRPC.errorData =
+        Just $
+          Aeson.object
+            [ "code" Aeson..= code
+            ]
     }
 
 notification :: Aeson.ToJSON a => Text -> a -> RpcNotification
 notification method value =
-  RpcNotification
-    { method
-    , params = Aeson.toJSON value
-    }
+  JSONRPC.JSONRPCNotification JSONRPC.rPC_VERSION method (Aeson.toJSON value)
+
+textRequestId :: Text -> RequestId
+textRequestId =
+  JSONRPC.RequestId . Aeson.String
+
+nullRequestId :: RequestId
+nullRequestId =
+  JSONRPC.RequestId Aeson.Null
+
+errorCodeNumber :: Text -> Int
+errorCodeNumber = \case
+  "invalid_json" -> JSONRPC.pARSE_ERROR
+  "invalid_request" -> JSONRPC.iNVALID_REQUEST
+  "method_not_found" -> JSONRPC.mETHOD_NOT_FOUND
+  "invalid_params" -> JSONRPC.iNVALID_PARAMS
+  _ -> JSONRPC.iNTERNAL_ERROR

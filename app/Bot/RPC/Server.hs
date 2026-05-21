@@ -25,6 +25,7 @@ import qualified Data.ByteString as ByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.STM as STM
+import qualified JSONRPC
 import qualified Network.HTTP.Types.URI as URI
 import qualified Network.WebSockets as WS
 
@@ -43,7 +44,18 @@ runRpcServer
   -> State.RpcState
   -> RpcServerCallbacks es
   -> Eff es ()
-runRpcServer cfg rpcState callbacks = do
+runRpcServer cfg@Config.Config{enabled} rpcState callbacks = do
+  if enabled
+    then runRpcServer' cfg rpcState callbacks
+    else pure ()
+
+runRpcServer'
+  :: (IOE :> es, Log :> es, Concurrent :> es)
+  => Config.Config
+  -> State.RpcState
+  -> RpcServerCallbacks es
+  -> Eff es ()
+runRpcServer' cfg rpcState callbacks = do
   let Config.Config{host, port} = cfg
   logInfo_ [i|RPC websocket listening on #{host}:#{port}|]
   withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
@@ -111,14 +123,19 @@ readRequestFrames rpcState callbacks queue conn =
     bytes <- liftIO (WS.receiveData conn :: IO ByteString)
     response <- case Aeson.eitherDecodeStrict bytes of
       Left err ->
-        pure (Protocol.errorResponse "" "invalid_json" (Text.pack err))
+        pure (Just (Protocol.parseErrorResponse (Text.pack err)))
       Right value ->
         case Aeson.fromJSON value of
-          Aeson.Success request ->
-            dispatchRpcRequest rpcState callbacks request
+          Aeson.Success (JSONRPC.RequestMessage request) ->
+            Just <$> dispatchRpcRequest rpcState callbacks request
+          Aeson.Success (JSONRPC.NotificationMessage notification_) -> do
+            _ <- dispatchRpcRequest rpcState callbacks (notificationToRequest notification_)
+            pure Nothing
           Aeson.Error err ->
-            pure (Protocol.errorResponse "" "invalid_request" (Text.pack err))
-    State.writeClient queue (Aeson.toJSON response)
+            pure (Just (Protocol.invalidRequestResponse (Text.pack err)))
+          Aeson.Success _ ->
+            pure (Just (Protocol.invalidRequestResponse "Expected request or notification"))
+    traverse_ (State.writeClient queue . Aeson.toJSON) response
 
 dispatchRpcRequest
   :: Concurrent :> es
@@ -127,7 +144,7 @@ dispatchRpcRequest
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
 dispatchRpcRequest rpcState callbacks request =
-  case request.method of
+  case Protocol.requestMethod request of
     "chat.open_session" ->
       dispatchOpenSession rpcState request
     "chat.send" ->
@@ -136,7 +153,7 @@ dispatchRpcRequest rpcState callbacks request =
       | "audit." `Text.isPrefixOf` method ->
           dispatchAudit callbacks request
       | otherwise ->
-          pure (methodNotFound request.id method)
+          pure (methodNotFound (Protocol.requestId request) method)
 
 dispatchOpenSession
   :: Concurrent :> es
@@ -144,13 +161,13 @@ dispatchOpenSession
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
 dispatchOpenSession rpcState request =
-  case AesonTypes.parseEither parseOpenSessionParams request.params of
+  case AesonTypes.parseEither parseOpenSessionParams (Protocol.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse request.id "invalid_params" (Text.pack err))
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
     Right label -> do
       sessionId <- State.openChatSession rpcState label
       pure $
-        Protocol.successResponse request.id $
+        Protocol.successResponse (Protocol.requestId request) $
           Aeson.object
             [ "sessionId" Aeson..= rpcSessionIdText sessionId
             ]
@@ -161,14 +178,14 @@ dispatchChatSend
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
 dispatchChatSend rpcState request =
-  case AesonTypes.parseEither parseChatSendParams request.params of
+  case AesonTypes.parseEither parseChatSendParams (Protocol.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse request.id "invalid_params" (Text.pack err))
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
     Right chatSend -> do
       message <- State.enqueueChatMessage rpcState chatSend
       let IncomingMessage{messageId} = message
       pure $
-        Protocol.successResponse request.id $
+        Protocol.successResponse (Protocol.requestId request) $
           Aeson.object
             [ "sessionId" Aeson..= rpcSessionIdText chatSend.sessionId
             , "messageId" Aeson..= messageId
@@ -181,11 +198,11 @@ dispatchAudit
 dispatchAudit callbacks request =
   callbacks.auditMethod request >>= \case
     Nothing ->
-      pure (methodNotFound request.id request.method)
+      pure (methodNotFound (Protocol.requestId request) (Protocol.requestMethod request))
     Just (Left err) ->
-      pure (Protocol.errorResponse request.id err.code err.message)
+      pure (JSONRPC.ErrorMessage (JSONRPC.JSONRPCError JSONRPC.rPC_VERSION (Protocol.requestId request) err))
     Just (Right value) ->
-      pure (Protocol.successResponse request.id value)
+      pure (Protocol.successResponse (Protocol.requestId request) value)
 
 parseOpenSessionParams :: Aeson.Value -> AesonTypes.Parser (Maybe Text)
 parseOpenSessionParams =
@@ -212,9 +229,13 @@ parseChatSendParams =
       , replyToMessageId
       }
 
-methodNotFound :: Text -> Text -> Protocol.RpcResponse
+methodNotFound :: Protocol.RequestId -> Text -> Protocol.RpcResponse
 methodNotFound requestId method =
   Protocol.errorResponse requestId "method_not_found" [i|Unknown RPC method: #{method}|]
+
+notificationToRequest :: Protocol.RpcNotification -> Protocol.RpcRequest
+notificationToRequest notification_ =
+  JSONRPC.JSONRPCRequest JSONRPC.rPC_VERSION (JSONRPC.RequestId Aeson.Null) notification_.method notification_.params
 
 rpcSessionIdText :: State.RpcSessionId -> Text
 rpcSessionIdText (State.RpcSessionId value) =

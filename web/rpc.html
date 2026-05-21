@@ -593,7 +593,7 @@
         }
 
         const id = String(state.nextId++);
-        const payload = { id, method, params: params || {} };
+        const payload = { jsonrpc: "2.0", id, method, params: params || {} };
         state.ws.send(JSON.stringify(payload));
         logEvent("-> " + method + " #" + id);
 
@@ -652,7 +652,7 @@
 
         clearTimeout(pending.timeout);
         state.pending.delete(String(response.id));
-        if (response.ok) {
+        if (!response.error) {
           logEvent("<- " + pending.method + " ok");
           pending.resolve(response.result);
         } else {

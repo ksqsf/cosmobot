@@ -43,6 +43,7 @@ build-type:         Simple
 
 -- Extra doc files to be distributed with the package, such as a CHANGELOG or a README.
 extra-doc-files:    CHANGELOG.md
+                  , doc/RPC.md
 
 -- Extra source files to be distributed with the package, such as examples, or a tutorial module.
 -- extra-source-files:
@@ -100,6 +101,7 @@ common app-deps
                     , crypton-connection
                     , tls
                     , http-types
+                    , jsonrpc
                     , optics
                     , time
                     , temporary
@@ -354,6 +356,26 @@ test-suite agent-spec
                     , process
                     , req
                     , toml-parser
+    hs-source-dirs:   test
+
+test-suite rpc-spec
+    import:           warnings
+                    , threaded
+                    , language
+                    , app-deps
+                    , test-deps
+                    , bot-core-modules
+    type:             exitcode-stdio-1.0
+    main-is:          RPCSpec.hs
+    other-modules:
+        Bot.Chat.Driver.Types
+        Bot.RPC.Config
+        Bot.RPC.Protocol
+        Bot.RPC.Server
+        Bot.RPC.State
+    build-depends:    log-base
+                    , toml-parser
+                    , websockets
     hs-source-dirs:   test
 
 test-suite llm-openai-config-spec

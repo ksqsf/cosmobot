@@ -28,7 +28,7 @@ dispatchAuditMethod
   => Protocol.RpcRequest
   -> Eff es (Maybe (Either Protocol.RpcError Aeson.Value))
 dispatchAuditMethod request =
-  Just <$> case request.method of
+  Just <$> case Protocol.requestMethod request of
     "audit.recent" ->
       parseParams request parseLimit \limit ->
         Aeson.toJSON <$> AgentAudit.queryRecentAuditRecords limit
@@ -44,8 +44,8 @@ dispatchAuditMethod request =
     "audit.subscribe" ->
       pure (Right (Aeson.object ["subscribed" Aeson..= True]))
     _ ->
-      let method = request.method
-      in pure (Left (Protocol.RpcError "method_not_found" [i|Unknown RPC method: #{method}|]))
+      let method = Protocol.requestMethod request
+      in pure (Left (Protocol.rpcError "method_not_found" [i|Unknown RPC method: #{method}|]))
 
 parseParams
   :: Protocol.RpcRequest
@@ -53,9 +53,9 @@ parseParams
   -> (a -> Eff es Aeson.Value)
   -> Eff es (Either Protocol.RpcError Aeson.Value)
 parseParams request parser action =
-  case AesonTypes.parseEither parser request.params of
+  case AesonTypes.parseEither parser (Protocol.requestParams request) of
     Left err ->
-      pure (Left (Protocol.RpcError "invalid_params" (toText err)))
+      pure (Left (Protocol.rpcError "invalid_params" (toText err)))
     Right value ->
       Right <$> action value
 
