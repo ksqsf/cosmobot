@@ -99,6 +99,14 @@ matrixEventMessageId :: MatrixEventId -> MessageId
 matrixEventMessageId =
   textMessageId . matrixEventIdText
 
+instance IsString MatrixRoomId where
+  fromString =
+    matrixRoomId . Text.pack
+
+instance IsString MatrixEventId where
+  fromString =
+    matrixEventId . Text.pack
+
 matrixDriver
   :: (Matrix :> es, FileSystem :> es, IOE :> es)
   => Driver.ChatPlatformDriver es
@@ -129,8 +137,8 @@ data Matrix :: Effect where
   JoinedMemberCounts :: Matrix m (Map MatrixRoomId Int)
   JoinedMemberCount :: MatrixRoomId -> Matrix m (Maybe Int)
   SendText :: MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Matrix m (Maybe SendMessageResponse)
-  UploadMedia :: FilePath -> Text -> Matrix m MatrixUploadResponse
-  SendFileMessage :: Text -> MatrixFileMessage -> Matrix m (Maybe SendMessageResponse)
+  UploadMedia :: FilePath -> Text -> Text -> Matrix m MatrixUploadResponse
+  SendFileMessage :: Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Matrix m (Maybe SendMessageResponse)
   DeleteEvent :: Text -> MessageId -> Maybe MatrixEventId -> Matrix m Bool
 
 type instance DispatchOf Matrix = Dynamic
@@ -158,13 +166,13 @@ sendText :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff e
 sendText roomId replyToEventId body =
   send (SendText roomId replyToEventId body)
 
-uploadMedia :: Matrix :> es => FilePath -> Text -> Eff es MatrixUploadResponse
-uploadMedia path fileName =
-  send (UploadMedia path fileName)
+uploadMedia :: Matrix :> es => FilePath -> Text -> Text -> Eff es MatrixUploadResponse
+uploadMedia path fileName mime =
+  send (UploadMedia path fileName mime)
 
-sendFileMessage :: Matrix :> es => Text -> MatrixFileMessage -> Eff es (Maybe SendMessageResponse)
-sendFileMessage roomId message =
-  send (SendFileMessage roomId message)
+sendFileMessage :: Matrix :> es => Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es (Maybe SendMessageResponse)
+sendFileMessage roomId replyRelation message =
+  send (SendFileMessage roomId replyRelation message)
 
 deleteEvent :: Matrix :> es => Text -> MessageId -> Maybe MatrixEventId -> Eff es Bool
 deleteEvent roomId messageId eventId =
@@ -207,12 +215,12 @@ runMatrix cfg inner = do
             sendMessageCall manager cfg token roomId replyToEventId body
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
-        UploadMedia path fileName ->
+        UploadMedia path fileName mime ->
           withMatrixAccessToken auth \token ->
-            uploadMediaCall manager cfg path fileName token
-        SendFileMessage roomId message -> do
+            uploadMediaCall manager cfg path fileName mime token
+        SendFileMessage roomId replyRelation message -> do
           response <- withMaybeMatrixAccessToken auth \token ->
-            sendFileMessageCall manager cfg token roomId message
+            sendFileMessageCall manager cfg token roomId replyRelation message
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         DeleteEvent roomId messageId knownEventId -> do
@@ -605,12 +613,20 @@ matrixAuthMode cfg
   | isJust cfg.loginUser && isJust cfg.loginPassword = "login"
   | otherwise = "none"
 
-replyTo :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe MessageId)
+replyTo :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
-      response <- sendText (matrixRoomId roomId) (matrixReplyTo message) (Chat.renderReplyBody body)
-      pure (matrixEventMessageId . (.eventId) <$> response)
+      let matrixRoom = matrixRoomId roomId
+          replyRelation = matrixReplyTo message
+          text = Chat.renderReplyBody body
+          imageRefs = Chat.replyImageUrls body
+      textResponse <- if Text.null (Text.strip text)
+        then pure Nothing
+        else sendText matrixRoom replyRelation text
+      imageResponses <- traverse (sendMatrixImage roomId replyRelation) imageRefs
+      let imageMessageIds = map (matrixEventMessageId . (.eventId)) (catMaybes imageResponses)
+      pure (matrixEventMessageId . (.eventId) <$> textResponse <|> viaNonEmpty head imageMessageIds)
     _ ->
       pure Nothing
 
@@ -624,8 +640,8 @@ uploadFile message path =
     (PlatformMatrix, Just roomId) -> do
       let fileName = matrixUploadFileName path
       size <- FileSystem.getFileSize path
-      uploaded <- uploadMedia path fileName
-      response <- sendFileMessage roomId MatrixFileMessage
+      uploaded <- uploadMedia path fileName "application/octet-stream"
+      response <- sendFileMessage roomId (matrixReplyTo message) MatrixFileMessage
         { msgtype = "m.file"
         , body = fileName
         , filename = fileName
@@ -638,6 +654,43 @@ uploadFile message path =
       pure (Right (matrixEventMessageId . (.eventId) <$> response))
     _ ->
       pure (Left "Matrix file upload requires a Matrix room id.")
+
+sendMatrixImage
+  :: (Matrix :> es, FileSystem :> es, IOE :> es)
+  => Text
+  -> Maybe MatrixReplyTo
+  -> Text
+  -> Eff es (Maybe SendMessageResponse)
+sendMatrixImage roomId replyRelation imageRef =
+  case matrixMxcRef imageRef of
+    Just contentUri ->
+      sendMatrixImageMessage roomId replyRelation "image" contentUri "application/octet-stream" 0
+    Nothing ->
+      withMatrixImageFile imageRef \path fileName mime -> do
+        size <- FileSystem.getFileSize path
+        uploaded <- uploadMedia path fileName mime
+        sendMatrixImageMessage roomId replyRelation fileName uploaded.contentUri mime size
+
+sendMatrixImageMessage
+  :: Matrix :> es
+  => Text
+  -> Maybe MatrixReplyTo
+  -> Text
+  -> Text
+  -> Text
+  -> Integer
+  -> Eff es (Maybe SendMessageResponse)
+sendMatrixImageMessage roomId replyRelation fileName contentUri mime size =
+  sendFileMessage roomId replyRelation MatrixFileMessage
+    { msgtype = "m.image"
+    , body = fileName
+    , filename = fileName
+    , url = contentUri
+    , info = MatrixFileInfo
+        { mimetype = mime
+        , size = size
+        }
+    }
 
 replyAudio :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
 replyAudio message audioRef caption =
@@ -652,13 +705,13 @@ sendMatrixAudio roomId audioRef caption =
   case matrixMxcRef audioRef of
     Just contentUri -> do
       let fileName = "audio"
-      response <- sendFileMessage roomId (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
+      response <- sendFileMessage roomId Nothing (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
       pure (Right (matrixEventMessageId . (.eventId) <$> response))
     Nothing ->
       withMatrixAudioFile audioRef \path fileName mime -> do
         size <- FileSystem.getFileSize path
-        uploaded <- uploadMedia path fileName
-        response <- sendFileMessage roomId (matrixAudioMessage caption fileName uploaded.contentUri mime size)
+        uploaded <- uploadMedia path fileName mime
+        response <- sendFileMessage roomId Nothing (matrixAudioMessage caption fileName uploaded.contentUri mime size)
         pure (Right (matrixEventMessageId . (.eventId) <$> response))
 
 matrixAudioMessage :: Maybe Text -> Text -> Text -> Text -> Integer -> MatrixFileMessage
@@ -683,6 +736,23 @@ matrixMxcRef :: Text -> Maybe Text
 matrixMxcRef ref =
   let stripped = Text.strip ref
   in stripped <$ guard ("mxc://" `Text.isPrefixOf` stripped)
+
+withMatrixImageFile
+  :: (FileSystem :> es, IOE :> es)
+  => Text
+  -> (FilePath -> Text -> Text -> Eff es a)
+  -> Eff es a
+withMatrixImageFile imageRef action =
+  case matrixLocalPath imageRef of
+    Just path ->
+      action path (matrixUploadFileName path) (matrixImageMimeType path)
+    Nothing ->
+      case matrixDataImage imageRef of
+        Just (mime, bytes) ->
+          withTemporaryMatrixImage mime bytes \path ->
+            action path (matrixUploadFileName path) mime
+        Nothing ->
+          throwIO (userError "Matrix image reply requires a file://, data:image/*, or mxc:// image reference.")
 
 withMatrixAudioFile
   :: (FileSystem :> es, IOE :> es)
@@ -725,6 +795,30 @@ matrixDataAudio ref = do
   bytes <- either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
   pure ("audio/" <> subtype, bytes)
 
+matrixDataImage :: Text -> Maybe (Text, StrictByteString.ByteString)
+matrixDataImage ref = do
+  rest <- Text.stripPrefix "data:image/" (Text.strip ref)
+  let (subtype, encodedWithMarker) = Text.breakOn ";base64," rest
+  encoded <- Text.stripPrefix ";base64," encodedWithMarker
+  bytes <- either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
+  pure ("image/" <> subtype, bytes)
+
+withTemporaryMatrixImage
+  :: (FileSystem :> es, IOE :> es)
+  => Text
+  -> StrictByteString.ByteString
+  -> (FilePath -> Eff es a)
+  -> Eff es a
+withTemporaryMatrixImage mime bytes action = do
+  FileSystem.createDirectoryIfMissing True matrixTempDir
+  nonce <- liftIO getMonotonicTimeNSec
+  let path = matrixTempDir </> ("matrix-image-" <> show nonce <.> matrixImageExtension mime)
+  FileSystemByteString.writeFile path bytes
+  action path `finally` cleanup path
+  where
+    cleanup path =
+      FileSystem.removeFile path `catchSync` \_ -> pure ()
+
 withTemporaryMatrixAudio
   :: (FileSystem :> es, IOE :> es)
   => Text
@@ -753,6 +847,31 @@ matrixAudioMimeType path =
     ".wav" -> "audio/wav"
     ".webm" -> "audio/webm"
     _ -> "application/octet-stream"
+
+matrixImageMimeType :: FilePath -> Text
+matrixImageMimeType path =
+  case Text.toLower (Text.pack (takeExtension path)) of
+    ".apng" -> "image/apng"
+    ".avif" -> "image/avif"
+    ".gif" -> "image/gif"
+    ".jpg" -> "image/jpeg"
+    ".jpeg" -> "image/jpeg"
+    ".png" -> "image/png"
+    ".svg" -> "image/svg+xml"
+    ".webp" -> "image/webp"
+    _ -> "application/octet-stream"
+
+matrixImageExtension :: Text -> String
+matrixImageExtension mime =
+  case Text.toLower mime of
+    "image/apng" -> "apng"
+    "image/avif" -> "avif"
+    "image/gif" -> "gif"
+    "image/jpeg" -> "jpg"
+    "image/png" -> "png"
+    "image/svg+xml" -> "svg"
+    "image/webp" -> "webp"
+    _ -> "bin"
 
 matrixAudioExtension :: Text -> String
 matrixAudioExtension mime =
@@ -997,13 +1116,13 @@ sendMessageCall manager cfg token roomId replyRelation body = do
       options)
     <&> responseBody
 
-uploadMediaCall :: (IOE :> es, Log :> es) => Manager -> Config -> FilePath -> Text -> Text -> Eff es MatrixUploadResponse
-uploadMediaCall manager cfg path fileName token = do
+uploadMediaCall :: (IOE :> es, Log :> es) => Manager -> Config -> FilePath -> Text -> Text -> Text -> Eff es MatrixUploadResponse
+uploadMediaCall manager cfg path fileName mime token = do
   (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
   let options =
         baseOptions
           <> matrixAuth token
-          <> header "Content-Type" "application/octet-stream"
+          <> header "Content-Type" (TextEncoding.encodeUtf8 mime)
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
           <> "filename" =: fileName
   logInfo_ "Matrix API request: upload media"
@@ -1015,19 +1134,23 @@ uploadMediaCall manager cfg path fileName token = do
       options)
     <&> responseBody
 
-sendFileMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> MatrixFileMessage -> Eff es SendMessageResponse
-sendFileMessageCall manager cfg token roomId message = do
+sendFileMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es SendMessageResponse
+sendFileMessageCall manager cfg token roomId replyRelation message@MatrixFileMessage{msgtype = mediaMsgtype} = do
   (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
   let options =
         baseOptions
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
-  logInfo_ "Matrix API request: send m.file"
-  matrixReq "send m.file" (Http.runReqWithConfig (matrixHttpConfig manager) $
+      request = MatrixFileMessageRequest
+        { message
+        , replyRelation
+        }
+  logInfo_ [i|Matrix API request: send #{mediaMsgtype}|]
+  matrixReq [i|send #{mediaMsgtype}|] (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)
-      (ReqBodyJson message)
+      (ReqBodyJson request)
       jsonResponse
       options)
     <&> responseBody
@@ -1317,6 +1440,23 @@ instance Aeson.ToJSON MatrixFileMessage where
       , "url" Aeson..= url
       , "info" Aeson..= info
       ]
+
+data MatrixFileMessageRequest = MatrixFileMessageRequest
+  { message :: !MatrixFileMessage
+  , replyRelation :: !(Maybe MatrixReplyTo)
+  }
+  deriving (Show, Generic)
+
+instance Aeson.ToJSON MatrixFileMessageRequest where
+  toJSON MatrixFileMessageRequest{message, replyRelation} =
+    case Aeson.toJSON message of
+      Aeson.Object fields ->
+        Aeson.Object (fields <> AesonKeyMap.fromList relationFields)
+      value ->
+        value
+    where
+      relationFields =
+        maybe [] (\(MatrixReplyTo eventId) -> [("m.relates_to", Aeson.toJSON (MatrixRelatesTo (Just eventId)))]) replyRelation
 
 data RedactEventRequest = RedactEventRequest
   { reason :: Maybe Text
