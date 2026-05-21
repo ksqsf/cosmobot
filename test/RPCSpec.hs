@@ -14,6 +14,7 @@ import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
+import Data.Unique (hashUnique, newUnique)
 import qualified Effectful.Concurrent.STM as STM
 import Effectful.FileSystem (runFileSystem)
 import qualified Effectful.FileSystem as FileSystem
@@ -24,6 +25,7 @@ import qualified Network.Socket as Socket
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.WebSockets as WS
 import qualified Streaming.Prelude as S
+import System.FilePath ((</>))
 import System.Timeout
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -428,10 +430,14 @@ runRpcStorage path action =
 withSQLiteTempPath :: String -> (FilePath -> IO a) -> IO a
 withSQLiteTempPath label action =
   runEff $ runFileSystem do
-    let path = "/tmp/cosmobot-" <> label <> ".sqlite"
-    FileSystem.removeFile path `catchSync` \_ -> pure ()
-    liftIO (action path)
-      `finally` (FileSystem.removeFile path `catchSync` \_ -> pure ())
+    root <- FileSystem.getTemporaryDirectory
+    unique <- liftIO (hashUnique <$> newUnique)
+    let dir = root </> [i|cosmobot-#{label}-#{unique}|]
+        path = dir </> "rpc.sqlite"
+    bracket
+      (FileSystem.createDirectory dir $> path)
+      (\_ -> FileSystem.removeDirectoryRecursive dir)
+      (liftIO . action)
 
 sessionValue :: Text -> Maybe Text -> Maybe Text -> Maybe Text -> Aeson.Value
 sessionValue sessionId label parentSessionId parentMessageId =
