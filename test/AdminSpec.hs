@@ -11,6 +11,8 @@ import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as LifecycleStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
+import Effectful.FileSystem (runFileSystem)
+import Effectful.Process (runProcess)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -163,10 +165,15 @@ runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incomin
     runTestLog $
       StorageSQLite.runStorageSQLitePath ":memory:" $
         Chat.runChatWith (chatHandlers replies titleCalls titleResult) do
-          runConcurrent do
+          runAdminStack do
             runHandlers (adminHandlers cfg) incoming
             when (delayMicros > 0) (threadDelay delayMicros)
           LifecycleStorage.loadStartupActions
+  where
+    runAdminStack =
+      runFileSystem
+        . runProcess
+        . runConcurrent
 
 chatHandlers
   :: IOE :> es
@@ -178,6 +185,7 @@ chatHandlers replies titleCalls titleResult =
   Chat.ChatHandlers
     { handleReplyTo = reply
     , handleUploadFile = upload
+    , handleReplyAudio = replyAudio
     , handleEditMessage = edit
     , handleDeleteMessage = delete
     , handleReplyStreamStyle = replyStreamStyle
@@ -194,6 +202,8 @@ chatHandlers replies titleCalls titleResult =
       liftIO $ IORef.modifyIORef' replies (<> [body])
       pure (Just "1")
     upload _ _ =
+      pure (Right Nothing)
+    replyAudio _ _ _ =
       pure (Right Nothing)
     edit _ _ _ =
       pure False

@@ -17,16 +17,18 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Handler.Admin.Config
 import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as Lifecycle
-import qualified Control.Concurrent.MVar as MVar
-import qualified Control.Concurrent as Concurrent
 import qualified Data.Char as Char
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Unique as Unique
+import qualified Effectful.Concurrent.MVar as MVar
+import Effectful.FileSystem (FileSystem)
+import qualified Effectful.FileSystem.IO.ByteString as ByteStringFileSystem
+import Effectful.Process (Process, ProcessHandle, StdStream (..), createProcess, proc, std_err, std_in, std_out, waitForProcess)
 import qualified System.Exit as Exit
-import qualified System.IO as IO
-import qualified System.Process as Process
+import System.IO.Error (userError)
 
-adminHandlers :: (Chat.Chat :> es, Concurrent :> es, Storage.Storage :> es, Log :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
+adminHandlers :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, Log :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
 adminHandlers cfg =
   [ pingRoute
   , titleRoute
@@ -74,19 +76,19 @@ parseTitleArgs rawArgs = do
   guard (userId > 0)
   pure (userId, title)
 
-upgradeRoute :: (Chat.Chat :> es, Concurrent :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
+upgradeRoute :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
 upgradeRoute cfg =
   requireAuth
     isSuperuser
     (\message -> void $ Chat.replyTo message "只有 superuser 可以执行 upgrade。")
     (stopOn (command "!upgrade") \message _ -> handleUpgrade cfg message)
 
-handleUpgrade :: (Chat.Chat :> es, Concurrent :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
+handleUpgrade :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
 handleUpgrade cfg message = do
   let scriptPath = cfg.script
   actionKey <- liftIO newLifecycleActionKey
   startupAction <- Lifecycle.enqueueStartupReply actionKey message "cosmobot 回来啦 (｡•̀ᴗ-)✧"
-  result <- trySync (liftIO (startUpgradeScript scriptPath))
+  result <- trySync (startUpgradeScript scriptPath)
   case result of
     Right running -> do
       void $ Chat.replyTo message [i|已启动 upgrade 脚本：#{Text.pack scriptPath}|]
@@ -96,9 +98,9 @@ handleUpgrade cfg message = do
       void $ Chat.replyTo message [i|upgrade 脚本启动失败：#{show err :: String}|]
 
 data RunningUpgradeScript = RunningUpgradeScript
-  { processHandle :: !Process.ProcessHandle
-  , stdoutHandle :: !IO.Handle
-  , stderrHandle :: !IO.Handle
+  { processHandle :: !ProcessHandle
+  , stdoutHandle :: !Handle
+  , stderrHandle :: !Handle
   }
 
 newLifecycleActionKey :: IO Text
@@ -106,42 +108,47 @@ newLifecycleActionKey = do
   unique <- Unique.newUnique
   pure [i|upgrade-#{Unique.hashUnique unique}|]
 
-startUpgradeScript :: FilePath -> IO RunningUpgradeScript
+startUpgradeScript :: Process :> es => FilePath -> Eff es RunningUpgradeScript
 startUpgradeScript scriptPath = do
-  (_, Just stdoutHandle, Just stderrHandle, processHandle) <-
-    Process.createProcess
-      (Process.proc scriptPath [])
-        { Process.std_in = Process.NoStream
-        , Process.std_out = Process.CreatePipe
-        , Process.std_err = Process.CreatePipe
+  (_, maybeStdoutHandle, maybeStderrHandle, processHandle) <-
+    createProcess
+      (proc scriptPath [])
+        { std_in = NoStream
+        , std_out = CreatePipe
+        , std_err = CreatePipe
         }
-  pure RunningUpgradeScript{processHandle, stdoutHandle, stderrHandle}
+  case (maybeStdoutHandle, maybeStderrHandle) of
+    (Just stdoutHandle, Just stderrHandle) ->
+      pure RunningUpgradeScript{processHandle, stdoutHandle, stderrHandle}
+    _ ->
+      throwIO (userError "upgrade script did not provide stdout/stderr handles.")
 
 reportUpgradeScriptExit
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, Log :> es, IOE :> es)
   => Lifecycle.StoredStartupAction
   -> IncomingMessage
   -> RunningUpgradeScript
   -> Eff es ()
 reportUpgradeScriptExit startupAction message running = do
-  (exitCode, stdoutText, stderrText) <- liftIO $ waitUpgradeScript running
+  (exitCode, stdoutText, stderrText) <- waitUpgradeScript running
   Lifecycle.deleteStartupAction startupAction
   void $ Chat.replyTo message (scriptExited exitCode stdoutText stderrText)
 
-waitUpgradeScript :: RunningUpgradeScript -> IO (Exit.ExitCode, Text, Text)
+waitUpgradeScript :: (Concurrent :> es, FileSystem :> es, Process :> es, IOE :> es) => RunningUpgradeScript -> Eff es (Exit.ExitCode, Text, Text)
 waitUpgradeScript RunningUpgradeScript{processHandle, stdoutHandle, stderrHandle} = do
   stdoutVar <- MVar.newEmptyMVar
   stderrVar <- MVar.newEmptyMVar
-  _ <- Concurrent.forkIO (readHandle stdoutHandle stdoutVar)
-  _ <- Concurrent.forkIO (readHandle stderrHandle stderrVar)
-  exitCode <- Process.waitForProcess processHandle
+  void $ forkIO (readHandle stdoutHandle stdoutVar)
+  void $ forkIO (readHandle stderrHandle stderrVar)
+  exitCode <- waitForProcess processHandle
   stdoutText <- MVar.takeMVar stdoutVar
   stderrText <- MVar.takeMVar stderrVar
   pure (exitCode, stdoutText, stderrText)
 
-readHandle :: IO.Handle -> MVar.MVar Text -> IO ()
-readHandle outputHandle output =
-  MVar.putMVar output . Text.pack =<< IO.hGetContents outputHandle
+readHandle :: (FileSystem :> es, Concurrent :> es) => Handle -> MVar.MVar Text -> Eff es ()
+readHandle outputHandle output = do
+  bytes <- ByteStringFileSystem.hGetContents outputHandle
+  MVar.putMVar output (TextEncoding.decodeUtf8 bytes)
 
 scriptExited :: Exit.ExitCode -> Text -> Text -> Text
 scriptExited exitCode stdoutText stderrText =
