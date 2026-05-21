@@ -301,10 +301,22 @@ retryingStorageWrite action =
         Right value ->
           pure value
         Left err
-          | attempts > 1 ->
+          | attempts > 1
+          , retryableStorageWriteFailure err ->
               go (attempts - 1)
           | otherwise ->
               throwIO err
+
+retryableStorageWriteFailure :: SomeException -> Bool
+retryableStorageWriteFailure err =
+  any (`Text.isInfixOf` message)
+    [ "database is locked"
+    , "database table is locked"
+    , "sqlite_busy"
+    , "sqlite_locked"
+    ]
+  where
+    message = Text.toLower (Text.pack (displayException err))
 
 sessionRow :: StoredChatSession -> RpcSessionRow
 sessionRow session =

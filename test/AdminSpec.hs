@@ -111,6 +111,7 @@ testLifecycleStartupRepliesAreDeletedAfterDrain :: IO ()
 testLifecycleStartupRepliesAreDeletedAfterDrain = do
   replies <- IORef.newIORef ([] :: [Text])
   remaining <- runEff $
+    runConcurrent $
     runTestLog $
       StorageSQLite.runStorageSQLitePath ":memory:" $
         Chat.runChatWith (chatHandlers replies Nothing False) do
@@ -162,6 +163,7 @@ runAdminWithDelayAndTitle
   -> IO [LifecycleStorage.StoredStartupAction]
 runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incoming =
   runEff $
+    runConcurrent $
     runTestLog $
       StorageSQLite.runStorageSQLitePath ":memory:" $
         Chat.runChatWith (chatHandlers replies titleCalls titleResult) do

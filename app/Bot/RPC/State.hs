@@ -7,6 +7,8 @@ Stability   : experimental
 module Bot.RPC.State
   ( RpcState
   , RpcClientId
+  , RpcClientQueue
+  , RpcClientEvent (..)
   , RpcSessionId (..)
   , RpcOutbound (..)
   , RpcChatMessage (..)
@@ -16,6 +18,7 @@ module Bot.RPC.State
   , newRpcState
   , registerClient
   , unregisterClient
+  , readClient
   , writeClient
   , broadcast
   , broadcastAuditRecord
@@ -48,6 +51,13 @@ import qualified Streaming.Prelude as S
 
 type RpcClientId = Integer
 
+newtype RpcClientQueue = RpcClientQueue (STM.TBQueue RpcClientEvent)
+
+data RpcClientEvent
+  = RpcClientSend !Aeson.Value
+  | RpcClientDisconnect !Text
+  deriving (Eq, Show)
+
 newtype RpcSessionId = RpcSessionId { unRpcSessionId :: Text }
   deriving (Eq, Ord, Show)
 
@@ -60,7 +70,7 @@ instance Aeson.FromJSON RpcSessionId where
     RpcSessionId <$> Aeson.parseJSON value
 
 data RpcState = RpcState
-  { clients :: !(STM.TVar (Map RpcClientId (STM.TChan Aeson.Value)))
+  { clients :: !(STM.TVar (Map RpcClientId RpcClientQueue))
   , nextClientId :: !(STM.TVar RpcClientId)
   , nextSessionNumber :: !(STM.TVar Integer)
   , nextMessageNumber :: !(STM.TVar Integer)
@@ -118,12 +128,12 @@ newRpcState = STM.atomically do
   inbound <- STM.newTChan
   pure RpcState{clients, nextClientId, nextSessionNumber, nextMessageNumber, inbound}
 
-registerClient :: Concurrent :> es => RpcState -> Eff es (RpcClientId, STM.TChan Aeson.Value)
+registerClient :: Concurrent :> es => RpcState -> Eff es (RpcClientId, RpcClientQueue)
 registerClient rpcState =
   STM.atomically do
     clientId <- STM.readTVar rpcState.nextClientId
     STM.writeTVar rpcState.nextClientId (clientId + 1)
-    queue <- STM.newTChan
+    queue <- RpcClientQueue <$> STM.newTBQueue rpcClientQueueCapacity
     STM.modifyTVar' rpcState.clients (Map.insert clientId queue)
     pure (clientId, queue)
 
@@ -132,14 +142,20 @@ unregisterClient rpcState clientId =
   STM.atomically $
     STM.modifyTVar' rpcState.clients (Map.delete clientId)
 
-writeClient :: Concurrent :> es => STM.TChan Aeson.Value -> Aeson.Value -> Eff es ()
-writeClient queue value =
-  STM.atomically (STM.writeTChan queue value)
+readClient :: Concurrent :> es => RpcClientQueue -> Eff es RpcClientEvent
+readClient (RpcClientQueue queue) =
+  STM.atomically (STM.readTBQueue queue)
+
+writeClient :: Concurrent :> es => RpcClientQueue -> Aeson.Value -> Eff es ()
+writeClient (RpcClientQueue queue) value =
+  STM.atomically (STM.writeTBQueue queue (RpcClientSend value))
 
 broadcast :: Concurrent :> es => RpcState -> Aeson.Value -> Eff es ()
 broadcast rpcState value = do
-  queues <- STM.atomically (Map.elems <$> STM.readTVar rpcState.clients)
-  traverse_ (`writeClient` value) queues
+  STM.atomically do
+    clients <- STM.readTVar rpcState.clients
+    clients' <- Map.traverseMaybeWithKey (broadcastClient value) clients
+    STM.writeTVar rpcState.clients clients'
 
 broadcastAuditRecord :: Concurrent :> es => RpcState -> Aeson.Value -> Eff es ()
 broadcastAuditRecord rpcState recordValue =
@@ -315,3 +331,26 @@ storedMessageToRpc message =
     , replyToMessageId = message.replyToMessageId
     , parentMessageId = message.parentMessageId
     }
+
+broadcastClient :: Aeson.Value -> RpcClientId -> RpcClientQueue -> STM.STM (Maybe RpcClientQueue)
+broadcastClient value _clientId (RpcClientQueue queue) = do
+  full <- STM.isFullTBQueue queue
+  if full
+    then do
+      drainTBQueue queue
+      STM.writeTBQueue queue (RpcClientDisconnect "RPC notification queue overflow")
+      pure Nothing
+    else do
+      STM.writeTBQueue queue (RpcClientSend value)
+      pure (Just (RpcClientQueue queue))
+
+drainTBQueue :: STM.TBQueue a -> STM.STM ()
+drainTBQueue queue =
+  STM.tryReadTBQueue queue >>= \case
+    Nothing ->
+      pure ()
+    Just _ ->
+      drainTBQueue queue
+
+rpcClientQueueCapacity :: Natural
+rpcClientQueueCapacity = 256

@@ -60,9 +60,9 @@ testImageSanitization = runChatLogTest do
   liftIO $ map (.imageUrls) entries @?= [["[Picture]"], ["[Picture]"]]
   liftIO $ map (.text) entries @?= ["look", ""]
 
-runChatLogTest :: Eff '[ChatLog.ChatLog, Storage.Storage, Log, IOE] a -> IO a
+runChatLogTest :: Eff '[ChatLog.ChatLog, Storage.Storage, Log, Concurrent, IOE] a -> IO a
 runChatLogTest action =
-  runEff $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ ChatLog.runChatLog action
+  runEff $ runConcurrent $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ ChatLog.runChatLog action
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
 runTestLog action = do

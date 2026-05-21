@@ -24,11 +24,11 @@ main =
       , effTestCase "messages without sender are rejected" testScratchpadMissingSender
       ]
 
-effTestCase :: TestName -> Eff '[Prim, FileSystem, IOE] () -> TestTree
+effTestCase :: TestName -> Eff '[Concurrent, Prim, FileSystem, IOE] () -> TestTree
 effTestCase name =
-  testCase name . runEff . runFileSystem . runPrim
+  testCase name . runEff . runFileSystem . runPrim . runConcurrent
 
-testScratchpadTodoFlow :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
+testScratchpadTodoFlow :: (Concurrent :> es, FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (message "!todo buy milk")
@@ -52,7 +52,7 @@ testScratchpadTodoFlow = withScratchpadStore "flow" \store -> do
     , "todo list 为空。"
     ]
 
-testScratchpadSenderIsolation :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
+testScratchpadSenderIsolation :: (Concurrent :> es, FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (messageFrom "200" "!todo alice task")
@@ -68,7 +68,7 @@ testScratchpadSenderIsolation = withScratchpadStore "sender-isolation" \store ->
     , "- [ ] 1. bob task\n"
     ]
 
-testScratchpadPersistence :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
+testScratchpadPersistence :: (Concurrent :> es, FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
   writeReplies <- IORef.newIORef ([] :: [Text])
   runScratchpad path writeReplies (message "!todo persists")
@@ -77,7 +77,7 @@ testScratchpadPersistence = withScratchpadPath "persistence" \path -> do
   actual <- IORef.readIORef readReplies
   liftIO $ actual @?= ["- [ ] 1. persists\n"]
 
-testScratchpadInvalidCommands :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
+testScratchpadInvalidCommands :: (Concurrent :> es, FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadInvalidCommands = withScratchpadStore "invalid-commands" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (message "!done")
@@ -95,25 +95,25 @@ testScratchpadInvalidCommands = withScratchpadStore "invalid-commands" \store ->
     , "用法：!rm <编号1> <编号2> ..."
     ]
 
-testScratchpadMissingSender :: (FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
+testScratchpadMissingSender :: (Concurrent :> es, FileSystem :> es, IOE :> es, Prim :> es) => Eff es ()
 testScratchpadMissingSender = withScratchpadStore "missing-sender" \store -> do
   replies <- IORef.newIORef ([] :: [Text])
   runScratchpad store replies (messageWithoutSender "!todo unsaved")
   actual <- IORef.readIORef replies
   liftIO $ actual @?= ["无法识别发送者，不能保存 todo。"]
 
-withScratchpadStore :: (FileSystem :> es, IOE :> es) => String -> (FilePath -> Eff es ()) -> Eff es ()
+withScratchpadStore :: (Concurrent :> es, FileSystem :> es, IOE :> es) => String -> (FilePath -> Eff es ()) -> Eff es ()
 withScratchpadStore label action =
   withScratchpadPath label action
 
-withScratchpadPath :: (FileSystem :> es, IOE :> es) => String -> (FilePath -> Eff es ()) -> Eff es ()
+withScratchpadPath :: (Concurrent :> es, FileSystem :> es, IOE :> es) => String -> (FilePath -> Eff es ()) -> Eff es ()
 withScratchpadPath label action = do
   tmp <- getTemporaryDirectory
   let path = tmp </> ("cosmobot-scratchpad-spec-" <> label <> ".sqlite")
   removeFile path `catch` \(_ :: IOException) -> pure ()
   action path
 
-runScratchpad :: (IOE :> es, Prim :> es) => FilePath -> IORef.IORef [Text] -> IncomingMessage -> Eff es ()
+runScratchpad :: (Concurrent :> es, IOE :> es, Prim :> es) => FilePath -> IORef.IORef [Text] -> IncomingMessage -> Eff es ()
 runScratchpad path replies incoming =
   Chat.runChatWith Chat.ChatHandlers
     { handleReplyTo = reply

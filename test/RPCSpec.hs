@@ -15,7 +15,6 @@ import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import Data.Unique (hashUnique, newUnique)
-import qualified Effectful.Concurrent.STM as STM
 import Effectful.FileSystem (runFileSystem)
 import qualified Effectful.FileSystem as FileSystem
 import qualified Network.HTTP.Client as HTTP
@@ -32,6 +31,11 @@ import Test.Tasty.HUnit
 import qualified Toml
 import Toml.Schema
 
+newtype TestRpcException = TestRpcException Text
+  deriving (Show)
+
+instance Exception TestRpcException
+
 main :: IO ()
 main =
   defaultMain $
@@ -42,6 +46,8 @@ main =
       , testCase "chat.send constructs PlatformRPC incoming message" testChatSendConstructsIncomingMessage
       , testCase "chat.send rejects missing sessions without persisting orphan messages" testChatSendRejectsMissingSession
       , testCase "chat.send broadcasts user chat notification" testChatSendBroadcastsNotification
+      , testCase "client notification queue overflow disconnects slow client" testClientNotificationQueueOverflowDisconnects
+      , testCase "sync request exception returns JSON-RPC error" testSyncRequestExceptionReturnsJsonRpcError
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
       , testCase "chat.fork stores immutable parent link and inherited history" testChatForkStoresParentLink
@@ -159,7 +165,11 @@ testChatSendBroadcastsNotification = do
           [ "sessionId" Aeson..= ("browser-1" :: Text)
           , "text" Aeson..= ("hello" :: Text)
           ]
-    STM.atomically (STM.readTChan queue)
+    RPC.readClient queue >>= \case
+      RPC.RpcClientSend value ->
+        pure value
+      RPC.RpcClientDisconnect reason ->
+        liftIO (assertFailure [i|unexpected RPC client disconnect: #{reason}|])
 
   notification <- parseJson notificationValue :: IO Protocol.RpcNotification
   notification.method @?= "chat.message"
@@ -173,6 +183,41 @@ testChatSendBroadcastsNotification = do
       , "replyToMessageId" Aeson..= (Nothing :: Maybe Text)
       , "parentMessageId" Aeson..= (Nothing :: Maybe Text)
       ]
+
+testClientNotificationQueueOverflowDisconnects :: IO ()
+testClientNotificationQueueOverflowDisconnects = do
+  event <- runRpcStorage ":memory:" do
+    rpcState <- RPC.newRpcState
+    (_clientId, queue) <- RPC.registerClient rpcState
+    replicateM_ 257 $
+      RPC.broadcast rpcState (Aeson.object ["event" Aeson..= ("notification" :: Text)])
+    RPC.readClient queue
+
+  case event of
+    RPC.RpcClientDisconnect reason ->
+      reason @?= "RPC notification queue overflow"
+    RPC.RpcClientSend value ->
+      assertFailure [i|expected queue overflow disconnect, got #{Aeson.encode value}|]
+
+testSyncRequestExceptionReturnsJsonRpcError :: IO ()
+testSyncRequestExceptionReturnsJsonRpcError = do
+  response <- runRpcStorage ":memory:" do
+    rpcState <- RPC.newRpcState
+    let callbacks =
+          RPCServer.noRpcServerCallbacks
+            { RPCServer.auditMethod = \_ ->
+                throwIO (TestRpcException "audit exploded")
+            }
+    RPCServer.dispatchRpcRequest rpcState callbacks $
+      rpcRequest "audit.recent" Aeson.Null
+
+  case response of
+    JSONRPC.ErrorMessage err -> do
+      err.id @?= JSONRPC.RequestId (Aeson.String "test-1")
+      JSONRPC.code err.error @?= JSONRPC.iNTERNAL_ERROR
+      JSONRPC.message err.error @?= "RPC request failed: TestRpcException \"audit exploded\""
+    _ ->
+      assertFailure [i|expected JSON-RPC error response, got #{Aeson.encode response}|]
 
 testChatSessionsPersistAcrossRestart :: IO ()
 testChatSessionsPersistAcrossRestart =

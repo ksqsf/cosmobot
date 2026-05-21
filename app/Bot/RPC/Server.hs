@@ -28,7 +28,6 @@ import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Effectful.Concurrent.STM as STM
 import qualified Effectful.FileSystem as FileSystem
 import qualified JSONRPC
 import qualified Network.HTTP.Types as Http
@@ -42,6 +41,11 @@ import System.FilePath ((</>), takeExtension)
 data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: Protocol.RpcRequest -> Eff es (Maybe (Either Protocol.RpcError Aeson.Value))
   }
+
+newtype RpcClientDisconnected = RpcClientDisconnected Text
+  deriving (Show)
+
+instance Exception RpcClientDisconnected
 
 noRpcServerCallbacks :: RpcServerCallbacks es
 noRpcServerCallbacks = RpcServerCallbacks
@@ -136,19 +140,23 @@ serveAcceptedClient rpcState callbacks conn = do
 
 writeQueuedFrames
   :: (IOE :> es, Concurrent :> es)
-  => STM.TChan Aeson.Value
+  => State.RpcClientQueue
   -> WS.Connection
   -> Eff es ()
 writeQueuedFrames queue conn =
   forever do
-    value <- STM.atomically (STM.readTChan queue)
-    liftIO (WS.sendTextData conn (Aeson.encode value))
+    State.readClient queue >>= \case
+      State.RpcClientSend value ->
+        liftIO (WS.sendTextData conn (Aeson.encode value))
+      State.RpcClientDisconnect reason -> do
+        liftIO (WS.sendClose conn reason)
+        throwIO (RpcClientDisconnected reason)
 
 readRequestFrames
-  :: (IOE :> es, Concurrent :> es, Storage.Storage :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
   -> RpcServerCallbacks es
-  -> STM.TChan Aeson.Value
+  -> State.RpcClientQueue
   -> WS.Connection
   -> Eff es ()
 readRequestFrames rpcState callbacks queue conn =
@@ -171,12 +179,27 @@ readRequestFrames rpcState callbacks queue conn =
     traverse_ (State.writeClient queue . Aeson.toJSON) response
 
 dispatchRpcRequest
-  :: (Concurrent :> es, Storage.Storage :> es)
+  :: (IOE :> es, Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
   -> RpcServerCallbacks es
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
 dispatchRpcRequest rpcState callbacks request =
+  dispatchRpcRequestUnsafe rpcState callbacks request
+    `catchSync` \err ->
+      pure $
+        Protocol.errorResponse
+          (Protocol.requestId request)
+          "internal_error"
+          [i|RPC request failed: #{displayException err}|]
+
+dispatchRpcRequestUnsafe
+  :: (Concurrent :> es, Storage.Storage :> es)
+  => State.RpcState
+  -> RpcServerCallbacks es
+  -> Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchRpcRequestUnsafe rpcState callbacks request =
   case Protocol.requestMethod request of
     "chat.open_session" ->
       dispatchOpenSession rpcState request

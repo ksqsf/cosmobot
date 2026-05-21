@@ -14,19 +14,25 @@ import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
 import qualified Database.Selda.Backend as SeldaBackend
 import qualified Database.Selda.SQLite as SeldaSQLite
+import qualified Effectful.Concurrent.MVar as MVar
 
 runStorageSQLite
-  :: IOE :> es
+  :: (IOE :> es, Concurrent :> es)
   => SeldaBackend.SeldaConnection SeldaSQLite.SQLite
   -> Eff (Storage.Storage : es) a
   -> Eff es a
-runStorageSQLite seldaConnection =
-  interpret \_ -> \case
-    Storage.RunSelda action ->
-      liftIO (SeldaBackend.runSeldaT action seldaConnection)
+runStorageSQLite seldaConnection inner = do
+  seldaLock <- MVar.newMVar ()
+  interpret
+    ( \_ -> \case
+        Storage.RunSelda action ->
+          MVar.withMVar seldaLock \_ ->
+            liftIO (SeldaBackend.runSeldaT action seldaConnection)
+    )
+    inner
 
 runStorageSQLitePath
-  :: IOE :> es
+  :: (IOE :> es, Concurrent :> es)
   => FilePath
   -> Eff (Storage.Storage : es) a
   -> Eff es a
