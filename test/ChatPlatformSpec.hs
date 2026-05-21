@@ -40,6 +40,7 @@ main =
       , testCase "Discord message converts to incoming message" testDiscordMessageConvertsToIncomingMessage
       , testCase "Discord self message is ignored" testDiscordSelfMessageIsIgnored
       , testCase "Discord superuser and bot mention are marked" testDiscordSuperuserAndBotMentionAreMarked
+      , testCase "Discord CommonMark extensions render Discord Markdown" testDiscordCommonMarkExtensionsRenderDiscordMarkdown
       ]
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
@@ -366,6 +367,14 @@ testDiscordSuperuserAndBotMentionAreMarked = do
   incoming.digest.senderIsAllowed @?= True
   incoming.digest.senderIsSuperuser @?= True
   incoming.digest.mentionsBot @?= True
+
+testDiscordCommonMarkExtensionsRenderDiscordMarkdown :: IO ()
+testDiscordCommonMarkExtensionsRenderDiscordMarkdown = do
+  Discord.formatDiscordMarkdown "**hi** and `code`" @?= "**hi** and `code`"
+  Discord.formatDiscordMarkdown "~~old~~ and [site](https://example.test/a)" @?= "~~old~~ and [site](https://example.test/a)"
+  Discord.formatDiscordMarkdown "- [ ] todo\n- [x] **done**" @?= "- [ ] todo\n- [x] **done**"
+  Discord.formatDiscordMarkdown "Use $x^2$ and $$y$$" @?= "Use `x^2` and ```\ny\n```"
+  Discord.formatDiscordMarkdown "| a | b |\n| - | - |\n| 1 | 2 |" @?= "```\na | b\n1 | 2\n```"
 
 qqMessageEvent :: Integer -> QQ.Event
 qqMessageEvent userId =
