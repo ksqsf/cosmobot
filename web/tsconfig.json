@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.strict.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "isolatedModules": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "types": ["svelte", "vite/client", "vitest/globals"]
+  },
+  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.svelte", "*.ts", "*.js"]
+}
