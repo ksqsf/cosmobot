@@ -21,6 +21,7 @@ data FileConfig = FileConfig
   , loginUser :: !(Maybe Text)
   , loginPassword :: !(Maybe Text)
   , deviceId :: !(Maybe Text)
+  , directRooms :: ![Text]
   , botId :: !(Maybe Text)
   , allowedRooms :: ![Text]
   , superusers :: ![Text]
@@ -33,6 +34,7 @@ defaultFileConfig = FileConfig
   , loginUser = Nothing
   , loginPassword = Nothing
   , deviceId = Nothing
+  , directRooms = []
   , botId = Nothing
   , allowedRooms = []
   , superusers = []
@@ -44,6 +46,7 @@ instance FromValue FileConfig where
     <*> optToken "login_user"
     <*> optToken "login_password"
     <*> optToken "device_id"
+    <*> fmap (fromMaybe []) (optKey "direct_rooms")
     <*> optKey "bot_id"
     <*> fmap (fromMaybe []) (optKey "allowed_rooms")
     <*> fmap (fromMaybe []) (optKey "superusers")
@@ -55,6 +58,7 @@ toRuntimeConfig cfg =
     , loginUser = cfg.loginUser
     , loginPassword = cfg.loginPassword
     , deviceId = cfg.deviceId
+    , directRooms = cfg.directRooms
     , userId = cfg.botId
     , allowedRooms = cfg.allowedRooms
     , superusers = cfg.superusers

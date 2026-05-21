@@ -280,6 +280,7 @@ testMatrixSuperuserIsMarkedInDigest = do
         , Matrix.loginUser = Nothing
         , Matrix.loginPassword = Nothing
         , Matrix.deviceId = Nothing
+        , Matrix.directRooms = []
         , Matrix.userId = Just "@bot:example.org"
         , Matrix.allowedRooms = ["!room:example.org"]
         , Matrix.superusers = ["@alice:example.org"]

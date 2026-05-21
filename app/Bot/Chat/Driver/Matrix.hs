@@ -63,6 +63,7 @@ data Config = Config
   , loginUser :: !(Maybe Text)
   , loginPassword :: !(Maybe Text)
   , deviceId :: !(Maybe Text)
+  , directRooms :: ![Text]
   , userId :: !(Maybe Text)
   , allowedRooms :: ![Text]
   , superusers :: ![Text]
@@ -96,6 +97,8 @@ data Matrix :: Effect where
   MatrixConfig :: Matrix m Config
   Sync :: Maybe Text -> Matrix m (Maybe SyncResponse)
   DirectRooms :: Matrix m (Set Text)
+  JoinedMemberCounts :: Matrix m (Map Text Int)
+  JoinedMemberCount :: Text -> Matrix m (Maybe Int)
   SendText :: Text -> Text -> Matrix m (Maybe SendMessageResponse)
   UploadMedia :: FilePath -> Text -> Matrix m MatrixUploadResponse
   SendFileMessage :: Text -> MatrixFileMessage -> Matrix m (Maybe SendMessageResponse)
@@ -113,6 +116,14 @@ sync =
 directRooms :: Matrix :> es => Eff es (Set Text)
 directRooms =
   send DirectRooms
+
+joinedMemberCounts :: Matrix :> es => Eff es (Map Text Int)
+joinedMemberCounts =
+  send JoinedMemberCounts
+
+joinedMemberCount :: Matrix :> es => Text -> Eff es (Maybe Int)
+joinedMemberCount =
+  send . JoinedMemberCount
 
 sendText :: Matrix :> es => Text -> Text -> Eff es (Maybe SendMessageResponse)
 sendText roomId body =
@@ -138,7 +149,8 @@ runMatrix
 runMatrix cfg inner = do
   manager <- liftIO Http.newTlsManager
   eventIds <- IORef.newIORef (Map.empty :: Map MessageId Text)
-  directRoomIdsRef <- IORef.newIORef (Set.empty :: Set Text)
+  directRoomIdsRef <- IORef.newIORef (Set.fromList cfg.directRooms)
+  joinedMemberCountsRef <- IORef.newIORef (Map.empty :: Map Text Int)
   initialAuthState <- initialMatrixAuthState manager cfg
   authState <- IORef.newIORef initialAuthState
   refreshLock <- MVar.newMVar ()
@@ -150,10 +162,17 @@ runMatrix cfg inner = do
         Sync since -> do
           response <- withMaybeMatrixAccessToken auth \token ->
             syncCall manager cfg since token
-          traverse_ (rememberDirectRooms directRoomIdsRef) response
+          traverse_ (rememberMatrixRoomState directRoomIdsRef joinedMemberCountsRef) response
           pure response
         DirectRooms ->
           IORef.readIORef directRoomIdsRef
+        JoinedMemberCounts ->
+          IORef.readIORef joinedMemberCountsRef
+        JoinedMemberCount roomId ->
+          withMaybeMatrixAccessToken auth \token -> do
+            count <- joinedMemberCountCall manager cfg token roomId
+            rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count
+            pure count
         SendText roomId body -> do
           response <- withMaybeMatrixAccessToken auth \token ->
             sendMessageCall manager cfg token roomId body
@@ -182,9 +201,30 @@ rememberMatrixEvent :: Prim :> es => IORef.IORef (Map MessageId Text) -> SendMes
 rememberMatrixEvent eventIds response =
   IORef.modifyIORef' eventIds (Map.insert (textMessageId response.eventId) response.eventId)
 
-rememberDirectRooms :: Prim :> es => IORef.IORef (Set Text) -> SyncResponse -> Eff es ()
-rememberDirectRooms directRoomIdsRef response =
+rememberMatrixRoomState
+  :: Prim :> es
+  => IORef.IORef (Set Text)
+  -> IORef.IORef (Map Text Int)
+  -> SyncResponse
+  -> Eff es ()
+rememberMatrixRoomState directRoomIdsRef joinedMemberCountsRef response = do
   IORef.modifyIORef' directRoomIdsRef (<> syncDirectRoomIds response)
+  for_ (syncJoinedMemberCounts response) \(roomId, count) ->
+    rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count
+
+rememberJoinedMemberCount
+  :: Prim :> es
+  => IORef.IORef (Set Text)
+  -> IORef.IORef (Map Text Int)
+  -> Text
+  -> Int
+  -> Eff es ()
+rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count = do
+  IORef.modifyIORef' joinedMemberCountsRef (Map.insert roomId count)
+  IORef.modifyIORef' directRoomIdsRef \directRoomIds ->
+    if count == 2
+      then Set.insert roomId directRoomIds
+      else Set.delete roomId directRoomIds
 
 data MatrixAuth = MatrixAuth
   { authManager :: !Manager
@@ -460,8 +500,12 @@ incomingMessages = do
           syncLoop cfg since
         Just response -> do
           directRoomIds <- S.lift directRooms
-          let events = syncEvents directRoomIds response
-              directCount = Set.size directRoomIds
+          joinedCounts <- S.lift joinedMemberCounts
+          probedDirectRoomIds <- S.lift (probeDirectRoomIds directRoomIds joinedCounts response)
+          refreshedDirectRoomIds <- S.lift directRooms
+          let effectiveDirectRoomIds = refreshedDirectRoomIds <> probedDirectRoomIds
+              events = syncEvents effectiveDirectRoomIds response
+              directCount = Set.size effectiveDirectRoomIds
           S.lift $ logInfo_ [i|Matrix sync batch: #{length events}; direct_rooms=#{directCount}|]
           for_ events \event ->
             case eventToIncomingMessageWith cfg event of
@@ -471,7 +515,7 @@ incomingMessages = do
                 S.lift $ logInfo_ ("Ignoring Matrix event: " <> reason)
               Just message -> do
                 S.lift $ logTrace "incoming Matrix message" message
-                S.lift $ logInfo_ [i|incoming Matrix message: #{incomingMessageLogLine message}|]
+                S.lift $ logInfo_ [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine message}|]
                 S.yield message
           syncLoop cfg (Just response.nextBatch)
 
@@ -479,7 +523,7 @@ syncEvents :: Set Text -> SyncResponse -> [RoomEvent]
 syncEvents directRoomIds response =
   [ RoomEvent
       { roomId
-      , roomIsDirect = roomId `Set.member` directRoomIds
+      , roomIsDirect = roomId `Set.member` directRoomIds || roomLooksDirect room
       , event
       }
   | (roomId, room) <- Map.toList response.rooms.join
@@ -489,6 +533,36 @@ syncEvents directRoomIds response =
 syncDirectRoomIds :: SyncResponse -> Set Text
 syncDirectRoomIds =
   Set.fromList . (.directRooms) . (.accountData)
+
+syncJoinedMemberCounts :: SyncResponse -> [(Text, Int)]
+syncJoinedMemberCounts response =
+  [ (roomId, count)
+  | (roomId, room) <- Map.toList response.rooms.join
+  , Just count <- [room.summary.joinedMemberCount]
+  ]
+
+probeDirectRoomIds :: Matrix :> es => Set Text -> Map Text Int -> SyncResponse -> Eff es (Set Text)
+probeDirectRoomIds knownDirectRoomIds joinedCounts response =
+  Set.fromList <$> filterM looksDirect roomIdsToProbe
+  where
+    roomIdsToProbe =
+      [ roomId
+      | (roomId, room) <- Map.toList response.rooms.join
+      , not (roomId `Set.member` knownDirectRoomIds)
+      , not (roomId `Map.member` joinedCounts)
+      , isNothing room.summary.joinedMemberCount
+      ]
+
+    looksDirect roomId =
+      (== Just 2) <$> joinedMemberCount roomId
+
+roomLooksDirect :: JoinedRoom -> Bool
+roomLooksDirect room =
+  room.summary.joinedMemberCount == Just 2
+
+matrixIncomingLogLine :: RoomEvent -> Text
+matrixIncomingLogLine RoomEvent{roomId, roomIsDirect} =
+  [i|room_id=#{roomId} direct=#{roomIsDirect}|]
 
 matrixAuthConfigured :: Config -> Bool
 matrixAuthConfigured cfg =
@@ -777,6 +851,7 @@ defaultConfig = Config
   , loginUser = Nothing
   , loginPassword = Nothing
   , deviceId = Nothing
+  , directRooms = []
   , userId = Nothing
   , allowedRooms = []
   , superusers = []
@@ -844,6 +919,25 @@ syncCall manager cfg since token = do
         req GET (baseUrl /: "_matrix" /: "client" /: "v3" /: "sync") NoReqBody jsonResponse options
     )
     <&> responseBody
+
+joinedMemberCountCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Eff es Int
+joinedMemberCountCall manager cfg token roomId = do
+  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+  let options =
+        baseOptions
+          <> matrixAuth token
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+  logInfo_ [i|Matrix API request: joined_members room=#{roomId}|]
+  response :: JoinedMembersResponse <- matrixReq "joined_members"
+    ( Http.runReqWithConfig (matrixHttpConfig manager) $
+        req GET
+          (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "joined_members")
+          NoReqBody
+          jsonResponse
+          options
+    )
+    <&> responseBody
+  pure (Map.size response.joinedMembers)
 
 sendMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Text -> Eff es SendMessageResponse
 sendMessageCall manager cfg token roomId body = do
@@ -1019,14 +1113,35 @@ instance Aeson.FromJSON Rooms where
   parseJSON = Aeson.withObject "Rooms" \o ->
     Rooms <$> o Aeson..:? "join" Aeson..!= Map.empty
 
-newtype JoinedRoom = JoinedRoom
+data JoinedRoom = JoinedRoom
   { timeline :: Timeline
+  , summary :: RoomSummary
   }
   deriving (Show, Generic)
 
 instance Aeson.FromJSON JoinedRoom where
   parseJSON = Aeson.withObject "JoinedRoom" \o ->
-    JoinedRoom <$> o Aeson..:? "timeline" Aeson..!= Timeline []
+    JoinedRoom
+      <$> o Aeson..:? "timeline" Aeson..!= Timeline []
+      <*> o Aeson..:? "summary" Aeson..!= RoomSummary Nothing
+
+newtype RoomSummary = RoomSummary
+  { joinedMemberCount :: Maybe Int
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON RoomSummary where
+  parseJSON = Aeson.withObject "RoomSummary" \o ->
+    RoomSummary <$> o Aeson..:? "m.joined_member_count"
+
+newtype JoinedMembersResponse = JoinedMembersResponse
+  { joinedMembers :: Map Text Aeson.Value
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON JoinedMembersResponse where
+  parseJSON = Aeson.withObject "JoinedMembersResponse" \o ->
+    JoinedMembersResponse <$> o Aeson..:? "joined" Aeson..!= Map.empty
 
 newtype Timeline = Timeline
   { events :: [Event]

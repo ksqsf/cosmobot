@@ -25,6 +25,7 @@ homeserver = "https://matrix.org"
 login_user = ""
 login_password = ""
 device_id = "cosmobot"
+direct_rooms = []
 bot_id = "@bot:matrix.org"
 superusers = []
 allowed_rooms = []
