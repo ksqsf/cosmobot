@@ -485,7 +485,7 @@ selectStaticFile Config.Config{staticDir} pathSegments =
     candidates =
       case pathSegments of
         [] ->
-          [staticDir </> "index.html", "web/rpc.html"]
+          [staticDir </> "index.html", "web/index.html"]
         _ ->
           [requestedPath, staticDir </> "index.html"]
 
