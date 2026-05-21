@@ -134,6 +134,7 @@ common bot-chat-driver-modules
         Bot.Effect.Storage
         Bot.RPC.Protocol
         Bot.RPC.State
+        Bot.RPC.Storage
         Bot.Storage.Matrix
         Bot.Storage.Prelude
         Bot.Util.HTTP
@@ -369,10 +370,14 @@ test-suite rpc-spec
     main-is:          RPCSpec.hs
     other-modules:
         Bot.Chat.Driver.Types
+        Bot.Effect.Storage
         Bot.RPC.Config
         Bot.RPC.Protocol
         Bot.RPC.Server
         Bot.RPC.State
+        Bot.RPC.Storage
+        Bot.Storage.Prelude
+        Bot.Storage.SQLite
     build-depends:    log-base
                     , network
                     , toml-parser

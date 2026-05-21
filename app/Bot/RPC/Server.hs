@@ -15,7 +15,8 @@ module Bot.RPC.Server
 where
 
 import Bot.Prelude
-import Bot.Core.Message (IncomingMessage (..))
+import Bot.Core.Message (IncomingMessage (..), MessageId)
+import qualified Bot.Effect.Storage as Storage
 import qualified Bot.RPC.Config as Config
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.RPC.State as State
@@ -39,7 +40,7 @@ noRpcServerCallbacks = RpcServerCallbacks
   }
 
 runRpcServer
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -50,7 +51,7 @@ runRpcServer cfg@Config.Config{enabled} rpcState callbacks = do
     else pure ()
 
 runRpcServer'
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -64,7 +65,7 @@ runRpcServer' cfg rpcState callbacks = do
         runInIO (rpcServerApp cfg rpcState callbacks pending)
 
 rpcServerApp
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -84,7 +85,7 @@ rpcServerApp cfg rpcState callbacks pending
             }
 
 serveAcceptedClient
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
   -> RpcServerCallbacks es
   -> WS.Connection
@@ -112,7 +113,7 @@ writeQueuedFrames queue conn =
     liftIO (WS.sendTextData conn (Aeson.encode value))
 
 readRequestFrames
-  :: (IOE :> es, Concurrent :> es)
+  :: (IOE :> es, Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
   -> RpcServerCallbacks es
   -> STM.TChan Aeson.Value
@@ -138,7 +139,7 @@ readRequestFrames rpcState callbacks queue conn =
     traverse_ (State.writeClient queue . Aeson.toJSON) response
 
 dispatchRpcRequest
-  :: Concurrent :> es
+  :: (Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
   -> RpcServerCallbacks es
   -> Protocol.RpcRequest
@@ -147,6 +148,18 @@ dispatchRpcRequest rpcState callbacks request =
   case Protocol.requestMethod request of
     "chat.open_session" ->
       dispatchOpenSession rpcState request
+    "chat.list_sessions" ->
+      dispatchListSessions request
+    "chat.get_session" ->
+      dispatchGetSession request
+    "chat.history" ->
+      dispatchHistory request
+    "chat.fork" ->
+      dispatchFork rpcState request
+    "chat.rename_session" ->
+      dispatchRenameSession request
+    "chat.delete_session" ->
+      dispatchDeleteSession request
     "chat.send" ->
       dispatchChatSend rpcState request
     method
@@ -156,7 +169,7 @@ dispatchRpcRequest rpcState callbacks request =
           pure (methodNotFound (Protocol.requestId request) method)
 
 dispatchOpenSession
-  :: Concurrent :> es
+  :: (Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
@@ -165,15 +178,118 @@ dispatchOpenSession rpcState request =
     Left err ->
       pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
     Right label -> do
-      sessionId <- State.openChatSession rpcState label
+      session <- State.openChatSession rpcState label
+      pure $
+        Protocol.successResponse (Protocol.requestId request) $
+          Aeson.object
+            [ "sessionId" Aeson..= rpcSessionIdText session.sessionId
+            , "session" Aeson..= session
+            ]
+
+dispatchListSessions
+  :: Storage.Storage :> es
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchListSessions request = do
+  sessions <- State.listChatSessions
+  pure $
+    Protocol.successResponse (Protocol.requestId request) $
+      Aeson.object ["sessions" Aeson..= sessions]
+
+dispatchGetSession
+  :: Storage.Storage :> es
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchGetSession request =
+  case AesonTypes.parseEither parseSessionIdParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right sessionId -> do
+      session <- State.getChatSession sessionId
+      history <- maybe (pure []) (const (State.chatHistory sessionId)) session
+      pure $
+        Protocol.successResponse (Protocol.requestId request) $
+          Aeson.object
+            [ "session" Aeson..= session
+            , "messages" Aeson..= history
+            ]
+
+dispatchHistory
+  :: Storage.Storage :> es
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchHistory request =
+  case AesonTypes.parseEither parseSessionIdParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right sessionId -> do
+      messages <- State.chatHistory sessionId
       pure $
         Protocol.successResponse (Protocol.requestId request) $
           Aeson.object
             [ "sessionId" Aeson..= rpcSessionIdText sessionId
+            , "messages" Aeson..= messages
+            ]
+
+dispatchFork
+  :: (Concurrent :> es, Storage.Storage :> es)
+  => State.RpcState
+  -> Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchFork rpcState request =
+  case AesonTypes.parseEither parseForkParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right (sessionId, messageId, label) -> do
+      forked <- State.forkChatSession rpcState sessionId messageId label
+      case forked of
+        Nothing ->
+          pure (Protocol.errorResponse (Protocol.requestId request) "not_found" "Session or message not found")
+        Just session ->
+          pure $
+            Protocol.successResponse (Protocol.requestId request) $
+              Aeson.object
+                [ "sessionId" Aeson..= rpcSessionIdText session.sessionId
+                , "session" Aeson..= session
+                ]
+
+dispatchRenameSession
+  :: Storage.Storage :> es
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchRenameSession request =
+  case AesonTypes.parseEither parseRenameSessionParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right (sessionId, label) -> do
+      renamed <- State.renameChatSession sessionId label
+      case renamed of
+        Nothing ->
+          pure (Protocol.errorResponse (Protocol.requestId request) "not_found" "Session not found")
+        Just session ->
+          pure $
+            Protocol.successResponse (Protocol.requestId request) $
+              Aeson.object ["session" Aeson..= session]
+
+dispatchDeleteSession
+  :: Storage.Storage :> es
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchDeleteSession request =
+  case AesonTypes.parseEither parseSessionIdParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right sessionId -> do
+      deleted <- State.deleteChatSession sessionId
+      pure $
+        Protocol.successResponse (Protocol.requestId request) $
+          Aeson.object
+            [ "sessionId" Aeson..= rpcSessionIdText sessionId
+            , "deleted" Aeson..= deleted
             ]
 
 dispatchChatSend
-  :: Concurrent :> es
+  :: (Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
@@ -222,12 +338,34 @@ parseChatSendParams =
       o Aeson..:? "replyToMessageId" >>= \case
         Just value -> pure (Just value)
         Nothing -> o Aeson..:? "reply_to_message_id"
+    attachments <- fromMaybe [] <$> o Aeson..:? "attachments"
     pure State.RpcChatSend
       { sessionId = State.RpcSessionId sessionText
       , text
       , imageUrls
+      , attachments
       , replyToMessageId
       }
+
+parseSessionIdParams :: Aeson.Value -> AesonTypes.Parser State.RpcSessionId
+parseSessionIdParams =
+  Aeson.withObject "session params" \o ->
+    State.RpcSessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
+
+parseForkParams :: Aeson.Value -> AesonTypes.Parser (State.RpcSessionId, MessageId, Maybe Text)
+parseForkParams =
+  Aeson.withObject "chat.fork params" \o -> do
+    sessionId <- State.RpcSessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
+    messageId <- o Aeson..: "messageId" <|> o Aeson..: "message_id"
+    label <- o Aeson..:? "label"
+    pure (sessionId, messageId, label)
+
+parseRenameSessionParams :: Aeson.Value -> AesonTypes.Parser (State.RpcSessionId, Text)
+parseRenameSessionParams =
+  Aeson.withObject "chat.rename_session params" \o -> do
+    sessionId <- State.RpcSessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
+    label <- o Aeson..: "label"
+    pure (sessionId, label)
 
 methodNotFound :: Protocol.RequestId -> Text -> Protocol.RpcResponse
 methodNotFound requestId method =
