@@ -30,6 +30,17 @@ bot_id = "@bot:matrix.org"
 superusers = []
 allowed_rooms = []
 
+[driver.discord]
+bot_token = ""
+bot_id = ""
+application_id = ""
+allowed_guilds = []
+allowed_channels = []
+allowed_users = []
+superusers = []
+gateway_host = "gateway.discord.gg"
+gateway_path = "/?v=10&encoding=json"
+
 [llm]
 chat = "openrouter"
 image = "openai"

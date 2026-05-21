@@ -12,6 +12,7 @@ module Bot.Chat.Driver
 where
 
 import qualified Bot.Chat.Driver.QQ as QQ
+import qualified Bot.Chat.Driver.Discord as Discord
 import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Chat.Driver.Types
@@ -26,26 +27,30 @@ import Effectful.FileSystem (FileSystem)
 import Effectful.Timeout
 
 type ChatDriverEffects es =
-  Chat.Chat : QQ.QQ : Telegram.Telegram : Matrix.Matrix : es
+  Chat.Chat : QQ.QQ : Telegram.Telegram : Matrix.Matrix : Discord.Discord : es
+
+type ChatDriverConstraints es =
+  (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, FileSystem :> es, IOE :> es)
 
 chatPlatformDrivers
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, IOE :> es)
+  :: ChatDriverConstraints es
   => [ChatPlatformDriver es]
 chatPlatformDrivers =
   [ QQ.qqDriver
   , Telegram.telegramDriver
   , Matrix.matrixDriver
+  , Discord.discordDriver
   ]
 
 platformDriver
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, IOE :> es)
+  :: ChatDriverConstraints es
   => IncomingMessage
   -> Maybe (ChatPlatformDriver es)
 platformDriver message =
   List.find ((== message.platform) . (.platform)) chatPlatformDrivers
 
 withPlatformDriver
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Text
   -> (ChatPlatformDriver es -> Eff es (Maybe a))
@@ -61,7 +66,7 @@ withPlatformDriver message label action =
         pure Nothing
 
 replyToPlatform
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Text
   -> Eff es (Maybe MessageId)
@@ -70,7 +75,7 @@ replyToPlatform message body =
     driver.replyTo message body
 
 uploadFileToPlatform
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> FilePath
   -> Eff es (Either Text (Maybe MessageId))
@@ -87,7 +92,7 @@ uploadFileToPlatform message path =
         pure (Left messageText)
 
 replyAudioToPlatform
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Text
   -> Maybe Text
@@ -105,7 +110,7 @@ replyAudioToPlatform message audioRef caption =
         pure (Left messageText)
 
 editPlatformMessage
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> MessageId
   -> Text
@@ -115,7 +120,7 @@ editPlatformMessage message messageId body =
     Just <$> driver.editMessage message messageId body
 
 deletePlatformMessage
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> MessageId
   -> Eff es Bool
@@ -124,7 +129,7 @@ deletePlatformMessage message messageId =
     Just <$> driver.deleteMessage message messageId
 
 platformReplyStreamStyle
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Eff es Chat.ReplyStreamStyle
 platformReplyStreamStyle message =
@@ -139,7 +144,7 @@ defaultChunkedReplyLimit :: Int
 defaultChunkedReplyLimit = 4000
 
 getPlatformMessageContent
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> MessageId
   -> Eff es (Maybe ReferencedMessage)
@@ -148,7 +153,7 @@ getPlatformMessageContent message messageId =
     driver.getMessageContent message messageId
 
 getPlatformSenderMemberInfo
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Eff es (Maybe Aeson.Value)
 getPlatformSenderMemberInfo message =
@@ -156,7 +161,7 @@ getPlatformSenderMemberInfo message =
     driver.getSenderMemberInfo message
 
 getPlatformMemberInfo
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Integer
   -> Eff es (Maybe Aeson.Value)
@@ -165,7 +170,7 @@ getPlatformMemberInfo message userId =
     driver.getMemberInfo message userId
 
 getPlatformUserAvatar
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Text
   -> Eff es (Maybe Aeson.Value)
@@ -174,7 +179,7 @@ getPlatformUserAvatar message userId =
     driver.getUserAvatar message userId
 
 listPlatformGroupMembers
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Eff es (Maybe Aeson.Value)
 listPlatformGroupMembers message =
@@ -182,7 +187,7 @@ listPlatformGroupMembers message =
     driver.listGroupMembers message
 
 mentionPlatformUser
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Integer
   -> Text
@@ -192,7 +197,7 @@ mentionPlatformUser message userId body =
     driver.mentionUser message userId body
 
 setPlatformMemberTitle
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => IncomingMessage
   -> Integer
   -> Text
@@ -206,9 +211,11 @@ runChatDrivers
   => QQ.Config
   -> Telegram.Config
   -> Matrix.Config
+  -> Discord.Config
   -> Eff (ChatDriverEffects es) a
   -> Eff es a
-runChatDrivers qqConfig telegramConfig matrixConfig =
+runChatDrivers qqConfig telegramConfig matrixConfig discordConfig =
+  Discord.runDiscord discordConfig .
   Matrix.runMatrix matrixConfig .
   Telegram.runTelegram telegramConfig .
   QQ.runQQ qqConfig .
@@ -218,6 +225,7 @@ incomingMessages
   :: QQ.QQ :> es
   => Telegram.Telegram :> es
   => Matrix.Matrix :> es
+  => Discord.Discord :> es
   => Log :> es
   => Concurrent :> es
   => Fail :> es
@@ -228,10 +236,11 @@ incomingMessages =
     [ QQ.incomingMessages
     , Telegram.incomingMessages
     , Matrix.incomingMessages
+    , Discord.incomingMessages
     ]
 
 chatHandlers
-  :: (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, FileSystem :> es, Log :> es, IOE :> es)
+  :: (ChatDriverConstraints es, Log :> es)
   => Chat.ChatHandlers es
 chatHandlers = Chat.ChatHandlers
   { handleReplyTo = replyToPlatform

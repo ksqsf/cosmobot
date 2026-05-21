@@ -2,3 +2,4 @@ dist-newstyle/
 cosmobot.sqlite3*
 config.toml
 *.sh
+.ghcid-errors

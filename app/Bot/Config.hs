@@ -19,6 +19,8 @@ where
 
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.QQ.Config as QQConfig
+import qualified Bot.Chat.Driver.Discord as Discord
+import qualified Bot.Chat.Driver.Discord.Config as DiscordConfig
 import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Matrix.Config as MatrixConfig
 import qualified Bot.Chat.Driver.Telegram as Telegram
@@ -58,6 +60,7 @@ data BotConfig = BotConfig
   { qq       :: !QQ.Config
   , telegram :: !Telegram.Config
   , matrix   :: !Matrix.Config
+  , discord :: !Discord.Config
   , llm      :: !LLMConfig.Config
   , tool     :: !Agent.ToolConfig
   , saucenao :: !SaucenaoConfig
@@ -115,6 +118,7 @@ data DriverFileConfig = DriverFileConfig
   { qq       :: !QQConfig.FileConfig
   , telegram :: !TelegramConfig.FileConfig
   , matrix   :: !MatrixConfig.FileConfig
+  , discord :: !DiscordConfig.FileConfig
   }
   deriving (Show)
 
@@ -123,6 +127,7 @@ instance FromValue DriverFileConfig where
     <$> reqKey "qq"
     <*> reqKey "telegram"
     <*> fmap (fromMaybe MatrixConfig.defaultFileConfig) (optKey "matrix")
+    <*> fmap (fromMaybe DiscordConfig.defaultFileConfig) (optKey "discord")
 
 data HandlerFileConfig = HandlerFileConfig
   { admin   :: !AdminConfig
@@ -191,14 +196,16 @@ toBotConfig cfg =
     qqFileConfig = cfg.driver.qq
     telegramFileConfig = cfg.driver.telegram
     matrixFileConfig = cfg.driver.matrix
+    discordFileConfig = cfg.driver.discord
     askConfig = cfg.handler.ask
-      { botIds = configuredBotIds qqFileConfig telegramFileConfig matrixFileConfig
+      { botIds = configuredBotIds qqFileConfig telegramFileConfig matrixFileConfig discordFileConfig
       }
   in
   BotConfig
     { qq = QQConfig.toRuntimeConfig qqFileConfig
     , telegram = TelegramConfig.toRuntimeConfig telegramFileConfig
     , matrix = MatrixConfig.toRuntimeConfig matrixFileConfig
+    , discord = DiscordConfig.toRuntimeConfig discordFileConfig
     , llm = LLMConfig.toRuntimeConfig cfg.llm
     , tool = AgentConfig.toToolConfig cfg.tool
     , saucenao = cfg.handler.saucenao
@@ -209,12 +216,13 @@ toBotConfig cfg =
     , sqlitePath = cfg.storage.sqlitePath
     }
 
-configuredBotIds :: QQConfig.FileConfig -> TelegramConfig.FileConfig -> MatrixConfig.FileConfig -> [(ChatPlatform, Text)]
-configuredBotIds qqCfg telegramCfg matrixCfg =
+configuredBotIds :: QQConfig.FileConfig -> TelegramConfig.FileConfig -> MatrixConfig.FileConfig -> DiscordConfig.FileConfig -> [(ChatPlatform, Text)]
+configuredBotIds qqCfg telegramCfg matrixCfg discordCfg =
   catMaybes
     [ (PlatformQQ,) . Text.pack . show <$> qqCfg.botId
     , (PlatformTelegram,) <$> telegramBotIdText telegramCfg.botId
     , (PlatformMatrix,) <$> matrixCfg.botId
+    , (PlatformDiscord,) <$> discordCfg.botId
     ]
 
 telegramBotIdText :: Maybe TelegramConfig.TelegramBotId -> Maybe Text

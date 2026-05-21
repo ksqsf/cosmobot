@@ -10,7 +10,7 @@ You are a Haskell engineer working on cosmobot. Favor correctness, explicit data
 
 ## Module Ownership
 
-- `Bot.Core.*`: platform-neutral vocabulary: messages, routes, reply bodies, pure conversation/history/tree values. No QQ/Telegram/Matrix, SQLite, Selda, LLM transport, or process details.
+- `Bot.Core.*`: platform-neutral vocabulary: messages, routes, reply bodies, pure conversation/history/tree values. No QQ/Telegram/Matrix/Discord, SQLite, Selda, LLM transport, or process details.
 - `Bot.Handler.*`: user-facing command and conversation flows.
 - `Bot.Effect.*`: narrow capability facades only.
 - `Bot.Chat.Driver.*`: platform APIs and normalized `IncomingMessage` construction.
@@ -47,6 +47,7 @@ Avoid import cycles when extracting from effects. Prefer explicit callback recor
 
 ## Coding Rules
 
+- For Haskell code changes, use the local `haskell` skill's fast-feedback workflow: keep `ghcid --outputfile .ghcid-errors` running when practical, read `.ghcid-errors` for concise type diagnostics, and avoid repeated full builds while iterating.
 - Work in `Eff es`. Add `IOE :> es` only at real external boundaries.
 - Prefer `effectful` capabilities (`Concurrent`, `STM`, `MVar`, `IORef`, `Timeout`, `Process`, `FileSystem`) over raw `base` concurrency/process/file APIs.
 - For filesystem work, prefer `Effectful.FileSystem` and `Effectful.FileSystem.IO*`. Do not import `System.Directory` or `System.IO` for ordinary file operations, temporary-file handling, handle closing, or byte-string reads/writes when an `effectful` operation exists.
@@ -67,11 +68,11 @@ Avoid import cycles when extracting from effects. Prefer explicit callback recor
 
 ## Config Rules
 
-- Driver settings live under `[driver.qq]`, `[driver.telegram]`, and `[driver.matrix]`.
+- Driver settings live under `[driver.qq]`, `[driver.telegram]`, `[driver.matrix]`, and `[driver.discord]`.
 - Handler settings live under `[handler.*]`.
 - LLM settings live under `[llm]` and are parsed by `Bot.LLM.*.Config`.
 - Driver access lists and superusers belong in each driver config.
-- Do not reintroduce top-level `[qq]`, `[telegram]`, `[matrix]`, `[saucenao]`, `[handlers.*]`, or handler-owned platform whitelist sections.
+- Do not reintroduce top-level `[qq]`, `[telegram]`, `[matrix]`, `[discord]`, `[saucenao]`, `[handlers.*]`, or handler-owned platform whitelist sections.
 - When adding config, update the owner parser, `Bot.Config`, `config.example.toml`, and every runtime consumer.
 
 ## Change Guidelines

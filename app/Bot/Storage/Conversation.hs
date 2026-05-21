@@ -408,6 +408,8 @@ platformFromKey = \case
     PlatformTelegram
   "matrix" ->
     PlatformMatrix
+  "discord" ->
+    PlatformDiscord
   _ ->
     PlatformQQ
 

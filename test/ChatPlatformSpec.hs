@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Data.Aeson as Aeson
+import qualified Bot.Chat.Driver.Discord as Discord
 import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
@@ -36,6 +37,9 @@ main =
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
       , testCase "Matrix Markdown renders custom HTML" testMatrixMarkdownRendersCustomHtml
+      , testCase "Discord message converts to incoming message" testDiscordMessageConvertsToIncomingMessage
+      , testCase "Discord self message is ignored" testDiscordSelfMessageIsIgnored
+      , testCase "Discord superuser and bot mention are marked" testDiscordSuperuserAndBotMentionAreMarked
       ]
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
@@ -334,6 +338,35 @@ testMatrixSuperuserIsMarkedInDigest = do
   incoming.digest.senderIsSuperuser @?= True
   incoming.digest.mentionsBot @?= True
 
+testDiscordMessageConvertsToIncomingMessage :: IO ()
+testDiscordMessageConvertsToIncomingMessage = do
+  let incoming = Discord.eventToIncomingMessage discordMessage
+  ((.platform) <$> incoming) @?= Just PlatformDiscord
+  ((.kind) <$> incoming) @?= Just ChatGroup
+  ((.chatAliases) <$> incoming) @?= Just ["90001", "80001"]
+  ((.senderId) <$> incoming) @?= Just (Just "10001")
+  ((.senderUsername) <$> incoming) @?= Just (Just "alice")
+  ((.messageId) <$> incoming) @?= Just (Just (textMessageId "70001"))
+  ((.replyToMessageId) <$> incoming) @?= Just (Just (textMessageId "60001"))
+  ((.mentions) <$> incoming) @?= Just [424242]
+  ((.imageUrls) <$> incoming) @?= Just ["https://cdn.discordapp.com/image.png"]
+  ((.text) <$> incoming) @?= Just "hello <@424242>"
+
+testDiscordSelfMessageIsIgnored :: IO ()
+testDiscordSelfMessageIsIgnored =
+  assertBool
+    "Discord messages sent by the bot itself are ignored"
+    (isNothing (Discord.eventToIncomingMessageWith discordConfig discordMessage{Discord.author = discordUser "424242" "krkr" True}))
+
+testDiscordSuperuserAndBotMentionAreMarked :: IO ()
+testDiscordSuperuserAndBotMentionAreMarked = do
+  let incoming = fromMaybe (error "expected incoming Discord message") $
+        Discord.eventToIncomingMessageWith discordConfig discordMessage
+  incoming.digest.chatIsAllowed @?= True
+  incoming.digest.senderIsAllowed @?= True
+  incoming.digest.senderIsSuperuser @?= True
+  incoming.digest.mentionsBot @?= True
+
 qqMessageEvent :: Integer -> QQ.Event
 qqMessageEvent userId =
   QQ.Event
@@ -487,6 +520,77 @@ matrixMentionRoomEvent =
         , Matrix.eventId = Just "$event:example.org"
         , Matrix.raw = Aeson.Null
         }
+    }
+
+discordConfig :: Discord.Config
+discordConfig =
+  Discord.Config
+    { Discord.botToken = ""
+    , Discord.botId = Just "424242"
+    , Discord.applicationId = Nothing
+    , Discord.allowedGuilds = [80001]
+    , Discord.allowedChannels = []
+    , Discord.allowedUsers = []
+    , Discord.superusers = ["10001"]
+    , Discord.gatewayHost = "gateway.discord.gg"
+    , Discord.gatewayPath = "/?v=10&encoding=json"
+    }
+
+discordMessage :: Discord.Message
+discordMessage =
+  Discord.Message
+    { Discord.id = "70001"
+    , Discord.channelId = "90001"
+    , Discord.guildId = Just "80001"
+    , Discord.author = discordUser "10001" "alice" False
+    , Discord.member = Nothing
+    , Discord.content = "hello <@424242>"
+    , Discord.attachments =
+        [ Discord.Attachment
+            { Discord.id = "1"
+            , Discord.filename = "image.png"
+            , Discord.url = "https://cdn.discordapp.com/image.png"
+            , Discord.contentType = Just "image/png"
+            }
+        ]
+    , Discord.mentions = [discordUser "424242" "krkr" True]
+    , Discord.referencedMessage = Just (discordReferencedMessage "60001")
+    , Discord.messageReference = Nothing
+    , Discord.raw = Aeson.object ["guild_id" Aeson..= ("80001" :: Text)]
+    }
+
+discordReferencedMessage :: Text -> Discord.Message
+discordReferencedMessage messageId =
+  (discordMessageNoReference messageId)
+    { Discord.content = "quoted"
+    , Discord.attachments = []
+    , Discord.mentions = []
+    }
+
+discordMessageNoReference :: Text -> Discord.Message
+discordMessageNoReference messageId =
+  Discord.Message
+    { Discord.id = messageId
+    , Discord.channelId = "90001"
+    , Discord.guildId = Just "80001"
+    , Discord.author = discordUser "20001" "bob" False
+    , Discord.member = Nothing
+    , Discord.content = ""
+    , Discord.attachments = []
+    , Discord.mentions = []
+    , Discord.referencedMessage = Nothing
+    , Discord.messageReference = Nothing
+    , Discord.raw = Aeson.object ["guild_id" Aeson..= ("80001" :: Text)]
+    }
+
+discordUser :: Text -> Text -> Bool -> Discord.User
+discordUser userId username fromBot =
+  Discord.User
+    { Discord.id = userId
+    , Discord.username = Just username
+    , Discord.globalName = Nothing
+    , Discord.bot = fromBot
+    , Discord.avatar = Nothing
     }
 
 runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a

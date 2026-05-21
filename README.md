@@ -1,10 +1,10 @@
 # Cosmobot
 
-Cosmobot 是一个小型 AI agent 框架，接受来自 QQ/OneBot、Telegram 和 Matrix 的消息，同时也可以作为聊天机器人使用。
+Cosmobot 是一个小型 AI agent 框架，接受来自 QQ/OneBot、Telegram、Matrix 和 Discord 的消息，同时也可以作为聊天机器人使用。
 
 ## 功能
 
-- 支持 QQ/OneBot、Telegram、Matrix 三种聊天入口。
+- 支持 QQ/OneBot、Telegram、Matrix、Discord 四种聊天入口。
 - 支持 OpenAI-compatible Chat Completions 和 streaming 输出接口。
 - 支持私聊和群组。
 - 支持多种触发方式：命令触发、`@`、机器人名字等。
@@ -48,6 +48,7 @@ agent_max_turns = 4
 - `[driver.qq]`：OneBot websocket 地址、token、机器人 QQ、允许的群/用户和管理员。
 - `[driver.telegram]`：Telegram bot token、bot id、允许的 chat 和管理员。
 - `[driver.matrix]`：Matrix homeserver、access token、用户 id、允许的 room 和管理员。
+- `[driver.discord]`：Discord bot token、bot id、允许的 guild/channel/user 和管理员。
 - `[llm]`：选择聊天和图片 provider；provider 表里配置 OpenAI-compatible endpoint、API key、模型和请求参数。
 - `[memory]`：持久记忆目录。
 - `[tool]`、`[tool.web_fetch]`、`[tool.web_search]`：agent 工具开关和限制。
@@ -59,7 +60,27 @@ agent_max_turns = 4
 - QQ 会话权限在 `allowed_groups` 和 `allowed_users`。
 - Telegram 会话权限在 `allowed_chats`。
 - Matrix 会话权限在 `allowed_rooms`。
+- Discord 会话权限在 `allowed_guilds`、`allowed_channels` 和 `allowed_users`。
 - 管理员权限在各平台 driver 的 `superusers`。
+
+### Discord 配置
+
+Discord driver 使用 Gateway v10 接收 `MESSAGE_CREATE`，并通过 REST API 发送、编辑、删除、读取消息和上传附件。需要在 Discord Developer Portal 给 bot 开启对应 intents；如果需要读取普通消息正文，还需要启用 Message Content Intent。
+
+```toml
+[driver.discord]
+bot_token = ""
+bot_id = ""
+application_id = ""
+allowed_guilds = []
+allowed_channels = []
+allowed_users = []
+superusers = []
+gateway_host = "gateway.discord.gg"
+gateway_path = "/?v=10&encoding=json"
+```
+
+`bot_id`、`allowed_users` 和 `superusers` 使用 Discord snowflake 字符串；`allowed_guilds` 和 `allowed_channels` 可写整数 snowflake。Discord 没有 QQ title 的等价能力，所以 `!title` 不支持 Discord 成员头衔设置。
 
 ### LLM provider 配置
 

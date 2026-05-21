@@ -78,6 +78,8 @@ data ChatPlatform
   -- ^ Telegram Bot API.
   | PlatformMatrix
   -- ^ Matrix Client-Server API.
+  | PlatformDiscord
+  -- ^ Discord Gateway and REST APIs.
   deriving (Eq, Ord, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 chatPlatformKey :: ChatPlatform -> Text
@@ -88,6 +90,8 @@ chatPlatformKey = \case
     "telegram"
   PlatformMatrix ->
     "matrix"
+  PlatformDiscord ->
+    "discord"
 
 -- | Coarse chat shape shared across platforms.
 data ChatKind

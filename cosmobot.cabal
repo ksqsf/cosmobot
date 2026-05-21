@@ -126,6 +126,7 @@ common bot-chat-driver-modules
     other-modules:
         Bot.Chat.Driver.Types
         Bot.Chat.Driver.QQ
+        Bot.Chat.Driver.Discord
         Bot.Chat.Driver.Matrix
         Bot.Chat.Driver.Telegram
         Bot.Effect.Storage
@@ -215,6 +216,7 @@ executable cosmobot
     other-modules:
         Bot.Agent.Config
         Bot.Chat.Driver
+        Bot.Chat.Driver.Discord.Config
         Bot.Chat.Driver.Matrix.Config
         Bot.Chat.Driver.QQ.Config
         Bot.Chat.Driver.Telegram.Config
