@@ -16,6 +16,8 @@ const pending = new Map<string, PendingRequest>();
 let ws: WebSocket | null = null;
 let nextId = 1;
 
+export const maxAttachmentBytes = 8 * 1024 * 1024;
+
 export const defaultConfig = (): RpcConfig => ({
   url: defaultWsUrl(),
   token: ''
@@ -85,7 +87,7 @@ export const disconnectRpc = (): void => {
   }
 };
 
-export const requestRpc = async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+export const requestRpc = async (method: string, params: Record<string, unknown> = {}): Promise<unknown> => {
   if (ws === null || ws.readyState !== WebSocket.OPEN) {
     throw new Error('WebSocket is not connected');
   }
@@ -93,20 +95,20 @@ export const requestRpc = async <T>(method: string, params: Record<string, unkno
   nextId += 1;
   ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
   addLog(`-> ${method} #${id}`);
-  return new Promise<T>((resolve, reject) => {
+  return new Promise<unknown>((resolve, reject) => {
     const timeout = setTimeout(() => {
       pending.delete(id);
       reject(new Error(`Request timed out: ${method}`));
     }, 30000);
-    pending.set(id, { method, resolve: (value) => { resolve(value as T); }, reject, timeout });
+    pending.set(id, { method, resolve, reject, timeout });
   });
 };
 
-export const requestFirst = async <T>(methods: string[], params: Record<string, unknown>): Promise<T> => {
+export const requestFirst = async (methods: string[], params: Record<string, unknown>): Promise<unknown> => {
   let lastError: Error | undefined;
   for (const method of methods) {
     try {
-      return await requestRpc<T>(method, params);
+      return await requestRpc(method, params);
     } catch (error) {
       const normalized = toError(error);
       lastError = normalized;
@@ -119,7 +121,7 @@ export const requestFirst = async <T>(methods: string[], params: Record<string, 
 };
 
 export const openSession = async (label: string): Promise<void> => {
-  const result = await requestFirst<unknown>(['chat.open_session', 'chat.open'], label.length > 0 ? { label } : {});
+  const result = await requestRpc('chat.open_session', label.length > 0 ? { label } : {});
   const sessionId = decodeSessionId(result);
   if (sessionId === '') {
     throw new Error('chat.open_session returned no session id');
@@ -131,7 +133,7 @@ export const openSession = async (label: string): Promise<void> => {
 
 export const refreshSessions = async (): Promise<void> => {
   try {
-    const result = await requestRpc<unknown>('chat.list_sessions', {});
+    const result = await requestRpc('chat.list_sessions', {});
     const decoded = decodeSessions(result);
     if (decoded.ok) {
       sessions.set(decoded.value);
@@ -150,7 +152,7 @@ export const loadHistory = async (sessionId: string): Promise<void> => {
     return;
   }
   try {
-    const result = await requestFirst<unknown>(['chat.history', 'chat.get_session'], { sessionId, session_id: sessionId });
+    const result = await requestFirst(['chat.history', 'chat.get_session'], { sessionId, session_id: sessionId });
     const decoded = decodeHistory(result, sessionId);
     if (!decoded.ok) {
       throw new Error(decoded.error);
@@ -173,7 +175,7 @@ export const sendChat = async (sessionId: string, text: string, attachments: Que
 };
 
 export const forkFrom = async (sessionId: string, messageId: string): Promise<void> => {
-  const result = await requestRpc<unknown>('chat.fork', { sessionId, session_id: sessionId, messageId, message_id: messageId });
+  const result = await requestRpc('chat.fork', { sessionId, session_id: sessionId, messageId, message_id: messageId });
   const forkedId = decodeSessionId(result);
   if (forkedId !== '') {
     await loadHistory(forkedId);
@@ -196,7 +198,11 @@ export const renameSession = async (sessionId: string, title: string): Promise<v
 };
 
 export const uploadAttachment = async (queued: QueuedAttachment): Promise<ChatAttachment> => {
-  const result = await requestRpc<unknown>('chat.upload_attachment', {
+  const sizeError = attachmentSizeError(queued.size);
+  if (sizeError !== undefined) {
+    throw new Error(sizeError);
+  }
+  const result = await requestRpc('chat.upload_attachment', {
     name: queued.name,
     mediaType: queued.mediaType,
     media_type: queued.mediaType,
@@ -217,7 +223,7 @@ export const deleteAttachment = async (attachmentId: string): Promise<void> => {
 
 export const refreshAudit = async (): Promise<void> => {
   try {
-    const result = await requestRpc<unknown>('audit.recent', { limit: 80 });
+    const result = await requestRpc('audit.recent', { limit: 80 });
     const decoded = decodeAuditEvents(result);
     if (decoded.ok) {
       decoded.value.reverse().forEach((event) => {
@@ -258,24 +264,55 @@ export const decodeIncomingRpcMessage = (value: unknown): DecodeResult<IncomingR
     if (id !== null && typeof id !== 'string' && typeof id !== 'number') {
       return err('rpc.id must be string, number, or null');
     }
-    const response: RpcResponse = { id };
+    const hasResult = 'result' in record.value;
+    const hasError = 'error' in record.value;
+    if (hasResult === hasError) {
+      return err('rpc response must include exactly one of result or error');
+    }
     const jsonrpc = optionalText(record.value['jsonrpc']);
-    if (jsonrpc !== undefined) {
-      response.jsonrpc = jsonrpc;
+    const base = jsonrpc === undefined ? { id } : { id, jsonrpc };
+    if (hasResult) {
+      return ok({ ...base, result: record.value['result'] });
     }
-    if ('result' in record.value) {
-      response.result = record.value['result'];
+    const error = decodeRpcError(record.value['error']);
+    if (!error.ok) {
+      return error;
     }
-    if ('error' in record.value) {
-      const error = decodeRpcError(record.value['error']);
-      if (!error.ok) {
-        return error;
-      }
-      response.error = error.value;
-    }
-    return ok(response);
+    return ok({ ...base, error: error.value });
   }
   return err('rpc message must be a response or notification');
+};
+
+export const attachmentSizeError = (size: number): string | undefined => {
+  if (!Number.isFinite(size) || size < 0) {
+    return 'Attachment size is invalid';
+  }
+  if (size > maxAttachmentBytes) {
+    return `Attachment is too large: ${formatBytes(size)} exceeds ${formatBytes(maxAttachmentBytes)}`;
+  }
+  return undefined;
+};
+
+export const attachmentParam = (attachment: ChatAttachment): Record<string, unknown> => {
+  const param: Record<string, unknown> = {
+    attachmentId: attachment.id,
+    kind: attachment.kind
+  };
+  if (attachment.name.length > 0) {
+    param['name'] = attachment.name;
+  }
+  param['id'] = attachment.id;
+  return param;
+};
+
+const formatBytes = (size: number): string => {
+  if (size < 1024) {
+    return `${String(size)} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KiB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MiB`;
 };
 
 export const decodeChatMessage = (value: unknown, fallbackSessionId = ''): DecodeResult<ChatMessage> => {
@@ -436,9 +473,9 @@ const decodeAttachment = (value: unknown, path = 'attachment'): DecodeResult<Cha
   if (!record.ok) {
     return record;
   }
-  const id = firstString(record.value, ['id', 'attachmentId', 'attachment_id']);
+  const id = firstString(record.value, ['attachmentId', 'attachment_id', 'id']);
   if (id === undefined) {
-    return err(`${path}.id must be present`);
+    return err(`${path}.attachmentId must be present`);
   }
   const mediaType = firstString(record.value, ['mediaType', 'media_type', 'contentType', 'content_type']) ?? 'application/octet-stream';
   const attachment: ChatAttachment = {
@@ -448,7 +485,7 @@ const decodeAttachment = (value: unknown, path = 'attachment'): DecodeResult<Cha
     size: firstNumber(record.value, ['size', 'byteSize', 'byte_size']) ?? 0,
     kind: attachmentKind(mediaType)
   };
-  addOptional(attachment, 'url', firstString(record.value, ['url', 'href']) ?? `/attachments/${encodeURIComponent(id)}`);
+  addOptional(attachment, 'url', firstString(record.value, ['url', 'href']) ?? synthesizedAttachmentUrl(id));
   return ok(attachment);
 };
 
@@ -493,16 +530,6 @@ const toAuditEvent = (payload: unknown): AuditEvent => {
   };
 };
 
-const attachmentParam = (attachment: ChatAttachment): Record<string, unknown> => ({
-  id: attachment.id,
-  name: attachment.name,
-  mediaType: attachment.mediaType,
-  media_type: attachment.mediaType,
-  size: attachment.size,
-  kind: attachment.kind,
-  url: attachment.url
-});
-
 const fileToBase64 = async (file: File): Promise<string> => {
   const buffer = await file.arrayBuffer();
   let binary = '';
@@ -510,6 +537,15 @@ const fileToBase64 = async (file: File): Promise<string> => {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary);
+};
+
+const synthesizedAttachmentUrl = (attachmentId: string): string => {
+  const url = new URL(`/attachments/${encodeURIComponent(attachmentId)}`, window.location.origin);
+  const token = loadConfig().token;
+  if (token.length > 0) {
+    url.searchParams.set('access_token', token);
+  }
+  return `${url.pathname}${url.search}`;
 };
 
 const optionalText = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);

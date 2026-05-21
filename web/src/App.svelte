@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { auditEvents, connection, currentSession, eventLog, messages, selectedAudit, sessions } from './lib/stores';
-  import { attachmentKind, connectRpc, deleteSession, disconnectRpc, forkFrom, loadConfig, loadHistory, openSession, refreshAudit, refreshSessions, renameSession, sendChat, subscribeAudit, toError, uploadAttachment } from './lib/rpc';
+  import { attachmentKind, attachmentSizeError, connectRpc, deleteSession, disconnectRpc, forkFrom, loadConfig, loadHistory, openSession, refreshAudit, refreshSessions, renameSession, sendChat, subscribeAudit, toError, uploadAttachment } from './lib/rpc';
   import type { QueuedAttachment, RpcConfig } from './lib/types';
 
   let config: RpcConfig = { url: '', token: '' };
@@ -99,15 +99,24 @@
   };
 
   const addFiles = (files: FileList | File[]): void => {
-    const additions = Array.from(files).map((file) => ({
-      localId: globalThis.crypto.randomUUID(),
-      file,
-      name: file.name,
-      mediaType: file.type || 'application/octet-stream',
-      size: file.size,
-      kind: attachmentKind(file.type || 'application/octet-stream'),
-      status: 'queued' as const
-    }));
+    const additions: QueuedAttachment[] = [];
+    for (const file of Array.from(files)) {
+      const sizeError = attachmentSizeError(file.size);
+      if (sizeError !== undefined) {
+        composerError = sizeError;
+        continue;
+      }
+      const mediaType = file.type || 'application/octet-stream';
+      additions.push({
+        localId: globalThis.crypto.randomUUID(),
+        file,
+        name: file.name,
+        mediaType,
+        size: file.size,
+        kind: attachmentKind(mediaType),
+        status: 'queued'
+      });
+    }
     queue = [...queue, ...additions];
   };
 

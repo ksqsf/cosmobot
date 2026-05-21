@@ -72,12 +72,13 @@ export interface RpcErrorPayload {
   data?: unknown;
 }
 
-export interface RpcResponse<T = unknown> {
+export type RpcResponse<T = unknown> = {
   jsonrpc?: string;
   id: string | number | null;
-  result?: T;
-  error?: RpcErrorPayload;
-}
+} & (
+  | { result: T; error?: never }
+  | { error: RpcErrorPayload; result?: never }
+);
 
 export interface RpcNotification {
   jsonrpc?: string;
