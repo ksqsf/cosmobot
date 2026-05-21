@@ -179,9 +179,16 @@ deleteChatSession sessionId =
 
 enqueueChatMessage :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> RpcChatSend -> Eff es IncomingMessage
 enqueueChatMessage rpcState chatSend = do
-  message <- rpcIncomingMessage rpcState chatSend
-  let chatMessage = incomingToChatMessage "user" message chatSend.sessionId
-  Storage.insertMessage (rpcMessageToStored chatMessage)
+  stored <- Storage.appendMessage
+    chatSend.sessionId.unRpcSessionId
+    "user"
+    chatSend.text
+    chatSend.imageUrls
+    chatSend.replyToMessageId
+    chatSend.replyToMessageId
+  rememberMessageNumber rpcState stored.messageId
+  let message = rpcIncomingMessage chatSend stored.messageId
+      chatMessage = storedMessageToRpc stored
   STM.atomically (STM.writeTChan rpcState.inbound message)
   broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" chatMessage))
   pure message
@@ -191,17 +198,24 @@ incomingMessages rpcState = forever do
   message <- S.lift (STM.atomically (STM.readTChan rpcState.inbound))
   S.yield message
 
-rpcChatDriver :: (Concurrent :> es, IOE :> es) => RpcState -> ChatPlatformDriver es
+rpcChatDriver :: (Concurrent :> es, IOE :> es, StorageEffect.Storage :> es) => RpcState -> ChatPlatformDriver es
 rpcChatDriver rpcState = driver
   where
     driver = ChatPlatformDriver
       { platform = PlatformRPC
       , replyTo = \message body -> do
-          messageId <- nextRpcMessageId rpcState
           let sessionId = sessionIdFromMessage message
-              payload = RpcOutbound sessionId (Just messageId) body
-          broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" payload))
-          pure (Just messageId)
+              parentMessageId = message.messageId
+          stored <- Storage.appendMessage
+            sessionId.unRpcSessionId
+            "assistant"
+            body
+            []
+            parentMessageId
+            parentMessageId
+          rememberMessageNumber rpcState stored.messageId
+          broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" (storedMessageToRpc stored)))
+          pure (Just stored.messageId)
       , replyAudio = \message audioRef caption -> do
           let body = maybe audioRef (\c -> c <> "\n" <> audioRef) caption
           Right <$> driver.replyTo message body
@@ -209,9 +223,11 @@ rpcChatDriver rpcState = driver
           sent <- driver.replyTo message ("Uploaded file: " <> Text.pack path)
           pure (Right sent)
       , editMessage = \message messageId body -> do
-          let payload = RpcOutbound (sessionIdFromMessage message) (Just messageId) body
+          let sessionId = sessionIdFromMessage message
+              payload = RpcOutbound sessionId (Just messageId) body
+          updated <- Storage.updateMessageText sessionId.unRpcSessionId messageId body
           broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message_update" payload))
-          pure True
+          pure updated
       , deleteMessage = \_ _ -> pure False
       , replyStreamStyle = \_ -> pure (Chat.EditableReply 1200 4000)
       , getMessageContent = \_ _ -> pure Nothing
@@ -223,12 +239,10 @@ rpcChatDriver rpcState = driver
       , setMemberTitle = \_ _ _ -> pure False
       }
 
-rpcIncomingMessage :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> RpcChatSend -> Eff es IncomingMessage
-rpcIncomingMessage rpcState chatSend = do
-  messageId <- Storage.nextMessageId
-  rememberMessageNumber rpcState messageId
+rpcIncomingMessage :: RpcChatSend -> MessageId -> IncomingMessage
+rpcIncomingMessage chatSend messageId =
   let sessionText = chatSend.sessionId.unRpcSessionId
-  pure IncomingMessage
+  in IncomingMessage
     { platform = PlatformRPC
     , kind = ChatPrivate
     , chatId = Nothing
@@ -250,25 +264,6 @@ rpcIncomingMessage rpcState chatSend = do
     , text = chatSend.text
     , raw = Aeson.toJSON chatSend
     }
-
-incomingToChatMessage :: Text -> IncomingMessage -> RpcSessionId -> RpcChatMessage
-incomingToChatMessage sender message sessionId =
-  RpcChatMessage
-    { sessionId
-    , messageId = fromMaybe "unknown" message.messageId
-    , sender
-    , text = message.text
-    , imageUrls = message.imageUrls
-    , replyToMessageId = message.replyToMessageId
-    , parentMessageId = message.replyToMessageId
-    }
-
-nextRpcMessageId :: Concurrent :> es => RpcState -> Eff es MessageId
-nextRpcMessageId rpcState =
-  STM.atomically do
-    number <- STM.readTVar rpcState.nextMessageNumber
-    STM.writeTVar rpcState.nextMessageNumber (number + 1)
-    pure (textMessageId ("rpc-" <> show number))
 
 rememberMessageNumber :: Concurrent :> es => RpcState -> MessageId -> Eff es ()
 rememberMessageNumber rpcState messageId =
@@ -305,18 +300,6 @@ storedMessageToRpc :: Storage.StoredChatMessage -> RpcChatMessage
 storedMessageToRpc message =
   RpcChatMessage
     { sessionId = RpcSessionId message.sessionId
-    , messageId = message.messageId
-    , sender = message.sender
-    , text = message.text
-    , imageUrls = message.imageUrls
-    , replyToMessageId = message.replyToMessageId
-    , parentMessageId = message.parentMessageId
-    }
-
-rpcMessageToStored :: RpcChatMessage -> Storage.StoredChatMessage
-rpcMessageToStored message =
-  Storage.StoredChatMessage
-    { sessionId = message.sessionId.unRpcSessionId
     , messageId = message.messageId
     , sender = message.sender
     , text = message.text

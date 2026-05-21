@@ -31,7 +31,7 @@ type ChatDriverEffects es =
   Chat.Chat : QQ.QQ : Telegram.Telegram : Matrix.Matrix : Discord.Discord : es
 
 type ChatDriverConstraints es =
-  (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, FileSystem :> es, Concurrent :> es, IOE :> es)
+  (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, FileSystem :> es, Concurrent :> es, Storage.Storage :> es, IOE :> es)
 
 chatPlatformDrivers
   :: ChatDriverConstraints es

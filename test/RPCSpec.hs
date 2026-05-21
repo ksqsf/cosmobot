@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Bot.Prelude
+import Bot.Chat.Driver.Types
 import Bot.Core.Message
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.RPC.Config as RPCConfig
@@ -12,11 +13,12 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.STM as STM
+import Effectful.FileSystem (runFileSystem)
+import qualified Effectful.FileSystem as FileSystem
 import qualified JSONRPC
 import qualified Network.Socket as Socket
 import qualified Network.WebSockets as WS
 import qualified Streaming.Prelude as S
-import System.IO.Temp (withSystemTempDirectory)
 import System.Timeout
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -33,6 +35,7 @@ main =
       , testCase "chat.send constructs PlatformRPC incoming message" testChatSendConstructsIncomingMessage
       , testCase "chat.send broadcasts user chat notification" testChatSendBroadcastsNotification
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
+      , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
       , testCase "chat.fork stores immutable parent link and inherited history" testChatForkStoresParentLink
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
       , testCase "websocket server authenticates and handles JSON-RPC requests" testWebSocketServerAuthenticatesAndHandlesRequests
@@ -165,6 +168,38 @@ testChatSessionsPersistAcrossRestart =
             ]
         )
     sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text), "messageId" Aeson..= Just ("rpc-2" :: Text)])
+
+testRpcDriverPersistsAssistantRepliesAndEdits :: IO ()
+testRpcDriverPersistsAssistantRepliesAndEdits =
+  withSQLiteTempPath "rpc-assistant" \path -> do
+    (replyId, edited) <- runRpcStorage path do
+      rpcState <- RPC.newRpcState
+      _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+      _sent <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.send" $
+          Aeson.object
+            [ "sessionId" Aeson..= ("browser-1" :: Text)
+            , "text" Aeson..= ("question" :: Text)
+            ]
+      incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
+      let driver = RPC.rpcChatDriver rpcState
+      replyId <- fromMaybe (error "expected rpc reply id") <$> driver.replyTo incoming "draft answer"
+      edited <- driver.editMessage incoming replyId "final answer"
+      pure (replyId, edited)
+
+    replyId @?= "rpc-2"
+    edited @?= True
+
+    historyResponse <- runRpcStorage path do
+      rpcState <- RPC.newRpcState
+      RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text)])
+
+    responseMessageSummaries historyResponse @?=
+      [ ("user", "rpc-1", "question")
+      , ("assistant", "rpc-2", "final answer")
+      ]
 
 testChatForkStoresParentLink :: IO ()
 testChatForkStoresParentLink =
@@ -318,9 +353,11 @@ runRpcStorage path action =
 
 withSQLiteTempPath :: String -> (FilePath -> IO a) -> IO a
 withSQLiteTempPath label action =
-  withSystemTempDirectory label \dir -> do
-    let path = dir <> "/rpc.sqlite"
-    action path
+  runEff $ runFileSystem do
+    let path = "/tmp/cosmobot-" <> label <> ".sqlite"
+    FileSystem.removeFile path `catchSync` \_ -> pure ()
+    liftIO (action path)
+      `finally` (FileSystem.removeFile path `catchSync` \_ -> pure ())
 
 sessionValue :: Text -> Maybe Text -> Maybe Text -> Maybe Text -> Aeson.Value
 sessionValue sessionId label parentSessionId parentMessageId =
@@ -352,6 +389,24 @@ responseMessageTexts response =
         traverse (AesonTypes.parseMaybe (Aeson.withObject "message" (Aeson..: "text"))) messages
     _ ->
       []
+
+responseMessageSummaries :: Protocol.RpcResponse -> [(Text, Text, Text)]
+responseMessageSummaries response =
+  case response of
+    JSONRPC.ResponseMessage result ->
+      fromMaybe [] do
+        messages <- AesonTypes.parseMaybe (Aeson.withObject "history" (Aeson..: "messages")) result.result
+        traverse messageSummary messages
+    _ ->
+      []
+  where
+    messageSummary =
+      AesonTypes.parseMaybe $
+        Aeson.withObject "message" \o -> do
+          sender <- o Aeson..: "sender"
+          messageId <- o Aeson..: "messageId"
+          body <- o Aeson..: "text"
+          pure (sender, messageId, body)
 
 responseSessionLabel :: Protocol.RpcResponse -> Maybe Text
 responseSessionLabel response =

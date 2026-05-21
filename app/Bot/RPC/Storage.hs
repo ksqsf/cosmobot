@@ -13,7 +13,9 @@ module Bot.RPC.Storage
   , listSessions
   , loadSession
   , loadSessionHistory
+  , appendMessage
   , insertMessage
+  , updateMessageText
   , renameSession
   , deleteSession
   , forkSession
@@ -101,13 +103,10 @@ ensureRpcTables =
 
 createSession :: Storage.Storage :> es => Maybe Text -> Eff es StoredChatSession
 createSession label = do
-  ensureRpcTables
-  sessions <- listSessions
-  let sessionId = nextSessionId (fromMaybe "session" (label >>= nonEmptyText)) (map (.sessionId) sessions)
-      stored = StoredChatSession{sessionId, label = label >>= nonEmptyText, parentSessionId = Nothing, parentMessageId = Nothing}
-  runSelda $
-    insert_ rpcSessionRows [sessionRow stored]
-  pure stored
+  let cleanLabel = label >>= nonEmptyText
+      base = fromMaybe "session" cleanLabel
+  allocateSession base \sessionId ->
+    StoredChatSession{sessionId, label = cleanLabel, parentSessionId = Nothing, parentMessageId = Nothing}
 
 listSessions :: Storage.Storage :> es => Eff es [StoredChatSession]
 listSessions = do
@@ -144,11 +143,46 @@ loadSessionHistory targetSessionId = do
       | otherwise ->
           pure current
 
+appendMessage :: Storage.Storage :> es => Text -> Text -> Text -> [Text] -> Maybe MessageId -> Maybe MessageId -> Eff es StoredChatMessage
+appendMessage sessionId sender body imageUrls replyToMessageId parentMessageId =
+  retryingStorageWrite do
+    ensureRpcTables
+    runSelda $
+      transaction do
+        rows <- query do
+          row <- select rpcMessageRows
+          pure (row ! #message_id)
+        let nextNumber = Foldable.maximum (0 : map messageNumber rows) + 1
+            message = StoredChatMessage
+              { sessionId
+              , messageId = textMessageId ("rpc-" <> show nextNumber)
+              , sender
+              , text = body
+              , imageUrls
+              , replyToMessageId
+              , parentMessageId
+              }
+        insert_ rpcMessageRows [messageRow message]
+        pure message
+
 insertMessage :: Storage.Storage :> es => StoredChatMessage -> Eff es ()
 insertMessage message = do
   ensureRpcTables
   runSelda $
     insert_ rpcMessageRows [messageRow message]
+
+updateMessageText :: Storage.Storage :> es => Text -> MessageId -> Text -> Eff es Bool
+updateMessageText targetSessionId targetMessageId body = do
+  existing <- loadMessage targetSessionId targetMessageId
+  case existing of
+    Nothing ->
+      pure False
+    Just _ -> do
+      runSelda $
+        update_ rpcMessageRows
+          (\row -> row ! #session_id .== literal targetSessionId .&& row ! #message_id .== literal (messageIdText targetMessageId))
+          (\row -> row `with` [#body := literal body])
+      pure True
 
 renameSession :: Storage.Storage :> es => Text -> Text -> Eff es (Maybe StoredChatSession)
 renameSession targetSessionId newLabel = do
@@ -176,18 +210,14 @@ forkSession sourceSessionId sourceMessageId requestedLabel = do
   sourceMessages <- loadSessionHistory sourceSessionId
   case (source, find ((== sourceMessageId) . (.messageId)) sourceMessages) of
     (Just sourceSession, Just _) -> do
-      sessions <- listSessions
       let base = fromMaybe (sourceLabelBase sourceSession <> "-fork") (requestedLabel >>= nonEmptyText)
-          sessionId = nextSessionId base (map (.sessionId) sessions)
-          stored = StoredChatSession
-            { sessionId
-            , label = requestedLabel >>= nonEmptyText
-            , parentSessionId = Just sourceSessionId
-            , parentMessageId = Just sourceMessageId
-            }
-      runSelda $
-        insert_ rpcSessionRows [sessionRow stored]
-      pure (Just stored)
+      Just <$> allocateSession base \sessionId ->
+        StoredChatSession
+          { sessionId
+          , label = requestedLabel >>= nonEmptyText
+          , parentSessionId = Just sourceSessionId
+          , parentMessageId = Just sourceMessageId
+          }
     _ ->
       pure Nothing
 
@@ -211,6 +241,45 @@ loadOwnMessages targetSessionId = do
       order (row ! #id) ascending
       pure row
   pure (map messageFromRow rows)
+
+loadMessage :: Storage.Storage :> es => Text -> MessageId -> Eff es (Maybe StoredChatMessage)
+loadMessage targetSessionId targetMessageId = do
+  ensureRpcTables
+  rows <- runSelda $
+    query $
+      queryLimit 0 1 do
+        row <- select rpcMessageRows
+        restrict (row ! #session_id .== literal targetSessionId .&& row ! #message_id .== literal (messageIdText targetMessageId))
+        pure row
+  pure (messageFromRow <$> viaNonEmpty head rows)
+
+allocateSession :: Storage.Storage :> es => Text -> (Text -> StoredChatSession) -> Eff es StoredChatSession
+allocateSession base mkSession =
+  retryingStorageWrite do
+    ensureRpcTables
+    runSelda $
+      transaction do
+        rows <- query do
+          row <- select rpcSessionRows
+          pure (row ! #session_id)
+        let session = mkSession (nextSessionId base rows)
+        insert_ rpcSessionRows [sessionRow session]
+        pure session
+
+retryingStorageWrite :: Storage.Storage :> es => Eff es a -> Eff es a
+retryingStorageWrite action =
+  go (3 :: Int)
+  where
+    go attempts = do
+      result <- trySync action
+      case result of
+        Right value ->
+          pure value
+        Left err
+          | attempts > 1 ->
+              go (attempts - 1)
+          | otherwise ->
+              throwIO err
 
 sessionRow :: StoredChatSession -> RpcSessionRow
 sessionRow session =
