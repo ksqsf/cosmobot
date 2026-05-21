@@ -39,7 +39,15 @@ import qualified Streaming.Prelude as S
 type RpcClientId = Integer
 
 newtype RpcSessionId = RpcSessionId { unRpcSessionId :: Text }
-  deriving (Eq, Ord, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+  deriving (Eq, Ord, Show)
+
+instance Aeson.ToJSON RpcSessionId where
+  toJSON =
+    Aeson.String . (.unRpcSessionId)
+
+instance Aeson.FromJSON RpcSessionId where
+  parseJSON value =
+    RpcSessionId <$> Aeson.parseJSON value
 
 data RpcState = RpcState
   { clients :: !(STM.TVar (Map RpcClientId (STM.TChan Aeson.Value)))
@@ -72,7 +80,7 @@ data RpcChatSend = RpcChatSend
   , imageUrls :: ![Text]
   , replyToMessageId :: !(Maybe MessageId)
   }
-  deriving (Eq, Show, Generic, Aeson.ToJSON)
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 newRpcState :: Concurrent :> es => Eff es RpcState
 newRpcState = STM.atomically do
@@ -84,62 +92,62 @@ newRpcState = STM.atomically do
   pure RpcState{clients, nextClientId, nextSessionNumber, nextMessageNumber, inbound}
 
 registerClient :: Concurrent :> es => RpcState -> Eff es (RpcClientId, STM.TChan Aeson.Value)
-registerClient state =
+registerClient rpcState =
   STM.atomically do
-    clientId <- STM.readTVar state.nextClientId
-    STM.writeTVar state.nextClientId (clientId + 1)
+    clientId <- STM.readTVar rpcState.nextClientId
+    STM.writeTVar rpcState.nextClientId (clientId + 1)
     queue <- STM.newTChan
-    STM.modifyTVar' state.clients (Map.insert clientId queue)
+    STM.modifyTVar' rpcState.clients (Map.insert clientId queue)
     pure (clientId, queue)
 
 unregisterClient :: Concurrent :> es => RpcState -> RpcClientId -> Eff es ()
-unregisterClient state clientId =
+unregisterClient rpcState clientId =
   STM.atomically $
-    STM.modifyTVar' state.clients (Map.delete clientId)
+    STM.modifyTVar' rpcState.clients (Map.delete clientId)
 
 writeClient :: Concurrent :> es => STM.TChan Aeson.Value -> Aeson.Value -> Eff es ()
 writeClient queue value =
   STM.atomically (STM.writeTChan queue value)
 
 broadcast :: Concurrent :> es => RpcState -> Aeson.Value -> Eff es ()
-broadcast state value = do
-  queues <- STM.atomically (Map.elems <$> STM.readTVar state.clients)
+broadcast rpcState value = do
+  queues <- STM.atomically (Map.elems <$> STM.readTVar rpcState.clients)
   traverse_ (`writeClient` value) queues
 
 broadcastAuditRecord :: Concurrent :> es => RpcState -> Aeson.Value -> Eff es ()
-broadcastAuditRecord state recordValue =
-  broadcast state (Aeson.toJSON (Protocol.notification "audit.event" recordValue))
+broadcastAuditRecord rpcState recordValue =
+  broadcast rpcState (Aeson.toJSON (Protocol.notification "audit.event" recordValue))
 
 openChatSession :: Concurrent :> es => RpcState -> Maybe Text -> Eff es RpcSessionId
-openChatSession state label =
+openChatSession rpcState label =
   STM.atomically do
-    number <- STM.readTVar state.nextSessionNumber
-    STM.writeTVar state.nextSessionNumber (number + 1)
+    number <- STM.readTVar rpcState.nextSessionNumber
+    STM.writeTVar rpcState.nextSessionNumber (number + 1)
     let base = fromMaybe "session" (label >>= nonEmptyText)
     pure (RpcSessionId (base <> "-" <> show number))
 
 enqueueChatMessage :: Concurrent :> es => RpcState -> RpcChatSend -> Eff es IncomingMessage
-enqueueChatMessage state send = do
-  message <- rpcIncomingMessage state send
-  STM.atomically (STM.writeTChan state.inbound message)
-  broadcast state (Aeson.toJSON (Protocol.notification "chat.message" (incomingToChatMessage "user" message send.sessionId)))
+enqueueChatMessage rpcState chatSend = do
+  message <- rpcIncomingMessage rpcState chatSend
+  STM.atomically (STM.writeTChan rpcState.inbound message)
+  broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" (incomingToChatMessage "user" message chatSend.sessionId)))
   pure message
 
 incomingMessages :: Concurrent :> es => RpcState -> Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages state = forever do
-  message <- S.lift (STM.atomically (STM.readTChan state.inbound))
+incomingMessages rpcState = forever do
+  message <- S.lift (STM.atomically (STM.readTChan rpcState.inbound))
   S.yield message
 
 rpcChatDriver :: (Concurrent :> es, IOE :> es) => RpcState -> ChatPlatformDriver es
-rpcChatDriver state = driver
+rpcChatDriver rpcState = driver
   where
     driver = ChatPlatformDriver
       { platform = PlatformRPC
       , replyTo = \message body -> do
-          messageId <- nextRpcMessageId state
+          messageId <- nextRpcMessageId rpcState
           let sessionId = sessionIdFromMessage message
               payload = RpcOutbound sessionId (Just messageId) body
-          broadcast state (Aeson.toJSON (Protocol.notification "chat.message" payload))
+          broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" payload))
           pure (Just messageId)
       , replyAudio = \message audioRef caption -> do
           let body = maybe audioRef (\c -> c <> "\n" <> audioRef) caption
@@ -149,7 +157,7 @@ rpcChatDriver state = driver
           pure (Right sent)
       , editMessage = \message messageId body -> do
           let payload = RpcOutbound (sessionIdFromMessage message) (Just messageId) body
-          broadcast state (Aeson.toJSON (Protocol.notification "chat.message_update" payload))
+          broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message_update" payload))
           pure True
       , deleteMessage = \_ _ -> pure False
       , replyStreamStyle = \_ -> pure (Chat.EditableReply 1200 4000)
@@ -163,9 +171,9 @@ rpcChatDriver state = driver
       }
 
 rpcIncomingMessage :: Concurrent :> es => RpcState -> RpcChatSend -> Eff es IncomingMessage
-rpcIncomingMessage state send = do
-  messageId <- nextRpcMessageId state
-  let sessionText = send.sessionId.unRpcSessionId
+rpcIncomingMessage rpcState chatSend = do
+  messageId <- nextRpcMessageId rpcState
+  let sessionText = chatSend.sessionId.unRpcSessionId
   pure IncomingMessage
     { platform = PlatformRPC
     , kind = ChatPrivate
@@ -181,12 +189,12 @@ rpcIncomingMessage state send = do
     , senderId = Just "rpc-user"
     , senderUsername = Just "RPC"
     , messageId = Just messageId
-    , replyToMessageId = send.replyToMessageId
+    , replyToMessageId = chatSend.replyToMessageId
     , mentions = []
     , mentionUsernames = []
-    , imageUrls = send.imageUrls
-    , text = send.text
-    , raw = Aeson.toJSON send
+    , imageUrls = chatSend.imageUrls
+    , text = chatSend.text
+    , raw = Aeson.toJSON chatSend
     }
 
 incomingToChatMessage :: Text -> IncomingMessage -> RpcSessionId -> RpcChatMessage
@@ -201,10 +209,10 @@ incomingToChatMessage sender message sessionId =
     }
 
 nextRpcMessageId :: Concurrent :> es => RpcState -> Eff es MessageId
-nextRpcMessageId state =
+nextRpcMessageId rpcState =
   STM.atomically do
-    number <- STM.readTVar state.nextMessageNumber
-    STM.writeTVar state.nextMessageNumber (number + 1)
+    number <- STM.readTVar rpcState.nextMessageNumber
+    STM.writeTVar rpcState.nextMessageNumber (number + 1)
     pure (textMessageId ("rpc-" <> show number))
 
 sessionIdFromMessage :: IncomingMessage -> RpcSessionId

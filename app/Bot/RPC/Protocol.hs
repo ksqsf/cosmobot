@@ -42,13 +42,13 @@ data RpcResponse = RpcResponse
   deriving (Eq, Show)
 
 instance Aeson.ToJSON RpcResponse where
-  toJSON RpcResponse{id, ok, result, error} =
+  toJSON response =
     Aeson.object $
-      [ "id" Aeson..= id
-      , "ok" Aeson..= ok
+      [ "id" Aeson..= response.id
+      , "ok" Aeson..= response.ok
       ]
-      <> maybe [] (\value -> ["result" Aeson..= value]) result
-      <> maybe [] (\value -> ["error" Aeson..= value]) error
+      <> maybe [] (\value -> ["result" Aeson..= value]) response.result
+      <> maybe [] (\value -> ["error" Aeson..= value]) response.error
 
 data RpcError = RpcError
   { code :: !Text
