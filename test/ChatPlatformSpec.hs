@@ -31,6 +31,7 @@ main =
       , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
+      , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
       ]
 
@@ -252,6 +253,16 @@ testMatrixMessageConvertsToIncomingMessage :: IO ()
 testMatrixMessageConvertsToIncomingMessage = do
   let incoming = Matrix.eventToIncomingMessage matrixRoomEvent
   ((.platform) <$> incoming) @?= Just PlatformMatrix
+  ((.kind) <$> incoming) @?= Just ChatGroup
+  ((.chatAliases) <$> incoming) @?= Just ["!room:example.org"]
+  ((.senderUsername) <$> incoming) @?= Just (Just "@alice:example.org")
+  ((.text) <$> incoming) @?= Just "hello"
+
+testMatrixDirectRoomConvertsToPrivateMessage :: IO ()
+testMatrixDirectRoomConvertsToPrivateMessage = do
+  let incoming = Matrix.eventToIncomingMessage matrixDirectRoomEvent
+  ((.platform) <$> incoming) @?= Just PlatformMatrix
+  ((.kind) <$> incoming) @?= Just ChatPrivate
   ((.chatAliases) <$> incoming) @?= Just ["!room:example.org"]
   ((.senderUsername) <$> incoming) @?= Just (Just "@alice:example.org")
   ((.text) <$> incoming) @?= Just "hello"
@@ -381,6 +392,7 @@ matrixRoomEvent :: Matrix.RoomEvent
 matrixRoomEvent =
   Matrix.RoomEvent
     { Matrix.roomId = "!room:example.org"
+    , Matrix.roomIsDirect = False
     , Matrix.event = Matrix.Event
         { Matrix.type_ = "m.room.message"
         , Matrix.sender = "@alice:example.org"
@@ -394,10 +406,15 @@ matrixRoomEvent =
         }
     }
 
+matrixDirectRoomEvent :: Matrix.RoomEvent
+matrixDirectRoomEvent =
+  matrixRoomEvent{Matrix.roomIsDirect = True}
+
 matrixMentionRoomEvent :: Matrix.RoomEvent
 matrixMentionRoomEvent =
   Matrix.RoomEvent
     { Matrix.roomId = "!room:example.org"
+    , Matrix.roomIsDirect = False
     , Matrix.event = Matrix.Event
         { Matrix.content = Matrix.EventContent
             { Matrix.msgtype = Just "m.text"

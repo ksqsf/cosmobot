@@ -33,11 +33,13 @@ import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Util.HTTP as Http
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.MVar as MVar
@@ -459,10 +461,18 @@ incomingMessages = do
 
 syncEvents :: SyncResponse -> [RoomEvent]
 syncEvents response =
-  [ RoomEvent roomId event
+  [ RoomEvent
+      { roomId
+      , roomIsDirect = roomId `Set.member` directRoomIds response
+      , event
+      }
   | (roomId, room) <- Map.toList response.rooms.join
   , event <- room.timeline.events
   ]
+
+directRoomIds :: SyncResponse -> Set Text
+directRoomIds =
+  Set.fromList . (.directRooms) . (.accountData)
 
 matrixAuthConfigured :: Config -> Bool
 matrixAuthConfigured cfg =
@@ -662,14 +672,14 @@ eventToIncomingMessage =
   eventToIncomingMessageWith defaultConfig
 
 eventToIncomingMessageWith :: Config -> RoomEvent -> Maybe IncomingMessage
-eventToIncomingMessageWith cfg RoomEvent{roomId, event} = do
+eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event} = do
   guard (event.type_ == "m.room.message")
   guard (not (isOwnEvent cfg event))
   body <- event.content.body
   guard (not (Text.null (Text.strip body)))
   pure IncomingMessage
     { platform = PlatformMatrix
-    , kind = ChatGroup
+    , kind = if roomIsDirect then ChatPrivate else ChatGroup
     , chatId = Just (stableTextId roomId)
     , chatAliases = [roomId]
     , digest = matrixMessageDigest cfg roomId event
@@ -929,6 +939,7 @@ nonEmptyMatrixBody body
 
 data RoomEvent = RoomEvent
   { roomId :: !Text
+  , roomIsDirect :: !Bool
   , event :: !Event
   }
   deriving (Show)
@@ -936,6 +947,7 @@ data RoomEvent = RoomEvent
 data SyncResponse = SyncResponse
   { nextBatch :: !Text
   , rooms :: !Rooms
+  , accountData :: !AccountData
   }
   deriving (Show, Generic)
 
@@ -944,6 +956,43 @@ instance Aeson.FromJSON SyncResponse where
     SyncResponse
       <$> o Aeson..: "next_batch"
       <*> o Aeson..:? "rooms" Aeson..!= Rooms Map.empty
+      <*> o Aeson..:? "account_data" Aeson..!= AccountData []
+
+newtype AccountData = AccountData
+  { directRooms :: [Text]
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON AccountData where
+  parseJSON = Aeson.withObject "AccountData" \o -> do
+    events <- o Aeson..:? "events" Aeson..!= []
+    pure AccountData
+      { directRooms = concatMap accountDataEventDirectRooms events
+      }
+
+data AccountDataEvent = AccountDataEvent
+  { accountDataEventType :: !Text
+  , accountDataEventContent :: !Aeson.Value
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON AccountDataEvent where
+  parseJSON = Aeson.withObject "AccountDataEvent" \o ->
+    AccountDataEvent
+      <$> o Aeson..: "type"
+      <*> o Aeson..:? "content" Aeson..!= Aeson.Object mempty
+
+accountDataEventDirectRooms :: AccountDataEvent -> [Text]
+accountDataEventDirectRooms event
+  | event.accountDataEventType == "m.direct" =
+      concat (fromMaybe [] (Aeson.parseMaybe parseDirectRooms event.accountDataEventContent))
+  | otherwise =
+      []
+  where
+    parseDirectRooms :: Aeson.Value -> Aeson.Parser [[Text]]
+    parseDirectRooms =
+      Aeson.withObject "m.direct content" \o ->
+        traverse Aeson.parseJSON (AesonKeyMap.elems o)
 
 newtype Rooms = Rooms
   { join :: Map Text JoinedRoom
