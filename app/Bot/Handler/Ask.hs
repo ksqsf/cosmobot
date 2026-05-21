@@ -145,7 +145,6 @@ mentionRoute toolCfg cfg conversations =
   where
     mentionMessage =
       promptOrImages
-        <* matching isAllowedGroup
         <* matching mentionsConfiguredBot
         <* notReply
         <* notAskPrefix cfg

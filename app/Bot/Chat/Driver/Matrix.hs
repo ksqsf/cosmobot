@@ -686,7 +686,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event} = do
     , senderId = Just event.sender
     , senderUsername = Just event.sender
     , messageId = textMessageId <$> event.eventId
-    , replyToMessageId = Nothing
+    , replyToMessageId = textMessageId <$> event.content.replyToEventId
     , mentions = []
     , mentionUsernames = matrixMentions cfg event.content body
     , imageUrls = []
@@ -1037,13 +1037,14 @@ instance Aeson.FromJSON Event where
         type_ <- o Aeson..: "type"
         sender <- o Aeson..: "sender"
         eventId <- o Aeson..:? "event_id"
-        content <- o Aeson..:? "content" Aeson..!= EventContent Nothing Nothing []
+        content <- o Aeson..:? "content" Aeson..!= EventContent Nothing Nothing [] Nothing
         pure Event{type_, sender, eventId, content, raw = value}
 
 data EventContent = EventContent
   { msgtype :: !(Maybe Text)
   , body :: !(Maybe Text)
   , mentions :: ![Text]
+  , replyToEventId :: !(Maybe Text)
   }
   deriving (Show, Generic)
 
@@ -1052,10 +1053,12 @@ instance Aeson.FromJSON EventContent where
     msgtype <- o Aeson..:? "msgtype"
     body <- o Aeson..:? "body"
     mentions <- o Aeson..:? "m.mentions" Aeson..!= MatrixMentions []
+    replyToEventId <- o Aeson..:? "m.relates_to" Aeson..!= MatrixRelatesTo Nothing
     pure EventContent
       { msgtype
       , body
       , mentions = mentions.userIds
+      , replyToEventId = replyToEventId.inReplyToEventId
       }
 
 newtype MatrixMentions = MatrixMentions
@@ -1066,6 +1069,25 @@ newtype MatrixMentions = MatrixMentions
 instance Aeson.FromJSON MatrixMentions where
   parseJSON = Aeson.withObject "MatrixMentions" \o ->
     MatrixMentions <$> o Aeson..:? "user_ids" Aeson..!= []
+
+newtype MatrixRelatesTo = MatrixRelatesTo
+  { inReplyToEventId :: Maybe Text
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON MatrixRelatesTo where
+  parseJSON = Aeson.withObject "MatrixRelatesTo" \o -> do
+    inReplyTo <- o Aeson..:? "m.in_reply_to" Aeson..!= MatrixInReplyTo Nothing
+    pure (MatrixRelatesTo inReplyTo.replyEventId)
+
+newtype MatrixInReplyTo = MatrixInReplyTo
+  { replyEventId :: Maybe Text
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON MatrixInReplyTo where
+  parseJSON = Aeson.withObject "MatrixInReplyTo" \o ->
+    MatrixInReplyTo <$> o Aeson..:? "event_id"
 
 data SendMessageRequest = SendMessageRequest
   { msgtype :: !Text

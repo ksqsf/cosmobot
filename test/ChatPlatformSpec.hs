@@ -32,6 +32,7 @@ main =
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
+      , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
       ]
 
@@ -267,6 +268,11 @@ testMatrixDirectRoomConvertsToPrivateMessage = do
   ((.senderUsername) <$> incoming) @?= Just (Just "@alice:example.org")
   ((.text) <$> incoming) @?= Just "hello"
 
+testMatrixReplyRelationConvertsToReplyMessageId :: IO ()
+testMatrixReplyRelationConvertsToReplyMessageId = do
+  let incoming = Matrix.eventToIncomingMessage matrixReplyRoomEvent
+  ((.replyToMessageId) <$> incoming) @?= Just (Just (textMessageId "$parent:example.org"))
+
 testMatrixSuperuserIsMarkedInDigest :: IO ()
 testMatrixSuperuserIsMarkedInDigest = do
   let cfg = Matrix.Config
@@ -401,6 +407,7 @@ matrixRoomEvent =
             { Matrix.msgtype = Just "m.text"
             , Matrix.body = Just "hello"
             , Matrix.mentions = []
+            , Matrix.replyToEventId = Nothing
             }
         , Matrix.raw = Aeson.Null
         }
@@ -409,6 +416,16 @@ matrixRoomEvent =
 matrixDirectRoomEvent :: Matrix.RoomEvent
 matrixDirectRoomEvent =
   matrixRoomEvent{Matrix.roomIsDirect = True}
+
+matrixReplyRoomEvent :: Matrix.RoomEvent
+matrixReplyRoomEvent =
+  matrixRoomEvent
+    { Matrix.event = matrixRoomEvent.event
+        { Matrix.content = matrixRoomEvent.event.content
+            { Matrix.replyToEventId = Just "$parent:example.org"
+            }
+        }
+    }
 
 matrixMentionRoomEvent :: Matrix.RoomEvent
 matrixMentionRoomEvent =
@@ -420,6 +437,7 @@ matrixMentionRoomEvent =
             { Matrix.msgtype = Just "m.text"
             , Matrix.body = Just "hello @bot:example.org"
             , Matrix.mentions = []
+            , Matrix.replyToEventId = Nothing
             }
         , Matrix.type_ = "m.room.message"
         , Matrix.sender = "@alice:example.org"
