@@ -49,6 +49,8 @@ Avoid import cycles when extracting from effects. Prefer explicit callback recor
 
 - For Haskell code changes, use the local `haskell` skill's fast-feedback workflow: keep `ghcid --outputfile .ghcid-errors` running when practical, read `.ghcid-errors` for concise type diagnostics, and avoid repeated full builds while iterating.
 - Work in `Eff es`. Add `IOE :> es` only at real external boundaries.
+- Haskell code should not read as imperative choreography. If correctness depends on remembering the order of acquire/use/release, register/use/unregister, insert/update/delete, or write/cleanup steps, extract the lifecycle into a bracket-style helper, domain operation, or small combinator that names and enforces the invariant.
+- Prefer declarative data transformations and pure planning functions over interleaving traversal, mutation, and persistence. For multi-step storage changes, make a component-owned operation that expresses the whole state transition.
 - Prefer `effectful` capabilities (`Concurrent`, `STM`, `MVar`, `IORef`, `Timeout`, `Process`, `FileSystem`) over raw `base` concurrency/process/file APIs.
 - For filesystem work, prefer `Effectful.FileSystem` and `Effectful.FileSystem.IO*`. Do not import `System.Directory` or `System.IO` for ordinary file operations, temporary-file handling, handle closing, or byte-string reads/writes when an `effectful` operation exists.
 - Do not import `Control.Exception` or `Control.Concurrent` for new code. Use `Effectful.Exception` via `Bot.Prelude` and effectful concurrency modules.
@@ -83,6 +85,14 @@ Avoid import cycles when extracting from effects. Prefer explicit callback recor
 - Agent middleware changes: use `Bot.Agent.Middleware.*` and typed middleware context through `Bot.Util.HList`. `AgentContext` is for per-message tool capabilities/permissions only.
 - Persistence changes: prefer component-owned `Bot.Storage.*` modules over handler-local files or ad hoc SQL. Model queryable state as columns, not opaque JSON blobs.
 - New modules: update `cosmobot.cabal` for the executable plus relevant tests/benchmarks. This package has no library stanza, so missing `other-modules` entries matter.
+
+## Review Requirements
+
+- For substantial changes, especially RPC/web/storage/resource-lifecycle work, run a review cycle before finishing: review the code, summarize risks, fix material issues, then review again. Repeat until no unresolved high or medium risk remains, or explicitly document why a remaining risk is out of scope.
+- Include an architecture review against module ownership and dependency direction, a resource-lifecycle review for files/blobs/temp paths/database rows/background queues, and a protocol-contract review for any public JSON/RPC/HTTP surface.
+- Include a Haskell abstraction-smell review. Flag code that reads as imperative ordering rather than named lifecycle/domain operations, especially manual cleanup, queue overflow handling, persistence cascades, retry loops, and multi-step resource transitions.
+- When using subagents for review or implementation, give each one a disjoint scope, require file/line findings, and require verification commands for code changes. Integrate their work only after reconciling overlapping contracts and rerunning the relevant checks in the main worktree.
+- Treat frontend/backend contract mismatches as blockers. If UI calls an RPC/HTTP method, the backend must implement and document it, or the UI must hide/remove that path.
 
 ## Verification
 
