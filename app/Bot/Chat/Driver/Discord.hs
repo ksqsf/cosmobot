@@ -15,6 +15,8 @@ module Bot.Chat.Driver.Discord
   , Message (..)
   , User (..)
   , Attachment (..)
+  , Embed (..)
+  , EmbedImage (..)
   , Member (..)
   , Reference (..)
   , CreateMessageRequest (..)
@@ -23,6 +25,7 @@ module Bot.Chat.Driver.Discord
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , formatDiscordMarkdown
+  , discordUserAvatarValue
   , replyTo
   , replyAudio
   , uploadFile
@@ -45,6 +48,7 @@ import qualified Control.Concurrent.Async as Async
 import qualified Control.Concurrent.Chan as Chan
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
+import Data.Bits (shiftR)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Char as Char
@@ -117,8 +121,9 @@ discordDriver = Driver.ChatPlatformDriver
           pure Nothing
   , Driver.getUserAvatar = \message userId ->
       case message.platform of
-        PlatformDiscord ->
-          Just <$> getUser userId
+        PlatformDiscord -> do
+          value <- getUser userId
+          pure (discordUserAvatarValue =<< Aeson.parseMaybe Aeson.parseJSON value)
         _ ->
           pure Nothing
   , Driver.listGroupMembers = \message ->
@@ -749,6 +754,47 @@ escapeDiscordLinkTarget :: Text -> Text
 escapeDiscordLinkTarget =
   Text.replace ")" "%29"
 
+discordUserAvatarValue :: User -> Maybe Aeson.Value
+discordUserAvatarValue user = do
+  avatarUrl <- discordUserAvatarUrl user
+  pure $ Aeson.object
+    [ "platform" Aeson..= ("discord" :: Text)
+    , "user_id" Aeson..= user.id
+    , "username" Aeson..= user.username
+    , "global_name" Aeson..= user.globalName
+    , "avatar" Aeson..= user.avatar
+    , "avatar_url" Aeson..= avatarUrl
+    ]
+
+discordUserAvatarUrl :: User -> Maybe Text
+discordUserAvatarUrl user =
+  case user.avatar of
+    Just avatarHash | not (Text.null avatarHash) ->
+      let userId = user.id
+          extension = discordAvatarExtension avatarHash
+      in Just [i|https://cdn.discordapp.com/avatars/#{userId}/#{avatarHash}.#{extension}?size=512|]
+    _ ->
+      discordDefaultAvatarUrl user.id
+
+discordAvatarExtension :: Text -> Text
+discordAvatarExtension avatarHash
+  | "a_" `Text.isPrefixOf` avatarHash = "gif"
+  | otherwise = "png"
+
+discordDefaultAvatarUrl :: Text -> Maybe Text
+discordDefaultAvatarUrl userId = do
+  numericUserId <- parseDiscordSnowflake userId
+  let index = (numericUserId `shiftR` 22) `mod` 6
+  pure [i|https://cdn.discordapp.com/embed/avatars/#{index}.png|]
+
+parseDiscordSnowflake :: Text -> Maybe Integer
+parseDiscordSnowflake raw =
+  case reads (Text.unpack (Text.strip raw)) of
+    [(value, "")] ->
+      Just value
+    _ ->
+      Nothing
+
 discordRemoteImageRef :: Text -> Maybe Text
 discordRemoteImageRef ref
   | "http://" `Text.isPrefixOf` ref || "https://" `Text.isPrefixOf` ref = Just ref
@@ -764,8 +810,45 @@ messageImageUrls :: Message -> [Text]
 messageImageUrls message =
   [ attachment.url
   | attachment <- message.attachments
-  , maybe False ("image/" `Text.isPrefixOf`) attachment.contentType
-  ]
+  , attachmentIsImage attachment
+  ] <>
+  [ embedImage.imageUrl
+  | embed <- message.embeds
+  , embedImage <- maybeToList embed.image <> maybeToList embed.thumbnail
+  ] <>
+  contentImageUrls message.content
+  where
+    attachmentIsImage attachment =
+      maybe (imageFileName attachment.filename || imageUrl attachment.url) ("image/" `Text.isPrefixOf`) attachment.contentType
+
+contentImageUrls :: Text -> [Text]
+contentImageUrls =
+  filter imageUrl . Text.words
+
+imageUrl :: Text -> Bool
+imageUrl raw =
+  ("http://" `Text.isPrefixOf` stripped || "https://" `Text.isPrefixOf` stripped) && imagePath (Text.toLower withoutQuery)
+  where
+    stripped =
+      Text.dropWhileEnd (`elem` (".,;:!?)" :: String)) raw
+    withoutQuery =
+      Text.takeWhile (\c -> c /= '?' && c /= '#') stripped
+
+imageFileName :: Text -> Bool
+imageFileName =
+  imagePath . Text.toLower
+
+imagePath :: Text -> Bool
+imagePath path =
+  any (`Text.isSuffixOf` path)
+    [ ".jpg"
+    , ".jpeg"
+    , ".png"
+    , ".gif"
+    , ".webp"
+    , ".bmp"
+    , ".avif"
+    ]
 
 isOwnMessage :: Config -> Message -> Bool
 isOwnMessage cfg message =
@@ -913,6 +996,7 @@ data Message = Message
   , member :: !(Maybe Member)
   , content :: !Text
   , attachments :: ![Attachment]
+  , embeds :: ![Embed]
   , mentions :: ![User]
   , referencedMessage :: !(Maybe Message)
   , messageReference :: !(Maybe Reference)
@@ -930,6 +1014,7 @@ instance Aeson.FromJSON Message where
       <*> o Aeson..:? "member"
       <*> fmap (fromMaybe "") (o Aeson..:? "content")
       <*> fmap (fromMaybe []) (o Aeson..:? "attachments")
+      <*> fmap (fromMaybe []) (o Aeson..:? "embeds")
       <*> fmap (fromMaybe []) (o Aeson..:? "mentions")
       <*> o Aeson..:? "referenced_message"
       <*> o Aeson..:? "message_reference"
@@ -975,6 +1060,21 @@ instance Aeson.FromJSON Attachment where
       <*> o Aeson..: "filename"
       <*> o Aeson..: "url"
       <*> o Aeson..:? "content_type"
+
+data Embed = Embed
+  { image :: !(Maybe EmbedImage)
+  , thumbnail :: !(Maybe EmbedImage)
+  }
+  deriving (Show, Generic, Aeson.FromJSON)
+
+data EmbedImage = EmbedImage
+  { imageUrl :: !Text
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON EmbedImage where
+  parseJSON = Aeson.withObject "EmbedImage" \o ->
+    EmbedImage <$> o Aeson..: "url"
 
 data Reference = Reference
   { messageId :: !MessageId

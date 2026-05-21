@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as AesonTypes
 import qualified Bot.Chat.Driver.Discord as Discord
 import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.QQ as QQ
@@ -41,6 +42,8 @@ main =
       , testCase "Discord self message is ignored" testDiscordSelfMessageIsIgnored
       , testCase "Discord superuser and bot mention are marked" testDiscordSuperuserAndBotMentionAreMarked
       , testCase "Discord CommonMark extensions render Discord Markdown" testDiscordCommonMarkExtensionsRenderDiscordMarkdown
+      , testCase "Discord avatar value includes avatar URL" testDiscordAvatarValueIncludesAvatarUrl
+      , testCase "Discord image context includes embeds and image links" testDiscordImageContextIncludesEmbedsAndImageLinks
       ]
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
@@ -376,6 +379,48 @@ testDiscordCommonMarkExtensionsRenderDiscordMarkdown = do
   Discord.formatDiscordMarkdown "Use $x^2$ and $$y$$" @?= "Use `x^2` and ```\ny\n```"
   Discord.formatDiscordMarkdown "| a | b |\n| - | - |\n| 1 | 2 |" @?= "```\na | b\n1 | 2\n```"
 
+testDiscordAvatarValueIncludesAvatarUrl :: IO ()
+testDiscordAvatarValueIncludesAvatarUrl = do
+  let customAvatar = (discordUser "10001" "alice" False){Discord.avatar = Just "hash"}
+  avatarUrl (fromMaybe (error "expected custom avatar") (Discord.discordUserAvatarValue customAvatar))
+    @?= Just "https://cdn.discordapp.com/avatars/10001/hash.png?size=512"
+
+  let defaultAvatar = (discordUser "10001" "alice" False){Discord.avatar = Nothing}
+  avatarUrl (fromMaybe (error "expected default avatar") (Discord.discordUserAvatarValue defaultAvatar))
+    @?= Just "https://cdn.discordapp.com/embed/avatars/0.png"
+
+testDiscordImageContextIncludesEmbedsAndImageLinks :: IO ()
+testDiscordImageContextIncludesEmbedsAndImageLinks = do
+  let message = (discordMessageNoReference "70002")
+        { Discord.content = "look https://example.test/generated.webp?size=512"
+        , Discord.attachments =
+            [ Discord.Attachment
+                { Discord.id = "2"
+                , Discord.filename = "photo.png"
+                , Discord.url = "https://cdn.discordapp.com/attachment-without-content-type"
+                , Discord.contentType = Nothing
+                }
+            ]
+        , Discord.embeds =
+            [ Discord.Embed
+                { Discord.image = Just (Discord.EmbedImage "https://example.test/embed.png")
+                , Discord.thumbnail = Just (Discord.EmbedImage "https://example.test/thumb.jpg")
+                }
+            ]
+        }
+      incoming = fromMaybe (error "expected incoming Discord message") (Discord.eventToIncomingMessage message)
+  incoming.imageUrls @?=
+    [ "https://cdn.discordapp.com/attachment-without-content-type"
+    , "https://example.test/embed.png"
+    , "https://example.test/thumb.jpg"
+    , "https://example.test/generated.webp?size=512"
+    ]
+
+avatarUrl :: Aeson.Value -> Maybe Text
+avatarUrl =
+  AesonTypes.parseMaybe $
+    Aeson.withObject "avatar value" (Aeson..: "avatar_url")
+
 qqMessageEvent :: Integer -> QQ.Event
 qqMessageEvent userId =
   QQ.Event
@@ -562,6 +607,7 @@ discordMessage =
             , Discord.contentType = Just "image/png"
             }
         ]
+    , Discord.embeds = []
     , Discord.mentions = [discordUser "424242" "krkr" True]
     , Discord.referencedMessage = Just (discordReferencedMessage "60001")
     , Discord.messageReference = Nothing
@@ -573,6 +619,7 @@ discordReferencedMessage messageId =
   (discordMessageNoReference messageId)
     { Discord.content = "quoted"
     , Discord.attachments = []
+    , Discord.embeds = []
     , Discord.mentions = []
     }
 
@@ -586,6 +633,7 @@ discordMessageNoReference messageId =
     , Discord.member = Nothing
     , Discord.content = ""
     , Discord.attachments = []
+    , Discord.embeds = []
     , Discord.mentions = []
     , Discord.referencedMessage = Nothing
     , Discord.messageReference = Nothing
