@@ -16,6 +16,7 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Chat.Driver.Types
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Util.Stream as StreamUtil
@@ -201,7 +202,7 @@ setPlatformMemberTitle message userId title =
     Just <$> driver.setMemberTitle message userId title
 
 runChatDrivers
-  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, FileSystem :> es, Prim :> es, IOE :> es)
+  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
   => QQ.Config
   -> Telegram.Config
   -> Matrix.Config

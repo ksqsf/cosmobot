@@ -28,6 +28,8 @@ module Bot.Chat.Driver.Matrix
 where
 
 import qualified Bot.Chat.Driver.Types as Driver
+import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Storage.Matrix as MatrixStorage
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
@@ -132,6 +134,8 @@ matrixStreamingMessageLimit = 4000
 
 data Matrix :: Effect where
   MatrixConfig :: Matrix m Config
+  LoadSyncToken :: Matrix m (Maybe Text)
+  StoreSyncToken :: Text -> Matrix m ()
   Sync :: Maybe Text -> Matrix m (Maybe SyncResponse)
   DirectRooms :: Matrix m (Set MatrixRoomId)
   JoinedMemberCounts :: Matrix m (Map MatrixRoomId Int)
@@ -145,6 +149,14 @@ type instance DispatchOf Matrix = Dynamic
 
 matrixConfig :: Matrix :> es => Eff es Config
 matrixConfig = send MatrixConfig
+
+loadSyncToken :: Matrix :> es => Eff es (Maybe Text)
+loadSyncToken =
+  send LoadSyncToken
+
+storeSyncToken :: Matrix :> es => Text -> Eff es ()
+storeSyncToken =
+  send . StoreSyncToken
 
 sync :: Matrix :> es => Maybe Text -> Eff es (Maybe SyncResponse)
 sync =
@@ -179,7 +191,7 @@ deleteEvent roomId messageId eventId =
   send (DeleteEvent roomId messageId eventId)
 
 runMatrix
-  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
   => Config
   -> Eff (Matrix : es) a
   -> Eff es a
@@ -196,6 +208,10 @@ runMatrix cfg inner = do
     ( \_ -> \case
         MatrixConfig ->
           pure cfg
+        LoadSyncToken ->
+          MatrixStorage.loadSyncToken
+        StoreSyncToken token ->
+          MatrixStorage.saveSyncToken token
         Sync since -> do
           response <- withMaybeMatrixAccessToken auth \token ->
             syncCall manager cfg since token
@@ -524,9 +540,28 @@ incomingMessages = do
   if matrixAuthConfigured cfg
     then do
       S.lift $ logInfo_ [i|Matrix sync starting: auth=#{matrixAuthMode cfg}|]
-      syncLoop cfg Nothing
+      storedSince <- S.lift loadSyncToken
+      case storedSince of
+        Just since ->
+          syncLoop cfg (Just since)
+        Nothing -> do
+          S.lift $ logInfo_ "Matrix sync state is empty; initializing from current homeserver state"
+          initializeSyncState cfg
     else S.lift $ logInfo_ "Matrix driver disabled: no access token, refresh token, or login credentials configured"
   where
+    initializeSyncState cfg = do
+      result <- S.lift $ sync Nothing `catchSync` \err -> do
+        logInfo_ [i|Matrix sync initialization failed, retrying: #{show err :: String}|]
+        threadDelay matrixRetryDelayMicroseconds
+        pure Nothing
+      case result of
+        Nothing ->
+          initializeSyncState cfg
+        Just response -> do
+          S.lift $ storeSyncToken response.nextBatch
+          S.lift $ logInfo_ "Matrix sync state initialized; skipped initial timeline batch"
+          syncLoop cfg (Just response.nextBatch)
+
     syncLoop cfg since = do
       result <- S.lift $ sync since `catchSync` \err -> do
         logInfo_ [i|Matrix sync failed, retrying: #{show err :: String}|]
@@ -554,6 +589,7 @@ incomingMessages = do
                 S.lift $ logTrace "incoming Matrix message" message
                 S.lift $ logInfo_ [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine message}|]
                 S.yield message
+          S.lift $ storeSyncToken response.nextBatch
           syncLoop cfg (Just response.nextBatch)
 
 syncEvents :: Set MatrixRoomId -> SyncResponse -> [RoomEvent]
