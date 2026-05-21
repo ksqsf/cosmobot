@@ -95,6 +95,7 @@ matrixStreamingMessageLimit = 4000
 data Matrix :: Effect where
   MatrixConfig :: Matrix m Config
   Sync :: Maybe Text -> Matrix m (Maybe SyncResponse)
+  DirectRooms :: Matrix m (Set Text)
   SendText :: Text -> Text -> Matrix m (Maybe SendMessageResponse)
   UploadMedia :: FilePath -> Text -> Matrix m MatrixUploadResponse
   SendFileMessage :: Text -> MatrixFileMessage -> Matrix m (Maybe SendMessageResponse)
@@ -108,6 +109,10 @@ matrixConfig = send MatrixConfig
 sync :: Matrix :> es => Maybe Text -> Eff es (Maybe SyncResponse)
 sync =
   send . Sync
+
+directRooms :: Matrix :> es => Eff es (Set Text)
+directRooms =
+  send DirectRooms
 
 sendText :: Matrix :> es => Text -> Text -> Eff es (Maybe SendMessageResponse)
 sendText roomId body =
@@ -133,6 +138,7 @@ runMatrix
 runMatrix cfg inner = do
   manager <- liftIO Http.newTlsManager
   eventIds <- IORef.newIORef (Map.empty :: Map MessageId Text)
+  directRoomIdsRef <- IORef.newIORef (Set.empty :: Set Text)
   initialAuthState <- initialMatrixAuthState manager cfg
   authState <- IORef.newIORef initialAuthState
   refreshLock <- MVar.newMVar ()
@@ -141,9 +147,13 @@ runMatrix cfg inner = do
     ( \_ -> \case
         MatrixConfig ->
           pure cfg
-        Sync since ->
-          withMaybeMatrixAccessToken auth \token ->
+        Sync since -> do
+          response <- withMaybeMatrixAccessToken auth \token ->
             syncCall manager cfg since token
+          traverse_ (rememberDirectRooms directRoomIdsRef) response
+          pure response
+        DirectRooms ->
+          IORef.readIORef directRoomIdsRef
         SendText roomId body -> do
           response <- withMaybeMatrixAccessToken auth \token ->
             sendMessageCall manager cfg token roomId body
@@ -171,6 +181,10 @@ runMatrix cfg inner = do
 rememberMatrixEvent :: Prim :> es => IORef.IORef (Map MessageId Text) -> SendMessageResponse -> Eff es ()
 rememberMatrixEvent eventIds response =
   IORef.modifyIORef' eventIds (Map.insert (textMessageId response.eventId) response.eventId)
+
+rememberDirectRooms :: Prim :> es => IORef.IORef (Set Text) -> SyncResponse -> Eff es ()
+rememberDirectRooms directRoomIdsRef response =
+  IORef.modifyIORef' directRoomIdsRef (<> syncDirectRoomIds response)
 
 data MatrixAuth = MatrixAuth
   { authManager :: !Manager
@@ -445,8 +459,10 @@ incomingMessages = do
         Nothing ->
           syncLoop cfg since
         Just response -> do
-          let events = syncEvents response
-          S.lift $ logInfo_ [i|Matrix sync batch: #{length events}|]
+          directRoomIds <- S.lift directRooms
+          let events = syncEvents directRoomIds response
+              directCount = Set.size directRoomIds
+          S.lift $ logInfo_ [i|Matrix sync batch: #{length events}; direct_rooms=#{directCount}|]
           for_ events \event ->
             case eventToIncomingMessageWith cfg event of
               Nothing -> do
@@ -459,19 +475,19 @@ incomingMessages = do
                 S.yield message
           syncLoop cfg (Just response.nextBatch)
 
-syncEvents :: SyncResponse -> [RoomEvent]
-syncEvents response =
+syncEvents :: Set Text -> SyncResponse -> [RoomEvent]
+syncEvents directRoomIds response =
   [ RoomEvent
       { roomId
-      , roomIsDirect = roomId `Set.member` directRoomIds response
+      , roomIsDirect = roomId `Set.member` directRoomIds
       , event
       }
   | (roomId, room) <- Map.toList response.rooms.join
   , event <- room.timeline.events
   ]
 
-directRoomIds :: SyncResponse -> Set Text
-directRoomIds =
+syncDirectRoomIds :: SyncResponse -> Set Text
+syncDirectRoomIds =
   Set.fromList . (.directRooms) . (.accountData)
 
 matrixAuthConfigured :: Config -> Bool
