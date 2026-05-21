@@ -9,6 +9,7 @@ enabled = false
 host = "127.0.0.1"
 port = 38765
 token = ""
+static_dir = "web/dist"
 
 [driver.qq]
 host = "127.0.0.1"

@@ -101,6 +101,9 @@ common app-deps
                     , crypton-connection
                     , tls
                     , http-types
+                    , wai
+                    , wai-websockets
+                    , warp
                     , jsonrpc
                     , optics
                     , time

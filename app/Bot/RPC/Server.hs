@@ -3,12 +3,14 @@ Module      : Bot.RPC.Server
 Description : Local JSON-RPC websocket server
 Stability   : experimental
 -}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Bot.RPC.Server
   ( RpcServerCallbacks (..)
   , noRpcServerCallbacks
   , runRpcServer
+  , rpcServerApplication
   , rpcServerApp
   , dispatchRpcRequest
   )
@@ -23,12 +25,19 @@ import qualified Bot.RPC.State as State
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.STM as STM
+import qualified Effectful.FileSystem as FileSystem
 import qualified JSONRPC
+import qualified Network.HTTP.Types as Http
 import qualified Network.HTTP.Types.URI as URI
+import qualified Network.Wai as Wai
+import qualified Network.Wai.Handler.Warp as Warp
+import qualified Network.Wai.Handler.WebSockets as WaiWS
 import qualified Network.WebSockets as WS
+import System.FilePath ((</>), takeExtension)
 
 data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: Protocol.RpcRequest -> Eff es (Maybe (Either Protocol.RpcError Aeson.Value))
@@ -40,7 +49,7 @@ noRpcServerCallbacks = RpcServerCallbacks
   }
 
 runRpcServer
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -51,18 +60,33 @@ runRpcServer cfg@Config.Config{enabled} rpcState callbacks = do
     else pure ()
 
 runRpcServer'
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
   -> Eff es ()
 runRpcServer' cfg rpcState callbacks = do
-  let Config.Config{host, port} = cfg
-  logInfo_ [i|RPC websocket listening on #{host}:#{port}|]
+  let Config.Config{host, port, staticDir} = cfg
+      settings =
+        Warp.setHost (fromString host) $
+          Warp.setPort port Warp.defaultSettings
+  logInfo_ [i|RPC HTTP server listening on #{host}:#{port}; websocket endpoint /rpc; static dir #{staticDir}|]
   withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
     liftIO $
-      WS.runServer host port \pending ->
-        runInIO (rpcServerApp cfg rpcState callbacks pending)
+      Warp.runSettings settings (rpcServerApplication runInIO cfg rpcState callbacks)
+
+rpcServerApplication
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  => (forall a. Eff es a -> IO a)
+  -> Config.Config
+  -> State.RpcState
+  -> RpcServerCallbacks es
+  -> Wai.Application
+rpcServerApplication runInIO cfg rpcState callbacks =
+  WaiWS.websocketsOr WS.defaultConnectionOptions websocketApp (httpApp runInIO cfg)
+  where
+    websocketApp pending =
+      runInIO (rpcServerApp cfg rpcState callbacks pending)
 
 rpcServerApp
   :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
@@ -72,6 +96,14 @@ rpcServerApp
   -> WS.PendingConnection
   -> Eff es ()
 rpcServerApp cfg rpcState callbacks pending
+  | not (requestIsRpcPath (WS.pendingRequest pending)) =
+      liftIO $
+        WS.rejectRequestWith pending $
+          WS.defaultRejectRequest
+            { WS.rejectCode = 404
+            , WS.rejectMessage = "Not Found"
+            , WS.rejectBody = "not found"
+            }
   | requestIsAuthorized cfg (WS.pendingRequest pending) = do
       conn <- liftIO (WS.acceptRequest pending)
       serveAcceptedClient rpcState callbacks conn
@@ -387,6 +419,12 @@ requestIsAuthorized cfg request =
     Config.Config{token} = cfg
     expectedToken = TextEncoding.encodeUtf8 token
 
+requestIsRpcPath :: WS.RequestHead -> Bool
+requestIsRpcPath request =
+  path == "/" || path == "/rpc"
+  where
+    (path, _) = ByteString.break (== questionMark) request.requestPath
+
 queryAccessToken :: WS.RequestHead -> Maybe ByteString
 queryAccessToken request =
   join (snd <$> find ((== "access_token") . fst) (URI.parseQuery queryBytes))
@@ -396,6 +434,116 @@ queryAccessToken request =
 authorizationBearer :: WS.RequestHead -> Maybe ByteString
 authorizationBearer request =
   ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) request.requestHeaders)
+
+httpApp :: FileSystem.FileSystem :> es => (forall a. Eff es a -> IO a) -> Config.Config -> Wai.Application
+httpApp runInIO cfg request respond =
+  case (Wai.requestMethod request, Wai.pathInfo request) of
+    ("GET", ["attachments", _attachmentId])
+      | httpRequestIsAuthorized cfg request ->
+          respond $
+            textResponse Http.status501 "attachment storage is not configured"
+      | otherwise ->
+          respond $
+            textResponse Http.status401 "unauthorized"
+    ("GET", pathSegments) ->
+      serveStatic runInIO cfg pathSegments respond
+    ("HEAD", pathSegments) ->
+      serveStatic runInIO cfg pathSegments respond
+    _ ->
+      respond $
+        textResponse Http.status405 "method not allowed"
+
+serveStatic
+  :: FileSystem.FileSystem :> es
+  => (forall a. Eff es a -> IO a)
+  -> Config.Config
+  -> [Text]
+  -> (Wai.Response -> IO Wai.ResponseReceived)
+  -> IO Wai.ResponseReceived
+serveStatic runInIO cfg pathSegments respond
+  | any unsafePathSegment pathSegments =
+      respond (textResponse Http.status404 "not found")
+  | otherwise = do
+      selected <- runInIO (selectStaticFile cfg pathSegments)
+      case selected of
+        Nothing ->
+          respond (textResponse Http.status404 "not found")
+        Just path ->
+          respond $
+            Wai.responseFile
+              Http.status200
+              [("Content-Type", contentType path)]
+              path
+              Nothing
+
+selectStaticFile :: FileSystem.FileSystem :> es => Config.Config -> [Text] -> Eff es (Maybe FilePath)
+selectStaticFile Config.Config{staticDir} pathSegments =
+  firstExisting candidates
+  where
+    requestedPath =
+      foldl' (</>) staticDir (map Text.unpack pathSegments)
+    candidates =
+      case pathSegments of
+        [] ->
+          [staticDir </> "index.html", "web/rpc.html"]
+        _ ->
+          [requestedPath, staticDir </> "index.html"]
+
+firstExisting :: FileSystem.FileSystem :> es => [FilePath] -> Eff es (Maybe FilePath)
+firstExisting = \case
+  [] ->
+    pure Nothing
+  path : rest -> do
+    exists <- FileSystem.doesFileExist path
+    if exists
+      then pure (Just path)
+      else firstExisting rest
+
+unsafePathSegment :: Text -> Bool
+unsafePathSegment segment =
+  Text.null segment || segment == "." || segment == ".." || Text.any isPathSeparator segment
+  where
+    isPathSeparator char =
+      char == '/' || char == '\\'
+
+httpRequestIsAuthorized :: Config.Config -> Wai.Request -> Bool
+httpRequestIsAuthorized cfg request =
+  httpQueryAccessToken request == Just expectedToken
+    || httpAuthorizationBearer request == Just expectedToken
+  where
+    Config.Config{token} = cfg
+    expectedToken = TextEncoding.encodeUtf8 token
+
+httpQueryAccessToken :: Wai.Request -> Maybe ByteString
+httpQueryAccessToken request =
+  join (snd <$> find ((== "access_token") . fst) (Wai.queryString request))
+
+httpAuthorizationBearer :: Wai.Request -> Maybe ByteString
+httpAuthorizationBearer request =
+  ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) (Wai.requestHeaders request))
+
+textResponse :: Http.Status -> LazyByteString.ByteString -> Wai.Response
+textResponse status body =
+  Wai.responseLBS status [("Content-Type", "text/plain; charset=utf-8")] body
+
+contentType :: FilePath -> ByteString
+contentType path =
+  case takeExtension path of
+    ".css" -> "text/css; charset=utf-8"
+    ".gif" -> "image/gif"
+    ".html" -> "text/html; charset=utf-8"
+    ".ico" -> "image/x-icon"
+    ".jpeg" -> "image/jpeg"
+    ".jpg" -> "image/jpeg"
+    ".js" -> "text/javascript; charset=utf-8"
+    ".json" -> "application/json; charset=utf-8"
+    ".map" -> "application/json; charset=utf-8"
+    ".png" -> "image/png"
+    ".svg" -> "image/svg+xml"
+    ".txt" -> "text/plain; charset=utf-8"
+    ".wasm" -> "application/wasm"
+    ".webp" -> "image/webp"
+    _ -> "application/octet-stream"
 
 questionMark :: Word8
 questionMark = 63

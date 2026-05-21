@@ -11,12 +11,17 @@ import qualified Bot.RPC.State as RPC
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
+import qualified Data.ByteString.Char8 as ByteStringChar8
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.STM as STM
 import Effectful.FileSystem (runFileSystem)
 import qualified Effectful.FileSystem as FileSystem
+import qualified Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Types as Http
 import qualified JSONRPC
 import qualified Network.Socket as Socket
+import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.WebSockets as WS
 import qualified Streaming.Prelude as S
 import System.Timeout
@@ -39,6 +44,7 @@ main =
       , testCase "chat.fork stores immutable parent link and inherited history" testChatForkStoresParentLink
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
       , testCase "websocket server authenticates and handles JSON-RPC requests" testWebSocketServerAuthenticatesAndHandlesRequests
+      , testCase "HTTP server serves static fallback and protects attachment route" testHttpServerServesStaticFallbackAndProtectsAttachmentRoute
       ]
 
 testRequestParamsDefaultToEmptyObject :: IO ()
@@ -263,10 +269,11 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
     port <- fromIntegral <$> liftIO (Socket.socketPort listenSocket)
     let cfg = RPCConfig.Config
           { enabled = True
-          , host = "127.0.0.1"
-          , port
-          , token = "secret"
-          }
+        , host = "127.0.0.1"
+        , port
+        , token = "secret"
+        , staticDir = "web/dist"
+        }
         server =
           finally
             (forever do
@@ -287,6 +294,53 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
       assertFailure "RPC server exited before client completed"
     Just (Right (unauthorized, response)) -> do
       assertUnauthorizedRejected unauthorized
+      response @?=
+        responseResult
+          ( Aeson.object
+              [ "sessionId" Aeson..= ("integration-1" :: Text)
+              , "session" Aeson..= sessionValue "integration-1" (Just "integration") Nothing Nothing
+              ]
+          )
+
+testHttpServerServesStaticFallbackAndProtectsAttachmentRoute :: IO ()
+testHttpServerServesStaticFallbackAndProtectsAttachmentRoute = do
+  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
+    rpcState <- RPC.newRpcState
+    listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
+    port <- fromIntegral <$> liftIO (Socket.socketPort listenSocket)
+    let cfg = RPCConfig.Config
+          { enabled = True
+          , host = "127.0.0.1"
+          , port
+          , token = "secret"
+          , staticDir = "web/dist"
+          }
+        server =
+          withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+            liftIO $
+              Warp.runSettingsSocket Warp.defaultSettings listenSocket $
+                RPCServer.rpcServerApplication runInIO cfg rpcState RPCServer.noRpcServerCallbacks
+        client = liftIO do
+          manager <- HTTP.newManager HTTP.defaultManagerSettings
+          root <- httpGet manager [i|http://127.0.0.1:#{port}/|]
+          attachmentWithoutToken <- httpGet manager [i|http://127.0.0.1:#{port}/attachments/missing|]
+          attachmentWithToken <- httpGet manager [i|http://127.0.0.1:#{port}/attachments/missing?access_token=secret|]
+          response <- openSessionClientAtPath port "/rpc?access_token=secret"
+          pure (root, attachmentWithoutToken, attachmentWithToken, response)
+    race server client
+
+  case result of
+    Nothing ->
+      assertFailure "RPC HTTP integration test timed out"
+    Just (Left ()) ->
+      assertFailure "RPC HTTP server exited before client completed"
+    Just (Right (root, attachmentWithoutToken, attachmentWithToken, response)) -> do
+      HTTP.responseStatus root @?= Http.status200
+      assertBool
+        "expected fallback web/rpc.html"
+        ("<title>cosmobot RPC</title>" `ByteStringChar8.isInfixOf` LazyByteString.toStrict (HTTP.responseBody root))
+      HTTP.responseStatus attachmentWithoutToken @?= Http.status401
+      HTTP.responseStatus attachmentWithToken @?= Http.status501
       response @?=
         responseResult
           ( Aeson.object
@@ -329,6 +383,26 @@ openSessionClient port token =
     case Aeson.eitherDecodeStrict' bytes of
       Left err -> fail [i|RPC websocket response was not JSON-RPC: #{err}|]
       Right response -> pure response
+
+openSessionClientAtPath :: Int -> String -> IO Protocol.RpcResponse
+openSessionClientAtPath port path =
+  WS.runClient "127.0.0.1" port path \conn -> do
+    WS.sendTextData conn $
+      Aeson.encode $
+        Protocol.rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("integration" :: Text)]) "test-1"
+    bytes <- WS.receiveData conn :: IO ByteString
+    case Aeson.eitherDecodeStrict' bytes of
+      Left err -> fail [i|RPC websocket response was not JSON-RPC: #{err}|]
+      Right response -> pure response
+
+httpGet :: HTTP.Manager -> String -> IO (HTTP.Response LazyByteString.ByteString)
+httpGet manager url = do
+  request <- HTTP.parseRequest url
+  HTTP.httpLbs
+    request
+      { HTTP.checkResponse = \_ _ -> pure ()
+      }
+    manager
 
 assertUnauthorizedRejected :: Either SomeException () -> IO ()
 assertUnauthorizedRejected = \case

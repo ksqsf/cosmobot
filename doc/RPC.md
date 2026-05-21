@@ -15,10 +15,12 @@ enabled = false
 host = "127.0.0.1"
 port = 38765
 token = ""
+static_dir = "web/dist"
 ```
 
 `enabled` defaults to `false`. When `enabled = true`, `token` must be non-empty.
-The default host is loopback-only.
+The default host is loopback-only. `static_dir` is the directory served at `/`;
+if `static_dir/index.html` is absent, `/` falls back to `web/rpc.html`.
 
 ## Authentication
 
@@ -27,6 +29,14 @@ Clients authenticate during the WebSocket handshake with either a query token:
 ```text
 ws://127.0.0.1:38765/?access_token=TOKEN
 ```
+
+The preferred WebSocket endpoint is:
+
+```text
+ws://127.0.0.1:38765/rpc?access_token=TOKEN
+```
+
+The legacy root WebSocket path remains accepted for compatibility.
 
 or an HTTP header:
 
@@ -234,12 +244,16 @@ Use `cosmobot rpc --config FILE ...` to read a config file other than
 
 ## Browser UI
 
-`web/rpc.html` is a static client that can be opened directly from the repo. It
-connects to the WebSocket endpoint, creates chat sessions, sends prompts, shows
-chat reply updates, lists recent audit records, subscribes to the live audit
-feed, and loads audit record details.
+When RPC is enabled, the same HTTP port serves the browser UI from
+`static_dir`. A Svelte/Vite build should place its output in `web/dist`; while
+that build is absent, `/` serves the legacy `web/rpc.html` client. The browser
+client connects to `/rpc`, creates chat sessions, sends prompts, shows chat
+reply updates, lists recent audit records, subscribes to the live audit feed,
+and loads audit record details.
 
-The RPC server is WebSocket-only; it does not serve this file over HTTP.
+`/attachments/<id>` is reserved for token-protected attachment downloads. Until
+the durable attachment store is wired in, authorized requests return HTTP 501
+and unauthorized requests return HTTP 401.
 
 ## Limitations
 
