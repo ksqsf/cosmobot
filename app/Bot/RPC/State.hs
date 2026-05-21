@@ -41,6 +41,7 @@ import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.Effect.Storage as StorageEffect
+import qualified Bot.Storage.Attachment as Attachment
 import qualified Bot.Storage.RPC as Storage
 import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
@@ -90,6 +91,7 @@ data RpcChatMessage = RpcChatMessage
   , sender :: !Text
   , text :: !Text
   , imageUrls :: ![Text]
+  , attachments :: ![RpcChatAttachmentRef]
   , replyToMessageId :: !(Maybe MessageId)
   , parentMessageId :: !(Maybe MessageId)
   }
@@ -105,10 +107,26 @@ data RpcChatSession = RpcChatSession
 
 data RpcChatAttachmentRef = RpcChatAttachmentRef
   { attachmentId :: !Text
+  , name :: !Text
+  , mediaType :: !Text
   , kind :: !Text
-  , name :: !(Maybe Text)
+  , size :: !Int
+  , url :: !Text
   }
-  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+  deriving (Eq, Show, Generic, Aeson.ToJSON)
+
+instance Aeson.FromJSON RpcChatAttachmentRef where
+  parseJSON =
+    Aeson.withObject "RPC chat attachment" \o -> do
+      attachmentId <- o Aeson..: "attachmentId" <|> o Aeson..: "attachment_id" <|> o Aeson..: "id"
+      name <- fromMaybe attachmentId <$> o Aeson..:? "name"
+      mediaType <- fromMaybe "application/octet-stream" <$> (o Aeson..:? "mediaType" >>= \case
+        Just value -> pure (Just value)
+        Nothing -> o Aeson..:? "media_type")
+      kind <- fromMaybe (kindFromMediaType mediaType) <$> o Aeson..:? "kind"
+      size <- fromMaybe 0 <$> o Aeson..:? "size"
+      url <- fromMaybe ("/attachments/" <> attachmentId) <$> o Aeson..:? "url"
+      pure RpcChatAttachmentRef{attachmentId, name, mediaType, kind, size, url}
 
 data RpcChatSend = RpcChatSend
   { sessionId :: !RpcSessionId
@@ -199,7 +217,8 @@ enqueueChatMessage rpcState chatSend = do
     chatSend.sessionId.unRpcSessionId
     "user"
     chatSend.text
-    chatSend.imageUrls
+    (rpcChatSendImageUrls chatSend)
+    (map rpcAttachmentToStored chatSend.attachments)
     chatSend.replyToMessageId
     chatSend.replyToMessageId
   case stored of
@@ -230,6 +249,7 @@ rpcChatDriver rpcState = driver
             sessionId.unRpcSessionId
             "assistant"
             body
+            []
             []
             parentMessageId
             parentMessageId
@@ -284,8 +304,8 @@ rpcIncomingMessage chatSend messageId =
     , replyToMessageId = chatSend.replyToMessageId
     , mentions = []
     , mentionUsernames = []
-    , imageUrls = chatSend.imageUrls
-    , text = chatSend.text
+    , imageUrls = rpcChatSendImageUrls chatSend
+    , text = chatSendContextText chatSend
     , raw = Aeson.toJSON chatSend
     }
 
@@ -328,6 +348,7 @@ storedMessageToRpc message =
     , sender = message.sender
     , text = message.text
     , imageUrls = message.imageUrls
+    , attachments = map storedAttachmentToRpc message.attachments
     , replyToMessageId = message.replyToMessageId
     , parentMessageId = message.parentMessageId
     }
@@ -354,3 +375,55 @@ drainTBQueue queue =
 
 rpcClientQueueCapacity :: Natural
 rpcClientQueueCapacity = 256
+
+rpcChatSendImageUrls :: RpcChatSend -> [Text]
+rpcChatSendImageUrls chatSend =
+  ordNub (chatSend.imageUrls <> [attachment.url | attachment <- chatSend.attachments, attachment.kind == "image"])
+
+chatSendContextText :: RpcChatSend -> Text
+chatSendContextText chatSend
+  | null nonImageAttachments =
+      chatSend.text
+  | Text.null (Text.strip chatSend.text) =
+      attachmentContext
+  | otherwise =
+      chatSend.text <> "\n\n" <> attachmentContext
+  where
+    nonImageAttachments =
+      filter ((/= "image") . (.kind)) chatSend.attachments
+    attachmentContext =
+      Text.unlines $
+        "Attachments:" :
+        [ "- " <> attachment.name <> " (" <> attachment.mediaType <> ", " <> attachment.url <> ")"
+        | attachment <- nonImageAttachments
+        ]
+
+rpcAttachmentToStored :: RpcChatAttachmentRef -> Attachment.StoredAttachmentRef
+rpcAttachmentToStored attachment =
+  Attachment.StoredAttachmentRef
+    { attachmentId = attachment.attachmentId
+    , name = attachment.name
+    , mediaType = attachment.mediaType
+    , kind = attachment.kind
+    , size = attachment.size
+    , url = attachment.url
+    }
+
+storedAttachmentToRpc :: Attachment.StoredAttachmentRef -> RpcChatAttachmentRef
+storedAttachmentToRpc attachment =
+  RpcChatAttachmentRef
+    { attachmentId = attachment.attachmentId
+    , name = attachment.name
+    , mediaType = attachment.mediaType
+    , kind = attachment.kind
+    , size = attachment.size
+    , url = attachment.url
+    }
+
+kindFromMediaType :: Text -> Text
+kindFromMediaType mediaType
+  | "image/" `Text.isPrefixOf` media = "image"
+  | "audio/" `Text.isPrefixOf` media = "audio"
+  | otherwise = "file"
+  where
+    media = Text.toLower mediaType

@@ -137,6 +137,7 @@ common bot-chat-driver-modules
         Bot.Effect.Storage
         Bot.RPC.Protocol
         Bot.RPC.State
+        Bot.Storage.Attachment
         Bot.Storage.Matrix
         Bot.Storage.Prelude
         Bot.Storage.RPC
@@ -194,6 +195,7 @@ common bot-agent-modules
         Bot.Scheduler.State
         Bot.Scheduler.Types
         Bot.Storage.Prelude
+        Bot.Storage.Attachment
         Bot.Storage.Conversation
         Bot.Storage.ChatLog
         Bot.Storage.Lifecycle
@@ -378,6 +380,7 @@ test-suite rpc-spec
         Bot.RPC.Protocol
         Bot.RPC.Server
         Bot.RPC.State
+        Bot.Storage.Attachment
         Bot.Storage.Prelude
         Bot.Storage.RPC
         Bot.Storage.SQLite

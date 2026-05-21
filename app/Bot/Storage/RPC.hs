@@ -26,10 +26,12 @@ where
 import Bot.Core.Message
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
+import qualified Bot.Storage.Attachment as Attachment
 import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Foldable as Foldable
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 
@@ -47,6 +49,7 @@ data StoredChatMessage = StoredChatMessage
   , sender :: !Text
   , text :: !Text
   , imageUrls :: ![Text]
+  , attachments :: ![Attachment.StoredAttachmentRef]
   , replyToMessageId :: !(Maybe MessageId)
   , parentMessageId :: !(Maybe MessageId)
   }
@@ -77,6 +80,20 @@ data RpcMessageRow = RpcMessageRow
 
 instance SqlRow RpcMessageRow
 
+data RpcMessageAttachmentRow = RpcMessageAttachmentRow
+  { id :: ID RpcMessageAttachmentRow
+  , message_id :: Text
+  , attachment_id :: Text
+  , name :: Text
+  , media_type :: Text
+  , kind :: Text
+  , size_bytes :: Int
+  , url :: Text
+  }
+  deriving (Generic)
+
+instance SqlRow RpcMessageAttachmentRow
+
 rpcSessionRows :: Table RpcSessionRow
 rpcSessionRows =
   table "rpc_chat_sessions"
@@ -95,11 +112,20 @@ rpcMessageRows =
     , #parent_message_id :- index
     ]
 
+rpcMessageAttachmentRows :: Table RpcMessageAttachmentRow
+rpcMessageAttachmentRows =
+  table "rpc_chat_message_attachments"
+    [ #id :- autoPrimary
+    , #message_id :- index
+    , #attachment_id :- index
+    ]
+
 ensureRpcTables :: Storage.Storage :> es => Eff es ()
 ensureRpcTables =
   runSelda do
     tryCreateTable rpcSessionRows
     tryCreateTable rpcMessageRows
+    tryCreateTable rpcMessageAttachmentRows
 
 createSession :: Storage.Storage :> es => Maybe Text -> Eff es StoredChatSession
 createSession label = do
@@ -143,11 +169,11 @@ loadSessionHistory targetSessionId = do
       | otherwise ->
           pure current
 
-appendMessage :: Storage.Storage :> es => Text -> Text -> Text -> [Text] -> Maybe MessageId -> Maybe MessageId -> Eff es (Maybe StoredChatMessage)
-appendMessage sessionId sender body imageUrls replyToMessageId parentMessageId =
+appendMessage :: Storage.Storage :> es => Text -> Text -> Text -> [Text] -> [Attachment.StoredAttachmentRef] -> Maybe MessageId -> Maybe MessageId -> Eff es (Maybe StoredChatMessage)
+appendMessage sessionId sender body imageUrls attachments replyToMessageId parentMessageId =
   retryingStorageWrite do
     ensureRpcTables
-    runSelda $
+    message <- runSelda $
       transaction do
         matchingSessions <- query do
           row <- select rpcSessionRows
@@ -167,17 +193,23 @@ appendMessage sessionId sender body imageUrls replyToMessageId parentMessageId =
                   , sender
                   , text = body
                   , imageUrls
+                  , attachments
                   , replyToMessageId
                   , parentMessageId
                   }
             insert_ rpcMessageRows [messageRow message]
+            insert_ rpcMessageAttachmentRows (map (messageAttachmentRow message.messageId) attachments)
             pure (Just message)
+    traverse_ (const (Attachment.addAttachmentRefs (map (.attachmentId) attachments))) message
+    pure message
 
 insertMessage :: Storage.Storage :> es => StoredChatMessage -> Eff es ()
 insertMessage message = do
   ensureRpcTables
-  runSelda $
+  runSelda do
     insert_ rpcMessageRows [messageRow message]
+    insert_ rpcMessageAttachmentRows (map (messageAttachmentRow message.messageId) message.attachments)
+  Attachment.addAttachmentRefs (map (.attachmentId) message.attachments)
 
 updateMessageText :: Storage.Storage :> es => Text -> MessageId -> Text -> Eff es Bool
 updateMessageText targetSessionId targetMessageId body = do
@@ -204,7 +236,7 @@ renameSession targetSessionId newLabel = do
 deleteSession :: Storage.Storage :> es => Text -> Eff es Bool
 deleteSession targetSessionId = do
   ensureRpcTables
-  runSelda $
+  (deleted, releasedAttachmentIds) <- runSelda $
     transaction do
       rows <- query do
         row <- select rpcSessionRows
@@ -212,22 +244,31 @@ deleteSession targetSessionId = do
       let deleteIds = descendantSessionIds targetSessionId rows
       case deleteIds of
         [] ->
-          pure False
+          pure (False, [])
         _ -> do
-          -- Forks inherit parent history, so deleting a parent cascades to its descendants.
-          traverse_
-            ( \sessionId ->
-                deleteFrom_ rpcMessageRows \row ->
-                  row ! #session_id .== literal sessionId
-            )
-            deleteIds
+          messages <- query do
+            row <- select rpcMessageRows
+            restrict (row ! #session_id `isIn` map literal deleteIds)
+            pure row
+          attachmentRows <- query do
+            row <- select rpcMessageAttachmentRows
+            restrict (row ! #message_id `isIn` map (literal . (.message_id)) messages)
+            pure row
+          unless (null messages) $
+            deleteFrom_ rpcMessageAttachmentRows \row ->
+              row ! #message_id `isIn` map (literal . (.message_id)) messages
+          deleteFrom_ rpcMessageRows \row ->
+            row ! #session_id `isIn` map literal deleteIds
           traverse_
             ( \sessionId ->
                 deleteFrom_ rpcSessionRows \row ->
                   row ! #session_id .== literal sessionId
             )
             deleteIds
-          pure True
+          pure (True, map (.attachment_id) attachmentRows)
+  when deleted $
+    Attachment.releaseAttachmentRefs releasedAttachmentIds
+  pure deleted
 
 forkSession :: Storage.Storage :> es => Text -> MessageId -> Maybe Text -> Eff es (Maybe StoredChatSession)
 forkSession sourceSessionId sourceMessageId requestedLabel = do
@@ -265,7 +306,8 @@ loadOwnMessages targetSessionId = do
       restrict (row ! #session_id .== literal targetSessionId)
       order (row ! #id) ascending
       pure row
-  pure (map messageFromRow rows)
+  attachRows <- loadAttachmentsForMessages (map (textMessageId . (.message_id)) rows)
+  pure [messageFromRow row (Map.findWithDefault [] (textMessageId row.message_id) attachRows) | row <- rows]
 
 loadMessage :: Storage.Storage :> es => Text -> MessageId -> Eff es (Maybe StoredChatMessage)
 loadMessage targetSessionId targetMessageId = do
@@ -276,7 +318,12 @@ loadMessage targetSessionId targetMessageId = do
         row <- select rpcMessageRows
         restrict (row ! #session_id .== literal targetSessionId .&& row ! #message_id .== literal (messageIdText targetMessageId))
         pure row
-  pure (messageFromRow <$> viaNonEmpty head rows)
+  case viaNonEmpty head rows of
+    Nothing ->
+      pure Nothing
+    Just row -> do
+      attachRows <- loadAttachmentsForMessages [textMessageId row.message_id]
+      pure (Just (messageFromRow row (Map.findWithDefault [] (textMessageId row.message_id) attachRows)))
 
 allocateSession :: Storage.Storage :> es => Text -> (Text -> StoredChatSession) -> Eff es StoredChatSession
 allocateSession base mkSession =
@@ -350,14 +397,15 @@ messageRow message =
     , parent_message_id = messageIdText <$> message.parentMessageId
     }
 
-messageFromRow :: RpcMessageRow -> StoredChatMessage
-messageFromRow row =
+messageFromRow :: RpcMessageRow -> [Attachment.StoredAttachmentRef] -> StoredChatMessage
+messageFromRow row attachments =
   StoredChatMessage
     { sessionId = row.session_id
     , messageId = textMessageId row.message_id
     , sender = row.sender
     , text = row.body
     , imageUrls = decodeImageUrls row.image_urls_json
+    , attachments
     , replyToMessageId = textMessageId <$> row.reply_to_message_id
     , parentMessageId = textMessageId <$> row.parent_message_id
     }
@@ -369,6 +417,47 @@ encodeImageUrls =
 decodeImageUrls :: Text -> [Text]
 decodeImageUrls value =
   fromMaybe [] (Aeson.decodeStrict' (TextEncoding.encodeUtf8 value))
+
+messageAttachmentRow :: MessageId -> Attachment.StoredAttachmentRef -> RpcMessageAttachmentRow
+messageAttachmentRow messageId attachment =
+  RpcMessageAttachmentRow
+    { id = def
+    , message_id = messageIdText messageId
+    , attachment_id = attachment.attachmentId
+    , name = attachment.name
+    , media_type = attachment.mediaType
+    , kind = attachment.kind
+    , size_bytes = attachment.size
+    , url = attachment.url
+    }
+
+attachmentFromMessageRow :: RpcMessageAttachmentRow -> Attachment.StoredAttachmentRef
+attachmentFromMessageRow row =
+  Attachment.StoredAttachmentRef
+    { attachmentId = row.attachment_id
+    , name = row.name
+    , mediaType = row.media_type
+    , kind = row.kind
+    , size = row.size_bytes
+    , url = row.url
+    }
+
+loadAttachmentsForMessages :: Storage.Storage :> es => [MessageId] -> Eff es (Map MessageId [Attachment.StoredAttachmentRef])
+loadAttachmentsForMessages [] =
+  pure Map.empty
+loadAttachmentsForMessages messageIds = do
+  rows <- runSelda $
+    query do
+      row <- select rpcMessageAttachmentRows
+      order (row ! #id) ascending
+      pure row
+  let requested = ordNub (map messageIdText messageIds)
+  pure $
+    Map.fromListWith (flip (<>))
+      [ (textMessageId row.message_id, [attachmentFromMessageRow row])
+      | row <- rows
+      , row.message_id `elem` requested
+      ]
 
 takeThrough :: MessageId -> [StoredChatMessage] -> [StoredChatMessage]
 takeThrough target =

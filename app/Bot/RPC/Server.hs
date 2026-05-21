@@ -13,6 +13,7 @@ module Bot.RPC.Server
   , rpcServerApplication
   , rpcServerApp
   , dispatchRpcRequest
+  , dispatchRpcRequestWithConfig
   )
 where
 
@@ -22,9 +23,11 @@ import qualified Bot.Effect.Storage as Storage
 import qualified Bot.RPC.Config as Config
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.RPC.State as State
+import qualified Bot.Storage.Attachment as Attachment
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -93,7 +96,7 @@ rpcServerApplication runInIO cfg rpcState callbacks =
       runInIO (rpcServerApp cfg rpcState callbacks pending)
 
 rpcServerApp
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -110,7 +113,7 @@ rpcServerApp cfg rpcState callbacks pending
             }
   | requestIsAuthorized cfg (WS.pendingRequest pending) = do
       conn <- liftIO (WS.acceptRequest pending)
-      serveAcceptedClient rpcState callbacks conn
+      serveAcceptedClient cfg rpcState callbacks conn
   | otherwise =
       liftIO $
         WS.rejectRequestWith pending $
@@ -121,17 +124,18 @@ rpcServerApp cfg rpcState callbacks pending
             }
 
 serveAcceptedClient
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
-  => State.RpcState
+  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  => Config.Config
+  -> State.RpcState
   -> RpcServerCallbacks es
   -> WS.Connection
   -> Eff es ()
-serveAcceptedClient rpcState callbacks conn = do
+serveAcceptedClient cfg rpcState callbacks conn = do
   (clientId, queue) <- State.registerClient rpcState
   logTrace_ [i|RPC client #{clientId} connected|]
   (race_
       (writeQueuedFrames queue conn)
-      (readRequestFrames rpcState callbacks queue conn)
+      (readRequestFrames cfg rpcState callbacks queue conn)
     `catchSync` \err ->
       logTrace_ [i|RPC client #{clientId} disconnected: #{displayException err}|])
     `finally` do
@@ -153,13 +157,14 @@ writeQueuedFrames queue conn =
         throwIO (RpcClientDisconnected reason)
 
 readRequestFrames
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
-  => State.RpcState
+  :: (IOE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  => Config.Config
+  -> State.RpcState
   -> RpcServerCallbacks es
   -> State.RpcClientQueue
   -> WS.Connection
   -> Eff es ()
-readRequestFrames rpcState callbacks queue conn =
+readRequestFrames cfg rpcState callbacks queue conn =
   forever do
     bytes <- liftIO (WS.receiveData conn :: IO ByteString)
     response <- case Aeson.eitherDecodeStrict bytes of
@@ -168,9 +173,9 @@ readRequestFrames rpcState callbacks queue conn =
       Right value ->
         case Aeson.fromJSON value of
           Aeson.Success (JSONRPC.RequestMessage request) ->
-            Just <$> dispatchRpcRequest rpcState callbacks request
+            Just <$> dispatchRpcRequestWithConfig rpcState cfg callbacks request
           Aeson.Success (JSONRPC.NotificationMessage notification_) -> do
-            _ <- dispatchRpcRequest rpcState callbacks (notificationToRequest notification_)
+            _ <- dispatchRpcRequestWithConfig rpcState cfg callbacks (notificationToRequest notification_)
             pure Nothing
           Aeson.Error err ->
             pure (Just (Protocol.invalidRequestResponse (Text.pack err)))
@@ -179,13 +184,23 @@ readRequestFrames rpcState callbacks queue conn =
     traverse_ (State.writeClient queue . Aeson.toJSON) response
 
 dispatchRpcRequest
-  :: (IOE :> es, Concurrent :> es, Storage.Storage :> es)
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
   => State.RpcState
   -> RpcServerCallbacks es
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
 dispatchRpcRequest rpcState callbacks request =
-  dispatchRpcRequestUnsafe rpcState callbacks request
+  dispatchRpcRequestWithConfig rpcState defaultDispatchConfig callbacks request
+
+dispatchRpcRequestWithConfig
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
+  => State.RpcState
+  -> Config.Config
+  -> RpcServerCallbacks es
+  -> Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchRpcRequestWithConfig rpcState cfg callbacks request =
+  dispatchRpcRequestUnsafe rpcState cfg callbacks request
     `catchSync` \err ->
       pure $
         Protocol.errorResponse
@@ -194,12 +209,13 @@ dispatchRpcRequest rpcState callbacks request =
           [i|RPC request failed: #{displayException err}|]
 
 dispatchRpcRequestUnsafe
-  :: (Concurrent :> es, Storage.Storage :> es)
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
   => State.RpcState
+  -> Config.Config
   -> RpcServerCallbacks es
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
-dispatchRpcRequestUnsafe rpcState callbacks request =
+dispatchRpcRequestUnsafe rpcState cfg callbacks request =
   case Protocol.requestMethod request of
     "chat.open_session" ->
       dispatchOpenSession rpcState request
@@ -215,6 +231,10 @@ dispatchRpcRequestUnsafe rpcState callbacks request =
       dispatchRenameSession request
     "chat.delete_session" ->
       dispatchDeleteSession request
+    "chat.upload_attachment" ->
+      dispatchUploadAttachment cfg request
+    "chat.delete_attachment" ->
+      dispatchDeleteAttachment request
     "chat.send" ->
       dispatchChatSend rpcState request
     method
@@ -343,6 +363,43 @@ dispatchDeleteSession request =
             , "deleted" Aeson..= deleted
             ]
 
+dispatchUploadAttachment
+  :: (Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
+  => Config.Config
+  -> Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchUploadAttachment cfg request =
+  case AesonTypes.parseEither parseAttachmentUploadParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right upload -> do
+      stored <- Attachment.storeAttachment (attachmentConfig cfg) upload
+      case stored of
+        Left err ->
+          pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" err)
+        Right attachment ->
+          pure $
+            Protocol.successResponse (Protocol.requestId request) $
+              attachmentResponse attachment
+
+dispatchDeleteAttachment
+  :: (Storage.Storage :> es, FileSystem.FileSystem :> es)
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchDeleteAttachment request =
+  case AesonTypes.parseEither parseAttachmentIdParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right attachmentId -> do
+      deleted <- Attachment.deleteUnreferencedAttachment attachmentId
+      pure $
+        Protocol.successResponse (Protocol.requestId request) $
+          Aeson.object
+            [ "attachmentId" Aeson..= attachmentId
+            , "id" Aeson..= attachmentId
+            , "deleted" Aeson..= deleted
+            ]
+
 dispatchChatSend
   :: (Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
@@ -405,6 +462,29 @@ parseChatSendParams =
       , replyToMessageId
       }
 
+parseAttachmentUploadParams :: Aeson.Value -> AesonTypes.Parser Attachment.AttachmentUpload
+parseAttachmentUploadParams =
+  Aeson.withObject "chat.upload_attachment params" \o -> do
+    name <- fromMaybe "attachment" <$> o Aeson..:? "name"
+    mediaType <-
+      o Aeson..:? "mediaType" >>= \case
+        Just value -> pure value
+        Nothing -> fromMaybe "application/octet-stream" <$> o Aeson..:? "media_type"
+    kind <- fromMaybe (kindFromMediaType mediaType) <$> o Aeson..:? "kind"
+    expectedSize <- o Aeson..:? "size"
+    encodedText <- o Aeson..: "data"
+    bytes <-
+      case Base64.decode (TextEncoding.encodeUtf8 encodedText) of
+        Left err -> fail err
+        Right decoded -> pure decoded
+    traverse_ (\size -> when (size /= ByteString.length bytes) (fail "size does not match decoded attachment bytes")) expectedSize
+    pure Attachment.AttachmentUpload{name, mediaType, kind, bytes}
+
+parseAttachmentIdParams :: Aeson.Value -> AesonTypes.Parser Text
+parseAttachmentIdParams =
+  Aeson.withObject "chat.delete_attachment params" \o ->
+    o Aeson..: "attachmentId" <|> o Aeson..: "attachment_id" <|> o Aeson..: "id"
+
 parseSessionIdParams :: Aeson.Value -> AesonTypes.Parser State.RpcSessionId
 parseSessionIdParams =
   Aeson.withObject "session params" \o ->
@@ -461,13 +541,12 @@ authorizationBearer :: WS.RequestHead -> Maybe ByteString
 authorizationBearer request =
   ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) request.requestHeaders)
 
-httpApp :: FileSystem.FileSystem :> es => (forall a. Eff es a -> IO a) -> Config.Config -> Wai.Application
+httpApp :: (Storage.Storage :> es, FileSystem.FileSystem :> es) => (forall a. Eff es a -> IO a) -> Config.Config -> Wai.Application
 httpApp runInIO cfg request respond =
   case (Wai.requestMethod request, Wai.pathInfo request) of
-    ("GET", ["attachments", _attachmentId])
+    ("GET", ["attachments", attachmentId])
       | httpRequestIsAuthorized cfg request ->
-          respond $
-            textResponse Http.status501 "attachment storage is not configured"
+          serveAttachment runInIO attachmentId respond
       | otherwise ->
           respond $
             textResponse Http.status401 "unauthorized"
@@ -478,6 +557,32 @@ httpApp runInIO cfg request respond =
     _ ->
       respond $
         textResponse Http.status405 "method not allowed"
+
+serveAttachment
+  :: (Storage.Storage :> es, FileSystem.FileSystem :> es)
+  => (forall a. Eff es a -> IO a)
+  -> Text
+  -> (Wai.Response -> IO Wai.ResponseReceived)
+  -> IO Wai.ResponseReceived
+serveAttachment runInIO attachmentId respond = do
+  attachment <- runInIO (Attachment.loadAttachment attachmentId)
+  case attachment of
+    Nothing ->
+      respond (textResponse Http.status404 "not found")
+    Just stored -> do
+      exists <- runInIO (FileSystem.doesFileExist stored.path)
+      if exists
+        then
+          respond $
+            Wai.responseFile
+              Http.status200
+              [ ("Content-Type", TextEncoding.encodeUtf8 stored.mediaType)
+              , ("Content-Disposition", "inline; filename=\"" <> safeHeaderBytes stored.name <> "\"")
+              ]
+              stored.path
+              Nothing
+        else
+          respond (textResponse Http.status404 "not found")
 
 serveStatic
   :: FileSystem.FileSystem :> es
@@ -576,3 +681,43 @@ questionMark = 63
 
 bearerPrefix :: ByteString
 bearerPrefix = "Bearer "
+
+attachmentConfig :: Config.Config -> Attachment.AttachmentConfig
+attachmentConfig cfg =
+  Attachment.AttachmentConfig
+    { directory = cfg.attachmentDir
+    , maxBytes = cfg.attachmentMaxBytes
+    }
+
+attachmentResponse :: Attachment.StoredAttachmentRef -> Aeson.Value
+attachmentResponse attachment =
+  Aeson.object
+    [ "id" Aeson..= attachment.attachmentId
+    , "attachmentId" Aeson..= attachment.attachmentId
+    , "name" Aeson..= attachment.name
+    , "mediaType" Aeson..= attachment.mediaType
+    , "media_type" Aeson..= attachment.mediaType
+    , "kind" Aeson..= attachment.kind
+    , "size" Aeson..= attachment.size
+    , "url" Aeson..= attachment.url
+    ]
+
+kindFromMediaType :: Text -> Text
+kindFromMediaType mediaType
+  | "image/" `Text.isPrefixOf` media = "image"
+  | "audio/" `Text.isPrefixOf` media = "audio"
+  | otherwise = "file"
+  where
+    media = Text.toLower mediaType
+
+safeHeaderBytes :: Text -> ByteString
+safeHeaderBytes =
+  TextEncoding.encodeUtf8 . Text.map safe
+  where
+    safe char
+      | char == '"' || char == '\\' || char == '\r' || char == '\n' = '_'
+      | otherwise = char
+
+defaultDispatchConfig :: Config.Config
+defaultDispatchConfig =
+  Config.toRuntimeConfig Config.defaultFileConfig

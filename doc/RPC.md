@@ -16,6 +16,8 @@ host = "127.0.0.1"
 port = 38765
 token = ""
 static_dir = "web/dist"
+attachment_dir = "attachments"
+attachment_max_bytes = 26214400
 ```
 
 `enabled` defaults to `false`. When `enabled = true`, `token` must be non-empty.
@@ -172,6 +174,7 @@ Injects a user message into the virtual RPC chat session.
     "sessionId": "browser-1",
     "text": "!ask hello",
     "imageUrls": [],
+    "attachments": [],
     "replyToMessageId": null
   }
 }
@@ -182,6 +185,11 @@ Accepted aliases:
 - `sessionId` or `session_id`
 - `imageUrls` or `image_urls`
 - `replyToMessageId` or `reply_to_message_id`
+
+Uploaded image attachments are also exposed to handlers as
+`IncomingMessage.imageUrls`. Audio and file attachments remain in message
+history as `attachments` and are summarized in the RPC message context passed to
+handlers.
 
 Result:
 
@@ -206,6 +214,49 @@ history immutably through that message.
 Deletes a session and its stored messages. If other sessions were forked from
 the deleted session, deletion cascades to those descendant sessions and their
 messages because forked sessions depend on parent history.
+
+### `chat.upload_attachment`
+
+Stores a browser/RPC attachment before sending it in chat:
+
+```json
+{
+  "id": "2",
+  "jsonrpc": "2.0",
+  "method": "chat.upload_attachment",
+  "params": {
+    "name": "notes.txt",
+    "mediaType": "text/plain",
+    "kind": "file",
+    "size": 5,
+    "data": "aGVsbG8="
+  }
+}
+```
+
+`data` is base64 without a data-URL prefix. The decoded byte length must match
+`size` when `size` is provided and must not exceed `rpc.attachment_max_bytes`.
+
+Result:
+
+```json
+{"id":"att-123","attachmentId":"att-123","name":"notes.txt","mediaType":"text/plain","kind":"file","size":5,"url":"/attachments/att-123"}
+```
+
+### `chat.delete_attachment`
+
+Deletes an uploaded attachment only while it is still unreferenced by persisted
+messages:
+
+```json
+{"jsonrpc":"2.0","id":"3","method":"chat.delete_attachment","params":{"attachmentId":"att-123"}}
+```
+
+Result:
+
+```json
+{"id":"att-123","attachmentId":"att-123","deleted":true}
+```
 
 ## Chat Notifications
 
@@ -266,9 +317,9 @@ client connects to `/rpc`, creates chat sessions, sends prompts, shows chat
 reply updates, lists recent audit records, subscribes to the live audit feed,
 and loads audit record details.
 
-`/attachments/<id>` is reserved for token-protected attachment downloads. Until
-the durable attachment store is wired in, authorized requests return HTTP 501
-and unauthorized requests return HTTP 401.
+`/attachments/<id>` serves uploaded attachment bytes when authorized by the same
+query token or bearer token as the websocket. Unauthorized requests return HTTP
+401; missing attachments return HTTP 404.
 
 ## Limitations
 

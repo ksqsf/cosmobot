@@ -24,7 +24,7 @@ import qualified Network.Socket as Socket
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.WebSockets as WS
 import qualified Streaming.Prelude as S
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeDirectory)
 import System.Timeout
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -48,6 +48,7 @@ main =
       , testCase "chat.send broadcasts user chat notification" testChatSendBroadcastsNotification
       , testCase "client notification queue overflow disconnects slow client" testClientNotificationQueueOverflowDisconnects
       , testCase "sync request exception returns JSON-RPC error" testSyncRequestExceptionReturnsJsonRpcError
+      , testCase "attachments upload, send, history, and guarded delete" testAttachmentLifecycle
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
       , testCase "chat.fork stores immutable parent link and inherited history" testChatForkStoresParentLink
@@ -180,6 +181,7 @@ testChatSendBroadcastsNotification = do
       , "sender" Aeson..= ("user" :: Text)
       , "text" Aeson..= ("hello" :: Text)
       , "imageUrls" Aeson..= ([] :: [Text])
+      , "attachments" Aeson..= ([] :: [Aeson.Value])
       , "replyToMessageId" Aeson..= (Nothing :: Maybe Text)
       , "parentMessageId" Aeson..= (Nothing :: Maybe Text)
       ]
@@ -218,6 +220,76 @@ testSyncRequestExceptionReturnsJsonRpcError = do
       JSONRPC.message err.error @?= "RPC request failed: TestRpcException \"audit exploded\""
     _ ->
       assertFailure [i|expected JSON-RPC error response, got #{Aeson.encode response}|]
+
+testAttachmentLifecycle :: IO ()
+testAttachmentLifecycle =
+  withSQLiteTempPath "rpc-attachments" \path -> do
+    let cfg :: RPCConfig.Config
+        cfg = RPCConfig.Config
+          { enabled = False
+          , host = "127.0.0.1"
+          , port = 38765
+          , token = ""
+          , staticDir = "web/dist"
+          , attachmentDir = takeDirectory path </> "attachments"
+          , attachmentMaxBytes = 1024
+          }
+    (uploadResponse, imageUploadResponse, sendResponse, historyResponse, incoming, deleteReferencedResponse) <- runRpcStorage path do
+      rpcState <- RPC.newRpcState
+      uploadResponse <- RPCServer.dispatchRpcRequestWithConfig rpcState cfg RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.upload_attachment" $
+          Aeson.object
+            [ "name" Aeson..= ("notes.txt" :: Text)
+            , "mediaType" Aeson..= ("text/plain" :: Text)
+            , "kind" Aeson..= ("file" :: Text)
+            , "size" Aeson..= (5 :: Int)
+            , "data" Aeson..= ("aGVsbG8=" :: Text)
+            ]
+      let attachment = responseAttachmentUnsafe uploadResponse
+      imageUploadResponse <- RPCServer.dispatchRpcRequestWithConfig rpcState cfg RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.upload_attachment" $
+          Aeson.object
+            [ "name" Aeson..= ("pixel.png" :: Text)
+            , "mediaType" Aeson..= ("image/png" :: Text)
+            , "kind" Aeson..= ("image" :: Text)
+            , "size" Aeson..= (1 :: Int)
+            , "data" Aeson..= ("AA==" :: Text)
+            ]
+      let imageAttachment = responseAttachmentUnsafe imageUploadResponse
+      _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+      sendResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.send" $
+          Aeson.object
+            [ "sessionId" Aeson..= ("browser-1" :: Text)
+            , "text" Aeson..= ("see attached" :: Text)
+            , "attachments" Aeson..= [attachment, imageAttachment]
+            ]
+      incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
+      historyResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text)])
+      deleteReferencedResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.delete_attachment" (Aeson.object ["attachmentId" Aeson..= attachment.attachmentId])
+      pure (uploadResponse, imageUploadResponse, sendResponse, historyResponse, incoming, deleteReferencedResponse)
+
+    attachment <- responseAttachment uploadResponse
+    imageAttachment <- responseAttachment imageUploadResponse
+    attachment.name @?= "notes.txt"
+    attachment.mediaType @?= "text/plain"
+    attachment.kind @?= "file"
+    imageAttachment.kind @?= "image"
+    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
+    assertBool "non-image attachment should be visible in incoming context" ("Attachments:" `Text.isInfixOf` incoming.text)
+    incoming.imageUrls @?= [imageAttachment.url]
+    assertEqual [i|history response: #{show historyResponse :: String}|] [[attachment.attachmentId, imageAttachment.attachmentId]] (responseMessageAttachments historyResponse)
+    deleteReferencedResponse @?=
+      responseResult
+        ( Aeson.object
+            [ "attachmentId" Aeson..= attachment.attachmentId
+            , "id" Aeson..= attachment.attachmentId
+            , "deleted" Aeson..= False
+            ]
+        )
 
 testChatSessionsPersistAcrossRestart :: IO ()
 testChatSessionsPersistAcrossRestart =
@@ -379,7 +451,7 @@ testDeleteSessionCascadesForkDescendants =
 
 testWebSocketServerAuthenticatesAndHandlesRequests :: IO ()
 testWebSocketServerAuthenticatesAndHandlesRequests = do
-  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
+  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
     port <- fromIntegral <$> liftIO (Socket.socketPort listenSocket)
@@ -389,6 +461,8 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
         , port
         , token = "secret"
         , staticDir = "web/dist"
+        , attachmentDir = "attachments"
+        , attachmentMaxBytes = 1024 * 1024
         }
         server =
           finally
@@ -430,6 +504,8 @@ testHttpServerServesStaticFallbackAndProtectsAttachmentRoute = do
           , port
           , token = "secret"
           , staticDir = "web/dist"
+          , attachmentDir = "attachments"
+          , attachmentMaxBytes = 1024 * 1024
           }
         server =
           withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
@@ -456,7 +532,7 @@ testHttpServerServesStaticFallbackAndProtectsAttachmentRoute = do
         "expected fallback web/index.html"
         ("<title>cosmobot</title>" `ByteStringChar8.isInfixOf` LazyByteString.toStrict (HTTP.responseBody root))
       HTTP.responseStatus attachmentWithoutToken @?= Http.status401
-      HTTP.responseStatus attachmentWithToken @?= Http.status501
+      HTTP.responseStatus attachmentWithToken @?= Http.status404
       response @?=
         responseResult
           ( Aeson.object
@@ -492,6 +568,20 @@ parseJson value =
   case AesonTypes.parseEither Aeson.parseJSON value of
     Left err -> assertFailure err
     Right parsed -> pure parsed
+
+responseAttachment :: Protocol.RpcResponse -> IO RPC.RpcChatAttachmentRef
+responseAttachment = \case
+  JSONRPC.ResponseMessage result ->
+    parseJson result.result
+  other ->
+    assertFailure [i|expected attachment response, got #{show other :: String}|]
+
+responseAttachmentUnsafe :: Protocol.RpcResponse -> RPC.RpcChatAttachmentRef
+responseAttachmentUnsafe = \case
+  JSONRPC.ResponseMessage result ->
+    fromMaybe (error "expected attachment response") (AesonTypes.parseMaybe Aeson.parseJSON result.result)
+  _ ->
+    error "expected attachment response"
 
 openSessionClient :: Int -> Text -> IO Protocol.RpcResponse
 openSessionClient port token =
@@ -541,9 +631,9 @@ runTestLog action = do
   logger <- liftIO $ mkLogger "rpc-spec" \_ -> pure ()
   runLog "rpc-spec" logger LogTrace action
 
-runRpcStorage :: FilePath -> Eff '[Storage.Storage, Concurrent, IOE] a -> IO a
+runRpcStorage :: FilePath -> Eff '[Storage.Storage, FileSystem.FileSystem, Concurrent, IOE] a -> IO a
 runRpcStorage path action =
-  runEff $ runConcurrent $ StorageSQLite.runStorageSQLitePath path action
+  runEff $ runConcurrent $ runFileSystem $ StorageSQLite.runStorageSQLitePath path action
 
 withSQLiteTempPath :: String -> (FilePath -> IO a) -> IO a
 withSQLiteTempPath label action =
@@ -574,6 +664,7 @@ messageValue sessionId messageId body parentMessageId =
     , "sender" Aeson..= ("user" :: Text)
     , "text" Aeson..= body
     , "imageUrls" Aeson..= ([] :: [Text])
+    , "attachments" Aeson..= ([] :: [Aeson.Value])
     , "replyToMessageId" Aeson..= parentMessageId
     , "parentMessageId" Aeson..= parentMessageId
     ]
@@ -605,6 +696,22 @@ responseMessageSummaries response =
           messageId <- o Aeson..: "messageId"
           body <- o Aeson..: "text"
           pure (sender, messageId, body)
+
+responseMessageAttachments :: Protocol.RpcResponse -> [[Text]]
+responseMessageAttachments response =
+  case response of
+    JSONRPC.ResponseMessage result ->
+      fromMaybe [] do
+        messages <- AesonTypes.parseMaybe (Aeson.withObject "history" (Aeson..: "messages")) result.result
+        traverse messageAttachments messages
+    _ ->
+      []
+  where
+    messageAttachments =
+      AesonTypes.parseMaybe $
+        Aeson.withObject "message" \o -> do
+          attachments <- o Aeson..: "attachments"
+          traverse (Aeson.withObject "attachment" \attachment -> attachment Aeson..: "attachmentId" <|> attachment Aeson..: "id") attachments
 
 responseSessionLabel :: Protocol.RpcResponse -> Maybe Text
 responseSessionLabel response =

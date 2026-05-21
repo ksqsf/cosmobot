@@ -22,6 +22,8 @@ data Config = Config
   , port :: !Int
   , token :: !Text
   , staticDir :: !FilePath
+  , attachmentDir :: !FilePath
+  , attachmentMaxBytes :: !Int
   }
   deriving (Eq, Show)
 
@@ -31,6 +33,8 @@ data FileConfig = FileConfig
   , port :: !Int
   , token :: !Text
   , staticDir :: !FilePath
+  , attachmentDir :: !FilePath
+  , attachmentMaxBytes :: !Int
   }
   deriving (Eq, Show)
 
@@ -41,6 +45,8 @@ defaultFileConfig = FileConfig
   , port = 38765
   , token = ""
   , staticDir = "web/dist"
+  , attachmentDir = "attachments"
+  , attachmentMaxBytes = 25 * 1024 * 1024
   }
 
 instance FromValue FileConfig where
@@ -50,10 +56,14 @@ instance FromValue FileConfig where
     port <- fromMaybe defaultFileConfig.port <$> optKey "port"
     token <- fromMaybe defaultFileConfig.token <$> optKey "token"
     staticDir <- fromMaybe defaultFileConfig.staticDir <$> optKey "static_dir"
+    attachmentDir <- fromMaybe defaultFileConfig.attachmentDir <$> optKey "attachment_dir"
+    attachmentMaxBytes <- fromMaybe defaultFileConfig.attachmentMaxBytes <$> optKey "attachment_max_bytes"
     when (enabled && Text.null token) $
       fail "rpc.token must be non-empty when rpc.enabled is true"
-    pure FileConfig{enabled, host, port, token, staticDir}
+    when (attachmentMaxBytes <= 0) $
+      fail "rpc.attachment_max_bytes must be positive"
+    pure FileConfig{enabled, host, port, token, staticDir, attachmentDir, attachmentMaxBytes}
 
 toRuntimeConfig :: FileConfig -> Config
-toRuntimeConfig FileConfig{enabled, host, port, token, staticDir} =
-  Config{enabled, host, port, token, staticDir}
+toRuntimeConfig FileConfig{enabled, host, port, token, staticDir, attachmentDir, attachmentMaxBytes} =
+  Config{enabled, host, port, token, staticDir, attachmentDir, attachmentMaxBytes}
