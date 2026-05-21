@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { auditEvents, connection, currentSession, eventLog, messages, selectedAudit, sessions } from './lib/stores';
-  import { attachmentKind, attachmentSizeError, connectRpc, deleteSession, disconnectRpc, forkFrom, loadConfig, loadHistory, openSession, refreshAudit, refreshSessions, renameSession, sendChat, subscribeAudit, toError, uploadAttachment } from './lib/rpc';
-  import type { QueuedAttachment, RpcConfig } from './lib/types';
+  import { attachmentKind, attachmentSizeError, connectRpc, deleteSession, disconnectRpc, forkFrom, loadConfig, loadHistory, openAttachment, openSession, refreshAudit, refreshSessions, renameSession, sendChat, subscribeAudit, toError, uploadAttachment } from './lib/rpc';
+  import type { ChatAttachment, QueuedAttachment, RpcConfig } from './lib/types';
 
   let config: RpcConfig = { url: '', token: '' };
   let newSessionLabel = 'browser';
@@ -21,7 +21,7 @@
   $: renameDraft = current?.title ?? '';
   $: selectedAuditEvent = $auditEvents.find((event) => event.id === $selectedAudit) ?? null;
   $: selectedAuditText = selectedAuditEvent === null ? 'Select an event.' : pretty(selectedAuditEvent.payload);
-  $: canSend = $connection.status === 'connected' && $currentSession !== '' && draft.trim().length > 0 && !busy;
+  $: canSend = $connection.status === 'connected' && $currentSession !== '' && (draft.trim().length > 0 || queue.length > 0) && !busy;
 
   const connect = (): void => {
     try {
@@ -49,7 +49,7 @@
 
   const submit = (): void => {
     const text = draft.trim();
-    if (!canSend || text.length === 0) {
+    if (!canSend) {
       return;
     }
     busy = true;
@@ -151,6 +151,13 @@
       return;
     }
     void forkFrom($currentSession, messageId).catch((error: unknown) => {
+      composerError = toError(error).message;
+      });
+  };
+
+  const runOpenAttachment = (attachment: ChatAttachment): void => {
+    composerError = '';
+    void openAttachment(attachment).catch((error: unknown) => {
       composerError = toError(error).message;
     });
   };
@@ -258,10 +265,10 @@
             {#if message.attachments.length > 0}
               <div class="attachment-grid">
                 {#each message.attachments as attachment (attachment.id)}
-                  <a class="attachment" href={attachment.url} target="_blank" rel="noreferrer">
+                  <button class="attachment" type="button" on:click={() => { runOpenAttachment(attachment); }}>
                     <span>{attachment.kind}</span>
                     <strong>{attachment.name}</strong>
-                  </a>
+                  </button>
                 {/each}
               </div>
             {/if}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attachmentKind, attachmentParam, attachmentSizeError, decodeChatMessage, decodeIncomingRpcMessage, maxAttachmentBytes, saveConfig } from './rpc';
+import { attachmentKind, attachmentParam, attachmentSizeError, decodeChatMessage, decodeIncomingRpcMessage, loadConfig, maxAttachmentBytes, saveConfig } from './rpc';
 
 describe('runtime RPC decoders', () => {
   it('decodes chat notifications', () => {
@@ -31,8 +31,44 @@ describe('runtime RPC decoders', () => {
       expect(decoded.value.sessionId).toBe('stable-session');
       expect(decoded.value.messageId).toBe('stable-message');
       expect(decoded.value.attachments).toHaveLength(2);
-      expect(decoded.value.attachments[0]?.url).toBe('/attachments/file-1?access_token=secret-token');
+      expect(decoded.value.attachments[0]?.url).toBe('/attachments/file-1');
     }
+  });
+
+  it('does not preserve cross-origin attachment URLs from RPC payloads', () => {
+    const decoded = decodeChatMessage({
+      sessionId: 'stable-session',
+      messageId: 'stable-message',
+      sender: 'assistant',
+      text: 'file',
+      attachments: [{ attachmentId: 'file-1', mediaType: 'text/plain', url: 'https://attacker.test/file-1' }]
+    });
+
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.value.attachments[0]?.url).toBe('/attachments/file-1');
+    }
+  });
+
+  it('removes legacy tokens from persisted RPC URLs', () => {
+    localStorage.setItem('cosmobot.web.rpc', JSON.stringify({ url: 'ws://localhost/rpc?access_token=old-token', token: 'old-token' }));
+    sessionStorage.setItem('cosmobot.web.rpc.token', 'tab-token');
+
+    const config = loadConfig();
+
+    expect(config.url).toBe('ws://localhost/rpc');
+    expect(config.token).toBe('tab-token');
+    expect(localStorage.getItem('cosmobot.web.rpc')).toBe(JSON.stringify({ url: 'ws://localhost/rpc' }));
+  });
+
+  it('drops malformed persisted config instead of keeping legacy token material', () => {
+    localStorage.setItem('cosmobot.web.rpc', JSON.stringify({ url: 'http://[', token: 'old-token' }));
+    sessionStorage.setItem('cosmobot.web.rpc.token', 'tab-token');
+
+    const config = loadConfig();
+
+    expect(config.token).toBe('tab-token');
+    expect(localStorage.getItem('cosmobot.web.rpc')).toBeNull();
   });
 
   it('rejects JSON-RPC responses without exactly one result or error', () => {

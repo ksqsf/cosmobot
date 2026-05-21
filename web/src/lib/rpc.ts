@@ -11,12 +11,13 @@ type PendingRequest = {
 };
 
 const storageKey = 'cosmobot.web.rpc';
+const tokenStorageKey = 'cosmobot.web.rpc.token';
 const pending = new Map<string, PendingRequest>();
 
 let ws: WebSocket | null = null;
 let nextId = 1;
 
-export const maxAttachmentBytes = 8 * 1024 * 1024;
+export const maxAttachmentBytes = 25 * 1024 * 1024;
 
 export const defaultConfig = (): RpcConfig => ({
   url: defaultWsUrl(),
@@ -25,26 +26,34 @@ export const defaultConfig = (): RpcConfig => ({
 
 export const loadConfig = (): RpcConfig => {
   const fallback = defaultConfig();
+  const token = sessionStorage.getItem(tokenStorageKey) ?? '';
   const raw = localStorage.getItem(storageKey);
   if (raw === null) {
-    return fallback;
+    return { ...fallback, token };
   }
   try {
     const parsed = unknownRecord(JSON.parse(raw), 'config');
     if (!parsed.ok) {
-      return fallback;
+      localStorage.removeItem(storageKey);
+      return { ...fallback, token };
     }
-    return {
-      url: typeof parsed.value['url'] === 'string' ? parsed.value['url'] : fallback.url,
-      token: typeof parsed.value['token'] === 'string' ? parsed.value['token'] : ''
+    const config = {
+      url: sanitizeRpcUrl(typeof parsed.value['url'] === 'string' ? parsed.value['url'] : fallback.url),
+      token
     };
+    if ('token' in parsed.value || parsed.value['url'] !== config.url) {
+      localStorage.setItem(storageKey, JSON.stringify({ url: config.url }));
+    }
+    return config;
   } catch {
-    return fallback;
+    localStorage.removeItem(storageKey);
+    return { ...fallback, token };
   }
 };
 
 export const saveConfig = (config: RpcConfig): void => {
-  localStorage.setItem(storageKey, JSON.stringify(config));
+  localStorage.setItem(storageKey, JSON.stringify({ url: sanitizeRpcUrl(config.url) }));
+  sessionStorage.setItem(tokenStorageKey, config.token);
 };
 
 export const connectRpc = (config: RpcConfig): void => {
@@ -219,6 +228,30 @@ export const uploadAttachment = async (queued: QueuedAttachment): Promise<ChatAt
 
 export const deleteAttachment = async (attachmentId: string): Promise<void> => {
   await requestRpc('chat.delete_attachment', { attachmentId, attachment_id: attachmentId });
+};
+
+export const openAttachment = async (attachment: ChatAttachment): Promise<void> => {
+  const config = loadConfig();
+  const url = attachmentFetchUrl(config, attachment);
+  const response = await fetch(url.toString(), {
+    credentials: 'omit',
+    headers: config.token.length > 0 ? { Authorization: `Bearer ${config.token}` } : {}
+  });
+  if (!response.ok) {
+    throw new Error(`Attachment request failed: ${String(response.status)}`);
+  }
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = attachment.name;
+  link.rel = 'noopener noreferrer';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => {
+    URL.revokeObjectURL(objectUrl);
+  }, 60000);
 };
 
 export const refreshAudit = async (): Promise<void> => {
@@ -417,11 +450,31 @@ const handleNotification = (notification: RpcNotification): void => {
 };
 
 const buildUrl = (config: RpcConfig): string => {
-  const url = new URL(config.url);
+  const url = new URL(sanitizeRpcUrl(config.url));
   if (config.token.length > 0) {
     url.searchParams.set('access_token', config.token);
   }
   return url.toString();
+};
+
+const sanitizeRpcUrl = (rawUrl: string): string => {
+  const url = new URL(rawUrl, window.location.href);
+  url.searchParams.delete('access_token');
+  return url.toString();
+};
+
+const attachmentFetchUrl = (config: RpcConfig, attachment: ChatAttachment): URL => {
+  const rpcUrl = new URL(config.url);
+  const protocol = rpcUrl.protocol === 'wss:' ? 'https:' : rpcUrl.protocol === 'ws:' ? 'http:' : window.location.protocol;
+  const base = `${protocol}//${rpcUrl.host}`;
+  const rawUrl = attachment.url ?? `/attachments/${encodeURIComponent(attachment.id)}`;
+  const url = new URL(rawUrl, base);
+  const rpcOrigin = new URL(base).origin;
+  if (url.origin !== rpcOrigin || !url.pathname.startsWith('/attachments/')) {
+    throw new Error('Attachment URL is outside the RPC attachment endpoint');
+  }
+  url.searchParams.delete('access_token');
+  return url;
 };
 
 const defaultWsUrl = (): string => {
@@ -485,7 +538,7 @@ const decodeAttachment = (value: unknown, path = 'attachment'): DecodeResult<Cha
     size: firstNumber(record.value, ['size', 'byteSize', 'byte_size']) ?? 0,
     kind: attachmentKind(mediaType)
   };
-  addOptional(attachment, 'url', firstString(record.value, ['url', 'href']) ?? synthesizedAttachmentUrl(id));
+  addOptional(attachment, 'url', safeAttachmentUrl(firstString(record.value, ['url', 'href']), id));
   return ok(attachment);
 };
 
@@ -539,13 +592,13 @@ const fileToBase64 = async (file: File): Promise<string> => {
   return btoa(binary);
 };
 
-const synthesizedAttachmentUrl = (attachmentId: string): string => {
-  const url = new URL(`/attachments/${encodeURIComponent(attachmentId)}`, window.location.origin);
-  const token = loadConfig().token;
-  if (token.length > 0) {
-    url.searchParams.set('access_token', token);
+const safeAttachmentUrl = (rawUrl: string | undefined, attachmentId: string): string => {
+  const url = new URL(rawUrl ?? `/attachments/${encodeURIComponent(attachmentId)}`, window.location.origin);
+  url.searchParams.delete('access_token');
+  if (url.origin === window.location.origin && url.pathname.startsWith('/attachments/')) {
+    return `${url.pathname}${url.search}${url.hash}`;
   }
-  return `${url.pathname}${url.search}`;
+  return `/attachments/${encodeURIComponent(attachmentId)}`;
 };
 
 const optionalText = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);

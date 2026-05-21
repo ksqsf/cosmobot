@@ -22,31 +22,21 @@ attachment_max_bytes = 26214400
 
 `enabled` defaults to `false`. When `enabled = true`, `token` must be non-empty.
 The default host is loopback-only. `static_dir` is the directory served at `/`;
-if `static_dir/index.html` is absent, `/` falls back to `web/rpc.html`.
+if `static_dir/index.html` is absent, `/` falls back to `web/index.html`.
 
 ## Authentication
 
-Clients authenticate during the WebSocket handshake with either a query token:
-
-```text
-ws://127.0.0.1:38765/?access_token=TOKEN
-```
-
-The preferred WebSocket endpoint is:
+Browser clients keep the token in tab-scoped state and open the WebSocket with
+the RPC token:
 
 ```text
 ws://127.0.0.1:38765/rpc?access_token=TOKEN
 ```
 
-The legacy root WebSocket path remains accepted for compatibility.
-
-or an HTTP header:
-
-```text
-Authorization: Bearer TOKEN
-```
-
-Unauthorized connections are rejected with HTTP 401.
+HTTP attachment reads use the bearer token header. Unauthorized WebSocket
+connections or attachment requests are rejected with HTTP 401.
+Do not put attachment tokens in query strings; the browser UI fetches
+attachments with `Authorization: Bearer TOKEN` and opens local blob URLs.
 
 ## Envelopes
 
@@ -312,14 +302,14 @@ Use `cosmobot rpc --config FILE ...` to read a config file other than
 
 When RPC is enabled, the same HTTP port serves the browser UI from
 `static_dir`. A Svelte/Vite build should place its output in `web/dist`; while
-that build is absent, `/` serves the legacy `web/rpc.html` client. The browser
+that build is absent, `/` serves the checked-in `web/index.html` entry point. The browser
 client connects to `/rpc`, creates chat sessions, sends prompts, shows chat
 reply updates, lists recent audit records, subscribes to the live audit feed,
 and loads audit record details.
 
 `/attachments/<id>` serves uploaded attachment bytes when authorized by the same
-query token or bearer token as the websocket. Unauthorized requests return HTTP
-401; missing attachments return HTTP 404.
+bearer token used by the web app. Unauthorized requests return HTTP 401; missing
+attachments return HTTP 404.
 
 ## Limitations
 

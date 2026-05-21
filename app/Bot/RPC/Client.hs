@@ -89,4 +89,4 @@ requestValue =
 
 websocketPath :: RPCConfig.Config -> String
 websocketPath RPCConfig.Config{token} =
-  "/?access_token=" <> ByteStringChar8.unpack (HttpURI.urlEncode True (TextEncoding.encodeUtf8 token))
+  "/rpc?access_token=" <> ByteStringChar8.unpack (HttpURI.urlEncode True (TextEncoding.encodeUtf8 token))

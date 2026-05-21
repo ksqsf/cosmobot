@@ -234,7 +234,7 @@ testAttachmentLifecycle =
           , attachmentDir = takeDirectory path </> "attachments"
           , attachmentMaxBytes = 1024
           }
-    (uploadResponse, imageUploadResponse, sendResponse, historyResponse, incoming, deleteReferencedResponse) <- runRpcStorage path do
+    (uploadResponse, imageUploadResponse, unsafeMediaResponse, oversizedResponse, sendResponse, historyResponse, incoming, deleteReferencedResponse) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       uploadResponse <- RPCServer.dispatchRpcRequestWithConfig rpcState cfg RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.upload_attachment" $
@@ -256,6 +256,33 @@ testAttachmentLifecycle =
             , "data" Aeson..= ("AA==" :: Text)
             ]
       let imageAttachment = responseAttachmentUnsafe imageUploadResponse
+      unsafeMediaResponse <- RPCServer.dispatchRpcRequestWithConfig rpcState cfg RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.upload_attachment" $
+          Aeson.object
+            [ "name" Aeson..= ("unsafe.html" :: Text)
+            , "mediaType" Aeson..= ("text/html\r\nx" :: Text)
+            , "kind" Aeson..= ("file" :: Text)
+            , "size" Aeson..= (1 :: Int)
+            , "data" Aeson..= ("AA==" :: Text)
+            ]
+      let smallAttachmentConfig =
+            RPCConfig.Config
+              { enabled = cfg.enabled
+              , host = cfg.host
+              , port = cfg.port
+              , token = cfg.token
+              , staticDir = cfg.staticDir
+              , attachmentDir = cfg.attachmentDir
+              , attachmentMaxBytes = 1
+              }
+      oversizedResponse <- RPCServer.dispatchRpcRequestWithConfig rpcState smallAttachmentConfig RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.upload_attachment" $
+          Aeson.object
+            [ "name" Aeson..= ("large.bin" :: Text)
+            , "mediaType" Aeson..= ("application/octet-stream" :: Text)
+            , "kind" Aeson..= ("file" :: Text)
+            , "data" Aeson..= (Text.replicate 8 "A" :: Text)
+            ]
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
       sendResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
@@ -270,14 +297,17 @@ testAttachmentLifecycle =
         rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text)])
       deleteReferencedResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.delete_attachment" (Aeson.object ["attachmentId" Aeson..= attachment.attachmentId])
-      pure (uploadResponse, imageUploadResponse, sendResponse, historyResponse, incoming, deleteReferencedResponse)
+      pure (uploadResponse, imageUploadResponse, unsafeMediaResponse, oversizedResponse, sendResponse, historyResponse, incoming, deleteReferencedResponse)
 
     attachment <- responseAttachment uploadResponse
     imageAttachment <- responseAttachment imageUploadResponse
+    unsafeMediaAttachment <- responseAttachment unsafeMediaResponse
     attachment.name @?= "notes.txt"
     attachment.mediaType @?= "text/plain"
     attachment.kind @?= "file"
     imageAttachment.kind @?= "image"
+    unsafeMediaAttachment.mediaType @?= "application/octet-stream"
+    oversizedResponse @?= responseError "invalid_params" "Error in $: encoded attachment exceeds configured limit"
     sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
     assertBool "non-image attachment should be visible in incoming context" ("Attachments:" `Text.isInfixOf` incoming.text)
     incoming.imageUrls @?= [imageAttachment.url]
@@ -472,7 +502,7 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
               RPCServer.rpcServerApp cfg rpcState RPCServer.noRpcServerCallbacks pending)
             (liftIO (Socket.close listenSocket))
         client = do
-          unauthorized <- trySync (liftIO (WS.runClient "127.0.0.1" port "/" \_ -> pure ()))
+          unauthorized <- trySync (liftIO (WS.runClient "127.0.0.1" port "/rpc" \_ -> pure ()))
           response <- liftIO (openSessionClient port "secret")
           pure (unauthorized, response)
     race server client
@@ -515,10 +545,10 @@ testHttpServerServesStaticFallbackAndProtectsAttachmentRoute = do
         client = liftIO do
           manager <- HTTP.newManager HTTP.defaultManagerSettings
           root <- httpGet manager [i|http://127.0.0.1:#{port}/|]
-          attachmentWithoutToken <- httpGet manager [i|http://127.0.0.1:#{port}/attachments/missing|]
-          attachmentWithToken <- httpGet manager [i|http://127.0.0.1:#{port}/attachments/missing?access_token=secret|]
-          response <- openSessionClientAtPath port "/rpc?access_token=secret"
-          pure (root, attachmentWithoutToken, attachmentWithToken, response)
+          attachmentWithoutAuth <- httpGet manager [i|http://127.0.0.1:#{port}/attachments/missing|]
+          attachmentWithAuth <- httpGetWithBearer manager "secret" [i|http://127.0.0.1:#{port}/attachments/missing|]
+          response <- openSessionClient port "secret"
+          pure (root, attachmentWithoutAuth, attachmentWithAuth, response)
     race server client
 
   case result of
@@ -526,13 +556,13 @@ testHttpServerServesStaticFallbackAndProtectsAttachmentRoute = do
       assertFailure "RPC HTTP integration test timed out"
     Just (Left ()) ->
       assertFailure "RPC HTTP server exited before client completed"
-    Just (Right (root, attachmentWithoutToken, attachmentWithToken, response)) -> do
+    Just (Right (root, attachmentWithoutAuth, attachmentWithAuth, response)) -> do
       HTTP.responseStatus root @?= Http.status200
       assertBool
         "expected fallback web/index.html"
         ("<title>cosmobot</title>" `ByteStringChar8.isInfixOf` LazyByteString.toStrict (HTTP.responseBody root))
-      HTTP.responseStatus attachmentWithoutToken @?= Http.status401
-      HTTP.responseStatus attachmentWithToken @?= Http.status404
+      HTTP.responseStatus attachmentWithoutAuth @?= Http.status401
+      HTTP.responseStatus attachmentWithAuth @?= Http.status404
       response @?=
         responseResult
           ( Aeson.object
@@ -585,18 +615,7 @@ responseAttachmentUnsafe = \case
 
 openSessionClient :: Int -> Text -> IO Protocol.RpcResponse
 openSessionClient port token =
-  WS.runClient "127.0.0.1" port ("/?access_token=" <> Text.unpack token) \conn -> do
-    WS.sendTextData conn $
-      Aeson.encode $
-        Protocol.rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("integration" :: Text)]) "test-1"
-    bytes <- WS.receiveData conn :: IO ByteString
-    case Aeson.eitherDecodeStrict' bytes of
-      Left err -> fail [i|RPC websocket response was not JSON-RPC: #{err}|]
-      Right response -> pure response
-
-openSessionClientAtPath :: Int -> String -> IO Protocol.RpcResponse
-openSessionClientAtPath port path =
-  WS.runClient "127.0.0.1" port path \conn -> do
+  WS.runClient "127.0.0.1" port ("/rpc?access_token=" <> Text.unpack token) \conn -> do
     WS.sendTextData conn $
       Aeson.encode $
         Protocol.rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("integration" :: Text)]) "test-1"
@@ -611,6 +630,16 @@ httpGet manager url = do
   HTTP.httpLbs
     request
       { HTTP.checkResponse = \_ _ -> pure ()
+      }
+    manager
+
+httpGetWithBearer :: HTTP.Manager -> ByteString -> String -> IO (HTTP.Response LazyByteString.ByteString)
+httpGetWithBearer manager token url = do
+  request <- HTTP.parseRequest url
+  HTTP.httpLbs
+    request
+      { HTTP.checkResponse = \_ _ -> pure ()
+      , HTTP.requestHeaders = [("Authorization", "Bearer " <> token)]
       }
     manager
 

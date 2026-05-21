@@ -347,7 +347,7 @@ dispatchRenameSession request =
               Aeson.object ["session" Aeson..= session]
 
 dispatchDeleteSession
-  :: Storage.Storage :> es
+  :: (Storage.Storage :> es, FileSystem.FileSystem :> es)
   => Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
 dispatchDeleteSession request =
@@ -369,7 +369,7 @@ dispatchUploadAttachment
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
 dispatchUploadAttachment cfg request =
-  case AesonTypes.parseEither parseAttachmentUploadParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither (parseAttachmentUploadParams cfg.attachmentMaxBytes) (Protocol.requestParams request) of
     Left err ->
       pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
     Right upload -> do
@@ -412,9 +412,11 @@ dispatchChatSend rpcState request =
     Right chatSend -> do
       message <- State.enqueueChatMessage rpcState chatSend
       case message of
-        Nothing ->
+        Left err ->
+          pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" err)
+        Right Nothing ->
           pure (Protocol.errorResponse (Protocol.requestId request) "not_found" "Session not found")
-        Just IncomingMessage{messageId} ->
+        Right (Just IncomingMessage{messageId}) ->
           pure $
             Protocol.successResponse (Protocol.requestId request) $
               Aeson.object
@@ -462,8 +464,8 @@ parseChatSendParams =
       , replyToMessageId
       }
 
-parseAttachmentUploadParams :: Aeson.Value -> AesonTypes.Parser Attachment.AttachmentUpload
-parseAttachmentUploadParams =
+parseAttachmentUploadParams :: Int -> Aeson.Value -> AesonTypes.Parser Attachment.AttachmentUpload
+parseAttachmentUploadParams maxBytes =
   Aeson.withObject "chat.upload_attachment params" \o -> do
     name <- fromMaybe "attachment" <$> o Aeson..:? "name"
     mediaType <-
@@ -473,12 +475,21 @@ parseAttachmentUploadParams =
     kind <- fromMaybe (kindFromMediaType mediaType) <$> o Aeson..:? "kind"
     expectedSize <- o Aeson..:? "size"
     encodedText <- o Aeson..: "data"
+    traverse_ (\size -> when (size > maxBytes) (fail "attachment size exceeds configured limit")) expectedSize
+    when (Text.length encodedText > maxBase64Length maxBytes) $
+      fail "encoded attachment exceeds configured limit"
     bytes <-
       case Base64.decode (TextEncoding.encodeUtf8 encodedText) of
         Left err -> fail err
         Right decoded -> pure decoded
+    when (ByteString.length bytes > maxBytes) $
+      fail "attachment size exceeds configured limit"
     traverse_ (\size -> when (size /= ByteString.length bytes) (fail "size does not match decoded attachment bytes")) expectedSize
     pure Attachment.AttachmentUpload{name, mediaType, kind, bytes}
+
+maxBase64Length :: Int -> Int
+maxBase64Length maxBytes =
+  ((maxBytes + 2) `div` 3) * 4
 
 parseAttachmentIdParams :: Aeson.Value -> AesonTypes.Parser Text
 parseAttachmentIdParams =
@@ -527,19 +538,9 @@ requestIsAuthorized cfg request =
 
 requestIsRpcPath :: WS.RequestHead -> Bool
 requestIsRpcPath request =
-  path == "/" || path == "/rpc"
+  path == "/rpc"
   where
     (path, _) = ByteString.break (== questionMark) request.requestPath
-
-queryAccessToken :: WS.RequestHead -> Maybe ByteString
-queryAccessToken request =
-  join (snd <$> find ((== "access_token") . fst) (URI.parseQuery queryBytes))
-  where
-    (_, queryBytes) = ByteString.break (== questionMark) request.requestPath
-
-authorizationBearer :: WS.RequestHead -> Maybe ByteString
-authorizationBearer request =
-  ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) request.requestHeaders)
 
 httpApp :: (Storage.Storage :> es, FileSystem.FileSystem :> es) => (forall a. Eff es a -> IO a) -> Config.Config -> Wai.Application
 httpApp runInIO cfg request respond =
@@ -576,9 +577,11 @@ serveAttachment runInIO attachmentId respond = do
           respond $
             Wai.responseFile
               Http.status200
-              [ ("Content-Type", TextEncoding.encodeUtf8 stored.mediaType)
-              , ("Content-Disposition", "inline; filename=\"" <> safeHeaderBytes stored.name <> "\"")
-              ]
+              ( attachmentHeaders
+                  [ ("Content-Type", TextEncoding.encodeUtf8 stored.mediaType)
+                  , ("Content-Disposition", "attachment; filename=\"" <> safeHeaderBytes stored.name <> "\"")
+                  ]
+              )
               stored.path
               Nothing
         else
@@ -603,7 +606,7 @@ serveStatic runInIO cfg pathSegments respond
           respond $
             Wai.responseFile
               Http.status200
-              [("Content-Type", contentType path)]
+              (staticHeaders [("Content-Type", contentType path)])
               path
               Nothing
 
@@ -639,15 +642,20 @@ unsafePathSegment segment =
 
 httpRequestIsAuthorized :: Config.Config -> Wai.Request -> Bool
 httpRequestIsAuthorized cfg request =
-  httpQueryAccessToken request == Just expectedToken
-    || httpAuthorizationBearer request == Just expectedToken
+  httpAuthorizationBearer request == Just expectedToken
   where
     Config.Config{token} = cfg
     expectedToken = TextEncoding.encodeUtf8 token
 
-httpQueryAccessToken :: Wai.Request -> Maybe ByteString
-httpQueryAccessToken request =
-  join (snd <$> find ((== "access_token") . fst) (Wai.queryString request))
+queryAccessToken :: WS.RequestHead -> Maybe ByteString
+queryAccessToken request =
+  join (snd <$> find ((== "access_token") . fst) (URI.parseQuery queryBytes))
+  where
+    (_, queryBytes) = ByteString.break (== questionMark) request.requestPath
+
+authorizationBearer :: WS.RequestHead -> Maybe ByteString
+authorizationBearer request =
+  ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) request.requestHeaders)
 
 httpAuthorizationBearer :: Wai.Request -> Maybe ByteString
 httpAuthorizationBearer request =
@@ -655,7 +663,27 @@ httpAuthorizationBearer request =
 
 textResponse :: Http.Status -> LazyByteString.ByteString -> Wai.Response
 textResponse status body =
-  Wai.responseLBS status [("Content-Type", "text/plain; charset=utf-8")] body
+  Wai.responseLBS status (baseSecurityHeaders [("Content-Type", "text/plain; charset=utf-8")]) body
+
+baseSecurityHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
+baseSecurityHeaders headers =
+  headers
+    <> [ ("Referrer-Policy", "no-referrer")
+       , ("X-Content-Type-Options", "nosniff")
+       , ("X-Frame-Options", "DENY")
+       ]
+
+staticHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
+staticHeaders headers =
+  baseSecurityHeaders headers
+    <> [ ("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+       ]
+
+attachmentHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
+attachmentHeaders headers =
+  baseSecurityHeaders headers
+    <> [ ("Cache-Control", "no-store")
+       ]
 
 contentType :: FilePath -> ByteString
 contentType path =

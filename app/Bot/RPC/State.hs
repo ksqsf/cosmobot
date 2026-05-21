@@ -47,6 +47,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.STM as STM
+import qualified Effectful.FileSystem as FileSystem
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 
@@ -207,30 +208,32 @@ renameChatSession :: StorageEffect.Storage :> es => RpcSessionId -> Text -> Eff 
 renameChatSession sessionId label =
   fmap storedSessionToRpc <$> Storage.renameSession sessionId.unRpcSessionId label
 
-deleteChatSession :: StorageEffect.Storage :> es => RpcSessionId -> Eff es Bool
+deleteChatSession :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcSessionId -> Eff es Bool
 deleteChatSession sessionId =
   Storage.deleteSession sessionId.unRpcSessionId
 
-enqueueChatMessage :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> RpcChatSend -> Eff es (Maybe IncomingMessage)
+enqueueChatMessage :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> RpcChatSend -> Eff es (Either Text (Maybe IncomingMessage))
 enqueueChatMessage rpcState chatSend = do
   stored <- Storage.appendMessage
     chatSend.sessionId.unRpcSessionId
     "user"
     chatSend.text
-    (rpcChatSendImageUrls chatSend)
-    (map rpcAttachmentToStored chatSend.attachments)
+    chatSend.imageUrls
+    (map (.attachmentId) chatSend.attachments)
     chatSend.replyToMessageId
     chatSend.replyToMessageId
   case stored of
-    Nothing ->
-      pure Nothing
-    Just messageRow -> do
+    Left err ->
+      pure (Left err)
+    Right Nothing ->
+      pure (Right Nothing)
+    Right (Just messageRow) -> do
       rememberMessageNumber rpcState messageRow.messageId
-      let message = rpcIncomingMessage chatSend messageRow.messageId
+      let message = rpcIncomingMessage chatSend messageRow
           chatMessage = storedMessageToRpc messageRow
       STM.atomically (STM.writeTChan rpcState.inbound message)
       broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" chatMessage))
-      pure (Just message)
+      pure (Right (Just message))
 
 incomingMessages :: Concurrent :> es => RpcState -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages rpcState = forever do
@@ -254,9 +257,11 @@ rpcChatDriver rpcState = driver
             parentMessageId
             parentMessageId
           case stored of
-            Nothing ->
+            Left _ ->
               pure Nothing
-            Just storedReply -> do
+            Right Nothing ->
+              pure Nothing
+            Right (Just storedReply) -> do
               rememberMessageNumber rpcState storedReply.messageId
               broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" (storedMessageToRpc storedReply)))
               pure (Just storedReply.messageId)
@@ -283,9 +288,18 @@ rpcChatDriver rpcState = driver
       , setMemberTitle = \_ _ _ -> pure False
       }
 
-rpcIncomingMessage :: RpcChatSend -> MessageId -> IncomingMessage
-rpcIncomingMessage chatSend messageId =
+rpcIncomingMessage :: RpcChatSend -> Storage.StoredChatMessage -> IncomingMessage
+rpcIncomingMessage chatSend messageRow =
   let sessionText = chatSend.sessionId.unRpcSessionId
+      canonicalSend :: RpcChatSend
+      canonicalSend =
+        RpcChatSend
+          { sessionId = chatSend.sessionId
+          , text = chatSend.text
+          , imageUrls = messageRow.imageUrls
+          , attachments = map storedAttachmentToRpc messageRow.attachments
+          , replyToMessageId = chatSend.replyToMessageId
+          }
   in IncomingMessage
     { platform = PlatformRPC
     , kind = ChatPrivate
@@ -300,13 +314,13 @@ rpcIncomingMessage chatSend messageId =
         }
     , senderId = Just "rpc-user"
     , senderUsername = Just "RPC"
-    , messageId = Just messageId
+    , messageId = Just messageRow.messageId
     , replyToMessageId = chatSend.replyToMessageId
     , mentions = []
     , mentionUsernames = []
-    , imageUrls = rpcChatSendImageUrls chatSend
-    , text = chatSendContextText chatSend
-    , raw = Aeson.toJSON chatSend
+    , imageUrls = rpcChatSendImageUrls canonicalSend
+    , text = chatSendContextText canonicalSend
+    , raw = Aeson.toJSON canonicalSend
     }
 
 rememberMessageNumber :: Concurrent :> es => RpcState -> MessageId -> Eff es ()
@@ -397,17 +411,6 @@ chatSendContextText chatSend
         [ "- " <> attachment.name <> " (" <> attachment.mediaType <> ", " <> attachment.url <> ")"
         | attachment <- nonImageAttachments
         ]
-
-rpcAttachmentToStored :: RpcChatAttachmentRef -> Attachment.StoredAttachmentRef
-rpcAttachmentToStored attachment =
-  Attachment.StoredAttachmentRef
-    { attachmentId = attachment.attachmentId
-    , name = attachment.name
-    , mediaType = attachment.mediaType
-    , kind = attachment.kind
-    , size = attachment.size
-    , url = attachment.url
-    }
 
 storedAttachmentToRpc :: Attachment.StoredAttachmentRef -> RpcChatAttachmentRef
 storedAttachmentToRpc attachment =
