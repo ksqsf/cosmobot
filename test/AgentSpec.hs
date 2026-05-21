@@ -121,6 +121,9 @@ main =
       , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "edit_image tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
       , testCase "ask handler passes referenced images to edit_image tool" testAskHandlerPassesReferencedImagesToEditImageTool
+      , testCase "ask handler continues from generated image context" testAskHandlerContinuesFromGeneratedImageContext
+      , testCase "ask handler passes referenced images when continuing conversation" testAskHandlerPassesReferencedImagesWhenContinuingConversation
+      , testCase "ask handler includes referenced images in continued LLM context" testAskHandlerIncludesReferencedImagesInContinuedContext
       , testCase "generate_image tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "generate_audio tool uses configured audio options and sends audio" testGenerateAudioToolUsesConfiguredAudioOptions
       , testCase "edit_image tool passes image request options" testEditImageToolPassesImageRequestOptions
@@ -398,6 +401,111 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
     waitUntil (liftIO $ (>= 3) . length <$> IORef.readIORef replies)
   IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [referencedImage] Nothing LLM.defaultImageRequestOptions])
 
+testAskHandlerContinuesFromGeneratedImageContext :: IO ()
+testAskHandlerContinuesFromGeneratedImageContext = do
+  let generatedImage = "https://example.test/generated.png"
+      editedImage = "[image] data:image/png;base64,edited"
+      prompt = "make it a girl"
+      parentId = "70001"
+      parentConversation =
+        Conversation (Seq.fromList
+          [ LLM.userText "根据你自己对自己形象的猜想，生成一张你自己的人设"
+          , LLM.userWithImages "Image context returned by tool generate_image:\nGenerated and sent image message id: Just (MessageId \"70001\")" [generatedImage]
+          , LLM.assistantText "好了"
+          ])
+      message = askHandlerMessage
+        { replyToMessageId = Just parentId
+        , imageUrls = []
+        , text = "改一下"
+        }
+      parentKey = conversationMessageKey message parentId
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "edit_image" (Aeson.object ["prompt" Aeson..= prompt])]
+    , chatAnswer "done" []
+    ]
+  editCalls <- IORef.newIORef ([] :: [ImageEditCall])
+  replies <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWithImageEditAndReferencedMessage answers editCalls editedImage Nothing (ChatMock (Just replies) (Just "47") Nothing) do
+    conversations <- newConversationStore
+    rememberConversation conversations (Just parentKey) parentConversation
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) message
+    waitUntil (liftIO $ (>= 3) . length <$> IORef.readIORef replies)
+  IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [generatedImage] Nothing LLM.defaultImageRequestOptions])
+
+testAskHandlerPassesReferencedImagesWhenContinuingConversation :: IO ()
+testAskHandlerPassesReferencedImagesWhenContinuingConversation = do
+  let referencedImage = "https://example.test/replied.png"
+      editedImage = "[image] data:image/png;base64,edited"
+      prompt = "make the replied image brighter"
+      parentId = "70001"
+      referenced = ReferencedMessage
+        { messageId = Just parentId
+        , senderDisplayName = Just "krkr"
+        , senderIdentifier = Just "2044933066"
+        , text = ""
+        , imageUrls = [referencedImage]
+        }
+      message = askHandlerMessage
+        { replyToMessageId = Just parentId
+        , imageUrls = []
+        , text = "把这张图调亮"
+        }
+      parentKey = conversationMessageKey message parentId
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "edit_image" (Aeson.object ["prompt" Aeson..= prompt])]
+    , chatAnswer "done" []
+    ]
+  editCalls <- IORef.newIORef ([] :: [ImageEditCall])
+  replies <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWithImageEditAndReferencedMessage answers editCalls editedImage (Just referenced) (ChatMock (Just replies) (Just "47") Nothing) do
+    conversations <- newConversationStore
+    rememberConversation conversations (Just parentKey) (startWithUser "previous")
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) message
+    waitUntil (liftIO $ (>= 3) . length <$> IORef.readIORef replies)
+  IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [referencedImage] Nothing LLM.defaultImageRequestOptions])
+
+testAskHandlerIncludesReferencedImagesInContinuedContext :: IO ()
+testAskHandlerIncludesReferencedImagesInContinuedContext = do
+  let referencedImage = "https://example.test/replied.png"
+      currentImage = "https://example.test/current.png"
+      parentId = "70001"
+      referenced = ReferencedMessage
+        { messageId = Just parentId
+        , senderDisplayName = Just "krkr"
+        , senderIdentifier = Just "2044933066"
+        , text = "generated image"
+        , imageUrls = [referencedImage]
+        }
+      message = askHandlerMessage
+        { replyToMessageId = Just parentId
+        , imageUrls = [currentImage]
+        , text = "继续改"
+        }
+      parentKey = conversationMessageKey message parentId
+  answers <- IORef.newIORef [chatAnswer "done" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  rendered <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    defaultTestSkillsConfig
+    rendered
+    (Just captured)
+    answers
+    (ChatMock Nothing Nothing Nothing)
+    (Just referenced)
+    (\_ _ -> pure "unused image answer")
+    (\_ _ _ _ -> pure "unused image edit answer") do
+    conversations <- newConversationStore
+    rememberConversation conversations (Just parentKey) (startWithUser "previous")
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) message
+    waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
+  requests <- IORef.readIORef captured
+  case viaNonEmpty head requests of
+    Just request ->
+      lastUserImageRefs request @?= [referencedImage, currentImage]
+    Nothing ->
+      assertFailure "expected captured LLM request"
+
 testGenerateImageToolPassesImageRequestOptions :: IO ()
 testGenerateImageToolPassesImageRequestOptions = do
   let generatedImage = "[image] data:image/png;base64,generated"
@@ -418,12 +526,13 @@ testGenerateImageToolPassesImageRequestOptions = do
   replies <- IORef.newIORef ([] :: [Text])
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
-  (answer, _) <- runAgentWithImageGenerate answers generateCalls generatedImage (ChatMock (Just replies) (Just "48") Nothing) do
+  (answer, conversation) <- runAgentWithImageGenerate answers generateCalls generatedImage (ChatMock (Just replies) (Just "48") Nothing) do
     Agent.runAgentWithHooks 4 agentContext (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "draw this")
   answer @?= "done"
   IORef.readIORef generateCalls >>= (@?= [ImageGenerateCall "draw a glass tower" [] expectedOptions])
   IORef.readIORef replies >>= (@?= [generatedImage])
   IORef.readIORef recorded >>= (@?= [generatedImage])
+  imageContextUrls conversation @?= ["data:image/png;base64,generated"]
 
 testGenerateAudioToolUsesConfiguredAudioOptions :: IO ()
 testGenerateAudioToolUsesConfiguredAudioOptions = do
@@ -501,12 +610,13 @@ testEditImageToolPassesImageRequestOptions = do
   replies <- IORef.newIORef ([] :: [Text])
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
-  (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "49") Nothing) do
+  (answer, conversation) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "49") Nothing) do
     Agent.runAgentWithHooks 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "edit this")
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it cinematic" [inputImage] Nothing expectedOptions])
   IORef.readIORef replies >>= (@?= [editedImage])
   IORef.readIORef recorded >>= (@?= [editedImage])
+  imageContextUrls conversation @?= ["data:image/png;base64,edited"]
 
 imageOptions :: Text -> Text -> Text -> Text -> LLM.ImageRequestOptions
 imageOptions quality size background moderation =
@@ -1554,6 +1664,16 @@ imageContextUrls (Conversation messages) =
   , Just (LLM.PartsContent parts) <- [message.content]
   , LLM.ImageUrlPart url <- parts
   ]
+
+lastUserImageRefs :: [LLM.ChatMessage] -> [Text]
+lastUserImageRefs messages =
+  maybe [] messageImageRefs (viaNonEmpty last userMessages)
+  where
+    userMessages =
+      [ message
+      | message <- messages
+      , message.role == "user"
+      ]
 
 requestRoles :: [LLM.ChatMessage] -> [Text]
 requestRoles =

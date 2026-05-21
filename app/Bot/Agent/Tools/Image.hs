@@ -41,10 +41,10 @@ generateImageTool = Tool
       case Chat.replyImageUrls generated of
         [] ->
           pure (toolText generated)
-        _ -> do
+        imageUrls -> do
           sent <- Chat.replyTo context.message generated
           let sentText = show sent :: String
-          pure (toolMessage sent [i|Generated and sent image message id: #{sentText}|])
+          pure (toolMessageWithImages sent [i|Generated and sent image message id: #{sentText}|] imageUrls)
   }
 
 editImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
@@ -73,10 +73,10 @@ editImageTool = Tool
           case Chat.replyImageUrls edited of
             [] ->
               pure (toolText edited)
-            _ -> do
+            imageUrls -> do
               sent <- Chat.replyTo context.message edited
               let sentText = show sent :: String
-              pure (toolMessage sent [i|Edited and sent image message id: #{sentText}|])
+              pure (toolMessageWithImages sent [i|Edited and sent image message id: #{sentText}|] imageUrls)
   }
 
 data GenerateImageArgs = GenerateImageArgs
