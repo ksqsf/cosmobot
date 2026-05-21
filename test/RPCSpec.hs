@@ -11,7 +11,10 @@ import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.STM as STM
 import qualified JSONRPC
+import qualified Network.Socket as Socket
+import qualified Network.WebSockets as WS
 import qualified Streaming.Prelude as S
+import System.Timeout
 import Test.Tasty
 import Test.Tasty.HUnit
 import qualified Toml
@@ -26,6 +29,7 @@ main =
       , testCase "chat.open_session returns generated session id" testOpenSessionReturnsGeneratedSessionId
       , testCase "chat.send constructs PlatformRPC incoming message" testChatSendConstructsIncomingMessage
       , testCase "chat.send broadcasts user chat notification" testChatSendBroadcastsNotification
+      , testCase "websocket server authenticates and handles JSON-RPC requests" testWebSocketServerAuthenticatesAndHandlesRequests
       ]
 
 testRequestParamsDefaultToEmptyObject :: IO ()
@@ -107,6 +111,40 @@ testChatSendBroadcastsNotification = do
       , "replyToMessageId" Aeson..= (Nothing :: Maybe Text)
       ]
 
+testWebSocketServerAuthenticatesAndHandlesRequests :: IO ()
+testWebSocketServerAuthenticatesAndHandlesRequests = do
+  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runTestLog do
+    rpcState <- RPC.newRpcState
+    listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
+    port <- fromIntegral <$> liftIO (Socket.socketPort listenSocket)
+    let cfg = RPCConfig.Config
+          { enabled = True
+          , host = "127.0.0.1"
+          , port
+          , token = "secret"
+          }
+        server =
+          finally
+            (forever do
+              (clientSocket, _) <- liftIO (Socket.accept listenSocket)
+              pending <- liftIO (WS.makePendingConnection clientSocket WS.defaultConnectionOptions)
+              RPCServer.rpcServerApp cfg rpcState RPCServer.noRpcServerCallbacks pending)
+            (liftIO (Socket.close listenSocket))
+        client = do
+          unauthorized <- trySync (liftIO (WS.runClient "127.0.0.1" port "/" \_ -> pure ()))
+          response <- liftIO (openSessionClient port "secret")
+          pure (unauthorized, response)
+    race server client
+
+  case result of
+    Nothing ->
+      assertFailure "RPC websocket integration test timed out"
+    Just (Left ()) ->
+      assertFailure "RPC server exited before client completed"
+    Just (Right (unauthorized, response)) -> do
+      assertUnauthorizedRejected unauthorized
+      response @?= responseResult (Aeson.object ["sessionId" Aeson..= ("integration-1" :: Text)])
+
 data RpcClientConfig = RpcClientConfig
   { rpc :: RPCConfig.FileConfig
   }
@@ -130,3 +168,31 @@ parseJson value =
   case AesonTypes.parseEither Aeson.parseJSON value of
     Left err -> assertFailure err
     Right parsed -> pure parsed
+
+openSessionClient :: Int -> Text -> IO Protocol.RpcResponse
+openSessionClient port token =
+  WS.runClient "127.0.0.1" port ("/?access_token=" <> Text.unpack token) \conn -> do
+    WS.sendTextData conn $
+      Aeson.encode $
+        Protocol.rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("integration" :: Text)]) "test-1"
+    bytes <- WS.receiveData conn :: IO ByteString
+    case Aeson.eitherDecodeStrict' bytes of
+      Left err -> fail [i|RPC websocket response was not JSON-RPC: #{err}|]
+      Right response -> pure response
+
+assertUnauthorizedRejected :: Either SomeException () -> IO ()
+assertUnauthorizedRejected = \case
+  Left err
+    | Just (WS.RequestRejected _ response) <- fromException err ->
+        WS.responseCode response @?= 401
+    | Just (WS.MalformedResponse response _) <- fromException err ->
+        WS.responseCode response @?= 401
+    | otherwise ->
+        assertFailure [i|expected websocket 401 rejection, got #{show err :: String}|]
+  Right () ->
+    assertFailure "expected unauthenticated websocket connection to fail"
+
+runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
+runTestLog action = do
+  logger <- liftIO $ mkLogger "rpc-spec" \_ -> pure ()
+  runLog "rpc-spec" logger LogTrace action
