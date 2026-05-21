@@ -13,11 +13,14 @@ module Bot.Effect.AgentAudit
   , ToolUseStatus (..)
   , agentAuditObserver
   , toolUsesFromAuditRecords
+  , queryRecentAuditRecords
+  , queryAuditRecord
   , queryRecentToolUses
   , queryToolUse
   , queryConversationAudit
   , queryConversationMessagesAudit
   , runAgentAudit
+  , runAgentAuditWithObserver
   )
 where
 
@@ -34,6 +37,8 @@ import Data.Time (getCurrentTime)
 
 data AgentAudit :: Effect where
   RecordEvent :: AgentAuditEvent -> AgentAudit m (Maybe Integer)
+  QueryRecentAuditRecords :: Int -> AgentAudit m [AgentAuditRecord]
+  QueryAuditRecord :: Integer -> AgentAudit m (Maybe AgentAuditRecord)
   QueryRecentToolUses :: Int -> AgentAudit m [ToolUseDetail]
   QueryToolUse :: Integer -> AgentAudit m (Maybe ToolUseDetail)
   QueryConversationAudit :: MessageId -> AgentAudit m [AgentAuditRecord]
@@ -48,6 +53,14 @@ recordEvent event =
 agentAuditObserver :: AgentAudit :> es => Agent.AgentObserver Observation.ObservationContext es
 agentAuditObserver =
   ObservationAdapter.agentAuditObserverWith recordEvent
+
+queryRecentAuditRecords :: AgentAudit :> es => Int -> Eff es [AgentAuditRecord]
+queryRecentAuditRecords limit =
+  send (QueryRecentAuditRecords limit)
+
+queryAuditRecord :: AgentAudit :> es => Integer -> Eff es (Maybe AgentAuditRecord)
+queryAuditRecord auditId =
+  send (QueryAuditRecord auditId)
 
 queryRecentToolUses :: AgentAudit :> es => Int -> Eff es [ToolUseDetail]
 queryRecentToolUses limit =
@@ -69,14 +82,34 @@ runAgentAudit
   :: (IOE :> es, Log :> es, Storage.Storage :> es)
   => Eff (AgentAudit : es) a
   -> Eff es a
-runAgentAudit inner = do
+runAgentAudit =
+  runAgentAuditWithObserver (const (pure ()))
+
+runAgentAuditWithObserver
+  :: (IOE :> es, Log :> es, Storage.Storage :> es)
+  => (AgentAuditRecord -> Eff es ())
+  -> Eff (AgentAudit : es) a
+  -> Eff es a
+runAgentAuditWithObserver observer inner = do
   processStartedAt <- liftIO getCurrentTime
   AgentAuditStorage.ensureAgentAuditTable
   interpret
     (\_ -> \case
       RecordEvent event -> do
         occurredAt <- liftIO getCurrentTime
-        AgentAuditStorage.persistEvent occurredAt event
+        persistedId <- AgentAuditStorage.persistEvent occurredAt event
+        for_ persistedId \auditId ->
+          observer AgentAuditRecord
+            { id = Just auditId
+            , occurredAt = occurredAt
+            , event = event
+            }
+        pure persistedId
+      QueryRecentAuditRecords limit -> do
+        records <- AgentAuditStorage.queryStoredRecent maxInMemoryAgentAuditEvents
+        pure (takeRecentAuditRecords limit (markStaleRunningToolUses processStartedAt records))
+      QueryAuditRecord auditId ->
+        AgentAuditStorage.queryStoredRecord auditId
       QueryRecentToolUses limit -> do
         records <- AgentAuditStorage.loadStoredAuditRecords
         pure (toolUsesFromRecords limit (markStaleRunningToolUses processStartedAt records))
@@ -89,3 +122,7 @@ runAgentAudit inner = do
         markStaleRunningToolUses processStartedAt <$> AgentAuditStorage.queryStoredConversationMessagesAudit messageIds
     )
     inner
+
+takeRecentAuditRecords :: Int -> [AgentAuditRecord] -> [AgentAuditRecord]
+takeRecentAuditRecords limit records =
+  drop (max 0 (length records - max 0 limit)) records

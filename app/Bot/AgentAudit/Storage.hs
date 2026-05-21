@@ -9,6 +9,8 @@ module Bot.AgentAudit.Storage
   ( ensureAgentAuditTable
   , loadStoredAuditRecords
   , persistEvent
+  , queryStoredRecent
+  , queryStoredRecord
   , queryStoredConversationAudit
   , queryStoredConversationMessagesAudit
   )
@@ -22,6 +24,7 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Int as Int
 import qualified Data.Text.Encoding as TextEncoding
 
 data AgentAuditRow = AgentAuditRow
@@ -83,6 +86,16 @@ queryStoredRecent limit = do
         order (row ! #id) descending
         pure row
   pure (mapMaybe storedAuditRecord (reverse rows))
+
+queryStoredRecord :: Storage.Storage :> es => Integer -> Eff es (Maybe AgentAuditRecord)
+queryStoredRecord auditId = do
+  rows <- runSelda $
+    query $
+      queryLimit 0 1 do
+        row <- select agentAuditRows
+        restrict (row ! #id .== literal (toId (fromIntegral auditId :: Int.Int64)))
+        pure row
+  pure (viaNonEmpty head (mapMaybe storedAuditRecord rows))
 
 queryStoredConversationAudit :: Storage.Storage :> es => MessageId -> Eff es [AgentAuditRecord]
 queryStoredConversationAudit messageId =
