@@ -34,6 +34,7 @@ main =
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
+      , testCase "Matrix Markdown renders custom HTML" testMatrixMarkdownRendersCustomHtml
       ]
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
@@ -267,6 +268,10 @@ testMatrixDirectRoomConvertsToPrivateMessage = do
   ((.chatAliases) <$> incoming) @?= Just ["!room:example.org"]
   ((.senderUsername) <$> incoming) @?= Just (Just "@alice:example.org")
   ((.text) <$> incoming) @?= Just "hello"
+
+testMatrixMarkdownRendersCustomHtml :: IO ()
+testMatrixMarkdownRendersCustomHtml =
+  Matrix.formatMatrixMarkdown "**hi** and `code`" @?= Just "<p><strong>hi</strong> and <code>code</code></p>"
 
 testMatrixReplyRelationConvertsToReplyMessageId :: IO ()
 testMatrixReplyRelationConvertsToReplyMessageId = do

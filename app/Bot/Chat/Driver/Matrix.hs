@@ -20,6 +20,7 @@ module Bot.Chat.Driver.Matrix
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
+  , formatMatrixMarkdown
   , replyTo
   , replyAudio
   , uploadFile
@@ -35,6 +36,7 @@ import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Util.HTTP as Http
+import Commonmark
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as Aeson
@@ -45,6 +47,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.Lazy as LazyText
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.Prim.IORef as IORef
 import GHC.Clock (getMonotonicTimeNSec)
@@ -1163,6 +1166,7 @@ sendMessageCall manager cfg token roomId replyRelation body = do
       request = SendMessageRequest
         { msgtype = "m.text"
         , body = nonEmptyMatrixBody body
+        , formattedBody = formatMatrixMarkdown body
         , replyRelation
         }
   logInfo_ "Matrix API request: send m.room.message"
@@ -1184,6 +1188,7 @@ editMessageCall manager cfg token roomId eventId body = do
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
       request = MatrixEditMessageRequest
         { body = nonEmptyMatrixBody body
+        , formattedBody = formatMatrixMarkdown body
         , replacesEventId = eventId
         }
   logInfo_ "Matrix API request: edit m.room.message"
@@ -1474,16 +1479,18 @@ instance Aeson.ToJSON MatrixInReplyTo where
 data SendMessageRequest = SendMessageRequest
   { msgtype :: !Text
   , body :: !Text
+  , formattedBody :: !(Maybe Text)
   , replyRelation :: !(Maybe MatrixReplyTo)
   }
   deriving (Show, Generic)
 
 instance Aeson.ToJSON SendMessageRequest where
-  toJSON SendMessageRequest{msgtype, body, replyRelation} =
+  toJSON SendMessageRequest{msgtype, body, formattedBody, replyRelation} =
     Aeson.object $
       [ "msgtype" Aeson..= msgtype
       , "body" Aeson..= body
       ]
+        <> matrixFormattedBodyFields formattedBody
         <> maybe [] (\(MatrixReplyTo eventId) -> ["m.relates_to" Aeson..= MatrixRelatesTo (Just eventId)]) replyRelation
 
 newtype MatrixUploadResponse = MatrixUploadResponse
@@ -1539,24 +1546,45 @@ instance Aeson.ToJSON MatrixFileMessageRequest where
 
 data MatrixEditMessageRequest = MatrixEditMessageRequest
   { body :: !Text
+  , formattedBody :: !(Maybe Text)
   , replacesEventId :: !MatrixEventId
   }
   deriving (Show, Generic)
 
 instance Aeson.ToJSON MatrixEditMessageRequest where
-  toJSON MatrixEditMessageRequest{body, replacesEventId} =
-    Aeson.object
+  toJSON MatrixEditMessageRequest{body, formattedBody, replacesEventId} =
+    Aeson.object $
       [ "msgtype" Aeson..= ("m.text" :: Text)
       , "body" Aeson..= ("* " <> body)
       , "m.new_content" Aeson..= Aeson.object
-          [ "msgtype" Aeson..= ("m.text" :: Text)
-          , "body" Aeson..= body
-          ]
+          ( [ "msgtype" Aeson..= ("m.text" :: Text)
+            , "body" Aeson..= body
+            ]
+              <> matrixFormattedBodyFields formattedBody
+          )
       , "m.relates_to" Aeson..= Aeson.object
           [ "rel_type" Aeson..= ("m.replace" :: Text)
           , "event_id" Aeson..= matrixEventIdText replacesEventId
           ]
       ]
+        <> matrixFormattedBodyFields (("* " <>) <$> formattedBody)
+
+matrixFormattedBodyFields :: Maybe Text -> [Aeson.Pair]
+matrixFormattedBodyFields = \case
+  Nothing ->
+    []
+  Just html ->
+    [ "format" Aeson..= ("org.matrix.custom.html" :: Text)
+    , "formatted_body" Aeson..= html
+    ]
+
+formatMatrixMarkdown :: Text -> Maybe Text
+formatMatrixMarkdown input =
+  case commonmark "matrix-message" input :: Either ParseError (Html ()) of
+    Left _ ->
+      Nothing
+    Right html ->
+      nonEmptyText (Text.strip (LazyText.toStrict (renderHtml html)))
 
 data RedactEventRequest = RedactEventRequest
   { reason :: Maybe Text
