@@ -70,6 +70,35 @@ data Config = Config
   }
   deriving (Show)
 
+newtype MatrixRoomId = MatrixRoomId Text
+  deriving (Show, Eq, Ord)
+
+newtype MatrixEventId = MatrixEventId Text
+  deriving (Show, Eq, Ord)
+
+newtype MatrixReplyTo = MatrixReplyTo MatrixEventId
+  deriving (Show, Eq)
+
+matrixRoomIdText :: MatrixRoomId -> Text
+matrixRoomIdText (MatrixRoomId roomId) =
+  roomId
+
+matrixEventIdText :: MatrixEventId -> Text
+matrixEventIdText (MatrixEventId eventId) =
+  eventId
+
+matrixRoomId :: Text -> MatrixRoomId
+matrixRoomId =
+  MatrixRoomId
+
+matrixEventId :: Text -> MatrixEventId
+matrixEventId =
+  MatrixEventId
+
+matrixEventMessageId :: MatrixEventId -> MessageId
+matrixEventMessageId =
+  textMessageId . matrixEventIdText
+
 matrixDriver
   :: (Matrix :> es, FileSystem :> es, IOE :> es)
   => Driver.ChatPlatformDriver es
@@ -96,13 +125,13 @@ matrixStreamingMessageLimit = 4000
 data Matrix :: Effect where
   MatrixConfig :: Matrix m Config
   Sync :: Maybe Text -> Matrix m (Maybe SyncResponse)
-  DirectRooms :: Matrix m (Set Text)
-  JoinedMemberCounts :: Matrix m (Map Text Int)
-  JoinedMemberCount :: Text -> Matrix m (Maybe Int)
-  SendText :: Text -> Text -> Matrix m (Maybe SendMessageResponse)
+  DirectRooms :: Matrix m (Set MatrixRoomId)
+  JoinedMemberCounts :: Matrix m (Map MatrixRoomId Int)
+  JoinedMemberCount :: MatrixRoomId -> Matrix m (Maybe Int)
+  SendText :: MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Matrix m (Maybe SendMessageResponse)
   UploadMedia :: FilePath -> Text -> Matrix m MatrixUploadResponse
   SendFileMessage :: Text -> MatrixFileMessage -> Matrix m (Maybe SendMessageResponse)
-  DeleteEvent :: Text -> MessageId -> Maybe Text -> Matrix m Bool
+  DeleteEvent :: Text -> MessageId -> Maybe MatrixEventId -> Matrix m Bool
 
 type instance DispatchOf Matrix = Dynamic
 
@@ -113,21 +142,21 @@ sync :: Matrix :> es => Maybe Text -> Eff es (Maybe SyncResponse)
 sync =
   send . Sync
 
-directRooms :: Matrix :> es => Eff es (Set Text)
+directRooms :: Matrix :> es => Eff es (Set MatrixRoomId)
 directRooms =
   send DirectRooms
 
-joinedMemberCounts :: Matrix :> es => Eff es (Map Text Int)
+joinedMemberCounts :: Matrix :> es => Eff es (Map MatrixRoomId Int)
 joinedMemberCounts =
   send JoinedMemberCounts
 
-joinedMemberCount :: Matrix :> es => Text -> Eff es (Maybe Int)
+joinedMemberCount :: Matrix :> es => MatrixRoomId -> Eff es (Maybe Int)
 joinedMemberCount =
   send . JoinedMemberCount
 
-sendText :: Matrix :> es => Text -> Text -> Eff es (Maybe SendMessageResponse)
-sendText roomId body =
-  send (SendText roomId body)
+sendText :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Maybe SendMessageResponse)
+sendText roomId replyToEventId body =
+  send (SendText roomId replyToEventId body)
 
 uploadMedia :: Matrix :> es => FilePath -> Text -> Eff es MatrixUploadResponse
 uploadMedia path fileName =
@@ -137,7 +166,7 @@ sendFileMessage :: Matrix :> es => Text -> MatrixFileMessage -> Eff es (Maybe Se
 sendFileMessage roomId message =
   send (SendFileMessage roomId message)
 
-deleteEvent :: Matrix :> es => Text -> MessageId -> Maybe Text -> Eff es Bool
+deleteEvent :: Matrix :> es => Text -> MessageId -> Maybe MatrixEventId -> Eff es Bool
 deleteEvent roomId messageId eventId =
   send (DeleteEvent roomId messageId eventId)
 
@@ -148,9 +177,9 @@ runMatrix
   -> Eff es a
 runMatrix cfg inner = do
   manager <- liftIO Http.newTlsManager
-  eventIds <- IORef.newIORef (Map.empty :: Map MessageId Text)
-  directRoomIdsRef <- IORef.newIORef (Set.fromList cfg.directRooms)
-  joinedMemberCountsRef <- IORef.newIORef (Map.empty :: Map Text Int)
+  eventIds <- IORef.newIORef (Map.empty :: Map MessageId MatrixEventId)
+  directRoomIdsRef <- IORef.newIORef (Set.fromList (matrixRoomId <$> cfg.directRooms))
+  joinedMemberCountsRef <- IORef.newIORef (Map.empty :: Map MatrixRoomId Int)
   initialAuthState <- initialMatrixAuthState manager cfg
   authState <- IORef.newIORef initialAuthState
   refreshLock <- MVar.newMVar ()
@@ -173,9 +202,9 @@ runMatrix cfg inner = do
             count <- joinedMemberCountCall manager cfg token roomId
             rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count
             pure count
-        SendText roomId body -> do
+        SendText roomId replyToEventId body -> do
           response <- withMaybeMatrixAccessToken auth \token ->
-            sendMessageCall manager cfg token roomId body
+            sendMessageCall manager cfg token roomId replyToEventId body
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         UploadMedia path fileName ->
@@ -193,18 +222,18 @@ runMatrix cfg inner = do
               pure False
             Just eventId ->
               fromMaybe False <$> withMaybeMatrixAccessToken auth \token ->
-                redactEventCall manager cfg token roomId eventId $> True
+                redactEventCall manager cfg token roomId (matrixEventIdText eventId) $> True
     )
     inner
 
-rememberMatrixEvent :: Prim :> es => IORef.IORef (Map MessageId Text) -> SendMessageResponse -> Eff es ()
+rememberMatrixEvent :: Prim :> es => IORef.IORef (Map MessageId MatrixEventId) -> SendMessageResponse -> Eff es ()
 rememberMatrixEvent eventIds response =
-  IORef.modifyIORef' eventIds (Map.insert (textMessageId response.eventId) response.eventId)
+  IORef.modifyIORef' eventIds (Map.insert (matrixEventMessageId response.eventId) response.eventId)
 
 rememberMatrixRoomState
   :: Prim :> es
-  => IORef.IORef (Set Text)
-  -> IORef.IORef (Map Text Int)
+  => IORef.IORef (Set MatrixRoomId)
+  -> IORef.IORef (Map MatrixRoomId Int)
   -> SyncResponse
   -> Eff es ()
 rememberMatrixRoomState directRoomIdsRef joinedMemberCountsRef response = do
@@ -214,9 +243,9 @@ rememberMatrixRoomState directRoomIdsRef joinedMemberCountsRef response = do
 
 rememberJoinedMemberCount
   :: Prim :> es
-  => IORef.IORef (Set Text)
-  -> IORef.IORef (Map Text Int)
-  -> Text
+  => IORef.IORef (Set MatrixRoomId)
+  -> IORef.IORef (Map MatrixRoomId Int)
+  -> MatrixRoomId
   -> Int
   -> Eff es ()
 rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count = do
@@ -519,35 +548,38 @@ incomingMessages = do
                 S.yield message
           syncLoop cfg (Just response.nextBatch)
 
-syncEvents :: Set Text -> SyncResponse -> [RoomEvent]
+syncEvents :: Set MatrixRoomId -> SyncResponse -> [RoomEvent]
 syncEvents directRoomIds response =
   [ RoomEvent
       { roomId
       , roomIsDirect = roomId `Set.member` directRoomIds || roomLooksDirect room
       , event
       }
-  | (roomId, room) <- Map.toList response.rooms.join
+  | (roomIdText, room) <- Map.toList response.rooms.join
+  , let roomId = matrixRoomId roomIdText
   , event <- room.timeline.events
   ]
 
-syncDirectRoomIds :: SyncResponse -> Set Text
+syncDirectRoomIds :: SyncResponse -> Set MatrixRoomId
 syncDirectRoomIds =
-  Set.fromList . (.directRooms) . (.accountData)
+  Set.fromList . fmap matrixRoomId . (.directRooms) . (.accountData)
 
-syncJoinedMemberCounts :: SyncResponse -> [(Text, Int)]
+syncJoinedMemberCounts :: SyncResponse -> [(MatrixRoomId, Int)]
 syncJoinedMemberCounts response =
   [ (roomId, count)
-  | (roomId, room) <- Map.toList response.rooms.join
+  | (roomIdText, room) <- Map.toList response.rooms.join
+  , let roomId = matrixRoomId roomIdText
   , Just count <- [room.summary.joinedMemberCount]
   ]
 
-probeDirectRoomIds :: Matrix :> es => Set Text -> Map Text Int -> SyncResponse -> Eff es (Set Text)
+probeDirectRoomIds :: Matrix :> es => Set MatrixRoomId -> Map MatrixRoomId Int -> SyncResponse -> Eff es (Set MatrixRoomId)
 probeDirectRoomIds knownDirectRoomIds joinedCounts response =
   Set.fromList <$> filterM looksDirect roomIdsToProbe
   where
     roomIdsToProbe =
       [ roomId
-      | (roomId, room) <- Map.toList response.rooms.join
+      | (roomIdText, room) <- Map.toList response.rooms.join
+      , let roomId = matrixRoomId roomIdText
       , not (roomId `Set.member` knownDirectRoomIds)
       , not (roomId `Map.member` joinedCounts)
       , isNothing room.summary.joinedMemberCount
@@ -577,10 +609,14 @@ replyTo :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
-      response <- sendText roomId (Chat.renderReplyBody body)
-      pure (textMessageId . (.eventId) <$> response)
+      response <- sendText (matrixRoomId roomId) (matrixReplyTo message) (Chat.renderReplyBody body)
+      pure (matrixEventMessageId . (.eventId) <$> response)
     _ ->
       pure Nothing
+
+matrixReplyTo :: IncomingMessage -> Maybe MatrixReplyTo
+matrixReplyTo message =
+  MatrixReplyTo <$> (matrixRawEventId message.raw <|> (matrixEventId . messageIdText <$> message.messageId))
 
 uploadFile :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
 uploadFile message path =
@@ -599,7 +635,7 @@ uploadFile message path =
             , size = size
             }
         }
-      pure (Right (textMessageId . (.eventId) <$> response))
+      pure (Right (matrixEventMessageId . (.eventId) <$> response))
     _ ->
       pure (Left "Matrix file upload requires a Matrix room id.")
 
@@ -617,13 +653,13 @@ sendMatrixAudio roomId audioRef caption =
     Just contentUri -> do
       let fileName = "audio"
       response <- sendFileMessage roomId (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
-      pure (Right (textMessageId . (.eventId) <$> response))
+      pure (Right (matrixEventMessageId . (.eventId) <$> response))
     Nothing ->
       withMatrixAudioFile audioRef \path fileName mime -> do
         size <- FileSystem.getFileSize path
         uploaded <- uploadMedia path fileName
         response <- sendFileMessage roomId (matrixAudioMessage caption fileName uploaded.contentUri mime size)
-        pure (Right (textMessageId . (.eventId) <$> response))
+        pure (Right (matrixEventMessageId . (.eventId) <$> response))
 
 matrixAudioMessage :: Maybe Text -> Text -> Text -> Text -> Integer -> MatrixFileMessage
 matrixAudioMessage caption fileName contentUri mime size =
@@ -748,14 +784,14 @@ deleteMessage message messageId =
     _ ->
       pure False
 
-currentRawEventId :: IncomingMessage -> MessageId -> Maybe Text
+currentRawEventId :: IncomingMessage -> MessageId -> Maybe MatrixEventId
 currentRawEventId message messageId = do
   guard (message.messageId == Just messageId)
   matrixRawEventId message.raw
 
-matrixRawEventId :: Aeson.Value -> Maybe Text
+matrixRawEventId :: Aeson.Value -> Maybe MatrixEventId
 matrixRawEventId =
-  Aeson.parseMaybe (Aeson.withObject "Matrix event" (Aeson..: "event_id"))
+  Aeson.parseMaybe (Aeson.withObject "Matrix event" \o -> matrixEventId <$> o Aeson..: "event_id")
 
 eventToIncomingMessage :: RoomEvent -> Maybe IncomingMessage
 eventToIncomingMessage =
@@ -770,13 +806,13 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event} = do
   pure IncomingMessage
     { platform = PlatformMatrix
     , kind = if roomIsDirect then ChatPrivate else ChatGroup
-    , chatId = Just (stableTextId roomId)
-    , chatAliases = [roomId]
+    , chatId = Just (stableTextId (matrixRoomIdText roomId))
+    , chatAliases = [matrixRoomIdText roomId]
     , digest = matrixMessageDigest cfg roomId event
     , senderId = Just event.sender
     , senderUsername = Just event.sender
-    , messageId = textMessageId <$> event.eventId
-    , replyToMessageId = textMessageId <$> event.content.replyToEventId
+    , messageId = matrixEventMessageId <$> event.eventId
+    , replyToMessageId = matrixEventMessageId <$> event.content.replyToEventId
     , mentions = []
     , mentionUsernames = matrixMentions cfg event.content body
     , imageUrls = []
@@ -804,7 +840,7 @@ matrixEventIgnoreReason cfg RoomEvent{roomId, event}
     eventSender = event.sender
 
     eventIdText :: Text
-    eventIdText = fromMaybe "<none>" event.eventId
+    eventIdText = maybe "<none>" matrixEventIdText event.eventId
 
     eventMsgtype :: Text
     eventMsgtype = fromMaybe "<none>" event.content.msgtype
@@ -813,7 +849,7 @@ matrixEventIgnoreReason cfg RoomEvent{roomId, event}
     context =
       [i|room=#{roomId} sender=#{eventSender} event_id=#{eventIdText} msgtype=#{eventMsgtype}|]
 
-matrixMessageDigest :: Config -> Text -> Event -> MessageDigest
+matrixMessageDigest :: Config -> MatrixRoomId -> Event -> MessageDigest
 matrixMessageDigest cfg roomId event =
   MessageDigest
     { chatIsAllowed = roomAllowed
@@ -824,7 +860,7 @@ matrixMessageDigest cfg roomId event =
     }
   where
     roomAllowed =
-      roomId `elem` cfg.allowedRooms
+      matrixRoomIdText roomId `elem` cfg.allowedRooms
     senderSuperuser =
       event.sender `elem` cfg.superusers
     eventText =
@@ -920,7 +956,7 @@ syncCall manager cfg since token = do
     )
     <&> responseBody
 
-joinedMemberCountCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Eff es Int
+joinedMemberCountCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Eff es Int
 joinedMemberCountCall manager cfg token roomId = do
   (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
   let options =
@@ -931,7 +967,7 @@ joinedMemberCountCall manager cfg token roomId = do
   response :: JoinedMembersResponse <- matrixReq "joined_members"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req GET
-          (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "joined_members")
+          (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "joined_members")
           NoReqBody
           jsonResponse
           options
@@ -939,8 +975,8 @@ joinedMemberCountCall manager cfg token roomId = do
     <&> responseBody
   pure (Map.size response.joinedMembers)
 
-sendMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Text -> Eff es SendMessageResponse
-sendMessageCall manager cfg token roomId body = do
+sendMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es SendMessageResponse
+sendMessageCall manager cfg token roomId replyRelation body = do
   (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
   let options =
@@ -950,11 +986,12 @@ sendMessageCall manager cfg token roomId body = do
       request = SendMessageRequest
         { msgtype = "m.text"
         , body = nonEmptyMatrixBody body
+        , replyRelation
         }
   logInfo_ "Matrix API request: send m.room.message"
   matrixReq "send m.room.message" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
-      (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)
+      (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson request)
       jsonResponse
       options)
@@ -1048,7 +1085,7 @@ nonEmptyMatrixBody body
   | otherwise = body
 
 data RoomEvent = RoomEvent
-  { roomId :: !Text
+  { roomId :: !MatrixRoomId
   , roomIsDirect :: !Bool
   , event :: !Event
   }
@@ -1155,7 +1192,7 @@ instance Aeson.FromJSON Timeline where
 data Event = Event
   { type_ :: !Text
   , sender :: !Text
-  , eventId :: !(Maybe Text)
+  , eventId :: !(Maybe MatrixEventId)
   , content :: !EventContent
   , raw :: !Aeson.Value
   }
@@ -1167,7 +1204,7 @@ instance Aeson.FromJSON Event where
       parse o = do
         type_ <- o Aeson..: "type"
         sender <- o Aeson..: "sender"
-        eventId <- o Aeson..:? "event_id"
+        eventId <- fmap matrixEventId <$> o Aeson..:? "event_id"
         content <- o Aeson..:? "content" Aeson..!= EventContent Nothing Nothing [] Nothing
         pure Event{type_, sender, eventId, content, raw = value}
 
@@ -1175,7 +1212,7 @@ data EventContent = EventContent
   { msgtype :: !(Maybe Text)
   , body :: !(Maybe Text)
   , mentions :: ![Text]
-  , replyToEventId :: !(Maybe Text)
+  , replyToEventId :: !(Maybe MatrixEventId)
   }
   deriving (Show, Generic)
 
@@ -1202,7 +1239,7 @@ instance Aeson.FromJSON MatrixMentions where
     MatrixMentions <$> o Aeson..:? "user_ids" Aeson..!= []
 
 newtype MatrixRelatesTo = MatrixRelatesTo
-  { inReplyToEventId :: Maybe Text
+  { inReplyToEventId :: Maybe MatrixEventId
   }
   deriving (Show, Generic)
 
@@ -1211,20 +1248,41 @@ instance Aeson.FromJSON MatrixRelatesTo where
     inReplyTo <- o Aeson..:? "m.in_reply_to" Aeson..!= MatrixInReplyTo Nothing
     pure (MatrixRelatesTo inReplyTo.replyEventId)
 
+instance Aeson.ToJSON MatrixRelatesTo where
+  toJSON MatrixRelatesTo{inReplyToEventId} =
+    Aeson.object
+      [ "m.in_reply_to" Aeson..= MatrixInReplyTo inReplyToEventId
+      ]
+
 newtype MatrixInReplyTo = MatrixInReplyTo
-  { replyEventId :: Maybe Text
+  { replyEventId :: Maybe MatrixEventId
   }
   deriving (Show, Generic)
 
 instance Aeson.FromJSON MatrixInReplyTo where
   parseJSON = Aeson.withObject "MatrixInReplyTo" \o ->
-    MatrixInReplyTo <$> o Aeson..:? "event_id"
+    MatrixInReplyTo . fmap matrixEventId <$> o Aeson..:? "event_id"
+
+instance Aeson.ToJSON MatrixInReplyTo where
+  toJSON MatrixInReplyTo{replyEventId} =
+    Aeson.object
+      [ "event_id" Aeson..= fmap matrixEventIdText replyEventId
+      ]
 
 data SendMessageRequest = SendMessageRequest
   { msgtype :: !Text
   , body :: !Text
+  , replyRelation :: !(Maybe MatrixReplyTo)
   }
-  deriving (Show, Generic, Aeson.ToJSON)
+  deriving (Show, Generic)
+
+instance Aeson.ToJSON SendMessageRequest where
+  toJSON SendMessageRequest{msgtype, body, replyRelation} =
+    Aeson.object $
+      [ "msgtype" Aeson..= msgtype
+      , "body" Aeson..= body
+      ]
+        <> maybe [] (\(MatrixReplyTo eventId) -> ["m.relates_to" Aeson..= MatrixRelatesTo (Just eventId)]) replyRelation
 
 newtype MatrixUploadResponse = MatrixUploadResponse
   { contentUri :: Text
@@ -1266,13 +1324,13 @@ data RedactEventRequest = RedactEventRequest
   deriving (Show, Generic, Aeson.ToJSON)
 
 newtype SendMessageResponse = SendMessageResponse
-  { eventId :: Text
+  { eventId :: MatrixEventId
   }
   deriving (Show, Generic)
 
 instance Aeson.FromJSON SendMessageResponse where
   parseJSON = Aeson.withObject "SendMessageResponse" \o ->
-    SendMessageResponse <$> o Aeson..: "event_id"
+    SendMessageResponse . matrixEventId <$> o Aeson..: "event_id"
 
 newtype RedactEventResponse = RedactEventResponse
   { redactionEventId :: Text
