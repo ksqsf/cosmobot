@@ -37,13 +37,16 @@ import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Char8 as ByteString
-import qualified Data.IORef as IORef
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Effectful.Concurrent.MVar as MVar
+import qualified Effectful.Prim.IORef as IORef
 import GHC.Clock (getMonotonicTimeNSec)
 import Network.HTTP.Client (Manager)
+import qualified Network.HTTP.Client as HTTP
 import Network.HTTP.Req
+import qualified Network.HTTP.Types.Status as HTTPStatus
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 import Effectful.FileSystem (FileSystem)
@@ -55,7 +58,9 @@ import qualified Text.URI as URI
 
 data Config = Config
   { homeserver :: !Text
-  , accessToken :: !(Maybe Text)
+  , loginUser :: !(Maybe Text)
+  , loginPassword :: !(Maybe Text)
+  , deviceId :: !(Maybe Text)
   , userId :: !(Maybe Text)
   , allowedRooms :: ![Text]
   , superusers :: ![Text]
@@ -119,47 +124,315 @@ deleteEvent roomId messageId eventId =
   send (DeleteEvent roomId messageId eventId)
 
 runMatrix
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es)
   => Config
   -> Eff (Matrix : es) a
   -> Eff es a
 runMatrix cfg inner = do
   manager <- liftIO Http.newTlsManager
-  eventIds <- liftIO (IORef.newIORef (Map.empty :: Map MessageId Text))
+  eventIds <- IORef.newIORef (Map.empty :: Map MessageId Text)
+  initialAuthState <- initialMatrixAuthState manager cfg
+  authState <- IORef.newIORef initialAuthState
+  refreshLock <- MVar.newMVar ()
+  let auth = MatrixAuth manager cfg authState refreshLock
   interpret
     ( \_ -> \case
         MatrixConfig ->
           pure cfg
         Sync since ->
-          traverse (syncCall manager cfg since) cfg.accessToken
+          withMaybeMatrixAccessToken auth \token ->
+            syncCall manager cfg since token
         SendText roomId body -> do
-          response <- traverse (\token -> sendMessageCall manager cfg token roomId body) cfg.accessToken
+          response <- withMaybeMatrixAccessToken auth \token ->
+            sendMessageCall manager cfg token roomId body
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         UploadMedia path fileName ->
-          maybe (throwIO (userError "Matrix access token is not configured.")) (uploadMediaCall manager cfg path fileName) cfg.accessToken
+          withMatrixAccessToken auth \token ->
+            uploadMediaCall manager cfg path fileName token
         SendFileMessage roomId message -> do
-          response <- traverse (\token -> sendFileMessageCall manager cfg token roomId message) cfg.accessToken
+          response <- withMaybeMatrixAccessToken auth \token ->
+            sendFileMessageCall manager cfg token roomId message
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         DeleteEvent roomId messageId knownEventId -> do
-          stored <- liftIO (IORef.readIORef eventIds)
+          stored <- IORef.readIORef eventIds
           case knownEventId <|> Map.lookup messageId stored of
             Nothing ->
               pure False
             Just eventId ->
-              maybe (pure False) (\token -> redactEventCall manager cfg token roomId eventId $> True) cfg.accessToken
+              fromMaybe False <$> withMaybeMatrixAccessToken auth \token ->
+                redactEventCall manager cfg token roomId eventId $> True
     )
     inner
 
-rememberMatrixEvent :: IOE :> es => IORef.IORef (Map MessageId Text) -> SendMessageResponse -> Eff es ()
+rememberMatrixEvent :: Prim :> es => IORef.IORef (Map MessageId Text) -> SendMessageResponse -> Eff es ()
 rememberMatrixEvent eventIds response =
-  liftIO $ IORef.modifyIORef' eventIds (Map.insert (textMessageId response.eventId) response.eventId)
+  IORef.modifyIORef' eventIds (Map.insert (textMessageId response.eventId) response.eventId)
+
+data MatrixAuth = MatrixAuth
+  { authManager :: !Manager
+  , authConfig :: !Config
+  , authState :: !(IORef.IORef MatrixAuthState)
+  , authRefreshLock :: !(MVar.MVar ())
+  }
+
+data MatrixAuthState = MatrixAuthState
+  { authAccessToken :: !(Maybe Text)
+  , authRefreshToken :: !(Maybe Text)
+  }
+  deriving (Show, Eq)
+
+instance Aeson.FromJSON MatrixAuthState where
+  parseJSON = Aeson.withObject "MatrixAuthState" \o ->
+    MatrixAuthState
+      <$> o Aeson..:? "access_token"
+      <*> o Aeson..:? "refresh_token"
+
+instance Aeson.ToJSON MatrixAuthState where
+  toJSON MatrixAuthState{authAccessToken, authRefreshToken} =
+    Aeson.object
+      [ "access_token" Aeson..= authAccessToken
+      , "refresh_token" Aeson..= authRefreshToken
+      ]
+
+initialMatrixAuthState :: (IOE :> es, Log :> es) => Manager -> Config -> Eff es MatrixAuthState
+initialMatrixAuthState manager cfg =
+  case (cfg.loginUser, cfg.loginPassword) of
+    (Just user, Just password) -> do
+      response <- loginCall manager cfg user password
+      pure MatrixAuthState
+        { authAccessToken = Just response.loginAccessToken
+        , authRefreshToken = response.loginRefreshToken
+        }
+    _ ->
+      pure MatrixAuthState{authAccessToken = Nothing, authRefreshToken = Nothing}
+
+withMaybeMatrixAccessToken
+  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es)
+  => MatrixAuth
+  -> (Text -> Eff es a)
+  -> Eff es (Maybe a)
+withMaybeMatrixAccessToken auth action = do
+  currentAuthState <- IORef.readIORef auth.authState
+  case (currentAuthState.authAccessToken, currentAuthState.authRefreshToken) of
+    (Nothing, Nothing) ->
+      pure Nothing
+    _ ->
+      Just <$> withMatrixAccessToken auth action
+
+withMatrixAccessToken
+  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es)
+  => MatrixAuth
+  -> (Text -> Eff es a)
+  -> Eff es a
+withMatrixAccessToken auth action = do
+  currentAuthState <- IORef.readIORef auth.authState
+  token <- case currentAuthState.authAccessToken of
+    Just accessToken ->
+      pure accessToken
+    Nothing ->
+      refreshMatrixAccessToken auth ""
+  action token `catch` \(err :: MatrixApiException) ->
+    if matrixAccessTokenExpired err
+      then do
+        refreshed <- refreshMatrixAccessToken auth token
+        action refreshed `catch` \(retryErr :: MatrixApiException) ->
+          throwIO (userError (Text.unpack (matrixApiExceptionMessage retryErr)))
+      else
+        throwIO (userError (Text.unpack (matrixApiExceptionMessage err)))
+
+refreshMatrixAccessToken
+  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es)
+  => MatrixAuth
+  -> Text
+  -> Eff es Text
+refreshMatrixAccessToken auth expiredToken =
+  MVar.withMVar auth.authRefreshLock \_ -> do
+    currentAuthState <- IORef.readIORef auth.authState
+    case currentAuthState.authAccessToken of
+      Just token | token /= expiredToken ->
+        pure token
+      _ ->
+        case currentAuthState.authRefreshToken of
+          Nothing ->
+            reloginMatrixAccessToken auth
+          Just refreshToken -> do
+            logInfo_ "Matrix access token expired; refreshing"
+            response <- refreshAccessTokenCall auth.authManager auth.authConfig refreshToken
+            let refreshedState = MatrixAuthState
+                  { authAccessToken = Just response.refreshedAccessToken
+                  , authRefreshToken = response.refreshedRefreshToken <|> currentAuthState.authRefreshToken
+                  }
+            IORef.writeIORef auth.authState refreshedState
+            pure response.refreshedAccessToken
+
+reloginMatrixAccessToken
+  :: (IOE :> es, Log :> es, Prim :> es)
+  => MatrixAuth
+  -> Eff es Text
+reloginMatrixAccessToken auth =
+  case (auth.authConfig.loginUser, auth.authConfig.loginPassword) of
+    (Just user, Just password) -> do
+      logInfo_ "Matrix access token expired and no refresh token is available; logging in again"
+      response <- loginCall auth.authManager auth.authConfig user password
+      let refreshedState = MatrixAuthState
+            { authAccessToken = Just response.loginAccessToken
+            , authRefreshToken = response.loginRefreshToken
+            }
+      IORef.writeIORef auth.authState refreshedState
+      pure response.loginAccessToken
+    _ ->
+      throwIO (userError "Matrix access token expired and no refresh token or login credentials are configured.")
+
+matrixAccessTokenExpired :: MatrixApiException -> Bool
+matrixAccessTokenExpired = \case
+  MatrixApiException _ status err ->
+    HTTPStatus.statusCode status == 401 && err.errcode == "M_UNKNOWN_TOKEN"
+  MatrixTransportException{} ->
+    False
+
+data MatrixApiException
+  = MatrixApiException !Text !HTTPStatus.Status !MatrixErrorResponse
+  | MatrixTransportException !Text !Text
+  deriving (Show, Eq)
+
+instance Exception MatrixApiException where
+  displayException =
+    Text.unpack . matrixApiExceptionMessage
+
+matrixApiExceptionMessage :: MatrixApiException -> Text
+matrixApiExceptionMessage = \case
+  MatrixApiException method status err ->
+    [i|Matrix API request failed (#{method}): HTTP #{HTTPStatus.statusCode status} #{matrixErrorResponseText err}|]
+  MatrixTransportException method message ->
+    [i|Matrix API request failed (#{method}): #{message}|]
+
+matrixErrorResponseText :: MatrixErrorResponse -> Text
+matrixErrorResponseText err =
+  Text.intercalate "; " $
+    [ err.errcode <> maybe "" (": " <>) err.matrixError
+    ]
+      <> maybe [] (\retry -> [[i|retry_after_ms=#{retry}|]]) err.retryAfterMs
+      <> if err.softLogout then ["soft_logout=true"] else []
+
+matrixApiException :: Text -> HttpException -> MatrixApiException
+matrixApiException method = \case
+  VanillaHttpException (HTTP.HttpExceptionRequest _ (HTTP.StatusCodeException response body)) ->
+    case Aeson.eitherDecodeStrict body of
+      Right err ->
+        MatrixApiException method (HTTP.responseStatus response) err
+      Left parseErr ->
+        MatrixTransportException method [i|HTTP #{HTTPStatus.statusCode (HTTP.responseStatus response)} with non-Matrix error body: #{parseErr}|]
+  VanillaHttpException (HTTP.HttpExceptionRequest _ content) ->
+    MatrixTransportException method [i|HTTP transport error: #{show content :: String}|]
+  VanillaHttpException err ->
+    MatrixTransportException method [i|HTTP error: #{show err :: String}|]
+  JsonHttpException message ->
+    MatrixTransportException method [i|JSON error: #{message}|]
+
+matrixReq :: IOE :> es => Text -> IO a -> Eff es a
+matrixReq method action =
+  liftIO action `catch` \(err :: HttpException) ->
+    throwIO (matrixApiException method err)
+
+newtype MatrixRefreshRequest = MatrixRefreshRequest
+  { requestRefreshToken :: Text
+  }
+
+instance Aeson.ToJSON MatrixRefreshRequest where
+  toJSON MatrixRefreshRequest{requestRefreshToken} =
+    Aeson.object
+      [ "refresh_token" Aeson..= requestRefreshToken
+      ]
+
+data MatrixRefreshResponse = MatrixRefreshResponse
+  { refreshedAccessToken :: !Text
+  , refreshedRefreshToken :: !(Maybe Text)
+  , refreshedExpiresInMs :: !(Maybe Integer)
+  }
+  deriving (Show, Eq)
+
+instance Aeson.FromJSON MatrixRefreshResponse where
+  parseJSON = Aeson.withObject "MatrixRefreshResponse" \o ->
+    MatrixRefreshResponse
+      <$> o Aeson..: "access_token"
+      <*> o Aeson..:? "refresh_token"
+      <*> o Aeson..:? "expires_in_ms"
+
+data MatrixErrorResponse = MatrixErrorResponse
+  { errcode :: !Text
+  , matrixError :: !(Maybe Text)
+  , retryAfterMs :: !(Maybe Integer)
+  , softLogout :: !Bool
+  }
+  deriving (Show, Eq)
+
+instance Aeson.FromJSON MatrixErrorResponse where
+  parseJSON = Aeson.withObject "MatrixErrorResponse" \o ->
+    MatrixErrorResponse
+      <$> o Aeson..: "errcode"
+      <*> o Aeson..:? "error"
+      <*> o Aeson..:? "retry_after_ms"
+      <*> o Aeson..:? "soft_logout" Aeson..!= False
+
+data MatrixLoginIdentifier = MatrixLoginIdentifier
+  { loginIdentifierType :: !Text
+  , loginIdentifierUser :: !Text
+  }
+
+instance Aeson.ToJSON MatrixLoginIdentifier where
+  toJSON MatrixLoginIdentifier{loginIdentifierType, loginIdentifierUser} =
+    Aeson.object
+      [ "type" Aeson..= loginIdentifierType
+      , "user" Aeson..= loginIdentifierUser
+      ]
+
+data MatrixLoginRequest = MatrixLoginRequest
+  { loginIdentifier :: !MatrixLoginIdentifier
+  , loginPassword :: !Text
+  , loginDeviceId :: !(Maybe Text)
+  , loginInitialDeviceDisplayName :: !(Maybe Text)
+  , loginRefreshToken :: !Bool
+  }
+
+instance Aeson.ToJSON MatrixLoginRequest where
+  toJSON MatrixLoginRequest{loginIdentifier, loginPassword, loginDeviceId, loginInitialDeviceDisplayName, loginRefreshToken} =
+    Aeson.object
+      [ "type" Aeson..= ("m.login.password" :: Text)
+      , "identifier" Aeson..= loginIdentifier
+      , "password" Aeson..= loginPassword
+      , "device_id" Aeson..= loginDeviceId
+      , "initial_device_display_name" Aeson..= loginInitialDeviceDisplayName
+      , "refresh_token" Aeson..= loginRefreshToken
+      ]
+
+data MatrixLoginResponse = MatrixLoginResponse
+  { loginUserId :: !Text
+  , loginDeviceId :: !(Maybe Text)
+  , loginAccessToken :: !Text
+  , loginRefreshToken :: !(Maybe Text)
+  , loginExpiresInMs :: !(Maybe Integer)
+  }
+  deriving (Show, Eq)
+
+instance Aeson.FromJSON MatrixLoginResponse where
+  parseJSON = Aeson.withObject "MatrixLoginResponse" \o ->
+    MatrixLoginResponse
+      <$> o Aeson..: "user_id"
+      <*> o Aeson..:? "device_id"
+      <*> o Aeson..: "access_token"
+      <*> o Aeson..:? "refresh_token"
+      <*> o Aeson..:? "expires_in_ms"
 
 incomingMessages :: (Matrix :> es, Log :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
   cfg <- S.lift matrixConfig
-  unless (isNothing cfg.accessToken) (syncLoop cfg Nothing)
+  if matrixAuthConfigured cfg
+    then do
+      S.lift $ logInfo_ [i|Matrix sync starting: auth=#{matrixAuthMode cfg}|]
+      syncLoop cfg Nothing
+    else S.lift $ logInfo_ "Matrix driver disabled: no access token, refresh token, or login credentials configured"
   where
     syncLoop cfg since = do
       result <- S.lift $ sync since `catchSync` \err -> do
@@ -175,8 +448,9 @@ incomingMessages = do
           for_ events \event ->
             case eventToIncomingMessageWith cfg event of
               Nothing -> do
-                S.lift $ logTrace_ "Ignoring Matrix event"
-                S.lift $ logInfo_ "Ignoring Matrix event"
+                let reason = matrixEventIgnoreReason cfg event
+                S.lift $ logTrace_ ("Ignoring Matrix event: " <> reason)
+                S.lift $ logInfo_ ("Ignoring Matrix event: " <> reason)
               Just message -> do
                 S.lift $ logTrace "incoming Matrix message" message
                 S.lift $ logInfo_ [i|incoming Matrix message: #{incomingMessageLogLine message}|]
@@ -189,6 +463,15 @@ syncEvents response =
   | (roomId, room) <- Map.toList response.rooms.join
   , event <- room.timeline.events
   ]
+
+matrixAuthConfigured :: Config -> Bool
+matrixAuthConfigured cfg =
+  isJust cfg.loginUser && isJust cfg.loginPassword
+
+matrixAuthMode :: Config -> Text
+matrixAuthMode cfg
+  | isJust cfg.loginUser && isJust cfg.loginPassword = "login"
+  | otherwise = "none"
 
 replyTo :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
@@ -401,6 +684,35 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, event} = do
     , raw = event.raw
     }
 
+matrixEventIgnoreReason :: Config -> RoomEvent -> Text
+matrixEventIgnoreReason cfg RoomEvent{roomId, event}
+  | eventType /= "m.room.message" =
+      [i|unsupported event type #{eventType}; #{context}|]
+  | isOwnEvent cfg event =
+      [i|own event; #{context}|]
+  | isNothing event.content.body =
+      [i|missing content.body; #{context}|]
+  | Text.null (Text.strip (fromMaybe "" event.content.body)) =
+      [i|blank content.body; #{context}|]
+  | otherwise =
+      [i|unknown reason; #{context}|]
+  where
+    eventType :: Text
+    eventType = event.type_
+
+    eventSender :: Text
+    eventSender = event.sender
+
+    eventIdText :: Text
+    eventIdText = fromMaybe "<none>" event.eventId
+
+    eventMsgtype :: Text
+    eventMsgtype = fromMaybe "<none>" event.content.msgtype
+
+    context :: Text
+    context =
+      [i|room=#{roomId} sender=#{eventSender} event_id=#{eventIdText} msgtype=#{eventMsgtype}|]
+
 matrixMessageDigest :: Config -> Text -> Event -> MessageDigest
 matrixMessageDigest cfg roomId event =
   MessageDigest
@@ -436,11 +748,58 @@ isOwnEvent cfg event =
 defaultConfig :: Config
 defaultConfig = Config
   { homeserver = "https://matrix.org"
-  , accessToken = Nothing
+  , loginUser = Nothing
+  , loginPassword = Nothing
+  , deviceId = Nothing
   , userId = Nothing
   , allowedRooms = []
   , superusers = []
   }
+
+loginCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixLoginResponse
+loginCall manager cfg user password = do
+  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+  let options =
+        baseOptions
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+      request = MatrixLoginRequest
+        { loginIdentifier = MatrixLoginIdentifier
+            { loginIdentifierType = "m.id.user"
+            , loginIdentifierUser = user
+            }
+        , loginPassword = password
+        , loginDeviceId = cfg.deviceId
+        , loginInitialDeviceDisplayName = Just "cosmobot"
+        , loginRefreshToken = True
+        }
+  logInfo_ "Matrix API request: login"
+  matrixReq "login"
+    ( Http.runReqWithConfig (matrixHttpConfig manager) $
+        req POST
+          (baseUrl /: "_matrix" /: "client" /: "v3" /: "login")
+          (ReqBodyJson request)
+          jsonResponse
+          options
+    )
+    <&> responseBody
+
+refreshAccessTokenCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Eff es MatrixRefreshResponse
+refreshAccessTokenCall manager cfg refreshToken = do
+  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+  let options =
+        baseOptions
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+      request = MatrixRefreshRequest refreshToken
+  logInfo_ "Matrix API request: refresh access token"
+  matrixReq "refresh"
+    ( Http.runReqWithConfig (matrixHttpConfig manager) $
+        req POST
+          (baseUrl /: "_matrix" /: "client" /: "v3" /: "refresh")
+          (ReqBodyJson request)
+          jsonResponse
+          options
+    )
+    <&> responseBody
 
 syncCall :: (IOE :> es, Log :> es) => Manager -> Config -> Maybe Text -> Text -> Eff es SyncResponse
 syncCall manager cfg since token = do
@@ -451,7 +810,10 @@ syncCall manager cfg since token = do
           <> responseTimeout matrixSyncResponseTimeoutMicroseconds
           <> "timeout" =: matrixSyncTimeoutMilliseconds
           <> maybe mempty ("since" =:) since
-  liftIO
+  let sinceLabel :: Text
+      sinceLabel = maybe "<initial>" (const "<next_batch>") since
+  logInfo_ [i|Matrix API request: sync since=#{sinceLabel}|]
+  matrixReq "sync"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req GET (baseUrl /: "_matrix" /: "client" /: "v3" /: "sync") NoReqBody jsonResponse options
     )
@@ -470,7 +832,7 @@ sendMessageCall manager cfg token roomId body = do
         , body = nonEmptyMatrixBody body
         }
   logInfo_ "Matrix API request: send m.room.message"
-  liftIO (Http.runReqWithConfig (matrixHttpConfig manager) $
+  matrixReq "send m.room.message" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson request)
@@ -488,7 +850,7 @@ uploadMediaCall manager cfg path fileName token = do
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
           <> "filename" =: fileName
   logInfo_ "Matrix API request: upload media"
-  liftIO (Http.runReqWithConfig (matrixHttpConfig manager) $
+  matrixReq "upload media" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req POST
       (baseUrl /: "_matrix" /: "media" /: "v3" /: "upload")
       (ReqBodyFile path)
@@ -505,7 +867,7 @@ sendFileMessageCall manager cfg token roomId message = do
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
   logInfo_ "Matrix API request: send m.file"
-  liftIO (Http.runReqWithConfig (matrixHttpConfig manager) $
+  matrixReq "send m.file" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson message)
@@ -523,7 +885,7 @@ redactEventCall manager cfg token roomId eventId = do
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
       request = RedactEventRequest{reason = Nothing}
   logInfo_ "Matrix API request: redact event"
-  liftIO (Http.runReqWithConfig (matrixHttpConfig manager) $
+  matrixReq "redact event" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "redact" /: eventId /: txnId)
       (ReqBodyJson request)

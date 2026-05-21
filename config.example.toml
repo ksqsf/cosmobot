@@ -22,7 +22,9 @@ allowed_chats = []
 
 [driver.matrix]
 homeserver = "https://matrix.org"
-access_token = ""
+login_user = ""
+login_password = ""
+device_id = "cosmobot"
 bot_id = "@bot:matrix.org"
 superusers = []
 allowed_rooms = []

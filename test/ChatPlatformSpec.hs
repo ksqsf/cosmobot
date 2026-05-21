@@ -260,7 +260,9 @@ testMatrixSuperuserIsMarkedInDigest :: IO ()
 testMatrixSuperuserIsMarkedInDigest = do
   let cfg = Matrix.Config
         { Matrix.homeserver = "https://matrix.example.org"
-        , Matrix.accessToken = Nothing
+        , Matrix.loginUser = Nothing
+        , Matrix.loginPassword = Nothing
+        , Matrix.deviceId = Nothing
         , Matrix.userId = Just "@bot:example.org"
         , Matrix.allowedRooms = ["!room:example.org"]
         , Matrix.superusers = ["@alice:example.org"]

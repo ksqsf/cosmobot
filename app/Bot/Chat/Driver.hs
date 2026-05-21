@@ -201,7 +201,7 @@ setPlatformMemberTitle message userId title =
     Just <$> driver.setMemberTitle message userId title
 
 runChatDrivers
-  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, FileSystem :> es, IOE :> es)
+  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, FileSystem :> es, Prim :> es, IOE :> es)
   => QQ.Config
   -> Telegram.Config
   -> Matrix.Config
