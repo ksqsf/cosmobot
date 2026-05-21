@@ -37,6 +37,7 @@ import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Util.HTTP as Http
 import Commonmark
+import Commonmark.Extensions
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as Aeson
@@ -1580,11 +1581,18 @@ matrixFormattedBodyFields = \case
 
 formatMatrixMarkdown :: Text -> Maybe Text
 formatMatrixMarkdown input =
-  case commonmark "matrix-message" input :: Either ParseError (Html ()) of
+  case runIdentity (commonmarkWith matrixMarkdownSyntax "matrix-message" input) :: Either ParseError (Html ()) of
     Left _ ->
       Nothing
     Right html ->
       nonEmptyText (Text.strip (LazyText.toStrict (renderHtml html)))
+
+matrixMarkdownSyntax :: SyntaxSpec Identity (Html ()) (Html ())
+matrixMarkdownSyntax =
+  gfmExtensions
+    <> mathSpec
+    <> footnoteSpec
+    <> defaultSyntaxSpec
 
 data RedactEventRequest = RedactEventRequest
   { reason :: Maybe Text

@@ -7,6 +7,7 @@ import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.ByteString.Char8 as ByteStringChar8
+import qualified Data.Text as Text
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -271,7 +272,43 @@ testMatrixDirectRoomConvertsToPrivateMessage = do
 
 testMatrixMarkdownRendersCustomHtml :: IO ()
 testMatrixMarkdownRendersCustomHtml =
-  Matrix.formatMatrixMarkdown "**hi** and `code`" @?= Just "<p><strong>hi</strong> and <code>code</code></p>"
+  Matrix.formatMatrixMarkdown markdown @?= Just expected
+  where
+    markdown =
+      Text.unlines
+        [ "**hi** and `code`"
+        , ""
+        , "~~old~~"
+        , ""
+        , "- [x] done"
+        , ""
+        , "| a | b |"
+        , "| - | - |"
+        , "| 1 | 2 |"
+        ]
+    expected =
+      Text.intercalate "\n"
+        [ "<p><strong>hi</strong> and <code>code</code></p>"
+        , "<p><del>old</del></p>"
+        , "<ul class=\"task-list\">"
+        , "<li><input type=\"checkbox\" disabled=\"\" checked=\"\" />done"
+        , "</li>"
+        , "</ul>"
+        , "<table>"
+        , "<thead>"
+        , "<tr>"
+        , "<th>a</th>"
+        , "<th>b</th>"
+        , "</tr>"
+        , "</thead>"
+        , "<tbody>"
+        , "<tr>"
+        , "<td>1</td>"
+        , "<td>2</td>"
+        , "</tr>"
+        , "</tbody>"
+        , "</table>"
+        ]
 
 testMatrixReplyRelationConvertsToReplyMessageId :: IO ()
 testMatrixReplyRelationConvertsToReplyMessageId = do
