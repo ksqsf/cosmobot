@@ -23,6 +23,7 @@ module Bot.Chat.Driver.Matrix
   , replyTo
   , replyAudio
   , uploadFile
+  , editMessage
   , deleteMessage
   )
 where
@@ -117,9 +118,9 @@ matrixDriver = Driver.ChatPlatformDriver
   , Driver.replyTo = replyTo
   , Driver.replyAudio = replyAudio
   , Driver.uploadFile = uploadFile
-  , Driver.editMessage = \_ _ _ -> pure False
+  , Driver.editMessage = editMessage
   , Driver.deleteMessage = deleteMessage
-  , Driver.replyStreamStyle = \_ -> pure (Chat.ChunkedReply matrixStreamingMessageLimit)
+  , Driver.replyStreamStyle = \_ -> pure (Chat.EditableReply matrixEditChunkChars matrixStreamingMessageLimit)
   , Driver.getMessageContent = \_ _ -> pure Nothing
   , Driver.getSenderMemberInfo = \_ -> pure Nothing
   , Driver.getMemberInfo = \_ _ -> pure Nothing
@@ -132,6 +133,9 @@ matrixDriver = Driver.ChatPlatformDriver
 matrixStreamingMessageLimit :: Int
 matrixStreamingMessageLimit = 4000
 
+matrixEditChunkChars :: Int
+matrixEditChunkChars = 512
+
 data Matrix :: Effect where
   MatrixConfig :: Matrix m Config
   LoadSyncToken :: Matrix m (Maybe Text)
@@ -143,6 +147,7 @@ data Matrix :: Effect where
   SendText :: MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Matrix m (Maybe SendMessageResponse)
   UploadMedia :: FilePath -> Text -> Text -> Matrix m MatrixUploadResponse
   SendFileMessage :: Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Matrix m (Maybe SendMessageResponse)
+  EditText :: MatrixRoomId -> MatrixEventId -> Text -> Matrix m (Maybe SendMessageResponse)
   DeleteEvent :: Text -> MessageId -> Maybe MatrixEventId -> Matrix m Bool
 
 type instance DispatchOf Matrix = Dynamic
@@ -185,6 +190,10 @@ uploadMedia path fileName mime =
 sendFileMessage :: Matrix :> es => Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es (Maybe SendMessageResponse)
 sendFileMessage roomId replyRelation message =
   send (SendFileMessage roomId replyRelation message)
+
+editText :: Matrix :> es => MatrixRoomId -> MatrixEventId -> Text -> Eff es (Maybe SendMessageResponse)
+editText roomId eventId body =
+  send (EditText roomId eventId body)
 
 deleteEvent :: Matrix :> es => Text -> MessageId -> Maybe MatrixEventId -> Eff es Bool
 deleteEvent roomId messageId eventId =
@@ -237,6 +246,11 @@ runMatrix cfg inner = do
         SendFileMessage roomId replyRelation message -> do
           response <- withMaybeMatrixAccessToken auth \token ->
             sendFileMessageCall manager cfg token roomId replyRelation message
+          traverse_ (rememberMatrixEvent eventIds) response
+          pure response
+        EditText roomId eventId body -> do
+          response <- withMaybeMatrixAccessToken auth \token ->
+            editMessageCall manager cfg token roomId eventId body
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         DeleteEvent roomId messageId knownEventId -> do
@@ -930,6 +944,14 @@ nonEmptyText text =
   let stripped = Text.strip text
   in if Text.null stripped then Nothing else Just stripped
 
+editMessage :: Matrix :> es => IncomingMessage -> MessageId -> Text -> Eff es Bool
+editMessage message messageId body =
+  case (message.platform, viaNonEmpty head message.chatAliases) of
+    (PlatformMatrix, Just roomId) -> do
+      response <- editText (matrixRoomId roomId) (matrixEventId (messageIdText messageId)) body
+      pure (isJust response)
+    _ ->
+      pure False
 
 deleteMessage :: Matrix :> es => IncomingMessage -> MessageId -> Eff es Bool
 deleteMessage message messageId =
@@ -1145,6 +1167,27 @@ sendMessageCall manager cfg token roomId replyRelation body = do
         }
   logInfo_ "Matrix API request: send m.room.message"
   matrixReq "send m.room.message" (Http.runReqWithConfig (matrixHttpConfig manager) $
+    req PUT
+      (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "send" /: "m.room.message" /: txnId)
+      (ReqBodyJson request)
+      jsonResponse
+      options)
+    <&> responseBody
+
+editMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> MatrixEventId -> Text -> Eff es SendMessageResponse
+editMessageCall manager cfg token roomId eventId body = do
+  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+  txnId <- liftIO (show <$> getMonotonicTimeNSec)
+  let options =
+        baseOptions
+          <> matrixAuth token
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+      request = MatrixEditMessageRequest
+        { body = nonEmptyMatrixBody body
+        , replacesEventId = eventId
+        }
+  logInfo_ "Matrix API request: edit m.room.message"
+  matrixReq "edit m.room.message" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson request)
@@ -1493,6 +1536,27 @@ instance Aeson.ToJSON MatrixFileMessageRequest where
     where
       relationFields =
         maybe [] (\(MatrixReplyTo eventId) -> [("m.relates_to", Aeson.toJSON (MatrixRelatesTo (Just eventId)))]) replyRelation
+
+data MatrixEditMessageRequest = MatrixEditMessageRequest
+  { body :: !Text
+  , replacesEventId :: !MatrixEventId
+  }
+  deriving (Show, Generic)
+
+instance Aeson.ToJSON MatrixEditMessageRequest where
+  toJSON MatrixEditMessageRequest{body, replacesEventId} =
+    Aeson.object
+      [ "msgtype" Aeson..= ("m.text" :: Text)
+      , "body" Aeson..= ("* " <> body)
+      , "m.new_content" Aeson..= Aeson.object
+          [ "msgtype" Aeson..= ("m.text" :: Text)
+          , "body" Aeson..= body
+          ]
+      , "m.relates_to" Aeson..= Aeson.object
+          [ "rel_type" Aeson..= ("m.replace" :: Text)
+          , "event_id" Aeson..= matrixEventIdText replacesEventId
+          ]
+      ]
 
 data RedactEventRequest = RedactEventRequest
   { reason :: Maybe Text
