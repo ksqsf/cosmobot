@@ -197,7 +197,10 @@ startAskConversation
 startAskConversation label toolCfg cfg conversations message prompt = do
   logTrace label message
   logInfo_ [i|#{label}: #{incomingMessageLogLine message}|]
-  input <- inputFromMessageContext message prompt
+  referenced <- fetchReferencedMessage message
+  let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
+  let contextPrompt = promptWithReferencedContext prompt referenced contextImages
+  let input = inputWithImages contextPrompt contextImages
   conversation <- startConversation cfg message input
   threadId <- myThreadId
   void $ askConversation toolCfg cfg conversations Nothing threadId message input conversation
@@ -214,7 +217,10 @@ startDrawConversation
 startDrawConversation label cfg conversations message prompt = do
   logTrace label message
   logInfo_ [i|#{label}: #{incomingMessageLogLine message}|]
-  input <- inputFromMessageContext message prompt
+  referenced <- fetchReferencedMessage message
+  let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
+  let contextPrompt = promptWithReferencedContext prompt referenced contextImages
+  let input = inputWithImages contextPrompt contextImages
   conversation <- startConversation cfg message input
   answer <- drawConversation conversation
   responseId <- Chat.replyTo message answer
@@ -239,8 +245,11 @@ startConversationFromReply
 startConversationFromReply toolCfg cfg conversations message parentId = do
   logTrace "starting conversation from mentioned reply" message
   logInfo_ [i|starting conversation from mentioned reply: #{incomingMessageLogLine message}|]
-  input <- inputFromReplyContext message parentId
-  unless (Text.null input.text && null (messageInputImageUrls input)) do
+  referenced <- Chat.getMessageContent message parentId
+  let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
+  let prompt = promptWithReferencedContext message.text referenced contextImages
+  unless (Text.null prompt && null contextImages) do
+    let input = inputWithImages prompt contextImages
     conversation <- startConversation cfg message input
     threadId <- myThreadId
     void $ askConversation toolCfg cfg conversations (Just (conversationMessageKey message parentId)) threadId message input conversation
@@ -257,7 +266,7 @@ continueConversation
 continueConversation toolCfg cfg conversations message parentKey conversation = do
   logTrace "continuing conversation" message
   logInfo_ [i|continuing conversation: #{incomingMessageLogLine message}|]
-  input <- continuedMessageInput message conversation
+  let input = inputWithImages (promptOrImageDefault message.text message.imageUrls) message.imageUrls
   let nextConversation =
         appendUserInput input conversation
   threadId <- myThreadId
@@ -531,38 +540,6 @@ loadScopedMemory :: Memory.Memory :> es => Either Text MemoryStore.MemoryScope -
 loadScopedMemory =
   either (const (pure Nothing)) Memory.loadMemory
 
-inputFromMessageContext :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es MessageInput
-inputFromMessageContext message prompt = do
-  referenced <- fetchReferencedMessage message
-  pure (messageInputWithReferencedContext prompt referenced message.imageUrls)
-
-inputFromReplyContext :: Chat.Chat :> es => IncomingMessage -> MessageId -> Eff es MessageInput
-inputFromReplyContext message parentId = do
-  referenced <- Chat.getMessageContent message parentId
-  pure (messageInputWithReferencedContext message.text referenced message.imageUrls)
-
-continuedMessageInput :: Chat.Chat :> es => IncomingMessage -> Conversation -> Eff es MessageInput
-continuedMessageInput message conversation = do
-  referenced <- fetchReferencedMessage message
-  let directImages = referencedImageUrls referenced <> message.imageUrls
-      imageUrls =
-        if null directImages
-          then latestConversationImageUrls conversation
-          else directImages
-  pure (messageInputWithImages message.text referenced imageUrls)
-
-messageInputWithReferencedContext :: Text -> Maybe ReferencedMessage -> [Text] -> MessageInput
-messageInputWithReferencedContext prompt referenced currentImages =
-  messageInputWithImages prompt referenced (referencedImageUrls referenced <> currentImages)
-
-messageInputWithImages :: Text -> Maybe ReferencedMessage -> [Text] -> MessageInput
-messageInputWithImages prompt referenced imageUrls =
-  inputWithImages (promptWithReferencedContext prompt referenced imageUrls) imageUrls
-
-referencedImageUrls :: Maybe ReferencedMessage -> [Text]
-referencedImageUrls =
-  maybe [] (.imageUrls)
-
 promptWithReferencedContext :: Text -> Maybe ReferencedMessage -> [Text] -> Text
 promptWithReferencedContext prompt referenced imageUrls =
   case (promptOrImageDefault prompt imageUrls, referenced >>= referencedMessageContext) of
@@ -600,18 +577,3 @@ referencedSenderLine referenced =
 referencedTextLines :: ReferencedMessage -> [Text]
 referencedTextLines referenced =
   [ text | let text = Text.strip referenced.text, not (Text.null text) ]
-
-latestConversationImageUrls :: Conversation -> [Text]
-latestConversationImageUrls (Conversation messages) =
-  fromMaybe [] (viaNonEmpty last imageContexts)
-  where
-    imageContexts =
-      [ [ url | LLM.ImageUrlPart url <- parts ]
-      | message <- Foldable.toList messages
-      , message.role == "user"
-      , Just (LLM.PartsContent parts) <- [message.content]
-      , any isImageUrlPart parts
-      ]
-    isImageUrlPart = \case
-      LLM.ImageUrlPart{} -> True
-      _ -> False
