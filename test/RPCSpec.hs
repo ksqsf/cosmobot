@@ -338,7 +338,7 @@ testHttpServerServesStaticFallbackAndProtectsAttachmentRoute = do
       HTTP.responseStatus root @?= Http.status200
       assertBool
         "expected fallback web/index.html"
-        ("<title>cosmobot web</title>" `ByteStringChar8.isInfixOf` LazyByteString.toStrict (HTTP.responseBody root))
+        ("<title>cosmobot</title>" `ByteStringChar8.isInfixOf` LazyByteString.toStrict (HTTP.responseBody root))
       HTTP.responseStatus attachmentWithoutToken @?= Http.status401
       HTTP.responseStatus attachmentWithToken @?= Http.status501
       response @?=
