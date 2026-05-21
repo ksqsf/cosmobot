@@ -37,8 +37,8 @@ import Bot.Chat.Driver.Types
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.RPC.Protocol as Protocol
-import qualified Bot.RPC.Storage as Storage
 import qualified Bot.Effect.Storage as StorageEffect
+import qualified Bot.Storage.RPC as Storage
 import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
@@ -177,7 +177,7 @@ deleteChatSession :: StorageEffect.Storage :> es => RpcSessionId -> Eff es Bool
 deleteChatSession sessionId =
   Storage.deleteSession sessionId.unRpcSessionId
 
-enqueueChatMessage :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> RpcChatSend -> Eff es IncomingMessage
+enqueueChatMessage :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> RpcChatSend -> Eff es (Maybe IncomingMessage)
 enqueueChatMessage rpcState chatSend = do
   stored <- Storage.appendMessage
     chatSend.sessionId.unRpcSessionId
@@ -186,12 +186,16 @@ enqueueChatMessage rpcState chatSend = do
     chatSend.imageUrls
     chatSend.replyToMessageId
     chatSend.replyToMessageId
-  rememberMessageNumber rpcState stored.messageId
-  let message = rpcIncomingMessage chatSend stored.messageId
-      chatMessage = storedMessageToRpc stored
-  STM.atomically (STM.writeTChan rpcState.inbound message)
-  broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" chatMessage))
-  pure message
+  case stored of
+    Nothing ->
+      pure Nothing
+    Just messageRow -> do
+      rememberMessageNumber rpcState messageRow.messageId
+      let message = rpcIncomingMessage chatSend messageRow.messageId
+          chatMessage = storedMessageToRpc messageRow
+      STM.atomically (STM.writeTChan rpcState.inbound message)
+      broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" chatMessage))
+      pure (Just message)
 
 incomingMessages :: Concurrent :> es => RpcState -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages rpcState = forever do
@@ -213,9 +217,13 @@ rpcChatDriver rpcState = driver
             []
             parentMessageId
             parentMessageId
-          rememberMessageNumber rpcState stored.messageId
-          broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" (storedMessageToRpc stored)))
-          pure (Just stored.messageId)
+          case stored of
+            Nothing ->
+              pure Nothing
+            Just storedReply -> do
+              rememberMessageNumber rpcState storedReply.messageId
+              broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" (storedMessageToRpc storedReply)))
+              pure (Just storedReply.messageId)
       , replyAudio = \message audioRef caption -> do
           let body = maybe audioRef (\c -> c <> "\n" <> audioRef) caption
           Right <$> driver.replyTo message body

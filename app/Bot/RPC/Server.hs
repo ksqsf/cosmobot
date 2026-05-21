@@ -331,13 +331,16 @@ dispatchChatSend rpcState request =
       pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
     Right chatSend -> do
       message <- State.enqueueChatMessage rpcState chatSend
-      let IncomingMessage{messageId} = message
-      pure $
-        Protocol.successResponse (Protocol.requestId request) $
-          Aeson.object
-            [ "sessionId" Aeson..= rpcSessionIdText chatSend.sessionId
-            , "messageId" Aeson..= messageId
-            ]
+      case message of
+        Nothing ->
+          pure (Protocol.errorResponse (Protocol.requestId request) "not_found" "Session not found")
+        Just IncomingMessage{messageId} ->
+          pure $
+            Protocol.successResponse (Protocol.requestId request) $
+              Aeson.object
+                [ "sessionId" Aeson..= rpcSessionIdText chatSend.sessionId
+                , "messageId" Aeson..= messageId
+                ]
 
 dispatchAudit
   :: RpcServerCallbacks es

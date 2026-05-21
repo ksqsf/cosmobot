@@ -137,9 +137,9 @@ common bot-chat-driver-modules
         Bot.Effect.Storage
         Bot.RPC.Protocol
         Bot.RPC.State
-        Bot.RPC.Storage
         Bot.Storage.Matrix
         Bot.Storage.Prelude
+        Bot.Storage.RPC
         Bot.Util.HTTP
         Bot.Util.Multipart
 
@@ -378,8 +378,8 @@ test-suite rpc-spec
         Bot.RPC.Protocol
         Bot.RPC.Server
         Bot.RPC.State
-        Bot.RPC.Storage
         Bot.Storage.Prelude
+        Bot.Storage.RPC
         Bot.Storage.SQLite
     build-depends:    log-base
                     , network

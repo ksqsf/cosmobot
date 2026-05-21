@@ -40,11 +40,13 @@ main =
       , testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "chat.open_session returns generated session id" testOpenSessionReturnsGeneratedSessionId
       , testCase "chat.send constructs PlatformRPC incoming message" testChatSendConstructsIncomingMessage
+      , testCase "chat.send rejects missing sessions without persisting orphan messages" testChatSendRejectsMissingSession
       , testCase "chat.send broadcasts user chat notification" testChatSendBroadcastsNotification
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
       , testCase "chat.fork stores immutable parent link and inherited history" testChatForkStoresParentLink
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
+      , testCase "chat.delete_session cascades fork descendants" testDeleteSessionCascadesForkDescendants
       , testCase "websocket server authenticates and handles JSON-RPC requests" testWebSocketServerAuthenticatesAndHandlesRequests
       , testCase "HTTP server serves static fallback and protects attachment route" testHttpServerServesStaticFallbackAndProtectsAttachmentRoute
       ]
@@ -86,6 +88,8 @@ testChatSendConstructsIncomingMessage :: IO ()
 testChatSendConstructsIncomingMessage = do
   (response, incoming) <- runRpcStorage ":memory:" do
     rpcState <- RPC.newRpcState
+    _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+      rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
     response <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
       rpcRequest "chat.send" $
         Aeson.object
@@ -109,11 +113,46 @@ testChatSendConstructsIncomingMessage = do
   incoming.digest.senderIsSuperuser @?= True
   incoming.digest.mentionsBot @?= True
 
+testChatSendRejectsMissingSession :: IO ()
+testChatSendRejectsMissingSession =
+  withSQLiteTempPath "rpc-missing-send" \path -> do
+    (sendResponse, openResponse, historyResponse) <- runRpcStorage path do
+      rpcState <- RPC.newRpcState
+      sendResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.send" $
+          Aeson.object
+            [ "sessionId" Aeson..= ("missing-1" :: Text)
+            , "text" Aeson..= ("orphan" :: Text)
+            ]
+      openResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("missing" :: Text)])
+      historyResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("missing-1" :: Text)])
+      pure (sendResponse, openResponse, historyResponse)
+
+    sendResponse @?= responseError "not_found" "Session not found"
+    openResponse @?=
+      responseResult
+        ( Aeson.object
+            [ "sessionId" Aeson..= ("missing-1" :: Text)
+            , "session" Aeson..= sessionValue "missing-1" (Just "missing") Nothing Nothing
+            ]
+        )
+    historyResponse @?=
+      responseResult
+        ( Aeson.object
+            [ "sessionId" Aeson..= ("missing-1" :: Text)
+            , "messages" Aeson..= ([] :: [Aeson.Value])
+            ]
+        )
+
 testChatSendBroadcastsNotification :: IO ()
 testChatSendBroadcastsNotification = do
   notificationValue <- runRpcStorage ":memory:" do
     rpcState <- RPC.newRpcState
     (_clientId, queue) <- RPC.registerClient rpcState
+    _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+      rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
     _response <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
       rpcRequest "chat.send" $
         Aeson.object
@@ -263,6 +302,36 @@ testRenameAndDeleteSession =
     deleteResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("old-1" :: Text), "deleted" Aeson..= True])
     listResponse @?= responseResult (Aeson.object ["sessions" Aeson..= ([] :: [Aeson.Value])])
 
+testDeleteSessionCascadesForkDescendants :: IO ()
+testDeleteSessionCascadesForkDescendants =
+  withSQLiteTempPath "rpc-delete-fork" \path -> do
+    (deleteResponse, listResponse, branchSendResponse) <- runRpcStorage path do
+      rpcState <- RPC.newRpcState
+      _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("root" :: Text)])
+      _first <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.send" (Aeson.object ["sessionId" Aeson..= ("root-1" :: Text), "text" Aeson..= ("first" :: Text)])
+      _fork <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.fork" $
+          Aeson.object
+            [ "sessionId" Aeson..= ("root-1" :: Text)
+            , "messageId" Aeson..= ("rpc-1" :: Text)
+            , "label" Aeson..= ("branch" :: Text)
+            ]
+      _branch <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.send" (Aeson.object ["sessionId" Aeson..= ("branch-1" :: Text), "text" Aeson..= ("branch only" :: Text)])
+      deleteResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.delete_session" (Aeson.object ["sessionId" Aeson..= ("root-1" :: Text)])
+      listResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.list_sessions" Aeson.Null
+      branchSendResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.send" (Aeson.object ["sessionId" Aeson..= ("branch-1" :: Text), "text" Aeson..= ("after delete" :: Text)])
+      pure (deleteResponse, listResponse, branchSendResponse)
+
+    deleteResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("root-1" :: Text), "deleted" Aeson..= True])
+    listResponse @?= responseResult (Aeson.object ["sessions" Aeson..= ([] :: [Aeson.Value])])
+    branchSendResponse @?= responseError "not_found" "Session not found"
+
 testWebSocketServerAuthenticatesAndHandlesRequests :: IO ()
 testWebSocketServerAuthenticatesAndHandlesRequests = do
   result <- timeout 2_000_000 $ runEff $ runConcurrent $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
@@ -368,6 +437,10 @@ rpcRequest method params =
 responseResult :: Aeson.Value -> Protocol.RpcResponse
 responseResult =
   Protocol.successResponse (JSONRPC.RequestId (Aeson.String "test-1"))
+
+responseError :: Text -> Text -> Protocol.RpcResponse
+responseError code message =
+  Protocol.errorResponse (JSONRPC.RequestId (Aeson.String "test-1")) code message
 
 parseJson :: Aeson.FromJSON a => Aeson.Value -> IO a
 parseJson value =

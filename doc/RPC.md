@@ -192,6 +192,21 @@ Result:
 The sent user message is also broadcast as a `chat.message` notification with
 `sender: "user"`.
 
+Sending to a session id that does not exist fails with textual error code
+`not_found`; no message is persisted or broadcast.
+
+### `chat.fork`
+
+Creates a new session whose history starts from a message in an existing
+session. The fork stores `parentSessionId` and `parentMessageId` and reads parent
+history immutably through that message.
+
+### `chat.delete_session`
+
+Deletes a session and its stored messages. If other sessions were forked from
+the deleted session, deletion cascades to those descendant sessions and their
+messages because forked sessions depend on parent history.
+
 ## Chat Notifications
 
 Bot replies are sent as `chat.message` notifications:

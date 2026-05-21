@@ -1,11 +1,11 @@
 {-|
-Module      : Bot.RPC.Storage
+Module      : Bot.Storage.RPC
 Description : Durable storage for local RPC chat sessions
 Stability   : experimental
 -}
 {-# LANGUAGE OverloadedLabels #-}
 
-module Bot.RPC.Storage
+module Bot.Storage.RPC
   ( StoredChatMessage (..)
   , StoredChatSession (..)
   , ensureRpcTables
@@ -143,27 +143,35 @@ loadSessionHistory targetSessionId = do
       | otherwise ->
           pure current
 
-appendMessage :: Storage.Storage :> es => Text -> Text -> Text -> [Text] -> Maybe MessageId -> Maybe MessageId -> Eff es StoredChatMessage
+appendMessage :: Storage.Storage :> es => Text -> Text -> Text -> [Text] -> Maybe MessageId -> Maybe MessageId -> Eff es (Maybe StoredChatMessage)
 appendMessage sessionId sender body imageUrls replyToMessageId parentMessageId =
   retryingStorageWrite do
     ensureRpcTables
     runSelda $
       transaction do
-        rows <- query do
-          row <- select rpcMessageRows
-          pure (row ! #message_id)
-        let nextNumber = Foldable.maximum (0 : map messageNumber rows) + 1
-            message = StoredChatMessage
-              { sessionId
-              , messageId = textMessageId ("rpc-" <> show nextNumber)
-              , sender
-              , text = body
-              , imageUrls
-              , replyToMessageId
-              , parentMessageId
-              }
-        insert_ rpcMessageRows [messageRow message]
-        pure message
+        matchingSessions <- query do
+          row <- select rpcSessionRows
+          restrict (row ! #session_id .== literal sessionId)
+          pure (row ! #session_id)
+        case matchingSessions of
+          [] ->
+            pure Nothing
+          _ -> do
+            rows <- query do
+              row <- select rpcMessageRows
+              pure (row ! #message_id)
+            let nextNumber = Foldable.maximum (0 : map messageNumber rows) + 1
+                message = StoredChatMessage
+                  { sessionId
+                  , messageId = textMessageId ("rpc-" <> show nextNumber)
+                  , sender
+                  , text = body
+                  , imageUrls
+                  , replyToMessageId
+                  , parentMessageId
+                  }
+            insert_ rpcMessageRows [messageRow message]
+            pure (Just message)
 
 insertMessage :: Storage.Storage :> es => StoredChatMessage -> Eff es ()
 insertMessage message = do
@@ -195,14 +203,31 @@ renameSession targetSessionId newLabel = do
 
 deleteSession :: Storage.Storage :> es => Text -> Eff es Bool
 deleteSession targetSessionId = do
-  existed <- isJust <$> loadSession targetSessionId
-  when existed do
-    runSelda do
-      deleteFrom_ rpcMessageRows \row ->
-        row ! #session_id .== literal targetSessionId
-      deleteFrom_ rpcSessionRows \row ->
-        row ! #session_id .== literal targetSessionId
-  pure existed
+  ensureRpcTables
+  runSelda $
+    transaction do
+      rows <- query do
+        row <- select rpcSessionRows
+        pure row
+      let deleteIds = descendantSessionIds targetSessionId rows
+      case deleteIds of
+        [] ->
+          pure False
+        _ -> do
+          -- Forks inherit parent history, so deleting a parent cascades to its descendants.
+          traverse_
+            ( \sessionId ->
+                deleteFrom_ rpcMessageRows \row ->
+                  row ! #session_id .== literal sessionId
+            )
+            deleteIds
+          traverse_
+            ( \sessionId ->
+                deleteFrom_ rpcSessionRows \row ->
+                  row ! #session_id .== literal sessionId
+            )
+            deleteIds
+          pure True
 
 forkSession :: Storage.Storage :> es => Text -> MessageId -> Maybe Text -> Eff es (Maybe StoredChatSession)
 forkSession sourceSessionId sourceMessageId requestedLabel = do
@@ -344,6 +369,26 @@ takeThrough target =
           [message]
       | otherwise =
           message : go rest
+
+descendantSessionIds :: Text -> [RpcSessionRow] -> [Text]
+descendantSessionIds rootSessionId rows
+  | rootSessionId `elem` map (.session_id) rows =
+      go [rootSessionId] []
+  | otherwise =
+      []
+  where
+    go [] deleted =
+      reverse deleted
+    go (sessionId : pending) deleted
+      | sessionId `elem` deleted =
+          go pending deleted
+      | otherwise =
+          let children =
+                [ row.session_id
+                | row <- rows
+                , row.parent_session_id == Just sessionId
+                ]
+          in go (children <> pending) (sessionId : deleted)
 
 nextSessionId :: Text -> [Text] -> Text
 nextSessionId base existing =
