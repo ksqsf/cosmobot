@@ -227,6 +227,8 @@ executable cosmobot
         Bot.Core.Route
         Bot.LLM.OpenAI
         Bot.Main
+        Bot.RPC.Audit
+        Bot.RPC.Client
         Bot.Handler.Admin
         Bot.Handler.Admin.Config
         Bot.Lifecycle
@@ -241,6 +243,7 @@ executable cosmobot
         Bot.Handler.Typing
         Bot.Handler.Typing.Typst
         Bot.Memory.Config
+        Bot.RPC.Server
         Bot.Skills.Config
         Bot.Handler.Saucenao
         Bot.Util.Toml

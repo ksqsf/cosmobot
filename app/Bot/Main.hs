@@ -20,7 +20,11 @@ import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.LLM.OpenAI as OpenAI
+import qualified Bot.RPC.Audit as RPCAudit
+import qualified Bot.RPC.Config as RPCConfig
+import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
+import qualified Data.Aeson as Aeson
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Audit
@@ -58,7 +62,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . runConcurrent
                . runBotLog cfg.logLevel
                . StorageSQLite.runStorageSQLitePath cfg.sqlitePath
-               . AgentAudit.runAgentAudit
+               . AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
                . ChatLog.runChatLog
                . Memory.runMemory cfg.memory
                . Skills.runSkills cfg.skills
@@ -73,9 +77,17 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
           [ ChatDriver.incomingMessages rpcState
           , Scheduler.scheduledMessages
           ]
-    consumeWith
-      (routes cfg conversations)
-      (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
+        rpcServer =
+          bool
+            (pure ())
+            (RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks)
+            rpcEnabled
+        messageConsumer =
+          consumeWith
+            (routes cfg conversations)
+            (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
+        RPCConfig.Config{enabled = rpcEnabled} = cfg.rpc
+    concurrently_ rpcServer messageConsumer
 
 routes
   :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
