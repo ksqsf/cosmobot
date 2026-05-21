@@ -57,7 +57,7 @@ data AgentAuditRecord = AgentAuditRecord
   , occurredAt :: !UTCTime
   , event :: !AgentAuditEvent
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 data ToolUseStatus
   = ToolUseInProgress
@@ -69,7 +69,7 @@ data ToolUseStatus
       { reason :: !Text
       , durationMilliseconds :: !Integer
       }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 data ToolUseDetail = ToolUseDetail
   { auditId :: !Integer
@@ -84,7 +84,7 @@ data ToolUseDetail = ToolUseDetail
   , result :: !(Maybe Text)
   , messageIds :: ![Maybe MessageId]
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 eventRunId :: AgentAuditEvent -> Text
 eventRunId = \case

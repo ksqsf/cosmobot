@@ -20,6 +20,7 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Message
 import Bot.Prelude
+import qualified Bot.RPC.State as RPC
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
@@ -30,33 +31,37 @@ type ChatDriverEffects es =
   Chat.Chat : QQ.QQ : Telegram.Telegram : Matrix.Matrix : Discord.Discord : es
 
 type ChatDriverConstraints es =
-  (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, FileSystem :> es, IOE :> es)
+  (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, FileSystem :> es, Concurrent :> es, IOE :> es)
 
 chatPlatformDrivers
   :: ChatDriverConstraints es
-  => [ChatPlatformDriver es]
-chatPlatformDrivers =
+  => RPC.RpcState
+  -> [ChatPlatformDriver es]
+chatPlatformDrivers rpcState =
   [ QQ.qqDriver
   , Telegram.telegramDriver
   , Matrix.matrixDriver
   , Discord.discordDriver
+  , RPC.rpcChatDriver rpcState
   ]
 
 platformDriver
   :: ChatDriverConstraints es
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Maybe (ChatPlatformDriver es)
-platformDriver message =
-  List.find ((== message.platform) . (.platform)) chatPlatformDrivers
+platformDriver rpcState message =
+  List.find ((== message.platform) . (.platform)) (chatPlatformDrivers rpcState)
 
 withPlatformDriver
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Text
   -> (ChatPlatformDriver es -> Eff es (Maybe a))
   -> Eff es (Maybe a)
-withPlatformDriver message label action =
-  case platformDriver message of
+withPlatformDriver rpcState message label action =
+  case platformDriver rpcState message of
     Nothing ->
       pure Nothing
     Just driver ->
@@ -67,20 +72,22 @@ withPlatformDriver message label action =
 
 replyToPlatform
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Text
   -> Eff es (Maybe MessageId)
-replyToPlatform message body =
-  withPlatformDriver message "chat reply" \driver ->
+replyToPlatform rpcState message body =
+  withPlatformDriver rpcState message "chat reply" \driver ->
     driver.replyTo message body
 
 uploadFileToPlatform
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> FilePath
   -> Eff es (Either Text (Maybe MessageId))
-uploadFileToPlatform message path =
-  case platformDriver message of
+uploadFileToPlatform rpcState message path =
+  case platformDriver rpcState message of
     Nothing ->
       let platformText = show message.platform :: String
       in pure (Left [i|No chat driver is registered for #{platformText}.|])
@@ -93,12 +100,13 @@ uploadFileToPlatform message path =
 
 replyAudioToPlatform
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Text
   -> Maybe Text
   -> Eff es (Either Text (Maybe MessageId))
-replyAudioToPlatform message audioRef caption =
-  case platformDriver message of
+replyAudioToPlatform rpcState message audioRef caption =
+  case platformDriver rpcState message of
     Nothing ->
       let platformText = show message.platform :: String
       in pure (Left [i|No chat driver is registered for #{platformText}.|])
@@ -111,29 +119,32 @@ replyAudioToPlatform message audioRef caption =
 
 editPlatformMessage
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> MessageId
   -> Text
   -> Eff es Bool
-editPlatformMessage message messageId body =
-  fromMaybe False <$> withPlatformDriver message "chat edit" \driver ->
+editPlatformMessage rpcState message messageId body =
+  fromMaybe False <$> withPlatformDriver rpcState message "chat edit" \driver ->
     Just <$> driver.editMessage message messageId body
 
 deletePlatformMessage
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> MessageId
   -> Eff es Bool
-deletePlatformMessage message messageId =
-  fromMaybe False <$> withPlatformDriver message "chat delete" \driver ->
+deletePlatformMessage rpcState message messageId =
+  fromMaybe False <$> withPlatformDriver rpcState message "chat delete" \driver ->
     Just <$> driver.deleteMessage message messageId
 
 platformReplyStreamStyle
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Eff es Chat.ReplyStreamStyle
-platformReplyStreamStyle message =
-  fromMaybe defaultReplyStreamStyle <$> withPlatformDriver message "reply stream style" \driver ->
+platformReplyStreamStyle rpcState message =
+  fromMaybe defaultReplyStreamStyle <$> withPlatformDriver rpcState message "reply stream style" \driver ->
     Just <$> driver.replyStreamStyle message
 
 defaultReplyStreamStyle :: Chat.ReplyStreamStyle
@@ -145,65 +156,72 @@ defaultChunkedReplyLimit = 4000
 
 getPlatformMessageContent
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> MessageId
   -> Eff es (Maybe ReferencedMessage)
-getPlatformMessageContent message messageId =
-  withPlatformDriver message "fetch referenced message" \driver ->
+getPlatformMessageContent rpcState message messageId =
+  withPlatformDriver rpcState message "fetch referenced message" \driver ->
     driver.getMessageContent message messageId
 
 getPlatformSenderMemberInfo
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Eff es (Maybe Aeson.Value)
-getPlatformSenderMemberInfo message =
-  withPlatformDriver message "fetch sender member info" \driver ->
+getPlatformSenderMemberInfo rpcState message =
+  withPlatformDriver rpcState message "fetch sender member info" \driver ->
     driver.getSenderMemberInfo message
 
 getPlatformMemberInfo
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Integer
   -> Eff es (Maybe Aeson.Value)
-getPlatformMemberInfo message userId =
-  withPlatformDriver message "fetch member info" \driver ->
+getPlatformMemberInfo rpcState message userId =
+  withPlatformDriver rpcState message "fetch member info" \driver ->
     driver.getMemberInfo message userId
 
 getPlatformUserAvatar
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Text
   -> Eff es (Maybe Aeson.Value)
-getPlatformUserAvatar message userId =
-  withPlatformDriver message "fetch user avatar" \driver ->
+getPlatformUserAvatar rpcState message userId =
+  withPlatformDriver rpcState message "fetch user avatar" \driver ->
     driver.getUserAvatar message userId
 
 listPlatformGroupMembers
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Eff es (Maybe Aeson.Value)
-listPlatformGroupMembers message =
-  withPlatformDriver message "list group members" \driver ->
+listPlatformGroupMembers rpcState message =
+  withPlatformDriver rpcState message "list group members" \driver ->
     driver.listGroupMembers message
 
 mentionPlatformUser
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Integer
   -> Text
   -> Eff es (Maybe MessageId)
-mentionPlatformUser message userId body =
-  withPlatformDriver message "chat mention" \driver ->
+mentionPlatformUser rpcState message userId body =
+  withPlatformDriver rpcState message "chat mention" \driver ->
     driver.mentionUser message userId body
 
 setPlatformMemberTitle
   :: (ChatDriverConstraints es, Log :> es)
-  => IncomingMessage
+  => RPC.RpcState
+  -> IncomingMessage
   -> Integer
   -> Text
   -> Eff es Bool
-setPlatformMemberTitle message userId title =
-  fromMaybe False <$> withPlatformDriver message "set member title" \driver ->
+setPlatformMemberTitle rpcState message userId title =
+  fromMaybe False <$> withPlatformDriver rpcState message "set member title" \driver ->
     Just <$> driver.setMemberTitle message userId title
 
 runChatDrivers
@@ -212,14 +230,15 @@ runChatDrivers
   -> Telegram.Config
   -> Matrix.Config
   -> Discord.Config
+  -> RPC.RpcState
   -> Eff (ChatDriverEffects es) a
   -> Eff es a
-runChatDrivers qqConfig telegramConfig matrixConfig discordConfig =
+runChatDrivers qqConfig telegramConfig matrixConfig discordConfig rpcState =
   Discord.runDiscord discordConfig .
   Matrix.runMatrix matrixConfig .
   Telegram.runTelegram telegramConfig .
   QQ.runQQ qqConfig .
-  Chat.runChatWith chatHandlers
+  Chat.runChatWith (chatHandlers rpcState)
 
 incomingMessages
   :: QQ.QQ :> es
@@ -230,30 +249,33 @@ incomingMessages
   => Concurrent :> es
   => Fail :> es
   => IOE :> es
-  => Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages =
+  => RPC.RpcState
+  -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages rpcState =
   StreamUtil.mergeStreams
     [ QQ.incomingMessages
     , Telegram.incomingMessages
     , Matrix.incomingMessages
     , Discord.incomingMessages
+    , RPC.incomingMessages rpcState
     ]
 
 chatHandlers
   :: (ChatDriverConstraints es, Log :> es)
-  => Chat.ChatHandlers es
-chatHandlers = Chat.ChatHandlers
-  { handleReplyTo = replyToPlatform
-  , handleReplyAudio = replyAudioToPlatform
-  , handleUploadFile = uploadFileToPlatform
-  , handleEditMessage = editPlatformMessage
-  , handleDeleteMessage = deletePlatformMessage
-  , handleReplyStreamStyle = platformReplyStreamStyle
-  , handleGetMessageContent = getPlatformMessageContent
-  , handleGetSenderMemberInfo = getPlatformSenderMemberInfo
-  , handleGetMemberInfo = getPlatformMemberInfo
-  , handleGetUserAvatar = getPlatformUserAvatar
-  , handleListGroupMembers = listPlatformGroupMembers
-  , handleMentionUser = mentionPlatformUser
-  , handleSetMemberTitle = setPlatformMemberTitle
+  => RPC.RpcState
+  -> Chat.ChatHandlers es
+chatHandlers rpcState = Chat.ChatHandlers
+  { handleReplyTo = replyToPlatform rpcState
+  , handleReplyAudio = replyAudioToPlatform rpcState
+  , handleUploadFile = uploadFileToPlatform rpcState
+  , handleEditMessage = editPlatformMessage rpcState
+  , handleDeleteMessage = deletePlatformMessage rpcState
+  , handleReplyStreamStyle = platformReplyStreamStyle rpcState
+  , handleGetMessageContent = getPlatformMessageContent rpcState
+  , handleGetSenderMemberInfo = getPlatformSenderMemberInfo rpcState
+  , handleGetMemberInfo = getPlatformMemberInfo rpcState
+  , handleGetUserAvatar = getPlatformUserAvatar rpcState
+  , handleListGroupMembers = listPlatformGroupMembers rpcState
+  , handleMentionUser = mentionPlatformUser rpcState
+  , handleSetMemberTitle = setPlatformMemberTitle rpcState
   }

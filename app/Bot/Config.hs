@@ -26,6 +26,7 @@ import qualified Bot.Chat.Driver.Matrix.Config as MatrixConfig
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import qualified Bot.Chat.Driver.Telegram.Config as TelegramConfig
 import qualified Bot.LLM.OpenAI.Config as LLMConfig
+import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.Agent.Config as AgentConfig
 import Bot.Core.Message (ChatPlatform (..))
@@ -66,6 +67,7 @@ data BotConfig = BotConfig
   , saucenao :: !SaucenaoConfig
   , memory   :: !Memory.MemoryConfig
   , skills   :: !Skills.SkillsConfig
+  , rpc      :: !RPCConfig.Config
   , handlers :: !HandlersConfig
   , logLevel :: !LogLevel
   , sqlitePath :: !FilePath
@@ -99,6 +101,7 @@ data FileConfig = FileConfig
   , tool     :: !AgentConfig.FileConfig
   , memory   :: !MemoryConfig.FileConfig
   , skills   :: !SkillsConfig.FileConfig
+  , rpc      :: !RPCConfig.FileConfig
   , handler  :: !HandlerFileConfig
   }
   deriving (Show)
@@ -112,6 +115,7 @@ instance FromValue FileConfig where
     <*> fmap (fromMaybe AgentConfig.defaultFileConfig) (optKey "tool")
     <*> fmap (fromMaybe MemoryConfig.defaultFileConfig) (optKey "memory")
     <*> fmap (fromMaybe SkillsConfig.defaultFileConfig) (optKey "skills")
+    <*> fmap (fromMaybe RPCConfig.defaultFileConfig) (optKey "rpc")
     <*> reqKey "handler"
 
 data DriverFileConfig = DriverFileConfig
@@ -211,6 +215,7 @@ toBotConfig cfg =
     , saucenao = cfg.handler.saucenao
     , memory = MemoryConfig.toMemoryConfig cfg.memory
     , skills = SkillsConfig.toSkillsConfig cfg.skills
+    , rpc = RPCConfig.toRuntimeConfig cfg.rpc
     , handlers = HandlersConfig cfg.handler.admin askConfig cfg.handler.shutup
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath

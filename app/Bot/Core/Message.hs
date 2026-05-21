@@ -80,6 +80,8 @@ data ChatPlatform
   -- ^ Matrix Client-Server API.
   | PlatformDiscord
   -- ^ Discord Gateway and REST APIs.
+  | PlatformRPC
+  -- ^ Local WebSocket RPC virtual chat sessions.
   deriving (Eq, Ord, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 chatPlatformKey :: ChatPlatform -> Text
@@ -92,6 +94,8 @@ chatPlatformKey = \case
     "matrix"
   PlatformDiscord ->
     "discord"
+  PlatformRPC ->
+    "rpc"
 
 -- | Coarse chat shape shared across platforms.
 data ChatKind

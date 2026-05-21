@@ -20,6 +20,7 @@ import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.LLM.OpenAI as OpenAI
+import qualified Bot.RPC.State as RPC
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Audit
@@ -48,6 +49,7 @@ mainWithConfig :: FilePath -> IO ()
 mainWithConfig configPath = runEff . runPrim . runFailIO $ do
   cfg <- loadConfig configPath
   conversations <- newConversationStore
+  rpcState <- runConcurrent RPC.newRpcState
   let runStack = runConcurrent
                . runGracefulTermination
                . runTimeout
@@ -63,12 +65,12 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . Scheduler.runScheduler
                . TypstCLI.runTypst
                . OpenAI.runLLM cfg.llm
-               . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord
+               . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord rpcState
                . Lifecycle.runLifecycle
   runStack do
     logInfo_ "Cosmobot stand by!"
     let allStreams =
-          [ ChatDriver.incomingMessages
+          [ ChatDriver.incomingMessages rpcState
           , Scheduler.scheduledMessages
           ]
     consumeWith

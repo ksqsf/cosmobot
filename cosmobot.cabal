@@ -130,6 +130,8 @@ common bot-chat-driver-modules
         Bot.Chat.Driver.Matrix
         Bot.Chat.Driver.Telegram
         Bot.Effect.Storage
+        Bot.RPC.Protocol
+        Bot.RPC.State
         Bot.Storage.Matrix
         Bot.Storage.Prelude
         Bot.Util.HTTP
@@ -176,6 +178,7 @@ common bot-agent-modules
         Bot.Effect.Storage
         Bot.Effect.Typst
         Bot.LLM.OpenAI.Config
+        Bot.RPC.Config
         Bot.LLM.OpenAI.Retry
         Bot.LLM.OpenAI.Transport
         Bot.LLM.Types
