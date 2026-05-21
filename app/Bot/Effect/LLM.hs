@@ -14,8 +14,8 @@ module Bot.Effect.LLM
   , askImageWithHistoryWithOptions
   , askImageStreamingWithHistory
   , askImageStreamingWithHistoryWithOptions
-  , askImageEdit
-  , askImageEditWithOptions
+  , askImageEditStreaming
+  , askImageEditStreamingWithOptions
   , askAudioWithHistory
   , askAudioWithHistoryWithOptions
   , askAudioStreamingWithHistory
@@ -54,14 +54,10 @@ import qualified Streaming.Prelude as S
 
 -- | Effect for text, image, and tool-calling LLM requests.
 data LLM :: Effect where
-  Ask :: [ChatMessage] -> LLM m Text
   AskStream :: [ChatMessage] -> LLM m (Stream (Of Text) m Text)
-  AskImage :: ImageRequestOptions -> [ChatMessage] -> LLM m Text
   AskImageStream :: ImageRequestOptions -> [ChatMessage] -> LLM m (Stream (Of Text) m Text)
-  AskImageEdit :: ImageRequestOptions -> Text -> [Text] -> Maybe Text -> LLM m Text
-  AskAudio :: AudioRequestOptions -> [ChatMessage] -> LLM m Text
+  AskImageEditStream :: ImageRequestOptions -> Text -> [Text] -> Maybe Text -> LLM m (Stream (Of Text) m Text)
   AskAudioStream :: AudioRequestOptions -> [ChatMessage] -> LLM m (Stream (Of Text) m Text)
-  AskTools :: [FunctionTool] -> [ChatMessage] -> LLM m ChatAnswer
   AskToolsStream :: [FunctionTool] -> [ChatMessage] -> LLM m (Stream (Of Text) m ChatAnswer)
 
 type instance DispatchOf LLM = Dynamic
@@ -108,10 +104,11 @@ ask prompt = askWithHistory [userText prompt]
 
 -- | Ask for a text answer using an explicit chat history.
 askWithHistory :: LLM :> es => [ChatMessage] -> Eff es Text
-askWithHistory = send . Ask
+askWithHistory messages =
+  S.effects (askStreamingWithHistory messages)
 
 -- | Ask for a text answer while receiving response chunks.
-askStreamingWithHistory :: (LLM :> es, IOE :> es) => [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askStreamingWithHistory :: LLM :> es => [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askStreamingWithHistory messages = do
   stream <- lift (send (AskStream messages))
   stream
@@ -137,15 +134,16 @@ askImageStreamingWithHistoryWithOptions options messages = do
   stream <- lift (send (AskImageStream options messages))
   stream
 
--- | Ask the configured image model to edit one or more input images.
-askImageEdit :: LLM :> es => Text -> [Text] -> Maybe Text -> Eff es Text
-askImageEdit prompt imageRefs maskRef =
-  askImageEditWithOptions defaultImageRequestOptions prompt imageRefs maskRef
+-- | Ask the configured image model to edit one or more input images over the streaming transport.
+askImageEditStreaming :: LLM :> es => Text -> [Text] -> Maybe Text -> Stream (Of Text) (Eff es) Text
+askImageEditStreaming prompt imageRefs maskRef =
+  askImageEditStreamingWithOptions defaultImageRequestOptions prompt imageRefs maskRef
 
--- | Ask the configured image model to edit one or more input images with per-call options.
-askImageEditWithOptions :: LLM :> es => ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Eff es Text
-askImageEditWithOptions options prompt imageRefs maskRef =
-  send (AskImageEdit options prompt imageRefs maskRef)
+-- | Ask the configured image model to edit one or more input images over the streaming transport with per-call options.
+askImageEditStreamingWithOptions :: LLM :> es => ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Stream (Of Text) (Eff es) Text
+askImageEditStreamingWithOptions options prompt imageRefs maskRef = do
+  stream <- lift (send (AskImageEditStream options prompt imageRefs maskRef))
+  stream
 
 -- | Ask the configured audio model to generate an audio response.
 askAudioWithHistory :: LLM :> es => [ChatMessage] -> Eff es Text
@@ -171,7 +169,7 @@ askAudioStreamingWithHistoryWithOptions options messages = do
 -- | Ask with function tools and return both text and tool calls.
 askWithTools :: LLM :> es => [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
 askWithTools tools messages =
-  send (AskTools tools messages)
+  S.effects (askWithToolsStreaming tools messages)
 
 -- | Ask with function tools while receiving assistant content chunks.
 askWithToolsStreaming :: LLM :> es => [FunctionTool] -> [ChatMessage] -> Stream (Of Text) (Eff es) ChatAnswer

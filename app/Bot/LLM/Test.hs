@@ -12,33 +12,20 @@ where
 import Bot.Prelude
 import qualified Bot.Effect.LLM as LLM
 import Bot.LLM.Types
-import qualified Streaming.Prelude as S
 
 runLLMWith
-  :: ([ChatMessage] -> Eff es Text)
-  -> ([ChatMessage] -> Stream (Of Text) (Eff es) Text)
-  -> (LLM.ImageRequestOptions -> [ChatMessage] -> Eff es Text)
-  -> (LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Eff es Text)
-  -> (LLM.AudioRequestOptions -> [ChatMessage] -> Eff es Text)
-  -> ([FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer)
+  :: ([ChatMessage] -> Stream (Of Text) (Eff es) Text)
+  -> (LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text)
+  -> (LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Stream (Of Text) (Eff es) Text)
+  -> (LLM.AudioRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text)
   -> ([FunctionTool] -> [ChatMessage] -> Stream (Of Text) (Eff es) ChatAnswer)
   -> Eff (LLM.LLM : es) a
   -> Eff es a
-runLLMWith askText askTextStream askImage askImageEditRequest askAudio askTools askToolsStream = interpret $ \localEnv operation ->
+runLLMWith askTextStream askImageStream askImageEditStream askAudioStream askToolsStream = interpret $ \localEnv operation ->
   localSeqLift localEnv \liftLocal ->
     case operation of
-      LLM.Ask messages -> askText messages
       LLM.AskStream messages -> pure (LLM.liftLocalStream liftLocal (askTextStream messages))
-      LLM.AskImage options messages -> askImage options messages
-      LLM.AskImageStream options messages -> pure (LLM.liftLocalStream liftLocal (textResultStream (askImage options messages)))
-      LLM.AskImageEdit options prompt imageRefs maskRef -> askImageEditRequest options prompt imageRefs maskRef
-      LLM.AskAudio options messages -> askAudio options messages
-      LLM.AskAudioStream options messages -> pure (LLM.liftLocalStream liftLocal (textResultStream (askAudio options messages)))
-      LLM.AskTools tools messages -> askTools tools messages
+      LLM.AskImageStream options messages -> pure (LLM.liftLocalStream liftLocal (askImageStream options messages))
+      LLM.AskImageEditStream options prompt imageRefs maskRef -> pure (LLM.liftLocalStream liftLocal (askImageEditStream options prompt imageRefs maskRef))
+      LLM.AskAudioStream options messages -> pure (LLM.liftLocalStream liftLocal (askAudioStream options messages))
       LLM.AskToolsStream tools messages -> pure (LLM.liftLocalStream liftLocal (askToolsStream tools messages))
-
-textResultStream :: Monad m => m Text -> Stream (Of Text) m Text
-textResultStream action = do
-  answer <- lift action
-  S.yield answer
-  pure answer

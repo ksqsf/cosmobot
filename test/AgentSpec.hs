@@ -142,6 +142,7 @@ main =
       , testCase "LLM image stream request asks only for final image" testLLMImageStreamRequestAsksOnlyForFinalImage
       , testCase "LLM audio speech request includes provider options" testLLMAudioSpeechRequestIncludesProviderOptions
       , testCase "LLM image stream completed event yields final image" testLLMImageStreamCompletedEventYieldsFinalImage
+      , testCase "LLM image edit stream completed event yields final image" testLLMImageEditStreamCompletedEventYieldsFinalImage
       , testCase "LLM image stream ignores partial event without final image" testLLMImageStreamIgnoresPartialEventWithoutFinalImage
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
@@ -440,14 +441,13 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
   audioReplies <- IORef.newIORef ([] :: [(Text, Maybe Text)])
   result <- runEff $
     LLMTest.runLLMWith
-      (\_ -> pure "unused text answer")
       (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
-      (\_ _ -> pure "unused image answer")
-      (\_ _ _ _ -> pure "unused image edit answer")
+      (\_ _ -> S.yield "unused image answer" $> "unused image answer")
+      (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
       (\options messages -> do
           liftIO $ IORef.modifyIORef' generateCalls (<> map (audioGenerateCall options) messages)
+          S.yield generatedAudio
           pure generatedAudio)
-      (\_ _ -> pure (chatAnswer "unused tool answer" []))
       (\_ _ -> S.each ["to", "ol"] $> chatAnswer "tool" []) $
       Chat.runChatWith
         Chat.ChatHandlers
@@ -911,6 +911,20 @@ testLLMImageStreamCompletedEventYieldsFinalImage =
         , "b64_json" Aeson..= ("final-image" :: Text)
         ]
 
+testLLMImageEditStreamCompletedEventYieldsFinalImage :: IO ()
+testLLMImageEditStreamCompletedEventYieldsFinalImage =
+  case LLMTransport.imageGenerationStreamTextFromPayloads imageStreamTestConfig [completed] of
+    Right answer ->
+      answer @?= "[image] data:image/png;base64,edited-image\n"
+    Left err ->
+      assertFailure (Text.unpack err)
+  where
+    completed =
+      Aeson.object
+        [ "type" Aeson..= ("image_edit.completed" :: Text)
+        , "b64_json" Aeson..= ("edited-image" :: Text)
+        ]
+
 testLLMImageStreamIgnoresPartialEventWithoutFinalImage :: IO ()
 testLLMImageStreamIgnoresPartialEventWithoutFinalImage =
   case LLMTransport.imageGenerationStreamTextFromPayloads imageStreamTestConfig [partial] of
@@ -941,12 +955,10 @@ testLLMStreamingEffectPreservesYieldedChunks :: IO ()
 testLLMStreamingEffectPreservesYieldedChunks = do
   chunks S.:> answer <- runEff $
     LLMTest.runLLMWith
-      (\_ -> pure "unused text answer")
       (\_ -> S.each ["he", "llo"] $> "hello")
-      (\_ _ -> pure "unused image answer")
-      (\_ _ _ _ -> pure "unused image edit answer")
-      (\_ _ -> pure "unused audio answer")
-      (\_ _ -> pure (chatAnswer "unused tool answer" []))
+      (\_ _ -> S.yield "unused image answer" $> "unused image answer")
+      (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
+      (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
       (\_ _ -> S.each ["to", "ol"] $> chatAnswer "tool" []) do
         S.toList (LLM.askWithToolsStreaming [] [LLM.userText "hello"])
   chunks @?= ["to", "ol"]
@@ -1855,15 +1867,23 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
                           Memory.runMemory memoryCfg $
                             Skills.runSkills skillsCfg $
                               LLMTest.runLLMWith
-                                (\messages -> captureMessages captured messages >> pure "unused text answer")
                                 (\messages -> do
                                     lift $ captureMessages captured messages
                                     S.yield "unused text stream answer"
                                     pure "unused text stream answer")
-                                (\options messages -> captureMessages captured messages >> liftIO (imageGenerate options messages))
-                                (\options prompt imageRefs maskRef -> liftIO (imageEdit options prompt imageRefs maskRef))
-                                (\_ messages -> captureMessages captured messages >> pure "unused audio answer")
-                                (\_ messages -> captureMessages captured messages >> liftIO (popAnswer answers))
+                                (\options messages -> do
+                                    lift $ captureMessages captured messages
+                                    answer <- liftIO (imageGenerate options messages)
+                                    S.yield answer
+                                    pure answer)
+                                (\options prompt imageRefs maskRef -> do
+                                    answer <- liftIO (imageEdit options prompt imageRefs maskRef)
+                                    S.yield answer
+                                    pure answer)
+                                (\_ messages -> do
+                                    lift $ captureMessages captured messages
+                                    S.yield "unused audio answer"
+                                    pure "unused audio answer")
                                 (\_ messages -> do
                                     lift $ captureMessages captured messages
                                     answer <- liftIO (popAnswer answers)
@@ -1917,12 +1937,10 @@ runAgentWithStreamingAnswers answers chatMock action = do
                           Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") $
                             Skills.runSkills defaultTestSkillsConfig $
                               LLMTest.runLLMWith
-                                (\_ -> pure "unused text answer")
                                 (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
-                                (\_ _ -> pure "unused image answer")
-                                (\_ _ _ _ -> pure "unused image edit answer")
-                                (\_ _ -> pure "unused audio answer")
-                                (\_ _ -> (.answer) <$> liftIO (popStreamingAnswer answers))
+                                (\_ _ -> S.yield "unused image answer" $> "unused image answer")
+                                (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
+                                (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
                                 (\_ _ -> do
                                     streamingAnswer <- liftIO (popStreamingAnswer answers)
                                     traverse_ S.yield streamingAnswer.chunks

@@ -6,15 +6,11 @@ Stability   : experimental
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 module Bot.LLM.OpenAI.Transport
-  ( -- * One-shot transport requests
-    askOpenAI
-  , askOpenAIStreaming
-  , askImageOpenAI
+  ( -- * Streaming transport requests
+    askOpenAIStreaming
   , askImageOpenAIStreaming
-  , askImageEditOpenAI
-  , askAudioOpenAI
+  , askImageEditOpenAIStreaming
   , askAudioOpenAIStreaming
-  , askOpenAIWithTools
   , askOpenAIWithToolsStreaming
 
     -- * Streaming parser
@@ -146,98 +142,6 @@ runTimedEff label timeoutSeconds action = do
     Nothing ->
       throwIO (LLMException [i|#{label} timed out after #{timeoutSeconds} seconds.|])
 
-llmJsonPost
-  :: ( Aeson.ToJSON request
-     , Aeson.FromJSON response
-     , Timeout.Timeout :> es
-     , Fail :> es
-     , IOE :> es
-     )
-  => Text
-  -> Int
-  -> Url 'Https
-  -> request
-  -> Option 'Https
-  -> Eff es (JsonResponse response)
-llmJsonPost label timeoutSeconds url request options =
-  runTimedLLMReq label timeoutSeconds $
-    reqCb POST url (ReqBodyJson request) jsonResponse options \httpRequest ->
-      pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
-
-llmMultipartPost
-  :: ( Aeson.FromJSON response
-     , Timeout.Timeout :> es
-     , Fail :> es
-     , IOE :> es)
-  => Text
-  -> Int
-  -> Url 'Https
-  -> [Multipart.Part]
-  -> Option 'Https
-  -> Eff es (JsonResponse response)
-llmMultipartPost label timeoutSeconds url parts options =
-  runTimedLLMReq label timeoutSeconds do
-    body <- reqBodyMultipart parts
-    reqCb POST url body jsonResponse options \httpRequest ->
-      pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
-
-llmBytesPost
-  :: ( Aeson.ToJSON request
-     , Timeout.Timeout :> es
-     , Fail :> es
-     , IOE :> es
-     )
-  => Text
-  -> Int
-  -> Url 'Https
-  -> request
-  -> Option 'Https
-  -> Eff es StrictByteString.ByteString
-llmBytesPost label timeoutSeconds url request options =
-  runTimedLLMReq label timeoutSeconds $
-    responseBody <$> reqCb POST url (ReqBodyJson request) bsResponse options \httpRequest ->
-      pure httpRequest{HTTP.responseTimeout = HTTP.responseTimeoutNone}
-
-askOpenAI
-  :: ( IOE :> es
-     , Timeout.Timeout :> es
-     , Fail :> es
-     , Log :> es)
-  => Config -> [ChatMessage] -> Eff es Text
-askOpenAI Config{chatProvider = Nothing} _ =
-  pure chatNotConfiguredMessage
-askOpenAI Config{chatProvider = Just ChatProviderConfig{apiKey = Nothing}} _ =
-  pure chatApiKeyNotConfiguredMessage
-askOpenAI Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Just key, model, reasoningEffort, requestTimeout}} messages = do
-  let requestEndpoint = chatCompletionsEndpoint cfg
-      requestPath = chatCompletionsPath
-      requestBaseUrl = cfg.baseUrl
-      request = ChatCompletionRequest
-        { model = model
-        , reasoningEffort = Just reasoningEffort
-        , messages = messages
-        , tools = Nothing
-        , modalities = Nothing
-        , imageConfig = Nothing
-        , stream = Nothing
-        }
-  do
-    logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
-    logLLMRequestMessages request
-    (url, options) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-    response <-
-      llmJsonPost "LLM request" requestTimeout url request
-        (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
-    let body = responseBody response
-    logInfo_ ("LLM response: " <> llmResponseLogLine requestEndpoint model body)
-    case chatCompletionText body of
-      Just answer -> pure answer
-      Nothing     -> throwIO (LLMException "OpenAI response was empty: no text or image output.")
-
-askImageOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> LLM.ImageRequestOptions -> [ChatMessage] -> Eff es Text
-askImageOpenAI cfg options messages =
-  S.effects (askImageOpenAIStreaming cfg options messages)
-
 askImageOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageOpenAIStreaming Config{imageProvider = Nothing} _ _ =
   yieldTextResult (pure imageNotConfiguredMessage)
@@ -245,42 +149,41 @@ askImageOpenAIStreaming Config{imageProvider = Just provider} options messages
   | provider.canGenerate =
       askImageGenerationsOpenAIStreaming provider options messages
   | otherwise =
-      yieldTextResult (askImageChatCompletionsOpenAI provider options messages)
+      askImageChatCompletionsOpenAIStreaming provider options messages
 
-askImageEditOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Eff es Text
-askImageEditOpenAI Config{imageProvider = Nothing} _ _ _ _ =
-  pure imageEditNotConfiguredMessage
-askImageEditOpenAI Config{imageProvider = Just cfg@ImageProviderConfig{apiKey, model, canEdit, requestTimeout}} options prompt imageRefs maskRef
+askImageEditOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Stream (Of Text) (Eff es) Text
+askImageEditOpenAIStreaming Config{imageProvider = Nothing} _ _ _ _ =
+  yieldTextResult (pure imageEditNotConfiguredMessage)
+askImageEditOpenAIStreaming Config{imageProvider = Just cfg@ImageProviderConfig{apiKey, model, canEdit, requestTimeout}} options prompt imageRefs maskRef
   | not canEdit =
-      pure "Image editing is not configured for this image provider: set llm.image_provider.<name>.can_edit = true only when the configured image model and endpoint support /images/edits."
+      yieldTextResult (pure "Image editing is not configured for this image provider: set llm.image_provider.<name>.can_edit = true only when the configured image model and endpoint support /images/edits.")
   | null imageRefs =
-      pure "Image editing requires at least one input image."
+      yieldTextResult (pure "Image editing requires at least one input image.")
   | otherwise =
       case apiKey of
         Nothing ->
-          pure imageApiKeyNotConfiguredMessage
+          yieldTextResult (pure imageApiKeyNotConfiguredMessage)
         Just key -> do
           let requestBaseUrl = cfg.baseUrl
               requestPath = imageEditsPath
               requestEndpoint = endpointText requestBaseUrl requestPath
               requestModel = model
-          imageUploads <- traverse (uncurry (imageUploadFromReference requestTimeout)) (zip [1 :: Int ..] imageRefs)
-          maskUpload <- traverse (imageUploadFromReference requestTimeout 0) maskRef
+          imageUploads <- lift $ traverse (uncurry (imageUploadFromReference requestTimeout)) (zip [1 :: Int ..] imageRefs)
+          maskUpload <- lift $ traverse (imageUploadFromReference requestTimeout 0) maskRef
           let parts = imageEditMultipartParts cfg options requestModel prompt imageUploads maskUpload
-          logInfo_ ("LLM image edit request: " <> imageEditRequestLogLine requestEndpoint requestTimeout requestModel prompt imageUploads maskUpload)
-          (url, requestOptions) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-          response <-
-            llmMultipartPost "LLM image edit request" requestTimeout url parts
-              (requestOptions <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
-          let body = responseBody response
-          logInfo_ ("LLM image edit response: " <> imageResponseLogLine requestEndpoint requestModel body)
+          lift $ logInfo_ ("LLM image edit streaming request: " <> imageEditRequestLogLine requestEndpoint requestTimeout requestModel prompt imageUploads maskUpload)
+          body <- lift $
+            runTimedEff "LLM image edit streaming request" requestTimeout $
+              foldImageGenerationStreamWith "Image edit" $
+                streamSseMultipartPost requestBaseUrl requestPath key (secondsToMicros requestTimeout) parts
+          lift $ logInfo_ ("LLM image edit response: " <> imageResponseLogLine requestEndpoint requestModel body)
           case imageGenerationResponseText cfg body of
-            Just answer -> compressImageAnswer (imageCompressionConfig cfg) answer
-            Nothing -> throwIO (LLMException "Image edit response was empty: no image output.")
-
-askAudioOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es) => Config -> LLM.AudioRequestOptions -> [ChatMessage] -> Eff es Text
-askAudioOpenAI cfg options messages =
-  S.effects (askAudioOpenAIStreaming cfg options messages)
+            Just answer -> do
+              compressed <- lift (compressImageAnswer (imageCompressionConfig cfg) answer)
+              S.yield compressed
+              pure compressed
+            Nothing ->
+              lift (throwIO (LLMException "Image edit response was empty: no image output."))
 
 askAudioOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es) => Config -> LLM.AudioRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askAudioOpenAIStreaming Config{audioProvider = Nothing} _ _ =
@@ -293,13 +196,10 @@ askAudioOpenAIStreaming Config{audioProvider = Just cfg@AudioProviderConfig{apiK
       requestEndpoint = endpointText requestBaseUrl requestPath
       request = audioSpeechRequest cfg options model (audioPromptFromMessages messages)
   lift $ logInfo_ ("LLM audio request: " <> audioRequestLogLine requestEndpoint requestTimeout request)
-  (url, requestOptions) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
   bytes <- lift $
-    llmBytesPost "LLM audio request" requestTimeout url request
-      ( requestOptions
-          <> header "Authorization" (ByteString.pack [i|Bearer #{key}|])
-          <> header "Accept" "application/octet-stream"
-      )
+    runTimedEff "LLM audio streaming request" requestTimeout $
+      collectByteStream $
+        streamRawJsonPost requestBaseUrl requestPath key (secondsToMicros requestTimeout) "application/octet-stream" request
   ref <- lift (writeGeneratedAudio request.responseFormat bytes)
   lift $ logInfo_ ("LLM audio response: " <> audioResponseLogLine requestEndpoint request.model request.responseFormat bytes)
   S.yield ref
@@ -311,11 +211,11 @@ yieldTextResult action = do
   unless (Text.null (Text.strip answer)) (S.yield answer)
   pure answer
 
-askImageChatCompletionsOpenAI :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Eff es Text
-askImageChatCompletionsOpenAI cfg@ImageProviderConfig{apiKey, model, requestTimeout} options messages =
+askImageChatCompletionsOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageChatCompletionsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, requestTimeout} options messages =
   case apiKey of
     Nothing ->
-      pure imageApiKeyNotConfiguredMessage
+      yieldTextResult (pure imageApiKeyNotConfiguredMessage)
     Just key -> do
       let requestBaseUrl = cfg.baseUrl
           requestPath = chatCompletionsPath
@@ -328,20 +228,20 @@ askImageChatCompletionsOpenAI cfg@ImageProviderConfig{apiKey, model, requestTime
             , tools = Nothing
             , modalities = Just ["image", "text"]
             , imageConfig = imageGenerationConfig cfg options
-            , stream = Nothing
+            , stream = Just True
             }
       do
-        logInfo_ ("LLM image chat request: " <> llmRequestLogLine requestEndpoint request)
-        logLLMRequestMessages request
-        (url, requestOptions) <- liftIO (Http.httpsEndpointUrl requestBaseUrl requestPath)
-        response <-
-          llmJsonPost "LLM image chat request" requestTimeout url request
-            (requestOptions <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
-        let body = responseBody response
-        logInfo_ ("LLM image chat response: " <> llmResponseLogLine requestEndpoint requestModel body)
-        case chatCompletionText body of
-          Just answer -> compressImageAnswer (imageCompressionConfig cfg) answer
-          Nothing -> throwIO (LLMException "OpenAI image chat response was empty: no text or image output.")
+        lift $ logInfo_ ("LLM image chat streaming request: " <> llmRequestLogLine requestEndpoint request)
+        lift $ logLLMRequestMessages request
+        answer <- streamChatCompletion False requestBaseUrl requestPath key (secondsToMicros requestTimeout) request
+        lift $ logInfo_ ("LLM image chat streaming response: " <> llmStreamResponseLogLine requestEndpoint requestModel answer)
+        let text = chatAnswerContent answer
+        if Text.null (Text.strip text)
+          then lift (throwIO (LLMException "OpenAI image chat streaming response was empty: no text or image output."))
+          else do
+            compressed <- lift (compressImageAnswer (imageCompressionConfig cfg) text)
+            S.yield compressed
+            pure compressed
 
 askImageGenerationsOpenAIStreaming :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageGenerationsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, requestTimeout} options messages =
@@ -358,7 +258,7 @@ askImageGenerationsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, reques
         lift (logInfo_ ("LLM image streaming request: " <> imageRequestLogLine requestEndpoint requestTimeout request))
         body <- lift $
           runTimedEff "LLM image streaming request" requestTimeout $
-            foldImageGenerationStream $
+            foldImageGenerationStreamWith "Image generation" $
               streamSseJsonPost requestBaseUrl requestPath key (secondsToMicros requestTimeout) request
         lift (logInfo_ ("LLM image response: " <> imageResponseLogLine requestEndpoint request.model body))
         case imageGenerationResponseText cfg body of
@@ -368,33 +268,6 @@ askImageGenerationsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, reques
             pure compressed
           Nothing ->
             lift (throwIO (LLMException "Image generation response was empty: no image output."))
-
-askOpenAIWithTools :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es) => Config -> [FunctionTool] -> [ChatMessage] -> Eff es ChatAnswer
-askOpenAIWithTools Config{chatProvider = Nothing} _ _ =
-  pure (ChatFinalAnswer chatNotConfiguredMessage)
-askOpenAIWithTools Config{chatProvider = Just ChatProviderConfig{apiKey = Nothing}} _ _ =
-  pure (ChatFinalAnswer chatApiKeyNotConfiguredMessage)
-askOpenAIWithTools Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Just key, model, reasoningEffort, requestTimeout}} functionTools messages = do
-  let requestEndpoint = chatCompletionsEndpoint cfg
-      request = ChatCompletionRequest
-        { model = model
-        , reasoningEffort = Just reasoningEffort
-        , messages = messages
-        , tools = toolSpecs functionTools
-        , modalities = Nothing
-        , imageConfig = Nothing
-        , stream = Nothing
-        }
-  do
-    logInfo_ ("LLM request: " <> llmRequestLogLine requestEndpoint request)
-    logLLMRequestMessages request
-    (url, options) <- liftIO (Http.httpsEndpointUrl cfg.baseUrl chatCompletionsPath)
-    response <-
-      llmJsonPost "LLM request" requestTimeout url request
-        (options <> header "Authorization" (ByteString.pack [i|Bearer #{key}|]))
-    let body = responseBody response
-    logInfo_ ("LLM response: " <> llmResponseLogLine requestEndpoint model body)
-    pure (chatCompletionAnswer body)
 
 askOpenAIStreaming
   :: (IOE :> es, Log :> es, Timeout.Timeout :> es, Fail :> es)
@@ -706,6 +579,8 @@ imageEditMultipartParts provider options model prompt imageUploads maskUpload =
     textFields =
       [ multipartTextPart "model" model
       , multipartTextPart "prompt" prompt
+      , multipartTextPart "stream" "true"
+      , multipartTextPart "partial_images" "0"
       ]
         <> maybeTextPart "quality" resolved.quality
         <> maybeTextPart "size" resolved.size
@@ -908,22 +783,6 @@ jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
   TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
 
-llmResponseLogLine :: Text -> Text -> ChatCompletionResponse -> Text
-llmResponseLogLine endpoint model response =
-  Text.unwords
-    [ "endpoint=" <> endpoint
-    , "model=" <> model
-    , "choices=" <> show (length response.choices)
-    , "usage=" <> show (isJust response.usage)
-    , "annotations=" <> show (length annotations)
-    , "images=" <> show (length images)
-    , "tool_calls=" <> show (length toolCalls)
-    ]
-  where
-    annotations = foldMap (fromMaybe [] . (.message.annotations)) response.choices
-    images = foldMap (fromMaybe [] . (.message.images)) response.choices
-    toolCalls = foldMap (.message.toolCalls) response.choices
-
 llmStreamResponseLogLine :: Text -> Text -> ChatAnswer -> Text
 llmStreamResponseLogLine endpoint model answer =
   Text.unwords
@@ -945,11 +804,55 @@ streamSseJsonPost baseUrl path apiKey timeoutMicros request = do
   httpRequest <- liftIO (sseJsonPostRequest baseUrl path apiKey timeoutMicros request)
   streamSsePayloads (streamHttpResponseBody httpRequest)
 
+streamRawJsonPost
+  :: (Aeson.ToJSON body, IOE :> es)
+  => Text
+  -> [Text]
+  -> Text
+  -> Int
+  -> ByteString.ByteString
+  -> body
+  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
+streamRawJsonPost baseUrl path apiKey timeoutMicros accept request = do
+  httpRequest <- liftIO (rawJsonPostRequest baseUrl path apiKey timeoutMicros accept request)
+  streamHttpResponseBody httpRequest
+
+streamSseMultipartPost
+  :: IOE :> es
+  => Text
+  -> [Text]
+  -> Text
+  -> Int
+  -> [Multipart.Part]
+  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
+streamSseMultipartPost baseUrl path apiKey timeoutMicros parts = do
+  httpRequest <- liftIO (sseMultipartPostRequest baseUrl path apiKey timeoutMicros parts)
+  streamSsePayloads (streamHttpResponseBody httpRequest)
+
 sseJsonPostRequest :: Aeson.ToJSON body => Text -> [Text] -> Text -> Int -> body -> IO HTTP.Request
 sseJsonPostRequest baseUrl path apiKey timeoutMicros request = do
   httpRequest <- Http.streamingJsonPostRequest baseUrl path apiKey timeoutMicros request
   pure httpRequest
     { HTTP.requestHeaders = ("Accept", "text/event-stream") : HTTP.requestHeaders httpRequest
+    }
+
+rawJsonPostRequest :: Aeson.ToJSON body => Text -> [Text] -> Text -> Int -> ByteString.ByteString -> body -> IO HTTP.Request
+rawJsonPostRequest baseUrl path apiKey timeoutMicros accept request = do
+  httpRequest <- Http.streamingJsonPostRequest baseUrl path apiKey timeoutMicros request
+  pure httpRequest
+    { HTTP.requestHeaders = ("Accept", accept) : HTTP.requestHeaders httpRequest
+    }
+
+sseMultipartPostRequest :: Text -> [Text] -> Text -> Int -> [Multipart.Part] -> IO HTTP.Request
+sseMultipartPostRequest baseUrl path apiKey timeoutMicros parts = do
+  base <- HTTP.parseRequest (Text.unpack (endpointText baseUrl path))
+  Multipart.formDataBody parts base
+    { HTTP.method = "POST"
+    , HTTP.requestHeaders =
+        [ ("Authorization", ByteString.pack [i|Bearer #{apiKey}|])
+        , ("Accept", "text/event-stream")
+        ]
+    , HTTP.responseTimeout = HTTP.responseTimeoutMicro timeoutMicros
     }
 
 streamHttpResponseBody :: IOE :> es => HTTP.Request -> Stream (Of StrictByteString.ByteString) (Eff es) ()
@@ -1011,11 +914,23 @@ ensureSuccessfulStreamingResponse request response = do
     let preview = LazyByteString.toStrict (LazyByteString.fromChunks chunks)
     lift (throwIO (HTTP.HttpExceptionRequest request (HTTP.StatusCodeException (void response) preview)))
 
-foldImageGenerationStream
+collectByteStream :: Monad m => Stream (Of StrictByteString.ByteString) m r -> m StrictByteString.ByteString
+collectByteStream =
+  go []
+  where
+    go chunks stream =
+      S.next stream >>= \case
+        Left _ ->
+          pure (StrictByteString.concat (reverse chunks))
+        Right (chunk, rest) ->
+          go (chunk : chunks) rest
+
+foldImageGenerationStreamWith
   :: IOE :> es
-  => Stream (Of StrictByteString.ByteString) (Eff es) ()
+  => Text
+  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
   -> Eff es ImageGenerationResponse
-foldImageGenerationStream =
+foldImageGenerationStreamWith label =
   go Nothing
   where
     go latest stream =
@@ -1023,7 +938,7 @@ foldImageGenerationStream =
         Left () ->
           case latest of
             Just response -> pure response
-            Nothing -> throwIO (LLMException "Image generation streaming response was empty: no image output.")
+            Nothing -> throwIO (LLMException [i|#{label} streaming response was empty: no image output.|])
         Right (payload, rest) ->
           case imageGenerationResponseFromPayload payload of
             Left err ->
@@ -1055,14 +970,16 @@ imageGenerationResponseFromValue value
 
 imageGenerationResponseFromStreamEvent :: ImageGenerationStreamEvent -> Either Text (Maybe ImageGenerationResponse)
 imageGenerationResponseFromStreamEvent event
-  | event.type_ == "image_generation.completed" =
+  | event.type_ == "image_generation.completed" || event.type_ == "image_edit.completed" =
       case event.b64Json of
         Just b64 ->
           Right (Just (ImageGenerationResponse [ImageGenerationData Nothing (Just b64)]))
         Nothing ->
-          Left "Image generation completed event did not include b64_json."
+          Left [i|#{eventType} event did not include b64_json.|]
   | otherwise =
       Right Nothing
+  where
+    eventType = event.type_
 
 imageGenerationStreamTextFromPayloads :: ImageProviderConfig -> [Aeson.Value] -> Either Text Text
 imageGenerationStreamTextFromPayloads cfg payloads =
@@ -1294,38 +1211,6 @@ imagePromptMessages False messages = messages
 imagePromptMessages True messages =
   systemText "The user is asking for an actual generated image. Generate image output; do not answer with ASCII art, SVG, markdown art, or only a textual description." : messages
 
-data ChatCompletionResponse = ChatCompletionResponse
-  { choices :: [Choice]
-  , usage   :: Maybe Aeson.Value
-  }
-  deriving (Show, Generic, Aeson.FromJSON)
-
-data Choice = Choice
-  { message :: ChatMessageResponse
-  }
-  deriving (Show, Generic, Aeson.FromJSON)
-
-data ChatMessageResponse = ChatMessageResponse
-  { content     :: Maybe Text
-  , annotations :: Maybe [Aeson.Value]
-  , images      :: Maybe [Aeson.Value]
-  , toolCalls   :: [ToolCall]
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON ChatMessageResponse where
-  parseJSON = Aeson.withObject "ChatMessageResponse" $ \o -> do
-    content <- o Aeson..:? "content"
-    annotations <- o Aeson..:? "annotations"
-    images <- o Aeson..:? "images"
-    toolCalls <- fromMaybe [] <$> o Aeson..:? "tool_calls"
-    pure ChatMessageResponse
-      { content = content
-      , annotations = annotations
-      , images = images
-      , toolCalls = toolCalls
-      }
-
 -- | Convert decoded OpenAI-compatible SSE payloads into streamed assistant
 -- content chunks and the completed assistant turn.
 --
@@ -1349,48 +1234,3 @@ chatStreamTextFromPayloads emitContentDeltas payloads = do
       case AesonTypes.parseEither Aeson.parseJSON value of
         Left err -> Left (Text.pack err)
         Right chunk -> Right chunk
-
-chatCompletionText :: ChatCompletionResponse -> Maybe Text
-chatCompletionText response =
-  viaNonEmpty head response.choices >>= \choice ->
-    let imageText = imageUrlsText choice.message.images
-    in case Text.strip <$> choice.message.content of
-      Just "" -> imageText
-      Just answer ->
-        Just (Text.strip (answer <> maybe "" ("\n" <>) imageText))
-      Nothing -> imageText
-
-chatCompletionAnswer :: ChatCompletionResponse -> ChatAnswer
-chatCompletionAnswer response =
-  case viaNonEmpty head response.choices of
-    Nothing ->
-      ChatFinalAnswer ""
-    Just choice ->
-      chatAnswer (fromMaybe "" (chatMessageText choice.message)) choice.message.toolCalls
-
-chatMessageText :: ChatMessageResponse -> Maybe Text
-chatMessageText message =
-  let imageText = imageUrlsText message.images
-  in case Text.strip <$> message.content of
-    Just "" -> imageText
-    Just answer ->
-      Just (Text.strip (answer <> maybe "" ("\n" <>) imageText))
-    Nothing -> imageText
-
-imageUrlsText :: Maybe [Aeson.Value] -> Maybe Text
-imageUrlsText images =
-  case mapMaybe imageValueUrl (fromMaybe [] images) of
-    []   -> Nothing
-    urls -> Just (Text.unlines (map ReplyBody.imageDirective urls))
-
-imageValueUrl :: Aeson.Value -> Maybe Text
-imageValueUrl = \case
-  Aeson.Object obj -> do
-    imageUrl <- KeyMap.lookup "image_url" obj <|> KeyMap.lookup "imageUrl" obj
-    case imageUrl of
-      Aeson.Object imageObject -> do
-        Aeson.String url <- KeyMap.lookup "url" imageObject
-        pure url
-      Aeson.String url -> pure url
-      _ -> Nothing
-  _ -> Nothing

@@ -34,31 +34,26 @@ runLLM
 runLLM cfg = interpret $ \localEnv operation ->
   localSeqLift localEnv \liftLocal ->
     case operation of
-      LLM.Ask messages ->
-        Retry.retryLLMRequest "LLM request" (Transport.askOpenAI cfg messages)
       LLM.AskStream messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             Retry.retryLLMStreamRequest "LLM streaming request" $
               pure (Retry.validateTextStream (Transport.askOpenAIStreaming cfg messages))
-      LLM.AskImage options messages ->
-        Retry.retryLLMRequest "LLM image request" (Transport.askImageOpenAI cfg options messages)
       LLM.AskImageStream options messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             Retry.retryLLMStreamRequest "LLM image streaming request" $
               pure (Retry.validateTextStream (Transport.askImageOpenAIStreaming cfg options messages))
-      LLM.AskImageEdit options prompt imageRefs maskRef ->
-        Retry.retryLLMRequest "LLM image edit request" (Transport.askImageEditOpenAI cfg options prompt imageRefs maskRef)
-      LLM.AskAudio options messages ->
-        Retry.retryLLMRequest "LLM audio request" (Transport.askAudioOpenAI cfg options messages)
+      LLM.AskImageEditStream options prompt imageRefs maskRef ->
+        pure $
+          LLM.liftLocalStream liftLocal $
+            Retry.retryLLMStreamRequest "LLM image edit streaming request" $
+              pure (Retry.validateTextStream (Transport.askImageEditOpenAIStreaming cfg options prompt imageRefs maskRef))
       LLM.AskAudioStream options messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             Retry.retryLLMStreamRequest "LLM audio streaming request" $
               pure (Retry.validateTextStream (Transport.askAudioOpenAIStreaming cfg options messages))
-      LLM.AskTools tools messages ->
-        Retry.retryLLMRequest "LLM request" (Transport.askOpenAIWithTools cfg tools messages >>= Retry.validateChatAnswer)
       LLM.AskToolsStream tools messages ->
         pure $
           LLM.liftLocalStream liftLocal $

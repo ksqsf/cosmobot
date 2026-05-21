@@ -20,6 +20,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
+import qualified Streaming.Prelude as S
 
 generateImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
 generateImageTool = Tool
@@ -68,7 +69,7 @@ editImageTool = Tool
         Just failure ->
           pure (toolFailure failure)
         Nothing -> do
-          edited <- LLM.askImageEditWithOptions editArgs.options editArgs.prompt imageRefs editArgs.maskImageUrl
+          edited <- S.effects (LLM.askImageEditStreamingWithOptions editArgs.options editArgs.prompt imageRefs editArgs.maskImageUrl)
           case Chat.replyImageUrls edited of
             [] ->
               pure (toolText edited)
