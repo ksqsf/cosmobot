@@ -4,6 +4,7 @@ Description : Matrix Client-Server chat driver
 Stability   : experimental
 -}
 {-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Bot.Chat.Driver.Matrix
   ( matrixDriver
@@ -1075,8 +1076,8 @@ defaultConfig = Config
   }
 
 loginCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixLoginResponse
-loginCall manager cfg user password = do
-  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+loginCall manager cfg user password =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
@@ -1102,8 +1103,8 @@ loginCall manager cfg user password = do
     <&> responseBody
 
 refreshAccessTokenCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Eff es MatrixRefreshResponse
-refreshAccessTokenCall manager cfg refreshToken = do
-  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+refreshAccessTokenCall manager cfg refreshToken =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
@@ -1120,8 +1121,8 @@ refreshAccessTokenCall manager cfg refreshToken = do
     <&> responseBody
 
 syncCall :: (IOE :> es, Log :> es) => Manager -> Config -> Maybe Text -> Text -> Eff es SyncResponse
-syncCall manager cfg since token = do
-  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+syncCall manager cfg since token =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> matrixAuth token
@@ -1138,8 +1139,8 @@ syncCall manager cfg since token = do
     <&> responseBody
 
 joinedMemberCountCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Eff es Int
-joinedMemberCountCall manager cfg token roomId = do
-  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+joinedMemberCountCall manager cfg token roomId =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> matrixAuth token
@@ -1157,8 +1158,8 @@ joinedMemberCountCall manager cfg token roomId = do
   pure (Map.size response.joinedMembers)
 
 sendMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es SendMessageResponse
-sendMessageCall manager cfg token roomId replyRelation body = do
-  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+sendMessageCall manager cfg token roomId replyRelation body =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
   let options =
         baseOptions
@@ -1180,8 +1181,8 @@ sendMessageCall manager cfg token roomId replyRelation body = do
     <&> responseBody
 
 editMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> MatrixEventId -> Text -> Eff es SendMessageResponse
-editMessageCall manager cfg token roomId eventId body = do
-  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+editMessageCall manager cfg token roomId eventId body =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
   let options =
         baseOptions
@@ -1202,8 +1203,8 @@ editMessageCall manager cfg token roomId eventId body = do
     <&> responseBody
 
 uploadMediaCall :: (IOE :> es, Log :> es) => Manager -> Config -> FilePath -> Text -> Text -> Text -> Eff es MatrixUploadResponse
-uploadMediaCall manager cfg path fileName mime token = do
-  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+uploadMediaCall manager cfg path fileName mime token =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> matrixAuth token
@@ -1220,8 +1221,8 @@ uploadMediaCall manager cfg path fileName mime token = do
     <&> responseBody
 
 sendFileMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es SendMessageResponse
-sendFileMessageCall manager cfg token roomId replyRelation message@MatrixFileMessage{msgtype = mediaMsgtype} = do
-  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+sendFileMessageCall manager cfg token roomId replyRelation message@MatrixFileMessage{msgtype = mediaMsgtype} =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
   let options =
         baseOptions
@@ -1241,8 +1242,8 @@ sendFileMessageCall manager cfg token roomId replyRelation message@MatrixFileMes
     <&> responseBody
 
 redactEventCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Text -> Eff es RedactEventResponse
-redactEventCall manager cfg token roomId eventId = do
-  (baseUrl, baseOptions) <- liftIO (matrixBaseUrl cfg.homeserver)
+redactEventCall manager cfg token roomId eventId =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
   let options =
         baseOptions
@@ -1258,16 +1259,18 @@ redactEventCall manager cfg token roomId eventId = do
       options)
     <&> responseBody
 
-matrixBaseUrl :: Text -> IO (Url 'Https, Option 'Https)
-matrixBaseUrl homeserver = do
+withMatrixBaseUrl :: IOE :> es => Text -> (forall scheme. Url scheme -> Option scheme -> Eff es a) -> Eff es a
+withMatrixBaseUrl homeserver action = do
   uri <- URI.mkURI homeserver
-  case useHttpsURI uri of
+  case useURI uri of
     Nothing ->
-      ioError (userError [i|Unsupported Matrix homeserver URL: #{homeserver}. Use a full HTTPS base URL.|])
-    Just parsed ->
-      pure parsed
+      liftIO (ioError (userError [i|Unsupported Matrix homeserver URL: #{homeserver}. Use a full HTTP or HTTPS base URL.|]))
+    Just (Left (baseUrl, baseOptions)) ->
+      action baseUrl baseOptions
+    Just (Right (baseUrl, baseOptions)) ->
+      action baseUrl baseOptions
 
-matrixAuth :: Text -> Option 'Https
+matrixAuth :: Text -> Option scheme
 matrixAuth token =
   header "Authorization" (ByteString.pack [i|Bearer #{token}|])
 
