@@ -556,12 +556,14 @@ requestIsRpcPath request =
 httpApp :: (Storage.Storage :> es, FileSystem.FileSystem :> es) => (forall a. Eff es a -> IO a) -> Config.Config -> Wai.Application
 httpApp runInIO cfg request respond =
   case (Wai.requestMethod request, Wai.pathInfo request) of
+    ("OPTIONS", ["attachments", _attachmentId]) ->
+      respond attachmentPreflightResponse
     ("GET", ["attachments", attachmentId])
       | httpRequestIsAuthorized cfg request ->
           serveAttachment runInIO attachmentId respond
       | otherwise ->
           respond $
-            textResponse Http.status401 "unauthorized"
+            attachmentTextResponse Http.status401 "unauthorized"
     ("GET", _) ->
       respond $
         textResponse Http.status404 "not found"
@@ -582,7 +584,7 @@ serveAttachment runInIO attachmentId respond = do
   attachment <- runInIO (Attachment.loadAttachment attachmentId)
   case attachment of
     Nothing ->
-      respond (textResponse Http.status404 "not found")
+      respond (attachmentTextResponse Http.status404 "not found")
     Just stored -> do
       exists <- runInIO (FileSystem.doesFileExist stored.path)
       if exists
@@ -590,7 +592,7 @@ serveAttachment runInIO attachmentId respond = do
           respond $
             Wai.responseFile
               Http.status200
-              ( attachmentHeaders
+              ( corsAttachmentHeaders
                   [ ("Content-Type", TextEncoding.encodeUtf8 stored.mediaType)
                   , ("Content-Disposition", "attachment; filename=\"" <> safeHeaderBytes stored.name <> "\"")
                   ]
@@ -598,7 +600,7 @@ serveAttachment runInIO attachmentId respond = do
               stored.path
               Nothing
         else
-          respond (textResponse Http.status404 "not found")
+          respond (attachmentTextResponse Http.status404 "not found")
 
 httpRequestIsAuthorized :: Config.Config -> Wai.Request -> Bool
 httpRequestIsAuthorized cfg request =
@@ -655,6 +657,14 @@ textResponse :: Http.Status -> LazyByteString.ByteString -> Wai.Response
 textResponse status body =
   Wai.responseLBS status (baseSecurityHeaders [("Content-Type", "text/plain; charset=utf-8")]) body
 
+attachmentTextResponse :: Http.Status -> LazyByteString.ByteString -> Wai.Response
+attachmentTextResponse status body =
+  Wai.responseLBS status (corsAttachmentHeaders [("Content-Type", "text/plain; charset=utf-8")]) body
+
+attachmentPreflightResponse :: Wai.Response
+attachmentPreflightResponse =
+  Wai.responseLBS Http.status204 (corsAttachmentHeaders []) ""
+
 baseSecurityHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
 baseSecurityHeaders headers =
   headers
@@ -667,6 +677,15 @@ attachmentHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
 attachmentHeaders headers =
   baseSecurityHeaders headers
     <> [ ("Cache-Control", "no-store")
+       ]
+
+corsAttachmentHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
+corsAttachmentHeaders headers =
+  attachmentHeaders headers
+    <> [ ("Access-Control-Allow-Origin", "*")
+       , ("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+       , ("Access-Control-Allow-Headers", "Authorization, Content-Type")
+       , ("Access-Control-Max-Age", "600")
        ]
 
 questionMark :: Word8

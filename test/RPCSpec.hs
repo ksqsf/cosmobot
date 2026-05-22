@@ -584,10 +584,11 @@ testHttpServerReturns404ForStaticAndProtectsAttachmentRoute = do
         client = liftIO do
           manager <- HTTP.newManager HTTP.defaultManagerSettings
           root <- httpGet manager [i|http://127.0.0.1:#{port}/|]
+          attachmentPreflight <- httpOptions manager [i|http://127.0.0.1:#{port}/attachments/missing|]
           attachmentWithoutAuth <- httpGet manager [i|http://127.0.0.1:#{port}/attachments/missing|]
           attachmentWithAuth <- httpGetWithBearer manager "secret" [i|http://127.0.0.1:#{port}/attachments/missing|]
           response <- openSessionClient port "secret"
-          pure (root, attachmentWithoutAuth, attachmentWithAuth, response)
+          pure (root, attachmentPreflight, attachmentWithoutAuth, attachmentWithAuth, response)
     race server client
 
   case result of
@@ -595,10 +596,15 @@ testHttpServerReturns404ForStaticAndProtectsAttachmentRoute = do
       assertFailure "RPC HTTP integration test timed out"
     Just (Left ()) ->
       assertFailure "RPC HTTP server exited before client completed"
-    Just (Right (root, attachmentWithoutAuth, attachmentWithAuth, response)) -> do
+    Just (Right (root, attachmentPreflight, attachmentWithoutAuth, attachmentWithAuth, response)) -> do
       HTTP.responseStatus root @?= Http.status404
+      HTTP.responseStatus attachmentPreflight @?= Http.status204
+      responseHeader "Access-Control-Allow-Origin" attachmentPreflight @?= Just "*"
+      responseHeader "Access-Control-Allow-Headers" attachmentPreflight @?= Just "Authorization, Content-Type"
       HTTP.responseStatus attachmentWithoutAuth @?= Http.status401
+      responseHeader "Access-Control-Allow-Origin" attachmentWithoutAuth @?= Just "*"
       HTTP.responseStatus attachmentWithAuth @?= Http.status404
+      responseHeader "Access-Control-Allow-Origin" attachmentWithAuth @?= Just "*"
       response @?=
         responseResult
           ( Aeson.object
@@ -678,6 +684,25 @@ httpGetWithBearer manager token url = do
       , HTTP.requestHeaders = [("Authorization", "Bearer " <> token)]
       }
     manager
+
+httpOptions :: HTTP.Manager -> String -> IO (HTTP.Response LazyByteString.ByteString)
+httpOptions manager url = do
+  request <- HTTP.parseRequest url
+  HTTP.httpLbs
+    request
+      { HTTP.checkResponse = \_ _ -> pure ()
+      , HTTP.method = "OPTIONS"
+      , HTTP.requestHeaders =
+          [ ("Origin", "http://localhost:5173")
+          , ("Access-Control-Request-Method", "GET")
+          , ("Access-Control-Request-Headers", "authorization")
+          ]
+      }
+    manager
+
+responseHeader :: Http.HeaderName -> HTTP.Response body -> Maybe ByteString
+responseHeader name response =
+  snd <$> find ((== name) . fst) (HTTP.responseHeaders response)
 
 assertUnauthorizedRejected :: Either SomeException () -> IO ()
 assertUnauthorizedRejected = \case
