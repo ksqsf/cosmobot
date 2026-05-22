@@ -17,6 +17,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Unique (hashUnique, newUnique)
 import Effectful.FileSystem (runFileSystem)
 import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types as Http
 import qualified JSONRPC
@@ -51,6 +52,7 @@ main =
       , testCase "attachments upload, send, history, and guarded delete" testAttachmentLifecycle
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
+      , testCase "rpc driver stores local image replies as attachments" testRpcDriverStoresLocalImageRepliesAsAttachments
       , testCase "chat.fork stores immutable parent link and inherited history" testChatForkStoresParentLink
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
       , testCase "chat.delete_session cascades fork descendants" testDeleteSessionCascadesForkDescendants
@@ -392,6 +394,47 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
       [ ("user", "rpc-1", "question")
       , ("assistant", "rpc-2", "final answer")
       ]
+
+testRpcDriverStoresLocalImageRepliesAsAttachments :: IO ()
+testRpcDriverStoresLocalImageRepliesAsAttachments =
+  withSQLiteTempPath "rpc-assistant-image" \path -> do
+    historyResponse <- runRpcStorage path do
+      let dir = takeDirectory path
+          imagePath = dir </> "generated.webp"
+          cfg :: RPCConfig.Config
+          cfg = RPCConfig.Config
+            { enabled = True
+            , host = "127.0.0.1"
+            , port = 38765
+            , token = "secret"
+            , attachmentDir = dir </> "attachments"
+            , attachmentMaxBytes = 1024 * 1024
+            }
+      FileSystemByteString.writeFile imagePath "fake-webp"
+      rpcState <- RPC.newRpcState
+      _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+      _sent <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.send" $
+          Aeson.object
+            [ "sessionId" Aeson..= ("browser-1" :: Text)
+            , "text" Aeson..= ("make an image" :: Text)
+            ]
+      incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
+      let driver = RPC.rpcChatDriver cfg rpcState
+      _reply <- driver.replyTo incoming ("done\n[image] file://" <> Text.pack imagePath)
+      RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text)])
+
+    responseMessageSummaries historyResponse @?=
+      [ ("user", "rpc-1", "make an image")
+      , ("assistant", "rpc-2", "done")
+      ]
+    case responseMessageAttachments historyResponse of
+      [[], [attachmentId]] ->
+        assertBool "expected stored image attachment id" ("att-" `Text.isPrefixOf` attachmentId)
+      other ->
+        assertFailure [i|expected one image attachment on assistant reply, got #{show other :: String}|]
 
 testChatForkStoresParentLink :: IO ()
 testChatForkStoresParentLink =

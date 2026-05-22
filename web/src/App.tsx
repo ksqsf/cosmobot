@@ -499,18 +499,21 @@ const ChatMessageRow = ({ message, onError, onFork }: ChatMessageRowProps): Reac
         </ReactMarkdown>
       </div>
       {message.attachments.length > 0 ? <AttachmentGrid attachments={message.attachments} onError={onError} /> : null}
-      <div className="message-actions">
-        <button
-          className="small-icon-button"
-          type="button"
-          onClick={() => {
-            onFork(message.messageId);
-          }}
-          aria-label={`Fork from ${message.messageId}`}
-        >
-          <GitFork aria-hidden="true" size={14} />
-        </button>
-      </div>
+      {message.role === 'assistant' ? (
+        <div className="message-actions">
+          <button
+            className="small-icon-button"
+            type="button"
+            onClick={() => {
+              onFork(message.messageId);
+            }}
+            aria-label="Fork conversation from this assistant reply"
+            title="Fork conversation from this reply"
+          >
+            <GitFork aria-hidden="true" size={14} />
+          </button>
+        </div>
+      ) : null}
     </div>
   </article>
 );
