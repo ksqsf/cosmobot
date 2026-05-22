@@ -14,6 +14,7 @@ import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Unique (hashUnique, newUnique)
 import Effectful.FileSystem (runFileSystem)
 import qualified Effectful.FileSystem as FileSystem
@@ -615,7 +616,7 @@ responseAttachmentUnsafe = \case
 
 openSessionClient :: Int -> Text -> IO Protocol.RpcResponse
 openSessionClient port token =
-  WS.runClient "127.0.0.1" port ("/rpc?access_token=" <> Text.unpack token) \conn -> do
+  WS.runClientWith "127.0.0.1" port "/rpc" WS.defaultConnectionOptions [("Authorization", "Bearer " <> TextEncoding.encodeUtf8 token)] \conn -> do
     WS.sendTextData conn $
       Aeson.encode $
         Protocol.rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("integration" :: Text)]) "test-1"

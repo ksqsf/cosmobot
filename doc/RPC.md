@@ -26,17 +26,19 @@ if `static_dir/index.html` is absent, `/` falls back to `web/index.html`.
 
 ## Authentication
 
-Browser clients keep the token in tab-scoped state and open the WebSocket with
-the RPC token:
+Browser clients keep the token in tab-scoped state and authenticate the
+WebSocket with subprotocols:
 
 ```text
-ws://127.0.0.1:38765/rpc?access_token=TOKEN
+Sec-WebSocket-Protocol: cosmobot-rpc, cosmobot-token.BASE64URL_TOKEN
 ```
 
-HTTP attachment reads use the bearer token header. Unauthorized WebSocket
-connections or attachment requests are rejected with HTTP 401.
-Do not put attachment tokens in query strings; the browser UI fetches
-attachments with `Authorization: Bearer TOKEN` and opens local blob URLs.
+CLI clients may use `Authorization: Bearer TOKEN` during the WebSocket
+handshake. Query-string tokens are not accepted for WebSocket authentication.
+HTTP attachment reads also use the bearer token header. Unauthorized WebSocket
+connections or attachment requests are rejected with HTTP 401. Do not put
+attachment tokens in query strings; the browser UI fetches attachments with
+`Authorization: Bearer TOKEN` and opens local blob URLs.
 
 ## Envelopes
 

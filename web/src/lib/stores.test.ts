@@ -1,13 +1,9 @@
-import { get } from 'svelte/store';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { auditEvents, currentSession, eventLog, messages, addAuditEvent, addLog, mergeMessage, setCurrentSession, setHistory } from './stores';
+import { describe, expect, it, beforeEach } from 'vitest';
+import { addAuditEvent, addLog, appStore, auditEventsAtom, currentSessionAtom, eventLogAtom, mergeMessage, messagesAtom, resetClientState, setCurrentSession, setHistory } from './stores';
 
 describe('client state transitions', () => {
   beforeEach(() => {
-    currentSession.set('');
-    messages.set([]);
-    auditEvents.set([]);
-    eventLog.set([]);
+    resetClientState();
   });
 
   it('adopts the first incoming chat session and merges updates by message id', () => {
@@ -28,8 +24,8 @@ describe('client state transitions', () => {
       streaming: false
     });
 
-    expect(get(currentSession)).toBe('session-a');
-    expect(get(messages)).toEqual([
+    expect(appStore.get(currentSessionAtom)).toBe('session-a');
+    expect(appStore.get(messagesAtom)).toEqual([
       {
         sessionId: 'session-a',
         messageId: 'rpc-1',
@@ -54,14 +50,14 @@ describe('client state transitions', () => {
       streaming: false
     });
 
-    expect(get(messages)).toHaveLength(0);
+    expect(appStore.get(messagesAtom)).toHaveLength(0);
   });
 
   it('deduplicates audit events and keeps the newest payload', () => {
     addAuditEvent({ id: 'audit-1', title: 'tool old', subtitle: '', payload: { step: 1 } });
     addAuditEvent({ id: 'audit-1', title: 'tool new', subtitle: '', payload: { step: 2 } });
 
-    expect(get(auditEvents)).toEqual([{ id: 'audit-1', title: 'tool new', subtitle: '', payload: { step: 2 } }]);
+    expect(appStore.get(auditEventsAtom)).toEqual([{ id: 'audit-1', title: 'tool new', subtitle: '', payload: { step: 2 } }]);
   });
 
   it('keeps a bounded event log', () => {
@@ -69,7 +65,7 @@ describe('client state transitions', () => {
       addLog(`event ${String(index)}`);
     }
 
-    expect(get(eventLog)).toHaveLength(120);
-    expect(get(eventLog)[0]?.text).toBe('event 10');
+    expect(appStore.get(eventLogAtom)).toHaveLength(120);
+    expect(appStore.get(eventLogAtom)[0]?.text).toBe('event 10');
   });
 });

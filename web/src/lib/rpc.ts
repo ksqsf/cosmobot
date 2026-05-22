@@ -1,6 +1,5 @@
-import { get } from 'svelte/store';
 import { arrayOf, booleanValue, err, field, numberValue, ok, optionalField, stringValue, unknownRecord, type DecodeResult } from './decoders';
-import { addAuditEvent, addLog, connection, currentSession, mergeMessage, sessions, setCurrentSession, setHistory } from './stores';
+import { addAuditEvent, addLog, appStore, connectionAtom, currentSessionAtom, mergeMessage, setCurrentSession, setHistory, setSessions, updateSessions } from './stores';
 import type { AuditEvent, ChatAttachment, ChatMessage, IncomingRpcMessage, MessageRole, QueuedAttachment, RpcConfig, RpcNotification, RpcResponse, SessionSummary } from './types';
 
 type PendingRequest = {
@@ -11,7 +10,7 @@ type PendingRequest = {
 };
 
 const storageKey = 'cosmobot.web.rpc';
-const tokenStorageKey = 'cosmobot.web.rpc.token';
+const legacySessionTokenStorageKey = 'cosmobot.web.rpc.token';
 const pending = new Map<string, PendingRequest>();
 
 let ws: WebSocket | null = null;
@@ -26,45 +25,46 @@ export const defaultConfig = (): RpcConfig => ({
 
 export const loadConfig = (): RpcConfig => {
   const fallback = defaultConfig();
-  const token = sessionStorage.getItem(tokenStorageKey) ?? '';
+  const legacySessionToken = sessionStorage.getItem(legacySessionTokenStorageKey) ?? '';
   const raw = localStorage.getItem(storageKey);
   if (raw === null) {
-    return { ...fallback, token };
+    return { ...fallback, token: legacySessionToken };
   }
   try {
     const parsed = unknownRecord(JSON.parse(raw), 'config');
     if (!parsed.ok) {
       localStorage.removeItem(storageKey);
-      return { ...fallback, token };
+      return { ...fallback, token: legacySessionToken };
     }
+    const token = typeof parsed.value['token'] === 'string' ? parsed.value['token'] : legacySessionToken;
     const config = {
       url: sanitizeRpcUrl(typeof parsed.value['url'] === 'string' ? parsed.value['url'] : fallback.url),
       token
     };
-    if ('token' in parsed.value || parsed.value['url'] !== config.url) {
-      localStorage.setItem(storageKey, JSON.stringify({ url: config.url }));
+    if (parsed.value['url'] !== config.url || parsed.value['token'] !== config.token) {
+      saveConfig(config);
     }
     return config;
   } catch {
     localStorage.removeItem(storageKey);
-    return { ...fallback, token };
+    return { ...fallback, token: legacySessionToken };
   }
 };
 
 export const saveConfig = (config: RpcConfig): void => {
-  localStorage.setItem(storageKey, JSON.stringify({ url: sanitizeRpcUrl(config.url) }));
-  sessionStorage.setItem(tokenStorageKey, config.token);
+  localStorage.setItem(storageKey, JSON.stringify({ url: sanitizeRpcUrl(config.url), token: config.token }));
+  sessionStorage.removeItem(legacySessionTokenStorageKey);
 };
 
 export const connectRpc = (config: RpcConfig): void => {
   disconnectRpc();
   saveConfig(config);
-  connection.set({ status: 'connecting', message: 'Connecting' });
-  const socket = new WebSocket(buildUrl(config));
+  appStore.set(connectionAtom, { status: 'connecting', message: 'Connecting' });
+  const socket = new WebSocket(buildUrl(config), websocketProtocols(config));
   ws = socket;
 
   socket.addEventListener('open', () => {
-    connection.set({ status: 'connected', message: 'Connected' });
+    appStore.set(connectionAtom, { status: 'connected', message: 'Connected' });
     addLog('Connected');
     void refreshSessions();
     void refreshAudit();
@@ -73,7 +73,7 @@ export const connectRpc = (config: RpcConfig): void => {
     handleFrame(event.data);
   });
   socket.addEventListener('error', () => {
-    connection.set({ status: 'error', message: 'Connection error' });
+    appStore.set(connectionAtom, { status: 'error', message: 'Connection error' });
   });
   socket.addEventListener('close', () => {
     if (ws === socket) {
@@ -84,7 +84,7 @@ export const connectRpc = (config: RpcConfig): void => {
       request.reject(new Error('WebSocket closed'));
       pending.delete(id);
     }
-    connection.set({ status: 'disconnected', message: 'Disconnected' });
+    appStore.set(connectionAtom, { status: 'disconnected', message: 'Disconnected' });
     addLog('Disconnected');
   });
 };
@@ -129,15 +129,16 @@ export const requestFirst = async (methods: string[], params: Record<string, unk
   throw lastError ?? new Error('No RPC method was available');
 };
 
-export const openSession = async (label: string): Promise<void> => {
+export const openSession = async (label: string): Promise<string> => {
   const result = await requestRpc('chat.open_session', label.length > 0 ? { label } : {});
   const sessionId = decodeSessionId(result);
   if (sessionId === '') {
     throw new Error('chat.open_session returned no session id');
   }
-  sessions.update((rows) => [{ id: sessionId, title: label.length > 0 ? label : sessionId }, ...rows.filter((row) => row.id !== sessionId)]);
+  updateSessions((rows) => [{ id: sessionId, title: label.length > 0 ? label : sessionId }, ...rows.filter((row) => row.id !== sessionId)]);
   setCurrentSession(sessionId);
   setHistory([]);
+  return sessionId;
 };
 
 export const refreshSessions = async (): Promise<void> => {
@@ -145,7 +146,7 @@ export const refreshSessions = async (): Promise<void> => {
     const result = await requestRpc('chat.list_sessions', {});
     const decoded = decodeSessions(result);
     if (decoded.ok) {
-      sessions.set(decoded.value);
+      setSessions(decoded.value);
     } else {
       addLog(`Session list decode failed: ${decoded.error}`);
     }
@@ -194,8 +195,8 @@ export const forkFrom = async (sessionId: string, messageId: string): Promise<vo
 
 export const deleteSession = async (sessionId: string): Promise<void> => {
   await requestRpc('chat.delete_session', { sessionId, session_id: sessionId });
-  sessions.update((rows) => rows.filter((row) => row.id !== sessionId));
-  if (get(currentSession) === sessionId) {
+  updateSessions((rows) => rows.filter((row) => row.id !== sessionId));
+  if (appStore.get(currentSessionAtom) === sessionId) {
     setCurrentSession('');
     setHistory([]);
   }
@@ -203,7 +204,7 @@ export const deleteSession = async (sessionId: string): Promise<void> => {
 
 export const renameSession = async (sessionId: string, title: string): Promise<void> => {
   await requestRpc('chat.rename_session', { sessionId, session_id: sessionId, title, label: title });
-  sessions.update((rows) => rows.map((row) => (row.id === sessionId ? { ...row, title } : row)));
+  updateSessions((rows) => rows.map((row) => (row.id === sessionId ? { ...row, title } : row)));
 };
 
 export const uploadAttachment = async (queued: QueuedAttachment): Promise<ChatAttachment> => {
@@ -231,16 +232,7 @@ export const deleteAttachment = async (attachmentId: string): Promise<void> => {
 };
 
 export const openAttachment = async (attachment: ChatAttachment): Promise<void> => {
-  const config = loadConfig();
-  const url = attachmentFetchUrl(config, attachment);
-  const response = await fetch(url.toString(), {
-    credentials: 'omit',
-    headers: config.token.length > 0 ? { Authorization: `Bearer ${config.token}` } : {}
-  });
-  if (!response.ok) {
-    throw new Error(`Attachment request failed: ${String(response.status)}`);
-  }
-  const blob = await response.blob();
+  const blob = await fetchAttachmentBlob(attachment);
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = objectUrl;
@@ -253,6 +245,16 @@ export const openAttachment = async (attachment: ChatAttachment): Promise<void> 
     URL.revokeObjectURL(objectUrl);
   }, 60000);
 };
+
+export const fetchAttachmentObjectUrl = async (attachment: ChatAttachment): Promise<string> => {
+  const blob = await fetchAttachmentBlob(attachment);
+  return URL.createObjectURL(blob);
+};
+
+export const canRenderInlineImage = (attachment: ChatAttachment): boolean =>
+  attachment.kind === 'image' &&
+  (attachment.mediaType.toLowerCase() === 'image/*' ||
+    ['image/png', 'image/jpeg', 'image/jpg', 'image/gif', 'image/webp', 'image/avif'].includes(attachment.mediaType.toLowerCase()));
 
 export const refreshAudit = async (): Promise<void> => {
   try {
@@ -358,7 +360,12 @@ export const decodeChatMessage = (value: unknown, fallbackSessionId = ''): Decod
   const attachments = decodeAttachmentList(record.value['attachments'] ?? []);
   const images = arrayOf(stringValue)(record.value['imageUrls'] ?? record.value['image_urls'] ?? [], 'message.imageUrls');
   const imageAttachments: ChatAttachment[] = images.ok
-    ? images.value.map((url, index) => ({ id: `${messageId}-image-${String(index)}`, name: url.split('/').at(-1) ?? 'image', mediaType: 'image/*', size: 0, kind: 'image', url }))
+    ? images.value.flatMap((rawUrl, index) => {
+        const url = safeImageUrl(rawUrl);
+        return url === undefined
+          ? []
+          : [{ id: `${messageId}-image-${String(index)}`, name: imageName(url), mediaType: 'image/*', size: 0, kind: 'image', url }];
+      })
     : [];
   const message: ChatMessage = {
     sessionId,
@@ -431,7 +438,7 @@ const handleNotification = (notification: RpcNotification): void => {
   switch (notification.method) {
     case 'chat.message':
     case 'chat.message_update': {
-      const decoded = decodeChatMessage(notification.params, get(currentSession));
+      const decoded = decodeChatMessage(notification.params, appStore.get(currentSessionAtom));
       if (decoded.ok) {
         mergeMessage({ ...decoded.value, streaming: notification.method === 'chat.message_update' });
       } else {
@@ -451,15 +458,22 @@ const handleNotification = (notification: RpcNotification): void => {
 
 const buildUrl = (config: RpcConfig): string => {
   const url = new URL(sanitizeRpcUrl(config.url));
-  if (config.token.length > 0) {
-    url.searchParams.set('access_token', config.token);
-  }
   return url.toString();
 };
 
+const websocketProtocols = (config: RpcConfig): string[] => {
+  if (config.token.length === 0) {
+    return [];
+  }
+  return ['cosmobot-rpc', `cosmobot-token.${base64Url(config.token)}`];
+};
+
+const base64Url = (value: string): string =>
+  btoa(value).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+
 const sanitizeRpcUrl = (rawUrl: string): string => {
   const url = new URL(rawUrl, window.location.href);
-  url.searchParams.delete('access_token');
+  removeAccessTokenParams(url);
   return url.toString();
 };
 
@@ -473,8 +487,21 @@ const attachmentFetchUrl = (config: RpcConfig, attachment: ChatAttachment): URL 
   if (url.origin !== rpcOrigin || !url.pathname.startsWith('/attachments/')) {
     throw new Error('Attachment URL is outside the RPC attachment endpoint');
   }
-  url.searchParams.delete('access_token');
+  removeAccessTokenParams(url);
   return url;
+};
+
+const fetchAttachmentBlob = async (attachment: ChatAttachment): Promise<Blob> => {
+  const config = loadConfig();
+  const url = attachmentFetchUrl(config, attachment);
+  const response = await fetch(url.toString(), {
+    credentials: 'omit',
+    headers: config.token.length > 0 ? { Authorization: `Bearer ${config.token}` } : {}
+  });
+  if (!response.ok) {
+    throw new Error(`Attachment request failed: ${String(response.status)}`);
+  }
+  return response.blob();
 };
 
 const defaultWsUrl = (): string => {
@@ -594,11 +621,37 @@ const fileToBase64 = async (file: File): Promise<string> => {
 
 const safeAttachmentUrl = (rawUrl: string | undefined, attachmentId: string): string => {
   const url = new URL(rawUrl ?? `/attachments/${encodeURIComponent(attachmentId)}`, window.location.origin);
-  url.searchParams.delete('access_token');
+  removeAccessTokenParams(url);
   if (url.origin === window.location.origin && url.pathname.startsWith('/attachments/')) {
     return `${url.pathname}${url.search}${url.hash}`;
   }
   return `/attachments/${encodeURIComponent(attachmentId)}`;
+};
+
+const safeImageUrl = (rawUrl: string): string | undefined => {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'https:') {
+      return undefined;
+    }
+    removeAccessTokenParams(url);
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+};
+
+const imageName = (url: string): string => {
+  const pathName = new URL(url).pathname;
+  return pathName.split('/').filter(Boolean).at(-1) ?? 'image';
+};
+
+const removeAccessTokenParams = (url: URL): void => {
+  for (const key of Array.from(url.searchParams.keys())) {
+    if (key.toLowerCase() === 'access_token') {
+      url.searchParams.delete(key);
+    }
+  }
 };
 
 const optionalText = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);

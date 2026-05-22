@@ -28,13 +28,14 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Char8 as ByteStringChar8
+import Data.Char (isSpace)
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.FileSystem as FileSystem
 import qualified JSONRPC
 import qualified Network.HTTP.Types as Http
-import qualified Network.HTTP.Types.URI as URI
 import qualified Network.Wai as Wai
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WebSockets as WaiWS
@@ -112,7 +113,7 @@ rpcServerApp cfg rpcState callbacks pending
             , WS.rejectBody = "not found"
             }
   | requestIsAuthorized cfg (WS.pendingRequest pending) = do
-      conn <- liftIO (WS.acceptRequest pending)
+      conn <- liftIO (acceptRpcRequest pending)
       serveAcceptedClient cfg rpcState callbacks conn
   | otherwise =
       liftIO $
@@ -530,11 +531,22 @@ rpcSessionIdText (State.RpcSessionId value) =
 
 requestIsAuthorized :: Config.Config -> WS.RequestHead -> Bool
 requestIsAuthorized cfg request =
-  queryAccessToken request == Just expectedToken
-    || authorizationBearer request == Just expectedToken
+  authorizationBearer request == Just expectedToken
+    || subprotocolAccessToken request == Just expectedToken
   where
     Config.Config{token} = cfg
     expectedToken = TextEncoding.encodeUtf8 token
+
+acceptRpcRequest :: WS.PendingConnection -> IO WS.Connection
+acceptRpcRequest pending
+  | "cosmobot-rpc" `elem` requestedSubprotocols (WS.pendingRequest pending) =
+      WS.acceptRequestWith pending $
+        WS.AcceptRequest
+          { WS.acceptSubprotocol = Just "cosmobot-rpc"
+          , WS.acceptHeaders = []
+          }
+  | otherwise =
+      WS.acceptRequest pending
 
 requestIsRpcPath :: WS.RequestHead -> Bool
 requestIsRpcPath request =
@@ -647,15 +659,45 @@ httpRequestIsAuthorized cfg request =
     Config.Config{token} = cfg
     expectedToken = TextEncoding.encodeUtf8 token
 
-queryAccessToken :: WS.RequestHead -> Maybe ByteString
-queryAccessToken request =
-  join (snd <$> find ((== "access_token") . fst) (URI.parseQuery queryBytes))
-  where
-    (_, queryBytes) = ByteString.break (== questionMark) request.requestPath
-
 authorizationBearer :: WS.RequestHead -> Maybe ByteString
 authorizationBearer request =
   ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) request.requestHeaders)
+
+subprotocolAccessToken :: WS.RequestHead -> Maybe ByteString
+subprotocolAccessToken request =
+  listToMaybe (mapMaybe decodeProtocolToken (requestedSubprotocols request))
+
+requestedSubprotocols :: WS.RequestHead -> [ByteString]
+requestedSubprotocols request =
+  case snd <$> find ((== "Sec-WebSocket-Protocol") . fst) request.requestHeaders of
+    Nothing ->
+      []
+    Just value ->
+      map stripAsciiByteString (ByteStringChar8.split ',' value)
+
+decodeProtocolToken :: ByteString -> Maybe ByteString
+decodeProtocolToken protocol = do
+  encoded <- ByteString.stripPrefix "cosmobot-token." protocol
+  either (const Nothing) Just (Base64.decode (padBase64Url (ByteString.map fromUrlChar encoded)))
+  where
+
+    fromUrlChar char
+      | char == 45 = 43
+      | char == 95 = 47
+      | otherwise = char
+
+padBase64Url :: ByteString -> ByteString
+padBase64Url value =
+  value <> ByteString.replicate padding 61
+  where
+    padding =
+      case ByteString.length value `mod` 4 of
+        0 -> 0
+        rest -> 4 - rest
+
+stripAsciiByteString :: ByteString -> ByteString
+stripAsciiByteString =
+  ByteStringChar8.dropWhile isSpace . ByteStringChar8.dropWhileEnd isSpace
 
 httpAuthorizationBearer :: Wai.Request -> Maybe ByteString
 httpAuthorizationBearer request =
@@ -676,7 +718,7 @@ baseSecurityHeaders headers =
 staticHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
 staticHeaders headers =
   baseSecurityHeaders headers
-    <> [ ("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+    <> [ ("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' https: blob: data:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
        ]
 
 attachmentHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders

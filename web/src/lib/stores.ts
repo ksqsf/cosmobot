@@ -1,17 +1,19 @@
-import { get, writable } from 'svelte/store';
+import { atom, createStore } from 'jotai/vanilla';
 import type { AuditEvent, ChatMessage, ConnectionStatus, EventLogEntry, SessionSummary } from './types';
 
-export const connection = writable<{ status: ConnectionStatus; message: string }>({
+export const appStore = createStore();
+
+export const connectionAtom = atom<{ status: ConnectionStatus; message: string }>({
   status: 'disconnected',
   message: 'Disconnected'
 });
 
-export const sessions = writable<SessionSummary[]>([]);
-export const currentSession = writable<string>('');
-export const messages = writable<ChatMessage[]>([]);
-export const auditEvents = writable<AuditEvent[]>([]);
-export const selectedAudit = writable<string | null>(null);
-export const eventLog = writable<EventLogEntry[]>([]);
+export const sessionsAtom = atom<SessionSummary[]>([]);
+export const currentSessionAtom = atom<string>('');
+export const messagesAtom = atom<ChatMessage[]>([]);
+export const auditEventsAtom = atom<AuditEvent[]>([]);
+export const selectedAuditAtom = atom<string | null>(null);
+export const eventLogAtom = atom<EventLogEntry[]>([]);
 
 let nextLogId = 1;
 
@@ -22,38 +24,58 @@ export const addLog = (text: string): void => {
     text
   };
   nextLogId += 1;
-  eventLog.update((rows) => [...rows, entry].slice(-120));
+  appStore.set(eventLogAtom, [...appStore.get(eventLogAtom), entry].slice(-120));
 };
 
 export const setCurrentSession = (sessionId: string): void => {
-  currentSession.set(sessionId);
+  appStore.set(currentSessionAtom, sessionId);
 };
 
 export const setHistory = (history: ChatMessage[]): void => {
-  messages.set(history);
+  appStore.set(messagesAtom, history);
+};
+
+export const setSessions = (rows: SessionSummary[]): void => {
+  appStore.set(sessionsAtom, rows);
+};
+
+export const updateSessions = (update: (rows: SessionSummary[]) => SessionSummary[]): void => {
+  appStore.set(sessionsAtom, update(appStore.get(sessionsAtom)));
 };
 
 export const mergeMessage = (message: ChatMessage): void => {
-  if (message.sessionId !== '' && get(currentSession) !== '' && message.sessionId !== get(currentSession)) {
+  const selectedSession = appStore.get(currentSessionAtom);
+  if (message.sessionId !== '' && selectedSession !== '' && message.sessionId !== selectedSession) {
     return;
   }
-  if (get(currentSession) === '' && message.sessionId !== '') {
-    currentSession.set(message.sessionId);
+  if (selectedSession === '' && message.sessionId !== '') {
+    appStore.set(currentSessionAtom, message.sessionId);
   }
-  messages.update((rows) => {
-    const index = rows.findIndex((row) => row.messageId === message.messageId);
-    if (index === -1) {
-      return [...rows, message];
-    }
-    const copy = [...rows];
-    const existing = copy[index];
-    if (existing !== undefined) {
-      copy[index] = { ...existing, ...message };
-    }
-    return copy;
-  });
+  appStore.set(
+    messagesAtom,
+    mergeMessageRows(appStore.get(messagesAtom), message)
+  );
+};
+
+export const mergeMessageRows = (rows: ChatMessage[], message: ChatMessage): ChatMessage[] => {
+  const index = rows.findIndex((row) => row.messageId === message.messageId);
+  if (index === -1) {
+    return [...rows, message];
+  }
+  return rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...message } : row));
 };
 
 export const addAuditEvent = (event: AuditEvent): void => {
-  auditEvents.update((rows) => [event, ...rows.filter((row) => row.id !== event.id)].slice(0, 200));
+  appStore.set(auditEventsAtom, [event, ...appStore.get(auditEventsAtom).filter((row) => row.id !== event.id)].slice(0, 200));
+};
+
+export const resetClientState = (): void => {
+  appStore.set(currentSessionAtom, '');
+  appStore.set(messagesAtom, []);
+  appStore.set(sessionsAtom, []);
+  appStore.set(auditEventsAtom, []);
+  appStore.set(selectedAuditAtom, null);
+  appStore.set(eventLogAtom, []);
+  appStore.set(connectionAtom, { status: 'disconnected', message: 'Disconnected' });
+  nextLogId = 1;
 };

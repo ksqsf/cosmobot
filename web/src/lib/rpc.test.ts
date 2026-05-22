@@ -22,7 +22,7 @@ describe('runtime RPC decoders', () => {
       message_id: 'stable-message',
       role: 'assistant',
       content: 'stream text',
-      image_urls: ['https://example.test/image.png'],
+      image_urls: ['https://example.test/image.png?access_token=should-not-leak&ok=1'],
       attachments: [{ attachmentId: 'file-1', filename: 'notes.txt', content_type: 'text/plain', size: 12 }]
     });
 
@@ -32,6 +32,7 @@ describe('runtime RPC decoders', () => {
       expect(decoded.value.messageId).toBe('stable-message');
       expect(decoded.value.attachments).toHaveLength(2);
       expect(decoded.value.attachments[0]?.url).toBe('/attachments/file-1');
+      expect(decoded.value.attachments[1]?.url).toBe('https://example.test/image.png?ok=1');
     }
   });
 
@@ -57,8 +58,8 @@ describe('runtime RPC decoders', () => {
     const config = loadConfig();
 
     expect(config.url).toBe('ws://localhost/rpc');
-    expect(config.token).toBe('tab-token');
-    expect(localStorage.getItem('cosmobot.web.rpc')).toBe(JSON.stringify({ url: 'ws://localhost/rpc' }));
+    expect(config.token).toBe('old-token');
+    expect(localStorage.getItem('cosmobot.web.rpc')).toBe(JSON.stringify({ url: 'ws://localhost/rpc', token: 'old-token' }));
   });
 
   it('drops malformed persisted config instead of keeping legacy token material', () => {

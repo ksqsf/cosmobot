@@ -16,11 +16,9 @@ import qualified Bot.RPC.Protocol as Protocol
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Encode.Pretty as AesonPretty
 import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
-import qualified Network.HTTP.Types.URI as HttpURI
 import qualified Network.WebSockets as WS
 import qualified Toml
 import Toml.Schema
@@ -48,7 +46,7 @@ runRpcClientCommand configPath command = do
   when (Text.null cfg.token) $
     fail "rpc.token must be configured for RPC client authentication"
   let request = requestForCommand command
-  WS.runClient cfg.host cfg.port (websocketPath cfg) \conn -> do
+  WS.runClientWith cfg.host cfg.port "/rpc" WS.defaultConnectionOptions (authHeaders cfg) \conn -> do
     WS.sendTextData conn (Aeson.encode (requestValue request))
     responseBytes <- WS.receiveData conn
     responseValue <- case Aeson.eitherDecodeStrict' responseBytes of
@@ -87,6 +85,6 @@ requestValue :: Protocol.RpcRequest -> Aeson.Value
 requestValue =
   Aeson.toJSON
 
-websocketPath :: RPCConfig.Config -> String
-websocketPath RPCConfig.Config{token} =
-  "/rpc?access_token=" <> ByteStringChar8.unpack (HttpURI.urlEncode True (TextEncoding.encodeUtf8 token))
+authHeaders :: RPCConfig.Config -> WS.Headers
+authHeaders RPCConfig.Config{token} =
+  [("Authorization", "Bearer " <> TextEncoding.encodeUtf8 token)]
