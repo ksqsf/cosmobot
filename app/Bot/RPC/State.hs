@@ -46,8 +46,10 @@ import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Storage.Attachment as Attachment
 import qualified Bot.Storage.RPC as Storage
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.STM as STM
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
@@ -216,7 +218,7 @@ deleteChatSession :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) 
 deleteChatSession sessionId =
   Storage.deleteSession sessionId.unRpcSessionId
 
-enqueueChatMessage :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> RpcChatSend -> Eff es (Either Text (Maybe IncomingMessage))
+enqueueChatMessage :: (Concurrent :> es, StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcState -> RpcChatSend -> Eff es (Either Text (Maybe IncomingMessage))
 enqueueChatMessage rpcState chatSend = do
   stored <- Storage.appendMessage
     chatSend.sessionId.unRpcSessionId
@@ -233,8 +235,8 @@ enqueueChatMessage rpcState chatSend = do
       pure (Right Nothing)
     Right (Just messageRow) -> do
       rememberMessageNumber rpcState messageRow.messageId
-      let message = rpcIncomingMessage chatSend messageRow
-          chatMessage = storedMessageToRpc messageRow
+      message <- rpcIncomingMessage chatSend messageRow
+      let chatMessage = storedMessageToRpc messageRow
       STM.atomically (STM.writeTChan rpcState.inbound message)
       broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" chatMessage))
       pure (Right (Just message))
@@ -357,8 +359,8 @@ imageMediaType path =
     ".webp" -> "image/webp"
     _ -> "application/octet-stream"
 
-rpcIncomingMessage :: RpcChatSend -> Storage.StoredChatMessage -> IncomingMessage
-rpcIncomingMessage chatSend messageRow =
+rpcIncomingMessage :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcChatSend -> Storage.StoredChatMessage -> Eff es IncomingMessage
+rpcIncomingMessage chatSend messageRow = do
   let sessionText = chatSend.sessionId.unRpcSessionId
       canonicalSend :: RpcChatSend
       canonicalSend =
@@ -369,7 +371,8 @@ rpcIncomingMessage chatSend messageRow =
           , attachments = map storedAttachmentToRpc messageRow.attachments
           , replyToMessageId = chatSend.replyToMessageId
           }
-  in IncomingMessage
+  llmImageUrls <- rpcChatSendLlmImageUrls canonicalSend
+  pure IncomingMessage
     { platform = PlatformRPC
     , kind = ChatPrivate
     , chatId = Nothing
@@ -387,7 +390,7 @@ rpcIncomingMessage chatSend messageRow =
     , replyToMessageId = chatSend.replyToMessageId
     , mentions = []
     , mentionUsernames = []
-    , imageUrls = rpcChatSendImageUrls canonicalSend
+    , imageUrls = llmImageUrls
     , text = chatSendContextText canonicalSend
     , raw = Aeson.toJSON canonicalSend
     }
@@ -459,9 +462,33 @@ drainTBQueue queue =
 rpcClientQueueCapacity :: Natural
 rpcClientQueueCapacity = 256
 
-rpcChatSendImageUrls :: RpcChatSend -> [Text]
-rpcChatSendImageUrls chatSend =
-  ordNub (chatSend.imageUrls <> [attachment.url | attachment <- chatSend.attachments, attachment.kind == "image"])
+rpcChatSendLlmImageUrls :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcChatSend -> Eff es [Text]
+rpcChatSendLlmImageUrls chatSend = do
+  attachmentRefs <- catMaybes <$> traverse attachmentDataImageRef (filter ((== "image") . (.kind)) chatSend.attachments)
+  pure (ordNub (filter isDirectLlmImageRef chatSend.imageUrls <> attachmentRefs))
+
+attachmentDataImageRef :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcChatAttachmentRef -> Eff es (Maybe Text)
+attachmentDataImageRef attachment =
+  Attachment.loadAttachment attachment.attachmentId >>= \case
+    Nothing ->
+      pure Nothing
+    Just stored -> do
+      exists <- FileSystem.doesFileExist stored.path
+      if exists && "image/" `Text.isPrefixOf` Text.toLower stored.mediaType
+        then do
+          bytes <- FileSystemByteString.readFile stored.path
+          pure (Just (dataImageRef stored.mediaType bytes))
+        else
+          pure Nothing
+
+dataImageRef :: Text -> ByteString -> Text
+dataImageRef mediaType bytes =
+  "data:" <> mediaType <> ";base64," <> TextEncoding.decodeUtf8 (Base64.encode bytes)
+
+isDirectLlmImageRef :: Text -> Bool
+isDirectLlmImageRef ref =
+  let stripped = Text.toLower (Text.strip ref)
+  in "https://" `Text.isPrefixOf` stripped || "data:image/" `Text.isPrefixOf` stripped
 
 chatSendContextText :: RpcChatSend -> Text
 chatSendContextText chatSend

@@ -401,7 +401,7 @@ dispatchDeleteAttachment request =
             ]
 
 dispatchChatSend
-  :: (Concurrent :> es, Storage.Storage :> es)
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
   => State.RpcState
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse

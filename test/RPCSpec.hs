@@ -290,6 +290,7 @@ testAttachmentLifecycle =
           Aeson.object
             [ "sessionId" Aeson..= ("browser-1" :: Text)
             , "text" Aeson..= ("see attached" :: Text)
+            , "imageUrls" Aeson..= [imageAttachment.url, "https://example.test/context.png"]
             , "attachments" Aeson..= [attachment, imageAttachment]
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
@@ -310,7 +311,7 @@ testAttachmentLifecycle =
     oversizedResponse @?= responseError "invalid_params" "Error in $: encoded attachment exceeds configured limit"
     sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
     assertBool "non-image attachment should be visible in incoming context" ("Attachments:" `Text.isInfixOf` incoming.text)
-    incoming.imageUrls @?= [imageAttachment.url]
+    incoming.imageUrls @?= ["https://example.test/context.png", "data:image/png;base64,AA=="]
     assertEqual [i|history response: #{show historyResponse :: String}|] [[attachment.attachmentId, imageAttachment.attachmentId]] (responseMessageAttachments historyResponse)
     deleteReferencedResponse @?=
       responseResult
