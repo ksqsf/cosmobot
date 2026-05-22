@@ -28,8 +28,6 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
-import qualified Data.ByteString.Char8 as ByteStringChar8
-import Data.Char (isSpace)
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -112,7 +110,7 @@ rpcServerApp cfg rpcState callbacks pending
             , WS.rejectBody = "not found"
             }
   | requestIsAuthorized cfg (WS.pendingRequest pending) = do
-      conn <- liftIO (acceptRpcRequest pending)
+      conn <- liftIO (WS.acceptRequest pending)
       serveAcceptedClient cfg rpcState callbacks conn
   | otherwise =
       liftIO $
@@ -531,21 +529,9 @@ rpcSessionIdText (State.RpcSessionId value) =
 requestIsAuthorized :: Config.Config -> WS.RequestHead -> Bool
 requestIsAuthorized cfg request =
   authorizationBearer request == Just expectedToken
-    || subprotocolAccessToken request == Just expectedToken
   where
     Config.Config{token} = cfg
     expectedToken = TextEncoding.encodeUtf8 token
-
-acceptRpcRequest :: WS.PendingConnection -> IO WS.Connection
-acceptRpcRequest pending
-  | "cosmobot-rpc" `elem` requestedSubprotocols (WS.pendingRequest pending) =
-      WS.acceptRequestWith pending $
-        WS.AcceptRequest
-          { WS.acceptSubprotocol = Just "cosmobot-rpc"
-          , WS.acceptHeaders = []
-          }
-  | otherwise =
-      WS.acceptRequest pending
 
 requestIsRpcPath :: WS.RequestHead -> Bool
 requestIsRpcPath request =
@@ -556,8 +542,6 @@ requestIsRpcPath request =
 httpApp :: (Storage.Storage :> es, FileSystem.FileSystem :> es) => (forall a. Eff es a -> IO a) -> Config.Config -> Wai.Application
 httpApp runInIO cfg request respond =
   case (Wai.requestMethod request, Wai.pathInfo request) of
-    ("OPTIONS", ["attachments", _attachmentId]) ->
-      respond attachmentPreflightResponse
     ("GET", ["attachments", attachmentId])
       | httpRequestIsAuthorized cfg request ->
           serveAttachment runInIO attachmentId respond
@@ -592,7 +576,7 @@ serveAttachment runInIO attachmentId respond = do
           respond $
             Wai.responseFile
               Http.status200
-              ( corsAttachmentHeaders
+              ( attachmentHeaders
                   [ ("Content-Type", TextEncoding.encodeUtf8 stored.mediaType)
                   , ("Content-Disposition", "attachment; filename=\"" <> safeHeaderBytes stored.name <> "\"")
                   ]
@@ -613,42 +597,6 @@ authorizationBearer :: WS.RequestHead -> Maybe ByteString
 authorizationBearer request =
   ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) request.requestHeaders)
 
-subprotocolAccessToken :: WS.RequestHead -> Maybe ByteString
-subprotocolAccessToken request =
-  listToMaybe (mapMaybe decodeProtocolToken (requestedSubprotocols request))
-
-requestedSubprotocols :: WS.RequestHead -> [ByteString]
-requestedSubprotocols request =
-  case snd <$> find ((== "Sec-WebSocket-Protocol") . fst) request.requestHeaders of
-    Nothing ->
-      []
-    Just value ->
-      map stripAsciiByteString (ByteStringChar8.split ',' value)
-
-decodeProtocolToken :: ByteString -> Maybe ByteString
-decodeProtocolToken protocol = do
-  encoded <- ByteString.stripPrefix "cosmobot-token." protocol
-  either (const Nothing) Just (Base64.decode (padBase64Url (ByteString.map fromUrlChar encoded)))
-  where
-
-    fromUrlChar char
-      | char == 45 = 43
-      | char == 95 = 47
-      | otherwise = char
-
-padBase64Url :: ByteString -> ByteString
-padBase64Url value =
-  value <> ByteString.replicate padding 61
-  where
-    padding =
-      case ByteString.length value `mod` 4 of
-        0 -> 0
-        rest -> 4 - rest
-
-stripAsciiByteString :: ByteString -> ByteString
-stripAsciiByteString =
-  ByteStringChar8.dropWhile isSpace . ByteStringChar8.dropWhileEnd isSpace
-
 httpAuthorizationBearer :: Wai.Request -> Maybe ByteString
 httpAuthorizationBearer request =
   ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) (Wai.requestHeaders request))
@@ -659,11 +607,7 @@ textResponse status body =
 
 attachmentTextResponse :: Http.Status -> LazyByteString.ByteString -> Wai.Response
 attachmentTextResponse status body =
-  Wai.responseLBS status (corsAttachmentHeaders [("Content-Type", "text/plain; charset=utf-8")]) body
-
-attachmentPreflightResponse :: Wai.Response
-attachmentPreflightResponse =
-  Wai.responseLBS Http.status204 (corsAttachmentHeaders []) ""
+  Wai.responseLBS status (attachmentHeaders [("Content-Type", "text/plain; charset=utf-8")]) body
 
 baseSecurityHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
 baseSecurityHeaders headers =
@@ -677,15 +621,6 @@ attachmentHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
 attachmentHeaders headers =
   baseSecurityHeaders headers
     <> [ ("Cache-Control", "no-store")
-       ]
-
-corsAttachmentHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
-corsAttachmentHeaders headers =
-  attachmentHeaders headers
-    <> [ ("Access-Control-Allow-Origin", "*")
-       , ("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
-       , ("Access-Control-Allow-Headers", "Authorization, Content-Type")
-       , ("Access-Control-Max-Age", "600")
        ]
 
 questionMark :: Word8

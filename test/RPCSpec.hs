@@ -57,7 +57,7 @@ main =
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
       , testCase "chat.delete_session cascades fork descendants" testDeleteSessionCascadesForkDescendants
       , testCase "websocket server authenticates and handles JSON-RPC requests" testWebSocketServerAuthenticatesAndHandlesRequests
-      , testCase "HTTP server rejects static paths and protects attachment route" testHttpServerReturns404ForStaticAndProtectsAttachmentRoute
+      , testCase "HTTP server rejects static paths and protects attachment route" testHttpServerRejectsStaticAndProtectsAttachmentRoute
       ]
 
 testRequestParamsDefaultToEmptyObject :: IO ()
@@ -84,12 +84,12 @@ testOpenSessionReturnsGeneratedSessionId = do
   response <- runRpcStorage ":memory:" do
     rpcState <- RPC.newRpcState
     RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-      rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+      rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
   response @?=
     responseResult
       ( Aeson.object
-          [ "sessionId" Aeson..= ("browser-1" :: Text)
-          , "session" Aeson..= sessionValue "browser-1" (Just "browser") Nothing Nothing
+          [ "sessionId" Aeson..= ("local-1" :: Text)
+          , "session" Aeson..= sessionValue "local-1" (Just "local") Nothing Nothing
           ]
       )
 
@@ -98,11 +98,11 @@ testChatSendConstructsIncomingMessage = do
   (response, incoming) <- runRpcStorage ":memory:" do
     rpcState <- RPC.newRpcState
     _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-      rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+      rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
     response <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
       rpcRequest "chat.send" $
         Aeson.object
-          [ "session_id" Aeson..= ("browser-1" :: Text)
+          [ "session_id" Aeson..= ("local-1" :: Text)
           , "text" Aeson..= ("hello" :: Text)
           , "image_urls" Aeson..= ["https://example.test/image.png" :: Text]
           , "reply_to_message_id" Aeson..= ("rpc-0" :: Text)
@@ -110,10 +110,10 @@ testChatSendConstructsIncomingMessage = do
     incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
     pure (response, incoming)
 
-  response @?= responseResult (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text), "messageId" Aeson..= ("rpc-1" :: Text)])
+  response @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= ("rpc-1" :: Text)])
   incoming.platform @?= PlatformRPC
   incoming.kind @?= ChatPrivate
-  incoming.chatAliases @?= ["browser-1"]
+  incoming.chatAliases @?= ["local-1"]
   incoming.senderId @?= Just "rpc-user"
   incoming.text @?= "hello"
   incoming.imageUrls @?= ["https://example.test/image.png"]
@@ -161,11 +161,11 @@ testChatSendBroadcastsNotification = do
     rpcState <- RPC.newRpcState
     (_clientId, queue) <- RPC.registerClient rpcState
     _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-      rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+      rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
     _response <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
       rpcRequest "chat.send" $
         Aeson.object
-          [ "sessionId" Aeson..= ("browser-1" :: Text)
+          [ "sessionId" Aeson..= ("local-1" :: Text)
           , "text" Aeson..= ("hello" :: Text)
           ]
     RPC.readClient queue >>= \case
@@ -178,7 +178,7 @@ testChatSendBroadcastsNotification = do
   notification.method @?= "chat.message"
   notification.params @?=
     Aeson.object
-      [ "sessionId" Aeson..= ("browser-1" :: Text)
+      [ "sessionId" Aeson..= ("local-1" :: Text)
       , "messageId" Aeson..= ("rpc-1" :: Text)
       , "sender" Aeson..= ("user" :: Text)
       , "text" Aeson..= ("hello" :: Text)
@@ -284,18 +284,18 @@ testAttachmentLifecycle =
             , "data" Aeson..= (Text.replicate 8 "A" :: Text)
             ]
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
       sendResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.send" $
           Aeson.object
-            [ "sessionId" Aeson..= ("browser-1" :: Text)
+            [ "sessionId" Aeson..= ("local-1" :: Text)
             , "text" Aeson..= ("see attached" :: Text)
             , "imageUrls" Aeson..= [imageAttachment.url, "https://example.test/context.png"]
             , "attachments" Aeson..= [attachment, imageAttachment]
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
       historyResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text)])
+        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
       deleteReferencedResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.delete_attachment" (Aeson.object ["attachmentId" Aeson..= attachment.attachmentId])
       pure (uploadResponse, imageUploadResponse, unsafeMediaResponse, oversizedResponse, sendResponse, historyResponse, incoming, deleteReferencedResponse)
@@ -309,7 +309,7 @@ testAttachmentLifecycle =
     imageAttachment.kind @?= "image"
     unsafeMediaAttachment.mediaType @?= "application/octet-stream"
     oversizedResponse @?= responseError "invalid_params" "Error in $: encoded attachment exceeds configured limit"
-    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
+    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
     assertBool "non-image attachment should be visible in incoming context" ("Attachments:" `Text.isInfixOf` incoming.text)
     incoming.imageUrls @?= ["https://example.test/context.png", "data:image/png;base64,AA=="]
     assertEqual [i|history response: #{show historyResponse :: String}|] [[attachment.attachmentId, imageAttachment.attachmentId]] (responseMessageAttachments historyResponse)
@@ -328,41 +328,41 @@ testChatSessionsPersistAcrossRestart =
     firstResponse <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
       RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.send" $
           Aeson.object
-            [ "sessionId" Aeson..= ("browser-1" :: Text)
+            [ "sessionId" Aeson..= ("local-1" :: Text)
             , "text" Aeson..= ("persisted" :: Text)
             ]
 
-    firstResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
+    firstResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
 
     (listResponse, historyResponse, sendResponse) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       listResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.list_sessions" Aeson.Null
       historyResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text)])
+        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
       sendResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.send" $
           Aeson.object
-            [ "sessionId" Aeson..= ("browser-1" :: Text)
+            [ "sessionId" Aeson..= ("local-1" :: Text)
             , "text" Aeson..= ("after restart" :: Text)
             ]
       pure (listResponse, historyResponse, sendResponse)
 
     listResponse @?=
       responseResult
-        (Aeson.object ["sessions" Aeson..= [sessionValue "browser-1" (Just "browser") Nothing Nothing]])
+        (Aeson.object ["sessions" Aeson..= [sessionValue "local-1" (Just "local") Nothing Nothing]])
     historyResponse @?=
       responseResult
         ( Aeson.object
-            [ "sessionId" Aeson..= ("browser-1" :: Text)
-            , "messages" Aeson..= [messageValue "browser-1" "rpc-1" "persisted" Nothing]
+            [ "sessionId" Aeson..= ("local-1" :: Text)
+            , "messages" Aeson..= [messageValue "local-1" "rpc-1" "persisted" Nothing]
             ]
         )
-    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text), "messageId" Aeson..= Just ("rpc-2" :: Text)])
+    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("rpc-2" :: Text)])
 
 testRpcDriverPersistsAssistantRepliesAndEdits :: IO ()
 testRpcDriverPersistsAssistantRepliesAndEdits =
@@ -370,11 +370,11 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
     (replyId, edited) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
       _sent <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.send" $
           Aeson.object
-            [ "sessionId" Aeson..= ("browser-1" :: Text)
+            [ "sessionId" Aeson..= ("local-1" :: Text)
             , "text" Aeson..= ("question" :: Text)
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
@@ -389,7 +389,7 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
     historyResponse <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text)])
+        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
 
     responseMessageSummaries historyResponse @?=
       [ ("user", "rpc-1", "question")
@@ -414,18 +414,18 @@ testRpcDriverStoresLocalImageRepliesAsAttachments =
       FileSystemByteString.writeFile imagePath "fake-webp"
       rpcState <- RPC.newRpcState
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("browser" :: Text)])
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
       _sent <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.send" $
           Aeson.object
-            [ "sessionId" Aeson..= ("browser-1" :: Text)
+            [ "sessionId" Aeson..= ("local-1" :: Text)
             , "text" Aeson..= ("make an image" :: Text)
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
       let driver = RPC.rpcChatDriver cfg rpcState
       _reply <- driver.replyTo incoming ("done\n[image] file://" <> Text.pack imagePath)
       RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("browser-1" :: Text)])
+        rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
 
     responseMessageSummaries historyResponse @?=
       [ ("user", "rpc-1", "make an image")
@@ -563,8 +563,8 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
               ]
           )
 
-testHttpServerReturns404ForStaticAndProtectsAttachmentRoute :: IO ()
-testHttpServerReturns404ForStaticAndProtectsAttachmentRoute = do
+testHttpServerRejectsStaticAndProtectsAttachmentRoute :: IO ()
+testHttpServerRejectsStaticAndProtectsAttachmentRoute = do
   result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
@@ -585,11 +585,10 @@ testHttpServerReturns404ForStaticAndProtectsAttachmentRoute = do
         client = liftIO do
           manager <- HTTP.newManager HTTP.defaultManagerSettings
           root <- httpGet manager [i|http://127.0.0.1:#{port}/|]
-          attachmentPreflight <- httpOptions manager [i|http://127.0.0.1:#{port}/attachments/missing|]
           attachmentWithoutAuth <- httpGet manager [i|http://127.0.0.1:#{port}/attachments/missing|]
           attachmentWithAuth <- httpGetWithBearer manager "secret" [i|http://127.0.0.1:#{port}/attachments/missing|]
           response <- openSessionClient port "secret"
-          pure (root, attachmentPreflight, attachmentWithoutAuth, attachmentWithAuth, response)
+          pure (root, attachmentWithoutAuth, attachmentWithAuth, response)
     race server client
 
   case result of
@@ -597,15 +596,10 @@ testHttpServerReturns404ForStaticAndProtectsAttachmentRoute = do
       assertFailure "RPC HTTP integration test timed out"
     Just (Left ()) ->
       assertFailure "RPC HTTP server exited before client completed"
-    Just (Right (root, attachmentPreflight, attachmentWithoutAuth, attachmentWithAuth, response)) -> do
+    Just (Right (root, attachmentWithoutAuth, attachmentWithAuth, response)) -> do
       HTTP.responseStatus root @?= Http.status404
-      HTTP.responseStatus attachmentPreflight @?= Http.status204
-      responseHeader "Access-Control-Allow-Origin" attachmentPreflight @?= Just "*"
-      responseHeader "Access-Control-Allow-Headers" attachmentPreflight @?= Just "Authorization, Content-Type"
       HTTP.responseStatus attachmentWithoutAuth @?= Http.status401
-      responseHeader "Access-Control-Allow-Origin" attachmentWithoutAuth @?= Just "*"
       HTTP.responseStatus attachmentWithAuth @?= Http.status404
-      responseHeader "Access-Control-Allow-Origin" attachmentWithAuth @?= Just "*"
       response @?=
         responseResult
           ( Aeson.object
@@ -685,25 +679,6 @@ httpGetWithBearer manager token url = do
       , HTTP.requestHeaders = [("Authorization", "Bearer " <> token)]
       }
     manager
-
-httpOptions :: HTTP.Manager -> String -> IO (HTTP.Response LazyByteString.ByteString)
-httpOptions manager url = do
-  request <- HTTP.parseRequest url
-  HTTP.httpLbs
-    request
-      { HTTP.checkResponse = \_ _ -> pure ()
-      , HTTP.method = "OPTIONS"
-      , HTTP.requestHeaders =
-          [ ("Origin", "http://localhost:5173")
-          , ("Access-Control-Request-Method", "GET")
-          , ("Access-Control-Request-Headers", "authorization")
-          ]
-      }
-    manager
-
-responseHeader :: Http.HeaderName -> HTTP.Response body -> Maybe ByteString
-responseHeader name response =
-  snd <$> find ((== name) . fst) (HTTP.responseHeaders response)
 
 assertUnauthorizedRejected :: Either SomeException () -> IO ()
 assertUnauthorizedRejected = \case

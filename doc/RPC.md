@@ -1,9 +1,9 @@
 # Cosmobot RPC Protocol
 
 Cosmobot can expose a local WebSocket RPC endpoint from `cosmobot serve`.
-The RPC service is intended for local browser chat, audit inspection, and CLI
-queries against the running daemon. The wire envelope is JSON-RPC 2.0 over
-WebSocket, using the Haskell `jsonrpc` package for protocol types.
+The RPC service is intended for local chat, audit inspection, and CLI queries
+against the running daemon. The wire envelope is JSON-RPC 2.0 over WebSocket,
+using the Haskell `jsonrpc` package for protocol types.
 
 ## Configuration
 
@@ -21,25 +21,14 @@ attachment_max_bytes = 26214400
 
 `enabled` defaults to `false`. When `enabled = true`, `token` must be non-empty.
 The default host is loopback-only. Cosmobot serves the WebSocket RPC endpoint at
-`/rpc` and authenticated attachment bytes under `/attachments/<id>`. Serve the
-browser UI separately, for example with Vite during development or nginx in
-deployment.
+`/rpc` and authenticated attachment bytes under `/attachments/<id>`.
 
 ## Authentication
 
-Browser clients keep the token in tab-scoped state and authenticate the
-WebSocket with subprotocols:
-
-```text
-Sec-WebSocket-Protocol: cosmobot-rpc, cosmobot-token.BASE64URL_TOKEN
-```
-
-CLI clients may use `Authorization: Bearer TOKEN` during the WebSocket
+Clients authenticate with `Authorization: Bearer TOKEN` during the WebSocket
 handshake. Query-string tokens are not accepted for WebSocket authentication.
 HTTP attachment reads also use the bearer token header. Unauthorized WebSocket
-connections or attachment requests are rejected with HTTP 401. Do not put
-attachment tokens in query strings; the browser UI fetches attachments with
-`Authorization: Bearer TOKEN` and opens local blob URLs.
+connections or attachment requests are rejected with HTTP 401.
 
 ## Envelopes
 
@@ -143,13 +132,13 @@ superuser because possession of the RPC token is the authorization boundary.
 Creates a virtual chat session. `label` is optional.
 
 ```json
-{"jsonrpc":"2.0","id":"1","method":"chat.open_session","params":{"label":"browser"}}
+{"jsonrpc":"2.0","id":"1","method":"chat.open_session","params":{"label":"local"}}
 ```
 
 Result:
 
 ```json
-{"sessionId":"browser-1"}
+{"sessionId":"local-1"}
 ```
 
 Blank labels are ignored and use the base name `session`.
@@ -164,7 +153,7 @@ Injects a user message into the virtual RPC chat session.
   "jsonrpc": "2.0",
   "method": "chat.send",
   "params": {
-    "sessionId": "browser-1",
+    "sessionId": "local-1",
     "text": "!ask hello",
     "imageUrls": [],
     "attachments": [],
@@ -187,7 +176,7 @@ handlers.
 Result:
 
 ```json
-{"sessionId":"browser-1","messageId":"rpc-1"}
+{"sessionId":"local-1","messageId":"rpc-1"}
 ```
 
 The sent user message is also broadcast as a `chat.message` notification with
@@ -210,7 +199,7 @@ messages because forked sessions depend on parent history.
 
 ### `chat.upload_attachment`
 
-Stores a browser/RPC attachment before sending it in chat:
+Stores an RPC attachment before sending it in chat:
 
 ```json
 {
@@ -260,7 +249,7 @@ Bot replies are sent as `chat.message` notifications:
   "method": "chat.message",
   "jsonrpc": "2.0",
   "params": {
-    "sessionId": "browser-1",
+    "sessionId": "local-1",
     "messageId": "rpc-2",
     "text": "reply text"
   }
@@ -274,7 +263,7 @@ Editable reply stream updates are sent as `chat.message_update`:
   "method": "chat.message_update",
   "jsonrpc": "2.0",
   "params": {
-    "sessionId": "browser-1",
+    "sessionId": "local-1",
     "messageId": "rpc-2",
     "text": "updated reply text"
   }
@@ -301,23 +290,14 @@ Responses are printed as pretty JSON.
 Use `cosmobot rpc --config FILE ...` to read a config file other than
 `config.toml`.
 
-## Browser UI
-
-Serve the browser UI separately from the cosmobot RPC process. The browser
-client connects to `/rpc`, creates chat sessions, sends prompts, shows chat
-reply updates, lists recent audit records, subscribes to the live audit feed,
-and loads audit record details. In deployment, put both the UI and RPC endpoint
-behind the same reverse proxy origin so authenticated attachment fetches can use
-the RPC token without cross-origin credential handling.
-
 `/attachments/<id>` serves uploaded attachment bytes when authorized by the same
-bearer token used by the web app. Unauthorized requests return HTTP 401; missing
+bearer token used by RPC clients. Unauthorized requests return HTTP 401; missing
 attachments return HTTP 404.
 
 ## Limitations
 
-All connected RPC clients currently receive broadcast notifications. Browser
-chat filters messages by session id on the client side.
+All connected RPC clients currently receive broadcast notifications. Clients
+that only need one chat should filter messages by session id.
 
 The virtual RPC chat driver supports replies, streamed reply edits, audio/file
 fallback text, and mentions. It does not support deleting messages, fetching old
