@@ -9,7 +9,6 @@ enabled = false
 host = "127.0.0.1"
 port = 38765
 token = ""
-static_dir = "web/dist"
 attachment_dir = "attachments"
 attachment_max_bytes = 26214400
 

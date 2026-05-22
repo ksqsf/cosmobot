@@ -3,6 +3,7 @@ import { useAtom, useAtomValue } from 'jotai';
 import {
   Archive,
   Bot,
+  ChevronLeft,
   Download,
   GitFork,
   ImageIcon,
@@ -206,7 +207,7 @@ const App = (): React.JSX.Element => {
         </Tabs.List>
       </header>
 
-      <Tabs.Content value="dialog" className="view dialog-view">
+      <Tabs.Content value="dialog" className={`view dialog-view ${currentSession === '' ? 'no-session' : 'has-session'}`}>
         <ConversationSidebar
           busy={busy}
           connectionStatus={connection.status}
@@ -233,6 +234,9 @@ const App = (): React.JSX.Element => {
           <ChatHeader
             current={current}
             currentSession={currentSession}
+            onBack={() => {
+              runConnected(async () => loadHistory(''));
+            }}
             onRename={(title) => {
               runConnected(async () => {
                 if (currentSession !== '') {
@@ -410,16 +414,20 @@ const ConversationSidebar = ({ busy, connectionStatus, currentSession, sessions,
 type ChatHeaderProps = {
   current: SessionSummary | undefined;
   currentSession: string;
+  onBack: () => void;
   onRename: (title: string) => void;
 };
 
-const ChatHeader = ({ current, currentSession, onRename }: ChatHeaderProps): React.JSX.Element => {
+const ChatHeader = ({ current, currentSession, onBack, onRename }: ChatHeaderProps): React.JSX.Element => {
   const [title, setTitle] = useState(current?.title ?? '');
   useEffect(() => {
     setTitle(current?.title ?? '');
   }, [current?.title]);
   return (
     <header className="chat-header">
+      <button className="mobile-back" type="button" onClick={onBack} aria-label="Back to conversations">
+        <ChevronLeft aria-hidden="true" size={18} />
+      </button>
       <div>
         <h2>{current?.title ?? 'New dialog'}</h2>
         <p>{currentSession || 'Start typing to create a conversation.'}</p>

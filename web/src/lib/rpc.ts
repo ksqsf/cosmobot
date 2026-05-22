@@ -15,6 +15,11 @@ const pending = new Map<string, PendingRequest>();
 
 let ws: WebSocket | null = null;
 let nextId = 1;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempts = 0;
+let manualDisconnect = false;
+
+const maxReconnectAttempts = 3;
 
 export const maxAttachmentBytes = 25 * 1024 * 1024;
 
@@ -57,13 +62,20 @@ export const saveConfig = (config: RpcConfig): void => {
 };
 
 export const connectRpc = (config: RpcConfig): void => {
-  disconnectRpc();
+  closeRpcSocket();
+  clearReconnectTimer();
+  manualDisconnect = false;
   saveConfig(config);
+  openRpcSocket(config);
+};
+
+const openRpcSocket = (config: RpcConfig): void => {
   appStore.set(connectionAtom, { status: 'connecting', message: 'Connecting' });
   const socket = new WebSocket(buildUrl(config), websocketProtocols(config));
   ws = socket;
 
   socket.addEventListener('open', () => {
+    reconnectAttempts = 0;
     appStore.set(connectionAtom, { status: 'connected', message: 'Connected' });
     addLog('Connected');
     void refreshSessions();
@@ -75,7 +87,7 @@ export const connectRpc = (config: RpcConfig): void => {
   socket.addEventListener('error', () => {
     appStore.set(connectionAtom, { status: 'error', message: 'Connection error' });
   });
-  socket.addEventListener('close', () => {
+  socket.addEventListener('close', (event) => {
     if (ws === socket) {
       ws = null;
     }
@@ -84,15 +96,40 @@ export const connectRpc = (config: RpcConfig): void => {
       request.reject(new Error('WebSocket closed'));
       pending.delete(id);
     }
-    appStore.set(connectionAtom, { status: 'disconnected', message: 'Disconnected' });
-    addLog('Disconnected');
+    const reason = event.reason.length > 0 ? `: ${event.reason}` : '';
+    addLog(`Disconnected (${String(event.code)}${reason})`);
+    if (!manualDisconnect && reconnectAttempts < maxReconnectAttempts) {
+      reconnectAttempts += 1;
+      const delayMs = reconnectAttempts * 1000;
+      appStore.set(connectionAtom, { status: 'connecting', message: `Reconnecting ${String(reconnectAttempts)}/${String(maxReconnectAttempts)}` });
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        openRpcSocket(loadConfig());
+      }, delayMs);
+    } else {
+      appStore.set(connectionAtom, { status: 'disconnected', message: 'Disconnected' });
+    }
   });
 };
 
 export const disconnectRpc = (): void => {
+  manualDisconnect = true;
+  clearReconnectTimer();
+  closeRpcSocket();
+  appStore.set(connectionAtom, { status: 'disconnected', message: 'Disconnected' });
+};
+
+const closeRpcSocket = (): void => {
   if (ws !== null) {
     ws.close();
     ws = null;
+  }
+};
+
+const clearReconnectTimer = (): void => {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
   }
 };
 

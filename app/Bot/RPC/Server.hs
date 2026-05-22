@@ -40,7 +40,6 @@ import qualified Network.Wai as Wai
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WebSockets as WaiWS
 import qualified Network.WebSockets as WS
-import System.FilePath ((</>), takeExtension)
 
 data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: Protocol.RpcRequest -> Eff es (Maybe (Either Protocol.RpcError Aeson.Value))
@@ -74,11 +73,11 @@ runRpcServer'
   -> RpcServerCallbacks es
   -> Eff es ()
 runRpcServer' cfg rpcState callbacks = do
-  let Config.Config{host, port, staticDir} = cfg
+  let Config.Config{host, port} = cfg
       settings =
         Warp.setHost (fromString host) $
           Warp.setPort port Warp.defaultSettings
-  logInfo_ [i|RPC HTTP server listening on #{host}:#{port}; websocket endpoint /rpc; static dir #{staticDir}|]
+  logInfo_ [i|RPC server listening on #{host}:#{port}; websocket endpoint /rpc; attachment endpoint /attachments/<id>|]
   withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
     liftIO $
       Warp.runSettings settings (rpcServerApplication runInIO cfg rpcState callbacks)
@@ -563,10 +562,12 @@ httpApp runInIO cfg request respond =
       | otherwise ->
           respond $
             textResponse Http.status401 "unauthorized"
-    ("GET", pathSegments) ->
-      serveStatic runInIO cfg pathSegments respond
-    ("HEAD", pathSegments) ->
-      serveStatic runInIO cfg pathSegments respond
+    ("GET", _) ->
+      respond $
+        textResponse Http.status404 "not found"
+    ("HEAD", _) ->
+      respond $
+        Wai.responseLBS Http.status404 (baseSecurityHeaders []) ""
     _ ->
       respond $
         textResponse Http.status405 "method not allowed"
@@ -598,59 +599,6 @@ serveAttachment runInIO attachmentId respond = do
               Nothing
         else
           respond (textResponse Http.status404 "not found")
-
-serveStatic
-  :: FileSystem.FileSystem :> es
-  => (forall a. Eff es a -> IO a)
-  -> Config.Config
-  -> [Text]
-  -> (Wai.Response -> IO Wai.ResponseReceived)
-  -> IO Wai.ResponseReceived
-serveStatic runInIO cfg pathSegments respond
-  | any unsafePathSegment pathSegments =
-      respond (textResponse Http.status404 "not found")
-  | otherwise = do
-      selected <- runInIO (selectStaticFile cfg pathSegments)
-      case selected of
-        Nothing ->
-          respond (textResponse Http.status404 "not found")
-        Just path ->
-          respond $
-            Wai.responseFile
-              Http.status200
-              (staticHeaders [("Content-Type", contentType path)])
-              path
-              Nothing
-
-selectStaticFile :: FileSystem.FileSystem :> es => Config.Config -> [Text] -> Eff es (Maybe FilePath)
-selectStaticFile Config.Config{staticDir} pathSegments =
-  firstExisting candidates
-  where
-    requestedPath =
-      foldl' (</>) staticDir (map Text.unpack pathSegments)
-    candidates =
-      case pathSegments of
-        [] ->
-          [staticDir </> "index.html", "web/index.html"]
-        _ ->
-          [requestedPath, staticDir </> "index.html"]
-
-firstExisting :: FileSystem.FileSystem :> es => [FilePath] -> Eff es (Maybe FilePath)
-firstExisting = \case
-  [] ->
-    pure Nothing
-  path : rest -> do
-    exists <- FileSystem.doesFileExist path
-    if exists
-      then pure (Just path)
-      else firstExisting rest
-
-unsafePathSegment :: Text -> Bool
-unsafePathSegment segment =
-  Text.null segment || segment == "." || segment == ".." || Text.any isPathSeparator segment
-  where
-    isPathSeparator char =
-      char == '/' || char == '\\'
 
 httpRequestIsAuthorized :: Config.Config -> Wai.Request -> Bool
 httpRequestIsAuthorized cfg request =
@@ -715,36 +663,11 @@ baseSecurityHeaders headers =
        , ("X-Frame-Options", "DENY")
        ]
 
-staticHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
-staticHeaders headers =
-  baseSecurityHeaders headers
-    <> [ ("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' https: blob: data:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
-       ]
-
 attachmentHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
 attachmentHeaders headers =
   baseSecurityHeaders headers
     <> [ ("Cache-Control", "no-store")
        ]
-
-contentType :: FilePath -> ByteString
-contentType path =
-  case takeExtension path of
-    ".css" -> "text/css; charset=utf-8"
-    ".gif" -> "image/gif"
-    ".html" -> "text/html; charset=utf-8"
-    ".ico" -> "image/x-icon"
-    ".jpeg" -> "image/jpeg"
-    ".jpg" -> "image/jpeg"
-    ".js" -> "text/javascript; charset=utf-8"
-    ".json" -> "application/json; charset=utf-8"
-    ".map" -> "application/json; charset=utf-8"
-    ".png" -> "image/png"
-    ".svg" -> "image/svg+xml"
-    ".txt" -> "text/plain; charset=utf-8"
-    ".wasm" -> "application/wasm"
-    ".webp" -> "image/webp"
-    _ -> "application/octet-stream"
 
 questionMark :: Word8
 questionMark = 63

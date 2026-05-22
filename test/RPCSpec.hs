@@ -11,7 +11,6 @@ import qualified Bot.RPC.State as RPC
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
-import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -56,7 +55,7 @@ main =
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
       , testCase "chat.delete_session cascades fork descendants" testDeleteSessionCascadesForkDescendants
       , testCase "websocket server authenticates and handles JSON-RPC requests" testWebSocketServerAuthenticatesAndHandlesRequests
-      , testCase "HTTP server serves static fallback and protects attachment route" testHttpServerServesStaticFallbackAndProtectsAttachmentRoute
+      , testCase "HTTP server rejects static paths and protects attachment route" testHttpServerReturns404ForStaticAndProtectsAttachmentRoute
       ]
 
 testRequestParamsDefaultToEmptyObject :: IO ()
@@ -231,7 +230,6 @@ testAttachmentLifecycle =
           , host = "127.0.0.1"
           , port = 38765
           , token = ""
-          , staticDir = "web/dist"
           , attachmentDir = takeDirectory path </> "attachments"
           , attachmentMaxBytes = 1024
           }
@@ -272,7 +270,6 @@ testAttachmentLifecycle =
               , host = cfg.host
               , port = cfg.port
               , token = cfg.token
-              , staticDir = cfg.staticDir
               , attachmentDir = cfg.attachmentDir
               , attachmentMaxBytes = 1
               }
@@ -378,7 +375,7 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
             , "text" Aeson..= ("question" :: Text)
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
-      let driver = RPC.rpcChatDriver rpcState
+      let driver = RPC.rpcChatDriver testRpcConfig rpcState
       replyId <- fromMaybe (error "expected rpc reply id") <$> driver.replyTo incoming "draft answer"
       edited <- driver.editMessage incoming replyId "final answer"
       pure (replyId, edited)
@@ -491,7 +488,6 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
         , host = "127.0.0.1"
         , port
         , token = "secret"
-        , staticDir = "web/dist"
         , attachmentDir = "attachments"
         , attachmentMaxBytes = 1024 * 1024
         }
@@ -523,8 +519,8 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
               ]
           )
 
-testHttpServerServesStaticFallbackAndProtectsAttachmentRoute :: IO ()
-testHttpServerServesStaticFallbackAndProtectsAttachmentRoute = do
+testHttpServerReturns404ForStaticAndProtectsAttachmentRoute :: IO ()
+testHttpServerReturns404ForStaticAndProtectsAttachmentRoute = do
   result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
@@ -534,7 +530,6 @@ testHttpServerServesStaticFallbackAndProtectsAttachmentRoute = do
           , host = "127.0.0.1"
           , port
           , token = "secret"
-          , staticDir = "web/dist"
           , attachmentDir = "attachments"
           , attachmentMaxBytes = 1024 * 1024
           }
@@ -558,10 +553,7 @@ testHttpServerServesStaticFallbackAndProtectsAttachmentRoute = do
     Just (Left ()) ->
       assertFailure "RPC HTTP server exited before client completed"
     Just (Right (root, attachmentWithoutAuth, attachmentWithAuth, response)) -> do
-      HTTP.responseStatus root @?= Http.status200
-      assertBool
-        "expected fallback web/index.html"
-        ("<title>cosmobot</title>" `ByteStringChar8.isInfixOf` LazyByteString.toStrict (HTTP.responseBody root))
+      HTTP.responseStatus root @?= Http.status404
       HTTP.responseStatus attachmentWithoutAuth @?= Http.status401
       HTTP.responseStatus attachmentWithAuth @?= Http.status404
       response @?=
@@ -726,6 +718,16 @@ responseMessageSummaries response =
           messageId <- o Aeson..: "messageId"
           body <- o Aeson..: "text"
           pure (sender, messageId, body)
+
+testRpcConfig :: RPCConfig.Config
+testRpcConfig = RPCConfig.Config
+  { enabled = True
+  , host = "127.0.0.1"
+  , port = 38765
+  , token = "secret"
+  , attachmentDir = "attachments"
+  , attachmentMaxBytes = 1024 * 1024
+  }
 
 responseMessageAttachments :: Protocol.RpcResponse -> [[Text]]
 responseMessageAttachments response =

@@ -15,14 +15,15 @@ enabled = false
 host = "127.0.0.1"
 port = 38765
 token = ""
-static_dir = "web/dist"
 attachment_dir = "attachments"
 attachment_max_bytes = 26214400
 ```
 
 `enabled` defaults to `false`. When `enabled = true`, `token` must be non-empty.
-The default host is loopback-only. `static_dir` is the directory served at `/`;
-if `static_dir/index.html` is absent, `/` falls back to `web/index.html`.
+The default host is loopback-only. Cosmobot serves the WebSocket RPC endpoint at
+`/rpc` and authenticated attachment bytes under `/attachments/<id>`. Serve the
+browser UI separately, for example with Vite during development or nginx in
+deployment.
 
 ## Authentication
 
@@ -302,12 +303,12 @@ Use `cosmobot rpc --config FILE ...` to read a config file other than
 
 ## Browser UI
 
-When RPC is enabled, the same HTTP port serves the browser UI from
-`static_dir`. A Svelte/Vite build should place its output in `web/dist`; while
-that build is absent, `/` serves the checked-in `web/index.html` entry point. The browser
+Serve the browser UI separately from the cosmobot RPC process. The browser
 client connects to `/rpc`, creates chat sessions, sends prompts, shows chat
 reply updates, lists recent audit records, subscribes to the live audit feed,
-and loads audit record details.
+and loads audit record details. In deployment, put both the UI and RPC endpoint
+behind the same reverse proxy origin so authenticated attachment fetches can use
+the RPC token without cross-origin credential handling.
 
 `/attachments/<id>` serves uploaded attachment bytes when authorized by the same
 bearer token used by the web app. Unauthorized requests return HTTP 401; missing

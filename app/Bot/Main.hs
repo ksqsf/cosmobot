@@ -68,7 +68,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . Scheduler.runScheduler
                . TypstCLI.runTypst
                . OpenAI.runLLM cfg.llm
-               . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord rpcState
+               . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
                . Lifecycle.runLifecycle
   runStack do
     logInfo_ "Cosmobot stand by!"

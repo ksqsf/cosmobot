@@ -38,7 +38,9 @@ where
 import qualified Bot.Chat.Types as Chat
 import Bot.Chat.Driver.Types
 import Bot.Core.Message
+import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Prelude
+import qualified Bot.RPC.Config as Config
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Storage.Attachment as Attachment
@@ -48,8 +50,10 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.STM as STM
 import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
+import System.FilePath (takeExtension, takeFileName)
 
 type RpcClientId = Integer
 
@@ -240,20 +244,21 @@ incomingMessages rpcState = forever do
   message <- S.lift (STM.atomically (STM.readTChan rpcState.inbound))
   S.yield message
 
-rpcChatDriver :: (Concurrent :> es, IOE :> es, StorageEffect.Storage :> es) => RpcState -> ChatPlatformDriver es
-rpcChatDriver rpcState = driver
+rpcChatDriver :: (Concurrent :> es, IOE :> es, StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => Config.Config -> RpcState -> ChatPlatformDriver es
+rpcChatDriver cfg rpcState = driver
   where
     driver = ChatPlatformDriver
       { platform = PlatformRPC
       , replyTo = \message body -> do
           let sessionId = sessionIdFromMessage message
               parentMessageId = message.messageId
+          reply <- rpcReplyContent cfg body
           stored <- Storage.appendMessage
             sessionId.unRpcSessionId
             "assistant"
-            body
-            []
-            []
+            reply.text
+            reply.imageUrls
+            (map (.attachmentId) reply.attachments)
             parentMessageId
             parentMessageId
           case stored of
@@ -273,8 +278,9 @@ rpcChatDriver rpcState = driver
           pure (Right sent)
       , editMessage = \message messageId body -> do
           let sessionId = sessionIdFromMessage message
-              payload = RpcOutbound sessionId (Just messageId) body
-          updated <- Storage.updateMessageText sessionId.unRpcSessionId messageId body
+              text = ReplyBody.renderReplyBody body
+              payload = RpcOutbound sessionId (Just messageId) text
+          updated <- Storage.updateMessageText sessionId.unRpcSessionId messageId text
           broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message_update" payload))
           pure updated
       , deleteMessage = \_ _ -> pure False
@@ -287,6 +293,69 @@ rpcChatDriver rpcState = driver
       , mentionUser = \message _ body -> driver.replyTo message body
       , setMemberTitle = \_ _ _ -> pure False
       }
+
+data RpcReplyContent = RpcReplyContent
+  { text :: !Text
+  , imageUrls :: ![Text]
+  , attachments :: ![Attachment.StoredAttachmentRef]
+  }
+
+rpcReplyContent
+  :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
+  => Config.Config
+  -> Text
+  -> Eff es RpcReplyContent
+rpcReplyContent cfg body = do
+  converted <- traverse (rpcReplyImage cfg) (ReplyBody.replyImageUrls body)
+  pure RpcReplyContent
+    { text = ReplyBody.renderReplyBody body
+    , imageUrls = [url | Left url <- converted]
+    , attachments = [attachment | Right attachment <- converted]
+    }
+
+rpcReplyImage
+  :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
+  => Config.Config
+  -> Text
+  -> Eff es (Either Text Attachment.StoredAttachmentRef)
+rpcReplyImage cfg ref =
+  case Text.stripPrefix "file://" (Text.strip ref) of
+    Nothing ->
+      pure (Left ref)
+    Just pathText -> do
+      let path = Text.unpack pathText
+      exists <- FileSystem.doesFileExist path
+      if exists
+        then do
+          bytes <- FileSystemByteString.readFile path
+          stored <- Attachment.storeAttachment (rpcAttachmentConfig cfg) $
+            Attachment.AttachmentUpload
+              { name = Text.pack (takeFileName path)
+              , mediaType = imageMediaType path
+              , kind = "image"
+              , bytes
+              }
+          pure (either Left Right stored)
+        else
+          pure (Left ref)
+
+rpcAttachmentConfig :: Config.Config -> Attachment.AttachmentConfig
+rpcAttachmentConfig cfg =
+  Attachment.AttachmentConfig
+    { directory = cfg.attachmentDir
+    , maxBytes = cfg.attachmentMaxBytes
+    }
+
+imageMediaType :: FilePath -> Text
+imageMediaType path =
+  case Text.toLower (Text.pack (takeExtension path)) of
+    ".avif" -> "image/avif"
+    ".gif" -> "image/gif"
+    ".jpeg" -> "image/jpeg"
+    ".jpg" -> "image/jpeg"
+    ".png" -> "image/png"
+    ".webp" -> "image/webp"
+    _ -> "application/octet-stream"
 
 rpcIncomingMessage :: RpcChatSend -> Storage.StoredChatMessage -> IncomingMessage
 rpcIncomingMessage chatSend messageRow =
