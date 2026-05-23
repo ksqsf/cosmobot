@@ -9,8 +9,6 @@ enabled = false
 host = "127.0.0.1"
 port = 38765
 token = ""
-attachment_dir = "attachments"
-attachment_max_bytes = 26214400
 
 [driver.qq]
 host = "127.0.0.1"

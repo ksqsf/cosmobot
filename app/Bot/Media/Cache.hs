@@ -11,10 +11,15 @@ module Bot.Media.Cache
   , CacheConfig (..)
   , cacheMediaObject
   , loadCachedMedia
+  , loadMediaFileInfo
+  , loadCachedMediaByRef
+  , listMediaFiles
+  , mediaCacheStats
   , mediaIdForFileId
   , parseMediaId
   , isMediaId
   , gcMediaCache
+  , gcMediaCacheRetaining
   , loadPlatformRef
   , storePlatformRef
   , extensionFor
@@ -23,7 +28,7 @@ module Bot.Media.Cache
   )
 where
 
-import Bot.Effect.Media (MediaObject (..))
+import Bot.Effect.Media (MediaCacheStats (..), MediaFileInfo (..), MediaObject (..))
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import Bot.Storage.Prelude
@@ -151,6 +156,56 @@ loadCachedMedia _ targetFileId = do
     touchMediaFile row.file_id
   pure (mediaObjectRowToCached <$> viaNonEmpty head existing)
 
+loadCachedMediaByRef :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
+loadCachedMediaByRef cfg ref =
+  case parseMediaId ref of
+    Nothing ->
+      pure Nothing
+    Just fileId ->
+      loadCachedMedia cfg fileId
+
+loadMediaFileInfo :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Text -> Eff es (Maybe MediaFileInfo)
+loadMediaFileInfo _ targetFileId = do
+  ensureMediaCacheTables
+  rows <- runSelda $
+    query $
+      queryLimit 0 1 do
+        object <- select mediaObjectRows
+        restrict (object ! #file_id .== literal targetFileId)
+        pure object
+  traverse mediaObjectRowToInfo (viaNonEmpty head rows)
+
+listMediaFiles :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Eff es [MediaFileInfo]
+listMediaFiles _ = do
+  ensureMediaCacheTables
+  rows <- runSelda $
+    query do
+      object <- select mediaObjectRows
+      order (object ! #created_at_unix) descending
+      pure object
+  traverse mediaObjectRowToInfo rows
+
+mediaCacheStats :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Eff es MediaCacheStats
+mediaCacheStats cfg = do
+  files <- listMediaFiles cfg
+  sourceCount <- runSelda do
+    rows <- query (select mediaSourceRows)
+    pure (length rows)
+  platformRefCount <- runSelda do
+    rows <- query (select mediaPlatformRefRows)
+    pure (length rows)
+  let existingFiles = length (filter (.exists) files)
+      missingFiles = length files - existingFiles
+      totalBytes = sum [file.size | file <- files, file.exists]
+  pure MediaCacheStats
+    { files = length files
+    , existingFiles
+    , missingFiles
+    , totalBytes
+    , sources = sourceCount
+    , platformRefs = platformRefCount
+    }
+
 lookupCachedDigest :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
 lookupCachedDigest _ targetDigest = do
   ensureMediaCacheTables
@@ -273,7 +328,16 @@ gcMediaCache
   => CacheConfig
   -> Int
   -> Eff es Int
-gcMediaCache _ maxAgeSeconds = do
+gcMediaCache cfg maxAgeSeconds =
+  gcMediaCacheRetaining cfg maxAgeSeconds Set.empty
+
+gcMediaCacheRetaining
+  :: (Storage.Storage :> es, FileSystem :> es, IOE :> es)
+  => CacheConfig
+  -> Int
+  -> Set.Set Text
+  -> Eff es Int
+gcMediaCacheRetaining _ maxAgeSeconds retainedFileIds = do
   ensureMediaCacheTables
   now <- currentUnixSeconds
   let cutoff = now - max 0 maxAgeSeconds
@@ -282,6 +346,7 @@ gcMediaCache _ maxAgeSeconds = do
         [ object
         | object <- objects
         , object.last_used_at_unix < cutoff
+        , not (Set.member object.file_id retainedFileIds)
         ]
       expiredIds = Set.fromList (map (.file_id) expired)
       retainedPaths =
@@ -357,6 +422,22 @@ mediaObjectRowToCached row =
     , sourceName = row.source_name
     , path = Text.unpack row.path
     , size = row.size_bytes
+    }
+
+mediaObjectRowToInfo :: FileSystem :> es => MediaObjectRow -> Eff es MediaFileInfo
+mediaObjectRowToInfo row = do
+  exists <- FileSystem.doesFileExist (Text.unpack row.path)
+  pure MediaFileInfo
+    { fileId = row.file_id
+    , ref = mediaIdForFileId row.file_id
+    , digest = row.digest
+    , mimeType = row.mime_type
+    , sourceName = row.source_name
+    , path = Text.unpack row.path
+    , size = row.size_bytes
+    , createdAtUnix = row.created_at_unix
+    , lastUsedAtUnix = row.last_used_at_unix
+    , exists
     }
 
 contentDigest :: StrictByteString.ByteString -> Text

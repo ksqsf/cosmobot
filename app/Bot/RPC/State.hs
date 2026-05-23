@@ -38,12 +38,13 @@ where
 import qualified Bot.Chat.Types as Chat
 import Bot.Chat.Driver.Types
 import Bot.Core.Message
+import qualified Bot.Effect.Media as Media
+import Bot.Effect.Media (MediaObject (..))
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Prelude
 import qualified Bot.RPC.Config as Config
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.Effect.Storage as StorageEffect
-import qualified Bot.Storage.Attachment as Attachment
 import qualified Bot.Storage.RPC as Storage
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Base64 as Base64
@@ -132,7 +133,7 @@ instance Aeson.FromJSON RpcChatAttachmentRef where
         Nothing -> o Aeson..:? "media_type")
       kind <- fromMaybe (kindFromMediaType mediaType) <$> o Aeson..:? "kind"
       size <- fromMaybe 0 <$> o Aeson..:? "size"
-      url <- fromMaybe ("/attachments/" <> attachmentId) <$> o Aeson..:? "url"
+      url <- fromMaybe (defaultMediaUrl attachmentId) <$> o Aeson..:? "url"
       pure RpcChatAttachmentRef{attachmentId, name, mediaType, kind, size, url}
 
 data RpcChatSend = RpcChatSend
@@ -218,35 +219,44 @@ deleteChatSession :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) 
 deleteChatSession sessionId =
   Storage.deleteSession sessionId.unRpcSessionId
 
-enqueueChatMessage :: (Concurrent :> es, StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcState -> RpcChatSend -> Eff es (Either Text (Maybe IncomingMessage))
+enqueueChatMessage
+  :: (Concurrent :> es, StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  => RpcState
+  -> RpcChatSend
+  -> Eff es (Either Text (Maybe IncomingMessage))
 enqueueChatMessage rpcState chatSend = do
-  stored <- Storage.appendMessage
-    chatSend.sessionId.unRpcSessionId
-    "user"
-    chatSend.text
-    chatSend.imageUrls
-    (map (.attachmentId) chatSend.attachments)
-    chatSend.replyToMessageId
-    chatSend.replyToMessageId
-  case stored of
+  attachments <- resolveMediaRefs (map (.attachmentId) chatSend.attachments)
+  case attachments of
     Left err ->
       pure (Left err)
-    Right Nothing ->
-      pure (Right Nothing)
-    Right (Just messageRow) -> do
-      rememberMessageNumber rpcState messageRow.messageId
-      message <- rpcIncomingMessage chatSend messageRow
-      let chatMessage = storedMessageToRpc messageRow
-      STM.atomically (STM.writeTChan rpcState.inbound message)
-      broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" chatMessage))
-      pure (Right (Just message))
+    Right mediaRefs -> do
+      stored <- Storage.appendMessage
+        chatSend.sessionId.unRpcSessionId
+        "user"
+        chatSend.text
+        chatSend.imageUrls
+        mediaRefs
+        chatSend.replyToMessageId
+        chatSend.replyToMessageId
+      case stored of
+        Left err ->
+          pure (Left err)
+        Right Nothing ->
+          pure (Right Nothing)
+        Right (Just messageRow) -> do
+          rememberMessageNumber rpcState messageRow.messageId
+          message <- rpcIncomingMessage chatSend messageRow
+          let chatMessage = storedMessageToRpc messageRow
+          STM.atomically (STM.writeTChan rpcState.inbound message)
+          broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" chatMessage))
+          pure (Right (Just message))
 
 incomingMessages :: Concurrent :> es => RpcState -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages rpcState = forever do
   message <- S.lift (STM.atomically (STM.readTChan rpcState.inbound))
   S.yield message
 
-rpcChatDriver :: (Concurrent :> es, IOE :> es, StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => Config.Config -> RpcState -> ChatPlatformDriver es
+rpcChatDriver :: (Concurrent :> es, IOE :> es, StorageEffect.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es) => Config.Config -> RpcState -> ChatPlatformDriver es
 rpcChatDriver cfg rpcState = driver
   where
     driver = ChatPlatformDriver
@@ -260,7 +270,7 @@ rpcChatDriver cfg rpcState = driver
             "assistant"
             reply.text
             reply.imageUrls
-            (map (.attachmentId) reply.attachments)
+            reply.attachments
             parentMessageId
             parentMessageId
           case stored of
@@ -299,11 +309,11 @@ rpcChatDriver cfg rpcState = driver
 data RpcReplyContent = RpcReplyContent
   { text :: !Text
   , imageUrls :: ![Text]
-  , attachments :: ![Attachment.StoredAttachmentRef]
+  , attachments :: ![Storage.StoredMediaRef]
   }
 
 rpcReplyContent
-  :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
+  :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => Config.Config
   -> Text
   -> Eff es RpcReplyContent
@@ -316,11 +326,11 @@ rpcReplyContent cfg body = do
     }
 
 rpcReplyImage
-  :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
+  :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => Config.Config
   -> Text
-  -> Eff es (Either Text Attachment.StoredAttachmentRef)
-rpcReplyImage cfg ref =
+  -> Eff es (Either Text Storage.StoredMediaRef)
+rpcReplyImage _cfg ref =
   case Text.stripPrefix "file://" (Text.strip ref) of
     Nothing ->
       pure (Left ref)
@@ -330,23 +340,23 @@ rpcReplyImage cfg ref =
       if exists
         then do
           bytes <- FileSystemByteString.readFile path
-          stored <- Attachment.storeAttachment (rpcAttachmentConfig cfg) $
-            Attachment.AttachmentUpload
-              { name = Text.pack (takeFileName path)
-              , mediaType = imageMediaType path
-              , kind = "image"
-              , bytes
+          mediaRef <- Media.storeMediaObject $
+            MediaObject
+              { bytes
+              , mimeType = imageMediaType path
+              , sourceName = Just (Text.pack (takeFileName path))
               }
-          pure (either Left Right stored)
+          case mediaRef >>= parseMediaId of
+            Nothing ->
+              pure (Left ref)
+            Just fileId ->
+              Media.mediaFileInfo fileId >>= \case
+                Nothing -> pure (Left ref)
+                Just info -> do
+                  url <- Media.publicMediaRef info.ref
+                  pure (Right (storedMediaRef info url))
         else
           pure (Left ref)
-
-rpcAttachmentConfig :: Config.Config -> Attachment.AttachmentConfig
-rpcAttachmentConfig cfg =
-  Attachment.AttachmentConfig
-    { directory = cfg.attachmentDir
-    , maxBytes = cfg.attachmentMaxBytes
-    }
 
 imageMediaType :: FilePath -> Text
 imageMediaType path =
@@ -359,7 +369,7 @@ imageMediaType path =
     ".webp" -> "image/webp"
     _ -> "application/octet-stream"
 
-rpcIncomingMessage :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcChatSend -> Storage.StoredChatMessage -> Eff es IncomingMessage
+rpcIncomingMessage :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es) => RpcChatSend -> Storage.StoredChatMessage -> Eff es IncomingMessage
 rpcIncomingMessage chatSend messageRow = do
   let sessionText = chatSend.sessionId.unRpcSessionId
       canonicalSend :: RpcChatSend
@@ -462,24 +472,27 @@ drainTBQueue queue =
 rpcClientQueueCapacity :: Natural
 rpcClientQueueCapacity = 256
 
-rpcChatSendLlmImageUrls :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcChatSend -> Eff es [Text]
+rpcChatSendLlmImageUrls :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es) => RpcChatSend -> Eff es [Text]
 rpcChatSendLlmImageUrls chatSend = do
   attachmentRefs <- catMaybes <$> traverse attachmentDataImageRef (filter ((== "image") . (.kind)) chatSend.attachments)
   pure (ordNub (filter isDirectLlmImageRef chatSend.imageUrls <> attachmentRefs))
 
-attachmentDataImageRef :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcChatAttachmentRef -> Eff es (Maybe Text)
+attachmentDataImageRef :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es) => RpcChatAttachmentRef -> Eff es (Maybe Text)
 attachmentDataImageRef attachment =
-  Attachment.loadAttachment attachment.attachmentId >>= \case
+  case parseMediaId attachment.attachmentId of
     Nothing ->
       pure Nothing
-    Just stored -> do
-      exists <- FileSystem.doesFileExist stored.path
-      if exists && "image/" `Text.isPrefixOf` Text.toLower stored.mediaType
-        then do
-          bytes <- FileSystemByteString.readFile stored.path
-          pure (Just (dataImageRef stored.mediaType bytes))
-        else
+    Just fileId ->
+      Media.mediaFileInfo fileId >>= \case
+        Nothing ->
           pure Nothing
+        Just stored ->
+          if stored.exists && "image/" `Text.isPrefixOf` Text.toLower stored.mimeType
+            then do
+              bytes <- FileSystemByteString.readFile stored.path
+              pure (Just (dataImageRef stored.mimeType bytes))
+            else
+              pure Nothing
 
 dataImageRef :: Text -> ByteString -> Text
 dataImageRef mediaType bytes =
@@ -508,7 +521,7 @@ chatSendContextText chatSend
         | attachment <- nonImageAttachments
         ]
 
-storedAttachmentToRpc :: Attachment.StoredAttachmentRef -> RpcChatAttachmentRef
+storedAttachmentToRpc :: Storage.StoredMediaRef -> RpcChatAttachmentRef
 storedAttachmentToRpc attachment =
   RpcChatAttachmentRef
     { attachmentId = attachment.attachmentId
@@ -518,6 +531,46 @@ storedAttachmentToRpc attachment =
     , size = attachment.size
     , url = attachment.url
     }
+
+storedMediaRef :: Media.MediaFileInfo -> Text -> Storage.StoredMediaRef
+storedMediaRef media url =
+  Storage.StoredMediaRef
+    { attachmentId = media.ref
+    , name = fromMaybe media.fileId media.sourceName
+    , mediaType = media.mimeType
+    , kind = kindFromMediaType media.mimeType
+    , size = media.size
+    , url
+    }
+
+resolveMediaRefs
+  :: Media.Media :> es
+  => [Text]
+  -> Eff es (Either Text [Storage.StoredMediaRef])
+resolveMediaRefs =
+  fmap sequence . traverse resolveMediaRef . ordNub
+  where
+    resolveMediaRef ref =
+      case parseMediaId ref of
+        Nothing ->
+          pure (Left [i|Unknown media ref: #{ref}|])
+        Just _ ->
+          Media.mediaFileInfoByRef ref >>= \case
+            Nothing ->
+              pure (Left [i|Unknown media ref: #{ref}|])
+            Just media -> do
+              url <- Media.publicMediaRef media.ref
+              pure (Right (storedMediaRef media url))
+
+defaultMediaUrl :: Text -> Text
+defaultMediaUrl attachmentId =
+  attachmentId
+
+parseMediaId :: Text -> Maybe Text
+parseMediaId ref = do
+  fileId <- Text.stripPrefix "media:" (Text.strip ref)
+  guard (not (Text.null fileId))
+  pure fileId
 
 kindFromMediaType :: Text -> Text
 kindFromMediaType mediaType

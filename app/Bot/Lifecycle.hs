@@ -11,15 +11,17 @@ module Bot.Lifecycle
 where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
-import qualified Bot.Media.Cache as MediaCache
 import qualified Bot.Media.Config as MediaConfig
 import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as LifecycleStorage
+import qualified Bot.Storage.RPC as RpcStorage
+import qualified Data.Set as Set
 import Effectful.FileSystem (FileSystem)
 
 runLifecycle
-  :: (Chat.Chat :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
+  :: (Chat.Chat :> es, Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
   => MediaConfig.Config
   -> Eff es a
   -> Eff es a
@@ -41,7 +43,7 @@ runStartupActions = do
         logWarning [i|Startup reply lifecycle action #{actionId} failed and was deleted: #{show err :: String}|]
 
 withMediaGc
-  :: (Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
+  :: (Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
   => MediaConfig.Config
   -> Eff es a
   -> Eff es a
@@ -53,7 +55,7 @@ withMediaGc mediaConfig inner
       inner `finally` killThread worker
 
 mediaGcLoop
-  :: (Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
+  :: (Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
   => MediaConfig.Config
   -> Eff es ()
 mediaGcLoop mediaConfig =
@@ -62,13 +64,14 @@ mediaGcLoop mediaConfig =
     threadDelay (hoursToMicroseconds (max 1 mediaConfig.gc.intervalHours))
 
 runMediaGc
-  :: (Storage.Storage :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+  :: (Media.Media :> es, Storage.Storage :> es, IOE :> es, KatipE :> es)
   => MediaConfig.Config
   -> Eff es ()
 runMediaGc mediaConfig = do
   let maxAgeSeconds = daysToSeconds (max 0 mediaConfig.gc.olderThanDays)
-      cacheConfig = MediaCache.CacheConfig{directory = mediaConfig.cacheDir}
-  result <- trySync (MediaCache.gcMediaCache cacheConfig maxAgeSeconds)
+  result <- trySync do
+    retained <- Set.fromList <$> RpcStorage.referencedMediaFileIds
+    Media.gcMediaCache maxAgeSeconds retained
   case result of
     Right deleted ->
       when (deleted > 0) $

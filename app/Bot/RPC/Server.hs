@@ -19,16 +19,19 @@ where
 
 import Bot.Prelude
 import Bot.Core.Message (IncomingMessage (..), MessageId)
+import qualified Bot.Effect.Media as Media
+import Bot.Effect.Media (MediaObject (..))
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.RPC.Config as Config
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.RPC.State as State
-import qualified Bot.Storage.Attachment as Attachment
+import qualified Bot.Storage.RPC as RpcStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.FileSystem as FileSystem
@@ -43,6 +46,22 @@ data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: Protocol.RpcRequest -> Eff es (Maybe (Either Protocol.RpcError Aeson.Value))
   }
 
+data RpcAttachmentUpload = RpcAttachmentUpload
+  { name :: !Text
+  , mediaType :: !Text
+  , kind :: !Text
+  , bytes :: !ByteString
+  }
+  deriving (Eq, Show)
+
+newtype MediaStatsParams = MediaStatsParams
+  { limit :: Int
+  }
+
+newtype MediaGcParams = MediaGcParams
+  { maxAgeSeconds :: Int
+  }
+
 newtype RpcClientDisconnected = RpcClientDisconnected Text
   deriving (Show)
 
@@ -54,7 +73,7 @@ noRpcServerCallbacks = RpcServerCallbacks
   }
 
 runRpcServer
-  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -65,7 +84,7 @@ runRpcServer cfg@Config.Config{enabled} rpcState callbacks = do
     else pure ()
 
 runRpcServer'
-  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -75,13 +94,13 @@ runRpcServer' cfg rpcState callbacks = do
       settings =
         Warp.setHost (fromString host) $
           Warp.setPort port Warp.defaultSettings
-  logInfo [i|RPC server listening on #{host}:#{port}; websocket endpoint /rpc; attachment endpoint /attachments/<id>|]
+  logInfo [i|RPC server listening on #{host}:#{port}; websocket endpoint /rpc|]
   withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
     liftIO $
       Warp.runSettings settings (rpcServerApplication runInIO cfg rpcState callbacks)
 
 rpcServerApplication
-  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => (forall a. Eff es a -> IO a)
   -> Config.Config
   -> State.RpcState
@@ -94,7 +113,7 @@ rpcServerApplication runInIO cfg rpcState callbacks =
       runInIO (rpcServerApp cfg rpcState callbacks pending)
 
 rpcServerApp
-  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -122,7 +141,7 @@ rpcServerApp cfg rpcState callbacks pending
             }
 
 serveAcceptedClient
-  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -155,7 +174,7 @@ writeQueuedFrames queue conn =
         throwIO (RpcClientDisconnected reason)
 
 readRequestFrames
-  :: (IOE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -182,7 +201,7 @@ readRequestFrames cfg rpcState callbacks queue conn =
     traverse_ (State.writeClient queue . Aeson.toJSON) response
 
 dispatchRpcRequest
-  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.RpcState
   -> RpcServerCallbacks es
   -> Protocol.RpcRequest
@@ -191,7 +210,7 @@ dispatchRpcRequest rpcState callbacks request =
   dispatchRpcRequestWithConfig rpcState defaultDispatchConfig callbacks request
 
 dispatchRpcRequestWithConfig
-  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.RpcState
   -> Config.Config
   -> RpcServerCallbacks es
@@ -207,13 +226,13 @@ dispatchRpcRequestWithConfig rpcState cfg callbacks request =
           [i|RPC request failed: #{displayException err}|]
 
 dispatchRpcRequestUnsafe
-  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.RpcState
   -> Config.Config
   -> RpcServerCallbacks es
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
-dispatchRpcRequestUnsafe rpcState cfg callbacks request =
+dispatchRpcRequestUnsafe rpcState _cfg callbacks request =
   case Protocol.requestMethod request of
     "chat.open_session" ->
       dispatchOpenSession rpcState request
@@ -230,11 +249,13 @@ dispatchRpcRequestUnsafe rpcState cfg callbacks request =
     "chat.delete_session" ->
       dispatchDeleteSession request
     "chat.upload_attachment" ->
-      dispatchUploadAttachment cfg request
-    "chat.delete_attachment" ->
-      dispatchDeleteAttachment request
+      dispatchUploadAttachment request
     "chat.send" ->
       dispatchChatSend rpcState request
+    "media.stats" ->
+      dispatchMediaStats request
+    "media.gc" ->
+      dispatchMediaGc request
     method
       | "audit." `Text.isPrefixOf` method ->
           dispatchAudit callbacks request
@@ -362,44 +383,39 @@ dispatchDeleteSession request =
             ]
 
 dispatchUploadAttachment
-  :: (Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es)
-  => Config.Config
-  -> Protocol.RpcRequest
+  :: Media.Media :> es
+  => Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
-dispatchUploadAttachment cfg request =
-  case AesonTypes.parseEither (parseAttachmentUploadParams cfg.attachmentMaxBytes) (Protocol.requestParams request) of
+dispatchUploadAttachment request =
+  case AesonTypes.parseEither (parseAttachmentUploadParams defaultUploadMaxBytes) (Protocol.requestParams request) of
     Left err ->
       pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
     Right upload -> do
-      stored <- Attachment.storeAttachment (attachmentConfig cfg) upload
-      case stored of
-        Left err ->
-          pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" err)
-        Right attachment ->
-          pure $
-            Protocol.successResponse (Protocol.requestId request) $
-              attachmentResponse attachment
-
-dispatchDeleteAttachment
-  :: (Storage.Storage :> es, FileSystem.FileSystem :> es)
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
-dispatchDeleteAttachment request =
-  case AesonTypes.parseEither parseAttachmentIdParams (Protocol.requestParams request) of
-    Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
-    Right attachmentId -> do
-      deleted <- Attachment.deleteUnreferencedAttachment attachmentId
-      pure $
-        Protocol.successResponse (Protocol.requestId request) $
-          Aeson.object
-            [ "attachmentId" Aeson..= attachmentId
-            , "id" Aeson..= attachmentId
-            , "deleted" Aeson..= deleted
-            ]
+      storedRef <- Media.storeMediaObject $
+        MediaObject
+          { bytes = upload.bytes
+          , mimeType = upload.mediaType
+          , sourceName = Just upload.name
+          }
+      case storedRef of
+        Nothing ->
+          pure (Protocol.errorResponse (Protocol.requestId request) "internal_error" "Media storage did not return a media ref")
+        Just mediaRef ->
+          case parseMediaRef mediaRef of
+            Nothing ->
+              pure (Protocol.errorResponse (Protocol.requestId request) "internal_error" "Media storage did not return a media ref")
+            Just fileId ->
+              Media.mediaFileInfo fileId >>= \case
+                Nothing ->
+                  pure (Protocol.errorResponse (Protocol.requestId request) "internal_error" "Stored media file could not be loaded")
+                Just media -> do
+                  url <- Media.publicMediaRef mediaRef
+                  pure $
+                    Protocol.successResponse (Protocol.requestId request) $
+                      attachmentResponse upload media url
 
 dispatchChatSend
-  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.RpcState
   -> Protocol.RpcRequest
   -> Eff es Protocol.RpcResponse
@@ -421,6 +437,43 @@ dispatchChatSend rpcState request =
                 [ "sessionId" Aeson..= rpcSessionIdText chatSend.sessionId
                 , "messageId" Aeson..= messageId
                 ]
+
+dispatchMediaStats
+  :: Media.Media :> es
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchMediaStats request = do
+  case AesonTypes.parseEither parseMediaStatsParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right params ->
+      do
+        stats <- Media.mediaCacheStats
+        files <- Media.listMediaFiles
+        pure $
+          Protocol.successResponse (Protocol.requestId request) $
+            Aeson.object
+              [ "stats" Aeson..= stats
+              , "files" Aeson..= take params.limit files
+              ]
+
+dispatchMediaGc
+  :: (Storage.Storage :> es, Media.Media :> es)
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchMediaGc request =
+  case AesonTypes.parseEither parseMediaGcParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right params -> do
+      retained <- Set.fromList <$> RpcStorage.referencedMediaFileIds
+      deleted <- Media.gcMediaCache params.maxAgeSeconds retained
+      pure $
+        Protocol.successResponse (Protocol.requestId request) $
+          Aeson.object
+            [ "deleted" Aeson..= deleted
+            , "retainedReferencedFiles" Aeson..= Set.size retained
+            ]
 
 dispatchAudit
   :: RpcServerCallbacks es
@@ -462,7 +515,7 @@ parseChatSendParams =
       , replyToMessageId
       }
 
-parseAttachmentUploadParams :: Int -> Aeson.Value -> AesonTypes.Parser Attachment.AttachmentUpload
+parseAttachmentUploadParams :: Int -> Aeson.Value -> AesonTypes.Parser RpcAttachmentUpload
 parseAttachmentUploadParams maxBytes =
   Aeson.withObject "chat.upload_attachment params" \o -> do
     name <- fromMaybe "attachment" <$> o Aeson..:? "name"
@@ -470,7 +523,8 @@ parseAttachmentUploadParams maxBytes =
       o Aeson..:? "mediaType" >>= \case
         Just value -> pure value
         Nothing -> fromMaybe "application/octet-stream" <$> o Aeson..:? "media_type"
-    kind <- fromMaybe (kindFromMediaType mediaType) <$> o Aeson..:? "kind"
+    let cleanType = cleanMediaType mediaType
+    kind <- fromMaybe (kindFromMediaType cleanType) <$> o Aeson..:? "kind"
     expectedSize <- o Aeson..:? "size"
     encodedText <- o Aeson..: "data"
     traverse_ (\size -> when (size > maxBytes) (fail "attachment size exceeds configured limit")) expectedSize
@@ -483,16 +537,11 @@ parseAttachmentUploadParams maxBytes =
     when (ByteString.length bytes > maxBytes) $
       fail "attachment size exceeds configured limit"
     traverse_ (\size -> when (size /= ByteString.length bytes) (fail "size does not match decoded attachment bytes")) expectedSize
-    pure Attachment.AttachmentUpload{name, mediaType, kind, bytes}
+    pure RpcAttachmentUpload{name, mediaType = cleanType, kind, bytes}
 
 maxBase64Length :: Int -> Int
 maxBase64Length maxBytes =
   ((maxBytes + 2) `div` 3) * 4
-
-parseAttachmentIdParams :: Aeson.Value -> AesonTypes.Parser Text
-parseAttachmentIdParams =
-  Aeson.withObject "chat.delete_attachment params" \o ->
-    o Aeson..: "attachmentId" <|> o Aeson..: "attachment_id" <|> o Aeson..: "id"
 
 parseSessionIdParams :: Aeson.Value -> AesonTypes.Parser State.RpcSessionId
 parseSessionIdParams =
@@ -513,6 +562,35 @@ parseRenameSessionParams =
     sessionId <- State.RpcSessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
     label <- o Aeson..: "label"
     pure (sessionId, label)
+
+parseMediaStatsParams :: Aeson.Value -> AesonTypes.Parser MediaStatsParams
+parseMediaStatsParams = \case
+  Aeson.Null ->
+    pure MediaStatsParams{limit = 50}
+  value ->
+    Aeson.withObject "media.stats params" parse value
+  where
+    parse o = do
+      limit <- fromMaybe 50 <$> o Aeson..:? "limit"
+      when (limit < 0) $
+        fail "limit must be non-negative"
+      pure MediaStatsParams{limit}
+
+parseMediaGcParams :: Aeson.Value -> AesonTypes.Parser MediaGcParams
+parseMediaGcParams = \case
+  Aeson.Null ->
+    pure MediaGcParams{maxAgeSeconds = 0}
+  value ->
+    Aeson.withObject "media.gc params" parse value
+  where
+    parse o = do
+      maxAgeSeconds <-
+        o Aeson..:? "maxAgeSeconds" >>= \case
+          Just value -> pure value
+          Nothing -> fromMaybe 0 <$> o Aeson..:? "max_age_seconds"
+      when (maxAgeSeconds < 0) $
+        fail "maxAgeSeconds must be non-negative"
+      pure MediaGcParams{maxAgeSeconds}
 
 methodNotFound :: Protocol.RequestId -> Text -> Protocol.RpcResponse
 methodNotFound requestId method =
@@ -539,15 +617,9 @@ requestIsRpcPath request =
   where
     (path, _) = ByteString.break (== questionMark) request.requestPath
 
-httpApp :: (Storage.Storage :> es, FileSystem.FileSystem :> es) => (forall a. Eff es a -> IO a) -> Config.Config -> Wai.Application
-httpApp runInIO cfg request respond =
+httpApp :: (forall a. Eff es a -> IO a) -> Config.Config -> Wai.Application
+httpApp _runInIO _cfg request respond =
   case (Wai.requestMethod request, Wai.pathInfo request) of
-    ("GET", ["attachments", attachmentId])
-      | httpRequestIsAuthorized cfg request ->
-          serveAttachment runInIO attachmentId respond
-      | otherwise ->
-          respond $
-            attachmentTextResponse Http.status401 "unauthorized"
     ("GET", _) ->
       respond $
         textResponse Http.status404 "not found"
@@ -558,56 +630,13 @@ httpApp runInIO cfg request respond =
       respond $
         textResponse Http.status405 "method not allowed"
 
-serveAttachment
-  :: (Storage.Storage :> es, FileSystem.FileSystem :> es)
-  => (forall a. Eff es a -> IO a)
-  -> Text
-  -> (Wai.Response -> IO Wai.ResponseReceived)
-  -> IO Wai.ResponseReceived
-serveAttachment runInIO attachmentId respond = do
-  attachment <- runInIO (Attachment.loadAttachment attachmentId)
-  case attachment of
-    Nothing ->
-      respond (attachmentTextResponse Http.status404 "not found")
-    Just stored -> do
-      exists <- runInIO (FileSystem.doesFileExist stored.path)
-      if exists
-        then
-          respond $
-            Wai.responseFile
-              Http.status200
-              ( attachmentHeaders
-                  [ ("Content-Type", TextEncoding.encodeUtf8 stored.mediaType)
-                  , ("Content-Disposition", "attachment; filename=\"" <> safeHeaderBytes stored.name <> "\"")
-                  ]
-              )
-              stored.path
-              Nothing
-        else
-          respond (attachmentTextResponse Http.status404 "not found")
-
-httpRequestIsAuthorized :: Config.Config -> Wai.Request -> Bool
-httpRequestIsAuthorized cfg request =
-  httpAuthorizationBearer request == Just expectedToken
-  where
-    Config.Config{token} = cfg
-    expectedToken = TextEncoding.encodeUtf8 token
-
 authorizationBearer :: WS.RequestHead -> Maybe ByteString
 authorizationBearer request =
   ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) request.requestHeaders)
 
-httpAuthorizationBearer :: Wai.Request -> Maybe ByteString
-httpAuthorizationBearer request =
-  ByteString.stripPrefix bearerPrefix =<< (snd <$> find ((== "Authorization") . fst) (Wai.requestHeaders request))
-
 textResponse :: Http.Status -> LazyByteString.ByteString -> Wai.Response
 textResponse status body =
   Wai.responseLBS status (baseSecurityHeaders [("Content-Type", "text/plain; charset=utf-8")]) body
-
-attachmentTextResponse :: Http.Status -> LazyByteString.ByteString -> Wai.Response
-attachmentTextResponse status body =
-  Wai.responseLBS status (attachmentHeaders [("Content-Type", "text/plain; charset=utf-8")]) body
 
 baseSecurityHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
 baseSecurityHeaders headers =
@@ -617,36 +646,27 @@ baseSecurityHeaders headers =
        , ("X-Frame-Options", "DENY")
        ]
 
-attachmentHeaders :: Http.ResponseHeaders -> Http.ResponseHeaders
-attachmentHeaders headers =
-  baseSecurityHeaders headers
-    <> [ ("Cache-Control", "no-store")
-       ]
-
 questionMark :: Word8
 questionMark = 63
 
 bearerPrefix :: ByteString
 bearerPrefix = "Bearer "
 
-attachmentConfig :: Config.Config -> Attachment.AttachmentConfig
-attachmentConfig cfg =
-  Attachment.AttachmentConfig
-    { directory = cfg.attachmentDir
-    , maxBytes = cfg.attachmentMaxBytes
-    }
-
-attachmentResponse :: Attachment.StoredAttachmentRef -> Aeson.Value
-attachmentResponse attachment =
+attachmentResponse :: RpcAttachmentUpload -> Media.MediaFileInfo -> Text -> Aeson.Value
+attachmentResponse upload media url =
+  let mediaRef = media.ref
+  in
   Aeson.object
-    [ "id" Aeson..= attachment.attachmentId
-    , "attachmentId" Aeson..= attachment.attachmentId
-    , "name" Aeson..= attachment.name
-    , "mediaType" Aeson..= attachment.mediaType
-    , "media_type" Aeson..= attachment.mediaType
-    , "kind" Aeson..= attachment.kind
-    , "size" Aeson..= attachment.size
-    , "url" Aeson..= attachment.url
+    [ "id" Aeson..= mediaRef
+    , "attachmentId" Aeson..= mediaRef
+    , "mediaRef" Aeson..= mediaRef
+    , "fileId" Aeson..= media.fileId
+    , "name" Aeson..= upload.name
+    , "mediaType" Aeson..= media.mimeType
+    , "media_type" Aeson..= media.mimeType
+    , "kind" Aeson..= upload.kind
+    , "size" Aeson..= media.size
+    , "url" Aeson..= url
     ]
 
 kindFromMediaType :: Text -> Text
@@ -657,14 +677,42 @@ kindFromMediaType mediaType
   where
     media = Text.toLower mediaType
 
-safeHeaderBytes :: Text -> ByteString
-safeHeaderBytes =
-  TextEncoding.encodeUtf8 . Text.map safe
-  where
-    safe char
-      | char == '"' || char == '\\' || char == '\r' || char == '\n' = '_'
-      | otherwise = char
+cleanMediaType :: Text -> Text
+cleanMediaType value =
+  case Text.strip value of
+    stripped
+      | validMediaType stripped -> stripped
+      | otherwise -> "application/octet-stream"
+
+validMediaType :: Text -> Bool
+validMediaType value =
+  case Text.splitOn "/" value of
+    [mainType, subtype] ->
+      validToken mainType && validToken subtype
+    _ ->
+      False
+
+validToken :: Text -> Bool
+validToken value =
+  not (Text.null value) && Text.all validTokenChar value
+
+validTokenChar :: Char -> Bool
+validTokenChar char =
+  (char >= 'a' && char <= 'z')
+    || (char >= 'A' && char <= 'Z')
+    || (char >= '0' && char <= '9')
+    || char `elem` ("!#$&^_.+-" :: String)
 
 defaultDispatchConfig :: Config.Config
 defaultDispatchConfig =
   Config.toRuntimeConfig Config.defaultFileConfig
+
+defaultUploadMaxBytes :: Int
+defaultUploadMaxBytes =
+  25 * 1024 * 1024
+
+parseMediaRef :: Text -> Maybe Text
+parseMediaRef ref = do
+  fileId <- Text.stripPrefix "media:" (Text.strip ref)
+  guard (not (Text.null fileId))
+  pure fileId

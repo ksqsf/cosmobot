@@ -7,7 +7,14 @@ Stability   : experimental
 module Bot.Effect.Media
   ( Media (..)
   , MediaObject (..)
+  , MediaFileInfo (..)
+  , MediaCacheStats (..)
   , storeMediaObject
+  , mediaFileInfo
+  , mediaFileInfoByRef
+  , listMediaFiles
+  , mediaCacheStats
+  , gcMediaCache
   , normalizeMediaRef
   , normalizeMediaRefs
   , publicMediaRef
@@ -25,7 +32,10 @@ where
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Message
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as StrictByteString
+import qualified Data.Set as Set
+import qualified Data.Text as Text
 import qualified Streaming.Prelude as S
 
 data MediaObject = MediaObject
@@ -35,8 +45,36 @@ data MediaObject = MediaObject
   }
   deriving (Show, Eq)
 
+data MediaFileInfo = MediaFileInfo
+  { fileId :: !Text
+  , ref :: !Text
+  , digest :: !Text
+  , mimeType :: !Text
+  , sourceName :: !(Maybe Text)
+  , path :: !FilePath
+  , size :: !Int
+  , createdAtUnix :: !Int
+  , lastUsedAtUnix :: !Int
+  , exists :: !Bool
+  }
+  deriving (Show, Eq, Generic, Aeson.ToJSON)
+
+data MediaCacheStats = MediaCacheStats
+  { files :: !Int
+  , existingFiles :: !Int
+  , missingFiles :: !Int
+  , totalBytes :: !Int
+  , sources :: !Int
+  , platformRefs :: !Int
+  }
+  deriving (Show, Eq, Generic, Aeson.ToJSON)
+
 data Media :: Effect where
   StoreMediaObject :: MediaObject -> Media m (Maybe Text)
+  GetMediaFileInfo :: Text -> Media m (Maybe MediaFileInfo)
+  ListMediaFiles :: Media m [MediaFileInfo]
+  GetMediaCacheStats :: Media m MediaCacheStats
+  GcMediaCache :: Int -> Set.Set Text -> Media m Int
   NormalizeMediaRef :: Text -> Media m Text
   PublicMediaRef :: Text -> Media m Text
   LocalMediaPath :: Text -> Media m (Maybe FilePath)
@@ -48,6 +86,28 @@ type instance DispatchOf Media = Dynamic
 storeMediaObject :: Media :> es => MediaObject -> Eff es (Maybe Text)
 storeMediaObject =
   send . StoreMediaObject
+
+mediaFileInfo :: Media :> es => Text -> Eff es (Maybe MediaFileInfo)
+mediaFileInfo =
+  send . GetMediaFileInfo
+
+mediaFileInfoByRef :: Media :> es => Text -> Eff es (Maybe MediaFileInfo)
+mediaFileInfoByRef ref =
+  case parseMediaId ref of
+    Nothing -> pure Nothing
+    Just fileId -> mediaFileInfo fileId
+
+listMediaFiles :: Media :> es => Eff es [MediaFileInfo]
+listMediaFiles =
+  send ListMediaFiles
+
+mediaCacheStats :: Media :> es => Eff es MediaCacheStats
+mediaCacheStats =
+  send GetMediaCacheStats
+
+gcMediaCache :: Media :> es => Int -> Set.Set Text -> Eff es Int
+gcMediaCache maxAgeSeconds retainedFileIds =
+  send (GcMediaCache maxAgeSeconds retainedFileIds)
 
 normalizeMediaRef :: Media :> es => Text -> Eff es Text
 normalizeMediaRef =
@@ -120,6 +180,14 @@ runMediaPassthrough =
   interpret \_ -> \case
     StoreMediaObject mediaObject ->
       pure (Just ("data:" <> mediaObject.mimeType <> ";base64,"))
+    GetMediaFileInfo _ ->
+      pure Nothing
+    ListMediaFiles ->
+      pure []
+    GetMediaCacheStats ->
+      pure MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0}
+    GcMediaCache _ _ ->
+      pure 0
     NormalizeMediaRef ref ->
       pure ref
     PublicMediaRef ref ->
@@ -130,3 +198,9 @@ runMediaPassthrough =
       pure Nothing
     StorePlatformMediaRef _ _ _ _ ->
       pure ()
+
+parseMediaId :: Text -> Maybe Text
+parseMediaId ref = do
+  fileId <- Text.stripPrefix "media:" (Text.strip ref)
+  guard (not (Text.null fileId))
+  pure fileId

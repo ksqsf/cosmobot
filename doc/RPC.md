@@ -15,20 +15,18 @@ enabled = false
 host = "127.0.0.1"
 port = 38765
 token = ""
-attachment_dir = "attachments"
-attachment_max_bytes = 26214400
 ```
 
 `enabled` defaults to `false`. When `enabled = true`, `token` must be non-empty.
 The default host is loopback-only. Cosmobot serves the WebSocket RPC endpoint at
-`/rpc` and authenticated attachment bytes under `/attachments/<id>`.
+`/rpc`. Uploaded media is stored in the shared media cache; RPC responses return
+the public URL produced by the media interpreter.
 
 ## Authentication
 
 Clients authenticate with `Authorization: Bearer TOKEN` during the WebSocket
 handshake. Query-string tokens are not accepted for WebSocket authentication.
-HTTP attachment reads also use the bearer token header. Unauthorized WebSocket
-connections or attachment requests are rejected with HTTP 401.
+Unauthorized WebSocket connections are rejected with HTTP 401.
 
 ## Envelopes
 
@@ -217,27 +215,32 @@ Stores an RPC attachment before sending it in chat:
 ```
 
 `data` is base64 without a data-URL prefix. The decoded byte length must match
-`size` when `size` is provided and must not exceed `rpc.attachment_max_bytes`.
+`size` when `size` is provided. Uploaded bytes are stored in the shared media
+cache and the returned `attachmentId` is a `media:<file_id>` reference.
 
 Result:
 
 ```json
-{"id":"att-123","attachmentId":"att-123","name":"notes.txt","mediaType":"text/plain","kind":"file","size":5,"url":"/attachments/att-123"}
+{"id":"media:mf_abc","attachmentId":"media:mf_abc","mediaRef":"media:mf_abc","fileId":"mf_abc","name":"notes.txt","mediaType":"text/plain","kind":"file","size":5,"url":"https://media.example.com/cosmobot-media/sha256.png"}
 ```
 
-### `chat.delete_attachment`
+### `media.stats`
 
-Deletes an uploaded attachment only while it is still unreferenced by persisted
-messages:
+Returns media cache counts and a bounded list of media files. `limit` defaults
+to `50`.
 
 ```json
-{"jsonrpc":"2.0","id":"3","method":"chat.delete_attachment","params":{"attachmentId":"att-123"}}
+{"jsonrpc":"2.0","id":"3","method":"media.stats","params":{"limit":20}}
 ```
 
-Result:
+### `media.gc`
+
+Runs media cache GC manually. `maxAgeSeconds` defaults to `0`. Media file ids
+referenced by RPC chat history are retained even if they are older than the GC
+cutoff.
 
 ```json
-{"id":"att-123","attachmentId":"att-123","deleted":true}
+{"jsonrpc":"2.0","id":"4","method":"media.gc","params":{"maxAgeSeconds":604800}}
 ```
 
 ## Chat Notifications
@@ -290,9 +293,9 @@ Responses are printed as pretty JSON.
 Use `cosmobot rpc --config FILE ...` to read a config file other than
 `config.toml`.
 
-`/attachments/<id>` serves uploaded attachment bytes when authorized by the same
-bearer token used by RPC clients. Unauthorized requests return HTTP 401; missing
-attachments return HTTP 404.
+Uploaded media bytes are not served by the RPC HTTP app. Configure
+`[media].public_base_url` and optional `[media.s3]` settings when RPC clients
+need dereferenceable public URLs.
 
 ## Limitations
 

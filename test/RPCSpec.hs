@@ -3,7 +3,10 @@ module Main (main) where
 import Bot.Prelude
 import Bot.Chat.Driver.Types
 import Bot.Core.Message
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Media.Config as MediaConfig
+import qualified Bot.Media.S3 as MediaS3
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.RPC.Server as RPCServer
@@ -18,6 +21,7 @@ import Data.Unique (hashUnique, newUnique)
 import Effectful.FileSystem (runFileSystem)
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import Effectful.Process (Process, runProcess)
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types as Http
 import qualified JSONRPC
@@ -49,7 +53,7 @@ main =
       , testCase "chat.send broadcasts user chat notification" testChatSendBroadcastsNotification
       , testCase "client notification queue overflow disconnects slow client" testClientNotificationQueueOverflowDisconnects
       , testCase "sync request exception returns JSON-RPC error" testSyncRequestExceptionReturnsJsonRpcError
-      , testCase "attachments upload, send, history, and guarded delete" testAttachmentLifecycle
+      , testCase "media upload, send, history, and stats" testAttachmentLifecycle
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
       , testCase "rpc driver stores local image replies as attachments" testRpcDriverStoresLocalImageRepliesAsAttachments
@@ -57,7 +61,7 @@ main =
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
       , testCase "chat.delete_session cascades fork descendants" testDeleteSessionCascadesForkDescendants
       , testCase "websocket server authenticates and handles JSON-RPC requests" testWebSocketServerAuthenticatesAndHandlesRequests
-      , testCase "HTTP server rejects static paths and protects attachment route" testHttpServerRejectsStaticAndProtectsAttachmentRoute
+      , testCase "HTTP server rejects non-RPC paths" testHttpServerRejectsNonRpcPaths
       ]
 
 testRequestParamsDefaultToEmptyObject :: IO ()
@@ -232,10 +236,8 @@ testAttachmentLifecycle =
           , host = "127.0.0.1"
           , port = 38765
           , token = ""
-          , attachmentDir = takeDirectory path </> "attachments"
-          , attachmentMaxBytes = 1024
           }
-    (uploadResponse, imageUploadResponse, unsafeMediaResponse, oversizedResponse, sendResponse, historyResponse, incoming, deleteReferencedResponse) <- runRpcStorage path do
+    (uploadResponse, imageUploadResponse, unsafeMediaResponse, oversizedResponse, sendResponse, historyResponse, incoming, mediaStatsResponse) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       uploadResponse <- RPCServer.dispatchRpcRequestWithConfig rpcState cfg RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.upload_attachment" $
@@ -264,23 +266,15 @@ testAttachmentLifecycle =
             , "mediaType" Aeson..= ("text/html\r\nx" :: Text)
             , "kind" Aeson..= ("file" :: Text)
             , "size" Aeson..= (1 :: Int)
-            , "data" Aeson..= ("AA==" :: Text)
+            , "data" Aeson..= ("AQ==" :: Text)
             ]
-      let smallAttachmentConfig =
-            RPCConfig.Config
-              { enabled = cfg.enabled
-              , host = cfg.host
-              , port = cfg.port
-              , token = cfg.token
-              , attachmentDir = cfg.attachmentDir
-              , attachmentMaxBytes = 1
-              }
-      oversizedResponse <- RPCServer.dispatchRpcRequestWithConfig rpcState smallAttachmentConfig RPCServer.noRpcServerCallbacks $
+      oversizedResponse <- RPCServer.dispatchRpcRequestWithConfig rpcState cfg RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.upload_attachment" $
           Aeson.object
             [ "name" Aeson..= ("large.bin" :: Text)
             , "mediaType" Aeson..= ("application/octet-stream" :: Text)
             , "kind" Aeson..= ("file" :: Text)
+            , "size" Aeson..= (25 * 1024 * 1024 + 1 :: Int)
             , "data" Aeson..= (Text.replicate 8 "A" :: Text)
             ]
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
@@ -296,9 +290,9 @@ testAttachmentLifecycle =
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
       historyResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
-      deleteReferencedResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
-        rpcRequest "chat.delete_attachment" (Aeson.object ["attachmentId" Aeson..= attachment.attachmentId])
-      pure (uploadResponse, imageUploadResponse, unsafeMediaResponse, oversizedResponse, sendResponse, historyResponse, incoming, deleteReferencedResponse)
+      mediaStatsResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "media.stats" (Aeson.object ["limit" Aeson..= (10 :: Int)])
+      pure (uploadResponse, imageUploadResponse, unsafeMediaResponse, oversizedResponse, sendResponse, historyResponse, incoming, mediaStatsResponse)
 
     attachment <- responseAttachment uploadResponse
     imageAttachment <- responseAttachment imageUploadResponse
@@ -308,19 +302,12 @@ testAttachmentLifecycle =
     attachment.kind @?= "file"
     imageAttachment.kind @?= "image"
     unsafeMediaAttachment.mediaType @?= "application/octet-stream"
-    oversizedResponse @?= responseError "invalid_params" "Error in $: encoded attachment exceeds configured limit"
+    oversizedResponse @?= responseError "invalid_params" "Error in $: attachment size exceeds configured limit"
     sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
     assertBool "non-image attachment should be visible in incoming context" ("Attachments:" `Text.isInfixOf` incoming.text)
-    incoming.imageUrls @?= ["https://example.test/context.png", "data:image/png;base64,AA=="]
+    incoming.imageUrls @?= [imageAttachment.url, "https://example.test/context.png", "data:image/png;base64,AA=="]
     assertEqual [i|history response: #{show historyResponse :: String}|] [[attachment.attachmentId, imageAttachment.attachmentId]] (responseMessageAttachments historyResponse)
-    deleteReferencedResponse @?=
-      responseResult
-        ( Aeson.object
-            [ "attachmentId" Aeson..= attachment.attachmentId
-            , "id" Aeson..= attachment.attachmentId
-            , "deleted" Aeson..= False
-            ]
-        )
+    responseMediaStatsFiles mediaStatsResponse @?= 3
 
 testChatSessionsPersistAcrossRestart :: IO ()
 testChatSessionsPersistAcrossRestart =
@@ -408,8 +395,6 @@ testRpcDriverStoresLocalImageRepliesAsAttachments =
             , host = "127.0.0.1"
             , port = 38765
             , token = "secret"
-            , attachmentDir = dir </> "attachments"
-            , attachmentMaxBytes = 1024 * 1024
             }
       FileSystemByteString.writeFile imagePath "fake-webp"
       rpcState <- RPC.newRpcState
@@ -433,7 +418,7 @@ testRpcDriverStoresLocalImageRepliesAsAttachments =
       ]
     case responseMessageAttachments historyResponse of
       [[], [attachmentId]] ->
-        assertBool "expected stored image attachment id" ("att-" `Text.isPrefixOf` attachmentId)
+        assertBool "expected stored image media ref" ("media:mf_" `Text.isPrefixOf` attachmentId)
       other ->
         assertFailure [i|expected one image attachment on assistant reply, got #{show other :: String}|]
 
@@ -523,7 +508,7 @@ testDeleteSessionCascadesForkDescendants =
 
 testWebSocketServerAuthenticatesAndHandlesRequests :: IO ()
 testWebSocketServerAuthenticatesAndHandlesRequests = do
-  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
+  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
     port <- fromIntegral <$> liftIO (Socket.socketPort listenSocket)
@@ -532,8 +517,6 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
         , host = "127.0.0.1"
         , port
         , token = "secret"
-        , attachmentDir = "attachments"
-        , attachmentMaxBytes = 1024 * 1024
         }
         server =
           finally
@@ -563,9 +546,9 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
               ]
           )
 
-testHttpServerRejectsStaticAndProtectsAttachmentRoute :: IO ()
-testHttpServerRejectsStaticAndProtectsAttachmentRoute = do
-  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
+testHttpServerRejectsNonRpcPaths :: IO ()
+testHttpServerRejectsNonRpcPaths = do
+  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
     port <- fromIntegral <$> liftIO (Socket.socketPort listenSocket)
@@ -574,8 +557,6 @@ testHttpServerRejectsStaticAndProtectsAttachmentRoute = do
           , host = "127.0.0.1"
           , port
           , token = "secret"
-          , attachmentDir = "attachments"
-          , attachmentMaxBytes = 1024 * 1024
           }
         server =
           withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
@@ -585,10 +566,10 @@ testHttpServerRejectsStaticAndProtectsAttachmentRoute = do
         client = liftIO do
           manager <- HTTP.newManager HTTP.defaultManagerSettings
           root <- httpGet manager [i|http://127.0.0.1:#{port}/|]
-          attachmentWithoutAuth <- httpGet manager [i|http://127.0.0.1:#{port}/attachments/missing|]
-          attachmentWithAuth <- httpGetWithBearer manager "secret" [i|http://127.0.0.1:#{port}/attachments/missing|]
+          mediaWithoutAuth <- httpGet manager [i|http://127.0.0.1:#{port}/media/missing|]
+          mediaWithAuth <- httpGetWithBearer manager "secret" [i|http://127.0.0.1:#{port}/media/missing|]
           response <- openSessionClient port "secret"
-          pure (root, attachmentWithoutAuth, attachmentWithAuth, response)
+          pure (root, mediaWithoutAuth, mediaWithAuth, response)
     race server client
 
   case result of
@@ -596,10 +577,10 @@ testHttpServerRejectsStaticAndProtectsAttachmentRoute = do
       assertFailure "RPC HTTP integration test timed out"
     Just (Left ()) ->
       assertFailure "RPC HTTP server exited before client completed"
-    Just (Right (root, attachmentWithoutAuth, attachmentWithAuth, response)) -> do
+    Just (Right (root, mediaWithoutAuth, mediaWithAuth, response)) -> do
       HTTP.responseStatus root @?= Http.status404
-      HTTP.responseStatus attachmentWithoutAuth @?= Http.status401
-      HTTP.responseStatus attachmentWithAuth @?= Http.status404
+      HTTP.responseStatus mediaWithoutAuth @?= Http.status404
+      HTTP.responseStatus mediaWithAuth @?= Http.status404
       response @?=
         responseResult
           ( Aeson.object
@@ -695,9 +676,23 @@ assertUnauthorizedRejected = \case
 runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
 runTestLog action = startKatipE "rpc-spec" "test" action
 
-runRpcStorage :: FilePath -> Eff '[Storage.Storage, FileSystem.FileSystem, Concurrent, IOE] a -> IO a
+runRpcStorage :: FilePath -> Eff '[Media.Media, Storage.Storage, KatipE, Process, FileSystem.FileSystem, Concurrent, Fail, IOE] a -> IO a
 runRpcStorage path action =
-  runEff $ runConcurrent $ runFileSystem $ StorageSQLite.runStorageSQLitePath path action
+  runEff $
+  runFailIO $
+  runConcurrent $
+  runFileSystem $
+  runProcess $
+  runTestLog $
+  StorageSQLite.runStorageSQLitePath path $
+  MediaS3.runMediaS3 (testMediaConfig path) $ action
+
+testMediaConfig :: FilePath -> MediaConfig.Config
+testMediaConfig path =
+  MediaConfig.defaultConfig
+    { MediaConfig.cacheDir = takeDirectory path </> "media-cache"
+    , MediaConfig.publicBaseUrl = Just "https://media.example.test/cosmobot-media"
+    }
 
 withSQLiteTempPath :: String -> (FilePath -> IO a) -> IO a
 withSQLiteTempPath label action =
@@ -767,8 +762,6 @@ testRpcConfig = RPCConfig.Config
   , host = "127.0.0.1"
   , port = 38765
   , token = "secret"
-  , attachmentDir = "attachments"
-  , attachmentMaxBytes = 1024 * 1024
   }
 
 responseMessageAttachments :: Protocol.RpcResponse -> [[Text]]
@@ -786,6 +779,16 @@ responseMessageAttachments response =
         Aeson.withObject "message" \o -> do
           attachments <- o Aeson..: "attachments"
           traverse (Aeson.withObject "attachment" \attachment -> attachment Aeson..: "attachmentId" <|> attachment Aeson..: "id") attachments
+
+responseMediaStatsFiles :: Protocol.RpcResponse -> Int
+responseMediaStatsFiles response =
+  case response of
+    JSONRPC.ResponseMessage result ->
+      fromMaybe 0 do
+        stats <- AesonTypes.parseMaybe (Aeson.withObject "media stats" (Aeson..: "stats")) result.result
+        AesonTypes.parseMaybe (Aeson.withObject "stats" (Aeson..: "files")) stats
+    _ ->
+      0
 
 responseSessionLabel :: Protocol.RpcResponse -> Maybe Text
 responseSessionLabel response =

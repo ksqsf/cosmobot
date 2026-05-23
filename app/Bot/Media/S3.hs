@@ -57,6 +57,14 @@ runMediaS3 cfg inner = do
     ( \_ -> \case
         StoreMediaObject mediaObject ->
           Just <$> cacheObject runtime Nothing mediaObject
+        GetMediaFileInfo fileId ->
+          Cache.loadMediaFileInfo (cacheConfig runtime) fileId
+        ListMediaFiles ->
+          Cache.listMediaFiles (cacheConfig runtime)
+        GetMediaCacheStats ->
+          Cache.mediaCacheStats (cacheConfig runtime)
+        GcMediaCache maxAgeSeconds retainedFileIds ->
+          Cache.gcMediaCacheRetaining (cacheConfig runtime) maxAgeSeconds retainedFileIds
         NormalizeMediaRef ref ->
           normalizeRef runtime ref
         PublicMediaRef ref ->
