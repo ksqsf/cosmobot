@@ -141,7 +141,7 @@ publicRef runtime ref =
         Just cached ->
           ensurePublicObject runtime cached
 
-localPath :: (FileSystem :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es (Maybe FilePath)
+localPath :: (FileSystem :> es, Storage.Storage :> es, IOE :> es) => Runtime -> Text -> Eff es (Maybe FilePath)
 localPath runtime ref =
   case Cache.parseMediaId ref of
     Nothing ->

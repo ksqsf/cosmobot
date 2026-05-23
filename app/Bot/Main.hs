@@ -70,7 +70,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . MediaS3.runMediaS3 cfg.media
                . OpenAI.runLLM cfg.llm
                . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
-               . Lifecycle.runLifecycle
+               . Lifecycle.runLifecycle cfg.media
   runStack do
     logInfo "Cosmobot stand by!"
     let allStreams =

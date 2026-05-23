@@ -14,6 +14,7 @@ module Bot.Media.Cache
   , mediaIdForFileId
   , parseMediaId
   , isMediaId
+  , gcMediaCache
   , loadPlatformRef
   , storePlatformRef
   , extensionFor
@@ -30,6 +31,7 @@ import Crypto.Hash (Digest, SHA256, hash)
 import qualified Crypto.Random as CryptoRandom
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64.URL as Base64URL
+import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Time.Clock.POSIX as POSIX
@@ -61,6 +63,7 @@ data MediaObjectRow = MediaObjectRow
   , path :: Text
   , size_bytes :: Int
   , created_at_unix :: Int
+  , last_used_at_unix :: Int
   }
   deriving (Generic)
 
@@ -135,7 +138,7 @@ cacheMediaObject cfg sourceRef mediaObject = do
         Nothing ->
           storeMediaObject cfg sourceRef mediaObject
 
-loadCachedMedia :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
+loadCachedMedia :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
 loadCachedMedia _ targetFileId = do
   ensureMediaCacheTables
   rows <- runSelda $
@@ -144,9 +147,11 @@ loadCachedMedia _ targetFileId = do
       restrict (object ! #file_id .== literal targetFileId)
       pure object
   existing <- filterM (FileSystem.doesFileExist . Text.unpack . (.path)) rows
+  for_ (viaNonEmpty head existing) \row ->
+    touchMediaFile row.file_id
   pure (mediaObjectRowToCached <$> viaNonEmpty head existing)
 
-lookupCachedDigest :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
+lookupCachedDigest :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
 lookupCachedDigest _ targetDigest = do
   ensureMediaCacheTables
   rows <- runSelda $
@@ -155,6 +160,8 @@ lookupCachedDigest _ targetDigest = do
       restrict (object ! #digest .== literal targetDigest)
       pure object
   existing <- filterM (FileSystem.doesFileExist . Text.unpack . (.path)) rows
+  for_ (viaNonEmpty head existing) \row ->
+    touchMediaFile row.file_id
   pure (mediaObjectRowToCached <$> viaNonEmpty head existing)
 
 linkSourceRef :: Storage.Storage :> es => Text -> Text -> Eff es ()
@@ -184,6 +191,8 @@ loadPlatformRef cfg platform scope ref =
               restrict (row ! #scope_key .== literal scope)
               restrict (row ! #file_id .== literal fileId)
               pure row
+          for_ (viaNonEmpty head rows) \_ ->
+            touchPlatformRef platform scope fileId
           pure ((.platform_ref) <$> viaNonEmpty head rows)
 
 storePlatformRef :: (Storage.Storage :> es, IOE :> es) => Text -> Text -> Text -> Text -> Eff es ()
@@ -210,7 +219,7 @@ storePlatformRef platform scope ref platformRef =
               }
           ]
 
-lookupCachedSource :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
+lookupCachedSource :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
 lookupCachedSource _ ref = do
   rows <- runSelda $
     query do
@@ -220,6 +229,8 @@ lookupCachedSource _ ref = do
       restrict (source ! #file_id .== object ! #file_id)
       pure object
   existing <- filterM (FileSystem.doesFileExist . Text.unpack . (.path)) rows
+  for_ (viaNonEmpty head existing) \row ->
+    touchMediaFile row.file_id
   pure (mediaObjectRowToCached <$> viaNonEmpty head existing)
 
 storeMediaObject
@@ -246,6 +257,7 @@ storeMediaObject cfg sourceRef mediaObject = do
         , path = Text.pack finalPath
         , size_bytes = StrictByteString.length mediaObject.bytes
         , created_at_unix = now
+        , last_used_at_unix = now
         }
   ensureMediaCacheTables
   runSelda do
@@ -256,12 +268,85 @@ storeMediaObject cfg sourceRef mediaObject = do
       insert_ mediaSourceRows [MediaSourceRow{source_ref = ref, file_id = fileId}]
   pure (mediaObjectRowToCached row)
 
+gcMediaCache
+  :: (Storage.Storage :> es, FileSystem :> es, IOE :> es)
+  => CacheConfig
+  -> Int
+  -> Eff es Int
+gcMediaCache _ maxAgeSeconds = do
+  ensureMediaCacheTables
+  now <- currentUnixSeconds
+  let cutoff = now - max 0 maxAgeSeconds
+  objects <- runSelda $ query (select mediaObjectRows)
+  let expired =
+        [ object
+        | object <- objects
+        , object.last_used_at_unix < cutoff
+        ]
+      expiredIds = Set.fromList (map (.file_id) expired)
+      retainedPaths =
+        Set.fromList
+          [ object.path
+          | object <- objects
+          , not (Set.member object.file_id expiredIds)
+          ]
+      removable =
+        [ object
+        | object <- expired
+        , not (Set.member object.path retainedPaths)
+        ]
+      expiredFileIds = map (.file_id) expired
+  traverse_ removeCachedFile removable
+  runSelda $ transaction do
+    for_ expiredFileIds \fileId -> do
+      deleteFrom_ mediaPlatformRefRows \row ->
+        row ! #file_id .== literal fileId
+      deleteFrom_ mediaSourceRows \row ->
+        row ! #file_id .== literal fileId
+      deleteFrom_ mediaObjectRows \row ->
+        row ! #file_id .== literal fileId
+  pure (length expired)
+
+removeCachedFile :: FileSystem :> es => MediaObjectRow -> Eff es ()
+removeCachedFile row = do
+  let filePath = Text.unpack row.path
+  exists <- FileSystem.doesFileExist filePath
+  when exists (FileSystem.removeFile filePath)
+    `catchSync` \_ ->
+      pure ()
+
 ensureMediaCacheTables :: Storage.Storage :> es => Eff es ()
 ensureMediaCacheTables =
   runSelda do
     tryCreateTable mediaObjectRows
     tryCreateTable mediaSourceRows
     tryCreateTable mediaPlatformRefRows
+
+touchMediaFile :: (Storage.Storage :> es, IOE :> es) => Text -> Eff es ()
+touchMediaFile fileId = do
+  now <- currentUnixSeconds
+  runSelda $
+    update_
+      mediaObjectRows
+      (\row -> row ! #file_id .== literal fileId)
+      (\row -> row `with` [#last_used_at_unix := literal now])
+
+touchPlatformRef :: (Storage.Storage :> es, IOE :> es) => Text -> Text -> Text -> Eff es ()
+touchPlatformRef platform scope fileId = do
+  now <- currentUnixSeconds
+  runSelda $
+    update_
+      mediaPlatformRefRows
+      ( \row ->
+          row ! #platform_key .== literal platform
+            .&& row ! #scope_key .== literal scope
+            .&& row ! #file_id .== literal fileId
+      )
+      (\row -> row `with` [#last_used_at_unix := literal now])
+
+currentUnixSeconds :: IOE :> es => Eff es Int
+currentUnixSeconds =
+  liftIO (round <$> POSIX.getPOSIXTime)
 
 mediaObjectRowToCached :: MediaObjectRow -> CachedMedia
 mediaObjectRowToCached row =

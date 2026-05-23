@@ -90,6 +90,11 @@ timeout = 300
 cache_dir = "media-cache"
 public_base_url = "https://media.example.com/cosmobot-media"
 
+[media.gc]
+enabled = false
+older_than_days = 7
+interval_hours = 24
+
 [media.s3]
 enabled = false
 bucket = "cosmobot-media"
