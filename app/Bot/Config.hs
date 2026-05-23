@@ -13,6 +13,7 @@ module Bot.Config
   , SaucenaoConfig (..)
   , Memory.MemoryConfig (..)
   , Skills.SkillsConfig (..)
+  , S3Config.Config (..)
   , loadConfig
   )
 where
@@ -26,6 +27,7 @@ import qualified Bot.Chat.Driver.Matrix.Config as MatrixConfig
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import qualified Bot.Chat.Driver.Telegram.Config as TelegramConfig
 import qualified Bot.LLM.OpenAI.Config as LLMConfig
+import qualified Bot.Media.S3.Config as S3Config
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.Agent.Config as AgentConfig
@@ -63,6 +65,7 @@ data BotConfig = BotConfig
   , matrix   :: !Matrix.Config
   , discord :: !Discord.Config
   , llm      :: !LLMConfig.Config
+  , s3       :: !S3Config.Config
   , tool     :: !Agent.ToolConfig
   , saucenao :: !SaucenaoConfig
   , memory   :: !Memory.MemoryConfig
@@ -98,6 +101,7 @@ data FileConfig = FileConfig
   , storage  :: !StorageFileConfig
   , driver   :: !DriverFileConfig
   , llm      :: !LLMConfig.FileConfig
+  , s3       :: !S3Config.Config
   , tool     :: !AgentConfig.FileConfig
   , memory   :: !MemoryConfig.FileConfig
   , skills   :: !SkillsConfig.FileConfig
@@ -112,6 +116,7 @@ instance FromValue FileConfig where
     <*> fmap (fromMaybe defaultStorageFileConfig) (optKey "storage")
     <*> reqKey "driver"
     <*> reqKey "llm"
+    <*> fmap (fromMaybe S3Config.defaultConfig) (optKey "s3")
     <*> fmap (fromMaybe AgentConfig.defaultFileConfig) (optKey "tool")
     <*> fmap (fromMaybe MemoryConfig.defaultFileConfig) (optKey "memory")
     <*> fmap (fromMaybe SkillsConfig.defaultFileConfig) (optKey "skills")
@@ -211,6 +216,7 @@ toBotConfig cfg =
     , matrix = MatrixConfig.toRuntimeConfig matrixFileConfig
     , discord = DiscordConfig.toRuntimeConfig discordFileConfig
     , llm = LLMConfig.toRuntimeConfig cfg.llm
+    , s3 = cfg.s3
     , tool = AgentConfig.toToolConfig cfg.tool
     , saucenao = cfg.handler.saucenao
     , memory = MemoryConfig.toMemoryConfig cfg.memory

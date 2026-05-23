@@ -32,6 +32,7 @@ where
 
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Storage.Matrix as MatrixStorage
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
@@ -116,7 +117,7 @@ instance IsString MatrixEventId where
     matrixEventId . Text.pack
 
 matrixDriver
-  :: (Matrix :> es, FileSystem :> es, IOE :> es)
+  :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es)
   => Driver.ChatPlatformDriver es
 matrixDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformMatrix
@@ -158,6 +159,7 @@ data Matrix :: Effect where
   FetchMember :: MatrixRoomId -> Text -> Matrix m (Maybe MatrixMember)
   FetchProfile :: Text -> Matrix m (Maybe MatrixProfile)
   FetchJoinedMembers :: MatrixRoomId -> Matrix m (Maybe JoinedMembersResponse)
+  DownloadMedia :: Text -> Matrix m (Maybe MatrixDownloadedMedia)
 
 type instance DispatchOf Matrix = Dynamic
 
@@ -227,6 +229,10 @@ fetchProfile userId =
 fetchJoinedMembers :: Matrix :> es => MatrixRoomId -> Eff es (Maybe JoinedMembersResponse)
 fetchJoinedMembers roomId =
   send (FetchJoinedMembers roomId)
+
+downloadMedia :: Matrix :> es => Text -> Eff es (Maybe MatrixDownloadedMedia)
+downloadMedia =
+  send . DownloadMedia
 
 runMatrix
   :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
@@ -302,6 +308,9 @@ runMatrix cfg inner = do
         FetchJoinedMembers roomId ->
           withMaybeMatrixAccessToken auth \token ->
             fetchJoinedMembersCall manager cfg token roomId
+        DownloadMedia mxcRef ->
+          withMaybeMatrixAccessToken auth \token ->
+            downloadMediaCall manager cfg token mxcRef
     )
     inner
 
@@ -344,6 +353,13 @@ data MatrixAuth = MatrixAuth
 data MatrixAuthState = MatrixAuthState
   { authAccessToken :: !(Maybe Text)
   , authRefreshToken :: !(Maybe Text)
+  }
+  deriving (Show, Eq)
+
+data MatrixDownloadedMedia = MatrixDownloadedMedia
+  { downloadedBytes :: !StrictByteString.ByteString
+  , downloadedMimeType :: !Text
+  , downloadedName :: !(Maybe Text)
   }
   deriving (Show, Eq)
 
@@ -589,7 +605,7 @@ instance Aeson.FromJSON MatrixLoginResponse where
       <*> o Aeson..:? "refresh_token"
       <*> o Aeson..:? "expires_in_ms"
 
-incomingMessages :: (Matrix :> es, Log :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (Matrix :> es, Media.Media :> es, Log :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
   cfg <- S.lift matrixConfig
   if matrixAuthConfigured cfg
@@ -641,9 +657,10 @@ incomingMessages = do
                 S.lift $ logTrace_ ("Ignoring Matrix event: " <> reason)
                 S.lift $ logInfo_ ("Ignoring Matrix event: " <> reason)
               Just message -> do
-                S.lift $ logTrace "incoming Matrix message" message
-                S.lift $ logInfo_ [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine message}|]
-                S.yield message
+                normalized <- S.lift (normalizeMatrixIncomingMessage message)
+                S.lift $ logTrace "incoming Matrix message" normalized
+                S.lift $ logInfo_ [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine normalized}|]
+                S.yield normalized
           S.lift $ storeSyncToken response.nextBatch
           syncLoop cfg (Just response.nextBatch)
 
@@ -721,12 +738,12 @@ replyTo message body =
     _ ->
       pure Nothing
 
-getMessageContent :: Matrix :> es => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
+getMessageContent :: (Matrix :> es, Media.Media :> es) => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
 getMessageContent message messageId =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
       fetched <- fetchEvent (matrixRoomId roomId) (matrixEventId (messageIdText messageId))
-      pure (matrixReferencedMessage =<< fetched)
+      traverse normalizeMatrixReferencedMessage (matrixReferencedMessage =<< fetched)
     _ ->
       pure Nothing
 
@@ -746,11 +763,11 @@ getMemberInfo message userId =
     _ ->
       pure Nothing
 
-getUserAvatar :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
+getUserAvatar :: (Matrix :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 getUserAvatar message userId =
   case message.platform of
     PlatformMatrix ->
-      fmap matrixProfileAvatarValue <$> fetchProfile userId
+      traverse matrixProfileAvatarValue =<< fetchProfile userId
     _ ->
       pure Nothing
 
@@ -792,6 +809,57 @@ matrixReferencedMessage event = do
     , imageUrls = matrixEventImageUrls event.raw
     }
 
+normalizeMatrixIncomingMessage :: (Matrix :> es, Media.Media :> es) => IncomingMessage -> Eff es IncomingMessage
+normalizeMatrixIncomingMessage message = do
+  imageUrls <- normalizeMatrixImageRefs message.imageUrls
+  pure IncomingMessage
+    { platform = message.platform
+    , kind = message.kind
+    , chatId = message.chatId
+    , chatAliases = message.chatAliases
+    , digest = message.digest
+    , senderId = message.senderId
+    , senderUsername = message.senderUsername
+    , messageId = message.messageId
+    , replyToMessageId = message.replyToMessageId
+    , mentions = message.mentions
+    , mentionUsernames = message.mentionUsernames
+    , imageUrls
+    , text = message.text
+    , raw = message.raw
+    }
+
+normalizeMatrixReferencedMessage :: (Matrix :> es, Media.Media :> es) => ReferencedMessage -> Eff es ReferencedMessage
+normalizeMatrixReferencedMessage message = do
+  imageUrls <- normalizeMatrixImageRefs message.imageUrls
+  pure ReferencedMessage
+    { messageId = message.messageId
+    , senderDisplayName = message.senderDisplayName
+    , senderIdentifier = message.senderIdentifier
+    , text = message.text
+    , imageUrls
+    }
+
+normalizeMatrixImageRefs :: (Matrix :> es, Media.Media :> es) => [Text] -> Eff es [Text]
+normalizeMatrixImageRefs =
+  traverse normalizeMatrixImageRef
+
+normalizeMatrixImageRef :: (Matrix :> es, Media.Media :> es) => Text -> Eff es Text
+normalizeMatrixImageRef ref
+  | "mxc://" `Text.isPrefixOf` Text.strip ref = do
+      downloaded <- downloadMedia ref
+      case downloaded of
+        Nothing ->
+          pure ref
+        Just media ->
+          fromMaybe ref <$> Media.storeMediaObject Media.MediaObject
+            { Media.bytes = media.downloadedBytes
+            , Media.mimeType = media.downloadedMimeType
+            , Media.sourceName = media.downloadedName
+            }
+  | otherwise =
+      pure ref
+
 matrixEventImageUrls :: Aeson.Value -> [Text]
 matrixEventImageUrls =
   fromMaybe [] . Aeson.parseMaybe parse
@@ -806,13 +874,14 @@ matrixEventImageUrls =
       url <- contentObject Aeson..:? "url"
       pure [imageUrl | msgtype == "m.image", Just imageUrl <- [url]]
 
-matrixProfileAvatarValue :: MatrixProfile -> Aeson.Value
-matrixProfileAvatarValue profile =
-  Aeson.object
+matrixProfileAvatarValue :: (Matrix :> es, Media.Media :> es) => MatrixProfile -> Eff es Aeson.Value
+matrixProfileAvatarValue profile = do
+  avatarUrl <- traverse normalizeMatrixImageRef profile.profileAvatarUrl
+  pure $ Aeson.object
     [ "platform" Aeson..= ("matrix" :: Text)
     , "user_id" Aeson..= profile.profileUserId
     , "displayname" Aeson..= profile.profileDisplayName
-    , "avatar_url" Aeson..= profile.profileAvatarUrl
+    , "avatar_url" Aeson..= avatarUrl
     ]
 
 matrixJoinedMembersValue :: JoinedMembersResponse -> Aeson.Value
@@ -1133,7 +1202,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event} = do
     , replyToMessageId = matrixEventMessageId <$> event.content.replyToEventId
     , mentions = []
     , mentionUsernames = matrixMentions cfg event.content body
-    , imageUrls = []
+    , imageUrls = matrixEventImageUrls event.raw
     , text = Text.strip body
     , raw = event.raw
     }
@@ -1370,6 +1439,43 @@ fetchProfileCall manager cfg token userId =
     , profileDisplayName = profile.profileContentDisplayName
     , profileAvatarUrl = profile.profileContentAvatarUrl
     }
+
+downloadMediaCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixDownloadedMedia
+downloadMediaCall manager cfg token mxcRef =
+  case parseMxcUri mxcRef of
+    Nothing ->
+      liftIO (ioError (userError [i|Invalid Matrix media URI: #{mxcRef}|]))
+    Just (serverName, mediaId) ->
+      withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
+        let options =
+              baseOptions
+                <> matrixAuth token
+                <> responseTimeout matrixApiResponseTimeoutMicroseconds
+        logInfo_ [i|Matrix API request: authenticated media download #{mxcRef}|]
+        response <- matrixReq "media download" (Http.runReqWithConfig (matrixHttpConfig manager) $
+          req GET
+            (baseUrl /: "_matrix" /: "client" /: "v1" /: "media" /: "download" /: serverName /: mediaId)
+            NoReqBody
+            bsResponse
+            options)
+        let mimeType =
+              fromMaybe "application/octet-stream" do
+                raw <- responseHeader response "Content-Type"
+                nonEmptyText (Text.takeWhile (/= ';') (TextEncoding.decodeUtf8 raw))
+        pure MatrixDownloadedMedia
+          { downloadedBytes = responseBody response
+          , downloadedMimeType = mimeType
+          , downloadedName = Just mediaId
+          }
+
+parseMxcUri :: Text -> Maybe (Text, Text)
+parseMxcUri ref = do
+  rest <- Text.stripPrefix "mxc://" (Text.strip ref)
+  let (serverName, mediaWithSlash) = Text.breakOn "/" rest
+  mediaId <- Text.stripPrefix "/" mediaWithSlash
+  guard (not (Text.null serverName))
+  guard (not (Text.null mediaId))
+  pure (serverName, mediaId)
 
 sendMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es SendMessageResponse
 sendMessageCall manager cfg token roomId replyRelation body mentionUserIds =

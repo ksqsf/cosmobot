@@ -17,6 +17,7 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Chat.Driver.Types
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Message
 import Bot.Prelude
@@ -24,7 +25,10 @@ import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.State as RPC
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.List as List
+import qualified Data.Vector as Vector
 import Effectful.FileSystem (FileSystem)
 import Effectful.Timeout
 
@@ -32,7 +36,7 @@ type ChatDriverEffects es =
   Chat.Chat : QQ.QQ : Telegram.Telegram : Matrix.Matrix : Discord.Discord : es
 
 type ChatDriverConstraints es =
-  (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, FileSystem :> es, Concurrent :> es, Storage.Storage :> es, IOE :> es)
+  (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, Media.Media :> es, FileSystem :> es, Concurrent :> es, Storage.Storage :> es, IOE :> es)
 
 chatPlatformDrivers
   :: ChatDriverConstraints es
@@ -173,7 +177,7 @@ getPlatformMessageContent
   -> Eff es (Maybe ReferencedMessage)
 getPlatformMessageContent rpcConfig rpcState message messageId =
   withPlatformDriver rpcConfig rpcState message "fetch referenced message" \driver ->
-    driver.getMessageContent message messageId
+    traverse Media.normalizeReferencedMessage =<< driver.getMessageContent message messageId
 
 getPlatformSenderMemberInfo
   :: (ChatDriverConstraints es, Log :> es)
@@ -205,7 +209,7 @@ getPlatformUserAvatar
   -> Eff es (Maybe Aeson.Value)
 getPlatformUserAvatar rpcConfig rpcState message userId =
   withPlatformDriver rpcConfig rpcState message "fetch user avatar" \driver ->
-    driver.getUserAvatar message userId
+    traverse normalizeJsonMediaUrls =<< driver.getUserAvatar message userId
 
 listPlatformGroupMembers
   :: (ChatDriverConstraints es, Log :> es)
@@ -242,7 +246,7 @@ setPlatformMemberTitle rpcConfig rpcState message userId title =
     Just <$> driver.setMemberTitle message userId title
 
 runChatDrivers
-  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
+  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
   => QQ.Config
   -> Telegram.Config
   -> Matrix.Config
@@ -263,6 +267,7 @@ incomingMessages
   => Telegram.Telegram :> es
   => Matrix.Matrix :> es
   => Discord.Discord :> es
+  => Media.Media :> es
   => Log :> es
   => Concurrent :> es
   => Fail :> es
@@ -270,13 +275,33 @@ incomingMessages
   => RPC.RpcState
   -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages rpcState =
-  StreamUtil.mergeStreams
+  Media.normalizeIncomingMessages $
+    StreamUtil.mergeStreams
     [ QQ.incomingMessages
     , Telegram.incomingMessages
     , Matrix.incomingMessages
     , Discord.incomingMessages
     , RPC.incomingMessages rpcState
     ]
+
+normalizeJsonMediaUrls :: Media.Media :> es => Aeson.Value -> Eff es Aeson.Value
+normalizeJsonMediaUrls = \case
+  Aeson.Object jsonObject ->
+    Aeson.Object . AesonKeyMap.fromList <$> traverse normalizePair (AesonKeyMap.toList jsonObject)
+  Aeson.Array array ->
+    Aeson.Array . Vector.fromList <$> traverse normalizeJsonMediaUrls (Vector.toList array)
+  value ->
+    pure value
+  where
+    normalizePair (key, Aeson.String ref)
+      | AesonKey.toText key `elem` mediaUrlKeys = do
+          normalized <- Media.normalizeMediaRef ref
+          pure (key, Aeson.String normalized)
+    normalizePair (key, value) =
+      (key,) <$> normalizeJsonMediaUrls value
+
+    mediaUrlKeys =
+      ["avatar_url", "image_url", "url"]
 
 chatHandlers
   :: (ChatDriverConstraints es, Log :> es)

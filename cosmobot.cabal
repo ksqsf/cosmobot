@@ -80,18 +80,22 @@ common app-deps
                     , containers
                     , commonmark
                     , commonmark-extensions
+                    , crypton
                     , directory
                     , filepath
                     , effectful
                     , log-effectful
                     , streaming
                     , transformers
+                    , vector
                     , stm
                     , async
                     , bytestring
                     , base64-bytestring
                     , aeson
                     , aeson-pretty
+                    , amazonka
+                    , amazonka-s3
                     , string-interpolate
                     , unix
                     , modern-uri
@@ -99,13 +103,14 @@ common app-deps
                     , http-client
                     , http-client-tls
                     , crypton-connection
-                    , tls
+                    , tls >= 2.0
                     , http-types
                     , wai
                     , wai-websockets
                     , warp
                     , jsonrpc
                     , optics
+                    , lens
                     , time
                     , temporary
                     , process
@@ -125,6 +130,7 @@ common bot-core-modules
         Bot.Chat.Types
         Bot.Core.Message
         Bot.Effect.Chat
+        Bot.Effect.Media
         Bot.Core.ReplyBody
 
 common bot-chat-driver-modules
@@ -238,6 +244,8 @@ executable cosmobot
         Bot.Core.Route
         Bot.LLM.OpenAI
         Bot.Main
+        Bot.Media.S3
+        Bot.Media.S3.Config
         Bot.RPC.Audit
         Bot.RPC.Client
         Bot.Handler.Admin
