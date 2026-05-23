@@ -32,7 +32,6 @@ where
 
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Storage as Storage
-import qualified Bot.Effect.Media as Media
 import qualified Bot.Storage.Matrix as MatrixStorage
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
@@ -117,7 +116,7 @@ instance IsString MatrixEventId where
     matrixEventId . Text.pack
 
 matrixDriver
-  :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es)
+  :: (Matrix :> es, FileSystem :> es, IOE :> es, KatipE :> es)
   => Driver.ChatPlatformDriver es
 matrixDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformMatrix
@@ -605,7 +604,7 @@ instance Aeson.FromJSON MatrixLoginResponse where
       <*> o Aeson..:? "refresh_token"
       <*> o Aeson..:? "expires_in_ms"
 
-incomingMessages :: (Matrix :> es, Media.Media :> es, KatipE :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (Matrix :> es, KatipE :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
   cfg <- S.lift matrixConfig
   if matrixAuthConfigured cfg
@@ -738,7 +737,7 @@ replyTo message body =
     _ ->
       pure Nothing
 
-getMessageContent :: (Matrix :> es, Media.Media :> es) => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
+getMessageContent :: (Matrix :> es, KatipE :> es) => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
 getMessageContent message messageId =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
@@ -763,13 +762,9 @@ getMemberInfo message userId =
     _ ->
       pure Nothing
 
-getUserAvatar :: (Matrix :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
-getUserAvatar message userId =
-  case message.platform of
-    PlatformMatrix ->
-      traverse matrixProfileAvatarValue =<< fetchProfile userId
-    _ ->
-      pure Nothing
+getUserAvatar :: (Matrix :> es, KatipE :> es) => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
+getUserAvatar _ userId =
+  traverse matrixProfileAvatarValue =<< fetchProfile userId
 
 listGroupMembers :: Matrix :> es => IncomingMessage -> Eff es (Maybe Aeson.Value)
 listGroupMembers message =
@@ -809,7 +804,7 @@ matrixReferencedMessage event = do
     , imageUrls = matrixEventImageUrls event.raw
     }
 
-normalizeMatrixIncomingMessage :: (Matrix :> es, Media.Media :> es) => IncomingMessage -> Eff es IncomingMessage
+normalizeMatrixIncomingMessage :: (Matrix :> es, KatipE :> es) => IncomingMessage -> Eff es IncomingMessage
 normalizeMatrixIncomingMessage message = do
   imageUrls <- normalizeMatrixImageRefs message.imageUrls
   pure IncomingMessage
@@ -829,7 +824,7 @@ normalizeMatrixIncomingMessage message = do
     , raw = message.raw
     }
 
-normalizeMatrixReferencedMessage :: (Matrix :> es, Media.Media :> es) => ReferencedMessage -> Eff es ReferencedMessage
+normalizeMatrixReferencedMessage :: (Matrix :> es, KatipE :> es) => ReferencedMessage -> Eff es ReferencedMessage
 normalizeMatrixReferencedMessage message = do
   imageUrls <- normalizeMatrixImageRefs message.imageUrls
   pure ReferencedMessage
@@ -840,25 +835,30 @@ normalizeMatrixReferencedMessage message = do
     , imageUrls
     }
 
-normalizeMatrixImageRefs :: (Matrix :> es, Media.Media :> es) => [Text] -> Eff es [Text]
+normalizeMatrixImageRefs :: (Matrix :> es, KatipE :> es) => [Text] -> Eff es [Text]
 normalizeMatrixImageRefs =
   traverse normalizeMatrixImageRef
 
-normalizeMatrixImageRef :: (Matrix :> es, Media.Media :> es) => Text -> Eff es Text
+normalizeMatrixImageRef :: (Matrix :> es, KatipE :> es) => Text -> Eff es Text
 normalizeMatrixImageRef ref
   | "mxc://" `Text.isPrefixOf` Text.strip ref = do
-      downloaded <- downloadMedia ref
+      downloaded <- downloadMedia (Text.strip ref) `catchSync` \err -> do
+        logInfo [i|Matrix media normalization skipped for #{Text.strip ref}: #{displayException err}|]
+        pure Nothing
       case downloaded of
         Nothing ->
           pure ref
         Just media ->
-          fromMaybe ref <$> Media.storeMediaObject Media.MediaObject
-            { Media.bytes = media.downloadedBytes
-            , Media.mimeType = media.downloadedMimeType
-            , Media.sourceName = media.downloadedName
-            }
+          pure (matrixDownloadedMediaDataUrl media)
   | otherwise =
       pure ref
+
+matrixDownloadedMediaDataUrl :: MatrixDownloadedMedia -> Text
+matrixDownloadedMediaDataUrl media =
+  "data:"
+    <> media.downloadedMimeType
+    <> ";base64,"
+    <> TextEncoding.decodeUtf8 (Base64.encode media.downloadedBytes)
 
 matrixEventImageUrls :: Aeson.Value -> [Text]
 matrixEventImageUrls =
@@ -874,7 +874,7 @@ matrixEventImageUrls =
       url <- contentObject Aeson..:? "url"
       pure [imageUrl | msgtype == "m.image", Just imageUrl <- [url]]
 
-matrixProfileAvatarValue :: (Matrix :> es, Media.Media :> es) => MatrixProfile -> Eff es Aeson.Value
+matrixProfileAvatarValue :: (Matrix :> es, KatipE :> es) => MatrixProfile -> Eff es Aeson.Value
 matrixProfileAvatarValue profile = do
   avatarUrl <- traverse normalizeMatrixImageRef profile.profileAvatarUrl
   pure $ Aeson.object

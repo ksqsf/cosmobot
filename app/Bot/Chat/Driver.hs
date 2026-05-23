@@ -39,7 +39,7 @@ type ChatDriverConstraints es =
   (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, Media.Media :> es, FileSystem :> es, Concurrent :> es, Storage.Storage :> es, IOE :> es)
 
 chatPlatformDrivers
-  :: ChatDriverConstraints es
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> [ChatPlatformDriver es]
@@ -52,7 +52,7 @@ chatPlatformDrivers rpcConfig rpcState =
   ]
 
 platformDriver
-  :: ChatDriverConstraints es
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
