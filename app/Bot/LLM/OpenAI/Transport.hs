@@ -179,9 +179,8 @@ askImageEditOpenAIStreaming Config{imageProvider = Just cfg@ImageProviderConfig{
           lift $ logInfo ("LLM image edit response: " <> imageResponseLogLine requestEndpoint requestModel body)
           case imageGenerationResponseText cfg body of
             Just answer -> do
-              compressed <- lift (compressImageAnswer (imageCompressionConfig cfg) answer)
-              S.yield compressed
-              pure compressed
+              S.yield answer
+              pure answer
             Nothing ->
               lift (throwIO (LLMException "Image edit response was empty: no image output."))
 
@@ -239,9 +238,8 @@ askImageChatCompletionsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, re
         if Text.null (Text.strip text)
           then lift (throwIO (LLMException "OpenAI image chat streaming response was empty: no text or image output."))
           else do
-            compressed <- lift (compressImageAnswer (imageCompressionConfig cfg) text)
-            S.yield compressed
-            pure compressed
+            S.yield text
+            pure text
 
 askImageGenerationsOpenAIStreaming :: (IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageGenerationsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, requestTimeout} options messages =
@@ -263,9 +261,8 @@ askImageGenerationsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, reques
         lift (logInfo ("LLM image response: " <> imageResponseLogLine requestEndpoint request.model body))
         case imageGenerationResponseText cfg body of
           Just answer -> do
-            compressed <- lift (compressImageAnswer (imageCompressionConfig cfg) answer)
-            S.yield compressed
-            pure compressed
+            S.yield answer
+            pure answer
           Nothing ->
             lift (throwIO (LLMException "Image generation response was empty: no image output."))
 
@@ -355,8 +352,6 @@ data ImageGenerationRequest = ImageGenerationRequest
   , quality :: !(Maybe Text)
   , size :: !(Maybe Text)
   , background :: !(Maybe Text)
-  , outputFormat :: !(Maybe Text)
-  , outputCompression :: !(Maybe Int)
   , moderation :: !(Maybe Text)
   , stream :: !(Maybe Bool)
   , partialImages :: !(Maybe Int)
@@ -364,7 +359,7 @@ data ImageGenerationRequest = ImageGenerationRequest
   deriving (Show)
 
 instance Aeson.ToJSON ImageGenerationRequest where
-  toJSON ImageGenerationRequest{model, prompt, quality, size, background, outputFormat, outputCompression, moderation, stream, partialImages} =
+  toJSON ImageGenerationRequest{model, prompt, quality, size, background, moderation, stream, partialImages} =
     Aeson.object $
       [ "model" Aeson..= model
       , "prompt" Aeson..= prompt
@@ -372,8 +367,6 @@ instance Aeson.ToJSON ImageGenerationRequest where
       <> maybe [] (\value -> ["quality" Aeson..= value]) quality
       <> maybe [] (\value -> ["size" Aeson..= value]) size
       <> maybe [] (\value -> ["background" Aeson..= value]) background
-      <> maybe [] (\value -> ["output_format" Aeson..= value]) outputFormat
-      <> maybe [] (\value -> ["output_compression" Aeson..= value]) outputCompression
       <> maybe [] (\value -> ["moderation" Aeson..= value]) moderation
       <> maybe [] (\value -> ["stream" Aeson..= value]) stream
       <> maybe [] (\value -> ["partial_images" Aeson..= value]) partialImages
@@ -458,8 +451,6 @@ imageGenerationConfig provider options =
         <> maybe [] (\value -> ["size" Aeson..= value]) resolved.size
         <> maybe [] (\value -> ["aspect_ratio" Aeson..= value]) provider.aspectRatio
         <> maybe [] (\value -> ["background" Aeson..= value]) resolved.background
-        <> maybe [] (\value -> ["output_format" Aeson..= value]) provider.outputFormat
-        <> maybe [] (\value -> ["output_compression" Aeson..= value]) provider.outputCompression
         <> maybe [] (\value -> ["moderation" Aeson..= value]) resolved.moderation
 
 imageGenerationRequest :: ImageProviderConfig -> LLM.ImageRequestOptions -> Text -> Text -> Maybe Bool -> ImageGenerationRequest
@@ -470,8 +461,6 @@ imageGenerationRequest provider options model prompt stream =
     , quality = resolved.quality
     , size = resolved.size
     , background = resolved.background
-    , outputFormat = provider.outputFormat
-    , outputCompression = provider.outputCompression
     , moderation = resolved.moderation
     , stream = stream
     , partialImages =
@@ -585,8 +574,6 @@ imageEditMultipartParts provider options model prompt imageUploads maskUpload =
         <> maybeTextPart "quality" resolved.quality
         <> maybeTextPart "size" resolved.size
         <> maybeTextPart "background" (imageEditBackground model resolved.background)
-        <> maybeTextPart "output_format" provider.outputFormat
-        <> maybeIntPart "output_compression" provider.outputCompression
         <> maybeTextPart "moderation" resolved.moderation
 
 imageUploadPart :: Text -> ImageUpload -> Multipart.Part
@@ -600,10 +587,6 @@ multipartTextPart name value =
 maybeTextPart :: Text -> Maybe Text -> [Multipart.Part]
 maybeTextPart name =
   maybe [] \value -> [multipartTextPart name value]
-
-maybeIntPart :: Text -> Maybe Int -> [Multipart.Part]
-maybeIntPart name =
-  maybe [] \value -> [multipartTextPart name (show value)]
 
 -- gpt-image-2 rejects transparent backgrounds; omit that unsupported option
 -- while preserving other model/config combinations.
@@ -668,25 +651,12 @@ imageGenerationResponseText cfg response =
     refs -> Just (Text.unlines (map ReplyBody.imageDirective refs))
 
 imageGenerationDataRef :: ImageProviderConfig -> ImageGenerationData -> Maybe Text
-imageGenerationDataRef cfg image =
-  image.url <|> (dataImageRef cfg <$> image.b64Json)
+imageGenerationDataRef _cfg image =
+  image.url <|> (dataImageRef <$> image.b64Json)
 
-dataImageRef :: ImageProviderConfig -> Text -> Text
-dataImageRef ImageProviderConfig{outputFormat} b64 =
-  "data:image/" <> fromMaybe "png" outputFormat <> ";base64," <> b64
-
-imageCompressionConfig :: ImageProviderConfig -> Image.ImageCompressionConfig
-imageCompressionConfig ImageProviderConfig{outputFormat, outputCompression} =
-  Image.ImageCompressionConfig
-    { outputFormat = outputFormat
-    , outputCompression = outputCompression
-    }
-
-compressImageAnswer :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es) => Image.ImageCompressionConfig -> Text -> Eff es Text
-compressImageAnswer cfg =
-  ReplyBody.traverseReplyImageUrls \ref -> do
-    compressed <- Image.compressDataImageReference cfg ref
-    pure (fromMaybe ref compressed)
+dataImageRef :: Text -> Text
+dataImageRef b64 =
+  "data:image/png;base64," <> b64
 
 imageRequestLogLine :: Text -> Int -> ImageGenerationRequest -> Text
 imageRequestLogLine endpoint timeoutSeconds request =

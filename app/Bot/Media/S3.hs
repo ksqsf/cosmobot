@@ -31,9 +31,10 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import Effectful.Process (Process)
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types.Header as HTTPHeader
-import System.FilePath (takeFileName)
+import System.FilePath (replaceExtension, takeFileName)
 import System.IO.Error (ioError, userError)
 
 data Runtime = Runtime
@@ -43,7 +44,7 @@ data Runtime = Runtime
   }
 
 runMediaS3
-  :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es)
+  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es)
   => MediaConfig.Config
   -> Eff (Media : es) a
   -> Eff es a
@@ -105,7 +106,7 @@ configureAddressing cfg service =
     _ ->
       service & AWS.service_s3AddressingStyle .~ AWS.S3AddressingStyleAuto
 
-normalizeRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es Text
+normalizeRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es Text
 normalizeRef runtime ref
   | Cache.isMediaId ref =
       pure ref
@@ -130,7 +131,7 @@ normalizeRef runtime ref
   | otherwise =
       pure ref
 
-publicRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es Text
+publicRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es Text
 publicRef runtime ref =
   case Cache.parseMediaId ref of
     Nothing -> normalizeRef runtime ref >>= publicRef runtime
@@ -149,10 +150,41 @@ localPath runtime ref =
     Just fileId ->
       fmap (.path) <$> Cache.loadCachedMedia (cacheConfig runtime) fileId
 
-cacheObject :: (IOE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Maybe Text -> MediaObject -> Eff es Text
+cacheObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es) => Runtime -> Maybe Text -> MediaObject -> Eff es Text
 cacheObject runtime sourceRef mediaObject = do
-  cached <- Cache.cacheMediaObject (cacheConfig runtime) sourceRef mediaObject
+  prepared <- prepareMediaObject runtime mediaObject
+  cached <- Cache.cacheMediaObject (cacheConfig runtime) sourceRef prepared
   pure (Cache.mediaIdForFileId cached.fileId)
+
+prepareMediaObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es) => Runtime -> MediaObject -> Eff es MediaObject
+prepareMediaObject runtime mediaObject
+  | "image/" `Text.isPrefixOf` Text.toLower mediaObject.mimeType =
+      compressMediaObject runtime mediaObject
+  | otherwise =
+      pure mediaObject
+
+compressMediaObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es) => Runtime -> MediaObject -> Eff es MediaObject
+compressMediaObject runtime mediaObject =
+  (Image.compressImageBytes runtime.cfg.compression mediaObject.bytes >>= \case
+    Nothing ->
+      pure mediaObject
+    Just (mimeType, bytes) -> do
+      let originalMimeType = mediaObject.mimeType
+      logInfo [i|Compressed media object: from_mime=#{originalMimeType} to_mime=#{mimeType}|]
+      pure MediaObject
+        { bytes
+        , mimeType
+        , sourceName = compressedSourceName mimeType mediaObject.sourceName
+        })
+    `catchSync` \err -> do
+      logWarning [i|Media image compression failed: #{show err :: String}|]
+      pure mediaObject
+
+compressedSourceName :: Text -> Maybe Text -> Maybe Text
+compressedSourceName mimeType =
+  fmap \name ->
+    let ext = Text.dropWhile (== '.') (Cache.extensionFor MediaObject{bytes = "", mimeType, sourceName = Nothing})
+    in Text.pack (replaceExtension (Text.unpack name) (Text.unpack ext))
 
 ensurePublicObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es Text
 ensurePublicObject runtime cached =

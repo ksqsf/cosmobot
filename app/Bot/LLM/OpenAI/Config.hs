@@ -53,8 +53,6 @@ data ImageProviderConfig = ImageProviderConfig
   , aspectRatio :: !(Maybe Text)
   , background :: !(Maybe Text)
   , moderation :: !(Maybe Text)
-  , outputFormat :: !(Maybe Text)
-  , outputCompression :: !(Maybe Int)
   }
   deriving (Eq, Show)
 
@@ -100,8 +98,6 @@ defaultImageProviderConfig = ImageProviderConfig
   , aspectRatio = Nothing
   , background = Nothing
   , moderation = Nothing
-  , outputFormat = Nothing
-  , outputCompression = Nothing
   }
 
 defaultAudioProviderConfig :: AudioProviderConfig
@@ -144,8 +140,6 @@ data ImageProviderFileConfig = ImageProviderFileConfig
   , aspectRatio :: !(Maybe Text)
   , background :: !(Maybe Text)
   , moderation :: !(Maybe Text)
-  , outputFormat :: !(Maybe Text)
-  , outputCompression :: !(Maybe Int)
   }
   deriving (Show)
 
@@ -226,8 +220,6 @@ instance FromValue ImageProviderFileConfig where
     aspectRatio <- optKey "aspect_ratio"
     background <- optKey "background"
     moderation <- optKey "moderation"
-    outputFormat <- optKey "output_format"
-    outputCompression <- optKey "output_compression"
     when (requestTimeout <= 0) (fail "llm.image_provider.<name>.timeout must be positive")
     pure ImageProviderFileConfig
       { baseUrl = baseUrl
@@ -241,8 +233,6 @@ instance FromValue ImageProviderFileConfig where
       , aspectRatio = aspectRatio
       , background = background
       , moderation = moderation
-      , outputFormat = outputFormat
-      , outputCompression = outputCompression
       }
 
 instance FromValue AudioProviderFileConfig where
@@ -300,8 +290,6 @@ toRuntimeImageProviderConfig cfg =
     , aspectRatio = cfg.aspectRatio
     , background = cfg.background
     , moderation = cfg.moderation
-    , outputFormat = cfg.outputFormat
-    , outputCompression = cfg.outputCompression
     }
 
 toRuntimeAudioProviderConfig :: AudioProviderFileConfig -> AudioProviderConfig

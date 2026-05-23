@@ -73,8 +73,6 @@ size = "1024x1024"
 aspect_ratio = "1:1"
 background = "auto"
 moderation = "auto"
-output_format = "webp"
-output_compression = 80
 
 [llm.audio_provider.openai]
 base_url = "https://api.openai.com/v1"
@@ -89,6 +87,8 @@ timeout = 300
 [media]
 cache_dir = "media-cache"
 public_base_url = "https://media.example.com/cosmobot-media"
+compression_format = "webp"
+compression_level = 80
 
 [media.gc]
 enabled = false

@@ -65,8 +65,6 @@ testSelectsNamedImageProvider = do
       , "aspect_ratio = \"portrait\""
       , "background = \"transparent\""
       , "moderation = \"low\""
-      , "output_format = \"webp\""
-      , "output_compression = 80"
       ]
   cfg.chatProvider @?= Nothing
   case cfg.imageProvider of
@@ -82,8 +80,6 @@ testSelectsNamedImageProvider = do
       provider.aspectRatio @?= Just "portrait"
       provider.background @?= Just "transparent"
       provider.moderation @?= Just "low"
-      provider.outputFormat @?= Just "webp"
-      provider.outputCompression @?= Just 80
     Nothing ->
       assertFailure "expected selected image provider"
   cfg.audioProvider @?= Nothing
