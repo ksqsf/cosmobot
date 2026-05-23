@@ -9,6 +9,7 @@ import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.ByteString.Char8 as ByteStringChar8
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -38,6 +39,7 @@ main =
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
       , testCase "Matrix Markdown renders custom HTML" testMatrixMarkdownRendersCustomHtml
+      , testCase "Matrix Markdown renders user ids as mention links" testMatrixMarkdownRendersUserIdsAsMentionLinks
       , testCase "Discord message converts to incoming message" testDiscordMessageConvertsToIncomingMessage
       , testCase "Discord self message is ignored" testDiscordSelfMessageIsIgnored
       , testCase "Discord superuser and bot mention are marked" testDiscordSuperuserAndBotMentionAreMarked
@@ -316,6 +318,20 @@ testMatrixMarkdownRendersCustomHtml =
         , "</tr>"
         , "</tbody>"
         , "</table>"
+        ]
+
+testMatrixMarkdownRendersUserIdsAsMentionLinks :: IO ()
+testMatrixMarkdownRendersUserIdsAsMentionLinks =
+  Matrix.formatMatrixMarkdownWithMentionNames mentionNames "@foo:matrix.org @bar:matrix.org." @?= Just expected
+  where
+    mentionNames =
+      Map.fromList
+        [ ("@foo:matrix.org", "Foo")
+        , ("@bar:matrix.org", "Bar")
+        ]
+    expected =
+      Text.intercalate "\n"
+        [ "<p><a href=\"https://matrix.to/#/@foo:matrix.org\">@Foo</a> <a href=\"https://matrix.to/#/@bar:matrix.org\">@Bar</a>.</p>"
         ]
 
 testMatrixReplyRelationConvertsToReplyMessageId :: IO ()

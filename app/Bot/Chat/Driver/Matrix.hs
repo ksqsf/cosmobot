@@ -22,6 +22,7 @@ module Bot.Chat.Driver.Matrix
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , formatMatrixMarkdown
+  , formatMatrixMarkdownWithMentionNames
   , replyTo
   , replyAudio
   , uploadFile
@@ -46,6 +47,7 @@ import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Char8 as ByteString
+import qualified Data.Char as Char
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -271,8 +273,10 @@ runMatrix cfg inner = do
             rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count
             pure count
         SendText roomId replyToEventId body mentionUserIds -> do
-          response <- withMaybeMatrixAccessToken auth \token ->
-            sendMessageCall manager cfg token roomId replyToEventId body mentionUserIds
+          response <- withMaybeMatrixAccessToken auth \token -> do
+            let mentions = matrixOutgoingMentionUserIds body mentionUserIds
+            mentionNames <- fetchMatrixMentionNames manager cfg token roomId mentions
+            sendMessageCall manager cfg token roomId replyToEventId body mentions mentionNames
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         UploadMedia path fileName mime ->
@@ -284,8 +288,10 @@ runMatrix cfg inner = do
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         EditText roomId eventId body -> do
-          response <- withMaybeMatrixAccessToken auth \token ->
-            editMessageCall manager cfg token roomId eventId body
+          response <- withMaybeMatrixAccessToken auth \token -> do
+            let mentions = matrixOutgoingMentionUserIds body []
+            mentionNames <- fetchMatrixMentionNames manager cfg token roomId mentions
+            editMessageCall manager cfg token roomId eventId body mentions mentionNames
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         DeleteEvent roomId messageId knownEventId -> do
@@ -1219,7 +1225,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event} = do
     , kind = if roomIsDirect then ChatPrivate else ChatGroup
     , chatId = Just (stableTextId (matrixRoomIdText roomId))
     , chatAliases = [matrixRoomIdText roomId]
-    , digest = matrixMessageDigest cfg roomId event
+    , digest = matrixMessageDigest cfg roomId event body
     , senderId = Just event.sender
     , senderUsername = Just event.sender
     , messageId = matrixEventMessageId <$> event.eventId
@@ -1260,13 +1266,13 @@ matrixEventIgnoreReason cfg RoomEvent{roomId, event}
     context =
       [i|room=#{roomId} sender=#{eventSender} event_id=#{eventIdText} msgtype=#{eventMsgtype}|]
 
-matrixMessageDigest :: Config -> MatrixRoomId -> Event -> MessageDigest
-matrixMessageDigest cfg roomId event =
+matrixMessageDigest :: Config -> MatrixRoomId -> Event -> Text -> MessageDigest
+matrixMessageDigest cfg roomId event body =
   MessageDigest
     { chatIsAllowed = roomAllowed
     , senderIsAllowed = senderSuperuser
     , senderIsSuperuser = senderSuperuser
-    , mentionsBot = maybe False (\botId -> botId `elem` event.content.mentions) cfg.userId
+    , mentionsBot = maybe False (\botId -> botId `elem` matrixMentions cfg event.content body) cfg.userId
     , botId = cfg.userId
     }
   where
@@ -1499,20 +1505,21 @@ parseMxcUri ref = do
   guard (not (Text.null mediaId))
   pure (serverName, mediaId)
 
-sendMessageCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es SendMessageResponse
-sendMessageCall manager cfg token roomId replyRelation body mentionUserIds =
+sendMessageCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Map Text Text -> Eff es SendMessageResponse
+sendMessageCall manager cfg token roomId replyRelation body mentionUserIds mentionNames =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
+  let displayBody = matrixMentionDisplayBody mentionNames body
   let options =
         baseOptions
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
       request = SendMessageRequest
         { msgtype = "m.text"
-        , body = nonEmptyMatrixBody body
-        , formattedBody = formatMatrixMarkdown body
+        , body = nonEmptyMatrixBody displayBody
+        , formattedBody = formatMatrixMarkdownWithMentionNames mentionNames body
         , replyRelation
-        , mentions = matrixOutgoingMentions body mentionUserIds
+        , mentions = MatrixMentions mentionUserIds
         }
   logInfo "Matrix API request: send m.room.message"
   matrixReq "send m.room.message" (Http.runReqWithConfig (matrixHttpConfig manager) $
@@ -1523,17 +1530,19 @@ sendMessageCall manager cfg token roomId replyRelation body mentionUserIds =
       options)
     <&> responseBody
 
-editMessageCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> MatrixEventId -> Text -> Eff es SendMessageResponse
-editMessageCall manager cfg token roomId eventId body =
+editMessageCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> MatrixEventId -> Text -> [Text] -> Map Text Text -> Eff es SendMessageResponse
+editMessageCall manager cfg token roomId eventId body mentionUserIds mentionNames =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
+  let displayBody = matrixMentionDisplayBody mentionNames body
   let options =
         baseOptions
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
       request = MatrixEditMessageRequest
-        { body = nonEmptyMatrixBody body
-        , formattedBody = formatMatrixMarkdown body
+        { body = nonEmptyMatrixBody displayBody
+        , formattedBody = formatMatrixMarkdownWithMentionNames mentionNames body
+        , mentions = MatrixMentions mentionUserIds
         , replacesEventId = eventId
         }
   logInfo "Matrix API request: edit m.room.message"
@@ -1638,9 +1647,44 @@ nonEmptyMatrixBody body
   | Text.null (Text.strip body) = " "
   | otherwise = body
 
-matrixOutgoingMentions :: Text -> [Text] -> MatrixMentions
-matrixOutgoingMentions body explicitUserIds =
-  MatrixMentions (Set.toList (Set.fromList (filter isMatrixUserId (explicitUserIds <> matrixUserIdsInText body))))
+matrixOutgoingMentionUserIds :: Text -> [Text] -> [Text]
+matrixOutgoingMentionUserIds body explicitUserIds =
+  Set.toList (Set.fromList (filter isMatrixUserId (explicitUserIds <> matrixUserIdsInText body)))
+
+fetchMatrixMentionNames
+  :: (IOE :> es, KatipE :> es)
+  => Manager
+  -> Config
+  -> Text
+  -> MatrixRoomId
+  -> [Text]
+  -> Eff es (Map Text Text)
+fetchMatrixMentionNames _ _ _ _ [] =
+  pure Map.empty
+fetchMatrixMentionNames manager cfg token roomId mentionUserIds = do
+  result <- trySync (fetchJoinedMembersCall manager cfg token roomId)
+  case result of
+    Left err -> do
+      logInfo [i|Matrix mention display names unavailable: #{displayException err}|]
+      pure Map.empty
+    Right members ->
+      pure (matrixMentionNames mentionUserIds members)
+
+matrixMentionNames :: [Text] -> JoinedMembersResponse -> Map Text Text
+matrixMentionNames mentionUserIds members =
+  Map.fromList
+    [ (userId, name)
+    | userId <- mentionUserIds
+    , Just member <- [Map.lookup userId members.joinedMembers]
+    , Just name <- [matrixMentionDisplayName =<< member.memberDisplayName]
+    ]
+
+matrixMentionDisplayName :: Text -> Maybe Text
+matrixMentionDisplayName name = do
+  displayName <- nonEmptyText name
+  pure if "@" `Text.isPrefixOf` displayName
+    then displayName
+    else "@" <> displayName
 
 matrixUserIdsInText :: Text -> [Text]
 matrixUserIdsInText =
@@ -1989,21 +2033,24 @@ instance Aeson.ToJSON MatrixFileMessageRequest where
 data MatrixEditMessageRequest = MatrixEditMessageRequest
   { body :: !Text
   , formattedBody :: !(Maybe Text)
+  , mentions :: !MatrixMentions
   , replacesEventId :: !MatrixEventId
   }
   deriving (Show, Generic)
 
 instance Aeson.ToJSON MatrixEditMessageRequest where
-  toJSON MatrixEditMessageRequest{body, formattedBody, replacesEventId} =
+  toJSON MatrixEditMessageRequest{body, formattedBody, mentions, replacesEventId} =
     Aeson.object $
       [ "msgtype" Aeson..= ("m.text" :: Text)
       , "body" Aeson..= ("* " <> body)
       , "m.new_content" Aeson..= Aeson.object
           ( [ "msgtype" Aeson..= ("m.text" :: Text)
             , "body" Aeson..= body
+            , "m.mentions" Aeson..= mentions
             ]
               <> matrixFormattedBodyFields formattedBody
           )
+      , "m.mentions" Aeson..= mentions
       , "m.relates_to" Aeson..= Aeson.object
           [ "rel_type" Aeson..= ("m.replace" :: Text)
           , "event_id" Aeson..= matrixEventIdText replacesEventId
@@ -2022,11 +2069,71 @@ matrixFormattedBodyFields = \case
 
 formatMatrixMarkdown :: Text -> Maybe Text
 formatMatrixMarkdown input =
-  case runIdentity (commonmarkWith matrixMarkdownSyntax "matrix-message" input) :: Either ParseError (Html ()) of
+  formatMatrixMarkdownWithMentionNames Map.empty input
+
+formatMatrixMarkdownWithMentionNames :: Map Text Text -> Text -> Maybe Text
+formatMatrixMarkdownWithMentionNames mentionNames input =
+  case runIdentity (commonmarkWith matrixMarkdownSyntax "matrix-message" (linkifyMatrixMentions mentionNames input)) :: Either ParseError (Html ()) of
     Left _ ->
       Nothing
     Right html ->
       nonEmptyText (Text.strip (LazyText.toStrict (renderHtml html)))
+
+linkifyMatrixMentions :: Map Text Text -> Text -> Text
+linkifyMatrixMentions mentionNames =
+  Text.concat . map (linkifyToken mentionNames) . Text.groupBy sameWhitespace
+  where
+    sameWhitespace left right =
+      Char.isSpace left == Char.isSpace right
+
+linkifyToken :: Map Text Text -> Text -> Text
+linkifyToken mentionNames token
+  | Text.all Char.isSpace token =
+      token
+  | isMatrixUserId userId =
+      "[" <> escapeMarkdownLinkLabel displayName <> "](" <> matrixToUserUrl userId <> ")" <> suffix
+  | otherwise =
+      token
+  where
+    userId = Text.dropWhileEnd (`elem` matrixUserIdTrailingPunctuation) token
+    suffix = Text.drop (Text.length userId) token
+    displayName = matrixMentionDisplayText mentionNames userId
+
+matrixMentionDisplayBody :: Map Text Text -> Text -> Text
+matrixMentionDisplayBody mentionNames =
+  Text.concat . map replaceToken . Text.groupBy sameWhitespace
+  where
+    sameWhitespace left right =
+      Char.isSpace left == Char.isSpace right
+
+    replaceToken token
+      | Text.all Char.isSpace token =
+          token
+      | isMatrixUserId userId =
+          matrixMentionDisplayText mentionNames userId <> suffix
+      | otherwise =
+          token
+      where
+        userId = Text.dropWhileEnd (`elem` matrixUserIdTrailingPunctuation) token
+        suffix = Text.drop (Text.length userId) token
+
+matrixMentionDisplayText :: Map Text Text -> Text -> Text
+matrixMentionDisplayText mentionNames userId =
+  fromMaybe userId (Map.lookup userId mentionNames >>= matrixMentionDisplayName)
+
+escapeMarkdownLinkLabel :: Text -> Text
+escapeMarkdownLinkLabel =
+  Text.concatMap \case
+    '\\' -> "\\\\"
+    '[' -> "\\["
+    ']' -> "\\]"
+    '\n' -> " "
+    '\r' -> " "
+    char -> Text.singleton char
+
+matrixToUserUrl :: Text -> Text
+matrixToUserUrl userId =
+  "https://matrix.to/#/" <> userId
 
 matrixMarkdownSyntax :: SyntaxSpec Identity (Html ()) (Html ())
 matrixMarkdownSyntax =
