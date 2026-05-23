@@ -106,7 +106,7 @@ routes cfg conversations =
 runBotLog :: IOE :> es => Severity -> Eff (KatipE : es) a -> Eff es a
 runBotLog level inner =
   startKatipE "cosmobot" "production" do
-    stdoutScribe <- mkHandleScribe ColorIfTerminal stdout (permitItem level) V2
+    stdoutScribe <- mkHandleScribe (ColorLog True) stdout (permitItem level) V2
     registerScribe "stdout" stdoutScribe defaultScribeSettings
     logInfo [i|Log level: #{show level :: String}|]
     logExceptionAt ErrorS inner
