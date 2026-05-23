@@ -25,6 +25,7 @@ import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
 import Bot.Handler.Ask (askHandlers)
 import Bot.Handler.Ask.Config (AskHandlerConfig (..))
+import qualified Bot.Log as Log
 import Bot.Storage.Conversation
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.Test as TypstTest
@@ -144,6 +145,7 @@ main =
       , testCase "LLM image stream completed event yields final image" testLLMImageStreamCompletedEventYieldsFinalImage
       , testCase "LLM image edit stream completed event yields final image" testLLMImageEditStreamCompletedEventYieldsFinalImage
       , testCase "LLM image stream ignores partial event without final image" testLLMImageStreamIgnoresPartialEventWithoutFinalImage
+      , testCase "LLM log JSON truncates base64 image payloads" testLLMLogJsonTruncatesBase64ImagePayloads
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "editable segmented replies open a new tail after tool messages" testEditableSegmentedRepliesOpenNewTail
@@ -157,6 +159,7 @@ main =
       , testCase "conversation branches persist through SQLite reload" testConversationBranchesPersistThroughSQLiteReload
       , testCase "conversation cache miss loads evicted parent from SQLite" testConversationCacheMissLoadsEvictedParent
       , testCase "conversation omits base64 generated image context" testConversationOmitsBase64GeneratedImageContext
+      , testCase "LLM request omits base64 generated image context" testLLMRequestOmitsBase64GeneratedImageContext
       , testCase "conversation JSON remains list compatible" testConversationJsonRemainsListCompatible
       , testCase "memory tool manages current sender memory" testMemoryToolManagesCurrentSenderMemory
       , testCase "memory tool manages current chat memory" testMemoryToolManagesCurrentChatMemory
@@ -940,6 +943,14 @@ testLLMImageStreamIgnoresPartialEventWithoutFinalImage =
         , "partial_image_index" Aeson..= (0 :: Int)
         ]
 
+testLLMLogJsonTruncatesBase64ImagePayloads :: IO ()
+testLLMLogJsonTruncatesBase64ImagePayloads = do
+  let payload = Text.replicate 160 "A"
+      imageRef = "data:image/png;base64," <> payload
+      logged = Log.logJsonText [LLM.userWithImages "look" [imageRef]]
+  assertBool "log JSON should not contain the full base64 payload" (not (payload `Text.isInfixOf` logged))
+  assertBool "log JSON should keep a recognizable truncated data URL" (("data:image/png;base64," <> Text.replicate 96 "A" <> "...") `Text.isInfixOf` logged)
+
 imageStreamTestConfig :: LLMConfig.ImageProviderConfig
 imageStreamTestConfig =
   LLMConfig.defaultImageProviderConfig
@@ -1266,6 +1277,22 @@ testConversationOmitsBase64GeneratedImageContext = do
   imageContextUrls conversation @?= []
   assertBool "conversation history should not retain base64 image payloads" (not (base64Image `Text.isInfixOf` encoded))
   assertBool "conversation history should keep a small generated-image marker" ("Generated image." `Text.isInfixOf` encoded)
+
+testLLMRequestOmitsBase64GeneratedImageContext :: IO ()
+testLLMRequestOmitsBase64GeneratedImageContext = do
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  answers <- IORef.newIORef [chatAnswer "ok" []]
+  let base64Image = "data:image/png;base64," <> Text.replicate 160 "A"
+      conversation =
+        appendUser
+          "what did you draw?"
+          (appendAssistant (ReplyBody.imageDirective base64Image) (startWithUser "draw"))
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 1 agentContext Agent.defaultTools conversation
+  requests <- IORef.readIORef captured
+  let encoded = jsonText requests
+  assertBool "captured LLM request should not contain generated image base64" (not (base64Image `Text.isInfixOf` encoded))
+  assertBool "captured LLM request should retain generated-image marker" ("Generated image." `Text.isInfixOf` encoded)
 
 testConversationJsonRemainsListCompatible :: IO ()
 testConversationJsonRemainsListCompatible = do

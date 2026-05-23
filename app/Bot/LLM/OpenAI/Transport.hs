@@ -722,7 +722,7 @@ llmRequestLogLine endpoint request =
 logLLMRequestMessages :: KatipE :> es => ChatCompletionRequest -> Eff es ()
 logLLMRequestMessages request = do
   logDebug ("LLM request first message: " <> firstMessagePreview request.messages)
-  logDebug ("LLM request messages: " <> jsonText request.messages)
+  logDebug ("LLM request messages: " <> logJsonText request.messages)
 
 firstMessagePreview :: [ChatMessage] -> Text
 firstMessagePreview [] =
@@ -740,7 +740,7 @@ previewMessageContent = \case
   Just (TextContent text) ->
     previewText 500 text
   Just (PartsContent parts) ->
-    previewText 500 (jsonText parts)
+    previewText 500 (logJsonText parts)
 
 previewText :: Int -> Text -> Text
 previewText maxChars text =
@@ -748,10 +748,6 @@ previewText maxChars text =
   in if Text.length oneLine > maxChars
     then Text.take maxChars oneLine <> "..."
     else oneLine
-
-jsonText :: Aeson.ToJSON a => a -> Text
-jsonText =
-  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
 
 llmStreamResponseLogLine :: Text -> Text -> ChatAnswer -> Text
 llmStreamResponseLogLine endpoint model answer =

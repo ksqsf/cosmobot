@@ -49,7 +49,7 @@ echoRoute =
 
 handleEcho :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 handleEcho message rawArgs = do
-  Chat.replyTo message rawArgs
+  void $ Chat.replyTo message rawArgs
 
 titleRoute :: Chat.Chat :> es => RouteHandler es
 titleRoute =
