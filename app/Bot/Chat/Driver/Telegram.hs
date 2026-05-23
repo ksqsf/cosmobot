@@ -65,6 +65,7 @@ where
 
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as ChatEffect
+import qualified Bot.Media.Mime as Mime
 import qualified Bot.Util.HTTP as Http
 import Bot.Util.Multipart
 import Bot.Core.Message
@@ -93,6 +94,7 @@ import Network.HTTP.Client (Manager)
 import qualified Network.HTTP.Client as HTTP
 import Network.HTTP.Req
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
+import qualified Network.HTTP.Types.Header as HTTPHeader
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 import Effectful.FileSystem (FileSystem)
@@ -191,6 +193,14 @@ data Telegram :: Effect where
     :: SendVoiceRequest
     -> FilePath
     -> Telegram m Message
+  UploadAudio
+    :: SendAudioRequest
+    -> FilePath
+    -> Telegram m Message
+  UploadVideo
+    :: SendVideoRequest
+    -> FilePath
+    -> Telegram m Message
   UploadDocument
     :: SendDocumentRequest
     -> FilePath
@@ -234,6 +244,10 @@ runTelegram cfg inner = do
           apiMultipartCall manager cfg "sendPhoto" (sendPhotoParts request path)
         UploadVoice request path ->
           apiMultipartCall manager cfg "sendVoice" (sendVoiceParts request path)
+        UploadAudio request path ->
+          apiMultipartCall manager cfg "sendAudio" (sendAudioParts request path)
+        UploadVideo request path ->
+          apiMultipartCall manager cfg "sendVideo" (sendVideoParts request path)
         UploadDocument request path ->
           apiMultipartCall manager cfg "sendDocument" (sendDocumentParts request path)
     )
@@ -608,7 +622,7 @@ telegramRequestOptions method =
 sendPhotoParts :: SendPhotoRequest -> FilePath -> [Multipart.Part]
 sendPhotoParts SendPhotoRequest{..} path =
   [ textPart "chat_id" (show chatId)
-  , Multipart.partFile "photo" path
+  , telegramFilePart "photo" path
   ]
     <> maybePart "message_thread_id" (show <$> messageThreadId)
     <> maybePart "caption" caption
@@ -620,7 +634,31 @@ sendPhotoParts SendPhotoRequest{..} path =
 sendDocumentParts :: SendDocumentRequest -> FilePath -> [Multipart.Part]
 sendDocumentParts SendDocumentRequest{..} path =
   [ textPart "chat_id" (show chatId)
-  , Multipart.partFileRequestBodyM "document" (telegramUploadFileName path) (HTTP.streamFile path)
+  , telegramFilePart "document" path
+  ]
+    <> maybePart "message_thread_id" (show <$> messageThreadId)
+    <> maybePart "caption" caption
+    <> maybePart "parse_mode" (parseModeText <$> parseMode)
+    <> maybePart "caption_entities" (jsonText <$> captionEntities)
+    <> maybePart "disable_notification" (boolText <$> disableNotification)
+    <> maybePart "reply_to_message_id" (show <$> replyToMessageId)
+
+sendAudioParts :: SendAudioRequest -> FilePath -> [Multipart.Part]
+sendAudioParts SendAudioRequest{..} path =
+  [ textPart "chat_id" (show chatId)
+  , telegramFilePart "audio" path
+  ]
+    <> maybePart "message_thread_id" (show <$> messageThreadId)
+    <> maybePart "caption" caption
+    <> maybePart "parse_mode" (parseModeText <$> parseMode)
+    <> maybePart "caption_entities" (jsonText <$> captionEntities)
+    <> maybePart "disable_notification" (boolText <$> disableNotification)
+    <> maybePart "reply_to_message_id" (show <$> replyToMessageId)
+
+sendVideoParts :: SendVideoRequest -> FilePath -> [Multipart.Part]
+sendVideoParts SendVideoRequest{..} path =
+  [ textPart "chat_id" (show chatId)
+  , telegramFilePart "video" path
   ]
     <> maybePart "message_thread_id" (show <$> messageThreadId)
     <> maybePart "caption" caption
@@ -632,7 +670,7 @@ sendDocumentParts SendDocumentRequest{..} path =
 sendVoiceParts :: SendVoiceRequest -> FilePath -> [Multipart.Part]
 sendVoiceParts SendVoiceRequest{..} path =
   [ textPart "chat_id" (show chatId)
-  , Multipart.partFileRequestBodyM "voice" (telegramUploadFileName path) (HTTP.streamFile path)
+  , telegramFilePart "voice" path
   ]
     <> maybePart "message_thread_id" (show <$> messageThreadId)
     <> maybePart "caption" caption
@@ -645,6 +683,12 @@ telegramUploadFileName :: FilePath -> FilePath
 telegramUploadFileName path =
   let name = takeFileName path
   in if null name then "file" else name
+
+telegramFilePart :: Text -> FilePath -> Multipart.Part
+telegramFilePart fieldName path =
+  Multipart.addPartHeaders
+    (Multipart.partFileRequestBodyM fieldName (telegramUploadFileName path) (HTTP.streamFile path))
+    [(HTTPHeader.hContentType, TextEncoding.encodeUtf8 (Mime.mimeFromName (Text.pack path)))]
 
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
@@ -1392,6 +1436,26 @@ instance TelegramRequest SendVoiceRequest where
   type TelegramResponse SendVoiceRequest = Message
   telegramMethod _ = "sendVoice"
 
+data SendAudioRequest = SendAudioRequest
+  { chatId              :: !Integer
+  , messageThreadId     :: !(Maybe Integer)
+  , caption             :: !(Maybe Text)
+  , parseMode           :: !(Maybe ParseMode)
+  , captionEntities     :: !(Maybe [MessageEntity])
+  , disableNotification :: !(Maybe Bool)
+  , replyToMessageId    :: !(Maybe Integer)
+  } deriving (Show, Generic)
+
+data SendVideoRequest = SendVideoRequest
+  { chatId              :: !Integer
+  , messageThreadId     :: !(Maybe Integer)
+  , caption             :: !(Maybe Text)
+  , parseMode           :: !(Maybe ParseMode)
+  , captionEntities     :: !(Maybe [MessageEntity])
+  , disableNotification :: !(Maybe Bool)
+  , replyToMessageId    :: !(Maybe Integer)
+  } deriving (Show, Generic)
+
 -- | Request payload for Telegram @sendDocument@ multipart uploads.
 data SendDocumentRequest = SendDocumentRequest
   { chatId              :: !Integer
@@ -1577,6 +1641,14 @@ uploadVoice :: Telegram :> es => SendVoiceRequest -> FilePath -> Eff es Message
 uploadVoice request path =
   send (UploadVoice request path)
 
+uploadAudio :: Telegram :> es => SendAudioRequest -> FilePath -> Eff es Message
+uploadAudio request path =
+  send (UploadAudio request path)
+
+uploadVideo :: Telegram :> es => SendVideoRequest -> FilePath -> Eff es Message
+uploadVideo request path =
+  send (UploadVideo request path)
+
 -- | Upload a local document file through multipart/form-data.
 uploadDocument :: Telegram :> es => SendDocumentRequest -> FilePath -> Eff es Message
 uploadDocument request path =
@@ -1683,18 +1755,76 @@ uploadFile message path =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
-      sent <- uploadDocument SendDocumentRequest
-        { chatId = chatId
-        , messageThreadId = Nothing
-        , caption = Nothing
-        , parseMode = Nothing
-        , captionEntities = Nothing
-        , disableNotification = Nothing
-        , replyToMessageId = replyToMessageId
-        } path
+          baseRequest =
+            TelegramUploadRequest
+              { chatId = chatId
+              , messageThreadId = Nothing
+              , caption = Nothing
+              , parseMode = Nothing
+              , captionEntities = Nothing
+              , disableNotification = Nothing
+              , replyToMessageId = replyToMessageId
+              }
+      sent <- uploadTelegramFileByMime baseRequest path
       pure (Right (Just (integerMessageId sent.messageId)))
     _ ->
       pure (Left "Telegram file upload requires a Telegram chat id.")
+
+data TelegramUploadRequest = TelegramUploadRequest
+  { chatId :: !Integer
+  , messageThreadId :: !(Maybe Integer)
+  , caption :: !(Maybe Text)
+  , parseMode :: !(Maybe ParseMode)
+  , captionEntities :: !(Maybe [MessageEntity])
+  , disableNotification :: !(Maybe Bool)
+  , replyToMessageId :: !(Maybe Integer)
+  }
+
+uploadTelegramFileByMime :: Telegram :> es => TelegramUploadRequest -> FilePath -> Eff es Message
+uploadTelegramFileByMime request path =
+  case telegramFileKind (Mime.mimeFromName (Text.pack path)) of
+    TelegramImageFile ->
+      uploadPhoto (photoRequest request) path
+    TelegramAudioFile ->
+      uploadAudio (audioRequest request) path
+    TelegramVideoFile ->
+      uploadVideo (videoRequest request) path
+    TelegramDocumentFile ->
+      uploadDocument (documentRequest request) path
+
+data TelegramFileKind
+  = TelegramImageFile
+  | TelegramAudioFile
+  | TelegramVideoFile
+  | TelegramDocumentFile
+
+telegramFileKind :: Text -> TelegramFileKind
+telegramFileKind mime
+  | "image/" `Text.isPrefixOf` clean = TelegramImageFile
+  | "audio/" `Text.isPrefixOf` clean = TelegramAudioFile
+  | "video/" `Text.isPrefixOf` clean = TelegramVideoFile
+  | otherwise = TelegramDocumentFile
+  where
+    clean = Text.toLower (Text.takeWhile (/= ';') mime)
+
+photoRequest :: TelegramUploadRequest -> SendPhotoRequest
+photoRequest TelegramUploadRequest{..} =
+  SendPhotoRequest
+    { photo = "attach://photo"
+    , ..
+    }
+
+audioRequest :: TelegramUploadRequest -> SendAudioRequest
+audioRequest TelegramUploadRequest{..} =
+  SendAudioRequest{..}
+
+videoRequest :: TelegramUploadRequest -> SendVideoRequest
+videoRequest TelegramUploadRequest{..} =
+  SendVideoRequest{..}
+
+documentRequest :: TelegramUploadRequest -> SendDocumentRequest
+documentRequest TelegramUploadRequest{..} =
+  SendDocumentRequest{..}
 
 telegramMentionHtml :: Integer -> Text -> Text
 telegramMentionHtml userId body =

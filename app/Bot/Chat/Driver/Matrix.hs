@@ -918,15 +918,16 @@ uploadFile message path =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
       let fileName = matrixUploadFileName path
+          mime = Mime.mimeFromName (Text.pack path)
       size <- FileSystem.getFileSize path
-      uploaded <- uploadMedia path fileName "application/octet-stream"
+      uploaded <- uploadMedia path fileName mime
       response <- sendFileMessage roomId (matrixReplyTo message) MatrixFileMessage
-        { msgtype = "m.file"
+        { msgtype = matrixFileMsgtype mime
         , body = fileName
         , filename = fileName
         , url = uploaded.contentUri
         , info = MatrixFileInfo
-            { mimetype = "application/octet-stream"
+            { mimetype = mime
             , size = size
             }
         }
@@ -1021,6 +1022,15 @@ matrixUploadFileName :: FilePath -> Text
 matrixUploadFileName path =
   let name = Text.pack (takeFileName path)
   in if Text.null name then "file" else name
+
+matrixFileMsgtype :: Text -> Text
+matrixFileMsgtype mime
+  | "image/" `Text.isPrefixOf` clean = "m.image"
+  | "audio/" `Text.isPrefixOf` clean = "m.audio"
+  | "video/" `Text.isPrefixOf` clean = "m.video"
+  | otherwise = "m.file"
+  where
+    clean = Text.toLower (Text.takeWhile (/= ';') mime)
 
 matrixMxcRef :: Text -> Maybe Text
 matrixMxcRef ref =
