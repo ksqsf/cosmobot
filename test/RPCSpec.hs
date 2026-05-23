@@ -6,7 +6,7 @@ import Bot.Core.Message
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Config as MediaConfig
-import qualified Bot.Media.S3 as MediaS3
+import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.RPC.Server as RPCServer
@@ -685,7 +685,7 @@ runRpcStorage path action =
   runProcess $
   runTestLog $
   StorageSQLite.runStorageSQLitePath path $
-  MediaS3.runMediaS3 (testMediaConfig path) $ action
+  MediaInterpreter.runMedia (testMediaConfig path) $ action
 
 testMediaConfig :: FilePath -> MediaConfig.Config
 testMediaConfig path =

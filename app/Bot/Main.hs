@@ -20,7 +20,7 @@ import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.LLM.OpenAI as OpenAI
-import qualified Bot.Media.S3 as MediaS3
+import qualified Bot.Media.Interpreter as Media
 import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
@@ -67,7 +67,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . Skills.runSkills cfg.skills
                . Scheduler.runScheduler
                . TypstCLI.runTypst
-               . MediaS3.runMediaS3 cfg.media
+               . Media.runMedia cfg.media
                . OpenAI.runLLM cfg.llm
                . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
                . Lifecycle.runLifecycle cfg.media
