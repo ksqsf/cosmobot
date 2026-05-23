@@ -135,6 +135,7 @@ common bot-chat-driver-modules
         Bot.Chat.Driver.Matrix
         Bot.Chat.Driver.Telegram
         Bot.Effect.Storage
+        Bot.RPC.Config
         Bot.RPC.Protocol
         Bot.RPC.State
         Bot.Storage.Attachment
@@ -309,6 +310,7 @@ test-suite chat-platform-spec
     build-depends:    base64-bytestring
                     , http-client
                     , req
+                    , toml-parser
                     , websockets
     hs-source-dirs:   test
 

@@ -116,9 +116,9 @@ sendFileTool = Tool
 mentionUserTool :: Chat.Chat :> es => Tool es
 mentionUserTool = Tool
   { name = "mention_user"
-  , description = "Send a reply in the current chat that mentions the given user id. On QQ this sends an actual at segment."
+  , description = "Send a reply in the current chat that mentions the given platform user id. Matrix user ids are textual, for example @user:server."
   , parameters = objectSchema
-      [ fieldInteger "user_id" "Platform user id to mention."
+      [ fieldText "user_id" "Platform user id to mention."
       , fieldText "text" "Message text to send after the mention."
       ]
       ["user_id", "text"]
@@ -148,15 +148,14 @@ memberInfoTool = Tool
   { name = "get_group_member_info"
   , description = "Get platform-provided member information for any user id in the current group chat."
   , parameters = objectSchema
-      [ fieldInteger "user_id" "Platform user id to query in the current group."
+      [ fieldText "user_id" "Platform user id to query in the current group."
       ]
       ["user_id"]
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args -> withIntegerArg "user_id" (\userId -> do
+  , start = \context -> pure \args -> withParsedToolArgs memberInfoArgs args \userId -> do
       info <- Chat.getMemberInfo context.message userId
       pure (toolText (maybe "No member information is available for this user in the current chat." jsonText info))
-      ) args
   }
 
 userAvatarTool :: (Chat.Chat :> es, Log :> es) => Tool es
@@ -214,7 +213,7 @@ currentMessageInfoValue message =
     , "sender_id" Aeson..= message.senderId
     , "sender_username" Aeson..= message.senderUsername
     , "mentions" Aeson..= Aeson.object
-        [ "user_ids" Aeson..= map (Text.pack . show) message.mentions
+        [ "user_ids" Aeson..= message.mentions
         , "text_user_ids" Aeson..= message.mentionUsernames
         ]
     , "image_urls" Aeson..= message.imageUrls
@@ -248,12 +247,17 @@ currentSenderChatLogScopeError message
   | otherwise =
       Nothing
 
-mentionUserArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Text)
+mentionUserArgs :: Aeson.Value -> AesonTypes.Parser (Text, Text)
 mentionUserArgs =
   Aeson.withObject "mention user arguments" $ \o -> do
-    userId <- o Aeson..: Key.fromText "user_id"
+    userId <- validateUserId =<< parseUserIdValue =<< o Aeson..: Key.fromText "user_id"
     text <- o Aeson..: Key.fromText "text"
     pure (userId, text)
+
+memberInfoArgs :: Aeson.Value -> AesonTypes.Parser Text
+memberInfoArgs =
+  Aeson.withObject "member info arguments" $ \o ->
+    validateUserId =<< parseUserIdValue =<< o Aeson..: Key.fromText "user_id"
 
 userAvatarArgs :: Aeson.Value -> AesonTypes.Parser Text
 userAvatarArgs =

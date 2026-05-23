@@ -66,14 +66,13 @@ handleTitle message rawArgs =
               then [i|已设置 #{userId} 的 title：#{title}|]
               else "设置 title 失败：当前平台可能不支持，或 bot 权限不足。"
 
-parseTitleArgs :: Text -> Maybe (Integer, Text)
+parseTitleArgs :: Text -> Maybe (Text, Text)
 parseTitleArgs rawArgs = do
   let args = Text.strip rawArgs
       (rawUserId, rawTitle) = Text.break Char.isSpace args
+      userId = Text.strip rawUserId
       title = Text.strip rawTitle
-  guard (not (Text.null rawUserId) && not (Text.null title))
-  userId <- readMaybe (Text.unpack rawUserId)
-  guard (userId > 0)
+  guard (not (Text.null userId) && userId /= "0" && not (Text.null title))
   pure (userId, title)
 
 upgradeRoute :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> RouteHandler es

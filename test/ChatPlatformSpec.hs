@@ -94,7 +94,7 @@ testQqCQMentionStringKeepsMentionedUserIds = do
         }
       incoming = fromMaybe (error "expected incoming QQ message") $
         QQ.eventToIncomingMessageWith cfg event
-  incoming.mentions @?= [123456, qqBotUserId]
+  incoming.mentions @?= ["123456", show qqBotUserId]
   incoming.text @?= "@123456 hi @424242"
   incoming.digest.mentionsBot @?= True
 
@@ -352,7 +352,7 @@ testDiscordMessageConvertsToIncomingMessage = do
   ((.senderUsername) <$> incoming) @?= Just (Just "alice")
   ((.messageId) <$> incoming) @?= Just (Just (textMessageId "70001"))
   ((.replyToMessageId) <$> incoming) @?= Just (Just (textMessageId "60001"))
-  ((.mentions) <$> incoming) @?= Just [424242]
+  ((.mentions) <$> incoming) @?= Just ["424242"]
   ((.imageUrls) <$> incoming) @?= Just ["https://cdn.discordapp.com/image.png"]
   ((.text) <$> incoming) @?= Just "hello <@424242>"
 

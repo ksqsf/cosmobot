@@ -96,8 +96,9 @@ qqDriver = Driver.ChatPlatformDriver
           pure Nothing
   , Driver.getMemberInfo = \message userId ->
       case (message.kind, message.chatId) of
-        (ChatGroup, Just groupId) ->
-          getGroupMemberInfo groupId userId
+        (ChatGroup, Just groupId)
+          | Just numericUserId <- parseIntegerUserId userId ->
+            getGroupMemberInfo groupId numericUserId
         _ ->
           pure Nothing
   , Driver.getUserAvatar = \message userId ->
@@ -510,18 +511,19 @@ replyTo message body =
     _ -> pure Nothing
 
 -- | Send a reply that mentions a QQ user where the platform supports it.
-mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
+mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
 mentionUser message userId body =
   case (message.platform, message.kind, message.chatId, message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId, _) -> do
-      qqMessage <- mentionMessage message userId body
-      fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
-        [ "action" Aeson..= Aeson.String "send_group_msg"
-        , "params" Aeson..= Aeson.object
-            [ "group_id" Aeson..= groupId
-            , "message" Aeson..= qqMessage
-            ]
-        ])
+    (PlatformQQ, ChatGroup, Just groupId, _)
+      | Just numericUserId <- parseIntegerUserId userId -> do
+        qqMessage <- mentionMessage message numericUserId body
+        fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
+          [ "action" Aeson..= Aeson.String "send_group_msg"
+          , "params" Aeson..= Aeson.object
+              [ "group_id" Aeson..= groupId
+              , "message" Aeson..= qqMessage
+              ]
+          ])
     (PlatformQQ, ChatPrivate, _, Just rawUserId)
       | Just userId_ <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
@@ -701,15 +703,16 @@ getGroupMemberList groupId =
     ])
 
 -- | Set a QQ group member's special title through OneBot/NapCat.
-setGroupMemberTitle :: QQ :> es => IncomingMessage -> Integer -> Text -> Eff es Bool
+setGroupMemberTitle :: QQ :> es => IncomingMessage -> Text -> Text -> Eff es Bool
 setGroupMemberTitle message userId title =
   case (message.platform, message.kind, message.chatId) of
-    (PlatformQQ, ChatGroup, Just groupId) -> do
+    (PlatformQQ, ChatGroup, Just groupId)
+      | Just numericUserId <- parseIntegerUserId userId -> do
       response <- sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "set_group_special_title"
         , "params" Aeson..= Aeson.object
             [ "group_id" Aeson..= groupId
-            , "user_id" Aeson..= userId
+            , "user_id" Aeson..= numericUserId
             , "special_title" Aeson..= title
             , "duration" Aeson..= (-1 :: Integer)
             ]
@@ -1008,7 +1011,7 @@ qqMessageDigest cfg event =
     { chatIsAllowed = maybe False (`elem` cfg.allowedGroups) event.groupId
     , senderIsAllowed = senderAllowed
     , senderIsSuperuser = senderSuperuser
-    , mentionsBot = maybe False (`elem` eventMentionIds event) cfg.botQQ
+    , mentionsBot = maybe False ((`elem` eventMentionIds event) . show) cfg.botQQ
     , botId = Text.pack . show <$> (event.selfId <|> cfg.botQQ)
     }
   where
@@ -1150,18 +1153,18 @@ rawMessageText text =
           next = Text.drop 1 afterSegment
       in before <> renderedMention <> rawMessageText next
 
-mentionIds :: Aeson.Value -> [Integer]
+mentionIds :: Aeson.Value -> [Text]
 mentionIds = \case
   Aeson.Array segments -> mapMaybe mentionSegmentId (toList segments)
   _ -> []
 
-eventMentionIds :: Event -> [Integer]
+eventMentionIds :: Event -> [Text]
 eventMentionIds event =
   case maybe [] mentionIds event.message of
     [] -> maybe [] rawMentionIds event.rawMessage
     ids -> ids
 
-rawMentionIds :: Text -> [Integer]
+rawMentionIds :: Text -> [Text]
 rawMentionIds text =
   case Text.breakOn "[CQ:at" text of
     (_, "") ->
@@ -1172,32 +1175,27 @@ rawMentionIds text =
           next = Text.drop 1 afterSegment
       in maybeToList (rawMentionId segment) <> rawMentionIds next
 
-rawMentionId :: Text -> Maybe Integer
+rawMentionId :: Text -> Maybe Text
 rawMentionId segment = do
-  value <- rawMentionValue segment
-  readMaybe (Text.unpack value)
+  rawMentionValue segment
 
 rawMentionValue :: Text -> Maybe Text
 rawMentionValue segment = do
   field <- find (Text.isPrefixOf "qq=") (Text.splitOn "," segment)
   pure (Text.drop (Text.length "qq=") field)
 
-mentionSegmentId :: Aeson.Value -> Maybe Integer
+mentionSegmentId :: Aeson.Value -> Maybe Text
 mentionSegmentId = \case
   Aeson.Object obj
     | Just (Aeson.String "at") <- KeyMap.lookup "type" obj
     , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj
     , Just value <- KeyMap.lookup "qq" data_ ->
-        parseQQ value
+        mentionValueText value
   _ -> Nothing
-
-parseQQ :: Aeson.Value -> Maybe Integer
-parseQQ = \case
-  Aeson.String "all" -> Nothing
-  value -> parseReplyId value
 
 mentionValueText :: Aeson.Value -> Maybe Text
 mentionValueText = \case
+  Aeson.String "all" -> Nothing
   Aeson.String qq -> Just qq
   value -> Text.pack . show <$> parseReplyId value
 

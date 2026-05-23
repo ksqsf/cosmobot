@@ -126,12 +126,12 @@ matrixDriver = Driver.ChatPlatformDriver
   , Driver.editMessage = editMessage
   , Driver.deleteMessage = deleteMessage
   , Driver.replyStreamStyle = \_ -> pure (Chat.EditableReply matrixEditChunkChars matrixStreamingMessageLimit)
-  , Driver.getMessageContent = \_ _ -> pure Nothing
-  , Driver.getSenderMemberInfo = \_ -> pure Nothing
-  , Driver.getMemberInfo = \_ _ -> pure Nothing
-  , Driver.getUserAvatar = \_ _ -> pure Nothing
-  , Driver.listGroupMembers = \_ -> pure Nothing
-  , Driver.mentionUser = \_ _ _ -> pure Nothing
+  , Driver.getMessageContent = getMessageContent
+  , Driver.getSenderMemberInfo = getSenderMemberInfo
+  , Driver.getMemberInfo = getMemberInfo
+  , Driver.getUserAvatar = getUserAvatar
+  , Driver.listGroupMembers = listGroupMembers
+  , Driver.mentionUser = mentionUser
   , Driver.setMemberTitle = \_ _ _ -> pure False
   }
 
@@ -149,11 +149,15 @@ data Matrix :: Effect where
   DirectRooms :: Matrix m (Set MatrixRoomId)
   JoinedMemberCounts :: Matrix m (Map MatrixRoomId Int)
   JoinedMemberCount :: MatrixRoomId -> Matrix m (Maybe Int)
-  SendText :: MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Matrix m (Maybe SendMessageResponse)
+  SendText :: MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Matrix m (Maybe SendMessageResponse)
   UploadMedia :: FilePath -> Text -> Text -> Matrix m MatrixUploadResponse
   SendFileMessage :: Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Matrix m (Maybe SendMessageResponse)
   EditText :: MatrixRoomId -> MatrixEventId -> Text -> Matrix m (Maybe SendMessageResponse)
   DeleteEvent :: Text -> MessageId -> Maybe MatrixEventId -> Matrix m Bool
+  FetchEvent :: MatrixRoomId -> MatrixEventId -> Matrix m (Maybe Event)
+  FetchMember :: MatrixRoomId -> Text -> Matrix m (Maybe MatrixMember)
+  FetchProfile :: Text -> Matrix m (Maybe MatrixProfile)
+  FetchJoinedMembers :: MatrixRoomId -> Matrix m (Maybe JoinedMembersResponse)
 
 type instance DispatchOf Matrix = Dynamic
 
@@ -186,7 +190,11 @@ joinedMemberCount =
 
 sendText :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Maybe SendMessageResponse)
 sendText roomId replyToEventId body =
-  send (SendText roomId replyToEventId body)
+  sendTextWithMentions roomId replyToEventId body []
+
+sendTextWithMentions :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es (Maybe SendMessageResponse)
+sendTextWithMentions roomId replyToEventId body mentionUserIds =
+  send (SendText roomId replyToEventId body mentionUserIds)
 
 uploadMedia :: Matrix :> es => FilePath -> Text -> Text -> Eff es MatrixUploadResponse
 uploadMedia path fileName mime =
@@ -203,6 +211,22 @@ editText roomId eventId body =
 deleteEvent :: Matrix :> es => Text -> MessageId -> Maybe MatrixEventId -> Eff es Bool
 deleteEvent roomId messageId eventId =
   send (DeleteEvent roomId messageId eventId)
+
+fetchEvent :: Matrix :> es => MatrixRoomId -> MatrixEventId -> Eff es (Maybe Event)
+fetchEvent roomId eventId =
+  send (FetchEvent roomId eventId)
+
+fetchMember :: Matrix :> es => MatrixRoomId -> Text -> Eff es (Maybe MatrixMember)
+fetchMember roomId userId =
+  send (FetchMember roomId userId)
+
+fetchProfile :: Matrix :> es => Text -> Eff es (Maybe MatrixProfile)
+fetchProfile userId =
+  send (FetchProfile userId)
+
+fetchJoinedMembers :: Matrix :> es => MatrixRoomId -> Eff es (Maybe JoinedMembersResponse)
+fetchJoinedMembers roomId =
+  send (FetchJoinedMembers roomId)
 
 runMatrix
   :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
@@ -240,9 +264,9 @@ runMatrix cfg inner = do
             count <- joinedMemberCountCall manager cfg token roomId
             rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count
             pure count
-        SendText roomId replyToEventId body -> do
+        SendText roomId replyToEventId body mentionUserIds -> do
           response <- withMaybeMatrixAccessToken auth \token ->
-            sendMessageCall manager cfg token roomId replyToEventId body
+            sendMessageCall manager cfg token roomId replyToEventId body mentionUserIds
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         UploadMedia path fileName mime ->
@@ -266,6 +290,18 @@ runMatrix cfg inner = do
             Just eventId ->
               fromMaybe False <$> withMaybeMatrixAccessToken auth \token ->
                 redactEventCall manager cfg token roomId (matrixEventIdText eventId) $> True
+        FetchEvent roomId eventId ->
+          withMaybeMatrixAccessToken auth \token ->
+            fetchEventCall manager cfg token roomId eventId
+        FetchMember roomId userId ->
+          withMaybeMatrixAccessToken auth \token ->
+            fetchMemberCall manager cfg token roomId userId
+        FetchProfile userId ->
+          withMaybeMatrixAccessToken auth \token ->
+            fetchProfileCall manager cfg token userId
+        FetchJoinedMembers roomId ->
+          withMaybeMatrixAccessToken auth \token ->
+            fetchJoinedMembersCall manager cfg token roomId
     )
     inner
 
@@ -684,6 +720,106 @@ replyTo message body =
       pure (matrixEventMessageId . (.eventId) <$> textResponse <|> viaNonEmpty head imageMessageIds)
     _ ->
       pure Nothing
+
+getMessageContent :: Matrix :> es => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
+getMessageContent message messageId =
+  case (message.platform, viaNonEmpty head message.chatAliases) of
+    (PlatformMatrix, Just roomId) -> do
+      fetched <- fetchEvent (matrixRoomId roomId) (matrixEventId (messageIdText messageId))
+      pure (matrixReferencedMessage =<< fetched)
+    _ ->
+      pure Nothing
+
+getSenderMemberInfo :: Matrix :> es => IncomingMessage -> Eff es (Maybe Aeson.Value)
+getSenderMemberInfo message =
+  case (message.platform, viaNonEmpty head message.chatAliases, message.senderId) of
+    (PlatformMatrix, Just roomId, Just userId) ->
+      fmap Aeson.toJSON <$> fetchMember (matrixRoomId roomId) userId
+    _ ->
+      pure Nothing
+
+getMemberInfo :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
+getMemberInfo message userId =
+  case (message.platform, viaNonEmpty head message.chatAliases) of
+    (PlatformMatrix, Just roomId) ->
+      fmap Aeson.toJSON <$> fetchMember (matrixRoomId roomId) userId
+    _ ->
+      pure Nothing
+
+getUserAvatar :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
+getUserAvatar message userId =
+  case message.platform of
+    PlatformMatrix ->
+      fmap matrixProfileAvatarValue <$> fetchProfile userId
+    _ ->
+      pure Nothing
+
+listGroupMembers :: Matrix :> es => IncomingMessage -> Eff es (Maybe Aeson.Value)
+listGroupMembers message =
+  case (message.platform, viaNonEmpty head message.chatAliases) of
+    (PlatformMatrix, Just roomId) ->
+      fmap matrixJoinedMembersValue <$> fetchJoinedMembers (matrixRoomId roomId)
+    _ ->
+      pure Nothing
+
+mentionUser :: Matrix :> es => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+mentionUser message userId body =
+  case (message.platform, viaNonEmpty head message.chatAliases) of
+    (PlatformMatrix, Just roomId) -> do
+      let replyRelation = matrixReplyTo message
+          text = matrixMentionText userId (Chat.renderReplyBody body)
+      response <- sendTextWithMentions (matrixRoomId roomId) replyRelation text [userId]
+      pure (matrixEventMessageId . (.eventId) <$> response)
+    _ ->
+      pure Nothing
+
+matrixMentionText :: Text -> Text -> Text
+matrixMentionText userId body =
+  let text = Text.strip body
+  in if userId `Text.isInfixOf` text
+    then text
+    else Text.unwords [userId, text]
+
+matrixReferencedMessage :: Event -> Maybe ReferencedMessage
+matrixReferencedMessage event = do
+  guard (event.type_ == "m.room.message")
+  body <- event.content.body
+  pure ReferencedMessage
+    { messageId = matrixEventMessageId <$> event.eventId
+    , senderDisplayName = Just event.sender
+    , senderIdentifier = Just event.sender
+    , text = Text.strip body
+    , imageUrls = matrixEventImageUrls event.raw
+    }
+
+matrixEventImageUrls :: Aeson.Value -> [Text]
+matrixEventImageUrls =
+  fromMaybe [] . Aeson.parseMaybe parse
+  where
+    parse =
+      Aeson.withObject "Matrix event" \eventObject -> do
+        content <- eventObject Aeson..:? "content" Aeson..!= Aeson.Object mempty
+        Aeson.withObject "Matrix event content" parseContent content
+
+    parseContent contentObject = do
+      msgtype <- contentObject Aeson..:? "msgtype" Aeson..!= ("" :: Text)
+      url <- contentObject Aeson..:? "url"
+      pure [imageUrl | msgtype == "m.image", Just imageUrl <- [url]]
+
+matrixProfileAvatarValue :: MatrixProfile -> Aeson.Value
+matrixProfileAvatarValue profile =
+  Aeson.object
+    [ "platform" Aeson..= ("matrix" :: Text)
+    , "user_id" Aeson..= profile.profileUserId
+    , "displayname" Aeson..= profile.profileDisplayName
+    , "avatar_url" Aeson..= profile.profileAvatarUrl
+    ]
+
+matrixJoinedMembersValue :: JoinedMembersResponse -> Aeson.Value
+matrixJoinedMembersValue response =
+  Aeson.object
+    [ "joined" Aeson..= response.joinedMembers
+    ]
 
 matrixReplyTo :: IncomingMessage -> Maybe MatrixReplyTo
 matrixReplyTo message =
@@ -1157,8 +1293,86 @@ joinedMemberCountCall manager cfg token roomId =
     <&> responseBody
   pure (Map.size response.joinedMembers)
 
-sendMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es SendMessageResponse
-sendMessageCall manager cfg token roomId replyRelation body =
+fetchJoinedMembersCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Eff es JoinedMembersResponse
+fetchJoinedMembersCall manager cfg token roomId =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
+  let options =
+        baseOptions
+          <> matrixAuth token
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+  logInfo_ [i|Matrix API request: joined_members room=#{roomId}|]
+  matrixReq "joined_members"
+    ( Http.runReqWithConfig (matrixHttpConfig manager) $
+        req GET
+          (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "joined_members")
+          NoReqBody
+          jsonResponse
+          options
+    )
+    <&> responseBody
+
+fetchEventCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> MatrixEventId -> Eff es Event
+fetchEventCall manager cfg token roomId eventId =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
+  let options =
+        baseOptions
+          <> matrixAuth token
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+  logInfo_ [i|Matrix API request: room event room=#{roomId}|]
+  matrixReq "room event"
+    ( Http.runReqWithConfig (matrixHttpConfig manager) $
+        req GET
+          (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "event" /: matrixEventIdText eventId)
+          NoReqBody
+          jsonResponse
+          options
+    )
+    <&> responseBody
+
+fetchMemberCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Text -> Eff es MatrixMember
+fetchMemberCall manager cfg token roomId userId =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
+  let options =
+        baseOptions
+          <> matrixAuth token
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+  logInfo_ [i|Matrix API request: room member room=#{roomId}|]
+  content :: MatrixMemberContent <- matrixReq "room member"
+    ( Http.runReqWithConfig (matrixHttpConfig manager) $
+        req GET
+          (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "state" /: "m.room.member" /: userId)
+          NoReqBody
+          jsonResponse
+          options
+    )
+    <&> responseBody
+  pure (matrixMemberFromContent userId content)
+
+fetchProfileCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixProfile
+fetchProfileCall manager cfg token userId =
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
+  let options =
+        baseOptions
+          <> matrixAuth token
+          <> responseTimeout matrixApiResponseTimeoutMicroseconds
+  logInfo_ "Matrix API request: profile"
+  profile :: MatrixProfileContent <- matrixReq "profile"
+    ( Http.runReqWithConfig (matrixHttpConfig manager) $
+        req GET
+          (baseUrl /: "_matrix" /: "client" /: "v3" /: "profile" /: userId)
+          NoReqBody
+          jsonResponse
+          options
+    )
+    <&> responseBody
+  pure MatrixProfile
+    { profileUserId = userId
+    , profileDisplayName = profile.profileContentDisplayName
+    , profileAvatarUrl = profile.profileContentAvatarUrl
+    }
+
+sendMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es SendMessageResponse
+sendMessageCall manager cfg token roomId replyRelation body mentionUserIds =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
   let options =
@@ -1170,6 +1384,7 @@ sendMessageCall manager cfg token roomId replyRelation body =
         , body = nonEmptyMatrixBody body
         , formattedBody = formatMatrixMarkdown body
         , replyRelation
+        , mentions = matrixOutgoingMentions body mentionUserIds
         }
   logInfo_ "Matrix API request: send m.room.message"
   matrixReq "send m.room.message" (Http.runReqWithConfig (matrixHttpConfig manager) $
@@ -1295,6 +1510,27 @@ nonEmptyMatrixBody body
   | Text.null (Text.strip body) = " "
   | otherwise = body
 
+matrixOutgoingMentions :: Text -> [Text] -> MatrixMentions
+matrixOutgoingMentions body explicitUserIds =
+  MatrixMentions (Set.toList (Set.fromList (filter isMatrixUserId (explicitUserIds <> matrixUserIdsInText body))))
+
+matrixUserIdsInText :: Text -> [Text]
+matrixUserIdsInText =
+  mapMaybe matrixUserIdToken . Text.words
+
+matrixUserIdToken :: Text -> Maybe Text
+matrixUserIdToken raw =
+  let token = Text.dropWhileEnd (`elem` matrixUserIdTrailingPunctuation) raw
+  in token <$ guard (isMatrixUserId token)
+
+matrixUserIdTrailingPunctuation :: [Char]
+matrixUserIdTrailingPunctuation =
+  ".,;:!?)]}>\"'"
+
+isMatrixUserId :: Text -> Bool
+isMatrixUserId token =
+  "@" `Text.isPrefixOf` token && ":" `Text.isInfixOf` token
+
 data RoomEvent = RoomEvent
   { roomId :: !MatrixRoomId
   , roomIsDirect :: !Bool
@@ -1383,13 +1619,79 @@ instance Aeson.FromJSON RoomSummary where
     RoomSummary <$> o Aeson..:? "m.joined_member_count"
 
 newtype JoinedMembersResponse = JoinedMembersResponse
-  { joinedMembers :: Map Text Aeson.Value
+  { joinedMembers :: Map Text MatrixMember
   }
   deriving (Show, Generic)
 
 instance Aeson.FromJSON JoinedMembersResponse where
-  parseJSON = Aeson.withObject "JoinedMembersResponse" \o ->
-    JoinedMembersResponse <$> o Aeson..:? "joined" Aeson..!= Map.empty
+  parseJSON = Aeson.withObject "JoinedMembersResponse" \o -> do
+    joined <- o Aeson..:? "joined" Aeson..!= Map.empty
+    pure (JoinedMembersResponse (Map.mapWithKey matrixMemberFromJoined joined))
+
+data MatrixMember = MatrixMember
+  { memberUserId :: !Text
+  , memberDisplayName :: !(Maybe Text)
+  , memberAvatarUrl :: !(Maybe Text)
+  , memberMembership :: !(Maybe Text)
+  }
+  deriving (Show, Eq, Generic)
+
+instance Aeson.ToJSON MatrixMember where
+  toJSON MatrixMember{memberUserId, memberDisplayName, memberAvatarUrl, memberMembership} =
+    Aeson.object
+      [ "user_id" Aeson..= memberUserId
+      , "displayname" Aeson..= memberDisplayName
+      , "avatar_url" Aeson..= memberAvatarUrl
+      , "membership" Aeson..= memberMembership
+      ]
+
+data MatrixMemberContent = MatrixMemberContent
+  { memberContentDisplayName :: !(Maybe Text)
+  , memberContentAvatarUrl :: !(Maybe Text)
+  , memberContentMembership :: !(Maybe Text)
+  }
+  deriving (Show, Eq, Generic)
+
+instance Aeson.FromJSON MatrixMemberContent where
+  parseJSON = Aeson.withObject "MatrixMemberContent" \o -> do
+    displayName <- o Aeson..:? "displayname"
+    joinedDisplayName <- o Aeson..:? "display_name"
+    MatrixMemberContent
+      <$> pure (displayName <|> joinedDisplayName)
+      <*> o Aeson..:? "avatar_url"
+      <*> o Aeson..:? "membership"
+
+matrixMemberFromContent :: Text -> MatrixMemberContent -> MatrixMember
+matrixMemberFromContent userId content =
+  MatrixMember
+    { memberUserId = userId
+    , memberDisplayName = content.memberContentDisplayName
+    , memberAvatarUrl = content.memberContentAvatarUrl
+    , memberMembership = content.memberContentMembership
+    }
+
+matrixMemberFromJoined :: Text -> MatrixMemberContent -> MatrixMember
+matrixMemberFromJoined =
+  matrixMemberFromContent
+
+data MatrixProfile = MatrixProfile
+  { profileUserId :: !Text
+  , profileDisplayName :: !(Maybe Text)
+  , profileAvatarUrl :: !(Maybe Text)
+  }
+  deriving (Show, Eq, Generic)
+
+data MatrixProfileContent = MatrixProfileContent
+  { profileContentDisplayName :: !(Maybe Text)
+  , profileContentAvatarUrl :: !(Maybe Text)
+  }
+  deriving (Show, Eq, Generic)
+
+instance Aeson.FromJSON MatrixProfileContent where
+  parseJSON = Aeson.withObject "MatrixProfileContent" \o ->
+    MatrixProfileContent
+      <$> o Aeson..:? "displayname"
+      <*> o Aeson..:? "avatar_url"
 
 newtype Timeline = Timeline
   { events :: [Event]
@@ -1449,6 +1751,12 @@ instance Aeson.FromJSON MatrixMentions where
   parseJSON = Aeson.withObject "MatrixMentions" \o ->
     MatrixMentions <$> o Aeson..:? "user_ids" Aeson..!= []
 
+instance Aeson.ToJSON MatrixMentions where
+  toJSON MatrixMentions{userIds} =
+    Aeson.object
+      [ "user_ids" Aeson..= userIds
+      ]
+
 newtype MatrixRelatesTo = MatrixRelatesTo
   { inReplyToEventId :: Maybe MatrixEventId
   }
@@ -1485,14 +1793,16 @@ data SendMessageRequest = SendMessageRequest
   , body :: !Text
   , formattedBody :: !(Maybe Text)
   , replyRelation :: !(Maybe MatrixReplyTo)
+  , mentions :: !MatrixMentions
   }
   deriving (Show, Generic)
 
 instance Aeson.ToJSON SendMessageRequest where
-  toJSON SendMessageRequest{msgtype, body, formattedBody, replyRelation} =
+  toJSON SendMessageRequest{msgtype, body, formattedBody, replyRelation, mentions} =
     Aeson.object $
       [ "msgtype" Aeson..= msgtype
       , "body" Aeson..= body
+      , "m.mentions" Aeson..= mentions
       ]
         <> matrixFormattedBodyFields formattedBody
         <> maybe [] (\(MatrixReplyTo eventId) -> ["m.relates_to" Aeson..= MatrixRelatesTo (Just eventId)]) replyRelation

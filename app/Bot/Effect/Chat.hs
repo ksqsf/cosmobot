@@ -78,7 +78,7 @@ data Chat :: Effect where
     -> Chat m (Maybe Aeson.Value)
   GetMemberInfo
     :: IncomingMessage
-    -> Integer
+    -> Text
     -> Chat m (Maybe Aeson.Value)
   GetUserAvatar
     :: IncomingMessage
@@ -89,12 +89,12 @@ data Chat :: Effect where
     -> Chat m (Maybe Aeson.Value)
   MentionUser
     :: IncomingMessage
-    -> Integer
+    -> Text
     -> Text
     -> Chat m (Maybe MessageId)
   SetMemberTitle
     :: IncomingMessage
-    -> Integer
+    -> Text
     -> Text
     -> Chat m Bool
 
@@ -161,7 +161,7 @@ getSenderMemberInfo message =
   send (GetSenderMemberInfo message)
 
 -- | Fetch member info for a user id in the current chat.
-getMemberInfo :: Chat :> es => IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+getMemberInfo :: Chat :> es => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 getMemberInfo message userId =
   send (GetMemberInfo message userId)
 
@@ -176,12 +176,12 @@ listGroupMembers message =
   send (ListGroupMembers message)
 
 -- | Send a reply that mentions a platform user id.
-mentionUser :: Chat :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
+mentionUser :: Chat :> es => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
 mentionUser message userId body =
   send (MentionUser message userId body)
 
 -- | Set a platform-specific title for a group member when supported.
-setMemberTitle :: Chat :> es => IncomingMessage -> Integer -> Text -> Eff es Bool
+setMemberTitle :: Chat :> es => IncomingMessage -> Text -> Text -> Eff es Bool
 setMemberTitle message userId title =
   send (SetMemberTitle message userId title)
 
@@ -195,11 +195,11 @@ data ChatHandlers es = ChatHandlers
   , handleReplyStreamStyle :: IncomingMessage -> Eff es ReplyStreamStyle
   , handleGetMessageContent :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
   , handleGetSenderMemberInfo :: IncomingMessage -> Eff es (Maybe Aeson.Value)
-  , handleGetMemberInfo :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+  , handleGetMemberInfo :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   , handleGetUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   , handleListGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
-  , handleMentionUser :: IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
-  , handleSetMemberTitle :: IncomingMessage -> Integer -> Text -> Eff es Bool
+  , handleMentionUser :: IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+  , handleSetMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
   }
 
 runChatWith

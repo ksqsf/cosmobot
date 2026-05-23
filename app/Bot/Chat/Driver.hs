@@ -190,7 +190,7 @@ getPlatformMemberInfo
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
-  -> Integer
+  -> Text
   -> Eff es (Maybe Aeson.Value)
 getPlatformMemberInfo rpcConfig rpcState message userId =
   withPlatformDriver rpcConfig rpcState message "fetch member info" \driver ->
@@ -222,7 +222,7 @@ mentionPlatformUser
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
-  -> Integer
+  -> Text
   -> Text
   -> Eff es (Maybe MessageId)
 mentionPlatformUser rpcConfig rpcState message userId body =
@@ -234,7 +234,7 @@ setPlatformMemberTitle
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
-  -> Integer
+  -> Text
   -> Text
   -> Eff es Bool
 setPlatformMemberTitle rpcConfig rpcState message userId title =

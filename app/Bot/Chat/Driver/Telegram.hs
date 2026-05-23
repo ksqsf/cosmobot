@@ -138,8 +138,9 @@ telegramDriver = Driver.ChatPlatformDriver
           pure Nothing
   , Driver.getMemberInfo = \message userId ->
       case (message.kind, message.chatId) of
-        (ChatGroup, Just chatId) ->
-          Just . Aeson.toJSON <$> getChatMember chatId userId
+        (ChatGroup, Just chatId)
+          | Just numericUserId <- parseIntegerUserId userId ->
+            Just . Aeson.toJSON <$> getChatMember chatId numericUserId
         _ ->
           pure Nothing
   , Driver.getUserAvatar = \message userId ->
@@ -338,7 +339,7 @@ telegramMessageDigest cfg message =
     , senderIsAllowed = telegramChatKind message.chat.type_ == ChatPrivate && (chatAllowed || senderSuperuser)
     , senderIsSuperuser = senderSuperuser
     , mentionsBot =
-        any (`elem` cfg.botIds) (messageMentionIds message) ||
+        any (`elem` map show cfg.botIds) (messageMentionIds message) ||
         any (`elem` cfg.botUsernames) (messageMentionUsernames message)
     , botId = listToMaybe (map (Text.pack . show) cfg.botIds <> cfg.botUsernames)
     }
@@ -364,13 +365,13 @@ telegramChatKind = \case
   ChatTypeSuperGroup -> ChatGroup
   ChatTypeChannel    -> ChatChannel
 
-messageMentionIds :: Message -> [Integer]
+messageMentionIds :: Message -> [Text]
 messageMentionIds message =
   mapMaybe entityMentionUserId (messageEntities message)
 
-entityMentionUserId :: MessageEntity -> Maybe Integer
+entityMentionUserId :: MessageEntity -> Maybe Text
 entityMentionUserId messageEntity =
-  (.id) <$> messageEntity.user
+  show . (.id) <$> messageEntity.user
 
 messageMentionUsernames :: Message -> [Text]
 messageMentionUsernames message =
@@ -1636,15 +1637,16 @@ deleteMessageFor message messageId =
       pure False
 
 -- | Reply with an HTML mention for a Telegram user id.
-mentionUser :: Telegram :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
+mentionUser :: Telegram :> es => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
 mentionUser message userId body =
   case (message.platform, message.chatId) of
-    (PlatformTelegram, Just chatId) -> do
+    (PlatformTelegram, Just chatId)
+      | Just numericUserId <- parseIntegerUserId userId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
       sent <- sendMessage SendMessageRequest
         { chatId = chatId
         , messageThreadId = Nothing
-        , text = telegramMentionHtml userId body
+        , text = telegramMentionHtml numericUserId body
         , parseMode = Just ParseModeHTML
         , entities = Nothing
         , disableNotification = Nothing

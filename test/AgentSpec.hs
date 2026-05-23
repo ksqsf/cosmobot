@@ -2082,7 +2082,7 @@ noopSenderMember :: IncomingMessage -> Eff es (Maybe Aeson.Value)
 noopSenderMember _ =
   pure Nothing
 
-noopMember :: IncomingMessage -> Integer -> Eff es (Maybe Aeson.Value)
+noopMember :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 noopMember _ _ =
   pure Nothing
 
@@ -2094,11 +2094,11 @@ noopMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
 noopMembers _ =
   pure Nothing
 
-noopMention :: IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
+noopMention :: IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
 noopMention _ _ _ =
   pure Nothing
 
-noopSetMemberTitle :: IncomingMessage -> Integer -> Text -> Eff es Bool
+noopSetMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
 noopSetMemberTitle _ _ _ =
   pure False
 

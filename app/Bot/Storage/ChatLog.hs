@@ -106,7 +106,7 @@ chatLogRow entry =
     , message_id = messageIdText <$> entry.messageId
     , reply_to_message_id = messageIdText <$> entry.replyToMessageId
     , is_bot = entry.isBot
-    , mentions = encodeIntegerList entry.mentions
+    , mentions = encodeTextList entry.mentions
     , mention_usernames = encodeTextList entry.mentionUsernames
     , image_urls = encodeTextList entry.imageUrls
     , body_text = entry.text
@@ -123,7 +123,7 @@ chatLogEntryFromRow context row =
     , messageId = textMessageId <$> row.message_id
     , replyToMessageId = textMessageId <$> row.reply_to_message_id
     , isBot = row.is_bot
-    , mentions = decodeIntegerList row.mentions
+    , mentions = decodeTextList row.mentions
     , mentionUsernames = decodeTextList row.mention_usernames
     , imageUrls = decodeTextList row.image_urls
     , text = row.body_text
@@ -180,15 +180,6 @@ platformKey =
 kindKey :: ChatKind -> Text
 kindKey =
   show
-
-encodeIntegerList :: [Integer] -> Text
-encodeIntegerList =
-  Text.intercalate "," . map show
-
-decodeIntegerList :: Text -> [Integer]
-decodeIntegerList value
-  | Text.null value = []
-  | otherwise = mapMaybe (readMaybe . toString) (Text.splitOn "," value)
 
 encodeTextList :: [Text] -> Text
 encodeTextList =

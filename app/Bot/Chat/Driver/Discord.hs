@@ -116,7 +116,7 @@ discordDriver = Driver.ChatPlatformDriver
   , Driver.getMemberInfo = \message userId ->
       case (message.platform, discordMessageGuildId message.raw) of
         (PlatformDiscord, Just guildId) ->
-          Just <$> getGuildMember guildId (show userId)
+          Just <$> getGuildMember guildId userId
         _ ->
           pure Nothing
   , Driver.getUserAvatar = \message userId ->
@@ -428,7 +428,7 @@ eventToIncomingMessageWith cfg message = do
     , senderUsername = message.author.globalName <|> message.author.username
     , messageId = Just (textMessageId message.id)
     , replyToMessageId = message.referencedMessage <&> (.id) <&> textMessageId
-    , mentions = mapMaybe (parseIntegerUserId . (.id)) message.mentions
+    , mentions = map (.id) message.mentions
     , mentionUsernames = mapMaybe (.username) message.mentions
     , imageUrls = messageImageUrls message
     , text = Text.strip message.content
@@ -510,7 +510,7 @@ getMessageContent message messageId =
     _ ->
       pure Nothing
 
-mentionUser :: Discord :> es => IncomingMessage -> Integer -> Text -> Eff es (Maybe MessageId)
+mentionUser :: Discord :> es => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
 mentionUser message userId body =
   case (message.platform, discordChannelId message) of
     (PlatformDiscord, Just channelId) -> do

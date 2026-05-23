@@ -155,7 +155,7 @@ data IncomingMessage = IncomingMessage
   , senderUsername :: !(Maybe Text)
   , messageId :: !(Maybe MessageId)
   , replyToMessageId :: !(Maybe MessageId)
-  , mentions  :: ![Integer]
+  , mentions  :: ![Text]
   , mentionUsernames :: ![Text]
   , imageUrls :: ![Text]
   , text      :: !Text

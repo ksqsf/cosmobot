@@ -41,7 +41,7 @@ testPingRepliesPong = do
 testTitleRejectsNonSuperuser :: IO ()
 testTitleRejectsNonSuperuser = do
   replies <- IORef.newIORef ([] :: [Text])
-  titleCalls <- IORef.newIORef ([] :: [(Maybe Integer, Integer, Text)])
+  titleCalls <- IORef.newIORef ([] :: [(Maybe Integer, Text, Text)])
   actions <- runAdminWithTitle defaultAdminConfig replies titleCalls True (groupMessageWith "!title 200 cool" emptyMessageDigest)
   IORef.readIORef replies >>= (@?= ["只有 superuser 可以设置 title。"])
   IORef.readIORef titleCalls >>= (@?= [])
@@ -50,8 +50,8 @@ testTitleRejectsNonSuperuser = do
 testTitleValidatesArguments :: IO ()
 testTitleValidatesArguments = do
   replies <- IORef.newIORef ([] :: [Text])
-  titleCalls <- IORef.newIORef ([] :: [(Maybe Integer, Integer, Text)])
-  actions <- runAdminWithTitle defaultAdminConfig replies titleCalls True (groupMessageWith "!title abc cool" emptyMessageDigest{senderIsSuperuser = True})
+  titleCalls <- IORef.newIORef ([] :: [(Maybe Integer, Text, Text)])
+  actions <- runAdminWithTitle defaultAdminConfig replies titleCalls True (groupMessageWith "!title 0 cool" emptyMessageDigest{senderIsSuperuser = True})
   IORef.readIORef replies >>= (@?= ["用法：!title <id> <title>"])
   IORef.readIORef titleCalls >>= (@?= [])
   assertBool "no startup actions queued" (null actions)
@@ -59,19 +59,19 @@ testTitleValidatesArguments = do
 testTitleSetsGroupMemberTitle :: IO ()
 testTitleSetsGroupMemberTitle = do
   replies <- IORef.newIORef ([] :: [Text])
-  titleCalls <- IORef.newIORef ([] :: [(Maybe Integer, Integer, Text)])
+  titleCalls <- IORef.newIORef ([] :: [(Maybe Integer, Text, Text)])
   actions <- runAdminWithTitle defaultAdminConfig replies titleCalls True (groupMessageWith "!title 200 very cool" emptyMessageDigest{senderIsSuperuser = True})
   IORef.readIORef replies >>= (@?= ["已设置 200 的 title：very cool"])
-  IORef.readIORef titleCalls >>= (@?= [(Just 100, 200, "very cool")])
+  IORef.readIORef titleCalls >>= (@?= [(Just 100, "200", "very cool")])
   assertBool "no startup actions queued" (null actions)
 
 testTitleReportsUnsupportedPlatformFailure :: IO ()
 testTitleReportsUnsupportedPlatformFailure = do
   replies <- IORef.newIORef ([] :: [Text])
-  titleCalls <- IORef.newIORef ([] :: [(Maybe Integer, Integer, Text)])
+  titleCalls <- IORef.newIORef ([] :: [(Maybe Integer, Text, Text)])
   actions <- runAdminWithTitle defaultAdminConfig replies titleCalls False (groupMessageWith "!title 200 very cool" emptyMessageDigest{senderIsSuperuser = True})
   IORef.readIORef replies >>= (@?= ["设置 title 失败：当前平台可能不支持，或 bot 权限不足。"])
-  IORef.readIORef titleCalls >>= (@?= [(Just 100, 200, "very cool")])
+  IORef.readIORef titleCalls >>= (@?= [(Just 100, "200", "very cool")])
   assertBool "no startup actions queued" (null actions)
 
 testUpgradeRejectsNonSuperuser :: IO ()
@@ -142,7 +142,7 @@ runAdminSettled cfg replies incoming =
 runAdminWithTitle
   :: AdminConfig
   -> IORef.IORef [Text]
-  -> IORef.IORef [(Maybe Integer, Integer, Text)]
+  -> IORef.IORef [(Maybe Integer, Text, Text)]
   -> Bool
   -> IncomingMessage
   -> IO [LifecycleStorage.StoredStartupAction]
@@ -157,7 +157,7 @@ runAdminWithDelayAndTitle
   :: Int
   -> AdminConfig
   -> IORef.IORef [Text]
-  -> Maybe (IORef.IORef [(Maybe Integer, Integer, Text)])
+  -> Maybe (IORef.IORef [(Maybe Integer, Text, Text)])
   -> Bool
   -> IncomingMessage
   -> IO [LifecycleStorage.StoredStartupAction]
@@ -180,7 +180,7 @@ runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incomin
 chatHandlers
   :: IOE :> es
   => IORef.IORef [Text]
-  -> Maybe (IORef.IORef [(Maybe Integer, Integer, Text)])
+  -> Maybe (IORef.IORef [(Maybe Integer, Text, Text)])
   -> Bool
   -> Chat.ChatHandlers es
 chatHandlers replies titleCalls titleResult =

@@ -23,7 +23,7 @@ data ChatLogEntry = ChatLogEntry
   , messageId :: !(Maybe MessageId)
   , replyToMessageId :: !(Maybe MessageId)
   , isBot :: !Bool
-  , mentions :: ![Integer]
+  , mentions :: ![Text]
   , mentionUsernames :: ![Text]
   , imageUrls :: ![Text]
   , text :: !Text
