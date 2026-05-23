@@ -1255,7 +1255,7 @@ matrixMessageDigest cfg roomId event body =
     { chatIsAllowed = roomAllowed
     , senderIsAllowed = senderSuperuser
     , senderIsSuperuser = senderSuperuser
-    , mentionsBot = maybe False (\botId -> botId `elem` matrixMentions cfg event.content body) cfg.userId
+    , mentionsBot = maybe False (\botId -> botId `elem` event.content.mentions) cfg.userId
     , botId = cfg.userId
     }
   where
