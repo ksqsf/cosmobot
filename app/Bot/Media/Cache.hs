@@ -24,13 +24,13 @@ module Bot.Media.Cache
   , loadPlatformRef
   , storePlatformRef
   , extensionFor
-  , mimeFromName
   , contentDigest
   )
 where
 
 import Bot.Effect.Media (MediaCacheStats (..), MediaFileInfo (..), MediaObject (..))
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Media.Mime as Mime
 import Bot.Prelude
 import Bot.Storage.Prelude
 import Crypto.Hash (Digest, SHA256, hash)
@@ -484,34 +484,9 @@ extensionFor :: MediaObject -> Text
 extensionFor mediaObject =
   case mediaObject.sourceName >>= extensionFromName of
     Just ext -> ext
-    Nothing -> extensionFromMime mediaObject.mimeType
+    Nothing -> Mime.extensionFromMime mediaObject.mimeType
 
 extensionFromName :: Text -> Maybe Text
 extensionFromName name =
   let ext = Text.pack (takeExtension (Text.unpack name))
   in if Text.null ext then Nothing else Just ext
-
-extensionFromMime :: Text -> Text
-extensionFromMime mime =
-  case Text.toLower (Text.takeWhile (/= ';') mime) of
-    "image/jpeg" -> ".jpg"
-    "image/png" -> ".png"
-    "image/webp" -> ".webp"
-    "image/gif" -> ".gif"
-    "audio/mpeg" -> ".mp3"
-    "audio/wav" -> ".wav"
-    "audio/ogg" -> ".ogg"
-    _ -> ".bin"
-
-mimeFromName :: Text -> Text
-mimeFromName name =
-  case Text.toLower (Text.pack (takeExtension (Text.unpack name))) of
-    ".jpg" -> "image/jpeg"
-    ".jpeg" -> "image/jpeg"
-    ".png" -> "image/png"
-    ".webp" -> "image/webp"
-    ".gif" -> "image/gif"
-    ".mp3" -> "audio/mpeg"
-    ".wav" -> "audio/wav"
-    ".ogg" -> "audio/ogg"
-    _ -> "application/octet-stream"

@@ -99,6 +99,7 @@ common app-deps
                     , string-interpolate
                     , unix
                     , modern-uri
+                    , mime-types
                     , req
                     , http-client
                     , http-client-tls
@@ -136,6 +137,7 @@ common bot-core-modules
         Bot.Media.Cache
         Bot.Media.Config
         Bot.Media.Interpreter
+        Bot.Media.Mime
         Bot.Media.Object
         Bot.Media.S3
         Bot.Media.S3.Config
@@ -251,6 +253,7 @@ executable cosmobot
         Bot.LLM.OpenAI
         Bot.Main
         Bot.Media.Interpreter
+        Bot.Media.Mime
         Bot.Media.Object
         Bot.Media.S3
         Bot.Media.S3.Config

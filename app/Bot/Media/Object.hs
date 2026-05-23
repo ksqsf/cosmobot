@@ -8,13 +8,12 @@ module Bot.Media.Object
   ( decodeDataMediaObject
   , downloadObject
   , fileObject
-  , sniffImageMime
   )
 where
 
 import Bot.Effect.Media (MediaObject (..))
 import Bot.Prelude
-import qualified Bot.Media.Cache as Cache
+import qualified Bot.Media.Mime as Mime
 import qualified Bot.Util.Image as Image
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -49,17 +48,20 @@ downloadObject :: IOE :> es => HTTP.Manager -> Text -> Eff es MediaObject
 downloadObject manager ref = do
   request <- liftIO (HTTP.parseRequest (Text.unpack ref))
   response <- liftIO (HTTP.httpLbs request manager)
-  let bytes = LazyByteString.toStrict (HTTP.responseBody response)
-      mime = fromMaybe (responseMime response) (sniffImageMime bytes)
+  let sourceName = TextEncoding.decodeUtf8 (StrictByteString.takeWhile (/= 63) (HTTP.path request))
+      bytes = LazyByteString.toStrict (HTTP.responseBody response)
+      headerMime = responseMime response
+      nameMime = Mime.mimeFromName sourceName
+      mime = fromMaybe (fallbackMime headerMime nameMime) (Mime.sniffMime bytes)
       status = HTTP.responseStatus response
   unless (HTTPStatus.statusIsSuccessful status) $
     liftIO (ioError (userError [i|Remote media download failed: #{ref} returned HTTP #{HTTPStatus.statusCode status}|]))
-  unless ("image/" `Text.isPrefixOf` Text.toLower mime) $
-    liftIO (ioError (userError [i|Remote media download returned non-image content-type #{mime}: #{ref}|]))
+  unless (Mime.isProbablyMediaMime mime) $
+    liftIO (ioError (userError [i|Remote media download returned non-media content-type #{mime}: #{ref}|]))
   pure MediaObject
     { bytes
     , mimeType = mime
-    , sourceName = Just (TextEncoding.decodeUtf8 (StrictByteString.takeWhile (/= 63) (HTTP.path request)))
+    , sourceName = Just sourceName
     }
 
 responseMime :: HTTP.Response body -> Text
@@ -68,13 +70,10 @@ responseMime response =
     raw <- List.lookup HTTPHeader.hContentType (HTTP.responseHeaders response)
     nonEmptyText (Text.takeWhile (/= ';') (TextEncoding.decodeUtf8 raw))
 
-sniffImageMime :: StrictByteString.ByteString -> Maybe Text
-sniffImageMime bytes
-  | "\x89PNG\r\n\x1a\n" `StrictByteString.isPrefixOf` bytes = Just "image/png"
-  | "\xff\xd8\xff" `StrictByteString.isPrefixOf` bytes = Just "image/jpeg"
-  | "GIF87a" `StrictByteString.isPrefixOf` bytes || "GIF89a" `StrictByteString.isPrefixOf` bytes = Just "image/gif"
-  | "RIFF" `StrictByteString.isPrefixOf` bytes && "WEBP" `StrictByteString.isPrefixOf` StrictByteString.drop 8 bytes = Just "image/webp"
-  | otherwise = Nothing
+fallbackMime :: Text -> Text -> Text
+fallbackMime headerMime nameMime
+  | Mime.isGenericMime headerMime = nameMime
+  | otherwise = headerMime
 
 fileObject :: (IOE :> es, FileSystem :> es) => Text -> Eff es MediaObject
 fileObject ref = do
@@ -84,7 +83,7 @@ fileObject ref = do
   bytes <- FileSystemByteString.readFile path
   pure MediaObject
     { bytes
-    , mimeType = Cache.mimeFromName (Text.pack path)
+    , mimeType = Mime.mimeFromName (Text.pack path)
     , sourceName = Just (Text.pack (takeFileName path))
     }
 

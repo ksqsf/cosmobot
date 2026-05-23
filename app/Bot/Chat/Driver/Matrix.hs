@@ -34,6 +34,7 @@ where
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Media.Mime as Mime
 import qualified Bot.Storage.Matrix as MatrixStorage
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
@@ -65,7 +66,7 @@ import qualified Streaming.Prelude as S
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
-import System.FilePath ((</>), (<.>), takeExtension, takeFileName)
+import System.FilePath ((</>), (<.>), takeFileName)
 import System.IO.Error (ioError, userError)
 import qualified Text.URI as URI
 
@@ -1132,54 +1133,20 @@ withTemporaryMatrixAudio mime bytes action = do
       FileSystem.removeFile path `catchSync` \_ -> pure ()
 
 matrixAudioMimeType :: FilePath -> Text
-matrixAudioMimeType path =
-  case Text.toLower (Text.pack (takeExtension path)) of
-    ".aac" -> "audio/aac"
-    ".flac" -> "audio/flac"
-    ".mp3" -> "audio/mpeg"
-    ".oga" -> "audio/ogg"
-    ".ogg" -> "audio/ogg"
-    ".opus" -> "audio/ogg"
-    ".wav" -> "audio/wav"
-    ".webm" -> "audio/webm"
-    _ -> "application/octet-stream"
+matrixAudioMimeType =
+  Mime.mimeFromName . Text.pack
 
 matrixImageMimeType :: FilePath -> Text
-matrixImageMimeType path =
-  case Text.toLower (Text.pack (takeExtension path)) of
-    ".apng" -> "image/apng"
-    ".avif" -> "image/avif"
-    ".gif" -> "image/gif"
-    ".jpg" -> "image/jpeg"
-    ".jpeg" -> "image/jpeg"
-    ".png" -> "image/png"
-    ".svg" -> "image/svg+xml"
-    ".webp" -> "image/webp"
-    _ -> "application/octet-stream"
+matrixImageMimeType =
+  Mime.mimeFromName . Text.pack
 
 matrixImageExtension :: Text -> String
 matrixImageExtension mime =
-  case Text.toLower mime of
-    "image/apng" -> "apng"
-    "image/avif" -> "avif"
-    "image/gif" -> "gif"
-    "image/jpeg" -> "jpg"
-    "image/png" -> "png"
-    "image/svg+xml" -> "svg"
-    "image/webp" -> "webp"
-    _ -> "bin"
+  Text.unpack (Text.dropWhile (== '.') (Mime.extensionFromMime mime))
 
 matrixAudioExtension :: Text -> String
 matrixAudioExtension mime =
-  case Text.toLower mime of
-    "audio/aac" -> "aac"
-    "audio/flac" -> "flac"
-    "audio/mpeg" -> "mp3"
-    "audio/mp4" -> "m4a"
-    "audio/ogg" -> "ogg"
-    "audio/wav" -> "wav"
-    "audio/webm" -> "webm"
-    _ -> "bin"
+  Text.unpack (Text.dropWhile (== '.') (Mime.extensionFromMime mime))
 
 matrixTempDir :: FilePath
 matrixTempDir =
