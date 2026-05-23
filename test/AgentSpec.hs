@@ -3,6 +3,7 @@ module Main (main) where
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Tools.Audio as AudioTools
 import qualified Bot.Agent.Tools.Chat as ChatTools
+import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Types as AgentTypes
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Core.Conversation
@@ -12,6 +13,9 @@ import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Media as Media
+import qualified Bot.Media.Config as MediaConfig
+import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.LLM.OpenAI.Config as LLMConfig
 import qualified Bot.LLM.OpenAI.Transport as LLMTransport
 import qualified Bot.LLM.Test as LLMTest
@@ -59,6 +63,7 @@ type AgentStack =
    , AgentAudit.AgentAudit
    , ChatLog.ChatLog
    , LLM.LLM
+   , Media.Media
    , Skills.Skills
    , Memory.Memory
    , Scheduler.Scheduler
@@ -123,6 +128,7 @@ main =
       , testCase "edit_image tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
       , testCase "ask handler passes referenced images to edit_image tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "generate_image tool passes image request options" testGenerateImageToolPassesImageRequestOptions
+      , testCase "view_image tool caches image for current context" testViewImageToolCachesImageForContext
       , testCase "generate_audio tool uses configured audio options and sends audio" testGenerateAudioToolUsesConfiguredAudioOptions
       , testCase "edit_image tool passes image request options" testEditImageToolPassesImageRequestOptions
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
@@ -427,6 +433,36 @@ testGenerateImageToolPassesImageRequestOptions = do
   IORef.readIORef generateCalls >>= (@?= [ImageGenerateCall "draw a glass tower" [] expectedOptions])
   IORef.readIORef replies >>= (@?= [generatedImage])
   IORef.readIORef recorded >>= (@?= [generatedImage])
+
+testViewImageToolCachesImageForContext :: IO ()
+testViewImageToolCachesImageForContext =
+  withSQLiteTempPath "view-image" \dbPath ->
+    withTempDir "view-image-media" \dir -> do
+      let cacheDir = dir </> "cache"
+          cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = cacheDir}
+          imageUrl = "data:image/png;base64,iVBORw0KGgpmYWtl" :: Text
+      result <- runEff $
+        runFileSystem $
+          runProcess $
+            runFail $
+              runConcurrent $
+                runTestLog $
+                  StorageSQLite.runStorageSQLitePath dbPath $
+                    MediaInterpreter.runMedia cfg do
+                      runner <- ImageTools.viewImageTool.start agentContext
+                      runner (Aeson.object ["url" Aeson..= imageUrl])
+      toolResult <- either assertFailure pure result
+      case toolResult of
+        Agent.ToolSucceeded{content, imageUrls, messageIds} -> do
+          assertBool "tool result should mention media ref" ("media:" `Text.isInfixOf` content)
+          case imageUrls of
+            [mediaRef] ->
+              assertBool "expected cached media ref" ("media:" `Text.isPrefixOf` mediaRef)
+            other ->
+              assertFailure [i|expected one image context ref, got #{show other :: String}|]
+          messageIds @?= []
+        Agent.ToolFailed{failure} ->
+          assertFailure [i|view_image failed: #{show failure :: String}|]
 
 testGenerateAudioToolUsesConfiguredAudioOptions :: IO ()
 testGenerateAudioToolUsesConfiguredAudioOptions = do
@@ -1893,7 +1929,8 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
                         Scheduler.runScheduler $
                           Memory.runMemory memoryCfg $
                             Skills.runSkills skillsCfg $
-                              LLMTest.runLLMWith
+                              Media.runMediaPassthrough $
+                                LLMTest.runLLMWith
                                 (\messages -> do
                                     lift $ captureMessages captured messages
                                     S.yield "unused text stream answer"
@@ -1963,7 +2000,8 @@ runAgentWithStreamingAnswers answers chatMock action = do
                         Scheduler.runScheduler $
                           Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") $
                             Skills.runSkills defaultTestSkillsConfig $
-                              LLMTest.runLLMWith
+                              Media.runMediaPassthrough $
+                                LLMTest.runLLMWith
                                 (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
                                 (\_ _ -> S.yield "unused image answer" $> "unused image answer")
                                 (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")

@@ -19,6 +19,7 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
@@ -43,6 +44,7 @@ type HandlerEffects es =
   , ChatLog.ChatLog :> es
   , AgentAudit.AgentAudit :> es
   , LLM.LLM :> es
+  , Media.Media :> es
   , Memory.Memory :> es
   , Concurrent :> es
   , Skills.Skills :> es

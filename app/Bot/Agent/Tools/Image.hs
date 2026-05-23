@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Agent.Tools.Image
   ( generateImageTool
   , editImageTool
+  , viewImageTool
   )
 where
 
@@ -15,6 +16,7 @@ import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Media as Media
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
@@ -77,6 +79,19 @@ editImageTool = Tool
               sent <- Chat.replyTo context.message edited
               let sentText = show sent :: String
               pure (toolMessage sent [i|Edited and sent image message id: #{sentText}|])
+  }
+
+viewImageTool :: Media.Media :> es => Tool es
+viewImageTool = Tool
+  { name = "view_image"
+  , description = "Download an image URL into the media cache and make its media id available as image context for the next model turn. This tool does not send a chat message."
+  , parameters = objectSchema
+      [ fieldText "url" "Image URL to add to the current model context. Use an http://, https://, data:image/*, or existing media: URL."
+      ]
+      ["url"]
+  , noisy = False
+  , allowed = everyone
+  , start = \_ -> pure \args -> withTextArg "url" viewImageUrl args
   }
 
 data GenerateImageArgs = GenerateImageArgs
@@ -149,3 +164,24 @@ nonEmptyText :: Text -> Maybe Text
 nonEmptyText text =
   let stripped = Text.strip text
   in if Text.null stripped then Nothing else Just stripped
+
+viewImageUrl :: Media.Media :> es => Text -> Eff es ToolResult
+viewImageUrl rawUrl = do
+  let url = Text.strip rawUrl
+  mediaRef <- Media.normalizeMediaRef url
+  if isMediaRef mediaRef
+    then cachedImageContext mediaRef
+    else pure (toolFailure (permanentArgumentFailure "view_image could not cache the image URL." "view_image could not cache the image URL.").failure)
+
+isMediaRef :: Text -> Bool
+isMediaRef ref =
+  "media:" `Text.isPrefixOf` Text.strip ref
+
+cachedImageContext :: Media.Media :> es => Text -> Eff es ToolResult
+cachedImageContext mediaRef =
+  Media.mediaFileInfoByRef mediaRef >>= \case
+    Just info
+      | "image/" `Text.isPrefixOf` Text.toLower info.mimeType ->
+          pure (toolTextWithImages [i|Added image to current context: #{mediaRef}|] [mediaRef])
+    _ ->
+      pure (toolFailure (permanentArgumentFailure "view_image URL is not a cached image." "view_image URL is not a cached image.").failure)

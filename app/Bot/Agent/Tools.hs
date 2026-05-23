@@ -24,6 +24,7 @@ import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Typst as Typst
@@ -37,6 +38,7 @@ defaultTools
   :: Chat.Chat :> es
   => ChatLog.ChatLog :> es
   => LLM.LLM :> es
+  => Media.Media :> es
   => Memory.Memory :> es
   => Scheduler.Scheduler :> es
   => Typst.Typst :> es
@@ -57,6 +59,7 @@ defaultTools =
   , webFetchTool
   , datetimeTool
   -- , generateAudioTool  -- useless now
+  , viewImageTool
   , generateImageTool
   , editImageTool
   , typstToImageTool
