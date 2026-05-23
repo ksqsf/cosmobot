@@ -1033,8 +1033,11 @@ withMatrixImageFile
   -> Eff es a
 withMatrixImageFile imageRef action =
   Media.localMediaPath imageRef >>= \case
-    Just path ->
-      action path (matrixUploadFileName path) (matrixImageMimeType path)
+    Just path -> do
+      mediaInfo <- Media.mediaFileInfoByRef imageRef
+      let fileName = fromMaybe (matrixUploadFileName path) (mediaInfo >>= (.sourceName))
+          mime = maybe (matrixImageMimeType path) (.mimeType) mediaInfo
+      action path fileName mime
     Nothing ->
       case matrixLocalPath imageRef of
         Just path ->

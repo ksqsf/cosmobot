@@ -35,6 +35,7 @@ import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.Process (Process)
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types.Header as HTTPHeader
+import qualified Network.HTTP.Types.Status as HTTPStatus
 import System.FilePath (replaceExtension, takeFileName)
 import System.IO.Error (ioError, userError)
 
@@ -285,7 +286,12 @@ downloadObject manager ref = do
   request <- liftIO (HTTP.parseRequest (Text.unpack ref))
   response <- liftIO (HTTP.httpLbs request manager)
   let bytes = LazyByteString.toStrict (HTTP.responseBody response)
-      mime = responseMime response
+      mime = fromMaybe (responseMime response) (sniffImageMime bytes)
+      status = HTTP.responseStatus response
+  unless (HTTPStatus.statusIsSuccessful status) $
+    liftIO (ioError (userError [i|Remote media download failed: #{ref} returned HTTP #{HTTPStatus.statusCode status}|]))
+  unless ("image/" `Text.isPrefixOf` Text.toLower mime) $
+    liftIO (ioError (userError [i|Remote media download returned non-image content-type #{mime}: #{ref}|]))
   pure MediaObject
     { bytes
     , mimeType = mime
@@ -297,6 +303,14 @@ responseMime response =
   fromMaybe "application/octet-stream" do
     raw <- List.lookup HTTPHeader.hContentType (HTTP.responseHeaders response)
     nonEmptyText (Text.takeWhile (/= ';') (TextEncoding.decodeUtf8 raw))
+
+sniffImageMime :: StrictByteString.ByteString -> Maybe Text
+sniffImageMime bytes
+  | "\x89PNG\r\n\x1a\n" `StrictByteString.isPrefixOf` bytes = Just "image/png"
+  | "\xff\xd8\xff" `StrictByteString.isPrefixOf` bytes = Just "image/jpeg"
+  | "GIF87a" `StrictByteString.isPrefixOf` bytes || "GIF89a" `StrictByteString.isPrefixOf` bytes = Just "image/gif"
+  | "RIFF" `StrictByteString.isPrefixOf` bytes && "WEBP" `StrictByteString.isPrefixOf` StrictByteString.drop 8 bytes = Just "image/webp"
+  | otherwise = Nothing
 
 fileObject :: (IOE :> es, FileSystem :> es) => Text -> Eff es MediaObject
 fileObject ref = do
