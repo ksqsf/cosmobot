@@ -302,6 +302,7 @@ rpcChatDriver cfg rpcState = driver
       , getMemberInfo = \_ _ -> pure Nothing
       , getUserAvatar = \_ _ -> pure Nothing
       , listGroupMembers = \_ -> pure Nothing
+      , normalizeMediaRef = pure
       , mentionUser = \message _ body -> driver.replyTo message body
       , setMemberTitle = \_ _ _ -> pure False
       }

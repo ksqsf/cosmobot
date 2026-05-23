@@ -10,6 +10,8 @@ module Bot.Effect.Media
   , MediaFileInfo (..)
   , MediaCacheStats (..)
   , storeMediaObject
+  , storeMediaObjectFromSource
+  , mediaRefForSource
   , mediaFileInfo
   , mediaFileInfoByRef
   , listMediaFiles
@@ -71,6 +73,8 @@ data MediaCacheStats = MediaCacheStats
 
 data Media :: Effect where
   StoreMediaObject :: MediaObject -> Media m (Maybe Text)
+  StoreMediaObjectFromSource :: Text -> MediaObject -> Media m (Maybe Text)
+  MediaRefForSource :: Text -> Media m (Maybe Text)
   GetMediaFileInfo :: Text -> Media m (Maybe MediaFileInfo)
   ListMediaFiles :: Media m [MediaFileInfo]
   GetMediaCacheStats :: Media m MediaCacheStats
@@ -86,6 +90,14 @@ type instance DispatchOf Media = Dynamic
 storeMediaObject :: Media :> es => MediaObject -> Eff es (Maybe Text)
 storeMediaObject =
   send . StoreMediaObject
+
+storeMediaObjectFromSource :: Media :> es => Text -> MediaObject -> Eff es (Maybe Text)
+storeMediaObjectFromSource sourceRef mediaObject =
+  send (StoreMediaObjectFromSource sourceRef mediaObject)
+
+mediaRefForSource :: Media :> es => Text -> Eff es (Maybe Text)
+mediaRefForSource =
+  send . MediaRefForSource
 
 mediaFileInfo :: Media :> es => Text -> Eff es (Maybe MediaFileInfo)
 mediaFileInfo =
@@ -180,6 +192,10 @@ runMediaPassthrough =
   interpret \_ -> \case
     StoreMediaObject mediaObject ->
       pure (Just ("data:" <> mediaObject.mimeType <> ";base64,"))
+    StoreMediaObjectFromSource _ mediaObject ->
+      pure (Just ("data:" <> mediaObject.mimeType <> ";base64,"))
+    MediaRefForSource _ ->
+      pure Nothing
     GetMediaFileInfo _ ->
       pure Nothing
     ListMediaFiles ->

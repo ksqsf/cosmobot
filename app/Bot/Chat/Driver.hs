@@ -178,7 +178,18 @@ getPlatformMessageContent
   -> Eff es (Maybe ReferencedMessage)
 getPlatformMessageContent rpcConfig rpcState message messageId =
   withPlatformDriver rpcConfig rpcState message "fetch referenced message" \driver ->
-    traverse Media.normalizeReferencedMessage =<< driver.getMessageContent message messageId
+    traverse (normalizeReferencedMessageMedia driver) =<< driver.getMessageContent message messageId
+
+normalizeReferencedMessageMedia :: Media.Media :> es => ChatPlatformDriver es -> ReferencedMessage -> Eff es ReferencedMessage
+normalizeReferencedMessageMedia driver message = do
+  imageUrls <- traverse (driver.normalizeMediaRef >=> Media.normalizeMediaRef) message.imageUrls
+  pure ReferencedMessage
+    { messageId = message.messageId
+    , senderDisplayName = message.senderDisplayName
+    , senderIdentifier = message.senderIdentifier
+    , text = message.text
+    , imageUrls
+    }
 
 getPlatformSenderMemberInfo
   :: (ChatDriverConstraints es, KatipE :> es)
@@ -188,7 +199,7 @@ getPlatformSenderMemberInfo
   -> Eff es (Maybe Aeson.Value)
 getPlatformSenderMemberInfo rpcConfig rpcState message =
   withPlatformDriver rpcConfig rpcState message "fetch sender member info" \driver ->
-    driver.getSenderMemberInfo message
+    traverse (normalizeJsonMediaUrls driver.normalizeMediaRef) =<< driver.getSenderMemberInfo message
 
 getPlatformMemberInfo
   :: (ChatDriverConstraints es, KatipE :> es)
@@ -199,7 +210,7 @@ getPlatformMemberInfo
   -> Eff es (Maybe Aeson.Value)
 getPlatformMemberInfo rpcConfig rpcState message userId =
   withPlatformDriver rpcConfig rpcState message "fetch member info" \driver ->
-    driver.getMemberInfo message userId
+    traverse (normalizeJsonMediaUrls driver.normalizeMediaRef) =<< driver.getMemberInfo message userId
 
 getPlatformUserAvatar
   :: (ChatDriverConstraints es, KatipE :> es)
@@ -210,7 +221,7 @@ getPlatformUserAvatar
   -> Eff es (Maybe Aeson.Value)
 getPlatformUserAvatar rpcConfig rpcState message userId =
   withPlatformDriver rpcConfig rpcState message "fetch user avatar" \driver ->
-    traverse normalizeJsonMediaUrls =<< driver.getUserAvatar message userId
+    traverse (normalizeJsonMediaUrls driver.normalizeMediaRef) =<< driver.getUserAvatar message userId
 
 listPlatformGroupMembers
   :: (ChatDriverConstraints es, KatipE :> es)
@@ -220,7 +231,7 @@ listPlatformGroupMembers
   -> Eff es (Maybe Aeson.Value)
 listPlatformGroupMembers rpcConfig rpcState message =
   withPlatformDriver rpcConfig rpcState message "list group members" \driver ->
-    driver.listGroupMembers message
+    traverse (normalizeJsonMediaUrls driver.normalizeMediaRef) =<< driver.listGroupMembers message
 
 mentionPlatformUser
   :: (ChatDriverConstraints es, KatipE :> es)
@@ -286,21 +297,22 @@ incomingMessages rpcState =
     , RPC.incomingMessages rpcState
     ]
 
-normalizeJsonMediaUrls :: Media.Media :> es => Aeson.Value -> Eff es Aeson.Value
-normalizeJsonMediaUrls = \case
+normalizeJsonMediaUrls :: Media.Media :> es => (Text -> Eff es Text) -> Aeson.Value -> Eff es Aeson.Value
+normalizeJsonMediaUrls normalizePlatformMediaRef = \case
   Aeson.Object jsonObject ->
     Aeson.Object . AesonKeyMap.fromList <$> traverse normalizePair (AesonKeyMap.toList jsonObject)
   Aeson.Array array ->
-    Aeson.Array . Vector.fromList <$> traverse normalizeJsonMediaUrls (Vector.toList array)
+    Aeson.Array . Vector.fromList <$> traverse (normalizeJsonMediaUrls normalizePlatformMediaRef) (Vector.toList array)
   value ->
     pure value
   where
     normalizePair (key, Aeson.String ref)
       | AesonKey.toText key `elem` mediaUrlKeys = do
-          normalized <- Media.normalizeMediaRef ref
+          platformNormalized <- normalizePlatformMediaRef ref
+          normalized <- Media.normalizeMediaRef platformNormalized
           pure (key, Aeson.String normalized)
     normalizePair (key, value) =
-      (key,) <$> normalizeJsonMediaUrls value
+      (key,) <$> normalizeJsonMediaUrls normalizePlatformMediaRef value
 
     mediaUrlKeys =
       ["avatar_url", "image_url", "url"]

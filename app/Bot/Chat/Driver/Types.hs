@@ -27,6 +27,7 @@ data ChatPlatformDriver es = ChatPlatformDriver
   , getMemberInfo :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   , getUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   , listGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
+  , normalizeMediaRef :: Text -> Eff es Text
   , mentionUser :: IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
   , setMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
   }

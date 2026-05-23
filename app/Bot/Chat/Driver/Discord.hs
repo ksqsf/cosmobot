@@ -132,6 +132,7 @@ discordDriver = Driver.ChatPlatformDriver
           Just <$> listGuildMembers guildId
         _ ->
           pure Nothing
+  , Driver.normalizeMediaRef = pure
   , Driver.mentionUser = mentionUser
   , Driver.setMemberTitle = \_ _ _ -> pure False
   }

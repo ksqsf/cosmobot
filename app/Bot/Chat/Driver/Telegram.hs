@@ -151,6 +151,7 @@ telegramDriver = Driver.ChatPlatformDriver
           pure Nothing
   , Driver.listGroupMembers = \_ ->
       pure Nothing
+  , Driver.normalizeMediaRef = pure
   , Driver.mentionUser = mentionUser
   , Driver.setMemberTitle = \_ _ _ -> pure False
   }

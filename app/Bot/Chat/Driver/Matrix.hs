@@ -134,6 +134,7 @@ matrixDriver = Driver.ChatPlatformDriver
   , Driver.getMemberInfo = getMemberInfo
   , Driver.getUserAvatar = getUserAvatar
   , Driver.listGroupMembers = listGroupMembers
+  , Driver.normalizeMediaRef = normalizeMatrixMediaRef
   , Driver.mentionUser = mentionUser
   , Driver.setMemberTitle = \_ _ _ -> pure False
   }
@@ -619,7 +620,7 @@ instance Aeson.FromJSON MatrixLoginResponse where
       <*> o Aeson..:? "refresh_token"
       <*> o Aeson..:? "expires_in_ms"
 
-incomingMessages :: (Matrix :> es, KatipE :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (Matrix :> es, Media.Media :> es, KatipE :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
   cfg <- S.lift matrixConfig
   if matrixAuthConfigured cfg
@@ -752,12 +753,12 @@ replyTo message body =
     _ ->
       pure Nothing
 
-getMessageContent :: (Matrix :> es, KatipE :> es) => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
+getMessageContent :: (Matrix :> es, Media.Media :> es, KatipE :> es) => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
 getMessageContent message messageId =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
       fetched <- fetchEvent (matrixRoomId roomId) (matrixEventId (messageIdText messageId))
-      traverse normalizeMatrixReferencedMessage (matrixReferencedMessage =<< fetched)
+      pure (matrixReferencedMessage =<< fetched)
     _ ->
       pure Nothing
 
@@ -777,9 +778,9 @@ getMemberInfo message userId =
     _ ->
       pure Nothing
 
-getUserAvatar :: (Matrix :> es, KatipE :> es) => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
+getUserAvatar :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 getUserAvatar _ userId =
-  traverse matrixProfileAvatarValue =<< fetchProfile userId
+  fmap matrixProfileAvatarValue <$> fetchProfile userId
 
 listGroupMembers :: Matrix :> es => IncomingMessage -> Eff es (Maybe Aeson.Value)
 listGroupMembers message =
@@ -819,9 +820,9 @@ matrixReferencedMessage event = do
     , imageUrls = matrixEventImageUrls event.raw
     }
 
-normalizeMatrixIncomingMessage :: (Matrix :> es, KatipE :> es) => IncomingMessage -> Eff es IncomingMessage
+normalizeMatrixIncomingMessage :: (Matrix :> es, Media.Media :> es, KatipE :> es) => IncomingMessage -> Eff es IncomingMessage
 normalizeMatrixIncomingMessage message = do
-  imageUrls <- normalizeMatrixImageRefs message.imageUrls
+  imageUrls <- normalizeMatrixMediaRefs message.imageUrls
   pure IncomingMessage
     { platform = message.platform
     , kind = message.kind
@@ -839,41 +840,44 @@ normalizeMatrixIncomingMessage message = do
     , raw = message.raw
     }
 
-normalizeMatrixReferencedMessage :: (Matrix :> es, KatipE :> es) => ReferencedMessage -> Eff es ReferencedMessage
-normalizeMatrixReferencedMessage message = do
-  imageUrls <- normalizeMatrixImageRefs message.imageUrls
-  pure ReferencedMessage
-    { messageId = message.messageId
-    , senderDisplayName = message.senderDisplayName
-    , senderIdentifier = message.senderIdentifier
-    , text = message.text
-    , imageUrls
-    }
+normalizeMatrixMediaRefs :: (Matrix :> es, Media.Media :> es, KatipE :> es) => [Text] -> Eff es [Text]
+normalizeMatrixMediaRefs =
+  traverse normalizeMatrixMediaRef
 
-normalizeMatrixImageRefs :: (Matrix :> es, KatipE :> es) => [Text] -> Eff es [Text]
-normalizeMatrixImageRefs =
-  traverse normalizeMatrixImageRef
-
-normalizeMatrixImageRef :: (Matrix :> es, KatipE :> es) => Text -> Eff es Text
-normalizeMatrixImageRef ref
+normalizeMatrixMediaRef :: (Matrix :> es, Media.Media :> es, KatipE :> es) => Text -> Eff es Text
+normalizeMatrixMediaRef ref
   | "mxc://" `Text.isPrefixOf` Text.strip ref = do
-      downloaded <- downloadMedia (Text.strip ref) `catchSync` \err -> do
-        logInfo [i|Matrix media normalization skipped for #{Text.strip ref}: #{displayException err}|]
-        pure Nothing
-      case downloaded of
+      let mxcRef = Text.strip ref
+      Media.mediaRefForSource mxcRef >>= \case
+        Just mediaRef ->
+          pure mediaRef
         Nothing ->
-          pure ref
-        Just media ->
-          pure (matrixDownloadedMediaDataUrl media)
+          cacheMatrixMediaRef mxcRef ref
   | otherwise =
       pure ref
 
-matrixDownloadedMediaDataUrl :: MatrixDownloadedMedia -> Text
-matrixDownloadedMediaDataUrl media =
-  "data:"
-    <> media.downloadedMimeType
-    <> ";base64,"
-    <> TextEncoding.decodeUtf8 (Base64.encode media.downloadedBytes)
+cacheMatrixMediaRef :: (Matrix :> es, Media.Media :> es, KatipE :> es) => Text -> Text -> Eff es Text
+cacheMatrixMediaRef mxcRef fallbackRef = do
+  downloaded <- downloadMedia mxcRef `catchSync` \err -> do
+    logInfo [i|Matrix media normalization skipped for #{mxcRef}: #{displayException err}|]
+    pure Nothing
+  case downloaded of
+    Nothing ->
+      pure fallbackRef
+    Just media ->
+      Media.storeMediaObjectFromSource mxcRef (matrixMediaObject media) >>= \case
+        Nothing ->
+          pure fallbackRef
+        Just mediaRef ->
+          pure mediaRef
+
+matrixMediaObject :: MatrixDownloadedMedia -> Media.MediaObject
+matrixMediaObject media =
+  Media.MediaObject
+    { bytes = media.downloadedBytes
+    , mimeType = media.downloadedMimeType
+    , sourceName = media.downloadedName
+    }
 
 matrixEventImageUrls :: Aeson.Value -> [Text]
 matrixEventImageUrls =
@@ -889,14 +893,13 @@ matrixEventImageUrls =
       url <- contentObject Aeson..:? "url"
       pure [imageUrl | msgtype == "m.image", Just imageUrl <- [url]]
 
-matrixProfileAvatarValue :: (Matrix :> es, KatipE :> es) => MatrixProfile -> Eff es Aeson.Value
-matrixProfileAvatarValue profile = do
-  avatarUrl <- traverse normalizeMatrixImageRef profile.profileAvatarUrl
-  pure $ Aeson.object
+matrixProfileAvatarValue :: MatrixProfile -> Aeson.Value
+matrixProfileAvatarValue profile =
+  Aeson.object
     [ "platform" Aeson..= ("matrix" :: Text)
     , "user_id" Aeson..= profile.profileUserId
     , "displayname" Aeson..= profile.profileDisplayName
-    , "avatar_url" Aeson..= avatarUrl
+    , "avatar_url" Aeson..= profile.profileAvatarUrl
     ]
 
 matrixJoinedMembersValue :: JoinedMembersResponse -> Aeson.Value

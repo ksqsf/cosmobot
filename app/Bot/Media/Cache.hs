@@ -13,6 +13,7 @@ module Bot.Media.Cache
   , loadCachedMedia
   , loadMediaFileInfo
   , loadCachedMediaByRef
+  , loadCachedMediaBySource
   , listMediaFiles
   , mediaCacheStats
   , mediaIdForFileId
@@ -163,6 +164,10 @@ loadCachedMediaByRef cfg ref =
       pure Nothing
     Just fileId ->
       loadCachedMedia cfg fileId
+
+loadCachedMediaBySource :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
+loadCachedMediaBySource =
+  lookupCachedSource
 
 loadMediaFileInfo :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Text -> Eff es (Maybe MediaFileInfo)
 loadMediaFileInfo _ targetFileId = do

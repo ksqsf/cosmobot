@@ -57,6 +57,10 @@ runMediaS3 cfg inner = do
     ( \_ -> \case
         StoreMediaObject mediaObject ->
           Just <$> cacheObject runtime Nothing mediaObject
+        StoreMediaObjectFromSource sourceRef mediaObject ->
+          Just <$> cacheObject runtime (Just sourceRef) mediaObject
+        MediaRefForSource sourceRef ->
+          fmap (Cache.mediaIdForFileId . (.fileId)) <$> Cache.loadCachedMediaBySource (cacheConfig runtime) sourceRef
         GetMediaFileInfo fileId ->
           Cache.loadMediaFileInfo (cacheConfig runtime) fileId
         ListMediaFiles ->

@@ -113,6 +113,7 @@ qqDriver = Driver.ChatPlatformDriver
           getGroupMemberList groupId
         _ ->
           pure Nothing
+  , Driver.normalizeMediaRef = pure
   , Driver.mentionUser = mentionUser
   , Driver.setMemberTitle = setGroupMemberTitle
   }
