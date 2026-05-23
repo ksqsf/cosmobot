@@ -140,7 +140,7 @@ matrixStreamingMessageLimit :: Int
 matrixStreamingMessageLimit = 4000
 
 matrixEditChunkChars :: Int
-matrixEditChunkChars = 512
+matrixEditChunkChars = 64
 
 data Matrix :: Effect where
   MatrixConfig :: Matrix m Config
