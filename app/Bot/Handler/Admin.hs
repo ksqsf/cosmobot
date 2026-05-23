@@ -32,6 +32,7 @@ adminHandlers :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :
 adminHandlers cfg =
   [ pingRoute
   , titleRoute
+  , echoRoute
   ] <> maybeToList (upgradeRoute <$> cfg.upgrade)
 
 pingRoute :: Chat.Chat :> es => RouteHandler es
@@ -41,6 +42,14 @@ pingRoute =
 handlePing :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 handlePing message _ =
   void $ Chat.replyTo message "pong"
+
+echoRoute :: Chat.Chat :> es => RouteHandler es
+echoRoute =
+  stopOn (command "!echo") handleEcho
+
+handleEcho :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
+handleEcho message rawArgs = do
+  Chat.replyTo message rawArgs
 
 titleRoute :: Chat.Chat :> es => RouteHandler es
 titleRoute =
