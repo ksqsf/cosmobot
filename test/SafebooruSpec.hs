@@ -79,7 +79,7 @@ testPublicRouteAndCommandBoundary = do
 
 runSafebooruFlow
   :: IORef.IORef [Text]
-  -> Eff '[StorageEffect.Storage, Chat.Chat, Log, Concurrent, IOE] ()
+  -> Eff '[StorageEffect.Storage, Chat.Chat, KatipE, Concurrent, IOE] ()
   -> IO ()
 runSafebooruFlow replies action =
   runEff $
@@ -106,10 +106,8 @@ chatHandlers replies =
     , handleMentionUser = \_ _ _ -> pure Nothing
     }
 
-runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
-runTestLog action = do
-  logger <- liftIO $ mkLogger "safebooru-spec" \_ -> pure ()
-  runLog "safebooru-spec" logger LogTrace action
+runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
+runTestLog action = startKatipE "safebooru-spec" "test" action
 
 waitUntil :: String -> IO Bool -> IO ()
 waitUntil label predicate =

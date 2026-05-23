@@ -63,7 +63,7 @@ type AgentStack =
    , Scheduler.Scheduler
    , Typst.Typst
    , StorageEffect.Storage
-   , Log
+   , KatipE
    , Prim
    , Fail
    , Concurrent
@@ -1979,10 +1979,8 @@ mockTypstRender rendered source action = do
   liftIO $ IORef.modifyIORef' rendered (<> [source])
   action "/tmp/cosmobot-agent-spec-typst.png"
 
-runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
-runTestLog action = do
-  logger <- liftIO $ mkLogger "agent-spec" \_ -> pure ()
-  runLog "agent-spec" logger LogTrace action
+runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
+runTestLog action = startKatipE "agent-spec" "test" action
 
 popAnswer :: IORef.IORef [LLM.ChatAnswer] -> IO LLM.ChatAnswer
 popAnswer answers =

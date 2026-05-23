@@ -34,7 +34,7 @@ bracketStream acquire release use = do
 -- with this project's GHC 9.6 toolchain. Keep this small local version until
 -- that dependency chain is usable here.
 mergeStreams
-  :: (Log :> es, Concurrent :> es)
+  :: (KatipE :> es, Concurrent :> es)
   => [Stream (Of a) (Eff es) ()]
   -> Stream (Of a) (Eff es) ()
 mergeStreams streams = do
@@ -58,7 +58,7 @@ data MergeState = MergeState
   }
 
 readMerged
-  :: (Log :> es, Concurrent :> es)
+  :: (KatipE :> es, Concurrent :> es)
   => Int
   -> STM.TBQueue (MergeEvent a)
   -> Stream (Of a) (Eff es) ()
@@ -85,7 +85,7 @@ readMerged streamCount queue =
     finishMerged mergeState
       | mergeState.failures == streamCount
       , Just err <- mergeState.lastFailure = do
-          S.lift (logAttention_ [i|All merged stream inputs failed: #{show err :: String}|])
+          S.lift (logWarning [i|All merged stream inputs failed: #{show err :: String}|])
           S.lift (throwIO err)
       | otherwise =
           pure ()
@@ -112,14 +112,14 @@ cleanupPumps pumps =
   traverse_ Async.cancel pumps
 
 pump
-  :: (Log :> es, Concurrent :> es)
+  :: (KatipE :> es, Concurrent :> es)
   => STM.TBQueue (MergeEvent a)
   -> Stream (Of a) (Eff es) ()
   -> Eff es ()
 pump queue stream =
   (S.mapM_ (writeMergeEvent queue . MergeItem) stream *> writeMergeEvent queue MergeDone)
     `catchSync` \err -> do
-      logInfo_ [i|Merged stream input stopped: #{show err :: String}|]
+      logInfo [i|Merged stream input stopped: #{show err :: String}|]
       writeMergeEvent queue (MergeFailed err)
     `finally` writeMergeEvent queue MergeDone
 

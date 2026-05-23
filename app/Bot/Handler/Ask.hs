@@ -49,7 +49,7 @@ type HandlerEffects es =
   , Scheduler.Scheduler :> es
   , Storage.Storage :> es
   , Typst.Typst :> es
-  , Log :> es
+  , KatipE :> es
   , Prim :> es
   , Process :> es
   , FileSystem :> es
@@ -102,7 +102,7 @@ askRoute toolCfg cfg conversations =
 haltRoute
   :: Chat.Chat :> es
   => Storage.Storage :> es
-  => Log :> es
+  => KatipE :> es
   => Prim :> es
   => Concurrent :> es
   => IOE :> es
@@ -112,8 +112,8 @@ haltRoute conversations =
   stopOn (command "!halt" *> replyToMessage) \message parentId -> do
     halted <- haltConversation conversations (conversationMessageKey message parentId)
     if halted
-      then logInfo_ "halted"
-      else logInfo_ "couldn't halt active conversation"
+      then logInfo "halted"
+      else logInfo "couldn't halt active conversation"
 
 privateRoute
   :: HandlerEffects es
@@ -164,8 +164,8 @@ continueRoute toolCfg cfg conversations =
       case parent of
         Nothing
           | not (canStartFromReply message) -> do
-              logTrace "Ignoring reply to unknown conversation message" parentId
-              logInfo_ [i|Ignoring unknown conversation reply: #{messageIdText parentId}|]
+              logDebug [i|Ignoring reply to unknown conversation message: #{show parentId :: String}|]
+              logInfo [i|Ignoring unknown conversation reply: #{messageIdText parentId}|]
           | otherwise ->
               startConversationFromReply toolCfg cfg conversations message parentId
         Just conversation ->
@@ -195,8 +195,8 @@ startAskConversation
   -> Text
   -> Eff es ()
 startAskConversation label toolCfg cfg conversations message prompt = do
-  logTrace label message
-  logInfo_ [i|#{label}: #{incomingMessageLogLine message}|]
+  logDebug [i|#{label}: #{show message :: String}|]
+  logInfo [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
@@ -215,8 +215,8 @@ startDrawConversation
   -> Text
   -> Eff es ()
 startDrawConversation label cfg conversations message prompt = do
-  logTrace label message
-  logInfo_ [i|#{label}: #{incomingMessageLogLine message}|]
+  logDebug [i|#{label}: #{show message :: String}|]
+  logInfo [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
@@ -243,8 +243,8 @@ startConversationFromReply
   -> MessageId
   -> Eff es ()
 startConversationFromReply toolCfg cfg conversations message parentId = do
-  logTrace "starting conversation from mentioned reply" message
-  logInfo_ [i|starting conversation from mentioned reply: #{incomingMessageLogLine message}|]
+  logDebug [i|starting conversation from mentioned reply: #{show message :: String}|]
+  logInfo [i|starting conversation from mentioned reply: #{incomingMessageLogLine message}|]
   referenced <- Chat.getMessageContent message parentId
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let prompt = promptWithReferencedContext message.text referenced contextImages
@@ -264,8 +264,8 @@ continueConversation
   -> Conversation
   -> Eff es ()
 continueConversation toolCfg cfg conversations message parentKey conversation = do
-  logTrace "continuing conversation" message
-  logInfo_ [i|continuing conversation: #{incomingMessageLogLine message}|]
+  logDebug [i|continuing conversation: #{show message :: String}|]
+  logInfo [i|continuing conversation: #{incomingMessageLogLine message}|]
   let input = inputWithImages (promptOrImageDefault message.text message.imageUrls) message.imageUrls
   let nextConversation =
         appendUserInput input conversation
@@ -321,7 +321,7 @@ agentContext toolCfg cfg message input =
     }
 
 agentHooks
-  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, Prim :> es)
+  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, KatipE :> es, Prim :> es)
   => ConversationStore
   -> Maybe ConversationMessageKey
   -> IncomingMessage
@@ -333,7 +333,7 @@ agentHooks conversations parentMessageKey message =
     }
 
 streamAgentReply
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Storage.Storage :> es, Log :> es, Prim :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => AskHandlerConfig
   -> Agent.AgentObserver AgentObservation.ObservationContext es
   -> Agent.AgentRun es
@@ -354,7 +354,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
       Just ThreadKilled ->
         throwIO err
       _ -> do
-        logAttention_ [i|LLM request failed: #{show err :: String}|]
+        logWarning [i|LLM request failed: #{show err :: String}|]
         let failureMessage = llmFailureMessage err
         responseId <- Chat.replyTo message failureMessage
         pure AgentReply
@@ -388,7 +388,7 @@ agentReplySegmentStream =
           go answer rest
 
 commitAgentReply
-  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, Log :> es, Prim :> es, Concurrent :> es)
+  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => Agent.AgentObserver AgentObservation.ObservationContext es
   -> ActiveReplyState
   -> IncomingMessage
@@ -413,7 +413,7 @@ conversationLink result parentMessageId linkedMessageId =
     , linkedMessageId
     }
 
-discardActiveReply :: (Storage.Storage :> es, Log :> es, Prim :> es, Concurrent :> es) => ActiveReplyState -> Eff es ()
+discardActiveReply :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es) => ActiveReplyState -> Eff es ()
 discardActiveReply activeReply =
   IORef.readIORef activeReply.activeRef
     >>= traverse_ (finishActiveConversationCurrent activeReply.conversations)
@@ -491,12 +491,12 @@ llmFailureMessage err =
   "LLM request failed: " <> (AgentFailure.agentFailureFromException err).userMessage
 
 drawConversation
-  :: (LLM.LLM :> es, Log :> es)
+  :: (LLM.LLM :> es, KatipE :> es)
   => Conversation
   -> Eff es Text
 drawConversation conversation =
   LLM.askImageWithHistory (Foldable.toList conversation.messages) `catchSync` \err -> do
-    logInfo_ [i|LLM image request failed: #{show err :: String}|]
+    logInfo [i|LLM image request failed: #{show err :: String}|]
     pure ("Image generation failed: " <> (AgentFailure.agentFailureFromException err).userMessage)
 
 

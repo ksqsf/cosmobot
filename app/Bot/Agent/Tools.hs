@@ -43,7 +43,7 @@ defaultTools
   => Fail :> es
   => Concurrent :> es
   => Timeout :> es
-  => Log :> es
+  => KatipE :> es
   => Process :> es
   => FileSystem :> es
   => IOE :> es

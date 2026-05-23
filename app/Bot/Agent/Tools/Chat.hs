@@ -158,7 +158,7 @@ memberInfoTool = Tool
       pure (toolText (maybe "No member information is available for this user in the current chat." jsonText info))
   }
 
-userAvatarTool :: (Chat.Chat :> es, Log :> es) => Tool es
+userAvatarTool :: (Chat.Chat :> es, KatipE :> es) => Tool es
 userAvatarTool = Tool
   { name = "get_user_avatar"
   , description = "Get avatar information for a platform user id and send the avatar image to the current chat."
@@ -284,7 +284,7 @@ avatarUrl =
   AesonTypes.parseMaybe $
     Aeson.withObject "user avatar" (Aeson..: Key.fromText "avatar_url")
 
-userAvatarResult :: (Chat.Chat :> es, Log :> es) => AgentContext es -> Aeson.Value -> Eff es ToolResult
+userAvatarResult :: (Chat.Chat :> es, KatipE :> es) => AgentContext es -> Aeson.Value -> Eff es ToolResult
 userAvatarResult context value =
   case avatarUrl value of
     Nothing ->
@@ -292,7 +292,7 @@ userAvatarResult context value =
     Just url -> do
       let body = ReplyBody.imageDirective url
       sent <- Chat.replyTo context.message body
-      logInfo_ [i|get_user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
+      logInfo [i|get_user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
       pure (toolMessageWithImages sent (jsonText value) [url])
 
 sendReplyArgs :: Aeson.Value -> AesonTypes.Parser Text

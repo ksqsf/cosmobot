@@ -692,10 +692,8 @@ assertUnauthorizedRejected = \case
   Right () ->
     assertFailure "expected unauthenticated websocket connection to fail"
 
-runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
-runTestLog action = do
-  logger <- liftIO $ mkLogger "rpc-spec" \_ -> pure ()
-  runLog "rpc-spec" logger LogTrace action
+runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
+runTestLog action = startKatipE "rpc-spec" "test" action
 
 runRpcStorage :: FilePath -> Eff '[Storage.Storage, FileSystem.FileSystem, Concurrent, IOE] a -> IO a
 runRpcStorage path action =

@@ -35,7 +35,7 @@ tigerRankCommand = "!hbcj"
 
 -- | Routes that render typing leaderboard snapshots.
 typingHandlers
-  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Typst.Typst :> es, KatipE :> es, IOE :> es, Concurrent :> es)
   => [RouteHandler es]
 typingHandlers =
   [ rankRoute championshipRankCommand "锦标赛成绩" "锦标赛排行榜生成失败。" fetchChampionshipRows
@@ -43,7 +43,7 @@ typingHandlers =
   ]
 
 rankRoute
-  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Typst.Typst :> es, KatipE :> es, IOE :> es, Concurrent :> es)
   => Text
   -> Text
   -> Text
@@ -52,11 +52,11 @@ rankRoute
 rankRoute commandText titleSuffix failureMessage fetchRows =
   requireAuth canStartConversation (\_ -> pure ()) $
     stopOn (command commandText) \message _ -> do
-      logInfo_ [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
+      logInfo [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
       spawnTask (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage
-  :: (Chat.Chat :> es, Typst.Typst :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Typst.Typst :> es, KatipE :> es, IOE :> es)
   => Text
   -> Text
   -> IO [[Text]]
@@ -64,20 +64,20 @@ sendRankImage
   -> Eff es ()
 sendRankImage titleSuffix failureMessage fetchRows message =
   handleError do
-    logInfo_ [i|Fetching typing rank rows: #{titleSuffix}|]
+    logInfo [i|Fetching typing rank rows: #{titleSuffix}|]
     title <- liftIO (rankTitle titleSuffix)
     rows <- liftIO fetchRows
-    logInfo_ [i|Fetched typing rank rows: #{title}, #{length rows} rows|]
+    logInfo [i|Fetched typing rank rows: #{title}, #{length rows} rows|]
     Typst.withTypstPng (typstDocument title rows) \imagePath -> do
-      logInfo_ [i|Rendered typing rank image: #{imagePath}|]
+      logInfo [i|Rendered typing rank image: #{imagePath}|]
       sent <- Chat.replyTo message (ReplyBody.imageDirective ("file://" <> Text.pack imagePath))
-      logInfo_ [i|Sent typing rank image: #{show sent :: Text}|]
+      logInfo [i|Sent typing rank image: #{show sent :: Text}|]
       when (isNothing sent) do
         void $ Chat.replyTo message [i|#{title}已生成，但图片发送失败。|]
   where
     handleError action =
       action `catchSync` \err -> do
-        logAttention_ [i|Failed to render typing rank: #{show err :: String}|]
+        logWarning [i|Failed to render typing rank: #{show err :: String}|]
         void $ Chat.replyTo message failureMessage
 
 rankTitle :: Text -> IO Text

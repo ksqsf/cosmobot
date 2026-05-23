@@ -24,7 +24,7 @@ maxLLMRequestAttempts :: Int
 maxLLMRequestAttempts =
   3
 
-retryLLMRequest :: (IOE :> es, Log :> es) => Text -> Eff es a -> Eff es a
+retryLLMRequest :: (IOE :> es, KatipE :> es) => Text -> Eff es a -> Eff es a
 retryLLMRequest label action =
   go (1 :: Int)
   where
@@ -32,13 +32,13 @@ retryLLMRequest label action =
       action `catchSync` \err ->
         if attempt < maxLLMRequestAttempts && retryableLLMFailure err
           then do
-            logAttention_ [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
+            logWarning [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
             go (attempt + 1)
           else
             throwIO err
 
 retryLLMStreamRequest
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, KatipE :> es)
   => Text
   -> Eff es (Stream (Of a) (Eff es) r)
   -> Stream (Of a) (Eff es) r
@@ -54,7 +54,7 @@ retryLLMStreamRequest label makeStream =
         S.next stream `catchSync` \err ->
           if attempt < maxLLMRequestAttempts && retryableLLMFailure err
             then do
-              logAttention_ [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
+              logWarning [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
               S.next (go (attempt + 1))
             else
               throwIO err

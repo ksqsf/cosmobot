@@ -35,7 +35,7 @@ removeFilesIfExists :: (IOE :> es, Fail :> es, FileSystem :> es) => [FilePath] -
 removeFilesIfExists =
   traverse_ removeIfExists
 
-compressDataImageReference :: (IOE :> es, Log :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageCompressionConfig -> Text -> Eff es (Maybe Text)
+compressDataImageReference :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageCompressionConfig -> Text -> Eff es (Maybe Text)
 compressDataImageReference cfg imageRef =
   case targetImageFormat cfg of
     Nothing ->
@@ -51,16 +51,16 @@ targetImageFormat cfg =
     Just "webp" -> Just "webp"
     _           -> Nothing
 
-compressDataImage :: (IOE :> es, Log :> es, FileSystem :> es, Process :> es, Fail :> es) => Text -> Maybe Int -> Text -> Eff es (Maybe Text)
+compressDataImage :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es) => Text -> Maybe Int -> Text -> Eff es (Maybe Text)
 compressDataImage format quality imageRef =
   case decodeDataImageReference imageRef of
     Nothing ->
       pure Nothing
     Just bytes -> do
       result <- (convertDataImage format quality bytes) `catchSync` \err -> do
-        logAttention_ [i|Image compression failed: #{show err :: String}|]
+        logWarning [i|Image compression failed: #{show err :: String}|]
         pure Nothing
-      traverse_ (\url -> logInfo_ [i|Compressed image response URL: #{url}|]) result
+      traverse_ (\url -> logInfo [i|Compressed image response URL: #{url}|]) result
       pure result
 
 decodeDataImageReference :: Text -> Maybe StrictByteString.ByteString

@@ -33,7 +33,7 @@ newtype ToolLimitContext = ToolLimitContext
   }
   deriving (Eq, Show)
 
-withToolLimit :: Log :> es => Int -> AgentProgram (ToolLimitContext ': context) es -> AgentProgram context es
+withToolLimit :: KatipE :> es => Int -> AgentProgram (ToolLimitContext ': context) es -> AgentProgram context es
 withToolLimit maxTurns program =
   program
     { aroundAgentRun = \context action ->
@@ -43,7 +43,7 @@ withToolLimit maxTurns program =
         case decision of
           ModelNeedsTools ToolTurnState{answered, toolContent, toolCalls}
             | agentState.turn >= toolLimitContext.maxToolTurns -> do
-                lift $ logInfo_ [i|Agent tool turn limit reached: #{show toolCalls :: String}|]
+                lift $ logInfo [i|Agent tool turn limit reached: #{show toolCalls :: String}|]
                 ModelAnswered <$> handleToolLimit program.agentRun.runId agentState.turn toolContent toolCalls answered
           _ ->
             pure decision

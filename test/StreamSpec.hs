@@ -26,7 +26,5 @@ testFailedInputDoesNotStopMergedStream = do
         ]
   result @?= Just [1, 2]
 
-runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
-runTestLog action = do
-  logger <- liftIO $ mkLogger "stream-spec" \_ -> pure ()
-  runLog "stream-spec" logger LogTrace action
+runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
+runTestLog action = startKatipE "stream-spec" "test" action

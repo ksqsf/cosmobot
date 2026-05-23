@@ -38,7 +38,6 @@ import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.CLI as TypstCLI
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Effectful.Concurrent.MVar as MVar
-import Log.Backend.StandardOutput
 import qualified System.Posix.Signals as Signals
 import Effectful.Timeout
 import Effectful.Process
@@ -73,7 +72,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
                . Lifecycle.runLifecycle
   runStack do
-    logInfo_ "Cosmobot stand by!"
+    logInfo "Cosmobot stand by!"
     let allStreams =
           [ ChatDriver.incomingMessages rpcState
           , Scheduler.scheduledMessages
@@ -90,7 +89,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
       messageConsumer
 
 routes
-  :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, Log :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ConversationStore
   -> [RouteHandler es]
@@ -104,11 +103,13 @@ routes cfg conversations =
     <> saucenaoHandlers cfg.saucenao
     <> askHandlers cfg.tool cfg.handlers.ask conversations
 
-runBotLog :: IOE :> es => LogLevel -> Eff (Log : es) a -> Eff es a
-runBotLog level inner = withStdOutLogger $ \logger ->
-  runLog "cosmobot" logger level $ do
-    logInfo_ [i|Log level: #{show level :: String}|]
-    logExceptions inner
+runBotLog :: IOE :> es => Severity -> Eff (KatipE : es) a -> Eff es a
+runBotLog level inner =
+  startKatipE "cosmobot" "production" do
+    stdoutScribe <- mkHandleScribe ColorIfTerminal stdout (permitItem level) V2
+    registerScribe "stdout" stdoutScribe defaultScribeSettings
+    logInfo [i|Log level: #{show level :: String}|]
+    logExceptionAt ErrorS inner
 
 runGracefulTermination :: (IOE :> es, Concurrent :> es) => Eff es a -> Eff es ()
 runGracefulTermination inner = do

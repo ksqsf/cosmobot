@@ -76,13 +76,13 @@ safebooruLinkRows =
 
 -- | Routes for public Safebooru image commands.
 safebooruHandlers
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es, Concurrent :> es, Fail :> es)
+  :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es, IOE :> es, Concurrent :> es, Fail :> es)
   => [RouteHandler es]
 safebooruHandlers =
   safebooruHandlersWith (searchSafebooruImageLinks)
 
 safebooruHandlersWith
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es, IOE :> es, Concurrent :> es)
   => SafebooruSearch es
   -> [RouteHandler es]
 safebooruHandlersWith search =
@@ -90,7 +90,7 @@ safebooruHandlersWith search =
   ]
 
 safebooruRoute
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, Concurrent :> es, IOE :> es)
+  :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => SafebooruSearch es
   -> RouteHandler es
 safebooruRoute search =
@@ -99,7 +99,7 @@ safebooruRoute search =
       Left err ->
         void $ Chat.replyTo message err
       Right request -> do
-        logInfo_ [i|matched safebooru route: #{incomingMessageLogLine message}|]
+        logInfo [i|matched safebooru route: #{incomingMessageLogLine message}|]
         spawnTask (sendSafebooruImages search message request)
 
 ballCommandArgs :: MessageFilter Text
@@ -148,7 +148,7 @@ ballCountError =
   "num 必须是 1 到 5。"
 
 sendSafebooruImages
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es, IOE :> es)
   => SafebooruSearch es
   -> IncomingMessage
   -> BallRequest
@@ -162,7 +162,7 @@ sendSafebooruImages search message request =
   where
     handleError action =
       action `catchSync` \err -> do
-        logInfo_ [i|Safebooru search failed: #{show err :: String}|]
+        logInfo [i|Safebooru search failed: #{show err :: String}|]
         void $ Chat.replyTo message "Safebooru 搜索失败。"
 
 drawSafebooruLinks

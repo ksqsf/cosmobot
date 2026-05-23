@@ -27,7 +27,7 @@ runLLM
      , FileSystem :> es
      , Process :> es
      , IOE :> es)
-  => Log :> es
+  => KatipE :> es
   => Config
   -> Eff (LLM.LLM : es) a
   -> Eff es a

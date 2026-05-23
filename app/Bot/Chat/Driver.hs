@@ -61,7 +61,7 @@ platformDriver rpcConfig rpcState message =
   List.find ((== message.platform) . (.platform)) (chatPlatformDrivers rpcConfig rpcState)
 
 withPlatformDriver
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -75,11 +75,11 @@ withPlatformDriver rpcConfig rpcState message label action =
     Just driver ->
       action driver `catchSync` \err -> do
         let platformText = show message.platform :: String
-        logInfo_ [i|#{label} failed on #{platformText}: #{displayException err}|]
+        logInfo [i|#{label} failed on #{platformText}: #{displayException err}|]
         pure Nothing
 
 replyToPlatform
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -90,7 +90,7 @@ replyToPlatform rpcConfig rpcState message body =
     driver.replyTo message body
 
 uploadFileToPlatform
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -105,11 +105,11 @@ uploadFileToPlatform rpcConfig rpcState message path =
       driver.uploadFile message path `catchSync` \err -> do
         let platformText = show message.platform :: String
             messageText = [i|File upload failed on #{platformText}: #{displayException err}|]
-        logInfo_ messageText
+        logInfo messageText
         pure (Left messageText)
 
 replyAudioToPlatform
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -125,11 +125,11 @@ replyAudioToPlatform rpcConfig rpcState message audioRef caption =
       driver.replyAudio message audioRef caption `catchSync` \err -> do
         let platformText = show message.platform :: String
             messageText = [i|Audio send failed on #{platformText}: #{displayException err}|]
-        logInfo_ messageText
+        logInfo messageText
         pure (Left messageText)
 
 editPlatformMessage
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -141,7 +141,7 @@ editPlatformMessage rpcConfig rpcState message messageId body =
     Just <$> driver.editMessage message messageId body
 
 deletePlatformMessage
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -152,7 +152,7 @@ deletePlatformMessage rpcConfig rpcState message messageId =
     Just <$> driver.deleteMessage message messageId
 
 platformReplyStreamStyle
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -169,7 +169,7 @@ defaultChunkedReplyLimit :: Int
 defaultChunkedReplyLimit = 4000
 
 getPlatformMessageContent
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -180,7 +180,7 @@ getPlatformMessageContent rpcConfig rpcState message messageId =
     traverse Media.normalizeReferencedMessage =<< driver.getMessageContent message messageId
 
 getPlatformSenderMemberInfo
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -190,7 +190,7 @@ getPlatformSenderMemberInfo rpcConfig rpcState message =
     driver.getSenderMemberInfo message
 
 getPlatformMemberInfo
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -201,7 +201,7 @@ getPlatformMemberInfo rpcConfig rpcState message userId =
     driver.getMemberInfo message userId
 
 getPlatformUserAvatar
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -212,7 +212,7 @@ getPlatformUserAvatar rpcConfig rpcState message userId =
     traverse normalizeJsonMediaUrls =<< driver.getUserAvatar message userId
 
 listPlatformGroupMembers
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -222,7 +222,7 @@ listPlatformGroupMembers rpcConfig rpcState message =
     driver.listGroupMembers message
 
 mentionPlatformUser
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -234,7 +234,7 @@ mentionPlatformUser rpcConfig rpcState message userId body =
     driver.mentionUser message userId body
 
 setPlatformMemberTitle
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> IncomingMessage
@@ -246,7 +246,7 @@ setPlatformMemberTitle rpcConfig rpcState message userId title =
     Just <$> driver.setMemberTitle message userId title
 
 runChatDrivers
-  :: (Log :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
+  :: (KatipE :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
   => QQ.Config
   -> Telegram.Config
   -> Matrix.Config
@@ -268,7 +268,7 @@ incomingMessages
   => Matrix.Matrix :> es
   => Discord.Discord :> es
   => Media.Media :> es
-  => Log :> es
+  => KatipE :> es
   => Concurrent :> es
   => Fail :> es
   => IOE :> es
@@ -304,7 +304,7 @@ normalizeJsonMediaUrls = \case
       ["avatar_url", "image_url", "url"]
 
 chatHandlers
-  :: (ChatDriverConstraints es, Log :> es)
+  :: (ChatDriverConstraints es, KatipE :> es)
   => RPCConfig.Config
   -> RPC.RpcState
   -> Chat.ChatHandlers es

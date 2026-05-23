@@ -17,6 +17,7 @@ where
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import Data.Time (UTCTime)
 
 data ToolCallTrace = ToolCallTrace
   { id :: !Text

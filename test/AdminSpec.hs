@@ -229,10 +229,8 @@ chatHandlers replies titleCalls titleResult =
       traverse_ (\ref -> liftIO $ IORef.modifyIORef' ref (<> [(incoming.chatId, userId, title)])) titleCalls
       pure titleResult
 
-runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
-runTestLog action = do
-  logger <- liftIO $ mkLogger "admin-spec" \_ -> pure ()
-  runLog "admin-spec" logger LogTrace action
+runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
+runTestLog action = startKatipE "admin-spec" "test" action
 
 message :: IncomingMessage
 message =

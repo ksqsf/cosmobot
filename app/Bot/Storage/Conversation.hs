@@ -166,7 +166,7 @@ updateActiveConversation (ActiveConversationHandle active) conversation =
   writeIORef active.activeCurrent conversation
 
 finishActiveConversation
-  :: (Prim :> es, Log :> es, Concurrent :> es, Storage.Storage :> es)
+  :: (Prim :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es)
   => ConversationStore
   -> ActiveConversationHandle
   -> Conversation
@@ -180,7 +180,7 @@ finishActiveConversation store@ConversationStore{activeConversationStore = activ
     (foldl' (flip Map.delete) activeMap messageKeys, ())
 
 finishActiveConversationCurrent
-  :: (Prim :> es, Log :> es, Storage.Storage :> es, Concurrent :> es)
+  :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es)
   => ConversationStore
   -> ActiveConversationHandle
   -> Eff es ()
@@ -188,7 +188,7 @@ finishActiveConversationCurrent store (ActiveConversationHandle active) = do
   conversation <- readIORef active.activeCurrent
   finishActiveConversation store (ActiveConversationHandle active) conversation
 
-haltConversation :: (Prim :> es, Log :> es, Storage.Storage :> es, Concurrent :> es) => ConversationStore -> ConversationMessageKey -> Eff es Bool
+haltConversation :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es) => ConversationStore -> ConversationMessageKey -> Eff es Bool
 haltConversation store@ConversationStore{activeConversationStore = activeRef} messageKey = do
   active <- Map.lookup messageKey <$> readIORef activeRef
   case active of
@@ -204,12 +204,12 @@ haltConversation store@ConversationStore{activeConversationStore = activeRef} me
         (foldl' (flip Map.delete) activeMap messageKeys, ())
       pure True
 
-rememberConversation :: (Prim :> es, Log :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Conversation -> Eff es ()
+rememberConversation :: (Prim :> es, KatipE :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Conversation -> Eff es ()
 rememberConversation store =
   rememberConversationFrom store Nothing
 
 rememberConversationFrom
-  :: (Prim :> es, Log :> es, Storage.Storage :> es)
+  :: (Prim :> es, KatipE :> es, Storage.Storage :> es)
   => ConversationStore
   -> Maybe ConversationMessageKey
   -> Maybe ConversationMessageKey
@@ -235,7 +235,7 @@ rememberConversationFrom store@ConversationStore{unConversationStore = ref} pare
     in (cachedState, (conversationId, storageParentMessageKey, storedMessages))
   saveConversationMessages messageKey conversationId storageParentMessageKey (messagesJson storedMessages)
     `catchSync` \err ->
-      logInfo_ [i|Failed to persist conversation: #{show err :: String}|]
+      logInfo [i|Failed to persist conversation: #{show err :: String}|]
 
 lookupConversationNode :: (Prim :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
 lookupConversationNode store messageKey =

@@ -78,7 +78,7 @@ queryCurrentSenderChatLog message keywords limit =
 
 -- | Interpret chat logging through the storage capability.
 runChatLog
-  :: (IOE :> es, Log :> es, Storage.Storage :> es)
+  :: (IOE :> es, KatipE :> es, Storage.Storage :> es)
   => Eff (ChatLog : es) a
   -> Eff es a
 runChatLog inner =

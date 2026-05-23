@@ -11,7 +11,7 @@ module Bot.Prelude
   , module Effectful.Concurrent
   , module Effectful.Concurrent.Async
   , module Effectful.Dispatch.Dynamic
-  , module Effectful.Log
+  , module Bot.Log
   , module Effectful.Exception
   , module Effectful.Fail
   , module Effectful.Prim.IORef
@@ -42,6 +42,7 @@ import Relude hiding
 -- ---------------------------------------------------------------------------
 
 import Data.String.Interpolate
+import Bot.Log
 
 -- ---------------------------------------------------------------------------
 -- Effects
@@ -51,7 +52,6 @@ import Effectful
 import Effectful.Concurrent
 import Effectful.Concurrent.Async
 import Effectful.Dispatch.Dynamic
-import Effectful.Log
 import Effectful.Exception
 import Effectful.Fail
 import Effectful.Prim.IORef
@@ -66,12 +66,12 @@ import Streaming (Stream, Of)
 -- Helpers
 -- ---------------------------------------------------------------------------
 
-spawnTask :: (Log :> es, Concurrent :> es) => Eff es () -> Eff es ()
+spawnTask :: (KatipE :> es, Concurrent :> es) => Eff es () -> Eff es ()
 spawnTask action = void $ forkIO do
   try action >>= \case
     Right () -> pure ()
     Left err
       | Just ThreadKilled <- fromException err -> do
         tid <- myThreadId
-        logInfo_ [i|Thread #{tid} was killed|]
-      | otherwise -> logAttention_ [i|Forked action failed: #{show err :: String}|]
+        logInfo [i|Thread #{tid} was killed|]
+      | otherwise -> logWarning [i|Forked action failed: #{show err :: String}|]

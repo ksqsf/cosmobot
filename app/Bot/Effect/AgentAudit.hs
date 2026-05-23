@@ -79,14 +79,14 @@ queryConversationMessagesAudit messageIds =
   send (QueryConversationMessagesAudit messageIds)
 
 runAgentAudit
-  :: (IOE :> es, Log :> es, Storage.Storage :> es)
+  :: (IOE :> es, KatipE :> es, Storage.Storage :> es)
   => Eff (AgentAudit : es) a
   -> Eff es a
 runAgentAudit =
   runAgentAuditWithObserver (const (pure ()))
 
 runAgentAuditWithObserver
-  :: (IOE :> es, Log :> es, Storage.Storage :> es)
+  :: (IOE :> es, KatipE :> es, Storage.Storage :> es)
   => (AgentAuditRecord -> Eff es ())
   -> Eff (AgentAudit : es) a
   -> Eff es a

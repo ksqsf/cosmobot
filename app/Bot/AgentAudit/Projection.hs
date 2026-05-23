@@ -15,7 +15,7 @@ where
 import Bot.AgentAudit.Types
 import Bot.Prelude
 import qualified Data.Map.Strict as Map
-import Data.Time (diffUTCTime)
+import Data.Time (UTCTime, diffUTCTime)
 
 maxInMemoryAgentAuditEvents :: Int
 maxInMemoryAgentAuditEvents =

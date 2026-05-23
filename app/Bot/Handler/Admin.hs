@@ -28,7 +28,7 @@ import Effectful.Process (Process, ProcessHandle, StdStream (..), createProcess,
 import qualified System.Exit as Exit
 import System.IO.Error (userError)
 
-adminHandlers :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, Log :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
+adminHandlers :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
 adminHandlers cfg =
   [ pingRoute
   , titleRoute
@@ -75,14 +75,14 @@ parseTitleArgs rawArgs = do
   guard (not (Text.null userId) && userId /= "0" && not (Text.null title))
   pure (userId, title)
 
-upgradeRoute :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
+upgradeRoute :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
 upgradeRoute cfg =
   requireAuth
     isSuperuser
     (\message -> void $ Chat.replyTo message "只有 superuser 可以执行 upgrade。")
     (stopOn (command "!upgrade") \message _ -> handleUpgrade cfg message)
 
-handleUpgrade :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, Log :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
+handleUpgrade :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
 handleUpgrade cfg message = do
   let scriptPath = cfg.script
   actionKey <- liftIO newLifecycleActionKey
@@ -123,7 +123,7 @@ startUpgradeScript scriptPath = do
       throwIO (userError "upgrade script did not provide stdout/stderr handles.")
 
 reportUpgradeScriptExit
-  :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, KatipE :> es, IOE :> es)
   => Lifecycle.StoredStartupAction
   -> IncomingMessage
   -> RunningUpgradeScript

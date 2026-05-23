@@ -235,7 +235,7 @@ downloadMedia =
   send . DownloadMedia
 
 runMatrix
-  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
   => Config
   -> Eff (Matrix : es) a
   -> Eff es a
@@ -376,7 +376,7 @@ instance Aeson.ToJSON MatrixAuthState where
       , "refresh_token" Aeson..= authRefreshToken
       ]
 
-initialMatrixAuthState :: (IOE :> es, Log :> es) => Manager -> Config -> Eff es MatrixAuthState
+initialMatrixAuthState :: (IOE :> es, KatipE :> es) => Manager -> Config -> Eff es MatrixAuthState
 initialMatrixAuthState manager cfg =
   case (cfg.loginUser, cfg.loginPassword) of
     (Just user, Just password) -> do
@@ -389,7 +389,7 @@ initialMatrixAuthState manager cfg =
       pure MatrixAuthState{authAccessToken = Nothing, authRefreshToken = Nothing}
 
 withMaybeMatrixAccessToken
-  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
   => MatrixAuth
   -> (Text -> Eff es a)
   -> Eff es (Maybe a)
@@ -402,7 +402,7 @@ withMaybeMatrixAccessToken auth action = do
       Just <$> withMatrixAccessToken auth action
 
 withMatrixAccessToken
-  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
   => MatrixAuth
   -> (Text -> Eff es a)
   -> Eff es a
@@ -423,7 +423,7 @@ withMatrixAccessToken auth action = do
         throwIO (userError (Text.unpack (matrixApiExceptionMessage err)))
 
 refreshMatrixAccessToken
-  :: (IOE :> es, Log :> es, Concurrent :> es, Prim :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
   => MatrixAuth
   -> Text
   -> Eff es Text
@@ -438,7 +438,7 @@ refreshMatrixAccessToken auth expiredToken =
           Nothing ->
             reloginMatrixAccessToken auth
           Just refreshToken -> do
-            logInfo_ "Matrix access token expired; refreshing"
+            logInfo "Matrix access token expired; refreshing"
             response <- refreshAccessTokenCall auth.authManager auth.authConfig refreshToken
             let refreshedState = MatrixAuthState
                   { authAccessToken = Just response.refreshedAccessToken
@@ -448,13 +448,13 @@ refreshMatrixAccessToken auth expiredToken =
             pure response.refreshedAccessToken
 
 reloginMatrixAccessToken
-  :: (IOE :> es, Log :> es, Prim :> es)
+  :: (IOE :> es, KatipE :> es, Prim :> es)
   => MatrixAuth
   -> Eff es Text
 reloginMatrixAccessToken auth =
   case (auth.authConfig.loginUser, auth.authConfig.loginPassword) of
     (Just user, Just password) -> do
-      logInfo_ "Matrix access token expired and no refresh token is available; logging in again"
+      logInfo "Matrix access token expired and no refresh token is available; logging in again"
       response <- loginCall auth.authManager auth.authConfig user password
       let refreshedState = MatrixAuthState
             { authAccessToken = Just response.loginAccessToken
@@ -605,24 +605,24 @@ instance Aeson.FromJSON MatrixLoginResponse where
       <*> o Aeson..:? "refresh_token"
       <*> o Aeson..:? "expires_in_ms"
 
-incomingMessages :: (Matrix :> es, Media.Media :> es, Log :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (Matrix :> es, Media.Media :> es, KatipE :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
   cfg <- S.lift matrixConfig
   if matrixAuthConfigured cfg
     then do
-      S.lift $ logInfo_ [i|Matrix sync starting: auth=#{matrixAuthMode cfg}|]
+      S.lift $ logInfo [i|Matrix sync starting: auth=#{matrixAuthMode cfg}|]
       storedSince <- S.lift loadSyncToken
       case storedSince of
         Just since ->
           syncLoop cfg (Just since)
         Nothing -> do
-          S.lift $ logInfo_ "Matrix sync state is empty; initializing from current homeserver state"
+          S.lift $ logInfo "Matrix sync state is empty; initializing from current homeserver state"
           initializeSyncState cfg
-    else S.lift $ logInfo_ "Matrix driver disabled: no access token, refresh token, or login credentials configured"
+    else S.lift $ logInfo "Matrix driver disabled: no access token, refresh token, or login credentials configured"
   where
     initializeSyncState cfg = do
       result <- S.lift $ sync Nothing `catchSync` \err -> do
-        logInfo_ [i|Matrix sync initialization failed, retrying: #{show err :: String}|]
+        logInfo [i|Matrix sync initialization failed, retrying: #{show err :: String}|]
         threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
@@ -630,12 +630,12 @@ incomingMessages = do
           initializeSyncState cfg
         Just response -> do
           S.lift $ storeSyncToken response.nextBatch
-          S.lift $ logInfo_ "Matrix sync state initialized; skipped initial timeline batch"
+          S.lift $ logInfo "Matrix sync state initialized; skipped initial timeline batch"
           syncLoop cfg (Just response.nextBatch)
 
     syncLoop cfg since = do
       result <- S.lift $ sync since `catchSync` \err -> do
-        logInfo_ [i|Matrix sync failed, retrying: #{show err :: String}|]
+        logInfo [i|Matrix sync failed, retrying: #{show err :: String}|]
         threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
@@ -649,17 +649,17 @@ incomingMessages = do
           let effectiveDirectRoomIds = refreshedDirectRoomIds <> probedDirectRoomIds
               events = syncEvents effectiveDirectRoomIds response
               directCount = Set.size effectiveDirectRoomIds
-          S.lift $ logInfo_ [i|Matrix sync batch: #{length events}; direct_rooms=#{directCount}|]
+          S.lift $ logInfo [i|Matrix sync batch: #{length events}; direct_rooms=#{directCount}|]
           for_ events \event ->
             case eventToIncomingMessageWith cfg event of
               Nothing -> do
                 let reason = matrixEventIgnoreReason cfg event
-                S.lift $ logTrace_ ("Ignoring Matrix event: " <> reason)
-                S.lift $ logInfo_ ("Ignoring Matrix event: " <> reason)
+                S.lift $ logDebug ("Ignoring Matrix event: " <> reason)
+                S.lift $ logInfo ("Ignoring Matrix event: " <> reason)
               Just message -> do
                 normalized <- S.lift (normalizeMatrixIncomingMessage message)
-                S.lift $ logTrace "incoming Matrix message" normalized
-                S.lift $ logInfo_ [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine normalized}|]
+                S.lift $ logDebug [i|incoming Matrix message: #{show normalized :: String}|]
+                S.lift $ logInfo [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine normalized}|]
                 S.yield normalized
           S.lift $ storeSyncToken response.nextBatch
           syncLoop cfg (Just response.nextBatch)
@@ -1280,7 +1280,7 @@ defaultConfig = Config
   , superusers = []
   }
 
-loginCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixLoginResponse
+loginCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixLoginResponse
 loginCall manager cfg user password =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
@@ -1296,7 +1296,7 @@ loginCall manager cfg user password =
         , loginInitialDeviceDisplayName = Just "cosmobot"
         , loginRefreshToken = True
         }
-  logInfo_ "Matrix API request: login"
+  logInfo "Matrix API request: login"
   matrixReq "login"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req POST
@@ -1307,14 +1307,14 @@ loginCall manager cfg user password =
     )
     <&> responseBody
 
-refreshAccessTokenCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Eff es MatrixRefreshResponse
+refreshAccessTokenCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> Eff es MatrixRefreshResponse
 refreshAccessTokenCall manager cfg refreshToken =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
       request = MatrixRefreshRequest refreshToken
-  logInfo_ "Matrix API request: refresh access token"
+  logInfo "Matrix API request: refresh access token"
   matrixReq "refresh"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req POST
@@ -1325,7 +1325,7 @@ refreshAccessTokenCall manager cfg refreshToken =
     )
     <&> responseBody
 
-syncCall :: (IOE :> es, Log :> es) => Manager -> Config -> Maybe Text -> Text -> Eff es SyncResponse
+syncCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Maybe Text -> Text -> Eff es SyncResponse
 syncCall manager cfg since token =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
@@ -1336,21 +1336,21 @@ syncCall manager cfg since token =
           <> maybe mempty ("since" =:) since
   let sinceLabel :: Text
       sinceLabel = maybe "<initial>" (const "<next_batch>") since
-  logInfo_ [i|Matrix API request: sync since=#{sinceLabel}|]
+  logInfo [i|Matrix API request: sync since=#{sinceLabel}|]
   matrixReq "sync"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req GET (baseUrl /: "_matrix" /: "client" /: "v3" /: "sync") NoReqBody jsonResponse options
     )
     <&> responseBody
 
-joinedMemberCountCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Eff es Int
+joinedMemberCountCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> Eff es Int
 joinedMemberCountCall manager cfg token roomId =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
-  logInfo_ [i|Matrix API request: joined_members room=#{roomId}|]
+  logInfo [i|Matrix API request: joined_members room=#{roomId}|]
   response :: JoinedMembersResponse <- matrixReq "joined_members"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req GET
@@ -1362,14 +1362,14 @@ joinedMemberCountCall manager cfg token roomId =
     <&> responseBody
   pure (Map.size response.joinedMembers)
 
-fetchJoinedMembersCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Eff es JoinedMembersResponse
+fetchJoinedMembersCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> Eff es JoinedMembersResponse
 fetchJoinedMembersCall manager cfg token roomId =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
-  logInfo_ [i|Matrix API request: joined_members room=#{roomId}|]
+  logInfo [i|Matrix API request: joined_members room=#{roomId}|]
   matrixReq "joined_members"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req GET
@@ -1380,14 +1380,14 @@ fetchJoinedMembersCall manager cfg token roomId =
     )
     <&> responseBody
 
-fetchEventCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> MatrixEventId -> Eff es Event
+fetchEventCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> MatrixEventId -> Eff es Event
 fetchEventCall manager cfg token roomId eventId =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
-  logInfo_ [i|Matrix API request: room event room=#{roomId}|]
+  logInfo [i|Matrix API request: room event room=#{roomId}|]
   matrixReq "room event"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req GET
@@ -1398,14 +1398,14 @@ fetchEventCall manager cfg token roomId eventId =
     )
     <&> responseBody
 
-fetchMemberCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Text -> Eff es MatrixMember
+fetchMemberCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> Text -> Eff es MatrixMember
 fetchMemberCall manager cfg token roomId userId =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
-  logInfo_ [i|Matrix API request: room member room=#{roomId}|]
+  logInfo [i|Matrix API request: room member room=#{roomId}|]
   content :: MatrixMemberContent <- matrixReq "room member"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req GET
@@ -1417,14 +1417,14 @@ fetchMemberCall manager cfg token roomId userId =
     <&> responseBody
   pure (matrixMemberFromContent userId content)
 
-fetchProfileCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixProfile
+fetchProfileCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixProfile
 fetchProfileCall manager cfg token userId =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
         baseOptions
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
-  logInfo_ "Matrix API request: profile"
+  logInfo "Matrix API request: profile"
   profile :: MatrixProfileContent <- matrixReq "profile"
     ( Http.runReqWithConfig (matrixHttpConfig manager) $
         req GET
@@ -1440,7 +1440,7 @@ fetchProfileCall manager cfg token userId =
     , profileAvatarUrl = profile.profileContentAvatarUrl
     }
 
-downloadMediaCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixDownloadedMedia
+downloadMediaCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> Text -> Eff es MatrixDownloadedMedia
 downloadMediaCall manager cfg token mxcRef =
   case parseMxcUri mxcRef of
     Nothing ->
@@ -1451,7 +1451,7 @@ downloadMediaCall manager cfg token mxcRef =
               baseOptions
                 <> matrixAuth token
                 <> responseTimeout matrixApiResponseTimeoutMicroseconds
-        logInfo_ [i|Matrix API request: authenticated media download #{mxcRef}|]
+        logInfo [i|Matrix API request: authenticated media download #{mxcRef}|]
         response <- matrixReq "media download" (Http.runReqWithConfig (matrixHttpConfig manager) $
           req GET
             (baseUrl /: "_matrix" /: "client" /: "v1" /: "media" /: "download" /: serverName /: mediaId)
@@ -1477,7 +1477,7 @@ parseMxcUri ref = do
   guard (not (Text.null mediaId))
   pure (serverName, mediaId)
 
-sendMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es SendMessageResponse
+sendMessageCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es SendMessageResponse
 sendMessageCall manager cfg token roomId replyRelation body mentionUserIds =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
@@ -1492,7 +1492,7 @@ sendMessageCall manager cfg token roomId replyRelation body mentionUserIds =
         , replyRelation
         , mentions = matrixOutgoingMentions body mentionUserIds
         }
-  logInfo_ "Matrix API request: send m.room.message"
+  logInfo "Matrix API request: send m.room.message"
   matrixReq "send m.room.message" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "send" /: "m.room.message" /: txnId)
@@ -1501,7 +1501,7 @@ sendMessageCall manager cfg token roomId replyRelation body mentionUserIds =
       options)
     <&> responseBody
 
-editMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> MatrixRoomId -> MatrixEventId -> Text -> Eff es SendMessageResponse
+editMessageCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> MatrixRoomId -> MatrixEventId -> Text -> Eff es SendMessageResponse
 editMessageCall manager cfg token roomId eventId body =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
@@ -1514,7 +1514,7 @@ editMessageCall manager cfg token roomId eventId body =
         , formattedBody = formatMatrixMarkdown body
         , replacesEventId = eventId
         }
-  logInfo_ "Matrix API request: edit m.room.message"
+  logInfo "Matrix API request: edit m.room.message"
   matrixReq "edit m.room.message" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "send" /: "m.room.message" /: txnId)
@@ -1523,7 +1523,7 @@ editMessageCall manager cfg token roomId eventId body =
       options)
     <&> responseBody
 
-uploadMediaCall :: (IOE :> es, Log :> es) => Manager -> Config -> FilePath -> Text -> Text -> Text -> Eff es MatrixUploadResponse
+uploadMediaCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> FilePath -> Text -> Text -> Text -> Eff es MatrixUploadResponse
 uploadMediaCall manager cfg path fileName mime token =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   let options =
@@ -1532,7 +1532,7 @@ uploadMediaCall manager cfg path fileName mime token =
           <> header "Content-Type" (TextEncoding.encodeUtf8 mime)
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
           <> "filename" =: fileName
-  logInfo_ "Matrix API request: upload media"
+  logInfo "Matrix API request: upload media"
   matrixReq "upload media" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req POST
       (baseUrl /: "_matrix" /: "media" /: "v3" /: "upload")
@@ -1541,7 +1541,7 @@ uploadMediaCall manager cfg path fileName mime token =
       options)
     <&> responseBody
 
-sendFileMessageCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es SendMessageResponse
+sendFileMessageCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es SendMessageResponse
 sendFileMessageCall manager cfg token roomId replyRelation message@MatrixFileMessage{msgtype = mediaMsgtype} =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
@@ -1553,7 +1553,7 @@ sendFileMessageCall manager cfg token roomId replyRelation message@MatrixFileMes
         { message
         , replyRelation
         }
-  logInfo_ [i|Matrix API request: send #{mediaMsgtype}|]
+  logInfo [i|Matrix API request: send #{mediaMsgtype}|]
   matrixReq [i|send #{mediaMsgtype}|] (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.room.message" /: txnId)
@@ -1562,7 +1562,7 @@ sendFileMessageCall manager cfg token roomId replyRelation message@MatrixFileMes
       options)
     <&> responseBody
 
-redactEventCall :: (IOE :> es, Log :> es) => Manager -> Config -> Text -> Text -> Text -> Eff es RedactEventResponse
+redactEventCall :: (IOE :> es, KatipE :> es) => Manager -> Config -> Text -> Text -> Text -> Eff es RedactEventResponse
 redactEventCall manager cfg token roomId eventId =
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
   txnId <- liftIO (show <$> getMonotonicTimeNSec)
@@ -1571,7 +1571,7 @@ redactEventCall manager cfg token roomId eventId =
           <> matrixAuth token
           <> responseTimeout matrixApiResponseTimeoutMicroseconds
       request = RedactEventRequest{reason = Nothing}
-  logInfo_ "Matrix API request: redact event"
+  logInfo "Matrix API request: redact event"
   matrixReq "redact event" (Http.runReqWithConfig (matrixHttpConfig manager) $
     req PUT
       (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "redact" /: eventId /: txnId)

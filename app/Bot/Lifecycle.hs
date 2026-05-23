@@ -16,14 +16,14 @@ import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as LifecycleStorage
 
 runLifecycle
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es)
+  :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es)
   => Eff es a
   -> Eff es a
 runLifecycle inner =
   bracket_ runStartupActions runShutdownActions inner
 
 runStartupActions
-  :: (Chat.Chat :> es, Storage.Storage :> es, Log :> es)
+  :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es)
   => Eff es ()
 runStartupActions = do
   actions <- LifecycleStorage.loadStartupActions
@@ -31,10 +31,10 @@ runStartupActions = do
     result <- trySync $ Chat.replyTo message body `finally` LifecycleStorage.deleteStartupAction action
     case result of
       Right response -> do
-        logInfo_ [i|Ran startup reply lifecycle action #{actionId}; response=#{show response :: Text}|]
+        logInfo [i|Ran startup reply lifecycle action #{actionId}; response=#{show response :: Text}|]
       Left err -> do
-        logAttention_ [i|Startup reply lifecycle action #{actionId} failed and was deleted: #{show err :: String}|]
+        logWarning [i|Startup reply lifecycle action #{actionId} failed and was deleted: #{show err :: String}|]
 
-runShutdownActions :: Log :> es => Eff es ()
+runShutdownActions :: KatipE :> es => Eff es ()
 runShutdownActions =
   pure ()

@@ -84,7 +84,7 @@ common app-deps
                     , directory
                     , filepath
                     , effectful
-                    , log-effectful
+                    , katip-effectful
                     , streaming
                     , transformers
                     , vector
@@ -126,6 +126,7 @@ common test-deps
 common bot-core-modules
     other-modules:
         Bot.Prelude
+        Bot.Log
         Bot.Chat.ReplyStream
         Bot.Chat.Types
         Bot.Core.Message

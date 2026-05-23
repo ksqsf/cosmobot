@@ -214,7 +214,7 @@ fileUrl = send . FileUrl
 -- | Interpret Telegram operations with HTTP calls to the Bot API.
 runTelegram
   :: IOE :> es
-  => Log :> es
+  => KatipE :> es
   => Config
   -> Eff (Telegram : es) a
   -> Eff es a
@@ -243,37 +243,37 @@ runTelegram cfg inner = do
 -- ---------------------------------------------------------------------------
 
 updatesStream'
-  :: (Telegram :> es, Log :> es, IOE :> es)
+  :: (Telegram :> es, KatipE :> es, IOE :> es)
   => Int
   -> Stream (Of Update) (Eff es) ()
 updatesStream' offset = do
   batches <- S.lift (getUpdates offset)
-  S.lift $ logTrace_ [i|Got a batch of #{length batches} messages|]
-  S.lift $ logInfo_ [i|Telegram update batch: #{length batches}|]
+  S.lift $ logDebug [i|Got a batch of #{length batches} messages|]
+  S.lift $ logInfo [i|Telegram update batch: #{length batches}|]
   S.each batches
   let nextOffset = case batches of
         [] -> offset
         _  -> 1 + maximum (map (fromInteger . (.updateId)) batches)
   updatesStream' nextOffset
 
-updatesStream :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of Update) (Eff es) ()
+updatesStream :: (Telegram :> es, KatipE :> es, IOE :> es) => Stream (Of Update) (Eff es) ()
 updatesStream = updatesStream' 0
 
 -- | Poll Telegram updates and yield platform-independent messages.
-incomingMessages :: (Telegram :> es, Log :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (Telegram :> es, KatipE :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = S.for updatesStream $ \update -> do
   cfg <- S.lift telegramConfig
   case updateToIncomingMessageWith cfg update of
     Nothing -> do
-      S.lift $ logTrace_ [i|Ignoring Telegram event|]
-      S.lift $ logInfo_ "Ignoring Telegram event"
+      S.lift $ logDebug [i|Ignoring Telegram event|]
+      S.lift $ logInfo "Ignoring Telegram event"
     Just parsedMessage -> do
       message <- S.lift $
         resolveIncomingMessageImages parsedMessage `catchSync` \err -> do
-          logInfo_ [i|Telegram image resolution failed: #{show err :: String}|]
+          logInfo [i|Telegram image resolution failed: #{show err :: String}|]
           pure parsedMessage
-      S.lift $ logTrace "incoming Telegram message" message
-      S.lift $ logInfo_ [i|incoming Telegram message: #{incomingMessageLogLine message}|]
+      S.lift $ logDebug [i|incoming Telegram message: #{show message :: String}|]
+      S.lift $ logInfo [i|incoming Telegram message: #{incomingMessageLogLine message}|]
       S.yield message
 
 resolveIncomingMessageImages :: Telegram :> es => IncomingMessage -> Eff es IncomingMessage
@@ -485,7 +485,7 @@ telegramFileUrl cfg path =
     token = cfg.botToken
 
 apiCall
-  :: (IOE :> es, Log :> es, Aeson.ToJSON body, Aeson.FromJSON result)
+  :: (IOE :> es, KatipE :> es, Aeson.ToJSON body, Aeson.FromJSON result)
   => Manager
   -> Config
   -> Text
@@ -503,7 +503,7 @@ apiCall manager cfg method body = do
   parseTelegramResult resp
 
 apiMultipartCall
-  :: (IOE :> es, Log :> es, Aeson.FromJSON result)
+  :: (IOE :> es, KatipE :> es, Aeson.FromJSON result)
   => Manager
   -> Config
   -> Text
@@ -539,15 +539,15 @@ telegramHttpConfig :: Manager -> HttpConfig
 telegramHttpConfig manager =
   Http.httpConfig manager
 
-logTelegramApiRequest :: Log :> es => Text -> Eff es ()
+logTelegramApiRequest :: KatipE :> es => Text -> Eff es ()
 logTelegramApiRequest method =
   unless (method == "getUpdates") $
-    logInfo_ [i|Telegram API request: #{method}|]
+    logInfo [i|Telegram API request: #{method}|]
 
-logTelegramApiResponse :: Log :> es => Text -> Eff es ()
+logTelegramApiResponse :: KatipE :> es => Text -> Eff es ()
 logTelegramApiResponse method =
   unless (method == "getUpdates") $
-    logInfo_ [i|Telegram API response: #{method}|]
+    logInfo [i|Telegram API response: #{method}|]
 
 parseTelegramResult
   :: (IOE :> es, Aeson.FromJSON result)

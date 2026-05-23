@@ -195,7 +195,7 @@ uploadDiscordFile channelId content path =
   send (UploadDiscordFile channelId content path)
 
 runDiscord
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => Config
   -> Eff (Discord : es) a
   -> Eff es a
@@ -237,7 +237,7 @@ discordEnabled cfg =
   not (Text.null (Text.strip cfg.botToken))
 
 discordConnectionLoop
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => Config
   -> Chan.Chan Message
   -> Eff es ()
@@ -246,13 +246,13 @@ discordConnectionLoop cfg eventChan =
     result <- runDiscordConnectionOnce cfg eventChan
     case result of
       Right () ->
-        logInfo_ "Discord gateway disconnected; reconnecting"
+        logInfo "Discord gateway disconnected; reconnecting"
       Left err ->
-        logInfo_ [i|Discord gateway failed; reconnecting: #{err}|]
+        logInfo [i|Discord gateway failed; reconnecting: #{err}|]
     threadDelay discordReconnectDelayMicroseconds
 
 runDiscordConnectionOnce
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => Config
   -> Chan.Chan Message
   -> Eff es (Either String ())
@@ -296,7 +296,7 @@ discordTlsSettings =
     }
 
 runGatewayConnection
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => Config
   -> Chan.Chan Message
   -> WS.Connection
@@ -306,13 +306,13 @@ runGatewayConnection cfg eventChan conn = do
   case firstEnvelope.op of
     10 -> do
       hello :: GatewayHello <- parseGatewayData "Discord hello" firstEnvelope.d
-      logInfo_ "Discord gateway connected"
+      logInfo "Discord gateway connected"
       lastSequence <- MVar.newMVar firstEnvelope.s
       heartbeatThread <- forkIO (heartbeatLoop conn lastSequence hello.heartbeatInterval)
       identifyGateway cfg conn
       readGatewayEvents eventChan lastSequence conn `finally` killThread heartbeatThread
     op ->
-      logInfo_ [i|Discord gateway expected HELLO, got op=#{op}|]
+      logInfo [i|Discord gateway expected HELLO, got op=#{op}|]
 
 heartbeatLoop
   :: (IOE :> es, Concurrent :> es)
@@ -326,7 +326,7 @@ heartbeatLoop conn lastSequence intervalMs = forever do
   liftIO $ WS.sendTextData conn (Aeson.encode (heartbeatPayload sequenceNumber))
 
 readGatewayEvents
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => Chan.Chan Message
   -> MVar.MVar (Maybe Int)
   -> WS.Connection
@@ -345,14 +345,14 @@ readGatewayEvents eventChan lastSequence conn = forever do
     _ ->
       pure ()
 
-readGatewayEnvelope :: (IOE :> es, Log :> es) => WS.Connection -> Eff es GatewayEnvelope
+readGatewayEnvelope :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es GatewayEnvelope
 readGatewayEnvelope conn = do
   bytes <- liftIO (WS.receiveData conn :: IO ByteString.ByteString)
   case Aeson.eitherDecodeStrict bytes of
     Right envelope ->
       pure envelope
     Left err -> do
-      logInfo_ [i|Ignoring malformed Discord gateway frame: #{Text.pack err}|]
+      logInfo [i|Ignoring malformed Discord gateway frame: #{Text.pack err}|]
       readGatewayEnvelope conn
 
 identifyGateway :: IOE :> es => Config -> WS.Connection -> Eff es ()
@@ -389,23 +389,23 @@ discordReconnectDelayMicroseconds :: Int
 discordReconnectDelayMicroseconds =
   5 * 1000000
 
-incomingMessages :: (Discord :> es, Log :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (Discord :> es, KatipE :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
   cfg <- S.lift discordConfig
   if discordEnabled cfg
     then incomingMessagesLoop cfg
-    else S.lift $ logInfo_ "Discord driver disabled: no bot token configured"
+    else S.lift $ logInfo "Discord driver disabled: no bot token configured"
 
-incomingMessagesLoop :: (Discord :> es, Log :> es) => Config -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessagesLoop :: (Discord :> es, KatipE :> es) => Config -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessagesLoop cfg = do
   event <- S.lift receiveEvent
   case eventToIncomingMessageWith cfg event of
     Nothing -> do
-      S.lift $ logTrace_ "Ignoring Discord event"
-      S.lift $ logInfo_ "Ignoring Discord event"
+      S.lift $ logDebug "Ignoring Discord event"
+      S.lift $ logInfo "Ignoring Discord event"
     Just message -> do
-      S.lift $ logTrace "incoming Discord message" message
-      S.lift $ logInfo_ [i|incoming Discord message: #{incomingMessageLogLine message}|]
+      S.lift $ logDebug [i|incoming Discord message: #{show message :: String}|]
+      S.lift $ logInfo [i|incoming Discord message: #{incomingMessageLogLine message}|]
       S.yield message
   incomingMessagesLoop cfg
 
@@ -876,7 +876,7 @@ stableTextId =
     fnvPrime = 1099511628211
 
 discordJsonRequest
-  :: (IOE :> es, Log :> es, Aeson.ToJSON body, Aeson.FromJSON result, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'CanHaveBody)
+  :: (IOE :> es, KatipE :> es, Aeson.ToJSON body, Aeson.FromJSON result, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'CanHaveBody)
   => Manager
   -> Config
   -> method
@@ -884,37 +884,37 @@ discordJsonRequest
   -> body
   -> Eff es result
 discordJsonRequest manager cfg method path body = do
-  logTrace_ [i|Discord REST request: #{Text.intercalate "/" path}|]
+  logDebug [i|Discord REST request: #{Text.intercalate "/" path}|]
   liftIO $ Http.runReqWithConfig (Http.httpConfig manager) do
     req method (discordApiUrl path) (ReqBodyJson body) jsonResponse (discordRequestOptions cfg)
       <&> responseBody
 
 discordNoResponseRequest
-  :: (IOE :> es, Log :> es, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'NoBody)
+  :: (IOE :> es, KatipE :> es, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'NoBody)
   => Manager
   -> Config
   -> method
   -> [Text]
   -> Eff es ()
 discordNoResponseRequest manager cfg method path = do
-  logTrace_ [i|Discord REST request: #{Text.intercalate "/" path}|]
+  logDebug [i|Discord REST request: #{Text.intercalate "/" path}|]
   void $ liftIO $ Http.runReqWithConfig (Http.httpConfig manager) do
     req method (discordApiUrl path) NoReqBody ignoreResponse (discordRequestOptions cfg)
 
 discordGetRequest
-  :: (IOE :> es, Log :> es, Aeson.FromJSON result)
+  :: (IOE :> es, KatipE :> es, Aeson.FromJSON result)
   => Manager
   -> Config
   -> [Text]
   -> Eff es result
 discordGetRequest manager cfg path = do
-  logTrace_ [i|Discord REST request: #{Text.intercalate "/" path}|]
+  logDebug [i|Discord REST request: #{Text.intercalate "/" path}|]
   liftIO $ Http.runReqWithConfig (Http.httpConfig manager) do
     req GET (discordApiUrl path) NoReqBody jsonResponse (discordRequestOptions cfg)
       <&> responseBody
 
 discordUploadFile
-  :: (IOE :> es, Log :> es)
+  :: (IOE :> es, KatipE :> es)
   => Manager
   -> Config
   -> Text

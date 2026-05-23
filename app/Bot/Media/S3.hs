@@ -41,7 +41,7 @@ data Runtime = Runtime
   }
 
 runMediaS3
-  :: (IOE :> es, Log :> es, FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, FileSystem :> es)
   => Config
   -> Eff (Media : es) a
   -> Eff es a
@@ -94,7 +94,7 @@ configureAddressing cfg service =
     _ ->
       service & AWS.service_s3AddressingStyle .~ AWS.S3AddressingStyleAuto
 
-normalizeRef :: (IOE :> es, Log :> es, FileSystem :> es) => Runtime -> Text -> Eff es Text
+normalizeRef :: (IOE :> es, KatipE :> es, FileSystem :> es) => Runtime -> Text -> Eff es Text
 normalizeRef runtime ref
   | not runtime.cfg.enabled =
       pure ref
@@ -103,31 +103,31 @@ normalizeRef runtime ref
   | "data:image/" `Text.isPrefixOf` Text.strip ref =
       case decodeDataMediaObject ref of
         Nothing -> do
-          logInfo_ "Skipping invalid data:image media reference"
+          logInfo "Skipping invalid data:image media reference"
           pure ref
         Just mediaObject ->
           fromMaybe ref <$> storeObject runtime mediaObject
   | "http://" `Text.isPrefixOf` Text.toLower (Text.strip ref) ||
       "https://" `Text.isPrefixOf` Text.toLower (Text.strip ref) = do
       downloaded <- (Just <$> downloadObject runtime.manager ref) `catchSync` \err -> do
-        logInfo_ [i|Remote media download skipped: #{show err :: String}|]
+        logInfo [i|Remote media download skipped: #{show err :: String}|]
         pure Nothing
       maybe (pure ref) (fmap (fromMaybe ref) . storeObject runtime) downloaded
   | "file://" `Text.isPrefixOf` Text.strip ref = do
       mediaObject <- (Just <$> fileObject ref) `catchSync` \err -> do
-        logInfo_ [i|Local media read skipped: #{show err :: String}|]
+        logInfo [i|Local media read skipped: #{show err :: String}|]
         pure Nothing
       maybe (pure ref) (fmap (fromMaybe ref) . storeObject runtime) mediaObject
   | otherwise =
       pure ref
 
-storeObject :: (IOE :> es, Log :> es) => Runtime -> MediaObject -> Eff es (Maybe Text)
+storeObject :: (IOE :> es, KatipE :> es) => Runtime -> MediaObject -> Eff es (Maybe Text)
 storeObject runtime mediaObject =
   storeObjectUnsafe runtime mediaObject `catchSync` \err -> do
-    logInfo_ [i|S3 media upload skipped: #{show err :: String}|]
+    logInfo [i|S3 media upload skipped: #{show err :: String}|]
     pure Nothing
 
-storeObjectUnsafe :: (IOE :> es, Log :> es) => Runtime -> MediaObject -> Eff es (Maybe Text)
+storeObjectUnsafe :: (IOE :> es, KatipE :> es) => Runtime -> MediaObject -> Eff es (Maybe Text)
 storeObjectUnsafe Runtime{cfg, env = Nothing} _
   | not cfg.enabled =
       pure Nothing
@@ -144,7 +144,7 @@ storeObjectUnsafe Runtime{cfg, env = Just env} mediaObject
             S3.newPutObject (S3.BucketName (fromMaybe "" cfg.bucket)) (S3.ObjectKey key) (AWS.toBody mediaObject.bytes)
               & S3Lens.putObject_contentType ?~ mime
               & setPublicAcl cfg
-      logInfo_ [i|S3 media upload: key=#{key} mime=#{mime}|]
+      logInfo [i|S3 media upload: key=#{key} mime=#{mime}|]
       _ <- liftIO $ AWS.runResourceT (AWS.send env request)
       pure (Just (publicObjectUrl cfg key))
 

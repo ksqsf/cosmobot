@@ -35,7 +35,7 @@ saucenaoCommand =
 
 -- | Routes for SauceNAO reverse image search commands.
 saucenaoHandlers
-  :: (Chat.Chat :> es, Log :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, KatipE :> es, IOE :> es, Concurrent :> es)
   => SaucenaoConfig
   -> [RouteHandler es]
 saucenaoHandlers saucenaoCfg =
@@ -43,16 +43,16 @@ saucenaoHandlers saucenaoCfg =
   ]
 
 saucenaoRoute
-  :: (Chat.Chat :> es, Log :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, KatipE :> es, IOE :> es, Concurrent :> es)
   => SaucenaoConfig
   -> RouteHandler es
 saucenaoRoute saucenaoCfg =
   stopOn (command saucenaoCommand) \message _ -> do
-    logInfo_ [i|matched saucenao route: #{incomingMessageLogLine message}|]
+    logInfo [i|matched saucenao route: #{incomingMessageLogLine message}|]
     spawnTask (sendSaucenaoResults saucenaoCfg message)
 
 sendSaucenaoResults
-  :: (Chat.Chat :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, KatipE :> es, IOE :> es)
   => SaucenaoConfig
   -> IncomingMessage
   -> Eff es ()
@@ -75,7 +75,7 @@ sendSaucenaoResults cfg message =
   where
     handleError action =
       action `catchSync` \err -> do
-        logInfo_ [i|SauceNAO search failed: #{show err :: String}|]
+        logInfo [i|SauceNAO search failed: #{show err :: String}|]
         void $ Chat.replyTo message "SauceNAO 搜索失败。"
 
 fetchReferencedMessage

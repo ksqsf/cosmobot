@@ -84,7 +84,7 @@ import qualified Streaming.Prelude as S
 
 -- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
 runAgent
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, KatipE :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
@@ -94,7 +94,7 @@ runAgent maxTurns context =
   runAgentWithHooks maxTurns context ignoreAgentHooks
 
 runAgentWithHooks
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, KatipE :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> AgentHooks es
@@ -107,7 +107,7 @@ runAgentWithHooks maxTurns context hooks tools conversation = do
 
 -- | Run an LLM/tool loop, streaming assistant content chunks.
 runAgentStreaming
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, KatipE :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
@@ -117,7 +117,7 @@ runAgentStreaming maxTurns context =
   runAgentStreamingWithHooks maxTurns context ignoreAgentHooks
 
 runAgentStreamingWithHooks
-  :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, KatipE :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> AgentHooks es
@@ -130,7 +130,7 @@ runAgentStreamingWithHooks maxTurns context hooks tools conversation = do
   pure result.conversation
 
 runPreparedAgentStreaming
-  :: (LLM.LLM :> es, Log :> es, IOE :> es)
+  :: (LLM.LLM :> es, KatipE :> es, IOE :> es)
   => Int
   -> AgentRun es
   -> Conversation
@@ -176,7 +176,7 @@ initialAgentState conversation =
     , turn = 1
     }
 
-defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, Log :> es, Prim :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[] es
+defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, KatipE :> es, Prim :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[] es
 defaultAgentProgram observer maxTurns agentRun =
   ( withToolLimit maxTurns
   . withObservation observer
@@ -186,7 +186,7 @@ defaultAgentProgram observer maxTurns agentRun =
   )
     (emptyAgentProgram agentRun)
 
-plainAgentProgram :: (LLM.LLM :> es, Log :> es, IOE :> es) => Int -> AgentRun es -> AgentProgram '[] es
+plainAgentProgram :: (LLM.LLM :> es, KatipE :> es, IOE :> es) => Int -> AgentRun es -> AgentProgram '[] es
 plainAgentProgram maxTurns agentRun =
   ( withToolLimit maxTurns
   . withContextCompaction

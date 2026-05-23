@@ -54,7 +54,7 @@ noRpcServerCallbacks = RpcServerCallbacks
   }
 
 runRpcServer
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -65,7 +65,7 @@ runRpcServer cfg@Config.Config{enabled} rpcState callbacks = do
     else pure ()
 
 runRpcServer'
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -75,13 +75,13 @@ runRpcServer' cfg rpcState callbacks = do
       settings =
         Warp.setHost (fromString host) $
           Warp.setPort port Warp.defaultSettings
-  logInfo_ [i|RPC server listening on #{host}:#{port}; websocket endpoint /rpc; attachment endpoint /attachments/<id>|]
+  logInfo [i|RPC server listening on #{host}:#{port}; websocket endpoint /rpc; attachment endpoint /attachments/<id>|]
   withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
     liftIO $
       Warp.runSettings settings (rpcServerApplication runInIO cfg rpcState callbacks)
 
 rpcServerApplication
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
   => (forall a. Eff es a -> IO a)
   -> Config.Config
   -> State.RpcState
@@ -94,7 +94,7 @@ rpcServerApplication runInIO cfg rpcState callbacks =
       runInIO (rpcServerApp cfg rpcState callbacks pending)
 
 rpcServerApp
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -122,7 +122,7 @@ rpcServerApp cfg rpcState callbacks pending
             }
 
 serveAcceptedClient
-  :: (IOE :> es, Log :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -130,15 +130,15 @@ serveAcceptedClient
   -> Eff es ()
 serveAcceptedClient cfg rpcState callbacks conn = do
   (clientId, queue) <- State.registerClient rpcState
-  logTrace_ [i|RPC client #{clientId} connected|]
+  logDebug [i|RPC client #{clientId} connected|]
   (race_
       (writeQueuedFrames queue conn)
       (readRequestFrames cfg rpcState callbacks queue conn)
     `catchSync` \err ->
-      logTrace_ [i|RPC client #{clientId} disconnected: #{displayException err}|])
+      logDebug [i|RPC client #{clientId} disconnected: #{displayException err}|])
     `finally` do
       State.unregisterClient rpcState clientId
-      logTrace_ [i|RPC client #{clientId} unregistered|]
+      logDebug [i|RPC client #{clientId} unregistered|]
 
 writeQueuedFrames
   :: (IOE :> es, Concurrent :> es)

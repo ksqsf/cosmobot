@@ -650,7 +650,5 @@ discordUser userId username fromBot =
     , Discord.avatar = Nothing
     }
 
-runTestLog :: IOE :> es => Eff (Log : es) a -> Eff es a
-runTestLog action = do
-  logger <- liftIO $ mkLogger "chat-platform-spec" \_ -> pure ()
-  runLog "chat-platform-spec" logger LogTrace action
+runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
+runTestLog action = startKatipE "chat-platform-spec" "test" action

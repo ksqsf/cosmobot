@@ -72,7 +72,7 @@ data BotConfig = BotConfig
   , skills   :: !Skills.SkillsConfig
   , rpc      :: !RPCConfig.Config
   , handlers :: !HandlersConfig
-  , logLevel :: !LogLevel
+  , logLevel :: !Severity
   , sqlitePath :: !FilePath
   }
   deriving (Show)
@@ -154,18 +154,18 @@ instance FromValue HandlerFileConfig where
     <*> fmap (fromMaybe ShutUpConfig.defaultShutUpConfig) (optKey "shutup")
 
 newtype LogFileConfig = LogFileConfig
-  { level :: LogLevel
+  { level :: Severity
   }
   deriving (Show)
 
 newtype ConfigLogLevel = ConfigLogLevel
-  { unConfigLogLevel :: LogLevel
+  { unConfigLogLevel :: Severity
   }
   deriving (Show)
 
 defaultLogFileConfig :: LogFileConfig
 defaultLogFileConfig = LogFileConfig
-  { level = LogInfo
+  { level = InfoS
   }
 
 instance FromValue LogFileConfig where
@@ -193,9 +193,9 @@ instance FromValue StorageFileConfig where
 instance FromValue ConfigLogLevel where
   fromValue = \case
     TomlValue.Text' _ value ->
-      case readLogLevelEither value of
-        Right level -> pure (ConfigLogLevel level)
-        Left err    -> fail err
+      case textToSeverity value of
+        Just level -> pure (ConfigLogLevel level)
+        Nothing    -> fail [i|invalid log.level #{value}; expected debug, info, notice, warning, error, critical, alert, or emergency|]
     _ ->
       fail "log.level must be a string"
 

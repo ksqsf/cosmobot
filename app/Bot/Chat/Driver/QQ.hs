@@ -50,7 +50,7 @@ import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
-import Data.Time.Clock (NominalDiffTime, diffUTCTime, getCurrentTime)
+import Data.Time.Clock (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
 import qualified Network.WebSockets as WS
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
@@ -145,7 +145,7 @@ sendAction = send . SendAction
 
 -- | Connect to OneBot and interpret QQ operations over the websocket.
 runQQ
-  :: (IOE :> es, Log :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
   => Config
   -> Eff (QQ : es) a
   -> Eff es a
@@ -168,14 +168,14 @@ runQQ cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
                 Just response ->
                   pure response
                 Nothing -> do
-                  logInfo_ "QQ action timed out"
+                  logInfo "QQ action timed out"
                   pure failedActionResponse)
           inner
 
 data ActionRequest = ActionRequest !Aeson.Value !(MVar ActionResponse)
 
 qqConnectionLoop
-  :: (IOE :> es, Log :> es, Concurrent :> es, Timeout :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Timeout :> es)
   => Config
   -> Chan.Chan Event
   -> Chan.Chan ActionRequest
@@ -185,13 +185,13 @@ qqConnectionLoop cfg eventChan actionChan =
     result <- runQQConnectionOnce cfg eventChan actionChan
     case result of
       Right () ->
-        logInfo_ "QQ websocket disconnected; reconnecting"
+        logInfo "QQ websocket disconnected; reconnecting"
       Left err ->
-        logInfo_ [i|QQ websocket failed; reconnecting: #{err}|]
+        logInfo [i|QQ websocket failed; reconnecting: #{err}|]
     threadDelay qqReconnectDelayMicroseconds
 
 runQQConnectionOnce
-  :: (IOE :> es, Log :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
   => Config
   -> Chan.Chan Event
   -> Chan.Chan ActionRequest
@@ -210,7 +210,7 @@ runQQConnectionOnce cfg eventChan actionChan =
       pure (Left (show ioErr))
 
 runConnection
-  :: (IOE :> es, Log :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
   => Chan.Chan Event
   -> Chan.Chan ActionRequest
   -> WS.Connection
@@ -224,16 +224,16 @@ runConnection eventChan actionChan conn = do
   sender <- forkConnectionThread done (sendActions actionChan pendingResponses actionCounter conn)
   monitor <- forkConnectionThread done (monitorConnectionHeartbeat lastFrameAt)
   reason <- liftIO (takeMVar done)
-  logInfo_ [i|QQ websocket connection ending: #{show reason :: String}|]
+  logInfo [i|QQ websocket connection ending: #{show reason :: String}|]
   closeWebSocketForReconnect conn
   stopConnectionThread "reader" readerThread
   stopConnectionThread "sender" sender
   stopConnectionThread "heartbeat monitor" monitor
   failPendingResponses pendingResponses
-  logInfo_ "QQ websocket connection ended"
+  logInfo "QQ websocket connection ended"
 
 forkConnectionThread
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => MVar SomeException
   -> Eff es ()
   -> Eff es ThreadId
@@ -246,7 +246,7 @@ forkConnectionThread done action = forkIO do
       void (MVar.tryPutMVar done (toException ThreadKilled))
 
 sendActions
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => Chan.Chan ActionRequest
   -> PendingResponses
   -> MVar Integer
@@ -271,23 +271,23 @@ failPendingResponses pendingResponses = do
     pure (Map.empty, pending)
   traverse_ (flip MVar.tryPutMVar failedActionResponse) pending
 
-closeWebSocketForReconnect :: (IOE :> es, Log :> es, Timeout :> es) => WS.Connection -> Eff es ()
+closeWebSocketForReconnect :: (IOE :> es, KatipE :> es, Timeout :> es) => WS.Connection -> Eff es ()
 closeWebSocketForReconnect conn = do
   result <- timeout qqConnectionCloseTimeoutMicroseconds $
     trySync (liftIO $ WS.sendClose conn ("reconnect" :: Text))
   case result of
     Nothing ->
-      logInfo_ "QQ websocket close timed out during reconnect"
+      logInfo "QQ websocket close timed out during reconnect"
     Just (Left err) ->
-      logTrace_ [i|QQ websocket close during reconnect failed: #{show err :: String}|]
+      logDebug [i|QQ websocket close during reconnect failed: #{show err :: String}|]
     Just (Right ()) ->
       pure ()
 
-stopConnectionThread :: (Timeout :> es, Log :> es, Concurrent :> es) => Text -> ThreadId -> Eff es ()
+stopConnectionThread :: (Timeout :> es, KatipE :> es, Concurrent :> es) => Text -> ThreadId -> Eff es ()
 stopConnectionThread label threadId = do
   result <- timeout qqConnectionThreadStopTimeoutMicroseconds (killThread threadId)
   when (isNothing result) $
-    logInfo_ [i|QQ websocket #{label} thread did not stop before reconnect; continuing|]
+    logInfo [i|QQ websocket #{label} thread did not stop before reconnect; continuing|]
 
 websocketPath :: Config -> String
 websocketPath Config{path, token = Nothing} = path
@@ -310,21 +310,21 @@ eventsStream = do
   eventsStream
 
 -- | Stream OneBot message events as platform-independent messages.
-incomingMessages :: (QQ :> es, Log :> es) => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (QQ :> es, KatipE :> es) => Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages = do
   cfg <- S.lift qqConfig
   event <- S.lift receiveEvent
   case eventToIncomingMessageWith cfg event of
     Nothing
       | isHeartbeatEvent event ->
-          S.lift $ logTrace_ "Ignoring QQ heartbeat event"
+          S.lift $ logDebug "Ignoring QQ heartbeat event"
       | otherwise -> do
           let Event{postType} = event
-          S.lift $ logTrace_ [i|Ignoring QQ event: #{postType}|]
-          S.lift $ logInfo_ [i|Ignoring QQ event: #{postType}|]
+          S.lift $ logDebug [i|Ignoring QQ event: #{postType}|]
+          S.lift $ logInfo [i|Ignoring QQ event: #{postType}|]
     Just message -> do
-      S.lift $ logTrace "incoming qq message" message
-      S.lift $ logInfo_ [i|incoming qq message: #{incomingMessageLogLine message}|]
+      S.lift $ logDebug [i|incoming qq message: #{show message :: String}|]
+      S.lift $ logInfo [i|incoming qq message: #{incomingMessageLogLine message}|]
       S.yield message
   incomingMessages
 
@@ -333,7 +333,7 @@ incomingMessages = do
 -- ---------------------------------------------------------------------------
 
 readFrames
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => Chan.Chan Event
   -> PendingResponses
   -> IORef.IORef UTCTime
@@ -345,17 +345,17 @@ readFrames eventChan pendingResponses lastFrameAt conn = forever do
   case Aeson.fromJSON value of
     Aeson.Success event -> do
       when (isHeartbeatEvent event) do
-        logTrace_ "QQ websocket heartbeat received"
+        logDebug "QQ websocket heartbeat received"
       liftIO $ Chan.writeChan eventChan event
     Aeson.Error _ ->
       case Aeson.fromJSON value of
         Aeson.Success response ->
           dispatchActionResponse pendingResponses response
         Aeson.Error err ->
-          logInfo_ [i|Ignoring malformed QQ frame: #{Text.pack err}|]
+          logInfo [i|Ignoring malformed QQ frame: #{Text.pack err}|]
 
 -- | Read frames until an action response is found.
-readActionResponse :: (IOE :> es, Log :> es) => WS.Connection -> Eff es ActionResponse
+readActionResponse :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es ActionResponse
 readActionResponse conn = do
   value <- readValue conn
   case Aeson.fromJSON value of
@@ -365,26 +365,26 @@ readActionResponse conn = do
         Aeson.Success (_event :: Event) ->
           readActionResponse conn
         Aeson.Error err -> do
-          logInfo_ [i|Ignoring malformed QQ action response: #{Text.pack err}|]
+          logInfo [i|Ignoring malformed QQ action response: #{Text.pack err}|]
           readActionResponse conn
 
-readValue :: (IOE :> es, Log :> es) => WS.Connection -> Eff es Aeson.Value
+readValue :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es Aeson.Value
 readValue conn = do
   bytes <- liftIO (WS.receiveData conn :: IO ByteString)
   case Aeson.eitherDecodeStrict bytes of
     Right value -> pure value
     Left err -> do
-      logInfo_ [i|Ignoring malformed QQ frame: #{Text.pack err}|]
+      logInfo [i|Ignoring malformed QQ frame: #{Text.pack err}|]
       readValue conn
 
-monitorConnectionHeartbeat :: (IOE :> es, Log :> es, Concurrent :> es) => IORef.IORef UTCTime -> Eff es ()
+monitorConnectionHeartbeat :: (IOE :> es, KatipE :> es, Concurrent :> es) => IORef.IORef UTCTime -> Eff es ()
 monitorConnectionHeartbeat lastFrameAt = forever do
   threadDelay qqHeartbeatCheckMicroseconds
   now <- liftIO getCurrentTime
   lastSeen <- liftIO (IORef.readIORef lastFrameAt)
   let silence = diffUTCTime now lastSeen
   when (silence > qqHeartbeatTimeout) do
-    logInfo_ [i|QQ websocket heartbeat timed out after #{show silence :: String}; reconnecting|]
+    logInfo [i|QQ websocket heartbeat timed out after #{show silence :: String}; reconnecting|]
     throwIO (QQHeartbeatTimeout silence)
 
 failedActionResponse :: ActionResponse
@@ -468,20 +468,20 @@ addActionEcho echo value =
       value
 
 dispatchActionResponse
-  :: (IOE :> es, Log :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => PendingResponses
   -> ActionResponse
   -> Eff es ()
 dispatchActionResponse pendingResponses response =
   case response.echo of
     Nothing ->
-      logInfo_ "Ignoring QQ action response without echo"
+      logInfo "Ignoring QQ action response without echo"
     Just echo -> do
       waiter <- MVar.withMVar pendingResponses \pending ->
         pure (Map.lookup echo pending)
       case waiter of
         Nothing ->
-          logInfo_ [i|Ignoring QQ action response with unknown echo: #{echo}|]
+          logInfo [i|Ignoring QQ action response with unknown echo: #{echo}|]
         Just responseVar ->
           void $ MVar.tryPutMVar responseVar response
 

@@ -48,7 +48,7 @@ agentAuditRows =
     , #parent_message_id :- index
     ]
 
-persistEvent :: (IOE :> es, Log :> es, Storage.Storage :> es) => UTCTime -> AgentAuditEvent -> Eff es (Maybe Integer)
+persistEvent :: (IOE :> es, KatipE :> es, Storage.Storage :> es) => UTCTime -> AgentAuditEvent -> Eff es (Maybe Integer)
 persistEvent occurredAt event =
   (Just . fromIntegral . fromId <$> runSelda
     ( insertWithPK
@@ -64,7 +64,7 @@ persistEvent occurredAt event =
         ]
     ))
     `catchSync` \err ->
-      logInfo_ [i|Failed to persist agent audit event: #{show err :: String}|] $> Nothing
+      logInfo [i|Failed to persist agent audit event: #{show err :: String}|] $> Nothing
   where
     (maybeLinkedMessageId, maybeParentMessageId) =
       case event of
