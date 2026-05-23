@@ -23,13 +23,14 @@ import qualified Bot.Media.Cache as Cache
 import qualified Bot.Media.Config as MediaConfig
 import Bot.Media.S3.Config
 import Bot.Prelude
-import Control.Lens ((.~), (?~))
+import Control.Lens ((.~), (?~), (^.))
 import qualified Data.ByteString as StrictByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Types.Status as HTTPStatus
 import System.IO.Error (ioError, userError)
 
 data Runtime = Runtime
@@ -106,16 +107,41 @@ storeObjectUnsafe Runtime{cfg, env = Just env} cached
       pure Nothing
   | otherwise = do
       ensureS3Config cfg.s3
-      bytes <- FileSystemByteString.readFile cached.path
       let key = objectKey cfg.s3 cached
-          mime = cached.mimeType
-          request =
-            S3.newPutObject (S3.BucketName (fromMaybe "" cfg.s3.bucket)) (S3.ObjectKey key) (AWS.toBody bytes)
-              & S3Lens.putObject_contentType ?~ mime
-              & setPublicAcl cfg.s3
-      logInfo [i|S3 media upload: key=#{key} mime=#{mime}|]
-      _ <- liftIO $ AWS.runResourceT (AWS.send env request)
-      pure (publicObjectUrl cfg cached)
+      objectExists env cfg.s3 key >>= \case
+        True -> do
+          logDebug [i|S3 media upload skipped; object already exists: key=#{key}|]
+          pure (publicObjectUrl cfg cached)
+        False -> do
+          uploadObject env cfg.s3 key cached
+          pure (publicObjectUrl cfg cached)
+
+objectExists :: IOE :> es => AWS.Env -> Config -> Text -> Eff es Bool
+objectExists env cfg key = do
+  result <- trySync (liftIO $ AWS.runResourceT (AWS.send env request))
+  case result of
+    Right _ ->
+      pure True
+    Left err
+      | Just (AWS.ServiceError serviceError) <- fromException err
+      , serviceError ^. AWS.serviceError_status == HTTPStatus.status404 ->
+          pure False
+      | otherwise ->
+          throwIO err
+  where
+    request =
+      S3.newHeadObject (S3.BucketName (fromMaybe "" cfg.bucket)) (S3.ObjectKey key)
+
+uploadObject :: (IOE :> es, KatipE :> es, FileSystem :> es) => AWS.Env -> Config -> Text -> Cache.CachedMedia -> Eff es ()
+uploadObject env cfg key cached = do
+  bytes <- FileSystemByteString.readFile cached.path
+  let mime = cached.mimeType
+      request =
+        S3.newPutObject (S3.BucketName (fromMaybe "" cfg.bucket)) (S3.ObjectKey key) (AWS.toBody bytes)
+          & S3Lens.putObject_contentType ?~ mime
+          & setPublicAcl cfg
+  logInfo [i|S3 media upload: key=#{key} mime=#{mime}|]
+  void $ liftIO $ AWS.runResourceT (AWS.send env request)
 
 setPublicAcl :: Config -> S3.PutObject -> S3.PutObject
 setPublicAcl cfg request
