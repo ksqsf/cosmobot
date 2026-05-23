@@ -45,6 +45,49 @@ Move larger code to its owner:
 
 Avoid import cycles when extracting from effects. Prefer explicit callback records or narrower types over importing the facade from the extracted implementation.
 
+## Agent Operations
+
+When changing the agent loop or middleware:
+
+- Start in `Bot.Agent.Core` only to change generic loop vocabulary: `AgentRun`, `AgentState`, `AgentProgram`, `ModelDecision`, or `runAgentLoop`. Keep `runAgentLoop` as direct model/tool recursion; do not add persistence, audit, media, chat logging, platform linking, or handler policy there.
+- Add cross-cutting behavior as `Bot.Agent.Middleware.*`, then compose it in `Bot.Agent.defaultAgentProgram` or the handler-specific program assembly. Add new modules to `cosmobot.cabal`.
+- Use `AgentState transient` only for state that must survive across model/tool turns. Add an HList field and initialize it through `emptyAgentProgram`.
+- Use `MiddlewareContext context` for dynamic middleware environment passed from outer middleware to inner middleware. Use this for values like `ToolLimitContext`, `ObservationContext`, and `ToolResultObservation`.
+- Do not add general-purpose fields to `AgentContext`. It is for per-message tool capabilities, permissions, input, and system context.
+- Do not make tools return platform message ids through `ToolResult`. Tool-emitted chat messages should be captured by `Chat` interposition middleware.
+
+Choose the hook by the behavior you need:
+
+- Change the conversation sent to the LLM: implement `modelInputConversation`.
+- Wrap a whole run: implement `aroundAgentRun`.
+- Wrap one model request/decision: implement `aroundModelTurn`.
+- Wrap a whole tool phase after a tool request: implement `aroundToolTurn`.
+- Wrap a single tool call: implement `aroundToolCall`.
+
+Use the existing middleware contracts this way:
+
+- For large tool results, use `withToolResultCompaction`. It stores the full result in media cache, keeps the full result for the immediate next model turn via transient `NextModelInput`, leaves later canonical conversation state omitted, and provides `ToolResultObservation` to inner middleware.
+- For lifecycle/audit events, use `withObservation`. It may read typed context, but it should not import media, storage, chat drivers, or concrete audit storage.
+- For noisy tool announcements, use `withToolMessage`. It expects `ObservationContext` so audit ids can appear in progress messages.
+- For platform messages emitted by tools, use `withLinkingToolEmittedMessagesToConversation` with a handler-owned sink. The handler knows the active conversation; the agent core does not.
+- For chat-log recording of tool-emitted self messages, use `withRecordingToolSelfMessages`. Keep chat-log recording separate from conversation linking.
+
+When changing tool-result or conversation persistence semantics:
+
+- Keep full tool results available to the immediate next model turn if the current turn produced them.
+- Ensure later turns and durable conversation rows see omitted tool results.
+- Keep conversation storage boring: it should persist the conversation it receives, not know about tool-result media storage.
+- Keep agent audit storage boring: it should persist the event it receives, not know about tool-result media storage.
+- Put durable projection before storage, normally in agent middleware order.
+
+For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
+
+- current-turn versus later-turn model input;
+- durable conversation shape;
+- audit event result shape;
+- tool-emitted chat message linking;
+- middleware ordering when context is provided by one middleware and consumed by another.
+
 ## Coding Rules
 
 - For Haskell code changes, use the local `haskell` skill's fast-feedback workflow: keep `ghcid --outputfile .ghcid-errors` running when practical, read `.ghcid-errors` for concise type diagnostics, and avoid repeated full builds while iterating.

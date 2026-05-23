@@ -4,6 +4,7 @@ import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Tools.Audio as AudioTools
 import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Tools.Image as ImageTools
+import qualified Bot.Agent.Tools.Media as MediaTools
 import qualified Bot.Agent.Types as AgentTypes
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Core.Conversation
@@ -130,6 +131,7 @@ main =
       , testCase "ask handler passes referenced images to edit_image tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "generate_image tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "view_image tool caches image for current context" testViewImageToolCachesImageForContext
+      , testCase "read_media_text reads cached media text slices" testReadMediaTextToolReadsCachedSlices
       , testCase "generate_audio tool uses configured audio options and sends audio" testGenerateAudioToolUsesConfiguredAudioOptions
       , testCase "edit_image tool passes image request options" testEditImageToolPassesImageRequestOptions
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt

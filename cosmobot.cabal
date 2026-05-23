@@ -181,6 +181,7 @@ common bot-agent-modules
         Bot.Agent.Tools.Emacs
         Bot.Agent.Tools.Files
         Bot.Agent.Tools.Image
+        Bot.Agent.Tools.Media
         Bot.Agent.Tools.Memory
         Bot.Agent.Tools.Schedule
         Bot.Agent.Tools.Shell

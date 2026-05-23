@@ -9,11 +9,12 @@ module Bot.Agent.Tools
   )
 where
 
-import Bot.Agent.Tools.Audio
+-- import Bot.Agent.Tools.Audio
 import Bot.Agent.Tools.Chat
 import Bot.Agent.Tools.Emacs
 import Bot.Agent.Tools.Files
 import Bot.Agent.Tools.Image
+import Bot.Agent.Tools.Media
 import Bot.Agent.Tools.Memory
 import Bot.Agent.Tools.Schedule
 import Bot.Agent.Tools.Shell
@@ -58,6 +59,7 @@ defaultTools =
   , webSearchTool
   , webFetchTool
   , datetimeTool
+  , readMediaTextTool
   -- , generateAudioTool  -- useless now
   , viewImageTool
   , generateImageTool
