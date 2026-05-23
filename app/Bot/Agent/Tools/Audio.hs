@@ -22,7 +22,7 @@ import qualified Data.Text as Text
 
 generateAudioTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
 generateAudioTool = Tool
-  { name = "generate_audio"
+  { name = "audio_generate"
   , description = "Generate speech or other audio from a prompt and send it to the current chat. Use this when the user asks to create, synthesize, speak, narrate, or generate an audio clip. After using this tool, keep the final answer brief and do not repeat the audio reference."
   , parameters = objectSchema
       [ fieldText "prompt" "The words to be converted into audio"
@@ -48,7 +48,7 @@ data GenerateAudioArgs = GenerateAudioArgs
 
 parseGenerateAudioArgs :: Aeson.Value -> AesonTypes.Parser GenerateAudioArgs
 parseGenerateAudioArgs =
-  Aeson.withObject "generate_audio arguments" \o -> do
+  Aeson.withObject "audio_generate arguments" \o -> do
     prompt <- Text.strip <$> o Aeson..: Key.fromText "prompt"
     pure GenerateAudioArgs
       { prompt = prompt

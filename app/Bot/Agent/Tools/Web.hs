@@ -28,7 +28,7 @@ import qualified Text.URI as URI
 
 webSearchTool :: IOE :> es => Tool es
 webSearchTool = Tool
-  { name = "web_search"
+  { name = "search_web"
   , description = "Search the web for current information. Returns a JSON object with the query and a results array containing title, url, and snippet."
   , parameters = objectSchema
       [ fieldText "query" "Search query."
@@ -50,7 +50,7 @@ webSearchTool = Tool
 
 webFetchTool :: IOE :> es => Tool es
 webFetchTool = Tool
-  { name = "web_fetch"
+  { name = "fetch_url"
   , description = "Fetch a web page by URL and return extracted readable text. Supports http and https URLs."
   , parameters = objectSchema
       [ fieldText "url" "HTTP or HTTPS URL to fetch."
@@ -65,7 +65,7 @@ webFetchTool = Tool
         withParsedToolArgs (webFetchArgs context.toolConfig.webFetchMaxContentTokens) args \(url, maxContentTokens) -> do
           checkUseLimit >>= \case
             UseLimitReached currentUses ->
-              pure (toolText [i|web_fetch use limit reached for this agent run: #{currentUses}.|])
+              pure (toolText [i|fetch_url use limit reached for this agent run: #{currentUses}.|])
             UseAllowed -> do
               page <- fetchWebPage url maxContentTokens
               pure (toolText (jsonText page))

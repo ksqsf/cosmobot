@@ -32,7 +32,7 @@ import qualified Data.Text as Text
 
 queryChatLogTool :: ChatLog.ChatLog :> es => Tool es
 queryChatLogTool = Tool
-  { name = "query_current_chat_log"
+  { name = "chat_log"
   , description = "Return recent messages recorded in the current chat. Results are in chronological order and include sender ids, message ids, mentions, image urls, and text."
   , parameters = objectSchema
       [ fieldInteger "limit" "Maximum number of recent messages to return."
@@ -49,7 +49,7 @@ queryChatLogTool = Tool
 
 queryCurrentSenderChatLogTool :: ChatLog.ChatLog :> es => Tool es
 queryCurrentSenderChatLogTool = Tool
-  { name = "query_current_sender_chatlog"
+  { name = "sender_chat_log"
   , description = "Return messages from the current sender in the current chat whose text matches any keyword group. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
   , parameters = objectSchema
       [ fieldTextArrayArray "keywords" "Keyword groups. Each inner array is joined with '%' and wrapped with '%' for ordered fuzzy matching."
@@ -70,7 +70,7 @@ queryCurrentSenderChatLogTool = Tool
 
 sendReplyTool :: Chat.Chat :> es => Tool es
 sendReplyTool = Tool
-  { name = "send_reply_to_current_chat"
+  { name = "send_reply"
   , description = "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
   , parameters = objectSchema
       [ fieldText "text" "Message text to send. May be omitted when image_urls is non-empty."
@@ -88,7 +88,7 @@ sendReplyTool = Tool
 
 sendFileTool :: Chat.Chat :> es => Tool es
 sendFileTool = Tool
-  { name = "send_file_to_current_chat"
+  { name = "send_file"
   , description = "Send a local file to the same chat as the current user message. The path must be readable by the bot for Telegram and Matrix. For QQ/NapCat, the path is passed to NapCat and must be accessible from the NapCat container. Use only when the user explicitly asks you to send a file."
   , parameters = objectSchema
       [ fieldText "path" "Local file path to send. A file:// prefix is accepted and stripped before upload."
@@ -133,7 +133,7 @@ mentionUserTool = Tool
 
 senderMemberInfoTool :: Chat.Chat :> es => Tool es
 senderMemberInfoTool = Tool
-  { name = "get_current_sender_member_info"
+  { name = "sender_info"
   , description = "Get platform-provided member information for the sender of the current message in the current group chat."
   , parameters = objectSchema [] []
   , noisy = False
@@ -145,7 +145,7 @@ senderMemberInfoTool = Tool
 
 memberInfoTool :: Chat.Chat :> es => Tool es
 memberInfoTool = Tool
-  { name = "get_group_member_info"
+  { name = "member_info"
   , description = "Get platform-provided member information for any user id in the current group chat."
   , parameters = objectSchema
       [ fieldText "user_id" "Platform user id to query in the current group."
@@ -160,10 +160,10 @@ memberInfoTool = Tool
 
 userAvatarTool :: (Chat.Chat :> es, KatipE :> es) => Tool es
 userAvatarTool = Tool
-  { name = "get_user_avatar"
+  { name = "user_avatar"
   , description = "Get avatar information for a platform user id and send the avatar image to the current chat."
   , parameters = objectSchema
-      [ fieldText "user_id" "Platform user id to query. Use get_current_message_info first when the target is the current sender or a mentioned user. 0 is invalid."
+      [ fieldText "user_id" "Platform user id to query. Use message_info first when the target is the current sender or a mentioned user. 0 is invalid."
       ]
       ["user_id"]
   , noisy = False
@@ -180,7 +180,7 @@ userAvatarTool = Tool
 
 listGroupMembersTool :: Chat.Chat :> es => Tool es
 listGroupMembersTool = Tool
-  { name = "list_group_members"
+  { name = "group_members"
   , description = "List members in the current group chat, including platform user ids and nicknames when available. QQ groups are supported. Telegram Bot API does not expose full member lists, so Telegram may return unavailable."
   , parameters = objectSchema [] []
   , noisy = False
@@ -192,7 +192,7 @@ listGroupMembersTool = Tool
 
 currentMessageInfoTool :: Tool es
 currentMessageInfoTool = Tool
-  { name = "get_current_message_info"
+  { name = "message_info"
   , description = "Return structured metadata for the current message, including platform, chat, sender, message ids, mentions, image URLs, and text."
   , parameters = objectSchema [] []
   , noisy = False
@@ -292,7 +292,7 @@ userAvatarResult context value =
     Just url -> do
       let body = ReplyBody.imageDirective url
       sent <- Chat.replyTo context.message body
-      logInfo [i|get_user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
+      logInfo [i|user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
       pure (toolTextWithImages (jsonText value) [url])
 
 sendReplyArgs :: Aeson.Value -> AesonTypes.Parser Text

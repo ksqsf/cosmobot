@@ -22,7 +22,7 @@ import qualified Data.Aeson.Types as AesonTypes
 
 scheduleAgentActionTool :: Scheduler.Scheduler :> es => Tool es
 scheduleAgentActionTool = Tool
-  { name = "schedule_agent_action"
+  { name = "schedule"
   , description = "Schedule a future agent action in the current chat. The future action is processed through the same incoming message pipeline and replies to the current user message."
   , parameters = objectSchema
       [ fieldInteger "delay_seconds" "Delay before running the future agent action, in seconds."
@@ -41,7 +41,7 @@ scheduleAgentActionTool = Tool
 
 deleteScheduledAgentActionTool :: Scheduler.Scheduler :> es => Tool es
 deleteScheduledAgentActionTool = Tool
-  { name = "delete_scheduled_agent_action"
+  { name = "delete_schedule"
   , description = "Delete a schedule using schedule ID. Only current user's schedules may be deleted."
   , parameters = objectSchema
     [ fieldInteger "schedule_id" "The schedule ID to be deleted."
@@ -59,7 +59,7 @@ deleteScheduledAgentActionTool = Tool
 
 listCurrentUserSchedulesTool :: Scheduler.Scheduler :> es => Tool es
 listCurrentUserSchedulesTool = Tool
-  { name = "list_current_user_schedules"
+  { name = "list_schedules"
   , description = "List pending scheduled agent actions created by the current user in the current chat. Returns schedule ids, remaining seconds, and scheduled prompts."
   , parameters = objectSchema [] []
   , noisy = False

@@ -26,7 +26,7 @@ import qualified Streaming.Prelude as S
 
 generateImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
 generateImageTool = Tool
-  { name = "generate_image"
+  { name = "image_generate"
   , description = "Generate an actual image from a prompt and send it to the current chat. Use this when the user *literally* asks to *draw*, *create*, or *generate* an image, including scheduled future image requests. After using this tool, keep the final answer brief and do not repeat the image URL. Never use this when the user is merely asking for, finding, or searching for an image; instead, use the web search tool."
   , parameters = objectSchema
       [ fieldText "prompt" "Image generation prompt. Include the user's visual requirements, style, subject, text, and constraints."
@@ -51,7 +51,7 @@ generateImageTool = Tool
 
 editImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
 editImageTool = Tool
-  { name = "edit_image"
+  { name = "image_edit"
   , description = "Edit one or more existing images with the configured image edit model and send the result to the current chat. Use this when the user asks to modify, restyle, inpaint, combine, or use attached/reference images to create an edited image. Omit image_urls to edit images attached to the current message. Use mask_image_url only when the user supplies an explicit mask image; the mask applies to the first input image."
   , parameters = objectSchema
       [ fieldText "prompt" "Image edit instruction. Describe exactly what should change and what should stay preserved."
@@ -83,7 +83,7 @@ editImageTool = Tool
 
 viewImageTool :: Media.Media :> es => Tool es
 viewImageTool = Tool
-  { name = "view_image"
+  { name = "image_cache"
   , description = "Download an image URL into the media cache and make its media id available as image context for the next model turn. This tool does not send a chat message."
   , parameters = objectSchema
       [ fieldText "url" "Image URL to add to the current model context. Use an http://, https://, data:image/*, or existing media: URL."
@@ -108,7 +108,7 @@ data EditImageArgs = EditImageArgs
 
 parseGenerateImageArgs :: Aeson.Value -> AesonTypes.Parser GenerateImageArgs
 parseGenerateImageArgs =
-  Aeson.withObject "generate_image arguments" \o -> do
+  Aeson.withObject "image_generate arguments" \o -> do
     prompt <- Text.strip <$> o Aeson..: Key.fromText "prompt"
     options <- parseImageRequestOptions o
     pure GenerateImageArgs
@@ -118,7 +118,7 @@ parseGenerateImageArgs =
 
 parseEditImageArgs :: Aeson.Value -> AesonTypes.Parser EditImageArgs
 parseEditImageArgs =
-  Aeson.withObject "edit_image arguments" \o -> do
+  Aeson.withObject "image_edit arguments" \o -> do
     prompt <- Text.strip <$> o Aeson..: Key.fromText "prompt"
     imageUrls <- map Text.strip . fromMaybe [] <$> o Aeson..:? Key.fromText "image_urls"
     maskImageUrl <- fmap Text.strip <$> o Aeson..:? Key.fromText "mask_image_url"
@@ -154,9 +154,9 @@ contextDefaultImageUrls context =
 validateEditImageRefs :: [Text] -> Maybe AgentFailure
 validateEditImageRefs imageRefs
   | null imageRefs =
-      Just ((permanentArgumentFailure "edit_image requires at least one input image." "edit_image requires at least one input image. Attach an image to the message or provide image_urls.").failure)
+      Just ((permanentArgumentFailure "image_edit requires at least one input image." "image_edit requires at least one input image. Attach an image to the message or provide image_urls.").failure)
   | length imageRefs > 16 =
-      Just ((permanentArgumentFailure "edit_image accepts at most 16 input images." "edit_image accepts at most 16 input images.").failure)
+      Just ((permanentArgumentFailure "image_edit accepts at most 16 input images." "image_edit accepts at most 16 input images.").failure)
   | otherwise =
       Nothing
 
@@ -171,7 +171,7 @@ viewImageUrl rawUrl = do
   mediaRef <- Media.normalizeMediaRef url
   if isMediaRef mediaRef
     then cachedImageContext mediaRef
-    else pure (toolFailure (permanentArgumentFailure "view_image could not cache the image URL." "view_image could not cache the image URL.").failure)
+    else pure (toolFailure (permanentArgumentFailure "image_cache could not cache the image URL." "image_cache could not cache the image URL.").failure)
 
 isMediaRef :: Text -> Bool
 isMediaRef ref =
@@ -184,4 +184,4 @@ cachedImageContext mediaRef =
       | "image/" `Text.isPrefixOf` Text.toLower info.mimeType ->
           pure (toolTextWithImages [i|Added image to current context: #{mediaRef}|] [mediaRef])
     _ ->
-      pure (toolFailure (permanentArgumentFailure "view_image URL is not a cached image." "view_image URL is not a cached image.").failure)
+      pure (toolFailure (permanentArgumentFailure "image_cache URL is not a cached image." "image_cache URL is not a cached image.").failure)

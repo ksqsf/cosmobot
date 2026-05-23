@@ -126,14 +126,14 @@ main =
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
-      , testCase "typst_to_image tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
-      , testCase "edit_image tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
-      , testCase "ask handler passes referenced images to edit_image tool" testAskHandlerPassesReferencedImagesToEditImageTool
-      , testCase "generate_image tool passes image request options" testGenerateImageToolPassesImageRequestOptions
-      , testCase "view_image tool caches image for current context" testViewImageToolCachesImageForContext
-      , testCase "read_media_text reads cached media text slices" testReadMediaTextToolReadsCachedSlices
-      , testCase "generate_audio tool uses configured audio options and sends audio" testGenerateAudioToolUsesConfiguredAudioOptions
-      , testCase "edit_image tool passes image request options" testEditImageToolPassesImageRequestOptions
+      , testCase "typst_render tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
+      , testCase "image_edit tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
+      , testCase "ask handler passes referenced images to image_edit tool" testAskHandlerPassesReferencedImagesToEditImageTool
+      , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
+      , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
+      , testCase "media_text reads cached media text slices" testReadMediaTextToolReadsCachedSlices
+      , testCase "audio_generate tool uses configured audio options and sends audio" testGenerateAudioToolUsesConfiguredAudioOptions
+      , testCase "image_edit tool passes image request options" testEditImageToolPassesImageRequestOptions
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "agent compacts old conversation context before model turn" testAgentCompactsOldConversationContextBeforeModelTurn
       , testCase "agent announces context compaction" testAgentAnnouncesContextCompaction
@@ -163,7 +163,7 @@ main =
       , testCase "segmented replies flush final open segment" testSegmentedRepliesFlushFinalOpenSegment
       , testCase "editable chat streaming splits long replies and yields aliases" testEditableChatStreamingSplitsLongReplies
       , testCase "chunked active conversation aliases every sent reply" testChunkedActiveConversationAliasesEverySentReply
-      , testCase "web_fetch max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
+      , testCase "fetch_url max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "conversation replies keep parent and child snapshots" testConversationRepliesKeepSnapshots
       , testCase "conversation branches do not overwrite siblings" testConversationBranchesDoNotOverwriteSiblings
       , testCase "conversation lookup is scoped by chat" testConversationLookupIsScopedByChat
@@ -187,7 +187,7 @@ main =
 testScheduleToolCreatesQueryableSchedule :: IO ()
 testScheduleToolCreatesQueryableSchedule = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "schedule_agent_action" (Aeson.object ["delay_seconds" Aeson..= (60 :: Int), "prompt" Aeson..= ("check oven" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "schedule" (Aeson.object ["delay_seconds" Aeson..= (60 :: Int), "prompt" Aeson..= ("check oven" :: Text)])]
     , chatAnswer "scheduled" []
     ]
   (answer, schedules) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
@@ -203,7 +203,7 @@ testScheduleToolCreatesQueryableSchedule = do
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "send_reply_to_current_chat" (Aeson.object ["text" Aeson..= ("hello" :: Text), "image_urls" Aeson..= ["https://example.test/image.png" :: Text]])]
+    [ chatAnswer "" [toolCall "call-1" "send_reply" (Aeson.object ["text" Aeson..= ("hello" :: Text), "image_urls" Aeson..= ["https://example.test/image.png" :: Text]])]
     , chatAnswer "sent" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -281,7 +281,7 @@ runSendFileTool replies upload =
 testCurrentSenderChatLogToolQueriesChatLog :: IO ()
 testCurrentSenderChatLogToolQueriesChatLog = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "query_current_sender_chatlog" (Aeson.object ["keywords" Aeson..= ([["needle"] :: [Text]] :: [[Text]]), "limit" Aeson..= (10 :: Int)])]
+    [ chatAnswer "" [toolCall "call-1" "sender_chat_log" (Aeson.object ["keywords" Aeson..= ([["needle"] :: [Text]] :: [[Text]]), "limit" Aeson..= (10 :: Int)])]
     , chatAnswer "found" []
     ]
   (answer, conversation) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
@@ -302,7 +302,7 @@ testUserAvatarToolQueriesChatEffect = do
         , "avatar_url" Aeson..= ("https://example.test/avatar.jpg" :: Text)
         ]
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "get_user_avatar" (Aeson.object ["user_id" Aeson..= ("200" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "user_avatar" (Aeson.object ["user_id" Aeson..= ("200" :: Text)])]
     , chatAnswer "found" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -321,7 +321,7 @@ testUserAvatarToolQueriesChatEffect = do
 testUserAvatarToolRequiresUserId :: IO ()
 testUserAvatarToolRequiresUserId = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "get_user_avatar" (Aeson.object [])]
+    [ chatAnswer "" [toolCall "call-1" "user_avatar" (Aeson.object [])]
     , chatAnswer "rejected" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -334,7 +334,7 @@ testUserAvatarToolRequiresUserId = do
 testUserAvatarToolRejectsZeroUserId :: IO ()
 testUserAvatarToolRejectsZeroUserId = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "get_user_avatar" (Aeson.object ["user_id" Aeson..= (0 :: Integer)])]
+    [ chatAnswer "" [toolCall "call-1" "user_avatar" (Aeson.object ["user_id" Aeson..= (0 :: Integer)])]
     , chatAnswer "rejected" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -348,7 +348,7 @@ testTypstToImageToolRendersAndSendsImage :: IO ()
 testTypstToImageToolRendersAndSendsImage = do
   let source = "#set page(width: auto, height: auto)\nHello from Typst"
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "typst_to_image" (Aeson.object ["source" Aeson..= source, "caption" Aeson..= ("demo" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "typst_render" (Aeson.object ["source" Aeson..= source, "caption" Aeson..= ("demo" :: Text)])]
     , chatAnswer "sent" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -370,7 +370,7 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult = do
       editedImage = "[image] data:image/png;base64,edited"
       message = testMessageWithImages [inputImage]
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "edit_image" (Aeson.object ["prompt" Aeson..= ("make it brighter" :: Text), "mask_image_url" Aeson..= maskImage])]
+    [ chatAnswer "" [toolCall "call-1" "image_edit" (Aeson.object ["prompt" Aeson..= ("make it brighter" :: Text), "mask_image_url" Aeson..= maskImage])]
     , chatAnswer "done" []
     ]
   editCalls <- IORef.newIORef ([] :: [ImageEditCall])
@@ -402,7 +402,7 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
         , text = "krkr 把回复里的图调亮"
         }
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "edit_image" (Aeson.object ["prompt" Aeson..= prompt])]
+    [ chatAnswer "" [toolCall "call-1" "image_edit" (Aeson.object ["prompt" Aeson..= prompt])]
     , chatAnswer "done" []
     ]
   editCalls <- IORef.newIORef ([] :: [ImageEditCall])
@@ -429,7 +429,7 @@ testGenerateImageToolPassesImageRequestOptions = do
           , "moderation" Aeson..= ("low" :: Text)
           ]
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "generate_image" args]
+    [ chatAnswer "" [toolCall "call-1" "image_generate" args]
     , chatAnswer "done" []
     ]
   generateCalls <- IORef.newIORef ([] :: [ImageGenerateCall])
@@ -470,7 +470,47 @@ testViewImageToolCachesImageForContext =
             other ->
               assertFailure [i|expected one image context ref, got #{show other :: String}|]
         Agent.ToolFailed{failure} ->
-          assertFailure [i|view_image failed: #{show failure :: String}|]
+          assertFailure [i|image_cache failed: #{show failure :: String}|]
+
+testReadMediaTextToolReadsCachedSlices :: IO ()
+testReadMediaTextToolReadsCachedSlices =
+  withSQLiteTempPath "read-media-text" \dbPath ->
+    withTempDir "read-media-text-cache" \dir -> do
+      let cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = dir </> "cache"}
+          content = "abcdefg" :: Text
+      runResult <- runEff $
+        runFileSystem $
+          runProcess $
+            runFail $
+              runConcurrent $
+                runTestLog $
+                  StorageSQLite.runStorageSQLitePath dbPath $
+                    MediaInterpreter.runMedia cfg do
+                      mediaRef <- Media.storeMediaObject Media.MediaObject
+                        { bytes = TextEncoding.encodeUtf8 content
+                        , mimeType = "text/plain; charset=utf-8"
+                        , sourceName = Just "sample.txt"
+                        }
+                      let mediaId = maybe "" (\ref -> fromMaybe ref (Text.stripPrefix "media:" ref)) mediaRef
+                      runner <- MediaTools.readMediaTextTool.start agentContext
+                      result <- runner (Aeson.object
+                        [ "media_id" Aeson..= mediaId
+                        , "offset" Aeson..= (2 :: Int)
+                        , "size" Aeson..= (3 :: Int)
+                        ])
+                      pure (mediaRef, result)
+      (mediaRef, result) <- either assertFailure pure runResult
+      let tool = MediaTools.readMediaTextTool :: Agent.Tool AgentStack
+      assertBool "expected stored media ref" (maybe False ("media:mf_" `Text.isPrefixOf`) mediaRef)
+      tool.noisy @?= False
+      assertBool "media_text should be available to everyone" (tool.allowed agentContext)
+      case result of
+        Agent.ToolSucceeded{content = output} -> do
+          assertBool "tool output should include requested slice" ("\"content\":\"cde\"" `Text.isInfixOf` output)
+          assertBool "tool output should include returned count" ("\"returned_chars\":3" `Text.isInfixOf` output)
+          assertBool "tool output should include total chars" ("\"total_chars\":7" `Text.isInfixOf` output)
+        Agent.ToolFailed{failure} ->
+          assertFailure [i|media_text failed: #{show failure :: String}|]
 
 testGenerateAudioToolUsesConfiguredAudioOptions :: IO ()
 testGenerateAudioToolUsesConfiguredAudioOptions = do
@@ -541,7 +581,7 @@ testEditImageToolPassesImageRequestOptions = do
           , "moderation" Aeson..= ("auto" :: Text)
           ]
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "edit_image" args]
+    [ chatAnswer "" [toolCall "call-1" "image_edit" args]
     , chatAnswer "done" []
     ]
   editCalls <- IORef.newIORef ([] :: [ImageEditCall])
@@ -716,7 +756,7 @@ testAskHandlerInjectsStartupSkillMetadata = withTempDir "skills-test" \skillsDir
 testAgentAuditRecordsToolEvents :: IO ()
 testAgentAuditRecordsToolEvents = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "fetch_url" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])]
     , chatAnswer "done" []
     ]
   fetches <- IORef.newIORef (0 :: Int)
@@ -727,7 +767,7 @@ testAgentAuditRecordsToolEvents = do
     AgentAudit.queryRecentToolUses 10
   case toolUses of
     [toolUse] -> do
-      toolUse.toolName @?= "web_fetch"
+      toolUse.toolName @?= "fetch_url"
       case toolUse.status of
         AgentAudit.ToolUseFinished{status} ->
           status @?= "ok"
@@ -895,7 +935,7 @@ testAgentAuditRecordsStructuredToolFailureCategory = do
 testAskHandlerAnnouncesNoisyToolCallsWithAuditId :: IO ()
 testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "generate_image" (Aeson.object ["prompt" Aeson..= ("cat" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "image_generate" (Aeson.object ["prompt" Aeson..= ("cat" :: Text)])]
     , chatAnswer "done" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -911,13 +951,13 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
     progress : _ ->
       assertBool
         [i|expected noisy tool progress message with audit id, got #{progress}|]
-        ("正在调用 generate_image 工具...（id=" `Text.isPrefixOf` progress && "）" `Text.isSuffixOf` progress)
+        ("正在调用 image_generate 工具...（id=" `Text.isPrefixOf` progress && "）" `Text.isSuffixOf` progress)
     _ ->
       assertFailure [i|expected noisy tool progress reply, got #{show sent :: String}|]
 
 finishedGenerateImageUse :: AgentAudit.ToolUseDetail -> Bool
 finishedGenerateImageUse toolUse =
-  toolUse.toolName == "generate_image" && isFinished toolUse.status
+  toolUse.toolName == "image_generate" && isFinished toolUse.status
   where
     isFinished = \case
       AgentAudit.ToolUseFinished{} -> True
@@ -925,7 +965,7 @@ finishedGenerateImageUse toolUse =
 
 finishedEditImageUse :: AgentAudit.ToolUseDetail -> Bool
 finishedEditImageUse toolUse =
-  toolUse.toolName == "edit_image" && isFinished toolUse.status
+  toolUse.toolName == "image_edit" && isFinished toolUse.status
   where
     isFinished = \case
       AgentAudit.ToolUseFinished{} -> True
@@ -953,7 +993,7 @@ testAskHandlerFlushesStreamedContentBeforeToolCalls = do
 testAgentStreamsToolRequestContentBeforeToolNotification :: IO ()
 testAgentStreamsToolRequestContentBeforeToolNotification = do
   answers <- IORef.newIORef
-    [ chatAnswer "我先查看当前消息。" [toolCall "call-1" "get_current_message_info" (Aeson.object [])]
+    [ chatAnswer "我先查看当前消息。" [toolCall "call-1" "message_info" (Aeson.object [])]
     , chatAnswer "done" []
     ]
   outputs S.:> result <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
@@ -962,13 +1002,13 @@ testAgentStreamsToolRequestContentBeforeToolNotification = do
   case outputs of
     [Agent.AgentContentDelta progress, Agent.AgentToolCallNotification toolCalls, Agent.AgentContentDelta finalChunk] -> do
       progress @?= "我先查看当前消息。"
-      map (.name) (toList toolCalls) @?= ["get_current_message_info"]
+      map (.name) (toList toolCalls) @?= ["message_info"]
       finalChunk @?= "done"
       case find ((not . null) . (.toolCalls)) (conversationMessagesList result) of
         Just LLM.ChatMessage{role, content = Just (LLM.TextContent content), toolCalls = savedToolCalls} -> do
           role @?= "assistant"
           content @?= "我先查看当前消息。"
-          map (.name) savedToolCalls @?= ["get_current_message_info"]
+          map (.name) savedToolCalls @?= ["message_info"]
         other ->
           assertFailure [i|expected assistant tool request snapshot, got #{show other :: String}|]
     other ->
@@ -976,7 +1016,7 @@ testAgentStreamsToolRequestContentBeforeToolNotification = do
 
 testChatAnswerJsonRemainsObjectCompatible :: IO ()
 testChatAnswerJsonRemainsObjectCompatible = do
-  let call = toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])
+  let call = toolCall "call-1" "fetch_url" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])
   Aeson.toJSON (chatAnswer "done" []) @?=
     Aeson.object
       [ "content" Aeson..= ("done" :: Text)
@@ -1037,7 +1077,7 @@ testLLMToolRequestContentStreamsImmediatelyWhenEnabled = do
                         , "id" Aeson..= ("call-1" :: Text)
                         , "function" Aeson..=
                             Aeson.object
-                              [ "name" Aeson..= ("get_current_message_info" :: Text)
+                              [ "name" Aeson..= ("message_info" :: Text)
                               , "arguments" Aeson..= ("{}" :: Text)
                               ]
                         ]
@@ -1049,7 +1089,7 @@ testLLMToolRequestContentStreamsImmediatelyWhenEnabled = do
     Right (outputs, LLM.ChatToolRequest{content, toolCalls}) -> do
       outputs @?= ["我先查看当前消息。"]
       content @?= "我先查看当前消息。"
-      map (.name) (toList toolCalls) @?= ["get_current_message_info"]
+      map (.name) (toList toolCalls) @?= ["message_info"]
     Right other ->
       assertFailure [i|expected tool request stream result, got #{show other :: String}|]
     Left err ->
@@ -1325,8 +1365,8 @@ testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do
   answers <- IORef.newIORef
     [ chatAnswer ""
-        [ toolCall "call-1" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test/1" :: Text)])
-        , toolCall "call-2" "web_fetch" (Aeson.object ["url" Aeson..= ("https://example.test/2" :: Text)])
+        [ toolCall "call-1" "fetch_url" (Aeson.object ["url" Aeson..= ("https://example.test/1" :: Text)])
+        , toolCall "call-2" "fetch_url" (Aeson.object ["url" Aeson..= ("https://example.test/2" :: Text)])
         ]
     , chatAnswer "done" []
     ]
@@ -1338,7 +1378,7 @@ testWebFetchMaxUsesLimitsCalls = do
 
 fakeWebFetchTool :: IOE :> es => IORef.IORef Int -> Agent.Tool es
 fakeWebFetchTool fetches = Agent.Tool
-  { name = "web_fetch"
+  { name = "fetch_url"
   , description = "fake web fetch"
   , parameters = Aeson.object []
   , noisy = False
@@ -1348,7 +1388,7 @@ fakeWebFetchTool fetches = Agent.Tool
       pure \_ -> do
         checkUseLimit >>= \case
           UseLimitReached currentUses ->
-            pure (Agent.toolText [i|web_fetch use limit reached for this agent run: #{currentUses}.|])
+            pure (Agent.toolText [i|fetch_url use limit reached for this agent run: #{currentUses}.|])
           UseAllowed -> do
             liftIO $ IORef.modifyIORef' fetches (+ 1)
             pure (Agent.toolText "fetched")
@@ -1596,9 +1636,9 @@ testConversationJsonRemainsListCompatible = do
 testMemoryToolManagesCurrentSenderMemory :: IO ()
 testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
-    , chatAnswer "" [toolCall "call-2" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
-    , chatAnswer "" [toolCall "call-3" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "sender_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
@@ -1610,9 +1650,9 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
 testMemoryToolManagesCurrentChatMemory :: IO ()
 testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
-    , chatAnswer "" [toolCall "call-2" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
-    , chatAnswer "" [toolCall "call-3" "manage_current_chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "chat_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "chat_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
@@ -1625,7 +1665,7 @@ testMemoryToolEnforcesLengthLimit :: IO ()
 testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
   let longMemory = Text.replicate 1001 "x"
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "manage_current_sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
+    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
     , chatAnswer "rejected" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do

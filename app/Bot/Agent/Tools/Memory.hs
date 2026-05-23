@@ -23,7 +23,7 @@ import qualified Data.Text as Text
 
 manageSenderMemoryTool :: Memory.Memory :> es => Tool es
 manageSenderMemoryTool = Tool
-  { name = "manage_current_sender_memory"
+  { name = "sender_memory"
   , description = "View, replace, or clear the persistent MEMORY.md for the current message sender. Use this when the sender asks to view or clear memory, or when the sender gives durable preferences such as a preferred name, style, language, stable personal facts, or recurring instructions. Keep memory concise: non-superusers must stay within 1000 characters; if an update is rejected, summarize it shorter and try again."
   , parameters = objectSchema
       [ fieldText "action" "One of: view, replace, clear."
@@ -39,7 +39,7 @@ manageSenderMemoryTool = Tool
 
 manageChatMemoryTool :: Memory.Memory :> es => Tool es
 manageChatMemoryTool = Tool
-  { name = "manage_current_chat_memory"
+  { name = "chat_memory"
   , description = "View, replace, or clear the persistent MEMORY.md for the current chat/conversation. Use this when the user asks to view or clear chat memory, or when durable preferences, facts, norms, recurring instructions, or context apply to this chat as a whole rather than only to the current sender. Keep memory concise: non-superusers must stay within 1000 characters; if an update is rejected, summarize it shorter and try again."
   , parameters = objectSchema
       [ fieldText "action" "One of: view, replace, clear."

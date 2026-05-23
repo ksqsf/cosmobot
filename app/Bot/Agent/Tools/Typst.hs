@@ -21,7 +21,7 @@ import qualified Data.Text as Text
 
 typstToImageTool :: (Chat.Chat :> es, Typst.Typst :> es) => Tool es
 typstToImageTool = Tool
-  { name = "typst_to_image"
+  { name = "typst_render"
   , description = "Render a Typst document to a PNG image and send it to the current chat. Use this for diagrams, tables, formulas, posters, or other precise layouts that should be generated from Typst source. The source must be a complete Typst document."
   , parameters = objectSchema
       [ fieldText "source" "Complete Typst source to compile into a PNG image. Use self-contained content; external files are not available."
@@ -48,7 +48,7 @@ data TypstArgs = TypstArgs
 
 typstArgs :: Aeson.Value -> AesonTypes.Parser TypstArgs
 typstArgs =
-  Aeson.withObject "typst_to_image arguments" \o -> do
+  Aeson.withObject "typst_render arguments" \o -> do
     source <- o Aeson..: Key.fromText "source"
     caption <- o Aeson..:? Key.fromText "caption"
     pure TypstArgs{source, caption}

@@ -21,7 +21,7 @@ import System.IO.Error (userError)
 
 listDirectoryTool :: IOE :> es => Tool es
 listDirectoryTool = Tool
-  { name = "list_directory"
+  { name = "list_files"
   , description = "List files and directories under a path inside the bot working directory."
   , parameters = objectSchema
       [ fieldText "path" "Directory path relative to the bot working directory. Use \".\" for the working directory."

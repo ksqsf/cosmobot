@@ -33,7 +33,7 @@ maxReadSize =
 
 readMediaTextTool :: (Media.Media :> es, FileSystem :> es) => Tool es
 readMediaTextTool = Tool
-  { name = "read_media_text"
+  { name = "media_text"
   , description = "Read a UTF-8 text slice from a cached media object. Use this with media ids returned in omitted tool results, such as mf_xxx or media:mf_xxx. offset and size are character counts."
   , parameters = objectSchema
       [ fieldText "media_id" "Media id to read, either mf_xxx or media:mf_xxx."
