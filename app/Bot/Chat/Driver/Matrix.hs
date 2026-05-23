@@ -439,13 +439,21 @@ refreshMatrixAccessToken auth expiredToken =
             reloginMatrixAccessToken auth
           Just refreshToken -> do
             logInfo "Matrix access token expired; refreshing"
-            response <- refreshAccessTokenCall auth.authManager auth.authConfig refreshToken
-            let refreshedState = MatrixAuthState
-                  { authAccessToken = Just response.refreshedAccessToken
-                  , authRefreshToken = response.refreshedRefreshToken <|> currentAuthState.authRefreshToken
-                  }
-            IORef.writeIORef auth.authState refreshedState
-            pure response.refreshedAccessToken
+            let refreshWithToken = do
+                  response <- refreshAccessTokenCall auth.authManager auth.authConfig refreshToken
+                  let refreshedState = MatrixAuthState
+                        { authAccessToken = Just response.refreshedAccessToken
+                        , authRefreshToken = response.refreshedRefreshToken <|> currentAuthState.authRefreshToken
+                        }
+                  IORef.writeIORef auth.authState refreshedState
+                  pure response.refreshedAccessToken
+            refreshWithToken `catch` \(err :: MatrixApiException) ->
+              if matrixAccessTokenExpired err
+                then do
+                  logWarning "Matrix refresh token was rejected; logging in again"
+                  reloginMatrixAccessToken auth
+                else
+                  throwIO err
 
 reloginMatrixAccessToken
   :: (IOE :> es, KatipE :> es, Prim :> es)

@@ -184,7 +184,7 @@ splitReadyText text =
 
 imageDirectivePrefix :: Text
 imageDirectivePrefix =
-  "[image] data:image/"
+  "[image] "
 
 imageDirectiveOverlapChars :: Int
 imageDirectiveOverlapChars =
