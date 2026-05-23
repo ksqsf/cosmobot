@@ -137,6 +137,7 @@ common bot-core-modules
         Bot.Media.Config
         Bot.Media.S3
         Bot.Media.S3.Config
+        Bot.System.ImageMagick
         Bot.Util.Image
 
 common bot-chat-driver-modules
@@ -216,6 +217,7 @@ common bot-agent-modules
         Bot.Storage.Lifecycle
         Bot.Storage.Scheduler
         Bot.Storage.SQLite
+        Bot.System.ImageMagick
         Bot.System.Typst.CLI
         Bot.System.Typst.Test
         Bot.Util.Html

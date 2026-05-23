@@ -21,6 +21,7 @@ import qualified Bot.Media.Cache as Cache
 import qualified Bot.Media.Config as MediaConfig
 import Bot.Media.S3.Config
 import Bot.Prelude
+import qualified Bot.System.ImageMagick as ImageMagick
 import qualified Bot.Util.HTTP as Http
 import qualified Bot.Util.Image as Image
 import Control.Lens ((.~), (?~))
@@ -165,7 +166,7 @@ prepareMediaObject runtime mediaObject
 
 compressMediaObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es) => Runtime -> MediaObject -> Eff es MediaObject
 compressMediaObject runtime mediaObject =
-  (Image.compressImageBytes runtime.cfg.compression mediaObject.bytes >>= \case
+  (ImageMagick.compressImageBytes runtime.cfg.compression mediaObject.bytes >>= \case
     Nothing ->
       pure mediaObject
     Just (mimeType, bytes) -> do
