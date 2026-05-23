@@ -13,10 +13,11 @@ Stability   : experimental
 module Bot.Util.HList
   ( HList (..)
   , Has (..)
+  , Put (..)
   )
 where
 
-import Bot.Prelude hiding (get)
+import Bot.Prelude hiding (get, put)
 
 infixr 5 :&
 data HList fields where
@@ -33,3 +34,14 @@ instance Has field (field ': rest) where
 instance {-# OVERLAPPABLE #-} Has field rest => Has field (other ': rest) where
   get (_ :& rest) =
     get @field rest
+
+class Put field (fields :: [Type]) where
+  put :: field -> HList fields -> HList fields
+
+instance Put field (field ': rest) where
+  put field (_ :& rest) =
+    field :& rest
+
+instance {-# OVERLAPPABLE #-} Put field rest => Put field (other ': rest) where
+  put field (other :& rest) =
+    other :& put field rest

@@ -46,7 +46,7 @@ generateImageTool = Tool
         _ -> do
           sent <- Chat.replyTo context.message generated
           let sentText = show sent :: String
-          pure (toolMessage sent [i|Generated and sent image message id: #{sentText}|])
+          pure (toolText [i|Generated and sent image message id: #{sentText}|])
   }
 
 editImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
@@ -78,7 +78,7 @@ editImageTool = Tool
             _ -> do
               sent <- Chat.replyTo context.message edited
               let sentText = show sent :: String
-              pure (toolMessage sent [i|Edited and sent image message id: #{sentText}|])
+              pure (toolText [i|Edited and sent image message id: #{sentText}|])
   }
 
 viewImageTool :: Media.Media :> es => Tool es

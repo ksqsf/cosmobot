@@ -49,7 +49,7 @@ agentAuditRows =
     ]
 
 persistEvent :: (IOE :> es, KatipE :> es, Storage.Storage :> es) => UTCTime -> AgentAuditEvent -> Eff es (Maybe Integer)
-persistEvent occurredAt event =
+persistEvent occurredAt event = do
   (Just . fromIntegral . fromId <$> runSelda
     ( insertWithPK
         agentAuditRows

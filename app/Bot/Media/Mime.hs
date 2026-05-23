@@ -8,12 +8,14 @@ module Bot.Media.Mime
   ( mimeFromName
   , extensionFromMime
   , sniffMime
+  , sniffTextMime
   , isProbablyMediaMime
   , isGenericMime
   )
 where
 
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
 import Data.Bits ((.&.))
 import qualified Data.ByteString as StrictByteString
 import qualified Data.Text as Text
@@ -79,6 +81,25 @@ sniffMime bytes
   | "7z\xbc\xaf\x27\x1c" `StrictByteString.isPrefixOf` bytes = Just "application/x-7z-compressed"
   | "Rar!\x1a\x07" `StrictByteString.isPrefixOf` bytes = Just "application/x-rar-compressed"
   | otherwise = Nothing
+
+sniffTextMime :: StrictByteString.ByteString -> Text -> Text
+sniffTextMime bytes text =
+  case Aeson.eitherDecodeStrict' bytes :: Either String Aeson.Value of
+    Right _ ->
+      "application/json"
+    Left _ ->
+      sniffStructuredTextMime text
+
+sniffStructuredTextMime :: Text -> Text
+sniffStructuredTextMime text
+  | "<!doctype html" `Text.isPrefixOf` lowerStripped || "<html" `Text.isPrefixOf` lowerStripped =
+      "text/html; charset=utf-8"
+  | "<?xml" `Text.isPrefixOf` lowerStripped =
+      "application/xml"
+  | otherwise =
+      "text/plain; charset=utf-8"
+  where
+    lowerStripped = Text.toLower (Text.stripStart text)
 
 isProbablyMediaMime :: Text -> Bool
 isProbablyMediaMime mime =

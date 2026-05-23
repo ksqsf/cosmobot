@@ -35,6 +35,7 @@ import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.Test as TypstTest
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Foldable as Foldable
 import qualified Data.IORef as IORef
@@ -141,6 +142,8 @@ main =
       , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
       , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
+      , testCase "agent audit storage omits large tool results" testAgentAuditStorageOmitsLargeToolResults
+      , testCase "agent omits large tool results only after one model turn consumes them" testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt
       , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "reply body parses structured content" testReplyBodyParsesStructuredContent
@@ -164,6 +167,7 @@ main =
       , testCase "conversation lookup is scoped by chat" testConversationLookupIsScopedByChat
       , testCase "conversation branches persist through SQLite reload" testConversationBranchesPersistThroughSQLiteReload
       , testCase "conversation cache miss loads evicted parent from SQLite" testConversationCacheMissLoadsEvictedParent
+      , testCase "conversation storage omits large tool results" testConversationStorageOmitsLargeToolResults
       , testCase "conversation omits base64 generated image context" testConversationOmitsBase64GeneratedImageContext
       , testCase "LLM request omits base64 generated image context" testLLMRequestOmitsBase64GeneratedImageContext
       , testCase "conversation JSON remains list compatible" testConversationJsonRemainsListCompatible
@@ -204,7 +208,7 @@ testSendReplyToolUsesChatEffect = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWith answers (ChatMock (Just replies) (Just "42") Nothing) do
-    Agent.runAgentWithHooks 4 agentContext (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "send it")
+    runAgentWithToolMessageCapture 4 agentContext Agent.defaultTools (startWithUser "send it") recorded remembered
   answer @?= "sent"
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= ["hello\n[image] https://example.test/image.png"])
@@ -218,8 +222,8 @@ testSendFileToolUploadsViaChatEffect = do
     liftIO $ IORef.modifyIORef' uploads (<> [path])
     pure (Right (Just "900"))
   case result of
-    Agent.ToolSucceeded{messageIds} ->
-      messageIds @?= [Just "900"]
+    Agent.ToolSucceeded{content} ->
+      assertBool "tool result should describe sent file" ("Sent file /tmp/report.txt" `Text.isInfixOf` content)
     Agent.ToolFailed{failure} ->
       assertFailure [i|expected file upload success, got #{show failure :: String}|]
   IORef.readIORef uploads >>= (@?= ["/tmp/report.txt"])
@@ -303,7 +307,7 @@ testUserAvatarToolQueriesChatEffect = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, conversation) <- runAgentWith answers (ChatMock (Just replies) (Just "44") (Just avatar)) do
-    Agent.runAgentWithHooks 4 agentContext (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "avatar?")
+    runAgentWithToolMessageCapture 4 agentContext Agent.defaultTools (startWithUser "avatar?") recorded remembered
   answer @?= "found"
   Text.unlines (toolOutputs conversation) @?= jsonText avatar <> "\n"
   imageContextUrls conversation @?= ["https://example.test/avatar.jpg"]
@@ -350,7 +354,7 @@ testTypstToImageToolRendersAndSendsImage = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWithTypst rendered answers (ChatMock (Just replies) (Just "43") Nothing) do
-    Agent.runAgentWithHooks 4 agentContext (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "render typst")
+    runAgentWithToolMessageCapture 4 agentContext Agent.defaultTools (startWithUser "render typst") recorded remembered
   answer @?= "sent"
   IORef.readIORef rendered >>= (@?= [source])
   IORef.readIORef replies >>= (@?= ["[image] file:///tmp/cosmobot-agent-spec-typst.png"])
@@ -372,11 +376,11 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "47") Nothing) do
-    Agent.runAgentWithHooks 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "edit this")
+    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) Agent.defaultTools (startWithUser "edit this") recorded remembered
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage) LLM.defaultImageRequestOptions])
-  IORef.readIORef replies >>= (@?= [editedImage])
-  IORef.readIORef recorded >>= (@?= [editedImage])
+  IORef.readIORef replies >>= assertElem editedImage
+  IORef.readIORef recorded >>= assertElem editedImage
 
 testAskHandlerPassesReferencedImagesToEditImageTool :: IO ()
 testAskHandlerPassesReferencedImagesToEditImageTool = do
@@ -405,6 +409,9 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
     conversations <- newConversationStore
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) message
     waitUntil (liftIO $ (>= 3) . length <$> IORef.readIORef replies)
+    waitUntil do
+      toolUses <- AgentAudit.queryRecentToolUses 10
+      pure (any finishedEditImageUse toolUses)
   IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [referencedImage] Nothing LLM.defaultImageRequestOptions])
 
 testGenerateImageToolPassesImageRequestOptions :: IO ()
@@ -428,11 +435,11 @@ testGenerateImageToolPassesImageRequestOptions = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWithImageGenerate answers generateCalls generatedImage (ChatMock (Just replies) (Just "48") Nothing) do
-    Agent.runAgentWithHooks 4 agentContext (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "draw this")
+    runAgentWithToolMessageCapture 4 agentContext Agent.defaultTools (startWithUser "draw this") recorded remembered
   answer @?= "done"
   IORef.readIORef generateCalls >>= (@?= [ImageGenerateCall "draw a glass tower" [] expectedOptions])
-  IORef.readIORef replies >>= (@?= [generatedImage])
-  IORef.readIORef recorded >>= (@?= [generatedImage])
+  IORef.readIORef replies >>= assertElem generatedImage
+  IORef.readIORef recorded >>= assertElem generatedImage
 
 testViewImageToolCachesImageForContext :: IO ()
 testViewImageToolCachesImageForContext =
@@ -441,7 +448,7 @@ testViewImageToolCachesImageForContext =
       let cacheDir = dir </> "cache"
           cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = cacheDir}
           imageUrl = "data:image/png;base64,iVBORw0KGgpmYWtl" :: Text
-      result <- runEff $
+      runResult <- runEff $
         runFileSystem $
           runProcess $
             runFail $
@@ -451,16 +458,15 @@ testViewImageToolCachesImageForContext =
                     MediaInterpreter.runMedia cfg do
                       runner <- ImageTools.viewImageTool.start agentContext
                       runner (Aeson.object ["url" Aeson..= imageUrl])
-      toolResult <- either assertFailure pure result
+      toolResult <- either assertFailure pure runResult
       case toolResult of
-        Agent.ToolSucceeded{content, imageUrls, messageIds} -> do
+        Agent.ToolSucceeded{content, imageUrls} -> do
           assertBool "tool result should mention media ref" ("media:" `Text.isInfixOf` content)
           case imageUrls of
             [mediaRef] ->
               assertBool "expected cached media ref" ("media:" `Text.isPrefixOf` mediaRef)
             other ->
               assertFailure [i|expected one image context ref, got #{show other :: String}|]
-          messageIds @?= []
         Agent.ToolFailed{failure} ->
           assertFailure [i|view_image failed: #{show failure :: String}|]
 
@@ -509,8 +515,8 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
           runner <- AudioTools.generateAudioTool.start agentContext
           runner args
   case result of
-    Agent.ToolSucceeded{messageIds} ->
-      messageIds @?= [Just "50"]
+    Agent.ToolSucceeded{content} ->
+      assertBool "tool result should describe sent audio" ("Generated and sent audio message id" `Text.isInfixOf` content)
     Agent.ToolFailed{failure} ->
       assertFailure [i|expected audio generation success, got #{show failure :: String}|]
   IORef.readIORef generateCalls >>= (@?= [AudioGenerateCall "say hello" expectedOptions])
@@ -541,11 +547,11 @@ testEditImageToolPassesImageRequestOptions = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "49") Nothing) do
-    Agent.runAgentWithHooks 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) (agentHooksWith recorded remembered) Agent.defaultTools (startWithUser "edit this")
+    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) Agent.defaultTools (startWithUser "edit this") recorded remembered
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it cinematic" [inputImage] Nothing expectedOptions])
-  IORef.readIORef replies >>= (@?= [editedImage])
-  IORef.readIORef recorded >>= (@?= [editedImage])
+  IORef.readIORef replies >>= assertElem editedImage
+  IORef.readIORef recorded >>= assertElem editedImage
 
 imageOptions :: Text -> Text -> Text -> Text -> LLM.ImageRequestOptions
 imageOptions quality size background moderation =
@@ -729,6 +735,140 @@ testAgentAuditRecordsToolEvents = do
     _ ->
       assertFailure [i|expected one tool use, got #{length toolUses}|]
 
+testAgentAuditStorageOmitsLargeToolResults :: IO ()
+testAgentAuditStorageOmitsLargeToolResults =
+  withSQLiteTempPath "audit-large-tool-result" \dbPath ->
+    withTempDir "audit-large-tool-result-media" \dir -> do
+      let cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = dir </> "cache"}
+          toolResultText = "{\"items\":[" <> Text.intercalate "," (replicate 5000 "\"value\"") <> "]}"
+          resultBytes = TextEncoding.encodeUtf8 toolResultText
+      answers <- IORef.newIORef
+        [ chatAnswer "" [toolCall "call-1" "large_audit_result" (Aeson.object [])]
+        , chatAnswer "done" []
+        ]
+      runResult <- runEff $
+        runFileSystem $
+          runProcess $
+            runFail $
+              runConcurrent $
+                runPrim $
+                  runTestLog $
+                    StorageSQLite.runStorageSQLitePath dbPath $
+                      MediaInterpreter.runMedia cfg $
+                        LLMTest.runLLMWith
+                          (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
+                          (\_ _ -> S.yield "unused image answer" $> "unused image answer")
+                          (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
+                          (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
+                          (\_ _ -> do
+                              answer <- liftIO (popAnswer answers)
+                              case answer of
+                                LLM.ChatFinalAnswer{content} ->
+                                  S.yield content
+                                LLM.ChatToolRequest{content}
+                                  | Text.null content -> pure ()
+                                  | otherwise -> S.yield content
+                              pure answer)
+                          $
+                            AgentAudit.runAgentAudit $
+                              Chat.runChatWith
+                                Chat.ChatHandlers
+                                  { handleReplyTo = \_ _ -> pure Nothing
+                                  , handleReplyAudio = noopReplyAudio
+                                  , handleUploadFile = noopUpload
+                                  , handleEditMessage = noopEdit
+                                  , handleDeleteMessage = noopDelete
+                                  , handleReplyStreamStyle = noopReplyStreamStyle
+                                  , handleGetMessageContent = noopFetch
+                                  , handleGetSenderMemberInfo = noopSenderMember
+                                  , handleGetMemberInfo = noopMember
+                                  , handleGetUserAvatar = noopUserAvatar
+                                  , handleListGroupMembers = noopMembers
+                                  , handleMentionUser = noopMention
+                                  , handleSetMemberTitle = noopSetMemberTitle
+                                  }
+                              do
+                                agentRun <- Agent.startAgentRun agentContext [largeAuditResultTool toolResultText]
+                                void $ S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun) (startWithUser "audit large result"))
+                                uses <- AgentAudit.queryRecentToolUses 10
+                                mediaFiles <- Media.listMediaFiles
+                                pure (uses, mediaFiles)
+      (toolUses, files) <- either assertFailure pure runResult
+      case toolUses of
+        [toolUse] -> do
+          case toolUse.result of
+            Just stored -> do
+              assertBool "large audit result is replaced by omitted marker" ("[tool result omitted;" `Text.isPrefixOf` stored)
+              assertBool "audit marker keeps inferred JSON MIME" ("mime=application/json" `Text.isInfixOf` stored)
+              assertBool "audit marker points to media cache" ("media_id=mf_" `Text.isInfixOf` stored)
+              assertBool "audit marker keeps a preview" ("preview=\"{\\\"items\\\"" `Text.isInfixOf` stored)
+              assertBool "audit row should not retain the full result tail" (not ("\"value\"]}" `Text.isInfixOf` stored))
+            Nothing ->
+              assertFailure "expected stored audit result"
+          case toolUse.status of
+            AgentAudit.ToolUseFinished{} ->
+              pure ()
+            other ->
+              assertFailure ("expected finished tool use, got " <> show other)
+        _ ->
+          assertFailure [i|expected one tool use, got #{length toolUses}|]
+      case files of
+        [file] -> do
+          file.mimeType @?= "application/json"
+          file.size @?= StrictByteString.length resultBytes
+        other ->
+          assertFailure [i|expected one cached result file, got #{length other}|]
+
+largeAuditResultTool :: Text -> Agent.Tool es
+largeAuditResultTool result =
+  Agent.Tool
+    { name = "large_audit_result"
+    , description = "fake large audit result"
+    , parameters = Aeson.object []
+    , noisy = False
+    , allowed = const True
+    , start = \_ -> pure \_ ->
+        pure (Agent.toolText result)
+    }
+
+testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt :: IO ()
+testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt = do
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "large_result" (Aeson.object [])]
+    , chatAnswer "done" []
+    ]
+  let largeResult = "large-result:" <> Text.replicate 5000 "x"
+      oneShotLargeResultTool = Agent.Tool
+        { name = "large_result"
+        , description = "return a large result"
+        , parameters = Aeson.object []
+        , noisy = False
+        , allowed = const True
+        , start = \_ -> pure \_ -> pure (Agent.toolText largeResult)
+        }
+  (_, conversation) <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 4 agentContext [oneShotLargeResultTool] (startWithUser "run it")
+  requests <- IORef.readIORef captured
+  case requests of
+    [_firstRequest, secondRequest] -> do
+      let encoded = jsonText secondRequest
+      assertBool "current model turn keeps full large tool result" (largeResult `Text.isInfixOf` encoded)
+      assertBool "current model turn is not replaced by persistence marker" (not ("[tool result omitted;" `Text.isInfixOf` encoded))
+    other ->
+      assertFailure [i|expected two LLM requests, got #{length other}|]
+  continuationAnswers <- IORef.newIORef [chatAnswer "continued" []]
+  _ <- runAgentCapturingMessages captured continuationAnswers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 1 agentContext [] conversation
+  continuedRequests <- IORef.readIORef captured
+  case drop 2 continuedRequests of
+    [continuedRequest] -> do
+      let encoded = jsonText continuedRequest
+      assertBool "later model turn sees omitted tool result" ("[tool result omitted;" `Text.isInfixOf` encoded)
+      assertBool "later model turn does not keep full large tool result" (not (largeResult `Text.isInfixOf` encoded))
+    other ->
+      assertFailure [i|expected one continuation LLM request, got #{length other}|]
+
 testAgentAuditRecordsStructuredToolFailureCategory :: IO ()
 testAgentAuditRecordsStructuredToolFailureCategory = do
   answers <- IORef.newIORef
@@ -776,6 +916,14 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
 finishedGenerateImageUse :: AgentAudit.ToolUseDetail -> Bool
 finishedGenerateImageUse toolUse =
   toolUse.toolName == "generate_image" && isFinished toolUse.status
+  where
+    isFinished = \case
+      AgentAudit.ToolUseFinished{} -> True
+      _ -> False
+
+finishedEditImageUse :: AgentAudit.ToolUseDetail -> Bool
+finishedEditImageUse toolUse =
+  toolUse.toolName == "edit_image" && isFinished toolUse.status
   where
     isFinished = \case
       AgentAudit.ToolUseFinished{} -> True
@@ -1155,7 +1303,7 @@ testEditableChatStreamingSplitsLongReplies = do
   IORef.readIORef updates >>= (@?= [(Just "1", [], "ab"), (Just "1", [], "abcd"), (Just "1", [], "abcdef"), (Just "1", [], "abcdefgh"), (Just "1", [], "abcdefghij"), (Just "1", [], "abcdefghijkl"), (Just "1", ["2", "3"], "abcdefghijkl")])
 
 testChunkedActiveConversationAliasesEverySentReply :: IO ()
-testChunkedActiveConversationAliasesEverySentReply = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
+testChunkedActiveConversationAliasesEverySentReply = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
   store <- newConversationStore
   threadId <- forkIO (threadDelay 60_000_000)
   let baseConversation = startWithUser "hello"
@@ -1205,7 +1353,7 @@ fakeWebFetchTool fetches = Agent.Tool
   }
 
 testConversationRepliesKeepSnapshots :: IO ()
-testConversationRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
+testConversationRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
   store <- newConversationStore
   let firstConversation = startWithUser "first"
       secondConversation = appendAssistant "second" firstConversation
@@ -1218,7 +1366,7 @@ testConversationRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTes
     (show secondLookup :: String) @?= show (Just secondConversation)
 
 testConversationBranchesDoNotOverwriteSiblings :: IO ()
-testConversationBranchesDoNotOverwriteSiblings = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
+testConversationBranchesDoNotOverwriteSiblings = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
   store <- newConversationStore
   let root = appendAssistant "root answer" (startWithUser "root")
       branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
@@ -1239,7 +1387,7 @@ testConversationBranchesDoNotOverwriteSiblings = runEff $ runConcurrent $ runPri
     (show branchA2Lookup :: String) @?= show (Just branchA2)
 
 testConversationLookupIsScopedByChat :: IO ()
-testConversationLookupIsScopedByChat = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" do
+testConversationLookupIsScopedByChat = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
   store <- newConversationStore
   let chatA = testMessageInChat 100
       chatB = testMessageInChat 200
@@ -1258,7 +1406,7 @@ testConversationLookupIsScopedByChat = runEff $ runConcurrent $ runPrim $ runTes
 testConversationBranchesPersistThroughSQLiteReload :: IO ()
 testConversationBranchesPersistThroughSQLiteReload =
   withSQLiteTempPath "conversation-branches" \path -> runEff $ runConcurrent $ runPrim $ runTestLog do
-    StorageSQLite.runStorageSQLitePath path do
+    StorageSQLite.runStorageSQLitePath path $ Media.runMediaPassthrough do
       store <- newConversationStore
       let root = appendAssistant "root answer" (startWithUser "root")
           branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
@@ -1287,7 +1435,7 @@ testConversationBranchesPersistThroughSQLiteReload =
 testConversationCacheMissLoadsEvictedParent :: IO ()
 testConversationCacheMissLoadsEvictedParent =
   withSQLiteTempPath "conversation-cache-miss" \path -> runEff $ runConcurrent $ runPrim $ runTestLog do
-    StorageSQLite.runStorageSQLitePath path do
+    StorageSQLite.runStorageSQLitePath path $ Media.runMediaPassthrough do
       store <- newConversationStore
       let root = appendAssistant "root answer" (startWithUser "root")
           child = appendAssistant "child answer" (appendUser "child follow-up" root)
@@ -1304,6 +1452,105 @@ testConversationCacheMissLoadsEvictedParent =
         (show childLookup :: String) @?= show (Just child)
         (rowParentMessageId =<< childRow) @?= Just "1"
         (payloadMessageCount <$> childRow) @?= Just 2
+
+testConversationStorageOmitsLargeToolResults :: IO ()
+testConversationStorageOmitsLargeToolResults =
+  withSQLiteTempPath "conversation-large-tool-result" \dbPath ->
+    withTempDir "conversation-large-tool-result-media" \dir -> do
+      let cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = dir </> "cache"}
+          result = "<!doctype html><html><body>" <> Text.replicate 5000 "x" <> "</body></html>"
+          resultBytes = TextEncoding.encodeUtf8 result
+          answers = [chatAnswer "" [toolCall "call-1" "large_tool" (Aeson.object [])], chatAnswer "done" []]
+      answerRef <- IORef.newIORef answers
+      runResult <- runEff $
+        runFileSystem $
+          runProcess $
+            runFail $
+              runConcurrent $
+                runPrim $
+                  runTestLog $
+                    StorageSQLite.runStorageSQLitePath dbPath $
+                      MediaInterpreter.runMedia cfg do
+                        store <- newConversationStore
+                        (_answer, conversation) <- LLMTest.runLLMWith
+                          (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
+                          (\_ _ -> S.yield "unused image answer" $> "unused image answer")
+                          (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
+                          (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
+                          (\_ _ -> do
+                              answer <- liftIO (popAnswer answerRef)
+                              case answer of
+                                LLM.ChatFinalAnswer{content} ->
+                                  S.yield content
+                                LLM.ChatToolRequest{content}
+                                  | Text.null content -> pure ()
+                                  | otherwise -> S.yield content
+                              pure answer)
+                          $
+                            AgentAudit.runAgentAudit $
+                              Chat.runChatWith
+                                Chat.ChatHandlers
+                                  { handleReplyTo = \_ _ -> pure Nothing
+                                  , handleReplyAudio = noopReplyAudio
+                                  , handleUploadFile = noopUpload
+                                  , handleEditMessage = noopEdit
+                                  , handleDeleteMessage = noopDelete
+                                  , handleReplyStreamStyle = noopReplyStreamStyle
+                                  , handleGetMessageContent = noopFetch
+                                  , handleGetSenderMemberInfo = noopSenderMember
+                                  , handleGetMemberInfo = noopMember
+                                  , handleGetUserAvatar = noopUserAvatar
+                                  , handleListGroupMembers = noopMembers
+                                  , handleMentionUser = noopMention
+                                  , handleSetMemberTitle = noopSetMemberTitle
+                                  }
+                              do
+                                agentRun <- Agent.startAgentRun agentContext [largeResultTool result]
+                                outputs S.:> agentResult <- S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun) (startWithUser "fetch"))
+                                pure (agentOutputText outputs, agentResult.conversation)
+                        rememberConversation store (Just (messageKey 1)) conversation
+                        loaded <- lookupConversation store (messageKey 1)
+                        storedRows <- loadConversationRows
+                        mediaFiles <- Media.listMediaFiles
+                        pure (loaded, storedRows, mediaFiles)
+      (cachedLookup, rows, files) <- either assertFailure pure runResult
+      case cachedLookup of
+        Just loaded ->
+          assertBool "cached lookup should contain omitted marker" ("[tool result omitted;" `Text.isInfixOf` Text.unlines (toolOutputs loaded))
+        Nothing ->
+          assertFailure "expected cached conversation"
+      case rows of
+        [row] -> do
+          contents <- decodeStoredToolContents row
+          case contents of
+            [stored] -> do
+              assertBool "large conversation tool result is replaced by omitted marker" ("[tool result omitted;" `Text.isPrefixOf` stored)
+              assertBool "conversation marker keeps inferred HTML MIME" ("mime=text/html; charset=utf-8" `Text.isInfixOf` stored)
+              assertBool "conversation marker points to media cache" ("media_id=mf_" `Text.isInfixOf` stored)
+              assertBool "conversation marker keeps a preview" ("preview=\"<!doctype html>" `Text.isInfixOf` stored)
+              assertBool "conversation row should not retain the full result tail" (not ("</body></html>" `Text.isInfixOf` stored))
+            other ->
+              assertFailure [i|expected one stored tool result, got #{length other}|]
+        other ->
+          assertFailure [i|expected one conversation row, got #{length other}|]
+      case files of
+        [file] -> do
+          file.mimeType @?= "text/html; charset=utf-8"
+          file.size @?= StrictByteString.length resultBytes
+        other ->
+          assertFailure [i|expected one cached result file, got #{length other}|]
+
+largeResultTool :: Text -> Agent.Tool es
+largeResultTool result =
+  Agent.Tool
+    { name = "large_tool"
+    , description = "fake large result"
+    , parameters = Aeson.object []
+    , noisy = False
+    , allowed = const True
+    , start = \_ -> pure \_ ->
+        pure (Agent.toolText result)
+    }
 
 testConversationOmitsBase64GeneratedImageContext :: IO ()
 testConversationOmitsBase64GeneratedImageContext = do
@@ -1506,6 +1753,19 @@ payloadMessageCount row =
       error (Text.pack err)
     Right messages ->
       length messages
+
+decodeStoredToolContents :: ConversationRow -> IO [Text]
+decodeStoredToolContents row =
+  case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 row.messagesJson) :: Either String [LLM.ChatMessage] of
+    Left err ->
+      assertFailure err
+    Right messages ->
+      pure
+        [ text
+        | message <- messages
+        , message.role == "tool"
+        , Just (LLM.TextContent text) <- [message.content]
+        ]
 
 rowMessageId :: ConversationRow -> MessageId
 rowMessageId row =
@@ -2094,12 +2354,38 @@ superuserContext :: Agent.AgentContext es
 superuserContext =
   agentContext{Agent.superuser = True}
 
-agentHooksWith :: IOE :> es => IORef.IORef [Text] -> IORef.IORef [Maybe MessageId] -> Agent.AgentHooks es
-agentHooksWith recorded remembered =
-  Agent.AgentHooks
-    { Agent.rememberToolMessage = \messageId _ -> liftIO $ IORef.modifyIORef' remembered (<> [messageId])
-    , Agent.recordSelfMessage = \body -> liftIO $ IORef.modifyIORef' recorded (<> [body])
-    }
+runAgentWithToolMessageCapture
+  :: Int
+  -> Agent.AgentContext AgentStack
+  -> [Agent.Tool AgentStack]
+  -> Conversation
+  -> IORef.IORef [Text]
+  -> IORef.IORef [Maybe MessageId]
+  -> Eff AgentStack (Text, Conversation)
+runAgentWithToolMessageCapture maxTurns context tools conversation recorded remembered = do
+  agentRun <- Agent.startAgentRun context tools
+  let sink = Agent.ToolEmittedMessageSink \messageId ->
+        liftIO $ IORef.modifyIORef' remembered (<> [messageId])
+      program =
+        ( Agent.withRecordingToolSelfMessages \body ->
+            liftIO $ IORef.modifyIORef' recorded (<> [body])
+        )
+          . Agent.withLinkingToolEmittedMessagesToConversation sink
+          $ Agent.defaultAgentProgram AgentAudit.agentAuditObserver maxTurns agentRun
+  outputs S.:> result <- S.toList (Agent.runAgentProgramStreaming program conversation)
+  pure (agentOutputText outputs, result.conversation)
+
+agentOutputText :: [Agent.AgentStreamOutput] -> Text
+agentOutputText =
+  Text.strip . foldMap \case
+    Agent.AgentContentDelta chunk ->
+      chunk
+    Agent.AgentToolCallNotification{} ->
+      ""
+
+assertElem :: (Eq a, Show a) => a -> [a] -> Assertion
+assertElem expected actual =
+  assertBool [i|expected #{show expected :: String} in #{show actual :: String}|] (expected `elem` actual)
 
 mockReply :: IOE :> es => ChatMock -> IncomingMessage -> Text -> Eff es (Maybe MessageId)
 mockReply ChatMock{replies, replyId} _ body = do

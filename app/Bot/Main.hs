@@ -62,13 +62,13 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . runConcurrent
                . runBotLog cfg.logLevel
                . StorageSQLite.runStorageSQLitePath cfg.sqlitePath
+               . Media.runMedia cfg.media
                . AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
                . ChatLog.runChatLog
                . Memory.runMemory cfg.memory
                . Skills.runSkills cfg.skills
                . Scheduler.runScheduler
                . TypstCLI.runTypst
-               . Media.runMedia cfg.media
                . OpenAI.runLLM cfg.llm
                . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
                . Lifecycle.runLifecycle cfg.media

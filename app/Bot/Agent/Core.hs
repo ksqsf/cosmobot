@@ -55,27 +55,27 @@ data AgentCompletion = AgentCompletion
 data AgentRun es = AgentRun
   { runId       :: !Text
   , context      :: AgentContext es
-  , hooks        :: AgentHooks es
   , tools        :: [Tool es]
   , exposedTools :: [Tool es]
   , runningTools :: [RunningTool es]
   }
 
 -- | Mutable position of the agent loop.
-data AgentState = AgentState
+data AgentState transient = AgentState
   { conversation :: !Conversation
   , turn         :: !Int
+  , transient    :: !(HList.HList transient)
   }
 
-data ModelDecision
+data ModelDecision transient
   = ModelAnswered !AgentCompletion
-  | ModelNeedsTools !ToolTurnState
+  | ModelNeedsTools !(ToolTurnState transient)
 
-type ModelTurn es =
-  AgentState -> Stream (Of AgentStreamOutput) (Eff es) ModelDecision
+type ModelTurn transient es =
+  AgentState transient -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)
 
-type ToolTurn es =
-  ToolTurnState -> Eff es AgentState
+type ToolTurn transient es =
+  ToolTurnState transient -> Eff es (AgentState transient)
 
 type MiddlewareContext context =
   HList.HList context
@@ -86,9 +86,14 @@ type MiddlewareContext context =
 -- behavior gets named middleware boundaries. For example, conversation
 -- compaction belongs in 'aroundModelTurn': it can rewrite state before the
 -- next LLM request without changing tool execution or completion handling.
-data AgentProgram (context :: [Type]) es = AgentProgram
+data AgentProgram (transient :: [Type]) (context :: [Type]) es = AgentProgram
   { -- | Immutable per-run tool and request context.
     agentRun :: AgentRun es
+    -- | Initial middleware-owned run state.
+  , initialTransient :: HList.HList transient
+    -- | Select the conversation sent to the next model request. Most programs
+    -- use the canonical conversation; middleware may expose a one-shot view.
+  , modelInputConversation :: MiddlewareContext context -> AgentState transient -> Eff es Conversation
     -- | Wrap one complete agent run.
   , aroundAgentRun :: MiddlewareContext context -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
     -- | Wrap one complete model phase.
@@ -96,12 +101,12 @@ data AgentProgram (context :: [Type]) es = AgentProgram
     -- Use this for model-side middleware such as conversation compaction,
     -- timing, auditing, or exception-aware behavior around the streamed model
     -- request plus decision.
-  , aroundModelTurn :: MiddlewareContext context -> AgentState -> (AgentState -> Stream (Of AgentStreamOutput) (Eff es) ModelDecision) -> Stream (Of AgentStreamOutput) (Eff es) ModelDecision
+  , aroundModelTurn :: MiddlewareContext context -> AgentState transient -> (AgentState transient -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)) -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)
     -- | Wrap the whole tool phase.
     --
     -- Use this for cleanup, timing, timeout, auditing, or exception-aware
     -- behavior that must cover all tool calls in the phase.
-  , aroundToolTurn :: MiddlewareContext context -> ToolTurnState -> Eff es AgentState -> Eff es AgentState
+  , aroundToolTurn :: MiddlewareContext context -> ToolTurnState transient -> Eff es (AgentState transient) -> Eff es (AgentState transient)
     -- | Wrap one model-requested tool call.
     --
     -- Use this for per-call observation, failure recovery, policy, or timing
@@ -109,17 +114,19 @@ data AgentProgram (context :: [Type]) es = AgentProgram
   , aroundToolCall :: Int -> LLM.ToolCall -> MiddlewareContext context -> Eff es ToolResult -> Eff es ToolResult
   }
 
-data ToolTurnState = ToolTurnState
-  { agentState :: !AgentState
+data ToolTurnState transient = ToolTurnState
+  { agentState :: !(AgentState transient)
   , answered   :: !Conversation
   , toolContent :: !Text
   , toolCalls  :: !(NonEmpty LLM.ToolCall)
   }
 
-emptyAgentProgram :: AgentRun es -> AgentProgram context es
-emptyAgentProgram agentRun =
+emptyAgentProgram :: HList.HList transient -> AgentRun es -> AgentProgram transient context es
+emptyAgentProgram initialTransient agentRun =
   AgentProgram
     { agentRun
+    , initialTransient
+    , modelInputConversation = \_ agentState -> pure agentState.conversation
     , aroundAgentRun = \_ action -> action
     , aroundModelTurn = \_ agentState action -> action agentState
     , aroundToolTurn = \_ _ action -> action
@@ -127,11 +134,11 @@ emptyAgentProgram agentRun =
     }
 
 runAgentLoop
-  :: AgentProgram context es
+  :: AgentProgram transient context es
   -> MiddlewareContext context
-  -> ModelTurn es
-  -> ToolTurn es
-  -> AgentState
+  -> ModelTurn transient es
+  -> ToolTurn transient es
+  -> AgentState transient
   -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
 runAgentLoop program context modelTurn toolTurn agentState = do
   program.aroundModelTurn context agentState modelTurn >>= \case

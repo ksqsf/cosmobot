@@ -288,7 +288,7 @@ askConversation
 askConversation toolCfg cfg conversations parentMessageKey threadId message input conversation = do
   activeReply <- newActiveReply conversations parentMessageKey message threadId conversation
   let observer = AgentAudit.agentAuditObserver
-  agentRun <- Agent.startAgentRunWithHooks (agentContext toolCfg cfg message input) (agentHooks conversations parentMessageKey message) Agent.defaultTools
+  agentRun <- Agent.startAgentRun (agentContext toolCfg cfg message input) Agent.defaultTools
   reply <-
     streamAgentReply cfg observer agentRun activeReply message conversation
       `onException` discardActiveReply activeReply
@@ -322,20 +322,8 @@ agentContext toolCfg cfg message input =
     , toolConfig = toolCfg
     }
 
-agentHooks
-  :: (ChatLog.ChatLog :> es, Storage.Storage :> es, KatipE :> es, Prim :> es)
-  => ConversationStore
-  -> Maybe ConversationMessageKey
-  -> IncomingMessage
-  -> Agent.AgentHooks es
-agentHooks conversations parentMessageKey message =
-  Agent.AgentHooks
-    { rememberToolMessage = \messageId -> rememberConversationFrom conversations parentMessageKey (conversationMessageKey message <$> messageId)
-    , recordSelfMessage = ChatLog.recordSelfMessage message
-    }
-
 streamAgentReply
-  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, Media.Media :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => AskHandlerConfig
   -> Agent.AgentObserver AgentObservation.ObservationContext es
   -> Agent.AgentRun es
@@ -345,7 +333,12 @@ streamAgentReply
   -> Eff es AgentReply
 streamAgentReply cfg observer agentRun activeReply message conversation =
   do
-    let program = Agent.defaultAgentProgram observer cfg.agentMaxTurns agentRun
+    let sink = Agent.ToolEmittedMessageSink (rememberToolEmittedMessage activeReply)
+        program =
+          ( Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessage message)
+          . Agent.withLinkingToolEmittedMessagesToConversation sink
+          )
+            (Agent.defaultAgentProgram observer cfg.agentMaxTurns agentRun)
     (responseId, replyResult) <-
       S.mapM_
         (recordReplyUpdate activeReply)
@@ -414,6 +407,20 @@ conversationLink result parentMessageId linkedMessageId =
     , parentMessageId
     , linkedMessageId
     }
+
+rememberToolEmittedMessage
+  :: (Prim :> es, Concurrent :> es)
+  => ActiveReplyState
+  -> Maybe MessageId
+  -> Eff es ()
+rememberToolEmittedMessage activeReply messageId = do
+  active <- IORef.readIORef activeReply.activeRef
+  case active of
+    Just activeHandle ->
+      traverse_ (addActiveConversationMessage activeReply.conversations activeHandle . conversationMessageKey activeReply.message) messageId
+    Nothing -> do
+      activeHandle <- rememberActiveConversation activeReply.conversations activeReply.parentMessageKey (conversationMessageKey activeReply.message <$> messageId) activeReply.threadId activeReply.baseConversation
+      IORef.writeIORef activeReply.activeRef activeHandle
 
 discardActiveReply :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es) => ActiveReplyState -> Eff es ()
 discardActiveReply activeReply =

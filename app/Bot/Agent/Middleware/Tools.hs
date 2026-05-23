@@ -33,11 +33,13 @@ newtype ToolLimitContext = ToolLimitContext
   }
   deriving (Eq, Show)
 
-withToolLimit :: KatipE :> es => Int -> AgentProgram (ToolLimitContext ': context) es -> AgentProgram context es
+withToolLimit :: KatipE :> es => Int -> AgentProgram transient (ToolLimitContext ': context) es -> AgentProgram transient context es
 withToolLimit maxTurns program =
   program
     { aroundAgentRun = \context action ->
         program.aroundAgentRun (toolLimitContext HList.:& context) action
+    , modelInputConversation = \context agentState ->
+        program.modelInputConversation (toolLimitContext HList.:& context) agentState
     , aroundModelTurn = \context agentState action -> do
         decision <- program.aroundModelTurn (toolLimitContext HList.:& context) agentState action
         case decision of
@@ -56,14 +58,14 @@ withToolLimit maxTurns program =
     toolLimitContext =
       ToolLimitContext{maxToolTurns = max 1 maxTurns}
 
-withToolFailureRecovery :: AgentProgram context es -> AgentProgram context es
+withToolFailureRecovery :: AgentProgram transient context es -> AgentProgram transient context es
 withToolFailureRecovery program =
   program
     { aroundToolCall = \turn call context action ->
         safeToolCall call (program.aroundToolCall turn call context action)
     }
 
-withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => AgentProgram context es -> AgentProgram context es
+withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => AgentProgram transient context es -> AgentProgram transient context es
 withToolMessage program =
   program
     { aroundToolCall = \turn call context action -> do
@@ -71,7 +73,7 @@ withToolMessage program =
         program.aroundToolCall turn call context action
     }
 
-announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => AgentProgram context es -> LLM.ToolCall -> MiddlewareContext context -> Eff es ()
+announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => AgentProgram transient context es -> LLM.ToolCall -> MiddlewareContext context -> Eff es ()
 announceNoisyTool program call context =
   case find ((== call.name) . (.name)) program.agentRun.tools of
     Just tool

@@ -36,7 +36,7 @@ generateAudioTool = Tool
       case sent of
         Right messageId -> do
           let sentText = show messageId :: String
-          pure (toolMessage messageId [i|Generated and sent audio message id: #{sentText}|])
+          pure (toolText [i|Generated and sent audio message id: #{sentText}|])
         Left err ->
           pure (toolFailure (externalServiceFailure ("发送音频失败：" <> err) err).failure)
   }

@@ -26,6 +26,7 @@ module Bot.Effect.Chat
   , ChatHandlers (..)
   , runChatWith
   , runChatRecordingSelfMessages
+  , runChatRecordingExtraMessages
 
     -- * Reply rendering
   , imageDirective
@@ -251,5 +252,31 @@ runChatRecordingSelfMessages recordSelf =
       sent <- passthrough localEnv operation
       recordSelf body
       pure sent
+    operation ->
+      passthrough localEnv operation
+
+runChatRecordingExtraMessages
+  :: Chat :> es
+  => (Maybe MessageId -> Eff es ())
+  -> Eff es a
+  -> Eff es a
+runChatRecordingExtraMessages record =
+  interpose $ \localEnv -> \case
+    operation@ReplyTo{} -> do
+      sent <- passthrough localEnv operation
+      record sent
+      pure sent
+    operation@MentionUser{} -> do
+      sent <- passthrough localEnv operation
+      record sent
+      pure sent
+    operation@ReplyAudio{} -> do
+      result <- passthrough localEnv operation
+      traverse_ record (rightToMaybe result)
+      pure result
+    operation@UploadFile{} -> do
+      result <- passthrough localEnv operation
+      traverse_ record (rightToMaybe result)
+      pure result
     operation ->
       passthrough localEnv operation

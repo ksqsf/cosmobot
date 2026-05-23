@@ -38,7 +38,7 @@ typstToImageTool = Tool
               captionText :: Text
               captionText =
                 maybe "" (" Caption: " <>) toolArgs.caption
-          pure (toolMessage sent [i|Rendered and sent Typst image message id: #{sentText}.#{captionText}|])
+          pure (toolText [i|Rendered and sent Typst image message id: #{sentText}.#{captionText}|])
   }
 
 data TypstArgs = TypstArgs

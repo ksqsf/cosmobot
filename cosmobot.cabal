@@ -170,6 +170,8 @@ common bot-agent-modules
         Bot.Agent.Middleware.ContextCompaction
         Bot.Agent.Middleware.Observation
         Bot.Agent.Middleware.Observation.Types
+        Bot.Agent.Middleware.ToolEmittedMessage
+        Bot.Agent.Middleware.ToolResultCompaction
         Bot.Agent.Middleware.Tools
         Bot.Agent.ToolRegistry
         Bot.Agent.Tools

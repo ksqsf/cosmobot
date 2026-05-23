@@ -34,17 +34,17 @@ compactionNoticeMessage :: Text
 compactionNoticeMessage =
   "正在整理较早的对话上下文..."
 
-withContextCompaction :: (LLM.LLM :> es) => AgentProgram context es -> AgentProgram context es
+withContextCompaction :: (LLM.LLM :> es) => AgentProgram transient context es -> AgentProgram transient context es
 withContextCompaction program =
   withContextCompactionUsing (\_ -> pure ()) program
 
-withContextCompactionNotice :: (Chat.Chat :> es, LLM.LLM :> es) => AgentProgram context es -> AgentProgram context es
+withContextCompactionNotice :: (Chat.Chat :> es, LLM.LLM :> es) => AgentProgram transient context es -> AgentProgram transient context es
 withContextCompactionNotice program =
   withContextCompactionUsing
     (\_ -> void $ Chat.replyTo program.agentRun.context.message compactionNoticeMessage)
     program
 
-withContextCompactionUsing :: (LLM.LLM :> es) => (AgentState -> Eff es ()) -> AgentProgram context es -> AgentProgram context es
+withContextCompactionUsing :: (LLM.LLM :> es) => (AgentState transient -> Eff es ()) -> AgentProgram transient context es -> AgentProgram transient context es
 withContextCompactionUsing notify program =
   program
     { aroundModelTurn = \context agentState action -> do
@@ -52,7 +52,7 @@ withContextCompactionUsing notify program =
         program.aroundModelTurn context compactedState action
     }
 
-compactAgentState :: LLM.LLM :> es => (AgentState -> Eff es ()) -> AgentState -> Eff es AgentState
+compactAgentState :: LLM.LLM :> es => (AgentState transient -> Eff es ()) -> AgentState transient -> Eff es (AgentState transient)
 compactAgentState notify agentState@AgentState{conversation = Conversation messages}
   | Seq.length messages < compactionHardLimit =
       pure agentState
@@ -63,6 +63,7 @@ compactAgentState notify agentState@AgentState{conversation = Conversation messa
       pure AgentState
         { conversation = Conversation (LLM.systemText (summaryMessage summary) Seq.<| newer)
         , turn = agentState.turn
+        , transient = agentState.transient
         }
 
 splitCompactablePrefix :: Seq.Seq LLM.ChatMessage -> (Seq.Seq LLM.ChatMessage, Seq.Seq LLM.ChatMessage)

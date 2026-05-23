@@ -4,6 +4,7 @@ Description : Agent lifecycle observation wrappers
 Stability   : experimental
 -}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 
 module Bot.Agent.Middleware.Observation
@@ -54,12 +55,19 @@ data ObservedConversationLink = ObservedConversationLink
   , linkedMessageId :: !MessageId
   }
 
-withObservation :: (HList.Has ToolLimitContext context) => AgentObserver ObservationContext es -> AgentProgram (ObservationContext ': context) es -> AgentProgram context es
+withObservation
+  :: forall transient context es.
+     (HList.Has ToolLimitContext context, HList.Has (ToolResultObservation es) context)
+  => AgentObserver ObservationContext es
+  -> AgentProgram transient (ObservationContext ': context) es
+  -> AgentProgram transient context es
 withObservation observer program =
   program
     { aroundAgentRun = \context action ->
         withObservedAgentRun observer (HList.get @ToolLimitContext context) program.agentRun (map (.name) program.agentRun.exposedTools) do
           program.aroundAgentRun (emptyObservationContext HList.:& context) action
+    , modelInputConversation = \context agentState ->
+        program.modelInputConversation (emptyObservationContext HList.:& context) agentState
     , aroundModelTurn = \context agentState action ->
         let turnInfo = ObservedModelTurn
               { runId = program.agentRun.runId
@@ -77,7 +85,9 @@ withObservation observer program =
               , turn = turn
               , toolCall = toolCall
               }
-        in withObservedToolCall observer observedCall \observation ->
+            toolResultObservation =
+              HList.get @(ToolResultObservation es) context
+        in withObservedToolCall toolResultObservation.observeToolResult observer observedCall \observation ->
              program.aroundToolCall turn toolCall (observation HList.:& context) action
     }
   where
@@ -99,7 +109,7 @@ withObservation observer program =
           , toolCalls = toList toolCalls
           }
 
-conversationMessageCount :: AgentState -> Int
+conversationMessageCount :: AgentState transient -> Int
 conversationMessageCount AgentState{conversation = Conversation{messages}} =
   Foldable.length messages
 
@@ -150,11 +160,12 @@ withObservedModelTurn observer turnInfo action = do
   pure result
 
 withObservedToolCall
-  :: AgentObserver ObservationContext es
+  :: (ToolResult -> Eff es Text)
+  -> AgentObserver ObservationContext es
   -> ObservedToolCall
   -> (ObservationContext -> Eff es ToolResult)
   -> Eff es ToolResult
-withObservedToolCall observer callInfo action = do
+withObservedToolCall toolResultForObservation observer callInfo action = do
   observation <- observer.observe ToolCallStarted
     { runId = callInfo.runId
     , turn = callInfo.turn
@@ -162,7 +173,7 @@ withObservedToolCall observer callInfo action = do
     }
   (status, result) <-
     statusFromResult <$> action observation
-  finishToolCall observer callInfo status result
+  finishToolCall toolResultForObservation observer callInfo status result
   pure result
 
 statusFromResult :: ToolResult -> (Text, ToolResult)
@@ -176,17 +187,18 @@ observeConversationLinked :: AgentObserver ObservationContext es -> ObservedConv
 observeConversationLinked observer ObservedConversationLink{runId, parentMessageId, linkedMessageId} =
   void $ observer.observe AgentConversationLinked{runId, linkedMessageId, parentMessageId}
 
-finishToolCall :: AgentObserver ObservationContext es -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
-finishToolCall observer callInfo status result =
+finishToolCall :: (ToolResult -> Eff es Text) -> AgentObserver ObservationContext es -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
+finishToolCall toolResultForObservation observer callInfo status result = do
+  observedResult <- toolResultForObservation result
   void $ observer.observe ToolCallFinished
     { runId = callInfo.runId
     , turn = callInfo.turn
     , toolCallId = callInfo.toolCall.id
     , toolName = callInfo.toolCall.name
     , status = status
-    , result = toolResultContent result
+    , result = observedResult
     , resultLength = Text.length (toolResultContent result)
-    , messageIds = toolResultMessageIds result
+    , messageIds = []
     }
 
 catchStream

@@ -14,7 +14,6 @@ module Bot.Agent.ToolRegistry
 where
 
 import Bot.Agent.Types
-import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -35,10 +34,10 @@ toolSchema Tool{name, description, parameters} =
     }
 
 -- | Start a tool for this agent run.
-startToolRun :: Chat.Chat :> es => AgentContext es -> AgentHooks es -> Tool es -> Eff es (RunningTool es)
-startToolRun context hooks Tool{name, start} = do
-  run <- Chat.runChatRecordingSelfMessages hooks.recordSelfMessage (start context)
-  pure RunningTool{name, run = \args -> Chat.runChatRecordingSelfMessages hooks.recordSelfMessage (run args)}
+startToolRun :: AgentContext es -> Tool es -> Eff es (RunningTool es)
+startToolRun context Tool{name, start} = do
+  run <- start context
+  pure RunningTool{name, run}
 
 -- | Resolve a model tool call, decode its JSON arguments, and invoke the
 -- per-run runner.

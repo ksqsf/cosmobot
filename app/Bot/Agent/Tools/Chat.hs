@@ -83,7 +83,7 @@ sendReplyTool = Tool
       withParsedToolArgs sendReplyArgs args \body -> do
         sent <- Chat.replyTo context.message body
         let sentText = show sent :: String
-        pure (toolMessage sent [i|Sent message id: #{sentText}|])
+        pure (toolText [i|Sent message id: #{sentText}|])
   }
 
 sendFileTool :: Chat.Chat :> es => Tool es
@@ -102,7 +102,7 @@ sendFileTool = Tool
         case result of
           Right sent -> do
             let sentText = show sent :: String
-            pure (toolMessage sent [i|Sent file #{Text.pack path}; message id: #{sentText}|])
+            pure (toolText [i|Sent file #{Text.pack path}; message id: #{sentText}|])
           Left err -> do
             let failureText = "发送文件失败：" <> err
             void $ Chat.replyTo context.message failureText
@@ -128,7 +128,7 @@ mentionUserTool = Tool
       withParsedToolArgs mentionUserArgs args \(userId, text) -> do
         sent <- Chat.mentionUser context.message userId text
         let sentText = show sent :: String
-        pure (toolMessage sent [i|Sent mention message id: #{sentText}|])
+        pure (toolText [i|Sent mention message id: #{sentText}|])
   }
 
 senderMemberInfoTool :: Chat.Chat :> es => Tool es
@@ -293,7 +293,7 @@ userAvatarResult context value =
       let body = ReplyBody.imageDirective url
       sent <- Chat.replyTo context.message body
       logInfo [i|get_user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
-      pure (toolMessageWithImages sent (jsonText value) [url])
+      pure (toolTextWithImages (jsonText value) [url])
 
 sendReplyArgs :: Aeson.Value -> AesonTypes.Parser Text
 sendReplyArgs =

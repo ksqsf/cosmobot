@@ -6,8 +6,6 @@ Stability   : experimental
 module Bot.Agent.Types
   ( Tool (..)
   , AgentContext (..)
-  , AgentHooks (..)
-  , ignoreAgentHooks
   , AgentEvent (..)
   , AgentObserver (..)
   , AgentFailureCategory (..)
@@ -25,17 +23,13 @@ module Bot.Agent.Types
   , toolText
   , toolTextWithImages
   , toolFailure
-  , toolMessage
-  , toolMessageWithImages
   , toolResultContent
   , toolResultImageUrls
-  , toolResultMessageIds
   , toolResultFailure
   )
 where
 
 import Bot.Agent.Failure
-import Bot.Core.Conversation
 import Bot.Core.Message
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -92,19 +86,6 @@ data AgentContext es = AgentContext
   , askCommand :: !Text
   , toolConfig :: !ToolConfig
   }
-
--- | Handler-owned side effects attached to one agent run.
-data AgentHooks es = AgentHooks
-  { rememberToolMessage :: Maybe MessageId -> Conversation -> Eff es ()
-  , recordSelfMessage :: Text -> Eff es ()
-  }
-
-ignoreAgentHooks :: AgentHooks es
-ignoreAgentHooks =
-  AgentHooks
-    { rememberToolMessage = \_ _ -> pure ()
-    , recordSelfMessage = \_ -> pure ()
-    }
 
 -- | Semantic lifecycle events emitted by the agent engine.
 --
@@ -177,7 +158,6 @@ data ToolResult
   = ToolSucceeded
       { content :: !Text
       , imageUrls :: ![Text]
-      , messageIds :: ![Maybe MessageId]
       }
   | ToolFailed
       { failure :: !AgentFailure
@@ -185,23 +165,15 @@ data ToolResult
 
 toolText :: Text -> ToolResult
 toolText content =
-  ToolSucceeded content [] []
+  ToolSucceeded content []
 
 toolTextWithImages :: Text -> [Text] -> ToolResult
 toolTextWithImages content imageUrls =
-  ToolSucceeded content imageUrls []
+  ToolSucceeded content imageUrls
 
 toolFailure :: AgentFailure -> ToolResult
 toolFailure failure =
   ToolFailed failure
-
-toolMessage :: Maybe MessageId -> Text -> ToolResult
-toolMessage messageId content =
-  ToolSucceeded content [] [messageId]
-
-toolMessageWithImages :: Maybe MessageId -> Text -> [Text] -> ToolResult
-toolMessageWithImages messageId content imageUrls =
-  ToolSucceeded content imageUrls [messageId]
 
 toolResultContent :: ToolResult -> Text
 toolResultContent = \case
@@ -214,13 +186,6 @@ toolResultImageUrls :: ToolResult -> [Text]
 toolResultImageUrls = \case
   ToolSucceeded{imageUrls} ->
     imageUrls
-  ToolFailed{} ->
-    []
-
-toolResultMessageIds :: ToolResult -> [Maybe MessageId]
-toolResultMessageIds = \case
-  ToolSucceeded{messageIds} ->
-    messageIds
   ToolFailed{} ->
     []
 
