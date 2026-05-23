@@ -1250,7 +1250,7 @@ matrixEventIgnoreReason cfg RoomEvent{roomId, event}
       [i|room=#{roomId} sender=#{eventSender} event_id=#{eventIdText} msgtype=#{eventMsgtype}|]
 
 matrixMessageDigest :: Config -> MatrixRoomId -> Event -> Text -> MessageDigest
-matrixMessageDigest cfg roomId event body =
+matrixMessageDigest cfg roomId event _body =
   MessageDigest
     { chatIsAllowed = roomAllowed
     , senderIsAllowed = senderSuperuser
