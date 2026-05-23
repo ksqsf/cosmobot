@@ -86,8 +86,9 @@ replyToPlatform
   -> Text
   -> Eff es (Maybe MessageId)
 replyToPlatform rpcConfig rpcState message body =
-  withPlatformDriver rpcConfig rpcState message "chat reply" \driver ->
-    driver.replyTo message body
+  withPlatformDriver rpcConfig rpcState message "chat reply" \driver -> do
+    normalizedBody <- Media.normalizeReplyBody body
+    driver.replyTo message normalizedBody
 
 uploadFileToPlatform
   :: (ChatDriverConstraints es, KatipE :> es)
@@ -230,8 +231,9 @@ mentionPlatformUser
   -> Text
   -> Eff es (Maybe MessageId)
 mentionPlatformUser rpcConfig rpcState message userId body =
-  withPlatformDriver rpcConfig rpcState message "chat mention" \driver ->
-    driver.mentionUser message userId body
+  withPlatformDriver rpcConfig rpcState message "chat mention" \driver -> do
+    normalizedBody <- Media.normalizeReplyBody body
+    driver.mentionUser message userId normalizedBody
 
 setPlatformMemberTitle
   :: (ChatDriverConstraints es, KatipE :> es)

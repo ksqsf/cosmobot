@@ -10,6 +10,10 @@ module Bot.Effect.Media
   , storeMediaObject
   , normalizeMediaRef
   , normalizeMediaRefs
+  , publicMediaRef
+  , localMediaPath
+  , platformMediaRef
+  , storePlatformMediaRef
   , normalizeIncomingMessage
   , normalizeIncomingMessages
   , normalizeReferencedMessage
@@ -34,6 +38,10 @@ data MediaObject = MediaObject
 data Media :: Effect where
   StoreMediaObject :: MediaObject -> Media m (Maybe Text)
   NormalizeMediaRef :: Text -> Media m Text
+  PublicMediaRef :: Text -> Media m Text
+  LocalMediaPath :: Text -> Media m (Maybe FilePath)
+  PlatformMediaRef :: Text -> Text -> Text -> Media m (Maybe Text)
+  StorePlatformMediaRef :: Text -> Text -> Text -> Text -> Media m ()
 
 type instance DispatchOf Media = Dynamic
 
@@ -44,6 +52,22 @@ storeMediaObject =
 normalizeMediaRef :: Media :> es => Text -> Eff es Text
 normalizeMediaRef =
   send . NormalizeMediaRef
+
+publicMediaRef :: Media :> es => Text -> Eff es Text
+publicMediaRef =
+  send . PublicMediaRef
+
+localMediaPath :: Media :> es => Text -> Eff es (Maybe FilePath)
+localMediaPath =
+  send . LocalMediaPath
+
+platformMediaRef :: Media :> es => Text -> Text -> Text -> Eff es (Maybe Text)
+platformMediaRef platform scope ref =
+  send (PlatformMediaRef platform scope ref)
+
+storePlatformMediaRef :: Media :> es => Text -> Text -> Text -> Text -> Eff es ()
+storePlatformMediaRef platform scope ref platformRef =
+  send (StorePlatformMediaRef platform scope ref platformRef)
 
 normalizeMediaRefs :: Media :> es => [Text] -> Eff es [Text]
 normalizeMediaRefs =
@@ -98,3 +122,11 @@ runMediaPassthrough =
       pure (Just ("data:" <> mediaObject.mimeType <> ";base64,"))
     NormalizeMediaRef ref ->
       pure ref
+    PublicMediaRef ref ->
+      pure ref
+    LocalMediaPath _ ->
+      pure Nothing
+    PlatformMediaRef _ _ _ ->
+      pure Nothing
+    StorePlatformMediaRef _ _ _ _ ->
+      pure ()

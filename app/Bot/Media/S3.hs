@@ -16,12 +16,14 @@ import qualified Amazonka.Auth as AWSAuth
 import qualified Amazonka.S3 as S3
 import qualified Amazonka.S3.Lens as S3Lens
 import Bot.Effect.Media
+import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Media.Cache as Cache
+import qualified Bot.Media.Config as MediaConfig
 import Bot.Media.S3.Config
 import Bot.Prelude
 import qualified Bot.Util.HTTP as Http
 import qualified Bot.Util.Image as Image
 import Control.Lens ((.~), (?~))
-import Crypto.Hash (Digest, SHA256, hash)
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.List as List
@@ -31,29 +33,38 @@ import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types.Header as HTTPHeader
-import System.FilePath (takeExtension, takeFileName)
+import System.FilePath (takeFileName)
 import System.IO.Error (ioError, userError)
 
 data Runtime = Runtime
-  { cfg :: !Config
+  { cfg :: !MediaConfig.Config
   , manager :: !HTTP.Manager
   , env :: !(Maybe AWS.Env)
   }
 
 runMediaS3
-  :: (IOE :> es, KatipE :> es, FileSystem :> es)
-  => Config
+  :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es)
+  => MediaConfig.Config
   -> Eff (Media : es) a
   -> Eff es a
 runMediaS3 cfg inner = do
   manager <- liftIO Http.newTlsManager
-  env <- if cfg.enabled then Just <$> createAmazonkaEnv manager cfg else pure Nothing
+  env <- if cfg.s3.enabled then Just <$> createAmazonkaEnv manager cfg.s3 else pure Nothing
+  let runtime = Runtime{cfg, manager, env}
   interpret
     ( \_ -> \case
         StoreMediaObject mediaObject ->
-          storeObject Runtime{cfg, manager, env} mediaObject
+          Just <$> cacheObject runtime Nothing mediaObject
         NormalizeMediaRef ref ->
-          normalizeRef Runtime{cfg, manager, env} ref
+          normalizeRef runtime ref
+        PublicMediaRef ref ->
+          publicRef runtime ref
+        LocalMediaPath ref ->
+          localPath runtime ref
+        PlatformMediaRef platform scope ref ->
+          Cache.loadPlatformRef (cacheConfig runtime) platform scope ref
+        StorePlatformMediaRef platform scope ref platformRef ->
+          Cache.storePlatformRef platform scope ref platformRef
     )
     inner
 
@@ -94,11 +105,9 @@ configureAddressing cfg service =
     _ ->
       service & AWS.service_s3AddressingStyle .~ AWS.S3AddressingStyleAuto
 
-normalizeRef :: (IOE :> es, KatipE :> es, FileSystem :> es) => Runtime -> Text -> Eff es Text
+normalizeRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es Text
 normalizeRef runtime ref
-  | not runtime.cfg.enabled =
-      pure ref
-  | isAlreadyPublicObject runtime.cfg ref =
+  | Cache.isMediaId ref =
       pure ref
   | "data:image/" `Text.isPrefixOf` Text.strip ref =
       case decodeDataMediaObject ref of
@@ -106,47 +115,82 @@ normalizeRef runtime ref
           logInfo "Skipping invalid data:image media reference"
           pure ref
         Just mediaObject ->
-          fromMaybe ref <$> storeObject runtime mediaObject
+          cacheObject runtime Nothing mediaObject
   | "http://" `Text.isPrefixOf` Text.toLower (Text.strip ref) ||
       "https://" `Text.isPrefixOf` Text.toLower (Text.strip ref) = do
       downloaded <- (Just <$> downloadObject runtime.manager ref) `catchSync` \err -> do
         logInfo [i|Remote media download skipped: #{show err :: String}|]
         pure Nothing
-      maybe (pure ref) (fmap (fromMaybe ref) . storeObject runtime) downloaded
+      maybe (pure ref) (cacheObject runtime (Just (Text.strip ref))) downloaded
   | "file://" `Text.isPrefixOf` Text.strip ref = do
       mediaObject <- (Just <$> fileObject ref) `catchSync` \err -> do
         logInfo [i|Local media read skipped: #{show err :: String}|]
         pure Nothing
-      maybe (pure ref) (fmap (fromMaybe ref) . storeObject runtime) mediaObject
+      maybe (pure ref) (cacheObject runtime (Just (Text.strip ref))) mediaObject
   | otherwise =
       pure ref
 
-storeObject :: (IOE :> es, KatipE :> es) => Runtime -> MediaObject -> Eff es (Maybe Text)
-storeObject runtime mediaObject =
-  storeObjectUnsafe runtime mediaObject `catchSync` \err -> do
+publicRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es Text
+publicRef runtime ref =
+  case Cache.parseMediaId ref of
+    Nothing -> normalizeRef runtime ref >>= publicRef runtime
+    Just fileId ->
+      Cache.loadCachedMedia (cacheConfig runtime) fileId >>= \case
+        Nothing ->
+          pure ref
+        Just cached ->
+          ensurePublicObject runtime cached
+
+localPath :: (FileSystem :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es (Maybe FilePath)
+localPath runtime ref =
+  case Cache.parseMediaId ref of
+    Nothing ->
+      pure Nothing
+    Just fileId ->
+      fmap (.path) <$> Cache.loadCachedMedia (cacheConfig runtime) fileId
+
+cacheObject :: (IOE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Maybe Text -> MediaObject -> Eff es Text
+cacheObject runtime sourceRef mediaObject = do
+  cached <- Cache.cacheMediaObject (cacheConfig runtime) sourceRef mediaObject
+  pure (Cache.mediaIdForFileId cached.fileId)
+
+ensurePublicObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es Text
+ensurePublicObject runtime cached =
+  case publicObjectUrl runtime.cfg cached of
+    Nothing ->
+      pure (Cache.mediaIdForFileId cached.fileId)
+    Just url -> do
+      when runtime.cfg.s3.enabled do
+        void (storeObject runtime cached)
+      pure url
+
+storeObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
+storeObject runtime cached =
+  storeObjectUnsafe runtime cached `catchSync` \err -> do
     logInfo [i|S3 media upload skipped: #{show err :: String}|]
     pure Nothing
 
-storeObjectUnsafe :: (IOE :> es, KatipE :> es) => Runtime -> MediaObject -> Eff es (Maybe Text)
+storeObjectUnsafe :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
 storeObjectUnsafe Runtime{cfg, env = Nothing} _
-  | not cfg.enabled =
+  | not cfg.s3.enabled =
       pure Nothing
   | otherwise =
-      liftIO (ioError (userError (Text.unpack (missingS3ConfigMessage cfg))))
-storeObjectUnsafe Runtime{cfg, env = Just env} mediaObject
-  | not cfg.enabled =
+      liftIO (ioError (userError (Text.unpack (missingS3ConfigMessage cfg.s3))))
+storeObjectUnsafe Runtime{cfg, env = Just env} cached
+  | not cfg.s3.enabled =
       pure Nothing
   | otherwise = do
-      ensureS3Config cfg
-      let key = objectKey cfg mediaObject
-          mime = mediaObject.mimeType
+      ensureS3Config cfg.s3
+      bytes <- FileSystemByteString.readFile cached.path
+      let key = objectKey cfg.s3 cached
+          mime = cached.mimeType
           request =
-            S3.newPutObject (S3.BucketName (fromMaybe "" cfg.bucket)) (S3.ObjectKey key) (AWS.toBody mediaObject.bytes)
+            S3.newPutObject (S3.BucketName (fromMaybe "" cfg.s3.bucket)) (S3.ObjectKey key) (AWS.toBody bytes)
               & S3Lens.putObject_contentType ?~ mime
-              & setPublicAcl cfg
+              & setPublicAcl cfg.s3
       logInfo [i|S3 media upload: key=#{key} mime=#{mime}|]
       _ <- liftIO $ AWS.runResourceT (AWS.send env request)
-      pure (Just (publicObjectUrl cfg key))
+      pure (publicObjectUrl cfg cached)
 
 setPublicAcl :: Config -> S3.PutObject -> S3.PutObject
 setPublicAcl cfg request
@@ -170,7 +214,6 @@ missingS3ConfigMessage cfg =
       [ name
       | (name, Nothing) <-
           [ ("bucket", cfg.bucket)
-          , ("public_base_url", cfg.publicBaseUrl)
           , ("access_key_id", cfg.accessKeyId)
           , ("secret_access_key", cfg.secretAccessKey)
           ]
@@ -222,61 +265,28 @@ fileObject ref = do
     , sourceName = Just (Text.pack (takeFileName path))
     }
 
-objectKey :: Config -> MediaObject -> Text
+objectKey :: Config -> Cache.CachedMedia -> Text
 objectKey cfg mediaObject =
-  let ext = extensionFor mediaObject
+  let ext = Cache.extensionFor MediaObject{bytes = "", mimeType = mediaObject.mimeType, sourceName = mediaObject.sourceName}
       prefix = Text.dropWhileEnd (== '/') cfg.prefix
-  in prefix <> "/" <> contentDigest mediaObject.bytes <> ext
-
-contentDigest :: StrictByteString.ByteString -> Text
-contentDigest bytes =
-  Text.pack (show (hash bytes :: Digest SHA256))
-
-extensionFor :: MediaObject -> Text
-extensionFor mediaObject =
-  case mediaObject.sourceName >>= extensionFromName of
-    Just ext -> ext
-    Nothing -> extensionFromMime mediaObject.mimeType
-
-extensionFromName :: Text -> Maybe Text
-extensionFromName name =
-  let ext = Text.pack (takeExtension (Text.unpack name))
-  in if Text.null ext then Nothing else Just ext
-
-extensionFromMime :: Text -> Text
-extensionFromMime mime =
-  case Text.toLower (Text.takeWhile (/= ';') mime) of
-    "image/jpeg" -> ".jpg"
-    "image/png" -> ".png"
-    "image/webp" -> ".webp"
-    "image/gif" -> ".gif"
-    "audio/mpeg" -> ".mp3"
-    "audio/wav" -> ".wav"
-    "audio/ogg" -> ".ogg"
-    _ -> ".bin"
+  in prefix <> "/" <> mediaObject.digest <> ext
 
 mimeFromName :: Text -> Text
 mimeFromName name =
-  case Text.toLower (Text.pack (takeExtension (Text.unpack name))) of
-    ".jpg" -> "image/jpeg"
-    ".jpeg" -> "image/jpeg"
-    ".png" -> "image/png"
-    ".webp" -> "image/webp"
-    ".gif" -> "image/gif"
-    ".mp3" -> "audio/mpeg"
-    ".wav" -> "audio/wav"
-    ".ogg" -> "audio/ogg"
-    _ -> "application/octet-stream"
+  Cache.mimeFromName name
 
-publicObjectUrl :: Config -> Text -> Text
-publicObjectUrl cfg key =
-  Text.dropWhileEnd (== '/') (fromMaybe "" cfg.publicBaseUrl) <> "/" <> key
-
-isAlreadyPublicObject :: Config -> Text -> Bool
-isAlreadyPublicObject cfg ref =
-  maybe False (\base -> Text.dropWhileEnd (== '/') base `Text.isPrefixOf` ref) cfg.publicBaseUrl
+publicObjectUrl :: MediaConfig.Config -> Cache.CachedMedia -> Maybe Text
+publicObjectUrl cfg cached = do
+  base <- cfg.publicBaseUrl
+  pure (Text.dropWhileEnd (== '/') base <> "/" <> objectKey cfg.s3 cached)
 
 nonEmptyText :: Text -> Maybe Text
 nonEmptyText text =
   let stripped = Text.strip text
   in if Text.null stripped then Nothing else Just stripped
+
+cacheConfig :: Runtime -> Cache.CacheConfig
+cacheConfig runtime =
+  Cache.CacheConfig
+    { directory = runtime.cfg.cacheDir
+    }

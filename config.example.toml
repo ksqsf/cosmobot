@@ -86,7 +86,11 @@ timeout = 300
 # speed = 1.0
 # instructions = "Speak clearly."
 
-[s3]
+[media]
+cache_dir = "media-cache"
+public_base_url = "https://media.example.com/cosmobot-media"
+
+[media.s3]
 enabled = false
 bucket = "cosmobot-media"
 region = "us-east-1"
@@ -95,7 +99,6 @@ region = "us-east-1"
 # region = "auto"
 # endpoint = "https://<account-id>.r2.cloudflarestorage.com"
 # addressing_style = "path"
-public_base_url = "https://media.example.com/cosmobot-media"
 access_key_id = ""
 secret_access_key = ""
 prefix = "cosmobot/media"

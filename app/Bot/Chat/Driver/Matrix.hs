@@ -31,6 +31,7 @@ module Bot.Chat.Driver.Matrix
 where
 
 import qualified Bot.Chat.Driver.Types as Driver
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Storage.Matrix as MatrixStorage
 import qualified Bot.Effect.Chat as Chat
@@ -116,7 +117,7 @@ instance IsString MatrixEventId where
     matrixEventId . Text.pack
 
 matrixDriver
-  :: (Matrix :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+  :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es)
   => Driver.ChatPlatformDriver es
 matrixDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformMatrix
@@ -720,7 +721,7 @@ matrixAuthMode cfg
   | isJust cfg.loginUser && isJust cfg.loginPassword = "login"
   | otherwise = "none"
 
-replyTo :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
+replyTo :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
 replyTo message body =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
@@ -916,7 +917,7 @@ uploadFile message path =
       pure (Left "Matrix file upload requires a Matrix room id.")
 
 sendMatrixImage
-  :: (Matrix :> es, FileSystem :> es, IOE :> es)
+  :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es)
   => Text
   -> Maybe MatrixReplyTo
   -> Text
@@ -925,11 +926,22 @@ sendMatrixImage roomId replyRelation imageRef =
   case matrixMxcRef imageRef of
     Just contentUri ->
       sendMatrixImageMessage roomId replyRelation "image" contentUri "application/octet-stream" 0
-    Nothing ->
-      withMatrixImageFile imageRef \path fileName mime -> do
-        size <- FileSystem.getFileSize path
-        uploaded <- uploadMedia path fileName mime
-        sendMatrixImageMessage roomId replyRelation fileName uploaded.contentUri mime size
+    Nothing -> do
+      scope <- matrixMediaScope
+      Media.platformMediaRef "matrix" scope imageRef >>= \case
+        Just contentUri ->
+          sendMatrixImageMessage roomId replyRelation "image" contentUri "application/octet-stream" 0
+        Nothing ->
+          withMatrixImageFile imageRef \path fileName mime -> do
+            size <- FileSystem.getFileSize path
+            uploaded <- uploadMedia path fileName mime
+            Media.storePlatformMediaRef "matrix" scope imageRef uploaded.contentUri
+            sendMatrixImageMessage roomId replyRelation fileName uploaded.contentUri mime size
+
+matrixMediaScope :: Matrix :> es => Eff es Text
+matrixMediaScope = do
+  cfg <- matrixConfig
+  pure (fromMaybe cfg.homeserver cfg.userId)
 
 sendMatrixImageMessage
   :: Matrix :> es
@@ -998,21 +1010,25 @@ matrixMxcRef ref =
   in stripped <$ guard ("mxc://" `Text.isPrefixOf` stripped)
 
 withMatrixImageFile
-  :: (FileSystem :> es, IOE :> es)
+  :: (Media.Media :> es, FileSystem :> es, IOE :> es)
   => Text
   -> (FilePath -> Text -> Text -> Eff es a)
   -> Eff es a
 withMatrixImageFile imageRef action =
-  case matrixLocalPath imageRef of
+  Media.localMediaPath imageRef >>= \case
     Just path ->
       action path (matrixUploadFileName path) (matrixImageMimeType path)
     Nothing ->
-      case matrixDataImage imageRef of
-        Just (mime, bytes) ->
-          withTemporaryMatrixImage mime bytes \path ->
-            action path (matrixUploadFileName path) mime
+      case matrixLocalPath imageRef of
+        Just path ->
+          action path (matrixUploadFileName path) (matrixImageMimeType path)
         Nothing ->
-          throwIO (userError "Matrix image reply requires a file://, data:image/*, or mxc:// image reference.")
+          case matrixDataImage imageRef of
+            Just (mime, bytes) ->
+              withTemporaryMatrixImage mime bytes \path ->
+                action path (matrixUploadFileName path) mime
+            Nothing ->
+              throwIO (userError "Matrix image reply requires a media:, file://, data:image/*, or mxc:// image reference.")
 
 withMatrixAudioFile
   :: (FileSystem :> es, IOE :> es)

@@ -67,7 +67,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . Skills.runSkills cfg.skills
                . Scheduler.runScheduler
                . TypstCLI.runTypst
-               . MediaS3.runMediaS3 cfg.s3
+               . MediaS3.runMediaS3 cfg.media
                . OpenAI.runLLM cfg.llm
                . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
                . Lifecycle.runLifecycle

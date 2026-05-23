@@ -133,6 +133,11 @@ common bot-core-modules
         Bot.Effect.Chat
         Bot.Effect.Media
         Bot.Core.ReplyBody
+        Bot.Media.Cache
+        Bot.Media.Config
+        Bot.Media.S3
+        Bot.Media.S3.Config
+        Bot.Util.Image
 
 common bot-chat-driver-modules
     other-modules:

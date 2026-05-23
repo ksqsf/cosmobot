@@ -18,7 +18,6 @@ data Config = Config
   , bucket :: !(Maybe Text)
   , region :: !Text
   , endpoint :: !(Maybe Text)
-  , publicBaseUrl :: !(Maybe Text)
   , accessKeyId :: !(Maybe Text)
   , secretAccessKey :: !(Maybe Text)
   , prefix :: !Text
@@ -33,7 +32,6 @@ defaultConfig = Config
   , bucket = Nothing
   , region = "us-east-1"
   , endpoint = Nothing
-  , publicBaseUrl = Nothing
   , accessKeyId = Nothing
   , secretAccessKey = Nothing
   , prefix = "cosmobot/media"
@@ -47,10 +45,9 @@ instance FromValue Config where
     bucket <- optKey "bucket"
     region <- fromMaybe defaultConfig.region <$> optKey "region"
     endpoint <- optKey "endpoint"
-    publicBaseUrl <- optKey "public_base_url"
     accessKeyId <- optKey "access_key_id"
     secretAccessKey <- optKey "secret_access_key"
     prefix <- fromMaybe defaultConfig.prefix <$> optKey "prefix"
     publicReadAcl <- fromMaybe defaultConfig.publicReadAcl <$> optKey "public_read_acl"
     addressingStyle <- fromMaybe defaultConfig.addressingStyle <$> optKey "addressing_style"
-    pure Config{enabled, bucket, region, endpoint, publicBaseUrl, accessKeyId, secretAccessKey, prefix, publicReadAcl, addressingStyle}
+    pure Config{enabled, bucket, region, endpoint, accessKeyId, secretAccessKey, prefix, publicReadAcl, addressingStyle}
