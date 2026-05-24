@@ -38,6 +38,7 @@ main =
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
+      , testCase "Matrix bot mention uses mentions field only" testMatrixBotMentionUsesMentionsFieldOnly
       , testCase "Matrix Markdown renders custom HTML" testMatrixMarkdownRendersCustomHtml
       , testCase "Matrix Markdown renders user ids as mention links" testMatrixMarkdownRendersUserIdsAsMentionLinks
       , testCase "Discord message converts to incoming message" testDiscordMessageConvertsToIncomingMessage
@@ -341,22 +342,18 @@ testMatrixReplyRelationConvertsToReplyMessageId = do
 
 testMatrixSuperuserIsMarkedInDigest :: IO ()
 testMatrixSuperuserIsMarkedInDigest = do
-  let cfg = Matrix.Config
-        { Matrix.homeserver = "https://matrix.example.org"
-        , Matrix.loginUser = Nothing
-        , Matrix.loginPassword = Nothing
-        , Matrix.deviceId = Nothing
-        , Matrix.directRooms = []
-        , Matrix.userId = Just "@bot:example.org"
-        , Matrix.allowedRooms = ["!room:example.org"]
-        , Matrix.superusers = ["@alice:example.org"]
-        }
-      incoming = fromMaybe (error "expected incoming Matrix message") $
-        Matrix.eventToIncomingMessageWith cfg matrixMentionRoomEvent
+  let incoming = fromMaybe (error "expected incoming Matrix message") $
+        Matrix.eventToIncomingMessageWith matrixMentionConfig matrixMentionRoomEvent
   incoming.digest.chatIsAllowed @?= True
   incoming.digest.senderIsAllowed @?= True
   incoming.digest.senderIsSuperuser @?= True
   incoming.digest.mentionsBot @?= True
+
+testMatrixBotMentionUsesMentionsFieldOnly :: IO ()
+testMatrixBotMentionUsesMentionsFieldOnly = do
+  let incoming = fromMaybe (error "expected incoming Matrix message") $
+        Matrix.eventToIncomingMessageWith matrixMentionConfig matrixTextOnlyMentionRoomEvent
+  incoming.digest.mentionsBot @?= False
 
 testDiscordMessageConvertsToIncomingMessage :: IO ()
 testDiscordMessageConvertsToIncomingMessage = do
@@ -582,7 +579,7 @@ matrixMentionRoomEvent =
         { Matrix.content = Matrix.EventContent
             { Matrix.msgtype = Just "m.text"
             , Matrix.body = Just "hello @bot:example.org"
-            , Matrix.mentions = []
+            , Matrix.mentions = ["@bot:example.org"]
             , Matrix.replyToEventId = Nothing
             }
         , Matrix.type_ = "m.room.message"
@@ -590,6 +587,29 @@ matrixMentionRoomEvent =
         , Matrix.eventId = Just "$event:example.org"
         , Matrix.raw = Aeson.Null
         }
+    }
+
+matrixTextOnlyMentionRoomEvent :: Matrix.RoomEvent
+matrixTextOnlyMentionRoomEvent =
+  matrixMentionRoomEvent
+    { Matrix.event = matrixMentionRoomEvent.event
+        { Matrix.content = matrixMentionRoomEvent.event.content
+            { Matrix.mentions = []
+            }
+        }
+    }
+
+matrixMentionConfig :: Matrix.Config
+matrixMentionConfig =
+  Matrix.Config
+    { Matrix.homeserver = "https://matrix.example.org"
+    , Matrix.loginUser = Nothing
+    , Matrix.loginPassword = Nothing
+    , Matrix.deviceId = Nothing
+    , Matrix.directRooms = []
+    , Matrix.userId = Just "@bot:example.org"
+    , Matrix.allowedRooms = ["!room:example.org"]
+    , Matrix.superusers = ["@alice:example.org"]
     }
 
 discordConfig :: Discord.Config
