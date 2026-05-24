@@ -520,22 +520,22 @@ mentionUser message userId body =
     _ ->
       pure Nothing
 
-replyAudio :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+replyAudio :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
 replyAudio message audioRef caption =
   case (message.platform, discordChannelId message) of
     (PlatformDiscord, Just channelId) -> do
       sent <- withDiscordImageFile audioRef \path ->
         uploadDiscordFile channelId (formatDiscordMarkdown . Chat.renderReplyBody <$> caption) path
-      pure (Right (Just (textMessageId sent.id)))
+      pure (Right (textMessageId sent.id))
     _ ->
       pure (Left "Discord audio reply requires a Discord channel id.")
 
-uploadFile :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+uploadFile :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
 uploadFile message path =
   case (message.platform, discordChannelId message) of
     (PlatformDiscord, Just channelId) -> do
       sent <- uploadDiscordFile channelId Nothing path
-      pure (Right (Just (textMessageId sent.id)))
+      pure (Right (textMessageId sent.id))
     _ ->
       pure (Left "Discord file upload requires a Discord channel id.")
 

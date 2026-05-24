@@ -64,7 +64,7 @@ defaultTools =
   , viewImageTool
   , generateImageTool
   , editImageTool
-  , typstToImageTool
+  , typstRenderTool
   , sendReplyTool
   , sendFileTool
   , mentionUserTool

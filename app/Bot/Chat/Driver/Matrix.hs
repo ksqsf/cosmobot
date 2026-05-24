@@ -913,7 +913,7 @@ matrixReplyTo :: IncomingMessage -> Maybe MatrixReplyTo
 matrixReplyTo message =
   MatrixReplyTo <$> (matrixRawEventId message.raw <|> (matrixEventId . messageIdText <$> message.messageId))
 
-uploadFile :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+uploadFile :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
 uploadFile message path =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
@@ -931,7 +931,7 @@ uploadFile message path =
             , size = size
             }
         }
-      pure (Right (matrixEventMessageId . (.eventId) <$> response))
+      pure (matrixMessageIdResult "Matrix file upload" response)
     _ ->
       pure (Left "Matrix file upload requires a Matrix room id.")
 
@@ -983,7 +983,7 @@ sendMatrixImageMessage roomId replyRelation fileName contentUri mime size =
         }
     }
 
-replyAudio :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+replyAudio :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
 replyAudio message audioRef caption =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) ->
@@ -991,19 +991,23 @@ replyAudio message audioRef caption =
     _ ->
       pure (Left "Matrix audio reply requires a Matrix room id.")
 
-sendMatrixAudio :: (Matrix :> es, FileSystem :> es, IOE :> es) => Text -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+sendMatrixAudio :: (Matrix :> es, FileSystem :> es, IOE :> es) => Text -> Text -> Maybe Text -> Eff es (Either Text MessageId)
 sendMatrixAudio roomId audioRef caption =
   case matrixMxcRef audioRef of
     Just contentUri -> do
       let fileName = "audio"
       response <- sendFileMessage roomId Nothing (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
-      pure (Right (matrixEventMessageId . (.eventId) <$> response))
+      pure (matrixMessageIdResult "Matrix audio reply" response)
     Nothing ->
       withMatrixAudioFile audioRef \path fileName mime -> do
         size <- FileSystem.getFileSize path
         uploaded <- uploadMedia path fileName mime
         response <- sendFileMessage roomId Nothing (matrixAudioMessage caption fileName uploaded.contentUri mime size)
-        pure (Right (matrixEventMessageId . (.eventId) <$> response))
+        pure (matrixMessageIdResult "Matrix audio reply" response)
+
+matrixMessageIdResult :: Text -> Maybe SendMessageResponse -> Either Text MessageId
+matrixMessageIdResult action =
+  maybe (Left [i|#{action} did not produce an event id.|]) (Right . matrixEventMessageId . (.eventId))
 
 matrixAudioMessage :: Maybe Text -> Text -> Text -> Text -> Integer -> MatrixFileMessage
 matrixAudioMessage caption fileName contentUri mime size =
@@ -1064,8 +1068,8 @@ withMatrixImageFile imageRef action =
 withMatrixAudioFile
   :: (FileSystem :> es, IOE :> es)
   => Text
-  -> (FilePath -> Text -> Text -> Eff es (Either Text (Maybe MessageId)))
-  -> Eff es (Either Text (Maybe MessageId))
+  -> (FilePath -> Text -> Text -> Eff es (Either Text MessageId))
+  -> Eff es (Either Text MessageId)
 withMatrixAudioFile audioRef action =
   case matrixLocalPath audioRef of
     Just path ->

@@ -34,6 +34,7 @@ import qualified Bot.Log as Log
 import Bot.Storage.Conversation
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.Test as TypstTest
+import qualified Bot.System.Typst.Types as TypstTypes
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as StrictByteString
@@ -222,7 +223,7 @@ testSendFileToolUploadsViaChatEffect = do
   replies <- IORef.newIORef ([] :: [Text])
   result <- runSendFileTool replies \_ path -> do
     liftIO $ IORef.modifyIORef' uploads (<> [path])
-    pure (Right (Just "900"))
+    pure (Right "900")
   case result of
     Agent.ToolSucceeded{content} ->
       assertBool "tool result should describe sent file" ("Sent file /tmp/report.txt" `Text.isInfixOf` content)
@@ -253,7 +254,7 @@ testSendFileToolIsNoisyAndSuperuserOnly = do
 
 runSendFileTool
   :: IORef.IORef [Text]
-  -> (IncomingMessage -> FilePath -> Eff '[IOE] (Either Text (Maybe MessageId)))
+  -> (IncomingMessage -> FilePath -> Eff '[IOE] (Either Text MessageId))
   -> IO Agent.ToolResult
 runSendFileTool replies upload =
   runEff $
@@ -348,7 +349,7 @@ testTypstToImageToolRendersAndSendsImage :: IO ()
 testTypstToImageToolRendersAndSendsImage = do
   let source = "#set page(width: auto, height: auto)\nHello from Typst"
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "typst_render" (Aeson.object ["source" Aeson..= source, "caption" Aeson..= ("demo" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "typst_render" (Aeson.object ["source" Aeson..= source, "format" Aeson..= ("png" :: Text), "caption" Aeson..= ("demo" :: Text)])]
     , chatAnswer "sent" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -541,7 +542,7 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
           { handleReplyTo = \_ _ -> pure Nothing
           , handleReplyAudio = \_ audioRef caption -> do
               liftIO $ IORef.modifyIORef' audioReplies (<> [(audioRef, caption)])
-              pure (Right (Just "50"))
+              pure (Right "50")
           , handleUploadFile = noopUpload
           , handleEditMessage = noopEdit
           , handleDeleteMessage = noopDelete
@@ -2341,8 +2342,8 @@ captureMessages :: IOE :> es => Maybe (IORef.IORef [[LLM.ChatMessage]]) -> [LLM.
 captureMessages captured messages =
   traverse_ (\ref -> liftIO $ IORef.modifyIORef' ref (<> [messages])) captured
 
-mockTypstRender :: IOE :> es => IORef.IORef [Text] -> Text -> (FilePath -> Eff es r) -> Eff es r
-mockTypstRender rendered source action = do
+mockTypstRender :: IOE :> es => IORef.IORef [Text] -> TypstTypes.TypstOutputFormat -> Text -> (FilePath -> Eff es r) -> Eff es r
+mockTypstRender rendered _format source action = do
   liftIO $ IORef.modifyIORef' rendered (<> [source])
   action "/tmp/cosmobot-agent-spec-typst.png"
 
@@ -2444,13 +2445,13 @@ noopFetch :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
 noopFetch _ _ =
   pure Nothing
 
-noopUpload :: IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+noopUpload :: IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
 noopUpload _ _ =
-  pure (Right Nothing)
+  pure (Right "noop-upload")
 
-noopReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+noopReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
 noopReplyAudio _ _ _ =
-  pure (Right Nothing)
+  pure (Right "noop-audio")
 
 noopEdit :: IncomingMessage -> MessageId -> Text -> Eff es Bool
 noopEdit _ _ _ =

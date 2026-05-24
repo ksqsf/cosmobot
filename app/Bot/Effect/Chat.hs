@@ -53,11 +53,11 @@ data Chat :: Effect where
     :: IncomingMessage
     -> Text
     -> Maybe Text
-    -> Chat m (Either Text (Maybe MessageId))
+    -> Chat m (Either Text MessageId)
   UploadFile
     :: IncomingMessage
     -> FilePath
-    -> Chat m (Either Text (Maybe MessageId))
+    -> Chat m (Either Text MessageId)
   EditMessage
     :: IncomingMessage
     -> MessageId
@@ -107,12 +107,12 @@ replyTo message body =
   send (ReplyTo message body)
 
 -- | Send an audio reference to the chat containing the incoming message.
-replyAudio :: Chat :> es => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+replyAudio :: Chat :> es => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
 replyAudio message audioRef caption =
   send (ReplyAudio message audioRef caption)
 
 -- | Upload a local file to the chat containing the incoming message.
-uploadFile :: Chat :> es => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+uploadFile :: Chat :> es => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
 uploadFile message path =
   send (UploadFile message path)
 
@@ -189,8 +189,8 @@ setMemberTitle message userId title =
 -- | Interpret chat operations by delegating each operation to platform code.
 data ChatHandlers es = ChatHandlers
   { handleReplyTo :: IncomingMessage -> Text -> Eff es (Maybe MessageId)
-  , handleReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
-  , handleUploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+  , handleReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
+  , handleUploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
   , handleEditMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
   , handleDeleteMessage :: IncomingMessage -> MessageId -> Eff es Bool
   , handleReplyStreamStyle :: IncomingMessage -> Eff es ReplyStreamStyle
@@ -272,11 +272,11 @@ runChatRecordingExtraMessages record =
       pure sent
     operation@ReplyAudio{} -> do
       result <- passthrough localEnv operation
-      traverse_ record (rightToMaybe result)
+      record (rightToMaybe result)
       pure result
     operation@UploadFile{} -> do
       result <- passthrough localEnv operation
-      traverse_ record (rightToMaybe result)
+      record (rightToMaybe result)
       pure result
     operation ->
       passthrough localEnv operation

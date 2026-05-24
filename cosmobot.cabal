@@ -303,6 +303,7 @@ test-suite filter-spec
     main-is:          FilterSpec.hs
     other-modules:
         Bot.Core.Route
+    build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite scratchpad-spec
@@ -319,6 +320,7 @@ test-suite scratchpad-spec
         Bot.Storage.Prelude
         Bot.Storage.SQLite
         Bot.Handler.Scratchpad
+    build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite chat-platform-spec
@@ -354,6 +356,7 @@ test-suite scheduler-spec
         Bot.Storage.Prelude
         Bot.Storage.Scheduler
         Bot.Storage.SQLite
+    build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite stream-spec
@@ -367,6 +370,7 @@ test-suite stream-spec
     main-is:          StreamSpec.hs
     other-modules:
         Bot.Util.Stream
+    build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite agent-spec
@@ -447,6 +451,7 @@ test-suite chat-log-spec
         Bot.Storage.ChatLog
         Bot.Storage.Prelude
         Bot.Storage.SQLite
+    build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite typing-spec
@@ -513,6 +518,7 @@ test-suite safebooru-spec
         Bot.Storage.SQLite
         Bot.Util.HTTP
     build-depends:    log-base
+                    , toml-parser
     hs-source-dirs:   test
 
 benchmark message-pipeline-bench

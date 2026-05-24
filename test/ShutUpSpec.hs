@@ -47,7 +47,8 @@ runShutUp deleted later cfg incoming =
   runEff $
     Chat.runChatWith Chat.ChatHandlers
       { handleReplyTo = \_ _ -> pure Nothing
-      , handleUploadFile = \_ _ -> pure (Right Nothing)
+      , handleReplyAudio = \_ _ _ -> pure (Right "audio")
+      , handleUploadFile = \_ _ -> pure (Right "upload")
       , handleEditMessage = \_ _ _ -> pure False
       , handleDeleteMessage = \_ messageId -> do
           liftIO $ IORef.modifyIORef' deleted (<> [messageId])

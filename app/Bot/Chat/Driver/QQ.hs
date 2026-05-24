@@ -537,30 +537,30 @@ mentionUser message userId body =
         ])
     _ -> pure Nothing
 
--- | Upload a file through NapCat. The path is interpreted by NapCat, so when
--- NapCat runs in Docker it must be visible inside that container.
-uploadFile :: QQ :> es => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+-- | Send a file segment through OneBot. The path is interpreted by NapCat, so
+-- when NapCat runs in Docker it must be visible inside that container.
+uploadFile :: QQ :> es => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
 uploadFile message path =
   case (message.platform, message.kind, message.chatId, message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId, _) ->
-      uploadQqFile "upload_group_file"
+    (PlatformQQ, ChatGroup, Just groupId, _) -> do
+      response <- sendFileMessage "send_group_msg"
         [ "group_id" Aeson..= groupId
-        , "file" Aeson..= path
-        , "name" Aeson..= qqUploadFileName path
+        , "message" Aeson..= fileMessage path
         ]
+      qqMessageIdResult "send_group_msg" response
     (PlatformQQ, ChatPrivate, _, Just rawUserId)
-      | Just userId <- parseIntegerUserId rawUserId ->
-      uploadQqFile "upload_private_file"
+      | Just userId <- parseIntegerUserId rawUserId -> do
+      response <- sendFileMessage "send_private_msg"
         [ "user_id" Aeson..= userId
-        , "file" Aeson..= path
-        , "name" Aeson..= qqUploadFileName path
+        , "message" Aeson..= fileMessage path
         ]
+      qqMessageIdResult "send_private_msg" response
     _ ->
       pure (Left "QQ file upload requires a QQ group or private chat with a known target.")
 
 -- | Send an audio record segment through OneBot, falling back to NapCat file
 -- upload for local files if the adapter rejects record sending.
-replyAudio :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+replyAudio :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
 replyAudio message audioRef caption =
   case (message.platform, message.kind, message.chatId, message.senderId) of
     (PlatformQQ, ChatGroup, Just groupId, _) -> do
@@ -583,11 +583,18 @@ replyAudio message audioRef caption =
   where
     audioResponseOrFallback response action
       | actionSucceeded response =
-          pure (Right (integerMessageId <$> responseMessageId response))
+          qqMessageIdResult action response
       | Just path <- localAudioPath audioRef =
           uploadFile message path
       | otherwise =
           pure (Left (qqUploadFailureText action response))
+
+sendFileMessage :: QQ :> es => Text -> [Aeson.Pair] -> Eff es ActionResponse
+sendFileMessage action params =
+  sendAction (Aeson.object
+    [ "action" Aeson..= Aeson.String action
+    , "params" Aeson..= Aeson.object params
+    ])
 
 sendAudioMessage :: QQ :> es => Text -> [Aeson.Pair] -> Eff es ActionResponse
 sendAudioMessage action params =
@@ -596,15 +603,23 @@ sendAudioMessage action params =
     , "params" Aeson..= Aeson.object params
     ])
 
-uploadQqFile :: QQ :> es => Text -> [Aeson.Pair] -> Eff es (Either Text (Maybe MessageId))
-uploadQqFile action params = do
-  response <- sendAction (Aeson.object
-    [ "action" Aeson..= Aeson.String action
-    , "params" Aeson..= Aeson.object params
-    ])
+qqMessageIdResult :: Applicative f => Text -> ActionResponse -> f (Either Text MessageId)
+qqMessageIdResult action response =
   if actionSucceeded response
-    then pure (Right Nothing)
+    then pure (maybe (Left (qqMalformedMessageResponseText action)) (Right . integerMessageId) (responseMessageId response))
     else pure (Left (qqUploadFailureText action response))
+
+fileMessage :: FilePath -> Aeson.Value
+fileMessage path =
+  Aeson.toJSON
+    [ Aeson.object
+        [ "type" Aeson..= Aeson.String "file"
+        , "data" Aeson..= Aeson.object
+            [ "file" Aeson..= path
+            , "name" Aeson..= qqUploadFileName path
+            ]
+        ]
+    ]
 
 qqUploadFileName :: FilePath -> Text
 qqUploadFileName path =
@@ -618,6 +633,10 @@ qqUploadFailureText action response =
     statusText = show response.status :: String
     retcodeText = show response.retcode :: String
     responseMessage = fromMaybe "" response.message
+
+qqMalformedMessageResponseText :: Text -> Text
+qqMalformedMessageResponseText action =
+  [i|QQ #{action} returned a successful response without data.message_id.|]
 
 responseMessageId :: ActionResponse -> Maybe Integer
 responseMessageId response =

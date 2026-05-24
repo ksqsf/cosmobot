@@ -5,7 +5,7 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Tools.Typst
-  ( typstToImageTool
+  ( typstRenderTool
   )
 where
 
@@ -20,8 +20,8 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
-typstToImageTool :: (Chat.Chat :> es, Typst.Typst :> es) => Tool es
-typstToImageTool = Tool
+typstRenderTool :: (Chat.Chat :> es, Typst.Typst :> es) => Tool es
+typstRenderTool = Tool
   { name = "typst_render"
   , description = "Render a Typst document and send it to the current chat. Use this for diagrams, tables, formulas, posters, or other precise layouts that should be generated from Typst source. The source must be a complete Typst document."
   , parameters = objectSchema
@@ -34,13 +34,15 @@ typstToImageTool = Tool
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs typstArgs args \toolArgs -> do
-        Typst.withTypst toolArgs.format toolArgs.source \imagePath -> do
-          sent <- Chat.replyTo context.message (Chat.imageDirective ("file://" <> Text.pack imagePath))
+        Typst.withTypst toolArgs.format toolArgs.source \outputPath -> do
+          sent <- case toolArgs.format of
+            TypstOutputPNG -> Chat.replyTo context.message (Chat.imageDirective ("file://" <> Text.pack outputPath))
+            TypstOutputPDF -> rightToMaybe <$> Chat.uploadFile context.message outputPath
           let sentText = show sent :: String
               captionText :: Text
               captionText =
                 maybe "" (" Caption: " <>) toolArgs.caption
-          pure (toolText [i|Rendered and sent Typst image message id: #{sentText}.#{captionText}|])
+          pure (toolText [i|Rendered and sent Typst document message id: #{sentText}.#{captionText}|])
   }
 
 data TypstArgs = TypstArgs

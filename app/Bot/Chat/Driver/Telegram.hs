@@ -1730,7 +1730,7 @@ mentionUser message userId body =
       pure Nothing
 
 -- | Reply with audio as a Telegram voice message.
-replyAudio :: (Telegram :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text (Maybe MessageId))
+replyAudio :: (Telegram :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
 replyAudio message audioRef caption =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
@@ -1745,12 +1745,12 @@ replyAudio message audioRef caption =
         , disableNotification = Nothing
         , replyToMessageId = replyToMessageId
         }
-      pure (Right (Just (integerMessageId sent.messageId)))
+      pure (Right (integerMessageId sent.messageId))
     _ ->
       pure (Left "Telegram audio reply requires a Telegram chat id.")
 
 -- | Send a file to a Telegram chat as a document.
-uploadFile :: Telegram :> es => IncomingMessage -> FilePath -> Eff es (Either Text (Maybe MessageId))
+uploadFile :: Telegram :> es => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
 uploadFile message path =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
@@ -1766,7 +1766,7 @@ uploadFile message path =
               , replyToMessageId = replyToMessageId
               }
       sent <- uploadTelegramFileByMime baseRequest path
-      pure (Right (Just (integerMessageId sent.messageId)))
+      pure (Right (integerMessageId sent.messageId))
     _ ->
       pure (Left "Telegram file upload requires a Telegram chat id.")
 

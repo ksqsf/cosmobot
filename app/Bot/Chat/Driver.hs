@@ -96,7 +96,7 @@ uploadFileToPlatform
   -> RPC.RpcState
   -> IncomingMessage
   -> FilePath
-  -> Eff es (Either Text (Maybe MessageId))
+  -> Eff es (Either Text MessageId)
 uploadFileToPlatform rpcConfig rpcState message path =
   case platformDriver rpcConfig rpcState message of
     Nothing ->
@@ -116,7 +116,7 @@ replyAudioToPlatform
   -> IncomingMessage
   -> Text
   -> Maybe Text
-  -> Eff es (Either Text (Maybe MessageId))
+  -> Eff es (Either Text MessageId)
 replyAudioToPlatform rpcConfig rpcState message audioRef caption =
   case platformDriver rpcConfig rpcState message of
     Nothing ->

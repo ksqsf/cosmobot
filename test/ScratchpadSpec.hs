@@ -117,6 +117,7 @@ runScratchpad :: (Concurrent :> es, IOE :> es, Prim :> es) => FilePath -> IORef.
 runScratchpad path replies incoming =
   Chat.runChatWith Chat.ChatHandlers
     { handleReplyTo = reply
+    , handleReplyAudio = replyAudio
     , handleUploadFile = upload
     , handleEditMessage = edit
     , handleDeleteMessage = delete
@@ -136,7 +137,9 @@ runScratchpad path replies incoming =
       IORef.modifyIORef' replies (<> [body])
       pure (Just "1")
     upload _ _ =
-      pure (Right Nothing)
+      pure (Right "upload")
+    replyAudio _ _ _ =
+      pure (Right "audio")
     fetch _ _ =
       pure Nothing
     edit _ _ _ =

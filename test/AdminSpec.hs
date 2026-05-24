@@ -1,12 +1,14 @@
 module Main (main) where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Core.Route
 import Bot.Handler.Admin
 import Bot.Handler.Admin.Config
 import qualified Bot.Lifecycle as Lifecycle
+import qualified Bot.Media.Config as MediaConfig
 import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as LifecycleStorage
 import qualified Data.Aeson as Aeson
@@ -112,12 +114,14 @@ testLifecycleStartupRepliesAreDeletedAfterDrain = do
   replies <- IORef.newIORef ([] :: [Text])
   remaining <- runEff $
     runConcurrent $
+    runFileSystem $
     runTestLog $
       StorageSQLite.runStorageSQLitePath ":memory:" $
-        Chat.runChatWith (chatHandlers replies Nothing False) do
-          void $ LifecycleStorage.enqueueStartupReply "test-startup-reply" message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
-          Lifecycle.runLifecycle (pure ())
-          LifecycleStorage.loadStartupActions
+        Media.runMediaPassthrough $
+          Chat.runChatWith (chatHandlers replies Nothing False) do
+            void $ LifecycleStorage.enqueueStartupReply "test-startup-reply" message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
+            Lifecycle.runLifecycle MediaConfig.defaultConfig (pure ())
+            LifecycleStorage.loadStartupActions
   IORef.readIORef replies >>= (@?= ["cosmobot 重启完成啦 (｡•̀ᴗ-)✧"])
   assertBool "startup actions deleted after drain" (null remaining)
 
@@ -204,9 +208,9 @@ chatHandlers replies titleCalls titleResult =
       liftIO $ IORef.modifyIORef' replies (<> [body])
       pure (Just "1")
     upload _ _ =
-      pure (Right Nothing)
+      pure (Right "upload")
     replyAudio _ _ _ =
-      pure (Right Nothing)
+      pure (Right "audio")
     edit _ _ _ =
       pure False
     delete _ _ =
