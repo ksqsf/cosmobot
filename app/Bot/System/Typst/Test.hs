@@ -11,13 +11,14 @@ where
 
 import Bot.Prelude
 import qualified Bot.Effect.Typst as Typst
+import Bot.System.Typst.Types
 
 runTypstWith
-  :: (forall r. Text -> (FilePath -> Eff es r) -> Eff es r)
+  :: (forall r. TypstOutputFormat -> Text -> (FilePath -> Eff es r) -> Eff es r)
   -> Eff (Typst.Typst : es) a
   -> Eff es a
 runTypstWith render = interpret $ \localEnv operation ->
   localSeqUnlift localEnv \runLocal ->
     case operation of
-      Typst.WithTypstPng source action ->
-        render source (runLocal . action)
+      Typst.WithTypst format source action ->
+        render format source (runLocal . action)

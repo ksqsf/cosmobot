@@ -223,6 +223,7 @@ common bot-agent-modules
         Bot.System.ImageMagick
         Bot.System.Typst.CLI
         Bot.System.Typst.Test
+        Bot.System.Typst.Types
         Bot.Util.Html
         Bot.Util.HList
         Bot.Util.HTTP
