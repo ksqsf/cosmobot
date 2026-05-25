@@ -13,6 +13,7 @@ import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as MediaEffect
 import qualified Bot.Effect.Memory as Memory
@@ -34,6 +35,7 @@ import Bot.Handler.Saucenao
 import Bot.Handler.ShutUp
 import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
+import qualified Bot.HTTP as HTTP
 import Bot.Storage.Conversation
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.CLI as TypstCLI
@@ -62,6 +64,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
                . runConcurrent
                . runBotLog cfg.logLevel
                . StorageSQLite.runStorageSQLitePath cfg.sqlitePath
+               . HTTP.runHTTP
                . Media.runMedia cfg.media
                . AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
                . ChatLog.runChatLog
@@ -90,7 +93,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
       messageConsumer
 
 routes
-  :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ConversationStore
   -> [RouteHandler es]

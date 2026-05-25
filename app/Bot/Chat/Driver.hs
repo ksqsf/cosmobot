@@ -17,6 +17,7 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Chat.Driver.Types
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Message
@@ -36,7 +37,7 @@ type ChatDriverEffects es =
   Chat.Chat : QQ.QQ : Telegram.Telegram : Matrix.Matrix : Discord.Discord : es
 
 type ChatDriverConstraints es =
-  (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, Media.Media :> es, FileSystem :> es, Concurrent :> es, Storage.Storage :> es, IOE :> es)
+  (QQ.QQ :> es, Telegram.Telegram :> es, Matrix.Matrix :> es, Discord.Discord :> es, HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, Concurrent :> es, Storage.Storage :> es, IOE :> es)
 
 chatPlatformDrivers
   :: (ChatDriverConstraints es, KatipE :> es)
@@ -259,7 +260,7 @@ setPlatformMemberTitle rpcConfig rpcState message userId title =
     Just <$> driver.setMemberTitle message userId title
 
 runChatDrivers
-  :: (KatipE :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
+  :: (KatipE :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
   => QQ.Config
   -> Telegram.Config
   -> Matrix.Config

@@ -24,6 +24,7 @@ import Bot.Agent.Tools.Web
 import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
@@ -38,6 +39,7 @@ import Effectful.FileSystem
 defaultTools
   :: Chat.Chat :> es
   => ChatLog.ChatLog :> es
+  => HTTP.HTTP :> es
   => LLM.LLM :> es
   => Media.Media :> es
   => Memory.Memory :> es

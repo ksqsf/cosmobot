@@ -22,12 +22,13 @@ module Bot.LLM.OpenAI.Transport
 where
 
 import Bot.Prelude
+import qualified Bot.Effect.HTTP as HTTP
+import qualified Bot.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import Bot.LLM.OpenAI.Config
 import Bot.LLM.Types
 import qualified Bot.Util.Image as Image
 import qualified Bot.Core.ReplyBody as ReplyBody
-import qualified Bot.Util.HTTP as Http
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -41,7 +42,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextEncoding
 import qualified Data.Text.Lazy as LazyText
 import qualified Data.Text.Lazy.Builder as TextBuilder
-import qualified Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Client as Client
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import Network.HTTP.Req
@@ -115,18 +116,17 @@ audioApiKeyNotConfiguredMessage :: Text
 audioApiKeyNotConfiguredMessage =
   "Audio generation is not configured: set llm.audio_provider.<name>.api_key."
 
-llmHttpConfig :: HTTP.Manager -> HttpConfig
-llmHttpConfig manager =
-  (Http.httpConfig manager)
+llmHttpConfig :: HttpConfig
+llmHttpConfig =
+  defaultHttpConfig
     { httpConfigRetryJudge = \_ _ -> False
     , httpConfigRetryJudgeException = \_ _ -> False
     }
 
-runTimedLLMReq :: (Fail :> es, Timeout.Timeout :> es, IOE :> es) => Text -> Int -> Req a -> Eff es a
+runTimedLLMReq :: (Fail :> es, Timeout.Timeout :> es, HTTP.HTTP :> es) => Text -> Int -> Req a -> Eff es a
 runTimedLLMReq label timeoutSeconds action = do
-  manager <- liftIO $ Http.newTlsManager
   result <- Timeout.timeout (secondsToMicros timeoutSeconds) $
-    liftIO $ Http.runReqWithConfig (llmHttpConfig manager) action
+    HTTP.runReqWithConfig llmHttpConfig action
   case result of
     Just value ->
       pure value
@@ -142,7 +142,7 @@ runTimedEff label timeoutSeconds action = do
     Nothing ->
       throwIO (LLMException [i|#{label} timed out after #{timeoutSeconds} seconds.|])
 
-askImageOpenAIStreaming :: (IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageOpenAIStreaming :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es) => Config -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageOpenAIStreaming Config{imageProvider = Nothing} _ _ =
   yieldTextResult (pure imageNotConfiguredMessage)
 askImageOpenAIStreaming Config{imageProvider = Just provider} options messages
@@ -151,7 +151,7 @@ askImageOpenAIStreaming Config{imageProvider = Just provider} options messages
   | otherwise =
       askImageChatCompletionsOpenAIStreaming provider options messages
 
-askImageEditOpenAIStreaming :: (IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Stream (Of Text) (Eff es) Text
+askImageEditOpenAIStreaming :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => Config -> LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> Stream (Of Text) (Eff es) Text
 askImageEditOpenAIStreaming Config{imageProvider = Nothing} _ _ _ _ =
   yieldTextResult (pure imageEditNotConfiguredMessage)
 askImageEditOpenAIStreaming Config{imageProvider = Just cfg@ImageProviderConfig{apiKey, model, canEdit, requestTimeout}} options prompt imageRefs maskRef
@@ -184,7 +184,7 @@ askImageEditOpenAIStreaming Config{imageProvider = Just cfg@ImageProviderConfig{
             Nothing ->
               lift (throwIO (LLMException "Image edit response was empty: no image output."))
 
-askAudioOpenAIStreaming :: (IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es) => Config -> LLM.AudioRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askAudioOpenAIStreaming :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es) => Config -> LLM.AudioRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askAudioOpenAIStreaming Config{audioProvider = Nothing} _ _ =
   yieldTextResult (pure audioNotConfiguredMessage)
 askAudioOpenAIStreaming Config{audioProvider = Just AudioProviderConfig{apiKey = Nothing}} _ _ =
@@ -210,7 +210,7 @@ yieldTextResult action = do
   unless (Text.null (Text.strip answer)) (S.yield answer)
   pure answer
 
-askImageChatCompletionsOpenAIStreaming :: (IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageChatCompletionsOpenAIStreaming :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageChatCompletionsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, requestTimeout} options messages =
   case apiKey of
     Nothing ->
@@ -241,7 +241,7 @@ askImageChatCompletionsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, re
             S.yield text
             pure text
 
-askImageGenerationsOpenAIStreaming :: (IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageGenerationsOpenAIStreaming :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageGenerationsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, requestTimeout} options messages =
   case apiKey of
     Nothing ->
@@ -267,7 +267,7 @@ askImageGenerationsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, reques
             lift (throwIO (LLMException "Image generation response was empty: no image output."))
 
 askOpenAIStreaming
-  :: (IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es)
   => Config
   -> [ChatMessage]
   -> Stream (Of Text) (Eff es) Text
@@ -295,7 +295,7 @@ askOpenAIStreaming Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Ju
   pure (chatAnswerContent answer)
 
 askOpenAIWithToolsStreaming
-  :: (IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es)
   => Config
   -> [FunctionTool]
   -> [ChatMessage]
@@ -529,7 +529,7 @@ data ImageUpload = ImageUpload
   , bytes :: !StrictByteString.ByteString
   }
 
-imageUploadFromReference :: (Timeout.Timeout :> es, IOE :> es, Fail :> es) => Int -> Int -> Text -> Eff es ImageUpload
+imageUploadFromReference :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, Fail :> es) => Int -> Int -> Text -> Eff es ImageUpload
 imageUploadFromReference timeoutSeconds index imageRef = do
   bytes <- imageBytesFromReference timeoutSeconds imageRef
   pure ImageUpload
@@ -537,7 +537,7 @@ imageUploadFromReference timeoutSeconds index imageRef = do
     , bytes = bytes
     }
 
-imageBytesFromReference :: (Timeout.Timeout :> es, IOE :> es, Fail :> es) => Int -> Text -> Eff es StrictByteString.ByteString
+imageBytesFromReference :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, Fail :> es) => Int -> Text -> Eff es StrictByteString.ByteString
 imageBytesFromReference timeoutSeconds imageRef
   | Just bytes <- Image.decodeDataImageReference stripped =
       pure bytes
@@ -548,7 +548,7 @@ imageBytesFromReference timeoutSeconds imageRef
   where
     stripped = Text.strip imageRef
 
-downloadImageReference :: (Timeout.Timeout :> es, IOE :> es, Fail :> es) => Int -> Text -> Eff es StrictByteString.ByteString
+downloadImageReference :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, Fail :> es) => Int -> Text -> Eff es StrictByteString.ByteString
 downloadImageReference timeoutSeconds imageRef = do
   uri <- URI.mkURI imageRef
   case useHttpsURI uri of
@@ -578,7 +578,7 @@ imageEditMultipartParts provider options model prompt imageUploads maskUpload =
 
 imageUploadPart :: Text -> ImageUpload -> Multipart.Part
 imageUploadPart fieldName upload =
-  Multipart.partFileRequestBody fieldName upload.filename (HTTP.RequestBodyBS upload.bytes)
+  Multipart.partFileRequestBody fieldName upload.filename (Client.RequestBodyBS upload.bytes)
 
 multipartTextPart :: Text -> Text -> Multipart.Part
 multipartTextPart name value =
@@ -759,7 +759,7 @@ llmStreamResponseLogLine endpoint model answer =
     ]
 
 streamSseJsonPost
-  :: (Aeson.ToJSON body, IOE :> es)
+  :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es)
   => Text
   -> [Text]
   -> Text
@@ -771,7 +771,7 @@ streamSseJsonPost baseUrl path apiKey timeoutMicros request = do
   streamSsePayloads (streamHttpResponseBody httpRequest)
 
 streamRawJsonPost
-  :: (Aeson.ToJSON body, IOE :> es)
+  :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es)
   => Text
   -> [Text]
   -> Text
@@ -784,7 +784,7 @@ streamRawJsonPost baseUrl path apiKey timeoutMicros accept request = do
   streamHttpResponseBody httpRequest
 
 streamSseMultipartPost
-  :: IOE :> es
+  :: (HTTP.HTTP :> es, IOE :> es)
   => Text
   -> [Text]
   -> Text
@@ -795,44 +795,43 @@ streamSseMultipartPost baseUrl path apiKey timeoutMicros parts = do
   httpRequest <- liftIO (sseMultipartPostRequest baseUrl path apiKey timeoutMicros parts)
   streamSsePayloads (streamHttpResponseBody httpRequest)
 
-sseJsonPostRequest :: Aeson.ToJSON body => Text -> [Text] -> Text -> Int -> body -> IO HTTP.Request
+sseJsonPostRequest :: Aeson.ToJSON body => Text -> [Text] -> Text -> Int -> body -> IO Client.Request
 sseJsonPostRequest baseUrl path apiKey timeoutMicros request = do
-  httpRequest <- Http.streamingJsonPostRequest baseUrl path apiKey timeoutMicros request
+  httpRequest <- HTTP.streamingJsonPostRequest baseUrl path apiKey timeoutMicros request
   pure httpRequest
-    { HTTP.requestHeaders = ("Accept", "text/event-stream") : HTTP.requestHeaders httpRequest
+    { Client.requestHeaders = ("Accept", "text/event-stream") : Client.requestHeaders httpRequest
     }
 
-rawJsonPostRequest :: Aeson.ToJSON body => Text -> [Text] -> Text -> Int -> ByteString.ByteString -> body -> IO HTTP.Request
+rawJsonPostRequest :: Aeson.ToJSON body => Text -> [Text] -> Text -> Int -> ByteString.ByteString -> body -> IO Client.Request
 rawJsonPostRequest baseUrl path apiKey timeoutMicros accept request = do
-  httpRequest <- Http.streamingJsonPostRequest baseUrl path apiKey timeoutMicros request
+  httpRequest <- HTTP.streamingJsonPostRequest baseUrl path apiKey timeoutMicros request
   pure httpRequest
-    { HTTP.requestHeaders = ("Accept", accept) : HTTP.requestHeaders httpRequest
+    { Client.requestHeaders = ("Accept", accept) : Client.requestHeaders httpRequest
     }
 
-sseMultipartPostRequest :: Text -> [Text] -> Text -> Int -> [Multipart.Part] -> IO HTTP.Request
+sseMultipartPostRequest :: Text -> [Text] -> Text -> Int -> [Multipart.Part] -> IO Client.Request
 sseMultipartPostRequest baseUrl path apiKey timeoutMicros parts = do
-  base <- HTTP.parseRequest (Text.unpack (endpointText baseUrl path))
+  base <- Client.parseRequest (Text.unpack (endpointText baseUrl path))
   Multipart.formDataBody parts base
-    { HTTP.method = "POST"
-    , HTTP.requestHeaders =
+    { Client.method = "POST"
+    , Client.requestHeaders =
         [ ("Authorization", ByteString.pack [i|Bearer #{apiKey}|])
         , ("Accept", "text/event-stream")
         ]
-    , HTTP.responseTimeout = HTTP.responseTimeoutMicro timeoutMicros
+    , Client.responseTimeout = Client.responseTimeoutMicro timeoutMicros
     }
 
-streamHttpResponseBody :: IOE :> es => HTTP.Request -> Stream (Of StrictByteString.ByteString) (Eff es) ()
+streamHttpResponseBody :: (HTTP.HTTP :> es, IOE :> es) => Client.Request -> Stream (Of StrictByteString.ByteString) (Eff es) ()
 streamHttpResponseBody httpRequest = do
-  manager <- liftIO Http.newTlsManager
   StreamUtil.bracketStream
-    (liftIO (HTTP.responseOpen httpRequest manager))
-    (liftIO . HTTP.responseClose)
+    (HTTP.openResponse httpRequest)
+    (liftIO . Client.responseClose)
     \response -> do
       ensureSuccessfulStreamingResponse httpRequest response
-      streamBody (HTTP.responseBody response)
+      streamBody (Client.responseBody response)
   where
     streamBody bodyReader = do
-      chunk <- liftIO (HTTP.brRead bodyReader)
+      chunk <- liftIO (Client.brRead bodyReader)
       unless (StrictByteString.null chunk) do
         S.yield chunk
         streamBody bodyReader
@@ -871,14 +870,14 @@ sseDataPayload rawLine = do
   guard (not (Text.null payload) && payload /= "[DONE]")
   pure (TextEncoding.encodeUtf8 payload)
 
-ensureSuccessfulStreamingResponse :: IOE :> es => HTTP.Request -> HTTP.Response HTTP.BodyReader -> Stream (Of a) (Eff es) ()
+ensureSuccessfulStreamingResponse :: IOE :> es => Client.Request -> Client.Response Client.BodyReader -> Stream (Of a) (Eff es) ()
 ensureSuccessfulStreamingResponse request response = do
-  let status = HTTP.responseStatus response
+  let status = Client.responseStatus response
       code = HTTPStatus.statusCode status
   unless (200 <= code && code < 300) do
-    chunks <- liftIO (HTTP.brConsume (HTTP.responseBody response))
+    chunks <- liftIO (Client.brConsume (Client.responseBody response))
     let preview = LazyByteString.toStrict (LazyByteString.fromChunks chunks)
-    lift (throwIO (HTTP.HttpExceptionRequest request (HTTP.StatusCodeException (void response) preview)))
+    lift (throwIO (Client.HttpExceptionRequest request (Client.StatusCodeException (void response) preview)))
 
 collectByteStream :: Monad m => Stream (Of StrictByteString.ByteString) m r -> m StrictByteString.ByteString
 collectByteStream =
@@ -967,7 +966,7 @@ imageGenerationStreamTextFromPayloads cfg payloads =
           Right (Just response)
 
 streamChatCompletion
-  :: (IOE :> es, KatipE :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
   => Bool
   -> Text
   -> [Text]

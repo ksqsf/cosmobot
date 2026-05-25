@@ -10,6 +10,7 @@ module Bot.Media.Interpreter
 where
 
 import Bot.Effect.Media
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Cache as Cache
 import qualified Bot.Media.Config as MediaConfig
@@ -17,26 +18,25 @@ import qualified Bot.Media.Object as MediaObject
 import qualified Bot.Media.S3 as S3
 import Bot.Prelude
 import qualified Bot.System.ImageMagick as ImageMagick
-import qualified Bot.Util.HTTP as Http
 import qualified Data.Text as Text
 import Effectful.FileSystem (FileSystem)
 import Effectful.Process (Process)
-import qualified Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Client as Client
 import System.FilePath (replaceExtension)
 
 data Runtime = Runtime
   { cfg :: !MediaConfig.Config
-  , manager :: !HTTP.Manager
+  , manager :: !Client.Manager
   , s3 :: !S3.Runtime
   }
 
 runMedia
-  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es)
+  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, HTTP.HTTP :> es, Storage.Storage :> es)
   => MediaConfig.Config
   -> Eff (Media : es) a
   -> Eff es a
 runMedia cfg inner = do
-  manager <- liftIO Http.newTlsManager
+  manager <- HTTP.manager
   s3 <- S3.newRuntime manager cfg
   let runtime = Runtime{cfg, manager, s3}
   interpret

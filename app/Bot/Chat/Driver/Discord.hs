@@ -40,7 +40,7 @@ import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Bot.Util.HTTP as Http
+import qualified Bot.Effect.HTTP as HTTP
 import Commonmark
 import qualified Commonmark.Entity as Commonmark
 import Commonmark.Extensions
@@ -57,8 +57,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.FileSystem (FileSystem)
 import qualified Network.Connection as Connection
-import qualified Network.HTTP.Client as HTTP
-import Network.HTTP.Client (Manager)
+import qualified Network.HTTP.Client as Client
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import Network.HTTP.Req
 import qualified Network.TLS as TLS
@@ -196,13 +195,12 @@ uploadDiscordFile channelId content path =
   send (UploadDiscordFile channelId content path)
 
 runDiscord
-  :: (IOE :> es, KatipE :> es, Concurrent :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es)
   => Config
   -> Eff (Discord : es) a
   -> Eff es a
 runDiscord cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
   eventChan <- liftIO Chan.newChan
-  manager <- liftIO Http.newTlsManager
   let runInner =
         runInIO $
           interpret
@@ -212,21 +210,21 @@ runDiscord cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO 
                 ReceiveEvent ->
                   liftIO (Chan.readChan eventChan)
                 CreateMessage channelId request ->
-                  discordJsonRequest manager cfg POST ["channels", channelId, "messages"] request
+                  discordJsonRequest cfg POST ["channels", channelId, "messages"] request
                 EditMessage channelId messageId request ->
-                  discordJsonRequest manager cfg PATCH ["channels", channelId, "messages", messageId] request
+                  discordJsonRequest cfg PATCH ["channels", channelId, "messages", messageId] request
                 DeleteMessage channelId messageId ->
-                  discordNoResponseRequest manager cfg DELETE ["channels", channelId, "messages", messageId]
+                  discordNoResponseRequest cfg DELETE ["channels", channelId, "messages", messageId]
                 FetchMessage channelId messageId ->
-                  discordGetRequest manager cfg ["channels", channelId, "messages", messageId]
+                  discordGetRequest cfg ["channels", channelId, "messages", messageId]
                 FetchUser userId ->
-                  discordGetRequest manager cfg ["users", userId]
+                  discordGetRequest cfg ["users", userId]
                 FetchGuildMember guildId userId ->
-                  discordGetRequest manager cfg ["guilds", guildId, "members", userId]
+                  discordGetRequest cfg ["guilds", guildId, "members", userId]
                 FetchGuildMembers guildId ->
-                  discordGetRequest manager cfg ["guilds", guildId, "members"]
+                  discordGetRequest cfg ["guilds", guildId, "members"]
                 UploadDiscordFile channelId content path ->
-                  discordUploadFile manager cfg channelId content path
+                  discordUploadFile cfg channelId content path
             )
             inner
   if discordEnabled cfg
@@ -877,71 +875,68 @@ stableTextId =
     fnvPrime = 1099511628211
 
 discordJsonRequest
-  :: (IOE :> es, KatipE :> es, Aeson.ToJSON body, Aeson.FromJSON result, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'CanHaveBody)
-  => Manager
-  -> Config
+  :: (HTTP.HTTP :> es, KatipE :> es, Aeson.ToJSON body, Aeson.FromJSON result, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'CanHaveBody)
+  => Config
   -> method
   -> [Text]
   -> body
   -> Eff es result
-discordJsonRequest manager cfg method path body = do
+discordJsonRequest cfg method path body = do
   logDebug [i|Discord REST request: #{Text.intercalate "/" path}|]
-  liftIO $ Http.runReqWithConfig (Http.httpConfig manager) do
+  HTTP.runReq do
     req method (discordApiUrl path) (ReqBodyJson body) jsonResponse (discordRequestOptions cfg)
       <&> responseBody
 
 discordNoResponseRequest
-  :: (IOE :> es, KatipE :> es, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'NoBody)
-  => Manager
-  -> Config
+  :: (HTTP.HTTP :> es, KatipE :> es, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'NoBody)
+  => Config
   -> method
   -> [Text]
   -> Eff es ()
-discordNoResponseRequest manager cfg method path = do
+discordNoResponseRequest cfg method path = do
   logDebug [i|Discord REST request: #{Text.intercalate "/" path}|]
-  void $ liftIO $ Http.runReqWithConfig (Http.httpConfig manager) do
+  void $ HTTP.runReq do
     req method (discordApiUrl path) NoReqBody ignoreResponse (discordRequestOptions cfg)
 
 discordGetRequest
-  :: (IOE :> es, KatipE :> es, Aeson.FromJSON result)
-  => Manager
-  -> Config
+  :: (HTTP.HTTP :> es, KatipE :> es, Aeson.FromJSON result)
+  => Config
   -> [Text]
   -> Eff es result
-discordGetRequest manager cfg path = do
+discordGetRequest cfg path = do
   logDebug [i|Discord REST request: #{Text.intercalate "/" path}|]
-  liftIO $ Http.runReqWithConfig (Http.httpConfig manager) do
+  HTTP.runReq do
     req GET (discordApiUrl path) NoReqBody jsonResponse (discordRequestOptions cfg)
       <&> responseBody
 
 discordUploadFile
-  :: (IOE :> es, KatipE :> es)
-  => Manager
-  -> Config
+  :: (HTTP.HTTP :> es, IOE :> es)
+  => Config
   -> Text
   -> Maybe Text
   -> FilePath
   -> Eff es Message
-discordUploadFile manager cfg channelId content path = do
-  base <- liftIO $ HTTP.parseRequest [i|https://discord.com/api/v10/channels/#{channelId}/messages|]
+discordUploadFile cfg channelId content path = do
+  manager <- HTTP.manager
+  base <- liftIO $ Client.parseRequest [i|https://discord.com/api/v10/channels/#{channelId}/messages|]
   let payload = Aeson.object
         [ "content" Aeson..= fromMaybe "" content
         ]
       request =
         base
-          { HTTP.method = "POST"
-          , HTTP.requestHeaders =
+          { Client.method = "POST"
+          , Client.requestHeaders =
               [ ("Authorization", TextEncoding.encodeUtf8 ("Bot " <> cfg.botToken))
               , ("User-Agent", "cosmobot")
               ]
           }
       parts =
         [ Multipart.partLBS "payload_json" (Aeson.encode payload)
-        , Multipart.partFileRequestBodyM "files[0]" (takeFileName path) (HTTP.streamFile path)
+        , Multipart.partFileRequestBodyM "files[0]" (takeFileName path) (Client.streamFile path)
         ]
   multipartRequest <- liftIO $ Multipart.formDataBody parts request
-  response <- liftIO $ HTTP.httpLbs multipartRequest manager
-  case Aeson.eitherDecode (HTTP.responseBody response) of
+  response <- liftIO $ Client.httpLbs multipartRequest manager
+  case Aeson.eitherDecode (Client.responseBody response) of
     Right message ->
       pure message
     Left err ->

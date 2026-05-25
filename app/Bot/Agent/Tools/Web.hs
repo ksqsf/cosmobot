@@ -12,8 +12,8 @@ where
 
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Util.Html as Html
-import qualified Bot.Util.HTTP as Http
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
@@ -26,7 +26,7 @@ import Network.HTTP.Req
 import System.IO.Error (userError)
 import qualified Text.URI as URI
 
-webSearchTool :: IOE :> es => Tool es
+webSearchTool :: HTTP.HTTP :> es => Tool es
 webSearchTool = Tool
   { name = "search_web"
   , description = "Search the web for current information. Returns a JSON object with the query and a results array containing title, url, and snippet."
@@ -48,7 +48,7 @@ webSearchTool = Tool
           ])))
   }
 
-webFetchTool :: IOE :> es => Tool es
+webFetchTool :: (HTTP.HTTP :> es, IOE :> es) => Tool es
 webFetchTool = Tool
   { name = "fetch_url"
   , description = "Fetch a web page by URL and return extracted readable text. Supports http and https URLs."
@@ -71,7 +71,7 @@ webFetchTool = Tool
               pure (toolText (jsonText page))
   }
 
-webSearch :: (IOE :> es) => ToolConfig -> Text -> Int -> Eff es [Aeson.Value]
+webSearch :: HTTP.HTTP :> es => ToolConfig -> Text -> Int -> Eff es [Aeson.Value]
 webSearch cfg query maxResults =
   case cfg.webSearchApi of
     WebSearchTavily ->
@@ -88,9 +88,9 @@ webSearchSource = \case
   WebSearchTavily -> "tavily"
   WebSearchBrave -> "brave"
 
-tavilySearch :: IOE :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
+tavilySearch :: HTTP.HTTP :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
 tavilySearch apiKey query maxResults = do
-  response <- liftIO . Http.runReq $
+  response <- HTTP.runReq $
     req POST
       (https "api.tavily.com" /: "search")
       (ReqBodyJson (Aeson.object
@@ -107,9 +107,9 @@ tavilySearch apiKey query maxResults = do
   either (throwIO . userError) pure $
     AesonTypes.parseEither parseTavilyResults (responseBody response)
 
-braveSearch :: IOE :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
+braveSearch :: HTTP.HTTP :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
 braveSearch apiKey query maxResults = do
-  response <- liftIO . Http.runReq $
+  response <- HTTP.runReq $
     req GET
       (https "api.search.brave.com" /: "res" /: "v1" /: "web" /: "search")
       NoReqBody
@@ -164,7 +164,7 @@ searchResult title url snippet =
     , "snippet" Aeson..= snippet
     ]
 
-fetchWebPage :: IOE :> es => Text -> Int -> Eff es Aeson.Value
+fetchWebPage :: (HTTP.HTTP :> es, IOE :> es) => Text -> Int -> Eff es Aeson.Value
 fetchWebPage rawUrl maxContentTokens = do
   uri <- URI.mkURI rawUrl
   case useURI uri of
@@ -175,9 +175,9 @@ fetchWebPage rawUrl maxContentTokens = do
     Just (Right (url, options)) ->
       fetch url options
   where
-    fetch :: IOE :> es => Url scheme -> Option scheme -> Eff es Aeson.Value
-    fetch url options = liftIO do
-      response <- Http.runReq $
+    fetch :: (HTTP.HTTP :> es, IOE :> es) => Url scheme -> Option scheme -> Eff es Aeson.Value
+    fetch url options = do
+      response <- HTTP.runReq $
         req GET url NoReqBody bsResponse (options <> webRequestOptions)
       let contentType = TextEncoding.decodeUtf8With TextEncoding.lenientDecode <$> responseHeader response "Content-Type"
           body = Html.htmlToPlainText (decodeResponseBody (responseBody response))

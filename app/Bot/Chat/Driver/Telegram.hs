@@ -65,8 +65,8 @@ where
 
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as ChatEffect
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Media.Mime as Mime
-import qualified Bot.Util.HTTP as Http
 import Bot.Util.Multipart
 import Bot.Core.Message
 import Commonmark hiding (escapeHtml)
@@ -90,8 +90,7 @@ import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Char as Char
 import qualified Data.Text.Encoding as TextEncoding
-import Network.HTTP.Client (Manager)
-import qualified Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Client as Client
 import Network.HTTP.Req
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Network.HTTP.Types.Header as HTTPHeader
@@ -226,30 +225,30 @@ fileUrl = send . FileUrl
 runTelegram
   :: IOE :> es
   => KatipE :> es
+  => HTTP.HTTP :> es
   => Config
   -> Eff (Telegram : es) a
   -> Eff es a
 runTelegram cfg inner = do
-  manager <- liftIO Http.newTlsManager
   interpret
     ( \_ -> \case
         TelegramConfig ->
           pure cfg
         CallTelegram request ->
-          apiCall manager cfg (telegramMethod request) request
+          apiCall cfg (telegramMethod request) request
         FileUrl fileId -> do
-          file :: File <- apiCall manager cfg (telegramMethod (GetFileRequest fileId)) (GetFileRequest fileId)
+          file :: File <- apiCall cfg (telegramMethod (GetFileRequest fileId)) (GetFileRequest fileId)
           pure (telegramFileUrl cfg file.filePath)
         UploadPhoto request path ->
-          apiMultipartCall manager cfg "sendPhoto" (sendPhotoParts request path)
+          apiMultipartCall cfg "sendPhoto" (sendPhotoParts request path)
         UploadVoice request path ->
-          apiMultipartCall manager cfg "sendVoice" (sendVoiceParts request path)
+          apiMultipartCall cfg "sendVoice" (sendVoiceParts request path)
         UploadAudio request path ->
-          apiMultipartCall manager cfg "sendAudio" (sendAudioParts request path)
+          apiMultipartCall cfg "sendAudio" (sendAudioParts request path)
         UploadVideo request path ->
-          apiMultipartCall manager cfg "sendVideo" (sendVideoParts request path)
+          apiMultipartCall cfg "sendVideo" (sendVideoParts request path)
         UploadDocument request path ->
-          apiMultipartCall manager cfg "sendDocument" (sendDocumentParts request path)
+          apiMultipartCall cfg "sendDocument" (sendDocumentParts request path)
     )
     inner
 
@@ -500,16 +499,15 @@ telegramFileUrl cfg path =
     token = cfg.botToken
 
 apiCall
-  :: (IOE :> es, KatipE :> es, Aeson.ToJSON body, Aeson.FromJSON result)
-  => Manager
-  -> Config
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Aeson.ToJSON body, Aeson.FromJSON result)
+  => Config
   -> Text
   -> body
   -> Eff es result
-apiCall manager cfg method body = do
+apiCall cfg method body = do
   logTelegramApiRequest method
   resp :: TelegramResult <-
-    ( liftIO $ Http.runReqWithConfig (telegramHttpConfig manager) $
+    ( HTTP.runReq $
         req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse (telegramRequestOptions method)
           <&> responseBody
     ) `catch` \(err :: HttpException) ->
@@ -518,16 +516,15 @@ apiCall manager cfg method body = do
   parseTelegramResult resp
 
 apiMultipartCall
-  :: (IOE :> es, KatipE :> es, Aeson.FromJSON result)
-  => Manager
-  -> Config
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Aeson.FromJSON result)
+  => Config
   -> Text
   -> [Multipart.Part]
   -> Eff es result
-apiMultipartCall manager cfg method parts = do
+apiMultipartCall cfg method parts = do
   logTelegramApiRequest method
   resp :: TelegramResult <-
-    ( liftIO $ Http.runReqWithConfig (telegramHttpConfig manager) do
+    ( HTTP.runReq do
         body <- reqBodyMultipart parts
         req POST (apiUrl cfg method) body jsonResponse (telegramRequestOptions method)
           <&> responseBody
@@ -539,7 +536,7 @@ apiMultipartCall manager cfg method parts = do
 telegramExceptionMessage :: Config -> HttpException -> Text
 telegramExceptionMessage cfg err =
   case err of
-    VanillaHttpException (HTTP.HttpExceptionRequest _ (HTTP.StatusCodeException _ body)) ->
+    VanillaHttpException (Client.HttpExceptionRequest _ (Client.StatusCodeException _ body)) ->
       case Aeson.eitherDecodeStrict body of
         Right result -> telegramResultError result
         Left _ -> sanitizeTelegramException cfg err
@@ -549,10 +546,6 @@ telegramExceptionMessage cfg err =
 sanitizeTelegramException :: Show err => Config -> err -> Text
 sanitizeTelegramException cfg err =
   Text.replace cfg.botToken "<telegram-token>" (show err)
-
-telegramHttpConfig :: Manager -> HttpConfig
-telegramHttpConfig manager =
-  Http.httpConfig manager
 
 logTelegramApiRequest :: KatipE :> es => Text -> Eff es ()
 logTelegramApiRequest method =
@@ -687,7 +680,7 @@ telegramUploadFileName path =
 telegramFilePart :: Text -> FilePath -> Multipart.Part
 telegramFilePart fieldName path =
   Multipart.addPartHeaders
-    (Multipart.partFileRequestBodyM fieldName (telegramUploadFileName path) (HTTP.streamFile path))
+    (Multipart.partFileRequestBodyM fieldName (telegramUploadFileName path) (Client.streamFile path))
     [(HTTPHeader.hContentType, TextEncoding.encodeUtf8 (Mime.mimeFromName (Text.pack path)))]
 
 jsonText :: Aeson.ToJSON a => a -> Text

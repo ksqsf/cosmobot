@@ -11,11 +11,11 @@ module Bot.Handler.Typing
 where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Typst as Typst
 import Bot.Core.Route
 import Bot.Handler.Typing.Typst (typstDocument)
 import qualified Bot.Util.Html as Html
-import qualified Bot.Util.HTTP as Http
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -25,6 +25,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time
 import Network.HTTP.Req
+import System.IO.Error (userError)
 import Text.Printf
 
 championshipRankCommand :: Text
@@ -35,7 +36,7 @@ tigerRankCommand = "!hbcj"
 
 -- | Routes that render typing leaderboard snapshots.
 typingHandlers
-  :: (Chat.Chat :> es, Typst.Typst :> es, KatipE :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, HTTP.HTTP :> es, Typst.Typst :> es, KatipE :> es, IOE :> es, Concurrent :> es)
   => [RouteHandler es]
 typingHandlers =
   [ rankRoute championshipRankCommand "锦标赛成绩" "锦标赛排行榜生成失败。" fetchChampionshipRows
@@ -47,7 +48,7 @@ rankRoute
   => Text
   -> Text
   -> Text
-  -> IO [[Text]]
+  -> Eff es [[Text]]
   -> RouteHandler es
 rankRoute commandText titleSuffix failureMessage fetchRows =
   requireAuth canStartConversation (\_ -> pure ()) $
@@ -59,14 +60,14 @@ sendRankImage
   :: (Chat.Chat :> es, Typst.Typst :> es, KatipE :> es, IOE :> es)
   => Text
   -> Text
-  -> IO [[Text]]
+  -> Eff es [[Text]]
   -> IncomingMessage
   -> Eff es ()
 sendRankImage titleSuffix failureMessage fetchRows message =
   handleError do
     logInfo [i|Fetching typing rank rows: #{titleSuffix}|]
     title <- liftIO (rankTitle titleSuffix)
-    rows <- liftIO fetchRows
+    rows <- fetchRows
     logInfo [i|Fetched typing rank rows: #{title}, #{length rows} rows|]
     Typst.withTypstPng (typstDocument title rows) \imagePath -> do
       logInfo [i|Rendered typing rank image: #{imagePath}|]
@@ -92,18 +93,18 @@ currentDateText = do
       day = localDay (utcToLocalTime tz now)
   pure (Text.pack (formatTime defaultTimeLocale "%F" day))
 
-fetchChampionshipRows :: IO [[Text]]
+fetchChampionshipRows :: (HTTP.HTTP :> es, IOE :> es) => Eff es [[Text]]
 fetchChampionshipRows = do
   html <- fetchChampionshipPage
-  table <- maybe (fail "championship rank table not found") pure (extractRankTable html)
+  table <- maybe (throwIO (userError "championship rank table not found")) pure (extractRankTable html)
   let rows = rankRows table
   case rows of
-    [] -> fail "championship rank table is empty"
+    [] -> throwIO (userError "championship rank table is empty")
     _  -> pure rows
 
-fetchChampionshipPage :: IO Text
+fetchChampionshipPage :: HTTP.HTTP :> es => Eff es Text
 fetchChampionshipPage = do
-  body <- Http.runReq $
+  body <- HTTP.runReq $
     responseBody <$> req GET url NoReqBody bsResponse mempty
   pure (TextEncoding.decodeUtf8Lenient body)
   where
@@ -111,12 +112,12 @@ fetchChampionshipPage = do
     -- not support Extended Main Secret. The same page is available over HTTP.
     url = http "www.jsxiaoshi.com" /: "championships_rank.html"
 
-fetchTigerRows :: IO [[Text]]
+fetchTigerRows :: (HTTP.HTTP :> es, IOE :> es) => Eff es [[Text]]
 fetchTigerRows = do
-  date <- currentDateText
-  value <- Http.runReq $
+  date <- liftIO currentDateText
+  value <- HTTP.runReq $
     responseBody <$> req GET (tigerLeaderboardUrl date) NoReqBody jsonResponse ("limit" =: (50 :: Int))
-  maybe (fail "tiger leaderboard response had unexpected shape") pure
+  maybe (throwIO (userError "tiger leaderboard response had unexpected shape")) pure
     (AesonTypes.parseMaybe tigerRows value)
 
 tigerLeaderboardUrl :: Text -> Url 'Https

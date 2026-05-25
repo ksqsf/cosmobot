@@ -13,6 +13,7 @@ import Bot.Core.Route (runHandlers)
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Media.Config as MediaConfig
@@ -30,6 +31,7 @@ import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
 import Bot.Handler.Ask (askHandlers)
 import Bot.Handler.Ask.Config (AskHandlerConfig (..))
+import qualified Bot.HTTP as HTTP
 import qualified Bot.Log as Log
 import Bot.Storage.Conversation
 import qualified Bot.Storage.SQLite as StorageSQLite
@@ -71,6 +73,7 @@ type AgentStack =
    , Memory.Memory
    , Scheduler.Scheduler
    , Typst.Typst
+   , HTTP.HTTP
    , StorageEffect.Storage
    , KatipE
    , Prim
@@ -458,7 +461,8 @@ testViewImageToolCachesImageForContext =
               runConcurrent $
                 runTestLog $
                   StorageSQLite.runStorageSQLitePath dbPath $
-                    MediaInterpreter.runMedia cfg do
+                    HTTP.runHTTP $
+                      MediaInterpreter.runMedia cfg do
                       runner <- ImageTools.viewImageTool.start agentContext
                       runner (Aeson.object ["url" Aeson..= imageUrl])
       toolResult <- either assertFailure pure runResult
@@ -486,7 +490,8 @@ testReadMediaTextToolReadsCachedSlices =
               runConcurrent $
                 runTestLog $
                   StorageSQLite.runStorageSQLitePath dbPath $
-                    MediaInterpreter.runMedia cfg do
+                    HTTP.runHTTP $
+                      MediaInterpreter.runMedia cfg do
                       mediaRef <- Media.storeMediaObject Media.MediaObject
                         { bytes = TextEncoding.encodeUtf8 content
                         , mimeType = "text/plain; charset=utf-8"
@@ -797,7 +802,8 @@ testAgentAuditStorageOmitsLargeToolResults =
                 runPrim $
                   runTestLog $
                     StorageSQLite.runStorageSQLitePath dbPath $
-                      MediaInterpreter.runMedia cfg $
+                      HTTP.runHTTP $
+                        MediaInterpreter.runMedia cfg $
                         LLMTest.runLLMWith
                           (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
                           (\_ _ -> S.yield "unused image answer" $> "unused image answer")
@@ -1513,7 +1519,8 @@ testConversationStorageOmitsLargeToolResults =
                 runPrim $
                   runTestLog $
                     StorageSQLite.runStorageSQLitePath dbPath $
-                      MediaInterpreter.runMedia cfg do
+                      HTTP.runHTTP $
+                        MediaInterpreter.runMedia cfg do
                         store <- newConversationStore
                         (_answer, conversation) <- LLMTest.runLLMWith
                           (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
@@ -2228,7 +2235,8 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
                 runPrim $
                   runTestLog $
                     StorageSQLite.runStorageSQLitePath ":memory:" $
-                      TypstTest.runTypstWith (mockTypstRender rendered) $
+                      HTTP.runHTTP $
+                        TypstTest.runTypstWith (mockTypstRender rendered) $
                         Scheduler.runScheduler $
                           Memory.runMemory memoryCfg $
                             Skills.runSkills skillsCfg $
@@ -2299,7 +2307,8 @@ runAgentWithStreamingAnswers answers chatMock action = do
                 runPrim $
                   runTestLog $
                     StorageSQLite.runStorageSQLitePath ":memory:" $
-                      TypstTest.runTypstWith (mockTypstRender rendered) $
+                      HTTP.runHTTP $
+                        TypstTest.runTypstWith (mockTypstRender rendered) $
                         Scheduler.runScheduler $
                           Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") $
                             Skills.runSkills defaultTestSkillsConfig $

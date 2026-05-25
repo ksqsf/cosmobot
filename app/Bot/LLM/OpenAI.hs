@@ -12,6 +12,7 @@ module Bot.LLM.OpenAI
 where
 
 import Bot.Prelude
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import Bot.LLM.OpenAI.Config
@@ -30,6 +31,7 @@ runLLM
      , Timeout :> es
      , FileSystem :> es
      , Process :> es
+     , HTTP.HTTP :> es
      , Media.Media :> es
      , IOE :> es)
   => KatipE :> es

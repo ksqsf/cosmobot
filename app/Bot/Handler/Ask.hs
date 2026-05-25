@@ -18,6 +18,7 @@ import qualified Bot.Core.ReplyBody as ReplyBody
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
@@ -43,6 +44,7 @@ type HandlerEffects es =
   ( Chat.Chat :> es
   , ChatLog.ChatLog :> es
   , AgentAudit.AgentAudit :> es
+  , HTTP.HTTP :> es
   , LLM.LLM :> es
   , Media.Media :> es
   , Memory.Memory :> es

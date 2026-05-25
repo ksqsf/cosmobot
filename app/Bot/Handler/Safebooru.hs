@@ -18,10 +18,10 @@ import Bot.Core.Message
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Route
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import Bot.Storage.Prelude
-import qualified Bot.Util.HTTP as Http
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Char as Char
@@ -76,7 +76,7 @@ safebooruLinkRows =
 
 -- | Routes for public Safebooru image commands.
 safebooruHandlers
-  :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es, IOE :> es, Concurrent :> es, Fail :> es)
+  :: (Chat.Chat :> es, HTTP.HTTP :> es, Storage.Storage :> es, KatipE :> es, IOE :> es, Concurrent :> es, Fail :> es)
   => [RouteHandler es]
 safebooruHandlers =
   safebooruHandlersWith (searchSafebooruImageLinks)
@@ -290,9 +290,9 @@ renderImageLinks :: [Text] -> Text
 renderImageLinks =
   Text.unlines . fmap ReplyBody.imageDirective
 
-searchSafebooruImageLinks :: (Fail :> es, IOE :> es) => Text -> Eff es [Text]
+searchSafebooruImageLinks :: (Fail :> es, HTTP.HTTP :> es) => Text -> Eff es [Text]
 searchSafebooruImageLinks keyword = do
-  value <- liftIO . Http.runReq $
+  value <- HTTP.runReq $
     responseBody <$> req GET safebooruUrl NoReqBody jsonResponse (safebooruOptions keyword)
   either (throwIO . userError) pure $
     AesonTypes.parseEither parseSafebooruImageLinks value

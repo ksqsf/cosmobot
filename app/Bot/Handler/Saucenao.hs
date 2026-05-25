@@ -11,10 +11,10 @@ module Bot.Handler.Saucenao
 where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.HTTP as HTTP
 import Bot.Core.Route
 import Bot.Core.Message
 import Bot.Handler.Saucenao.Config
-import qualified Bot.Util.HTTP as Http
 import Bot.Util.Multipart
 import Bot.Prelude
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -35,7 +35,7 @@ saucenaoCommand =
 
 -- | Routes for SauceNAO reverse image search commands.
 saucenaoHandlers
-  :: (Chat.Chat :> es, KatipE :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es, Concurrent :> es)
   => SaucenaoConfig
   -> [RouteHandler es]
 saucenaoHandlers saucenaoCfg =
@@ -43,7 +43,7 @@ saucenaoHandlers saucenaoCfg =
   ]
 
 saucenaoRoute
-  :: (Chat.Chat :> es, KatipE :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es, Concurrent :> es)
   => SaucenaoConfig
   -> RouteHandler es
 saucenaoRoute saucenaoCfg =
@@ -52,7 +52,7 @@ saucenaoRoute saucenaoCfg =
     spawnTask (sendSaucenaoResults saucenaoCfg message)
 
 sendSaucenaoResults
-  :: (Chat.Chat :> es, KatipE :> es, IOE :> es)
+  :: (Chat.Chat :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es)
   => SaucenaoConfig
   -> IncomingMessage
   -> Eff es ()
@@ -90,12 +90,12 @@ nonEmptyImageUrls referenced =
   viaNonEmpty toList referenced.imageUrls
 
 searchOne
-  :: IOE :> es
+  :: (HTTP.HTTP :> es, IOE :> es)
   => SaucenaoConfig
   -> Text
   -> Eff es (Maybe SearchResult)
 searchOne cfg imageUrl = do
-  result <- liftIO (searchImage cfg imageUrl)
+  result <- searchImage cfg imageUrl
   pure (result >>= highSimilarityResult)
 
 data SearchResult = SearchResult
@@ -107,15 +107,15 @@ data SearchResult = SearchResult
   }
   deriving (Show, Generic, Aeson.ToJSON)
 
-searchImage :: SaucenaoConfig -> Text -> IO (Maybe SearchResult)
+searchImage :: (HTTP.HTTP :> es, IOE :> es) => SaucenaoConfig -> Text -> Eff es (Maybe SearchResult)
 searchImage cfg imageUrl = do
   imageBytes <- downloadImage imageUrl
-  value <- Http.runReq $
+  value <- HTTP.runReq $
     responseBody <$> do
       body <- reqBodyMultipart (multipartParts cfg imageBytes)
       req POST saucenaoUrl body jsonResponse saucenaoRequestOptions
   case join (AesonTypes.parseMaybe saucenaoApiError value) of
-    Just err -> ioError (userError (Text.unpack err))
+    Just err -> throwIO (userError (Text.unpack err))
     Nothing  -> pure ()
   pure (join (AesonTypes.parseMaybe firstResult value))
 
@@ -123,16 +123,16 @@ saucenaoUrl :: Url 'Https
 saucenaoUrl =
   https "saucenao.com" /: "search.php"
 
-downloadImage :: Text -> IO ByteString.ByteString
+downloadImage :: (HTTP.HTTP :> es, IOE :> es) => Text -> Eff es ByteString.ByteString
 downloadImage imageUrl
   | Just path <- Text.stripPrefix "file://" imageUrl =
-      ByteString.readFile (Text.unpack path)
+      liftIO $ ByteString.readFile (Text.unpack path)
   | otherwise = do
       uri <- URI.mkURI imageUrl
       case useHttpsURI uri of
         Nothing ->
-          ioError (userError [i|Unsupported SauceNAO image URL: #{imageUrl}|])
-        Just (url, options) -> Http.runReq $
+          liftIO $ ioError (userError [i|Unsupported SauceNAO image URL: #{imageUrl}|])
+        Just (url, options) -> HTTP.runReq $
           responseBody <$> req GET url NoReqBody bsResponse (options <> saucenaoRequestOptions)
 
 multipartParts :: SaucenaoConfig -> ByteString.ByteString -> [Multipart.Part]

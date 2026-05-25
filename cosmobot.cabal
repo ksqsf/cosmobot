@@ -132,6 +132,7 @@ common bot-core-modules
         Bot.Chat.Types
         Bot.Core.Message
         Bot.Effect.Chat
+        Bot.Effect.HTTP
         Bot.Effect.Media
         Bot.Core.ReplyBody
         Bot.Media.Cache
@@ -141,6 +142,7 @@ common bot-core-modules
         Bot.Media.Object
         Bot.Media.S3
         Bot.Media.S3.Config
+        Bot.HTTP
         Bot.System.ImageMagick
         Bot.Util.Image
 
@@ -158,7 +160,6 @@ common bot-chat-driver-modules
         Bot.Storage.Matrix
         Bot.Storage.Prelude
         Bot.Storage.RPC
-        Bot.Util.HTTP
         Bot.Util.Multipart
 
 common bot-agent-modules
@@ -226,7 +227,6 @@ common bot-agent-modules
         Bot.System.Typst.Types
         Bot.Util.Html
         Bot.Util.HList
-        Bot.Util.HTTP
         Bot.Util.Image
         Bot.Util.Stream
 
@@ -414,7 +414,7 @@ test-suite rpc-spec
         Bot.Storage.Prelude
         Bot.Storage.RPC
         Bot.Storage.SQLite
-        Bot.Util.HTTP
+        Bot.HTTP
     build-depends:    log-base
                     , network
                     , toml-parser
@@ -516,7 +516,7 @@ test-suite safebooru-spec
         Bot.Handler.Safebooru
         Bot.Storage.Prelude
         Bot.Storage.SQLite
-        Bot.Util.HTTP
+        Bot.HTTP
     build-depends:    log-base
                     , toml-parser
     hs-source-dirs:   test
