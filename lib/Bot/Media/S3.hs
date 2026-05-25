@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedLabels #-}
 {-|
 Module      : Bot.Media.S3
 Description : S3 media publishing
@@ -16,14 +15,13 @@ where
 import qualified Amazonka as AWS
 import qualified Amazonka.Auth as AWSAuth
 import qualified Amazonka.S3 as S3
-import qualified Amazonka.S3.Lens as S3Lens
+import qualified Amazonka.S3.PutObject as PutObject
 import Bot.Effect.Media (MediaObject (..))
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Cache as Cache
 import qualified Bot.Media.Config as MediaConfig
 import Bot.Media.S3.Config
 import Bot.Prelude
-import Control.Lens ((.~), (?~), (^.))
 import qualified Data.ByteString as StrictByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -74,11 +72,11 @@ configureAddressing :: Config -> AWS.Service -> AWS.Service
 configureAddressing cfg service =
   case Text.toLower (Text.strip cfg.addressingStyle) of
     "path" ->
-      service & AWS.service_s3AddressingStyle .~ AWS.S3AddressingStylePath
+      service{AWS.s3AddressingStyle = AWS.S3AddressingStylePath}
     "virtual" ->
-      service & AWS.service_s3AddressingStyle .~ AWS.S3AddressingStyleVirtual
+      service{AWS.s3AddressingStyle = AWS.S3AddressingStyleVirtual}
     _ ->
-      service & AWS.service_s3AddressingStyle .~ AWS.S3AddressingStyleAuto
+      service{AWS.s3AddressingStyle = AWS.S3AddressingStyleAuto}
 
 ensurePublicObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es Text
 ensurePublicObject runtime cached =
@@ -124,7 +122,7 @@ objectExists env cfg key = do
       pure True
     Left err
       | Just (AWS.ServiceError serviceError) <- fromException err
-      , serviceError ^. AWS.serviceError_status == HTTPStatus.status404 ->
+      , serviceError.status == HTTPStatus.status404 ->
           pure False
       | otherwise ->
           throwIO err
@@ -137,16 +135,18 @@ uploadObject env cfg key cached = do
   bytes <- FileSystemByteString.readFile cached.path
   let mime = cached.mimeType
       request =
-        S3.newPutObject (S3.BucketName (fromMaybe "" cfg.bucket)) (S3.ObjectKey key) (AWS.toBody bytes)
-          & S3Lens.putObject_contentType ?~ mime
-          & setPublicAcl cfg
+        setPublicAcl cfg
+          ( (S3.newPutObject (S3.BucketName (fromMaybe "" cfg.bucket)) (S3.ObjectKey key) (AWS.toBody bytes))
+            { PutObject.contentType = Just mime
+            }
+          )
   logInfo [i|S3 media upload: key=#{key} mime=#{mime}|]
   void $ liftIO $ AWS.runResourceT (AWS.send env request)
 
 setPublicAcl :: Config -> S3.PutObject -> S3.PutObject
 setPublicAcl cfg request
   | cfg.publicReadAcl =
-      request & S3Lens.putObject_acl ?~ S3.ObjectCannedACL_Public_read
+      request{PutObject.acl = Just S3.ObjectCannedACL_Public_read}
   | otherwise =
       request
 

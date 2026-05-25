@@ -109,7 +109,6 @@ common lib-deps
                     , warp
                     , jsonrpc
                     , optics
-                    , lens
                     , time
                     , temporary
                     , process
