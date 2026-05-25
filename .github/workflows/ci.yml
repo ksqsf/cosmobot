@@ -16,7 +16,7 @@ jobs:
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
         with:
-          ghc-version: "9.6.7"
+          ghc-version: "9.10.3"
           cabal-version: "3.14.2.0"
 
       - name: Cache Cabal
@@ -25,9 +25,9 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ runner.os }}-ghc-9.6.7-cabal-${{ hashFiles('cosmobot.cabal') }}
+          key: ${{ runner.os }}-ghc-9.10.3-cabal-${{ hashFiles('cosmobot.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-ghc-9.6.7-cabal-
+            ${{ runner.os }}-ghc-9.10.3-cabal-
 
       - name: Update package index
         run: cabal update
