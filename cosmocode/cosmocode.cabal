@@ -1,5 +1,5 @@
 cabal-version:      3.0
-name:               cosmo-code
+name:               cosmocode
 version:            0.1.0.0
 -- synopsis:
 -- description:
@@ -14,7 +14,7 @@ extra-doc-files:    CHANGELOG.md
 common warnings
     ghc-options: -Wall
 
-executable cosmo-code
+executable cosmocode
     import:           warnings
     main-is:          Main.hs
     other-modules:

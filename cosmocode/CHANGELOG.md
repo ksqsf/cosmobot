@@ -1,4 +1,4 @@
-# Revision history for cosmo-code
+# Revision history for cosmocode
 
 ## 0.1.0.0 -- YYYY-mm-dd
 
