@@ -37,6 +37,7 @@ main =
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
+      , testCase "Matrix edit event is ignored" testMatrixEditEventIsIgnored
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
       , testCase "Matrix bot mention uses mentions field only" testMatrixBotMentionUsesMentionsFieldOnly
       , testCase "Matrix Markdown renders custom HTML" testMatrixMarkdownRendersCustomHtml
@@ -340,6 +341,12 @@ testMatrixReplyRelationConvertsToReplyMessageId = do
   let incoming = Matrix.eventToIncomingMessage matrixReplyRoomEvent
   ((.replyToMessageId) <$> incoming) @?= Just (Just (textMessageId "$parent:example.org"))
 
+testMatrixEditEventIsIgnored :: IO ()
+testMatrixEditEventIsIgnored =
+  assertBool
+    "Matrix edit events should not trigger handlers"
+    (isNothing (Matrix.eventToIncomingMessage matrixEditRoomEvent))
+
 testMatrixSuperuserIsMarkedInDigest :: IO ()
 testMatrixSuperuserIsMarkedInDigest = do
   let incoming = fromMaybe (error "expected incoming Matrix message") $
@@ -567,6 +574,21 @@ matrixReplyRoomEvent =
         { Matrix.content = matrixRoomEvent.event.content
             { Matrix.replyToEventId = Just "$parent:example.org"
             }
+        }
+    }
+
+matrixEditRoomEvent :: Matrix.RoomEvent
+matrixEditRoomEvent =
+  matrixRoomEvent
+    { Matrix.event = matrixRoomEvent.event
+        { Matrix.raw = Aeson.object
+            [ "content" Aeson..= Aeson.object
+                [ "m.relates_to" Aeson..= Aeson.object
+                    [ "rel_type" Aeson..= ("m.replace" :: Text)
+                    , "event_id" Aeson..= ("$event:example.org" :: Text)
+                    ]
+                ]
+            ]
         }
     }
 

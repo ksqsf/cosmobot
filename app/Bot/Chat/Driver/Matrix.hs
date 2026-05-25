@@ -1202,6 +1202,7 @@ eventToIncomingMessageWith :: Config -> RoomEvent -> Maybe IncomingMessage
 eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event} = do
   guard (event.type_ == "m.room.message")
   guard (not (isOwnEvent cfg event))
+  guard (not (isEditEvent event))
   body <- event.content.body
   guard (not (Text.null (Text.strip body)))
   pure IncomingMessage
@@ -1227,6 +1228,8 @@ matrixEventIgnoreReason cfg RoomEvent{roomId, event}
       [i|unsupported event type #{eventType}; #{context}|]
   | isOwnEvent cfg event =
       [i|own event; #{context}|]
+  | isEditEvent event =
+      [i|edit event; #{context}|]
   | isNothing event.content.body =
       [i|missing content.body; #{context}|]
   | Text.null (Text.strip (fromMaybe "" event.content.body)) =
@@ -1279,6 +1282,18 @@ matrixMentions cfg content body =
 isOwnEvent :: Config -> Event -> Bool
 isOwnEvent cfg event =
   cfg.userId == Just event.sender
+
+isEditEvent :: Event -> Bool
+isEditEvent event =
+  matrixRelationType event.raw == Just "m.replace"
+
+matrixRelationType :: Aeson.Value -> Maybe Text
+matrixRelationType =
+  Aeson.parseMaybe $
+    Aeson.withObject "Matrix event" \eventObject -> do
+      content <- eventObject Aeson..: "content"
+      Aeson.withObject "Matrix content" (\contentObject -> contentObject Aeson..: "m.relates_to") content >>=
+        Aeson.withObject "Matrix relation" (Aeson..: "rel_type")
 
 defaultConfig :: Config
 defaultConfig = Config
