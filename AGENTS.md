@@ -1,6 +1,10 @@
 You are a Haskell engineer working on cosmobot. Favor correctness, explicit data flow, small algebraic modules, and abstractions that make the code clearer in practice.
 
-## Architecture Rules
+## Cosmobot
+
+Placed under ./cosmobot.
+
+### Architecture Rules
 
 - Preserve the dependency direction:
   `platform event -> core message -> route -> handler -> effects -> interpreter/concrete capability`.
@@ -8,7 +12,7 @@ You are a Haskell engineer working on cosmobot. Favor correctness, explicit data
 - Concrete integrations stay behind interpreters or infrastructure modules: chat drivers, storage modules, LLM transport, memory files, and `Bot.System.*`.
 - `app/Main.hs` is the composition root. Keep it declarative: read config, create stores, install interpreters, start drivers, register routes, connect streams.
 
-## Module Ownership
+### Module Ownership
 
 - `Bot.Core.*`: platform-neutral vocabulary: messages, routes, reply bodies, pure conversation/history/tree values. No QQ/Telegram/Matrix/Discord, SQLite, Selda, LLM transport, or process details.
 - `Bot.Handler.*`: user-facing command and conversation flows.
@@ -25,7 +29,7 @@ You are a Haskell engineer working on cosmobot. Favor correctness, explicit data
 - `Bot.System.*`: local executable or operating-system integrations such as Typst.
 - `Bot.Config`: top-level assembly only. Concrete parsers belong beside their owner, e.g. `Bot.Chat.Driver.*.Config`, `Bot.Handler.*.Config`, `Bot.LLM.*.Config`, `Bot.Memory.Config`.
 
-## Effect Facade Rules
+### Effect Facade Rules
 
 Keep `Bot.Effect.*` modules boring:
 
@@ -45,7 +49,7 @@ Move larger code to its owner:
 
 Avoid import cycles when extracting from effects. Prefer explicit callback records or narrower types over importing the facade from the extracted implementation.
 
-## Agent Operations
+### Agent Operations
 
 When changing the agent loop or middleware:
 
@@ -88,7 +92,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - tool-emitted chat message linking;
 - middleware ordering when context is provided by one middleware and consumed by another.
 
-## Coding Rules
+### Coding Rules
 
 - For Haskell code changes, use the local `haskell` skill's fast-feedback workflow: keep `ghcid --outputfile .ghcid-errors` running when practical, read `.ghcid-errors` for concise type diagnostics, and avoid repeated full builds while iterating.
 - Work in `Eff es`. Add `IOE :> es` only at real external boundaries.
@@ -102,7 +106,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - Do not add indirection for appearance. Add an abstraction only when it removes real duplication, isolates an external system, or gives a growing responsibility a clear home.
 - Keep broad refactors separate from behavior changes unless the refactor is required to implement the behavior safely.
 
-## Identity And Persistence
+### Identity And Persistence
 
 - Do not conflate chat identity with sender identity.
 - Person-scoped features normally key by `platform` and `senderId`.
@@ -111,7 +115,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - If required identity is missing, reject clearly instead of guessing.
 - Keep persistence keying rules close to the state they persist.
 
-## Config Rules
+### Config Rules
 
 - Driver settings live under `[driver.qq]`, `[driver.telegram]`, `[driver.matrix]`, and `[driver.discord]`.
 - Handler settings live under `[handler.*]`.
@@ -120,7 +124,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - Do not reintroduce top-level `[qq]`, `[telegram]`, `[matrix]`, `[discord]`, `[saucenao]`, `[handlers.*]`, or handler-owned platform whitelist sections.
 - When adding config, update the owner parser, `Bot.Config`, `config.example.toml`, and every runtime consumer.
 
-## Change Guidelines
+### Change Guidelines
 
 - Handler changes: start from route admission in `Bot.Core.Route`; compose predicates/combinators instead of duplicating admission logic. Use the existing `forkEff` pattern for LLM/platform work that should not block incoming stream consumption.
 - Platform changes: keep API details in the relevant driver or dispatch glue. Do not leak platform request/response types into handlers or tools.
@@ -129,7 +133,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - Persistence changes: prefer component-owned `Bot.Storage.*` modules over handler-local files or ad hoc SQL. Model queryable state as columns, not opaque JSON blobs.
 - New modules: update `cosmobot.cabal` for the executable plus relevant tests/benchmarks. This package has no library stanza, so missing `other-modules` entries matter.
 
-## Review Requirements
+### Review Requirements
 
 - For substantial changes, especially RPC/web/storage/resource-lifecycle work, run a review cycle before finishing: review the code, summarize risks, fix material issues, then review again. Repeat until no unresolved high or medium risk remains, or explicitly document why a remaining risk is out of scope.
 - Include an architecture review against module ownership and dependency direction, a resource-lifecycle review for files/blobs/temp paths/database rows/background queues, and a protocol-contract review for any public JSON/RPC/HTTP surface.
@@ -138,7 +142,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - When using subagents for review or implementation, give each one a disjoint scope, require file/line findings, and require verification commands for code changes. Integrate their work only after reconciling overlapping contracts and rerunning the relevant checks in the main worktree.
 - Treat frontend/backend contract mismatches as blockers. If UI calls an RPC/HTTP method, the backend must implement and document it, or the UI must hide/remove that path.
 
-## Verification
+### Verification
 
 - Agent/tool/conversation changes: `cabal test agent-spec`.
 - Scheduler changes: `cabal test scheduler-spec`.
@@ -147,3 +151,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - Executable wiring, config, cabal module lists, or handler signatures: `cabal build cosmobot`.
 - Always run `git diff --check` before finishing.
 - Keep unrelated untracked files out of commits unless explicitly requested.
+
+## Cosmocode
+
+A TUI interface to interact with Cosmobot RPC server, and specifically, designed for coding tasks.
