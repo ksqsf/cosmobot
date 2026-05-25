@@ -3,8 +3,10 @@ module Main (main) where
 import Bot.Prelude
 import Bot.Chat.Driver.Types
 import Bot.Core.Message
+import qualified Bot.Effect.HTTP as EffectHTTP
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.HTTP as BotHTTP
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.RPC.Config as RPCConfig
@@ -676,7 +678,7 @@ assertUnauthorizedRejected = \case
 runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
 runTestLog action = startKatipE "rpc-spec" "test" action
 
-runRpcStorage :: FilePath -> Eff '[Media.Media, Storage.Storage, KatipE, Process, FileSystem.FileSystem, Concurrent, Fail, IOE] a -> IO a
+runRpcStorage :: FilePath -> Eff '[Media.Media, EffectHTTP.HTTP, Storage.Storage, KatipE, Process, FileSystem.FileSystem, Concurrent, Fail, IOE] a -> IO a
 runRpcStorage path action =
   runEff $
   runFailIO $
@@ -685,6 +687,7 @@ runRpcStorage path action =
   runProcess $
   runTestLog $
   StorageSQLite.runStorageSQLitePath path $
+  BotHTTP.runHTTP $
   MediaInterpreter.runMedia (testMediaConfig path) $ action
 
 testMediaConfig :: FilePath -> MediaConfig.Config

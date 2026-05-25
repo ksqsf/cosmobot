@@ -44,6 +44,8 @@ forcePlatform = \case
   PlatformQQ -> ()
   PlatformTelegram -> ()
   PlatformMatrix -> ()
+  PlatformDiscord -> ()
+  PlatformRPC -> ()
 
 forceKind :: ChatKind -> ()
 forceKind = \case
@@ -117,13 +119,14 @@ chatLogRouteDispatch :: [IncomingMessage] -> IO Int
 chatLogRouteDispatch messages = do
   handled <- IORef.newIORef 0
   runEff $
-    runBenchmarkLog $
-      StorageSQLite.runStorageSQLitePath ":memory:" $
-      ChatLog.runChatLog do
-        consumeWith
-          (benchmarkHandlers handled)
-          (ChatLog.recordIncomingMessages (S.each messages))
-        liftIO (IORef.readIORef handled)
+    runConcurrent $
+      runBenchmarkLog $
+        StorageSQLite.runStorageSQLitePath ":memory:" $
+        ChatLog.runChatLog do
+          consumeWith
+            (benchmarkHandlers handled)
+            (ChatLog.recordIncomingMessages (S.each messages))
+          liftIO (IORef.readIORef handled)
 
 mergedChatLogRouteDispatch :: [IncomingMessage] -> IO Int
 mergedChatLogRouteDispatch messages = do
@@ -170,21 +173,23 @@ decodeJsonValues =
 chatLogRecord :: [IncomingMessage] -> IO Int
 chatLogRecord messages = do
   runEff $
-    runBenchmarkLog $
-      StorageSQLite.runStorageSQLitePath ":memory:" $
-      ChatLog.runChatLog do
-        traverse_ ChatLog.recordMessage messages
-        pure (length messages)
+    runConcurrent $
+      runBenchmarkLog $
+        StorageSQLite.runStorageSQLitePath ":memory:" $
+        ChatLog.runChatLog do
+          traverse_ ChatLog.recordMessage messages
+          pure (length messages)
 
 chatLogRecordQuery :: [IncomingMessage] -> IO Int
 chatLogRecordQuery messages = do
   runEff $
-    runBenchmarkLog $
-      StorageSQLite.runStorageSQLitePath ":memory:" $
-      ChatLog.runChatLog do
-        traverse_ ChatLog.recordMessage messages
-        entries <- ChatLog.queryChat (lastMessage messages) 100 True
-        pure (length entries)
+    runConcurrent $
+      runBenchmarkLog $
+        StorageSQLite.runStorageSQLitePath ":memory:" $
+        ChatLog.runChatLog do
+          traverse_ ChatLog.recordMessage messages
+          entries <- ChatLog.queryChat (lastMessage messages) 100 True
+          pure (length entries)
 
 mergeOnly :: [IncomingMessage] -> IO Int
 mergeOnly messages = do
@@ -229,10 +234,9 @@ benchmarkHandlers handled =
       liftIO $ IORef.modifyIORef' handled (+ 1)
   ]
 
-runBenchmarkLog :: IOE :> es => Eff (Log : es) a -> Eff es a
-runBenchmarkLog action = do
-  logger <- liftIO $ mkLogger "message-pipeline-bench" \_ -> pure ()
-  runLog "message-pipeline-bench" logger LogAttention action
+runBenchmarkLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
+runBenchmarkLog action =
+  startKatipE "message-pipeline-bench" "bench" action
 
 syntheticMessages :: Int -> [IncomingMessage]
 syntheticMessages count =
@@ -255,7 +259,7 @@ syntheticMessage index =
     , senderUsername = Just ("user" <> show (index `mod` 256))
     , messageId = Just (integerMessageId (fromIntegral index))
     , replyToMessageId = if index `mod` 13 == 0 then Just (integerMessageId (fromIntegral (max 1 (index - 1)))) else Nothing
-    , mentions = if index `mod` 17 == 0 then [42] else []
+    , mentions = if index `mod` 17 == 0 then ["42"] else []
     , mentionUsernames = if index `mod` 19 == 0 then ["cosmobot"] else []
     , imageUrls = if index `mod` 23 == 0 then ["https://example.test/image.png"] else []
     , text = "message " <> show index <> " " <> Text.replicate (index `mod` 8) "payload "

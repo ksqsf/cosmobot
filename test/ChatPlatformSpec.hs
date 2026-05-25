@@ -7,6 +7,7 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
+import qualified Bot.HTTP as BotHTTP
 import Bot.Prelude
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.Map.Strict as Map
@@ -172,7 +173,7 @@ testTelegramReferencedMessageIncludesSenderIdentity = do
       messageWithReply = (telegramMessage False){Telegram.replyToMessage = Just referenced}
       incoming = fromMaybe (error "expected incoming Telegram message") $
         Telegram.updateToIncomingMessage (telegramUpdateWithMessage messageWithReply)
-  fetched <- runEff $ runTestLog $
+  fetched <- runEff $ runTestLog $ BotHTTP.runHTTP $
     Telegram.runTelegram (Telegram.Config "dummy-token" [] [] [] [] []) $
       Telegram.getMessageContent incoming ("70001")
   (fetched <&> (.senderDisplayName)) @?= Just (Just "Bob Smith")
@@ -239,7 +240,7 @@ testTelegramOkFalseBecomesTelegramExceptionDescription = do
   result <- runEff (trySync (Telegram.parseTelegramResult parsed)) :: IO (Either SomeException Telegram.Message)
   case result of
     Left err ->
-      toText (displayException err) @?= "Bad Request: can't parse entities"
+      exceptionFirstLine err @?= "Bad Request: can't parse entities"
     Right _ ->
       assertFailure "expected TelegramException"
 
@@ -247,6 +248,10 @@ testTelegramFailureReplyIsConcise :: IO ()
 testTelegramFailureReplyIsConcise =
   Telegram.telegramFailureReplyText (Telegram.TelegramException "Bad Request: message is too long")
     @?= "Telegram request failed: Bad Request: message is too long"
+
+exceptionFirstLine :: Exception err => err -> Text
+exceptionFirstLine =
+  Text.takeWhile (/= '\n') . toText . displayException
 
 assertEntity :: Telegram.TelegramFormatted -> Text -> Integer -> Integer -> Maybe Text -> Maybe Text -> Assertion
 assertEntity formatted type_ offset entityLength url language =

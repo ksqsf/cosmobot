@@ -17,7 +17,7 @@ Cosmobot 是一个小型 AI agent 框架，接受来自 QQ/OneBot、Telegram、M
 
 ## 构建
 
-目前仅支持 GHC 9.6 和 Cabal 3.14。
+目前仅支持 GHC 9.10 和 Cabal 3.14，使用 Stackage LTS 24.42。
 
 ```bash
 cabal build cosmobot

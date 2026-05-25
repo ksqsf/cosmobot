@@ -58,13 +58,11 @@ common rtsopts
     ghc-options: -rtsopts
 
 common language
-    default-language: GHC2021
+    default-language: GHC2024
     default-extensions:
-        DataKinds
         DeriveAnyClass
         DerivingVia
         DuplicateRecordFields
-        LambdaCase
         NoFieldSelectors
         NoImplicitPrelude
         OverloadedRecordDot
@@ -73,7 +71,7 @@ common language
         TypeFamilies
         BlockArguments
 
-common app-deps
+common lib-deps
     build-depends:    base >=4.18.0.0
                     , relude
                     , text
@@ -104,7 +102,7 @@ common app-deps
                     , http-client
                     , http-client-tls
                     , crypton-connection
-                    , tls >= 2.0
+                    , tls >= 2.1
                     , http-types
                     , wai
                     , wai-websockets
@@ -118,53 +116,40 @@ common app-deps
                     , selda
                     , selda-sqlite
                     , regex-tdfa
-    hs-source-dirs:   app
 
 common test-deps
-    build-depends:    tasty
+    build-depends:    base >=4.18.0.0
+                    , cosmobot
+                    , tasty
                     , tasty-hunit
+                    , aeson
+                    , bytestring
+                    , containers
+                    , directory
+                    , effectful
+                    , filepath
+                    , http-client
+                    , http-types
+                    , jsonrpc
+                    , network
+                    , process
+                    , req
+                    , regex-tdfa
+                    , streaming
+                    , text
+                    , toml-parser
+                    , wai
+                    , warp
+                    , websockets
 
-common bot-core-modules
-    other-modules:
-        Bot.Prelude
-        Bot.Log
-        Bot.Chat.ReplyStream
-        Bot.Chat.Types
-        Bot.Core.Message
-        Bot.Effect.Chat
-        Bot.Effect.HTTP
-        Bot.Effect.Media
-        Bot.Core.ReplyBody
-        Bot.Media.Cache
-        Bot.Media.Config
-        Bot.Media.Interpreter
-        Bot.Media.Mime
-        Bot.Media.Object
-        Bot.Media.S3
-        Bot.Media.S3.Config
-        Bot.HTTP
-        Bot.System.ImageMagick
-        Bot.Util.Image
-
-common bot-chat-driver-modules
-    other-modules:
-        Bot.Chat.Driver.Types
-        Bot.Chat.Driver.QQ
-        Bot.Chat.Driver.Discord
-        Bot.Chat.Driver.Matrix
-        Bot.Chat.Driver.Telegram
-        Bot.Effect.Storage
-        Bot.RPC.Config
-        Bot.RPC.Protocol
-        Bot.RPC.State
-        Bot.Storage.Matrix
-        Bot.Storage.Prelude
-        Bot.Storage.RPC
-        Bot.Util.Multipart
-
-common bot-agent-modules
-    other-modules:
+library
+    import:           warnings
+                    , language
+                    , lib-deps
+    hs-source-dirs:   lib
+    exposed-modules:
         Bot.Agent
+        Bot.Agent.Config
         Bot.Agent.Conversation
         Bot.Agent.Core
         Bot.Agent.Failure
@@ -194,31 +179,86 @@ common bot-agent-modules
         Bot.AgentAudit.Projection
         Bot.AgentAudit.Storage
         Bot.AgentAudit.Types
+        Bot.Chat.Driver
+        Bot.Chat.Driver.Discord
+        Bot.Chat.Driver.Discord.Config
+        Bot.Chat.Driver.Matrix
+        Bot.Chat.Driver.Matrix.Config
+        Bot.Chat.Driver.QQ
+        Bot.Chat.Driver.QQ.Config
+        Bot.Chat.Driver.Telegram
+        Bot.Chat.Driver.Telegram.Config
+        Bot.Chat.Driver.Types
+        Bot.Chat.ReplyStream
+        Bot.Chat.Types
         Bot.ChatLog.Record
         Bot.ChatLog.Types
+        Bot.Config
         Bot.Core.Conversation
+        Bot.Core.Message
+        Bot.Core.ReplyBody
+        Bot.Core.Route
         Bot.Effect.AgentAudit
+        Bot.Effect.Chat
         Bot.Effect.ChatLog
+        Bot.Effect.HTTP
         Bot.Effect.LLM
+        Bot.Effect.Media
         Bot.Effect.Memory
         Bot.Effect.Scheduler
         Bot.Effect.Skills
         Bot.Effect.Storage
         Bot.Effect.Typst
+        Bot.HTTP
+        Bot.Handler.Admin
+        Bot.Handler.Admin.Config
+        Bot.Handler.Ask
+        Bot.Handler.Ask.Config
+        Bot.Handler.Audit
+        Bot.Handler.Safebooru
+        Bot.Handler.Saucenao
+        Bot.Handler.Saucenao.Config
+        Bot.Handler.Scratchpad
+        Bot.Handler.ShutUp
+        Bot.Handler.ShutUp.Config
+        Bot.Handler.Typing
+        Bot.Handler.Typing.Typst
+        Bot.LLM.OpenAI
         Bot.LLM.OpenAI.Config
-        Bot.RPC.Config
         Bot.LLM.OpenAI.Retry
         Bot.LLM.OpenAI.Transport
+        Bot.LLM.Test
         Bot.LLM.Types
+        Bot.Lifecycle
+        Bot.Log
+        Bot.Main
+        Bot.Media.Cache
+        Bot.Media.Config
+        Bot.Media.Interpreter
+        Bot.Media.Mime
+        Bot.Media.Object
+        Bot.Media.S3
+        Bot.Media.S3.Config
         Bot.Memory
+        Bot.Memory.Config
+        Bot.Prelude
+        Bot.RPC.Audit
+        Bot.RPC.Client
+        Bot.RPC.Config
+        Bot.RPC.Protocol
+        Bot.RPC.Server
+        Bot.RPC.State
         Bot.Skills
+        Bot.Skills.Config
         Bot.Scheduler.Interpreter
         Bot.Scheduler.State
         Bot.Scheduler.Types
-        Bot.Storage.Prelude
-        Bot.Storage.Conversation
         Bot.Storage.ChatLog
+        Bot.Storage.Conversation
         Bot.Storage.Lifecycle
+        Bot.Storage.Matrix
+        Bot.Storage.Prelude
+        Bot.Storage.RPC
         Bot.Storage.Scheduler
         Bot.Storage.SQLite
         Bot.System.ImageMagick
@@ -228,7 +268,13 @@ common bot-agent-modules
         Bot.Util.Html
         Bot.Util.HList
         Bot.Util.Image
+        Bot.Util.Multipart
         Bot.Util.Stream
+        Bot.Util.Toml
+    build-depends:    log-base
+                    , aeson-optics
+                    , websockets
+                    , toml-parser
 
 executable cosmobot
     -- Import common warning flags.
@@ -236,100 +282,43 @@ executable cosmobot
                     , threaded
                     , rtsopts
                     , language
-                    , app-deps
-                    , bot-core-modules
-                    , bot-chat-driver-modules
-                    , bot-agent-modules
 
     -- .hs or .lhs file containing the Main module.
     main-is:          Main.hs
-
-    -- Modules included in this executable, other than Main.
-    other-modules:
-        Bot.Agent.Config
-        Bot.Chat.Driver
-        Bot.Chat.Driver.Discord.Config
-        Bot.Chat.Driver.Matrix.Config
-        Bot.Chat.Driver.QQ.Config
-        Bot.Chat.Driver.Telegram.Config
-        Bot.Config
-        Bot.Core.Route
-        Bot.LLM.OpenAI
-        Bot.Main
-        Bot.Media.Interpreter
-        Bot.Media.Mime
-        Bot.Media.Object
-        Bot.Media.S3
-        Bot.Media.S3.Config
-        Bot.RPC.Audit
-        Bot.RPC.Client
-        Bot.Handler.Admin
-        Bot.Handler.Admin.Config
-        Bot.Lifecycle
-        Bot.Handler.Ask
-        Bot.Handler.Ask.Config
-        Bot.Handler.Audit
-        Bot.Handler.Safebooru
-        Bot.Handler.Scratchpad
-        Bot.Handler.Saucenao.Config
-        Bot.Handler.ShutUp
-        Bot.Handler.ShutUp.Config
-        Bot.Handler.Typing
-        Bot.Handler.Typing.Typst
-        Bot.Memory.Config
-        Bot.RPC.Server
-        Bot.Skills.Config
-        Bot.Handler.Saucenao
-        Bot.Util.Toml
+    hs-source-dirs:   app
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
 
     -- Other library packages from which modules are imported.
-    build-depends:    log-base
-                    , aeson-optics
-                    , dotenv
+    build-depends:    base >=4.18.0.0
+                    , cosmobot
+                    , aeson
+                    , text
                     , optparse-applicative
-                    , websockets
-                    , toml-parser
 
 test-suite filter-spec
     import:           warnings
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          FilterSpec.hs
-    other-modules:
-        Bot.Core.Route
     build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite scratchpad-spec
     import:           warnings
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          ScratchpadSpec.hs
-    other-modules:
-        Bot.Core.Route
-        Bot.Effect.Storage
-        Bot.Storage.Prelude
-        Bot.Storage.SQLite
-        Bot.Handler.Scratchpad
     build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite chat-platform-spec
     import:           warnings
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
-                    , bot-chat-driver-modules
     type:             exitcode-stdio-1.0
     main-is:          ChatPlatformSpec.hs
     build-depends:    base64-bytestring
@@ -342,20 +331,9 @@ test-suite chat-platform-spec
 test-suite scheduler-spec
     import:           warnings
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          SchedulerSpec.hs
-    other-modules:
-        Bot.Effect.Scheduler
-        Bot.Effect.Storage
-        Bot.Scheduler.Interpreter
-        Bot.Scheduler.State
-        Bot.Scheduler.Types
-        Bot.Storage.Prelude
-        Bot.Storage.Scheduler
-        Bot.Storage.SQLite
     build-depends:    toml-parser
     hs-source-dirs:   test
 
@@ -363,13 +341,9 @@ test-suite stream-spec
     import:           warnings
                     , threaded
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          StreamSpec.hs
-    other-modules:
-        Bot.Util.Stream
     build-depends:    toml-parser
     hs-source-dirs:   test
 
@@ -377,18 +351,9 @@ test-suite agent-spec
     import:           warnings
                     , threaded
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
-                    , bot-agent-modules
     type:             exitcode-stdio-1.0
     main-is:          AgentSpec.hs
-    other-modules:
-        Bot.Core.Route
-        Bot.Handler.Ask
-        Bot.Handler.Ask.Config
-        Bot.LLM.Test
-        Bot.Util.Toml
     build-depends:    http-client
                     , process
                     , req
@@ -399,22 +364,9 @@ test-suite rpc-spec
     import:           warnings
                     , threaded
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          RPCSpec.hs
-    other-modules:
-        Bot.Chat.Driver.Types
-        Bot.Effect.Storage
-        Bot.RPC.Config
-        Bot.RPC.Protocol
-        Bot.RPC.Server
-        Bot.RPC.State
-        Bot.Storage.Prelude
-        Bot.Storage.RPC
-        Bot.Storage.SQLite
-        Bot.HTTP
     build-depends:    log-base
                     , network
                     , toml-parser
@@ -424,80 +376,44 @@ test-suite rpc-spec
 test-suite llm-openai-config-spec
     import:           warnings
                     , language
-                    , app-deps
                     , test-deps
     type:             exitcode-stdio-1.0
     main-is:          LLMOpenAIConfigSpec.hs
-    other-modules:
-        Bot.Prelude
-        Bot.LLM.OpenAI.Config
-        Bot.Util.Toml
     build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite chat-log-spec
     import:           warnings
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          ChatLogSpec.hs
-    other-modules:
-        Bot.ChatLog.Record
-        Bot.ChatLog.Types
-        Bot.Effect.ChatLog
-        Bot.Effect.Storage
-        Bot.Storage.ChatLog
-        Bot.Storage.Prelude
-        Bot.Storage.SQLite
     build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite typing-spec
     import:           warnings
                     , language
-                    , app-deps
                     , test-deps
     type:             exitcode-stdio-1.0
     main-is:          TypingSpec.hs
-    other-modules:
-        Bot.Prelude
-        Bot.Handler.Typing.Typst
     hs-source-dirs:   test
 
 test-suite admin-spec
     import:           warnings
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          AdminSpec.hs
-    other-modules:
-        Bot.Core.Route
-        Bot.Effect.Storage
-        Bot.Handler.Admin
-        Bot.Handler.Admin.Config
-        Bot.Lifecycle
-        Bot.Storage.Lifecycle
-        Bot.Storage.Prelude
-        Bot.Storage.SQLite
     build-depends:    toml-parser
     hs-source-dirs:   test
 
 test-suite shutup-spec
     import:           warnings
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          ShutUpSpec.hs
-    other-modules:
-        Bot.Core.Route
-        Bot.Handler.ShutUp
-        Bot.Handler.ShutUp.Config
     build-depends:    toml-parser
     hs-source-dirs:   test
 
@@ -505,18 +421,9 @@ test-suite safebooru-spec
     import:           warnings
                     , threaded
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          SafebooruSpec.hs
-    other-modules:
-        Bot.Core.Route
-        Bot.Effect.Storage
-        Bot.Handler.Safebooru
-        Bot.Storage.Prelude
-        Bot.Storage.SQLite
-        Bot.HTTP
     build-depends:    log-base
                     , toml-parser
     hs-source-dirs:   test
@@ -525,26 +432,9 @@ benchmark message-pipeline-bench
     import:           warnings
                     , threaded
                     , language
-                    , app-deps
                     , test-deps
-                    , bot-core-modules
     type:             exitcode-stdio-1.0
     main-is:          MessagePipelineBench.hs
-    other-modules:
-        Bot.ChatLog.Record
-        Bot.ChatLog.Types
-        Bot.Core.Route
-        Bot.Effect.ChatLog
-        Bot.Effect.Scheduler
-        Bot.Effect.Storage
-        Bot.Scheduler.Interpreter
-        Bot.Scheduler.State
-        Bot.Scheduler.Types
-        Bot.Storage.ChatLog
-        Bot.Storage.Prelude
-        Bot.Storage.Scheduler
-        Bot.Storage.SQLite
-        Bot.Util.Stream
     build-depends:    deepseq
                     , tasty-bench
     hs-source-dirs:   bench
