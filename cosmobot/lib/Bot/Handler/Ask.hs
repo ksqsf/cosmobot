@@ -339,6 +339,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
         program =
           ( Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessage message)
           . Agent.withLinkingToolEmittedMessagesToConversation sink
+          . Agent.withNormalizingToolReplies
           )
             (Agent.defaultAgentProgram observer cfg.agentMaxTurns agentRun)
     (responseId, replyResult) <-

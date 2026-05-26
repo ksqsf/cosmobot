@@ -25,6 +25,7 @@ module Bot.Effect.Chat
   , setMemberTitle
   , ChatHandlers (..)
   , runChatWith
+  , runChatMappingReplies
   , runChatRecordingSelfMessages
   , runChatRecordingExtraMessages
 
@@ -234,6 +235,24 @@ runChatWith handlers = interpret $ \_ -> \case
     handlers.handleMentionUser message userId body
   SetMemberTitle message userId title ->
     handlers.handleSetMemberTitle message userId title
+
+-- | Locally rewrite ordinary reply bodies while all platform operations still
+-- delegate to the outer 'Chat' interpreter.
+runChatMappingReplies
+  :: Chat :> es
+  => (Text -> Eff es (Either Text Text))
+  -> Eff es a
+  -> Eff es a
+runChatMappingReplies rewrite =
+  interpose $ \localEnv -> \case
+    ReplyTo message body -> do
+      rewrite body >>= \case
+        Left err ->
+          pure (Left err)
+        Right rewritten ->
+          passthrough localEnv (ReplyTo message rewritten)
+    operation ->
+      passthrough localEnv operation
 
 -- | Locally override chat sending so self messages can be recorded while all
 -- platform operations still delegate to the outer 'Chat' interpreter.

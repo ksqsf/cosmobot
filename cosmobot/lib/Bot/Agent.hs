@@ -31,6 +31,7 @@ module Bot.Agent
   , toolTextWithImages
   , toolFailure
   , withLinkingToolEmittedMessagesToConversation
+  , withNormalizingToolReplies
   , withRecordingToolSelfMessages
   , runAgent
   , runAgentStreaming
@@ -66,6 +67,9 @@ import Bot.Agent.Middleware.ToolEmittedMessage
   ( ToolEmittedMessageSink (..)
   , withLinkingToolEmittedMessagesToConversation
   , withRecordingToolSelfMessages
+  )
+import Bot.Agent.Middleware.ToolReplyNormalization
+  ( withNormalizingToolReplies
   )
 import Bot.Agent.ToolRegistry
   ( startToolRun

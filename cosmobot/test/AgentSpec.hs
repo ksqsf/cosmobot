@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Core as AgentCore
 import qualified Bot.Agent.Tools.Audio as AudioTools
 import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Tools.Image as ImageTools
@@ -37,6 +38,7 @@ import Bot.Storage.Conversation
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.Test as TypstTest
 import qualified Bot.System.Typst.Types as TypstTypes
+import qualified Bot.Util.HList as HList
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as StrictByteString
@@ -123,6 +125,8 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
+      , testCase "tool reply middleware normalizes reply images" testToolReplyMiddlewareNormalizesReplyImages
+      , testCase "tool reply middleware rejects uncached remote images" testToolReplyMiddlewareRejectsUncachedRemoteImages
       , testCase "send file tool uploads via chat effect" testSendFileToolUploadsViaChatEffect
       , testCase "send file tool reports upload failure" testSendFileToolReportsUploadFailure
       , testCase "send file tool is noisy and superuser-only" testSendFileToolIsNoisyAndSuperuserOnly
@@ -219,6 +223,68 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef remembered >>= (@?= [Just "42"])
+
+testToolReplyMiddlewareNormalizesReplyImages :: IO ()
+testToolReplyMiddlewareNormalizesReplyImages = do
+  replies <- IORef.newIORef ([] :: [Text])
+  runEff $
+    runMediaNormalizingRefs $
+      Chat.runChatWith
+        Chat.ChatHandlers
+          { handleReplyTo = \_ body -> do
+              liftIO $ IORef.modifyIORef' replies (<> [body])
+              pure (Right "42")
+          , handleReplyAudio = noopReplyAudio
+          , handleUploadFile = noopUpload
+          , handleEditMessage = noopEdit
+          , handleDeleteMessage = noopDelete
+          , handleReplyStreamStyle = noopReplyStreamStyle
+          , handleGetMessageContent = noopFetch
+          , handleGetSenderMemberInfo = noopSenderMember
+          , handleGetMemberInfo = noopMember
+          , handleGetUserAvatar = noopUserAvatar
+          , handleListGroupMembers = noopMembers
+          , handleMentionUser = noopMention
+          , handleSetMemberTitle = noopSetMemberTitle
+          } do
+          agentRun <- Agent.startAgentRun agentContext []
+          let program = Agent.withNormalizingToolReplies (AgentCore.emptyAgentProgram HList.HNil agentRun)
+          _ <- program.aroundToolCall 1 (toolCall "call-1" "send_reply" (Aeson.object [])) HList.HNil do
+            void $ Chat.replyTo testMessage (ReplyBody.imageDirective "https://example.test/image.png")
+            pure (Agent.toolText "done")
+          pure ()
+  (map Text.strip <$> IORef.readIORef replies) >>= (@?= ["[image] media:https://example.test/image.png"])
+
+testToolReplyMiddlewareRejectsUncachedRemoteImages :: IO ()
+testToolReplyMiddlewareRejectsUncachedRemoteImages = do
+  replies <- IORef.newIORef ([] :: [Text])
+  result <- runEff $
+    runMediaLeavingRefs $
+      Chat.runChatWith
+        Chat.ChatHandlers
+          { handleReplyTo = \_ body -> do
+              liftIO $ IORef.modifyIORef' replies (<> [body])
+              pure (Right "42")
+          , handleReplyAudio = noopReplyAudio
+          , handleUploadFile = noopUpload
+          , handleEditMessage = noopEdit
+          , handleDeleteMessage = noopDelete
+          , handleReplyStreamStyle = noopReplyStreamStyle
+          , handleGetMessageContent = noopFetch
+          , handleGetSenderMemberInfo = noopSenderMember
+          , handleGetMemberInfo = noopMember
+          , handleGetUserAvatar = noopUserAvatar
+          , handleListGroupMembers = noopMembers
+          , handleMentionUser = noopMention
+          , handleSetMemberTitle = noopSetMemberTitle
+          } do
+          agentRun <- Agent.startAgentRun agentContext []
+          let program = Agent.withNormalizingToolReplies (AgentCore.emptyAgentProgram HList.HNil agentRun)
+          program.aroundToolCall 1 (toolCall "call-1" "send_reply" (Aeson.object [])) HList.HNil do
+            sent <- Chat.replyTo testMessage (ReplyBody.imageDirective "https://example.test/image.png")
+            pure (Agent.toolText (either id (const "sent") sent))
+  AgentTypes.toolResultContent result @?= "Image reply contains remote image URLs that could not be cached: https://example.test/image.png"
+  IORef.readIORef replies >>= (@?= [])
 
 testSendFileToolUploadsViaChatEffect :: IO ()
 testSendFileToolUploadsViaChatEffect = do
@@ -2494,6 +2560,62 @@ noopUserAvatar _ _ =
 noopMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
 noopMembers _ =
   pure Nothing
+
+runMediaNormalizingRefs :: Eff (Media.Media : es) a -> Eff es a
+runMediaNormalizingRefs =
+  interpret \_ -> \case
+    Media.StoreMediaObject mediaObject ->
+      pure (Just ("media:stored:" <> mediaObject.mimeType))
+    Media.StoreMediaObjectFromSource sourceRef _ ->
+      pure (Just ("media:" <> sourceRef))
+    Media.MediaRefForSource sourceRef ->
+      pure (Just ("media:" <> sourceRef))
+    Media.GetMediaFileInfo _ ->
+      pure Nothing
+    Media.ListMediaFiles ->
+      pure []
+    Media.GetMediaCacheStats ->
+      pure Media.MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0}
+    Media.GcMediaCache _ _ ->
+      pure 0
+    Media.NormalizeMediaRef ref ->
+      pure ("media:" <> ref)
+    Media.PublicMediaRef ref ->
+      pure ref
+    Media.LocalMediaPath _ ->
+      pure Nothing
+    Media.PlatformMediaRef _ _ _ ->
+      pure Nothing
+    Media.StorePlatformMediaRef _ _ _ _ ->
+      pure ()
+
+runMediaLeavingRefs :: Eff (Media.Media : es) a -> Eff es a
+runMediaLeavingRefs =
+  interpret \_ -> \case
+    Media.StoreMediaObject _ ->
+      pure Nothing
+    Media.StoreMediaObjectFromSource _ _ ->
+      pure Nothing
+    Media.MediaRefForSource _ ->
+      pure Nothing
+    Media.GetMediaFileInfo _ ->
+      pure Nothing
+    Media.ListMediaFiles ->
+      pure []
+    Media.GetMediaCacheStats ->
+      pure Media.MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0}
+    Media.GcMediaCache _ _ ->
+      pure 0
+    Media.NormalizeMediaRef ref ->
+      pure ref
+    Media.PublicMediaRef ref ->
+      pure ref
+    Media.LocalMediaPath _ ->
+      pure Nothing
+    Media.PlatformMediaRef _ _ _ ->
+      pure Nothing
+    Media.StorePlatformMediaRef _ _ _ _ ->
+      pure ()
 
 noopMention :: IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
 noopMention _ _ _ =
