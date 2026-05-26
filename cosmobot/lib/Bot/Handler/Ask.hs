@@ -227,7 +227,7 @@ startDrawConversation label cfg conversations message prompt = do
   let input = inputWithImages contextPrompt contextImages
   conversation <- startConversation cfg message input
   answer <- drawConversation conversation
-  responseId <- Chat.replyTo message answer
+  responseId <- rightToMaybe <$> Chat.replyTo message answer
   ChatLog.recordSelfMessage message answer
   rememberConversation conversations (conversationMessageKey message <$> responseId) (appendAssistant answer conversation)
 
@@ -353,7 +353,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
       _ -> do
         logWarning [i|LLM request failed: #{show err :: String}|]
         let failureMessage = llmFailureMessage err
-        responseId <- Chat.replyTo message failureMessage
+        responseId <- rightToMaybe <$> Chat.replyTo message failureMessage
         pure AgentReply
           { responseId
           , answer = failureMessage
@@ -507,7 +507,7 @@ drawConversation
   -> Eff es Text
 drawConversation conversation =
   LLM.askImageWithHistory (Foldable.toList conversation.messages) `catchSync` \err -> do
-    logInfo [i|LLM image request failed: #{show err :: String}|]
+    logError [i|LLM image request failed: #{show err :: String}|]
     pure ("Image generation failed: " <> (AgentFailure.agentFailureFromException err).userMessage)
 
 

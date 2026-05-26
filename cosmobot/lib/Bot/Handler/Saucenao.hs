@@ -75,7 +75,7 @@ sendSaucenaoResults cfg message =
   where
     handleError action =
       action `catchSync` \err -> do
-        logInfo [i|SauceNAO search failed: #{show err :: String}|]
+        logError [i|SauceNAO search failed: #{show err :: String}|]
         void $ Chat.replyTo message "SauceNAO 搜索失败。"
 
 fetchReferencedMessage

@@ -119,7 +119,7 @@ pump
 pump queue stream =
   (S.mapM_ (writeMergeEvent queue . MergeItem) stream *> writeMergeEvent queue MergeDone)
     `catchSync` \err -> do
-      logInfo [i|Merged stream input stopped: #{show err :: String}|]
+      logError [i|Merged stream input stopped: #{show err :: String}|]
       writeMergeEvent queue (MergeFailed err)
     `finally` writeMergeEvent queue MergeDone
 

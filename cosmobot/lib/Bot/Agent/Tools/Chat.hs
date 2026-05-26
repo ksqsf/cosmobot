@@ -81,9 +81,16 @@ sendReplyTool = Tool
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs sendReplyArgs args \body -> do
-        sent <- Chat.replyTo context.message body
-        let sentText = show sent :: String
-        pure (toolText [i|Sent message id: #{sentText}|])
+        Chat.replyTo context.message body >>= \case
+          Right sent -> do
+            let sentText = show sent :: String
+            pure (toolText [i|Sent message id: #{sentText}|])
+          Left err ->
+            pure (toolFailure AgentFailure
+              { category = ExternalServiceUnavailable
+              , userMessage = [i|发送消息失败：#{err}|]
+              , detail = err
+              })
   }
 
 sendFileTool :: Chat.Chat :> es => Tool es
@@ -126,9 +133,16 @@ mentionUserTool = Tool
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs mentionUserArgs args \(userId, text) -> do
-        sent <- Chat.mentionUser context.message userId text
-        let sentText = show sent :: String
-        pure (toolText [i|Sent mention message id: #{sentText}|])
+        Chat.mentionUser context.message userId text >>= \case
+          Right sent -> do
+            let sentText = show sent :: String
+            pure (toolText [i|Sent mention message id: #{sentText}|])
+          Left err ->
+            pure (toolFailure AgentFailure
+              { category = ExternalServiceUnavailable
+              , userMessage = [i|发送提及消息失败：#{err}|]
+              , detail = err
+              })
   }
 
 senderMemberInfoTool :: Chat.Chat :> es => Tool es

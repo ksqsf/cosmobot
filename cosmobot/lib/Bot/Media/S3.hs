@@ -91,7 +91,7 @@ ensurePublicObject runtime cached =
 storeObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
 storeObject runtime cached =
   storeObjectUnsafe runtime cached `catchSync` \err -> do
-    logInfo [i|S3 media upload skipped: #{show err :: String}|]
+    logError [i|S3 media upload skipped: #{show err :: String}|]
     pure Nothing
 
 storeObjectUnsafe :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)

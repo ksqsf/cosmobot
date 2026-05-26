@@ -60,7 +60,7 @@ persistRecord record = do
   ensureChatLogTable
   runSelda (insert_ chatLogRows [chatLogRow (sanitizeChatLogEntry (chatLogEntry record))])
     `catchSync` \err ->
-      logInfo [i|Failed to persist chat log entry: #{show err :: String}|]
+      logError [i|Failed to persist chat log entry: #{show err :: String}|]
 
 queryStored :: Storage.Storage :> es => IncomingMessage -> Int -> Bool -> Eff es [ChatLogEntry]
 queryStored message limitCount includeBotMessages = do

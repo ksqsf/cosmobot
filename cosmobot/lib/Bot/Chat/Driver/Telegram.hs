@@ -284,7 +284,7 @@ incomingMessages = S.for updatesStream $ \update -> do
     Just parsedMessage -> do
       message <- S.lift $
         resolveIncomingMessageImages parsedMessage `catchSync` \err -> do
-          logInfo [i|Telegram image resolution failed: #{show err :: String}|]
+          logError [i|Telegram image resolution failed: #{show err :: String}|]
           pure parsedMessage
       S.lift $ logDebug [i|incoming Telegram message: #{show message :: String}|]
       S.lift $ logInfo [i|incoming Telegram message: #{incomingMessageLogLine message}|]
@@ -1648,16 +1648,16 @@ uploadDocument request path =
   send (UploadDocument request path)
 
 -- | Reply to a Telegram chat, including image directives in the body.
-replyTo :: (Telegram :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
+replyTo :: (Telegram :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Either Text MessageId)
 replyTo message body =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId) -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
       sent <- replyTextAndImages chatId replyToMessageId body `catch` \(err :: TelegramException) ->
         sendTelegramFailureReply chatId replyToMessageId err
-      pure (Just (integerMessageId sent.messageId))
+      pure (Right (integerMessageId sent.messageId))
     _ ->
-      pure Nothing
+      pure (Left "Telegram reply requires a Telegram chat id.")
 
 sendTelegramFailureReply :: Telegram :> es => Integer -> Maybe Integer -> TelegramException -> Eff es Message
 sendTelegramFailureReply chatId replyToMessageId err =
@@ -1703,7 +1703,7 @@ deleteMessageFor message messageId =
       pure False
 
 -- | Reply with an HTML mention for a Telegram user id.
-mentionUser :: Telegram :> es => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+mentionUser :: Telegram :> es => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
 mentionUser message userId body =
   case (message.platform, message.chatId) of
     (PlatformTelegram, Just chatId)
@@ -1718,9 +1718,9 @@ mentionUser message userId body =
         , disableNotification = Nothing
         , replyToMessageId = replyToMessageId
         }
-      pure (Just (integerMessageId sent.messageId))
+      pure (Right (integerMessageId sent.messageId))
     _ ->
-      pure Nothing
+      pure (Left "Telegram mention reply requires a Telegram chat id and numeric user id.")
 
 -- | Reply with audio as a Telegram voice message.
 replyAudio :: (Telegram :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)

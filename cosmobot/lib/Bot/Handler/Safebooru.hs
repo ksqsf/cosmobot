@@ -162,7 +162,7 @@ sendSafebooruImages search message request =
   where
     handleError action =
       action `catchSync` \err -> do
-        logInfo [i|Safebooru search failed: #{show err :: String}|]
+        logError [i|Safebooru search failed: #{show err :: String}|]
         void $ Chat.replyTo message "Safebooru 搜索失败。"
 
 drawSafebooruLinks

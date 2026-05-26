@@ -171,7 +171,7 @@ viewImageUrl rawUrl = do
   mediaRef <- Media.normalizeMediaRef url
   if isMediaRef mediaRef
     then cachedImageContext mediaRef
-    else pure (toolFailure (permanentArgumentFailure "image_cache could not cache the image URL." "image_cache could not cache the image URL.").failure)
+    else pure (toolFailure (permanentArgumentFailure "image_cache could not cache an image URL." "image_cache could not cache the image URL.").failure)
 
 isMediaRef :: Text -> Bool
 isMediaRef ref =

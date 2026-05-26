@@ -85,11 +85,21 @@ replyToPlatform
   -> RPC.RpcState
   -> IncomingMessage
   -> Text
-  -> Eff es (Maybe MessageId)
+  -> Eff es (Either Text MessageId)
 replyToPlatform rpcConfig rpcState message body =
-  withPlatformDriver rpcConfig rpcState message "chat reply" \driver -> do
-    normalizedBody <- Media.normalizeReplyBody body
-    driver.replyTo message normalizedBody
+  case platformDriver rpcConfig rpcState message of
+    Nothing ->
+      let platformText = show message.platform :: String
+      in pure (Left [i|No chat driver is registered for #{platformText}.|])
+    Just driver ->
+      ( do
+          normalizedBody <- Media.normalizeReplyBody body
+          driver.replyTo message normalizedBody
+      ) `catchSync` \err -> do
+        let platformText = show message.platform :: String
+            messageText = [i|Chat reply failed on #{platformText}: #{displayException err}|]
+        logInfo messageText
+        pure (Left messageText)
 
 uploadFileToPlatform
   :: (ChatDriverConstraints es, KatipE :> es)
@@ -241,11 +251,21 @@ mentionPlatformUser
   -> IncomingMessage
   -> Text
   -> Text
-  -> Eff es (Maybe MessageId)
+  -> Eff es (Either Text MessageId)
 mentionPlatformUser rpcConfig rpcState message userId body =
-  withPlatformDriver rpcConfig rpcState message "chat mention" \driver -> do
-    normalizedBody <- Media.normalizeReplyBody body
-    driver.mentionUser message userId normalizedBody
+  case platformDriver rpcConfig rpcState message of
+    Nothing ->
+      let platformText = show message.platform :: String
+      in pure (Left [i|No chat driver is registered for #{platformText}.|])
+    Just driver ->
+      ( do
+          normalizedBody <- Media.normalizeReplyBody body
+          driver.mentionUser message userId normalizedBody
+      ) `catchSync` \err -> do
+        let platformText = show message.platform :: String
+            messageText = [i|Chat mention failed on #{platformText}: #{displayException err}|]
+        logInfo messageText
+        pure (Left messageText)
 
 setPlatformMemberTitle
   :: (ChatDriverConstraints es, KatipE :> es)

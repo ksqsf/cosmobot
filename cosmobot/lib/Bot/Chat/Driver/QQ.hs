@@ -487,12 +487,12 @@ dispatchActionResponse pendingResponses response =
           void $ MVar.tryPutMVar responseVar response
 
 -- | Reply to a QQ private or group message.
-replyTo :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
+replyTo :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Either Text MessageId)
 replyTo message body =
   case (message.platform, message.kind, message.chatId, message.senderId) of
     (PlatformQQ, ChatGroup, Just groupId, _) -> do
       qqMessage <- replyMessage message body
-      fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
+      maybe (Left "QQ group reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_group_msg"
         , "params" Aeson..= Aeson.object
             [ "group_id" Aeson..= groupId
@@ -502,23 +502,23 @@ replyTo message body =
     (PlatformQQ, ChatPrivate, _, Just rawUserId)
       | Just userId <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
-      fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
+      maybe (Left "QQ private reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
         , "params" Aeson..= Aeson.object
             [ "user_id" Aeson..= userId
             , "message" Aeson..= qqMessage
             ]
         ])
-    _ -> pure Nothing
+    _ -> pure (Left "QQ reply requires a QQ group id or private sender id.")
 
 -- | Send a reply that mentions a QQ user where the platform supports it.
-mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
 mentionUser message userId body =
   case (message.platform, message.kind, message.chatId, message.senderId) of
     (PlatformQQ, ChatGroup, Just groupId, _)
       | Just numericUserId <- parseIntegerUserId userId -> do
         qqMessage <- mentionMessage message numericUserId body
-        fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
+        maybe (Left "QQ group mention did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction (Aeson.object
           [ "action" Aeson..= Aeson.String "send_group_msg"
           , "params" Aeson..= Aeson.object
               [ "group_id" Aeson..= groupId
@@ -528,14 +528,14 @@ mentionUser message userId body =
     (PlatformQQ, ChatPrivate, _, Just rawUserId)
       | Just userId_ <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
-      fmap integerMessageId . responseMessageId <$> sendAction (Aeson.object
+      maybe (Left "QQ private mention reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
         , "params" Aeson..= Aeson.object
             [ "user_id" Aeson..= userId_
             , "message" Aeson..= qqMessage
             ]
         ])
-    _ -> pure Nothing
+    _ -> pure (Left "QQ mention reply requires a QQ group id or private sender id.")
 
 -- | Send a file segment through OneBot. The path is interpreted by NapCat, so
 -- when NapCat runs in Docker it must be visible inside that container.

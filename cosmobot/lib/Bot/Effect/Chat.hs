@@ -48,7 +48,7 @@ data Chat :: Effect where
   ReplyTo
     :: IncomingMessage
     -> Text
-    -> Chat m (Maybe MessageId)
+    -> Chat m (Either Text MessageId)
   ReplyAudio
     :: IncomingMessage
     -> Text
@@ -92,7 +92,7 @@ data Chat :: Effect where
     :: IncomingMessage
     -> Text
     -> Text
-    -> Chat m (Maybe MessageId)
+    -> Chat m (Either Text MessageId)
   SetMemberTitle
     :: IncomingMessage
     -> Text
@@ -102,7 +102,7 @@ data Chat :: Effect where
 type instance DispatchOf Chat = Dynamic
 
 -- | Reply to the chat containing the incoming message.
-replyTo :: Chat :> es => IncomingMessage -> Text -> Eff es (Maybe MessageId)
+replyTo :: Chat :> es => IncomingMessage -> Text -> Eff es (Either Text MessageId)
 replyTo message body =
   send (ReplyTo message body)
 
@@ -147,7 +147,7 @@ streamReplySegmentsTo =
 chatReplyStreamCallbacks :: Chat :> es => ReplyStream.ReplyStreamCallbacks es
 chatReplyStreamCallbacks = ReplyStream.ReplyStreamCallbacks
   { ReplyStream.replyStreamStyleFor = \message -> send (ReplyStreamStyle message)
-  , ReplyStream.sendReplyTo = replyTo
+  , ReplyStream.sendReplyTo = \message body -> rightToMaybe <$> replyTo message body
   , ReplyStream.editReplyMessage = editMessage
   }
 
@@ -177,7 +177,7 @@ listGroupMembers message =
   send (ListGroupMembers message)
 
 -- | Send a reply that mentions a platform user id.
-mentionUser :: Chat :> es => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+mentionUser :: Chat :> es => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
 mentionUser message userId body =
   send (MentionUser message userId body)
 
@@ -188,7 +188,7 @@ setMemberTitle message userId title =
 
 -- | Interpret chat operations by delegating each operation to platform code.
 data ChatHandlers es = ChatHandlers
-  { handleReplyTo :: IncomingMessage -> Text -> Eff es (Maybe MessageId)
+  { handleReplyTo :: IncomingMessage -> Text -> Eff es (Either Text MessageId)
   , handleReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
   , handleUploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
   , handleEditMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
@@ -199,7 +199,7 @@ data ChatHandlers es = ChatHandlers
   , handleGetMemberInfo :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   , handleGetUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   , handleListGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
-  , handleMentionUser :: IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+  , handleMentionUser :: IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
   , handleSetMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
   }
 
@@ -263,13 +263,13 @@ runChatRecordingExtraMessages
 runChatRecordingExtraMessages record =
   interpose $ \localEnv -> \case
     operation@ReplyTo{} -> do
-      sent <- passthrough localEnv operation
-      record sent
-      pure sent
+      result <- passthrough localEnv operation
+      record (rightToMaybe result)
+      pure result
     operation@MentionUser{} -> do
-      sent <- passthrough localEnv operation
-      record sent
-      pure sent
+      result <- passthrough localEnv operation
+      record (rightToMaybe result)
+      pure result
     operation@ReplyAudio{} -> do
       result <- passthrough localEnv operation
       record (rightToMaybe result)

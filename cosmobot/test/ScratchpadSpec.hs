@@ -135,7 +135,7 @@ runScratchpad path replies incoming =
   where
     reply _ body = do
       IORef.modifyIORef' replies (<> [body])
-      pure (Just "1")
+      pure (Right "1")
     upload _ _ =
       pure (Right "upload")
     replyAudio _ _ _ =
@@ -157,7 +157,7 @@ runScratchpad path replies incoming =
     listMembers _ =
       pure Nothing
     mention _ _ _ =
-      pure Nothing
+      pure (Left "noop mention")
     setMemberTitle _ _ _ =
       pure False
 

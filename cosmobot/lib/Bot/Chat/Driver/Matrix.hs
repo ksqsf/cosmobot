@@ -153,10 +153,10 @@ data Matrix :: Effect where
   DirectRooms :: Matrix m (Set MatrixRoomId)
   JoinedMemberCounts :: Matrix m (Map MatrixRoomId Int)
   JoinedMemberCount :: MatrixRoomId -> Matrix m (Maybe Int)
-  SendText :: MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Matrix m (Maybe SendMessageResponse)
+  SendText :: MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Matrix m (Either Text SendMessageResponse)
   UploadMedia :: FilePath -> Text -> Text -> Matrix m MatrixUploadResponse
-  SendFileMessage :: Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Matrix m (Maybe SendMessageResponse)
-  EditText :: MatrixRoomId -> MatrixEventId -> Text -> Matrix m (Maybe SendMessageResponse)
+  SendFileMessage :: Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Matrix m (Either Text SendMessageResponse)
+  EditText :: MatrixRoomId -> MatrixEventId -> Text -> Matrix m (Either Text SendMessageResponse)
   DeleteEvent :: Text -> MessageId -> Maybe MatrixEventId -> Matrix m Bool
   FetchEvent :: MatrixRoomId -> MatrixEventId -> Matrix m (Maybe Event)
   FetchMember :: MatrixRoomId -> Text -> Matrix m (Maybe MatrixMember)
@@ -193,11 +193,11 @@ joinedMemberCount :: Matrix :> es => MatrixRoomId -> Eff es (Maybe Int)
 joinedMemberCount =
   send . JoinedMemberCount
 
-sendText :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Maybe SendMessageResponse)
+sendText :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Either Text SendMessageResponse)
 sendText roomId replyToEventId body =
   sendTextWithMentions roomId replyToEventId body []
 
-sendTextWithMentions :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es (Maybe SendMessageResponse)
+sendTextWithMentions :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es (Either Text SendMessageResponse)
 sendTextWithMentions roomId replyToEventId body mentionUserIds =
   send (SendText roomId replyToEventId body mentionUserIds)
 
@@ -205,11 +205,11 @@ uploadMedia :: Matrix :> es => FilePath -> Text -> Text -> Eff es MatrixUploadRe
 uploadMedia path fileName mime =
   send (UploadMedia path fileName mime)
 
-sendFileMessage :: Matrix :> es => Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es (Maybe SendMessageResponse)
+sendFileMessage :: Matrix :> es => Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es (Either Text SendMessageResponse)
 sendFileMessage roomId replyRelation message =
   send (SendFileMessage roomId replyRelation message)
 
-editText :: Matrix :> es => MatrixRoomId -> MatrixEventId -> Text -> Eff es (Maybe SendMessageResponse)
+editText :: Matrix :> es => MatrixRoomId -> MatrixEventId -> Text -> Eff es (Either Text SendMessageResponse)
 editText roomId eventId body =
   send (EditText roomId eventId body)
 
@@ -273,7 +273,7 @@ runMatrix cfg inner = do
             rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count
             pure count
         SendText roomId replyToEventId body mentionUserIds -> do
-          response <- withMaybeMatrixAccessToken auth \token -> do
+          response <- withEitherMatrixAccessToken "send m.room.message" auth \token -> do
             let mentions = matrixOutgoingMentionUserIds body mentionUserIds
             mentionNames <- fetchMatrixMentionNames cfg token roomId mentions
             sendMessageCall cfg token roomId replyToEventId body mentions mentionNames
@@ -282,13 +282,13 @@ runMatrix cfg inner = do
         UploadMedia path fileName mime ->
           withMatrixAccessToken auth \token ->
             uploadMediaCall cfg path fileName mime token
-        SendFileMessage roomId replyRelation message -> do
-          response <- withMaybeMatrixAccessToken auth \token ->
+        SendFileMessage roomId replyRelation message@MatrixFileMessage{msgtype = mediaMsgtype} -> do
+          response <- withEitherMatrixAccessToken [i|send #{mediaMsgtype}|] auth \token ->
             sendFileMessageCall cfg token roomId replyRelation message
           traverse_ (rememberMatrixEvent eventIds) response
           pure response
         EditText roomId eventId body -> do
-          response <- withMaybeMatrixAccessToken auth \token -> do
+          response <- withEitherMatrixAccessToken "edit m.room.message" auth \token -> do
             let mentions = matrixOutgoingMentionUserIds body []
             mentionNames <- fetchMatrixMentionNames cfg token roomId mentions
             editMessageCall cfg token roomId eventId body mentions mentionNames
@@ -405,6 +405,21 @@ withMaybeMatrixAccessToken auth action = do
       pure Nothing
     _ ->
       Just <$> withMatrixAccessToken auth action
+
+withEitherMatrixAccessToken
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => Text
+  -> MatrixAuth
+  -> (Text -> Eff es a)
+  -> Eff es (Either Text a)
+withEitherMatrixAccessToken action auth sendWithToken = do
+  currentAuthState <- IORef.readIORef auth.authState
+  case (currentAuthState.authAccessToken, currentAuthState.authRefreshToken) of
+    (Nothing, Nothing) ->
+      pure (Left [i|Matrix #{action} requires a configured access token, refresh token, or login credentials.|])
+    _ -> do
+      result <- trySync (withMatrixAccessToken auth sendWithToken)
+      pure (first (\err -> [i|Matrix #{action} failed: #{displayException err}|]) result)
 
 withMatrixAccessToken
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
@@ -635,7 +650,7 @@ incomingMessages = do
   where
     initializeSyncState cfg = do
       result <- S.lift $ sync Nothing `catchSync` \err -> do
-        logInfo [i|Matrix sync initialization failed, retrying: #{show err :: String}|]
+        logError [i|Matrix sync initialization failed, retrying: #{show err :: String}|]
         threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
@@ -648,7 +663,7 @@ incomingMessages = do
 
     syncLoop cfg since = do
       result <- S.lift $ sync since `catchSync` \err -> do
-        logInfo [i|Matrix sync failed, retrying: #{show err :: String}|]
+        logError [i|Matrix sync failed, retrying: #{show err :: String}|]
         threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
@@ -734,7 +749,7 @@ matrixAuthMode cfg
   | isJust cfg.loginUser && isJust cfg.loginPassword = "login"
   | otherwise = "none"
 
-replyTo :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
+replyTo :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es) => IncomingMessage -> Text -> Eff es (Either Text MessageId)
 replyTo message body =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
@@ -744,12 +759,12 @@ replyTo message body =
           imageRefs = Chat.replyImageUrls body
       textResponse <- if Text.null (Text.strip text)
         then pure Nothing
-        else sendText matrixRoom replyRelation text
-      imageResponses <- traverse (sendMatrixImage roomId replyRelation) imageRefs
-      let imageMessageIds = map (matrixEventMessageId . (.eventId)) (catMaybes imageResponses)
-      pure (matrixEventMessageId . (.eventId) <$> textResponse <|> viaNonEmpty head imageMessageIds)
+        else Just <$> sendText matrixRoom replyRelation text
+      imageResponses <- traverse (tryMatrixSendImage roomId replyRelation) imageRefs
+      let responses = maybeToList textResponse <> imageResponses
+      pure (matrixReplyResult responses)
     _ ->
-      pure Nothing
+      pure (Left "Matrix reply requires a Matrix room id.")
 
 getMessageContent :: (Matrix :> es, Media.Media :> es, KatipE :> es) => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
 getMessageContent message messageId =
@@ -788,16 +803,16 @@ listGroupMembers message =
     _ ->
       pure Nothing
 
-mentionUser :: Matrix :> es => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+mentionUser :: (Matrix :> es, KatipE :> es) => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
 mentionUser message userId body =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
       let replyRelation = matrixReplyTo message
           text = matrixMentionText userId (Chat.renderReplyBody body)
       response <- sendTextWithMentions (matrixRoomId roomId) replyRelation text [userId]
-      pure (matrixEventMessageId . (.eventId) <$> response)
+      pure (matrixMessageIdResult response)
     _ ->
-      pure Nothing
+      pure (Left "Matrix mention reply requires a Matrix room id.")
 
 matrixMentionText :: Text -> Text -> Text
 matrixMentionText userId body =
@@ -928,7 +943,7 @@ uploadFile message path =
             , size = size
             }
         }
-      pure (matrixMessageIdResult "Matrix file upload" response)
+      pure (matrixMessageIdResult response)
     _ ->
       pure (Left "Matrix file upload requires a Matrix room id.")
 
@@ -937,7 +952,7 @@ sendMatrixImage
   => Text
   -> Maybe MatrixReplyTo
   -> Text
-  -> Eff es (Maybe SendMessageResponse)
+  -> Eff es (Either Text SendMessageResponse)
 sendMatrixImage roomId replyRelation imageRef =
   case matrixMxcRef imageRef of
     Just contentUri ->
@@ -954,6 +969,20 @@ sendMatrixImage roomId replyRelation imageRef =
             Media.storePlatformMediaRef "matrix" scope imageRef uploaded.contentUri
             sendMatrixImageMessage roomId replyRelation fileName uploaded.contentUri mime size
 
+tryMatrixSendImage
+  :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es)
+  => Text
+  -> Maybe MatrixReplyTo
+  -> Text
+  -> Eff es (Either Text SendMessageResponse)
+tryMatrixSendImage roomId replyRelation imageRef = do
+  result <- trySync (sendMatrixImage roomId replyRelation imageRef)
+  pure case result of
+    Left err ->
+      Left [i|Matrix image reply failed for #{imageRef}: #{displayException err}|]
+    Right response ->
+      response
+
 matrixMediaScope :: Matrix :> es => Eff es Text
 matrixMediaScope = do
   cfg <- matrixConfig
@@ -967,7 +996,7 @@ sendMatrixImageMessage
   -> Text
   -> Text
   -> Integer
-  -> Eff es (Maybe SendMessageResponse)
+  -> Eff es (Either Text SendMessageResponse)
 sendMatrixImageMessage roomId replyRelation fileName contentUri mime size =
   sendFileMessage roomId replyRelation MatrixFileMessage
     { msgtype = "m.image"
@@ -994,17 +1023,44 @@ sendMatrixAudio roomId audioRef caption =
     Just contentUri -> do
       let fileName = "audio"
       response <- sendFileMessage roomId Nothing (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
-      pure (matrixMessageIdResult "Matrix audio reply" response)
+      pure (matrixMessageIdResult response)
     Nothing ->
       withMatrixAudioFile audioRef \path fileName mime -> do
         size <- FileSystem.getFileSize path
         uploaded <- uploadMedia path fileName mime
         response <- sendFileMessage roomId Nothing (matrixAudioMessage caption fileName uploaded.contentUri mime size)
-        pure (matrixMessageIdResult "Matrix audio reply" response)
+        pure (matrixMessageIdResult response)
 
-matrixMessageIdResult :: Text -> Maybe SendMessageResponse -> Either Text MessageId
-matrixMessageIdResult action =
-  maybe (Left [i|#{action} did not produce an event id.|]) (Right . matrixEventMessageId . (.eventId))
+matrixMessageIdResult :: Either Text SendMessageResponse -> Either Text MessageId
+matrixMessageIdResult =
+  fmap (matrixEventMessageId . (.eventId))
+
+matrixReplyResult :: [Either Text SendMessageResponse] -> Either Text MessageId
+matrixReplyResult responses =
+  case errors of
+    err : _ ->
+      Left (matrixReplyFailureText sentIds err)
+    [] ->
+      case sentIds of
+        sent : _ ->
+          Right sent
+        [] ->
+          Left "Matrix reply did not send any message."
+  where
+    sentIds = [matrixEventMessageId response.eventId | Right response <- responses]
+    errors = [err | Left err <- responses]
+
+matrixReplyFailureText :: [MessageId] -> Text -> Text
+matrixReplyFailureText sentIds err =
+  case sentIds of
+    [] ->
+      err
+    sent : _ ->
+      [i|#{err} Text message was sent as #{messageIdText sent}, but one or more image messages failed.|]
+
+logMatrixSendErrors :: KatipE :> es => [Either Text SendMessageResponse] -> Eff es ()
+logMatrixSendErrors responses =
+  traverse_ logWarning [err | Left err <- responses]
 
 matrixAudioMessage :: Maybe Text -> Text -> Text -> Text -> Integer -> MatrixFileMessage
 matrixAudioMessage caption fileName contentUri mime size =
@@ -1168,12 +1224,13 @@ nonEmptyText text =
   let stripped = Text.strip text
   in if Text.null stripped then Nothing else Just stripped
 
-editMessage :: Matrix :> es => IncomingMessage -> MessageId -> Text -> Eff es Bool
+editMessage :: (Matrix :> es, KatipE :> es) => IncomingMessage -> MessageId -> Text -> Eff es Bool
 editMessage message messageId body =
   case (message.platform, viaNonEmpty head message.chatAliases) of
     (PlatformMatrix, Just roomId) -> do
       response <- editText (matrixRoomId roomId) (matrixEventId (messageIdText messageId)) body
-      pure (isJust response)
+      logMatrixSendErrors [response]
+      pure (either (const False) (const True) response)
     _ ->
       pure False
 

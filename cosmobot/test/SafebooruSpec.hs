@@ -94,7 +94,9 @@ chatHandlers replies =
   Chat.ChatHandlers
     { handleReplyTo = \_ body -> do
         liftIO $ IORef.modifyIORef' replies (<> [body])
-        pure (Just "1")
+        pure (Right "1")
+    , handleReplyAudio = \_ _ _ -> pure (Right "audio")
+    , handleUploadFile = \_ _ -> pure (Right "upload")
     , handleEditMessage = \_ _ _ -> pure False
     , handleDeleteMessage = \_ _ -> pure False
     , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 1800)
@@ -103,7 +105,8 @@ chatHandlers replies =
     , handleGetMemberInfo = \_ _ -> pure Nothing
     , handleGetUserAvatar = \_ _ -> pure Nothing
     , handleListGroupMembers = \_ -> pure Nothing
-    , handleMentionUser = \_ _ _ -> pure Nothing
+    , handleMentionUser = \_ _ _ -> pure (Left "noop mention")
+    , handleSetMemberTitle = \_ _ _ -> pure False
     }
 
 runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a

@@ -46,7 +46,7 @@ runShutUp :: IORef.IORef [MessageId] -> IORef.IORef Bool -> ShutUpConfig -> Inco
 runShutUp deleted later cfg incoming =
   runEff $
     Chat.runChatWith Chat.ChatHandlers
-      { handleReplyTo = \_ _ -> pure Nothing
+      { handleReplyTo = \_ _ -> pure (Left "noop reply")
       , handleReplyAudio = \_ _ _ -> pure (Right "audio")
       , handleUploadFile = \_ _ -> pure (Right "upload")
       , handleEditMessage = \_ _ _ -> pure False
@@ -59,7 +59,7 @@ runShutUp deleted later cfg incoming =
       , handleGetMemberInfo = \_ _ -> pure Nothing
       , handleGetUserAvatar = \_ _ -> pure Nothing
       , handleListGroupMembers = \_ -> pure Nothing
-      , handleMentionUser = \_ _ _ -> pure Nothing
+      , handleMentionUser = \_ _ _ -> pure (Left "noop mention")
       , handleSetMemberTitle = \_ _ _ -> pure False
       } $
       runHandlers (shutUpHandlers cfg <> [laterRoute]) incoming

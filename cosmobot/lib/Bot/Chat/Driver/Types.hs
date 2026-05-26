@@ -16,7 +16,7 @@ import qualified Data.Aeson as Aeson
 
 data ChatPlatformDriver es = ChatPlatformDriver
   { platform :: !ChatPlatform
-  , replyTo :: IncomingMessage -> Text -> Eff es (Maybe MessageId)
+  , replyTo :: IncomingMessage -> Text -> Eff es (Either Text MessageId)
   , replyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
   , uploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
   , editMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
@@ -28,6 +28,6 @@ data ChatPlatformDriver es = ChatPlatformDriver
   , getUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   , listGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
   , normalizeMediaRef :: Text -> Eff es Text
-  , mentionUser :: IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+  , mentionUser :: IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
   , setMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
   }

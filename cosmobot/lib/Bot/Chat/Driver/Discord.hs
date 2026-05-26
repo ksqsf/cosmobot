@@ -452,7 +452,7 @@ discordMessageDigest cfg message =
     senderSuperuser =
       message.author.id `elem` cfg.superusers
 
-replyTo :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Maybe MessageId)
+replyTo :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Either Text MessageId)
 replyTo message body =
   case (message.platform, discordChannelId message) of
     (PlatformDiscord, Just channelId) -> do
@@ -463,9 +463,13 @@ replyTo message body =
         then pure Nothing
         else Just <$> createMessage channelId request
       sentImages <- traverse (sendDiscordImage channelId (discordReplyReference message)) imageRefs
-      pure (textMessageId . (.id) <$> sentText <|> (textMessageId . (.id) <$> viaNonEmpty head sentImages))
+      pure case textMessageId . (.id) <$> sentText <|> (textMessageId . (.id) <$> viaNonEmpty head sentImages) of
+        Just messageId ->
+          Right messageId
+        Nothing ->
+          Left "Discord reply did not send any message."
     _ ->
-      pure Nothing
+      pure (Left "Discord reply requires a Discord channel id.")
 
 sendDiscordImage :: (Discord :> es, FileSystem :> es, IOE :> es) => Text -> Maybe Reference -> Text -> Eff es Message
 sendDiscordImage channelId replyReference imageRef =
@@ -509,14 +513,14 @@ getMessageContent message messageId =
     _ ->
       pure Nothing
 
-mentionUser :: Discord :> es => IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+mentionUser :: Discord :> es => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
 mentionUser message userId body =
   case (message.platform, discordChannelId message) of
     (PlatformDiscord, Just channelId) -> do
       sent <- createMessage channelId (createMessageRequest ([i|<@#{userId}> #{formatDiscordMarkdown body}|]) (discordReplyReference message))
-      pure (Just (textMessageId sent.id))
+      pure (Right (textMessageId sent.id))
     _ ->
-      pure Nothing
+      pure (Left "Discord mention reply requires a Discord channel id.")
 
 replyAudio :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
 replyAudio message audioRef caption =

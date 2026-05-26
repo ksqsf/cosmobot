@@ -206,7 +206,7 @@ chatHandlers replies titleCalls titleResult =
   where
     reply _ body = do
       liftIO $ IORef.modifyIORef' replies (<> [body])
-      pure (Just "1")
+      pure (Right "1")
     upload _ _ =
       pure (Right "upload")
     replyAudio _ _ _ =
@@ -228,7 +228,7 @@ chatHandlers replies titleCalls titleResult =
     listMembers _ =
       pure Nothing
     mention _ _ _ =
-      pure Nothing
+      pure (Left "noop mention")
     setMemberTitle incoming userId title = do
       traverse_ (\ref -> liftIO $ IORef.modifyIORef' ref (<> [(incoming.chatId, userId, title)])) titleCalls
       pure titleResult

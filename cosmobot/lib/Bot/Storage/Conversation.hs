@@ -235,7 +235,7 @@ rememberConversationFrom store@ConversationStore{unConversationStore = ref} pare
     in (cachedState, (conversationId, storageParentMessageKey, storedMessages))
   saveConversationMessages messageKey conversationId storageParentMessageKey (messagesJson storedMessages)
     `catchSync` \err ->
-      logInfo [i|Failed to persist conversation: #{show err :: String}|]
+      logError [i|Failed to persist conversation: #{show err :: String}|]
 
 lookupConversationNode :: (Prim :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe StoredConversationNode)
 lookupConversationNode store messageKey =

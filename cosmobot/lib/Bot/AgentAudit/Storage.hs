@@ -64,7 +64,7 @@ persistEvent occurredAt event = do
         ]
     ))
     `catchSync` \err ->
-      logInfo [i|Failed to persist agent audit event: #{show err :: String}|] $> Nothing
+      logError [i|Failed to persist agent audit event: #{show err :: String}|] $> Nothing
   where
     (maybeLinkedMessageId, maybeParentMessageId) =
       case event of

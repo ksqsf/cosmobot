@@ -75,19 +75,19 @@ normalizeRef runtime ref
   | "data:image/" `Text.isPrefixOf` Text.strip ref =
       case MediaObject.decodeDataMediaObject ref of
         Nothing -> do
-          logInfo "Skipping invalid data:image media reference"
+          logError "Skipping invalid data:image media reference"
           pure ref
         Just mediaObject ->
           cacheObject runtime Nothing mediaObject
   | "http://" `Text.isPrefixOf` Text.toLower (Text.strip ref) ||
       "https://" `Text.isPrefixOf` Text.toLower (Text.strip ref) = do
       downloaded <- (Just <$> MediaObject.downloadObject runtime.manager ref) `catchSync` \err -> do
-        logInfo [i|Remote media download skipped: #{show err :: String}|]
+        logError [i|Remote media download failed: #{show err :: String}|]
         pure Nothing
       maybe (pure ref) (cacheObject runtime (Just (Text.strip ref))) downloaded
   | "file://" `Text.isPrefixOf` Text.strip ref = do
       mediaObject <- (Just <$> MediaObject.fileObject ref) `catchSync` \err -> do
-        logInfo [i|Local media read skipped: #{show err :: String}|]
+        logError [i|Local media read failed: #{show err :: String}|]
         pure Nothing
       maybe (pure ref) (cacheObject runtime (Just (Text.strip ref))) mediaObject
   | otherwise =

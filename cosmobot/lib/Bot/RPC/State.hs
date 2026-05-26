@@ -274,20 +274,19 @@ rpcChatDriver cfg rpcState = driver
             parentMessageId
             parentMessageId
           case stored of
-            Left _ ->
-              pure Nothing
+            Left err ->
+              pure (Left err)
             Right Nothing ->
-              pure Nothing
+              pure (Left "RPC reply did not produce a message id.")
             Right (Just storedReply) -> do
               rememberMessageNumber rpcState storedReply.messageId
               broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" (storedMessageToRpc storedReply)))
-              pure (Just storedReply.messageId)
+              pure (Right storedReply.messageId)
       , replyAudio = \message audioRef caption -> do
           let body = maybe audioRef (\c -> c <> "\n" <> audioRef) caption
-          maybe (Left "RPC audio reply did not produce a message id.") Right <$> driver.replyTo message body
+          driver.replyTo message body
       , uploadFile = \message path -> do
-          sent <- driver.replyTo message ("Uploaded file: " <> Text.pack path)
-          pure (maybe (Left "RPC file upload did not produce a message id.") Right sent)
+          driver.replyTo message ("Uploaded file: " <> Text.pack path)
       , editMessage = \message messageId body -> do
           let sessionId = sessionIdFromMessage message
               text = ReplyBody.renderReplyBody body

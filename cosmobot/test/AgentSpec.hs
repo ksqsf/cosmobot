@@ -265,7 +265,7 @@ runSendFileTool replies upload =
       Chat.ChatHandlers
         { handleReplyTo = \_ body -> do
             liftIO $ IORef.modifyIORef' replies (<> [body])
-            pure (Just "901")
+            pure (Right "901")
         , handleReplyAudio = noopReplyAudio
         , handleUploadFile = upload
         , handleEditMessage = noopEdit
@@ -544,7 +544,7 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
       (\_ _ -> S.each ["to", "ol"] $> chatAnswer "tool" []) $
       Chat.runChatWith
         Chat.ChatHandlers
-          { handleReplyTo = \_ _ -> pure Nothing
+          { handleReplyTo = \_ _ -> pure (Left "noop reply")
           , handleReplyAudio = \_ audioRef caption -> do
               liftIO $ IORef.modifyIORef' audioReplies (<> [(audioRef, caption)])
               pure (Right "50")
@@ -822,7 +822,7 @@ testAgentAuditStorageOmitsLargeToolResults =
                             AgentAudit.runAgentAudit $
                               Chat.runChatWith
                                 Chat.ChatHandlers
-                                  { handleReplyTo = \_ _ -> pure Nothing
+                                  { handleReplyTo = \_ _ -> pure (Left "noop reply")
                                   , handleReplyAudio = noopReplyAudio
                                   , handleUploadFile = noopUpload
                                   , handleEditMessage = noopEdit
@@ -1540,7 +1540,7 @@ testConversationStorageOmitsLargeToolResults =
                             AgentAudit.runAgentAudit $
                               Chat.runChatWith
                                 Chat.ChatHandlers
-                                  { handleReplyTo = \_ _ -> pure Nothing
+                                  { handleReplyTo = \_ _ -> pure (Left "noop reply")
                                   , handleReplyAudio = noopReplyAudio
                                   , handleUploadFile = noopUpload
                                   , handleEditMessage = noopEdit
@@ -2439,16 +2439,16 @@ assertElem :: (Eq a, Show a) => a -> [a] -> Assertion
 assertElem expected actual =
   assertBool [i|expected #{show expected :: String} in #{show actual :: String}|] (expected `elem` actual)
 
-mockReply :: IOE :> es => ChatMock -> IncomingMessage -> Text -> Eff es (Maybe MessageId)
+mockReply :: IOE :> es => ChatMock -> IncomingMessage -> Text -> Eff es (Either Text MessageId)
 mockReply ChatMock{replies, replyId} _ body = do
   traverse_ (\ref -> liftIO $ IORef.modifyIORef' ref (<> [body])) replies
-  pure replyId
+  pure (maybe (Left "mock reply did not produce a message id") Right replyId)
 
-recordReply :: IOE :> es => IORef.IORef [(Maybe MessageId, Text)] -> IORef.IORef Integer -> IncomingMessage -> Text -> Eff es (Maybe MessageId)
+recordReply :: IOE :> es => IORef.IORef [(Maybe MessageId, Text)] -> IORef.IORef Integer -> IncomingMessage -> Text -> Eff es (Either Text MessageId)
 recordReply replies nextReplyId message body = do
   liftIO $ IORef.modifyIORef' replies (<> [(message.messageId, body)])
   liftIO $ IORef.atomicModifyIORef' nextReplyId \replyId ->
-    (replyId + 1, Just (integerMessageId replyId))
+    (replyId + 1, Right (integerMessageId replyId))
 
 noopFetch :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
 noopFetch _ _ =
@@ -2495,9 +2495,9 @@ noopMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
 noopMembers _ =
   pure Nothing
 
-noopMention :: IncomingMessage -> Text -> Text -> Eff es (Maybe MessageId)
+noopMention :: IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
 noopMention _ _ _ =
-  pure Nothing
+  pure (Left "noop mention")
 
 noopSetMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
 noopSetMemberTitle _ _ _ =
