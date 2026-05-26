@@ -46,7 +46,7 @@ dataImageMime ref =
 
 downloadObject :: IOE :> es => HTTP.Manager -> Text -> Eff es MediaObject
 downloadObject manager ref = do
-  request <- liftIO (HTTP.parseRequest (Text.unpack ref))
+  request <- mediaDownloadRequest <$> liftIO (HTTP.parseRequest (Text.unpack ref))
   response <- liftIO (HTTP.httpLbs request manager)
   let sourceName = TextEncoding.decodeUtf8 (StrictByteString.takeWhile (/= 63) (HTTP.path request))
       bytes = LazyByteString.toStrict (HTTP.responseBody response)
@@ -63,6 +63,17 @@ downloadObject manager ref = do
     , mimeType = mime
     , sourceName = Just sourceName
     }
+
+mediaDownloadRequest :: HTTP.Request -> HTTP.Request
+mediaDownloadRequest request =
+  request
+    { HTTP.requestHeaders =
+        (HTTPHeader.hUserAgent, mediaDownloadUserAgent) : filter ((/= HTTPHeader.hUserAgent) . fst) request.requestHeaders
+    }
+
+mediaDownloadUserAgent :: StrictByteString.ByteString
+mediaDownloadUserAgent =
+  "cosmobot/0.1 (+https://github.com/ksqsf/cosmobot)"
 
 responseMime :: HTTP.Response body -> Text
 responseMime response =
