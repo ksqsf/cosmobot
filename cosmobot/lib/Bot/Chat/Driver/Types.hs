@@ -30,4 +30,5 @@ data ChatPlatformDriver es = ChatPlatformDriver
   , normalizeMediaRef :: Text -> Eff es Text
   , mentionUser :: IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
   , setMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
+  , setTyping :: IncomingMessage -> Int -> Eff es ()
   }

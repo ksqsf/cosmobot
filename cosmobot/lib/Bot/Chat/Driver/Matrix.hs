@@ -137,6 +137,10 @@ matrixDriver = Driver.ChatPlatformDriver
   , Driver.normalizeMediaRef = normalizeMatrixMediaRef
   , Driver.mentionUser = mentionUser
   , Driver.setMemberTitle = \_ _ _ -> pure False
+  , Driver.setTyping = \message timeoutMs ->
+      case viaNonEmpty head message.chatAliases of
+        Just roomId -> typing (matrixRoomId roomId) timeoutMs
+        Nothing -> pure ()
   }
 
 matrixStreamingMessageLimit :: Int
@@ -163,6 +167,7 @@ data Matrix :: Effect where
   FetchProfile :: Text -> Matrix m (Maybe MatrixProfile)
   FetchJoinedMembers :: MatrixRoomId -> Matrix m (Maybe JoinedMembersResponse)
   DownloadMedia :: Text -> Matrix m (Maybe MatrixDownloadedMedia)
+  Typing :: MatrixRoomId -> Int -> Matrix m ()
 
 type instance DispatchOf Matrix = Dynamic
 
@@ -236,6 +241,10 @@ fetchJoinedMembers roomId =
 downloadMedia :: Matrix :> es => Text -> Eff es (Maybe MatrixDownloadedMedia)
 downloadMedia =
   send . DownloadMedia
+
+typing :: Matrix :> es => MatrixRoomId -> Int -> Eff es ()
+typing roomId timeoutMs =
+  send (Typing roomId timeoutMs)
 
 runMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
@@ -317,6 +326,13 @@ runMatrix cfg inner = do
         DownloadMedia mxcRef ->
           withMaybeMatrixAccessToken auth \token ->
             downloadMediaCall cfg token mxcRef
+        Typing roomId timeoutMs ->
+          case cfg.userId of
+            Just userId ->
+              void $ withMaybeMatrixAccessToken auth \token ->
+                typingCall cfg token roomId userId timeoutMs
+            Nothing ->
+              logWarning [i|Matrix typing notification skipped: bot_id is not configured.|]
     )
     inner
 
@@ -1667,6 +1683,24 @@ redactEventCall cfg token roomId eventId =
       options)
     <&> responseBody
 
+typingCall :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Config -> Text -> MatrixRoomId -> Text -> Int -> Eff es ()
+typingCall cfg token roomId userId timeoutMs = do
+  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions -> do
+    let options =
+          baseOptions
+            <> matrixAuth token
+            <> responseTimeout matrixApiResponseTimeoutMicroseconds
+        request = SetTypingRequest timeoutMs
+    logInfo [i|Matrix API request: set typing room=#{matrixRoomIdText roomId} user=#{userId}|]
+    response <- matrixReq "set typing" (HTTP.runReqWithConfig matrixHttpConfig $
+      req PUT
+        (baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "typing" /: userId)
+        (ReqBodyJson request)
+        (jsonResponse :: Proxy (JsonResponse Aeson.Value))
+        options)
+    let _ = responseBody response
+    pure ()
+
 withMatrixBaseUrl :: IOE :> es => Text -> (forall scheme. Url scheme -> Option scheme -> Eff es a) -> Eff es a
 withMatrixBaseUrl homeserver action = do
   uri <- URI.mkURI homeserver
@@ -2201,6 +2235,18 @@ data RedactEventRequest = RedactEventRequest
   { reason :: Maybe Text
   }
   deriving (Show, Generic, Aeson.ToJSON)
+
+data SetTypingRequest = SetTypingRequest
+  { timeout :: Int
+  }
+  deriving (Show, Generic)
+
+instance Aeson.ToJSON SetTypingRequest where
+  toJSON SetTypingRequest{timeout} =
+    Aeson.object
+      [ "typing" Aeson..= True
+      , "timeout" Aeson..= timeout
+      ]
 
 newtype SendMessageResponse = SendMessageResponse
   { eventId :: MatrixEventId

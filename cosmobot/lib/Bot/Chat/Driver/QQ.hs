@@ -116,6 +116,7 @@ qqDriver = Driver.ChatPlatformDriver
   , Driver.normalizeMediaRef = pure
   , Driver.mentionUser = mentionUser
   , Driver.setMemberTitle = setGroupMemberTitle
+  , Driver.setTyping = \_ _ -> pure ()  -- unsupported
   }
 
 qqStreamingMessageLimit :: Int

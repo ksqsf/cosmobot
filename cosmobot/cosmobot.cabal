@@ -158,6 +158,7 @@ library
         Bot.Agent.Middleware.ToolEmittedMessage
         Bot.Agent.Middleware.ToolReplyNormalization
         Bot.Agent.Middleware.ToolResultCompaction
+        Bot.Agent.Middleware.Typing
         Bot.Agent.Middleware.Tools
         Bot.Agent.ToolRegistry
         Bot.Agent.Tools

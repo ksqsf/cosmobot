@@ -33,6 +33,7 @@ module Bot.Chat.Driver.Discord
   , deleteMessage
   , getMessageContent
   , mentionUser
+  , triggerTyping
   )
 where
 
@@ -95,7 +96,7 @@ defaultConfig = Config
   }
 
 discordDriver
-  :: (Discord :> es, FileSystem :> es, IOE :> es)
+  :: (Discord :> es, FileSystem :> es, IOE :> es, KatipE :> es)
   => Driver.ChatPlatformDriver es
 discordDriver = Driver.ChatPlatformDriver
   { Driver.platform = PlatformDiscord
@@ -134,6 +135,12 @@ discordDriver = Driver.ChatPlatformDriver
   , Driver.normalizeMediaRef = pure
   , Driver.mentionUser = mentionUser
   , Driver.setMemberTitle = \_ _ _ -> pure False
+  , Driver.setTyping = \message _timeoutMillis ->
+      case (message.platform, discordChannelId message) of
+        (PlatformDiscord, Just channelId) ->
+          triggerTyping channelId
+        _ ->
+          pure ()
   }
 
 discordEditChunkChars :: Int
@@ -153,6 +160,7 @@ data Discord :: Effect where
   FetchGuildMember :: Text -> Text -> Discord m Aeson.Value
   FetchGuildMembers :: Text -> Discord m Aeson.Value
   UploadDiscordFile :: Text -> Maybe Text -> FilePath -> Discord m Message
+  TriggerTyping :: Text -> Discord m ()
 
 type instance DispatchOf Discord = Dynamic
 
@@ -194,6 +202,10 @@ uploadDiscordFile :: Discord :> es => Text -> Maybe Text -> FilePath -> Eff es M
 uploadDiscordFile channelId content path =
   send (UploadDiscordFile channelId content path)
 
+triggerTyping :: Discord :> es => Text -> Eff es ()
+triggerTyping =
+  send . TriggerTyping
+
 runDiscord
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es)
   => Config
@@ -225,6 +237,8 @@ runDiscord cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO 
                   discordGetRequest cfg ["guilds", guildId, "members"]
                 UploadDiscordFile channelId content path ->
                   discordUploadFile cfg channelId content path
+                TriggerTyping channelId ->
+                  discordNoResponseRequest cfg POST ["channels", channelId, "typing"]
             )
             inner
   if discordEnabled cfg

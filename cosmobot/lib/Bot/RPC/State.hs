@@ -304,6 +304,7 @@ rpcChatDriver cfg rpcState = driver
       , normalizeMediaRef = pure
       , mentionUser = \message _ body -> driver.replyTo message body
       , setMemberTitle = \_ _ _ -> pure False
+      , setTyping = \_ _ -> pure ()
       }
 
 data RpcReplyContent = RpcReplyContent

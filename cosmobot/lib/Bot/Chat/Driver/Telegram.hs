@@ -155,6 +155,13 @@ telegramDriver = Driver.ChatPlatformDriver
   , Driver.normalizeMediaRef = pure
   , Driver.mentionUser = mentionUser
   , Driver.setMemberTitle = \_ _ _ -> pure False
+  , Driver.setTyping = \message _timeoutMillis ->
+      case (message.platform, message.chatId) of
+        (PlatformTelegram, Just chatId) -> do
+          _ <- callTelegram (SendChatActionRequest chatId ChatActionTyping Nothing Nothing)
+          pure ()
+        _ ->
+          pure ()
   }
 
 telegramEditChunkChars :: Int
@@ -1598,6 +1605,58 @@ instance Aeson.ToJSON LeaveChatRequest where
 instance TelegramRequest LeaveChatRequest where
   type TelegramResponse LeaveChatRequest = Bool
   telegramMethod _ = "leaveChat"
+
+data SendChatActionRequest = SendChatActionRequest
+  { chatId :: !Integer
+  , action :: !ChatAction
+  , messageThreadId :: !(Maybe Integer)
+  , businessConnectionId :: !(Maybe Text)
+  } deriving (Show, Generic)
+
+instance TelegramRequest SendChatActionRequest where
+  type TelegramResponse SendChatActionRequest = Bool
+  telegramMethod _ = "sendChatAction"
+
+instance Aeson.ToJSON SendChatActionRequest where
+  toJSON SendChatActionRequest{..} = Aeson.object $
+    [ "chat_id" Aeson..= chatId
+    , "action" Aeson..= action
+    ]
+    <> maybeField "message_thread_id" messageThreadId
+    <> maybeField "business_connection_id" businessConnectionId
+
+data ChatAction
+  = ChatActionTyping
+  | ChatActionUploadPhoto
+  | ChatActionUploadVideo
+  | ChatActionUploadVoice
+  | ChatActionUploadDocument
+  | ChatActionChooseSticker
+  | ChatActionFindLocation
+  | ChatActionUploadVideoNote
+  deriving (Show, Generic)
+
+instance Aeson.ToJSON ChatAction where
+  toJSON ChatActionTyping = "typing" :: Aeson.Value
+  toJSON ChatActionUploadPhoto = "upload_photo" :: Aeson.Value
+  toJSON ChatActionUploadVideo = "upload_video" :: Aeson.Value
+  toJSON ChatActionUploadVoice = "upload_voice" :: Aeson.Value
+  toJSON ChatActionUploadDocument = "upload_document" :: Aeson.Value
+  toJSON ChatActionChooseSticker = "choose_sticker" :: Aeson.Value
+  toJSON ChatActionFindLocation = "find_location" :: Aeson.Value
+  toJSON ChatActionUploadVideoNote = "upload_video_note" :: Aeson.Value
+
+instance Aeson.FromJSON ChatAction where
+  parseJSON = Aeson.withText "ChatAction" $ \case
+    "typing" -> pure ChatActionTyping
+    "upload_photo" -> pure ChatActionUploadPhoto
+    "upload_video" -> pure ChatActionUploadVideo
+    "upload_voice" -> pure ChatActionUploadVoice
+    "upload_document" -> pure ChatActionUploadDocument
+    "choose_sticker" -> pure ChatActionChooseSticker
+    "find_location" -> pure ChatActionFindLocation
+    "upload_video_note" -> pure ChatActionUploadVideoNote
+    other -> fail $ "Unknown ChatAction: " <> show other
 
 -- ---------------------------------------------------------------------------
 -- Smart constructors

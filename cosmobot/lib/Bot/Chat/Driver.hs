@@ -279,6 +279,21 @@ setPlatformMemberTitle rpcConfig rpcState message userId title =
   fromMaybe False <$> withPlatformDriver rpcConfig rpcState message "set member title" \driver ->
     Just <$> driver.setMemberTitle message userId title
 
+setPlatformTyping
+  :: (ChatDriverConstraints es, KatipE :> es)
+  => RPCConfig.Config
+  -> RPC.RpcState
+  -> IncomingMessage
+  -> Int
+  -> Eff es ()
+setPlatformTyping rpcConfig rpcState message timeoutMillis =
+  case platformDriver rpcConfig rpcState message of
+    Nothing -> pure ()
+    Just driver -> do
+      driver.setTyping message timeoutMillis
+        `catchSync` \err -> do
+          logError [i|Failed to set typing: #{show err :: String}|]
+
 runChatDrivers
   :: (KatipE :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
   => QQ.Config
@@ -357,4 +372,5 @@ chatHandlers rpcConfig rpcState = Chat.ChatHandlers
   , handleListGroupMembers = listPlatformGroupMembers rpcConfig rpcState
   , handleMentionUser = mentionPlatformUser rpcConfig rpcState
   , handleSetMemberTitle = setPlatformMemberTitle rpcConfig rpcState
+  , handleSetTyping = setPlatformTyping rpcConfig rpcState
   }

@@ -23,6 +23,7 @@ module Bot.Effect.Chat
   , listGroupMembers
   , mentionUser
   , setMemberTitle
+  , setTyping
   , ChatHandlers (..)
   , runChatWith
   , runChatMappingReplies
@@ -99,6 +100,10 @@ data Chat :: Effect where
     -> Text
     -> Text
     -> Chat m Bool
+  SetTyping
+    :: IncomingMessage
+    -> Int
+    -> Chat m ()
 
 type instance DispatchOf Chat = Dynamic
 
@@ -187,6 +192,10 @@ setMemberTitle :: Chat :> es => IncomingMessage -> Text -> Text -> Eff es Bool
 setMemberTitle message userId title =
   send (SetMemberTitle message userId title)
 
+setTyping :: Chat :> es => IncomingMessage -> Int -> Eff es ()
+setTyping message timeout =
+  send (SetTyping message timeout)
+
 -- | Interpret chat operations by delegating each operation to platform code.
 data ChatHandlers es = ChatHandlers
   { handleReplyTo :: IncomingMessage -> Text -> Eff es (Either Text MessageId)
@@ -202,6 +211,7 @@ data ChatHandlers es = ChatHandlers
   , handleListGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
   , handleMentionUser :: IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
   , handleSetMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
+  , handleSetTyping :: IncomingMessage -> Int -> Eff es ()
   }
 
 runChatWith
@@ -235,6 +245,8 @@ runChatWith handlers = interpret $ \_ -> \case
     handlers.handleMentionUser message userId body
   SetMemberTitle message userId title ->
     handlers.handleSetMemberTitle message userId title
+  SetTyping message timeout ->
+    handlers.handleSetTyping message timeout
 
 -- | Locally rewrite ordinary reply bodies while all platform operations still
 -- delegate to the outer 'Chat' interpreter.

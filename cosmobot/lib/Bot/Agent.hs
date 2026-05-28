@@ -33,6 +33,7 @@ module Bot.Agent
   , withLinkingToolEmittedMessagesToConversation
   , withNormalizingToolReplies
   , withRecordingToolSelfMessages
+  , withTypingNotification
   , runAgent
   , runAgentStreaming
   , defaultTools
@@ -70,6 +71,9 @@ import Bot.Agent.Middleware.ToolEmittedMessage
   )
 import Bot.Agent.Middleware.ToolReplyNormalization
   ( withNormalizingToolReplies
+  )
+import Bot.Agent.Middleware.Typing
+  ( withTypingNotification
   )
 import Bot.Agent.ToolRegistry
   ( startToolRun
@@ -172,9 +176,10 @@ initialAgentState transient conversation =
     , transient
     }
 
-defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
+defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
 defaultAgentProgram observer maxTurns agentRun =
-  ( withToolLimit maxTurns
+  ( withTypingNotification
+  . withToolLimit maxTurns
   . withToolResultCompaction
   . withObservation observer
   . withToolMessage

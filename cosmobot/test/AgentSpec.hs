@@ -246,6 +246,7 @@ testToolReplyMiddlewareNormalizesReplyImages = do
           , handleListGroupMembers = noopMembers
           , handleMentionUser = noopMention
           , handleSetMemberTitle = noopSetMemberTitle
+          , handleSetTyping = noopSetTyping
           } do
           agentRun <- Agent.startAgentRun agentContext []
           let program = Agent.withNormalizingToolReplies (AgentCore.emptyAgentProgram HList.HNil agentRun)
@@ -277,6 +278,7 @@ testToolReplyMiddlewareRejectsUncachedRemoteImages = do
           , handleListGroupMembers = noopMembers
           , handleMentionUser = noopMention
           , handleSetMemberTitle = noopSetMemberTitle
+          , handleSetTyping = noopSetTyping
           } do
           agentRun <- Agent.startAgentRun agentContext []
           let program = Agent.withNormalizingToolReplies (AgentCore.emptyAgentProgram HList.HNil agentRun)
@@ -344,6 +346,7 @@ runSendFileTool replies upload =
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
         , handleSetMemberTitle = noopSetMemberTitle
+        , handleSetTyping = noopSetTyping
         } do
         runner <- ChatTools.sendFileTool.start superuserContext
         runner (Aeson.object ["path" Aeson..= ("file:///tmp/report.txt" :: Text)])
@@ -625,6 +628,7 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
           , handleListGroupMembers = noopMembers
           , handleMentionUser = noopMention
           , handleSetMemberTitle = noopSetMemberTitle
+          , handleSetTyping = noopSetTyping
           } do
           runner <- AudioTools.generateAudioTool.start agentContext
           runner args
@@ -901,6 +905,7 @@ testAgentAuditStorageOmitsLargeToolResults =
                                   , handleListGroupMembers = noopMembers
                                   , handleMentionUser = noopMention
                                   , handleSetMemberTitle = noopSetMemberTitle
+                                  , handleSetTyping = noopSetTyping
                                   }
                               do
                                 agentRun <- Agent.startAgentRun agentContext [largeAuditResultTool toolResultText]
@@ -1299,6 +1304,7 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
         , handleSetMemberTitle = noopSetMemberTitle
+        , handleSetTyping = noopSetTyping
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -1330,6 +1336,7 @@ testEditableSegmentedRepliesOpenNewTail = do
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
         , handleSetMemberTitle = noopSetMemberTitle
+        , handleSetTyping = noopSetTyping
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -1372,6 +1379,7 @@ testSegmentedRepliesFlushFinalOpenSegment = do
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
         , handleSetMemberTitle = noopSetMemberTitle
+        , handleSetTyping = noopSetTyping
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -1407,6 +1415,7 @@ testEditableChatStreamingSplitsLongReplies = do
         , handleListGroupMembers = noopMembers
         , handleMentionUser = noopMention
         , handleSetMemberTitle = noopSetMemberTitle
+        , handleSetTyping = noopSetTyping
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -1619,6 +1628,7 @@ testConversationStorageOmitsLargeToolResults =
                                   , handleListGroupMembers = noopMembers
                                   , handleMentionUser = noopMention
                                   , handleSetMemberTitle = noopSetMemberTitle
+                                  , handleSetTyping = noopSetTyping
                                   }
                               do
                                 agentRun <- Agent.startAgentRun agentContext [largeResultTool result]
@@ -2352,6 +2362,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
                                         , handleListGroupMembers = noopMembers
                                         , handleMentionUser = noopMention
                                         , handleSetMemberTitle = noopSetMemberTitle
+                                        , handleSetTyping = noopSetTyping
                                         }
                                       action
   either assertFailure pure result
@@ -2405,6 +2416,7 @@ runAgentWithStreamingAnswers answers chatMock action = do
                                         , handleListGroupMembers = noopMembers
                                         , handleMentionUser = noopMention
                                         , handleSetMemberTitle = noopSetMemberTitle
+                                        , handleSetTyping = noopSetTyping
                                         }
                                       action
   either assertFailure pure result
@@ -2624,6 +2636,10 @@ noopMention _ _ _ =
 noopSetMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
 noopSetMemberTitle _ _ _ =
   pure False
+
+noopSetTyping :: IncomingMessage -> Int -> Eff es ()
+noopSetTyping _ _ =
+  pure ()
 
 mockUserAvatar :: ChatMock -> IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 mockUserAvatar ChatMock{userAvatar} _ _ =
