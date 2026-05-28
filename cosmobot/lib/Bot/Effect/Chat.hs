@@ -1,3 +1,5 @@
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-|
 Module      : Bot.Effect.Chat
 Description : Unified chat capability facade
@@ -6,7 +8,8 @@ Stability   : experimental
 
 module Bot.Effect.Chat
   ( -- * Effect
-    Chat
+    Chat (..)
+  , ChatHandler
   , replyTo
   , replyAudio
   , uploadFile
@@ -24,8 +27,10 @@ module Bot.Effect.Chat
   , mentionUser
   , setMemberTitle
   , setTyping
-  , ChatHandlers (..)
+  , incomingMessages
+  , runChatWithHandler
   , runChatWith
+  , chatDriverHandler
   , runChatMappingReplies
   , runChatRecordingSelfMessages
   , runChatRecordingExtraMessages
@@ -40,10 +45,12 @@ where
 
 import Bot.Core.Message
 import Bot.Prelude
+import qualified Bot.Chat.Driver.Types as Driver
 import Bot.Chat.Types
 import Bot.Core.ReplyBody
 import qualified Bot.Chat.ReplyStream as ReplyStream
 import qualified Data.Aeson as Aeson
+import qualified Streaming as S
 
 -- | Platform-independent chat operations used by handlers and tools.
 data Chat :: Effect where
@@ -104,8 +111,13 @@ data Chat :: Effect where
     :: IncomingMessage
     -> Int
     -> Chat m ()
+  IncomingMessages
+    :: Chat m (Stream (Of IncomingMessage) m ())
 
 type instance DispatchOf Chat = Dynamic
+
+type ChatHandler es =
+  EffectHandler Chat es
 
 -- | Reply to the chat containing the incoming message.
 replyTo :: Chat :> es => IncomingMessage -> Text -> Eff es (Either Text MessageId)
@@ -196,57 +208,63 @@ setTyping :: Chat :> es => IncomingMessage -> Int -> Eff es ()
 setTyping message timeout =
   send (SetTyping message timeout)
 
--- | Interpret chat operations by delegating each operation to platform code.
-data ChatHandlers es = ChatHandlers
-  { handleReplyTo :: IncomingMessage -> Text -> Eff es (Either Text MessageId)
-  , handleReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
-  , handleUploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
-  , handleEditMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
-  , handleDeleteMessage :: IncomingMessage -> MessageId -> Eff es Bool
-  , handleReplyStreamStyle :: IncomingMessage -> Eff es ReplyStreamStyle
-  , handleGetMessageContent :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
-  , handleGetSenderMemberInfo :: IncomingMessage -> Eff es (Maybe Aeson.Value)
-  , handleGetMemberInfo :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
-  , handleGetUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
-  , handleListGroupMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
-  , handleMentionUser :: IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
-  , handleSetMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
-  , handleSetTyping :: IncomingMessage -> Int -> Eff es ()
-  }
+incomingMessages :: Chat :> es => Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages = do
+  stream <- S.lift (send IncomingMessages)
+  stream
 
-runChatWith
-  :: ChatHandlers es
+runChatWithHandler
+  :: ChatHandler es
   -> Eff (Chat : es) a
   -> Eff es a
-runChatWith handlers = interpret $ \_ -> \case
+runChatWithHandler =
+  interpret
+
+runChatWith
+  :: forall driver es a.
+     (Driver.ChatDriver driver, Driver.ChatDriverEffects driver es)
+  => driver
+  -> Eff (Chat : es) a
+  -> Eff es a
+runChatWith driver =
+  runChatWithHandler (chatDriverHandler driver)
+
+chatDriverHandler
+  :: forall driver es.
+     (Driver.ChatDriver driver, Driver.ChatDriverEffects driver es)
+  => driver
+  -> ChatHandler es
+chatDriverHandler driver _ = \case
   ReplyTo message body ->
-    handlers.handleReplyTo message body
+    Driver.replyTo driver message body
   ReplyAudio message audioRef caption ->
-    handlers.handleReplyAudio message audioRef caption
+    Driver.replyAudio driver message audioRef caption
   UploadFile message path ->
-    handlers.handleUploadFile message path
+    Driver.uploadFile driver message path
   EditMessage message messageId body ->
-    handlers.handleEditMessage message messageId body
+    Driver.editMessage driver message messageId body
   DeleteMessage message messageId ->
-    handlers.handleDeleteMessage message messageId
+    Driver.deleteMessage driver message messageId
   ReplyStreamStyle message ->
-    handlers.handleReplyStreamStyle message
+    Driver.replyStreamStyle driver message
   GetMessageContent message messageId ->
-    handlers.handleGetMessageContent message messageId
+    Driver.getMessageContent driver message messageId
   GetSenderMemberInfo message ->
-    handlers.handleGetSenderMemberInfo message
+    Driver.getSenderMemberInfo driver message
   GetMemberInfo message userId ->
-    handlers.handleGetMemberInfo message userId
+    Driver.getMemberInfo driver message userId
   GetUserAvatar message userId ->
-    handlers.handleGetUserAvatar message userId
+    Driver.getUserAvatar driver message userId
   ListGroupMembers message ->
-    handlers.handleListGroupMembers message
+    Driver.listGroupMembers driver message
   MentionUser message userId body ->
-    handlers.handleMentionUser message userId body
+    Driver.mentionUser driver message userId body
   SetMemberTitle message userId title ->
-    handlers.handleSetMemberTitle message userId title
+    Driver.setMemberTitle driver message userId title
   SetTyping message timeout ->
-    handlers.handleSetTyping message timeout
+    Driver.setTyping driver message timeout
+  IncomingMessages ->
+    pure (pure ())
 
 -- | Locally rewrite ordinary reply bodies while all platform operations still
 -- delegate to the outer 'Chat' interpreter.

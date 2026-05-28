@@ -78,7 +78,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
   runStack do
     logInfo "Cosmobot stand by!"
     let allStreams =
-          [ ChatDriver.incomingMessages rpcState
+          [ Chat.incomingMessages
           , Scheduler.scheduledMessages
           ]
         messageConsumer =

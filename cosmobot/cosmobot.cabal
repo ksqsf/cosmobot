@@ -187,6 +187,7 @@ library
         Bot.Chat.Driver.Matrix.Config
         Bot.Chat.Driver.QQ
         Bot.Chat.Driver.QQ.Config
+        Bot.Chat.Driver.RPC
         Bot.Chat.Driver.Telegram
         Bot.Chat.Driver.Telegram.Config
         Bot.Chat.Driver.Types

@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeFamilies #-}
 {-|
 Module      : Bot.RPC.State
 Description : Shared runtime state for RPC sessions and notifications
@@ -31,18 +32,17 @@ module Bot.RPC.State
   , deleteChatSession
   , enqueueChatMessage
   , incomingMessages
-  , rpcChatDriver
+  , sessionIdFromMessage
+  , rememberMessageNumber
+  , storedMessageToRpc
+  , storedMediaRef
+  , parseMediaId
   )
 where
 
-import qualified Bot.Chat.Types as Chat
-import Bot.Chat.Driver.Types
 import Bot.Core.Message
 import qualified Bot.Effect.Media as Media
-import Bot.Effect.Media (MediaObject (..))
-import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Prelude
-import qualified Bot.RPC.Config as Config
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Storage.RPC as Storage
@@ -56,7 +56,6 @@ import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
-import System.FilePath (takeExtension, takeFileName)
 
 type RpcClientId = Integer
 
@@ -255,120 +254,6 @@ incomingMessages :: Concurrent :> es => RpcState -> Stream (Of IncomingMessage) 
 incomingMessages rpcState = forever do
   message <- S.lift (STM.atomically (STM.readTChan rpcState.inbound))
   S.yield message
-
-rpcChatDriver :: (Concurrent :> es, IOE :> es, StorageEffect.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es) => Config.Config -> RpcState -> ChatPlatformDriver es
-rpcChatDriver cfg rpcState = driver
-  where
-    driver = ChatPlatformDriver
-      { platform = PlatformRPC
-      , replyTo = \message body -> do
-          let sessionId = sessionIdFromMessage message
-              parentMessageId = message.messageId
-          reply <- rpcReplyContent cfg body
-          stored <- Storage.appendMessage
-            sessionId.unRpcSessionId
-            "assistant"
-            reply.text
-            reply.imageUrls
-            reply.attachments
-            parentMessageId
-            parentMessageId
-          case stored of
-            Left err ->
-              pure (Left err)
-            Right Nothing ->
-              pure (Left "RPC reply did not produce a message id.")
-            Right (Just storedReply) -> do
-              rememberMessageNumber rpcState storedReply.messageId
-              broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" (storedMessageToRpc storedReply)))
-              pure (Right storedReply.messageId)
-      , replyAudio = \message audioRef caption -> do
-          let body = maybe audioRef (\c -> c <> "\n" <> audioRef) caption
-          driver.replyTo message body
-      , uploadFile = \message path -> do
-          driver.replyTo message ("Uploaded file: " <> Text.pack path)
-      , editMessage = \message messageId body -> do
-          let sessionId = sessionIdFromMessage message
-              text = ReplyBody.renderReplyBody body
-              payload = RpcOutbound sessionId (Just messageId) text
-          updated <- Storage.updateMessageText sessionId.unRpcSessionId messageId text
-          broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message_update" payload))
-          pure updated
-      , deleteMessage = \_ _ -> pure False
-      , replyStreamStyle = \_ -> pure (Chat.EditableReply 1200 4000)
-      , getMessageContent = \_ _ -> pure Nothing
-      , getSenderMemberInfo = \_ -> pure Nothing
-      , getMemberInfo = \_ _ -> pure Nothing
-      , getUserAvatar = \_ _ -> pure Nothing
-      , listGroupMembers = \_ -> pure Nothing
-      , normalizeMediaRef = pure
-      , mentionUser = \message _ body -> driver.replyTo message body
-      , setMemberTitle = \_ _ _ -> pure False
-      , setTyping = \_ _ -> pure ()
-      }
-
-data RpcReplyContent = RpcReplyContent
-  { text :: !Text
-  , imageUrls :: ![Text]
-  , attachments :: ![Storage.StoredMediaRef]
-  }
-
-rpcReplyContent
-  :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
-  => Config.Config
-  -> Text
-  -> Eff es RpcReplyContent
-rpcReplyContent cfg body = do
-  converted <- traverse (rpcReplyImage cfg) (ReplyBody.replyImageUrls body)
-  pure RpcReplyContent
-    { text = ReplyBody.renderReplyBody body
-    , imageUrls = [url | Left url <- converted]
-    , attachments = [attachment | Right attachment <- converted]
-    }
-
-rpcReplyImage
-  :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
-  => Config.Config
-  -> Text
-  -> Eff es (Either Text Storage.StoredMediaRef)
-rpcReplyImage _cfg ref =
-  case Text.stripPrefix "file://" (Text.strip ref) of
-    Nothing ->
-      pure (Left ref)
-    Just pathText -> do
-      let path = Text.unpack pathText
-      exists <- FileSystem.doesFileExist path
-      if exists
-        then do
-          bytes <- FileSystemByteString.readFile path
-          mediaRef <- Media.storeMediaObject $
-            MediaObject
-              { bytes
-              , mimeType = imageMediaType path
-              , sourceName = Just (Text.pack (takeFileName path))
-              }
-          case mediaRef >>= parseMediaId of
-            Nothing ->
-              pure (Left ref)
-            Just fileId ->
-              Media.mediaFileInfo fileId >>= \case
-                Nothing -> pure (Left ref)
-                Just info -> do
-                  url <- Media.publicMediaRef info.ref
-                  pure (Right (storedMediaRef info url))
-        else
-          pure (Left ref)
-
-imageMediaType :: FilePath -> Text
-imageMediaType path =
-  case Text.toLower (Text.pack (takeExtension path)) of
-    ".avif" -> "image/avif"
-    ".gif" -> "image/gif"
-    ".jpeg" -> "image/jpeg"
-    ".jpg" -> "image/jpeg"
-    ".png" -> "image/png"
-    ".webp" -> "image/webp"
-    _ -> "application/octet-stream"
 
 rpcIncomingMessage :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es) => RpcChatSend -> Storage.StoredChatMessage -> Eff es IncomingMessage
 rpcIncomingMessage chatSend messageRow = do

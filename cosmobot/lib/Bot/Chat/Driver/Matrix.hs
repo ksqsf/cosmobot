@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeFamilies #-}
 {-|
 Module      : Bot.Chat.Driver.Matrix
 Description : Matrix Client-Server chat driver
@@ -7,8 +8,9 @@ Stability   : experimental
 -}
 
 module Bot.Chat.Driver.Matrix
-  ( matrixDriver
-  , Matrix
+  ( MatrixDriver
+  , newMatrixDriver
+  , chatHandler
   , Config (..)
   , SyncResponse (..)
   , JoinedRoom (..)
@@ -17,17 +19,11 @@ module Bot.Chat.Driver.Matrix
   , EventContent (..)
   , SendMessageResponse (..)
   , RoomEvent (..)
-  , runMatrix
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , formatMatrixMarkdown
   , formatMatrixMarkdownWithMentionNames
-  , replyTo
-  , replyAudio
-  , uploadFile
-  , editMessage
-  , deleteMessage
   )
 where
 
@@ -118,30 +114,91 @@ instance IsString MatrixEventId where
   fromString =
     matrixEventId . Text.pack
 
-matrixDriver
-  :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es)
-  => Driver.ChatPlatformDriver es
-matrixDriver = Driver.ChatPlatformDriver
-  { Driver.platform = PlatformMatrix
-  , Driver.replyTo = replyTo
-  , Driver.replyAudio = replyAudio
-  , Driver.uploadFile = uploadFile
-  , Driver.editMessage = editMessage
-  , Driver.deleteMessage = deleteMessage
-  , Driver.replyStreamStyle = \_ -> pure (Chat.EditableReply matrixEditChunkChars matrixStreamingMessageLimit)
-  , Driver.getMessageContent = getMessageContent
-  , Driver.getSenderMemberInfo = getSenderMemberInfo
-  , Driver.getMemberInfo = getMemberInfo
-  , Driver.getUserAvatar = getUserAvatar
-  , Driver.listGroupMembers = listGroupMembers
-  , Driver.normalizeMediaRef = normalizeMatrixMediaRef
-  , Driver.mentionUser = mentionUser
-  , Driver.setMemberTitle = \_ _ _ -> pure False
-  , Driver.setTyping = \message timeoutMs ->
-      case viaNonEmpty head message.chatAliases of
-        Just roomId -> typing (matrixRoomId roomId) timeoutMs
-        Nothing -> pure ()
+data MatrixDriver = MatrixDriver
+  { config :: !Config
+  , auth :: !MatrixAuth
+  , eventIds :: !(IORef.IORef (Map MessageId MatrixEventId))
+  , directRoomIds :: !(IORef.IORef (Set MatrixRoomId))
+  , joinedMemberCounts :: !(IORef.IORef (Map MatrixRoomId Int))
   }
+
+newMatrixDriver
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => Config
+  -> Eff es MatrixDriver
+newMatrixDriver cfg = do
+  eventIds <- IORef.newIORef Map.empty
+  directRoomIdsRef <- IORef.newIORef (Set.fromList (matrixRoomId <$> cfg.directRooms))
+  joinedMemberCountsRef <- IORef.newIORef Map.empty
+  initialAuthState <- initialMatrixAuthState cfg
+  authState <- IORef.newIORef initialAuthState
+  refreshLock <- MVar.newMVar ()
+  let auth = MatrixAuth cfg authState refreshLock
+  pure MatrixDriver
+    { config = cfg
+    , auth
+    , eventIds
+    , directRoomIds = directRoomIdsRef
+    , joinedMemberCounts = joinedMemberCountsRef
+    }
+
+instance Driver.ChatDriver MatrixDriver where
+  type ChatDriverEffects MatrixDriver es =
+    (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
+
+  driverPlatform _ =
+    PlatformMatrix
+
+  replyTo =
+    replyToMatrix
+
+  replyAudio =
+    replyAudioMatrix
+
+  uploadFile =
+    uploadFileMatrix
+
+  editMessage =
+    editMessageMatrix
+
+  deleteMessage =
+    deleteMessageMatrix
+
+  replyStreamStyle _ _ =
+    pure (Chat.EditableReply matrixEditChunkChars matrixStreamingMessageLimit)
+
+  getMessageContent =
+    getMessageContentMatrix
+
+  getSenderMemberInfo =
+    getSenderMemberInfoMatrix
+
+  getMemberInfo =
+    getMemberInfoMatrix
+
+  getUserAvatar =
+    getUserAvatarMatrix
+
+  listGroupMembers =
+    listGroupMembersMatrix
+
+  normalizeMediaRef driver ref =
+    normalizeMatrixMediaRef driver ref
+
+  mentionUser =
+    mentionUserMatrix
+
+  setTyping driver message timeoutMs =
+    case viaNonEmpty head message.chatAliases of
+      Just roomId -> typing driver (matrixRoomId roomId) timeoutMs
+      Nothing -> pure ()
+
+chatHandler
+  :: Driver.ChatDriverEffects MatrixDriver es
+  => MatrixDriver
+  -> Chat.ChatHandler es
+chatHandler =
+  Chat.chatDriverHandler
 
 matrixStreamingMessageLimit :: Int
 matrixStreamingMessageLimit = 4000
@@ -149,192 +206,113 @@ matrixStreamingMessageLimit = 4000
 matrixEditChunkChars :: Int
 matrixEditChunkChars = 64
 
-data Matrix :: Effect where
-  MatrixConfig :: Matrix m Config
-  LoadSyncToken :: Matrix m (Maybe Text)
-  StoreSyncToken :: Text -> Matrix m ()
-  Sync :: Maybe Text -> Matrix m (Maybe SyncResponse)
-  DirectRooms :: Matrix m (Set MatrixRoomId)
-  JoinedMemberCounts :: Matrix m (Map MatrixRoomId Int)
-  JoinedMemberCount :: MatrixRoomId -> Matrix m (Maybe Int)
-  SendText :: MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Matrix m (Either Text SendMessageResponse)
-  UploadMedia :: FilePath -> Text -> Text -> Matrix m MatrixUploadResponse
-  SendFileMessage :: Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Matrix m (Either Text SendMessageResponse)
-  EditText :: MatrixRoomId -> MatrixEventId -> Text -> Matrix m (Either Text SendMessageResponse)
-  DeleteEvent :: Text -> MessageId -> Maybe MatrixEventId -> Matrix m Bool
-  FetchEvent :: MatrixRoomId -> MatrixEventId -> Matrix m (Maybe Event)
-  FetchMember :: MatrixRoomId -> Text -> Matrix m (Maybe MatrixMember)
-  FetchProfile :: Text -> Matrix m (Maybe MatrixProfile)
-  FetchJoinedMembers :: MatrixRoomId -> Matrix m (Maybe JoinedMembersResponse)
-  DownloadMedia :: Text -> Matrix m (Maybe MatrixDownloadedMedia)
-  Typing :: MatrixRoomId -> Int -> Matrix m ()
-
-type instance DispatchOf Matrix = Dynamic
-
-matrixConfig :: Matrix :> es => Eff es Config
-matrixConfig = send MatrixConfig
-
-loadSyncToken :: Matrix :> es => Eff es (Maybe Text)
+loadSyncToken :: Storage.Storage :> es => Eff es (Maybe Text)
 loadSyncToken =
-  send LoadSyncToken
+  MatrixStorage.loadSyncToken
 
-storeSyncToken :: Matrix :> es => Text -> Eff es ()
+storeSyncToken :: Storage.Storage :> es => Text -> Eff es ()
 storeSyncToken =
-  send . StoreSyncToken
+  MatrixStorage.saveSyncToken
 
-sync :: Matrix :> es => Maybe Text -> Eff es (Maybe SyncResponse)
-sync =
-  send . Sync
+sync :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Maybe Text -> Eff es (Maybe SyncResponse)
+sync driver since = do
+  response <- withMaybeMatrixAccessToken driver.auth \token ->
+    syncCall driver.config since token
+  traverse_ (rememberMatrixRoomState driver.directRoomIds driver.joinedMemberCounts) response
+  pure response
 
-directRooms :: Matrix :> es => Eff es (Set MatrixRoomId)
-directRooms =
-  send DirectRooms
+directRooms :: Prim :> es => MatrixDriver -> Eff es (Set MatrixRoomId)
+directRooms driver =
+  IORef.readIORef driver.directRoomIds
 
-joinedMemberCounts :: Matrix :> es => Eff es (Map MatrixRoomId Int)
-joinedMemberCounts =
-  send JoinedMemberCounts
+joinedMemberCounts :: Prim :> es => MatrixDriver -> Eff es (Map MatrixRoomId Int)
+joinedMemberCounts driver =
+  IORef.readIORef driver.joinedMemberCounts
 
-joinedMemberCount :: Matrix :> es => MatrixRoomId -> Eff es (Maybe Int)
-joinedMemberCount =
-  send . JoinedMemberCount
+joinedMemberCount :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Eff es (Maybe Int)
+joinedMemberCount driver roomId =
+  withMaybeMatrixAccessToken driver.auth \token -> do
+    count <- joinedMemberCountCall driver.config token roomId
+    rememberJoinedMemberCount driver.directRoomIds driver.joinedMemberCounts roomId count
+    pure count
 
-sendText :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Either Text SendMessageResponse)
-sendText roomId replyToEventId body =
-  sendTextWithMentions roomId replyToEventId body []
+sendText :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Either Text SendMessageResponse)
+sendText driver roomId replyToEventId body =
+  sendTextWithMentions driver roomId replyToEventId body []
 
-sendTextWithMentions :: Matrix :> es => MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es (Either Text SendMessageResponse)
-sendTextWithMentions roomId replyToEventId body mentionUserIds =
-  send (SendText roomId replyToEventId body mentionUserIds)
+sendTextWithMentions :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es (Either Text SendMessageResponse)
+sendTextWithMentions driver roomId replyToEventId body mentionUserIds = do
+  response <- withEitherMatrixAccessToken "send m.room.message" driver.auth \token -> do
+    let mentions = matrixOutgoingMentionUserIds body mentionUserIds
+    mentionNames <- fetchMatrixMentionNames driver.config token roomId mentions
+    sendMessageCall driver.config token roomId replyToEventId body mentions mentionNames
+  traverse_ (rememberMatrixEvent driver.eventIds) response
+  pure response
 
-uploadMedia :: Matrix :> es => FilePath -> Text -> Text -> Eff es MatrixUploadResponse
-uploadMedia path fileName mime =
-  send (UploadMedia path fileName mime)
+uploadMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> FilePath -> Text -> Text -> Eff es MatrixUploadResponse
+uploadMedia driver path fileName mime =
+  withMatrixAccessToken driver.auth \token ->
+    uploadMediaCall driver.config path fileName mime token
 
-sendFileMessage :: Matrix :> es => Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es (Either Text SendMessageResponse)
-sendFileMessage roomId replyRelation message =
-  send (SendFileMessage roomId replyRelation message)
+sendFileMessage :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es (Either Text SendMessageResponse)
+sendFileMessage driver roomId replyRelation message@MatrixFileMessage{msgtype = mediaMsgtype} = do
+  response <- withEitherMatrixAccessToken [i|send #{mediaMsgtype}|] driver.auth \token ->
+    sendFileMessageCall driver.config token roomId replyRelation message
+  traverse_ (rememberMatrixEvent driver.eventIds) response
+  pure response
 
-editText :: Matrix :> es => MatrixRoomId -> MatrixEventId -> Text -> Eff es (Either Text SendMessageResponse)
-editText roomId eventId body =
-  send (EditText roomId eventId body)
+editText :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> MatrixEventId -> Text -> Eff es (Either Text SendMessageResponse)
+editText driver roomId eventId body = do
+  response <- withEitherMatrixAccessToken "edit m.room.message" driver.auth \token -> do
+    let mentions = matrixOutgoingMentionUserIds body []
+    mentionNames <- fetchMatrixMentionNames driver.config token roomId mentions
+    editMessageCall driver.config token roomId eventId body mentions mentionNames
+  traverse_ (rememberMatrixEvent driver.eventIds) response
+  pure response
 
-deleteEvent :: Matrix :> es => Text -> MessageId -> Maybe MatrixEventId -> Eff es Bool
-deleteEvent roomId messageId eventId =
-  send (DeleteEvent roomId messageId eventId)
+deleteEvent :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> MessageId -> Maybe MatrixEventId -> Eff es Bool
+deleteEvent driver roomId messageId knownEventId = do
+  stored <- IORef.readIORef driver.eventIds
+  case knownEventId <|> Map.lookup messageId stored of
+    Nothing ->
+      pure False
+    Just eventId ->
+      fromMaybe False <$> withMaybeMatrixAccessToken driver.auth \token ->
+        redactEventCall driver.config token roomId (matrixEventIdText eventId) $> True
 
-fetchEvent :: Matrix :> es => MatrixRoomId -> MatrixEventId -> Eff es (Maybe Event)
-fetchEvent roomId eventId =
-  send (FetchEvent roomId eventId)
+fetchEvent :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> MatrixEventId -> Eff es (Maybe Event)
+fetchEvent driver roomId eventId =
+  withMaybeMatrixAccessToken driver.auth \token ->
+    fetchEventCall driver.config token roomId eventId
 
-fetchMember :: Matrix :> es => MatrixRoomId -> Text -> Eff es (Maybe MatrixMember)
-fetchMember roomId userId =
-  send (FetchMember roomId userId)
+fetchMember :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Text -> Eff es (Maybe MatrixMember)
+fetchMember driver roomId userId =
+  withMaybeMatrixAccessToken driver.auth \token ->
+    fetchMemberCall driver.config token roomId userId
 
-fetchProfile :: Matrix :> es => Text -> Eff es (Maybe MatrixProfile)
-fetchProfile userId =
-  send (FetchProfile userId)
+fetchProfile :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Eff es (Maybe MatrixProfile)
+fetchProfile driver userId =
+  withMaybeMatrixAccessToken driver.auth \token ->
+    fetchProfileCall driver.config token userId
 
-fetchJoinedMembers :: Matrix :> es => MatrixRoomId -> Eff es (Maybe JoinedMembersResponse)
-fetchJoinedMembers roomId =
-  send (FetchJoinedMembers roomId)
+fetchJoinedMembers :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Eff es (Maybe JoinedMembersResponse)
+fetchJoinedMembers driver roomId =
+  withMaybeMatrixAccessToken driver.auth \token ->
+    fetchJoinedMembersCall driver.config token roomId
 
-downloadMedia :: Matrix :> es => Text -> Eff es (Maybe MatrixDownloadedMedia)
-downloadMedia =
-  send . DownloadMedia
+downloadMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Eff es (Maybe MatrixDownloadedMedia)
+downloadMedia driver mxcRef =
+  withMaybeMatrixAccessToken driver.auth \token ->
+    downloadMediaCall driver.config token mxcRef
 
-typing :: Matrix :> es => MatrixRoomId -> Int -> Eff es ()
-typing roomId timeoutMs =
-  send (Typing roomId timeoutMs)
-
-runMatrix
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
-  => Config
-  -> Eff (Matrix : es) a
-  -> Eff es a
-runMatrix cfg inner = do
-  eventIds <- IORef.newIORef (Map.empty :: Map MessageId MatrixEventId)
-  directRoomIdsRef <- IORef.newIORef (Set.fromList (matrixRoomId <$> cfg.directRooms))
-  joinedMemberCountsRef <- IORef.newIORef (Map.empty :: Map MatrixRoomId Int)
-  initialAuthState <- initialMatrixAuthState cfg
-  authState <- IORef.newIORef initialAuthState
-  refreshLock <- MVar.newMVar ()
-  let auth = MatrixAuth cfg authState refreshLock
-  interpret
-    ( \_ -> \case
-        MatrixConfig ->
-          pure cfg
-        LoadSyncToken ->
-          MatrixStorage.loadSyncToken
-        StoreSyncToken token ->
-          MatrixStorage.saveSyncToken token
-        Sync since -> do
-          response <- withMaybeMatrixAccessToken auth \token ->
-            syncCall cfg since token
-          traverse_ (rememberMatrixRoomState directRoomIdsRef joinedMemberCountsRef) response
-          pure response
-        DirectRooms ->
-          IORef.readIORef directRoomIdsRef
-        JoinedMemberCounts ->
-          IORef.readIORef joinedMemberCountsRef
-        JoinedMemberCount roomId ->
-          withMaybeMatrixAccessToken auth \token -> do
-            count <- joinedMemberCountCall cfg token roomId
-            rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count
-            pure count
-        SendText roomId replyToEventId body mentionUserIds -> do
-          response <- withEitherMatrixAccessToken "send m.room.message" auth \token -> do
-            let mentions = matrixOutgoingMentionUserIds body mentionUserIds
-            mentionNames <- fetchMatrixMentionNames cfg token roomId mentions
-            sendMessageCall cfg token roomId replyToEventId body mentions mentionNames
-          traverse_ (rememberMatrixEvent eventIds) response
-          pure response
-        UploadMedia path fileName mime ->
-          withMatrixAccessToken auth \token ->
-            uploadMediaCall cfg path fileName mime token
-        SendFileMessage roomId replyRelation message@MatrixFileMessage{msgtype = mediaMsgtype} -> do
-          response <- withEitherMatrixAccessToken [i|send #{mediaMsgtype}|] auth \token ->
-            sendFileMessageCall cfg token roomId replyRelation message
-          traverse_ (rememberMatrixEvent eventIds) response
-          pure response
-        EditText roomId eventId body -> do
-          response <- withEitherMatrixAccessToken "edit m.room.message" auth \token -> do
-            let mentions = matrixOutgoingMentionUserIds body []
-            mentionNames <- fetchMatrixMentionNames cfg token roomId mentions
-            editMessageCall cfg token roomId eventId body mentions mentionNames
-          traverse_ (rememberMatrixEvent eventIds) response
-          pure response
-        DeleteEvent roomId messageId knownEventId -> do
-          stored <- IORef.readIORef eventIds
-          case knownEventId <|> Map.lookup messageId stored of
-            Nothing ->
-              pure False
-            Just eventId ->
-              fromMaybe False <$> withMaybeMatrixAccessToken auth \token ->
-                redactEventCall cfg token roomId (matrixEventIdText eventId) $> True
-        FetchEvent roomId eventId ->
-          withMaybeMatrixAccessToken auth \token ->
-            fetchEventCall cfg token roomId eventId
-        FetchMember roomId userId ->
-          withMaybeMatrixAccessToken auth \token ->
-            fetchMemberCall cfg token roomId userId
-        FetchProfile userId ->
-          withMaybeMatrixAccessToken auth \token ->
-            fetchProfileCall cfg token userId
-        FetchJoinedMembers roomId ->
-          withMaybeMatrixAccessToken auth \token ->
-            fetchJoinedMembersCall cfg token roomId
-        DownloadMedia mxcRef ->
-          withMaybeMatrixAccessToken auth \token ->
-            downloadMediaCall cfg token mxcRef
-        Typing roomId timeoutMs ->
-          case cfg.userId of
-            Just userId ->
-              void $ withMaybeMatrixAccessToken auth \token ->
-                typingCall cfg token roomId userId timeoutMs
-            Nothing ->
-              logWarning [i|Matrix typing notification skipped: bot_id is not configured.|]
-    )
-    inner
+typing :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Int -> Eff es ()
+typing driver roomId timeoutMs =
+  case driver.config.userId of
+    Just userId ->
+      void $ withMaybeMatrixAccessToken driver.auth \token ->
+        typingCall driver.config token roomId userId timeoutMs
+    Nothing ->
+      logWarning [i|Matrix typing notification skipped: bot_id is not configured.|]
 
 rememberMatrixEvent :: Prim :> es => IORef.IORef (Map MessageId MatrixEventId) -> SendMessageResponse -> Eff es ()
 rememberMatrixEvent eventIds response =
@@ -649,47 +627,51 @@ instance Aeson.FromJSON MatrixLoginResponse where
       <*> o Aeson..:? "refresh_token"
       <*> o Aeson..:? "expires_in_ms"
 
-incomingMessages :: (Matrix :> es, Media.Media :> es, KatipE :> es, IOE :> es, Concurrent :> es) => Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages = do
-  cfg <- S.lift matrixConfig
+incomingMessages
+  :: (HTTP.HTTP :> es, Media.Media :> es, KatipE :> es, IOE :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
+  => MatrixDriver
+  -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages driver =
   if matrixAuthConfigured cfg
     then do
       S.lift $ logInfo [i|Matrix sync starting: auth=#{matrixAuthMode cfg}|]
       storedSince <- S.lift loadSyncToken
       case storedSince of
         Just since ->
-          syncLoop cfg (Just since)
+          syncLoop (Just since)
         Nothing -> do
           S.lift $ logInfo "Matrix sync state is empty; initializing from current homeserver state"
-          initializeSyncState cfg
+          initializeSyncState
     else S.lift $ logInfo "Matrix driver disabled: no access token, refresh token, or login credentials configured"
   where
-    initializeSyncState cfg = do
-      result <- S.lift $ sync Nothing `catchSync` \err -> do
+    cfg = driver.config
+
+    initializeSyncState = do
+      result <- S.lift $ sync driver Nothing `catchSync` \err -> do
         logError [i|Matrix sync initialization failed, retrying: #{show err :: String}|]
         threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
         Nothing ->
-          initializeSyncState cfg
+          initializeSyncState
         Just response -> do
           S.lift $ storeSyncToken response.nextBatch
           S.lift $ logInfo "Matrix sync state initialized; skipped initial timeline batch"
-          syncLoop cfg (Just response.nextBatch)
+          syncLoop (Just response.nextBatch)
 
-    syncLoop cfg since = do
-      result <- S.lift $ sync since `catchSync` \err -> do
+    syncLoop since = do
+      result <- S.lift $ sync driver since `catchSync` \err -> do
         logError [i|Matrix sync failed, retrying: #{show err :: String}|]
         threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
         Nothing ->
-          syncLoop cfg since
+          syncLoop since
         Just response -> do
-          directRoomIds <- S.lift directRooms
-          joinedCounts <- S.lift joinedMemberCounts
-          probedDirectRoomIds <- S.lift (probeDirectRoomIds directRoomIds joinedCounts response)
-          refreshedDirectRoomIds <- S.lift directRooms
+          directRoomIds <- S.lift (directRooms driver)
+          joinedCounts <- S.lift (joinedMemberCounts driver)
+          probedDirectRoomIds <- S.lift (probeDirectRoomIds driver directRoomIds joinedCounts response)
+          refreshedDirectRoomIds <- S.lift (directRooms driver)
           let effectiveDirectRoomIds = refreshedDirectRoomIds <> probedDirectRoomIds
               events = syncEvents effectiveDirectRoomIds response
               directCount = Set.size effectiveDirectRoomIds
@@ -701,12 +683,12 @@ incomingMessages = do
                 S.lift $ logDebug ("Ignoring Matrix event: " <> reason)
                 S.lift $ logInfo ("Ignoring Matrix event: " <> reason)
               Just message -> do
-                normalized <- S.lift (normalizeMatrixIncomingMessage message)
+                normalized <- S.lift (normalizeMatrixIncomingMessage driver message)
                 S.lift $ logDebug [i|incoming Matrix message: #{show normalized :: String}|]
                 S.lift $ logInfo [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine normalized}|]
                 S.yield normalized
           S.lift $ storeSyncToken response.nextBatch
-          syncLoop cfg (Just response.nextBatch)
+          syncLoop (Just response.nextBatch)
 
 syncEvents :: Set MatrixRoomId -> SyncResponse -> [RoomEvent]
 syncEvents directRoomIds response =
@@ -732,8 +714,14 @@ syncJoinedMemberCounts response =
   , Just count <- [room.summary.joinedMemberCount]
   ]
 
-probeDirectRoomIds :: Matrix :> es => Set MatrixRoomId -> Map MatrixRoomId Int -> SyncResponse -> Eff es (Set MatrixRoomId)
-probeDirectRoomIds knownDirectRoomIds joinedCounts response =
+probeDirectRoomIds
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> Set MatrixRoomId
+  -> Map MatrixRoomId Int
+  -> SyncResponse
+  -> Eff es (Set MatrixRoomId)
+probeDirectRoomIds driver knownDirectRoomIds joinedCounts response =
   Set.fromList <$> filterM looksDirect roomIdsToProbe
   where
     roomIdsToProbe =
@@ -746,7 +734,7 @@ probeDirectRoomIds knownDirectRoomIds joinedCounts response =
       ]
 
     looksDirect roomId =
-      (== Just 2) <$> joinedMemberCount roomId
+      (== Just 2) <$> joinedMemberCount driver roomId
 
 roomLooksDirect :: JoinedRoom -> Bool
 roomLooksDirect room =
@@ -765,67 +753,101 @@ matrixAuthMode cfg
   | isJust cfg.loginUser && isJust cfg.loginPassword = "login"
   | otherwise = "none"
 
-replyTo :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es) => IncomingMessage -> Text -> Eff es (Either Text MessageId)
-replyTo message body =
-  case (message.platform, viaNonEmpty head message.chatAliases) of
-    (PlatformMatrix, Just roomId) -> do
+replyToMatrix
+  :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> Text
+  -> Eff es (Either Text MessageId)
+replyToMatrix driver message body =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId -> do
       let matrixRoom = matrixRoomId roomId
           replyRelation = matrixReplyTo message
           text = Chat.renderReplyBody body
           imageRefs = Chat.replyImageUrls body
       textResponse <- if Text.null (Text.strip text)
         then pure Nothing
-        else Just <$> sendText matrixRoom replyRelation text
-      imageResponses <- traverse (tryMatrixSendImage roomId replyRelation) imageRefs
+        else Just <$> sendText driver matrixRoom replyRelation text
+      imageResponses <- traverse (tryMatrixSendImage driver roomId replyRelation) imageRefs
       let responses = maybeToList textResponse <> imageResponses
       pure (matrixReplyResult responses)
     _ ->
       pure (Left "Matrix reply requires a Matrix room id.")
 
-getMessageContent :: (Matrix :> es, Media.Media :> es, KatipE :> es) => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
-getMessageContent message messageId =
-  case (message.platform, viaNonEmpty head message.chatAliases) of
-    (PlatformMatrix, Just roomId) -> do
-      fetched <- fetchEvent (matrixRoomId roomId) (matrixEventId (messageIdText messageId))
+getMessageContentMatrix
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> MessageId
+  -> Eff es (Maybe ReferencedMessage)
+getMessageContentMatrix driver message messageId =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId -> do
+      fetched <- fetchEvent driver (matrixRoomId roomId) (matrixEventId (messageIdText messageId))
       pure (matrixReferencedMessage =<< fetched)
     _ ->
       pure Nothing
 
-getSenderMemberInfo :: Matrix :> es => IncomingMessage -> Eff es (Maybe Aeson.Value)
-getSenderMemberInfo message =
-  case (message.platform, viaNonEmpty head message.chatAliases, message.senderId) of
-    (PlatformMatrix, Just roomId, Just userId) ->
-      fmap Aeson.toJSON <$> fetchMember (matrixRoomId roomId) userId
+getSenderMemberInfoMatrix
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> Eff es (Maybe Aeson.Value)
+getSenderMemberInfoMatrix driver message =
+  case (viaNonEmpty head message.chatAliases, message.senderId) of
+    (Just roomId, Just userId) ->
+      fmap Aeson.toJSON <$> fetchMember driver (matrixRoomId roomId) userId
     _ ->
       pure Nothing
 
-getMemberInfo :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
-getMemberInfo message userId =
-  case (message.platform, viaNonEmpty head message.chatAliases) of
-    (PlatformMatrix, Just roomId) ->
-      fmap Aeson.toJSON <$> fetchMember (matrixRoomId roomId) userId
+getMemberInfoMatrix
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> Text
+  -> Eff es (Maybe Aeson.Value)
+getMemberInfoMatrix driver message userId =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId ->
+      fmap Aeson.toJSON <$> fetchMember driver (matrixRoomId roomId) userId
     _ ->
       pure Nothing
 
-getUserAvatar :: Matrix :> es => IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
-getUserAvatar _ userId =
-  fmap matrixProfileAvatarValue <$> fetchProfile userId
+getUserAvatarMatrix
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> Text
+  -> Eff es (Maybe Aeson.Value)
+getUserAvatarMatrix driver _ userId =
+  fmap matrixProfileAvatarValue <$> fetchProfile driver userId
 
-listGroupMembers :: Matrix :> es => IncomingMessage -> Eff es (Maybe Aeson.Value)
-listGroupMembers message =
-  case (message.platform, viaNonEmpty head message.chatAliases) of
-    (PlatformMatrix, Just roomId) ->
-      fmap matrixJoinedMembersValue <$> fetchJoinedMembers (matrixRoomId roomId)
+listGroupMembersMatrix
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> Eff es (Maybe Aeson.Value)
+listGroupMembersMatrix driver message =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId ->
+      fmap matrixJoinedMembersValue <$> fetchJoinedMembers driver (matrixRoomId roomId)
     _ ->
       pure Nothing
 
-mentionUser :: (Matrix :> es, KatipE :> es) => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
-mentionUser message userId body =
-  case (message.platform, viaNonEmpty head message.chatAliases) of
-    (PlatformMatrix, Just roomId) -> do
+mentionUserMatrix
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> Text
+  -> Text
+  -> Eff es (Either Text MessageId)
+mentionUserMatrix driver message userId body =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId -> do
       let replyRelation = matrixReplyTo message
           text = matrixMentionText userId (Chat.renderReplyBody body)
-      response <- sendTextWithMentions (matrixRoomId roomId) replyRelation text [userId]
+      response <- sendTextWithMentions driver (matrixRoomId roomId) replyRelation text [userId]
       pure (matrixMessageIdResult response)
     _ ->
       pure (Left "Matrix mention reply requires a Matrix room id.")
@@ -849,9 +871,9 @@ matrixReferencedMessage event = do
     , imageUrls = matrixEventImageUrls event.raw
     }
 
-normalizeMatrixIncomingMessage :: (Matrix :> es, Media.Media :> es, KatipE :> es) => IncomingMessage -> Eff es IncomingMessage
-normalizeMatrixIncomingMessage message = do
-  imageUrls <- normalizeMatrixMediaRefs message.imageUrls
+normalizeMatrixIncomingMessage :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> IncomingMessage -> Eff es IncomingMessage
+normalizeMatrixIncomingMessage driver message = do
+  imageUrls <- normalizeMatrixMediaRefs driver message.imageUrls
   pure IncomingMessage
     { platform = message.platform
     , kind = message.kind
@@ -869,25 +891,25 @@ normalizeMatrixIncomingMessage message = do
     , raw = message.raw
     }
 
-normalizeMatrixMediaRefs :: (Matrix :> es, Media.Media :> es, KatipE :> es) => [Text] -> Eff es [Text]
-normalizeMatrixMediaRefs =
-  traverse normalizeMatrixMediaRef
+normalizeMatrixMediaRefs :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> [Text] -> Eff es [Text]
+normalizeMatrixMediaRefs driver =
+  traverse (normalizeMatrixMediaRef driver)
 
-normalizeMatrixMediaRef :: (Matrix :> es, Media.Media :> es, KatipE :> es) => Text -> Eff es Text
-normalizeMatrixMediaRef ref
+normalizeMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Eff es Text
+normalizeMatrixMediaRef driver ref
   | "mxc://" `Text.isPrefixOf` Text.strip ref = do
       let mxcRef = Text.strip ref
       Media.mediaRefForSource mxcRef >>= \case
         Just mediaRef ->
           pure mediaRef
         Nothing ->
-          cacheMatrixMediaRef mxcRef ref
+          cacheMatrixMediaRef driver mxcRef ref
   | otherwise =
       pure ref
 
-cacheMatrixMediaRef :: (Matrix :> es, Media.Media :> es, KatipE :> es) => Text -> Text -> Eff es Text
-cacheMatrixMediaRef mxcRef fallbackRef = do
-  downloaded <- downloadMedia mxcRef `catchSync` \err -> do
+cacheMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Text -> Eff es Text
+cacheMatrixMediaRef driver mxcRef fallbackRef = do
+  downloaded <- downloadMedia driver mxcRef `catchSync` \err -> do
     logInfo [i|Matrix media normalization skipped for #{mxcRef}: #{displayException err}|]
     pure Nothing
   case downloaded of
@@ -941,15 +963,20 @@ matrixReplyTo :: IncomingMessage -> Maybe MatrixReplyTo
 matrixReplyTo message =
   MatrixReplyTo <$> (matrixRawEventId message.raw <|> (matrixEventId . messageIdText <$> message.messageId))
 
-uploadFile :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
-uploadFile message path =
-  case (message.platform, viaNonEmpty head message.chatAliases) of
-    (PlatformMatrix, Just roomId) -> do
+uploadFileMatrix
+  :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> FilePath
+  -> Eff es (Either Text MessageId)
+uploadFileMatrix driver message path =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId -> do
       let fileName = matrixUploadFileName path
           mime = Mime.mimeFromName (Text.pack path)
       size <- FileSystem.getFileSize path
-      uploaded <- uploadMedia path fileName mime
-      response <- sendFileMessage roomId (matrixReplyTo message) MatrixFileMessage
+      uploaded <- uploadMedia driver path fileName mime
+      response <- sendFileMessage driver roomId (matrixReplyTo message) MatrixFileMessage
         { msgtype = matrixFileMsgtype mime
         , body = fileName
         , filename = fileName
@@ -964,57 +991,59 @@ uploadFile message path =
       pure (Left "Matrix file upload requires a Matrix room id.")
 
 sendMatrixImage
-  :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es)
-  => Text
+  :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> Text
   -> Maybe MatrixReplyTo
   -> Text
   -> Eff es (Either Text SendMessageResponse)
-sendMatrixImage roomId replyRelation imageRef =
+sendMatrixImage driver roomId replyRelation imageRef =
   case matrixMxcRef imageRef of
     Just contentUri ->
-      sendMatrixImageMessage roomId replyRelation "image" contentUri "application/octet-stream" 0
+      sendMatrixImageMessage driver roomId replyRelation "image" contentUri "application/octet-stream" 0
     Nothing -> do
-      scope <- matrixMediaScope
+      let scope = matrixMediaScope driver
       Media.platformMediaRef "matrix" scope imageRef >>= \case
         Just contentUri ->
-          sendMatrixImageMessage roomId replyRelation "image" contentUri "application/octet-stream" 0
+          sendMatrixImageMessage driver roomId replyRelation "image" contentUri "application/octet-stream" 0
         Nothing ->
           withMatrixImageFile imageRef \path fileName mime -> do
             size <- FileSystem.getFileSize path
-            uploaded <- uploadMedia path fileName mime
+            uploaded <- uploadMedia driver path fileName mime
             Media.storePlatformMediaRef "matrix" scope imageRef uploaded.contentUri
-            sendMatrixImageMessage roomId replyRelation fileName uploaded.contentUri mime size
+            sendMatrixImageMessage driver roomId replyRelation fileName uploaded.contentUri mime size
 
 tryMatrixSendImage
-  :: (Matrix :> es, Media.Media :> es, FileSystem :> es, IOE :> es)
-  => Text
+  :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> Text
   -> Maybe MatrixReplyTo
   -> Text
   -> Eff es (Either Text SendMessageResponse)
-tryMatrixSendImage roomId replyRelation imageRef = do
-  result <- trySync (sendMatrixImage roomId replyRelation imageRef)
+tryMatrixSendImage driver roomId replyRelation imageRef = do
+  result <- trySync (sendMatrixImage driver roomId replyRelation imageRef)
   pure case result of
     Left err ->
       Left [i|Matrix image reply failed for #{imageRef}: #{displayException err}|]
     Right response ->
       response
 
-matrixMediaScope :: Matrix :> es => Eff es Text
-matrixMediaScope = do
-  cfg <- matrixConfig
-  pure (fromMaybe cfg.homeserver cfg.userId)
+matrixMediaScope :: MatrixDriver -> Text
+matrixMediaScope driver =
+  fromMaybe driver.config.homeserver driver.config.userId
 
 sendMatrixImageMessage
-  :: Matrix :> es
-  => Text
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> Text
   -> Maybe MatrixReplyTo
   -> Text
   -> Text
   -> Text
   -> Integer
   -> Eff es (Either Text SendMessageResponse)
-sendMatrixImageMessage roomId replyRelation fileName contentUri mime size =
-  sendFileMessage roomId replyRelation MatrixFileMessage
+sendMatrixImageMessage driver roomId replyRelation fileName contentUri mime size =
+  sendFileMessage driver roomId replyRelation MatrixFileMessage
     { msgtype = "m.image"
     , body = fileName
     , filename = fileName
@@ -1025,26 +1054,38 @@ sendMatrixImageMessage roomId replyRelation fileName contentUri mime size =
         }
     }
 
-replyAudio :: (Matrix :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
-replyAudio message audioRef caption =
-  case (message.platform, viaNonEmpty head message.chatAliases) of
-    (PlatformMatrix, Just roomId) ->
-      sendMatrixAudio roomId audioRef caption
+replyAudioMatrix
+  :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> Text
+  -> Maybe Text
+  -> Eff es (Either Text MessageId)
+replyAudioMatrix driver message audioRef caption =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId ->
+      sendMatrixAudio driver roomId audioRef caption
     _ ->
       pure (Left "Matrix audio reply requires a Matrix room id.")
 
-sendMatrixAudio :: (Matrix :> es, FileSystem :> es, IOE :> es) => Text -> Text -> Maybe Text -> Eff es (Either Text MessageId)
-sendMatrixAudio roomId audioRef caption =
+sendMatrixAudio
+  :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> Text
+  -> Text
+  -> Maybe Text
+  -> Eff es (Either Text MessageId)
+sendMatrixAudio driver roomId audioRef caption =
   case matrixMxcRef audioRef of
     Just contentUri -> do
       let fileName = "audio"
-      response <- sendFileMessage roomId Nothing (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
+      response <- sendFileMessage driver roomId Nothing (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
       pure (matrixMessageIdResult response)
     Nothing ->
       withMatrixAudioFile audioRef \path fileName mime -> do
         size <- FileSystem.getFileSize path
-        uploaded <- uploadMedia path fileName mime
-        response <- sendFileMessage roomId Nothing (matrixAudioMessage caption fileName uploaded.contentUri mime size)
+        uploaded <- uploadMedia driver path fileName mime
+        response <- sendFileMessage driver roomId Nothing (matrixAudioMessage caption fileName uploaded.contentUri mime size)
         pure (matrixMessageIdResult response)
 
 matrixMessageIdResult :: Either Text SendMessageResponse -> Either Text MessageId
@@ -1240,21 +1281,32 @@ nonEmptyText text =
   let stripped = Text.strip text
   in if Text.null stripped then Nothing else Just stripped
 
-editMessage :: (Matrix :> es, KatipE :> es) => IncomingMessage -> MessageId -> Text -> Eff es Bool
-editMessage message messageId body =
-  case (message.platform, viaNonEmpty head message.chatAliases) of
-    (PlatformMatrix, Just roomId) -> do
-      response <- editText (matrixRoomId roomId) (matrixEventId (messageIdText messageId)) body
+editMessageMatrix
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> MessageId
+  -> Text
+  -> Eff es Bool
+editMessageMatrix driver message messageId body =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId -> do
+      response <- editText driver (matrixRoomId roomId) (matrixEventId (messageIdText messageId)) body
       logMatrixSendErrors [response]
       pure (either (const False) (const True) response)
     _ ->
       pure False
 
-deleteMessage :: Matrix :> es => IncomingMessage -> MessageId -> Eff es Bool
-deleteMessage message messageId =
-  case (message.platform, viaNonEmpty head message.chatAliases) of
-    (PlatformMatrix, Just roomId) ->
-      deleteEvent roomId messageId (currentRawEventId message messageId)
+deleteMessageMatrix
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> MessageId
+  -> Eff es Bool
+deleteMessageMatrix driver message messageId =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId ->
+      deleteEvent driver roomId messageId (currentRawEventId message messageId)
     _ ->
       pure False
 

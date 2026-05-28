@@ -1,5 +1,7 @@
 module Main (main) where
 
+import Bot.Chat.Driver.Types (ChatDriverEffects)
+import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Core.Route
@@ -15,6 +17,15 @@ import Text.Regex.TDFA
   , defaultExecOpt
   , makeRegexOptsM
   )
+
+newtype DeleteChatDriver es =
+  DeleteChatDriver (IncomingMessage -> MessageId -> Eff es Bool)
+
+instance Driver.ChatDriver (DeleteChatDriver es0) where
+  type ChatDriverEffects (DeleteChatDriver es0) es = es ~ es0
+  driverPlatform _ = PlatformTelegram
+  deleteMessage (DeleteChatDriver delete) =
+    delete
 
 main :: IO ()
 main =
@@ -45,23 +56,11 @@ testNonmatchingMessageContinues = do
 runShutUp :: IORef.IORef [MessageId] -> IORef.IORef Bool -> ShutUpConfig -> IncomingMessage -> IO ()
 runShutUp deleted later cfg incoming =
   runEff $
-    Chat.runChatWith Chat.ChatHandlers
-      { handleReplyTo = \_ _ -> pure (Left "noop reply")
-      , handleReplyAudio = \_ _ _ -> pure (Right "audio")
-      , handleUploadFile = \_ _ -> pure (Right "upload")
-      , handleEditMessage = \_ _ _ -> pure False
-      , handleDeleteMessage = \_ messageId -> do
+    Chat.runChatWith
+      ( DeleteChatDriver \_ messageId -> do
           liftIO $ IORef.modifyIORef' deleted (<> [messageId])
           pure True
-      , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 1800)
-      , handleGetMessageContent = \_ _ -> pure Nothing
-      , handleGetSenderMemberInfo = \_ -> pure Nothing
-      , handleGetMemberInfo = \_ _ -> pure Nothing
-      , handleGetUserAvatar = \_ _ -> pure Nothing
-      , handleListGroupMembers = \_ -> pure Nothing
-      , handleMentionUser = \_ _ _ -> pure (Left "noop mention")
-      , handleSetMemberTitle = \_ _ _ -> pure False
-      } $
+      ) $
       runHandlers (shutUpHandlers cfg <> [laterRoute]) incoming
   where
     laterRoute =

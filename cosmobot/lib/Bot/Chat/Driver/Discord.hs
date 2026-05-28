@@ -1,5 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
 {-|
 Module      : Bot.Chat.Driver.Discord
 Description : Discord Gateway and REST chat driver
@@ -7,8 +8,9 @@ Stability   : experimental
 -}
 
 module Bot.Chat.Driver.Discord
-  ( discordDriver
-  , Discord
+  ( DiscordDriver
+  , newDiscordDriver
+  , runDiscordDriver
   , Config (..)
   , GatewayEnvelope (..)
   , GatewayHello (..)
@@ -20,20 +22,11 @@ module Bot.Chat.Driver.Discord
   , Member (..)
   , Reference (..)
   , CreateMessageRequest (..)
-  , runDiscord
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , formatDiscordMarkdown
   , discordUserAvatarValue
-  , replyTo
-  , replyAudio
-  , uploadFile
-  , editMessage
-  , deleteMessage
-  , getMessageContent
-  , mentionUser
-  , triggerTyping
   )
 where
 
@@ -95,53 +88,77 @@ defaultConfig = Config
   , gatewayPath = "/?v=10&encoding=json"
   }
 
-discordDriver
-  :: (Discord :> es, FileSystem :> es, IOE :> es, KatipE :> es)
-  => Driver.ChatPlatformDriver es
-discordDriver = Driver.ChatPlatformDriver
-  { Driver.platform = PlatformDiscord
-  , Driver.replyTo = replyTo
-  , Driver.replyAudio = replyAudio
-  , Driver.uploadFile = uploadFile
-  , Driver.editMessage = editMessage
-  , Driver.deleteMessage = deleteMessage
-  , Driver.replyStreamStyle = \_ -> pure (Chat.EditableReply discordEditChunkChars discordMessageTextLimit)
-  , Driver.getMessageContent = getMessageContent
-  , Driver.getSenderMemberInfo = \message ->
-      case (message.platform, discordMessageGuildId message.raw, message.senderId) of
-        (PlatformDiscord, Just guildId, Just userId) ->
-          Just <$> getGuildMember guildId userId
+data DiscordDriver = DiscordDriver
+  { config :: !Config
+  , eventChan :: !(Chan.Chan Message)
+  }
+
+newDiscordDriver :: IOE :> es => Config -> Eff es DiscordDriver
+newDiscordDriver config = do
+  eventChan <- liftIO Chan.newChan
+  pure DiscordDriver{config, eventChan}
+
+instance Driver.ChatDriver DiscordDriver where
+  type ChatDriverEffects DiscordDriver es = (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+
+  driverPlatform _ =
+    PlatformDiscord
+
+  replyTo =
+    replyToDiscord
+
+  replyAudio =
+    replyAudioDiscord
+
+  uploadFile =
+    uploadFileDiscord
+
+  editMessage =
+    editMessageDiscord
+
+  deleteMessage =
+    deleteMessageDiscord
+
+  replyStreamStyle _ _ =
+    pure (Chat.EditableReply discordEditChunkChars discordMessageTextLimit)
+
+  getMessageContent =
+    getMessageContentDiscord
+
+  getSenderMemberInfo driver message =
+      case (discordMessageGuildId message.raw, message.senderId) of
+        (Just guildId, Just userId) ->
+          Just <$> getGuildMember driver guildId userId
         _ ->
           pure Nothing
-  , Driver.getMemberInfo = \message userId ->
-      case (message.platform, discordMessageGuildId message.raw) of
-        (PlatformDiscord, Just guildId) ->
-          Just <$> getGuildMember guildId userId
+
+  getMemberInfo driver message userId =
+      case discordMessageGuildId message.raw of
+        Just guildId ->
+          Just <$> getGuildMember driver guildId userId
         _ ->
           pure Nothing
-  , Driver.getUserAvatar = \message userId ->
-      case message.platform of
-        PlatformDiscord -> do
-          value <- getUser userId
-          pure (discordUserAvatarValue =<< Aeson.parseMaybe Aeson.parseJSON value)
+
+  getUserAvatar driver _ userId = do
+    value <- getUser driver userId
+    pure (discordUserAvatarValue =<< Aeson.parseMaybe Aeson.parseJSON value)
+
+  listGroupMembers driver message =
+      case discordMessageGuildId message.raw of
+        Just guildId ->
+          Just <$> listGuildMembers driver guildId
         _ ->
           pure Nothing
-  , Driver.listGroupMembers = \message ->
-      case (message.platform, discordMessageGuildId message.raw) of
-        (PlatformDiscord, Just guildId) ->
-          Just <$> listGuildMembers guildId
-        _ ->
-          pure Nothing
-  , Driver.normalizeMediaRef = pure
-  , Driver.mentionUser = mentionUser
-  , Driver.setMemberTitle = \_ _ _ -> pure False
-  , Driver.setTyping = \message _timeoutMillis ->
-      case (message.platform, discordChannelId message) of
-        (PlatformDiscord, Just channelId) ->
-          triggerTyping channelId
+
+  mentionUser =
+    mentionUserDiscord
+
+  setTyping driver message _timeoutMillis =
+      case discordChannelId message of
+        Just channelId ->
+          triggerTyping driver channelId
         _ ->
           pure ()
-  }
 
 discordEditChunkChars :: Int
 discordEditChunkChars = 512
@@ -149,98 +166,55 @@ discordEditChunkChars = 512
 discordMessageTextLimit :: Int
 discordMessageTextLimit = 2000
 
-data Discord :: Effect where
-  DiscordConfig :: Discord m Config
-  ReceiveEvent :: Discord m Message
-  CreateMessage :: Text -> CreateMessageRequest -> Discord m Message
-  EditMessage :: Text -> Text -> CreateMessageRequest -> Discord m Message
-  DeleteMessage :: Text -> Text -> Discord m ()
-  FetchMessage :: Text -> Text -> Discord m Message
-  FetchUser :: Text -> Discord m Aeson.Value
-  FetchGuildMember :: Text -> Text -> Discord m Aeson.Value
-  FetchGuildMembers :: Text -> Discord m Aeson.Value
-  UploadDiscordFile :: Text -> Maybe Text -> FilePath -> Discord m Message
-  TriggerTyping :: Text -> Discord m ()
+receiveEvent :: IOE :> es => DiscordDriver -> Eff es Message
+receiveEvent driver =
+  liftIO (Chan.readChan driver.eventChan)
 
-type instance DispatchOf Discord = Dynamic
+createMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> CreateMessageRequest -> Eff es Message
+createMessage driver channelId request =
+  discordJsonRequest driver.config POST ["channels", channelId, "messages"] request
 
-discordConfig :: Discord :> es => Eff es Config
-discordConfig = send DiscordConfig
+editDiscordMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> CreateMessageRequest -> Eff es Message
+editDiscordMessage driver channelId messageId request =
+  discordJsonRequest driver.config PATCH ["channels", channelId, "messages", messageId] request
 
-receiveEvent :: Discord :> es => Eff es Message
-receiveEvent = send ReceiveEvent
+deleteDiscordMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Eff es ()
+deleteDiscordMessage driver channelId messageId =
+  discordNoResponseRequest driver.config DELETE ["channels", channelId, "messages", messageId]
 
-createMessage :: Discord :> es => Text -> CreateMessageRequest -> Eff es Message
-createMessage channelId request =
-  send (CreateMessage channelId request)
+fetchMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Eff es Message
+fetchMessage driver channelId messageId =
+  discordGetRequest driver.config ["channels", channelId, "messages", messageId]
 
-editDiscordMessage :: Discord :> es => Text -> Text -> CreateMessageRequest -> Eff es Message
-editDiscordMessage channelId messageId request =
-  send (EditMessage channelId messageId request)
+getUser :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Eff es Aeson.Value
+getUser driver userId =
+  discordGetRequest driver.config ["users", userId]
 
-deleteDiscordMessage :: Discord :> es => Text -> Text -> Eff es ()
-deleteDiscordMessage channelId messageId =
-  send (DeleteMessage channelId messageId)
+getGuildMember :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Eff es Aeson.Value
+getGuildMember driver guildId userId =
+  discordGetRequest driver.config ["guilds", guildId, "members", userId]
 
-fetchMessage :: Discord :> es => Text -> Text -> Eff es Message
-fetchMessage channelId messageId =
-  send (FetchMessage channelId messageId)
+listGuildMembers :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Eff es Aeson.Value
+listGuildMembers driver guildId =
+  discordGetRequest driver.config ["guilds", guildId, "members"]
 
-getUser :: Discord :> es => Text -> Eff es Aeson.Value
-getUser =
-  send . FetchUser
+uploadDiscordFile :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es) => DiscordDriver -> Text -> Maybe Text -> FilePath -> Eff es Message
+uploadDiscordFile driver channelId content path =
+  discordUploadFile driver.config channelId content path
 
-getGuildMember :: Discord :> es => Text -> Text -> Eff es Aeson.Value
-getGuildMember guildId userId =
-  send (FetchGuildMember guildId userId)
+triggerTyping :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Eff es ()
+triggerTyping driver channelId =
+  discordNoResponseRequest driver.config POST ["channels", channelId, "typing"]
 
-listGuildMembers :: Discord :> es => Text -> Eff es Aeson.Value
-listGuildMembers =
-  send . FetchGuildMembers
-
-uploadDiscordFile :: Discord :> es => Text -> Maybe Text -> FilePath -> Eff es Message
-uploadDiscordFile channelId content path =
-  send (UploadDiscordFile channelId content path)
-
-triggerTyping :: Discord :> es => Text -> Eff es ()
-triggerTyping =
-  send . TriggerTyping
-
-runDiscord
+runDiscordDriver
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es)
-  => Config
-  -> Eff (Discord : es) a
+  => DiscordDriver
   -> Eff es a
-runDiscord cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
-  eventChan <- liftIO Chan.newChan
-  let runInner =
-        runInIO $
-          interpret
-            ( \_ -> \case
-                DiscordConfig ->
-                  pure cfg
-                ReceiveEvent ->
-                  liftIO (Chan.readChan eventChan)
-                CreateMessage channelId request ->
-                  discordJsonRequest cfg POST ["channels", channelId, "messages"] request
-                EditMessage channelId messageId request ->
-                  discordJsonRequest cfg PATCH ["channels", channelId, "messages", messageId] request
-                DeleteMessage channelId messageId ->
-                  discordNoResponseRequest cfg DELETE ["channels", channelId, "messages", messageId]
-                FetchMessage channelId messageId ->
-                  discordGetRequest cfg ["channels", channelId, "messages", messageId]
-                FetchUser userId ->
-                  discordGetRequest cfg ["users", userId]
-                FetchGuildMember guildId userId ->
-                  discordGetRequest cfg ["guilds", guildId, "members", userId]
-                FetchGuildMembers guildId ->
-                  discordGetRequest cfg ["guilds", guildId, "members"]
-                UploadDiscordFile channelId content path ->
-                  discordUploadFile cfg channelId content path
-                TriggerTyping channelId ->
-                  discordNoResponseRequest cfg POST ["channels", channelId, "typing"]
-            )
-            inner
+  -> Eff es a
+runDiscordDriver driver inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
+  let cfg = driver.config
+      eventChan = driver.eventChan
+      runInner = runInIO inner
   if discordEnabled cfg
     then liftIO $ Async.withAsync (runInIO $ discordConnectionLoop cfg eventChan) \_ -> runInner
     else runInner
@@ -402,17 +376,16 @@ discordReconnectDelayMicroseconds :: Int
 discordReconnectDelayMicroseconds =
   5 * 1000000
 
-incomingMessages :: (Discord :> es, KatipE :> es) => Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages = do
-  cfg <- S.lift discordConfig
-  if discordEnabled cfg
-    then incomingMessagesLoop cfg
+incomingMessages :: (IOE :> es, KatipE :> es) => DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages driver = do
+  if discordEnabled driver.config
+    then incomingMessagesLoop driver
     else S.lift $ logInfo "Discord driver disabled: no bot token configured"
 
-incomingMessagesLoop :: (Discord :> es, KatipE :> es) => Config -> Stream (Of IncomingMessage) (Eff es) ()
-incomingMessagesLoop cfg = do
-  event <- S.lift receiveEvent
-  case eventToIncomingMessageWith cfg event of
+incomingMessagesLoop :: (IOE :> es, KatipE :> es) => DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessagesLoop driver = do
+  event <- S.lift (receiveEvent driver)
+  case eventToIncomingMessageWith driver.config event of
     Nothing -> do
       S.lift $ logDebug "Ignoring Discord event"
       S.lift $ logInfo "Ignoring Discord event"
@@ -420,7 +393,7 @@ incomingMessagesLoop cfg = do
       S.lift $ logDebug [i|incoming Discord message: #{show message :: String}|]
       S.lift $ logInfo [i|incoming Discord message: #{incomingMessageLogLine message}|]
       S.yield message
-  incomingMessagesLoop cfg
+  incomingMessagesLoop driver
 
 eventToIncomingMessage :: Message -> Maybe IncomingMessage
 eventToIncomingMessage =
@@ -466,17 +439,22 @@ discordMessageDigest cfg message =
     senderSuperuser =
       message.author.id `elem` cfg.superusers
 
-replyTo :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Either Text MessageId)
-replyTo message body =
-  case (message.platform, discordChannelId message) of
-    (PlatformDiscord, Just channelId) -> do
+replyToDiscord
+  :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+  => DiscordDriver
+  -> IncomingMessage
+  -> Text
+  -> Eff es (Either Text MessageId)
+replyToDiscord driver message body =
+  case discordChannelId message of
+    Just channelId -> do
       let text = formatDiscordMarkdown (Chat.renderReplyBody body)
           imageRefs = Chat.replyImageUrls body
           request = createMessageRequest text (discordReplyReference message)
       sentText <- if Text.null (Text.strip text)
         then pure Nothing
-        else Just <$> createMessage channelId request
-      sentImages <- traverse (sendDiscordImage channelId (discordReplyReference message)) imageRefs
+        else Just <$> createMessage driver channelId request
+      sentImages <- traverse (sendDiscordImage driver channelId (discordReplyReference message)) imageRefs
       pure case textMessageId . (.id) <$> sentText <|> (textMessageId . (.id) <$> viaNonEmpty head sentImages) of
         Just messageId ->
           Right messageId
@@ -485,38 +463,38 @@ replyTo message body =
     _ ->
       pure (Left "Discord reply requires a Discord channel id.")
 
-sendDiscordImage :: (Discord :> es, FileSystem :> es, IOE :> es) => Text -> Maybe Reference -> Text -> Eff es Message
-sendDiscordImage channelId replyReference imageRef =
+sendDiscordImage :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => DiscordDriver -> Text -> Maybe Reference -> Text -> Eff es Message
+sendDiscordImage driver channelId replyReference imageRef =
   case discordRemoteImageRef imageRef of
     Just url ->
-      createMessage channelId (createMessageRequest url replyReference)
+      createMessage driver channelId (createMessageRequest url replyReference)
     Nothing ->
       withDiscordImageFile imageRef \path ->
-        uploadDiscordFile channelId Nothing path
+        uploadDiscordFile driver channelId Nothing path
 
-editMessage :: Discord :> es => IncomingMessage -> MessageId -> Text -> Eff es Bool
-editMessage message messageId body =
-  case (message.platform, discordChannelId message) of
-    (PlatformDiscord, Just channelId) -> do
-      void $ editDiscordMessage channelId (messageIdText messageId) (createMessageRequest (formatDiscordMarkdown (Chat.renderReplyBody body)) Nothing)
+editMessageDiscord :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> MessageId -> Text -> Eff es Bool
+editMessageDiscord driver message messageId body =
+  case discordChannelId message of
+    Just channelId -> do
+      void $ editDiscordMessage driver channelId (messageIdText messageId) (createMessageRequest (formatDiscordMarkdown (Chat.renderReplyBody body)) Nothing)
       pure True
     _ ->
       pure False
 
-deleteMessage :: Discord :> es => IncomingMessage -> MessageId -> Eff es Bool
-deleteMessage message messageId =
-  case (message.platform, discordChannelId message) of
-    (PlatformDiscord, Just channelId) -> do
-      deleteDiscordMessage channelId (messageIdText messageId)
+deleteMessageDiscord :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> MessageId -> Eff es Bool
+deleteMessageDiscord driver message messageId =
+  case discordChannelId message of
+    Just channelId -> do
+      deleteDiscordMessage driver channelId (messageIdText messageId)
       pure True
     _ ->
       pure False
 
-getMessageContent :: Discord :> es => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
-getMessageContent message messageId =
-  case (message.platform, discordChannelId message) of
-    (PlatformDiscord, Just channelId) -> do
-      fetched <- fetchMessage channelId (messageIdText messageId)
+getMessageContentDiscord :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
+getMessageContentDiscord driver message messageId =
+  case discordChannelId message of
+    Just channelId -> do
+      fetched <- fetchMessage driver channelId (messageIdText messageId)
       pure (Just ReferencedMessage
         { messageId = Just (textMessageId fetched.id)
         , senderDisplayName = fetched.author.globalName <|> fetched.author.username
@@ -527,30 +505,30 @@ getMessageContent message messageId =
     _ ->
       pure Nothing
 
-mentionUser :: Discord :> es => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
-mentionUser message userId body =
-  case (message.platform, discordChannelId message) of
-    (PlatformDiscord, Just channelId) -> do
-      sent <- createMessage channelId (createMessageRequest ([i|<@#{userId}> #{formatDiscordMarkdown body}|]) (discordReplyReference message))
+mentionUserDiscord :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
+mentionUserDiscord driver message userId body =
+  case discordChannelId message of
+    Just channelId -> do
+      sent <- createMessage driver channelId (createMessageRequest ([i|<@#{userId}> #{formatDiscordMarkdown body}|]) (discordReplyReference message))
       pure (Right (textMessageId sent.id))
     _ ->
       pure (Left "Discord mention reply requires a Discord channel id.")
 
-replyAudio :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
-replyAudio message audioRef caption =
-  case (message.platform, discordChannelId message) of
-    (PlatformDiscord, Just channelId) -> do
+replyAudioDiscord :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
+replyAudioDiscord driver message audioRef caption =
+  case discordChannelId message of
+    Just channelId -> do
       sent <- withDiscordImageFile audioRef \path ->
-        uploadDiscordFile channelId (formatDiscordMarkdown . Chat.renderReplyBody <$> caption) path
+        uploadDiscordFile driver channelId (formatDiscordMarkdown . Chat.renderReplyBody <$> caption) path
       pure (Right (textMessageId sent.id))
     _ ->
       pure (Left "Discord audio reply requires a Discord channel id.")
 
-uploadFile :: (Discord :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
-uploadFile message path =
-  case (message.platform, discordChannelId message) of
-    (PlatformDiscord, Just channelId) -> do
-      sent <- uploadDiscordFile channelId Nothing path
+uploadFileDiscord :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
+uploadFileDiscord driver message path =
+  case discordChannelId message of
+    Just channelId -> do
+      sent <- uploadDiscordFile driver channelId Nothing path
       pure (Right (textMessageId sent.id))
     _ ->
       pure (Left "Discord file upload requires a Discord channel id.")

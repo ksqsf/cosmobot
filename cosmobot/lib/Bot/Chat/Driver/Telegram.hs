@@ -3,6 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
 {-|
 Module      : Bot.Chat.Driver.Telegram
 Description : Telegram chat driver
@@ -10,8 +11,8 @@ Stability   : experimental
 -}
 
 module Bot.Chat.Driver.Telegram
-  ( telegramDriver
-  , Telegram
+  ( TelegramDriver
+  , newTelegramDriver
   , Config (..)
   , User (..)
   , Update (..)
@@ -34,32 +35,9 @@ module Bot.Chat.Driver.Telegram
   , parseTelegramResult
   , formatTelegramMarkdown
   , telegramFailureReplyText
-  , runTelegram
   , incomingMessages
   , updateToIncomingMessage
   , updateToIncomingMessageWith
-  , getMe
-  , getUpdates
-  , sendMessage
-  , sendPhoto
-  , uploadPhoto
-  , replyAudio
-  , uploadFile
-  , replyTo
-  , editMessage
-  , deleteMessageFor
-  , getMessageContent
-  , forwardMessage
-  , deleteMessage
-  , pinMessage
-  , unpinMessage
-  , getChat
-  , getChatMember
-  , banChatMember
-  , unbanChatMember
-  , leaveChat
-  , getUserAvatar
-  , mentionUser
   )
 where
 
@@ -118,51 +96,70 @@ data Config = Config
   }
   deriving (Show)
 
-telegramDriver
-  :: (Telegram :> es, FileSystem :> es, IOE :> es)
-  => Driver.ChatPlatformDriver es
-telegramDriver = Driver.ChatPlatformDriver
-  { Driver.platform = PlatformTelegram
-  , Driver.replyTo = replyTo
-  , Driver.replyAudio = replyAudio
-  , Driver.uploadFile = uploadFile
-  , Driver.editMessage = editMessage
-  , Driver.deleteMessage = deleteMessageFor
-  , Driver.replyStreamStyle = \_ -> pure (ChatEffect.EditableReply telegramEditChunkChars telegramMessageTextLimit)
-  , Driver.getMessageContent = getMessageContent
-  , Driver.getSenderMemberInfo = \message ->
+newtype TelegramDriver = TelegramDriver
+  { config :: Config
+  }
+
+newTelegramDriver :: Config -> TelegramDriver
+newTelegramDriver config =
+  TelegramDriver{config}
+
+instance Driver.ChatDriver TelegramDriver where
+  type ChatDriverEffects TelegramDriver es = (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+
+  driverPlatform _ =
+    PlatformTelegram
+
+  replyTo =
+    replyToTelegram
+
+  replyAudio =
+    replyAudioTelegram
+
+  uploadFile =
+    uploadFileTelegram
+
+  editMessage =
+    editMessageTelegram
+
+  deleteMessage =
+    deleteMessageForTelegram
+
+  replyStreamStyle _ _ =
+    pure (ChatEffect.EditableReply telegramEditChunkChars telegramMessageTextLimit)
+
+  getMessageContent =
+    getMessageContentTelegram
+
+  getSenderMemberInfo driver message =
       case (message.kind, message.chatId, message.senderId) of
         (ChatGroup, Just chatId, Just rawUserId)
           | Just userId <- parseIntegerUserId rawUserId ->
-          Just . Aeson.toJSON <$> getChatMember chatId userId
+          Just . Aeson.toJSON <$> getChatMember driver chatId userId
         _ ->
           pure Nothing
-  , Driver.getMemberInfo = \message userId ->
+
+  getMemberInfo driver message userId =
       case (message.kind, message.chatId) of
         (ChatGroup, Just chatId)
           | Just numericUserId <- parseIntegerUserId userId ->
-            Just . Aeson.toJSON <$> getChatMember chatId numericUserId
+            Just . Aeson.toJSON <$> getChatMember driver chatId numericUserId
         _ ->
           pure Nothing
-  , Driver.getUserAvatar = \message userId ->
-      case message.platform of
-        PlatformTelegram ->
-          maybe (pure Nothing) getUserAvatar (parseIntegerUserId userId)
-        _ ->
-          pure Nothing
-  , Driver.listGroupMembers = \_ ->
-      pure Nothing
-  , Driver.normalizeMediaRef = pure
-  , Driver.mentionUser = mentionUser
-  , Driver.setMemberTitle = \_ _ _ -> pure False
-  , Driver.setTyping = \message _timeoutMillis ->
-      case (message.platform, message.chatId) of
-        (PlatformTelegram, Just chatId) -> do
-          _ <- callTelegram (SendChatActionRequest chatId ChatActionTyping Nothing Nothing)
+
+  getUserAvatar driver _ userId =
+      maybe (pure Nothing) (getUserAvatar driver) (parseIntegerUserId userId)
+
+  mentionUser =
+    mentionUserTelegram
+
+  setTyping driver message _timeoutMillis =
+      case message.chatId of
+        Just chatId -> do
+          _ <- callTelegram driver (SendChatActionRequest chatId ChatActionTyping Nothing Nothing)
           pure ()
         _ ->
           pure ()
-  }
 
 telegramEditChunkChars :: Int
 telegramEditChunkChars = 512
@@ -178,128 +175,64 @@ class (Aeson.ToJSON req, Aeson.FromJSON (TelegramResponse req)) => TelegramReque
   type TelegramResponse req
   telegramMethod :: req -> Text
 
--- ---------------------------------------------------------------------------
--- Effect
--- ---------------------------------------------------------------------------
-
--- | Telegram Bot API effect.
-data Telegram :: Effect where
-  TelegramConfig :: Telegram m Config
-  CallTelegram
-    :: TelegramRequest req
-    => req -> Telegram m (TelegramResponse req)
-  FileUrl
-    :: Text
-    -> Telegram m Text
-  UploadPhoto
-    :: SendPhotoRequest
-    -> FilePath
-    -> Telegram m Message
-  UploadVoice
-    :: SendVoiceRequest
-    -> FilePath
-    -> Telegram m Message
-  UploadAudio
-    :: SendAudioRequest
-    -> FilePath
-    -> Telegram m Message
-  UploadVideo
-    :: SendVideoRequest
-    -> FilePath
-    -> Telegram m Message
-  UploadDocument
-    :: SendDocumentRequest
-    -> FilePath
-    -> Telegram m Message
-
-type instance DispatchOf Telegram = Dynamic
-
-telegramConfig :: Telegram :> es => Eff es Config
-telegramConfig = send TelegramConfig
-
 callTelegram
-  :: (Telegram :> es, TelegramRequest req)
-  => req -> Eff es (TelegramResponse req)
-callTelegram = send . CallTelegram
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, TelegramRequest req)
+  => TelegramDriver
+  -> req
+  -> Eff es (TelegramResponse req)
+callTelegram driver request =
+  apiCall driver.config (telegramMethod request) request
 
 fileUrl
-  :: Telegram :> es
-  => Text
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  => TelegramDriver
+  -> Text
   -> Eff es Text
-fileUrl = send . FileUrl
-
--- | Interpret Telegram operations with HTTP calls to the Bot API.
-runTelegram
-  :: IOE :> es
-  => KatipE :> es
-  => HTTP.HTTP :> es
-  => Config
-  -> Eff (Telegram : es) a
-  -> Eff es a
-runTelegram cfg inner = do
-  interpret
-    ( \_ -> \case
-        TelegramConfig ->
-          pure cfg
-        CallTelegram request ->
-          apiCall cfg (telegramMethod request) request
-        FileUrl fileId -> do
-          file :: File <- apiCall cfg (telegramMethod (GetFileRequest fileId)) (GetFileRequest fileId)
-          pure (telegramFileUrl cfg file.filePath)
-        UploadPhoto request path ->
-          apiMultipartCall cfg "sendPhoto" (sendPhotoParts request path)
-        UploadVoice request path ->
-          apiMultipartCall cfg "sendVoice" (sendVoiceParts request path)
-        UploadAudio request path ->
-          apiMultipartCall cfg "sendAudio" (sendAudioParts request path)
-        UploadVideo request path ->
-          apiMultipartCall cfg "sendVideo" (sendVideoParts request path)
-        UploadDocument request path ->
-          apiMultipartCall cfg "sendDocument" (sendDocumentParts request path)
-    )
-    inner
+fileUrl driver fileId = do
+  file :: File <- apiCall driver.config (telegramMethod (GetFileRequest fileId)) (GetFileRequest fileId)
+  pure (telegramFileUrl driver.config file.filePath)
 
 -- ---------------------------------------------------------------------------
 -- Streaming
 -- ---------------------------------------------------------------------------
 
 updatesStream'
-  :: (Telegram :> es, KatipE :> es, IOE :> es)
-  => Int
+  :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es)
+  => TelegramDriver
+  -> Int
   -> Stream (Of Update) (Eff es) ()
-updatesStream' offset = do
-  batches <- S.lift (getUpdates offset)
+updatesStream' driver offset = do
+  batches <- S.lift (getUpdates driver offset)
   S.lift $ logDebug [i|Got a batch of #{length batches} messages|]
   S.lift $ logInfo [i|Telegram update batch: #{length batches}|]
   S.each batches
   let nextOffset = case batches of
         [] -> offset
         _  -> 1 + maximum (map (fromInteger . (.updateId)) batches)
-  updatesStream' nextOffset
+  updatesStream' driver nextOffset
 
-updatesStream :: (Telegram :> es, KatipE :> es, IOE :> es) => Stream (Of Update) (Eff es) ()
-updatesStream = updatesStream' 0
+updatesStream :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es) => TelegramDriver -> Stream (Of Update) (Eff es) ()
+updatesStream driver = updatesStream' driver 0
 
 -- | Poll Telegram updates and yield platform-independent messages.
-incomingMessages :: (Telegram :> es, KatipE :> es, IOE :> es) => Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages = S.for updatesStream $ \update -> do
-  cfg <- S.lift telegramConfig
-  case updateToIncomingMessageWith cfg update of
+incomingMessages :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es) => TelegramDriver -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages driver = S.for (updatesStream driver) $ \update -> do
+  case updateToIncomingMessageWith driver.config update of
     Nothing -> do
       S.lift $ logDebug [i|Ignoring Telegram event|]
       S.lift $ logInfo "Ignoring Telegram event"
     Just parsedMessage -> do
       message <- S.lift $
-        resolveIncomingMessageImages parsedMessage `catchSync` \err -> do
+        resolveIncomingMessageImages driver parsedMessage `catchSync` \err -> do
           logError [i|Telegram image resolution failed: #{show err :: String}|]
           pure parsedMessage
       S.lift $ logDebug [i|incoming Telegram message: #{show message :: String}|]
       S.lift $ logInfo [i|incoming Telegram message: #{incomingMessageLogLine message}|]
       S.yield message
 
-resolveIncomingMessageImages :: Telegram :> es => IncomingMessage -> Eff es IncomingMessage
-resolveIncomingMessageImages message = do
-  imageUrls <- traverse fileUrl message.imageUrls
+resolveIncomingMessageImages :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> IncomingMessage -> Eff es IncomingMessage
+resolveIncomingMessageImages driver message = do
+  imageUrls <- traverse (fileUrl driver) message.imageUrls
   pure IncomingMessage
     { platform = message.platform
     , kind = message.kind
@@ -433,8 +366,13 @@ photoArea photo =
   photo.width * photo.height
 
 -- | Resolve the content of a replied-to Telegram message when available locally.
-getMessageContent :: Telegram :> es => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
-getMessageContent message messageId =
+getMessageContentTelegram
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  => TelegramDriver
+  -> IncomingMessage
+  -> MessageId
+  -> Eff es (Maybe ReferencedMessage)
+getMessageContentTelegram driver message messageId =
   case messageIdInteger messageId of
     Nothing ->
       pure Nothing
@@ -444,7 +382,7 @@ getMessageContent message messageId =
           case telegramMessage.replyToMessage of
             Just referenced
               | referenced.messageId == rawMessageId -> do
-                  imageUrls <- traverse fileUrl (messageImageFileIds referenced)
+                  imageUrls <- traverse (fileUrl driver) (messageImageFileIds referenced)
                   pure $ Just ReferencedMessage
                     { messageId = Just (integerMessageId referenced.messageId)
                     , senderDisplayName = telegramMessageSenderDisplayName referenced
@@ -1658,69 +1596,57 @@ instance Aeson.FromJSON ChatAction where
     "upload_video_note" -> pure ChatActionUploadVideoNote
     other -> fail $ "Unknown ChatAction: " <> show other
 
--- ---------------------------------------------------------------------------
--- Smart constructors
--- ---------------------------------------------------------------------------
-
--- | Return the bot user associated with the current token.
-getMe :: Telegram :> es => Eff es User
-getMe =
-  callTelegram GetMeRequest
-
--- | Long-poll Telegram updates from an offset.
-getUpdates :: Telegram :> es => Int -> Eff es [Update]
-getUpdates offset = callTelegram $ GetUpdatesRequest
+getUpdates :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Int -> Eff es [Update]
+getUpdates driver offset = callTelegram driver GetUpdatesRequest
   { offset  = offset
   , timeout = telegramLongPollTimeoutSeconds
   , limit   = 100
   }
 
--- | Call Telegram @sendMessage@.
-sendMessage :: Telegram :> es => SendMessageRequest -> Eff es Message
-sendMessage = callTelegram
+sendPhoto :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendPhotoRequest -> Eff es Message
+sendPhoto =
+  callTelegram
 
--- | Call Telegram @sendPhoto@ with a remote or already-uploaded photo ref.
-sendPhoto :: Telegram :> es => SendPhotoRequest -> Eff es Message
-sendPhoto = callTelegram
+uploadPhoto :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendPhotoRequest -> FilePath -> Eff es Message
+uploadPhoto driver request path =
+  apiMultipartCall driver.config "sendPhoto" (sendPhotoParts request path)
 
--- | Upload a local photo file through multipart/form-data.
-uploadPhoto :: Telegram :> es => SendPhotoRequest -> FilePath -> Eff es Message
-uploadPhoto request path =
-  send (UploadPhoto request path)
+uploadVoice :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendVoiceRequest -> FilePath -> Eff es Message
+uploadVoice driver request path =
+  apiMultipartCall driver.config "sendVoice" (sendVoiceParts request path)
 
--- | Upload a local voice file through multipart/form-data.
-uploadVoice :: Telegram :> es => SendVoiceRequest -> FilePath -> Eff es Message
-uploadVoice request path =
-  send (UploadVoice request path)
+uploadAudio :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendAudioRequest -> FilePath -> Eff es Message
+uploadAudio driver request path =
+  apiMultipartCall driver.config "sendAudio" (sendAudioParts request path)
 
-uploadAudio :: Telegram :> es => SendAudioRequest -> FilePath -> Eff es Message
-uploadAudio request path =
-  send (UploadAudio request path)
+uploadVideo :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendVideoRequest -> FilePath -> Eff es Message
+uploadVideo driver request path =
+  apiMultipartCall driver.config "sendVideo" (sendVideoParts request path)
 
-uploadVideo :: Telegram :> es => SendVideoRequest -> FilePath -> Eff es Message
-uploadVideo request path =
-  send (UploadVideo request path)
-
--- | Upload a local document file through multipart/form-data.
-uploadDocument :: Telegram :> es => SendDocumentRequest -> FilePath -> Eff es Message
-uploadDocument request path =
-  send (UploadDocument request path)
+uploadDocument :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendDocumentRequest -> FilePath -> Eff es Message
+uploadDocument driver request path =
+  apiMultipartCall driver.config "sendDocument" (sendDocumentParts request path)
 
 -- | Reply to a Telegram chat, including image directives in the body.
-replyTo :: (Telegram :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Either Text MessageId)
-replyTo message body =
-  case (message.platform, message.chatId) of
-    (PlatformTelegram, Just chatId) -> do
+replyToTelegram
+  :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+  => TelegramDriver
+  -> IncomingMessage
+  -> Text
+  -> Eff es (Either Text MessageId)
+replyToTelegram driver message body =
+  case message.chatId of
+    Just chatId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
-      sent <- replyTextAndImages chatId replyToMessageId body `catch` \(err :: TelegramException) ->
-        sendTelegramFailureReply chatId replyToMessageId err
+      sent <- replyTextAndImages driver chatId replyToMessageId body `catch` \(err :: TelegramException) ->
+        sendTelegramFailureReply driver chatId replyToMessageId err
       pure (Right (integerMessageId sent.messageId))
     _ ->
       pure (Left "Telegram reply requires a Telegram chat id.")
 
-sendTelegramFailureReply :: Telegram :> es => Integer -> Maybe Integer -> TelegramException -> Eff es Message
-sendTelegramFailureReply chatId replyToMessageId err =
-  sendMessage SendMessageRequest
+sendTelegramFailureReply :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Maybe Integer -> TelegramException -> Eff es Message
+sendTelegramFailureReply driver chatId replyToMessageId err =
+  callTelegram driver SendMessageRequest
     { chatId = chatId
     , messageThreadId = Nothing
     , text = telegramFailureReplyText err
@@ -1735,12 +1661,18 @@ telegramFailureReplyText (TelegramException message) =
   "Telegram request failed: " <> message
 
 -- | Edit a Telegram text message previously sent by this bot.
-editMessage :: Telegram :> es => IncomingMessage -> MessageId -> Text -> Eff es Bool
-editMessage message messageId body =
-  case (message.platform, message.chatId, messageIdInteger messageId) of
-    (PlatformTelegram, Just chatId, Just rawMessageId) -> do
+editMessageTelegram
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  => TelegramDriver
+  -> IncomingMessage
+  -> MessageId
+  -> Text
+  -> Eff es Bool
+editMessageTelegram driver message messageId body =
+  case (message.chatId, messageIdInteger messageId) of
+    (Just chatId, Just rawMessageId) -> do
       let formatted = formatTelegramMarkdown body
-      void $ callTelegram EditMessageTextRequest
+      void $ callTelegram driver EditMessageTextRequest
         { chatId = chatId
         , messageId = rawMessageId
         , text = formatted.formattedText
@@ -1753,22 +1685,33 @@ editMessage message messageId body =
       pure False
 
 -- | Delete a Telegram message in the current chat when the bot has permission.
-deleteMessageFor :: Telegram :> es => IncomingMessage -> MessageId -> Eff es Bool
-deleteMessageFor message messageId =
-  case (message.platform, message.chatId, messageIdInteger messageId) of
-    (PlatformTelegram, Just chatId, Just rawMessageId) ->
-      deleteMessage chatId rawMessageId
+deleteMessageForTelegram
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  => TelegramDriver
+  -> IncomingMessage
+  -> MessageId
+  -> Eff es Bool
+deleteMessageForTelegram driver message messageId =
+  case (message.chatId, messageIdInteger messageId) of
+    (Just chatId, Just rawMessageId) ->
+      deleteMessage driver chatId rawMessageId
     _ ->
       pure False
 
 -- | Reply with an HTML mention for a Telegram user id.
-mentionUser :: Telegram :> es => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
-mentionUser message userId body =
-  case (message.platform, message.chatId) of
-    (PlatformTelegram, Just chatId)
+mentionUserTelegram
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  => TelegramDriver
+  -> IncomingMessage
+  -> Text
+  -> Text
+  -> Eff es (Either Text MessageId)
+mentionUserTelegram driver message userId body =
+  case message.chatId of
+    Just chatId
       | Just numericUserId <- parseIntegerUserId userId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
-      sent <- sendMessage SendMessageRequest
+      sent <- callTelegram driver SendMessageRequest
         { chatId = chatId
         , messageThreadId = Nothing
         , text = telegramMentionHtml numericUserId body
@@ -1782,12 +1725,18 @@ mentionUser message userId body =
       pure (Left "Telegram mention reply requires a Telegram chat id and numeric user id.")
 
 -- | Reply with audio as a Telegram voice message.
-replyAudio :: (Telegram :> es, FileSystem :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
-replyAudio message audioRef caption =
-  case (message.platform, message.chatId) of
-    (PlatformTelegram, Just chatId) -> do
+replyAudioTelegram
+  :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+  => TelegramDriver
+  -> IncomingMessage
+  -> Text
+  -> Maybe Text
+  -> Eff es (Either Text MessageId)
+replyAudioTelegram driver message audioRef caption =
+  case message.chatId of
+    Just chatId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
-      sent <- sendVoiceRequest SendVoiceRequest
+      sent <- sendVoiceRequest driver SendVoiceRequest
         { chatId = chatId
         , messageThreadId = Nothing
         , voice = audioRef
@@ -1802,10 +1751,15 @@ replyAudio message audioRef caption =
       pure (Left "Telegram audio reply requires a Telegram chat id.")
 
 -- | Send a file to a Telegram chat as a document.
-uploadFile :: Telegram :> es => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
-uploadFile message path =
-  case (message.platform, message.chatId) of
-    (PlatformTelegram, Just chatId) -> do
+uploadFileTelegram
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  => TelegramDriver
+  -> IncomingMessage
+  -> FilePath
+  -> Eff es (Either Text MessageId)
+uploadFileTelegram driver message path =
+  case message.chatId of
+    Just chatId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
           baseRequest =
             TelegramUploadRequest
@@ -1817,7 +1771,7 @@ uploadFile message path =
               , disableNotification = Nothing
               , replyToMessageId = replyToMessageId
               }
-      sent <- uploadTelegramFileByMime baseRequest path
+      sent <- uploadTelegramFileByMime driver baseRequest path
       pure (Right (integerMessageId sent.messageId))
     _ ->
       pure (Left "Telegram file upload requires a Telegram chat id.")
@@ -1832,17 +1786,17 @@ data TelegramUploadRequest = TelegramUploadRequest
   , replyToMessageId :: !(Maybe Integer)
   }
 
-uploadTelegramFileByMime :: Telegram :> es => TelegramUploadRequest -> FilePath -> Eff es Message
-uploadTelegramFileByMime request path =
+uploadTelegramFileByMime :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> TelegramUploadRequest -> FilePath -> Eff es Message
+uploadTelegramFileByMime driver request path =
   case telegramFileKind (Mime.mimeFromName (Text.pack path)) of
     TelegramImageFile ->
-      uploadPhoto (photoRequest request) path
+      uploadPhoto driver (photoRequest request) path
     TelegramAudioFile ->
-      uploadAudio (audioRequest request) path
+      uploadAudio driver (audioRequest request) path
     TelegramVideoFile ->
-      uploadVideo (videoRequest request) path
+      uploadVideo driver (videoRequest request) path
     TelegramDocumentFile ->
-      uploadDocument (documentRequest request) path
+      uploadDocument driver (documentRequest request) path
 
 data TelegramFileKind
   = TelegramImageFile
@@ -1891,13 +1845,13 @@ escapeHtml =
     '"' -> "&quot;"
     c   -> Text.singleton c
 
-replyTextAndImages :: (Telegram :> es, FileSystem :> es, IOE :> es) => Integer -> Maybe Integer -> Text -> Eff es Message
-replyTextAndImages chatId replyToMessageId body =
+replyTextAndImages :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Maybe Integer -> Text -> Eff es Message
+replyTextAndImages driver chatId replyToMessageId body =
   case ChatEffect.replyImageUrls body of
     [] -> sendText (ChatEffect.renderReplyBody body)
     firstImage : restImages -> do
       let formattedCaption = nonEmptyText (ChatEffect.renderReplyBody body) <&> formatTelegramMarkdown
-      firstSent <- sendImageRequest SendPhotoRequest
+      firstSent <- sendImageRequest driver SendPhotoRequest
         { chatId = chatId
         , messageThreadId = Nothing
         , photo = firstImage
@@ -1912,7 +1866,7 @@ replyTextAndImages chatId replyToMessageId body =
   where
     sendText text =
       let formatted = formatTelegramMarkdown text
-      in sendMessage SendMessageRequest
+      in callTelegram driver SendMessageRequest
       { chatId = chatId
       , messageThreadId = Nothing
       , text = formatted.formattedText
@@ -1921,7 +1875,7 @@ replyTextAndImages chatId replyToMessageId body =
       , disableNotification = Nothing
       , replyToMessageId = replyToMessageId
       }
-    sendImage caption photo = void $ sendImageRequest SendPhotoRequest
+    sendImage caption photo = void $ sendImageRequest driver SendPhotoRequest
       { chatId = chatId
       , messageThreadId = Nothing
       , photo = photo
@@ -1932,23 +1886,23 @@ replyTextAndImages chatId replyToMessageId body =
       , replyToMessageId = Nothing
       }
 
-sendImageRequest :: (Telegram :> es, FileSystem :> es, IOE :> es) => SendPhotoRequest -> Eff es Message
-sendImageRequest request =
+sendImageRequest :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendPhotoRequest -> Eff es Message
+sendImageRequest driver request =
   case localFilePhoto request.photo of
-    Just path -> uploadPhoto request path
+    Just path -> uploadPhoto driver request path
     Nothing ->
       case dataImagePhoto request.photo of
-        Just bytes -> uploadTemporaryPhoto request bytes
-        Nothing    -> sendPhoto request
+        Just bytes -> uploadTemporaryPhoto driver request bytes
+        Nothing    -> sendPhoto driver request
 
-sendVoiceRequest :: (Telegram :> es, FileSystem :> es, IOE :> es) => SendVoiceRequest -> Eff es Message
-sendVoiceRequest request =
+sendVoiceRequest :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendVoiceRequest -> Eff es Message
+sendVoiceRequest driver request =
   case localFileRef request.voice of
-    Just path -> uploadVoice request path
+    Just path -> uploadVoice driver request path
     Nothing ->
       case dataAudioBytes request.voice of
-        Just bytes -> uploadTemporaryVoice request bytes
-        Nothing    -> callTelegram request
+        Just bytes -> uploadTemporaryVoice driver request bytes
+        Nothing    -> callTelegram driver request
 
 localFilePhoto :: Text -> Maybe FilePath
 localFilePhoto photo =
@@ -1984,20 +1938,20 @@ dataAudioBytes ref = do
   encoded <- Text.stripPrefix ";base64," encodedWithMarker
   either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
 
-uploadTemporaryPhoto :: (Telegram :> es, FileSystem :> es, IOE :> es) => SendPhotoRequest -> ByteString.ByteString -> Eff es Message
-uploadTemporaryPhoto request bytes = do
+uploadTemporaryPhoto :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendPhotoRequest -> ByteString.ByteString -> Eff es Message
+uploadTemporaryPhoto driver request bytes = do
   path <- temporaryTelegramPath "telegram-photo" "png"
   FileSystemByteString.writeFile path bytes
-  uploadPhoto request path `finally` cleanup path
+  uploadPhoto driver request path `finally` cleanup path
   where
     cleanup path =
       FileSystem.removeFile path `catchSync` \_ -> pure ()
 
-uploadTemporaryVoice :: (Telegram :> es, FileSystem :> es, IOE :> es) => SendVoiceRequest -> ByteString.ByteString -> Eff es Message
-uploadTemporaryVoice request bytes = do
+uploadTemporaryVoice :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendVoiceRequest -> ByteString.ByteString -> Eff es Message
+uploadTemporaryVoice driver request bytes = do
   path <- temporaryTelegramPath "telegram-voice" "ogg"
   FileSystemByteString.writeFile path bytes
-  uploadVoice request path `finally` cleanup path
+  uploadVoice driver request path `finally` cleanup path
   where
     cleanup path =
       FileSystem.removeFile path `catchSync` \_ -> pure ()
@@ -2017,55 +1971,17 @@ nonEmptyText text
   | Text.null text = Nothing
   | otherwise      = Just text
 
--- | Forward an existing Telegram message.
-forwardMessage :: Telegram :> es => Integer -> Integer -> Integer -> Eff es Message
-forwardMessage chatId fromChatId messageId =
-  callTelegram $ ForwardMessageRequest{..}
+deleteMessage :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Integer -> Eff es Bool
+deleteMessage driver chatId messageId =
+  callTelegram driver DeleteMessageRequest{..}
 
--- | Delete a Telegram message when the bot has permission.
-deleteMessage :: Telegram :> es => Integer -> Integer -> Eff es Bool
-deleteMessage chatId messageId =
-  callTelegram $ DeleteMessageRequest{..}
+getChatMember :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Integer -> Eff es ChatMember
+getChatMember driver chatId userId =
+  callTelegram driver GetChatMemberRequest{..}
 
--- | Pin a Telegram message in a chat.
-pinMessage :: Telegram :> es => Integer -> Integer -> Bool -> Eff es Bool
-pinMessage chatId messageId disableNotification =
-  callTelegram $ PinMessageRequest{..}
-
--- | Unpin a Telegram message in a chat.
-unpinMessage :: Telegram :> es => Integer -> Integer -> Eff es Bool
-unpinMessage chatId messageId =
-  callTelegram $ UnpinMessageRequest{..}
-
--- | Fetch Telegram chat metadata.
-getChat :: Telegram :> es => Integer -> Eff es Chat
-getChat chatId =
-  callTelegram $ GetChatRequest{..}
-
--- | Fetch one user's membership in a Telegram chat.
-getChatMember :: Telegram :> es => Integer -> Integer -> Eff es ChatMember
-getChatMember chatId userId =
-  callTelegram $ GetChatMemberRequest{..}
-
--- | Ban a Telegram user from a chat.
-banChatMember :: Telegram :> es => Integer -> Integer -> Maybe Integer -> Eff es Bool
-banChatMember chatId userId untilDate =
-  callTelegram $ BanChatMemberRequest{..}
-
--- | Unban a Telegram user from a chat.
-unbanChatMember :: Telegram :> es => Integer -> Integer -> Eff es Bool
-unbanChatMember chatId userId =
-  callTelegram $ UnbanChatMemberRequest { onlyIfBanned = True, .. }
-
--- | Leave a Telegram chat.
-leaveChat :: Telegram :> es => Integer -> Eff es Bool
-leaveChat chatId =
-  callTelegram $ LeaveChatRequest{..}
-
--- | Fetch the latest Telegram profile photo for a user id.
-getUserAvatar :: Telegram :> es => Integer -> Eff es (Maybe Aeson.Value)
-getUserAvatar userId = do
-  profilePhotos <- callTelegram GetUserProfilePhotosRequest
+getUserAvatar :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Eff es (Maybe Aeson.Value)
+getUserAvatar driver userId = do
+  profilePhotos <- callTelegram driver GetUserProfilePhotosRequest
     { userId = userId
     , offset = Nothing
     , limit = Just 1
@@ -2074,7 +1990,7 @@ getUserAvatar userId = do
     [] ->
       pure Nothing
     photo : _ -> do
-      avatarUrl <- fileUrl photo.fileId
+      avatarUrl <- fileUrl driver photo.fileId
       pure $ Just $ Aeson.object
         [ "platform" Aeson..= ("telegram" :: Text)
         , "user_id" Aeson..= userId

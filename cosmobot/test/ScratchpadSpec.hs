@@ -1,5 +1,7 @@
 module Main (main) where
 
+import Bot.Chat.Driver.Types (ChatDriverEffects)
+import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
@@ -12,6 +14,15 @@ import qualified Effectful.Prim.IORef as IORef
 import System.FilePath ((</>))
 import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit
+
+newtype ReplyChatDriver es =
+  ReplyChatDriver (IncomingMessage -> Text -> Eff es (Either Text MessageId))
+
+instance Driver.ChatDriver (ReplyChatDriver es0) where
+  type ChatDriverEffects (ReplyChatDriver es0) es = es ~ es0
+  driverPlatform _ = PlatformTelegram
+  replyTo (ReplyChatDriver sendReply) =
+    sendReply
 
 main :: IO ()
 main =
@@ -115,51 +126,13 @@ withScratchpadPath label action = do
 
 runScratchpad :: (Concurrent :> es, IOE :> es, Prim :> es) => FilePath -> IORef.IORef [Text] -> IncomingMessage -> Eff es ()
 runScratchpad path replies incoming =
-  Chat.runChatWith Chat.ChatHandlers
-    { handleReplyTo = reply
-    , handleReplyAudio = replyAudio
-    , handleUploadFile = upload
-    , handleEditMessage = edit
-    , handleDeleteMessage = delete
-    , handleReplyStreamStyle = replyStreamStyle
-    , handleGetMessageContent = fetch
-    , handleGetSenderMemberInfo = fetchSenderMember
-    , handleGetMemberInfo = fetchMember
-    , handleGetUserAvatar = fetchUserAvatar
-    , handleListGroupMembers = listMembers
-    , handleMentionUser = mention
-    , handleSetMemberTitle = setMemberTitle
-    } $
+  Chat.runChatWith (ReplyChatDriver reply) $
     StorageSQLite.runStorageSQLitePath path $
       runHandlers scratchpadHandlers incoming
   where
     reply _ body = do
       IORef.modifyIORef' replies (<> [body])
       pure (Right "1")
-    upload _ _ =
-      pure (Right "upload")
-    replyAudio _ _ _ =
-      pure (Right "audio")
-    fetch _ _ =
-      pure Nothing
-    edit _ _ _ =
-      pure False
-    delete _ _ =
-      pure False
-    replyStreamStyle _ =
-      pure (Chat.ChunkedReply 1800)
-    fetchSenderMember _ =
-      pure Nothing
-    fetchMember _ _ =
-      pure Nothing
-    fetchUserAvatar _ _ =
-      pure Nothing
-    listMembers _ =
-      pure Nothing
-    mention _ _ _ =
-      pure (Left "noop mention")
-    setMemberTitle _ _ _ =
-      pure False
 
 message :: Text -> IncomingMessage
 message =

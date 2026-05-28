@@ -7,7 +7,6 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
-import qualified Bot.HTTP as BotHTTP
 import Bot.Prelude
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.Map.Strict as Map
@@ -173,12 +172,14 @@ testTelegramReferencedMessageIncludesSenderIdentity = do
       messageWithReply = (telegramMessage False){Telegram.replyToMessage = Just referenced}
       incoming = fromMaybe (error "expected incoming Telegram message") $
         Telegram.updateToIncomingMessage (telegramUpdateWithMessage messageWithReply)
-  fetched <- runEff $ runTestLog $ BotHTTP.runHTTP $
-    Telegram.runTelegram (Telegram.Config "dummy-token" [] [] [] [] []) $
-      Telegram.getMessageContent incoming ("70001")
-  (fetched <&> (.senderDisplayName)) @?= Just (Just "Bob Smith")
-  (fetched <&> (.senderIdentifier)) @?= Just (Just "@bob")
-  (fetched <&> (.text)) @?= Just "quoted"
+      rawMessage :: Telegram.Message
+      rawMessage = case Aeson.fromJSON incoming.raw of
+        Aeson.Success message -> message
+        Aeson.Error err -> error (toText err)
+      fetched = rawMessage.replyToMessage
+  ((\user -> Text.unwords [user.firstName, fromMaybe "" user.lastName]) <$> (fetched >>= (.from))) @?= Just "Bob Smith"
+  ((\user -> maybe (Text.pack (show user.id :: String)) ("@" <>) user.username) <$> (fetched >>= (.from))) @?= Just "@bob"
+  (fetched >>= (.text)) @?= Just "quoted"
 
 testTelegramCommonMarkFormattingEmitsUtf16Entities :: IO ()
 testTelegramCommonMarkFormattingEmitsUtf16Entities = do
@@ -712,6 +713,3 @@ discordUser userId username fromBot =
     , Discord.bot = fromBot
     , Discord.avatar = Nothing
     }
-
-runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
-runTestLog action = startKatipE "chat-platform-spec" "test" action

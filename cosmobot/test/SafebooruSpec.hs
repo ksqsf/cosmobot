@@ -2,6 +2,8 @@ module Main (main) where
 
 import Bot.Core.Message
 import Bot.Core.Route
+import Bot.Chat.Driver.Types (ChatDriverEffects)
+import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Storage.SQLite as StorageSQLite
@@ -13,6 +15,15 @@ import qualified Data.IORef as IORef
 import qualified Data.Set as Set
 import Test.Tasty
 import Test.Tasty.HUnit
+
+newtype ReplyChatDriver es =
+  ReplyChatDriver (IncomingMessage -> Text -> Eff es (Either Text MessageId))
+
+instance Driver.ChatDriver (ReplyChatDriver es0) where
+  type ChatDriverEffects (ReplyChatDriver es0) es = es ~ es0
+  driverPlatform _ = PlatformTelegram
+  replyTo (ReplyChatDriver sendReply) =
+    sendReply
 
 main :: IO ()
 main =
@@ -85,29 +96,15 @@ runSafebooruFlow replies action =
   runEff $
     runConcurrent $
     runTestLog $
-      Chat.runChatWith (chatHandlers replies) $
+      Chat.runChatWith (testChatDriver replies) $
         StorageSQLite.runStorageSQLitePath ":memory:" $
           action
 
-chatHandlers :: IOE :> es => IORef.IORef [Text] -> Chat.ChatHandlers es
-chatHandlers replies =
-  Chat.ChatHandlers
-    { handleReplyTo = \_ body -> do
-        liftIO $ IORef.modifyIORef' replies (<> [body])
-        pure (Right "1")
-    , handleReplyAudio = \_ _ _ -> pure (Right "audio")
-    , handleUploadFile = \_ _ -> pure (Right "upload")
-    , handleEditMessage = \_ _ _ -> pure False
-    , handleDeleteMessage = \_ _ -> pure False
-    , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 1800)
-    , handleGetMessageContent = \_ _ -> pure Nothing
-    , handleGetSenderMemberInfo = \_ -> pure Nothing
-    , handleGetMemberInfo = \_ _ -> pure Nothing
-    , handleGetUserAvatar = \_ _ -> pure Nothing
-    , handleListGroupMembers = \_ -> pure Nothing
-    , handleMentionUser = \_ _ _ -> pure (Left "noop mention")
-    , handleSetMemberTitle = \_ _ _ -> pure False
-    }
+testChatDriver :: IOE :> es => IORef.IORef [Text] -> ReplyChatDriver es
+testChatDriver replies =
+  ReplyChatDriver \_ body -> do
+    liftIO $ IORef.modifyIORef' replies (<> [body])
+    pure (Right "1")
 
 runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
 runTestLog action = startKatipE "safebooru-spec" "test" action

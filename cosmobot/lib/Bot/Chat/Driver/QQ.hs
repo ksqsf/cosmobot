@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TypeFamilies #-}
 {-|
 Module      : Bot.Chat.Driver.QQ
 Description : QQ/NapCat OneBot v11 chat driver
@@ -6,30 +7,18 @@ Stability   : experimental
 -}
 
 module Bot.Chat.Driver.QQ
-  ( qqDriver
-  , QQ
+  ( QQDriver
+  , newQQDriver
+  , runQQDriver
   , Config (..)
   , Event (..)
   , ActionResponse (..)
-  , receiveEvent
-  , sendAction
-  , runQQ
-  , eventsStream
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , forwardedMessagesText
   , readActionResponse
-  , replyTo
-  , replyAudio
-  , deleteMessage
-  , getMessageContent
   , getUserAvatar
-  , getGroupMemberInfo
-  , getGroupMemberList
-  , mentionUser
-  , uploadFile
-  , setGroupMemberTitle
   )
 where
 
@@ -75,104 +64,109 @@ data Config = Config
   }
   deriving (Show)
 
-qqDriver
-  :: (QQ :> es, IOE :> es)
-  => Driver.ChatPlatformDriver es
-qqDriver = Driver.ChatPlatformDriver
-  { Driver.platform = PlatformQQ
-  , Driver.replyTo = replyTo
-  , Driver.replyAudio = replyAudio
-  , Driver.uploadFile = uploadFile
-  , Driver.editMessage = \_ _ _ -> pure False
-  , Driver.deleteMessage = deleteMessage
-  , Driver.replyStreamStyle = \_ -> pure (Chat.ChunkedReply qqStreamingMessageLimit)
-  , Driver.getMessageContent = \_ messageId -> getMessageContent messageId
-  , Driver.getSenderMemberInfo = \message ->
-      case (message.kind, message.chatId, message.senderId) of
-        (ChatGroup, Just groupId, Just rawUserId)
-          | Just userId <- parseIntegerUserId rawUserId ->
-          getGroupMemberInfo groupId userId
-        _ ->
-          pure Nothing
-  , Driver.getMemberInfo = \message userId ->
-      case (message.kind, message.chatId) of
-        (ChatGroup, Just groupId)
-          | Just numericUserId <- parseIntegerUserId userId ->
-            getGroupMemberInfo groupId numericUserId
-        _ ->
-          pure Nothing
-  , Driver.getUserAvatar = \message userId ->
-      case message.platform of
-        PlatformQQ ->
-          pure (getUserAvatar <$> parseIntegerUserId userId)
-        _ ->
-          pure Nothing
-  , Driver.listGroupMembers = \message ->
-      case (message.kind, message.chatId) of
-        (ChatGroup, Just groupId) ->
-          getGroupMemberList groupId
-        _ ->
-          pure Nothing
-  , Driver.normalizeMediaRef = pure
-  , Driver.mentionUser = mentionUser
-  , Driver.setMemberTitle = setGroupMemberTitle
-  , Driver.setTyping = \_ _ -> pure ()  -- unsupported
+data QQDriver = QQDriver
+  { config :: !Config
+  , eventChan :: !(Chan.Chan Event)
+  , actionChan :: !(Chan.Chan ActionRequest)
   }
+
+newQQDriver :: IOE :> es => Config -> Eff es QQDriver
+newQQDriver config = do
+  eventChan <- liftIO Chan.newChan
+  actionChan <- liftIO Chan.newChan
+  pure QQDriver{config, eventChan, actionChan}
+
+instance Driver.ChatDriver QQDriver where
+  type ChatDriverEffects QQDriver es = (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+
+  driverPlatform _ =
+    PlatformQQ
+
+  replyTo =
+    replyToQQ
+
+  replyAudio =
+    replyAudioQQ
+
+  uploadFile =
+    uploadFileQQ
+
+  deleteMessage =
+    deleteMessageQQ
+
+  replyStreamStyle _ _ =
+    pure (Chat.ChunkedReply qqStreamingMessageLimit)
+
+  getMessageContent driver _ messageId =
+    getMessageContentQQ driver messageId
+
+  getSenderMemberInfo driver message =
+    case (message.kind, message.chatId, message.senderId) of
+      (ChatGroup, Just groupId, Just rawUserId)
+        | Just userId <- parseIntegerUserId rawUserId ->
+        getGroupMemberInfo driver groupId userId
+      _ ->
+        pure Nothing
+
+  getMemberInfo driver message userId =
+    case (message.kind, message.chatId) of
+      (ChatGroup, Just groupId)
+        | Just numericUserId <- parseIntegerUserId userId ->
+          getGroupMemberInfo driver groupId numericUserId
+      _ ->
+        pure Nothing
+
+  getUserAvatar _ _ userId =
+    pure (getUserAvatar <$> parseIntegerUserId userId)
+
+  listGroupMembers driver message =
+    case (message.kind, message.chatId) of
+      (ChatGroup, Just groupId) ->
+        getGroupMemberList driver groupId
+      _ ->
+        pure Nothing
+
+  mentionUser =
+    mentionUserQQ
+
+  setMemberTitle =
+    setGroupMemberTitleQQ
 
 qqStreamingMessageLimit :: Int
 qqStreamingMessageLimit = 4000
 
--- ---------------------------------------------------------------------------
--- Effect
--- ---------------------------------------------------------------------------
-
--- | Low-level OneBot transport effect.
-data QQ :: Effect where
-  QQConfig :: QQ m Config
-  ReceiveEvent :: QQ m Event
-  SendAction :: Aeson.Value -> QQ m ActionResponse
-
-type instance DispatchOf QQ = Dynamic
-
-qqConfig :: QQ :> es => Eff es Config
-qqConfig = send QQConfig
-
--- | Receive one raw OneBot event from the websocket reader.
-receiveEvent :: QQ :> es => Eff es Event
-receiveEvent = send ReceiveEvent
-
--- | Send one raw OneBot action payload.
-sendAction :: QQ :> es => Aeson.Value -> Eff es ActionResponse
-sendAction = send . SendAction
-
--- | Connect to OneBot and interpret QQ operations over the websocket.
-runQQ
+runQQDriver
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => Config
-  -> Eff (QQ : es) a
+  => QQDriver
   -> Eff es a
-runQQ cfg inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
-  eventChan <- liftIO Chan.newChan
-  actionChan <- liftIO Chan.newChan
+  -> Eff es a
+runQQDriver driver inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
   liftIO $ Async.withAsync (runInIO $ qqConnectionLoop cfg eventChan actionChan) \_ ->
-    runInIO $
-      interpret
-          (\_ -> \case
-            QQConfig ->
-              pure cfg
-            ReceiveEvent ->
-              liftIO (Chan.readChan eventChan)
-            SendAction value -> do
-              responseVar <- liftIO newEmptyMVar
-              liftIO $ Chan.writeChan actionChan (ActionRequest value responseVar)
-              result <- timeout qqActionTimeoutMicroseconds (takeMVar responseVar)
-              case result of
-                Just response ->
-                  pure response
-                Nothing -> do
-                  logInfo "QQ action timed out"
-                  pure failedActionResponse)
-          inner
+    runInIO inner
+  where
+    cfg = driver.config
+    eventChan = driver.eventChan
+    actionChan = driver.actionChan
+
+receiveEvent :: IOE :> es => QQDriver -> Eff es Event
+receiveEvent driver =
+  liftIO (Chan.readChan driver.eventChan)
+
+sendAction
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> Aeson.Value
+  -> Eff es ActionResponse
+sendAction driver value = do
+  responseVar <- liftIO newEmptyMVar
+  liftIO $ Chan.writeChan driver.actionChan (ActionRequest value responseVar)
+  result <- timeout qqActionTimeoutMicroseconds (takeMVar responseVar)
+  case result of
+    Just response ->
+      pure response
+    Nothing -> do
+      logInfo "QQ action timed out"
+      pure failedActionResponse
 
 data ActionRequest = ActionRequest !Aeson.Value !(MVar ActionResponse)
 
@@ -304,19 +298,11 @@ websocketPath Config{path, token = Just t} =
 -- Streaming
 -- ---------------------------------------------------------------------------
 
--- | Stream raw OneBot events.
-eventsStream :: QQ :> es => Stream (Of Event) (Eff es) ()
-eventsStream = do
-  event <- S.lift receiveEvent
-  S.yield event
-  eventsStream
-
 -- | Stream OneBot message events as platform-independent messages.
-incomingMessages :: (QQ :> es, KatipE :> es) => Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages = do
-  cfg <- S.lift qqConfig
-  event <- S.lift receiveEvent
-  case eventToIncomingMessageWith cfg event of
+incomingMessages :: (IOE :> es, KatipE :> es) => QQDriver -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages driver = do
+  event <- S.lift (receiveEvent driver)
+  case eventToIncomingMessageWith driver.config event of
     Nothing
       | isHeartbeatEvent event ->
           S.lift $ logDebug "Ignoring QQ heartbeat event"
@@ -328,7 +314,7 @@ incomingMessages = do
       S.lift $ logDebug [i|incoming qq message: #{show message :: String}|]
       S.lift $ logInfo [i|incoming qq message: #{incomingMessageLogLine message}|]
       S.yield message
-  incomingMessages
+  incomingMessages driver
 
 -- ---------------------------------------------------------------------------
 -- OneBot v11 events
@@ -488,22 +474,27 @@ dispatchActionResponse pendingResponses response =
           void $ MVar.tryPutMVar responseVar response
 
 -- | Reply to a QQ private or group message.
-replyTo :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Eff es (Either Text MessageId)
-replyTo message body =
-  case (message.platform, message.kind, message.chatId, message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId, _) -> do
+replyToQQ
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> IncomingMessage
+  -> Text
+  -> Eff es (Either Text MessageId)
+replyToQQ driver message body =
+  case (message.kind, message.chatId, message.senderId) of
+    (ChatGroup, Just groupId, _) -> do
       qqMessage <- replyMessage message body
-      maybe (Left "QQ group reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction (Aeson.object
+      maybe (Left "QQ group reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction driver (Aeson.object
         [ "action" Aeson..= Aeson.String "send_group_msg"
         , "params" Aeson..= Aeson.object
             [ "group_id" Aeson..= groupId
             , "message" Aeson..= qqMessage
             ]
         ])
-    (PlatformQQ, ChatPrivate, _, Just rawUserId)
+    (ChatPrivate, _, Just rawUserId)
       | Just userId <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
-      maybe (Left "QQ private reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction (Aeson.object
+      maybe (Left "QQ private reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction driver (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
         , "params" Aeson..= Aeson.object
             [ "user_id" Aeson..= userId
@@ -513,23 +504,29 @@ replyTo message body =
     _ -> pure (Left "QQ reply requires a QQ group id or private sender id.")
 
 -- | Send a reply that mentions a QQ user where the platform supports it.
-mentionUser :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
-mentionUser message userId body =
-  case (message.platform, message.kind, message.chatId, message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId, _)
+mentionUserQQ
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> IncomingMessage
+  -> Text
+  -> Text
+  -> Eff es (Either Text MessageId)
+mentionUserQQ driver message userId body =
+  case (message.kind, message.chatId, message.senderId) of
+    (ChatGroup, Just groupId, _)
       | Just numericUserId <- parseIntegerUserId userId -> do
         qqMessage <- mentionMessage message numericUserId body
-        maybe (Left "QQ group mention did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction (Aeson.object
+        maybe (Left "QQ group mention did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction driver (Aeson.object
           [ "action" Aeson..= Aeson.String "send_group_msg"
           , "params" Aeson..= Aeson.object
               [ "group_id" Aeson..= groupId
               , "message" Aeson..= qqMessage
               ]
           ])
-    (PlatformQQ, ChatPrivate, _, Just rawUserId)
+    (ChatPrivate, _, Just rawUserId)
       | Just userId_ <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
-      maybe (Left "QQ private mention reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction (Aeson.object
+      maybe (Left "QQ private mention reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction driver (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
         , "params" Aeson..= Aeson.object
             [ "user_id" Aeson..= userId_
@@ -540,18 +537,23 @@ mentionUser message userId body =
 
 -- | Send a file segment through OneBot. The path is interpreted by NapCat, so
 -- when NapCat runs in Docker it must be visible inside that container.
-uploadFile :: QQ :> es => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
-uploadFile message path =
-  case (message.platform, message.kind, message.chatId, message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId, _) -> do
-      response <- sendFileMessage "send_group_msg"
+uploadFileQQ
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> IncomingMessage
+  -> FilePath
+  -> Eff es (Either Text MessageId)
+uploadFileQQ driver message path =
+  case (message.kind, message.chatId, message.senderId) of
+    (ChatGroup, Just groupId, _) -> do
+      response <- sendFileMessage driver "send_group_msg"
         [ "group_id" Aeson..= groupId
         , "message" Aeson..= fileMessage path
         ]
       qqMessageIdResult "send_group_msg" response
-    (PlatformQQ, ChatPrivate, _, Just rawUserId)
+    (ChatPrivate, _, Just rawUserId)
       | Just userId <- parseIntegerUserId rawUserId -> do
-      response <- sendFileMessage "send_private_msg"
+      response <- sendFileMessage driver "send_private_msg"
         [ "user_id" Aeson..= userId
         , "message" Aeson..= fileMessage path
         ]
@@ -561,20 +563,26 @@ uploadFile message path =
 
 -- | Send an audio record segment through OneBot, falling back to NapCat file
 -- upload for local files if the adapter rejects record sending.
-replyAudio :: (QQ :> es, IOE :> es) => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
-replyAudio message audioRef caption =
-  case (message.platform, message.kind, message.chatId, message.senderId) of
-    (PlatformQQ, ChatGroup, Just groupId, _) -> do
+replyAudioQQ
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> IncomingMessage
+  -> Text
+  -> Maybe Text
+  -> Eff es (Either Text MessageId)
+replyAudioQQ driver message audioRef caption =
+  case (message.kind, message.chatId, message.senderId) of
+    (ChatGroup, Just groupId, _) -> do
       qqMessage <- audioMessage audioRef caption
-      response <- sendAudioMessage "send_group_msg"
+      response <- sendAudioMessage driver "send_group_msg"
         [ "group_id" Aeson..= groupId
         , "message" Aeson..= qqMessage
         ]
       audioResponseOrFallback response "send_group_msg"
-    (PlatformQQ, ChatPrivate, _, Just rawUserId)
+    (ChatPrivate, _, Just rawUserId)
       | Just userId <- parseIntegerUserId rawUserId -> do
       qqMessage <- audioMessage audioRef caption
-      response <- sendAudioMessage "send_private_msg"
+      response <- sendAudioMessage driver "send_private_msg"
         [ "user_id" Aeson..= userId
         , "message" Aeson..= qqMessage
         ]
@@ -586,20 +594,30 @@ replyAudio message audioRef caption =
       | actionSucceeded response =
           qqMessageIdResult action response
       | Just path <- localAudioPath audioRef =
-          uploadFile message path
+          uploadFileQQ driver message path
       | otherwise =
           pure (Left (qqUploadFailureText action response))
 
-sendFileMessage :: QQ :> es => Text -> [Aeson.Pair] -> Eff es ActionResponse
-sendFileMessage action params =
-  sendAction (Aeson.object
+sendFileMessage
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> Text
+  -> [Aeson.Pair]
+  -> Eff es ActionResponse
+sendFileMessage driver action params =
+  sendAction driver (Aeson.object
     [ "action" Aeson..= Aeson.String action
     , "params" Aeson..= Aeson.object params
     ])
 
-sendAudioMessage :: QQ :> es => Text -> [Aeson.Pair] -> Eff es ActionResponse
-sendAudioMessage action params =
-  sendAction (Aeson.object
+sendAudioMessage
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> Text
+  -> [Aeson.Pair]
+  -> Eff es ActionResponse
+sendAudioMessage driver action params =
+  sendAction driver (Aeson.object
     [ "action" Aeson..= Aeson.String action
     , "params" Aeson..= Aeson.object params
     ])
@@ -648,11 +666,16 @@ responseMessageId response =
     _ -> Nothing
 
 -- | Delete a QQ message by OneBot message id.
-deleteMessage :: QQ :> es => IncomingMessage -> MessageId -> Eff es Bool
-deleteMessage message messageId =
-  case (message.platform, messageIdInteger messageId) of
-    (PlatformQQ, Just rawMessageId) -> do
-      response <- sendAction (Aeson.object
+deleteMessageQQ
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> IncomingMessage
+  -> MessageId
+  -> Eff es Bool
+deleteMessageQQ driver _ messageId =
+  case messageIdInteger messageId of
+    Just rawMessageId -> do
+      response <- sendAction driver (Aeson.object
         [ "action" Aeson..= Aeson.String "delete_msg"
         , "params" Aeson..= Aeson.object
             [ "message_id" Aeson..= rawMessageId
@@ -667,13 +690,17 @@ actionSucceeded response =
   response.status == Just "ok" || response.retcode == Just 0
 
 -- | Fetch message text and image references by QQ message id.
-getMessageContent :: QQ :> es => MessageId -> Eff es (Maybe ReferencedMessage)
-getMessageContent messageId = do
+getMessageContentQQ
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> MessageId
+  -> Eff es (Maybe ReferencedMessage)
+getMessageContentQQ driver messageId = do
   case messageIdInteger messageId of
     Nothing ->
       pure Nothing
     Just rawMessageId -> do
-      response <- sendAction (Aeson.object
+      response <- sendAction driver (Aeson.object
         [ "action" Aeson..= Aeson.String "get_msg"
         , "params" Aeson..= Aeson.object
             [ "message_id" Aeson..= rawMessageId
@@ -683,16 +710,25 @@ getMessageContent messageId = do
         Nothing ->
           pure Nothing
         Just value ->
-          traverse (appendForwardedMessageText (referencedMessageForwardIds value)) (referencedMessageFromValue value)
+          traverse (appendForwardedMessageText driver (referencedMessageForwardIds value)) (referencedMessageFromValue value)
 
-appendForwardedMessageText :: QQ :> es => [Text] -> ReferencedMessage -> Eff es ReferencedMessage
-appendForwardedMessageText forwardIds referenced = do
-  forwardedTexts <- traverse getForwardedMessageText forwardIds
+appendForwardedMessageText
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> [Text]
+  -> ReferencedMessage
+  -> Eff es ReferencedMessage
+appendForwardedMessageText driver forwardIds referenced = do
+  forwardedTexts <- traverse (getForwardedMessageText driver) forwardIds
   pure (referencedWithText referenced (joinMessageTexts (referenced.text : forwardedTexts)))
 
-getForwardedMessageText :: QQ :> es => Text -> Eff es Text
-getForwardedMessageText forwardId = do
-  response <- sendAction (Aeson.object
+getForwardedMessageText
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> Text
+  -> Eff es Text
+getForwardedMessageText driver forwardId = do
+  response <- sendAction driver (Aeson.object
     [ "action" Aeson..= Aeson.String "get_forward_msg"
     , "params" Aeson..= Aeson.object
         [ "id" Aeson..= forwardId
@@ -701,9 +737,14 @@ getForwardedMessageText forwardId = do
   pure (maybe "" forwardedMessagesText response.data_)
 
 -- | Fetch platform-provided QQ group member information.
-getGroupMemberInfo :: QQ :> es => Integer -> Integer -> Eff es (Maybe Aeson.Value)
-getGroupMemberInfo groupId userId =
-  (.data_) <$> sendAction (Aeson.object
+getGroupMemberInfo
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> Integer
+  -> Integer
+  -> Eff es (Maybe Aeson.Value)
+getGroupMemberInfo driver groupId userId =
+  (.data_) <$> sendAction driver (Aeson.object
     [ "action" Aeson..= Aeson.String "get_group_member_info"
     , "params" Aeson..= Aeson.object
         [ "group_id" Aeson..= groupId
@@ -713,9 +754,13 @@ getGroupMemberInfo groupId userId =
     ])
 
 -- | Fetch platform-provided QQ group member list.
-getGroupMemberList :: QQ :> es => Integer -> Eff es (Maybe Aeson.Value)
-getGroupMemberList groupId =
-  (.data_) <$> sendAction (Aeson.object
+getGroupMemberList
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> Integer
+  -> Eff es (Maybe Aeson.Value)
+getGroupMemberList driver groupId =
+  (.data_) <$> sendAction driver (Aeson.object
     [ "action" Aeson..= Aeson.String "get_group_member_list"
     , "params" Aeson..= Aeson.object
         [ "group_id" Aeson..= groupId
@@ -724,12 +769,18 @@ getGroupMemberList groupId =
     ])
 
 -- | Set a QQ group member's special title through OneBot/NapCat.
-setGroupMemberTitle :: QQ :> es => IncomingMessage -> Text -> Text -> Eff es Bool
-setGroupMemberTitle message userId title =
-  case (message.platform, message.kind, message.chatId) of
-    (PlatformQQ, ChatGroup, Just groupId)
+setGroupMemberTitleQQ
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> IncomingMessage
+  -> Text
+  -> Text
+  -> Eff es Bool
+setGroupMemberTitleQQ driver message userId title =
+  case (message.kind, message.chatId) of
+    (ChatGroup, Just groupId)
       | Just numericUserId <- parseIntegerUserId userId -> do
-      response <- sendAction (Aeson.object
+      response <- sendAction driver (Aeson.object
         [ "action" Aeson..= Aeson.String "set_group_special_title"
         , "params" Aeson..= Aeson.object
             [ "group_id" Aeson..= groupId

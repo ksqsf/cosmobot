@@ -8,6 +8,8 @@ import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
 import qualified Bot.Agent.Types as AgentTypes
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
+import Bot.Chat.Driver.Types (ChatDriverEffects)
+import qualified Bot.Chat.Driver.Types as Driver
 import Bot.Core.Conversation
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Route (runHandlers)
@@ -86,6 +88,45 @@ type AgentStack =
    , FileSystem
    , IOE
    ]
+
+data NoopChatDriver =
+  NoopChatDriver
+
+instance Driver.ChatDriver NoopChatDriver where
+  driverPlatform _ = PlatformTelegram
+
+data AgentMockChatDriver es = AgentMockChatDriver
+  { agentReply :: IncomingMessage -> Text -> Eff es (Either Text MessageId)
+  , agentReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
+  , agentUploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
+  , agentEditMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
+  , agentReplyStreamStyle :: IncomingMessage -> Eff es Chat.ReplyStreamStyle
+  , agentFetchMessage :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
+  , agentUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
+  }
+
+instance Driver.ChatDriver (AgentMockChatDriver es0) where
+  type ChatDriverEffects (AgentMockChatDriver es0) es = es ~ es0
+  driverPlatform _ = PlatformTelegram
+  replyTo driver = driver.agentReply
+  replyAudio driver = driver.agentReplyAudio
+  uploadFile driver = driver.agentUploadFile
+  editMessage driver = driver.agentEditMessage
+  replyStreamStyle driver = driver.agentReplyStreamStyle
+  getMessageContent driver = driver.agentFetchMessage
+  getUserAvatar driver = driver.agentUserAvatar
+
+defaultAgentMockChatDriver :: AgentMockChatDriver es
+defaultAgentMockChatDriver =
+  AgentMockChatDriver
+    { agentReply = \_ _ -> pure (Left "noop reply")
+    , agentReplyAudio = \_ _ _ -> pure (Right "audio")
+    , agentUploadFile = \_ _ -> pure (Right "upload")
+    , agentEditMessage = \_ _ _ -> pure False
+    , agentReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 1800)
+    , agentFetchMessage = \_ _ -> pure Nothing
+    , agentUserAvatar = \_ _ -> pure Nothing
+    }
 
 data ChatMock = ChatMock
   { replies :: !(Maybe (IORef.IORef [Text]))
@@ -229,25 +270,10 @@ testToolReplyMiddlewareNormalizesReplyImages = do
   replies <- IORef.newIORef ([] :: [Text])
   runEff $
     runMediaNormalizingRefs $
-      Chat.runChatWith
-        Chat.ChatHandlers
-          { handleReplyTo = \_ body -> do
-              liftIO $ IORef.modifyIORef' replies (<> [body])
-              pure (Right "42")
-          , handleReplyAudio = noopReplyAudio
-          , handleUploadFile = noopUpload
-          , handleEditMessage = noopEdit
-          , handleDeleteMessage = noopDelete
-          , handleReplyStreamStyle = noopReplyStreamStyle
-          , handleGetMessageContent = noopFetch
-          , handleGetSenderMemberInfo = noopSenderMember
-          , handleGetMemberInfo = noopMember
-          , handleGetUserAvatar = noopUserAvatar
-          , handleListGroupMembers = noopMembers
-          , handleMentionUser = noopMention
-          , handleSetMemberTitle = noopSetMemberTitle
-          , handleSetTyping = noopSetTyping
-          } do
+      Chat.runChatWith defaultAgentMockChatDriver { agentReply = \_ body -> do
+          liftIO $ IORef.modifyIORef' replies (<> [body])
+          pure (Right "42")
+        } do
           agentRun <- Agent.startAgentRun agentContext []
           let program = Agent.withNormalizingToolReplies (AgentCore.emptyAgentProgram HList.HNil agentRun)
           _ <- program.aroundToolCall 1 (toolCall "call-1" "send_reply" (Aeson.object [])) HList.HNil do
@@ -261,25 +287,10 @@ testToolReplyMiddlewareRejectsUncachedRemoteImages = do
   replies <- IORef.newIORef ([] :: [Text])
   result <- runEff $
     runMediaLeavingRefs $
-      Chat.runChatWith
-        Chat.ChatHandlers
-          { handleReplyTo = \_ body -> do
-              liftIO $ IORef.modifyIORef' replies (<> [body])
-              pure (Right "42")
-          , handleReplyAudio = noopReplyAudio
-          , handleUploadFile = noopUpload
-          , handleEditMessage = noopEdit
-          , handleDeleteMessage = noopDelete
-          , handleReplyStreamStyle = noopReplyStreamStyle
-          , handleGetMessageContent = noopFetch
-          , handleGetSenderMemberInfo = noopSenderMember
-          , handleGetMemberInfo = noopMember
-          , handleGetUserAvatar = noopUserAvatar
-          , handleListGroupMembers = noopMembers
-          , handleMentionUser = noopMention
-          , handleSetMemberTitle = noopSetMemberTitle
-          , handleSetTyping = noopSetTyping
-          } do
+      Chat.runChatWith defaultAgentMockChatDriver { agentReply = \_ body -> do
+          liftIO $ IORef.modifyIORef' replies (<> [body])
+          pure (Right "42")
+        } do
           agentRun <- Agent.startAgentRun agentContext []
           let program = Agent.withNormalizingToolReplies (AgentCore.emptyAgentProgram HList.HNil agentRun)
           program.aroundToolCall 1 (toolCall "call-1" "send_reply" (Aeson.object [])) HList.HNil do
@@ -330,23 +341,11 @@ runSendFileTool
 runSendFileTool replies upload =
   runEff $
     Chat.runChatWith
-      Chat.ChatHandlers
-        { handleReplyTo = \_ body -> do
+      defaultAgentMockChatDriver
+        { agentReply = \_ body -> do
             liftIO $ IORef.modifyIORef' replies (<> [body])
             pure (Right "901")
-        , handleReplyAudio = noopReplyAudio
-        , handleUploadFile = upload
-        , handleEditMessage = noopEdit
-        , handleDeleteMessage = noopDelete
-        , handleReplyStreamStyle = noopReplyStreamStyle
-        , handleGetMessageContent = noopFetch
-        , handleGetSenderMemberInfo = noopSenderMember
-        , handleGetMemberInfo = noopMember
-        , handleGetUserAvatar = noopUserAvatar
-        , handleListGroupMembers = noopMembers
-        , handleMentionUser = noopMention
-        , handleSetMemberTitle = noopSetMemberTitle
-        , handleSetTyping = noopSetTyping
+        , agentUploadFile = upload
         } do
         runner <- ChatTools.sendFileTool.start superuserContext
         runner (Aeson.object ["path" Aeson..= ("file:///tmp/report.txt" :: Text)])
@@ -611,25 +610,10 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
           S.yield generatedAudio
           pure generatedAudio)
       (\_ _ -> S.each ["to", "ol"] $> chatAnswer "tool" []) $
-      Chat.runChatWith
-        Chat.ChatHandlers
-          { handleReplyTo = \_ _ -> pure (Left "noop reply")
-          , handleReplyAudio = \_ audioRef caption -> do
-              liftIO $ IORef.modifyIORef' audioReplies (<> [(audioRef, caption)])
-              pure (Right "50")
-          , handleUploadFile = noopUpload
-          , handleEditMessage = noopEdit
-          , handleDeleteMessage = noopDelete
-          , handleReplyStreamStyle = noopReplyStreamStyle
-          , handleGetMessageContent = noopFetch
-          , handleGetSenderMemberInfo = noopSenderMember
-          , handleGetMemberInfo = noopMember
-          , handleGetUserAvatar = noopUserAvatar
-          , handleListGroupMembers = noopMembers
-          , handleMentionUser = noopMention
-          , handleSetMemberTitle = noopSetMemberTitle
-          , handleSetTyping = noopSetTyping
-          } do
+      Chat.runChatWith defaultAgentMockChatDriver { agentReplyAudio = \_ audioRef caption -> do
+          liftIO $ IORef.modifyIORef' audioReplies (<> [(audioRef, caption)])
+          pure (Right "50")
+        } do
           runner <- AudioTools.generateAudioTool.start agentContext
           runner args
   case result of
@@ -890,23 +874,7 @@ testAgentAuditStorageOmitsLargeToolResults =
                               pure answer)
                           $
                             AgentAudit.runAgentAudit $
-                              Chat.runChatWith
-                                Chat.ChatHandlers
-                                  { handleReplyTo = \_ _ -> pure (Left "noop reply")
-                                  , handleReplyAudio = noopReplyAudio
-                                  , handleUploadFile = noopUpload
-                                  , handleEditMessage = noopEdit
-                                  , handleDeleteMessage = noopDelete
-                                  , handleReplyStreamStyle = noopReplyStreamStyle
-                                  , handleGetMessageContent = noopFetch
-                                  , handleGetSenderMemberInfo = noopSenderMember
-                                  , handleGetMemberInfo = noopMember
-                                  , handleGetUserAvatar = noopUserAvatar
-                                  , handleListGroupMembers = noopMembers
-                                  , handleMentionUser = noopMention
-                                  , handleSetMemberTitle = noopSetMemberTitle
-                                  , handleSetTyping = noopSetTyping
-                                  }
+                              Chat.runChatWith NoopChatDriver
                               do
                                 agentRun <- Agent.startAgentRun agentContext [largeAuditResultTool toolResultText]
                                 void $ S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun) (startWithUser "audit large result"))
@@ -1290,21 +1258,9 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $ runPrim $
     Chat.runChatWith
-      Chat.ChatHandlers
-        { handleReplyTo = recordReply replies nextReplyId
-        , handleReplyAudio = noopReplyAudio
-        , handleUploadFile = noopUpload
-        , handleEditMessage = noopEdit
-        , handleDeleteMessage = noopDelete
-        , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 4)
-        , handleGetMessageContent = noopFetch
-        , handleGetSenderMemberInfo = noopSenderMember
-        , handleGetMemberInfo = noopMember
-        , handleGetUserAvatar = noopUserAvatar
-        , handleListGroupMembers = noopMembers
-        , handleMentionUser = noopMention
-        , handleSetMemberTitle = noopSetMemberTitle
-        , handleSetTyping = noopSetTyping
+      defaultAgentMockChatDriver
+        { agentReply = recordReply replies nextReplyId
+        , agentReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 4)
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -1322,21 +1278,10 @@ testEditableSegmentedRepliesOpenNewTail = do
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $ runPrim $
     Chat.runChatWith
-      Chat.ChatHandlers
-        { handleReplyTo = recordReply replies nextReplyId
-        , handleReplyAudio = noopReplyAudio
-        , handleUploadFile = noopUpload
-        , handleEditMessage = recordEdit edits
-        , handleDeleteMessage = noopDelete
-        , handleReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 100)
-        , handleGetMessageContent = noopFetch
-        , handleGetSenderMemberInfo = noopSenderMember
-        , handleGetMemberInfo = noopMember
-        , handleGetUserAvatar = noopUserAvatar
-        , handleListGroupMembers = noopMembers
-        , handleMentionUser = noopMention
-        , handleSetMemberTitle = noopSetMemberTitle
-        , handleSetTyping = noopSetTyping
+      defaultAgentMockChatDriver
+        { agentReply = recordReply replies nextReplyId
+        , agentEditMessage = recordEdit edits
+        , agentReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 100)
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -1365,21 +1310,9 @@ testSegmentedRepliesFlushFinalOpenSegment = do
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $ runPrim $
     Chat.runChatWith
-      Chat.ChatHandlers
-        { handleReplyTo = recordReply replies nextReplyId
-        , handleReplyAudio = noopReplyAudio
-        , handleUploadFile = noopUpload
-        , handleEditMessage = noopEdit
-        , handleDeleteMessage = noopDelete
-        , handleReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 100)
-        , handleGetMessageContent = noopFetch
-        , handleGetSenderMemberInfo = noopSenderMember
-        , handleGetMemberInfo = noopMember
-        , handleGetUserAvatar = noopUserAvatar
-        , handleListGroupMembers = noopMembers
-        , handleMentionUser = noopMention
-        , handleSetMemberTitle = noopSetMemberTitle
-        , handleSetTyping = noopSetTyping
+      defaultAgentMockChatDriver
+        { agentReply = recordReply replies nextReplyId
+        , agentReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 100)
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -1401,21 +1334,10 @@ testEditableChatStreamingSplitsLongReplies = do
   nextReplyId <- IORef.newIORef (1 :: Integer)
   (responseId, result) <- runEff $ runPrim $
     Chat.runChatWith
-      Chat.ChatHandlers
-        { handleReplyTo = recordReply replies nextReplyId
-        , handleReplyAudio = noopReplyAudio
-        , handleUploadFile = noopUpload
-        , handleEditMessage = recordEdit edits
-        , handleDeleteMessage = noopDelete
-        , handleReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 4)
-        , handleGetMessageContent = noopFetch
-        , handleGetSenderMemberInfo = noopSenderMember
-        , handleGetMemberInfo = noopMember
-        , handleGetUserAvatar = noopUserAvatar
-        , handleListGroupMembers = noopMembers
-        , handleMentionUser = noopMention
-        , handleSetMemberTitle = noopSetMemberTitle
-        , handleSetTyping = noopSetTyping
+      defaultAgentMockChatDriver
+        { agentReply = recordReply replies nextReplyId
+        , agentEditMessage = recordEdit edits
+        , agentReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 4)
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
@@ -1613,23 +1535,7 @@ testConversationStorageOmitsLargeToolResults =
                               pure answer)
                           $
                             AgentAudit.runAgentAudit $
-                              Chat.runChatWith
-                                Chat.ChatHandlers
-                                  { handleReplyTo = \_ _ -> pure (Left "noop reply")
-                                  , handleReplyAudio = noopReplyAudio
-                                  , handleUploadFile = noopUpload
-                                  , handleEditMessage = noopEdit
-                                  , handleDeleteMessage = noopDelete
-                                  , handleReplyStreamStyle = noopReplyStreamStyle
-                                  , handleGetMessageContent = noopFetch
-                                  , handleGetSenderMemberInfo = noopSenderMember
-                                  , handleGetMemberInfo = noopMember
-                                  , handleGetUserAvatar = noopUserAvatar
-                                  , handleListGroupMembers = noopMembers
-                                  , handleMentionUser = noopMention
-                                  , handleSetMemberTitle = noopSetMemberTitle
-                                  , handleSetTyping = noopSetTyping
-                                  }
+                              Chat.runChatWith NoopChatDriver
                               do
                                 agentRun <- Agent.startAgentRun agentContext [largeResultTool result]
                                 outputs S.:> agentResult <- S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun) (startWithUser "fetch"))
@@ -2347,23 +2253,11 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
                                     pure answer) $
                                 ChatLog.runChatLog $
                                   AgentAudit.runAgentAudit $
-                                    Chat.runChatWith
-                                      Chat.ChatHandlers
-                                        { handleReplyTo = mockReply chatMock
-                                        , handleReplyAudio = noopReplyAudio
-                                        , handleUploadFile = noopUpload
-                                        , handleEditMessage = noopEdit
-                                        , handleDeleteMessage = noopDelete
-                                        , handleReplyStreamStyle = noopReplyStreamStyle
-                                        , handleGetMessageContent = \_ _ -> pure referencedMessage
-                                        , handleGetSenderMemberInfo = noopSenderMember
-                                        , handleGetMemberInfo = noopMember
-                                        , handleGetUserAvatar = mockUserAvatar chatMock
-                                        , handleListGroupMembers = noopMembers
-                                        , handleMentionUser = noopMention
-                                        , handleSetMemberTitle = noopSetMemberTitle
-                                        , handleSetTyping = noopSetTyping
-                                        }
+                                    Chat.runChatWith defaultAgentMockChatDriver
+                                      { agentReply = mockReply chatMock
+                                      , agentFetchMessage = \_ _ -> pure referencedMessage
+                                      , agentUserAvatar = mockUserAvatar chatMock
+                                      }
                                       action
   either assertFailure pure result
 
@@ -2401,23 +2295,10 @@ runAgentWithStreamingAnswers answers chatMock action = do
                                     pure streamingAnswer.answer) $
                                 ChatLog.runChatLog $
                                   AgentAudit.runAgentAudit $
-                                    Chat.runChatWith
-                                      Chat.ChatHandlers
-                                        { handleReplyTo = mockReply chatMock
-                                        , handleReplyAudio = noopReplyAudio
-                                        , handleUploadFile = noopUpload
-                                        , handleEditMessage = noopEdit
-                                        , handleDeleteMessage = noopDelete
-                                        , handleReplyStreamStyle = noopReplyStreamStyle
-                                        , handleGetMessageContent = noopFetch
-                                        , handleGetSenderMemberInfo = noopSenderMember
-                                        , handleGetMemberInfo = noopMember
-                                        , handleGetUserAvatar = mockUserAvatar chatMock
-                                        , handleListGroupMembers = noopMembers
-                                        , handleMentionUser = noopMention
-                                        , handleSetMemberTitle = noopSetMemberTitle
-                                        , handleSetTyping = noopSetTyping
-                                        }
+                                    Chat.runChatWith defaultAgentMockChatDriver
+                                      { agentReply = mockReply chatMock
+                                      , agentUserAvatar = mockUserAvatar chatMock
+                                      }
                                       action
   either assertFailure pure result
 
@@ -2528,50 +2409,10 @@ recordReply replies nextReplyId message body = do
   liftIO $ IORef.atomicModifyIORef' nextReplyId \replyId ->
     (replyId + 1, Right (integerMessageId replyId))
 
-noopFetch :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
-noopFetch _ _ =
-  pure Nothing
-
-noopUpload :: IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
-noopUpload _ _ =
-  pure (Right "noop-upload")
-
-noopReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
-noopReplyAudio _ _ _ =
-  pure (Right "noop-audio")
-
-noopEdit :: IncomingMessage -> MessageId -> Text -> Eff es Bool
-noopEdit _ _ _ =
-  pure False
-
 recordEdit :: IOE :> es => IORef.IORef [(MessageId, Text)] -> IncomingMessage -> MessageId -> Text -> Eff es Bool
 recordEdit edits _ messageId body = do
   liftIO $ IORef.modifyIORef' edits (<> [(messageId, body)])
   pure True
-
-noopDelete :: IncomingMessage -> MessageId -> Eff es Bool
-noopDelete _ _ =
-  pure False
-
-noopReplyStreamStyle :: IncomingMessage -> Eff es Chat.ReplyStreamStyle
-noopReplyStreamStyle _ =
-  pure (Chat.ChunkedReply 1800)
-
-noopSenderMember :: IncomingMessage -> Eff es (Maybe Aeson.Value)
-noopSenderMember _ =
-  pure Nothing
-
-noopMember :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
-noopMember _ _ =
-  pure Nothing
-
-noopUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
-noopUserAvatar _ _ =
-  pure Nothing
-
-noopMembers :: IncomingMessage -> Eff es (Maybe Aeson.Value)
-noopMembers _ =
-  pure Nothing
 
 runMediaNormalizingRefs :: Eff (Media.Media : es) a -> Eff es a
 runMediaNormalizingRefs =
@@ -2628,18 +2469,6 @@ runMediaLeavingRefs =
       pure Nothing
     Media.StorePlatformMediaRef _ _ _ _ ->
       pure ()
-
-noopMention :: IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
-noopMention _ _ _ =
-  pure (Left "noop mention")
-
-noopSetMemberTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
-noopSetMemberTitle _ _ _ =
-  pure False
-
-noopSetTyping :: IncomingMessage -> Int -> Eff es ()
-noopSetTyping _ _ =
-  pure ()
 
 mockUserAvatar :: ChatMock -> IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
 mockUserAvatar ChatMock{userAvatar} _ _ =

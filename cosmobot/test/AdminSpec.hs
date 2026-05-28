@@ -1,5 +1,7 @@
 module Main (main) where
 
+import Bot.Chat.Driver.Types (ChatDriverEffects)
+import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Storage.SQLite as StorageSQLite
@@ -17,6 +19,17 @@ import Effectful.FileSystem (runFileSystem)
 import Effectful.Process (runProcess)
 import Test.Tasty
 import Test.Tasty.HUnit
+
+data AdminChatDriver es = AdminChatDriver
+  { sendReply :: IncomingMessage -> Text -> Eff es (Either Text MessageId)
+  , setTitle :: IncomingMessage -> Text -> Text -> Eff es Bool
+  }
+
+instance Driver.ChatDriver (AdminChatDriver es0) where
+  type ChatDriverEffects (AdminChatDriver es0) es = es ~ es0
+  driverPlatform _ = PlatformTelegram
+  replyTo driver = driver.sendReply
+  setMemberTitle driver = driver.setTitle
 
 main :: IO ()
 main =
@@ -118,7 +131,7 @@ testLifecycleStartupRepliesAreDeletedAfterDrain = do
     runTestLog $
       StorageSQLite.runStorageSQLitePath ":memory:" $
         Media.runMediaPassthrough $
-          Chat.runChatWith (chatHandlers replies Nothing False) do
+          Chat.runChatWith (testChatDriver replies Nothing False) do
             void $ LifecycleStorage.enqueueStartupReply "test-startup-reply" message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
             Lifecycle.runLifecycle MediaConfig.defaultConfig (pure ())
             LifecycleStorage.loadStartupActions
@@ -170,7 +183,7 @@ runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incomin
     runConcurrent $
     runTestLog $
       StorageSQLite.runStorageSQLitePath ":memory:" $
-        Chat.runChatWith (chatHandlers replies titleCalls titleResult) do
+        Chat.runChatWith (testChatDriver replies titleCalls titleResult) do
           runAdminStack do
             runHandlers (adminHandlers cfg) incoming
             when (delayMicros > 0) (threadDelay delayMicros)
@@ -181,54 +194,21 @@ runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incomin
         . runProcess
         . runConcurrent
 
-chatHandlers
+testChatDriver
   :: IOE :> es
   => IORef.IORef [Text]
   -> Maybe (IORef.IORef [(Maybe Integer, Text, Text)])
   -> Bool
-  -> Chat.ChatHandlers es
-chatHandlers replies titleCalls titleResult =
-  Chat.ChatHandlers
-    { handleReplyTo = reply
-    , handleUploadFile = upload
-    , handleReplyAudio = replyAudio
-    , handleEditMessage = edit
-    , handleDeleteMessage = delete
-    , handleReplyStreamStyle = replyStreamStyle
-    , handleGetMessageContent = fetch
-    , handleGetSenderMemberInfo = fetchSenderMember
-    , handleGetMemberInfo = fetchMember
-    , handleGetUserAvatar = fetchUserAvatar
-    , handleListGroupMembers = listMembers
-    , handleMentionUser = mention
-    , handleSetMemberTitle = setMemberTitle
+  -> AdminChatDriver es
+testChatDriver replies titleCalls titleResult =
+  AdminChatDriver
+    { sendReply = reply
+    , setTitle = setMemberTitle
     }
   where
     reply _ body = do
       liftIO $ IORef.modifyIORef' replies (<> [body])
       pure (Right "1")
-    upload _ _ =
-      pure (Right "upload")
-    replyAudio _ _ _ =
-      pure (Right "audio")
-    edit _ _ _ =
-      pure False
-    delete _ _ =
-      pure False
-    replyStreamStyle _ =
-      pure (Chat.ChunkedReply 1800)
-    fetch _ _ =
-      pure Nothing
-    fetchSenderMember _ =
-      pure Nothing
-    fetchMember _ _ =
-      pure Nothing
-    fetchUserAvatar _ _ =
-      pure Nothing
-    listMembers _ =
-      pure Nothing
-    mention _ _ _ =
-      pure (Left "noop mention")
     setMemberTitle incoming userId title = do
       traverse_ (\ref -> liftIO $ IORef.modifyIORef' ref (<> [(incoming.chatId, userId, title)])) titleCalls
       pure titleResult
