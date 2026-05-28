@@ -31,8 +31,8 @@ import Bot.Core.Message
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+import Bot.Util.Aeson
 import qualified Data.Aeson as Aeson
-import qualified Data.Foldable as Foldable
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
@@ -53,18 +53,7 @@ newtype Conversation = Conversation
   { messages :: Seq.Seq LLM.ChatMessage
   }
   deriving (Show, Generic)
-
--- Conversation JSON is intentionally an object instead of a bare list, so the
--- core value can grow without breaking persisted rows immediately.
-instance Aeson.ToJSON Conversation where
-  toJSON Conversation{messages} =
-    Aeson.object
-      [ "messages" Aeson..= Foldable.toList messages
-      ]
-
-instance Aeson.FromJSON Conversation where
-  parseJSON = Aeson.withObject "Conversation" $ \o ->
-    Conversation . Seq.fromList <$> o Aeson..: "messages"
+    deriving (Aeson.ToJSON, Aeson.FromJSON) via (SnakeJSON Conversation)
 
 -- | Chat-scoped identity for a message that can anchor a conversation node.
 --

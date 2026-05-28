@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -34,6 +35,7 @@ import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
+import Bot.Util.Aeson
 import qualified Bot.Effect.HTTP as HTTP
 import Commonmark
 import qualified Commonmark.Entity as Commonmark
@@ -954,23 +956,13 @@ data GatewayEnvelope = GatewayEnvelope
   , t :: !(Maybe Text)
   }
   deriving (Show, Generic)
-
-instance Aeson.FromJSON GatewayEnvelope where
-  parseJSON = Aeson.withObject "GatewayEnvelope" \o ->
-    GatewayEnvelope
-      <$> o Aeson..: "op"
-      <*> o Aeson..: "d"
-      <*> o Aeson..:? "s"
-      <*> o Aeson..:? "t"
+    deriving Aeson.FromJSON via (SnakeJSON GatewayEnvelope)
 
 data GatewayHello = GatewayHello
   { heartbeatInterval :: !Int
   }
   deriving (Show, Generic)
-
-instance Aeson.FromJSON GatewayHello where
-  parseJSON = Aeson.withObject "GatewayHello" \o ->
-    GatewayHello <$> o Aeson..: "heartbeat_interval"
+    deriving Aeson.FromJSON via (SnakeJSON GatewayHello)
 
 parseGatewayData :: (IOE :> es, Aeson.FromJSON a) => String -> Aeson.Value -> Eff es a
 parseGatewayData label value =
@@ -1044,14 +1036,7 @@ data Attachment = Attachment
   , contentType :: !(Maybe Text)
   }
   deriving (Show, Generic)
-
-instance Aeson.FromJSON Attachment where
-  parseJSON = Aeson.withObject "Attachment" \o ->
-    Attachment
-      <$> o Aeson..: "id"
-      <*> o Aeson..: "filename"
-      <*> o Aeson..: "url"
-      <*> o Aeson..:? "content_type"
+    deriving Aeson.FromJSON via (SnakeJSON Attachment)
 
 data Embed = Embed
   { image :: !(Maybe EmbedImage)
@@ -1063,10 +1048,7 @@ data EmbedImage = EmbedImage
   { imageUrl :: !Text
   }
   deriving (Show, Generic)
-
-instance Aeson.FromJSON EmbedImage where
-  parseJSON = Aeson.withObject "EmbedImage" \o ->
-    EmbedImage <$> o Aeson..: "url"
+    deriving Aeson.FromJSON via (PrefixedSnakeJSON "image" EmbedImage)
 
 data Reference = Reference
   { messageId :: !MessageId
@@ -1074,20 +1056,7 @@ data Reference = Reference
   , guildId :: !(Maybe Text)
   }
   deriving (Show, Generic)
-
-instance Aeson.FromJSON Reference where
-  parseJSON = Aeson.withObject "Reference" \o ->
-    Reference
-      <$> (textMessageId <$> o Aeson..: "message_id")
-      <*> o Aeson..: "channel_id"
-      <*> o Aeson..:? "guild_id"
-
-instance Aeson.ToJSON Reference where
-  toJSON Reference{..} = Aeson.object $
-    [ "message_id" Aeson..= messageIdText messageId
-    , "channel_id" Aeson..= channelId
-    ]
-    <> maybeField "guild_id" guildId
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing Reference)
 
 data AllowedMentions = AllowedMentions
   { parse :: ![Text]
@@ -1095,13 +1064,7 @@ data AllowedMentions = AllowedMentions
   , repliedUser :: !(Maybe Bool)
   }
   deriving (Show, Generic)
-
-instance Aeson.ToJSON AllowedMentions where
-  toJSON AllowedMentions{..} = Aeson.object $
-    [ "parse" Aeson..= parse
-    , "users" Aeson..= users
-    ]
-    <> maybeField "replied_user" repliedUser
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing AllowedMentions)
 
 data CreateMessageRequest = CreateMessageRequest
   { content :: !Text
@@ -1109,14 +1072,4 @@ data CreateMessageRequest = CreateMessageRequest
   , allowedMentions :: !AllowedMentions
   }
   deriving (Show, Generic)
-
-instance Aeson.ToJSON CreateMessageRequest where
-  toJSON CreateMessageRequest{..} = Aeson.object $
-    [ "content" Aeson..= content
-    , "allowed_mentions" Aeson..= allowedMentions
-    ]
-    <> maybeField "message_reference" messageReference
-
-maybeField :: Aeson.ToJSON value => Aeson.Key -> Maybe value -> [Aeson.Pair]
-maybeField key =
-  maybe [] \value -> [key Aeson..= value]
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing CreateMessageRequest)

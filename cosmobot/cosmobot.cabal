@@ -267,6 +267,7 @@ library
         Bot.System.Typst.CLI
         Bot.System.Typst.Test
         Bot.System.Typst.Types
+        Bot.Util.Aeson
         Bot.Util.Html
         Bot.Util.HList
         Bot.Util.Image

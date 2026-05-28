@@ -68,14 +68,7 @@ data RpcClientEvent
 
 newtype RpcSessionId = RpcSessionId { unRpcSessionId :: Text }
   deriving (Eq, Ord, Show)
-
-instance Aeson.ToJSON RpcSessionId where
-  toJSON =
-    Aeson.String . (.unRpcSessionId)
-
-instance Aeson.FromJSON RpcSessionId where
-  parseJSON value =
-    RpcSessionId <$> Aeson.parseJSON value
+    deriving (Aeson.ToJSON, Aeson.FromJSON) via Text
 
 data RpcState = RpcState
   { clients :: !(STM.TVar (Map RpcClientId RpcClientQueue))

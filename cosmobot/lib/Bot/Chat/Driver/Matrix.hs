@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -32,6 +33,7 @@ import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Mime as Mime
 import qualified Bot.Storage.Matrix as MatrixStorage
+import Bot.Util.Aeson
 import qualified Bot.Effect.Chat as Chat
 import Bot.Core.Message
 import Bot.Prelude
@@ -82,6 +84,7 @@ newtype MatrixRoomId = MatrixRoomId Text
 
 newtype MatrixEventId = MatrixEventId Text
   deriving (Show, Eq, Ord)
+    deriving (Aeson.ToJSON, Aeson.FromJSON) via Text
 
 newtype MatrixReplyTo = MatrixReplyTo MatrixEventId
   deriving (Show, Eq)
@@ -344,7 +347,8 @@ data MatrixAuthState = MatrixAuthState
   { authAccessToken :: !(Maybe Text)
   , authRefreshToken :: !(Maybe Text)
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (PrefixedSnakeJSON "auth" MatrixAuthState)
 
 data MatrixDownloadedMedia = MatrixDownloadedMedia
   { downloadedBytes :: !StrictByteString.ByteString
@@ -585,19 +589,6 @@ instance MatrixAPI MatrixSetTyping where
       PUT
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText typingRoomId /: "typing" /: typingUserId)
       (ReqBodyJson request)
-
-instance Aeson.FromJSON MatrixAuthState where
-  parseJSON = Aeson.withObject "MatrixAuthState" \o ->
-    MatrixAuthState
-      <$> o Aeson..:? "access_token"
-      <*> o Aeson..:? "refresh_token"
-
-instance Aeson.ToJSON MatrixAuthState where
-  toJSON MatrixAuthState{authAccessToken, authRefreshToken} =
-    Aeson.object
-      [ "access_token" Aeson..= authAccessToken
-      , "refresh_token" Aeson..= authRefreshToken
-      ]
 
 initialMatrixAuthState :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Config -> Eff es MatrixAuthState
 initialMatrixAuthState cfg =
@@ -861,26 +852,16 @@ matrixSyncOptions token since baseOptions =
 newtype MatrixRefreshRequest = MatrixRefreshRequest
   { requestRefreshToken :: Text
   }
-
-instance Aeson.ToJSON MatrixRefreshRequest where
-  toJSON MatrixRefreshRequest{requestRefreshToken} =
-    Aeson.object
-      [ "refresh_token" Aeson..= requestRefreshToken
-      ]
+  deriving (Generic)
+    deriving Aeson.ToJSON via (PrefixedSnakeJSON "request" MatrixRefreshRequest)
 
 data MatrixRefreshResponse = MatrixRefreshResponse
   { refreshedAccessToken :: !Text
   , refreshedRefreshToken :: !(Maybe Text)
   , refreshedExpiresInMs :: !(Maybe Integer)
   }
-  deriving (Show, Eq)
-
-instance Aeson.FromJSON MatrixRefreshResponse where
-  parseJSON = Aeson.withObject "MatrixRefreshResponse" \o ->
-    MatrixRefreshResponse
-      <$> o Aeson..: "access_token"
-      <*> o Aeson..:? "refresh_token"
-      <*> o Aeson..:? "expires_in_ms"
+  deriving (Show, Eq, Generic)
+    deriving Aeson.FromJSON via (PrefixedSnakeJSON "refreshed" MatrixRefreshResponse)
 
 data MatrixErrorResponse = MatrixErrorResponse
   { errcode :: !Text
@@ -936,16 +917,8 @@ data MatrixLoginResponse = MatrixLoginResponse
   , loginRefreshToken :: !(Maybe Text)
   , loginExpiresInMs :: !(Maybe Integer)
   }
-  deriving (Show, Eq)
-
-instance Aeson.FromJSON MatrixLoginResponse where
-  parseJSON = Aeson.withObject "MatrixLoginResponse" \o ->
-    MatrixLoginResponse
-      <$> o Aeson..: "user_id"
-      <*> o Aeson..:? "device_id"
-      <*> o Aeson..: "access_token"
-      <*> o Aeson..:? "refresh_token"
-      <*> o Aeson..:? "expires_in_ms"
+  deriving (Show, Eq, Generic)
+    deriving Aeson.FromJSON via (PrefixedSnakeJSON "login" MatrixLoginResponse)
 
 incomingMessages
   :: (HTTP.HTTP :> es, Media.Media :> es, KatipE :> es, IOE :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
@@ -2093,16 +2066,11 @@ newtype MatrixMentions = MatrixMentions
   { userIds :: [Text]
   }
   deriving (Show, Generic)
+    deriving Aeson.ToJSON via (SnakeJSON MatrixMentions)
 
 instance Aeson.FromJSON MatrixMentions where
   parseJSON = Aeson.withObject "MatrixMentions" \o ->
     MatrixMentions <$> o Aeson..:? "user_ids" Aeson..!= []
-
-instance Aeson.ToJSON MatrixMentions where
-  toJSON MatrixMentions{userIds} =
-    Aeson.object
-      [ "user_ids" Aeson..= userIds
-      ]
 
 newtype MatrixRelatesTo = MatrixRelatesTo
   { inReplyToEventId :: Maybe MatrixEventId
@@ -2124,16 +2092,7 @@ newtype MatrixInReplyTo = MatrixInReplyTo
   { replyEventId :: Maybe MatrixEventId
   }
   deriving (Show, Generic)
-
-instance Aeson.FromJSON MatrixInReplyTo where
-  parseJSON = Aeson.withObject "MatrixInReplyTo" \o ->
-    MatrixInReplyTo . fmap matrixEventId <$> o Aeson..:? "event_id"
-
-instance Aeson.ToJSON MatrixInReplyTo where
-  toJSON MatrixInReplyTo{replyEventId} =
-    Aeson.object
-      [ "event_id" Aeson..= fmap matrixEventIdText replyEventId
-      ]
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (PrefixedSnakeJSON "reply" MatrixInReplyTo)
 
 data SendMessageRequest = SendMessageRequest
   { msgtype :: !Text
@@ -2158,10 +2117,7 @@ newtype MatrixUploadResponse = MatrixUploadResponse
   { contentUri :: Text
   }
   deriving (Show, Generic)
-
-instance Aeson.FromJSON MatrixUploadResponse where
-  parseJSON = Aeson.withObject "MatrixUploadResponse" \o ->
-    MatrixUploadResponse <$> o Aeson..: "content_uri"
+    deriving Aeson.FromJSON via (SnakeJSON MatrixUploadResponse)
 
 data MatrixFileInfo = MatrixFileInfo
   { mimetype :: !Text
@@ -2177,16 +2133,7 @@ data MatrixFileMessage = MatrixFileMessage
   , info :: !MatrixFileInfo
   }
   deriving (Show, Generic)
-
-instance Aeson.ToJSON MatrixFileMessage where
-  toJSON MatrixFileMessage{msgtype, body, filename, url, info} =
-    Aeson.object
-      [ "msgtype" Aeson..= msgtype
-      , "body" Aeson..= body
-      , "filename" Aeson..= filename
-      , "url" Aeson..= url
-      , "info" Aeson..= info
-      ]
+    deriving Aeson.ToJSON via (SnakeJSON MatrixFileMessage)
 
 data MatrixFileMessageRequest = MatrixFileMessageRequest
   { message :: !MatrixFileMessage
@@ -2338,19 +2285,13 @@ newtype SendMessageResponse = SendMessageResponse
   { eventId :: MatrixEventId
   }
   deriving (Show, Generic)
-
-instance Aeson.FromJSON SendMessageResponse where
-  parseJSON = Aeson.withObject "SendMessageResponse" \o ->
-    SendMessageResponse . matrixEventId <$> o Aeson..: "event_id"
+    deriving Aeson.FromJSON via (SnakeJSON SendMessageResponse)
 
 newtype RedactEventResponse = RedactEventResponse
   { redactionEventId :: Text
   }
   deriving (Show, Generic)
-
-instance Aeson.FromJSON RedactEventResponse where
-  parseJSON = Aeson.withObject "RedactEventResponse" \o ->
-    RedactEventResponse <$> o Aeson..: "event_id"
+    deriving Aeson.FromJSON via (PrefixedSnakeJSON "redaction" RedactEventResponse)
 
 matrixSyncTimeoutMilliseconds :: Int
 matrixSyncTimeoutMilliseconds = 30000

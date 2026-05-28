@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -46,6 +47,7 @@ import qualified Bot.Effect.Chat as ChatEffect
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Media.Mime as Mime
 import Bot.Util.Multipart
+import Bot.Util.Aeson
 import Bot.Core.Message
 import Commonmark hiding (escapeHtml)
 import qualified Commonmark.Entity as Commonmark
@@ -62,7 +64,6 @@ import Commonmark.Extensions
 import Data.List (maximum)
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -535,10 +536,6 @@ telegramResultError = \case
   Ok _ -> "Telegram API returned ok result in an HTTP error response."
   Err desc -> desc
 
-maybeField :: Aeson.ToJSON value => Aeson.Key -> Maybe value -> [Aeson.Pair]
-maybeField key =
-  maybe [] (\value -> [key Aeson..= value])
-
 telegramLongPollTimeoutSeconds :: Int
 telegramLongPollTimeoutSeconds = 30
 
@@ -878,23 +875,7 @@ data Update = Update
   , channelPost       :: Maybe Message
   , editedChannelPost :: Maybe Message
   } deriving (Show, Generic)
-
-instance Aeson.FromJSON Update where
-  parseJSON = Aeson.withObject "Update" $ \o -> do
-    updateId <- o Aeson..: "update_id"
-    message <- o Aeson..:? "message"
-    editedMessage <- o Aeson..:? "edited_message"
-    channelPost <- o Aeson..:? "channel_post"
-    editedChannelPost <- o Aeson..:? "edited_channel_post"
-    pure Update{..}
-
-instance Aeson.ToJSON Update where
-  toJSON Update{..} = Aeson.object $
-    [ "update_id" Aeson..= updateId ]
-    <> maybeField "message" message
-    <> maybeField "edited_message" editedMessage
-    <> maybeField "channel_post" channelPost
-    <> maybeField "edited_channel_post" editedChannelPost
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing Update)
 
 -- | Telegram user object fields used by the bot.
 data User = User
@@ -904,26 +885,7 @@ data User = User
   , lastName  :: !(Maybe Text)
   , username  :: !(Maybe Text)
   } deriving (Show, Generic)
-
-instance Aeson.FromJSON User where
-  parseJSON = Aeson.withObject "User" $ \o -> do
-    userId <- o Aeson..: "id"
-    isBot <- o Aeson..: "is_bot"
-    firstName <- o Aeson..: "first_name"
-    lastName <- o Aeson..:? "last_name"
-    username <- o Aeson..:? "username"
-    pure User{id = userId, ..}
-
-instance Aeson.ToJSON User where
-  toJSON user = Aeson.object $
-    [ "id" Aeson..= user.id
-    , "is_bot" Aeson..= isBot
-    , "first_name" Aeson..= firstName
-    ]
-    <> maybeField "last_name" lastName
-    <> maybeField "username" username
-    where
-      User{isBot, firstName, lastName, username} = user
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing User)
 
 -- | Telegram message object fields consumed by the unified parser.
 data Message = Message
@@ -939,36 +901,7 @@ data Message = Message
   , captionEntities :: !(Maybe [MessageEntity])
   , photo           :: !(Maybe [PhotoSize])
   } deriving (Show, Generic)
-
-instance Aeson.FromJSON Message where
-  parseJSON = Aeson.withObject "Message" $ \o -> do
-    messageId <- o Aeson..: "message_id"
-    messageThreadId <- o Aeson..:? "message_thread_id"
-    from <- o Aeson..:? "from"
-    senderChat <- o Aeson..:? "sender_chat"
-    chat <- o Aeson..: "chat"
-    replyToMessage <- o Aeson..:? "reply_to_message"
-    text <- o Aeson..:? "text"
-    entities <- o Aeson..:? "entities"
-    caption <- o Aeson..:? "caption"
-    captionEntities <- o Aeson..:? "caption_entities"
-    photo <- o Aeson..:? "photo"
-    pure Message{..}
-
-instance Aeson.ToJSON Message where
-  toJSON Message{..} = Aeson.object $
-    [ "message_id" Aeson..= messageId
-    , "chat" Aeson..= chat
-    ]
-    <> maybeField "message_thread_id" messageThreadId
-    <> maybeField "from" from
-    <> maybeField "sender_chat" senderChat
-    <> maybeField "reply_to_message" replyToMessage
-    <> maybeField "text" text
-    <> maybeField "entities" entities
-    <> maybeField "caption" caption
-    <> maybeField "caption_entities" captionEntities
-    <> maybeField "photo" photo
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing Message)
 
 -- | Telegram photo variant metadata.
 data PhotoSize = PhotoSize
@@ -978,24 +911,7 @@ data PhotoSize = PhotoSize
   , height       :: !Integer
   , fileSize     :: !(Maybe Integer)
   } deriving (Show, Generic)
-
-instance Aeson.FromJSON PhotoSize where
-  parseJSON = Aeson.withObject "PhotoSize" $ \o -> do
-    fileId <- o Aeson..: "file_id"
-    fileUniqueId <- o Aeson..: "file_unique_id"
-    width <- o Aeson..: "width"
-    height <- o Aeson..: "height"
-    fileSize <- o Aeson..:? "file_size"
-    pure PhotoSize{..}
-
-instance Aeson.ToJSON PhotoSize where
-  toJSON PhotoSize{..} = Aeson.object $
-    [ "file_id" Aeson..= fileId
-    , "file_unique_id" Aeson..= fileUniqueId
-    , "width" Aeson..= width
-    , "height" Aeson..= height
-    ]
-    <> maybeField "file_size" fileSize
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing PhotoSize)
 
 -- | Telegram message entity metadata used for mention extraction.
 data MessageEntity = MessageEntity
@@ -1006,28 +922,7 @@ data MessageEntity = MessageEntity
   , language :: !(Maybe Text)
   , user   :: !(Maybe User)
   } deriving (Show, Generic)
-
-instance Aeson.FromJSON MessageEntity where
-  parseJSON = Aeson.withObject "MessageEntity" $ \o -> do
-    type_ <- o Aeson..: "type"
-    offset <- o Aeson..: "offset"
-    entityLength <- o Aeson..: "length"
-    url <- o Aeson..:? "url"
-    language <- o Aeson..:? "language"
-    user <- o Aeson..:? "user"
-    pure MessageEntity{length = entityLength, ..}
-
-instance Aeson.ToJSON MessageEntity where
-  toJSON messageEntity = Aeson.object $
-    [ "type" Aeson..= type_
-    , "offset" Aeson..= offset
-    , "length" Aeson..= messageEntity.length
-    ]
-    <> maybeField "url" url
-    <> maybeField "language" language
-    <> maybeField "user" user
-    where
-      MessageEntity{type_, offset, url, language, user} = messageEntity
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing MessageEntity)
 
 -- | Telegram chat kind.
 data ChatType
@@ -1060,28 +955,7 @@ data Chat = Chat
   , firstName :: !(Maybe Text)
   , lastName  :: !(Maybe Text)
   } deriving (Show, Generic)
-
-instance Aeson.FromJSON Chat where
-  parseJSON = Aeson.withObject "Chat" $ \o -> do
-    chatId <- o Aeson..: "id"
-    type_ <- o Aeson..: "type"
-    title <- o Aeson..:? "title"
-    username <- o Aeson..:? "username"
-    firstName <- o Aeson..:? "first_name"
-    lastName <- o Aeson..:? "last_name"
-    pure Chat{id = chatId, ..}
-
-instance Aeson.ToJSON Chat where
-  toJSON chat = Aeson.object $
-    [ "id" Aeson..= chat.id
-    , "type" Aeson..= type_
-    ]
-    <> maybeField "title" title
-    <> maybeField "username" username
-    <> maybeField "first_name" firstName
-    <> maybeField "last_name" lastName
-    where
-      Chat{type_, title, username, firstName, lastName} = chat
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing Chat)
 
 -- | Telegram membership status.
 data ChatMemberStatus
@@ -1092,42 +966,14 @@ data ChatMemberStatus
   | ChatMemberLeft
   | ChatMemberKicked
   deriving (Show, Generic)
-
-instance Aeson.FromJSON ChatMemberStatus where
-  parseJSON = Aeson.withText "ChatMemberStatus" $ \case
-    "creator"       -> pure ChatMemberCreator
-    "administrator" -> pure ChatMemberAdministrator
-    "member"        -> pure ChatMemberMember
-    "restricted"    -> pure ChatMemberRestricted
-    "left"          -> pure ChatMemberLeft
-    "kicked"        -> pure ChatMemberKicked
-    other           -> fail $ "Unknown ChatMemberStatus: " <> show other
-
-instance Aeson.ToJSON ChatMemberStatus where
-  toJSON ChatMemberCreator       = Aeson.String "creator"
-  toJSON ChatMemberAdministrator = Aeson.String "administrator"
-  toJSON ChatMemberMember        = Aeson.String "member"
-  toJSON ChatMemberRestricted    = Aeson.String "restricted"
-  toJSON ChatMemberLeft          = Aeson.String "left"
-  toJSON ChatMemberKicked        = Aeson.String "kicked"
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (PrefixedEnumJSON "ChatMember" ChatMemberStatus)
 
 -- | Telegram membership information returned by @getChatMember@.
 data ChatMember = ChatMember
   { status :: !ChatMemberStatus
   , user   :: !User
   } deriving (Show, Generic)
-
-instance Aeson.FromJSON ChatMember where
-  parseJSON = Aeson.withObject "ChatMember" $ \o -> do
-    status <- o Aeson..: "status"
-    user <- o Aeson..: "user"
-    pure ChatMember{..}
-
-instance Aeson.ToJSON ChatMember where
-  toJSON ChatMember{..} = Aeson.object
-    [ "status" Aeson..= status
-    , "user" Aeson..= user
-    ]
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSON ChatMember)
 
 -- | Telegram parse mode for outbound formatted text.
 data ParseMode
@@ -1165,11 +1011,7 @@ instance TelegramRequest GetMeRequest where
 newtype GetFileRequest = GetFileRequest
   { fileId :: Text
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON GetFileRequest where
-  toJSON GetFileRequest{..} = Aeson.object
-    [ "file_id" Aeson..= fileId
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON GetFileRequest)
 
 instance TelegramRequest GetFileRequest where
   type TelegramResponse GetFileRequest = File
@@ -1180,13 +1022,7 @@ data GetUserProfilePhotosRequest = GetUserProfilePhotosRequest
   , offset :: !(Maybe Int)
   , limit  :: !(Maybe Int)
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON GetUserProfilePhotosRequest where
-  toJSON GetUserProfilePhotosRequest{..} = Aeson.object $
-    [ "user_id" Aeson..= userId
-    ]
-    <> maybeField "offset" offset
-    <> maybeField "limit" limit
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing GetUserProfilePhotosRequest)
 
 instance TelegramRequest GetUserProfilePhotosRequest where
   type TelegramResponse GetUserProfilePhotosRequest = UserProfilePhotos
@@ -1196,12 +1032,7 @@ data UserProfilePhotos = UserProfilePhotos
   { totalCount :: !Integer
   , photos     :: ![[PhotoSize]]
   } deriving (Show, Generic)
-
-instance Aeson.FromJSON UserProfilePhotos where
-  parseJSON = Aeson.withObject "UserProfilePhotos" $ \o -> do
-    totalCount <- o Aeson..: "total_count"
-    photos <- o Aeson..: "photos"
-    pure UserProfilePhotos{..}
+    deriving Aeson.FromJSON via (SnakeJSON UserProfilePhotos)
 
 data File = File
   { fileId       :: !Text
@@ -1209,27 +1040,14 @@ data File = File
   , fileSize     :: !(Maybe Integer)
   , filePath     :: !Text
   } deriving (Show, Generic)
-
-instance Aeson.FromJSON File where
-  parseJSON = Aeson.withObject "File" $ \o -> do
-    fileId <- o Aeson..: "file_id"
-    fileUniqueId <- o Aeson..: "file_unique_id"
-    fileSize <- o Aeson..:? "file_size"
-    filePath <- o Aeson..: "file_path"
-    pure File{..}
+    deriving Aeson.FromJSON via (SnakeJSON File)
 
 data GetUpdatesRequest = GetUpdatesRequest
   { offset  :: !Int
   , timeout :: !Int
   , limit   :: !Int
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON GetUpdatesRequest where
-  toJSON GetUpdatesRequest{..} = Aeson.object
-    [ "offset" Aeson..= offset
-    , "timeout" Aeson..= timeout
-    , "limit" Aeson..= limit
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON GetUpdatesRequest)
 
 instance TelegramRequest GetUpdatesRequest where
   type TelegramResponse GetUpdatesRequest = [Update]
@@ -1245,28 +1063,7 @@ data SendMessageRequest = SendMessageRequest
   , disableNotification :: !(Maybe Bool)
   , replyToMessageId    :: !(Maybe Integer)
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON SendMessageRequest where
-  toJSON SendMessageRequest{..} = Aeson.object $
-    [ "chat_id" Aeson..= chatId
-    , "text" Aeson..= text
-    ]
-    <> maybeField "message_thread_id" messageThreadId
-    <> maybeField "parse_mode" parseMode
-    <> maybeField "entities" entities
-    <> maybeField "disable_notification" disableNotification
-    <> maybeField "reply_to_message_id" replyToMessageId
-
-instance Aeson.FromJSON SendMessageRequest where
-  parseJSON = Aeson.withObject "SendMessageRequest" $ \o -> do
-    chatId <- o Aeson..: "chat_id"
-    messageThreadId <- o Aeson..:? "message_thread_id"
-    text <- o Aeson..: "text"
-    parseMode <- o Aeson..:? "parse_mode"
-    entities <- o Aeson..:? "entities"
-    disableNotification <- o Aeson..:? "disable_notification"
-    replyToMessageId <- o Aeson..:? "reply_to_message_id"
-    pure SendMessageRequest{..}
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing SendMessageRequest)
 
 instance TelegramRequest SendMessageRequest where
   type TelegramResponse SendMessageRequest = Message
@@ -1281,26 +1078,7 @@ data EditMessageTextRequest = EditMessageTextRequest
   , entities              :: !(Maybe [MessageEntity])
   , disableWebPagePreview :: !(Maybe Bool)
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON EditMessageTextRequest where
-  toJSON EditMessageTextRequest{..} = Aeson.object $
-    [ "chat_id" Aeson..= chatId
-    , "message_id" Aeson..= messageId
-    , "text" Aeson..= text
-    ]
-    <> maybeField "parse_mode" parseMode
-    <> maybeField "entities" entities
-    <> maybeField "disable_web_page_preview" disableWebPagePreview
-
-instance Aeson.FromJSON EditMessageTextRequest where
-  parseJSON = Aeson.withObject "EditMessageTextRequest" $ \o -> do
-    chatId <- o Aeson..: "chat_id"
-    messageId <- o Aeson..: "message_id"
-    text <- o Aeson..: "text"
-    parseMode <- o Aeson..:? "parse_mode"
-    entities <- o Aeson..:? "entities"
-    disableWebPagePreview <- o Aeson..:? "disable_web_page_preview"
-    pure EditMessageTextRequest{..}
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing EditMessageTextRequest)
 
 instance TelegramRequest EditMessageTextRequest where
   type TelegramResponse EditMessageTextRequest = Message
@@ -1317,30 +1095,7 @@ data SendPhotoRequest = SendPhotoRequest
   , disableNotification :: !(Maybe Bool)
   , replyToMessageId    :: !(Maybe Integer)
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON SendPhotoRequest where
-  toJSON SendPhotoRequest{..} = Aeson.object $
-    [ "chat_id" Aeson..= chatId
-    , "photo" Aeson..= photo
-    ]
-    <> maybeField "message_thread_id" messageThreadId
-    <> maybeField "caption" caption
-    <> maybeField "parse_mode" parseMode
-    <> maybeField "caption_entities" captionEntities
-    <> maybeField "disable_notification" disableNotification
-    <> maybeField "reply_to_message_id" replyToMessageId
-
-instance Aeson.FromJSON SendPhotoRequest where
-  parseJSON = Aeson.withObject "SendPhotoRequest" $ \o -> do
-    chatId <- o Aeson..: "chat_id"
-    messageThreadId <- o Aeson..:? "message_thread_id"
-    photo <- o Aeson..: "photo"
-    caption <- o Aeson..:? "caption"
-    parseMode <- o Aeson..:? "parse_mode"
-    captionEntities <- o Aeson..:? "caption_entities"
-    disableNotification <- o Aeson..:? "disable_notification"
-    replyToMessageId <- o Aeson..:? "reply_to_message_id"
-    pure SendPhotoRequest{..}
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing SendPhotoRequest)
 
 instance TelegramRequest SendPhotoRequest where
   type TelegramResponse SendPhotoRequest = Message
@@ -1357,18 +1112,7 @@ data SendVoiceRequest = SendVoiceRequest
   , disableNotification :: !(Maybe Bool)
   , replyToMessageId    :: !(Maybe Integer)
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON SendVoiceRequest where
-  toJSON SendVoiceRequest{..} = Aeson.object $
-    [ "chat_id" Aeson..= chatId
-    , "voice" Aeson..= voice
-    ]
-    <> maybeField "message_thread_id" messageThreadId
-    <> maybeField "caption" caption
-    <> maybeField "parse_mode" parseMode
-    <> maybeField "caption_entities" captionEntities
-    <> maybeField "disable_notification" disableNotification
-    <> maybeField "reply_to_message_id" replyToMessageId
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing SendVoiceRequest)
 
 instance TelegramRequest SendVoiceRequest where
   type TelegramResponse SendVoiceRequest = Message
@@ -1410,13 +1154,7 @@ data ForwardMessageRequest = ForwardMessageRequest
   , fromChatId :: !Integer
   , messageId  :: !Integer
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON ForwardMessageRequest where
-  toJSON ForwardMessageRequest{..} = Aeson.object
-    [ "chat_id" Aeson..= chatId
-    , "from_chat_id" Aeson..= fromChatId
-    , "message_id" Aeson..= messageId
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON ForwardMessageRequest)
 
 instance TelegramRequest ForwardMessageRequest where
   type TelegramResponse ForwardMessageRequest = Message
@@ -1426,12 +1164,7 @@ data DeleteMessageRequest = DeleteMessageRequest
   { chatId    :: !Integer
   , messageId :: !Integer
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON DeleteMessageRequest where
-  toJSON DeleteMessageRequest{..} = Aeson.object
-    [ "chat_id" Aeson..= chatId
-    , "message_id" Aeson..= messageId
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON DeleteMessageRequest)
 
 instance TelegramRequest DeleteMessageRequest where
   type TelegramResponse DeleteMessageRequest = Bool
@@ -1442,13 +1175,7 @@ data PinMessageRequest = PinMessageRequest
   , messageId           :: !Integer
   , disableNotification :: !Bool
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON PinMessageRequest where
-  toJSON PinMessageRequest{..} = Aeson.object
-    [ "chat_id" Aeson..= chatId
-    , "message_id" Aeson..= messageId
-    , "disable_notification" Aeson..= disableNotification
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON PinMessageRequest)
 
 instance TelegramRequest PinMessageRequest where
   type TelegramResponse PinMessageRequest = Bool
@@ -1458,12 +1185,7 @@ data UnpinMessageRequest = UnpinMessageRequest
   { chatId    :: !Integer
   , messageId :: !Integer
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON UnpinMessageRequest where
-  toJSON UnpinMessageRequest{..} = Aeson.object
-    [ "chat_id" Aeson..= chatId
-    , "message_id" Aeson..= messageId
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON UnpinMessageRequest)
 
 instance TelegramRequest UnpinMessageRequest where
   type TelegramResponse UnpinMessageRequest = Bool
@@ -1472,11 +1194,7 @@ instance TelegramRequest UnpinMessageRequest where
 newtype GetChatRequest = GetChatRequest
   { chatId :: Integer
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON GetChatRequest where
-  toJSON GetChatRequest{..} = Aeson.object
-    [ "chat_id" Aeson..= chatId
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON GetChatRequest)
 
 instance TelegramRequest GetChatRequest where
   type TelegramResponse GetChatRequest = Chat
@@ -1486,12 +1204,7 @@ data GetChatMemberRequest = GetChatMemberRequest
   { chatId :: !Integer
   , userId :: !Integer
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON GetChatMemberRequest where
-  toJSON GetChatMemberRequest{..} = Aeson.object
-    [ "chat_id" Aeson..= chatId
-    , "user_id" Aeson..= userId
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON GetChatMemberRequest)
 
 instance TelegramRequest GetChatMemberRequest where
   type TelegramResponse GetChatMemberRequest = ChatMember
@@ -1502,13 +1215,7 @@ data BanChatMemberRequest = BanChatMemberRequest
   , userId    :: !Integer
   , untilDate :: !(Maybe Integer)
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON BanChatMemberRequest where
-  toJSON BanChatMemberRequest{..} = Aeson.object $
-    [ "chat_id" Aeson..= chatId
-    , "user_id" Aeson..= userId
-    ]
-    <> maybeField "until_date" untilDate
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing BanChatMemberRequest)
 
 instance TelegramRequest BanChatMemberRequest where
   type TelegramResponse BanChatMemberRequest = Bool
@@ -1519,13 +1226,7 @@ data UnbanChatMemberRequest = UnbanChatMemberRequest
   , userId      :: !Integer
   , onlyIfBanned :: !Bool
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON UnbanChatMemberRequest where
-  toJSON UnbanChatMemberRequest{..} = Aeson.object
-    [ "chat_id" Aeson..= chatId
-    , "user_id" Aeson..= userId
-    , "only_if_banned" Aeson..= onlyIfBanned
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON UnbanChatMemberRequest)
 
 instance TelegramRequest UnbanChatMemberRequest where
   type TelegramResponse UnbanChatMemberRequest = Bool
@@ -1534,11 +1235,7 @@ instance TelegramRequest UnbanChatMemberRequest where
 newtype LeaveChatRequest = LeaveChatRequest
   { chatId :: Integer
   } deriving (Show, Generic)
-
-instance Aeson.ToJSON LeaveChatRequest where
-  toJSON LeaveChatRequest{..} = Aeson.object
-    [ "chat_id" Aeson..= chatId
-    ]
+    deriving Aeson.ToJSON via (SnakeJSON LeaveChatRequest)
 
 instance TelegramRequest LeaveChatRequest where
   type TelegramResponse LeaveChatRequest = Bool
@@ -1550,18 +1247,11 @@ data SendChatActionRequest = SendChatActionRequest
   , messageThreadId :: !(Maybe Integer)
   , businessConnectionId :: !(Maybe Text)
   } deriving (Show, Generic)
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing SendChatActionRequest)
 
 instance TelegramRequest SendChatActionRequest where
   type TelegramResponse SendChatActionRequest = Bool
   telegramMethod _ = "sendChatAction"
-
-instance Aeson.ToJSON SendChatActionRequest where
-  toJSON SendChatActionRequest{..} = Aeson.object $
-    [ "chat_id" Aeson..= chatId
-    , "action" Aeson..= action
-    ]
-    <> maybeField "message_thread_id" messageThreadId
-    <> maybeField "business_connection_id" businessConnectionId
 
 data ChatAction
   = ChatActionTyping
@@ -1573,28 +1263,7 @@ data ChatAction
   | ChatActionFindLocation
   | ChatActionUploadVideoNote
   deriving (Show, Generic)
-
-instance Aeson.ToJSON ChatAction where
-  toJSON ChatActionTyping = "typing" :: Aeson.Value
-  toJSON ChatActionUploadPhoto = "upload_photo" :: Aeson.Value
-  toJSON ChatActionUploadVideo = "upload_video" :: Aeson.Value
-  toJSON ChatActionUploadVoice = "upload_voice" :: Aeson.Value
-  toJSON ChatActionUploadDocument = "upload_document" :: Aeson.Value
-  toJSON ChatActionChooseSticker = "choose_sticker" :: Aeson.Value
-  toJSON ChatActionFindLocation = "find_location" :: Aeson.Value
-  toJSON ChatActionUploadVideoNote = "upload_video_note" :: Aeson.Value
-
-instance Aeson.FromJSON ChatAction where
-  parseJSON = Aeson.withText "ChatAction" $ \case
-    "typing" -> pure ChatActionTyping
-    "upload_photo" -> pure ChatActionUploadPhoto
-    "upload_video" -> pure ChatActionUploadVideo
-    "upload_voice" -> pure ChatActionUploadVoice
-    "upload_document" -> pure ChatActionUploadDocument
-    "choose_sticker" -> pure ChatActionChooseSticker
-    "find_location" -> pure ChatActionFindLocation
-    "upload_video_note" -> pure ChatActionUploadVideoNote
-    other -> fail $ "Unknown ChatAction: " <> show other
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (PrefixedEnumJSON "ChatAction" ChatAction)
 
 getUpdates :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Int -> Eff es [Update]
 getUpdates driver offset = callTelegram driver GetUpdatesRequest

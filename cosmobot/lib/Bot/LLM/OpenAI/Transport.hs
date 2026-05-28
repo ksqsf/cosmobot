@@ -27,6 +27,7 @@ import qualified Bot.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import Bot.LLM.OpenAI.Config
 import Bot.LLM.Types
+import Bot.Util.Aeson
 import qualified Bot.Util.Image as Image
 import qualified Bot.Core.ReplyBody as ReplyBody
 import qualified Bot.Util.Stream as StreamUtil
@@ -333,18 +334,7 @@ data ChatCompletionRequest = ChatCompletionRequest
   , stream      :: !(Maybe Bool)
   }
   deriving (Show, Generic)
-
-instance Aeson.ToJSON ChatCompletionRequest where
-  toJSON ChatCompletionRequest{model, reasoningEffort, messages, tools, modalities, imageConfig, stream} =
-    Aeson.object $
-      [ "model" Aeson..= model
-      , "messages" Aeson..= messages
-      ]
-      <> maybe [] (\value -> ["reasoning_effort" Aeson..= value]) reasoningEffort
-      <> maybe [] (\value -> ["tools" Aeson..= value]) tools
-      <> maybe [] (\value -> ["modalities" Aeson..= value]) modalities
-      <> maybe [] (\value -> ["image_config" Aeson..= value]) imageConfig
-      <> maybe [] (\value -> ["stream" Aeson..= value]) stream
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing ChatCompletionRequest)
 
 data ImageGenerationRequest = ImageGenerationRequest
   { model :: !Text
@@ -356,20 +346,8 @@ data ImageGenerationRequest = ImageGenerationRequest
   , stream :: !(Maybe Bool)
   , partialImages :: !(Maybe Int)
   }
-  deriving (Show)
-
-instance Aeson.ToJSON ImageGenerationRequest where
-  toJSON ImageGenerationRequest{model, prompt, quality, size, background, moderation, stream, partialImages} =
-    Aeson.object $
-      [ "model" Aeson..= model
-      , "prompt" Aeson..= prompt
-      ]
-      <> maybe [] (\value -> ["quality" Aeson..= value]) quality
-      <> maybe [] (\value -> ["size" Aeson..= value]) size
-      <> maybe [] (\value -> ["background" Aeson..= value]) background
-      <> maybe [] (\value -> ["moderation" Aeson..= value]) moderation
-      <> maybe [] (\value -> ["stream" Aeson..= value]) stream
-      <> maybe [] (\value -> ["partial_images" Aeson..= value]) partialImages
+  deriving (Show, Generic)
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing ImageGenerationRequest)
 
 data AudioSpeechRequest = AudioSpeechRequest
   { model :: !Text
@@ -379,51 +357,28 @@ data AudioSpeechRequest = AudioSpeechRequest
   , speed :: !(Maybe Double)
   , instructions :: !(Maybe Text)
   }
-  deriving (Show)
-
-instance Aeson.ToJSON AudioSpeechRequest where
-  toJSON AudioSpeechRequest{model, input, voice, responseFormat, speed, instructions} =
-    Aeson.object $
-      [ "model" Aeson..= model
-      , "input" Aeson..= input
-      , "voice" Aeson..= voice
-      , "response_format" Aeson..= responseFormat
-      ]
-      <> maybe [] (\value -> ["speed" Aeson..= value]) speed
-      <> maybe [] (\value -> ["instructions" Aeson..= value]) instructions
+  deriving (Show, Generic)
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing AudioSpeechRequest)
 
 data ImageGenerationResponse = ImageGenerationResponse
   { data_ :: ![ImageGenerationData]
   }
-  deriving (Show)
-
-instance Aeson.FromJSON ImageGenerationResponse where
-  parseJSON = Aeson.withObject "ImageGenerationResponse" \o ->
-    ImageGenerationResponse <$> o Aeson..: "data"
+  deriving (Show, Generic)
+    deriving Aeson.FromJSON via (SnakeJSON ImageGenerationResponse)
 
 data ImageGenerationData = ImageGenerationData
   { url :: !(Maybe Text)
   , b64Json :: !(Maybe Text)
   }
-  deriving (Show)
-
-instance Aeson.FromJSON ImageGenerationData where
-  parseJSON = Aeson.withObject "ImageGenerationData" \o ->
-    ImageGenerationData
-      <$> o Aeson..:? "url"
-      <*> o Aeson..:? "b64_json"
+  deriving (Show, Generic)
+    deriving Aeson.FromJSON via (SnakeJSON ImageGenerationData)
 
 data ImageGenerationStreamEvent = ImageGenerationStreamEvent
   { type_ :: !Text
   , b64Json :: !(Maybe Text)
   }
-  deriving (Show)
-
-instance Aeson.FromJSON ImageGenerationStreamEvent where
-  parseJSON = Aeson.withObject "ImageGenerationStreamEvent" \o ->
-    ImageGenerationStreamEvent
-      <$> o Aeson..: "type"
-      <*> o Aeson..:? "b64_json"
+  deriving (Show, Generic)
+    deriving Aeson.FromJSON via (SnakeJSON ImageGenerationStreamEvent)
 
 newtype ToolSpec
   = FunctionToolSpec FunctionTool
@@ -1133,11 +1088,8 @@ streamPayloadError = \case
 data StreamChoice = StreamChoice
   { delta :: !StreamDelta
   }
-  deriving (Show)
-
-instance Aeson.FromJSON StreamChoice where
-  parseJSON = Aeson.withObject "StreamChoice" $ \o ->
-    StreamChoice <$> o Aeson..: "delta"
+  deriving (Show, Generic)
+    deriving Aeson.FromJSON via (SnakeJSON StreamChoice)
 
 data StreamDelta = StreamDelta
   { content :: !(Maybe Text)
@@ -1156,14 +1108,8 @@ data ToolCallDelta = ToolCallDelta
   , id :: !(Maybe Text)
   , function :: !(Maybe FunctionDelta)
   }
-  deriving (Show)
-
-instance Aeson.FromJSON ToolCallDelta where
-  parseJSON = Aeson.withObject "ToolCallDelta" $ \o -> do
-    index <- o Aeson..: "index"
-    callId <- o Aeson..:? "id"
-    function <- o Aeson..:? "function"
-    pure ToolCallDelta{index, id = callId, function}
+  deriving (Show, Generic)
+    deriving Aeson.FromJSON via (SnakeJSON ToolCallDelta)
 
 data FunctionDelta = FunctionDelta
   { name :: !(Maybe Text)

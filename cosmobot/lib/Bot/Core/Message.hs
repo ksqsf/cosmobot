@@ -33,6 +33,7 @@ module Bot.Core.Message
 where
 
 import Bot.Prelude
+import Bot.Util.Aeson
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
@@ -114,25 +115,7 @@ data MessageDigest = MessageDigest
   , botId :: !(Maybe Text)
   }
   deriving (Eq, Show, Generic)
-
-instance Aeson.ToJSON MessageDigest where
-  toJSON MessageDigest{chatIsAllowed, senderIsAllowed, senderIsSuperuser, mentionsBot, botId} =
-    Aeson.object
-      [ "chatIsAllowed" Aeson..= chatIsAllowed
-      , "senderIsAllowed" Aeson..= senderIsAllowed
-      , "senderIsSuperuser" Aeson..= senderIsSuperuser
-      , "mentionsBot" Aeson..= mentionsBot
-      , "botId" Aeson..= botId
-      ]
-
-instance Aeson.FromJSON MessageDigest where
-  parseJSON = Aeson.withObject "MessageDigest" \o ->
-    MessageDigest
-      <$> o Aeson..: "chatIsAllowed"
-      <*> o Aeson..: "senderIsAllowed"
-      <*> o Aeson..: "senderIsSuperuser"
-      <*> o Aeson..: "mentionsBot"
-      <*> o Aeson..:? "botId"
+    deriving (Aeson.ToJSON, Aeson.FromJSON) via (JSON MessageDigest)
 
 emptyMessageDigest :: MessageDigest
 emptyMessageDigest =
