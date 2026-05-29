@@ -17,6 +17,7 @@ module Bot.LLM.OpenAI.Transport
   , chatStreamTextFromPayloads
   , imageGenerationStreamingRequestPayload
   , imageGenerationStreamTextFromPayloads
+  , streamImageGenerationImageBytes
   , audioSpeechRequestPayload
   )
 where
@@ -35,6 +36,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as StrictByteString
+import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Map.Strict as Map
@@ -48,12 +50,15 @@ import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import Network.HTTP.Req
 import Optics ((%~))
+import qualified Streaming as Streaming
+import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
 import System.IO.Error (ioError, userError)
 import qualified Effectful.Timeout as Timeout
 import qualified Text.URI as URI
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO as FileSystemIO
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.Process (Process)
 import GHC.Clock (getMonotonicTimeNSec)
@@ -196,12 +201,12 @@ askAudioOpenAIStreaming Config{audioProvider = Just cfg@AudioProviderConfig{apiK
       requestEndpoint = endpointText requestBaseUrl requestPath
       request = audioSpeechRequest cfg options model (audioPromptFromMessages messages)
   lift $ logInfo ("LLM audio request: " <> audioRequestLogLine requestEndpoint requestTimeout request)
-  bytes <- lift $
+  ref <- lift $
     runTimedEff "LLM audio streaming request" requestTimeout $
-      collectByteStream $
-        streamRawJsonPost requestBaseUrl requestPath key (secondsToMicros requestTimeout) "application/octet-stream" request
-  ref <- lift (writeGeneratedAudio request.responseFormat bytes)
-  lift $ logInfo ("LLM audio response: " <> audioResponseLogLine requestEndpoint request.model request.responseFormat bytes)
+      writeGeneratedAudioStream request.responseFormat $
+        Q.fromChunks $
+          streamRawJsonPost requestBaseUrl requestPath key (secondsToMicros requestTimeout) "application/octet-stream" request
+  lift $ logInfo ("LLM audio response: " <> audioResponseLogLine requestEndpoint request.model request.responseFormat ref)
   S.yield ref
   pure ref
 
@@ -456,12 +461,13 @@ audioPromptFromMessages messages =
     "" -> "Generate speech for this message."
     prompt -> prompt
 
-writeGeneratedAudio :: (IOE :> es, FileSystem :> es) => Text -> StrictByteString.ByteString -> Eff es Text
-writeGeneratedAudio format bytes = do
+writeGeneratedAudioStream :: (IOE :> es, FileSystem :> es) => Text -> Q.ByteStream (Eff es) () -> Eff es Text
+writeGeneratedAudioStream format bytes = do
   dir <- FileSystem.getTemporaryDirectory
   nonce <- liftIO getMonotonicTimeNSec
   let path = dir </> ("cosmobot-audio-" <> show nonce <.> Text.unpack (safeAudioExtension format))
-  FileSystemByteString.writeFile path bytes
+  FileSystemIO.withBinaryFile path FileSystemIO.WriteMode \audioHandle ->
+    S.mapM_ (FileSystemByteString.hPut audioHandle) (Q.toChunks bytes)
   pure ("file://" <> Text.pack path)
 
 safeAudioExtension :: Text -> Text
@@ -653,13 +659,13 @@ audioRequestLogLine endpoint timeoutSeconds request =
     , "timeout_seconds=" <> show timeoutSeconds
     ]
 
-audioResponseLogLine :: Text -> Text -> Text -> StrictByteString.ByteString -> Text
-audioResponseLogLine endpoint model responseFormat bytes =
+audioResponseLogLine :: Text -> Text -> Text -> Text -> Text
+audioResponseLogLine endpoint model responseFormat ref =
   Text.unwords
     [ "endpoint=" <> endpoint
     , "model=" <> model
     , "response_format=" <> responseFormat
-    , "bytes=" <> show (StrictByteString.length bytes)
+    , "ref=" <> ref
     ]
 
 llmRequestLogLine :: Text -> ChatCompletionRequest -> Text
@@ -724,6 +730,19 @@ streamSseJsonPost
 streamSseJsonPost baseUrl path apiKey timeoutMicros request = do
   httpRequest <- liftIO (sseJsonPostRequest baseUrl path apiKey timeoutMicros request)
   streamSsePayloads (streamHttpResponseBody httpRequest)
+
+streamImageGenerationImageBytes
+  :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es)
+  => Text
+  -> [Text]
+  -> Text
+  -> Int
+  -> body
+  -> Q.ByteStream (Eff es) ()
+streamImageGenerationImageBytes baseUrl path apiKey timeoutMicros request =
+  Q.fromChunks do
+    httpRequest <- liftIO (sseJsonPostRequest baseUrl path apiKey timeoutMicros request)
+    base64DecodedChunks (b64JsonBase64Chunks (streamHttpResponseBody httpRequest))
 
 streamRawJsonPost
   :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es)
@@ -834,16 +853,88 @@ ensureSuccessfulStreamingResponse request response = do
     let preview = LazyByteString.toStrict (LazyByteString.fromChunks chunks)
     lift (throwIO (Client.HttpExceptionRequest request (Client.StatusCodeException (void response) preview)))
 
-collectByteStream :: Monad m => Stream (Of StrictByteString.ByteString) m r -> m StrictByteString.ByteString
-collectByteStream =
-  go []
-  where
-    go chunks stream =
-      S.next stream >>= \case
+-- Raw Image Byte Streaming
+
+b64JsonBase64Chunks
+  :: IOE :> es
+  => Stream (Of StrictByteString.ByteString) (Eff es) r
+  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
+b64JsonBase64Chunks input =
+  findB64JsonKey (Q.split quote (Q.fromChunks input))
+
+findB64JsonKey
+  :: IOE :> es
+  => Stream (Q.ByteStream (Eff es)) (Eff es) r
+  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
+findB64JsonKey segments =
+  lift (Streaming.inspect segments) >>= \case
+    Left _ ->
+      lift (throwIO (LLMException "Image generation response did not include b64_json."))
+    Right segment -> do
+      keyCandidate S.:> rest <- lift (Q.toStrict segment)
+      if keyCandidate == "b64_json"
+        then b64JsonValueChunks rest
+        else findB64JsonKey rest
+
+b64JsonValueChunks
+  :: IOE :> es
+  => Stream (Q.ByteStream (Eff es)) (Eff es) r
+  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
+b64JsonValueChunks segments =
+  lift (Streaming.inspect segments) >>= \case
+    Left _ ->
+      lift (throwIO (LLMException "Image generation b64_json value was missing."))
+    Right afterKeySegment -> do
+      _afterKey S.:> afterKey <- lift (Q.toStrict afterKeySegment)
+      lift (Streaming.inspect afterKey) >>= \case
         Left _ ->
-          pure (StrictByteString.concat (reverse chunks))
-        Right (chunk, rest) ->
-          go (chunk : chunks) rest
+          lift (throwIO (LLMException "Image generation b64_json value was missing."))
+        Right valueSegment -> do
+          _rest <- Q.toChunks valueSegment
+          pure ()
+
+base64DecodedChunks
+  :: IOE :> es
+  => Stream (Of StrictByteString.ByteString) (Eff es) r
+  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
+base64DecodedChunks =
+  go StrictByteString.empty
+  where
+    go pending input =
+      lift (S.next input) >>= \case
+        Left _ ->
+          unless (StrictByteString.null pending) (decodeAndYield pending)
+        Right (chunk, rest) -> do
+          let clean = StrictByteString.filter (not . isJsonWhitespace) chunk
+              joined = pending <> clean
+              decodeLength = (StrictByteString.length joined `div` 4) * 4
+              (ready, nextPending) = StrictByteString.splitAt decodeLength joined
+          decodeAndYield ready
+          go nextPending rest
+
+decodeAndYield :: IOE :> es => StrictByteString.ByteString -> Stream (Of StrictByteString.ByteString) (Eff es) ()
+decodeAndYield bytes
+  | StrictByteString.null bytes =
+      pure ()
+  | otherwise =
+      case Base64.decode bytes of
+        Left err ->
+          lift (throwIO (LLMException [i|Invalid b64_json image data: #{Text.pack err}|]))
+        Right decoded ->
+          yieldNonEmptyBytes decoded
+
+yieldNonEmptyBytes :: Monad m => StrictByteString.ByteString -> Stream (Of StrictByteString.ByteString) m ()
+yieldNonEmptyBytes bytes =
+  unless (StrictByteString.null bytes) (S.yield bytes)
+
+quote :: Word8
+quote = 34
+
+isJsonWhitespace :: Word8 -> Bool
+isJsonWhitespace byte =
+  byte == 32 || byte == 10 || byte == 13 || byte == 9
+
+-- Image Stream Response Parsing
 
 foldImageGenerationStreamWith
   :: IOE :> es
