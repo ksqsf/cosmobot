@@ -40,10 +40,10 @@ import Bot.Prelude
 import qualified Bot.Effect.HTTP as HTTP
 import Commonmark
 import Commonmark.Extensions
+import Control.Monad.Trans.Resource (ResourceT, runResourceT)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as Aeson
-import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Char as Char
@@ -59,10 +59,11 @@ import qualified Network.HTTP.Client as Client
 import Network.HTTP.Req
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import qualified Streaming as S
+import qualified Data.ByteString.Streaming.HTTP as StreamingHTTP
+import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
-import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import System.FilePath ((</>), (<.>), takeFileName)
 import System.IO.Error (ioError, userError)
 import qualified Text.URI as URI
@@ -186,7 +187,7 @@ instance Driver.ChatDriver MatrixDriver where
     listGroupMembersMatrix
 
   normalizeMediaRef driver ref =
-    normalizeMatrixMediaRef driver ref
+    normalizeMatrixMediaRef driver Nothing ref
 
   mentionUser =
     mentionUserMatrix
@@ -351,11 +352,15 @@ data MatrixAuthState = MatrixAuthState
     deriving (Aeson.FromJSON, Aeson.ToJSON) via (PrefixedSnakeJSON "auth" MatrixAuthState)
 
 data MatrixDownloadedMedia = MatrixDownloadedMedia
-  { downloadedBytes :: !StrictByteString.ByteString
+  { downloadedBytes :: !(Q.ByteStream (ResourceT IO) ())
   , downloadedMimeType :: !Text
   , downloadedName :: !(Maybe Text)
   }
-  deriving (Show, Eq)
+
+data MatrixMediaRef = MatrixMediaRef
+  { matrixMediaRefUrl :: !Text
+  , matrixMediaRefMimeType :: !(Maybe Text)
+  }
 
 newtype MatrixSync = MatrixSync
   { syncSince :: Maybe Text
@@ -564,21 +569,15 @@ instance MatrixAPI MatrixDownloadMedia where
       Nothing ->
         liftIO (ioError (userError [i|Invalid Matrix media URI: #{downloadMediaRef}|]))
       Just (serverName, mediaId) -> do
-        response <- matrixCall driver "media download" [i|authenticated media download #{downloadMediaRef}|] matrixApiOptions \baseUrl options ->
-          req GET
-            (baseUrl /: "_matrix" /: "client" /: "v1" /: "media" /: "download" /: serverName /: mediaId)
-            NoReqBody
-            bsResponse
-            options
-        let mimeType =
-              fromMaybe "application/octet-stream" do
-                raw <- responseHeader response "Content-Type"
-                nonEmptyText (Text.takeWhile (/= ';') (TextEncoding.decodeUtf8 raw))
-        pure MatrixDownloadedMedia
-          { downloadedBytes = responseBody response
-          , downloadedMimeType = mimeType
-          , downloadedName = Just mediaId
-          }
+        logInfo [i|Matrix API request: authenticated media download #{downloadMediaRef}|]
+        withMatrixAccessToken driver.auth \token -> do
+          manager <- HTTP.manager
+          request <- liftIO (matrixMediaDownloadRequest driver.config token serverName mediaId)
+          pure MatrixDownloadedMedia
+            { downloadedBytes = matrixResponseByteStream request manager
+            , downloadedMimeType = Mime.mimeFromName mediaId
+            , downloadedName = Just mediaId
+            }
 
 instance MatrixAPI MatrixSetTyping where
   type MatrixResponse MatrixSetTyping = Aeson.Value
@@ -768,18 +767,6 @@ matrixUnauthenticatedCall cfg method logMessage addOptions buildRequest = do
       HTTP.runReqWithConfig matrixHttpConfig $
         buildRequest baseUrl (addOptions baseOptions)
 
-matrixCall
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
-  -> Text
-  -> Text
-  -> (forall scheme. Text -> Option scheme -> Option scheme)
-  -> (forall scheme. Url scheme -> Option scheme -> Req response)
-  -> Eff es response
-matrixCall driver method logMessage addOptions buildRequest =
-  withMatrixAccessToken driver.auth \token ->
-    matrixUnauthenticatedCall driver.config method logMessage (addOptions token) buildRequest
-
 matrixUnauthenticatedJsonCall
   :: ( HTTP.HTTP :> es
      , IOE :> es
@@ -840,6 +827,26 @@ matrixApiOptionsNoAuth :: Option scheme -> Option scheme
 matrixApiOptionsNoAuth baseOptions =
   baseOptions
     <> responseTimeout matrixApiResponseTimeoutMicroseconds
+
+matrixMediaDownloadRequest :: Config -> Text -> Text -> Text -> IO Client.Request
+matrixMediaDownloadRequest cfg token serverName mediaId = do
+  request <- Client.parseRequest (Text.unpack (matrixEndpointText cfg.homeserver ["_matrix", "client", "v1", "media", "download", serverName, mediaId]))
+  pure request
+    { Client.requestHeaders =
+        ( "Authorization"
+        , ByteString.pack [i|Bearer #{token}|]
+        ) : Client.requestHeaders request
+    , Client.responseTimeout = Client.responseTimeoutMicro matrixApiResponseTimeoutMicroseconds
+    }
+
+matrixResponseByteStream :: Client.Request -> Client.Manager -> Q.ByteStream (ResourceT IO) ()
+matrixResponseByteStream request manager = do
+  response <- lift (StreamingHTTP.http request manager)
+  Client.responseBody response
+
+matrixEndpointText :: Text -> [Text] -> Text
+matrixEndpointText homeserver path =
+  Text.dropWhileEnd (== '/') homeserver <> "/" <> Text.intercalate "/" path
 
 matrixSyncOptions :: Text -> Maybe Text -> Option scheme -> Option scheme
 matrixSyncOptions token since baseOptions =
@@ -1166,7 +1173,12 @@ matrixReferencedMessage event = do
 
 normalizeMatrixIncomingMessage :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> IncomingMessage -> Eff es IncomingMessage
 normalizeMatrixIncomingMessage driver message = do
-  imageUrls <- normalizeMatrixMediaRefs driver message.imageUrls
+  imageUrls <-
+    case matrixEventImageMediaRefs message.raw of
+      [] ->
+        normalizeMatrixMediaRefs driver message.imageUrls
+      mediaRefs ->
+        normalizeMatrixMediaRefsWithMetadata driver mediaRefs
   pure IncomingMessage
     { platform = message.platform
     , kind = message.kind
@@ -1186,22 +1198,27 @@ normalizeMatrixIncomingMessage driver message = do
 
 normalizeMatrixMediaRefs :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> [Text] -> Eff es [Text]
 normalizeMatrixMediaRefs driver =
-  traverse (normalizeMatrixMediaRef driver)
+  traverse (normalizeMatrixMediaRef driver Nothing)
 
-normalizeMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Eff es Text
-normalizeMatrixMediaRef driver ref
+normalizeMatrixMediaRefsWithMetadata :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> [MatrixMediaRef] -> Eff es [Text]
+normalizeMatrixMediaRefsWithMetadata driver =
+  traverse \mediaRef ->
+    normalizeMatrixMediaRef driver mediaRef.matrixMediaRefMimeType mediaRef.matrixMediaRefUrl
+
+normalizeMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Maybe Text -> Text -> Eff es Text
+normalizeMatrixMediaRef driver preferredMime ref
   | "mxc://" `Text.isPrefixOf` Text.strip ref = do
       let mxcRef = Text.strip ref
       Media.mediaRefForSource mxcRef >>= \case
         Just mediaRef ->
           pure mediaRef
         Nothing ->
-          cacheMatrixMediaRef driver mxcRef ref
+          cacheMatrixMediaRef driver preferredMime mxcRef ref
   | otherwise =
       pure ref
 
-cacheMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Text -> Eff es Text
-cacheMatrixMediaRef driver mxcRef fallbackRef = do
+cacheMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Maybe Text -> Text -> Text -> Eff es Text
+cacheMatrixMediaRef driver preferredMime mxcRef fallbackRef = do
   downloaded <- downloadMedia driver mxcRef `catchSync` \err -> do
     logInfo [i|Matrix media normalization skipped for #{mxcRef}: #{displayException err}|]
     pure Nothing
@@ -1209,22 +1226,26 @@ cacheMatrixMediaRef driver mxcRef fallbackRef = do
     Nothing ->
       pure fallbackRef
     Just media ->
-      Media.storeMediaObjectFromSource mxcRef (matrixMediaObject media) >>= \case
+      Media.storeMediaObjectFromSource mxcRef (matrixMediaObject preferredMime media) >>= \case
         Nothing ->
           pure fallbackRef
         Just mediaRef ->
           pure mediaRef
 
-matrixMediaObject :: MatrixDownloadedMedia -> Media.MediaObject
-matrixMediaObject media =
+matrixMediaObject :: Maybe Text -> MatrixDownloadedMedia -> Media.MediaObject
+matrixMediaObject preferredMime media =
   Media.MediaObject
     { bytes = media.downloadedBytes
-    , mimeType = media.downloadedMimeType
+    , mimeType = fromMaybe media.downloadedMimeType preferredMime
     , sourceName = media.downloadedName
     }
 
 matrixEventImageUrls :: Aeson.Value -> [Text]
 matrixEventImageUrls =
+  map (.matrixMediaRefUrl) . matrixEventImageMediaRefs
+
+matrixEventImageMediaRefs :: Aeson.Value -> [MatrixMediaRef]
+matrixEventImageMediaRefs =
   fromMaybe [] . Aeson.parseMaybe parse
   where
     parse =
@@ -1235,7 +1256,16 @@ matrixEventImageUrls =
     parseContent contentObject = do
       msgtype <- contentObject Aeson..:? "msgtype" Aeson..!= ("" :: Text)
       url <- contentObject Aeson..:? "url"
-      pure [imageUrl | msgtype == "m.image", Just imageUrl <- [url]]
+      mimeType <- contentObject Aeson..:? "info" Aeson..!= Aeson.Object mempty >>=
+        Aeson.withObject "Matrix image info" (Aeson..:? "mimetype")
+      pure
+        [ MatrixMediaRef
+            { matrixMediaRefUrl = imageUrl
+            , matrixMediaRefMimeType = nonEmptyText =<< mimeType
+            }
+        | msgtype == "m.image"
+        , Just imageUrl <- [url]
+        ]
 
 matrixProfileAvatarValue :: MatrixProfile -> Aeson.Value
 matrixProfileAvatarValue profile =
@@ -1501,33 +1531,33 @@ isLocalPathRef :: Text -> Bool
 isLocalPathRef ref =
   "/" `Text.isPrefixOf` ref || "./" `Text.isPrefixOf` ref || "../" `Text.isPrefixOf` ref
 
-matrixDataAudio :: Text -> Maybe (Text, StrictByteString.ByteString)
+matrixDataAudio :: Text -> Maybe (Text, Q.ByteStream (ResourceT IO) ())
 matrixDataAudio ref = do
   rest <- Text.stripPrefix "data:audio/" (Text.strip ref)
   let (subtype, encodedWithMarker) = Text.breakOn ";base64," rest
   encoded <- Text.stripPrefix ";base64," encodedWithMarker
   bytes <- either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
-  pure ("audio/" <> subtype, bytes)
+  pure ("audio/" <> subtype, Q.fromStrict bytes)
 
-matrixDataImage :: Text -> Maybe (Text, StrictByteString.ByteString)
+matrixDataImage :: Text -> Maybe (Text, Q.ByteStream (ResourceT IO) ())
 matrixDataImage ref = do
   rest <- Text.stripPrefix "data:image/" (Text.strip ref)
   let (subtype, encodedWithMarker) = Text.breakOn ";base64," rest
   encoded <- Text.stripPrefix ";base64," encodedWithMarker
   bytes <- either (const Nothing) Just (Base64.decode (TextEncoding.encodeUtf8 encoded))
-  pure ("image/" <> subtype, bytes)
+  pure ("image/" <> subtype, Q.fromStrict bytes)
 
 withTemporaryMatrixImage
   :: (FileSystem :> es, IOE :> es)
   => Text
-  -> StrictByteString.ByteString
+  -> Q.ByteStream (ResourceT IO) ()
   -> (FilePath -> Eff es a)
   -> Eff es a
 withTemporaryMatrixImage mime bytes action = do
   FileSystem.createDirectoryIfMissing True matrixTempDir
   nonce <- liftIO getMonotonicTimeNSec
   let path = matrixTempDir </> ("matrix-image-" <> show nonce <.> matrixImageExtension mime)
-  FileSystemByteString.writeFile path bytes
+  liftIO (runResourceT (Q.writeFile path bytes))
   action path `finally` cleanup path
   where
     cleanup path =
@@ -1536,14 +1566,14 @@ withTemporaryMatrixImage mime bytes action = do
 withTemporaryMatrixAudio
   :: (FileSystem :> es, IOE :> es)
   => Text
-  -> StrictByteString.ByteString
+  -> Q.ByteStream (ResourceT IO) ()
   -> (FilePath -> Eff es a)
   -> Eff es a
 withTemporaryMatrixAudio mime bytes action = do
   FileSystem.createDirectoryIfMissing True matrixTempDir
   nonce <- liftIO getMonotonicTimeNSec
   let path = matrixTempDir </> ("matrix-audio-" <> show nonce <.> matrixAudioExtension mime)
-  FileSystemByteString.writeFile path bytes
+  liftIO (runResourceT (Q.writeFile path bytes))
   action path `finally` cleanup path
   where
     cleanup path =

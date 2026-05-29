@@ -25,6 +25,7 @@ import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types.Header as HTTPHeader
 import qualified Network.HTTP.Types.Status as HTTPStatus
+import qualified Streaming.ByteString as Q
 import System.FilePath (takeFileName)
 import System.IO.Error (ioError, userError)
 
@@ -33,7 +34,7 @@ decodeDataMediaObject ref = do
   bytes <- Image.decodeDataImageReference ref
   let mime = fromMaybe "image/png" (dataImageMime ref)
   pure MediaObject
-    { bytes
+    { bytes = Q.fromStrict bytes
     , mimeType = mime
     , sourceName = Nothing
     }
@@ -59,7 +60,7 @@ downloadObject manager ref = do
   unless (Mime.isProbablyMediaMime mime) $
     liftIO (ioError (userError [i|Remote media download returned non-media content-type #{mime}: #{ref}|]))
   pure MediaObject
-    { bytes
+    { bytes = Q.fromStrict bytes
     , mimeType = mime
     , sourceName = Just sourceName
     }
@@ -93,7 +94,7 @@ fileObject ref = do
     Nothing -> liftIO (ioError (userError [i|Invalid file media reference: #{ref}|]))
   bytes <- FileSystemByteString.readFile path
   pure MediaObject
-    { bytes
+    { bytes = Q.fromStrict bytes
     , mimeType = Mime.mimeFromName (Text.pack path)
     , sourceName = Just (Text.pack (takeFileName path))
     }

@@ -84,7 +84,10 @@ common lib-deps
                     , effectful
                     , katip-effectful
                     , streaming
+                    , streaming-bytestring
+                    , streaming-utils
                     , transformers
+                    , resourcet
                     , vector
                     , stm
                     , async
@@ -135,6 +138,7 @@ common test-deps
                     , req
                     , regex-tdfa
                     , streaming
+                    , streaming-bytestring
                     , text
                     , toml-parser
                     , wai

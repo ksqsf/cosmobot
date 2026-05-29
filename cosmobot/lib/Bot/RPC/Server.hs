@@ -33,6 +33,7 @@ import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Set as Set
 import qualified Data.Text as Text
+import qualified Streaming.ByteString as Q
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.FileSystem as FileSystem
 import qualified JSONRPC
@@ -397,7 +398,7 @@ dispatchUploadAttachment request =
     Right upload -> do
       storedRef <- Media.storeMediaObject $
         MediaObject
-          { bytes = upload.bytes
+          { bytes = Q.fromStrict upload.bytes
           , mimeType = upload.mediaType
           , sourceName = Just upload.name
           }

@@ -48,6 +48,7 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Foldable as Foldable
 import qualified Data.IORef as IORef
 import qualified Data.Sequence as Seq
+import qualified Streaming.ByteString as Q
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
@@ -561,7 +562,7 @@ testReadMediaTextToolReadsCachedSlices =
                     HTTP.runHTTP $
                       MediaInterpreter.runMedia cfg do
                       mediaRef <- Media.storeMediaObject Media.MediaObject
-                        { bytes = TextEncoding.encodeUtf8 content
+                        { bytes = Q.fromStrict (TextEncoding.encodeUtf8 content)
                         , mimeType = "text/plain; charset=utf-8"
                         , sourceName = Just "sample.txt"
                         }

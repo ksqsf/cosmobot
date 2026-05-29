@@ -27,6 +27,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import qualified Streaming.ByteString as Q
 import System.FilePath (takeExtension, takeFileName)
 
 data RpcChatDriver = RpcChatDriver
@@ -120,7 +121,7 @@ rpcReplyImage _cfg ref =
           bytes <- FileSystemByteString.readFile path
           mediaRef <- Media.storeMediaObject $
             MediaObject
-              { bytes
+              { bytes = Q.fromStrict bytes
               , mimeType = imageMediaType path
               , sourceName = Just (Text.pack (takeFileName path))
               }

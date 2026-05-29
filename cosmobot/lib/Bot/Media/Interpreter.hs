@@ -17,12 +17,10 @@ import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Object as MediaObject
 import qualified Bot.Media.S3 as S3
 import Bot.Prelude
-import qualified Bot.System.ImageMagick as ImageMagick
 import qualified Data.Text as Text
 import Effectful.FileSystem (FileSystem)
 import Effectful.Process (Process)
 import qualified Network.HTTP.Client as Client
-import System.FilePath (replaceExtension)
 
 data Runtime = Runtime
   { cfg :: !MediaConfig.Config
@@ -119,34 +117,8 @@ cacheObject runtime sourceRef mediaObject = do
   pure (Cache.mediaIdForFileId cached.fileId)
 
 prepareMediaObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es) => Runtime -> MediaObject -> Eff es MediaObject
-prepareMediaObject runtime mediaObject
-  | "image/" `Text.isPrefixOf` Text.toLower mediaObject.mimeType =
-      compressMediaObject runtime mediaObject
-  | otherwise =
-      pure mediaObject
-
-compressMediaObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es) => Runtime -> MediaObject -> Eff es MediaObject
-compressMediaObject runtime mediaObject =
-  (ImageMagick.compressImageBytes runtime.cfg.compression mediaObject.bytes >>= \case
-    Nothing ->
-      pure mediaObject
-    Just (mimeType, bytes) -> do
-      let originalMimeType = mediaObject.mimeType
-      logInfo [i|Compressed media object: from_mime=#{originalMimeType} to_mime=#{mimeType}|]
-      pure MediaObject
-        { bytes
-        , mimeType
-        , sourceName = compressedSourceName mimeType mediaObject.sourceName
-        })
-    `catchSync` \err -> do
-      logWarning [i|Media image compression failed: #{show err :: String}|]
-      pure mediaObject
-
-compressedSourceName :: Text -> Maybe Text -> Maybe Text
-compressedSourceName mimeType =
-  fmap \name ->
-    let ext = Text.dropWhile (== '.') (Cache.extensionFor MediaObject{bytes = "", mimeType, sourceName = Nothing})
-    in Text.pack (replaceExtension (Text.unpack name) (Text.unpack ext))
+prepareMediaObject _ mediaObject =
+  pure mediaObject
 
 cacheConfig :: Runtime -> Cache.CacheConfig
 cacheConfig runtime =

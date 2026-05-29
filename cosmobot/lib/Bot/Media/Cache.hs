@@ -24,7 +24,6 @@ module Bot.Media.Cache
   , loadPlatformRef
   , storePlatformRef
   , extensionFor
-  , contentDigest
   )
 where
 
@@ -33,7 +32,7 @@ import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Mime as Mime
 import Bot.Prelude
 import Bot.Storage.Prelude
-import Crypto.Hash (Digest, SHA256, hash)
+import Crypto.Hash (Context, Digest, SHA256, hashFinalize, hashInit, hashUpdate)
 import qualified Crypto.Random as CryptoRandom
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64.URL as Base64URL
@@ -41,9 +40,11 @@ import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Time.Clock.POSIX as POSIX
+import Control.Monad.Trans.Resource (runResourceT)
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
-import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import qualified Streaming.ByteString as Q
+import Streaming (Of (..))
 import System.FilePath ((<.>), (</>), takeExtension)
 
 data CacheConfig = CacheConfig
@@ -131,18 +132,9 @@ cacheMediaObject cfg sourceRef mediaObject = do
         Just media ->
           pure media
         Nothing ->
-          lookupCachedDigest cfg (contentDigest mediaObject.bytes) >>= \case
-            Just media -> do
-              linkSourceRef ref media.fileId
-              pure media
-            Nothing ->
-              storeMediaObject cfg sourceRef mediaObject
-    Nothing ->
-      lookupCachedDigest cfg (contentDigest mediaObject.bytes) >>= \case
-        Just media ->
-          pure media
-        Nothing ->
           storeMediaObject cfg sourceRef mediaObject
+    Nothing ->
+      storeMediaObject cfg sourceRef mediaObject
 
 loadCachedMedia :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
 loadCachedMedia _ targetFileId = do
@@ -300,13 +292,38 @@ storeMediaObject
   -> MediaObject
   -> Eff es CachedMedia
 storeMediaObject cfg sourceRef mediaObject = do
-  let digest = contentDigest mediaObject.bytes
-      relativePath = Text.unpack digest <.> Text.unpack (Text.dropWhile (== '.') (extensionFor mediaObject))
-      finalPath = cfg.directory </> relativePath
   FileSystem.createDirectoryIfMissing True cfg.directory
+  temporaryFileId <- newFileId
+  let temporaryPath = cfg.directory </> Text.unpack temporaryFileId <.> "tmp"
+  liftIO (runResourceT (Q.writeFile temporaryPath mediaObject.bytes))
+    `onException` removeFileIfExists temporaryPath
+  digest <- contentDigestFile temporaryPath
+  lookupCachedDigest cfg digest >>= \case
+    Just cached -> do
+      removeFileIfExists temporaryPath
+      for_ sourceRef \ref ->
+        linkSourceRef ref cached.fileId
+      pure cached
+    Nothing ->
+      storeStreamedMediaFile cfg sourceRef mediaObject digest temporaryPath
+
+storeStreamedMediaFile
+  :: (Storage.Storage :> es, FileSystem :> es, IOE :> es)
+  => CacheConfig
+  -> Maybe Text
+  -> MediaObject
+  -> Text
+  -> FilePath
+  -> Eff es CachedMedia
+storeStreamedMediaFile cfg sourceRef mediaObject digest temporaryPath = do
+  let relativePath = Text.unpack digest <.> Text.unpack (Text.dropWhile (== '.') (extensionFor mediaObject))
+      finalPath = cfg.directory </> relativePath
   exists <- FileSystem.doesFileExist finalPath
   unless exists $
-    FileSystemByteString.writeFile finalPath mediaObject.bytes
+    FileSystem.renameFile temporaryPath finalPath
+  when exists $
+    removeFileIfExists temporaryPath
+  sizeBytes <- fromIntegral <$> FileSystem.getFileSize finalPath
   fileId <- newFileId
   now <- liftIO (round <$> POSIX.getPOSIXTime)
   let row = MediaObjectRow
@@ -315,7 +332,7 @@ storeMediaObject cfg sourceRef mediaObject = do
         , mime_type = mediaObject.mimeType
         , source_name = mediaObject.sourceName
         , path = Text.pack finalPath
-        , size_bytes = StrictByteString.length mediaObject.bytes
+        , size_bytes = sizeBytes
         , created_at_unix = now
         , last_used_at_unix = now
         }
@@ -327,6 +344,13 @@ storeMediaObject cfg sourceRef mediaObject = do
         candidate ! #source_ref .== literal ref
       insert_ mediaSourceRows [MediaSourceRow{source_ref = ref, file_id = fileId}]
   pure (mediaObjectRowToCached row)
+
+removeFileIfExists :: FileSystem :> es => FilePath -> Eff es ()
+removeFileIfExists path = do
+  exists <- FileSystem.doesFileExist path
+  when exists (FileSystem.removeFile path)
+    `catchSync` \_ ->
+      pure ()
 
 gcMediaCache
   :: (Storage.Storage :> es, FileSystem :> es, IOE :> es)
@@ -445,9 +469,11 @@ mediaObjectRowToInfo row = do
     , exists
     }
 
-contentDigest :: StrictByteString.ByteString -> Text
-contentDigest bytes =
-  Text.pack (show (hash bytes :: Digest SHA256))
+contentDigestFile :: (IOE :> es) => FilePath -> Eff es Text
+contentDigestFile path = do
+  digestContext :> () <- liftIO $ runResourceT $
+    Q.foldlChunks hashUpdate (hashInit :: Context SHA256) (Q.readFile path)
+  pure (Text.pack (show (hashFinalize digestContext :: Digest SHA256)))
 
 mediaIdForFileId :: Text -> Text
 mediaIdForFileId fileId =

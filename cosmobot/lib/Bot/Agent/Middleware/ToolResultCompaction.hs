@@ -30,6 +30,7 @@ import qualified Data.Foldable as Foldable
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Streaming.ByteString as Q
 
 maxToolResultPreviewChars :: Int
 maxToolResultPreviewChars =
@@ -100,7 +101,7 @@ compactLargeToolResultText text
       let bytes = TextEncoding.encodeUtf8 text
           mime = Mime.sniffTextMime bytes text
       mediaRef <- Media.storeMediaObject Media.MediaObject
-        { bytes
+        { bytes = Q.fromStrict bytes
         , mimeType = mime
         , sourceName = Just (sourceNameForMime mime)
         }

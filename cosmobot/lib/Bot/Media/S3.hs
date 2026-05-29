@@ -24,6 +24,7 @@ import Bot.Media.S3.Config
 import Bot.Prelude
 import qualified Data.ByteString as StrictByteString
 import qualified Data.Text as Text
+import qualified Streaming.ByteString as Q
 import qualified Data.Text.Encoding as TextEncoding
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
@@ -172,7 +173,7 @@ missingS3ConfigMessage cfg =
 
 objectKey :: Config -> Cache.CachedMedia -> Text
 objectKey cfg mediaObject =
-  let ext = Cache.extensionFor MediaObject{bytes = "", mimeType = mediaObject.mimeType, sourceName = mediaObject.sourceName}
+  let ext = Cache.extensionFor MediaObject{bytes = Q.empty, mimeType = mediaObject.mimeType, sourceName = mediaObject.sourceName}
       prefix = Text.dropWhileEnd (== '/') cfg.prefix
   in prefix <> "/" <> mediaObject.digest <> ext
 

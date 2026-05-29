@@ -35,17 +35,17 @@ import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
-import qualified Data.ByteString as StrictByteString
 import qualified Data.Set as Set
 import qualified Data.Text as Text
+import Control.Monad.Trans.Resource (ResourceT)
+import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
 
 data MediaObject = MediaObject
-  { bytes :: !StrictByteString.ByteString
+  { bytes :: Q.ByteStream (ResourceT IO) ()
   , mimeType :: !Text
   , sourceName :: !(Maybe Text)
   }
-  deriving (Show, Eq)
 
 data MediaFileInfo = MediaFileInfo
   { fileId :: !Text
