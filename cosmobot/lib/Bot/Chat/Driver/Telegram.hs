@@ -45,6 +45,7 @@ where
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as ChatEffect
 import qualified Bot.Effect.HTTP as HTTP
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Media.Mime as Mime
 import Bot.Util.Multipart
 import Bot.Util.Aeson
@@ -106,7 +107,7 @@ newTelegramDriver config =
   TelegramDriver{config}
 
 instance Driver.ChatDriver TelegramDriver where
-  type ChatDriverEffects TelegramDriver es = (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+  type ChatDriverEffects TelegramDriver es = (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es)
 
   driverPlatform _ =
     PlatformTelegram
@@ -1298,7 +1299,7 @@ uploadDocument driver request path =
 
 -- | Reply to a Telegram chat, including image directives in the body.
 replyToTelegram
-  :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+  :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es)
   => TelegramDriver
   -> IncomingMessage
   -> Text
@@ -1514,7 +1515,7 @@ escapeHtml =
     '"' -> "&quot;"
     c   -> Text.singleton c
 
-replyTextAndImages :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Maybe Integer -> Text -> Eff es Message
+replyTextAndImages :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Maybe Integer -> Text -> Eff es Message
 replyTextAndImages driver chatId replyToMessageId body =
   case ChatEffect.replyImageUrls body of
     [] -> sendText (ChatEffect.renderReplyBody body)
@@ -1555,14 +1556,55 @@ replyTextAndImages driver chatId replyToMessageId body =
       , replyToMessageId = Nothing
       }
 
-sendImageRequest :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendPhotoRequest -> Eff es Message
+sendImageRequest :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendPhotoRequest -> Eff es Message
 sendImageRequest driver request =
-  case localFilePhoto request.photo of
-    Just path -> uploadPhoto driver request path
+  Media.platformMediaRef "telegram" (telegramMediaScope driver) originalPhoto >>= \case
+    Just telegramFileId ->
+      sendPhoto driver (replacePhoto telegramFileId request)
     Nothing ->
-      case dataImagePhoto request.photo of
-        Just bytes -> uploadTemporaryPhoto driver request bytes
-        Nothing    -> sendPhoto driver request
+      case localFilePhoto originalPhoto of
+        Just path ->
+          uploadAndRemember path
+        Nothing ->
+          Media.localMediaPath originalPhoto >>= \case
+            Just path ->
+              uploadAndRemember path
+            Nothing ->
+              case dataImagePhoto originalPhoto of
+                Just bytes -> uploadTemporaryPhoto driver request bytes
+                Nothing -> do
+                  sent <- sendPhoto driver request
+                  rememberTelegramPhotoRef originalPhoto sent
+                  pure sent
+  where
+    originalPhoto =
+      request.photo
+
+    uploadAndRemember path = do
+      sent <- uploadPhoto driver request path
+      rememberTelegramPhotoRef originalPhoto sent
+      pure sent
+
+    rememberTelegramPhotoRef ref sent =
+      when (telegramCacheablePhotoRef ref) do
+        for_ (sent.photo >>= largestPhotoFileId) \telegramFileId ->
+          Media.storePlatformMediaRef "telegram" (telegramMediaScope driver) ref telegramFileId
+
+telegramMediaScope :: TelegramDriver -> Text
+telegramMediaScope driver =
+  fromMaybe "default" $
+    (("id:" <>) . show <$> viaNonEmpty head driver.config.botIds) <|>
+      (("username:" <>) <$> viaNonEmpty head driver.config.botUsernames)
+
+telegramCacheablePhotoRef :: Text -> Bool
+telegramCacheablePhotoRef ref =
+  let stripped = Text.strip ref
+      lower = Text.toLower stripped
+  in not (Text.null stripped) && not ("data:image/" `Text.isPrefixOf` lower)
+
+replacePhoto :: Text -> SendPhotoRequest -> SendPhotoRequest
+replacePhoto newPhoto SendPhotoRequest{..} =
+  SendPhotoRequest{photo = newPhoto, ..}
 
 sendVoiceRequest :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendVoiceRequest -> Eff es Message
 sendVoiceRequest driver request =
