@@ -203,8 +203,8 @@ main =
       , testCase "LLM tool request content streams immediately when enabled" testLLMToolRequestContentStreamsImmediatelyWhenEnabled
       , testCase "LLM image stream request asks only for final image" testLLMImageStreamRequestAsksOnlyForFinalImage
       , testCase "LLM audio speech request includes provider options" testLLMAudioSpeechRequestIncludesProviderOptions
-      , testCase "LLM image stream completed event yields final image" testLLMImageStreamCompletedEventYieldsFinalImage
-      , testCase "LLM image edit stream completed event yields final image" testLLMImageEditStreamCompletedEventYieldsFinalImage
+      , testCase "LLM image stream completed event yields final image bytes" testLLMImageStreamCompletedEventYieldsFinalImage
+      , testCase "LLM image edit stream completed event yields final image bytes" testLLMImageEditStreamCompletedEventYieldsFinalImage
       , testCase "LLM image stream ignores partial event without final image" testLLMImageStreamIgnoresPartialEventWithoutFinalImage
       , testCase "LLM log JSON truncates base64 image payloads" testLLMLogJsonTruncatesBase64ImagePayloads
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
@@ -1175,44 +1175,44 @@ testLLMAudioSpeechRequestIncludesProviderOptions =
 
 testLLMImageStreamCompletedEventYieldsFinalImage :: IO ()
 testLLMImageStreamCompletedEventYieldsFinalImage =
-  case LLMTransport.imageGenerationStreamTextFromPayloads imageStreamTestConfig [completed] of
-    Right answer ->
-      answer @?= "[image] data:image/png;base64,final-image\n"
+  case LLMTransport.imageGenerationStreamBytesFromPayloads [completed] of
+    Right bytes ->
+      bytes @?= "final-image"
     Left err ->
       assertFailure (Text.unpack err)
   where
     completed =
       Aeson.object
         [ "type" Aeson..= ("image_generation.completed" :: Text)
-        , "b64_json" Aeson..= ("final-image" :: Text)
+        , "b64_json" Aeson..= ("ZmluYWwtaW1hZ2U=" :: Text)
         ]
 
 testLLMImageEditStreamCompletedEventYieldsFinalImage :: IO ()
 testLLMImageEditStreamCompletedEventYieldsFinalImage =
-  case LLMTransport.imageGenerationStreamTextFromPayloads imageStreamTestConfig [completed] of
-    Right answer ->
-      answer @?= "[image] data:image/png;base64,edited-image\n"
+  case LLMTransport.imageGenerationStreamBytesFromPayloads [completed] of
+    Right bytes ->
+      bytes @?= "edited-image"
     Left err ->
       assertFailure (Text.unpack err)
   where
     completed =
       Aeson.object
         [ "type" Aeson..= ("image_edit.completed" :: Text)
-        , "b64_json" Aeson..= ("edited-image" :: Text)
+        , "b64_json" Aeson..= ("ZWRpdGVkLWltYWdl" :: Text)
         ]
 
 testLLMImageStreamIgnoresPartialEventWithoutFinalImage :: IO ()
 testLLMImageStreamIgnoresPartialEventWithoutFinalImage =
-  case LLMTransport.imageGenerationStreamTextFromPayloads imageStreamTestConfig [partial] of
+  case LLMTransport.imageGenerationStreamBytesFromPayloads [partial] of
     Left err ->
       err @?= "Image generation streaming response was empty: no image output."
-    Right answer ->
-      assertFailure [i|expected empty stream error, got #{answer}|]
+    Right bytes ->
+      assertFailure [i|expected empty stream error, got #{show bytes :: String}|]
   where
     partial =
       Aeson.object
         [ "type" Aeson..= ("image_generation.partial_image" :: Text)
-        , "b64_json" Aeson..= ("partial-image" :: Text)
+        , "b64_json" Aeson..= ("cGFydGlhbC1pbWFnZQ==" :: Text)
         , "partial_image_index" Aeson..= (0 :: Int)
         ]
 

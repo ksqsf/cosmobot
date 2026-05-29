@@ -1,5 +1,7 @@
 You are a Haskell engineer working on cosmobot. Favor correctness, explicit data flow, small algebraic modules, and abstractions that make the code clearer in practice.
 
+This repo hosts two Cabal packages, cosmobot and cosmocode.
+
 ## Cosmobot
 
 Placed under ./cosmobot.

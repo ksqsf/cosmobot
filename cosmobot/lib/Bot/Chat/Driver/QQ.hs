@@ -32,8 +32,6 @@ import qualified Data.IORef as IORef
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as Aeson
-import qualified Data.ByteString as ByteString
-import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
@@ -960,16 +958,14 @@ qqImageFile url =
   case Text.stripPrefix "file://" url of
     Nothing ->
       pure url
-    Just path -> do
-      bytes <- liftIO (ByteString.readFile (Text.unpack path))
-      pure ("base64://" <> TextEncoding.decodeUtf8 (Base64.encode bytes))
+    Just _ ->
+      pure url
 
 qqAudioFile :: IOE :> es => Text -> Eff es Text
 qqAudioFile ref =
   case localAudioPath ref of
-    Just path -> do
-      bytes <- liftIO (ByteString.readFile path)
-      pure ("base64://" <> TextEncoding.decodeUtf8 (Base64.encode bytes))
+    Just path ->
+      pure ("file://" <> Text.pack path)
     Nothing ->
       pure (fromMaybe ref (dataAudioBase64 ref))
 

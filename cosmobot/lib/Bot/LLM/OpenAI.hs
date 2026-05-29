@@ -66,7 +66,7 @@ runLLM cfg = interpret $ \localEnv operation ->
               resolvedImageRefs <- lift (traverse Media.publicMediaRef imageRefs)
               resolvedMaskRef <- lift (traverse Media.publicMediaRef maskRef)
               Retry.retryLLMStreamRequest "LLM image edit streaming request" $
-                pure (Retry.validateTextStream (normalizeReplyResult (Transport.askImageEditOpenAIStreaming cfg options prompt resolvedImageRefs resolvedMaskRef)))
+                pure (Retry.validateTextStream (askImageEditStreamingWithMedia cfg options prompt resolvedImageRefs resolvedMaskRef))
       LLM.AskAudioStream options messages ->
         pure $
           LLM.liftLocalStream liftLocal $
@@ -116,31 +116,46 @@ askImageStreamingWithMedia
   -> [ChatMessage]
   -> Stream (Of Text) (Eff es) Text
 askImageStreamingWithMedia cfg options messages =
-  case cfg.imageProvider of
-    Just provider@ImageProviderConfig{apiKey = Just key, canGenerate = True} ->
-      streamGeneratedImageToMedia provider key options messages
-    _ ->
-      normalizeReplyResult (Transport.askImageOpenAIStreaming cfg options messages)
+  normalizeReplyResult (Transport.askImageOpenAIStreaming cfg options messages (storeImageFromTransport "LLM image streaming request"))
 
-streamGeneratedImageToMedia
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout :> es, Media.Media :> es)
-  => ImageProviderConfig
-  -> Text
+askImageEditStreamingWithMedia
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout :> es, Media.Media :> es, FileSystem :> es, Fail :> es)
+  => Config
   -> LLM.ImageRequestOptions
-  -> [ChatMessage]
+  -> Text
+  -> [Text]
+  -> Maybe Text
   -> Stream (Of Text) (Eff es) Text
-streamGeneratedImageToMedia provider@ImageProviderConfig{baseUrl, model, requestTimeout} key options messages = do
-  let requestPath = ["images", "generations"]
-      request = Transport.imageGenerationStreamingRequestPayload provider options model (imagePromptFromMessages messages)
-      mime = generatedImageMimeType
+askImageEditStreamingWithMedia cfg options prompt imageRefs maskRef =
+  Transport.askImageEditOpenAIStreaming cfg options prompt imageRefs maskRef (storeImageFromTransport "LLM image edit streaming request")
+
+storeImageFromTransport
+  :: (IOE :> es, Timeout :> es, Media.Media :> es)
+  => Text
+  -> ImageProviderConfig
+  -> Text
+  -> Q.ByteStream (Eff es) ()
+  -> Stream (Of Text) (Eff es) Text
+storeImageFromTransport label ImageProviderConfig{requestTimeout} _key bytes = do
+  let mime = generatedImageMimeType
       sourceName = Just (generatedImageSourceName mime)
+  storeImageByteStream label requestTimeout mime sourceName bytes
+
+storeImageByteStream
+  :: (IOE :> es, Timeout :> es, Media.Media :> es)
+  => Text
+  -> Int
+  -> Text
+  -> Maybe Text
+  -> Q.ByteStream (Eff es) ()
+  -> Stream (Of Text) (Eff es) Text
+storeImageByteStream label requestTimeout mime sourceName bytes = do
   ref <- lift $
-    runTimedImageMediaStore requestTimeout $
+    runTimedImageMediaStore label requestTimeout $
       withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
         runInIO $
           Media.storeMediaObject Media.MediaObject
-          { bytes = effByteStreamToResourceTIO runInIO $
-              Transport.streamImageGenerationImageBytes baseUrl requestPath key (requestTimeout * 1000000) request
+          { bytes = effByteStreamToResourceTIO runInIO bytes
           , mimeType = mime
           , sourceName
           }
@@ -152,14 +167,14 @@ streamGeneratedImageToMedia provider@ImageProviderConfig{baseUrl, model, request
       S.yield answer
       pure answer
 
-runTimedImageMediaStore :: (Timeout :> es, IOE :> es) => Int -> Eff es a -> Eff es a
-runTimedImageMediaStore timeoutSeconds action = do
+runTimedImageMediaStore :: (Timeout :> es, IOE :> es) => Text -> Int -> Eff es a -> Eff es a
+runTimedImageMediaStore label timeoutSeconds action = do
   result <- timeout (timeoutSeconds * 1000000) action
   case result of
     Just value ->
       pure value
     Nothing ->
-      throwIO (LLMException [i|LLM image streaming request timed out after #{timeoutSeconds} seconds.|])
+      throwIO (LLMException [i|#{label} timed out after #{timeoutSeconds} seconds.|])
 
 effByteStreamToResourceTIO
   :: (forall a. Eff es a -> IO a)
@@ -187,34 +202,6 @@ generatedImageSourceName mime =
     "image/jpeg" -> "llm-image.jpg"
     "image/webp" -> "llm-image.webp"
     _ -> "llm-image.png"
-
-imagePromptFromMessages :: [ChatMessage] -> Text
-imagePromptFromMessages messages =
-  case Text.strip (Text.intercalate "\n\n" (mapMaybe chatMessagePromptText messages)) of
-    "" -> "Generate an image."
-    prompt -> prompt
-
-chatMessagePromptText :: ChatMessage -> Maybe Text
-chatMessagePromptText message =
-  case message.content of
-    Just (TextContent text) ->
-      nonEmptyText text
-    Just (PartsContent parts) ->
-      nonEmptyText (Text.unlines (map partPromptText parts))
-    Nothing ->
-      Nothing
-
-partPromptText :: ContentPart -> Text
-partPromptText = \case
-  TextPart text ->
-    text
-  ImageUrlPart url ->
-    "Input image: " <> url
-
-nonEmptyText :: Text -> Maybe Text
-nonEmptyText text =
-  let stripped = Text.strip text
-  in if Text.null stripped then Nothing else Just stripped
 
 -- Reply Normalization
 

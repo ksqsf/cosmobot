@@ -27,7 +27,6 @@ import qualified Data.Text as Text
 import qualified Streaming.ByteString as Q
 import qualified Data.Text.Encoding as TextEncoding
 import Effectful.FileSystem (FileSystem)
-import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import System.IO.Error (ioError, userError)
@@ -133,11 +132,11 @@ objectExists env cfg key = do
 
 uploadObject :: (IOE :> es, KatipE :> es, FileSystem :> es) => AWS.Env -> Config -> Text -> Cache.CachedMedia -> Eff es ()
 uploadObject env cfg key cached = do
-  bytes <- FileSystemByteString.readFile cached.path
+  body <- liftIO (AWS.Hashed <$> AWS.hashedFile cached.path)
   let mime = cached.mimeType
       request =
         setPublicAcl cfg
-          ( (S3.newPutObject (S3.BucketName (fromMaybe "" cfg.bucket)) (S3.ObjectKey key) (AWS.toBody bytes))
+          ( (S3.newPutObject (S3.BucketName (fromMaybe "" cfg.bucket)) (S3.ObjectKey key) body)
             { PutObject.contentType = Just mime
             }
           )
