@@ -13,11 +13,11 @@ main :: IO ()
 main =
   execParser commandInfo >>= \case
     Serve configPath -> BotMain.mainWithConfig configPath
-    Rpc configPath rpcCommand -> RpcClient.runRpcClientCommand configPath rpcCommand
+    Rpc options rpcCommand -> RpcClient.runRpcClientCommand options rpcCommand
 
 data Command
   = Serve !FilePath
-  | Rpc !FilePath !RpcClient.RpcClientCommand
+  | Rpc !RpcClient.RpcClientOptions !RpcClient.RpcClientCommand
 
 commandInfo :: ParserInfo Command
 commandInfo =
@@ -53,8 +53,33 @@ serveParser = Serve <$> configPathParser
 rpcParser :: Parser Command
 rpcParser =
   Rpc
-    <$> configPathParser
+    <$> rpcClientOptionsParser
     <*> rpcCommandParser
+
+rpcClientOptionsParser :: Parser RpcClient.RpcClientOptions
+rpcClientOptionsParser =
+  RpcClient.RpcClientOptions
+    <$> configPathParser
+    <*> optional
+      ( strOption $
+          long "host"
+            <> metavar "HOST"
+            <> help "RPC websocket host; overrides rpc.host from config"
+      )
+    <*> optional
+      ( option auto $
+          long "port"
+            <> metavar "PORT"
+            <> help "RPC websocket port; overrides rpc.port from config"
+      )
+    <*> optional
+      ( Text.pack
+          <$> strOption
+            ( long "token"
+                <> metavar "TOKEN"
+                <> help "RPC bearer token; overrides rpc.token from config"
+            )
+      )
 
 rpcCommandParser :: Parser RpcClient.RpcClientCommand
 rpcCommandParser =
@@ -63,6 +88,10 @@ rpcCommandParser =
       ( info (rpcAuditParser <**> helper) $
           progDesc "Query agent audit RPC methods"
       )
+      <> command "media"
+        ( info (rpcMediaParser <**> helper) $
+            progDesc "Query and maintain media cache RPC methods"
+        )
       <> command "call"
         ( info (rpcCallParser <**> helper) $
             progDesc "Call an arbitrary RPC method with JSON params"
@@ -104,6 +133,67 @@ rpcAuditThreadParser :: Parser RpcClient.RpcClientCommand
 rpcAuditThreadParser =
   RpcClient.RpcAuditThread . Text.pack
     <$> argument str (metavar "MESSAGE_ID")
+
+rpcMediaParser :: Parser RpcClient.RpcClientCommand
+rpcMediaParser =
+  subparser $
+    command "stats"
+      ( info (rpcMediaStatsParser <**> helper) $
+          progDesc "Show media cache stats and recent files"
+      )
+      <> command "resolve-source"
+        ( info (rpcMediaResolveSourceParser <**> helper) $
+            progDesc "Resolve a source reference to a cached media id"
+        )
+      <> command "get"
+        ( info (rpcMediaGetParser <**> helper) $
+            progDesc "Show one media cache entry"
+        )
+      <> command "delete"
+        ( info (rpcMediaDeleteParser <**> helper) $
+            progDesc "Delete one media cache entry"
+        )
+      <> command "gc"
+        ( info (rpcMediaGcParser <**> helper) $
+            progDesc "Run media cache garbage collection"
+        )
+
+rpcMediaStatsParser :: Parser RpcClient.RpcClientCommand
+rpcMediaStatsParser =
+  RpcClient.RpcMediaStats
+    <$> option auto
+      ( long "limit"
+          <> metavar "N"
+          <> value 50
+          <> showDefault
+          <> help "Maximum number of media files to include"
+      )
+
+rpcMediaResolveSourceParser :: Parser RpcClient.RpcClientCommand
+rpcMediaResolveSourceParser =
+  RpcClient.RpcMediaResolveSource . Text.pack
+    <$> argument str (metavar "SOURCE_REF")
+
+rpcMediaGetParser :: Parser RpcClient.RpcClientCommand
+rpcMediaGetParser =
+  RpcClient.RpcMediaGet . Text.pack
+    <$> argument str (metavar "MEDIA_ID_OR_FILE_ID")
+
+rpcMediaDeleteParser :: Parser RpcClient.RpcClientCommand
+rpcMediaDeleteParser =
+  RpcClient.RpcMediaDelete . Text.pack
+    <$> argument str (metavar "MEDIA_ID_OR_FILE_ID")
+
+rpcMediaGcParser :: Parser RpcClient.RpcClientCommand
+rpcMediaGcParser =
+  RpcClient.RpcMediaGc
+    <$> option auto
+      ( long "max-age-seconds"
+          <> metavar "SECONDS"
+          <> value 0
+          <> showDefault
+          <> help "Delete media files older than this age unless retained"
+      )
 
 rpcCallParser :: Parser RpcClient.RpcClientCommand
 rpcCallParser =

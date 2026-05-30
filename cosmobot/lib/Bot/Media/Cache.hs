@@ -8,6 +8,7 @@ Stability   : experimental
 
 module Bot.Media.Cache
   ( CachedMedia (..)
+  , CachedMediaWrite (..)
   , CacheConfig (..)
   , cacheMediaObject
   , deleteCachedMedia
@@ -63,6 +64,11 @@ data CachedMedia = CachedMedia
   , path :: !FilePath
   , size :: !Int
   }
+  deriving (Show, Eq)
+
+data CachedMediaWrite
+  = CreatedCachedMedia !CachedMedia
+  | ReusedCachedMedia !CachedMedia
   deriving (Show, Eq)
 
 data MediaObjectRow = MediaObjectRow
@@ -125,7 +131,7 @@ cacheMediaObject
   => CacheConfig
   -> Maybe Text
   -> MediaObject
-  -> Eff es CachedMedia
+  -> Eff es CachedMediaWrite
 cacheMediaObject cfg sourceRef mediaObject = do
   ensureMediaCacheTables
   case sourceRef of
@@ -133,7 +139,7 @@ cacheMediaObject cfg sourceRef mediaObject = do
       cached <- lookupCachedSource cfg ref
       case cached of
         Just media ->
-          pure media
+          pure (ReusedCachedMedia media)
         Nothing ->
           storeMediaObject cfg sourceRef mediaObject
     Nothing ->
@@ -337,7 +343,7 @@ storeMediaObject
   => CacheConfig
   -> Maybe Text
   -> MediaObject
-  -> Eff es CachedMedia
+  -> Eff es CachedMediaWrite
 storeMediaObject cfg sourceRef mediaObject = do
   FileSystem.createDirectoryIfMissing True cfg.directory
   Temporary.runTemporary $
@@ -350,9 +356,9 @@ storeMediaObject cfg sourceRef mediaObject = do
         Just cached -> do
           for_ sourceRef \ref ->
             linkSourceRef ref cached.fileId
-          pure cached
+          pure (ReusedCachedMedia cached)
         Nothing ->
-          storeStreamedMediaFile cfg sourceRef mediaObject digest temporaryPath
+          CreatedCachedMedia <$> storeStreamedMediaFile cfg sourceRef mediaObject digest temporaryPath
 
 storeStreamedMediaFile
   :: (Storage.Storage :> es, FileSystem :> es, IOE :> es)

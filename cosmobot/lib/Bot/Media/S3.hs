@@ -9,6 +9,7 @@ module Bot.Media.S3
   ( Runtime
   , newRuntime
   , ensurePublicObject
+  , uploadPublicObject
   )
 where
 
@@ -17,7 +18,6 @@ import qualified Amazonka.Auth as AWSAuth
 import qualified Amazonka.S3 as S3
 import qualified Amazonka.S3.PutObject as PutObject
 import Bot.Effect.Media (MediaObject (..))
-import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Cache as Cache
 import qualified Bot.Media.Config as MediaConfig
 import Bot.Media.S3.Config
@@ -78,39 +78,43 @@ configureAddressing cfg service =
     _ ->
       service{AWS.s3AddressingStyle = AWS.S3AddressingStyleAuto}
 
-ensurePublicObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es Text
+ensurePublicObject :: (IOE :> es, KatipE :> es, FileSystem :> es) => Runtime -> Cache.CachedMedia -> Eff es Text
 ensurePublicObject runtime cached =
   case publicObjectUrl runtime.cfg cached of
     Nothing ->
       pure (Cache.mediaIdForFileId cached.fileId)
     Just url -> do
-      when runtime.cfg.s3.enabled do
-        void (storeObject runtime cached)
+      uploadPublicObject False runtime cached
       pure url
 
-storeObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
-storeObject runtime cached =
-  storeObjectUnsafe runtime cached `catchSync` \err -> do
+uploadPublicObject :: (IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es ()
+uploadPublicObject forceUpload runtime cached =
+  when runtime.cfg.s3.enabled do
+    void (storeObject forceUpload runtime cached)
+
+storeObject :: (IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
+storeObject forceUpload runtime cached =
+  storeObjectUnsafe forceUpload runtime cached `catchSync` \err -> do
     logError [i|S3 media upload skipped: #{show err :: String}|]
     pure Nothing
 
-storeObjectUnsafe :: (IOE :> es, KatipE :> es, FileSystem :> es, Storage.Storage :> es) => Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
-storeObjectUnsafe Runtime{cfg, env = Nothing} _
+storeObjectUnsafe :: (IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
+storeObjectUnsafe _ Runtime{cfg, env = Nothing} _
   | not cfg.s3.enabled =
       pure Nothing
   | otherwise =
       liftIO (ioError (userError (Text.unpack (missingS3ConfigMessage cfg.s3))))
-storeObjectUnsafe Runtime{cfg, env = Just env} cached
+storeObjectUnsafe forceUpload Runtime{cfg, env = Just env} cached
   | not cfg.s3.enabled =
       pure Nothing
   | otherwise = do
       ensureS3Config cfg.s3
       let key = objectKey cfg.s3 cached
       objectExists env cfg.s3 key >>= \case
-        True -> do
+        True | not forceUpload -> do
           logDebug [i|S3 media upload skipped; object already exists: key=#{key}|]
           pure (publicObjectUrl cfg cached)
-        False -> do
+        _ -> do
           uploadObject env cfg.s3 key cached
           pure (publicObjectUrl cfg cached)
 

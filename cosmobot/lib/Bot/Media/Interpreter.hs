@@ -117,8 +117,12 @@ localPath runtime ref =
 cacheObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es) => Runtime -> Maybe Text -> MediaObject -> Eff es Text
 cacheObject runtime sourceRef mediaObject = do
   prepared <- prepareMediaObject runtime mediaObject
-  cached <- Cache.cacheMediaObject (cacheConfig runtime) sourceRef prepared
-  pure (Cache.mediaIdForFileId cached.fileId)
+  Cache.cacheMediaObject (cacheConfig runtime) sourceRef prepared >>= \case
+    Cache.CreatedCachedMedia cached -> do
+      S3.uploadPublicObject True runtime.s3 cached
+      pure (Cache.mediaIdForFileId cached.fileId)
+    Cache.ReusedCachedMedia cached ->
+      pure (Cache.mediaIdForFileId cached.fileId)
 
 prepareMediaObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es) => Runtime -> MediaObject -> Eff es MediaObject
 prepareMediaObject _ mediaObject =

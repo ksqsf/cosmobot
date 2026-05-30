@@ -6,6 +6,7 @@ Stability   : experimental
 
 module Bot.RPC.Client
   ( RpcClientCommand (..)
+  , RpcClientOptions (..)
   , runRpcClientCommand
   )
 where
@@ -27,7 +28,20 @@ data RpcClientCommand
   = RpcAuditRecent !Int
   | RpcAuditShow !Integer
   | RpcAuditThread !Text
+  | RpcMediaStats !Int
+  | RpcMediaResolveSource !Text
+  | RpcMediaGet !Text
+  | RpcMediaDelete !Text
+  | RpcMediaGc !Int
   | RpcCall !Text !Aeson.Value
+  deriving (Eq, Show)
+
+data RpcClientOptions = RpcClientOptions
+  { configPath :: !FilePath
+  , host :: !(Maybe String)
+  , port :: !(Maybe Int)
+  , token :: !(Maybe Text)
+  }
   deriving (Eq, Show)
 
 newtype RpcClientFileConfig = RpcClientFileConfig
@@ -40,9 +54,9 @@ instance FromValue RpcClientFileConfig where
     RpcClientFileConfig
       <$> fmap (fromMaybe RPCConfig.defaultFileConfig) (optKey "rpc")
 
-runRpcClientCommand :: FilePath -> RpcClientCommand -> IO ()
-runRpcClientCommand configPath command = do
-  cfg <- loadRpcClientConfig configPath
+runRpcClientCommand :: RpcClientOptions -> RpcClientCommand -> IO ()
+runRpcClientCommand options command = do
+  cfg <- applyRpcClientOptions options <$> loadRpcClientConfig options.configPath
   when (Text.null cfg.token) $
     fail "rpc.token must be configured for RPC client authentication"
   let request = requestForCommand command
@@ -66,6 +80,15 @@ loadRpcClientConfig path = do
       traverse_ (putStrLn . ("TOML warning: " <>)) warnings
       pure (RPCConfig.toRuntimeConfig (config_ :: RpcClientFileConfig).rpc)
 
+applyRpcClientOptions :: RpcClientOptions -> RPCConfig.Config -> RPCConfig.Config
+applyRpcClientOptions options RPCConfig.Config{enabled, host, port, token} =
+  RPCConfig.Config
+    { enabled
+    , host = fromMaybe host options.host
+    , port = fromMaybe port options.port
+    , token = fromMaybe token options.token
+    }
+
 requestForCommand :: RpcClientCommand -> Protocol.RpcRequest
 requestForCommand = \case
   RpcAuditRecent limit ->
@@ -74,6 +97,16 @@ requestForCommand = \case
     rpcRequest "audit.get" (Aeson.object ["audit_id" Aeson..= auditId])
   RpcAuditThread messageId ->
     rpcRequest "audit.thread" (Aeson.object ["message_id" Aeson..= messageId])
+  RpcMediaStats limit ->
+    rpcRequest "media.stats" (Aeson.object ["limit" Aeson..= limit])
+  RpcMediaResolveSource sourceRef ->
+    rpcRequest "media.resolve_source" (Aeson.object ["sourceRef" Aeson..= sourceRef])
+  RpcMediaGet mediaId ->
+    rpcRequest "media.get" (Aeson.object ["mediaId" Aeson..= mediaId])
+  RpcMediaDelete mediaId ->
+    rpcRequest "media.delete" (Aeson.object ["mediaId" Aeson..= mediaId])
+  RpcMediaGc maxAgeSeconds ->
+    rpcRequest "media.gc" (Aeson.object ["maxAgeSeconds" Aeson..= maxAgeSeconds])
   RpcCall method params ->
     rpcRequest method params
 

@@ -318,7 +318,19 @@ The CLI reads `[rpc]` from `config.toml` and connects to the running daemon:
 cosmobot rpc audit recent --limit 20
 cosmobot rpc audit show 123
 cosmobot rpc audit thread MESSAGE_ID
+cosmobot rpc media stats --limit 20
+cosmobot rpc media resolve-source SOURCE_REF
+cosmobot rpc media get MEDIA_ID_OR_FILE_ID
+cosmobot rpc media delete MEDIA_ID_OR_FILE_ID
+cosmobot rpc media gc --max-age-seconds 604800
 cosmobot rpc call METHOD JSON
+```
+
+Use `--host`, `--port`, or `--token` after `rpc` to override the `[rpc]`
+settings from the config file:
+
+```sh
+cosmobot rpc --host 127.0.0.1 --port 38765 --token "$TOKEN" media stats
 ```
 
 Responses are printed as pretty JSON.
