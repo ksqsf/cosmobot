@@ -107,6 +107,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - Use structured APIs: `aeson` for JSON, `Toml.Schema`/local parsers for TOML, and Selda via `Bot.Storage.Prelude` for queryable state.
 - Do not add indirection for appearance. Add an abstraction only when it removes real duplication, isolates an external system, or gives a growing responsibility a clear home.
 - Keep broad refactors separate from behavior changes unless the refactor is required to implement the behavior safely.
+- Prefer composition over nested `$` chains. Write `foo . bar . baz $ xxx` instead of `foo $ bar $ baz $ xxx` when the composition form is clear.
 
 ### Identity And Persistence
 

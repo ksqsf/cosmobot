@@ -103,10 +103,10 @@ runAgent
   => Int
   -> AgentContext es
   -> [Tool es]
-  -> Conversation
-  -> Eff es (Text, Conversation)
-runAgent maxTurns context tools conversation = do
-  outputs S.:> result <- S.toList (runAgentStreaming maxTurns context tools conversation)
+  -> Transcript
+  -> Eff es (Text, Transcript)
+runAgent maxTurns context tools transcript = do
+  outputs S.:> result <- S.toList (runAgentStreaming maxTurns context tools transcript)
   pure (agentStreamAnswer outputs, result)
 
 -- | Run an LLM/tool loop, streaming assistant content chunks.
@@ -115,8 +115,8 @@ runAgentStreaming
   => Int
   -> AgentContext es
   -> [Tool es]
-  -> Conversation
-  -> Stream (Of AgentStreamOutput) (Eff es) Conversation
+  -> Transcript
+  -> Stream (Of AgentStreamOutput) (Eff es) Transcript
 runAgentStreaming maxTurns context =
   runAgentStreamingWith maxTurns context
 
@@ -125,31 +125,31 @@ runAgentStreamingWith
   => Int
   -> AgentContext es
   -> [Tool es]
-  -> Conversation
-  -> Stream (Of AgentStreamOutput) (Eff es) Conversation
-runAgentStreamingWith maxTurns context tools conversation = do
+  -> Transcript
+  -> Stream (Of AgentStreamOutput) (Eff es) Transcript
+runAgentStreamingWith maxTurns context tools transcript = do
   agentRun <- lift (startAgentRun context tools)
-  result <- runPreparedAgentStreaming maxTurns agentRun conversation
-  pure result.conversation
+  result <- runPreparedAgentStreaming maxTurns agentRun transcript
+  pure result.transcript
 
 runPreparedAgentStreaming
   :: (LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es)
   => Int
   -> AgentRun es
-  -> Conversation
+  -> Transcript
   -> Stream (Of AgentStreamOutput) (Eff es) AgentResult
-runPreparedAgentStreaming maxTurns agentRun conversation =
-  runAgentProgramStreaming (plainAgentProgram maxTurns agentRun) conversation
+runPreparedAgentStreaming maxTurns agentRun transcript =
+  runAgentProgramStreaming (plainAgentProgram maxTurns agentRun) transcript
 
 runAgentProgramStreaming
   :: (LLM.LLM :> es)
   => AgentProgram transient '[] es
-  -> Conversation
+  -> Transcript
   -> Stream (Of AgentStreamOutput) (Eff es) AgentResult
-runAgentProgramStreaming program conversation =
+runAgentProgramStreaming program transcript =
   fmap (.result) $
     program.aroundAgentRun HList.HNil do
-      runAgentLoop program HList.HNil (runModelPhase program HList.HNil) (runToolTurn program) (initialAgentState program.initialTransient conversation)
+      runAgentLoop program HList.HNil (runModelPhase program HList.HNil) (runToolTurn program) (initialAgentState program.initialTransient transcript)
 
 agentRunId :: AgentRun es -> Text
 agentRunId =
@@ -168,10 +168,10 @@ startAgentRun context tools = do
   runningTools <- traverse (startToolRun context) exposedTools
   pure AgentRun{runId, context, tools, exposedTools, runningTools}
 
-initialAgentState :: HList.HList transient -> Conversation -> AgentState transient
-initialAgentState transient conversation =
+initialAgentState :: HList.HList transient -> Transcript -> AgentState transient
+initialAgentState transient transcript =
   AgentState
-    { conversation = closeInterruptedToolCalls conversation
+    { transcript = closeInterruptedToolCalls transcript
     , turn = 1
     , transient
     }
@@ -208,8 +208,8 @@ runModelPhase
   -> AgentState transient
   -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)
 runModelPhase program context agentState = do
-  conversation <- lift (program.modelInputConversation context agentState)
-  answer <- askNext program.agentRun conversation
+  transcript <- lift (program.modelInputTranscript context agentState)
+  answer <- askNext program.agentRun transcript
   modelDecision program.agentRun agentState answer
 
 runToolTurn :: AgentProgram transient '[] es -> ToolTurn transient es
@@ -230,7 +230,7 @@ modelDecision agentRun agentState answer =
       pure (ModelNeedsTools ToolTurnState{agentState, answered, toolContent = content, toolCalls})
   where
     answered =
-      appendMessage (LLM.assistantAnswer answer) agentState.conversation
+      appendMessage (LLM.assistantAnswer answer) agentState.transcript
 
 -- | Interpret one tool phase and advance to the next model phase.
 toolPhase
@@ -238,13 +238,13 @@ toolPhase
   -> ToolTurnState transient
   -> Eff es (AgentState transient)
 toolPhase program ToolTurnState{agentState, answered, toolCalls} = do
-  nextConversation <- continueWithToolCalls program agentState.turn answered toolCalls
-  pure (advanceAfterTools agentState nextConversation)
+  nextTranscript <- continueWithToolCalls program agentState.turn answered toolCalls
+  pure (advanceAfterTools agentState nextTranscript)
 
-advanceAfterTools :: AgentState transient -> Conversation -> AgentState transient
-advanceAfterTools agentState conversation =
+advanceAfterTools :: AgentState transient -> Transcript -> AgentState transient
+advanceAfterTools agentState transcript =
   agentState
-    { conversation = conversation
+    { transcript = transcript
     , turn = agentState.turn + 1
     }
 
@@ -256,13 +256,13 @@ advanceAfterTools agentState conversation =
 askNext
   :: (LLM.LLM :> es)
   => AgentRun es
-  -> Conversation
+  -> Transcript
   -> Stream (Of AgentStreamOutput) (Eff es) LLM.ChatAnswer
-askNext agentRun conversation = do
+askNext agentRun transcript = do
   S.map AgentContentDelta $
     LLM.askWithToolsStreaming
       (map toolSchema agentRun.exposedTools)
-      (agentRequestMessages agentRun.context conversation)
+      (agentRequestMessages agentRun.context transcript)
 
 agentStreamAnswer :: [AgentStreamOutput] -> Text
 agentStreamAnswer =
@@ -272,8 +272,8 @@ agentStreamAnswer =
     AgentToolCallNotification{} ->
       ""
 
-agentRequestMessages :: AgentContext es -> Conversation -> [LLM.ChatMessage]
-agentRequestMessages context (Conversation messages) =
+agentRequestMessages :: AgentContext es -> Transcript -> [LLM.ChatMessage]
+agentRequestMessages context (Transcript messages) =
   mergeSystemContext context.systemContext (Foldable.toList messages)
 
 mergeSystemContext :: Text -> [LLM.ChatMessage] -> [LLM.ChatMessage]
@@ -306,9 +306,9 @@ replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
 continueWithToolCalls
   :: AgentProgram transient '[] es
   -> Int
-  -> Conversation
+  -> Transcript
   -> NonEmpty LLM.ToolCall
-  -> Eff es Conversation
+  -> Eff es Transcript
 continueWithToolCalls program turn answered calls = do
   executions <- traverse (executeToolCall program turn) calls
   let executionList = toList executions
@@ -344,10 +344,10 @@ toolImageContextText call result =
 -- * Completion
 -----------------------------------------------------------------------------------------
 
-agentCompletion :: AgentRun es -> Text -> Text -> Int -> Conversation -> AgentCompletion
-agentCompletion agentRun status answer turnsUsed conversation =
+agentCompletion :: AgentRun es -> Text -> Text -> Int -> Transcript -> AgentCompletion
+agentCompletion agentRun status answer turnsUsed transcript =
   AgentCompletion
-    { result = AgentResult{runId = agentRun.runId, conversation}
+    { result = AgentResult{runId = agentRun.runId, transcript}
     , status
     , finalText = answer
     , turnsUsed

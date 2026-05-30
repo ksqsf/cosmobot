@@ -53,7 +53,7 @@ withContextCompactionUsing notify program =
     }
 
 compactAgentState :: LLM.LLM :> es => (AgentState transient -> Eff es ()) -> AgentState transient -> Eff es (AgentState transient)
-compactAgentState notify agentState@AgentState{conversation = Conversation messages}
+compactAgentState notify agentState@AgentState{transcript = Transcript messages}
   | Seq.length messages < compactionHardLimit =
       pure agentState
   | otherwise = do
@@ -61,7 +61,7 @@ compactAgentState notify agentState@AgentState{conversation = Conversation messa
       notify agentState
       summary <- summarizeMessages (Foldable.toList older)
       pure AgentState
-        { conversation = Conversation (LLM.systemText (summaryMessage summary) Seq.<| newer)
+        { transcript = Transcript (LLM.systemText (summaryMessage summary) Seq.<| newer)
         , turn = agentState.turn
         , transient = agentState.transient
         }

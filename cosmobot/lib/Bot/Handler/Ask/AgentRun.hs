@@ -63,15 +63,15 @@ runAskAgentConversation
   -> Maybe ConversationMessageKey
   -> IncomingMessage
   -> MessageInput
-  -> Conversation
-  -> Eff es (Text, Conversation)
-runAskAgentConversation toolCfg cfg conversations parentMessageKey message input conversation = do
+  -> Transcript
+  -> Eff es (Text, Transcript)
+runAskAgentConversation toolCfg cfg conversations parentMessageKey message input transcript = do
   threadId <- myThreadId
-  activeReply <- newActiveReply conversations parentMessageKey message threadId conversation
+  activeReply <- newActiveReply conversations parentMessageKey message threadId transcript
   let observer = AgentAudit.agentAuditObserver
   agentRun <- Agent.startAgentRun (agentContext toolCfg cfg message input) Agent.defaultTools
   reply <-
-    streamAgentReply cfg observer agentRun activeReply message conversation
+    streamAgentReply cfg observer agentRun activeReply message transcript
       `onException` discardActiveReply activeReply
   commitAgentReply observer activeReply message reply
     `onException` discardActiveReply activeReply
@@ -138,9 +138,9 @@ streamAgentReply
   -> Agent.AgentRun es
   -> ActiveReplyState
   -> IncomingMessage
-  -> Conversation
+  -> Transcript
   -> Eff es AgentReply
-streamAgentReply cfg observer agentRun activeReply message conversation =
+streamAgentReply cfg observer agentRun activeReply message transcript =
   do
     let sink = Agent.ToolEmittedMessageSink (rememberToolEmittedMessage activeReply)
         program =
@@ -152,7 +152,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
     (responseId, replyResult) <-
       S.mapM_
         (recordReplyUpdate activeReply)
-        (Chat.streamReplySegmentsTo message (.replyAnswer) (agentReplySegmentStream (Agent.runAgentProgramStreaming program conversation)))
+        (Chat.streamReplySegmentsTo message (.replyAnswer) (agentReplySegmentStream (Agent.runAgentProgramStreaming program transcript)))
     pure AgentReply{responseId, answer = replyResult.replyAnswer, result = replyResult.agentResult}
   `catchSync` \err ->
     case fromException err of
@@ -167,7 +167,7 @@ streamAgentReply cfg observer agentRun activeReply message conversation =
           , answer = failureMessage
           , result = Agent.AgentResult
               { runId = Agent.agentRunId agentRun
-              , conversation = conversation
+              , transcript = transcript
               }
           }
 
@@ -198,17 +198,17 @@ commitAgentReply
   -> ActiveReplyState
   -> IncomingMessage
   -> AgentReply
-  -> Eff es (Text, Conversation)
+  -> Eff es (Text, Transcript)
 commitAgentReply observer activeReply message AgentReply{responseId, answer, result} = do
   traverse_ (AgentObservation.observeConversationLinked observer . conversationLink result (activeReply.parentMessageKey <&> (.messageId))) responseId
   ChatLog.recordSelfMessage message answer
   active <- IORef.readIORef activeReply.activeRef
   case active of
     Just activeHandle ->
-      finishActiveConversation activeReply.conversations activeHandle result.conversation
+      finishActiveConversation activeReply.conversations activeHandle result.transcript
     Nothing ->
-      rememberConversationFrom activeReply.conversations activeReply.parentMessageKey (conversationMessageKey message <$> responseId) result.conversation
-  pure (answer, result.conversation)
+      rememberConversationTranscriptFrom activeReply.conversations activeReply.parentMessageKey (conversationMessageKey message <$> responseId) result.transcript
+  pure (answer, result.transcript)
 
 conversationLink :: Agent.AgentResult -> Maybe MessageId -> MessageId -> AgentObservation.ObservedConversationLink
 conversationLink result parentMessageId linkedMessageId =
@@ -242,7 +242,7 @@ data ActiveReplyState = ActiveReplyState
   , parentMessageKey :: !(Maybe ConversationMessageKey)
   , message :: !IncomingMessage
   , threadId :: !ThreadId
-  , baseConversation :: !Conversation
+  , baseConversation :: !Transcript
   , activeRef :: !(IORef.IORef (Maybe ActiveConversationHandle))
   }
 
@@ -252,7 +252,7 @@ newActiveReply
   -> Maybe ConversationMessageKey
   -> IncomingMessage
   -> ThreadId
-  -> Conversation
+  -> Transcript
   -> Eff es ActiveReplyState
 newActiveReply conversations parentMessageKey message threadId baseConversation = do
   activeRef <- IORef.newIORef Nothing

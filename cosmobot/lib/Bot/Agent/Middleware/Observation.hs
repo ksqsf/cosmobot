@@ -66,8 +66,8 @@ withObservation observer program =
     { aroundAgentRun = \context action ->
         withObservedAgentRun observer (HList.get @ToolLimitContext context) program.agentRun (map (.name) program.agentRun.exposedTools) do
           program.aroundAgentRun (emptyObservationContext HList.:& context) action
-    , modelInputConversation = \context agentState ->
-        program.modelInputConversation (emptyObservationContext HList.:& context) agentState
+    , modelInputTranscript = \context agentState ->
+        program.modelInputTranscript (emptyObservationContext HList.:& context) agentState
     , aroundModelTurn = \context agentState action ->
         let turnInfo = ObservedModelTurn
               { runId = program.agentRun.runId
@@ -110,7 +110,7 @@ withObservation observer program =
           }
 
 conversationMessageCount :: AgentState transient -> Int
-conversationMessageCount AgentState{conversation = Conversation{messages}} =
+conversationMessageCount AgentState{transcript = Transcript{messages}} =
   Foldable.length messages
 
 withObservedAgentRun

@@ -160,16 +160,16 @@ continueRoute toolCfg cfg conversations =
   stopOn continuedMessage \message parentId ->
     spawnTask do
       let parentKey = conversationMessageKey message parentId
-      parent <- lookupConversation conversations parentKey
-      case parent of
+      parentTranscript <- lookupConversationTranscript conversations parentKey
+      case parentTranscript of
         Nothing
           | not (canStartFromReply message) -> do
               logDebug [i|Ignoring reply to unknown conversation message: #{show parentId :: String}|]
               logInfo [i|Ignoring unknown conversation reply: #{messageIdText parentId}|]
           | otherwise ->
               startConversationFromReply toolCfg cfg conversations message parentId
-        Just conversation ->
-          continueConversation toolCfg cfg conversations message parentKey conversation
+        Just transcript ->
+          continueConversation toolCfg cfg conversations message parentKey transcript
   where
     continuedMessage =
       replyToMessage <* notAskPrefix cfg <* notCommand cfg.drawCommand
@@ -201,8 +201,8 @@ startAskConversation label toolCfg cfg conversations message prompt = do
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
   let input = inputWithImages contextPrompt contextImages
-  conversation <- startConversation cfg message input
-  void $ runAskAgentConversation toolCfg cfg conversations Nothing message input conversation
+  transcript <- startTranscript cfg message input
+  void $ runAskAgentConversation toolCfg cfg conversations Nothing message input transcript
 
 startDrawConversation
   :: HandlerEffects es
@@ -220,11 +220,11 @@ startDrawConversation label cfg conversations message prompt = do
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
   let input = inputWithImages contextPrompt contextImages
-  conversation <- startConversation cfg message input
-  answer <- drawConversation conversation
+  transcript <- startTranscript cfg message input
+  answer <- drawTranscript transcript
   responseId <- rightToMaybe <$> Chat.replyTo message answer
   ChatLog.recordSelfMessage message answer
-  rememberConversation conversations (conversationMessageKey message <$> responseId) (appendAssistant answer conversation)
+  rememberConversationTranscript conversations (conversationMessageKey message <$> responseId) (appendAssistant answer transcript)
 
 fetchReferencedMessage
   :: Chat.Chat :> es
@@ -249,8 +249,8 @@ startConversationFromReply toolCfg cfg conversations message parentId = do
   let prompt = promptWithReferencedContext message.text referenced contextImages
   unless (Text.null prompt && null contextImages) do
     let input = inputWithImages prompt contextImages
-    conversation <- startConversation cfg message input
-    void $ runAskAgentConversation toolCfg cfg conversations (Just (conversationMessageKey message parentId)) message input conversation
+    transcript <- startTranscript cfg message input
+    void $ runAskAgentConversation toolCfg cfg conversations (Just (conversationMessageKey message parentId)) message input transcript
 
 continueConversation
   :: HandlerEffects es
@@ -259,22 +259,22 @@ continueConversation
   -> ConversationStore
   -> IncomingMessage
   -> ConversationMessageKey
-  -> Conversation
+  -> Transcript
   -> Eff es ()
-continueConversation toolCfg cfg conversations message parentKey conversation = do
+continueConversation toolCfg cfg conversations message parentKey transcript = do
   logDebug [i|continuing conversation: #{show message :: String}|]
   logInfo [i|continuing conversation: #{incomingMessageLogLine message}|]
   let input = inputWithImages (promptOrImageDefault message.text message.imageUrls) message.imageUrls
-  let nextConversation =
-        appendUserInput input conversation
-  void $ runAskAgentConversation toolCfg cfg conversations (Just parentKey) message input nextConversation
+  let nextTranscript =
+        appendUserInput input transcript
+  void $ runAskAgentConversation toolCfg cfg conversations (Just parentKey) message input nextTranscript
 
-drawConversation
+drawTranscript
   :: (LLM.LLM :> es, KatipE :> es)
-  => Conversation
+  => Transcript
   -> Eff es Text
-drawConversation conversation =
-  LLM.askImageWithHistory (Foldable.toList conversation.messages) `catchSync` \err -> do
+drawTranscript transcript =
+  LLM.askImageWithHistory (Foldable.toList transcript.messages) `catchSync` \err -> do
     logError [i|LLM image request failed: #{show err :: String}|]
     pure ("Image generation failed: " <> (AgentFailure.agentFailureFromException err).userMessage)
 
@@ -287,8 +287,8 @@ promptOrImageDefault prompt imageUrls
   where
     stripped = Text.strip prompt
 
-startConversation :: (Memory.Memory :> es, Skills.Skills :> es) => AskHandlerConfig -> IncomingMessage -> MessageInput -> Eff es Conversation
-startConversation cfg message input = do
+startTranscript :: (Memory.Memory :> es, Skills.Skills :> es) => AskHandlerConfig -> IncomingMessage -> MessageInput -> Eff es Transcript
+startTranscript cfg message input = do
   skillsPrompt <- Skills.skillsSystemPrompt
   senderMemory <- loadScopedMemory (MemoryStore.senderMemoryScope message)
   chatMemory <- loadScopedMemory (MemoryStore.chatMemoryScope message)

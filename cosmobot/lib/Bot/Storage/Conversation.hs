@@ -11,10 +11,10 @@ module Bot.Storage.Conversation
   , ActiveConversationHandle
   , ConversationRow (..)
   , newConversationStore
-  , lookupConversation
+  , lookupConversationTranscript
   , lookupConversationMessageIds
-  , rememberConversation
-  , rememberConversationFrom
+  , rememberConversationTranscript
+  , rememberConversationTranscriptFrom
   , rememberActiveConversation
   , addActiveConversationMessage
   , updateActiveConversation
@@ -62,8 +62,8 @@ data ActiveConversation = ActiveConversation
   { activeMessageKey :: !ConversationMessageKey
   , activeParentMessageKey :: !(Maybe ConversationMessageKey)
   , activeMessageKeys :: !(IORef [ConversationMessageKey])
-  , activeCurrent :: !(IORef Conversation)
-  , activeDone :: !(MVar.MVar Conversation)
+  , activeCurrent :: !(IORef Transcript)
+  , activeDone :: !(MVar.MVar Transcript)
   , activeThreadId :: !ThreadId
   }
 
@@ -108,12 +108,12 @@ newConversationStore = do
   activeRef <- newIORef Map.empty
   pure ConversationStore{unConversationStore = ref, activeConversationStore = activeRef}
 
-lookupConversation :: (Prim :> es, Concurrent :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe Conversation)
-lookupConversation store@ConversationStore{activeConversationStore = activeRef} messageKey = do
+lookupConversationTranscript :: (Prim :> es, Concurrent :> es, Storage.Storage :> es) => ConversationStore -> ConversationMessageKey -> Eff es (Maybe Transcript)
+lookupConversationTranscript store@ConversationStore{activeConversationStore = activeRef} messageKey = do
   finished <- fmap (.treeNode.conversation) <$> lookupConversationNode store messageKey
   case finished of
-    Just conversation ->
-      pure (Just conversation)
+    Just transcript ->
+      pure (Just transcript)
     Nothing -> do
       active <- Map.lookup messageKey <$> readIORef activeRef
       traverse (MVar.readMVar . (.activeDone)) active
@@ -140,13 +140,13 @@ rememberActiveConversation
   -> Maybe ConversationMessageKey
   -> Maybe ConversationMessageKey
   -> ThreadId
-  -> Conversation
+  -> Transcript
   -> Eff es (Maybe ActiveConversationHandle)
 rememberActiveConversation _ _ Nothing _ _ =
   pure Nothing
-rememberActiveConversation ConversationStore{activeConversationStore = activeRef} parentMessageKey (Just messageKey) threadId conversation = do
+rememberActiveConversation ConversationStore{activeConversationStore = activeRef} parentMessageKey (Just messageKey) threadId transcript = do
   messageKeys <- newIORef [messageKey]
-  current <- newIORef conversation
+  current <- newIORef transcript
   done <- MVar.newEmptyMVar
   let active = ActiveConversation{activeMessageKey = messageKey, activeParentMessageKey = parentMessageKey, activeMessageKeys = messageKeys, activeCurrent = current, activeDone = done, activeThreadId = threadId}
   atomicModifyIORef' activeRef \activeMap ->
@@ -161,21 +161,21 @@ addActiveConversationMessage ConversationStore{activeConversationStore = activeR
   atomicModifyIORef' activeRef \activeMap ->
     (Map.insert messageKey active activeMap, ())
 
-updateActiveConversation :: Prim :> es => ActiveConversationHandle -> Conversation -> Eff es ()
-updateActiveConversation (ActiveConversationHandle active) conversation =
-  writeIORef active.activeCurrent conversation
+updateActiveConversation :: Prim :> es => ActiveConversationHandle -> Transcript -> Eff es ()
+updateActiveConversation (ActiveConversationHandle active) transcript =
+  writeIORef active.activeCurrent transcript
 
 finishActiveConversation
   :: (Prim :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es)
   => ConversationStore
   -> ActiveConversationHandle
-  -> Conversation
+  -> Transcript
   -> Eff es ()
-finishActiveConversation store@ConversationStore{activeConversationStore = activeRef} (ActiveConversationHandle active) conversation = do
-  updateActiveConversation (ActiveConversationHandle active) conversation
+finishActiveConversation store@ConversationStore{activeConversationStore = activeRef} (ActiveConversationHandle active) transcript = do
+  updateActiveConversation (ActiveConversationHandle active) transcript
   messageKeys <- readIORef active.activeMessageKeys
-  traverse_ (\messageKey -> rememberConversationFrom store active.activeParentMessageKey (Just messageKey) conversation) messageKeys
-  void $ MVar.tryPutMVar active.activeDone conversation
+  traverse_ (\messageKey -> rememberConversationTranscriptFrom store active.activeParentMessageKey (Just messageKey) transcript) messageKeys
+  void $ MVar.tryPutMVar active.activeDone transcript
   atomicModifyIORef' activeRef \activeMap ->
     (foldl' (flip Map.delete) activeMap messageKeys, ())
 
@@ -185,8 +185,8 @@ finishActiveConversationCurrent
   -> ActiveConversationHandle
   -> Eff es ()
 finishActiveConversationCurrent store (ActiveConversationHandle active) = do
-  conversation <- readIORef active.activeCurrent
-  finishActiveConversation store (ActiveConversationHandle active) conversation
+  transcript <- readIORef active.activeCurrent
+  finishActiveConversation store (ActiveConversationHandle active) transcript
 
 haltConversation :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es) => ConversationStore -> ConversationMessageKey -> Eff es Bool
 haltConversation store@ConversationStore{activeConversationStore = activeRef} messageKey = do
@@ -195,29 +195,29 @@ haltConversation store@ConversationStore{activeConversationStore = activeRef} me
     Nothing ->
       pure False
     Just activeConversation -> do
-      conversation <- readIORef activeConversation.activeCurrent
+      transcript <- readIORef activeConversation.activeCurrent
       messageKeys <- readIORef activeConversation.activeMessageKeys
       killThread activeConversation.activeThreadId
-      traverse_ (\activeMessageKey -> rememberConversationFrom store activeConversation.activeParentMessageKey (Just activeMessageKey) conversation) messageKeys
-      void $ MVar.tryPutMVar activeConversation.activeDone conversation
+      traverse_ (\activeMessageKey -> rememberConversationTranscriptFrom store activeConversation.activeParentMessageKey (Just activeMessageKey) transcript) messageKeys
+      void $ MVar.tryPutMVar activeConversation.activeDone transcript
       atomicModifyIORef' activeRef \activeMap ->
         (foldl' (flip Map.delete) activeMap messageKeys, ())
       pure True
 
-rememberConversation :: (Prim :> es, KatipE :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Conversation -> Eff es ()
-rememberConversation store =
-  rememberConversationFrom store Nothing
+rememberConversationTranscript :: (Prim :> es, KatipE :> es, Storage.Storage :> es) => ConversationStore -> Maybe ConversationMessageKey -> Transcript -> Eff es ()
+rememberConversationTranscript store =
+  rememberConversationTranscriptFrom store Nothing
 
-rememberConversationFrom
+rememberConversationTranscriptFrom
   :: (Prim :> es, KatipE :> es, Storage.Storage :> es)
   => ConversationStore
   -> Maybe ConversationMessageKey
   -> Maybe ConversationMessageKey
-  -> Conversation
+  -> Transcript
   -> Eff es ()
-rememberConversationFrom _ _ Nothing _ =
+rememberConversationTranscriptFrom _ _ Nothing _ =
   pure ()
-rememberConversationFrom store@ConversationStore{unConversationStore = ref} parentMessageKey (Just messageKey) conversation = do
+rememberConversationTranscriptFrom store@ConversationStore{unConversationStore = ref} parentMessageKey (Just messageKey) transcript = do
   ensureConversationTable
   parentNode <- lookupConversationNodeMaybe store parentMessageKey
   existingNode <- lookupConversationNodeMaybe store (Just messageKey)
@@ -226,9 +226,9 @@ rememberConversationFrom store@ConversationStore{unConversationStore = ref} pare
     let conversationId = conversationIdFor conversationState parentNode existingNode
         node = StoredConversationNode
           { conversationId
-          , treeNode = ConversationTreeNode{messageKey, parentMessageKey, conversation}
+          , treeNode = ConversationTreeNode{messageKey, parentMessageKey, conversation = transcript}
           }
-        (storageParentMessageKey, storedMessages) = conversationMessagesForStorage parentMessageKey parentNode conversation
+        (storageParentMessageKey, storedMessages) = transcriptMessagesForStorage parentMessageKey parentNode transcript
         nextConversationId = max nextStoredConversationId (if conversationId < conversationState.nextConversationId then conversationState.nextConversationId else conversationId + 1)
         nextState = conversationState{nextConversationId = nextConversationId}
         cachedState = cacheConversationNode messageKey node nextState
@@ -278,7 +278,7 @@ loadConversationNodeFromStorage store@ConversationStore{unConversationStore = re
                 , treeNode = ConversationTreeNode
                     { messageKey = messageKey
                     , parentMessageKey = stored.storedParentMessageKey
-                    , conversation = storedConversationFromMessages parentNode stored.storedMessages
+                    , conversation = storedTranscriptFromMessages parentNode stored.storedMessages
                     }
                 }
           atomicModifyIORef' ref \conversationState ->
@@ -297,13 +297,13 @@ decodeStoredConversation row = do
   let conversationId = fromMaybe 0 row.conversationId
   pure StoredConversation{storedConversationId = conversationId, storedParentMessageKey = row.parentMessageKey, storedMessages = messages}
 
-storedConversationFromMessages :: Maybe StoredConversationNode -> [LLM.ChatMessage] -> Conversation
-storedConversationFromMessages parentNode messages =
+storedTranscriptFromMessages :: Maybe StoredConversationNode -> [LLM.ChatMessage] -> Transcript
+storedTranscriptFromMessages parentNode messages =
   case parentNode of
     Nothing ->
-      Conversation (Seq.fromList messages)
+      Transcript (Seq.fromList messages)
     Just parent ->
-      Conversation (parent.treeNode.conversation.messages <> Seq.fromList messages)
+      Transcript (parent.treeNode.conversation.messages <> Seq.fromList messages)
 
 decodeMessages :: Text -> Maybe [LLM.ChatMessage]
 decodeMessages =
@@ -442,32 +442,32 @@ messagesJson :: [LLM.ChatMessage] -> Text
 messagesJson =
   TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
 
-conversationMessagesForStorage :: Maybe ConversationMessageKey -> Maybe StoredConversationNode -> Conversation -> (Maybe ConversationMessageKey, [LLM.ChatMessage])
-conversationMessagesForStorage parentMessageKey parentNode conversation =
+transcriptMessagesForStorage :: Maybe ConversationMessageKey -> Maybe StoredConversationNode -> Transcript -> (Maybe ConversationMessageKey, [LLM.ChatMessage])
+transcriptMessagesForStorage parentMessageKey parentNode transcript =
   case parentNode of
     Just parent
-      | Just suffix <- conversationSuffix parent.treeNode.conversation conversation ->
+      | Just suffix <- transcriptSuffix parent.treeNode.conversation transcript ->
           (parentMessageKey, suffix)
       | otherwise ->
-          (Nothing, conversationMessagesList conversation)
+          (Nothing, transcriptMessagesList transcript)
     Nothing ->
-      (parentMessageKey, conversationMessagesList conversation)
+      (parentMessageKey, transcriptMessagesList transcript)
 
-conversationSuffix :: Conversation -> Conversation -> Maybe [LLM.ChatMessage]
-conversationSuffix parent child
+transcriptSuffix :: Transcript -> Transcript -> Maybe [LLM.ChatMessage]
+transcriptSuffix parent child
   | parentJson == childPrefixJson =
       Just (drop parentLength childMessages)
   | otherwise =
       Nothing
   where
-    parentMessages = conversationMessagesList parent
-    childMessages = conversationMessagesList child
+    parentMessages = transcriptMessagesList parent
+    childMessages = transcriptMessagesList child
     parentLength = length parentMessages
     parentJson = map messageJson parentMessages
     childPrefixJson = map messageJson (take parentLength childMessages)
 
-conversationMessagesList :: Conversation -> [LLM.ChatMessage]
-conversationMessagesList =
+transcriptMessagesList :: Transcript -> [LLM.ChatMessage]
+transcriptMessagesList =
   Foldable.toList . (.messages)
 
 messageJson :: LLM.ChatMessage -> LazyByteString.ByteString

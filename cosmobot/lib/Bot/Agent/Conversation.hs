@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Agent.Conversation
-Description : Conversation shaping helpers for agent turns
+Description : Transcript shaping helpers for agent turns
 Stability   : experimental
 -}
 
@@ -18,13 +18,13 @@ import Bot.Prelude
 import qualified Data.Foldable as Foldable
 import qualified Data.Sequence as Seq
 
-appendMessage :: LLM.ChatMessage -> Conversation -> Conversation
-appendMessage message (Conversation messages) =
-  Conversation (messages Seq.|> message)
+appendMessage :: LLM.ChatMessage -> Transcript -> Transcript
+appendMessage message (Transcript messages) =
+  Transcript (messages Seq.|> message)
 
-appendMessages :: [LLM.ChatMessage] -> Conversation -> Conversation
-appendMessages newMessages (Conversation messages) =
-  Conversation (messages <> Seq.fromList newMessages)
+appendMessages :: [LLM.ChatMessage] -> Transcript -> Transcript
+appendMessages newMessages (Transcript messages) =
+  Transcript (messages <> Seq.fromList newMessages)
 
 -- | Synthetic tool result used when a real tool call is deliberately skipped.
 pausedToolResult :: LLM.ToolCall -> LLM.ChatMessage
@@ -36,9 +36,9 @@ pausedToolResult call =
 -- This covers interruption between receiving tool calls and appending their
 -- results. The next run can then send the conversation to the LLM without
 -- violating the tool-calling message protocol.
-closeInterruptedToolCalls :: Conversation -> Conversation
-closeInterruptedToolCalls (Conversation messages) =
-  Conversation (Seq.fromList (go (Foldable.toList messages)))
+closeInterruptedToolCalls :: Transcript -> Transcript
+closeInterruptedToolCalls (Transcript messages) =
+  Transcript (Seq.fromList (go (Foldable.toList messages)))
   where
     go [] = []
     go (message : rest)

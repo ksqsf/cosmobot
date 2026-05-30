@@ -5,7 +5,7 @@ Stability   : experimental
 -}
 
 module Bot.Core.Conversation
-  ( Conversation (..)
+  ( Transcript (..)
   , ConversationMessageKey (..)
   , conversationMessageKey
   , ConversationTreeNode (..)
@@ -39,7 +39,7 @@ import qualified Data.Text as Text
 
 -- | Platform-neutral conversation history.
 --
--- A 'Conversation' is the exact ordered message context that will be sent back
+-- A 'Transcript' is the exact ordered message context that will be sent back
 -- to the LLM when a user continues a thread. It deliberately does not contain
 -- chat ids, message ids, parent links, active stream handles, or persistence
 -- details; those belong to the storage layer that indexes and reloads
@@ -49,11 +49,11 @@ import qualified Data.Text as Text
 -- immutable value: start with the admitted user prompt, append normalized user
 -- and assistant turns, then hand the resulting value to the LLM effect or to
 -- storage.
-newtype Conversation = Conversation
+newtype Transcript = Transcript
   { messages :: Seq.Seq LLM.ChatMessage
   }
   deriving (Show, Generic)
-    deriving (Aeson.ToJSON, Aeson.FromJSON) via (SnakeJSON Conversation)
+    deriving (Aeson.ToJSON, Aeson.FromJSON) via (SnakeJSON Transcript)
 
 -- | Chat-scoped identity for a message that can anchor a conversation node.
 --
@@ -82,7 +82,7 @@ conversationMessageKey message messageId =
 data ConversationTreeNode = ConversationTreeNode
   { messageKey :: !ConversationMessageKey
   , parentMessageKey :: !(Maybe ConversationMessageKey)
-  , conversation :: !Conversation
+  , conversation :: !Transcript
   }
   deriving (Show)
 
@@ -116,7 +116,7 @@ conversationTreeEntries =
 --
 -- This is the common path for commands that do not provide an explicit system
 -- prompt and do not attach image context.
-startWithUser :: Text -> Conversation
+startWithUser :: Text -> Transcript
 startWithUser prompt =
   startWithSystemAndUserContext "" prompt []
 
@@ -124,11 +124,11 @@ startWithUser prompt =
 --
 -- Image URLs are encoded into the initial user message because the LLM API sees
 -- them as part of the same user turn, not as independent bot state.
-startWithUserContext :: Text -> [Text] -> Conversation
+startWithUserContext :: Text -> [Text] -> Transcript
 startWithUserContext prompt imageUrls =
   startWithUserInput (inputWithImages prompt imageUrls)
 
-startWithUserInput :: MessageInput -> Conversation
+startWithUserInput :: MessageInput -> Transcript
 startWithUserInput =
   startWithSystemAndUserInput ""
 
@@ -136,7 +136,7 @@ startWithUserInput =
 --
 -- The system prompt is omitted entirely when it is empty, so callers do not
 -- create blank system messages by accident.
-startWithSystemAndUser :: Text -> Text -> Conversation
+startWithSystemAndUser :: Text -> Text -> Transcript
 startWithSystemAndUser systemPrompt prompt =
   startWithSystemAndUserContext systemPrompt prompt []
 
@@ -145,20 +145,20 @@ startWithSystemAndUser systemPrompt prompt =
 -- This is the most general constructor. The resulting sequence is always
 -- system messages first, then exactly one user message containing the prompt
 -- and any image context.
-startWithSystemAndUserContext :: Text -> Text -> [Text] -> Conversation
+startWithSystemAndUserContext :: Text -> Text -> [Text] -> Transcript
 startWithSystemAndUserContext systemPrompt prompt imageUrls =
   startWithSystemAndUserInput systemPrompt (inputWithImages prompt imageUrls)
 
-startWithSystemAndUserInput :: Text -> MessageInput -> Conversation
+startWithSystemAndUserInput :: Text -> MessageInput -> Transcript
 startWithSystemAndUserInput systemPrompt input =
-  Conversation (Seq.fromList (systemMessages <> [LLM.userWithImages input.text (messageInputImageUrls input)]))
+  Transcript (Seq.fromList (systemMessages <> [LLM.userWithImages input.text (messageInputImageUrls input)]))
   where
     systemMessages
       | Text.null systemPrompt = []
       | otherwise         = [LLM.systemText systemPrompt]
 
 -- | Append a text-only user turn to an existing history.
-appendUser :: Text -> Conversation -> Conversation
+appendUser :: Text -> Transcript -> Transcript
 appendUser prompt =
   appendUserContext prompt []
 
@@ -167,13 +167,13 @@ appendUser prompt =
 -- Continuations use this when a reply adds a new prompt to an already persisted
 -- conversation. Parent/child thread linkage is intentionally handled outside
 -- this value.
-appendUserContext :: Text -> [Text] -> Conversation -> Conversation
-appendUserContext prompt imageUrls (Conversation history) =
-  appendUserInput (inputWithImages prompt imageUrls) (Conversation history)
+appendUserContext :: Text -> [Text] -> Transcript -> Transcript
+appendUserContext prompt imageUrls (Transcript history) =
+  appendUserInput (inputWithImages prompt imageUrls) (Transcript history)
 
-appendUserInput :: MessageInput -> Conversation -> Conversation
-appendUserInput input (Conversation history) =
-  Conversation (history Seq.|> LLM.userWithImages input.text (messageInputImageUrls input))
+appendUserInput :: MessageInput -> Transcript -> Transcript
+appendUserInput input (Transcript history) =
+  Transcript (history Seq.|> LLM.userWithImages input.text (messageInputImageUrls input))
 
 -- | Append an assistant reply.
 --
@@ -181,9 +181,9 @@ appendUserInput input (Conversation history) =
 -- context message. That makes image results available to later turns even
 -- though the assistant message itself is text-oriented in the OpenAI-compatible
 -- chat format we use here.
-appendAssistant :: Text -> Conversation -> Conversation
-appendAssistant answer (Conversation history) =
-  Conversation (history <> Seq.fromList (assistantContext answer))
+appendAssistant :: Text -> Transcript -> Transcript
+appendAssistant answer (Transcript history) =
+  Transcript (history <> Seq.fromList (assistantContext answer))
 
 assistantContext :: Text -> [LLM.ChatMessage]
 assistantContext answer =

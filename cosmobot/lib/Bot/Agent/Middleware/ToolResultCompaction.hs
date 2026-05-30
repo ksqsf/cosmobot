@@ -8,7 +8,7 @@ module Bot.Agent.Middleware.ToolResultCompaction
   ( NextModelInput (..)
   , maxToolResultPreviewChars
   , compactLargeToolResultText
-  , compactLargeToolResultsInConversation
+  , compactLargeToolResultsInTranscript
   , compactLargeToolResultsInMessages
   , withToolResultCompaction
   )
@@ -37,7 +37,7 @@ maxToolResultPreviewChars =
   4096
 
 newtype NextModelInput = NextModelInput
-  { conversation :: Maybe Conversation
+  { transcript :: Maybe Transcript
   }
 
 withToolResultCompaction
@@ -48,21 +48,21 @@ withToolResultCompaction program =
   program
     { aroundAgentRun = \context action ->
         program.aroundAgentRun (toolResultObservation HList.:& context) action
-    , modelInputConversation = \context agentState ->
-        case (HList.get @NextModelInput agentState.transient).conversation of
-          Just conversation ->
-            pure conversation
+    , modelInputTranscript = \context agentState ->
+        case (HList.get @NextModelInput agentState.transient).transcript of
+          Just transcript ->
+            pure transcript
           Nothing ->
-            program.modelInputConversation (toolResultObservation HList.:& context) agentState
+            program.modelInputTranscript (toolResultObservation HList.:& context) agentState
     , aroundModelTurn = \context agentState action -> do
         decision <- program.aroundModelTurn (toolResultObservation HList.:& context) agentState action
         pure (clearConsumedModelInput decision)
     , aroundToolTurn = \context toolState action -> do
         fullState <- program.aroundToolTurn (toolResultObservation HList.:& context) toolState action
-        compactedConversation <- compactLargeToolResultsInConversation fullState.conversation
+        compactedTranscript <- compactLargeToolResultsInTranscript fullState.transcript
         pure fullState
-          { conversation = compactedConversation
-          , transient = HList.put (NextModelInput (Just fullState.conversation)) fullState.transient
+          { transcript = compactedTranscript
+          , transient = HList.put (NextModelInput (Just fullState.transcript)) fullState.transient
           }
     , aroundToolCall = \turn call context action ->
         program.aroundToolCall turn call (toolResultObservation HList.:& context) action
@@ -89,9 +89,9 @@ compactLargeToolResultsInMessages :: Media.Media :> es => [LLM.ChatMessage] -> E
 compactLargeToolResultsInMessages =
   traverse compactLargeToolResultMessage
 
-compactLargeToolResultsInConversation :: Media.Media :> es => Conversation -> Eff es Conversation
-compactLargeToolResultsInConversation (Conversation messages) =
-  Conversation . Seq.fromList <$> compactLargeToolResultsInMessages (Foldable.toList messages)
+compactLargeToolResultsInTranscript :: Media.Media :> es => Transcript -> Eff es Transcript
+compactLargeToolResultsInTranscript (Transcript messages) =
+  Transcript . Seq.fromList <$> compactLargeToolResultsInMessages (Foldable.toList messages)
 
 compactLargeToolResultText :: Media.Media :> es => Text -> Eff es Text
 compactLargeToolResultText text

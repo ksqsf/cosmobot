@@ -31,7 +31,7 @@ import qualified Bot.Util.HList as HList
 
 data AgentResult = AgentResult
   { runId :: !Text
-  , conversation :: !Conversation
+  , transcript :: !Transcript
   }
 
 data AgentStreamOutput
@@ -62,7 +62,7 @@ data AgentRun es = AgentRun
 
 -- | Mutable position of the agent loop.
 data AgentState transient = AgentState
-  { conversation :: !Conversation
+  { transcript    :: !Transcript
   , turn         :: !Int
   , transient    :: !(HList.HList transient)
   }
@@ -83,7 +83,7 @@ type MiddlewareContext context =
 -- | Runtime wiring for the agent algorithm.
 --
 -- The core loop stays as direct model/tool recursion, while cross-cutting
--- behavior gets named middleware boundaries. For example, conversation
+-- behavior gets named middleware boundaries. For example, transcript
 -- compaction belongs in 'aroundModelTurn': it can rewrite state before the
 -- next LLM request without changing tool execution or completion handling.
 data AgentProgram (transient :: [Type]) (context :: [Type]) es = AgentProgram
@@ -91,14 +91,14 @@ data AgentProgram (transient :: [Type]) (context :: [Type]) es = AgentProgram
     agentRun :: AgentRun es
     -- | Initial middleware-owned run state.
   , initialTransient :: HList.HList transient
-    -- | Select the conversation sent to the next model request. Most programs
-    -- use the canonical conversation; middleware may expose a one-shot view.
-  , modelInputConversation :: MiddlewareContext context -> AgentState transient -> Eff es Conversation
+    -- | Select the transcript sent to the next model request. Most programs
+    -- use the canonical transcript; middleware may expose a one-shot view.
+  , modelInputTranscript :: MiddlewareContext context -> AgentState transient -> Eff es Transcript
     -- | Wrap one complete agent run.
   , aroundAgentRun :: MiddlewareContext context -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
     -- | Wrap one complete model phase.
     --
-    -- Use this for model-side middleware such as conversation compaction,
+    -- Use this for model-side middleware such as transcript compaction,
     -- timing, auditing, or exception-aware behavior around the streamed model
     -- request plus decision.
   , aroundModelTurn :: MiddlewareContext context -> AgentState transient -> (AgentState transient -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)) -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)
@@ -116,7 +116,7 @@ data AgentProgram (transient :: [Type]) (context :: [Type]) es = AgentProgram
 
 data ToolTurnState transient = ToolTurnState
   { agentState :: !(AgentState transient)
-  , answered   :: !Conversation
+  , answered   :: !Transcript
   , toolContent :: !Text
   , toolCalls  :: !(NonEmpty LLM.ToolCall)
   }
@@ -126,7 +126,7 @@ emptyAgentProgram initialTransient agentRun =
   AgentProgram
     { agentRun
     , initialTransient
-    , modelInputConversation = \_ agentState -> pure agentState.conversation
+    , modelInputTranscript = \_ agentState -> pure agentState.transcript
     , aroundAgentRun = \_ action -> action
     , aroundModelTurn = \_ agentState action -> action agentState
     , aroundToolTurn = \_ _ action -> action

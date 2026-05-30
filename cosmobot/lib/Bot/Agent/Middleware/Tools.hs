@@ -38,8 +38,8 @@ withToolLimit maxTurns program =
   program
     { aroundAgentRun = \context action ->
         program.aroundAgentRun (toolLimitContext HList.:& context) action
-    , modelInputConversation = \context agentState ->
-        program.modelInputConversation (toolLimitContext HList.:& context) agentState
+    , modelInputTranscript = \context agentState ->
+        program.modelInputTranscript (toolLimitContext HList.:& context) agentState
     , aroundModelTurn = \context agentState action -> do
         decision <- program.aroundModelTurn (toolLimitContext HList.:& context) agentState action
         case decision of
@@ -103,14 +103,14 @@ handleToolLimit
   -> Int
   -> Text
   -> NonEmpty LLM.ToolCall
-  -> Conversation
+  -> Transcript
   -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
 handleToolLimit runId turn _content calls answered = do
   let paused = appendMessages (toList (fmap pausedToolResult calls)) answered
       message = toolLimitMessage calls
   S.yield (AgentContentDelta message)
   pure AgentCompletion
-    { result = AgentResult{runId, conversation = paused}
+    { result = AgentResult{runId, transcript = paused}
     , status = "tool_limit"
     , finalText = message
     , turnsUsed = turn

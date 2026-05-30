@@ -751,7 +751,7 @@ testAgentCompactsOldConversationContextBeforeModelTurn = do
   answers <- IORef.newIORef [chatAnswer "done" []]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   let longConversation =
-        Conversation (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
+        Transcript (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 4 agentContext [] longConversation
   requests <- IORef.readIORef captured
@@ -777,7 +777,7 @@ testAgentAnnouncesContextCompaction = do
   answers <- IORef.newIORef [chatAnswer "done" []]
   replies <- IORef.newIORef ([] :: [Text])
   let longConversation =
-        Conversation (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
+        Transcript (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
   _ <- runAgentWith answers (ChatMock (Just replies) (Just "46") Nothing) do
     agentRun <- Agent.startAgentRun agentContext []
     let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun
@@ -1101,7 +1101,7 @@ testAgentStreamsToolRequestContentBeforeToolNotification = do
       progress @?= "我先查看当前消息。"
       map (.name) (toList toolCalls) @?= ["message_info"]
       finalChunk @?= "done"
-      case find ((not . null) . (.toolCalls)) (conversationMessagesList result) of
+      case find ((not . null) . (.toolCalls)) (transcriptMessagesList result) of
         Just LLM.ChatMessage{role, content = Just (LLM.TextContent content), toolCalls = savedToolCalls} -> do
           role @?= "assistant"
           content @?= "我先查看当前消息。"
@@ -1409,8 +1409,8 @@ testChunkedActiveConversationAliasesEverySentReply = runEff $ runConcurrent $ ru
   addActiveConversationMessage store active (messageKey 2)
   updateActiveConversation active partialConversation
   halted <- haltConversation store (messageKey 2)
-  firstLookup <- lookupConversation store (messageKey 1)
-  secondLookup <- lookupConversation store (messageKey 2)
+  firstLookup <- lookupConversationTranscript store (messageKey 1)
+  secondLookup <- lookupConversationTranscript store (messageKey 2)
   liftIO do
     halted @?= True
     (show firstLookup :: String) @?= show (Just partialConversation)
@@ -1454,10 +1454,10 @@ testConversationRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTes
   store <- newConversationStore
   let firstConversation = startWithUser "first"
       secondConversation = appendAssistant "second" firstConversation
-  rememberConversation store (Just (messageKey 1)) firstConversation
-  rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 2)) secondConversation
-  firstLookup <- lookupConversation store (messageKey 1)
-  secondLookup <- lookupConversation store (messageKey 2)
+  rememberConversationTranscript store (Just (messageKey 1)) firstConversation
+  rememberConversationTranscriptFrom store (Just (messageKey 1)) (Just (messageKey 2)) secondConversation
+  firstLookup <- lookupConversationTranscript store (messageKey 1)
+  secondLookup <- lookupConversationTranscript store (messageKey 2)
   liftIO do
     (show firstLookup :: String) @?= show (Just firstConversation)
     (show secondLookup :: String) @?= show (Just secondConversation)
@@ -1469,14 +1469,14 @@ testConversationBranchesDoNotOverwriteSiblings = runEff $ runConcurrent $ runPri
       branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
       branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
       branchA2 = appendAssistant "A second answer" (appendUser "A second follow-up" branchA)
-  rememberConversation store (Just (messageKey 1)) root
-  rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 2)) branchA
-  rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 3)) branchB
-  rememberConversationFrom store (Just (messageKey 2)) (Just (messageKey 4)) branchA2
-  rootLookup <- lookupConversation store (messageKey 1)
-  branchALookup <- lookupConversation store (messageKey 2)
-  branchBLookup <- lookupConversation store (messageKey 3)
-  branchA2Lookup <- lookupConversation store (messageKey 4)
+  rememberConversationTranscript store (Just (messageKey 1)) root
+  rememberConversationTranscriptFrom store (Just (messageKey 1)) (Just (messageKey 2)) branchA
+  rememberConversationTranscriptFrom store (Just (messageKey 1)) (Just (messageKey 3)) branchB
+  rememberConversationTranscriptFrom store (Just (messageKey 2)) (Just (messageKey 4)) branchA2
+  rootLookup <- lookupConversationTranscript store (messageKey 1)
+  branchALookup <- lookupConversationTranscript store (messageKey 2)
+  branchBLookup <- lookupConversationTranscript store (messageKey 3)
+  branchA2Lookup <- lookupConversationTranscript store (messageKey 4)
   liftIO do
     (show rootLookup :: String) @?= show (Just root)
     (show branchALookup :: String) @?= show (Just branchA)
@@ -1492,10 +1492,10 @@ testConversationLookupIsScopedByChat = runEff $ runConcurrent $ runPrim $ runTes
       keyB = conversationMessageKey chatB
       conversationA = appendAssistant "answer A" (startWithUser "from chat A")
       conversationB = appendAssistant "answer B" (startWithUser "from chat B")
-  rememberConversation store (Just (keyA "1")) conversationA
-  rememberConversation store (Just (keyB "1")) conversationB
-  lookupA <- lookupConversation store (keyA "1")
-  lookupB <- lookupConversation store (keyB "1")
+  rememberConversationTranscript store (Just (keyA "1")) conversationA
+  rememberConversationTranscript store (Just (keyB "1")) conversationB
+  lookupA <- lookupConversationTranscript store (keyA "1")
+  lookupB <- lookupConversationTranscript store (keyB "1")
   liftIO do
     (show lookupA :: String) @?= show (Just conversationA)
     (show lookupB :: String) @?= show (Just conversationB)
@@ -1508,17 +1508,17 @@ testConversationBranchesPersistThroughSQLiteReload =
       let root = appendAssistant "root answer" (startWithUser "root")
           branchA = appendAssistant "A answer" (appendUser "A follow-up" root)
           branchB = appendAssistant "B answer" (appendUser "B follow-up" root)
-      rememberConversation store (Just (messageKey 1)) root
-      rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 2)) branchA
-      rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 3)) branchB
+      rememberConversationTranscript store (Just (messageKey 1)) root
+      rememberConversationTranscriptFrom store (Just (messageKey 1)) (Just (messageKey 2)) branchA
+      rememberConversationTranscriptFrom store (Just (messageKey 1)) (Just (messageKey 3)) branchB
 
       reloaded <- newConversationStore
-      branchAAfterReload <- lookupConversation reloaded (messageKey 2)
-      branchBAfterReload <- lookupConversation reloaded (messageKey 3)
+      branchAAfterReload <- lookupConversationTranscript reloaded (messageKey 2)
+      branchBAfterReload <- lookupConversationTranscript reloaded (messageKey 3)
       let branchA2 = appendAssistant "A second answer" (appendUser "A second follow-up" branchA)
-      rememberConversationFrom reloaded (Just (messageKey 2)) (Just (messageKey 4)) branchA2
+      rememberConversationTranscriptFrom reloaded (Just (messageKey 2)) (Just (messageKey 4)) branchA2
       rows <- loadConversationRows
-      branchA2AfterReload <- lookupConversation reloaded (messageKey 4)
+      branchA2AfterReload <- lookupConversationTranscript reloaded (messageKey 4)
 
       liftIO do
         (show branchAAfterReload :: String) @?= show (Just branchA)
@@ -1536,12 +1536,12 @@ testConversationCacheMissLoadsEvictedParent =
       store <- newConversationStore
       let root = appendAssistant "root answer" (startWithUser "root")
           child = appendAssistant "child answer" (appendUser "child follow-up" root)
-      rememberConversation store (Just (messageKey 1)) root
+      rememberConversationTranscript store (Just (messageKey 1)) root
       for_ [1000..1512] \messageId ->
-        rememberConversation store (Just (messageKey messageId)) (startWithUser [i|filler #{messageId}|])
-      rememberConversationFrom store (Just (messageKey 1)) (Just (messageKey 2)) child
-      rootLookup <- lookupConversation store (messageKey 1)
-      childLookup <- lookupConversation store (messageKey 2)
+        rememberConversationTranscript store (Just (messageKey messageId)) (startWithUser [i|filler #{messageId}|])
+      rememberConversationTranscriptFrom store (Just (messageKey 1)) (Just (messageKey 2)) child
+      rootLookup <- lookupConversationTranscript store (messageKey 1)
+      childLookup <- lookupConversationTranscript store (messageKey 2)
       rows <- loadConversationRows
       let childRow = find ((== "2") . rowMessageId) rows
       liftIO do
@@ -1590,9 +1590,9 @@ testConversationStorageOmitsLargeToolResults =
                               do
                                 agentRun <- Agent.startAgentRun agentContext [largeResultTool result]
                                 outputs S.:> agentResult <- S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun) (startWithUser "fetch"))
-                                pure (agentOutputText outputs, agentResult.conversation)
-                        rememberConversation store (Just (messageKey 1)) conversation
-                        loaded <- lookupConversation store (messageKey 1)
+                                pure (agentOutputText outputs, agentResult.transcript)
+                        rememberConversationTranscript store (Just (messageKey 1)) conversation
+                        loaded <- lookupConversationTranscript store (messageKey 1)
                         storedRows <- loadConversationRows
                         mediaFiles <- Media.listMediaFiles
                         pure (loaded, storedRows, mediaFiles)
@@ -1638,9 +1638,9 @@ largeResultTool result =
 testConversationOmitsBase64GeneratedImageContext :: IO ()
 testConversationOmitsBase64GeneratedImageContext = do
   let base64Image = "data:image/png;base64,AAAA"
-      conversation = appendAssistant (ReplyBody.imageDirective base64Image) (startWithUser "draw")
-      encoded = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode conversation))
-  imageContextUrls conversation @?= []
+      transcript = appendAssistant (ReplyBody.imageDirective base64Image) (startWithUser "draw")
+      encoded = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode transcript))
+  imageContextUrls transcript @?= []
   assertBool "conversation history should not retain base64 image payloads" (not (base64Image `Text.isInfixOf` encoded))
   assertBool "conversation history should keep a small generated-image marker" ("Generated image." `Text.isInfixOf` encoded)
 
@@ -1649,12 +1649,12 @@ testLLMRequestOmitsBase64GeneratedImageContext = do
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   answers <- IORef.newIORef [chatAnswer "ok" []]
   let base64Image = "data:image/png;base64," <> Text.replicate 160 "A"
-      conversation =
+      transcript =
         appendUser
           "what did you draw?"
           (appendAssistant (ReplyBody.imageDirective base64Image) (startWithUser "draw"))
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    Agent.runAgent 1 agentContext Agent.defaultTools conversation
+    Agent.runAgent 1 agentContext Agent.defaultTools transcript
   requests <- IORef.readIORef captured
   let encoded = jsonText requests
   assertBool "captured LLM request should not contain generated image base64" (not (base64Image `Text.isInfixOf` encoded))
@@ -1662,17 +1662,17 @@ testLLMRequestOmitsBase64GeneratedImageContext = do
 
 testConversationJsonRemainsListCompatible :: IO ()
 testConversationJsonRemainsListCompatible = do
-  let conversation = appendAssistant "answer" (appendUser "follow-up" (startWithUser "hello"))
-      encoded = Aeson.encode conversation
-      decoded = Aeson.eitherDecode encoded :: Either String Conversation
+  let transcript = appendAssistant "answer" (appendUser "follow-up" (startWithUser "hello"))
+      encoded = Aeson.encode transcript
+      decoded = Aeson.eitherDecode encoded :: Either String Transcript
       encodedValue = Aeson.eitherDecode encoded :: Either String Aeson.Value
   case decoded of
     Left err ->
       assertFailure err
     Right roundTripped ->
-      (show roundTripped :: String) @?= show conversation
+      (show roundTripped :: String) @?= show transcript
   encodedValue @?=
-    Right (Aeson.object ["messages" Aeson..= Foldable.toList conversation.messages])
+    Right (Aeson.object ["messages" Aeson..= Foldable.toList transcript.messages])
 
 testMemoryToolManagesCurrentSenderMemory :: IO ()
 testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
@@ -1909,16 +1909,16 @@ chatLogMessage messageId senderId chatId text =
     , text = text
     }
 
-toolOutputs :: Conversation -> [Text]
-toolOutputs (Conversation messages) =
+toolOutputs :: Transcript -> [Text]
+toolOutputs (Transcript messages) =
   [ text
   | message <- Foldable.toList messages
   , message.role == "tool"
   , Just (LLM.TextContent text) <- [message.content]
   ]
 
-conversationMessagesList :: Conversation -> [LLM.ChatMessage]
-conversationMessagesList (Conversation messages) =
+transcriptMessagesList :: Transcript -> [LLM.ChatMessage]
+transcriptMessagesList (Transcript messages) =
   Foldable.toList messages
 
 showSeparatedOutputs :: [Agent.AgentStreamOutput] -> String
@@ -1932,9 +1932,9 @@ showSeparatedOutputs =
       Agent.AgentToolCallNotification calls ->
         ("tool", Text.intercalate ", " (toList (fmap (.name) calls)))
 
-decodeSingleChatLogToolOutput :: Conversation -> IO [ChatLog.ChatLogEntry]
-decodeSingleChatLogToolOutput conversation =
-  case toolOutputs conversation of
+decodeSingleChatLogToolOutput :: Transcript -> IO [ChatLog.ChatLogEntry]
+decodeSingleChatLogToolOutput transcript =
+  case toolOutputs transcript of
     [output] ->
       case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 output) of
         Left err ->
@@ -1952,8 +1952,8 @@ streamAnswerText =
     Agent.AgentToolCallNotification{} ->
       ""
 
-imageContextUrls :: Conversation -> [Text]
-imageContextUrls (Conversation messages) =
+imageContextUrls :: Transcript -> [Text]
+imageContextUrls (Transcript messages) =
   [ url
   | message <- Foldable.toList messages
   , message.role == "user"
@@ -2438,11 +2438,11 @@ runAgentWithToolMessageCapture
   :: Int
   -> Agent.AgentContext AgentStack
   -> [Agent.Tool AgentStack]
-  -> Conversation
+  -> Transcript
   -> IORef.IORef [Text]
   -> IORef.IORef [Maybe MessageId]
-  -> Eff AgentStack (Text, Conversation)
-runAgentWithToolMessageCapture maxTurns context tools conversation recorded remembered = do
+  -> Eff AgentStack (Text, Transcript)
+runAgentWithToolMessageCapture maxTurns context tools transcript recorded remembered = do
   agentRun <- Agent.startAgentRun context tools
   let sink = Agent.ToolEmittedMessageSink \messageId ->
         liftIO $ IORef.modifyIORef' remembered (<> [messageId])
@@ -2452,8 +2452,8 @@ runAgentWithToolMessageCapture maxTurns context tools conversation recorded reme
         )
           . Agent.withLinkingToolEmittedMessagesToConversation sink
           $ Agent.defaultAgentProgram AgentAudit.agentAuditObserver maxTurns agentRun
-  outputs S.:> result <- S.toList (Agent.runAgentProgramStreaming program conversation)
-  pure (agentOutputText outputs, result.conversation)
+  outputs S.:> result <- S.toList (Agent.runAgentProgramStreaming program transcript)
+  pure (agentOutputText outputs, result.transcript)
 
 agentOutputText :: [Agent.AgentStreamOutput] -> Text
 agentOutputText =
