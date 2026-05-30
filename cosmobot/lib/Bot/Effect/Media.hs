@@ -7,11 +7,15 @@ Stability   : experimental
 module Bot.Effect.Media
   ( Media (..)
   , MediaObject (..)
+  , MediaCacheEntry (..)
   , MediaFileInfo (..)
+  , MediaPlatformRefInfo (..)
   , MediaCacheStats (..)
   , storeMediaObject
   , storeMediaObjectFromSource
   , mediaRefForSource
+  , mediaCacheEntry
+  , deleteMediaFile
   , mediaFileInfo
   , mediaFileInfoByRef
   , listMediaFiles
@@ -61,6 +65,20 @@ data MediaFileInfo = MediaFileInfo
   }
   deriving (Show, Eq, Generic, Aeson.ToJSON)
 
+data MediaPlatformRefInfo = MediaPlatformRefInfo
+  { platform :: !Text
+  , scope :: !Text
+  , platformRef :: !Text
+  }
+  deriving (Show, Eq, Generic, Aeson.ToJSON)
+
+data MediaCacheEntry = MediaCacheEntry
+  { file :: !MediaFileInfo
+  , sourceRefs :: ![Text]
+  , platformRefs :: ![MediaPlatformRefInfo]
+  }
+  deriving (Show, Eq, Generic, Aeson.ToJSON)
+
 data MediaCacheStats = MediaCacheStats
   { files :: !Int
   , existingFiles :: !Int
@@ -75,6 +93,8 @@ data Media :: Effect where
   StoreMediaObject :: MediaObject -> Media m (Maybe Text)
   StoreMediaObjectFromSource :: Text -> MediaObject -> Media m (Maybe Text)
   MediaRefForSource :: Text -> Media m (Maybe Text)
+  GetMediaCacheEntry :: Text -> Media m (Maybe MediaCacheEntry)
+  DeleteMediaFile :: Text -> Media m Bool
   GetMediaFileInfo :: Text -> Media m (Maybe MediaFileInfo)
   ListMediaFiles :: Media m [MediaFileInfo]
   GetMediaCacheStats :: Media m MediaCacheStats
@@ -98,6 +118,14 @@ storeMediaObjectFromSource sourceRef mediaObject =
 mediaRefForSource :: Media :> es => Text -> Eff es (Maybe Text)
 mediaRefForSource =
   send . MediaRefForSource
+
+mediaCacheEntry :: Media :> es => Text -> Eff es (Maybe MediaCacheEntry)
+mediaCacheEntry =
+  send . GetMediaCacheEntry
+
+deleteMediaFile :: Media :> es => Text -> Eff es Bool
+deleteMediaFile =
+  send . DeleteMediaFile
 
 mediaFileInfo :: Media :> es => Text -> Eff es (Maybe MediaFileInfo)
 mediaFileInfo =
@@ -196,6 +224,10 @@ runMediaPassthrough =
       pure (Just ("data:" <> mediaObject.mimeType <> ";base64,"))
     MediaRefForSource _ ->
       pure Nothing
+    GetMediaCacheEntry _ ->
+      pure Nothing
+    DeleteMediaFile _ ->
+      pure False
     GetMediaFileInfo _ ->
       pure Nothing
     ListMediaFiles ->

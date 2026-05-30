@@ -233,6 +233,39 @@ to `50`.
 {"jsonrpc":"2.0","id":"3","method":"media.stats","params":{"limit":20}}
 ```
 
+### `media.resolve_source`
+
+Looks up a media cache entry by source id and returns its `media:<file_id>`
+reference when known.
+
+```json
+{"jsonrpc":"2.0","id":"4","method":"media.resolve_source","params":{"sourceRef":"telegram:file-123"}}
+```
+
+Result:
+
+```json
+{"sourceRef":"telegram:file-123","mediaId":"media:mf_abc","fileId":"mf_abc"}
+```
+
+### `media.get`
+
+Returns one cached media entry by `mediaId` or `fileId`, including source refs,
+platform refs, public URL, and local cache path.
+
+```json
+{"jsonrpc":"2.0","id":"5","method":"media.get","params":{"mediaId":"media:mf_abc"}}
+```
+
+### `media.delete`
+
+Deletes one media id, its source/platform refs, and its local cached file when
+the file is not shared by another media row.
+
+```json
+{"jsonrpc":"2.0","id":"6","method":"media.delete","params":{"mediaId":"media:mf_abc"}}
+```
+
 ### `media.gc`
 
 Runs media cache GC manually. `maxAgeSeconds` defaults to `0`. Media file ids

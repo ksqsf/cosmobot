@@ -257,6 +257,12 @@ dispatchRpcRequestUnsafe rpcState _cfg callbacks request =
       dispatchUploadAttachment request
     "chat.send" ->
       dispatchChatSend rpcState request
+    "media.resolve_source" ->
+      dispatchMediaResolveSource request
+    "media.get" ->
+      dispatchMediaGet request
+    "media.delete" ->
+      dispatchMediaDelete request
     "media.stats" ->
       dispatchMediaStats request
     "media.gc" ->
@@ -462,6 +468,62 @@ dispatchMediaStats request = do
               , "files" Aeson..= take params.limit files
               ]
 
+dispatchMediaResolveSource
+  :: Media.Media :> es
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchMediaResolveSource request =
+  case AesonTypes.parseEither parseMediaSourceParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right sourceRef -> do
+      mediaRef <- Media.mediaRefForSource sourceRef
+      pure $
+        Protocol.successResponse (Protocol.requestId request) $
+          Aeson.object
+            [ "sourceRef" Aeson..= sourceRef
+            , "mediaId" Aeson..= mediaRef
+            , "fileId" Aeson..= (mediaRef >>= parseMediaRef)
+            ]
+
+dispatchMediaGet
+  :: Media.Media :> es
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchMediaGet request =
+  case AesonTypes.parseEither parseMediaIdParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right fileId -> do
+      Media.mediaCacheEntry fileId >>= \case
+        Nothing ->
+          pure (Protocol.errorResponse (Protocol.requestId request) "not_found" [i|Media file not found: #{fileId}|])
+        Just entry -> do
+          let mediaRef = entry.file.ref
+          publicUrl <- Media.publicMediaRef mediaRef
+          localPath <- Media.localMediaPath mediaRef
+          pure $
+            Protocol.successResponse (Protocol.requestId request) $
+              mediaEntryResponse entry publicUrl localPath
+
+dispatchMediaDelete
+  :: Media.Media :> es
+  => Protocol.RpcRequest
+  -> Eff es Protocol.RpcResponse
+dispatchMediaDelete request =
+  case AesonTypes.parseEither parseMediaIdParams (Protocol.requestParams request) of
+    Left err ->
+      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+    Right fileId -> do
+      deleted <- Media.deleteMediaFile fileId
+      pure $
+        Protocol.successResponse (Protocol.requestId request) $
+          Aeson.object
+            [ "fileId" Aeson..= fileId
+            , "mediaId" Aeson..= ("media:" <> fileId)
+            , "deleted" Aeson..= deleted
+            ]
+
 dispatchMediaGc
   :: (Storage.Storage :> es, Media.Media :> es)
   => Protocol.RpcRequest
@@ -580,6 +642,40 @@ parseMediaStatsParams = \case
       when (limit < 0) $
         fail "limit must be non-negative"
       pure MediaStatsParams{limit}
+
+parseMediaSourceParams :: Aeson.Value -> AesonTypes.Parser Text
+parseMediaSourceParams =
+  Aeson.withObject "media.resolve_source params" \o -> do
+    sourceRef <-
+      o Aeson..:? "sourceRef" >>= \case
+        Just value -> pure value
+        Nothing ->
+          o Aeson..:? "source_ref" >>= \case
+            Just value -> pure value
+            Nothing -> o Aeson..: "source"
+    let clean = Text.strip sourceRef
+    when (Text.null clean) $
+      fail "sourceRef must be non-empty"
+    pure clean
+
+parseMediaIdParams :: Aeson.Value -> AesonTypes.Parser Text
+parseMediaIdParams =
+  Aeson.withObject "media id params" \o -> do
+    ref <-
+      o Aeson..:? "mediaId" >>= \case
+        Just value -> pure value
+        Nothing ->
+          o Aeson..:? "media_id" >>= \case
+            Just value -> pure value
+            Nothing ->
+              o Aeson..:? "fileId" >>= \case
+                Just value -> pure value
+                Nothing -> o Aeson..: "file_id"
+    case parseMediaIdOrFileId ref of
+      Nothing ->
+        fail "mediaId must be media:<file_id> or a non-empty fileId"
+      Just fileId ->
+        pure fileId
 
 parseMediaGcParams :: Aeson.Value -> AesonTypes.Parser MediaGcParams
 parseMediaGcParams = \case
@@ -721,3 +817,28 @@ parseMediaRef ref = do
   fileId <- Text.stripPrefix "media:" (Text.strip ref)
   guard (not (Text.null fileId))
   pure fileId
+
+parseMediaIdOrFileId :: Text -> Maybe Text
+parseMediaIdOrFileId ref =
+  case parseMediaRef ref of
+    Just fileId ->
+      Just fileId
+    Nothing ->
+      let fileId = Text.strip ref
+      in if Text.null fileId then Nothing else Just fileId
+
+mediaEntryResponse :: Media.MediaCacheEntry -> Text -> Maybe FilePath -> Aeson.Value
+mediaEntryResponse entry publicUrl localPath =
+  Aeson.object
+    [ "mediaId" Aeson..= entry.file.ref
+    , "fileId" Aeson..= entry.file.fileId
+    , "file" Aeson..= entry.file
+    , "sourceRefs" Aeson..= entry.sourceRefs
+    , "source_refs" Aeson..= entry.sourceRefs
+    , "platformRefs" Aeson..= entry.platformRefs
+    , "platform_refs" Aeson..= entry.platformRefs
+    , "publicUrl" Aeson..= publicUrl
+    , "public_url" Aeson..= publicUrl
+    , "localPath" Aeson..= localPath
+    , "local_path" Aeson..= localPath
+    ]

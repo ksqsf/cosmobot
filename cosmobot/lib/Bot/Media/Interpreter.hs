@@ -45,6 +45,10 @@ runMedia cfg inner = do
           Just <$> cacheObject runtime (Just sourceRef) mediaObject
         MediaRefForSource sourceRef ->
           fmap (Cache.mediaIdForFileId . (.fileId)) <$> Cache.loadCachedMediaBySource (cacheConfig runtime) sourceRef
+        GetMediaCacheEntry fileId ->
+          Cache.loadMediaCacheEntry (cacheConfig runtime) fileId
+        DeleteMediaFile fileId ->
+          Cache.deleteCachedMedia (cacheConfig runtime) fileId
         GetMediaFileInfo fileId ->
           Cache.loadMediaFileInfo (cacheConfig runtime) fileId
         ListMediaFiles ->

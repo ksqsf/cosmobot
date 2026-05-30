@@ -10,7 +10,9 @@ module Bot.Media.Cache
   ( CachedMedia (..)
   , CacheConfig (..)
   , cacheMediaObject
+  , deleteCachedMedia
   , loadCachedMedia
+  , loadMediaCacheEntry
   , loadMediaFileInfo
   , loadCachedMediaByRef
   , loadCachedMediaBySource
@@ -27,7 +29,7 @@ module Bot.Media.Cache
   )
 where
 
-import Bot.Effect.Media (MediaCacheStats (..), MediaFileInfo (..), MediaObject (..))
+import Bot.Effect.Media (MediaCacheEntry (..), MediaCacheStats (..), MediaFileInfo (..), MediaObject (..), MediaPlatformRefInfo (..))
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Mime as Mime
 import Bot.Prelude
@@ -173,6 +175,21 @@ loadMediaFileInfo _ targetFileId = do
         pure object
   traverse mediaObjectRowToInfo (viaNonEmpty head rows)
 
+loadMediaCacheEntry :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Text -> Eff es (Maybe MediaCacheEntry)
+loadMediaCacheEntry cfg targetFileId = do
+  file <- loadMediaFileInfo cfg targetFileId
+  traverse
+    ( \mediaFile -> do
+        sourceRefs <- loadSourceRefs targetFileId
+        platformRefs <- loadPlatformRefs targetFileId
+        pure MediaCacheEntry
+          { file = mediaFile
+          , sourceRefs
+          , platformRefs
+          }
+    )
+    file
+
 listMediaFiles :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Eff es [MediaFileInfo]
 listMediaFiles _ = do
   ensureMediaCacheTables
@@ -271,6 +288,35 @@ storePlatformRef platform scope ref platformRef =
               , last_used_at_unix = now
               }
           ]
+
+loadSourceRefs :: Storage.Storage :> es => Text -> Eff es [Text]
+loadSourceRefs targetFileId = do
+  ensureMediaCacheTables
+  runSelda $
+    query do
+      row <- select mediaSourceRows
+      restrict (row ! #file_id .== literal targetFileId)
+      order (row ! #source_ref) ascending
+      pure (row ! #source_ref)
+
+loadPlatformRefs :: Storage.Storage :> es => Text -> Eff es [MediaPlatformRefInfo]
+loadPlatformRefs targetFileId = do
+  ensureMediaCacheTables
+  rows <- runSelda $
+    query do
+      row <- select mediaPlatformRefRows
+      restrict (row ! #file_id .== literal targetFileId)
+      order (row ! #platform_key) ascending
+      order (row ! #scope_key) ascending
+      pure row
+  pure
+    [ MediaPlatformRefInfo
+        { platform = row.platform_key
+        , scope = row.scope_key
+        , platformRef = row.platform_ref
+        }
+    | row <- rows
+    ]
 
 lookupCachedSource :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
 lookupCachedSource _ ref = do
@@ -401,6 +447,44 @@ gcMediaCacheRetaining _ maxAgeSeconds retainedFileIds = do
       deleteFrom_ mediaObjectRows \row ->
         row ! #file_id .== literal fileId
   pure (length expired)
+
+deleteCachedMedia
+  :: (Storage.Storage :> es, FileSystem :> es)
+  => CacheConfig
+  -> Text
+  -> Eff es Bool
+deleteCachedMedia _ targetFileId = do
+  ensureMediaCacheTables
+  rows <- runSelda $
+    query $
+      queryLimit 0 1 do
+        object <- select mediaObjectRows
+        restrict (object ! #file_id .== literal targetFileId)
+        pure object
+  case viaNonEmpty head rows of
+    Nothing ->
+      pure False
+    Just object -> do
+      pathShared <- isPathShared object
+      unless pathShared (removeCachedFile object)
+      runSelda $ transaction do
+        deleteFrom_ mediaPlatformRefRows \row ->
+          row ! #file_id .== literal targetFileId
+        deleteFrom_ mediaSourceRows \row ->
+          row ! #file_id .== literal targetFileId
+        deleteFrom_ mediaObjectRows \row ->
+          row ! #file_id .== literal targetFileId
+      pure True
+
+isPathShared :: Storage.Storage :> es => MediaObjectRow -> Eff es Bool
+isPathShared object = do
+  rows <- runSelda $
+    query do
+      row <- select mediaObjectRows
+      restrict (row ! #path .== literal object.path)
+      restrict (row ! #file_id ./= literal object.file_id)
+      pure (row ! #file_id)
+  pure (not (null rows))
 
 removeCachedFile :: FileSystem :> es => MediaObjectRow -> Eff es ()
 removeCachedFile row = do

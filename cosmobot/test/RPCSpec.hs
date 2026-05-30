@@ -16,6 +16,7 @@ import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
@@ -31,6 +32,7 @@ import qualified JSONRPC
 import qualified Network.Socket as Socket
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.WebSockets as WS
+import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
 import System.FilePath ((</>), takeDirectory)
 import System.Timeout
@@ -57,6 +59,7 @@ main =
       , testCase "client notification queue overflow disconnects slow client" testClientNotificationQueueOverflowDisconnects
       , testCase "sync request exception returns JSON-RPC error" testSyncRequestExceptionReturnsJsonRpcError
       , testCase "media upload, send, history, and stats" testAttachmentLifecycle
+      , testCase "media cache can resolve, inspect, and delete cached media" testMediaCacheResolveInspectDelete
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
       , testCase "rpc driver stores local image replies as attachments" testRpcDriverStoresLocalImageRepliesAsAttachments
@@ -311,6 +314,40 @@ testAttachmentLifecycle =
     incoming.imageUrls @?= [imageAttachment.url, "https://example.test/context.png", "data:image/png;base64,AA=="]
     assertEqual [i|history response: #{show historyResponse :: String}|] [[attachment.attachmentId, imageAttachment.attachmentId]] (responseMessageAttachments historyResponse)
     responseMediaStatsFiles mediaStatsResponse @?= 3
+
+testMediaCacheResolveInspectDelete :: IO ()
+testMediaCacheResolveInspectDelete =
+  withSQLiteTempPath "rpc-media-cache" \path -> do
+    (mediaRef, resolveResponse, getResponse, deleteResponse, getAfterDeleteResponse, fileExistsAfterDelete) <- runRpcStorage path do
+      rpcState <- RPC.newRpcState
+      let sourceRef = "telegram:file-123"
+      mediaRef <- fromMaybe (error "expected stored media ref") <$> Media.storeMediaObjectFromSource sourceRef Media.MediaObject
+        { Media.bytes = Q.fromStrict (TextEncoding.encodeUtf8 "hello")
+        , Media.mimeType = "text/plain"
+        , Media.sourceName = Just "hello.txt"
+        }
+      Media.storePlatformMediaRef "telegram" "chat-42" mediaRef "file-123"
+      resolveResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "media.resolve_source" (Aeson.object ["sourceRef" Aeson..= sourceRef])
+      getResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "media.get" (Aeson.object ["mediaId" Aeson..= mediaRef])
+      let localPath = responseMediaLocalPath getResponse
+      deleteResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "media.delete" (Aeson.object ["mediaId" Aeson..= mediaRef])
+      getAfterDeleteResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "media.get" (Aeson.object ["mediaId" Aeson..= mediaRef])
+      fileExistsAfterDelete <- maybe (pure False) FileSystem.doesFileExist localPath
+      pure (mediaRef, resolveResponse, getResponse, deleteResponse, getAfterDeleteResponse, fileExistsAfterDelete)
+
+    responseField resolveResponse "mediaId" @?= Just mediaRef
+    responseField getResponse "mediaId" @?= Just mediaRef
+    assertBool "public url should use configured media base" (maybe False ("https://media.example.test/cosmobot-media/" `Text.isPrefixOf`) (responseField getResponse "publicUrl"))
+    assertBool "public url should keep source extension" (maybe False (".txt" `Text.isSuffixOf`) (responseField getResponse "publicUrl"))
+    responseTextList getResponse "sourceRefs" @?= ["telegram:file-123"]
+    responsePlatformRefs getResponse @?= [("telegram", "chat-42", "file-123")]
+    responseBool deleteResponse "deleted" @?= Just True
+    responseErrorCode getAfterDeleteResponse @?= Just "not_found"
+    fileExistsAfterDelete @?= False
 
 testChatSessionsPersistAcrossRestart :: IO ()
 testChatSessionsPersistAcrossRestart =
@@ -793,6 +830,53 @@ responseMediaStatsFiles response =
         AesonTypes.parseMaybe (Aeson.withObject "stats" (Aeson..: "files")) stats
     _ ->
       0
+
+responseField :: Aeson.FromJSON a => Protocol.RpcResponse -> Text -> Maybe a
+responseField response field =
+  case response of
+    JSONRPC.ResponseMessage result ->
+      AesonTypes.parseMaybe (Aeson.withObject "response" (Aeson..: AesonKey.fromText field)) result.result
+    _ ->
+      Nothing
+
+responseBool :: Protocol.RpcResponse -> Text -> Maybe Bool
+responseBool =
+  responseField
+
+responseTextList :: Protocol.RpcResponse -> Text -> [Text]
+responseTextList response field =
+  fromMaybe [] (responseField response field)
+
+responsePlatformRefs :: Protocol.RpcResponse -> [(Text, Text, Text)]
+responsePlatformRefs response =
+  case response of
+    JSONRPC.ResponseMessage result ->
+      fromMaybe [] do
+        refs <- AesonTypes.parseMaybe (Aeson.withObject "media" (Aeson..: "platformRefs")) result.result
+        traverse platformRef refs
+    _ ->
+      []
+  where
+    platformRef =
+      AesonTypes.parseMaybe $
+        Aeson.withObject "platform ref" \o -> do
+          platform <- o Aeson..: "platform"
+          scope <- o Aeson..: "scope"
+          ref <- o Aeson..: "platformRef"
+          pure (platform, scope, ref)
+
+responseMediaLocalPath :: Protocol.RpcResponse -> Maybe FilePath
+responseMediaLocalPath response =
+  responseField response "localPath"
+
+responseErrorCode :: Protocol.RpcResponse -> Maybe Text
+responseErrorCode = \case
+  JSONRPC.ErrorMessage err ->
+    AesonTypes.parseMaybe
+      (Aeson.withObject "error data" (Aeson..: "code"))
+      =<< err.error.errorData
+  _ ->
+    Nothing
 
 responseSessionLabel :: Protocol.RpcResponse -> Maybe Text
 responseSessionLabel response =
