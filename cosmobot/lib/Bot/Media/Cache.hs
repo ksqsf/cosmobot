@@ -43,6 +43,7 @@ import qualified Data.Time.Clock.POSIX as POSIX
 import Control.Monad.Trans.Resource (runResourceT)
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.Temporary as Temporary
 import qualified Streaming.ByteString as Q
 import Streaming (Of (..))
 import System.FilePath ((<.>), (</>), takeExtension)
@@ -293,19 +294,19 @@ storeMediaObject
   -> Eff es CachedMedia
 storeMediaObject cfg sourceRef mediaObject = do
   FileSystem.createDirectoryIfMissing True cfg.directory
-  temporaryFileId <- newFileId
-  let temporaryPath = cfg.directory </> Text.unpack temporaryFileId <.> "tmp"
-  liftIO (runResourceT (Q.writeFile temporaryPath mediaObject.bytes))
-    `onException` removeFileIfExists temporaryPath
-  digest <- contentDigestFile temporaryPath
-  lookupCachedDigest cfg digest >>= \case
-    Just cached -> do
-      removeFileIfExists temporaryPath
-      for_ sourceRef \ref ->
-        linkSourceRef ref cached.fileId
-      pure cached
-    Nothing ->
-      storeStreamedMediaFile cfg sourceRef mediaObject digest temporaryPath
+  Temporary.runTemporary $
+    Temporary.withTempDirectory cfg.directory "cosmobot-media-" \temporaryDirectory -> do
+      temporaryFileId <- newFileId
+      let temporaryPath = temporaryDirectory </> Text.unpack temporaryFileId <.> "tmp"
+      liftIO (runResourceT (Q.writeFile temporaryPath mediaObject.bytes))
+      digest <- contentDigestFile temporaryPath
+      lookupCachedDigest cfg digest >>= \case
+        Just cached -> do
+          for_ sourceRef \ref ->
+            linkSourceRef ref cached.fileId
+          pure cached
+        Nothing ->
+          storeStreamedMediaFile cfg sourceRef mediaObject digest temporaryPath
 
 storeStreamedMediaFile
   :: (Storage.Storage :> es, FileSystem :> es, IOE :> es)

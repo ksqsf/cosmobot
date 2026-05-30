@@ -12,19 +12,19 @@ where
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Prelude
-import qualified Effectful.Concurrent.MVar as MVar
+import qualified Bot.Util.Text as TextUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
-import qualified Data.Text.IO as Text
-import System.Exit (ExitCode)
 import System.Posix.Signals (signalProcess, signalProcessGroup, sigKILL)
-import Effectful.Process (Process, ProcessHandle, StdStream(..), createProcess, create_group, getPid, shell, std_err, std_out, waitForProcess)
-import Effectful.FileSystem.IO (FileSystem, hClose)
+import qualified Effectful.Concurrent.STM as STM
+import qualified Effectful.Process as Process
+import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout
 
-runBashTool :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, Process :> es, FileSystem :> es) => Tool es
+runBashTool :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Tool es
 runBashTool = Tool
   { name = "run_bash"
   , description = "Run a bash script and obtain outputs; do not run malicious code."
@@ -41,73 +41,40 @@ runBashTool = Tool
         pure (toolText result)
   }
 
-runBashSafe :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, Process :> es, FileSystem :> es) => Int -> String -> Eff es Text
+runBashSafe :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Int -> String -> Eff es Text
 runBashSafe timeoutSeconds script = do
   let effectiveTimeout = max 1 timeoutSeconds
-  (_, Just hOut, Just hErr, ph) <- createProcess
-    (shell script)
-      { std_out = CreatePipe
-      , std_err = CreatePipe
-      , create_group = True
-      }
-  stdoutVar <- readHandleAsync hOut
-  stderrVar <- readHandleAsync hErr
-  exitVar <- waitForProcessAsync ph
-  outcome <- timeout (effectiveTimeout * 1_000_000) (MVar.takeMVar exitVar)
+      processConfig =
+        TypedProcess.setCreateGroup True .
+        TypedProcess.setStdin TypedProcess.closed .
+        TypedProcess.setStdout TypedProcess.byteStringOutput .
+        TypedProcess.setStderr TypedProcess.byteStringOutput $
+        TypedProcess.shell script
+  process <- TypedProcess.startProcess processConfig
+  outcome <- timeout (effectiveTimeout * 1_000_000) (TypedProcess.waitExitCode process)
   case outcome of
     Nothing -> do
-      killProcessTree ph
-      _ <- timeout processExitGraceMicroseconds (MVar.takeMVar exitVar)
-      stdoutText <- readerText "stdout" stdoutVar
-      stderrText <- readerText "stderr" stderrVar
-      ignoreIO (hClose hOut)
-      ignoreIO (hClose hErr)
+      killProcessTree (TypedProcess.unsafeProcessHandle process)
+      _ <- timeout processExitGraceMicroseconds (TypedProcess.waitExitCode process)
+      stdoutText <- processOutputText (TypedProcess.getStdout process)
+      stderrText <- processOutputText (TypedProcess.getStderr process)
       pure $ Text.strip $ Text.unlines $ filter (not . Text.null)
         [ "Script timed out after " <> Text.pack (show effectiveTimeout) <> " seconds and was killed."
         , if Text.null stdoutText then "" else "stdout:\n" <> stdoutText
         , if Text.null stderrText then "" else "stderr:\n" <> stderrText
         ]
-    Just (Left err) ->
-      throwIO err
-    Just (Right exitCode) -> do
-      stdoutText <- readerText "stdout" stdoutVar
-      stderrText <- readerText "stderr" stderrVar
-      ignoreIO (hClose hOut)
-      ignoreIO (hClose hErr)
+    Just exitCode -> do
+      stdoutText <- processOutputText (TypedProcess.getStdout process)
+      stderrText <- processOutputText (TypedProcess.getStderr process)
       pure (formatBashResult exitCode stdoutText stderrText)
 
-waitForProcessAsync :: (IOE :> es, Concurrent :> es, Process :> es) => ProcessHandle -> Eff es (MVar.MVar (Either SomeException ExitCode))
-waitForProcessAsync ph = do
-  result <- MVar.newEmptyMVar
-  void $ forkIO do
-    output <- try (waitForProcess ph)
-    void (MVar.tryPutMVar result output)
-  pure result
+processOutputText :: Concurrent :> es => STM.STM LazyByteString.ByteString -> Eff es Text
+processOutputText =
+  fmap TextUtil.decodeLazyUtf8Lenient . STM.atomically
 
-readHandleAsync :: (IOE :> es, Concurrent :> es) => Handle -> Eff es (MVar.MVar (Either SomeException Text))
-readHandleAsync processOutputHandle = do
-  result <- MVar.newEmptyMVar
-  void $ forkIO do
-    output <- try do
-      text <- liftIO $ Text.hGetContents processOutputHandle
-      evaluate (Text.length text) $> text
-    void (MVar.tryPutMVar result output)
-  pure result
-
-readerText :: (Timeout :> es, Concurrent :> es) => Text -> MVar.MVar (Either SomeException Text) -> Eff es Text
-readerText label result = do
-  outcome <- timeout processExitGraceMicroseconds (MVar.takeMVar result)
-  pure case outcome of
-    Nothing ->
-      [i|Could not read #{label}: reader timed out.|]
-    Just (Left err) ->
-      [i|Could not read #{label}: #{show err :: String}|]
-    Just (Right text) ->
-      text
-
-killProcessTree :: (IOE :> es, Process :> es) => ProcessHandle -> Eff es ()
+killProcessTree :: (IOE :> es, Process.Process :> es) => Process.ProcessHandle -> Eff es ()
 killProcessTree ph = do
-  mPid <- getPid ph
+  mPid <- Process.getPid ph
   traverse_ killPid mPid
   where
     killPid pid =

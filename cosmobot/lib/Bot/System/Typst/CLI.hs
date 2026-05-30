@@ -18,11 +18,10 @@ import qualified Bot.Util.Image as Image
 import qualified Data.Text.IO as TextIO
 import Effectful.FileSystem (FileSystem)
 import Effectful.Process
-import System.Directory (removeDirectoryRecursive)
+import qualified Effectful.Temporary as Temporary
 import System.Exit
 import System.FilePath
 import System.IO.Error (userError)
-import System.IO.Temp (createTempDirectory, getCanonicalTemporaryDirectory)
 
 runTypst
   :: (IOE :> es, KatipE :> es, Fail :> es, FileSystem :> es, Process :> es)
@@ -41,15 +40,10 @@ withRenderedTypst
   -> (FilePath -> Eff es a)
   -> Eff es a
 withRenderedTypst format source action =
-  bracket acquire release \dir -> do
-    imagePath <- renderTypst format dir source
-    action imagePath
-  where
-    acquire = liftIO do
-      tmp <- getCanonicalTemporaryDirectory
-      createTempDirectory tmp "cosmobot-typst-"
-    release =
-      liftIO . removeDirectoryRecursive
+  Temporary.runTemporary $
+    Temporary.withSystemTempDirectory "cosmobot-typst-" \dir -> do
+      imagePath <- renderTypst format dir source
+      raise (action imagePath)
 
 renderTypst :: (IOE :> es, KatipE :> es, Fail :> es, FileSystem :> es, Process :> es) => TypstOutputFormat -> FilePath -> Text -> Eff es FilePath
 renderTypst format dir source = do

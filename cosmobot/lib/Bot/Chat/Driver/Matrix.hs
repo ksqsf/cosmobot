@@ -64,6 +64,7 @@ import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.Temporary as Temporary
 import System.FilePath ((</>), (<.>), takeFileName)
 import System.IO.Error (ioError, userError)
 import qualified Text.URI as URI
@@ -1554,14 +1555,11 @@ withTemporaryMatrixImage
   -> (FilePath -> Eff es a)
   -> Eff es a
 withTemporaryMatrixImage mime bytes action = do
-  FileSystem.createDirectoryIfMissing True matrixTempDir
-  nonce <- liftIO getMonotonicTimeNSec
-  let path = matrixTempDir </> ("matrix-image-" <> show nonce <.> matrixImageExtension mime)
-  liftIO (runResourceT (Q.writeFile path bytes))
-  action path `finally` cleanup path
-  where
-    cleanup path =
-      FileSystem.removeFile path `catchSync` \_ -> pure ()
+  Temporary.runTemporary $
+    Temporary.withSystemTempDirectory "cosmobot-matrix-" \dir -> do
+      let path = dir </> ("matrix-image" <.> matrixImageExtension mime)
+      liftIO (runResourceT (Q.writeFile path bytes))
+      raise (action path)
 
 withTemporaryMatrixAudio
   :: (FileSystem :> es, IOE :> es)
@@ -1570,14 +1568,11 @@ withTemporaryMatrixAudio
   -> (FilePath -> Eff es a)
   -> Eff es a
 withTemporaryMatrixAudio mime bytes action = do
-  FileSystem.createDirectoryIfMissing True matrixTempDir
-  nonce <- liftIO getMonotonicTimeNSec
-  let path = matrixTempDir </> ("matrix-audio-" <> show nonce <.> matrixAudioExtension mime)
-  liftIO (runResourceT (Q.writeFile path bytes))
-  action path `finally` cleanup path
-  where
-    cleanup path =
-      FileSystem.removeFile path `catchSync` \_ -> pure ()
+  Temporary.runTemporary $
+    Temporary.withSystemTempDirectory "cosmobot-matrix-" \dir -> do
+      let path = dir </> ("matrix-audio" <.> matrixAudioExtension mime)
+      liftIO (runResourceT (Q.writeFile path bytes))
+      raise (action path)
 
 matrixAudioMimeType :: FilePath -> Text
 matrixAudioMimeType =
@@ -1594,10 +1589,6 @@ matrixImageExtension mime =
 matrixAudioExtension :: Text -> String
 matrixAudioExtension mime =
   Text.unpack (Text.dropWhile (== '.') (Mime.extensionFromMime mime))
-
-matrixTempDir :: FilePath
-matrixTempDir =
-  "/tmp/cosmobot-matrix"
 
 nonEmptyText :: Text -> Maybe Text
 nonEmptyText text =

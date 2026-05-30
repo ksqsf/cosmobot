@@ -79,7 +79,7 @@ import qualified Streaming.Prelude as S
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
-import GHC.Clock (getMonotonicTimeNSec)
+import qualified Effectful.Temporary as Temporary
 import qualified Data.Text as Text
 import System.FilePath ((</>), (<.>), takeFileName)
 
@@ -1651,31 +1651,19 @@ dataAudioBytes ref = do
 
 uploadTemporaryPhoto :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendPhotoRequest -> ByteString.ByteString -> Eff es Message
 uploadTemporaryPhoto driver request bytes = do
-  path <- temporaryTelegramPath "telegram-photo" "png"
-  FileSystemByteString.writeFile path bytes
-  uploadPhoto driver request path `finally` cleanup path
-  where
-    cleanup path =
-      FileSystem.removeFile path `catchSync` \_ -> pure ()
+  withTemporaryTelegramFile "telegram-photo" "png" bytes (uploadPhoto driver request)
 
 uploadTemporaryVoice :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendVoiceRequest -> ByteString.ByteString -> Eff es Message
 uploadTemporaryVoice driver request bytes = do
-  path <- temporaryTelegramPath "telegram-voice" "ogg"
-  FileSystemByteString.writeFile path bytes
-  uploadVoice driver request path `finally` cleanup path
-  where
-    cleanup path =
-      FileSystem.removeFile path `catchSync` \_ -> pure ()
+  withTemporaryTelegramFile "telegram-voice" "ogg" bytes (uploadVoice driver request)
 
-temporaryTelegramPath :: (FileSystem :> es, IOE :> es) => FilePath -> FilePath -> Eff es FilePath
-temporaryTelegramPath prefix extension = do
-  FileSystem.createDirectoryIfMissing True telegramTempDir
-  nonce <- liftIO getMonotonicTimeNSec
-  pure (telegramTempDir </> (prefix <> "-" <> show nonce <.> extension))
-
-telegramTempDir :: FilePath
-telegramTempDir =
-  "/tmp/cosmobot-telegram"
+withTemporaryTelegramFile :: (FileSystem :> es, IOE :> es) => FilePath -> FilePath -> ByteString.ByteString -> (FilePath -> Eff es a) -> Eff es a
+withTemporaryTelegramFile prefix extension bytes action =
+  Temporary.runTemporary $
+    Temporary.withSystemTempDirectory "cosmobot-telegram-" \dir -> do
+      let path = dir </> (prefix <.> extension)
+      FileSystemByteString.writeFile path bytes
+      raise (action path)
 
 nonEmptyText :: Text -> Maybe Text
 nonEmptyText text

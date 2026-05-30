@@ -17,18 +17,17 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Handler.Admin.Config
 import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as Lifecycle
+import qualified Bot.Util.Text as TextUtil
 import qualified Data.Char as Char
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Unique as Unique
-import qualified Effectful.Concurrent.MVar as MVar
+import qualified Effectful.Concurrent.STM as STM
 import Effectful.FileSystem (FileSystem)
-import qualified Effectful.FileSystem.IO.ByteString as ByteStringFileSystem
-import Effectful.Process (Process, ProcessHandle, StdStream (..), createProcess, proc, std_err, std_in, std_out, waitForProcess)
+import qualified Effectful.Process.Typed as TypedProcess
 import qualified System.Exit as Exit
-import System.IO.Error (userError)
 
-adminHandlers :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
+adminHandlers :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
 adminHandlers cfg =
   [ pingRoute
   , titleRoute
@@ -84,14 +83,14 @@ parseTitleArgs rawArgs = do
   guard (not (Text.null userId) && userId /= "0" && not (Text.null title))
   pure (userId, title)
 
-upgradeRoute :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
+upgradeRoute :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
 upgradeRoute cfg =
   requireAuth
     isSuperuser
     (\message -> void $ Chat.replyTo message "只有 superuser 可以执行 upgrade。")
     (stopOn (command "!upgrade") \message _ -> handleUpgrade cfg message)
 
-handleUpgrade :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
+handleUpgrade :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
 handleUpgrade cfg message = do
   let scriptPath = cfg.script
   actionKey <- liftIO newLifecycleActionKey
@@ -106,9 +105,7 @@ handleUpgrade cfg message = do
       void $ Chat.replyTo message [i|upgrade 脚本启动失败：#{show err :: String}|]
 
 data RunningUpgradeScript = RunningUpgradeScript
-  { processHandle :: !ProcessHandle
-  , stdoutHandle :: !Handle
-  , stderrHandle :: !Handle
+  { process :: !(TypedProcess.Process () (STM.STM LazyByteString.ByteString) (STM.STM LazyByteString.ByteString))
   }
 
 newLifecycleActionKey :: IO Text
@@ -116,23 +113,17 @@ newLifecycleActionKey = do
   unique <- Unique.newUnique
   pure [i|upgrade-#{Unique.hashUnique unique}|]
 
-startUpgradeScript :: Process :> es => FilePath -> Eff es RunningUpgradeScript
+startUpgradeScript :: TypedProcess.TypedProcess :> es => FilePath -> Eff es RunningUpgradeScript
 startUpgradeScript scriptPath = do
-  (_, maybeStdoutHandle, maybeStderrHandle, processHandle) <-
-    createProcess
-      (proc scriptPath [])
-        { std_in = NoStream
-        , std_out = CreatePipe
-        , std_err = CreatePipe
-        }
-  case (maybeStdoutHandle, maybeStderrHandle) of
-    (Just stdoutHandle, Just stderrHandle) ->
-      pure RunningUpgradeScript{processHandle, stdoutHandle, stderrHandle}
-    _ ->
-      throwIO (userError "upgrade script did not provide stdout/stderr handles.")
+  process <- TypedProcess.startProcess $
+    TypedProcess.setStdin TypedProcess.closed .
+    TypedProcess.setStdout TypedProcess.byteStringOutput .
+    TypedProcess.setStderr TypedProcess.byteStringOutput $
+    TypedProcess.proc scriptPath []
+  pure RunningUpgradeScript{process}
 
 reportUpgradeScriptExit
-  :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, Process :> es, Storage.Storage :> es, KatipE :> es, IOE :> es)
+  :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es)
   => Lifecycle.StoredStartupAction
   -> IncomingMessage
   -> RunningUpgradeScript
@@ -142,21 +133,16 @@ reportUpgradeScriptExit startupAction message running = do
   Lifecycle.deleteStartupAction startupAction
   void $ Chat.replyTo message (scriptExited exitCode stdoutText stderrText)
 
-waitUpgradeScript :: (Concurrent :> es, FileSystem :> es, Process :> es, IOE :> es) => RunningUpgradeScript -> Eff es (Exit.ExitCode, Text, Text)
-waitUpgradeScript RunningUpgradeScript{processHandle, stdoutHandle, stderrHandle} = do
-  stdoutVar <- MVar.newEmptyMVar
-  stderrVar <- MVar.newEmptyMVar
-  void $ forkIO (readHandle stdoutHandle stdoutVar)
-  void $ forkIO (readHandle stderrHandle stderrVar)
-  exitCode <- waitForProcess processHandle
-  stdoutText <- MVar.takeMVar stdoutVar
-  stderrText <- MVar.takeMVar stderrVar
+waitUpgradeScript :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es) => RunningUpgradeScript -> Eff es (Exit.ExitCode, Text, Text)
+waitUpgradeScript RunningUpgradeScript{process} = do
+  exitCode <- TypedProcess.waitExitCode process
+  stdoutText <- processOutputText (TypedProcess.getStdout process)
+  stderrText <- processOutputText (TypedProcess.getStderr process)
   pure (exitCode, stdoutText, stderrText)
 
-readHandle :: (FileSystem :> es, Concurrent :> es) => Handle -> MVar.MVar Text -> Eff es ()
-readHandle outputHandle output = do
-  bytes <- ByteStringFileSystem.hGetContents outputHandle
-  MVar.putMVar output (TextEncoding.decodeUtf8 bytes)
+processOutputText :: Concurrent :> es => STM.STM LazyByteString.ByteString -> Eff es Text
+processOutputText =
+  fmap TextUtil.decodeLazyUtf8Lenient . STM.atomically
 
 scriptExited :: Exit.ExitCode -> Text -> Text -> Text
 scriptExited exitCode stdoutText stderrText =

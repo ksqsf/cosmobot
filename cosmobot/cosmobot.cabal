@@ -95,6 +95,8 @@ common lib-deps
                     , base64-bytestring
                     , aeson
                     , aeson-pretty
+                    , autodocodec
+                    , autodocodec-schema
                     , amazonka
                     , amazonka-s3
                     , string-interpolate
@@ -115,6 +117,8 @@ common lib-deps
                     , time
                     , temporary
                     , process
+                    , typed-process
+                    , typed-process-effectful
                     , selda
                     , selda-sqlite
                     , regex-tdfa
@@ -277,6 +281,7 @@ library
         Bot.Util.Image
         Bot.Util.Multipart
         Bot.Util.Stream
+        Bot.Util.Text
         Bot.Util.Toml
     build-depends:    log-base
                     , aeson-optics
