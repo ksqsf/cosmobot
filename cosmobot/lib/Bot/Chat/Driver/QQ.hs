@@ -118,6 +118,9 @@ instance Driver.ChatDriver QQDriver where
   getUserAvatar _ _ userId =
     pure (getUserAvatar <$> parseIntegerUserId userId)
 
+  normalizeMediaRef _ =
+    qqPublicImageRef
+
   listGroupMembers driver message =
     case (message.kind, message.chatId) of
       (ChatGroup, Just groupId) ->
@@ -483,23 +486,25 @@ replyToQQ driver message body =
   case (message.kind, message.chatId, message.senderId) of
     (ChatGroup, Just groupId, _) -> do
       qqMessage <- replyMessage message body
-      maybe (Left "QQ group reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction driver (Aeson.object
+      response <- sendAction driver (Aeson.object
         [ "action" Aeson..= Aeson.String "send_group_msg"
         , "params" Aeson..= Aeson.object
             [ "group_id" Aeson..= groupId
             , "message" Aeson..= qqMessage
             ]
         ])
+      qqMessageIdResult "send_group_msg" response
     (ChatPrivate, _, Just rawUserId)
       | Just userId <- parseIntegerUserId rawUserId -> do
       qqMessage <- replyMessage message body
-      maybe (Left "QQ private reply did not produce a message id.") (Right . integerMessageId) . responseMessageId <$> sendAction driver (Aeson.object
+      response <- sendAction driver (Aeson.object
         [ "action" Aeson..= Aeson.String "send_private_msg"
         , "params" Aeson..= Aeson.object
             [ "user_id" Aeson..= userId
             , "message" Aeson..= qqMessage
             ]
         ])
+      qqMessageIdResult "send_private_msg" response
     _ -> pure (Left "QQ reply requires a QQ group id or private sender id.")
 
 -- | Send a reply that mentions a QQ user where the platform supports it.
@@ -956,11 +961,11 @@ imageSegmentValue file =
 
 qqImageFile :: (IOE :> es, Media.Media :> es) => Text -> Eff es Text
 qqImageFile url =
-  case mediaRef url of
-    Just ref ->
-      maybe url (("file://" <>) . Text.pack) <$> Media.localMediaPath ref
-    Nothing ->
-      pure url
+  qqPublicImageRef url
+
+qqPublicImageRef :: Media.Media :> es => Text -> Eff es Text
+qqPublicImageRef url =
+  maybe (pure url) Media.publicMediaRef (mediaRef url)
 
 mediaRef :: Text -> Maybe Text
 mediaRef ref =

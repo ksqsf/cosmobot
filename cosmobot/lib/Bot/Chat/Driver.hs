@@ -23,6 +23,7 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Message
+import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Prelude
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.State as RPC
@@ -56,7 +57,7 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
 
   replyTo (NormalizingChatDriver driver) message body =
     withChatDriverEither message "Chat reply" do
-      normalizedBody <- Media.normalizeReplyBody body
+      normalizedBody <- normalizeOutgoingReplyBody driver body
       replyTo driver message normalizedBody
 
   replyAudio (NormalizingChatDriver driver) message audioRef caption =
@@ -104,7 +105,7 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
 
   mentionUser (NormalizingChatDriver driver) message userId body =
     withChatDriverEither message "Chat mention" do
-      normalizedBody <- Media.normalizeReplyBody body
+      normalizedBody <- normalizeOutgoingReplyBody driver body
       mentionUser driver message userId normalizedBody
 
   setMemberTitle (NormalizingChatDriver driver) message userId title =
@@ -249,6 +250,14 @@ normalizeReferencedMessageMedia driver message = do
     , text = message.text
     , imageUrls
     }
+
+normalizeOutgoingReplyBody
+  :: (Media.Media :> es, ChatDriver driver, ChatDriverEffects driver es)
+  => driver
+  -> Text
+  -> Eff es Text
+normalizeOutgoingReplyBody driver body =
+  Media.normalizeReplyBody body >>= ReplyBody.traverseReplyImageUrls (normalizeMediaRef driver)
 
 runChatDrivers
   :: (KatipE :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
