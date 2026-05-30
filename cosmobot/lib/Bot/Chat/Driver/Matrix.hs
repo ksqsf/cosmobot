@@ -1287,6 +1287,8 @@ matrixEventImageMediaRefs =
     parseContent contentObject = do
       msgtype <- contentObject Aeson..:? "msgtype" Aeson..!= ("" :: Text)
       url <- contentObject Aeson..:? "url"
+      fileUrl <- contentObject Aeson..:? "file" Aeson..!= Aeson.Object mempty >>=
+        Aeson.withObject "Matrix encrypted file" (Aeson..:? "url")
       mimeType <- contentObject Aeson..:? "info" Aeson..!= Aeson.Object mempty >>=
         Aeson.withObject "Matrix image info" (Aeson..:? "mimetype")
       pure
@@ -1295,7 +1297,7 @@ matrixEventImageMediaRefs =
             , matrixMediaRefMimeType = nonEmptyText =<< mimeType
             }
         | msgtype == "m.image"
-        , Just imageUrl <- [url]
+        , Just imageUrl <- [url <|> fileUrl]
         ]
 
 matrixProfileAvatarValue :: MatrixProfile -> Aeson.Value

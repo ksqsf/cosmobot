@@ -36,6 +36,8 @@ main =
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
+      , testCase "Matrix image message includes media URL" testMatrixImageMessageIncludesMediaUrl
+      , testCase "Matrix encrypted image message includes media URL" testMatrixEncryptedImageMessageIncludesMediaUrl
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix edit event is ignored" testMatrixEditEventIsIgnored
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
@@ -287,6 +289,18 @@ testMatrixDirectRoomConvertsToPrivateMessage = do
   ((.chatAliases) <$> incoming) @?= Just ["!room:example.org"]
   ((.senderUsername) <$> incoming) @?= Just (Just "@alice:example.org")
   ((.text) <$> incoming) @?= Just "hello"
+
+testMatrixImageMessageIncludesMediaUrl :: IO ()
+testMatrixImageMessageIncludesMediaUrl = do
+  let incoming = Matrix.eventToIncomingMessage matrixImageRoomEvent
+  ((.text) <$> incoming) @?= Just "image.png"
+  ((.imageUrls) <$> incoming) @?= Just ["mxc://example.org/plain-image"]
+
+testMatrixEncryptedImageMessageIncludesMediaUrl :: IO ()
+testMatrixEncryptedImageMessageIncludesMediaUrl = do
+  let incoming = Matrix.eventToIncomingMessage matrixEncryptedImageRoomEvent
+  ((.text) <$> incoming) @?= Just "image.png"
+  ((.imageUrls) <$> incoming) @?= Just ["mxc://example.org/encrypted-image"]
 
 testMatrixMarkdownRendersCustomHtml :: IO ()
 testMatrixMarkdownRendersCustomHtml =
@@ -572,6 +586,50 @@ matrixRoomEvent =
 matrixDirectRoomEvent :: Matrix.RoomEvent
 matrixDirectRoomEvent =
   matrixRoomEvent{Matrix.roomIsDirect = True}
+
+matrixImageRoomEvent :: Matrix.RoomEvent
+matrixImageRoomEvent =
+  matrixRoomEvent
+    { Matrix.event = matrixRoomEvent.event
+        { Matrix.content = matrixRoomEvent.event.content
+            { Matrix.msgtype = Just "m.image"
+            , Matrix.body = Just "image.png"
+            }
+        , Matrix.raw = matrixImageRawContent
+            [ "msgtype" Aeson..= ("m.image" :: Text)
+            , "body" Aeson..= ("image.png" :: Text)
+            , "url" Aeson..= ("mxc://example.org/plain-image" :: Text)
+            , "info" Aeson..= Aeson.object
+                [ "mimetype" Aeson..= ("image/png" :: Text)
+                ]
+            ]
+        }
+    }
+
+matrixEncryptedImageRoomEvent :: Matrix.RoomEvent
+matrixEncryptedImageRoomEvent =
+  matrixRoomEvent
+    { Matrix.event = matrixRoomEvent.event
+        { Matrix.content = matrixRoomEvent.event.content
+            { Matrix.msgtype = Just "m.image"
+            , Matrix.body = Just "image.png"
+            }
+        , Matrix.raw = matrixImageRawContent
+            [ "msgtype" Aeson..= ("m.image" :: Text)
+            , "body" Aeson..= ("image.png" :: Text)
+            , "file" Aeson..= Aeson.object
+                [ "url" Aeson..= ("mxc://example.org/encrypted-image" :: Text)
+                ]
+            , "info" Aeson..= Aeson.object
+                [ "mimetype" Aeson..= ("image/png" :: Text)
+                ]
+            ]
+        }
+    }
+
+matrixImageRawContent :: [AesonTypes.Pair] -> Aeson.Value
+matrixImageRawContent content =
+  Aeson.object ["content" Aeson..= Aeson.object content]
 
 matrixReplyRoomEvent :: Matrix.RoomEvent
 matrixReplyRoomEvent =
