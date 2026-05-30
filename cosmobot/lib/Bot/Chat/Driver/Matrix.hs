@@ -23,6 +23,7 @@ module Bot.Chat.Driver.Matrix
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
+  , decryptMatrixEncryptedBytesForTest
   , formatMatrixMarkdown
   , formatMatrixMarkdownWithMentionNames
   )
@@ -41,10 +42,15 @@ import qualified Bot.Effect.HTTP as HTTP
 import Commonmark
 import Commonmark.Extensions
 import Control.Monad.Trans.Resource (ResourceT, runResourceT)
+import qualified Crypto.Cipher.AES as CryptoAES
+import qualified Crypto.Cipher.Types as CryptoCipher
+import qualified Crypto.Error as CryptoError
+import qualified Crypto.Hash as CryptoHash
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Base64.URL as Base64URL
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.ByteString as StrictByteString
 import qualified Data.Char as Char
@@ -62,6 +68,7 @@ import qualified Network.HTTP.Types.Status as HTTPStatus
 import qualified Streaming as S
 import qualified Data.ByteString.Streaming.HTTP as StreamingHTTP
 import qualified Streaming.ByteString as Q
+import qualified Streaming.Prelude as SP
 import qualified Streaming.Prelude as S
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
@@ -362,6 +369,20 @@ data MatrixDownloadedMedia = MatrixDownloadedMedia
 data MatrixMediaRef = MatrixMediaRef
   { matrixMediaRefUrl :: !Text
   , matrixMediaRefMimeType :: !(Maybe Text)
+  , matrixMediaRefEncrypted :: !(Maybe MatrixEncryptedFile)
+  }
+
+data MatrixEncryptedFile = MatrixEncryptedFile
+  { encryptedFileUrl :: !Text
+  , encryptedFileKey :: !Text
+  , encryptedFileIv :: !Text
+  , encryptedFileSha256 :: !Text
+  }
+
+data MatrixDecryptionPlan = MatrixDecryptionPlan
+  { decryptionCipher :: !CryptoAES.AES256
+  , decryptionIv :: !(CryptoCipher.IV CryptoAES.AES256)
+  , decryptionExpectedHash :: !(CryptoHash.Digest CryptoHash.SHA256)
   }
 
 newtype MatrixSync = MatrixSync
@@ -1234,34 +1255,57 @@ normalizeMatrixMediaRefs driver =
 normalizeMatrixMediaRefsWithMetadata :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> [MatrixMediaRef] -> Eff es [Text]
 normalizeMatrixMediaRefsWithMetadata driver =
   traverse \mediaRef ->
-    normalizeMatrixMediaRef driver mediaRef.matrixMediaRefMimeType mediaRef.matrixMediaRefUrl
+    normalizeMatrixMediaRefWithMetadata driver mediaRef
 
 normalizeMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Maybe Text -> Text -> Eff es Text
 normalizeMatrixMediaRef driver preferredMime ref
+  = normalizeMatrixMediaRefWithMetadata driver MatrixMediaRef
+      { matrixMediaRefUrl = ref
+      , matrixMediaRefMimeType = preferredMime
+      , matrixMediaRefEncrypted = Nothing
+      }
+
+normalizeMatrixMediaRefWithMetadata :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixMediaRef -> Eff es Text
+normalizeMatrixMediaRefWithMetadata driver mediaRef
   | "mxc://" `Text.isPrefixOf` Text.strip ref = do
       let mxcRef = Text.strip ref
       Media.mediaRefForSource mxcRef >>= \case
-        Just mediaRef ->
-          pure mediaRef
+        Just cachedMediaRef ->
+          pure cachedMediaRef
         Nothing ->
-          cacheMatrixMediaRef driver preferredMime mxcRef ref
+          cacheMatrixMediaRef driver mediaRef mxcRef ref
   | otherwise =
       pure ref
+  where
+    ref = mediaRef.matrixMediaRefUrl
 
-cacheMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Maybe Text -> Text -> Text -> Eff es Text
-cacheMatrixMediaRef driver preferredMime mxcRef fallbackRef = do
-  downloaded <- downloadMedia driver mxcRef `catchSync` \err -> do
+cacheMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixMediaRef -> Text -> Text -> Eff es Text
+cacheMatrixMediaRef driver mediaRef mxcRef fallbackRef = do
+  cached <- cacheMatrixMediaRefObject driver mediaRef mxcRef `catchSync` \err -> do
     logInfo [i|Matrix media normalization skipped for #{mxcRef}: #{displayException err}|]
     pure Nothing
-  case downloaded of
+  case cached of
     Nothing ->
       pure fallbackRef
-    Just media ->
-      Media.storeMediaObjectFromSource mxcRef (matrixMediaObject preferredMime media) >>= \case
-        Nothing ->
-          pure fallbackRef
-        Just mediaRef ->
-          pure mediaRef
+    Just cachedMediaRef ->
+      pure cachedMediaRef
+
+cacheMatrixMediaRefObject :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixMediaRef -> Text -> Eff es (Maybe Text)
+cacheMatrixMediaRefObject driver mediaRef mxcRef =
+  fetchMatrixMediaObject driver mediaRef mxcRef >>= \case
+    Nothing ->
+      pure Nothing
+    Just mediaObject ->
+      Media.storeMediaObjectFromSource mxcRef mediaObject
+
+fetchMatrixMediaObject :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixMediaRef -> Text -> Eff es (Maybe Media.MediaObject)
+fetchMatrixMediaObject driver mediaRef mxcRef = do
+  downloadMedia driver mxcRef >>= traverse \media ->
+    case mediaRef.matrixMediaRefEncrypted of
+      Nothing ->
+        pure (matrixMediaObject mediaRef.matrixMediaRefMimeType media)
+      Just encrypted ->
+        decryptMatrixMediaObject mediaRef.matrixMediaRefMimeType encrypted media
 
 matrixMediaObject :: Maybe Text -> MatrixDownloadedMedia -> Media.MediaObject
 matrixMediaObject preferredMime media =
@@ -1270,6 +1314,107 @@ matrixMediaObject preferredMime media =
     , mimeType = fromMaybe media.downloadedMimeType preferredMime
     , sourceName = media.downloadedName
     }
+
+decryptMatrixMediaObject :: IOE :> es => Maybe Text -> MatrixEncryptedFile -> MatrixDownloadedMedia -> Eff es Media.MediaObject
+decryptMatrixMediaObject preferredMime encrypted media = do
+  plan <- either (liftIO . ioError . userError . Text.unpack) pure (matrixDecryptionPlan encrypted)
+  pure Media.MediaObject
+    { bytes = decryptMatrixEncryptedByteStream plan media.downloadedBytes
+    , mimeType = fromMaybe media.downloadedMimeType preferredMime
+    , sourceName = media.downloadedName
+    }
+
+matrixDecryptionPlan :: MatrixEncryptedFile -> Either Text MatrixDecryptionPlan
+matrixDecryptionPlan encrypted = do
+  key <- first ("invalid Matrix encrypted file key: " <>) (decodeBase64UrlText encrypted.encryptedFileKey)
+  ivBytes <- first ("invalid Matrix encrypted file IV: " <>) (decodeBase64TextUnpadded encrypted.encryptedFileIv)
+  expectedHash <- first ("invalid Matrix encrypted file sha256: " <>) (decodeBase64TextUnpadded encrypted.encryptedFileSha256)
+  cipher <- case CryptoError.eitherCryptoError (CryptoCipher.cipherInit key :: CryptoError.CryptoFailable CryptoAES.AES256) of
+    Left err ->
+      Left [i|invalid Matrix encrypted file cipher key: #{show err :: String}|]
+    Right value ->
+      Right value
+  iv <- maybe (Left "invalid Matrix encrypted file AES-CTR IV.") Right (CryptoCipher.makeIV ivBytes)
+  expectedDigest <- case CryptoHash.digestFromByteString expectedHash :: Maybe (CryptoHash.Digest CryptoHash.SHA256) of
+    Nothing ->
+      Left "invalid Matrix encrypted file sha256 digest length."
+    Just expected ->
+      Right expected
+  pure MatrixDecryptionPlan
+    { decryptionCipher = cipher
+    , decryptionIv = iv
+    , decryptionExpectedHash = expectedDigest
+    }
+
+decryptMatrixEncryptedByteStream :: MatrixDecryptionPlan -> Q.ByteStream (ResourceT IO) () -> Q.ByteStream (ResourceT IO) ()
+decryptMatrixEncryptedByteStream plan encryptedBytes =
+  Q.fromChunks (go CryptoHash.hashInit 0 StrictByteString.empty (Q.toChunks encryptedBytes))
+  where
+    go
+      :: CryptoHash.Context CryptoHash.SHA256
+      -> Int
+      -> StrictByteString.ByteString
+      -> S.Stream (S.Of StrictByteString.ByteString) (ResourceT IO) ()
+      -> S.Stream (S.Of StrictByteString.ByteString) (ResourceT IO) ()
+    go context blockIndex pending chunks =
+      lift (SP.next chunks) >>= \case
+        Left () -> do
+          let plainText = decryptMatrixChunkAt plan blockIndex pending
+              finalContext = CryptoHash.hashUpdate context pending
+              digest = CryptoHash.hashFinalize finalContext
+          unless (StrictByteString.null plainText) do
+            SP.yield plainText
+          unless (digest == plan.decryptionExpectedHash) do
+            liftIO (ioError (userError "Matrix encrypted file sha256 verification failed."))
+        Right (chunk, rest) -> do
+          let bytes = pending <> chunk
+              readyLength = (StrictByteString.length bytes `div` matrixAesBlockSize) * matrixAesBlockSize
+              (ready, nextPending) = StrictByteString.splitAt readyLength bytes
+              plainText = decryptMatrixChunkAt plan blockIndex ready
+              nextContext = CryptoHash.hashUpdate context ready
+              nextBlockIndex = blockIndex + readyLength `div` matrixAesBlockSize
+          unless (StrictByteString.null plainText) do
+            SP.yield plainText
+          go nextContext nextBlockIndex nextPending rest
+
+decryptMatrixChunkAt :: MatrixDecryptionPlan -> Int -> StrictByteString.ByteString -> StrictByteString.ByteString
+decryptMatrixChunkAt plan blockIndex bytes =
+  CryptoCipher.ctrCombine plan.decryptionCipher (CryptoCipher.ivAdd plan.decryptionIv blockIndex) bytes
+
+decryptMatrixEncryptedBytesForTest :: Text -> Text -> Text -> [StrictByteString.ByteString] -> IO [StrictByteString.ByteString]
+decryptMatrixEncryptedBytesForTest key iv sha256 chunks =
+  case matrixDecryptionPlan encrypted of
+    Left err ->
+      ioError (userError (Text.unpack err))
+    Right plan ->
+      runResourceT (SP.toList_ (Q.toChunks (decryptMatrixEncryptedByteStream plan (Q.fromChunks (SP.each chunks)))))
+  where
+    encrypted = MatrixEncryptedFile
+      { encryptedFileUrl = "mxc://example.invalid/test"
+      , encryptedFileKey = key
+      , encryptedFileIv = iv
+      , encryptedFileSha256 = sha256
+      }
+
+matrixAesBlockSize :: Int
+matrixAesBlockSize =
+  16
+
+decodeBase64UrlText :: Text -> Either Text StrictByteString.ByteString
+decodeBase64UrlText =
+  first Text.pack . Base64URL.decode . TextEncoding.encodeUtf8 . Text.strip
+
+decodeBase64TextUnpadded :: Text -> Either Text StrictByteString.ByteString
+decodeBase64TextUnpadded =
+  first Text.pack . Base64.decode . padBase64 . TextEncoding.encodeUtf8 . Text.strip
+
+padBase64 :: StrictByteString.ByteString -> StrictByteString.ByteString
+padBase64 bytes =
+  case StrictByteString.length bytes `mod` 4 of
+    0 -> bytes
+    2 -> bytes <> "=="
+    3 -> bytes <> "="
+    _ -> bytes
 
 matrixEventImageUrls :: Aeson.Value -> [Text]
 matrixEventImageUrls =
@@ -1287,18 +1432,46 @@ matrixEventImageMediaRefs =
     parseContent contentObject = do
       msgtype <- contentObject Aeson..:? "msgtype" Aeson..!= ("" :: Text)
       url <- contentObject Aeson..:? "url"
-      fileUrl <- contentObject Aeson..:? "file" Aeson..!= Aeson.Object mempty >>=
-        Aeson.withObject "Matrix encrypted file" (Aeson..:? "url")
+      encrypted <- contentObject Aeson..:? "file" >>= traverse parseEncryptedFile
       mimeType <- contentObject Aeson..:? "info" Aeson..!= Aeson.Object mempty >>=
         Aeson.withObject "Matrix image info" (Aeson..:? "mimetype")
       pure
         [ MatrixMediaRef
             { matrixMediaRefUrl = imageUrl
             , matrixMediaRefMimeType = nonEmptyText =<< mimeType
+            , matrixMediaRefEncrypted = encryptedFile
             }
         | msgtype == "m.image"
-        , Just imageUrl <- [url <|> fileUrl]
+        , (imageUrl, encryptedFile) <- maybeToList (matrixImageContentRef url encrypted)
         ]
+
+    matrixImageContentRef url encrypted =
+      case url of
+        Just imageUrl ->
+          Just (imageUrl, Nothing)
+        Nothing -> do
+          encryptedFile <- encrypted
+          Just (encryptedFile.encryptedFileUrl, Just encryptedFile)
+
+parseEncryptedFile :: Aeson.Value -> Aeson.Parser MatrixEncryptedFile
+parseEncryptedFile =
+  Aeson.withObject "Matrix encrypted file" \fileObject -> do
+    url <- fileObject Aeson..: "url"
+    iv <- fileObject Aeson..: "iv"
+    sha256 <- fileObject Aeson..: "hashes" >>=
+      Aeson.withObject "Matrix encrypted file hashes" (Aeson..: "sha256")
+    key <- fileObject Aeson..: "key" >>=
+      Aeson.withObject "Matrix encrypted file key" \keyObject -> do
+        alg <- keyObject Aeson..:? "alg" Aeson..!= ("" :: Text)
+        unless (alg == "A256CTR") do
+          fail [i|unsupported Matrix encrypted file algorithm: #{alg}|]
+        keyObject Aeson..: "k"
+    pure MatrixEncryptedFile
+      { encryptedFileUrl = url
+      , encryptedFileKey = key
+      , encryptedFileIv = iv
+      , encryptedFileSha256 = sha256
+      }
 
 matrixProfileAvatarValue :: MatrixProfile -> Aeson.Value
 matrixProfileAvatarValue profile =

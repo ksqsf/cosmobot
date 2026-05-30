@@ -131,12 +131,14 @@ common test-deps
                     , aeson
                     , bytestring
                     , containers
+                    , crypton
                     , directory
                     , effectful
                     , filepath
                     , http-client
                     , http-types
                     , jsonrpc
+                    , memory
                     , network
                     , process
                     , req

@@ -8,9 +8,18 @@ import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
 import Bot.Prelude
+import qualified Crypto.Cipher.AES as CryptoAES
+import qualified Crypto.Cipher.Types as CryptoCipher
+import qualified Crypto.Error as CryptoError
+import qualified Crypto.Hash as CryptoHash
+import qualified Data.ByteString as StrictByteString
+import qualified Data.ByteString.Base64 as Base64
+import qualified Data.ByteString.Base64.URL as Base64URL
+import qualified Data.ByteArray as ByteArray
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -38,6 +47,7 @@ main =
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
       , testCase "Matrix image message includes media URL" testMatrixImageMessageIncludesMediaUrl
       , testCase "Matrix encrypted image message includes media URL" testMatrixEncryptedImageMessageIncludesMediaUrl
+      , testCase "Matrix encrypted image bytes decrypt and verify ciphertext hash" testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix edit event is ignored" testMatrixEditEventIsIgnored
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
@@ -301,6 +311,18 @@ testMatrixEncryptedImageMessageIncludesMediaUrl = do
   let incoming = Matrix.eventToIncomingMessage matrixEncryptedImageRoomEvent
   ((.text) <$> incoming) @?= Just "image.png"
   ((.imageUrls) <$> incoming) @?= Just ["mxc://example.org/encrypted-image"]
+
+testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash :: IO ()
+testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash = do
+  let key = StrictByteString.replicate 32 0
+      iv = StrictByteString.replicate 16 0
+      plainText = "Matrix encrypted image bytes"
+      cipherText = matrixAes256Ctr key iv plainText
+      encryptedKey = TextEncoding.decodeUtf8 (Base64URL.encodeUnpadded key)
+      encryptedIv = TextEncoding.decodeUtf8 (Base64.encode iv)
+      encryptedSha256 = TextEncoding.decodeUtf8 (Base64.encode (matrixSha256 cipherText))
+  chunks <- Matrix.decryptMatrixEncryptedBytesForTest encryptedKey encryptedIv encryptedSha256 [StrictByteString.take 7 cipherText, StrictByteString.drop 7 cipherText]
+  StrictByteString.concat chunks @?= plainText
 
 testMatrixMarkdownRendersCustomHtml :: IO ()
 testMatrixMarkdownRendersCustomHtml =
@@ -619,6 +641,15 @@ matrixEncryptedImageRoomEvent =
             , "body" Aeson..= ("image.png" :: Text)
             , "file" Aeson..= Aeson.object
                 [ "url" Aeson..= ("mxc://example.org/encrypted-image" :: Text)
+                , "key" Aeson..= Aeson.object
+                    [ "alg" Aeson..= ("A256CTR" :: Text)
+                    , "k" Aeson..= ("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" :: Text)
+                    , "kty" Aeson..= ("oct" :: Text)
+                    ]
+                , "iv" Aeson..= ("AAAAAAAAAAAAAAAAAAAAAA" :: Text)
+                , "hashes" Aeson..= Aeson.object
+                    [ "sha256" Aeson..= ("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" :: Text)
+                    ]
                 ]
             , "info" Aeson..= Aeson.object
                 [ "mimetype" Aeson..= ("image/png" :: Text)
@@ -630,6 +661,16 @@ matrixEncryptedImageRoomEvent =
 matrixImageRawContent :: [AesonTypes.Pair] -> Aeson.Value
 matrixImageRawContent content =
   Aeson.object ["content" Aeson..= Aeson.object content]
+
+matrixAes256Ctr :: StrictByteString.ByteString -> StrictByteString.ByteString -> StrictByteString.ByteString -> StrictByteString.ByteString
+matrixAes256Ctr key iv bytes =
+  let cipher = CryptoError.throwCryptoError (CryptoCipher.cipherInit key :: CryptoError.CryptoFailable CryptoAES.AES256)
+      initialIv = fromMaybe (error "invalid AES IV in Matrix test") (CryptoCipher.makeIV iv)
+  in CryptoCipher.ctrCombine cipher initialIv bytes
+
+matrixSha256 :: StrictByteString.ByteString -> StrictByteString.ByteString
+matrixSha256 bytes =
+  ByteArray.convert (CryptoHash.hash bytes :: CryptoHash.Digest CryptoHash.SHA256)
 
 matrixReplyRoomEvent :: Matrix.RoomEvent
 matrixReplyRoomEvent =
