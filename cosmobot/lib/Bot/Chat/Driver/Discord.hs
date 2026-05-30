@@ -37,6 +37,7 @@ import Bot.Core.Message
 import Bot.Prelude
 import Bot.Util.Aeson
 import qualified Bot.Effect.HTTP as HTTP
+import qualified Bot.Effect.Media as Media
 import Commonmark
 import qualified Commonmark.Entity as Commonmark
 import Commonmark.Extensions
@@ -101,7 +102,7 @@ newDiscordDriver config = do
   pure DiscordDriver{config, eventChan}
 
 instance Driver.ChatDriver DiscordDriver where
-  type ChatDriverEffects DiscordDriver es = (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+  type ChatDriverEffects DiscordDriver es = (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Media.Media :> es)
 
   driverPlatform _ =
     PlatformDiscord
@@ -461,7 +462,7 @@ discordMessageDigest cfg message =
       message.author.id `elem` cfg.superusers
 
 replyToDiscord
-  :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es)
+  :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Media.Media :> es)
   => DiscordDriver
   -> IncomingMessage
   -> Text
@@ -484,13 +485,14 @@ replyToDiscord driver message body =
     _ ->
       pure (Left "Discord reply requires a Discord channel id.")
 
-sendDiscordImage :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es) => DiscordDriver -> Text -> Maybe Reference -> Text -> Eff es Message
-sendDiscordImage driver channelId replyReference imageRef =
-  case discordRemoteImageRef imageRef of
+sendDiscordImage :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Media.Media :> es) => DiscordDriver -> Text -> Maybe Reference -> Text -> Eff es Message
+sendDiscordImage driver channelId replyReference imageRef = do
+  resolvedRef <- discordImageRef imageRef
+  case discordRemoteImageRef resolvedRef of
     Just url ->
       createMessage driver channelId (createMessageRequest url replyReference)
     Nothing ->
-      withDiscordImageFile imageRef \path ->
+      withDiscordImageFile resolvedRef \path ->
         uploadDiscordFile driver channelId Nothing path
 
 editMessageDiscord :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> MessageId -> Text -> Eff es Bool
@@ -815,6 +817,16 @@ discordRemoteImageRef :: Text -> Maybe Text
 discordRemoteImageRef ref
   | "http://" `Text.isPrefixOf` ref || "https://" `Text.isPrefixOf` ref = Just ref
   | otherwise = Nothing
+
+discordImageRef :: Media.Media :> es => Text -> Eff es Text
+discordImageRef ref
+  | "media:" `Text.isPrefixOf` Text.strip ref = do
+      publicRef <- Media.publicMediaRef ref
+      if "media:" `Text.isPrefixOf` Text.strip publicRef
+        then maybe ref (("file://" <>) . Text.pack) <$> Media.localMediaPath ref
+        else pure publicRef
+  | otherwise =
+      pure ref
 
 withDiscordImageFile :: (FileSystem :> es, IOE :> es) => Text -> (FilePath -> Eff es a) -> Eff es a
 withDiscordImageFile ref action =

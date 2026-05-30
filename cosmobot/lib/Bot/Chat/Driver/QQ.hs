@@ -24,6 +24,7 @@ where
 
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Media as Media
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Control.Concurrent.Async as Async
@@ -75,7 +76,7 @@ newQQDriver config = do
   pure QQDriver{config, eventChan, actionChan}
 
 instance Driver.ChatDriver QQDriver where
-  type ChatDriverEffects QQDriver es = (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  type ChatDriverEffects QQDriver es = (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
 
   driverPlatform _ =
     PlatformQQ
@@ -473,7 +474,7 @@ dispatchActionResponse pendingResponses response =
 
 -- | Reply to a QQ private or group message.
 replyToQQ
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
   => QQDriver
   -> IncomingMessage
   -> Text
@@ -503,7 +504,7 @@ replyToQQ driver message body =
 
 -- | Send a reply that mentions a QQ user where the platform supports it.
 mentionUserQQ
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
   => QQDriver
   -> IncomingMessage
   -> Text
@@ -848,7 +849,7 @@ nonEmptyText value =
   Text.strip <$> value >>= \text ->
     text <$ guard (not (Text.null text))
 
-replyMessage :: IOE :> es => IncomingMessage -> Text -> Eff es Aeson.Value
+replyMessage :: (IOE :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es Aeson.Value
 replyMessage message body =
   Aeson.toJSON <$> maybe textOnly withReply message.messageId
   where
@@ -866,7 +867,7 @@ replyMessage message body =
         ] <>
       ) <$> replyContent text imageUrls
 
-mentionMessage :: IOE :> es => IncomingMessage -> Integer -> Text -> Eff es Aeson.Value
+mentionMessage :: (IOE :> es, Media.Media :> es) => IncomingMessage -> Integer -> Text -> Eff es Aeson.Value
 mentionMessage message userId body =
   Aeson.toJSON <$> maybe mentionOnly withReply message.messageId
   where
@@ -900,7 +901,7 @@ mentionContent userId body =
       ]
   ]
 
-replyContent :: IOE :> es => Text -> [Text] -> Eff es [Aeson.Value]
+replyContent :: (IOE :> es, Media.Media :> es) => Text -> [Text] -> Eff es [Aeson.Value]
 replyContent body imageUrls = do
   imageSegments <- traverse imageSegment imageUrls
   pure $
@@ -940,7 +941,7 @@ textSegment body =
         ]
     ]
 
-imageSegment :: IOE :> es => Text -> Eff es Aeson.Value
+imageSegment :: (IOE :> es, Media.Media :> es) => Text -> Eff es Aeson.Value
 imageSegment url =
   imageSegmentValue <$> qqImageFile url
 
@@ -953,13 +954,18 @@ imageSegmentValue file =
         ]
     ]
 
-qqImageFile :: IOE :> es => Text -> Eff es Text
+qqImageFile :: (IOE :> es, Media.Media :> es) => Text -> Eff es Text
 qqImageFile url =
-  case Text.stripPrefix "file://" url of
+  case mediaRef url of
+    Just ref ->
+      maybe url (("file://" <>) . Text.pack) <$> Media.localMediaPath ref
     Nothing ->
       pure url
-    Just _ ->
-      pure url
+
+mediaRef :: Text -> Maybe Text
+mediaRef ref =
+  let stripped = Text.strip ref
+  in stripped <$ guard ("media:" `Text.isPrefixOf` stripped)
 
 qqAudioFile :: IOE :> es => Text -> Eff es Text
 qqAudioFile ref =
