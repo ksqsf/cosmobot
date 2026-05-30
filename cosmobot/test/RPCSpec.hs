@@ -116,19 +116,19 @@ testChatSendConstructsIncomingMessage = do
           [ "session_id" Aeson..= ("local-1" :: Text)
           , "text" Aeson..= ("hello" :: Text)
           , "image_urls" Aeson..= ["https://example.test/image.png" :: Text]
-          , "reply_to_message_id" Aeson..= ("rpc-0" :: Text)
+          , "reply_to_message_id" Aeson..= ("session-0" :: Text)
           ]
     incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
     pure (response, incoming)
 
-  response @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= ("rpc-1" :: Text)])
+  response @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= ("session-1" :: Text)])
   incoming.platform @?= PlatformRPC
   incoming.kind @?= ChatPrivate
   incoming.chatAliases @?= ["local-1"]
   incoming.senderId @?= Just "rpc-user"
   incoming.text @?= "hello"
   incoming.imageUrls @?= ["https://example.test/image.png"]
-  incoming.replyToMessageId @?= Just "rpc-0"
+  incoming.replyToMessageId @?= Just "session-0"
   incoming.digest.senderIsAllowed @?= True
   incoming.digest.senderIsSuperuser @?= True
   incoming.digest.mentionsBot @?= True
@@ -190,7 +190,7 @@ testChatSendBroadcastsNotification = do
   notification.params @?=
     Aeson.object
       [ "sessionId" Aeson..= ("local-1" :: Text)
-      , "messageId" Aeson..= ("rpc-1" :: Text)
+      , "messageId" Aeson..= ("session-1" :: Text)
       , "sender" Aeson..= ("user" :: Text)
       , "text" Aeson..= ("hello" :: Text)
       , "imageUrls" Aeson..= ([] :: [Text])
@@ -310,7 +310,7 @@ testAttachmentLifecycle =
     imageAttachment.kind @?= "image"
     unsafeMediaAttachment.mediaType @?= "application/octet-stream"
     oversizedResponse @?= responseError "invalid_params" "Error in $: attachment size exceeds configured limit"
-    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
+    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("session-1" :: Text)])
     assertBool "non-image attachment should be visible in incoming context" ("Attachments:" `Text.isInfixOf` incoming.text)
     incoming.imageUrls @?= [imageAttachment.url, "https://example.test/context.png", "data:image/png;base64,AA=="]
     assertEqual [i|history response: #{show historyResponse :: String}|] [[attachment.attachmentId, imageAttachment.attachmentId]] (responseMessageAttachments historyResponse)
@@ -367,7 +367,7 @@ testChatSessionsPersistAcrossRestart =
             , "text" Aeson..= ("persisted" :: Text)
             ]
 
-    firstResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("rpc-1" :: Text)])
+    firstResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("session-1" :: Text)])
 
     (listResponse, historyResponse, sendResponse) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
@@ -390,10 +390,10 @@ testChatSessionsPersistAcrossRestart =
       responseResult
         ( Aeson.object
             [ "sessionId" Aeson..= ("local-1" :: Text)
-            , "messages" Aeson..= [messageValue "local-1" "rpc-1" "persisted" Nothing]
+            , "messages" Aeson..= [messageValue "local-1" "session-1" "persisted" Nothing]
             ]
         )
-    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("rpc-2" :: Text)])
+    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("session-2" :: Text)])
 
 testRpcDriverPersistsAssistantRepliesAndEdits :: IO ()
 testRpcDriverPersistsAssistantRepliesAndEdits =
@@ -414,7 +414,7 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
       edited <- editMessage driver incoming replyId "final answer"
       pure (replyId, edited)
 
-    replyId @?= "rpc-2"
+    replyId @?= "session-2"
     edited @?= True
 
     historyResponse <- runRpcStorage path do
@@ -423,8 +423,8 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
         rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
 
     responseMessageSummaries historyResponse @?=
-      [ ("user", "rpc-1", "question")
-      , ("assistant", "rpc-2", "final answer")
+      [ ("user", "session-1", "question")
+      , ("assistant", "session-2", "final answer")
       ]
 
 testRpcDriverStoresLocalImageRepliesAsAttachments :: IO ()
@@ -457,8 +457,8 @@ testRpcDriverStoresLocalImageRepliesAsAttachments =
         rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
 
     responseMessageSummaries historyResponse @?=
-      [ ("user", "rpc-1", "make an image")
-      , ("assistant", "rpc-2", "done")
+      [ ("user", "session-1", "make an image")
+      , ("assistant", "session-2", "done")
       ]
     case responseMessageAttachments historyResponse of
       [[], [attachmentId]] ->
@@ -481,7 +481,7 @@ testChatForkStoresParentLink =
         rpcRequest "chat.fork" $
           Aeson.object
             [ "sessionId" Aeson..= ("root-1" :: Text)
-            , "messageId" Aeson..= ("rpc-1" :: Text)
+            , "messageId" Aeson..= ("session-1" :: Text)
             , "label" Aeson..= ("branch" :: Text)
             ]
       _branch <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
@@ -494,7 +494,7 @@ testChatForkStoresParentLink =
       responseResult
         ( Aeson.object
             [ "sessionId" Aeson..= ("branch-1" :: Text)
-            , "session" Aeson..= sessionValue "branch-1" (Just "branch") (Just "root-1") (Just "rpc-1")
+            , "session" Aeson..= sessionValue "branch-1" (Just "branch") (Just "root-1") (Just "session-1")
             ]
         )
     responseMessageTexts forkHistory @?= ["first", "branch only"]
@@ -533,7 +533,7 @@ testDeleteSessionCascadesForkDescendants =
         rpcRequest "chat.fork" $
           Aeson.object
             [ "sessionId" Aeson..= ("root-1" :: Text)
-            , "messageId" Aeson..= ("rpc-1" :: Text)
+            , "messageId" Aeson..= ("session-1" :: Text)
             , "label" Aeson..= ("branch" :: Text)
             ]
       _branch <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $

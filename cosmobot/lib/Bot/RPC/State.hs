@@ -10,12 +10,13 @@ module Bot.RPC.State
   , RpcClientId
   , RpcClientQueue
   , RpcClientEvent (..)
-  , RpcSessionId (..)
+  , RpcSessionId
   , RpcOutbound (..)
-  , RpcChatMessage (..)
-  , RpcChatSession (..)
+  , RpcChatMessage
+  , RpcChatSession
   , RpcChatAttachmentRef (..)
   , RpcChatSend (..)
+  , unRpcSessionId
   , newRpcState
   , registerClient
   , unregisterClient
@@ -44,16 +45,14 @@ import Bot.Core.Message
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
 import qualified Bot.RPC.Protocol as Protocol
+import qualified Bot.Session as Session
 import qualified Bot.Effect.Storage as StorageEffect
-import qualified Bot.Storage.RPC as Storage
+import qualified Bot.Storage.Session as Storage
 import qualified Data.Aeson as Aeson
-import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.STM as STM
 import qualified Effectful.FileSystem as FileSystem
-import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 
@@ -66,9 +65,11 @@ data RpcClientEvent
   | RpcClientDisconnect !Text
   deriving (Eq, Show)
 
-newtype RpcSessionId = RpcSessionId { unRpcSessionId :: Text }
-  deriving (Eq, Ord, Show)
-    deriving (Aeson.ToJSON, Aeson.FromJSON) via Text
+type RpcSessionId = Session.SessionId
+
+unRpcSessionId :: RpcSessionId -> Text
+unRpcSessionId =
+  Session.sessionIdText
 
 data RpcState = RpcState
   { clients :: !(STM.TVar (Map RpcClientId RpcClientQueue))
@@ -85,25 +86,9 @@ data RpcOutbound = RpcOutbound
   }
   deriving (Eq, Show, Generic, Aeson.ToJSON)
 
-data RpcChatMessage = RpcChatMessage
-  { sessionId :: !RpcSessionId
-  , messageId :: !MessageId
-  , sender :: !Text
-  , text :: !Text
-  , imageUrls :: ![Text]
-  , attachments :: ![RpcChatAttachmentRef]
-  , replyToMessageId :: !(Maybe MessageId)
-  , parentMessageId :: !(Maybe MessageId)
-  }
-  deriving (Eq, Show, Generic, Aeson.ToJSON)
+type RpcChatMessage = Session.SessionMessage
 
-data RpcChatSession = RpcChatSession
-  { sessionId :: !RpcSessionId
-  , label :: !(Maybe Text)
-  , parentSessionId :: !(Maybe RpcSessionId)
-  , parentMessageId :: !(Maybe MessageId)
-  }
-  deriving (Eq, Show, Generic, Aeson.ToJSON)
+type RpcChatSession = Session.Session
 
 data RpcChatAttachmentRef = RpcChatAttachmentRef
   { attachmentId :: !Text
@@ -181,35 +166,35 @@ broadcastAuditRecord rpcState recordValue =
 
 openChatSession :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> Maybe Text -> Eff es RpcChatSession
 openChatSession rpcState label = do
-  session <- Storage.createSession label
-  rememberSessionNumber rpcState session.sessionId
-  pure (storedSessionToRpc session)
+  session <- Session.openSession label
+  rememberSessionNumber rpcState (Session.sessionIdText session.sessionId)
+  pure session
 
 listChatSessions :: StorageEffect.Storage :> es => Eff es [RpcChatSession]
 listChatSessions =
-  map storedSessionToRpc <$> Storage.listSessions
+  Session.listSessions
 
 getChatSession :: StorageEffect.Storage :> es => RpcSessionId -> Eff es (Maybe RpcChatSession)
 getChatSession sessionId =
-  fmap storedSessionToRpc <$> Storage.loadSession sessionId.unRpcSessionId
+  Session.getSession sessionId
 
 chatHistory :: StorageEffect.Storage :> es => RpcSessionId -> Eff es [RpcChatMessage]
 chatHistory sessionId =
-  map storedMessageToRpc <$> Storage.loadSessionHistory sessionId.unRpcSessionId
+  Session.sessionHistory sessionId
 
 forkChatSession :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> RpcSessionId -> MessageId -> Maybe Text -> Eff es (Maybe RpcChatSession)
 forkChatSession rpcState sourceSessionId messageId label = do
-  session <- Storage.forkSession sourceSessionId.unRpcSessionId messageId label
-  traverse_ (rememberSessionNumber rpcState . (.sessionId)) session
-  pure (storedSessionToRpc <$> session)
+  session <- Session.forkSession sourceSessionId messageId label
+  traverse_ (rememberSessionNumber rpcState . Session.sessionIdText . (.sessionId)) session
+  pure session
 
 renameChatSession :: StorageEffect.Storage :> es => RpcSessionId -> Text -> Eff es (Maybe RpcChatSession)
 renameChatSession sessionId label =
-  fmap storedSessionToRpc <$> Storage.renameSession sessionId.unRpcSessionId label
+  Session.renameSession sessionId label
 
 deleteChatSession :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => RpcSessionId -> Eff es Bool
 deleteChatSession sessionId =
-  Storage.deleteSession sessionId.unRpcSessionId
+  Session.deleteSession sessionId
 
 enqueueChatMessage
   :: (Concurrent :> es, StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
@@ -217,50 +202,37 @@ enqueueChatMessage
   -> RpcChatSend
   -> Eff es (Either Text (Maybe IncomingMessage))
 enqueueChatMessage rpcState chatSend = do
-  attachments <- resolveMediaRefs (map (.attachmentId) chatSend.attachments)
-  case attachments of
+  appended <- Session.appendUserMessage (rpcChatSendToSession chatSend)
+  case appended of
     Left err ->
       pure (Left err)
-    Right mediaRefs -> do
-      stored <- Storage.appendMessage
-        chatSend.sessionId.unRpcSessionId
-        "user"
-        chatSend.text
-        chatSend.imageUrls
-        mediaRefs
-        chatSend.replyToMessageId
-        chatSend.replyToMessageId
-      case stored of
-        Left err ->
-          pure (Left err)
-        Right Nothing ->
-          pure (Right Nothing)
-        Right (Just messageRow) -> do
-          rememberMessageNumber rpcState messageRow.messageId
-          message <- rpcIncomingMessage chatSend messageRow
-          let chatMessage = storedMessageToRpc messageRow
-          STM.atomically (STM.writeTChan rpcState.inbound message)
-          broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" chatMessage))
-          pure (Right (Just message))
+    Right Nothing ->
+      pure (Right Nothing)
+    Right (Just sessionMessage) -> do
+      rememberMessageNumber rpcState sessionMessage.messageId
+      message <- rpcIncomingMessage chatSend sessionMessage
+      STM.atomically (STM.writeTChan rpcState.inbound message)
+      broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" sessionMessage))
+      pure (Right (Just message))
 
 incomingMessages :: Concurrent :> es => RpcState -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages rpcState = forever do
   message <- S.lift (STM.atomically (STM.readTChan rpcState.inbound))
   S.yield message
 
-rpcIncomingMessage :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es) => RpcChatSend -> Storage.StoredChatMessage -> Eff es IncomingMessage
+rpcIncomingMessage :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es) => RpcChatSend -> RpcChatMessage -> Eff es IncomingMessage
 rpcIncomingMessage chatSend messageRow = do
-  let sessionText = chatSend.sessionId.unRpcSessionId
-      canonicalSend :: RpcChatSend
+  let sessionText = Session.sessionIdText chatSend.sessionId
+      canonicalSend :: Session.SessionSend
       canonicalSend =
-        RpcChatSend
+        Session.SessionSend
           { sessionId = chatSend.sessionId
           , text = chatSend.text
           , imageUrls = messageRow.imageUrls
-          , attachments = map storedAttachmentToRpc messageRow.attachments
+          , attachments = messageRow.attachments
           , replyToMessageId = chatSend.replyToMessageId
           }
-  llmImageUrls <- rpcChatSendLlmImageUrls canonicalSend
+  llmImageUrls <- Session.sessionSendLlmImageUrls canonicalSend
   pure IncomingMessage
     { platform = PlatformRPC
     , kind = ChatPrivate
@@ -280,13 +252,13 @@ rpcIncomingMessage chatSend messageRow = do
     , mentions = []
     , mentionUsernames = []
     , imageUrls = llmImageUrls
-    , text = chatSendContextText canonicalSend
+    , text = Session.sessionSendContextText canonicalSend
     , raw = Aeson.toJSON canonicalSend
     }
 
 rememberMessageNumber :: Concurrent :> es => RpcState -> MessageId -> Eff es ()
 rememberMessageNumber rpcState messageId =
-  case Text.stripPrefix "rpc-" (messageIdText messageId) >>= readMaybe . Text.unpack of
+  case Text.stripPrefix "session-" (messageIdText messageId) >>= readMaybe . Text.unpack of
     Nothing ->
       pure ()
     Just number ->
@@ -304,29 +276,11 @@ rememberSessionNumber rpcState sessionId =
 
 sessionIdFromMessage :: IncomingMessage -> RpcSessionId
 sessionIdFromMessage message =
-  RpcSessionId (fromMaybe "session" (listToMaybe message.chatAliases))
-
-storedSessionToRpc :: Storage.StoredChatSession -> RpcChatSession
-storedSessionToRpc session =
-  RpcChatSession
-    { sessionId = RpcSessionId session.sessionId
-    , label = session.label
-    , parentSessionId = RpcSessionId <$> session.parentSessionId
-    , parentMessageId = session.parentMessageId
-    }
+  Session.SessionId (fromMaybe "session" (listToMaybe message.chatAliases))
 
 storedMessageToRpc :: Storage.StoredChatMessage -> RpcChatMessage
-storedMessageToRpc message =
-  RpcChatMessage
-    { sessionId = RpcSessionId message.sessionId
-    , messageId = message.messageId
-    , sender = message.sender
-    , text = message.text
-    , imageUrls = message.imageUrls
-    , attachments = map storedAttachmentToRpc message.attachments
-    , replyToMessageId = message.replyToMessageId
-    , parentMessageId = message.parentMessageId
-    }
+storedMessageToRpc =
+  Session.storedMessageToSession
 
 broadcastClient :: Aeson.Value -> RpcClientId -> RpcClientQueue -> STM.STM (Maybe RpcClientQueue)
 broadcastClient value _clientId (RpcClientQueue queue) = do
@@ -351,58 +305,27 @@ drainTBQueue queue =
 rpcClientQueueCapacity :: Natural
 rpcClientQueueCapacity = 256
 
-rpcChatSendLlmImageUrls :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es) => RpcChatSend -> Eff es [Text]
-rpcChatSendLlmImageUrls chatSend = do
-  attachmentRefs <- catMaybes <$> traverse attachmentDataImageRef (filter ((== "image") . (.kind)) chatSend.attachments)
-  pure (ordNub (filter isDirectLlmImageRef chatSend.imageUrls <> attachmentRefs))
+storedMediaRef :: Media.MediaFileInfo -> Text -> Storage.StoredMediaRef
+storedMediaRef =
+  Session.storedMediaRef
 
-attachmentDataImageRef :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es) => RpcChatAttachmentRef -> Eff es (Maybe Text)
-attachmentDataImageRef attachment =
-  case parseMediaId attachment.attachmentId of
-    Nothing ->
-      pure Nothing
-    Just fileId ->
-      Media.mediaFileInfo fileId >>= \case
-        Nothing ->
-          pure Nothing
-        Just stored ->
-          if stored.exists && "image/" `Text.isPrefixOf` Text.toLower stored.mimeType
-            then do
-              bytes <- FileSystemByteString.readFile stored.path
-              pure (Just (dataImageRef stored.mimeType bytes))
-            else
-              pure Nothing
+parseMediaId :: Text -> Maybe Text
+parseMediaId =
+  Session.parseMediaId
 
-dataImageRef :: Text -> ByteString -> Text
-dataImageRef mediaType bytes =
-  "data:" <> mediaType <> ";base64," <> TextEncoding.decodeUtf8 (Base64.encode bytes)
+rpcChatSendToSession :: RpcChatSend -> Session.SessionSend
+rpcChatSendToSession chatSend =
+  Session.SessionSend
+    { sessionId = chatSend.sessionId
+    , text = chatSend.text
+    , imageUrls = chatSend.imageUrls
+    , attachments = map rpcAttachmentToSession chatSend.attachments
+    , replyToMessageId = chatSend.replyToMessageId
+    }
 
-isDirectLlmImageRef :: Text -> Bool
-isDirectLlmImageRef ref =
-  let stripped = Text.toLower (Text.strip ref)
-  in "https://" `Text.isPrefixOf` stripped || "data:image/" `Text.isPrefixOf` stripped
-
-chatSendContextText :: RpcChatSend -> Text
-chatSendContextText chatSend
-  | null nonImageAttachments =
-      chatSend.text
-  | Text.null (Text.strip chatSend.text) =
-      attachmentContext
-  | otherwise =
-      chatSend.text <> "\n\n" <> attachmentContext
-  where
-    nonImageAttachments =
-      filter ((/= "image") . (.kind)) chatSend.attachments
-    attachmentContext =
-      Text.unlines $
-        "Attachments:" :
-        [ "- " <> attachment.name <> " (" <> attachment.mediaType <> ", " <> attachment.url <> ")"
-        | attachment <- nonImageAttachments
-        ]
-
-storedAttachmentToRpc :: Storage.StoredMediaRef -> RpcChatAttachmentRef
-storedAttachmentToRpc attachment =
-  RpcChatAttachmentRef
+rpcAttachmentToSession :: RpcChatAttachmentRef -> Session.SessionAttachmentRef
+rpcAttachmentToSession attachment =
+  Session.SessionAttachmentRef
     { attachmentId = attachment.attachmentId
     , name = attachment.name
     , mediaType = attachment.mediaType
@@ -411,45 +334,9 @@ storedAttachmentToRpc attachment =
     , url = attachment.url
     }
 
-storedMediaRef :: Media.MediaFileInfo -> Text -> Storage.StoredMediaRef
-storedMediaRef media url =
-  Storage.StoredMediaRef
-    { attachmentId = media.ref
-    , name = fromMaybe media.fileId media.sourceName
-    , mediaType = media.mimeType
-    , kind = kindFromMediaType media.mimeType
-    , size = media.size
-    , url
-    }
-
-resolveMediaRefs
-  :: Media.Media :> es
-  => [Text]
-  -> Eff es (Either Text [Storage.StoredMediaRef])
-resolveMediaRefs =
-  fmap sequence . traverse resolveMediaRef . ordNub
-  where
-    resolveMediaRef ref =
-      case parseMediaId ref of
-        Nothing ->
-          pure (Left [i|Unknown media ref: #{ref}|])
-        Just _ ->
-          Media.mediaFileInfoByRef ref >>= \case
-            Nothing ->
-              pure (Left [i|Unknown media ref: #{ref}|])
-            Just media -> do
-              url <- Media.publicMediaRef media.ref
-              pure (Right (storedMediaRef media url))
-
 defaultMediaUrl :: Text -> Text
 defaultMediaUrl attachmentId =
   attachmentId
-
-parseMediaId :: Text -> Maybe Text
-parseMediaId ref = do
-  fileId <- Text.stripPrefix "media:" (Text.strip ref)
-  guard (not (Text.null fileId))
-  pure fileId
 
 kindFromMediaType :: Text -> Text
 kindFromMediaType mediaType

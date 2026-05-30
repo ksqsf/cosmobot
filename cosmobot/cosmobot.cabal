@@ -274,6 +274,7 @@ library
         Bot.Storage.Matrix
         Bot.Storage.Prelude
         Bot.Storage.RPC
+        Bot.Storage.Session
         Bot.Storage.Scheduler
         Bot.Storage.SQLite
         Bot.System.ImageMagick

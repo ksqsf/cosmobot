@@ -25,6 +25,7 @@ import qualified Bot.Effect.Storage as Storage
 import qualified Bot.RPC.Config as Config
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.RPC.State as State
+import qualified Bot.Session as Session
 import qualified Bot.Storage.RPC as RpcStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
@@ -575,7 +576,7 @@ parseChatSendParams =
         Nothing -> o Aeson..:? "reply_to_message_id"
     attachments <- fromMaybe [] <$> o Aeson..:? "attachments"
     pure State.RpcChatSend
-      { sessionId = State.RpcSessionId sessionText
+      { sessionId = Session.SessionId sessionText
       , text
       , imageUrls
       , attachments
@@ -613,12 +614,12 @@ maxBase64Length maxBytes =
 parseSessionIdParams :: Aeson.Value -> AesonTypes.Parser State.RpcSessionId
 parseSessionIdParams =
   Aeson.withObject "session params" \o ->
-    State.RpcSessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
+    Session.SessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
 
 parseForkParams :: Aeson.Value -> AesonTypes.Parser (State.RpcSessionId, MessageId, Maybe Text)
 parseForkParams =
   Aeson.withObject "chat.fork params" \o -> do
-    sessionId <- State.RpcSessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
+    sessionId <- Session.SessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
     messageId <- o Aeson..: "messageId" <|> o Aeson..: "message_id"
     label <- o Aeson..:? "label"
     pure (sessionId, messageId, label)
@@ -626,7 +627,7 @@ parseForkParams =
 parseRenameSessionParams :: Aeson.Value -> AesonTypes.Parser (State.RpcSessionId, Text)
 parseRenameSessionParams =
   Aeson.withObject "chat.rename_session params" \o -> do
-    sessionId <- State.RpcSessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
+    sessionId <- Session.SessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
     label <- o Aeson..: "label"
     pure (sessionId, label)
 
@@ -702,8 +703,8 @@ notificationToRequest notification_ =
   JSONRPC.JSONRPCRequest JSONRPC.rPC_VERSION (JSONRPC.RequestId Aeson.Null) notification_.method notification_.params
 
 rpcSessionIdText :: State.RpcSessionId -> Text
-rpcSessionIdText (State.RpcSessionId value) =
-  value
+rpcSessionIdText =
+  State.unRpcSessionId
 
 requestIsAuthorized :: Config.Config -> WS.RequestHead -> Bool
 requestIsAuthorized cfg request =

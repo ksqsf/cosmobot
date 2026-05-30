@@ -22,7 +22,7 @@ import Bot.Prelude
 import qualified Bot.RPC.Config as Config
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.RPC.State as RPC
-import qualified Bot.Storage.RPC as Storage
+import qualified Bot.Storage.Session as SessionStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import qualified Effectful.FileSystem as FileSystem
@@ -49,8 +49,8 @@ instance ChatDriver RpcChatDriver where
     let sessionId = RPC.sessionIdFromMessage message
         parentMessageId = message.messageId
     reply <- rpcReplyContent driver.cfg body
-    stored <- Storage.appendMessage
-      sessionId.unRpcSessionId
+    stored <- SessionStorage.appendMessage
+      (RPC.unRpcSessionId sessionId)
       "assistant"
       reply.text
       reply.imageUrls
@@ -78,7 +78,7 @@ instance ChatDriver RpcChatDriver where
     let sessionId = RPC.sessionIdFromMessage message
         text = ReplyBody.renderReplyBody body
         payload = RPC.RpcOutbound sessionId (Just messageId) text
-    updated <- Storage.updateMessageText sessionId.unRpcSessionId messageId text
+    updated <- SessionStorage.updateMessageText (RPC.unRpcSessionId sessionId) messageId text
     RPC.broadcast driver.rpcState (Aeson.toJSON (Protocol.notification "chat.message_update" payload))
     pure updated
 
@@ -88,7 +88,7 @@ instance ChatDriver RpcChatDriver where
 data RpcReplyContent = RpcReplyContent
   { text :: !Text
   , imageUrls :: ![Text]
-  , attachments :: ![Storage.StoredMediaRef]
+  , attachments :: ![SessionStorage.StoredMediaRef]
   }
 
 rpcReplyContent
@@ -108,7 +108,7 @@ rpcReplyImage
   :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => Config.Config
   -> Text
-  -> Eff es (Either Text Storage.StoredMediaRef)
+  -> Eff es (Either Text SessionStorage.StoredMediaRef)
 rpcReplyImage _cfg ref =
   case Text.stripPrefix "file://" (Text.strip ref) of
     Nothing ->
