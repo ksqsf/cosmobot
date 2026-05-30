@@ -280,8 +280,8 @@ library
         Bot.Util.HList
         Bot.Util.Image
         Bot.Util.Multipart
+        Bot.Util.Process
         Bot.Util.Stream
-        Bot.Util.Text
         Bot.Util.Toml
     build-depends:    log-base
                     , aeson-optics

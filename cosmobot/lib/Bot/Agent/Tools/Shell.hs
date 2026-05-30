@@ -12,14 +12,12 @@ where
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Prelude
-import qualified Bot.Util.Text as TextUtil
+import qualified Bot.Util.Process as ProcessUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
-import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import System.Posix.Signals (signalProcess, signalProcessGroup, sigKILL)
-import qualified Effectful.Concurrent.STM as STM
 import qualified Effectful.Process as Process
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout
@@ -56,21 +54,17 @@ runBashSafe timeoutSeconds script = do
     Nothing -> do
       killProcessTree (TypedProcess.unsafeProcessHandle process)
       _ <- timeout processExitGraceMicroseconds (TypedProcess.waitExitCode process)
-      stdoutText <- processOutputText (TypedProcess.getStdout process)
-      stderrText <- processOutputText (TypedProcess.getStderr process)
+      stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
+      stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
       pure $ Text.strip $ Text.unlines $ filter (not . Text.null)
         [ "Script timed out after " <> Text.pack (show effectiveTimeout) <> " seconds and was killed."
         , if Text.null stdoutText then "" else "stdout:\n" <> stdoutText
         , if Text.null stderrText then "" else "stderr:\n" <> stderrText
         ]
     Just exitCode -> do
-      stdoutText <- processOutputText (TypedProcess.getStdout process)
-      stderrText <- processOutputText (TypedProcess.getStderr process)
+      stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
+      stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
       pure (formatBashResult exitCode stdoutText stderrText)
-
-processOutputText :: Concurrent :> es => STM.STM LazyByteString.ByteString -> Eff es Text
-processOutputText =
-  fmap TextUtil.decodeLazyUtf8Lenient . STM.atomically
 
 killProcessTree :: (IOE :> es, Process.Process :> es) => Process.ProcessHandle -> Eff es ()
 killProcessTree ph = do

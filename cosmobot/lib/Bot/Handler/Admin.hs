@@ -17,7 +17,7 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Handler.Admin.Config
 import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as Lifecycle
-import qualified Bot.Util.Text as TextUtil
+import qualified Bot.Util.Process as ProcessUtil
 import qualified Data.Char as Char
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
@@ -136,13 +136,9 @@ reportUpgradeScriptExit startupAction message running = do
 waitUpgradeScript :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es) => RunningUpgradeScript -> Eff es (Exit.ExitCode, Text, Text)
 waitUpgradeScript RunningUpgradeScript{process} = do
   exitCode <- TypedProcess.waitExitCode process
-  stdoutText <- processOutputText (TypedProcess.getStdout process)
-  stderrText <- processOutputText (TypedProcess.getStderr process)
+  stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
+  stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
   pure (exitCode, stdoutText, stderrText)
-
-processOutputText :: Concurrent :> es => STM.STM LazyByteString.ByteString -> Eff es Text
-processOutputText =
-  fmap TextUtil.decodeLazyUtf8Lenient . STM.atomically
 
 scriptExited :: Exit.ExitCode -> Text -> Text -> Text
 scriptExited exitCode stdoutText stderrText =
