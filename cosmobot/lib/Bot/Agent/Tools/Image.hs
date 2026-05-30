@@ -43,10 +43,8 @@ generateImageTool = Tool
       case Chat.replyImageUrls generated of
         [] ->
           pure (toolText generated)
-        _ -> do
-          sent <- Chat.replyTo context.message generated
-          let sentText = show sent :: String
-          pure (toolText [i|Generated and sent image message id: #{sentText}|])
+        imageRefs ->
+          sendImageToolResult context.message "Generated" imageRefs generated
   }
 
 editImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
@@ -75,10 +73,8 @@ editImageTool = Tool
           case Chat.replyImageUrls edited of
             [] ->
               pure (toolText edited)
-            _ -> do
-              sent <- Chat.replyTo context.message edited
-              let sentText = show sent :: String
-              pure (toolText [i|Edited and sent image message id: #{sentText}|])
+            editedRefs ->
+              sendImageToolResult context.message "Edited" editedRefs edited
   }
 
 viewImageTool :: Media.Media :> es => Tool es
@@ -185,3 +181,13 @@ cachedImageContext mediaRef =
           pure (toolTextWithImages [i|Added image to current context: #{mediaRef}|] [mediaRef])
     _ ->
       pure (toolFailure (permanentArgumentFailure "image_cache URL is not a cached image." "image_cache URL is not a cached image.").failure)
+
+sendImageToolResult :: Chat.Chat :> es => IncomingMessage -> Text -> [Text] -> Text -> Eff es ToolResult
+sendImageToolResult message label imageRefs body = do
+  sent <- Chat.replyTo message body
+  let sentText = show sent :: String
+      mediaRefs = filter isMediaRef imageRefs
+      mediaText
+        | null mediaRefs = ""
+        | otherwise = "\nMedia ids: " <> Text.intercalate ", " mediaRefs
+  pure (toolTextWithImages [i|#{label} and sent image message id: #{sentText}#{mediaText}|] mediaRefs)

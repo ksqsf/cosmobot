@@ -440,7 +440,8 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult :: IO ()
 testEditImageToolEditsCurrentMessageImageAndSendsResult = do
   let inputImage = "https://example.test/input.png"
       maskImage = "https://example.test/mask.png"
-      editedImage = "[image] data:image/png;base64,edited"
+      editedMediaRef = "media:mf_edited"
+      editedImage = "[image] " <> editedMediaRef
       message = testMessageWithImages [inputImage]
   answers <- IORef.newIORef
     [ chatAnswer "" [toolCall "call-1" "image_edit" (Aeson.object ["prompt" Aeson..= ("make it brighter" :: Text), "mask_image_url" Aeson..= maskImage])]
@@ -450,12 +451,14 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult = do
   replies <- IORef.newIORef ([] :: [Text])
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
-  (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "47") Nothing) do
+  (answer, conversation) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "47") Nothing) do
     runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) Agent.defaultTools (startWithUser "edit this") recorded remembered
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage) LLM.defaultImageRequestOptions])
   IORef.readIORef replies >>= assertElem editedImage
   IORef.readIORef recorded >>= assertElem editedImage
+  assertBool "tool result should include edited media id" (editedMediaRef `Text.isInfixOf` Text.unlines (toolOutputs conversation))
+  imageContextUrls conversation @?= [editedMediaRef]
 
 testAskHandlerPassesReferencedImagesToEditImageTool :: IO ()
 testAskHandlerPassesReferencedImagesToEditImageTool = do
@@ -491,7 +494,8 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
 
 testGenerateImageToolPassesImageRequestOptions :: IO ()
 testGenerateImageToolPassesImageRequestOptions = do
-  let generatedImage = "[image] data:image/png;base64,generated"
+  let generatedMediaRef = "media:mf_generated"
+      generatedImage = "[image] " <> generatedMediaRef
       expectedOptions = imageOptions "high" "1024x1536" "transparent" "low"
       args =
         Aeson.object
@@ -509,12 +513,14 @@ testGenerateImageToolPassesImageRequestOptions = do
   replies <- IORef.newIORef ([] :: [Text])
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
-  (answer, _) <- runAgentWithImageGenerate answers generateCalls generatedImage (ChatMock (Just replies) (Just "48") Nothing) do
+  (answer, conversation) <- runAgentWithImageGenerate answers generateCalls generatedImage (ChatMock (Just replies) (Just "48") Nothing) do
     runAgentWithToolMessageCapture 4 agentContext Agent.defaultTools (startWithUser "draw this") recorded remembered
   answer @?= "done"
   IORef.readIORef generateCalls >>= (@?= [ImageGenerateCall "draw a glass tower" [] expectedOptions])
   IORef.readIORef replies >>= assertElem generatedImage
   IORef.readIORef recorded >>= assertElem generatedImage
+  assertBool "tool result should include generated media id" (generatedMediaRef `Text.isInfixOf` Text.unlines (toolOutputs conversation))
+  imageContextUrls conversation @?= [generatedMediaRef]
 
 testViewImageToolCachesImageForContext :: IO ()
 testViewImageToolCachesImageForContext =
@@ -630,7 +636,8 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
 testEditImageToolPassesImageRequestOptions :: IO ()
 testEditImageToolPassesImageRequestOptions = do
   let inputImage = "https://example.test/input.png"
-      editedImage = "[image] data:image/png;base64,edited"
+      editedMediaRef = "media:mf_cinematic"
+      editedImage = "[image] " <> editedMediaRef
       expectedOptions = imageOptions "medium" "1536x1024" "opaque" "auto"
       message = testMessageWithImages [inputImage]
       args =
@@ -649,12 +656,14 @@ testEditImageToolPassesImageRequestOptions = do
   replies <- IORef.newIORef ([] :: [Text])
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
-  (answer, _) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "49") Nothing) do
+  (answer, conversation) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "49") Nothing) do
     runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) Agent.defaultTools (startWithUser "edit this") recorded remembered
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it cinematic" [inputImage] Nothing expectedOptions])
   IORef.readIORef replies >>= assertElem editedImage
   IORef.readIORef recorded >>= assertElem editedImage
+  assertBool "tool result should include edited media id" (editedMediaRef `Text.isInfixOf` Text.unlines (toolOutputs conversation))
+  imageContextUrls conversation @?= [editedMediaRef]
 
 imageOptions :: Text -> Text -> Text -> Text -> LLM.ImageRequestOptions
 imageOptions quality size background moderation =
