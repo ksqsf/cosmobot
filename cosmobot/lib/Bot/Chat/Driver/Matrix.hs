@@ -860,7 +860,7 @@ matrixMediaDownloadRequest cfg token serverName mediaId = do
         ( "Authorization"
         , ByteString.pack [i|Bearer #{token}|]
         ) : Client.requestHeaders request
-    , Client.responseTimeout = Client.responseTimeoutMicro matrixApiResponseTimeoutMicroseconds
+    , Client.responseTimeout = Client.responseTimeoutMicro matrixMediaDownloadResponseTimeoutMicroseconds
     }
 
 matrixResponseByteStream :: Client.Request -> Client.Manager -> Q.ByteStream (ResourceT IO) ()
@@ -2527,6 +2527,9 @@ matrixSyncResponseTimeoutMicroseconds = 40000000
 
 matrixApiResponseTimeoutMicroseconds :: Int
 matrixApiResponseTimeoutMicroseconds = 10000000
+
+matrixMediaDownloadResponseTimeoutMicroseconds :: Int
+matrixMediaDownloadResponseTimeoutMicroseconds = 60000000
 
 matrixRetryDelayMicroseconds :: Int
 matrixRetryDelayMicroseconds = 5000000
