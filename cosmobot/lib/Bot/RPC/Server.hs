@@ -834,11 +834,7 @@ mediaEntryResponse entry publicUrl localPath =
     , "fileId" Aeson..= entry.file.fileId
     , "file" Aeson..= entry.file
     , "sourceRefs" Aeson..= entry.sourceRefs
-    , "source_refs" Aeson..= entry.sourceRefs
     , "platformRefs" Aeson..= entry.platformRefs
-    , "platform_refs" Aeson..= entry.platformRefs
     , "publicUrl" Aeson..= publicUrl
-    , "public_url" Aeson..= publicUrl
     , "localPath" Aeson..= localPath
-    , "local_path" Aeson..= localPath
     ]

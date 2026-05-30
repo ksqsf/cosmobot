@@ -17,6 +17,7 @@ import qualified Bot.RPC.State as RPC
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
@@ -345,6 +346,9 @@ testMediaCacheResolveInspectDelete =
     assertBool "public url should keep source extension" (maybe False (".txt" `Text.isSuffixOf`) (responseField getResponse "publicUrl"))
     responseTextList getResponse "sourceRefs" @?= ["telegram:file-123"]
     responsePlatformRefs getResponse @?= [("telegram", "chat-42", "file-123")]
+    assertBool "media get response should not duplicate source refs in snake_case" (not (responseHasField getResponse "source_refs"))
+    assertBool "media get response should not duplicate public url in snake_case" (not (responseHasField getResponse "public_url"))
+    assertBool "media get response should not duplicate local path in snake_case" (not (responseHasField getResponse "local_path"))
     responseBool deleteResponse "deleted" @?= Just True
     responseErrorCode getAfterDeleteResponse @?= Just "not_found"
     fileExistsAfterDelete @?= False
@@ -838,6 +842,15 @@ responseField response field =
       AesonTypes.parseMaybe (Aeson.withObject "response" (Aeson..: AesonKey.fromText field)) result.result
     _ ->
       Nothing
+
+responseHasField :: Protocol.RpcResponse -> Text -> Bool
+responseHasField response field =
+  case response of
+    JSONRPC.ResponseMessage result ->
+      fromMaybe False $
+        AesonTypes.parseMaybe (Aeson.withObject "response" (pure . AesonKeyMap.member (AesonKey.fromText field))) result.result
+    _ ->
+      False
 
 responseBool :: Protocol.RpcResponse -> Text -> Maybe Bool
 responseBool =

@@ -54,6 +54,7 @@ import qualified Data.ByteString.Base64.URL as Base64URL
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.ByteString as StrictByteString
 import qualified Data.Char as Char
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
@@ -64,6 +65,7 @@ import qualified Effectful.Prim.IORef as IORef
 import GHC.Clock (getMonotonicTimeNSec)
 import qualified Network.HTTP.Client as Client
 import Network.HTTP.Req
+import qualified Network.HTTP.Types.Header as HTTPHeader
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import qualified Streaming as S
 import qualified Data.ByteString.Streaming.HTTP as StreamingHTTP
@@ -596,10 +598,10 @@ instance MatrixAPI MatrixDownloadMedia where
         withMatrixAccessToken driver.auth \token -> do
           manager <- HTTP.manager
           request <- liftIO (matrixMediaDownloadRequest driver.config token serverName mediaId)
-          matrixReq "authenticated media download" (probeMatrixMediaDownload request manager)
+          downloadedMimeType <- matrixReq "authenticated media download" (probeMatrixMediaDownload request manager)
           pure MatrixDownloadedMedia
             { downloadedBytes = matrixResponseByteStream request manager
-            , downloadedMimeType = Mime.mimeFromName mediaId
+            , downloadedMimeType
             , downloadedName = Just mediaId
             }
 
@@ -868,7 +870,7 @@ matrixResponseByteStream request manager = do
   response <- lift (StreamingHTTP.http request manager)
   Client.responseBody response
 
-probeMatrixMediaDownload :: IOE :> es => Client.Request -> Client.Manager -> Eff es ()
+probeMatrixMediaDownload :: IOE :> es => Client.Request -> Client.Manager -> Eff es Text
 probeMatrixMediaDownload request manager =
   bracket
     (liftIO $ Client.responseOpen (matrixMediaProbeRequest request) manager)
@@ -876,10 +878,18 @@ probeMatrixMediaDownload request manager =
     \response -> do
       let status = Client.responseStatus response
       if HTTPStatus.statusIsSuccessful status
-        then void $ liftIO $ Client.brRead (Client.responseBody response)
+        then do
+          void $ liftIO $ Client.brRead (Client.responseBody response)
+          pure (matrixResponseMime response)
         else do
           body <- liftIO $ Client.brRead (Client.responseBody response)
           throwIO (matrixDownloadStatusException status body)
+
+matrixResponseMime :: Client.Response body -> Text
+matrixResponseMime response =
+  fromMaybe "application/octet-stream" do
+    raw <- List.lookup HTTPHeader.hContentType (Client.responseHeaders response)
+    nonEmptyText (Text.takeWhile (/= ';') (TextEncoding.decodeUtf8 raw))
 
 matrixMediaProbeRequest :: Client.Request -> Client.Request
 matrixMediaProbeRequest request =
