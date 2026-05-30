@@ -6,7 +6,7 @@ Stability   : experimental
 
 module Bot.Agent.Middleware.ToolEmittedMessage
   ( ToolEmittedMessageSink (..)
-  , withLinkingToolEmittedMessagesToConversation
+  , withLinkingToolEmittedMessagesToThread
   , withRecordingToolSelfMessages
   )
 where
@@ -20,12 +20,12 @@ newtype ToolEmittedMessageSink es = ToolEmittedMessageSink
   { remember :: Maybe MessageId -> Eff es ()
   }
 
-withLinkingToolEmittedMessagesToConversation
+withLinkingToolEmittedMessagesToThread
   :: Chat.Chat :> es
   => ToolEmittedMessageSink es
   -> AgentProgram transient context es
   -> AgentProgram transient context es
-withLinkingToolEmittedMessagesToConversation sink program =
+withLinkingToolEmittedMessagesToThread sink program =
   program
     { aroundToolCall = \turn call context action ->
         Chat.runChatRecordingExtraMessages sink.remember $

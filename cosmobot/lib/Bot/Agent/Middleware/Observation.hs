@@ -8,12 +8,12 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Middleware.Observation
-  ( ObservedConversationLink (..)
+  ( ObservedThreadLink (..)
   , ObservedModelTurn (..)
   , ObservedToolCall (..)
   , ObservationContext (..)
   , emptyObservationContext
-  , observeConversationLinked
+  , observeThreadLinked
   , withObservation
   , withObservedModelTurn
   , withObservedAgentRun
@@ -25,7 +25,7 @@ import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types
 import Bot.Agent.Middleware.Tools (ToolLimitContext (..))
 import Bot.Agent.Types
-import Bot.Core.Conversation
+import Bot.Core.Transcript
 import Bot.Core.Message (IncomingMessage (..), MessageId)
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -49,7 +49,7 @@ data ObservedToolCall = ObservedToolCall
   , toolCall :: !LLM.ToolCall
   }
 
-data ObservedConversationLink = ObservedConversationLink
+data ObservedThreadLink = ObservedThreadLink
   { runId :: !Text
   , parentMessageId :: !(Maybe MessageId)
   , linkedMessageId :: !MessageId
@@ -72,7 +72,7 @@ withObservation observer program =
         let turnInfo = ObservedModelTurn
               { runId = program.agentRun.runId
               , turn = agentState.turn
-              , messageCount = conversationMessageCount agentState
+              , messageCount = transcriptMessageCount agentState
               , exposedTools = map (.name) program.agentRun.exposedTools
               , finished = modelDecisionFinished program.agentRun.runId agentState.turn
               }
@@ -109,8 +109,8 @@ withObservation observer program =
           , toolCalls = toList toolCalls
           }
 
-conversationMessageCount :: AgentState transient -> Int
-conversationMessageCount AgentState{transcript = Transcript{messages}} =
+transcriptMessageCount :: AgentState transient -> Int
+transcriptMessageCount AgentState{transcript = Transcript{messages}} =
   Foldable.length messages
 
 withObservedAgentRun
@@ -183,9 +183,9 @@ statusFromResult result
   | otherwise =
       ("ok", result)
 
-observeConversationLinked :: AgentObserver ObservationContext es -> ObservedConversationLink -> Eff es ()
-observeConversationLinked observer ObservedConversationLink{runId, parentMessageId, linkedMessageId} =
-  void $ observer.observe AgentConversationLinked{runId, linkedMessageId, parentMessageId}
+observeThreadLinked :: AgentObserver ObservationContext es -> ObservedThreadLink -> Eff es ()
+observeThreadLinked observer ObservedThreadLink{runId, parentMessageId, linkedMessageId} =
+  void $ observer.observe AgentThreadLinked{runId, linkedMessageId, parentMessageId}
 
 finishToolCall :: (ToolResult -> Eff es Text) -> AgentObserver ObservationContext es -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
 finishToolCall toolResultForObservation observer callInfo status result = do

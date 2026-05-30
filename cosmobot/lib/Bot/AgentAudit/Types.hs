@@ -46,7 +46,7 @@ data AgentAuditEvent
       { runId :: !Text
       , reason :: !Text
       }
-  | AgentConversationLinked
+  | AgentThreadLinked
       { runId :: !Text
       , linkedMessageId :: !MessageId
       , parentMessageId :: !(Maybe MessageId)
@@ -92,4 +92,4 @@ eventRunId = \case
   ToolCallStarted{runId} -> runId
   ToolCallFinished{runId} -> runId
   AgentRunInterrupted{runId} -> runId
-  AgentConversationLinked{runId} -> runId
+  AgentThreadLinked{runId} -> runId

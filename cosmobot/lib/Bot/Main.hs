@@ -36,7 +36,7 @@ import Bot.Handler.ShutUp
 import Bot.Handler.Scratchpad
 import Bot.Handler.Typing
 import qualified Bot.HTTP as HTTP
-import Bot.Storage.Conversation
+import Bot.Storage.Thread
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.CLI as TypstCLI
 import qualified Bot.Util.Stream as StreamUtil
@@ -54,7 +54,7 @@ main = mainWithConfig "config.toml"
 mainWithConfig :: FilePath -> IO ()
 mainWithConfig configPath = runEff . runPrim . runFailIO $ do
   cfg <- loadConfig configPath
-  conversations <- newConversationStore
+  threads <- newThreadStore
   rpcState <- runConcurrent RPC.newRpcState
   let runStack = runConcurrent
                . runGracefulTermination
@@ -83,7 +83,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
           ]
         messageConsumer =
           consumeWith
-            (routes cfg conversations)
+            (routes cfg threads)
             (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
         rpcServer =
           RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks
@@ -95,17 +95,17 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
 routes
   :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
-  -> ConversationStore
+  -> ThreadStore
   -> [RouteHandler es]
-routes cfg conversations =
+routes cfg threads =
   shutUpHandlers cfg.handlers.shutup
-    <> auditHandlers conversations
+    <> auditHandlers threads
     <> adminHandlers cfg.handlers.admin
     <> scratchpadHandlers
     <> typingHandlers
     <> safebooruHandlers
     <> saucenaoHandlers cfg.saucenao
-    <> askHandlers cfg.tool cfg.handlers.ask conversations
+    <> askHandlers cfg.tool cfg.handlers.ask threads
 
 runBotLog :: IOE :> es => Severity -> Eff (KatipE : es) a -> Eff es a
 runBotLog level inner =

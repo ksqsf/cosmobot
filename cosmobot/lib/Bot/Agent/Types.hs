@@ -136,7 +136,7 @@ data AgentEvent
       { runId :: !Text
       , reason :: !Text
       }
-  | AgentConversationLinked
+  | AgentThreadLinked
       { runId :: !Text
       , linkedMessageId :: !MessageId
       , parentMessageId :: !(Maybe MessageId)

@@ -159,7 +159,7 @@ library
     exposed-modules:
         Bot.Agent
         Bot.Agent.Config
-        Bot.Agent.Conversation
+        Bot.Agent.Transcript
         Bot.Agent.Core
         Bot.Agent.Failure
         Bot.Agent.Middleware.ContextCompaction
@@ -206,7 +206,8 @@ library
         Bot.ChatLog.Record
         Bot.ChatLog.Types
         Bot.Config
-        Bot.Core.Conversation
+        Bot.Core.Thread
+        Bot.Core.Transcript
         Bot.Core.Message
         Bot.Core.ReplyBody
         Bot.Core.Route
@@ -268,7 +269,7 @@ library
         Bot.Scheduler.State
         Bot.Scheduler.Types
         Bot.Storage.ChatLog
-        Bot.Storage.Conversation
+        Bot.Storage.Thread
         Bot.Storage.Lifecycle
         Bot.Storage.Matrix
         Bot.Storage.Prelude

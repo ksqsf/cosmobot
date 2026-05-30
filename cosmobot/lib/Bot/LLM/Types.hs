@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.LLM.Types
-Description : LLM conversation and tool-call domain values
+Description : LLM transcript and tool-call domain values
 Stability   : experimental
 -}
 

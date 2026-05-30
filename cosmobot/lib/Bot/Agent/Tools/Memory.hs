@@ -40,7 +40,7 @@ manageSenderMemoryTool = Tool
 manageChatMemoryTool :: Memory.Memory :> es => Tool es
 manageChatMemoryTool = Tool
   { name = "chat_memory"
-  , description = "View, replace, or clear the persistent MEMORY.md for the current chat/conversation. Use this when the user asks to view or clear chat memory, or when durable preferences, facts, norms, recurring instructions, or context apply to this chat as a whole rather than only to the current sender. Keep memory concise: non-superusers must stay within 1000 characters; if an update is rejected, summarize it shorter and try again."
+  , description = "View, replace, or clear the persistent MEMORY.md for the current chat/thread. Use this when the user asks to view or clear chat memory, or when durable preferences, facts, norms, recurring instructions, or context apply to this chat as a whole rather than only to the current sender. Keep memory concise: non-superusers must stay within 1000 characters; if an update is rejected, summarize it shorter and try again."
   , parameters = objectSchema
       [ fieldText "action" "One of: view, replace, clear."
       , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."

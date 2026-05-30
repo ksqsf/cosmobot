@@ -24,7 +24,7 @@ where
 
 import Bot.Agent.ToolRegistry (RunningTool)
 import Bot.Agent.Types
-import Bot.Core.Conversation
+import Bot.Core.Transcript
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Util.HList as HList

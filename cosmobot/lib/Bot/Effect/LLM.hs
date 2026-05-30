@@ -26,7 +26,7 @@ module Bot.Effect.LLM
   , LLMException (..)
   , llmExceptionSummary
 
-    -- * Conversation values
+    -- * Transcript values
   , ImageRequestOptions (..)
   , defaultImageRequestOptions
   , AudioRequestOptions (..)

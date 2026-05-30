@@ -43,7 +43,7 @@ instance SqlRow ChatLogRow
 
 chatLogRows :: Table ChatLogRow
 chatLogRows =
-  table "chat_log_entries"
+  table "chat_log"
     [ #id :- autoPrimary
     , #platform_key :- index
     , #kind_key :- index

@@ -26,7 +26,7 @@ import Toml.Schema
 data RpcClientCommand
   = RpcAuditRecent !Int
   | RpcAuditShow !Integer
-  | RpcAuditConversation !Text
+  | RpcAuditThread !Text
   | RpcCall !Text !Aeson.Value
   deriving (Eq, Show)
 
@@ -72,8 +72,8 @@ requestForCommand = \case
     rpcRequest "audit.recent" (Aeson.object ["limit" Aeson..= limit])
   RpcAuditShow auditId ->
     rpcRequest "audit.get" (Aeson.object ["audit_id" Aeson..= auditId])
-  RpcAuditConversation messageId ->
-    rpcRequest "audit.conversation" (Aeson.object ["message_id" Aeson..= messageId])
+  RpcAuditThread messageId ->
+    rpcRequest "audit.thread" (Aeson.object ["message_id" Aeson..= messageId])
   RpcCall method params ->
     rpcRequest method params
 

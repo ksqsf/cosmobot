@@ -35,12 +35,12 @@ dispatchAuditMethod request =
     "audit.get" ->
       parseParams request parseAuditId \auditId ->
         Aeson.toJSON <$> AgentAudit.queryAuditRecord auditId
-    "audit.conversation" ->
+    "audit.thread" ->
       parseParams request parseMessageId \messageId ->
-        Aeson.toJSON <$> AgentAudit.queryConversationAudit (textMessageId messageId)
-    "audit.conversation_messages" ->
+        Aeson.toJSON <$> AgentAudit.queryThreadAudit (textMessageId messageId)
+    "audit.thread_messages" ->
       parseParams request parseMessageIds \messageIds ->
-        Aeson.toJSON <$> AgentAudit.queryConversationMessagesAudit (map textMessageId messageIds)
+        Aeson.toJSON <$> AgentAudit.queryThreadMessagesAudit (map textMessageId messageIds)
     "audit.subscribe" ->
       pure (Right (Aeson.object ["subscribed" Aeson..= True]))
     _ ->
@@ -71,10 +71,10 @@ parseAuditId =
 
 parseMessageId :: Aeson.Value -> AesonTypes.Parser Text
 parseMessageId =
-  Aeson.withObject "audit.conversation params" \o ->
+  Aeson.withObject "audit.thread params" \o ->
     o Aeson..: "message_id"
 
 parseMessageIds :: Aeson.Value -> AesonTypes.Parser [Text]
 parseMessageIds =
-  Aeson.withObject "audit.conversation_messages params" \o ->
+  Aeson.withObject "audit.thread_messages params" \o ->
     o Aeson..: "message_ids"

@@ -107,7 +107,7 @@ instance SqlRow RpcMessageAttachmentRow
 
 rpcSessionRows :: Table RpcSessionRow
 rpcSessionRows =
-  table "rpc_chat_sessions"
+  table "sessions"
     [ #id :- autoPrimary
     , #session_id :- unique
     , #parent_session_id :- index
@@ -116,7 +116,7 @@ rpcSessionRows =
 
 rpcMessageRows :: Table RpcMessageRow
 rpcMessageRows =
-  table "rpc_chat_messages"
+  table "session_messages"
     [ #id :- autoPrimary
     , #session_id :- index
     , #message_id :- unique
@@ -125,7 +125,7 @@ rpcMessageRows =
 
 rpcMessageAttachmentRows :: Table RpcMessageAttachmentRow
 rpcMessageAttachmentRows =
-  table "rpc_chat_message_attachments"
+  table "session_message_attachments"
     [ #id :- autoPrimary
     , #message_id :- index
     , #attachment_id :- index

@@ -30,7 +30,7 @@ module Bot.Agent
   , toolText
   , toolTextWithImages
   , toolFailure
-  , withLinkingToolEmittedMessagesToConversation
+  , withLinkingToolEmittedMessagesToThread
   , withNormalizingToolReplies
   , withRecordingToolSelfMessages
   , withTypingNotification
@@ -40,8 +40,8 @@ module Bot.Agent
   )
 where
 
-import Bot.Core.Conversation
-import Bot.Agent.Conversation
+import Bot.Core.Transcript
+import Bot.Agent.Transcript
   ( appendMessage
   , appendMessages
   , closeInterruptedToolCalls
@@ -66,7 +66,7 @@ import Bot.Agent.Middleware.ToolResultCompaction
   )
 import Bot.Agent.Middleware.ToolEmittedMessage
   ( ToolEmittedMessageSink (..)
-  , withLinkingToolEmittedMessagesToConversation
+  , withLinkingToolEmittedMessagesToThread
   , withRecordingToolSelfMessages
   )
 import Bot.Agent.Middleware.ToolReplyNormalization

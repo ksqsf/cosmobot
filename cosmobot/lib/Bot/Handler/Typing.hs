@@ -51,7 +51,7 @@ rankRoute
   -> Eff es [[Text]]
   -> RouteHandler es
 rankRoute commandText titleSuffix failureMessage fetchRows =
-  requireAuth canStartConversation (\_ -> pure ()) $
+  requireAuth canStartThread (\_ -> pure ()) $
     stopOn (command commandText) \message _ -> do
       logInfo [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
       spawnTask (sendRankImage titleSuffix failureMessage fetchRows message)

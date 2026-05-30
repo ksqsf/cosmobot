@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Agent.Middleware.ContextCompaction
-Description : Agent conversation compaction middleware
+Description : Agent transcript compaction middleware
 Stability   : experimental
 -}
 module Bot.Agent.Middleware.ContextCompaction
@@ -11,7 +11,7 @@ where
 
 import Bot.Agent.Core
 import Bot.Agent.Types (AgentContext (..))
-import Bot.Core.Conversation
+import Bot.Core.Transcript
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -85,11 +85,11 @@ Transcript JSON:
 
 summarySystemPrompt :: Text
 summarySystemPrompt =
-  "You compact chatbot conversation history into a durable continuation summary. Return a concise but complete summary. Do not invent facts. Keep identifiers, file paths, URLs, commands, and tool results precise."
+  "You compact chatbot transcript into a durable continuation summary. Return a concise but complete summary. Do not invent facts. Keep identifiers, file paths, URLs, commands, and tool results precise."
 
 summaryMessage :: Text -> Text
 summaryMessage summary =
-  Text.strip [i|The earlier conversation was compacted. Use this summary as context for the continuation:
+  Text.strip [i|The earlier transcript was compacted. Use this summary as context for the continuation:
 
 #{summary}|]
 

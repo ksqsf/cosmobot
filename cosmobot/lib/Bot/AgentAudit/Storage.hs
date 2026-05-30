@@ -11,8 +11,8 @@ module Bot.AgentAudit.Storage
   , persistEvent
   , queryStoredRecent
   , queryStoredRecord
-  , queryStoredConversationAudit
-  , queryStoredConversationMessagesAudit
+  , queryStoredThreadAudit
+  , queryStoredThreadMessagesAudit
   )
 where
 
@@ -41,7 +41,7 @@ instance SqlRow AgentAuditRow
 
 agentAuditRows :: Table AgentAuditRow
 agentAuditRows =
-  table "agent_trace"
+  table "audit_log"
     [ #id :- autoPrimary
     , #run_id :- index
     , #linked_message_id :- index
@@ -68,7 +68,7 @@ persistEvent occurredAt event = do
   where
     (maybeLinkedMessageId, maybeParentMessageId) =
       case event of
-        AgentConversationLinked{linkedMessageId = eventLinkedMessageId, parentMessageId = eventParentMessageId} ->
+        AgentThreadLinked{linkedMessageId = eventLinkedMessageId, parentMessageId = eventParentMessageId} ->
           (Just eventLinkedMessageId, eventParentMessageId)
         _ ->
           (Nothing, Nothing)
@@ -97,14 +97,14 @@ queryStoredRecord auditId = do
         pure row
   pure (viaNonEmpty head (mapMaybe storedAuditRecord rows))
 
-queryStoredConversationAudit :: Storage.Storage :> es => MessageId -> Eff es [AgentAuditRecord]
-queryStoredConversationAudit messageId =
-  queryStoredConversationMessagesAudit [messageId]
+queryStoredThreadAudit :: Storage.Storage :> es => MessageId -> Eff es [AgentAuditRecord]
+queryStoredThreadAudit messageId =
+  queryStoredThreadMessagesAudit [messageId]
 
-queryStoredConversationMessagesAudit :: Storage.Storage :> es => [MessageId] -> Eff es [AgentAuditRecord]
-queryStoredConversationMessagesAudit [] =
+queryStoredThreadMessagesAudit :: Storage.Storage :> es => [MessageId] -> Eff es [AgentAuditRecord]
+queryStoredThreadMessagesAudit [] =
   pure []
-queryStoredConversationMessagesAudit messageIds = do
+queryStoredThreadMessagesAudit messageIds = do
   runIds <- linkedRunIds messageIds
   concat <$> traverse queryStoredRun runIds
 

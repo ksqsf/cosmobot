@@ -6,14 +6,15 @@ Stability   : experimental
 -}
 
 module Bot.Handler.Ask.AgentRun
-  ( runAskAgentConversation
+  ( runAskAgentThread
   )
 where
 
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Failure as AgentFailure
 import qualified Bot.Agent.Middleware.Observation as AgentObservation
-import Bot.Core.Conversation
+import Bot.Core.Thread
+import Bot.Core.Transcript
 import Bot.Core.Message
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Route (isSuperuser)
@@ -29,7 +30,7 @@ import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import Bot.Handler.Ask.Config
 import Bot.Prelude
-import Bot.Storage.Conversation
+import Bot.Storage.Thread
 import qualified Data.Text as Text
 import qualified Effectful.Prim.IORef as IORef
 import qualified Streaming.Prelude as S
@@ -37,7 +38,7 @@ import Effectful.FileSystem
 import Effectful.Process
 import Effectful.Timeout
 
-runAskAgentConversation
+runAskAgentThread
   :: ( Chat.Chat :> es
      , ChatLog.ChatLog :> es
      , AgentAudit.AgentAudit :> es
@@ -59,15 +60,15 @@ runAskAgentConversation
      )
   => Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
-  -> Maybe ConversationMessageKey
+  -> ThreadStore
+  -> Maybe ThreadMessageKey
   -> IncomingMessage
   -> MessageInput
   -> Transcript
   -> Eff es (Text, Transcript)
-runAskAgentConversation toolCfg cfg conversations parentMessageKey message input transcript = do
+runAskAgentThread toolCfg cfg threads parentMessageKey message input transcript = do
   threadId <- myThreadId
-  activeReply <- newActiveReply conversations parentMessageKey message threadId transcript
+  activeReply <- newActiveReply threads parentMessageKey message threadId transcript
   let observer = AgentAudit.agentAuditObserver
   agentRun <- Agent.startAgentRun (agentContext toolCfg cfg message input) Agent.defaultTools
   reply <-
@@ -145,7 +146,7 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
     let sink = Agent.ToolEmittedMessageSink (rememberToolEmittedMessage activeReply)
         program =
           ( Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessage message)
-          . Agent.withLinkingToolEmittedMessagesToConversation sink
+          . Agent.withLinkingToolEmittedMessagesToThread sink
           . Agent.withNormalizingToolReplies
           )
             (Agent.defaultAgentProgram observer cfg.agentMaxTurns agentRun)
@@ -200,19 +201,19 @@ commitAgentReply
   -> AgentReply
   -> Eff es (Text, Transcript)
 commitAgentReply observer activeReply message AgentReply{responseId, answer, result} = do
-  traverse_ (AgentObservation.observeConversationLinked observer . conversationLink result (activeReply.parentMessageKey <&> (.messageId))) responseId
+  traverse_ (AgentObservation.observeThreadLinked observer . threadLink result (activeReply.parentMessageKey <&> (.messageId))) responseId
   ChatLog.recordSelfMessage message answer
   active <- IORef.readIORef activeReply.activeRef
   case active of
     Just activeHandle ->
-      finishActiveConversation activeReply.conversations activeHandle result.transcript
+      finishActiveThread activeReply.threads activeHandle result.transcript
     Nothing ->
-      rememberConversationTranscriptFrom activeReply.conversations activeReply.parentMessageKey (conversationMessageKey message <$> responseId) result.transcript
+      rememberThreadTranscriptFrom activeReply.threads activeReply.parentMessageKey (threadMessageKey message <$> responseId) result.transcript
   pure (answer, result.transcript)
 
-conversationLink :: Agent.AgentResult -> Maybe MessageId -> MessageId -> AgentObservation.ObservedConversationLink
-conversationLink result parentMessageId linkedMessageId =
-  AgentObservation.ObservedConversationLink
+threadLink :: Agent.AgentResult -> Maybe MessageId -> MessageId -> AgentObservation.ObservedThreadLink
+threadLink result parentMessageId linkedMessageId =
+  AgentObservation.ObservedThreadLink
     { runId = result.runId
     , parentMessageId
     , linkedMessageId
@@ -227,41 +228,41 @@ rememberToolEmittedMessage activeReply messageId = do
   active <- IORef.readIORef activeReply.activeRef
   case active of
     Just activeHandle ->
-      traverse_ (addActiveConversationMessage activeReply.conversations activeHandle . conversationMessageKey activeReply.message) messageId
+      traverse_ (addActiveThreadMessage activeReply.threads activeHandle . threadMessageKey activeReply.message) messageId
     Nothing -> do
-      activeHandle <- rememberActiveConversation activeReply.conversations activeReply.parentMessageKey (conversationMessageKey activeReply.message <$> messageId) activeReply.threadId activeReply.baseConversation
+      activeHandle <- rememberActiveThread activeReply.threads activeReply.parentMessageKey (threadMessageKey activeReply.message <$> messageId) activeReply.threadId activeReply.baseTranscript
       IORef.writeIORef activeReply.activeRef activeHandle
 
 discardActiveReply :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es) => ActiveReplyState -> Eff es ()
 discardActiveReply activeReply =
   IORef.readIORef activeReply.activeRef
-    >>= traverse_ (finishActiveConversationCurrent activeReply.conversations)
+    >>= traverse_ (finishActiveThreadCurrent activeReply.threads)
 
 data ActiveReplyState = ActiveReplyState
-  { conversations :: !ConversationStore
-  , parentMessageKey :: !(Maybe ConversationMessageKey)
+  { threads :: !ThreadStore
+  , parentMessageKey :: !(Maybe ThreadMessageKey)
   , message :: !IncomingMessage
   , threadId :: !ThreadId
-  , baseConversation :: !Transcript
-  , activeRef :: !(IORef.IORef (Maybe ActiveConversationHandle))
+  , baseTranscript :: !Transcript
+  , activeRef :: !(IORef.IORef (Maybe ActiveThreadHandle))
   }
 
 newActiveReply
   :: Prim :> es
-  => ConversationStore
-  -> Maybe ConversationMessageKey
+  => ThreadStore
+  -> Maybe ThreadMessageKey
   -> IncomingMessage
   -> ThreadId
   -> Transcript
   -> Eff es ActiveReplyState
-newActiveReply conversations parentMessageKey message threadId baseConversation = do
+newActiveReply threads parentMessageKey message threadId baseTranscript = do
   activeRef <- IORef.newIORef Nothing
   pure ActiveReplyState
-    { conversations = conversations
+    { threads = threads
     , parentMessageKey = parentMessageKey
     , message = message
     , threadId = threadId
-    , baseConversation = baseConversation
+    , baseTranscript = baseTranscript
     , activeRef = activeRef
     }
 
@@ -271,7 +272,7 @@ recordReplyUpdate
   -> Chat.ReplyStreamUpdate
   -> Eff es ()
 recordReplyUpdate activeState update = do
-  refreshActiveConversation activeState update.answer
+  refreshActiveThread activeState update.answer
   registerActiveIfNeeded activeState update.responseId update.answer
   registerActiveAliases activeState update.sentResponseIds
 
@@ -284,7 +285,7 @@ registerActiveIfNeeded
 registerActiveIfNeeded activeState responseId current = do
   existing <- IORef.readIORef activeState.activeRef
   when (isNothing existing) do
-    activeHandle <- rememberActiveConversation activeState.conversations activeState.parentMessageKey (conversationMessageKey activeState.message <$> responseId) activeState.threadId (appendAssistant current activeState.baseConversation)
+    activeHandle <- rememberActiveThread activeState.threads activeState.parentMessageKey (threadMessageKey activeState.message <$> responseId) activeState.threadId (appendAssistant current activeState.baseTranscript)
     IORef.writeIORef activeState.activeRef activeHandle
 
 registerActiveAliases
@@ -294,16 +295,16 @@ registerActiveAliases
   -> Eff es ()
 registerActiveAliases activeState responseIds = do
   active <- IORef.readIORef activeState.activeRef
-  traverse_ (\activeHandle -> traverse_ (addActiveConversationMessage activeState.conversations activeHandle . conversationMessageKey activeState.message) responseIds) active
+  traverse_ (\activeHandle -> traverse_ (addActiveThreadMessage activeState.threads activeHandle . threadMessageKey activeState.message) responseIds) active
 
-refreshActiveConversation
+refreshActiveThread
   :: Prim :> es
   => ActiveReplyState
   -> Text
   -> Eff es ()
-refreshActiveConversation activeState current = do
+refreshActiveThread activeState current = do
   active <- IORef.readIORef activeState.activeRef
-  traverse_ (`updateActiveConversation` appendAssistant current activeState.baseConversation) active
+  traverse_ (`updateActiveThread` appendAssistant current activeState.baseTranscript) active
 
 llmFailureMessage :: SomeException -> Text
 llmFailureMessage err =

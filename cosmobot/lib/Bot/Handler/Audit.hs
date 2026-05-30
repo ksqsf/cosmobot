@@ -10,54 +10,54 @@ module Bot.Handler.Audit
 where
 
 import Bot.Core.Message
-import Bot.Core.Conversation
 import Bot.Core.Route
+import Bot.Core.Thread
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
-import Bot.Storage.Conversation
+import Bot.Storage.Thread
 import qualified Data.Text as Text
 import Data.Time (FormatTime, defaultTimeLocale, formatTime)
 
 auditHandlers
   :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, Prim :> es)
-  => ConversationStore
+  => ThreadStore
   -> [RouteHandler es]
-auditHandlers conversations =
+auditHandlers threads =
   [ requireAuth isSuperuser (\message -> void $ Chat.replyTo message "只有 superuser 可以查看 audit。") $
-      stopOn (command "!audit") (handleAudit conversations)
+      stopOn (command "!audit") (handleAudit threads)
   ]
 
 handleAudit
   :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, Prim :> es)
-  => ConversationStore
+  => ThreadStore
   -> IncomingMessage
   -> Text
   -> Eff es ()
-handleAudit conversations message args =
+handleAudit threads message args =
   case parseAuditId args of
     Nothing
       | Text.toLower (Text.strip args) == "log" ->
           case message.replyToMessageId of
             Just parentId -> do
-              records <- AgentAudit.queryConversationAudit parentId
-              void $ Chat.replyTo message (renderConversationAuditLog parentId records)
+              records <- AgentAudit.queryThreadAudit parentId
+              void $ Chat.replyTo message (renderThreadAuditLog parentId records)
             Nothing ->
-              void $ Chat.replyTo message "用法：回复一条 agent conversation 消息并发送 !audit log"
+              void $ Chat.replyTo message "用法：回复一条 agent thread 消息并发送 !audit log"
       | Text.toLower (Text.strip args) == "all" ->
           case message.replyToMessageId of
             Just parentId -> do
-              messageIds <- lookupConversationMessageIds conversations (conversationMessageKey message parentId)
-              records <- AgentAudit.queryConversationMessagesAudit messageIds
-              void $ Chat.replyTo message (renderConversationToolUses parentId records)
+              messageIds <- lookupThreadMessageIds threads (threadMessageKey message parentId)
+              records <- AgentAudit.queryThreadMessagesAudit messageIds
+              void $ Chat.replyTo message (renderThreadToolUses parentId records)
             Nothing ->
-              void $ Chat.replyTo message "用法：回复一条 agent conversation 消息并发送 !audit all"
+              void $ Chat.replyTo message "用法：回复一条 agent thread 消息并发送 !audit all"
       | Text.null (Text.strip args) ->
           case message.replyToMessageId of
             Just parentId -> do
-              records <- AgentAudit.queryConversationAudit parentId
-              void $ Chat.replyTo message (renderConversationToolUses parentId records)
+              records <- AgentAudit.queryThreadAudit parentId
+              void $ Chat.replyTo message (renderThreadToolUses parentId records)
             Nothing -> do
               toolUses <- AgentAudit.queryRecentToolUses recentAuditLimit
               void $ Chat.replyTo message (renderAuditList toolUses)
@@ -119,15 +119,15 @@ renderAuditDetail toolUse =
     , fenced "" result
     ]
 
-renderConversationToolUses :: MessageId -> [AgentAudit.AgentAuditRecord] -> Text
-renderConversationToolUses parentId [] =
+renderThreadToolUses :: MessageId -> [AgentAudit.AgentAuditRecord] -> Text
+renderThreadToolUses parentId [] =
   [i|没有找到消息 #{messageIdText parentId} 对应的 agent audit。|]
-renderConversationToolUses _ records =
+renderThreadToolUses _ records =
   case AgentAudit.toolUsesFromAuditRecords records of
     [] ->
       "该 agent audit 中没有 tool use。"
     toolUses ->
-      Text.intercalate "\n" ("*Conversation tool uses*" : map renderToolUseBlock toolUses)
+      Text.intercalate "\n" ("*Thread tool uses*" : map renderToolUseBlock toolUses)
 
 renderToolUseBlock :: AgentAudit.ToolUseDetail -> Text
 renderToolUseBlock toolUse =
@@ -150,11 +150,11 @@ renderToolUseBlock toolUse =
     , indent (fenced "json" arguments)
     ]
 
-renderConversationAuditLog :: MessageId -> [AgentAudit.AgentAuditRecord] -> Text
-renderConversationAuditLog parentId [] =
+renderThreadAuditLog :: MessageId -> [AgentAudit.AgentAuditRecord] -> Text
+renderThreadAuditLog parentId [] =
   [i|没有找到消息 #{messageIdText parentId} 对应的 agent audit。|]
-renderConversationAuditLog _ records =
-  Text.unlines ("*Conversation audit log*" : map renderAuditRecord records)
+renderThreadAuditLog _ records =
+  Text.unlines ("*Thread audit log*" : map renderAuditRecord records)
 
 renderAuditRecord :: AgentAudit.AgentAuditRecord -> Text
 renderAuditRecord record =
@@ -178,9 +178,9 @@ renderAuditEvent recordId = \case
     [i|finished run=#{runId} turn=#{turn} tool=`#{toolName}` status=#{status} result_chars=#{resultLength}|]
   AgentAudit.AgentRunInterrupted{runId, reason} ->
     [i|run run=#{runId} reason=`#{reason}`|]
-  AgentAudit.AgentConversationLinked{runId, linkedMessageId, parentMessageId} ->
+  AgentAudit.AgentThreadLinked{runId, linkedMessageId, parentMessageId} ->
     let parent = maybe "-" messageIdText parentMessageId
-    in [i|`conversation_linked` run=#{runId} message=#{messageIdText linkedMessageId} parent=#{parent}|]
+    in [i|`thread_linked` run=#{runId} message=#{messageIdText linkedMessageId} parent=#{parent}|]
 
 renderMessageIds :: [Maybe MessageId] -> Text
 renderMessageIds messageIds =

@@ -77,20 +77,20 @@ Returns one audit record by audit id. The preferred parameter is `audit_id`;
 {"jsonrpc":"2.0","id":"1","method":"audit.get","params":{"audit_id":123}}
 ```
 
-### `audit.conversation`
+### `audit.thread`
 
 Returns audit records associated with one message id.
 
 ```json
-{"jsonrpc":"2.0","id":"1","method":"audit.conversation","params":{"message_id":"telegram-42"}}
+{"jsonrpc":"2.0","id":"1","method":"audit.thread","params":{"message_id":"telegram-42"}}
 ```
 
-### `audit.conversation_messages`
+### `audit.thread_messages`
 
 Returns audit records associated with multiple message ids.
 
 ```json
-{"jsonrpc":"2.0","id":"1","method":"audit.conversation_messages","params":{"message_ids":["m1","m2"]}}
+{"jsonrpc":"2.0","id":"1","method":"audit.thread_messages","params":{"message_ids":["m1","m2"]}}
 ```
 
 ### `audit.subscribe`
@@ -284,7 +284,7 @@ The CLI reads `[rpc]` from `config.toml` and connects to the running daemon:
 ```sh
 cosmobot rpc audit recent --limit 20
 cosmobot rpc audit show 123
-cosmobot rpc audit conversation MESSAGE_ID
+cosmobot rpc audit thread MESSAGE_ID
 cosmobot rpc call METHOD JSON
 ```
 

@@ -26,7 +26,7 @@ module Bot.Core.Route
   , isAllowedGroup
   , isAllowedPrivate
   , isSuperuser
-  , canStartConversation
+  , canStartThread
   , canStartFromReply
   , mentionsConfiguredBot
   , RouteHandler
@@ -143,7 +143,7 @@ mentionsConfiguredBot :: IncomingMessage -> Bool
 mentionsConfiguredBot message =
   message.digest.mentionsBot
 
--- | Whether a private message may start a conversation.
+-- | Whether a private message may start a thread.
 isAllowedPrivate :: IncomingMessage -> Bool
 isAllowedPrivate message =
   message.kind == ChatPrivate && message.digest.senderIsAllowed
@@ -153,9 +153,9 @@ isSuperuser :: IncomingMessage -> Bool
 isSuperuser message =
   message.digest.senderIsSuperuser
 
--- | General admission predicate for starting a new conversation.
-canStartConversation :: IncomingMessage -> Bool
-canStartConversation message =
+-- | General admission predicate for starting a new thread.
+canStartThread :: IncomingMessage -> Bool
+canStartThread message =
   case message.kind of
     ChatPrivate -> isAllowedPrivate message
     ChatGroup   -> isAllowedGroup message || mentionsConfiguredBot message

@@ -13,14 +13,14 @@ module Bot.Agent.Middleware.Tools
   )
 where
 
-import Bot.Agent.Conversation
+import Bot.Agent.Transcript
   ( appendMessages
   , pausedToolResult
   )
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types
 import Bot.Agent.Types
-import Bot.Core.Conversation
+import Bot.Core.Transcript
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -96,7 +96,7 @@ toolMessageText call context =
 --
 -- The assistant message already contains tool calls, and OpenAI-compatible
 -- chat history requires every tool call to be followed by a tool result. We
--- therefore append synthetic "paused" tool results so the saved conversation is
+-- therefore append synthetic "paused" tool results so the saved transcript is
 -- valid when the user later continues.
 handleToolLimit
   :: Text

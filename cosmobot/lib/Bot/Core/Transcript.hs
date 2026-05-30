@@ -1,19 +1,11 @@
 {-|
-Module      : Bot.Core.Conversation
-Description : Core conversation value
+Module      : Bot.Core.Transcript
+Description : Core LLM transcript value
 Stability   : experimental
 -}
 
-module Bot.Core.Conversation
+module Bot.Core.Transcript
   ( Transcript (..)
-  , ConversationMessageKey (..)
-  , conversationMessageKey
-  , ConversationTreeNode (..)
-  , ConversationTree (..)
-  , emptyConversationTree
-  , lookupConversationTreeNode
-  , insertConversationTreeNode
-  , conversationTreeEntries
   , startWithUser
   , startWithUserContext
   , startWithUserInput
@@ -33,94 +25,28 @@ import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import Bot.Util.Aeson
 import qualified Data.Aeson as Aeson
-import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 
--- | Platform-neutral conversation history.
+-- | Platform-neutral LLM message history.
 --
 -- A 'Transcript' is the exact ordered message context that will be sent back
 -- to the LLM when a user continues a thread. It deliberately does not contain
 -- chat ids, message ids, parent links, active stream handles, or persistence
--- details; those belong to the storage layer that indexes and reloads
--- conversations for a concrete bot runtime.
---
--- Keeping this type small matters because handlers can treat it as an
--- immutable value: start with the admitted user prompt, append normalized user
--- and assistant turns, then hand the resulting value to the LLM effect or to
--- storage.
+-- details; those belong to the storage layer that indexes and reloads threads
+-- for a concrete bot runtime.
 newtype Transcript = Transcript
   { messages :: Seq.Seq LLM.ChatMessage
   }
   deriving (Show, Generic)
     deriving (Aeson.ToJSON, Aeson.FromJSON) via (SnakeJSON Transcript)
 
--- | Chat-scoped identity for a message that can anchor a conversation node.
---
--- Platform message ids are not globally unique. Telegram message ids, for
--- example, are scoped to a chat, so the key must carry the normalized platform
--- and chat identity together with the message id.
-data ConversationMessageKey = ConversationMessageKey
-  { platform :: !ChatPlatform
-  , chatId :: !(Maybe Integer)
-  , messageId :: !MessageId
-  }
-  deriving (Eq, Ord, Show)
-
-conversationMessageKey :: IncomingMessage -> MessageId -> ConversationMessageKey
-conversationMessageKey message messageId =
-  ConversationMessageKey
-    { platform = message.platform
-    , chatId = message.chatId
-    , messageId = messageId
-    }
-
--- | One node in the reply tree.
---
--- The node keeps the accumulated LLM conversation for its message and an
--- optional parent key. It does not know how the node is cached or persisted.
-data ConversationTreeNode = ConversationTreeNode
-  { messageKey :: !ConversationMessageKey
-  , parentMessageKey :: !(Maybe ConversationMessageKey)
-  , conversation :: !Transcript
-  }
-  deriving (Show)
-
--- | Pure conversation tree indexed by chat-scoped message keys.
---
--- The tree is represented as keyed nodes with parent links instead of a nested
--- child list because the main runtime operation is reply lookup by message id.
--- Storage modules can still derive branches by following 'parentMessageKey'.
-newtype ConversationTree = ConversationTree
-  { nodes :: Map.Map ConversationMessageKey ConversationTreeNode
-  }
-  deriving (Show)
-
-emptyConversationTree :: ConversationTree
-emptyConversationTree =
-  ConversationTree Map.empty
-
-lookupConversationTreeNode :: ConversationMessageKey -> ConversationTree -> Maybe ConversationTreeNode
-lookupConversationTreeNode messageKey tree =
-  Map.lookup messageKey tree.nodes
-
-insertConversationTreeNode :: ConversationTreeNode -> ConversationTree -> ConversationTree
-insertConversationTreeNode node tree =
-  ConversationTree (Map.insert node.messageKey node tree.nodes)
-
-conversationTreeEntries :: ConversationTree -> [(ConversationMessageKey, ConversationTreeNode)]
-conversationTreeEntries =
-  Map.toList . (.nodes)
-
--- | Start a conversation from a single text-only user prompt.
---
--- This is the common path for commands that do not provide an explicit system
--- prompt and do not attach image context.
+-- | Start a transcript from a single text-only user prompt.
 startWithUser :: Text -> Transcript
 startWithUser prompt =
   startWithSystemAndUserContext "" prompt []
 
--- | Start a conversation from user text plus image URLs.
+-- | Start a transcript from user text plus image URLs.
 --
 -- Image URLs are encoded into the initial user message because the LLM API sees
 -- them as part of the same user turn, not as independent bot state.
@@ -157,7 +83,7 @@ startWithSystemAndUserInput systemPrompt input =
       | Text.null systemPrompt = []
       | otherwise         = [LLM.systemText systemPrompt]
 
--- | Append a text-only user turn to an existing history.
+-- | Append a text-only user turn to an existing transcript.
 appendUser :: Text -> Transcript -> Transcript
 appendUser prompt =
   appendUserContext prompt []
@@ -165,8 +91,8 @@ appendUser prompt =
 -- | Append a user turn with optional image context.
 --
 -- Continuations use this when a reply adds a new prompt to an already persisted
--- conversation. Parent/child thread linkage is intentionally handled outside
--- this value.
+-- transcript. Parent/child thread linkage is intentionally handled outside this
+-- value.
 appendUserContext :: Text -> [Text] -> Transcript -> Transcript
 appendUserContext prompt imageUrls (Transcript history) =
   appendUserInput (inputWithImages prompt imageUrls) (Transcript history)

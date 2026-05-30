@@ -1,7 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-|
 Module      : Bot.Handler.Ask
-Description : Ask command and threaded conversation handler
+Description : Ask command and threaded ask handler
 Stability   : experimental
 -}
 
@@ -12,7 +12,8 @@ where
 
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Failure as AgentFailure
-import Bot.Core.Conversation
+import Bot.Core.Thread
+import Bot.Core.Transcript
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.ChatLog as ChatLog
@@ -25,12 +26,12 @@ import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import Bot.Core.Route
-import Bot.Handler.Ask.AgentRun (runAskAgentConversation)
+import Bot.Handler.Ask.AgentRun (runAskAgentThread)
 import Bot.Handler.Ask.Config
 import qualified Bot.Memory as MemoryStore
 import Bot.Core.Message
 import Bot.Prelude
-import Bot.Storage.Conversation
+import Bot.Storage.Thread
 import qualified Data.Foldable as Foldable
 import qualified Data.Text as Text
 import Effectful.Timeout
@@ -65,39 +66,39 @@ askHandlers
   => ChatLog.ChatLog :> es
   => Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> [RouteHandler es]
-askHandlers toolCfg cfg conversations =
-  [ drawRoute cfg conversations
-  , haltRoute conversations
-  , askRoute toolCfg cfg conversations
-  , privateRoute toolCfg cfg conversations
-  , mentionRoute toolCfg cfg conversations
-  , continueRoute toolCfg cfg conversations
+askHandlers toolCfg cfg threads =
+  [ drawRoute cfg threads
+  , haltRoute threads
+  , askRoute toolCfg cfg threads
+  , privateRoute toolCfg cfg threads
+  , mentionRoute toolCfg cfg threads
+  , continueRoute toolCfg cfg threads
   ]
 
 drawRoute
   :: HandlerEffects es
   => ChatLog.ChatLog :> es
   => AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> RouteHandler es
-drawRoute cfg conversations =
-  requireAuth canStartConversation (\_ -> pure ()) $
+drawRoute cfg threads =
+  requireAuth canStartThread (\_ -> pure ()) $
     stopOn (command cfg.drawCommand) \message prompt ->
-      spawnTask (startDrawConversation "matched draw route" cfg conversations message prompt)
+      spawnTask (startDrawThread "matched draw route" cfg threads message prompt)
 
 askRoute
   :: HandlerEffects es
   => IOE :> es
   => Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> RouteHandler es
-askRoute toolCfg cfg conversations =
-  requireAuth canStartConversation (\_ -> pure ()) $
+askRoute toolCfg cfg threads =
+  requireAuth canStartThread (\_ -> pure ()) $
     stopOn (askPrefix cfg) \message prompt ->
-      spawnTask (startAskConversation "matched ask route" toolCfg cfg conversations message prompt)
+      spawnTask (startAskThread "matched ask route" toolCfg cfg threads message prompt)
 
 haltRoute
   :: Chat.Chat :> es
@@ -106,25 +107,25 @@ haltRoute
   => Prim :> es
   => Concurrent :> es
   => IOE :> es
-  => ConversationStore
+  => ThreadStore
   -> RouteHandler es
-haltRoute conversations =
+haltRoute threads =
   stopOn (command "!halt" *> replyToMessage) \message parentId -> do
-    halted <- haltConversation conversations (conversationMessageKey message parentId)
+    halted <- haltThread threads (threadMessageKey message parentId)
     if halted
       then logInfo "halted"
-      else logInfo "couldn't halt active conversation"
+      else logInfo "couldn't halt active thread"
 
 privateRoute
   :: HandlerEffects es
   => Concurrent :> es
   => Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> RouteHandler es
-privateRoute toolCfg cfg conversations =
+privateRoute toolCfg cfg threads =
   stopOn privateMessage \message prompt ->
-    spawnTask (startAskConversation "matched private ask route" toolCfg cfg conversations message prompt)
+    spawnTask (startAskThread "matched private ask route" toolCfg cfg threads message prompt)
   where
     privateMessage =
       promptOrImages
@@ -137,11 +138,11 @@ mentionRoute
   :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> RouteHandler es
-mentionRoute toolCfg cfg conversations =
+mentionRoute toolCfg cfg threads =
   stopOn mentionMessage \message prompt ->
-    spawnTask (startAskConversation "matched bot mention route" toolCfg cfg conversations message prompt)
+    spawnTask (startAskThread "matched bot mention route" toolCfg cfg threads message prompt)
   where
     mentionMessage =
       promptOrImages
@@ -154,22 +155,22 @@ continueRoute
   :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> RouteHandler es
-continueRoute toolCfg cfg conversations =
+continueRoute toolCfg cfg threads =
   stopOn continuedMessage \message parentId ->
     spawnTask do
-      let parentKey = conversationMessageKey message parentId
-      parentTranscript <- lookupConversationTranscript conversations parentKey
+      let parentKey = threadMessageKey message parentId
+      parentTranscript <- lookupThreadTranscript threads parentKey
       case parentTranscript of
         Nothing
           | not (canStartFromReply message) -> do
-              logDebug [i|Ignoring reply to unknown conversation message: #{show parentId :: String}|]
-              logInfo [i|Ignoring unknown conversation reply: #{messageIdText parentId}|]
+              logDebug [i|Ignoring reply to unknown thread message: #{show parentId :: String}|]
+              logInfo [i|Ignoring unknown thread reply: #{messageIdText parentId}|]
           | otherwise ->
-              startConversationFromReply toolCfg cfg conversations message parentId
+              startThreadFromReply toolCfg cfg threads message parentId
         Just transcript ->
-          continueConversation toolCfg cfg conversations message parentKey transcript
+          continueThread toolCfg cfg threads message parentKey transcript
   where
     continuedMessage =
       replyToMessage <* notAskPrefix cfg <* notCommand cfg.drawCommand
@@ -185,16 +186,16 @@ notAskPrefix cfg =
   rejecting \message ->
     isJust (matches message)
 
-startAskConversation
+startAskThread
   :: HandlerEffects es
   => Text
   -> Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> IncomingMessage
   -> Text
   -> Eff es ()
-startAskConversation label toolCfg cfg conversations message prompt = do
+startAskThread label toolCfg cfg threads message prompt = do
   logDebug [i|#{label}: #{show message :: String}|]
   logInfo [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
@@ -202,18 +203,18 @@ startAskConversation label toolCfg cfg conversations message prompt = do
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
   let input = inputWithImages contextPrompt contextImages
   transcript <- startTranscript cfg message input
-  void $ runAskAgentConversation toolCfg cfg conversations Nothing message input transcript
+  void $ runAskAgentThread toolCfg cfg threads Nothing message input transcript
 
-startDrawConversation
+startDrawThread
   :: HandlerEffects es
   => ChatLog.ChatLog :> es
   => Text
   -> AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> IncomingMessage
   -> Text
   -> Eff es ()
-startDrawConversation label cfg conversations message prompt = do
+startDrawThread label cfg threads message prompt = do
   logDebug [i|#{label}: #{show message :: String}|]
   logInfo [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
@@ -224,7 +225,7 @@ startDrawConversation label cfg conversations message prompt = do
   answer <- drawTranscript transcript
   responseId <- rightToMaybe <$> Chat.replyTo message answer
   ChatLog.recordSelfMessage message answer
-  rememberConversationTranscript conversations (conversationMessageKey message <$> responseId) (appendAssistant answer transcript)
+  rememberThreadTranscript threads (threadMessageKey message <$> responseId) (appendAssistant answer transcript)
 
 fetchReferencedMessage
   :: Chat.Chat :> es
@@ -233,41 +234,41 @@ fetchReferencedMessage
 fetchReferencedMessage message =
   traverse (Chat.getMessageContent message) message.replyToMessageId <&> join
 
-startConversationFromReply
+startThreadFromReply
   :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> IncomingMessage
   -> MessageId
   -> Eff es ()
-startConversationFromReply toolCfg cfg conversations message parentId = do
-  logDebug [i|starting conversation from mentioned reply: #{show message :: String}|]
-  logInfo [i|starting conversation from mentioned reply: #{incomingMessageLogLine message}|]
+startThreadFromReply toolCfg cfg threads message parentId = do
+  logDebug [i|starting thread from mentioned reply: #{show message :: String}|]
+  logInfo [i|starting thread from mentioned reply: #{incomingMessageLogLine message}|]
   referenced <- Chat.getMessageContent message parentId
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let prompt = promptWithReferencedContext message.text referenced contextImages
   unless (Text.null prompt && null contextImages) do
     let input = inputWithImages prompt contextImages
     transcript <- startTranscript cfg message input
-    void $ runAskAgentConversation toolCfg cfg conversations (Just (conversationMessageKey message parentId)) message input transcript
+    void $ runAskAgentThread toolCfg cfg threads (Just (threadMessageKey message parentId)) message input transcript
 
-continueConversation
+continueThread
   :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
-  -> ConversationStore
+  -> ThreadStore
   -> IncomingMessage
-  -> ConversationMessageKey
+  -> ThreadMessageKey
   -> Transcript
   -> Eff es ()
-continueConversation toolCfg cfg conversations message parentKey transcript = do
-  logDebug [i|continuing conversation: #{show message :: String}|]
-  logInfo [i|continuing conversation: #{incomingMessageLogLine message}|]
+continueThread toolCfg cfg threads message parentKey transcript = do
+  logDebug [i|continuing thread: #{show message :: String}|]
+  logInfo [i|continuing thread: #{incomingMessageLogLine message}|]
   let input = inputWithImages (promptOrImageDefault message.text message.imageUrls) message.imageUrls
   let nextTranscript =
         appendUserInput input transcript
-  void $ runAskAgentConversation toolCfg cfg conversations (Just parentKey) message input nextTranscript
+  void $ runAskAgentThread toolCfg cfg threads (Just parentKey) message input nextTranscript
 
 drawTranscript
   :: (LLM.LLM :> es, KatipE :> es)

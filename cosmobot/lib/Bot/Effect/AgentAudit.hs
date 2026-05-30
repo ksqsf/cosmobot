@@ -17,8 +17,8 @@ module Bot.Effect.AgentAudit
   , queryAuditRecord
   , queryRecentToolUses
   , queryToolUse
-  , queryConversationAudit
-  , queryConversationMessagesAudit
+  , queryThreadAudit
+  , queryThreadMessagesAudit
   , runAgentAudit
   , runAgentAuditWithObserver
   )
@@ -41,8 +41,8 @@ data AgentAudit :: Effect where
   QueryAuditRecord :: Integer -> AgentAudit m (Maybe AgentAuditRecord)
   QueryRecentToolUses :: Int -> AgentAudit m [ToolUseDetail]
   QueryToolUse :: Integer -> AgentAudit m (Maybe ToolUseDetail)
-  QueryConversationAudit :: MessageId -> AgentAudit m [AgentAuditRecord]
-  QueryConversationMessagesAudit :: [MessageId] -> AgentAudit m [AgentAuditRecord]
+  QueryThreadAudit :: MessageId -> AgentAudit m [AgentAuditRecord]
+  QueryThreadMessagesAudit :: [MessageId] -> AgentAudit m [AgentAuditRecord]
 
 type instance DispatchOf AgentAudit = Dynamic
 
@@ -70,13 +70,13 @@ queryToolUse :: AgentAudit :> es => Integer -> Eff es (Maybe ToolUseDetail)
 queryToolUse auditId =
   send (QueryToolUse auditId)
 
-queryConversationAudit :: AgentAudit :> es => MessageId -> Eff es [AgentAuditRecord]
-queryConversationAudit messageId =
-  send (QueryConversationAudit messageId)
+queryThreadAudit :: AgentAudit :> es => MessageId -> Eff es [AgentAuditRecord]
+queryThreadAudit messageId =
+  send (QueryThreadAudit messageId)
 
-queryConversationMessagesAudit :: AgentAudit :> es => [MessageId] -> Eff es [AgentAuditRecord]
-queryConversationMessagesAudit messageIds =
-  send (QueryConversationMessagesAudit messageIds)
+queryThreadMessagesAudit :: AgentAudit :> es => [MessageId] -> Eff es [AgentAuditRecord]
+queryThreadMessagesAudit messageIds =
+  send (QueryThreadMessagesAudit messageIds)
 
 runAgentAudit
   :: (IOE :> es, KatipE :> es, Storage.Storage :> es)
@@ -116,10 +116,10 @@ runAgentAuditWithObserver observer inner = do
       QueryToolUse auditId -> do
         records <- AgentAuditStorage.loadStoredAuditRecords
         pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords maxInMemoryAgentAuditEvents (markStaleRunningToolUses processStartedAt records)))
-      QueryConversationAudit messageId ->
-        markStaleRunningToolUses processStartedAt <$> AgentAuditStorage.queryStoredConversationAudit messageId
-      QueryConversationMessagesAudit messageIds ->
-        markStaleRunningToolUses processStartedAt <$> AgentAuditStorage.queryStoredConversationMessagesAudit messageIds
+      QueryThreadAudit messageId ->
+        markStaleRunningToolUses processStartedAt <$> AgentAuditStorage.queryStoredThreadAudit messageId
+      QueryThreadMessagesAudit messageIds ->
+        markStaleRunningToolUses processStartedAt <$> AgentAuditStorage.queryStoredThreadMessagesAudit messageIds
     )
     inner
 

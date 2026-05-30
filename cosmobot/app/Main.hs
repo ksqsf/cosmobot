@@ -79,9 +79,9 @@ rpcAuditParser =
         ( info (rpcAuditShowParser <**> helper) $
             progDesc "Show one agent audit tool use by id"
         )
-      <> command "conversation"
-        ( info (rpcAuditConversationParser <**> helper) $
-            progDesc "Show agent audit records for a conversation message"
+      <> command "thread"
+        ( info (rpcAuditThreadParser <**> helper) $
+            progDesc "Show agent audit records for a thread message"
         )
 
 rpcAuditRecentParser :: Parser RpcClient.RpcClientCommand
@@ -100,9 +100,9 @@ rpcAuditShowParser =
   RpcClient.RpcAuditShow
     <$> argument auto (metavar "ID")
 
-rpcAuditConversationParser :: Parser RpcClient.RpcClientCommand
-rpcAuditConversationParser =
-  RpcClient.RpcAuditConversation . Text.pack
+rpcAuditThreadParser :: Parser RpcClient.RpcClientCommand
+rpcAuditThreadParser =
+  RpcClient.RpcAuditThread . Text.pack
     <$> argument str (metavar "MESSAGE_ID")
 
 rpcCallParser :: Parser RpcClient.RpcClientCommand

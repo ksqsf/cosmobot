@@ -17,7 +17,7 @@ where
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types (ToolResultObservation (..))
 import Bot.Agent.Types (toolResultContent)
-import Bot.Core.Conversation
+import Bot.Core.Transcript
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Media.Mime as Mime
