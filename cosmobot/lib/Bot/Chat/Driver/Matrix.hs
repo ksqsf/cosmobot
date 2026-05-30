@@ -46,6 +46,7 @@ import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Char8 as ByteString
+import qualified Data.ByteString as StrictByteString
 import qualified Data.Char as Char
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -574,6 +575,7 @@ instance MatrixAPI MatrixDownloadMedia where
         withMatrixAccessToken driver.auth \token -> do
           manager <- HTTP.manager
           request <- liftIO (matrixMediaDownloadRequest driver.config token serverName mediaId)
+          matrixReq "authenticated media download" (probeMatrixMediaDownload request manager)
           pure MatrixDownloadedMedia
             { downloadedBytes = matrixResponseByteStream request manager
             , downloadedMimeType = Mime.mimeFromName mediaId
@@ -844,6 +846,34 @@ matrixResponseByteStream :: Client.Request -> Client.Manager -> Q.ByteStream (Re
 matrixResponseByteStream request manager = do
   response <- lift (StreamingHTTP.http request manager)
   Client.responseBody response
+
+probeMatrixMediaDownload :: IOE :> es => Client.Request -> Client.Manager -> Eff es ()
+probeMatrixMediaDownload request manager =
+  bracket
+    (liftIO $ Client.responseOpen (matrixMediaProbeRequest request) manager)
+    (liftIO . Client.responseClose)
+    \response -> do
+      let status = Client.responseStatus response
+      if HTTPStatus.statusIsSuccessful status
+        then void $ liftIO $ Client.brRead (Client.responseBody response)
+        else do
+          body <- liftIO $ Client.brRead (Client.responseBody response)
+          throwIO (matrixDownloadStatusException status body)
+
+matrixMediaProbeRequest :: Client.Request -> Client.Request
+matrixMediaProbeRequest request =
+  request
+    { Client.requestHeaders =
+        ("Range", "bytes=0-0") : filter ((/= "Range") . fst) request.requestHeaders
+    }
+
+matrixDownloadStatusException :: HTTPStatus.Status -> StrictByteString.ByteString -> MatrixApiException
+matrixDownloadStatusException status body =
+  case Aeson.eitherDecodeStrict body of
+    Right err ->
+      MatrixApiException "authenticated media download" status err
+    Left parseErr ->
+      MatrixTransportException "authenticated media download" [i|HTTP #{HTTPStatus.statusCode status} with non-Matrix error body: #{parseErr}|]
 
 matrixEndpointText :: Text -> [Text] -> Text
 matrixEndpointText homeserver path =
