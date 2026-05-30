@@ -297,42 +297,61 @@ runGatewayConnection cfg eventChan conn = do
       hello :: GatewayHello <- parseGatewayData "Discord hello" firstEnvelope.d
       logInfo "Discord gateway connected"
       lastSequence <- MVar.newMVar firstEnvelope.s
-      heartbeatThread <- forkIO (heartbeatLoop conn lastSequence hello.heartbeatInterval)
+      heartbeatAck <- MVar.newMVar True
+      heartbeatThread <- forkIO (heartbeatLoop conn lastSequence heartbeatAck hello.heartbeatInterval)
       identifyGateway cfg conn
-      readGatewayEvents eventChan lastSequence conn `finally` killThread heartbeatThread
+      readGatewayEvents eventChan lastSequence heartbeatAck conn `finally` killThread heartbeatThread
     op ->
       logInfo [i|Discord gateway expected HELLO, got op=#{op}|]
 
 heartbeatLoop
-  :: (IOE :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => WS.Connection
   -> MVar.MVar (Maybe Int)
+  -> MVar.MVar Bool
   -> Int
   -> Eff es ()
-heartbeatLoop conn lastSequence intervalMs = forever do
+heartbeatLoop conn lastSequence heartbeatAck intervalMs = forever do
   threadDelay (intervalMs * 1000)
-  sequenceNumber <- MVar.readMVar lastSequence
-  liftIO $ WS.sendTextData conn (Aeson.encode (heartbeatPayload sequenceNumber))
+  acked <- MVar.swapMVar heartbeatAck False
+  if acked
+    then do
+      sequenceNumber <- MVar.readMVar lastSequence
+      liftIO $ WS.sendTextData conn (Aeson.encode (heartbeatPayload sequenceNumber))
+    else do
+      logInfo "Discord gateway heartbeat ACK timed out; closing connection"
+      liftIO $ WS.sendClose conn ("heartbeat ACK timeout" :: Text)
 
 readGatewayEvents
   :: (IOE :> es, KatipE :> es, Concurrent :> es)
   => Chan.Chan Message
   -> MVar.MVar (Maybe Int)
+  -> MVar.MVar Bool
   -> WS.Connection
   -> Eff es ()
-readGatewayEvents eventChan lastSequence conn = forever do
+readGatewayEvents eventChan lastSequence heartbeatAck conn = forever do
   envelope <- readGatewayEnvelope conn
-  void $ MVar.swapMVar lastSequence envelope.s
+  updateLastSequence lastSequence envelope.s
   case (envelope.op, envelope.t) of
     (0, Just "MESSAGE_CREATE") -> do
       message :: Message <- parseGatewayData "Discord message create" envelope.d
       liftIO $ Chan.writeChan eventChan message
+    (1, _) -> do
+      sequenceNumber <- MVar.readMVar lastSequence
+      liftIO $ WS.sendTextData conn (Aeson.encode (heartbeatPayload sequenceNumber))
     (7, _) ->
       throwIO (userError "Discord gateway requested reconnect")
     (9, _) ->
       throwIO (userError "Discord gateway invalid session")
+    (11, _) ->
+      void $ MVar.swapMVar heartbeatAck True
     _ ->
       pure ()
+
+updateLastSequence :: Concurrent :> es => MVar.MVar (Maybe Int) -> Maybe Int -> Eff es ()
+updateLastSequence lastSequence =
+  traverse_ \sequenceNumber ->
+    void $ MVar.swapMVar lastSequence (Just sequenceNumber)
 
 readGatewayEnvelope :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es GatewayEnvelope
 readGatewayEnvelope conn = do
