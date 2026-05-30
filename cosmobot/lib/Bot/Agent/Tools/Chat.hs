@@ -333,29 +333,3 @@ replyBodyWithImages text imageUrls =
   Text.strip $ Text.unlines $
     [ text | not (Text.null text) ]
       <> map ReplyBody.imageDirective imageUrls
-
-fieldTextArrayArray :: Text -> Text -> (Text, Aeson.Value)
-fieldTextArrayArray name description =
-  ( name
-  , Aeson.object
-      [ "type" Aeson..= Aeson.String "array"
-      , "items" Aeson..= Aeson.object
-          [ "type" Aeson..= Aeson.String "array"
-          , "items" Aeson..= Aeson.object
-              [ "type" Aeson..= Aeson.String "string"
-              ]
-          ]
-      , "description" Aeson..= description
-      ]
-  )
-
-fieldIntegerMax :: Text -> Int -> Text -> (Text, Aeson.Value)
-fieldIntegerMax name maximum description =
-  ( name
-  , Aeson.object
-      [ "type" Aeson..= Aeson.String "integer"
-      , "minimum" Aeson..= (0 :: Int)
-      , "maximum" Aeson..= maximum
-      , "description" Aeson..= description
-      ]
-  )
