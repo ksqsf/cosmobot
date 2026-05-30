@@ -179,6 +179,7 @@ main =
       , testCase "typst_render tool renders and sends an image" testTypstToImageToolRendersAndSendsImage
       , testCase "image_edit tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
       , testCase "ask handler passes referenced images to image_edit tool" testAskHandlerPassesReferencedImagesToEditImageTool
+      , testCase "ask handler includes referenced image URLs in text context" testAskHandlerIncludesReferencedImageUrlsInTextContext
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
       , testCase "media_text reads cached media text slices" testReadMediaTextToolReadsCachedSlices
@@ -491,6 +492,46 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
       toolUses <- AgentAudit.queryRecentToolUses 10
       pure (any finishedEditImageUse toolUses)
   IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [referencedImage] Nothing LLM.defaultImageRequestOptions])
+
+testAskHandlerIncludesReferencedImageUrlsInTextContext :: IO ()
+testAskHandlerIncludesReferencedImageUrlsInTextContext = do
+  let referencedImage = "media:mf_replied"
+      referenced = ReferencedMessage
+        { messageId = Just "70001"
+        , senderDisplayName = Just "Bob"
+        , senderIdentifier = Just "10001"
+        , text = "original image"
+        , imageUrls = [referencedImage]
+        }
+      message = askHandlerMessage
+        { replyToMessageId = Just "70001"
+        , imageUrls = []
+        , text = "krkr 重发被回复的图"
+        }
+  answers <- IORef.newIORef [chatAnswer "done" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  rendered <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    defaultTestSkillsConfig
+    rendered
+    (Just captured)
+    answers
+    (ChatMock Nothing Nothing Nothing)
+    (Just referenced)
+    (\_ _ -> pure "unused image answer")
+    (\_ _ _ _ -> pure "unused image edit answer") do
+      conversations <- newConversationStore
+      runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig conversations) message
+      waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
+  requests <- IORef.readIORef captured
+  case viaNonEmpty head requests of
+    Just request -> do
+      let userText = Text.unlines (requestUserTextParts request)
+      assertBool "referenced image URL should appear in text context" ("被回复图片：media:mf_replied" `Text.isInfixOf` userText)
+      requestUserImageUrls request @?= [referencedImage]
+    Nothing ->
+      assertFailure "expected captured LLM request"
 
 testGenerateImageToolPassesImageRequestOptions :: IO ()
 testGenerateImageToolPassesImageRequestOptions = do
@@ -1915,6 +1956,24 @@ imageContextUrls :: Conversation -> [Text]
 imageContextUrls (Conversation messages) =
   [ url
   | message <- Foldable.toList messages
+  , message.role == "user"
+  , Just (LLM.PartsContent parts) <- [message.content]
+  , LLM.ImageUrlPart url <- parts
+  ]
+
+requestUserTextParts :: [LLM.ChatMessage] -> [Text]
+requestUserTextParts messages =
+  [ text
+  | message <- messages
+  , message.role == "user"
+  , Just (LLM.PartsContent parts) <- [message.content]
+  , LLM.TextPart text <- parts
+  ]
+
+requestUserImageUrls :: [LLM.ChatMessage] -> [Text]
+requestUserImageUrls messages =
+  [ url
+  | message <- messages
   , message.role == "user"
   , Just (LLM.PartsContent parts) <- [message.content]
   , LLM.ImageUrlPart url <- parts

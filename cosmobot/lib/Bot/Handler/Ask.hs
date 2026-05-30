@@ -575,7 +575,7 @@ referencedMessageContext referenced =
     else Just (Text.unlines contextLines)
   where
     contextLines =
-      referencedSenderLine referenced <> referencedTextLines referenced
+      referencedSenderLine referenced <> referencedTextLines referenced <> referencedImageLines referenced
 
 referencedSenderLine :: ReferencedMessage -> [Text]
 referencedSenderLine referenced =
@@ -589,3 +589,10 @@ referencedSenderLine referenced =
 referencedTextLines :: ReferencedMessage -> [Text]
 referencedTextLines referenced =
   [ text | let text = Text.strip referenced.text, not (Text.null text) ]
+
+referencedImageLines :: ReferencedMessage -> [Text]
+referencedImageLines referenced =
+  [ "被回复图片：" <> Text.intercalate ", " imageUrls
+  | let imageUrls = filter (not . Text.null) (map Text.strip referenced.imageUrls)
+  , not (null imageUrls)
+  ]
