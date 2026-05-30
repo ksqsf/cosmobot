@@ -225,6 +225,7 @@ library
         Bot.Handler.Admin
         Bot.Handler.Admin.Config
         Bot.Handler.Ask
+        Bot.Handler.Ask.AgentRun
         Bot.Handler.Ask.Config
         Bot.Handler.Audit
         Bot.Handler.Safebooru
@@ -260,6 +261,7 @@ library
         Bot.RPC.Protocol
         Bot.RPC.Server
         Bot.RPC.State
+        Bot.Session
         Bot.Skills
         Bot.Skills.Config
         Bot.Scheduler.Interpreter
