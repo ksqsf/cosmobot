@@ -88,30 +88,40 @@ downloadObject manager ref = do
   request <- mediaDownloadRequest <$> liftIO (HTTP.parseRequest (Text.unpack ref))
   let sourceName = TextEncoding.decodeUtf8 (StrictByteString.takeWhile (/= 63) (HTTP.path request))
       nameMime = Mime.mimeFromName sourceName
-  mime <- remoteMime manager request nameMime
+  mime <- probeRemoteMime manager request nameMime
   pure MediaObject
-    { bytes = downloadByteStream manager ref request
+    { bytes = downloadByteStream manager ref request mime
     , mimeType = mime
     , sourceName = Just sourceName
     }
 
-remoteMime :: IOE :> es => HTTP.Manager -> HTTP.Request -> Text -> Eff es Text
-remoteMime manager request nameMime = do
-  result <- trySync (liftIO (HTTP.httpNoBody request{HTTP.method = "HEAD"} manager))
+probeRemoteMime :: IOE :> es => HTTP.Manager -> HTTP.Request -> Text -> Eff es Text
+probeRemoteMime manager request nameMime = do
+  result <- trySync (probeRemoteMimeWithRangeGet manager request nameMime)
   pure case result of
-    Right response ->
-      fallbackMime (responseMime response) nameMime
-    Left _ ->
-      fallbackMime "application/octet-stream" nameMime
+    Right mime -> mime
+    Left _ -> fallbackMime "application/octet-stream" nameMime
 
-downloadByteStream :: HTTP.Manager -> Text -> HTTP.Request -> Q.ByteStream (ResourceT IO) ()
-downloadByteStream manager ref request = do
+probeRemoteMimeWithRangeGet :: IOE :> es => HTTP.Manager -> HTTP.Request -> Text -> Eff es Text
+probeRemoteMimeWithRangeGet manager request nameMime =
+  bracket
+    (liftIO $ HTTP.responseOpen (mediaProbeRequest request) manager)
+    (liftIO . HTTP.responseClose)
+    \response -> do
+      let status = HTTP.responseStatus response
+      unless (HTTPStatus.statusIsSuccessful status) $
+        liftIO (ioError (userError [i|Remote media probe failed with HTTP #{HTTPStatus.statusCode status}|]))
+      chunk <- liftIO (HTTP.brRead (HTTP.responseBody response))
+      pure (resolvedRemoteMime (responseMime response) nameMime chunk)
+
+downloadByteStream :: HTTP.Manager -> Text -> HTTP.Request -> Text -> Q.ByteStream (ResourceT IO) ()
+downloadByteStream manager ref request expectedMime = do
   response <- lift (StreamingHTTP.http request manager)
   let status = HTTP.responseStatus response
       headerMime = responseMime response
   unless (HTTPStatus.statusIsSuccessful status) $
     liftIO (ioError (userError [i|Remote media download failed: #{ref} returned HTTP #{HTTPStatus.statusCode status}|]))
-  unless (Mime.isProbablyMediaMime headerMime) $
+  unless (Mime.isProbablyMediaMime headerMime || Mime.isProbablyMediaMime expectedMime) $
     liftIO (ioError (userError [i|Remote media download returned non-media content-type #{headerMime}: #{ref}|]))
   HTTP.responseBody response
 
@@ -120,6 +130,13 @@ mediaDownloadRequest request =
   request
     { HTTP.requestHeaders =
         (HTTPHeader.hUserAgent, mediaDownloadUserAgent) : filter ((/= HTTPHeader.hUserAgent) . fst) request.requestHeaders
+    }
+
+mediaProbeRequest :: HTTP.Request -> HTTP.Request
+mediaProbeRequest request =
+  request
+    { HTTP.requestHeaders =
+        ("Range", "bytes=0-0") : filter ((/= "Range") . fst) request.requestHeaders
     }
 
 mediaDownloadUserAgent :: StrictByteString.ByteString
@@ -136,6 +153,15 @@ fallbackMime :: Text -> Text -> Text
 fallbackMime headerMime nameMime
   | Mime.isGenericMime headerMime = nameMime
   | otherwise = headerMime
+
+resolvedRemoteMime :: Text -> Text -> StrictByteString.ByteString -> Text
+resolvedRemoteMime headerMime nameMime chunk =
+  case Mime.sniffMime chunk of
+    Just sniffedMime
+      | not (Mime.isProbablyMediaMime headerMime) || Mime.isGenericMime headerMime ->
+          sniffedMime
+    _ ->
+      fallbackMime headerMime nameMime
 
 fileObject :: (IOE :> es, FileSystem :> es) => Text -> Eff es MediaObject
 fileObject ref = do

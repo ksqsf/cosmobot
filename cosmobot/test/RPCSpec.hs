@@ -10,6 +10,7 @@ import qualified Bot.Effect.Storage as Storage
 import qualified Bot.HTTP as BotHTTP
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
+import qualified Bot.Media.Object as MediaObject
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Protocol as Protocol
 import qualified Bot.RPC.Server as RPCServer
@@ -31,6 +32,7 @@ import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types as Http
 import qualified JSONRPC
 import qualified Network.Socket as Socket
+import qualified Network.Wai as Wai
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.WebSockets as WS
 import qualified Streaming.ByteString as Q
@@ -61,6 +63,7 @@ main =
       , testCase "sync request exception returns JSON-RPC error" testSyncRequestExceptionReturnsJsonRpcError
       , testCase "media upload, send, history, and stats" testAttachmentLifecycle
       , testCase "media cache can resolve, inspect, and delete cached media" testMediaCacheResolveInspectDelete
+      , testCase "remote media MIME is probed with range GET" testRemoteMediaMimeUsesRangeGetProbe
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
       , testCase "rpc driver stores local image replies as attachments" testRpcDriverStoresLocalImageRepliesAsAttachments
@@ -555,7 +558,7 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
   result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
-    port <- fromIntegral <$> liftIO (Socket.socketPort listenSocket)
+    port <- (fromIntegral :: Socket.PortNumber -> Int) <$> liftIO (Socket.socketPort listenSocket)
     let cfg = RPCConfig.Config
           { enabled = True
         , host = "127.0.0.1"
@@ -632,6 +635,37 @@ testHttpServerRejectsNonRpcPaths = do
               , "session" Aeson..= sessionValue "integration-1" (Just "integration") Nothing Nothing
               ]
           )
+
+testRemoteMediaMimeUsesRangeGetProbe :: IO ()
+testRemoteMediaMimeUsesRangeGetProbe = do
+  result <- timeout 2_000_000 $ runEff $ runConcurrent do
+    listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
+    port <- (fromIntegral :: Socket.PortNumber -> Int) <$> liftIO (Socket.socketPort listenSocket)
+    let server =
+          liftIO $
+            Warp.runSettingsSocket Warp.defaultSettings listenSocket remoteMediaProbeApp
+        client = do
+          manager <- liftIO (HTTP.newManager HTTP.defaultManagerSettings)
+          MediaObject.downloadObject manager [i|http://127.0.0.1:#{port}/download?file=image|]
+    race server client
+
+  case result of
+    Nothing ->
+      assertFailure "remote media probe test timed out"
+    Just (Left ()) ->
+      assertFailure "remote media probe server exited before client completed"
+    Just (Right mediaObject) ->
+      mediaObject.mimeType @?= "image/png"
+
+remoteMediaProbeApp :: Wai.Application
+remoteMediaProbeApp request respond =
+  respond case Wai.requestMethod request of
+    "GET" ->
+      Wai.responseLBS Http.status206 [(Http.hContentType, "image/png")] "\x89PNG\r\n\x1a\n"
+    "HEAD" ->
+      Wai.responseLBS Http.status200 [(Http.hContentType, "application/json")] ""
+    _ ->
+      Wai.responseLBS Http.status405 [] ""
 
 data RpcClientConfig = RpcClientConfig
   { rpc :: RPCConfig.FileConfig
