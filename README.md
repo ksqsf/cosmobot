@@ -1,212 +1,378 @@
 # Cosmobot
 
-Cosmobot 是一个小型 AI agent 框架，接受来自 QQ/OneBot、Telegram、Matrix 和 Discord 的消息，同时也可以作为聊天机器人使用。
+Cosmobot is a lightweight and extensible AI agent framework. It can receive user messages from [Matrix](https://matrix.org/), Telegram, QQ (OneBot), and Discord. It can even act like a ChatBot in a group chat for fun!
 
-## 功能
+Beware: Cosmobot is just a hobby project. Won't be big and professional like OpenClaw. /jk
 
-- 支持 QQ/OneBot、Telegram、Matrix、Discord 四种聊天入口。
-- 支持 OpenAI-compatible Chat Completions 和 streaming 输出接口。
-- 支持私聊和群组。
-- 支持多种触发方式：命令触发、`@`、机器人名字等。
-- 支持多轮对话、回复续聊等。
-- Agent 会在上下文过长时自动整理较早的对话历史，保留最近上下文。
-- 支持简易的管理员鉴权。
-- 内置 agent 工具：文件读取、目录列表、聊天记录查询、网页搜索/抓取、时间、图片生成、消息发送、群成员查询、计划任务、记忆管理等。
-- 内置多种简单命令工具：todo 列表、saucenao 搜图等。
-- 支持使用 SQLite 持久化聊天记录、agent audit、会话、计划任务等。
+## Features
 
-## 构建
+- **Multiple platforms**: Matrix, Telegram, QQ (OneBot), or Discord.
+- **Multiple interfaces**: Both Private Chat and Group Chat are supported.
+- **Any LLM provider**: OpenAI-compatible API is supported.
+- **Capable**: Image generation/editing; Shell scripting; File sending; and the compulsory Web searching and fetching...
+- **Extendable**: Carefully designed abstractions allowing for super easy extension.
+- **C/S architecture**: Build peripheral devices upon the core.
+- **Observable & Auditable**: Audit traces, observability over RPC
+- **Lean**: less CPU and RAM consumption; VPS-friendly.
 
-目前仅支持 GHC 9.10 和 Cabal 3.14，使用 Stackage LTS 24.42。
+## Building
 
-```bash
-cabal build cosmobot
-```
-
-## 配置
-
-Cosmobot 启动时从当前工作目录读取 `config.toml`。
+Currenly, only GHC 9.10.3 and Cabal 3.14 are supported. Package versions are pinned to [Stackage LTS 24.42](https://www.stackage.org/lts-24.42). After [setting up your toolchain](https://www.haskell.org/ghcup/), to build the whole project, run:
 
 ```bash
-cp config.example.toml config.toml
+cabal build -j all
 ```
 
-然后按需要填写平台、LLM、权限和 handler 配置。`[handler.ask]` 必须提供 `system_prompt`，例如：
+Then you can find the executable path by running:
 
-```toml
-[handler.ask]
-command = "!ask"
-draw_command = "!draw"
-system_prompt = "You are a helpful assistant."
-agent_max_turns = 4
+```bash
+cabal list-bin exe:cosmobot
 ```
 
-### 主要配置段
+By default, the binary is statically linked with Haskell dependencies, so you can probably deploy it by simply `rsync`'ing. The cost is the size of the binary. ;-)
 
-- `[log]`：日志级别。
-- `[storage]`：SQLite 数据库路径。
-- `[driver.qq]`：OneBot websocket 地址、token、机器人 QQ、允许的群/用户和管理员。
-- `[driver.telegram]`：Telegram bot token、bot id、允许的 chat 和管理员。
-- `[driver.matrix]`：Matrix homeserver、access token、用户 id、允许的 room 和管理员。
-- `[driver.discord]`：Discord bot token、bot id、允许的 guild/channel/user 和管理员。
-- `[llm]`：选择聊天和图片 provider；provider 表里配置 OpenAI-compatible endpoint、API key、模型和请求参数。
-- `[memory]`：持久记忆目录。
-- `[tool]`、`[tool.web_fetch]`、`[tool.web_search]`：agent 工具开关和限制。
-- `[handler.ask]`：问答/画图命令、系统提示词和 agent 最大轮数。
-- `[handler.saucenao]`：SauceNAO API key。
+## **WARNING**
 
-访问控制按平台配置：
+Cosmobot is still in infancy. We do not recommend you use Cosmobot in any critical scenario.
 
-- QQ 会话权限在 `allowed_groups` 和 `allowed_users`。
-- Telegram 会话权限在 `allowed_chats`。
-- Matrix 会话权限在 `allowed_rooms`。
-- Discord 会话权限在 `allowed_guilds`、`allowed_channels` 和 `allowed_users`。
-- 管理员权限在各平台 driver 的 `superusers`。
+Regarding **Security**, currently, Cosmobot has ZERO security features except `superusers`! And we strongly advise you against running the agent unprotected!
 
-### Discord 配置
+- Whenever the agent reacts to a message sender, the list of available tools is determined by whether they are a superuser. Privileged tools are only visible to the agent if it is responding to a superuser request.
+- However, this does NOT prevent prompt injection. A malicious chat message or webpage is very much possible to fool your agent to do dangerous things!
 
-Discord driver 使用 Gateway v10 接收 `MESSAGE_CREATE`，并通过 REST API 发送、编辑、删除、读取消息和上传附件。需要在 Discord Developer Portal 给 bot 开启对应 intents；如果需要读取普通消息正文，还需要启用 Message Content Intent。
+Regarding **Privacy**, we have done our best effort. For example, Alice can never query Bob's chat log. But that's about it.
+
+## Cosmobot Deployment
+
+Cosmobot reads `config.yaml` from the current working directory. If it's listening for messages, you should see "Cosmobot stand by!" in the logs.
+
+There is a template config to get you started.
+
+```
+cp cosmobot/config.example.toml config.toml
+```
+
+But, unfortunately, you need to set Cosmobot up correctly before it can do anything useful.
+
+### 1. Chat interfaces
+
+You need to connect Cosmobot to one of the chat platforms. Or, if you like, all of them.
 
 ```toml
+[driver.matrix]
+homeserver = "https://matrix.org"
+bot_id = "@your_bot_id:matrix.org"
+login_user = "your_bot_id"
+login_password = "your_bot_password"
+device_id = "the_device_id_shown_in_the_device_list"
+superusers = ["@your_id:matrix.org"]
+allowed_rooms = ["!aBcDeFgH:matrix.org"]  # Bots can receive messages from members in these rooms
+
+[driver.telegram]
+bot_token = "1111111111:AAaaaaaaaaaaaaaaaaaa_PPPPPPPPPPPPPP"  # Get your bot token from @BotFather
+bot_id = "MyOwnBot"                # Bot ID
+superusers = ["ksqsf"]             # Your own id
+allowed_chats = ["some_group_chat", -100000000]  # Bot can receive messages from these chats
+
+[driver.qq]
+host = "127.0.0.1"                  # OneBot server host
+port = 3001                         # OneBot server port
+path = "/"                          # OneBot server API path
+token = "some token"                # Configured token
+bot_id = 114514114514               # Your bot's QQ number
+superusers = [23333333]             # Your own QQ number
+allowed_groups = [11111111, 222222] # Bot can receive messages from members in these groups
+allowed_users = [33333333]          # Bot can receive messages from these private chats
+
 [driver.discord]
-bot_token = ""
-bot_id = ""
-application_id = ""
+bot_token = "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM"
+bot_id = "1500000000000000000"
+application_id = "1555555555555555555"
 allowed_guilds = []
 allowed_channels = []
 allowed_users = []
-superusers = []
-gateway_host = "gateway.discord.gg"
-gateway_path = "/?v=10&encoding=json"
+superusers = ["111111111111111111"]    # Your own user ID
+gateway_host = "gateway.discord.gg"    # You probably don't need to change
+gateway_path = "/?v=10&encoding=json"  # Ditto
 ```
 
-`bot_id`、`allowed_users` 和 `superusers` 使用 Discord snowflake 字符串；`allowed_guilds` 和 `allowed_channels` 可写整数 snowflake。Discord 没有 QQ title 的等价能力，所以 `!title` 不支持 Discord 成员头衔设置。
+Common options:
 
-### LLM provider 配置
+- `superusers`: A list of platform user IDs. These users are considered *you*, and can utilize the full capabilities. **Specify correctly and verify thrice!!**
+- `bot_id`: Bot's own ID on that platform. Used for identifying whether Bot is mentioned. Please specify correctly.
+- `allowed_{rooms,chats,groups,users}`: Bot is allowed to react to messages from these private or group chats. If it is a group chat, Bot can react to all members in the group. This is a Cosmobot peculiarity because it can also act as a shared chatbot. If you only use Cosmobot privately, just don't set them; `superusers` is enough.
 
-`[llm]` 使用 `chat = "..."` 和 `image = "..."` 选择 provider。聊天 provider 写在 `[llm.chat_provider.<name>]`，图片 provider 写在 `[llm.image_provider.<name>]`。
+Special notes:
+
+- Currently, Matrix and Telegram are the best supported platforms. QQ support is mature. You may experience bugs with Discord support.
+- **Matrix**: 
+  + Cosmobot by itself does not support Matrix's E2EE. You need a proxy to do encryption and decryption for it (e.g. [Pantalaimon](https://github.com/matrix-org/pantalaimon)).
+- **QQ**: 
+  + [NapCat](https://napneko.github.io/) is recommended. Only "WebSocket Server" mode is supported.
+  + QQ does not support streaming output and "bot is typing" notification.
+- **Discord**: (Gateway v10)
+  + Make sure to enable Intents in Discord Developer Portal. For example, you really need to enable Message Content Intent as the bot needs to read message contents.
+
+
+Cosmobot on Matrix is highly recommended. It has the best Markdown support (including tables!), streaming, typing feedback, and all Cosmobot features. With some effort, you can talk to Cosmobot in an E2EE room which gives you superior privacy protection.
+
+
+### LLM providers
+
+Cosmobot supports three types of models, Chat (or Text), Image, and Audio. Chat is required. You need to select one provider for each type after defining a Provider.
 
 ```toml
 [llm]
-chat = "openrouter"
-image = "openai"
+chat = "openai"       # that is, [llm.chat_provider.openai],  *required*
+image = "gptimage2"   # that is, [llm.image_provider.gptimage2], *optional*
+audio = "zz"          # that is, [llm.audio_provider.test], *optional*
 
-[llm.chat_provider.openrouter]
-base_url = "https://openrouter.ai/api/v1"
-api_key = ""
-model = "openai/gpt-4o-mini"
-reasoning_effort = "low"
-timeout = 60
-
-[llm.image_provider.openai]
+[llm.chat_provider.openai]
 base_url = "https://api.openai.com/v1"
-api_key = ""
-model = "gpt-image-1.5"
-can_generate = true
-can_edit = false
+api_key = "sk-something"
+model = "gpt-5.5"
+reasoning_effort = "low"
+timeout = 120
+
+[llm.chat_provider.openrouter]  # You can define multiple providers to easily switch between them
+base_url = "https://api.openrouter.ai/v1"
+api_key = "sk-something"
+model = "openai/gpt-5.5"
+reasoning_effort = "low"
+timeout = 120
+
+[llm.image_provider.gptimage2]
+base_url = "https://api.openai.com/v1"
+api_key = "sk-something"
+model = "gpt-image-2"
+can_generate = true    # does this model support images/generation?
+can_edit = true        # does this model support images/edit?
+timeout = 600
+quality = "high"       # default quality
+size = "auto"          # default size
+
+[llm.audio_provider.zz]
+base_url = "https://something"
+api_key = "sk-something"
+model = "gemini-2.5-flash-tts"
+voice = "zephyr"
+response_format = "mp3"
 timeout = 300
-quality = "medium"
-size = "1024x1024"
-aspect_ratio = "1:1"
-background = "auto"
-moderation = "auto"
-output_format = "webp"
-output_compression = 80
+speed = 1.1
+instructions = ""
 ```
 
-`llm.chat_provider.<name>.timeout` 用于普通文本 LLM 请求。非 streaming 请求按总耗时限制；streaming 请求按等待首段或下一段数据的 idle 时间限制。
+### Personalize your agent
 
-`llm.image_provider.<name>.timeout` 用于图片生成和编辑请求。`can_generate` 控制是否允许生成图片，`can_edit` 控制是否允许调用图片编辑接口；只有确认当前模型和兼容端点支持图片编辑时才设为 `true`。图片 provider 还可以配置 `quality`、`size`、`aspect_ratio`、`background`、`moderation`、`output_format` 和 `output_compression`。
+Cosmobot follows a modular design and the Agent is only contacted through a Handler called `Ask`. Therefore, you need to configure `[handler.ask]`:
 
-## 运行
+```toml
+name = "Doraemon"                # Your agent's name
+command = "!ask"                 # The "handler command" way to start a conversation
+draw_command = "!draw"           # The "handler command" way to draw
+agent_max_turns = 12             # Max number of tool turms
+system_prompt = "You are Doraemon, an AI agent powered by Cosmobot. Respond concisely."
+```
 
-准备好 `config.toml` 后：
+You must provide `system_prompt`. (Actually, this is not the full system prompt provided to the agent. The Ask handler will also add information about the chat, the sender, memories, skills, and tools. For typical uses, it's not necessary to be too verbose here. A few sentences will do.)
+
+So far, you should be able to contact your agent and get it to respond! Next, we will equip the agent with a lot of tools.
+
+### Configure tools
+
+Enable date time:
+
+```toml
+[tool]
+datetime = true
+```
+
+Enable web searching:
+
+```toml
+[tool.web_search]
+enable = true
+api = "tavily"       # tavily | brave
+max_results = 20
+tavily_api_key = "tvly-dev-something"
+brave_api_key = "some-token"
+```
+
+Enable web fetching (does not require an API):
+
+```toml
+[tool.web_fetch]
+enable = true
+max_uses = 5         # Max number of calling to this tool
+max_content_tokens = 50000
+```
+
+Note: To use the `typst_render` tool, you need to have a binary called `typst` on `PATH`.
+
+### Memory
+
+Cosmobot has a simple "memory" system. Memory is scoped by either a message sender, or a chat. That is, you can have Bot recognize you, or behave differently in different group chats, or even just you but in different chats!
+
+By default, a memory is a Markdown file stored at `<dir>/<platform>/<id>.md`. You can symlink files to share memory.
+
+```toml
+[memory]
+dir = "memory"
+```
+
+### Skills
+
+Cosmobot has a simple "skill" system. It basically follows the agentskills.io spec.
+
+```toml
+[skills]
+dir = "skills"
+```
+
+### Media object cache
+
+Different platforms have different policies regarding media files, like images or videos. Cosmobot handles this with a local media cache system: each incoming media file will be cached locally, and has a public URL for external access. This means we need to take care of garbage collection as well as finding a public URL.
+
+You can configure [Cloudflare R2](https://www.cloudflare.com/products/r2/) or any S3-compatible service, so that media files get uploaded automatically, and you get public URLs. Or you can disable S3 uploading, and serve these files from your server.
+
+```toml
+[media]
+cache_dir = "./cache"
+public_base_url = "https://s3.your_custom_domain.com/"
+compression_format = "webp"
+compression_level = 95
+
+[media.gc]
+enabled = true
+older_than_days = 7      # any media files whose last use date is 7 days ago are deleted locally
+interval_hours = 24      # runs gc every day
+
+[media.s3]
+enabled = true           # Do you want S3 uploading?
+bucket = "cosmobot-cache" # Bucket name
+region = "auto"           # Region
+endpoint = "https://???.r2.cloudflarestorage.com/"  # Endpoint
+prefix = "cosmobot/media"
+public_read_acl = false
+addressing_style = "path"
+access_key_id = "xxxxxxxxxxxxxx"
+secret_access_key = "yyyyyyyyyyyyy"
+```
+
+If you enable S3, the public URL of each media file will be `public_base_url + prefix + object_id.ext`. Otherwise, it is just `public_base_url + object_id.ext`. Make sure your server config points to the correct root.
+
+### RPC
+
+RPC provides an alternative way to interact with Cosmobot. We recommend you to enable it, as it provides observablity and advanced management tools.
+
+```
+[rpc]
+enabled = true
+host = "127.0.0.1"         # listen to host
+port = 38765               # listen to port
+token = "a random string"  # keep it secure!
+```
+
+Keep `token` really secure, as it gives unrestricted access to Cosmobot. We strongly advise you against setting `host` to `0.0.0.0`. Instead, use solutions like [SSH port forwarding](https://www.digitalocean.com/community/tutorials/ssh-port-forwarding) or [ZeroTier](https://www.zerotier.com/) to access your server's specific port.
+
+## Interact with Cosmobot
+
+The primary interface currently is Chat. Equipped with many tools, Cosmobot is actually more capable than a typical AI chat app.
+
+### Chat with Cosmobot
+
+In an allowed room/chat/group, or directly send messages from superuser/an allowed user,
+
+- start a new conversation
+  + `!ask <anything>`
+  + `<bot_name> <anything>`
+  + `<anything> @botid <anything>` (mention bot)
+  + (only in private chats) directly send `<anything>`
+- continue/fork a conversation
+  + reply to a bot's response
+
+### Audit (Superuser-only)
+
+- send `!audit` directly
+- reply to a bot's response with `!audit`
+- `!audit <id>` for details
+
+### RPC
+
+See
 
 ```bash
-cabal run cosmobot
+cabal run exe:cosmobot -- rpc --help
 ```
 
-日志中出现 `Cosmobot stand by!` 表示主循环已经启动。
+## Other features
 
-## 对话命令
+The following can happen automatically:
 
-### 对话
+- Recording all chat messages so Bot can search
+- Context compaction
+- Tool result compaction
+- "Noisy" tools can send notifications (with audit ID)
 
-- `!ask <问题>`：发起 LLM 对话。
-- `!draw <提示词>`：调用图片生成。
-- 回复机器人消息：继续对应会话。
-- 回复正在生成的机器人消息并发送 `!halt`：尝试中止该会话。
-- 私聊机器人：直接以消息内容作为问题。
-- 群聊中提及（`@`）机器人：以消息内容作为问题。
+## Other Handlers
 
-如果 `[handler.ask]` 配置了 `name`，也可以用该前缀触发 ask flow。
+### Todo list
 
-长对话会自动进行上下文整理：当 agent 发送给 LLM 的历史达到 50 条消息时，cosmobot 会保留最近 20 条消息，并把更早的历史总结成一条上下文摘要。触发整理时，机器人会先发送：
+Todos are scoped by `(platform,senderId)`:
 
-```text
-正在整理较早的对话上下文...
-```
-
-部分耗时工具也会发送进度提示，例如图片生成工具会提示正在调用工具，并附带 audit id，方便用 `!audit <id>` 查询详情。
-
-### Todo
-
-Todo 按 `platform + senderId` 隔离：
-
-- `!todo <内容>`：添加 todo；不带内容时显示列表。
-- `!list`：显示 todo list。
-- `!done <编号>`：标记完成。
-- `!rm <编号1> <编号2> ...`：删除若干项。
-- `!clear`：清空列表。
+- `!todo <task>`: add a todo item
+- `!list`
+- `!done <id>`
+- `!rm <id1> <id2> ...`
+- `!clear`
 
 ### SauceNAO
 
-回复一条包含图片的消息并发送：
+Reply to a message that contains an image:
 
 ```text
 !saucenao
 ```
 
-需要在 `[handler.saucenao]` 中配置 `api_key`。当前只返回相似度大于 `90%` 的结果。
+You need to provide `api_key` in `[handler.saucenao]`. Currently, only the top result with similarity > 90% is reported.
 
-### Audit
+## Agent tools
 
-Audit 命令仅限各平台 `superusers` 使用：
+Currently, the following tools are available:
 
-- `!audit`：输出最近 50 条 agent tool use，按从旧到新的顺序排列。
-- 回复一条 agent conversation 消息并发送 `!audit`：按 tool call 输出该消息对应的 agent trace。
-- 回复一条 agent conversation 消息并发送 `!audit all`：按 tool call 输出该 conversation tree 中所有消息关联的 agent trace。
-- 回复一条 agent conversation 消息并发送 `!audit log`：输出原始 agent trace event log。
-- `!audit <id>`：输出某条 tool use 的详细信息，包括参数和结果。
+| Category | Name              | Privileged? |
+|----------|-------------------|-------------|
+| Files    | `list_directory`  | Yes         |
+| Files    | `read_file`       | Yes         |
+| Chat     | `chat_log`        |             |
+| Chat     | `sender_chat_log` |             |
+| Chat     | `send_reply`      |             |
+| Chat     | `send_file`       | Yes         |
+| Chat     | `mention_user`    |             |
+| Chat     | `sender_info`     |             |
+| Chat     | `member_info`     |             |
+| Chat     | `user_avatar`     |             |
+| Chat     | `group_members`   |             |
+| Chat     | `message_info`    |             |
+| Emacs    | `emacs_eval`      | Yes         |
+| Audio    | `audio_generate`  |             |
+| Image    | `image_generate`  |             |
+| Image    | `image_edit`      |             |
+| Image    | `image_cache`     |             |
+| Media    | `media_text`      |             |
+| Memory   | `sender_memory`   |             |
+| Memory   | `chat_memory`     |             |
+| Schedule | `schedule`        |             |
+| Schedule | `delete_schedule` |             |
+| Schedule | `list_schedules`  |             |
+| Shell    | `run_bash`        | Yes         |
+| Time     | `now`             |             |
+| Typst    | `typst_render`    |             |
+| Web      | `search_web`      |             |
+| Web      | `fetch_url`       |             |
 
-列表中的 `id` 是 cosmobot 的 audit id，用来查询详情；`request` 是 LLM tool-call request id，即模型返回的 tool call id。
+Note:
 
-## Agent 工具
-
-内置工具由 `Bot.Agent.Tools` 聚合，具体实现按领域放在 `Bot.Agent.Tools.*`：
-
-- `Files`：列目录、读文件。
-- `Chat`：查询聊天记录、发送回复、提及用户、读取群成员信息。
-- `Web`：网页搜索和网页抓取。
-- `Time`：日期时间。
-- `Image`：图片生成。
-- `Schedule`：计划任务。
-- `Memory`：个人/群聊记忆管理。
-- `Shell`：受控 shell 执行。
-- `Emacs`：通过 `emacsclient --socket-name cosmobot --eval` 在 cosmobot 管理的 Emacs daemon 中执行 Emacs Lisp。
-
-部分工具需要配置开关或 API key。例如网页搜索需要启用 `[tool.web_search]`，并选择 `tavily` 或 `brave`。
-
-## Agent Middleware
-
-Agent 的核心循环负责模型请求、工具调用和 conversation 推进；横切行为由 `Bot.Agent.Middleware.*` 提供：
-
-- `ContextCompaction`：在历史达到 50 条消息时整理较早上下文，保留最近 20 条消息。
-- `Observation`：记录 agent run、model turn、tool call 和 conversation link 事件，并把 audit id 放入 typed middleware context。
-- `Tools`：处理工具调用失败、工具轮数限制，以及 noisy tool 的用户可见进度提示。
-
-Middleware 之间通过 typed `MiddlewareContext` 传递数据，避免把临时字段塞进 agent core 或工具上下文。
-
-## Agent Audit
-
-Agent 运行时会记录结构化 trace event：run start/finish、model turn start/finish、tool call start/finish。可以使用 `!audit` 命令查询。
+- If the current message sender is not superuser, the priviledged tools will be not visible to the agent.
+- Some tools may be turned off in the config.
+- Most tools are always available.
