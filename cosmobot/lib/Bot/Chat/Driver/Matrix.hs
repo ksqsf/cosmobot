@@ -138,15 +138,14 @@ data MatrixDriver = MatrixDriver
   }
 
 newMatrixDriver
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  :: (Concurrent :> es, Prim :> es)
   => Config
   -> Eff es MatrixDriver
 newMatrixDriver cfg = do
   eventIds <- IORef.newIORef Map.empty
   directRoomIdsRef <- IORef.newIORef (Set.fromList (matrixRoomId <$> cfg.directRooms))
   joinedMemberCountsRef <- IORef.newIORef Map.empty
-  initialAuthState <- initialMatrixAuthState cfg
-  authState <- IORef.newIORef initialAuthState
+  authState <- IORef.newIORef (initialMatrixAuthState cfg)
   refreshLock <- MVar.newMVar ()
   let auth = MatrixAuth cfg authState refreshLock
   pure MatrixDriver
@@ -231,9 +230,9 @@ storeSyncToken =
 
 sync :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Maybe Text -> Eff es (Maybe SyncResponse)
 sync driver since = do
-  response <- maybeCall driver (MatrixSync since)
-  traverse_ (rememberMatrixRoomState driver.directRoomIds driver.joinedMemberCounts) response
-  pure response
+  response <- call driver (MatrixSync since)
+  rememberMatrixRoomState driver.directRoomIds driver.joinedMemberCounts response
+  pure (Just response)
 
 directRooms :: Prim :> es => MatrixDriver -> Eff es (Set MatrixRoomId)
 directRooms driver =
@@ -615,17 +614,10 @@ instance MatrixAPI MatrixSetTyping where
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText typingRoomId /: "typing" /: typingUserId)
       (ReqBodyJson request)
 
-initialMatrixAuthState :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Config -> Eff es MatrixAuthState
-initialMatrixAuthState cfg =
-  case (cfg.loginUser, cfg.loginPassword) of
-    (Just user, Just password) -> do
-      response <- matrixLogin cfg user password
-      pure MatrixAuthState
-        { authAccessToken = Just response.loginAccessToken
-        , authRefreshToken = response.loginRefreshToken
-        }
-    _ ->
-      pure MatrixAuthState{authAccessToken = Nothing, authRefreshToken = Nothing}
+initialMatrixAuthState :: Config -> MatrixAuthState
+initialMatrixAuthState _cfg =
+  -- It's unnecessary to log in here. /sync should handle it.
+  MatrixAuthState{authAccessToken = Nothing, authRefreshToken = Nothing}
 
 matrixAuthAvailable :: Prim :> es => MatrixDriver -> Eff es Bool
 matrixAuthAvailable driver = do
