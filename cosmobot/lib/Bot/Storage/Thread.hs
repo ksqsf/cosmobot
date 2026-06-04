@@ -430,7 +430,7 @@ cacheThreadNode messageKey node threadState =
 
 maxCachedThreads :: Int
 maxCachedThreads =
-  32
+  4
 
 threadStorageIdFor :: ThreadState -> Maybe StoredThreadNode -> Maybe StoredThreadNode -> Integer
 threadStorageIdFor threadState parentNode existingNode =
