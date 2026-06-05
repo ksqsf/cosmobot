@@ -6,7 +6,6 @@ Stability   : experimental
 
 module Bot.AgentAudit.Projection
   ( maxInMemoryAgentAuditEvents
-  , markStaleRunningToolUses
   , toolUsesFromAuditRecords
   , toolUsesFromRecords
   )
@@ -21,28 +20,9 @@ maxInMemoryAgentAuditEvents :: Int
 maxInMemoryAgentAuditEvents =
   5000
 
-markStaleRunningToolUses :: UTCTime -> [AgentAuditRecord] -> [AgentAuditRecord]
-markStaleRunningToolUses processStartedAt records =
-  let restartedRunIds =
-        ordNub
-          [ toolUse.runId
-          | toolUse <- toolUsesFromAuditRecords records
-          , toolUse.status == ToolUseInProgress
-          , toolUse.occurredAt < processStartedAt
-          ]
-      restartedRecords =
-        [ AgentAuditRecord
-            { id = Nothing
-            , occurredAt = processStartedAt
-            , event = AgentRunInterrupted{runId, reason = "restarted"}
-            }
-        | runId <- restartedRunIds
-        ]
-  in records <> restartedRecords
-
-toolUsesFromRecords :: Int -> [AgentAuditRecord] -> [ToolUseDetail]
-toolUsesFromRecords limit records =
-  takeLast (max 0 limit) (toolUsesFromAuditRecords records)
+toolUsesFromRecords :: UTCTime -> Int -> [AgentAuditRecord] -> [ToolUseDetail]
+toolUsesFromRecords processStartedAt limit records =
+  takeLast (max 0 limit) (map (markStaleRunningToolUse processStartedAt) (toolUsesFromAuditRecords records))
 
 toolUsesFromAuditRecords :: [AgentAuditRecord] -> [ToolUseDetail]
 toolUsesFromAuditRecords records =
@@ -60,7 +40,7 @@ toolUsesFromAuditRecords records =
         | record@AgentAuditRecord{event = event@AgentRunInterrupted{}} <- records
         ]
 
-    toolUseDetail finishesByCall interruptionsByRun AgentAuditRecord{id = Just auditId, occurredAt, event = ToolCallStarted{runId, turn, toolCall}} =
+    toolUseDetail finishesByCall interruptionsByRun AgentAuditRecord{id = auditId, occurredAt, event = ToolCallStarted{runId, turn, toolCall}} =
       let finished = Map.lookup (runId, toolCall.id) finishesByCall
           interrupted = Map.lookup runId interruptionsByRun
       in Just ToolUseDetail
@@ -120,3 +100,17 @@ toolUsesFromAuditRecords records =
 takeLast :: Int -> [a] -> [a]
 takeLast n values =
   drop (max 0 (length values - n)) values
+
+markStaleRunningToolUse :: UTCTime -> ToolUseDetail -> ToolUseDetail
+markStaleRunningToolUse processStartedAt toolUse
+  | toolUse.status == ToolUseInProgress
+  , toolUse.occurredAt < processStartedAt =
+      toolUse
+        { finishedAt = Just processStartedAt
+        , status = ToolUseInterrupted
+            { reason = "restarted"
+            , durationMilliseconds = floor (diffUTCTime processStartedAt toolUse.occurredAt * 1000)
+            }
+        }
+  | otherwise =
+      toolUse

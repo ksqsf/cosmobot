@@ -54,7 +54,7 @@ data AgentAuditEvent
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 data AgentAuditRecord = AgentAuditRecord
-  { id :: !(Maybe Integer)
+  { id :: !Integer
   , occurredAt :: !UTCTime
   , event :: !AgentAuditEvent
   }

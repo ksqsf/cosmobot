@@ -146,6 +146,7 @@ common test-deps
                     , streaming
                     , streaming-bytestring
                     , text
+                    , time
                     , toml-parser
                     , wai
                     , warp

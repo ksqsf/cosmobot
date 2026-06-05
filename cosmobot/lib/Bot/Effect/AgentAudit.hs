@@ -100,26 +100,26 @@ runAgentAuditWithObserver observer inner = do
         persistedId <- AgentAuditStorage.persistEvent occurredAt event
         for_ persistedId \auditId ->
           observer AgentAuditRecord
-            { id = Just auditId
+            { id = auditId
             , occurredAt = occurredAt
             , event = event
             }
         pure persistedId
       QueryRecentAuditRecords limit -> do
         records <- AgentAuditStorage.queryStoredRecent maxInMemoryAgentAuditEvents
-        pure (takeRecentAuditRecords limit (markStaleRunningToolUses processStartedAt records))
+        pure (takeRecentAuditRecords limit records)
       QueryAuditRecord auditId ->
         AgentAuditStorage.queryStoredRecord auditId
       QueryRecentToolUses limit -> do
         records <- AgentAuditStorage.loadStoredAuditRecords
-        pure (toolUsesFromRecords limit (markStaleRunningToolUses processStartedAt records))
+        pure (toolUsesFromRecords processStartedAt limit records)
       QueryToolUse auditId -> do
         records <- AgentAuditStorage.loadStoredAuditRecords
-        pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords maxInMemoryAgentAuditEvents (markStaleRunningToolUses processStartedAt records)))
+        pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords processStartedAt maxInMemoryAgentAuditEvents records))
       QueryThreadAudit messageId ->
-        markStaleRunningToolUses processStartedAt <$> AgentAuditStorage.queryStoredThreadAudit messageId
+        AgentAuditStorage.queryStoredThreadAudit messageId
       QueryThreadMessagesAudit messageIds ->
-        markStaleRunningToolUses processStartedAt <$> AgentAuditStorage.queryStoredThreadMessagesAudit messageIds
+        AgentAuditStorage.queryStoredThreadMessagesAudit messageIds
     )
     inner
 

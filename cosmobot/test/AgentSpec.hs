@@ -7,6 +7,7 @@ import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
 import qualified Bot.Agent.Types as AgentTypes
+import qualified Bot.AgentAudit.Storage as AgentAuditStorage
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Chat.Driver.Types (ChatDriverEffects)
 import qualified Bot.Chat.Driver.Types as Driver
@@ -53,6 +54,7 @@ import qualified Streaming.ByteString as Q
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
+import Data.Time (UTCTime (..), fromGregorian)
 import Data.Unique
 import Effectful.FileSystem (FileSystem, runFileSystem)
 import qualified Effectful.FileSystem as FS
@@ -196,6 +198,7 @@ main =
       , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
       , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
+      , testCase "agent audit recent records exclude synthetic restarted runs" testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns
       , testCase "agent audit storage omits large tool results" testAgentAuditStorageOmitsLargeToolResults
       , testCase "agent omits large tool results only after one model turn consumes them" testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt
       , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
@@ -887,6 +890,44 @@ testAgentAuditRecordsToolEvents = do
       toolUse.result @?= Just "fetched"
     _ ->
       assertFailure [i|expected one tool use, got #{length toolUses}|]
+
+testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns :: IO ()
+testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns = do
+  (records, toolUses) <- runEff $
+    runConcurrent $
+      runPrim $
+        runTestLog $
+          StorageSQLite.runStorageSQLitePath ":memory:" do
+            AgentAuditStorage.ensureAgentAuditTable
+            void $ AgentAuditStorage.persistEvent staleAuditTime AgentAudit.ToolCallStarted
+              { runId = "run-stale"
+              , turn = 1
+              , toolCall = AgentAudit.ToolCallTrace
+                  { id = "call-stale"
+                  , name = "fetch_url"
+                  , arguments = "{}"
+                  }
+              }
+            AgentAudit.runAgentAudit do
+              (,) <$> AgentAudit.queryRecentAuditRecords 10 <*> AgentAudit.queryRecentToolUses 10
+  case records of
+    [record] ->
+      assertBool "recent raw audit records should keep persisted ids" (record.id > 0)
+    _ ->
+      assertFailure [i|expected one persisted audit record, got #{length records}|]
+  case toolUses of
+    [toolUse] ->
+      case toolUse.status of
+        AgentAudit.ToolUseInterrupted{reason} ->
+          reason @?= "restarted"
+        other ->
+          assertFailure ("expected restarted stale tool use, got " <> show other)
+    _ ->
+      assertFailure [i|expected one projected tool use, got #{length toolUses}|]
+
+staleAuditTime :: UTCTime
+staleAuditTime =
+  UTCTime (fromGregorian 2020 1 1) 0
 
 testAgentAuditStorageOmitsLargeToolResults :: IO ()
 testAgentAuditStorageOmitsLargeToolResults =

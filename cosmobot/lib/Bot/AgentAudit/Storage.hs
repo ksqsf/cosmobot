@@ -139,7 +139,7 @@ storedAuditRecord :: AgentAuditRow -> Maybe AgentAuditRecord
 storedAuditRecord row = do
   event <- decodeJsonText row.event_json
   pure AgentAuditRecord
-    { id = Just (fromIntegral (fromId row.id))
+    { id = fromIntegral (fromId row.id)
     , occurredAt = row.occurred_at
     , event = event
     }

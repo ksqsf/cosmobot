@@ -158,21 +158,19 @@ renderThreadAuditLog _ records =
 
 renderAuditRecord :: AgentAudit.AgentAuditRecord -> Text
 renderAuditRecord record =
-  let eventId = renderRecordId record.id
+  let eventId :: Text
+      eventId = show record.id
       occurredAt = timestamp record.occurredAt
       event = renderAuditEvent record.id record.event
   in
   [i|- `#{occurredAt}` `event_id=#{eventId}` #{event}|]
 
-renderRecordId :: Maybe Integer -> Text
-renderRecordId =
-  maybe "unknown" show
-
-renderAuditEvent :: Maybe Integer -> AgentAudit.AgentAuditEvent -> Text
+renderAuditEvent :: Integer -> AgentAudit.AgentAuditEvent -> Text
 renderAuditEvent recordId = \case
   AgentAudit.ToolCallStarted{runId, turn, toolCall} ->
     let toolName = toolCall.name
-        auditId = renderRecordId recordId
+        auditId :: Text
+        auditId = show recordId
     in [i|started audit_id=#{auditId} run=#{runId} turn=#{turn} tool=`#{toolName}`|]
   AgentAudit.ToolCallFinished{runId, turn, toolName, status, resultLength} ->
     [i|finished run=#{runId} turn=#{turn} tool=`#{toolName}` status=#{status} result_chars=#{resultLength}|]
