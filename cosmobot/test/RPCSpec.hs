@@ -413,7 +413,7 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
       let driver = RPCDriver.rpcChatDriver testRpcConfig rpcState
-      replyId <- fromMaybe (error "expected rpc reply id") . rightToMaybe <$> replyTo driver incoming "draft answer"
+      replyId <- fromMaybe (error "expected rpc reply id") . rightToMaybe <$> sendReplyMessage driver incoming "draft answer"
       edited <- editMessage driver incoming replyId "final answer"
       pure (replyId, edited)
 
@@ -455,7 +455,7 @@ testRpcDriverStoresLocalImageRepliesAsAttachments =
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
       let driver = RPCDriver.rpcChatDriver cfg rpcState
-      _reply <- replyTo driver incoming ("done\n[image] file://" <> Text.pack imagePath)
+      _reply <- sendReplyMessage driver incoming ("done\n[image] file://" <> Text.pack imagePath)
       RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
 

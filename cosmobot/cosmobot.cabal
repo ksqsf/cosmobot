@@ -190,6 +190,7 @@ library
         Bot.AgentAudit.Projection
         Bot.AgentAudit.Storage
         Bot.AgentAudit.Types
+        Bot.Chat.Adapter
         Bot.Chat.Driver
         Bot.Chat.Driver.Discord
         Bot.Chat.Driver.Discord.Config
@@ -201,7 +202,6 @@ library
         Bot.Chat.Driver.Telegram
         Bot.Chat.Driver.Telegram.Config
         Bot.Chat.Driver.Types
-        Bot.Chat.ReplyStream
         Bot.Chat.Types
         Bot.ChatLog.Record
         Bot.ChatLog.Types
@@ -213,6 +213,7 @@ library
         Bot.Core.Route
         Bot.Effect.AgentAudit
         Bot.Effect.Chat
+        Bot.Effect.ChatDriver
         Bot.Effect.ChatLog
         Bot.Effect.HTTP
         Bot.Effect.LLM

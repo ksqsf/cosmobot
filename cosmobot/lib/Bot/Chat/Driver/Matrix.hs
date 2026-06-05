@@ -163,7 +163,7 @@ instance Driver.ChatDriver MatrixDriver where
   driverPlatform _ =
     PlatformMatrix
 
-  replyTo =
+  sendReplyMessage =
     replyToMatrix
 
   replyAudio =
@@ -178,8 +178,8 @@ instance Driver.ChatDriver MatrixDriver where
   deleteMessage =
     deleteMessageMatrix
 
-  replyStreamStyle _ _ =
-    pure (Chat.EditableReply matrixEditChunkChars matrixStreamingMessageLimit)
+  messageOutPolicy _ _ =
+    pure (Chat.EditableMessage matrixEditChunkChars matrixStreamingMessageLimit)
 
   getMessageContent =
     getMessageContentMatrix

@@ -37,7 +37,7 @@ typstRenderTool = Tool
         Typst.withTypst toolArgs.format toolArgs.source \outputPath -> do
           sent <- case toolArgs.format of
             TypstOutputPNG -> Chat.replyTo context.message (Chat.imageDirective ("file://" <> Text.pack outputPath))
-            TypstOutputPDF -> Chat.uploadFile context.message outputPath
+            TypstOutputPDF -> (: []) <$> Chat.uploadFile context.message outputPath
           let sentText = show sent :: String
               captionText :: Text
               captionText =

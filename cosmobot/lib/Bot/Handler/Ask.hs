@@ -223,7 +223,7 @@ startDrawThread label cfg threads message prompt = do
   let input = inputWithImages contextPrompt contextImages
   transcript <- startTranscript cfg message input
   answer <- drawTranscript transcript
-  responseId <- rightToMaybe <$> Chat.replyTo message answer
+  responseId <- listToMaybe . rights <$> Chat.replyTo message answer
   ChatLog.recordSelfMessage message answer
   rememberThreadTranscript threads (threadMessageKey message <$> responseId) (appendAssistant answer transcript)
 

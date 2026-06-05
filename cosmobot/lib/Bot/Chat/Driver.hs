@@ -19,6 +19,7 @@ import qualified Bot.Chat.Driver.RPC as RPCDriver
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Chat.Driver.Types
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.ChatDriver as ChatDriverEffect
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
@@ -55,10 +56,10 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
   driverPlatform (NormalizingChatDriver driver) =
     driverPlatform driver
 
-  replyTo (NormalizingChatDriver driver) message body =
+  sendReplyMessage (NormalizingChatDriver driver) message body =
     withChatDriverEither message "Chat reply" do
       normalizedBody <- normalizeOutgoingReplyBody driver body
-      replyTo driver message normalizedBody
+      sendReplyMessage driver message normalizedBody
 
   replyAudio (NormalizingChatDriver driver) message audioRef caption =
     withChatDriverEither message "Audio send" do
@@ -76,9 +77,9 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
     fromMaybe False <$> withChatDriverMaybe message "chat delete" do
       Just <$> deleteMessage driver message messageId
 
-  replyStreamStyle (NormalizingChatDriver driver) message =
-    fromMaybe defaultReplyStreamStyle <$> withChatDriverMaybe message "reply stream style" do
-      Just <$> replyStreamStyle driver message
+  messageOutPolicy (NormalizingChatDriver driver) message =
+    fromMaybe defaultMessageOutPolicy <$> withChatDriverMaybe message "message out policy" do
+      Just <$> messageOutPolicy driver message
 
   getMessageContent (NormalizingChatDriver driver) message messageId =
     withChatDriverMaybe message "fetch referenced message" do
@@ -129,9 +130,9 @@ instance ChatDriver ChatDrivers where
   driverPlatform _ =
     error "ChatDrivers does not have a single platform"
 
-  replyTo drivers message body =
+  sendReplyMessage drivers message body =
     withMessageDriver drivers message \driver ->
-      replyTo driver message body
+      sendReplyMessage driver message body
 
   replyAudio drivers message audioRef caption =
     withMessageDriver drivers message \driver ->
@@ -149,9 +150,9 @@ instance ChatDriver ChatDrivers where
     withMessageDriver drivers message \driver ->
       deleteMessage driver message messageId
 
-  replyStreamStyle drivers message =
+  messageOutPolicy drivers message =
     withMessageDriver drivers message \driver ->
-      replyStreamStyle driver message
+      messageOutPolicy driver message
 
   getMessageContent drivers message messageId =
     withMessageDriver drivers message \driver ->
@@ -229,12 +230,12 @@ withChatDriverEither message label action =
     logInfo messageText
     pure (Left messageText)
 
-defaultReplyStreamStyle :: Chat.ReplyStreamStyle
-defaultReplyStreamStyle =
-  Chat.ChunkedReply defaultChunkedReplyLimit
+defaultMessageOutPolicy :: Chat.MessageOutPolicy
+defaultMessageOutPolicy =
+  Chat.ChunkedMessage defaultChunkedMessageLimit
 
-defaultChunkedReplyLimit :: Int
-defaultChunkedReplyLimit = 4000
+defaultChunkedMessageLimit :: Int
+defaultChunkedMessageLimit = 4000
 
 normalizeReferencedMessageMedia
   :: (Media.Media :> es, ChatDriver driver, ChatDriverEffects driver es)
@@ -309,7 +310,7 @@ chatDriversHandler
   => ChatDrivers
   -> Chat.ChatHandler es
 chatDriversHandler drivers localEnv = \case
-  Chat.IncomingMessages -> do
+  ChatDriverEffect.IncomingMessages -> do
     let stream :: Stream (Of IncomingMessage) (Eff es) ()
         stream = incomingMessages drivers
     localLift localEnv (ConcUnlift Persistent Unlimited) \runLocal ->

@@ -81,7 +81,7 @@ instance Driver.ChatDriver QQDriver where
   driverPlatform _ =
     PlatformQQ
 
-  replyTo =
+  sendReplyMessage =
     replyToQQ
 
   replyAudio =
@@ -93,8 +93,8 @@ instance Driver.ChatDriver QQDriver where
   deleteMessage =
     deleteMessageQQ
 
-  replyStreamStyle _ _ =
-    pure (Chat.ChunkedReply qqStreamingMessageLimit)
+  messageOutPolicy _ _ =
+    pure (Chat.ChunkedMessage qqStreamingMessageLimit)
 
   getMessageContent driver _ messageId =
     getMessageContentQQ driver messageId

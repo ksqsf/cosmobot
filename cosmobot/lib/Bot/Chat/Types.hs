@@ -5,21 +5,21 @@ Stability   : experimental
 -}
 
 module Bot.Chat.Types
-  ( ReplyStreamStyle (..)
-  , ReplyStreamUpdate (..)
+  ( MessageOutPolicy (..)
+  , MessageOutResult (..)
   )
 where
 
 import Bot.Core.Message
 import Bot.Prelude
 
-data ReplyStreamStyle
-  = EditableReply !Int !Int
-  | ChunkedReply !Int
+data MessageOutPolicy
+  = EditableMessage !Int !Int
+  | ChunkedMessage !Int
 
-data ReplyStreamUpdate = ReplyStreamUpdate
+data MessageOutResult = MessageOutResult
   { responseId :: !(Maybe MessageId)
-  , sentResponseIds :: ![MessageId]
+  , sentMessageResults :: ![Either Text MessageId]
   , answer :: !Text
   }
   deriving (Show)

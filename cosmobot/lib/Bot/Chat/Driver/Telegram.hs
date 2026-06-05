@@ -77,7 +77,6 @@ import qualified Network.HTTP.Types.Header as HTTPHeader
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 import Effectful.FileSystem (FileSystem)
-import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Effectful.Temporary as Temporary
 import qualified Data.Text as Text
@@ -112,7 +111,7 @@ instance Driver.ChatDriver TelegramDriver where
   driverPlatform _ =
     PlatformTelegram
 
-  replyTo =
+  sendReplyMessage =
     replyToTelegram
 
   replyAudio =
@@ -127,8 +126,8 @@ instance Driver.ChatDriver TelegramDriver where
   deleteMessage =
     deleteMessageForTelegram
 
-  replyStreamStyle _ _ =
-    pure (ChatEffect.EditableReply telegramEditChunkChars telegramMessageTextLimit)
+  messageOutPolicy _ _ =
+    pure (ChatEffect.EditableMessage telegramEditChunkChars telegramMessageTextLimit)
 
   getMessageContent =
     getMessageContentTelegram

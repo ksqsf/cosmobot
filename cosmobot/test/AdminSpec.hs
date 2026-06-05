@@ -28,7 +28,7 @@ data AdminChatDriver es = AdminChatDriver
 instance Driver.ChatDriver (AdminChatDriver es0) where
   type ChatDriverEffects (AdminChatDriver es0) es = es ~ es0
   driverPlatform _ = PlatformTelegram
-  replyTo driver = driver.sendReply
+  sendReplyMessage driver = driver.sendReply
   setMemberTitle driver = driver.setTitle
 
 main :: IO ()

@@ -107,7 +107,7 @@ instance Driver.ChatDriver DiscordDriver where
   driverPlatform _ =
     PlatformDiscord
 
-  replyTo =
+  sendReplyMessage =
     replyToDiscord
 
   replyAudio =
@@ -122,8 +122,8 @@ instance Driver.ChatDriver DiscordDriver where
   deleteMessage =
     deleteMessageDiscord
 
-  replyStreamStyle _ _ =
-    pure (Chat.EditableReply discordEditChunkChars discordMessageTextLimit)
+  messageOutPolicy _ _ =
+    pure (Chat.EditableMessage discordEditChunkChars discordMessageTextLimit)
 
   getMessageContent =
     getMessageContentDiscord

@@ -34,7 +34,6 @@ import qualified Data.Text as Text
 import qualified Data.Text.Lazy as LazyText
 import qualified Data.Text.Lazy.Builder as TextBuilder
 import qualified Effectful.Prim.IORef as IORef
-import qualified Streaming
 import qualified Streaming.Prelude as S
 import Effectful.FileSystem
 import Effectful.Process
@@ -69,25 +68,16 @@ runAskAgentThread
   -> Transcript
   -> Eff es (Text, Transcript)
 runAskAgentThread toolCfg cfg threads parentMessageKey message input transcript = do
-  threadId <- myThreadId
-  activeReply <- newActiveReply threads parentMessageKey message threadId transcript
   let observer = AgentAudit.agentAuditObserver
   agentRun <- Agent.startAgentRun (agentContext toolCfg cfg message input) Agent.defaultTools
-  reply <-
-    streamAgentReply cfg observer agentRun activeReply message transcript
-      `onException` discardActiveReply activeReply
-  commitAgentReply observer activeReply message reply
-    `onException` discardActiveReply activeReply
+  withActiveReply threads parentMessageKey message transcript \activeReply -> do
+    reply <- streamAgentReply cfg observer agentRun activeReply message transcript
+    commitAgentReply observer activeReply message reply
 
 data AgentReply = AgentReply
   { responseId :: !(Maybe MessageId)
   , answer :: !Text
   , result :: !Agent.AgentResult
-  }
-
-data AgentReplyResult = AgentReplyResult
-  { replyAnswer :: !Text
-  , agentResult :: !Agent.AgentResult
   }
 
 agentContext
@@ -152,11 +142,13 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
           . Agent.withNormalizingToolReplies
           )
             (Agent.defaultAgentProgram observer cfg.agentMaxTurns agentRun)
-    (responseId, replyResult) <-
+    (lastReply, replyResult) <-
       S.mapM_
         (recordReplyUpdate activeReply)
-        (Chat.streamReplySegmentsTo message (.replyAnswer) (agentReplyTextSegments (Agent.runAgentProgramStreaming program transcript)))
-    pure AgentReply{responseId, answer = replyResult.replyAnswer, result = replyResult.agentResult}
+        (Chat.streamMultipleRepliesTo message (agentReplyTextSegments (Agent.runAgentProgramStreaming program transcript)))
+    let responseId = lastReply.responseId
+        (answer, result) = replyResult
+    pure AgentReply{responseId, answer, result}
   `catchSync` \err ->
     case fromException err of
       Just ThreadKilled ->
@@ -164,7 +156,7 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
       _ -> do
         logWarning [i|LLM request failed: #{show err :: String}|]
         let failureMessage = llmFailureMessage err
-        responseId <- rightToMaybe <$> Chat.replyTo message failureMessage
+        responseId <- listToMaybe . rights <$> Chat.replyTo message failureMessage
         pure AgentReply
           { responseId
           , answer = failureMessage
@@ -179,39 +171,28 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
 agentReplyTextSegments
   :: Prim :> es
   => Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
-  -> Stream (Stream (Of Text) (Eff es)) (Eff es) AgentReplyResult
+  -> Stream (Stream (Of Text) (Eff es)) (Eff es) (Text, Agent.AgentResult)
 agentReplyTextSegments =
+  S.maps (S.mapMaybe id) . S.breaks isNothing . agentReplyTextEvents
+
+agentReplyTextEvents
+  :: Prim :> es
+  => Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
+  -> Stream (Of (Maybe Text)) (Eff es) (Text, Agent.AgentResult)
+agentReplyTextEvents =
   go mempty
   where
     go answer stream = do
       next <- lift (S.next stream)
       case next of
         Left result ->
-          pure AgentReplyResult
-            { replyAnswer = renderReplyText answer
-            , agentResult = result
-            }
-        Right (Agent.AgentContentDelta chunk, rest) ->
-          Streaming.wrap (segment (appendReplyText chunk answer) chunk rest)
-        Right (Agent.AgentToolCallNotification{}, rest) ->
+          pure (renderReplyText answer, result)
+        Right (Agent.AgentContentDelta chunk, rest) -> do
+          S.yield (Just chunk)
+          go (appendReplyText chunk answer) rest
+        Right (Agent.AgentToolCallNotification{}, rest) -> do
+          S.yield Nothing
           go answer rest
-
-    segment answer chunk stream = do
-      S.yield chunk
-      next <- lift (S.next stream)
-      case next of
-        Left result ->
-          pure (finished answer result)
-        Right (Agent.AgentContentDelta nextChunk, rest) ->
-          segment (appendReplyText nextChunk answer) nextChunk rest
-        Right (Agent.AgentToolCallNotification{}, rest) ->
-          pure (go answer rest)
-
-    finished answer result =
-      pure AgentReplyResult
-        { replyAnswer = renderReplyText answer
-        , agentResult = result
-        }
 
 appendReplyText :: Text -> TextBuilder.Builder -> TextBuilder.Builder
 appendReplyText chunk answer =
@@ -253,13 +234,8 @@ rememberToolEmittedMessage
   -> Maybe MessageId
   -> Eff es ()
 rememberToolEmittedMessage activeReply messageId = do
-  active <- IORef.readIORef activeReply.activeRef
-  case active of
-    Just activeHandle ->
-      traverse_ (addActiveThreadMessage activeReply.threads activeHandle . threadMessageKey activeReply.message) messageId
-    Nothing -> do
-      activeHandle <- rememberActiveThread activeReply.threads activeReply.parentMessageKey (threadMessageKey activeReply.message <$> messageId) activeReply.threadId activeReply.baseTranscript
-      IORef.writeIORef activeReply.activeRef activeHandle
+  active <- ensureActiveReply activeReply messageId activeReply.baseTranscript
+  traverse_ (\activeHandle -> traverse_ (addActiveThreadMessage activeReply.threads activeHandle . threadMessageKey activeReply.message) messageId) active
 
 discardActiveReply :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es) => ActiveReplyState -> Eff es ()
 discardActiveReply activeReply =
@@ -275,64 +251,55 @@ data ActiveReplyState = ActiveReplyState
   , activeRef :: !(IORef.IORef (Maybe ActiveThreadHandle))
   }
 
-newActiveReply
-  :: Prim :> es
+withActiveReply
+  :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => ThreadStore
   -> Maybe ThreadMessageKey
   -> IncomingMessage
-  -> ThreadId
   -> Transcript
-  -> Eff es ActiveReplyState
-newActiveReply threads parentMessageKey message threadId baseTranscript = do
+  -> (ActiveReplyState -> Eff es a)
+  -> Eff es a
+withActiveReply threads parentMessageKey message baseTranscript use = do
+  threadId <- myThreadId
   activeRef <- IORef.newIORef Nothing
-  pure ActiveReplyState
-    { threads = threads
-    , parentMessageKey = parentMessageKey
-    , message = message
-    , threadId = threadId
-    , baseTranscript = baseTranscript
-    , activeRef = activeRef
-    }
+  let activeReply =
+        ActiveReplyState
+          { threads
+          , parentMessageKey
+          , message
+          , threadId
+          , baseTranscript
+          , activeRef
+          }
+  use activeReply `onException` discardActiveReply activeReply
 
 recordReplyUpdate
   :: (Prim :> es, Concurrent :> es)
   => ActiveReplyState
-  -> Chat.ReplyStreamUpdate
+  -> Chat.MessageOutResult
   -> Eff es ()
 recordReplyUpdate activeState update = do
-  refreshActiveThread activeState update.answer
-  registerActiveIfNeeded activeState update.responseId update.answer
-  registerActiveAliases activeState update.sentResponseIds
+  let sentIds = rights update.sentMessageResults
+      transcript = appendAssistant update.answer activeState.baseTranscript
+  active <- ensureActiveReply activeState (update.responseId <|> listToMaybe sentIds) transcript
+  traverse_ (`updateActiveThread` transcript) active
+  traverse_ (\activeHandle -> traverse_ (addActiveThreadMessage activeState.threads activeHandle . threadMessageKey activeState.message) sentIds) active
 
-registerActiveIfNeeded
+ensureActiveReply
   :: (Prim :> es, Concurrent :> es)
   => ActiveReplyState
   -> Maybe MessageId
-  -> Text
-  -> Eff es ()
-registerActiveIfNeeded activeState responseId current = do
+  -> Transcript
+  -> Eff es (Maybe ActiveThreadHandle)
+ensureActiveReply activeState messageId transcript = do
   existing <- IORef.readIORef activeState.activeRef
-  when (isNothing existing) do
-    activeHandle <- rememberActiveThread activeState.threads activeState.parentMessageKey (threadMessageKey activeState.message <$> responseId) activeState.threadId (appendAssistant current activeState.baseTranscript)
-    IORef.writeIORef activeState.activeRef activeHandle
-
-registerActiveAliases
-  :: Prim :> es
-  => ActiveReplyState
-  -> [MessageId]
-  -> Eff es ()
-registerActiveAliases activeState responseIds = do
-  active <- IORef.readIORef activeState.activeRef
-  traverse_ (\activeHandle -> traverse_ (addActiveThreadMessage activeState.threads activeHandle . threadMessageKey activeState.message) responseIds) active
-
-refreshActiveThread
-  :: Prim :> es
-  => ActiveReplyState
-  -> Text
-  -> Eff es ()
-refreshActiveThread activeState current = do
-  active <- IORef.readIORef activeState.activeRef
-  traverse_ (`updateActiveThread` appendAssistant current activeState.baseTranscript) active
+  case existing of
+    Just{} ->
+      pure existing
+    Nothing -> do
+      active <- rememberActiveThread activeState.threads activeState.parentMessageKey (threadMessageKey activeState.message <$> messageId) activeState.threadId transcript
+      IORef.writeIORef activeState.activeRef active
+      pure active
 
 llmFailureMessage :: SomeException -> Text
 llmFailureMessage err =

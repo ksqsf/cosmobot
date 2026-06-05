@@ -23,8 +23,8 @@ class ChatDriver driver where
 
   driverPlatform :: driver -> ChatPlatform
 
-  replyTo :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Eff es (Either Text MessageId)
-  replyTo driver _ _ =
+  sendReplyMessage :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Eff es (Either Text MessageId)
+  sendReplyMessage driver _ _ =
     pure (Left [i|#{driverPlatform driver} does not support replies.|])
 
   replyAudio :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
@@ -43,9 +43,9 @@ class ChatDriver driver where
   deleteMessage _ _ _ =
     pure False
 
-  replyStreamStyle :: ChatDriverEffects driver es => driver -> IncomingMessage -> Eff es Chat.ReplyStreamStyle
-  replyStreamStyle _ _ =
-    pure (Chat.ChunkedReply 4000)
+  messageOutPolicy :: ChatDriverEffects driver es => driver -> IncomingMessage -> Eff es Chat.MessageOutPolicy
+  messageOutPolicy _ _ =
+    pure (Chat.ChunkedMessage 4000)
 
   getMessageContent :: ChatDriverEffects driver es => driver -> IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
   getMessageContent _ _ _ =
@@ -73,7 +73,7 @@ class ChatDriver driver where
 
   mentionUser :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
   mentionUser driver message _ body =
-    replyTo driver message body
+    sendReplyMessage driver message body
 
   setMemberTitle :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Text -> Eff es Bool
   setMemberTitle _ _ _ _ =

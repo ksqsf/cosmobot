@@ -45,7 +45,7 @@ instance ChatDriver RpcChatDriver where
   driverPlatform _ =
     PlatformRPC
 
-  replyTo driver message body = do
+  sendReplyMessage driver message body = do
     let sessionId = RPC.sessionIdFromMessage message
         parentMessageId = message.messageId
     reply <- rpcReplyContent driver.cfg body
@@ -69,10 +69,10 @@ instance ChatDriver RpcChatDriver where
 
   replyAudio driver message audioRef caption = do
     let body = maybe audioRef (\c -> c <> "\n" <> audioRef) caption
-    replyTo driver message body
+    sendReplyMessage driver message body
 
   uploadFile driver message path =
-    replyTo driver message ("Uploaded file: " <> Text.pack path)
+    sendReplyMessage driver message ("Uploaded file: " <> Text.pack path)
 
   editMessage driver message messageId body = do
     let sessionId = RPC.sessionIdFromMessage message
@@ -82,8 +82,8 @@ instance ChatDriver RpcChatDriver where
     RPC.broadcast driver.rpcState (Aeson.toJSON (Protocol.notification "chat.message_update" payload))
     pure updated
 
-  replyStreamStyle _ _ =
-    pure (Chat.EditableReply 1200 4000)
+  messageOutPolicy _ _ =
+    pure (Chat.EditableMessage 1200 4000)
 
 data RpcReplyContent = RpcReplyContent
   { text :: !Text

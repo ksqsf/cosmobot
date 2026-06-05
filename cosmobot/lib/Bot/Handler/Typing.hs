@@ -73,7 +73,7 @@ sendRankImage titleSuffix failureMessage fetchRows message =
       logInfo [i|Rendered typing rank image: #{imagePath}|]
       sent <- Chat.replyTo message (ReplyBody.imageDirective ("file://" <> Text.pack imagePath))
       logInfo [i|Sent typing rank image: #{show sent :: Text}|]
-      when (isLeft sent) do
+      when (null (rights sent)) do
         void $ Chat.replyTo message [i|#{title}已生成，但图片发送失败。|]
   where
     handleError action =

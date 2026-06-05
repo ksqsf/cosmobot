@@ -102,7 +102,7 @@ data AgentMockChatDriver es = AgentMockChatDriver
   , agentReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
   , agentUploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
   , agentEditMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
-  , agentReplyStreamStyle :: IncomingMessage -> Eff es Chat.ReplyStreamStyle
+  , agentMessageOutPolicy :: IncomingMessage -> Eff es Chat.MessageOutPolicy
   , agentFetchMessage :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
   , agentUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
   }
@@ -110,11 +110,11 @@ data AgentMockChatDriver es = AgentMockChatDriver
 instance Driver.ChatDriver (AgentMockChatDriver es0) where
   type ChatDriverEffects (AgentMockChatDriver es0) es = es ~ es0
   driverPlatform _ = PlatformTelegram
-  replyTo driver = driver.agentReply
+  sendReplyMessage driver = driver.agentReply
   replyAudio driver = driver.agentReplyAudio
   uploadFile driver = driver.agentUploadFile
   editMessage driver = driver.agentEditMessage
-  replyStreamStyle driver = driver.agentReplyStreamStyle
+  messageOutPolicy driver = driver.agentMessageOutPolicy
   getMessageContent driver = driver.agentFetchMessage
   getUserAvatar driver = driver.agentUserAvatar
 
@@ -125,7 +125,7 @@ defaultAgentMockChatDriver =
     , agentReplyAudio = \_ _ _ -> pure (Right "audio")
     , agentUploadFile = \_ _ -> pure (Right "upload")
     , agentEditMessage = \_ _ _ -> pure False
-    , agentReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 1800)
+    , agentMessageOutPolicy = \_ -> pure (Chat.ChunkedMessage 1800)
     , agentFetchMessage = \_ _ -> pure Nothing
     , agentUserAvatar = \_ _ -> pure Nothing
     }
@@ -297,7 +297,7 @@ testToolReplyMiddlewareRejectsUncachedRemoteImages = do
           let program = Agent.withNormalizingToolReplies (AgentCore.emptyAgentProgram HList.HNil agentRun)
           program.aroundToolCall 1 (toolCall "call-1" "send_reply" (Aeson.object [])) HList.HNil do
             sent <- Chat.replyTo testMessage (ReplyBody.imageDirective "https://example.test/image.png")
-            pure (Agent.toolText (either id (const "sent") sent))
+            pure (Agent.toolText if null (rights sent) then Text.intercalate "\n" (lefts sent) else "sent")
   AgentTypes.toolResultContent result @?= "Image reply contains remote image URLs that could not be cached: https://example.test/image.png"
   IORef.readIORef replies >>= (@?= [])
 
@@ -1288,15 +1288,16 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
   replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
   updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
-  (responseId, result) <- runEff $ runPrim $
+  (lastReply, result) <- runEff $ runPrim $
     Chat.runChatWith
       defaultAgentMockChatDriver
         { agentReply = recordReply replies nextReplyId
-        , agentReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 4)
+        , agentMessageOutPolicy = \_ -> pure (Chat.ChunkedMessage 4)
         } $
         S.mapM_
-          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
-          (Chat.streamReplyTo testMessage id (S.each ["ab", "cd", "ef"] $> "abcdef"))
+          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, rights update.sentMessageResults, update.answer)]))
+          (Chat.streamReplyTo testMessage (S.each ["ab", "cd", "ef"] $> "abcdef"))
+  let responseId = lastReply.responseId
   responseId @?= Just "1"
   result @?= "abcdef"
   IORef.readIORef replies >>= (@?= [(Just "300", "abcd"), (Just "1", "ef")])
@@ -1308,20 +1309,20 @@ testEditableSegmentedRepliesOpenNewTail = do
   edits <- IORef.newIORef ([] :: [(MessageId, Text)])
   updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
-  (responseId, result) <- runEff $ runPrim $
+  (lastReply, result) <- runEff $ runPrim $
     Chat.runChatWith
       defaultAgentMockChatDriver
         { agentReply = recordReply replies nextReplyId
         , agentEditMessage = recordEdit edits
-        , agentReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 100)
+        , agentMessageOutPolicy = \_ -> pure (Chat.EditableMessage 2 100)
         } $
         S.mapM_
-          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
-          ( Chat.streamReplySegmentsTo
+          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, rights update.sentMessageResults, update.answer)]))
+          ( Chat.streamMultipleRepliesTo
               testMessage
-              id
               (S.breaks Text.null (S.each ["ab", "", "cd", "ef"] $> "cdef"))
           )
+  let responseId = lastReply.responseId
   responseId @?= Just "2"
   result @?= "cdef"
   IORef.readIORef replies >>= (@?= [(Just "300", "ab"), (Just "300", "cd")])
@@ -1333,19 +1334,19 @@ testSegmentedRepliesFlushFinalOpenSegment = do
   replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
   updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
-  (responseId, result) <- runEff $ runPrim $
+  (lastReply, result) <- runEff $ runPrim $
     Chat.runChatWith
       defaultAgentMockChatDriver
         { agentReply = recordReply replies nextReplyId
-        , agentReplyStreamStyle = \_ -> pure (Chat.ChunkedReply 100)
+        , agentMessageOutPolicy = \_ -> pure (Chat.ChunkedMessage 100)
         } $
         S.mapM_
-          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
-          ( Chat.streamReplySegmentsTo
+          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, rights update.sentMessageResults, update.answer)]))
+          ( Chat.streamMultipleRepliesTo
               testMessage
-              id
               (S.breaks Text.null (S.each ["last ", "segment"] $> "last segment"))
           )
+  let responseId = lastReply.responseId
   responseId @?= Just "1"
   result @?= "last segment"
   IORef.readIORef replies >>= (@?= [(Just "300", "last segment")])
@@ -1357,21 +1358,22 @@ testEditableChatStreamingSplitsLongReplies = do
   edits <- IORef.newIORef ([] :: [(MessageId, Text)])
   updates <- IORef.newIORef ([] :: [(Maybe MessageId, [MessageId], Text)])
   nextReplyId <- IORef.newIORef (1 :: Integer)
-  (responseId, result) <- runEff $ runPrim $
+  (lastReply, result) <- runEff $ runPrim $
     Chat.runChatWith
       defaultAgentMockChatDriver
         { agentReply = recordReply replies nextReplyId
         , agentEditMessage = recordEdit edits
-        , agentReplyStreamStyle = \_ -> pure (Chat.EditableReply 2 4)
+        , agentMessageOutPolicy = \_ -> pure (Chat.EditableMessage 2 4)
         } $
         S.mapM_
-          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, update.sentResponseIds, update.answer)]))
-          (Chat.streamReplyTo testMessage id (S.each ["ab", "cd", "ef", "gh", "ij", "kl"] $> "abcdefghijkl"))
+          (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, rights update.sentMessageResults, update.answer)]))
+          (Chat.streamReplyTo testMessage (S.each ["ab", "cd", "ef", "gh", "ij", "kl"] $> "abcdefghijkl"))
+  let responseId = lastReply.responseId
   responseId @?= Just "1"
   result @?= "abcdefghijkl"
   IORef.readIORef replies >>= (@?= [(Just "300", "ab"), (Just "1", "efgh"), (Just "2", "ijkl")])
   IORef.readIORef edits >>= (@?= [("1", "abcd")])
-  IORef.readIORef updates >>= (@?= [(Just "1", [], "ab"), (Just "1", [], "abcd"), (Just "1", [], "abcdef"), (Just "1", [], "abcdefgh"), (Just "1", [], "abcdefghij"), (Just "1", [], "abcdefghijkl"), (Just "1", ["2", "3"], "abcdefghijkl")])
+  IORef.readIORef updates >>= (@?= [(Just "1", ["1"], "ab"), (Just "1", [], "abcd"), (Just "1", [], "abcdef"), (Just "1", [], "abcdefgh"), (Just "1", [], "abcdefghij"), (Just "1", [], "abcdefghijkl"), (Just "1", ["2", "3"], "abcdefghijkl")])
 
 testChunkedActiveThreadAliasesEverySentReply :: IO ()
 testChunkedActiveThreadAliasesEverySentReply = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do

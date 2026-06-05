@@ -81,11 +81,14 @@ sendReplyTool = Tool
   , allowed = everyone
   , start = \context -> pure \args ->
       withParsedToolArgs sendReplyArgs args \body -> do
-        Chat.replyTo context.message body >>= \case
-          Right sent -> do
-            let sentText = show sent :: String
-            pure (toolText [i|Sent message id: #{sentText}|])
-          Left err ->
+        sent <- Chat.replyTo context.message body
+        case rights sent of
+          messageIds@(_:_) -> do
+            let sentText = show messageIds :: String
+            pure (toolText [i|Sent message ids: #{sentText}|])
+          [] ->
+            let err = Text.intercalate "\n" (lefts sent)
+             in
             pure (toolFailure AgentFailure
               { category = ExternalServiceUnavailable
               , userMessage = [i|发送消息失败：#{err}|]

@@ -21,7 +21,7 @@ newtype ReplyChatDriver es =
 instance Driver.ChatDriver (ReplyChatDriver es0) where
   type ChatDriverEffects (ReplyChatDriver es0) es = es ~ es0
   driverPlatform _ = PlatformTelegram
-  replyTo (ReplyChatDriver sendReply) =
+  sendReplyMessage (ReplyChatDriver sendReply) =
     sendReply
 
 main :: IO ()
