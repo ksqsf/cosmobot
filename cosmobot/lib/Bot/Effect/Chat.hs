@@ -157,7 +157,7 @@ streamReplySegmentsTo
   :: (Chat :> es, Prim :> es)
   => IncomingMessage
   -> (r -> Text)
-  -> Stream (Of ReplySegmentEvent) (Eff es) r
+  -> Stream (Stream (Of Text) (Eff es)) (Eff es) r
   -> Stream (Of ReplyStreamUpdate) (Eff es) (Maybe MessageId, r)
 streamReplySegmentsTo =
   ReplyStream.streamReplySegmentsTo chatReplyStreamCallbacks

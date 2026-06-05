@@ -16,7 +16,6 @@ import qualified Bot.Agent.Middleware.Observation as AgentObservation
 import Bot.Core.Thread
 import Bot.Core.Transcript
 import Bot.Core.Message
-import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Route (isSuperuser)
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
@@ -32,7 +31,10 @@ import Bot.Handler.Ask.Config
 import Bot.Prelude
 import Bot.Storage.Thread
 import qualified Data.Text as Text
+import qualified Data.Text.Lazy as LazyText
+import qualified Data.Text.Lazy.Builder as TextBuilder
 import qualified Effectful.Prim.IORef as IORef
+import qualified Streaming
 import qualified Streaming.Prelude as S
 import Effectful.FileSystem
 import Effectful.Process
@@ -153,7 +155,7 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
     (responseId, replyResult) <-
       S.mapM_
         (recordReplyUpdate activeReply)
-        (Chat.streamReplySegmentsTo message (.replyAnswer) (agentReplySegmentStream (Agent.runAgentProgramStreaming program transcript)))
+        (Chat.streamReplySegmentsTo message (.replyAnswer) (agentReplyTextSegments (Agent.runAgentProgramStreaming program transcript)))
     pure AgentReply{responseId, answer = replyResult.replyAnswer, result = replyResult.agentResult}
   `catchSync` \err ->
     case fromException err of
@@ -172,26 +174,52 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
               }
           }
 
-agentReplySegmentStream
-  :: Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
-  -> Stream (Of ReplyBody.ReplySegmentEvent) (Eff es) AgentReplyResult
-agentReplySegmentStream =
-  go ""
+-- Project flat agent events into visible chat reply segments. A tool-call
+-- notification closes the current reply before tool progress messages appear.
+agentReplyTextSegments
+  :: Prim :> es
+  => Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
+  -> Stream (Stream (Of Text) (Eff es)) (Eff es) AgentReplyResult
+agentReplyTextSegments =
+  go mempty
   where
     go answer stream = do
       next <- lift (S.next stream)
       case next of
         Left result ->
           pure AgentReplyResult
-            { replyAnswer = Text.strip answer
+            { replyAnswer = renderReplyText answer
             , agentResult = result
             }
-        Right (Agent.AgentContentDelta chunk, rest) -> do
-          S.yield (ReplyBody.ReplySegmentDelta chunk)
-          go (answer <> chunk) rest
-        Right (Agent.AgentToolCallNotification{}, rest) -> do
-          S.yield ReplyBody.ReplySegmentBoundary
+        Right (Agent.AgentContentDelta chunk, rest) ->
+          Streaming.wrap (segment (appendReplyText chunk answer) chunk rest)
+        Right (Agent.AgentToolCallNotification{}, rest) ->
           go answer rest
+
+    segment answer chunk stream = do
+      S.yield chunk
+      next <- lift (S.next stream)
+      case next of
+        Left result ->
+          pure (finished answer result)
+        Right (Agent.AgentContentDelta nextChunk, rest) ->
+          segment (appendReplyText nextChunk answer) nextChunk rest
+        Right (Agent.AgentToolCallNotification{}, rest) ->
+          pure (go answer rest)
+
+    finished answer result =
+      pure AgentReplyResult
+        { replyAnswer = renderReplyText answer
+        , agentResult = result
+        }
+
+appendReplyText :: Text -> TextBuilder.Builder -> TextBuilder.Builder
+appendReplyText chunk answer =
+  answer <> TextBuilder.fromText chunk
+
+renderReplyText :: TextBuilder.Builder -> Text
+renderReplyText =
+  Text.strip . LazyText.toStrict . TextBuilder.toLazyText
 
 commitAgentReply
   :: (ChatLog.ChatLog :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)

@@ -201,7 +201,6 @@ main =
       , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "reply body parses structured content" testReplyBodyParsesStructuredContent
-      , testCase "reply segment adapter folds deltas into messages" testReplySegmentAdapterFoldsDeltasIntoMessages
       , testCase "LLM tool request content streams immediately when enabled" testLLMToolRequestContentStreamsImmediatelyWhenEnabled
       , testCase "LLM image stream request asks only for final image" testLLMImageStreamRequestAsksOnlyForFinalImage
       , testCase "LLM audio speech request includes provider options" testLLMAudioSpeechRequestIncludesProviderOptions
@@ -1144,25 +1143,6 @@ testReplyBodyParsesStructuredContent = do
   ReplyBody.replyImageUrls "hello\n[image] https://example.test/a.png\n[image] file:///tmp/b.png" @?=
     ["https://example.test/a.png", "file:///tmp/b.png"]
 
-testReplySegmentAdapterFoldsDeltasIntoMessages :: IO ()
-testReplySegmentAdapterFoldsDeltasIntoMessages = do
-  ReplyBody.replySegmentMessages
-    [ ReplyBody.ReplySegmentDelta "hello"
-    , ReplyBody.ReplySegmentDelta " world"
-    , ReplyBody.ReplySegmentBoundary
-    , ReplyBody.ReplySegmentMessage ReplyBody.ReplyContent{text = "tool request", images = ["https://example.test/tool.png"]}
-    , ReplyBody.ReplySegmentDelta "final"
-    , ReplyBody.ReplySegmentDelta " answer"
-    ]
-    @?=
-      [ ReplyBody.ReplyContent{text = "hello world", images = []}
-      , ReplyBody.ReplyContent{text = "tool request", images = ["https://example.test/tool.png"]}
-      , ReplyBody.ReplyContent{text = "final answer", images = []}
-      ]
-  ReplyBody.replyContentToBody
-    (ReplyBody.replyContentFromBody "tool request\n[image] https://example.test/tool.png")
-    @?= "tool request\n[image] https://example.test/tool.png"
-
 testLLMToolRequestContentStreamsImmediatelyWhenEnabled :: IO ()
 testLLMToolRequestContentStreamsImmediatelyWhenEnabled = do
   let payloads =
@@ -1340,14 +1320,7 @@ testEditableSegmentedRepliesOpenNewTail = do
           ( Chat.streamReplySegmentsTo
               testMessage
               id
-              ( S.each
-                  [ ReplyBody.ReplySegmentDelta "ab"
-                  , ReplyBody.ReplySegmentMessage ReplyBody.ReplyContent{text = "tool", images = []}
-                  , ReplyBody.ReplySegmentDelta "cd"
-                  , ReplyBody.ReplySegmentDelta "ef"
-                  ]
-                  $> "cdef"
-              )
+              (S.breaks Text.null (S.each ["ab", "", "cd", "ef"] $> "cdef"))
           )
   responseId @?= Just "2"
   result @?= "cdef"
@@ -1371,7 +1344,7 @@ testSegmentedRepliesFlushFinalOpenSegment = do
           ( Chat.streamReplySegmentsTo
               testMessage
               id
-              (S.each [ReplyBody.ReplySegmentDelta "last ", ReplyBody.ReplySegmentDelta "segment"] $> "last segment")
+              (S.breaks Text.null (S.each ["last ", "segment"] $> "last segment"))
           )
   responseId @?= Just "1"
   result @?= "last segment"

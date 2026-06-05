@@ -13,12 +13,12 @@ where
 
 import Bot.Chat.Types
 import Bot.Core.Message
-import Bot.Core.ReplyBody
 import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Data.Text.Lazy as LazyText
 import qualified Data.Text.Lazy.Builder as TextBuilder
 import qualified Effectful.Prim.IORef as IORef
+import qualified Streaming
 import qualified Streaming.Prelude as S
 
 data ReplyStreamCallbacks es = ReplyStreamCallbacks
@@ -92,57 +92,56 @@ streamReplySegmentsTo
   => ReplyStreamCallbacks es
   -> IncomingMessage
   -> (r -> Text)
-  -> Stream (Of ReplySegmentEvent) (Eff es) r
+  -> Stream (Stream (Of Text) (Eff es)) (Eff es) r
   -> Stream (Of ReplyStreamUpdate) (Eff es) (Maybe MessageId, r)
 streamReplySegmentsTo callbacks message finalAnswer input =
-  go Nothing False input
+  go Nothing input
   where
-    go current sawText stream = do
-      next <- lift (S.next stream)
-      case next of
+    go lastResponseId stream = do
+      inspected <- lift (Streaming.inspect stream)
+      case inspected of
         Left result -> do
-          responseId <- finishAtEnd current sawText result
+          responseId <- finishAtEnd lastResponseId result
           pure (responseId, result)
-        Right (event, rest) ->
-          case event of
-            ReplySegmentDelta chunk -> do
-              let openedSegment = isNothing current
-              replyStream <- lift (maybe (newReplyStream callbacks message) pure current)
-              pushed <- lift (pushReplyStreamChunk replyStream chunk)
-              let update =
-                    if openedSegment
-                      then pushed{sentResponseIds = maybeToList pushed.responseId <> pushed.sentResponseIds}
-                      else pushed
-              S.yield update
-              go (Just replyStream) True rest
-            ReplySegmentBoundary -> do
-              responseId <- closeSegment current
-              go Nothing (sawText || isJust responseId) rest
-            ReplySegmentMessage{} -> do
-              responseId <- closeSegment current
-              go Nothing (sawText || isJust responseId) rest
+        Right segment -> do
+          (responseId, rest) <- streamReplySegmentTo segment
+          go (responseId <|> lastResponseId) rest
 
-    finishAtEnd current sawText result =
-      case current of
-        Just replyStream ->
-          closeSegmentUpdate replyStream
-        Nothing
-          | sawText ->
-              pure Nothing
-          | otherwise -> do
-              let answer = finalAnswer result
-              if Text.null (Text.strip answer)
-                then pure Nothing
-                else do
-                  replyStream <- lift (newReplyStream callbacks message)
-                  closeSegmentUpdateWith replyStream answer
+    finishAtEnd lastResponseId result =
+      case lastResponseId of
+        Just{} ->
+          pure lastResponseId
+        Nothing -> do
+          let answer = finalAnswer result
+          if Text.null (Text.strip answer)
+            then pure Nothing
+            else do
+              replyStream <- lift (newReplyStream callbacks message)
+              closeSegmentUpdateWith replyStream answer
 
-    closeSegment current =
-      case current of
-        Nothing ->
-          pure Nothing
-        Just replyStream ->
-          closeSegmentUpdate replyStream
+    streamReplySegmentTo segment = do
+      replyStream <- lift (newReplyStream callbacks message)
+      (hasChunks, rest) <- streamSegmentChunks replyStream True segment
+      responseId <-
+        if hasChunks
+          then closeSegmentUpdate replyStream
+          else pure Nothing
+      pure (responseId, rest)
+
+    streamSegmentChunks replyStream opened segment = do
+      nextChunk <- lift (S.next segment)
+      case nextChunk of
+        Left rest ->
+          pure (False, rest)
+        Right (chunk, rest) -> do
+          pushed <- lift (pushReplyStreamChunk replyStream chunk)
+          let update =
+                if opened
+                  then pushed{sentResponseIds = maybeToList pushed.responseId <> pushed.sentResponseIds}
+                  else pushed
+          S.yield update
+          (restHasChunks, outerRest) <- streamSegmentChunks replyStream False rest
+          pure (restHasChunks || not (Text.null chunk), outerRest)
 
     closeSegmentUpdate replyStream = do
       answer <- lift (textAccumulatorText <$> IORef.readIORef replyStream.answerRef)
