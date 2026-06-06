@@ -533,6 +533,7 @@ testAskHandlerIncludesReferencedImageUrlsInTextContext = do
       threads <- newThreadStore
       runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
       waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
+      waitUntilResourceFinished "ask.command"
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just request -> do
@@ -956,39 +957,40 @@ testAgentAuditStorageOmitsLargeToolResults =
         [ chatAnswer "" [toolCall "call-1" "large_audit_result" (Aeson.object [])]
         , chatAnswer "done" []
         ]
-      runResult <- runEff $
-        runFileSystem $
-          runProcess $
-            runFail $
-              runConcurrent $
-                runPrim $
-                  runTestLog $
-                    StorageSQLite.runStorageSQLitePath dbPath $
-                      HTTP.runHTTP $
-                        MediaInterpreter.runMedia cfg $
-                        LLMTest.runLLMWith
-                          (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
-                          (\_ _ -> S.yield "unused image answer" $> "unused image answer")
-                          (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
-                          (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
-                          (\_ _ -> do
-                              answer <- liftIO (popAnswer answers)
-                              case answer of
-                                LLM.ChatFinalAnswer{content} ->
-                                  S.yield content
-                                LLM.ChatToolRequest{content}
-                                  | Text.null content -> pure ()
-                                  | otherwise -> S.yield content
-                              pure answer)
-                          $
-                            AgentAudit.runAgentAudit $
-                              Chat.runChatWith NoopChatDriver
-                              do
-                                agentRun <- Agent.startAgentRun agentContext [largeAuditResultTool toolResultText]
-                                void $ S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun) (startWithUser "audit large result"))
-                                uses <- AgentAudit.queryRecentToolUses 10
-                                mediaFiles <- Media.listMediaFiles
-                                pure (uses, mediaFiles)
+      let runStack =
+            runFileSystem
+              . runProcess
+              . runFail
+              . runConcurrent
+              . runPrim
+              . Ki.runStructuredConcurrency
+              . ConcurrencyManager.runConcurrencyManager
+              . runTestLog
+              . StorageSQLite.runStorageSQLitePath dbPath
+              . HTTP.runHTTP
+              . MediaInterpreter.runMedia cfg
+              . LLMTest.runLLMWith
+                  (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
+                  (\_ _ -> S.yield "unused image answer" $> "unused image answer")
+                  (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
+                  (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
+                  (\_ _ -> do
+                      answer <- liftIO (popAnswer answers)
+                      case answer of
+                        LLM.ChatFinalAnswer{content} ->
+                          S.yield content
+                        LLM.ChatToolRequest{content}
+                          | Text.null content -> pure ()
+                          | otherwise -> S.yield content
+                      pure answer)
+              . AgentAudit.runAgentAudit
+              . Chat.runChatWith NoopChatDriver
+      runResult <- runEff $ runStack do
+        agentRun <- Agent.startAgentRun agentContext [largeAuditResultTool toolResultText]
+        void $ S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun) (startWithUser "audit large result"))
+        uses <- AgentAudit.queryRecentToolUses 10
+        mediaFiles <- Media.listMediaFiles
+        pure (uses, mediaFiles)
       (toolUses, files) <- either assertFailure pure runResult
       case toolUses of
         [toolUse] -> do
@@ -1618,43 +1620,45 @@ testThreadStorageOmitsLargeToolResults =
           resultBytes = TextEncoding.encodeUtf8 result
           answers = [chatAnswer "" [toolCall "call-1" "large_tool" (Aeson.object [])], chatAnswer "done" []]
       answerRef <- IORef.newIORef answers
-      runResult <- runEff $
-        runFileSystem $
-          runProcess $
-            runFail $
-              runConcurrent $
-                runPrim $
-                  runTestLog $
-                    StorageSQLite.runStorageSQLitePath dbPath $
-                      HTTP.runHTTP $
-                        MediaInterpreter.runMedia cfg do
-                        store <- newThreadStore
-                        (_answer, transcript) <- LLMTest.runLLMWith
-                          (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
-                          (\_ _ -> S.yield "unused image answer" $> "unused image answer")
-                          (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
-                          (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
-                          (\_ _ -> do
-                              answer <- liftIO (popAnswer answerRef)
-                              case answer of
-                                LLM.ChatFinalAnswer{content} ->
-                                  S.yield content
-                                LLM.ChatToolRequest{content}
-                                  | Text.null content -> pure ()
-                                  | otherwise -> S.yield content
-                              pure answer)
-                          $
-                            AgentAudit.runAgentAudit $
-                              Chat.runChatWith NoopChatDriver
-                              do
-                                agentRun <- Agent.startAgentRun agentContext [largeResultTool result]
-                                outputs S.:> agentResult <- S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun) (startWithUser "fetch"))
-                                pure (agentOutputText outputs, agentResult.transcript)
-                        rememberThreadTranscript store (Just (messageKey 1)) transcript
-                        loaded <- lookupThreadTranscript store (messageKey 1)
-                        storedRows <- loadThreadRows
-                        mediaFiles <- Media.listMediaFiles
-                        pure (loaded, storedRows, mediaFiles)
+      let runStack =
+            runFileSystem
+              . runProcess
+              . runFail
+              . runConcurrent
+              . runPrim
+              . Ki.runStructuredConcurrency
+              . ConcurrencyManager.runConcurrencyManager
+              . runTestLog
+              . StorageSQLite.runStorageSQLitePath dbPath
+              . HTTP.runHTTP
+              . MediaInterpreter.runMedia cfg
+      runResult <- runEff $ runStack do
+        store <- newThreadStore
+        (_answer, transcript) <- LLMTest.runLLMWith
+          (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
+          (\_ _ -> S.yield "unused image answer" $> "unused image answer")
+          (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
+          (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
+          (\_ _ -> do
+              answer <- liftIO (popAnswer answerRef)
+              case answer of
+                LLM.ChatFinalAnswer{content} ->
+                  S.yield content
+                LLM.ChatToolRequest{content}
+                  | Text.null content -> pure ()
+                  | otherwise -> S.yield content
+              pure answer)
+          $
+            AgentAudit.runAgentAudit $
+              Chat.runChatWith NoopChatDriver do
+                agentRun <- Agent.startAgentRun agentContext [largeResultTool result]
+                outputs S.:> agentResult <- S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun) (startWithUser "fetch"))
+                pure (agentOutputText outputs, agentResult.transcript)
+        rememberThreadTranscript store (Just (messageKey 1)) transcript
+        loaded <- lookupThreadTranscript store (messageKey 1)
+        storedRows <- loadThreadRows
+        mediaFiles <- Media.listMediaFiles
+        pure (loaded, storedRows, mediaFiles)
       (cachedLookup, rows, files) <- either assertFailure pure runResult
       case cachedLookup of
         Just loaded ->
@@ -2703,3 +2707,10 @@ waitUntil predicate =
       unless done do
         threadDelay 20_000
         go (remaining - 1)
+
+waitUntilResourceFinished :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es) => Text -> Eff es ()
+waitUntilResourceFinished label =
+  waitUntil do
+    snapshot <- Concurrency.listResources
+    let matching = filter ((== label) . (.label)) snapshot.resources
+    pure (not (null matching) && all (Concurrency.Running /=) ((.status) <$> matching))

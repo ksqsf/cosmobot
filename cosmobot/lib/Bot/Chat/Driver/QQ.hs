@@ -143,8 +143,7 @@ runQQDriver
   -> Eff es a
   -> Eff es a
 runQQDriver driver inner = do
-  worker <- Concurrency.spawnTask "qq.connection" (qqConnectionLoop cfg eventChan actionChan)
-  inner `finally` void (Concurrency.cancelResource worker.resourceId)
+  Concurrency.withWorker "qq.connection" (qqConnectionLoop cfg eventChan actionChan) inner
   where
     cfg = driver.config
     eventChan = driver.eventChan
@@ -238,7 +237,7 @@ forkConnectionThread
   -> MVar SomeException
   -> Eff es ()
   -> Eff es Concurrency.ResourceHandle
-forkConnectionThread label done action = Concurrency.spawnTask [i|qq.websocket.#{label}|] do
+forkConnectionThread label done action = Concurrency.spawnTopLevelTask [i|qq.websocket.#{label}|] do
   result <- try action
   case result of
     Left err ->

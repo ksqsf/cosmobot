@@ -16,9 +16,10 @@ module Bot.Effect.Concurrency
   , rootParent
   , childParent
   , resourceFinished
-  , startTask
-  , startTaskWithHandle
-  , spawnTask
+  , fireTask
+  , fireTaskWithHandle
+  , spawnTopLevelTask
+  , withWorker
   , spawnStreamPump
   , raceTasks_
   , spawnResource
@@ -97,29 +98,39 @@ resourceFinished :: ResourceInfo -> Bool
 resourceFinished resource =
   isJust resource.finishedAt
 
-startTask
+fireTask
   :: Concurrency :> es
   => Text
   -> Eff es ()
   -> Eff es ()
-startTask label =
-  void . spawnTask label
+fireTask label =
+  void . spawnTopLevelTask label
 
-startTaskWithHandle
+fireTaskWithHandle
   :: Concurrency :> es
   => Text
   -> (ResourceHandle -> Eff es ())
   -> Eff es ()
-startTaskWithHandle label =
+fireTaskWithHandle label =
   void . spawnResourceWithHandle Task label
 
-spawnTask
+spawnTopLevelTask
   :: Concurrency :> es
   => Text
   -> Eff es ()
   -> Eff es ResourceHandle
-spawnTask =
+spawnTopLevelTask =
   spawnResource Task
+
+withWorker
+  :: Concurrency :> es
+  => Text
+  -> Eff es ()
+  -> Eff es a
+  -> Eff es a
+withWorker label worker inner = do
+  workerHandle <- spawnResource Task label worker
+  inner `finally` cancelAndAwaitResource workerHandle
 
 spawnStreamPump
   :: Concurrency :> es
@@ -138,8 +149,8 @@ raceTasks_
   -> Eff es ()
 raceTasks_ leftLabel leftAction rightLabel rightAction = do
   done <- MVar.newEmptyMVar
-  left <- spawnTask leftLabel (capture done leftAction)
-  right <- spawnTask rightLabel (capture done rightAction)
+  left <- spawnTopLevelTask leftLabel (capture done leftAction)
+  right <- spawnTopLevelTask rightLabel (capture done rightAction)
   result <- MVar.takeMVar done
   void $ cancelResource left.resourceId
   void $ cancelResource right.resourceId
@@ -152,6 +163,11 @@ raceTasks_ leftLabel leftAction rightLabel rightAction = do
       -> Eff es ()
     capture done action =
       try action >>= void . MVar.tryPutMVar done
+
+cancelAndAwaitResource :: Concurrency :> es => ResourceHandle -> Eff es ()
+cancelAndAwaitResource resourceHandle = do
+  void (cancelResource resourceHandle.resourceId)
+  awaitResource resourceHandle
 
 data Concurrency :: Effect where
   SpawnResource :: ResourceKind -> Text -> m () -> Concurrency m ResourceHandle

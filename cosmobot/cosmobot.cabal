@@ -381,6 +381,15 @@ test-suite stream-spec
     build-depends:    toml-parser
     hs-source-dirs:   test
 
+test-suite concurrency-spec
+    import:           warnings
+                    , threaded
+                    , language
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          ConcurrencySpec.hs
+    hs-source-dirs:   test
+
 test-suite agent-spec
     import:           warnings
                     , threaded

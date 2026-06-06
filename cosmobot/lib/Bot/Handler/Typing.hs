@@ -55,7 +55,7 @@ rankRoute commandText titleSuffix failureMessage fetchRows =
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (command commandText) \message _ -> do
       logInfo [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
-      Concurrency.startTask "typing.rank" (sendRankImage titleSuffix failureMessage fetchRows message)
+      Concurrency.fireTask "typing.rank" (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage
   :: (Chat.Chat :> es, Typst.Typst :> es, KatipE :> es, IOE :> es)

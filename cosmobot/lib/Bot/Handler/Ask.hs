@@ -88,7 +88,7 @@ drawRoute
 drawRoute cfg threads =
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (command cfg.drawCommand) \message prompt ->
-      Concurrency.startTask "ask.draw" $
+      Concurrency.fireTask "ask.draw" $
         startDrawThread "matched draw route" cfg threads message prompt
 
 askRoute
@@ -101,7 +101,7 @@ askRoute
 askRoute toolCfg cfg threads =
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (askPrefix cfg) \message prompt ->
-      Concurrency.startTaskWithHandle "ask.command" \resource ->
+      Concurrency.fireTaskWithHandle "ask.command" \resource ->
         startAskThread "matched ask route" toolCfg cfg threads resource message prompt
 
 haltRoute
@@ -130,7 +130,7 @@ privateRoute
   -> RouteHandler es
 privateRoute toolCfg cfg threads =
   stopOn privateMessage \message prompt ->
-    Concurrency.startTaskWithHandle "ask.private" \resource ->
+    Concurrency.fireTaskWithHandle "ask.private" \resource ->
       startAskThread "matched private ask route" toolCfg cfg threads resource message prompt
   where
     privateMessage =
@@ -148,7 +148,7 @@ mentionRoute
   -> RouteHandler es
 mentionRoute toolCfg cfg threads =
   stopOn mentionMessage \message prompt ->
-    Concurrency.startTaskWithHandle "ask.mention" \resource ->
+    Concurrency.fireTaskWithHandle "ask.mention" \resource ->
       startAskThread "matched bot mention route" toolCfg cfg threads resource message prompt
   where
     mentionMessage =
@@ -166,7 +166,7 @@ continueRoute
   -> RouteHandler es
 continueRoute toolCfg cfg threads =
   stopOn continuedMessage \message parentId ->
-    Concurrency.startTaskWithHandle "ask.continue" \resource -> do
+    Concurrency.fireTaskWithHandle "ask.continue" \resource -> do
       let parentKey = threadMessageKey message parentId
       parentTranscript <- lookupThreadTranscript threads parentKey
       case parentTranscript of

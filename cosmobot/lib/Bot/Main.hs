@@ -60,27 +60,34 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
   cfg <- loadConfig configPath
   threads <- newThreadStore
   rpcState <- runConcurrent RPC.newRpcState
-  let runStack = runConcurrent
-             . Ki.runStructuredConcurrency
-             . ConcurrencyManager.runConcurrencyManager
-             . runGracefulTermination
-             . runTimeout
-             . runFileSystem
-             . runProcess
-             . runConcurrent
-             . runBotLog cfg.logLevel
-             . StorageSQLite.runStorageSQLitePath cfg.sqlitePath
-             . HTTP.runHTTP
-             . Media.runMedia cfg.media
-             . AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
-             . ChatLog.runChatLog
-             . Memory.runMemory cfg.memory
-             . Skills.runSkills cfg.skills
-             . Scheduler.runScheduler
-             . TypstCLI.runTypst
-             . OpenAI.runLLM cfg.llm
-             . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
-             . Lifecycle.runLifecycle cfg.media
+  let runRuntime =
+        runConcurrent
+          . Ki.runStructuredConcurrency
+          . runTimeout
+          . runFileSystem
+          . runProcess
+          . runConcurrent
+      runInfrastructure =
+        runBotLog cfg.logLevel
+          . StorageSQLite.runStorageSQLitePath cfg.sqlitePath
+          . HTTP.runHTTP
+          . Media.runMedia cfg.media
+          . TypstCLI.runTypst
+          . OpenAI.runLLM cfg.llm
+      runApplication =
+        AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
+          . ChatLog.runChatLog
+          . Memory.runMemory cfg.memory
+          . Skills.runSkills cfg.skills
+          . ConcurrencyManager.runConcurrencyManager
+          . runGracefulTermination
+          . Scheduler.runScheduler
+          . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
+          . Lifecycle.runLifecycle cfg.media
+      runStack =
+        runRuntime
+          . runInfrastructure
+          . runApplication
   runStack do
     logInfo "Cosmobot stand by!"
     let allStreams =

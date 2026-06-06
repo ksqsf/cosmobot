@@ -100,7 +100,7 @@ handleUpgrade cfg message = do
   case result of
     Right running -> do
       void $ Chat.replyTo message [i|已启动 upgrade 脚本：#{Text.pack scriptPath}|]
-      Concurrency.startTask "admin.upgrade" (reportUpgradeScriptExit startupAction message running)
+      Concurrency.fireTask "admin.upgrade" (reportUpgradeScriptExit startupAction message running)
     Left err -> do
       Lifecycle.deleteStartupAction startupAction
       void $ Chat.replyTo message [i|upgrade 脚本启动失败：#{show err :: String}|]

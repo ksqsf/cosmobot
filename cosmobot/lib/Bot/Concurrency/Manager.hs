@@ -27,9 +27,13 @@ data ManagerState es = ManagerState
 data ResourceRuntime es = ResourceRuntime
   { info :: !ResourceInfo
   , thread :: !(Maybe (Ki.Thread ()))
-  , threadId :: !(Maybe ThreadId)
+  , cancelSignal :: !(Maybe (MVar.MVar ()))
   , cleanup :: !(Maybe (Eff es ()))
   }
+
+data ManagedActionResult
+  = ManagedActionFinished
+  | ManagedActionCancelled
 
 runConcurrencyManager
   :: (IOE :> es, Prim :> es, Concurrent :> es, Ki.StructuredConcurrency :> es)
@@ -49,13 +53,13 @@ runConcurrencyOperation
 runConcurrencyOperation managerState localEnv operation =
   case operation of
     Concurrency.SpawnResource kind label action ->
-      localUnlift localEnv (ConcUnlift Persistent Unlimited) \unlift ->
+      localUnlift localEnv managedActionUnlift \unlift ->
         spawnResourceIn managerState kind label (unlift action)
     Concurrency.SpawnResourceWithHandle kind label action ->
-      localUnlift localEnv (ConcUnlift Persistent Unlimited) \unlift ->
+      localUnlift localEnv managedActionUnlift \unlift ->
         spawnResourceWithHandleIn managerState kind label (unlift . action)
     Concurrency.RegisterResource kind label cleanup ->
-      localUnlift localEnv (ConcUnlift Persistent Unlimited) \unlift ->
+      localUnlift localEnv managedActionUnlift \unlift ->
         registerResourceIn managerState kind label (unlift cleanup)
     Concurrency.ReleaseResource resourceId ->
       releaseResourceIn managerState resourceId
@@ -69,6 +73,10 @@ runConcurrencyOperation managerState localEnv operation =
       listResourcesIn managerState
     Concurrency.LookupResource resourceId ->
       lookupResourceIn managerState resourceId
+
+managedActionUnlift :: UnliftStrategy
+managedActionUnlift =
+  ConcUnlift Persistent (Limited 1)
 
 spawnResourceIn
   :: (IOE :> es, Prim :> es, Concurrent :> es, Ki.StructuredConcurrency :> es)
@@ -90,17 +98,16 @@ spawnResourceWithHandleIn
 spawnResourceWithHandleIn managerState kind label action = do
   resourceInfo <- newResourceInfo managerState kind label
   let resourceHandle = ResourceHandle{resourceId = resourceInfo.id}
-  started <- MVar.newEmptyMVar
   registered <- MVar.newEmptyMVar
+  cancelSignal <- MVar.newEmptyMVar
   thread <- Ki.fork managerState.rootScope do
-    MVar.putMVar started =<< myThreadId
     MVar.takeMVar registered
-    runResourceAction managerState resourceInfo.id (action resourceHandle)
-  threadId <- MVar.takeMVar started
+    superviseResourceAction managerState resourceInfo.id cancelSignal (action resourceHandle)
+    clearResourceRuntimeHandles managerState resourceInfo.id
   let runtime = ResourceRuntime
         { info = resourceInfo
         , thread = Just thread
-        , threadId = Just threadId
+        , cancelSignal = Just cancelSignal
         , cleanup = Nothing
         }
   insertRuntime managerState runtime
@@ -119,10 +126,34 @@ registerResourceIn managerState kind label cleanup = do
   insertRuntime managerState ResourceRuntime
     { info = resourceInfo
     , thread = Nothing
-    , threadId = Nothing
+    , cancelSignal = Nothing
     , cleanup = Just cleanup
     }
   pure ResourceHandle{resourceId = resourceInfo.id}
+
+superviseResourceAction
+  :: (IOE :> es, Prim :> es, Concurrent :> es, Ki.StructuredConcurrency :> es)
+  => ManagerState es
+  -> ResourceId
+  -> MVar.MVar ()
+  -> Eff es ()
+  -> Eff es ()
+superviseResourceAction managerState resourceId cancelSignal action =
+  Ki.scoped \scope -> do
+    result <- MVar.newEmptyMVar
+    actionThread <- Ki.fork scope (runResourceAction managerState resourceId action)
+    void $ Ki.fork scope do
+      void (Ki.atomically (Ki.await actionThread))
+      void (MVar.tryPutMVar result ManagedActionFinished)
+    void $ Ki.fork scope do
+      MVar.takeMVar cancelSignal
+      finishResource managerState resourceId Cancelled
+      void (MVar.tryPutMVar result ManagedActionCancelled)
+    MVar.takeMVar result >>= \case
+      ManagedActionFinished ->
+        pure ()
+      ManagedActionCancelled ->
+        pure ()
 
 runResourceAction
   :: (IOE :> es, Prim :> es)
@@ -171,8 +202,8 @@ cancelResourceIn managerState resourceId = do
     Just resource
       | resourceFinished resource.info ->
           pure False
-      | Just threadId <- resource.threadId -> do
-          killThread threadId
+      | Just cancelSignal <- resource.cancelSignal -> do
+          void (MVar.tryPutMVar cancelSignal ())
           finishResource managerState resourceId Cancelled
           pure True
       | otherwise ->
@@ -251,5 +282,22 @@ finishResource managerState resourceId status = do
                 { status
                 , finishedAt = Just finishedAt
                 }
+            , cancelSignal = Nothing
+            , cleanup = Nothing
+            }
+    in (Map.adjust update resourceId runtimes, ())
+
+clearResourceRuntimeHandles
+  :: Prim :> es
+  => ManagerState es
+  -> ResourceId
+  -> Eff es ()
+clearResourceRuntimeHandles managerState resourceId =
+  atomicModifyIORef' managerState.runtimes \runtimes ->
+    let update runtime =
+          runtime
+            { thread = Nothing
+            , cancelSignal = Nothing
+            , cleanup = Nothing
             }
     in (Map.adjust update resourceId runtimes, ())

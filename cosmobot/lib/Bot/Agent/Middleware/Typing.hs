@@ -16,49 +16,46 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
 import Bot.Prelude
 import qualified Bot.Util.Stream as StreamUtil
-import qualified Effectful.Prim.IORef as IORef
+import qualified Streaming as S
 
 withTypingNotification
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es)
   => AgentProgram transient context es
   -> AgentProgram transient context es
 withTypingNotification program =
   program
     { aroundAgentRun = \context action ->
-        StreamUtil.bracketStream
-          (startTypingNotification message)
-          stopTypingNotification
-          \_ -> program.aroundAgentRun context action
+        withTypingScope message (program.aroundAgentRun context action)
     }
   where
     message =
       program.agentRun.context.message
 
-startTypingNotification
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es)
+withTypingScope
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es)
   => IncomingMessage
-  -> Eff es (IORef.IORef Bool)
-startTypingNotification message = do
-  active <- IORef.newIORef True
-  safeSetTyping message typingNotificationTimeoutMillis
-  Concurrency.startTask "agent.typing" (typingNotificationLoop active message)
-  pure active
+  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
+  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
+withTypingScope message stream = do
+  S.lift (safeSetTyping message typingNotificationTimeoutMillis)
+  StreamUtil.bracketStream
+    (Concurrency.spawnTopLevelTask "agent.typing" (typingNotificationLoop message))
+    cancelAndAwaitTyping
+    \_ -> stream
 
-stopTypingNotification :: Prim :> es => IORef.IORef Bool -> Eff es ()
-stopTypingNotification active =
-  IORef.writeIORef active False
+cancelAndAwaitTyping :: Concurrency.Concurrency :> es => Concurrency.ResourceHandle -> Eff es ()
+cancelAndAwaitTyping typingHandle = do
+  void (Concurrency.cancelResource typingHandle.resourceId)
+  Concurrency.awaitResource typingHandle
 
 typingNotificationLoop
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es)
-  => IORef.IORef Bool
-  -> IncomingMessage
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es)
+  => IncomingMessage
   -> Eff es ()
-typingNotificationLoop active message = do
+typingNotificationLoop message = do
   Concurrency.sleepMicroseconds typingNotificationRefreshMicroseconds
-  stillActive <- IORef.readIORef active
-  when stillActive do
-    safeSetTyping message typingNotificationTimeoutMillis
-    typingNotificationLoop active message
+  safeSetTyping message typingNotificationTimeoutMillis
+  typingNotificationLoop message
 
 safeSetTyping
   :: (Chat.Chat :> es, KatipE :> es)

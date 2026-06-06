@@ -34,34 +34,33 @@ runScheduler inner = do
   queue <- STM.newTBQueueIO scheduledMessageQueueCapacity
   schedulerStateVar <- MVar.newMVar (schedulerStateFromStoredMessages nextScheduleId storedMessages)
   schedulerWake <- MVar.newEmptyMVar
-  worker <- Concurrency.spawnTask "scheduler.worker" (schedulerWorker schedulerStateVar schedulerWake queue)
-  interpret
-    (\_ -> \case
-      ScheduleMessage delaySeconds message -> do
-        scheduled <- registerPendingMessage schedulerStateVar delaySeconds message
-        SchedulerStorage.saveScheduledMessage (storedScheduledMessage scheduled)
-        signalSchedulerWake schedulerWake
-        pure True
-      DeleteScheduledMessage message scheduleId -> do
-        deleted <- deletePendingMessage schedulerStateVar message scheduleId
-        when deleted do
-          SchedulerStorage.deleteScheduledMessage scheduleId
+  Concurrency.withWorker "scheduler.worker" (schedulerWorker schedulerStateVar schedulerWake queue) $
+    interpret
+      (\_ -> \case
+        ScheduleMessage delaySeconds message -> do
+          scheduled <- registerPendingMessage schedulerStateVar delaySeconds message
+          SchedulerStorage.saveScheduledMessage (storedScheduledMessage scheduled)
           signalSchedulerWake schedulerWake
-        pure deleted
-      ListScheduledMessages message -> do
-        now <- currentUnixSeconds
-        pending <- MVar.withMVar schedulerStateVar (pure . Map.elems . (.pendingById))
-        pure
-          [ scheduledMessage now pendingMessage
-          | pendingMessage <- pending
-          , sameMessageOwner message pendingMessage.message
-          ]
-      ReceiveScheduledMessage -> do
-        pending <- STM.atomically (STM.readTBQueue queue)
-        SchedulerStorage.deleteScheduledMessage pending.scheduleId
-        pure pending.message)
-    inner
-    `finally` void (Concurrency.cancelResource worker.resourceId)
+          pure True
+        DeleteScheduledMessage message scheduleId -> do
+          deleted <- deletePendingMessage schedulerStateVar message scheduleId
+          when deleted do
+            SchedulerStorage.deleteScheduledMessage scheduleId
+            signalSchedulerWake schedulerWake
+          pure deleted
+        ListScheduledMessages message -> do
+          now <- currentUnixSeconds
+          pending <- MVar.withMVar schedulerStateVar (pure . Map.elems . (.pendingById))
+          pure
+            [ scheduledMessage now pendingMessage
+            | pendingMessage <- pending
+            , sameMessageOwner message pendingMessage.message
+            ]
+        ReceiveScheduledMessage -> do
+          pending <- STM.atomically (STM.readTBQueue queue)
+          SchedulerStorage.deleteScheduledMessage pending.scheduleId
+          pure pending.message)
+      inner
 
 schedulerWorker
   :: (Concurrent :> es, IOE :> es, Timeout :> es)

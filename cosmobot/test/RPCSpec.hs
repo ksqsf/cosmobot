@@ -27,6 +27,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Unique (hashUnique, newUnique)
 import Effectful.FileSystem (runFileSystem)
+import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.Ki as Ki
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
@@ -579,7 +580,7 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
           unauthorized <- trySync (liftIO (WS.runClient "127.0.0.1" port "/rpc" \_ -> pure ()))
           response <- liftIO (openSessionClient port "secret")
           pure (unauthorized, response)
-    race server client
+    raceEff server client
 
   case result of
     Nothing ->
@@ -620,7 +621,7 @@ testHttpServerRejectsNonRpcPaths = do
           mediaWithAuth <- httpGetWithBearer manager "secret" [i|http://127.0.0.1:#{port}/media/missing|]
           response <- openSessionClient port "secret"
           pure (root, mediaWithoutAuth, mediaWithAuth, response)
-    race server client
+    raceEff server client
 
   case result of
     Nothing ->
@@ -650,7 +651,7 @@ testRemoteMediaMimeUsesRangeGetProbe = do
         client = do
           manager <- liftIO (HTTP.newManager HTTP.defaultManagerSettings)
           MediaObject.downloadObject manager [i|http://127.0.0.1:#{port}/download?file=image|]
-    race server client
+    raceEff server client
 
   case result of
     Nothing ->
@@ -756,6 +757,28 @@ assertUnauthorizedRejected = \case
 
 runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
 runTestLog action = startKatipE "rpc-spec" "test" action
+
+raceEff
+  :: (Concurrent :> es, IOE :> es)
+  => Eff es a
+  -> Eff es b
+  -> Eff es (Either a b)
+raceEff left right = do
+  done <- MVar.newEmptyMVar
+  leftThread <- forkIO (finishRace done (Left <$> left))
+  rightThread <- forkIO (finishRace done (Right <$> right))
+  result <- MVar.takeMVar done
+  killThread leftThread
+  killThread rightThread
+  either throwIO pure result
+
+finishRace
+  :: (Concurrent :> es, IOE :> es)
+  => MVar.MVar (Either SomeException a)
+  -> Eff es a
+  -> Eff es ()
+finishRace done action =
+  try action >>= void . MVar.tryPutMVar done
 
 runRpcServerTest
   :: Eff '[Media.Media, Storage.Storage, KatipE, FileSystem.FileSystem, Concurrency.Concurrency, Ki.StructuredConcurrency, Prim, Concurrent, IOE] a

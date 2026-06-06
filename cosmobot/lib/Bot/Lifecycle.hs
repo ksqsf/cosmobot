@@ -51,9 +51,8 @@ withMediaGc
 withMediaGc mediaConfig inner
   | not mediaConfig.gc.enabled =
       inner
-  | otherwise = do
-      worker <- Concurrency.spawnTask "media.gc" (mediaGcLoop mediaConfig)
-      inner `finally` void (Concurrency.cancelResource worker.resourceId)
+  | otherwise =
+      Concurrency.withWorker "media.gc" (mediaGcLoop mediaConfig) inner
 
 mediaGcLoop
   :: (Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)

@@ -81,7 +81,8 @@ readMerged streamCount queue =
               go mergeState{remaining = mergeState.remaining - 1}
             MergeFailed err ->
               go mergeState
-                { failures = mergeState.failures + 1
+                { remaining = mergeState.remaining - 1
+                , failures = mergeState.failures + 1
                 , lastFailure = Just err
                 }
 
@@ -112,7 +113,12 @@ streamFinally stream cleanup =
 
 cleanupPumps :: Concurrency.Concurrency :> es => [Concurrency.ResourceHandle] -> Eff es ()
 cleanupPumps pumps =
-  traverse_ (void . Concurrency.cancelResource . (.resourceId)) pumps
+  traverse_ cancelAndAwaitPump pumps
+
+cancelAndAwaitPump :: Concurrency.Concurrency :> es => Concurrency.ResourceHandle -> Eff es ()
+cancelAndAwaitPump pumpHandle = do
+  void (Concurrency.cancelResource pumpHandle.resourceId)
+  Concurrency.awaitResource pumpHandle
 
 pump
   :: (KatipE :> es, Concurrent :> es)
@@ -124,7 +130,6 @@ pump queue stream =
     `catchSync` \err -> do
       logError [i|Merged stream input stopped: #{show err :: String}|]
       writeMergeEvent queue (MergeFailed err)
-    `finally` writeMergeEvent queue MergeDone
 
 writeMergeEvent :: Concurrent :> es => STM.TBQueue (MergeEvent a) -> MergeEvent a -> Eff es ()
 writeMergeEvent queue =

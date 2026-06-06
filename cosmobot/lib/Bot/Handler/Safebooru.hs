@@ -101,7 +101,7 @@ safebooruRoute search =
         void $ Chat.replyTo message err
       Right request -> do
         logInfo [i|matched safebooru route: #{incomingMessageLogLine message}|]
-        Concurrency.startTask "safebooru.search" (sendSafebooruImages search message request)
+        Concurrency.fireTask "safebooru.search" (sendSafebooruImages search message request)
 
 ballCommandArgs :: MessageFilter Text
 ballCommandArgs =

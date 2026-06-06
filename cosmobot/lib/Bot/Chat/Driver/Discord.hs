@@ -219,8 +219,7 @@ runDiscordDriver driver inner = do
       eventChan = driver.eventChan
   if discordEnabled cfg
     then do
-      worker <- Concurrency.spawnTask "discord.gateway" (discordConnectionLoop cfg eventChan)
-      inner `finally` void (Concurrency.cancelResource worker.resourceId)
+      Concurrency.withWorker "discord.gateway" (discordConnectionLoop cfg eventChan) inner
     else inner
 
 discordEnabled :: Config -> Bool
@@ -332,7 +331,7 @@ forkGatewayThread
   -> MVar.MVar SomeException
   -> Eff es ()
   -> Eff es Concurrency.ResourceHandle
-forkGatewayThread label done action = Concurrency.spawnTask [i|discord.gateway.#{label}|] do
+forkGatewayThread label done action = Concurrency.spawnTopLevelTask [i|discord.gateway.#{label}|] do
   result <- try action
   case result of
     Left err ->

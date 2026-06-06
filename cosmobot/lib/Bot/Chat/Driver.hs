@@ -348,10 +348,14 @@ chatDriversHandler drivers localEnv = \case
   ChatDriverEffect.IncomingMessages -> do
     let stream :: Stream (Of IncomingMessage) (Eff es) ()
         stream = incomingMessages drivers
-    localLift localEnv (ConcUnlift Persistent Unlimited) \runLocal ->
+    localLift localEnv incomingMessageStreamUnlift \runLocal ->
       pure (S.hoist runLocal stream)
   op ->
     Chat.chatDriverHandler drivers localEnv op
+
+incomingMessageStreamUnlift :: UnliftStrategy
+incomingMessageStreamUnlift =
+  ConcUnlift Persistent (Limited 1)
 
 incomingMessages
   :: HTTP.HTTP :> es
