@@ -230,9 +230,19 @@ storeSyncToken =
 
 sync :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Maybe Text -> Eff es (Maybe SyncResponse)
 sync driver since = do
-  response <- call driver (MatrixSync since)
+  response <- call driver MatrixSync
+    { syncSince = since
+    , syncMode = matrixSyncMode since
+    }
   rememberMatrixRoomState driver.directRoomIds driver.joinedMemberCounts response
   pure (Just response)
+
+matrixSyncMode :: Maybe Text -> MatrixSyncMode
+matrixSyncMode = \case
+  Nothing ->
+    MatrixInitialSync
+  Just{} ->
+    MatrixLongPollSync
 
 directRooms :: Prim :> es => MatrixDriver -> Eff es (Set MatrixRoomId)
 directRooms driver =
@@ -386,9 +396,14 @@ data MatrixDecryptionPlan = MatrixDecryptionPlan
   , decryptionExpectedHash :: !(CryptoHash.Digest CryptoHash.SHA256)
   }
 
-newtype MatrixSync = MatrixSync
+data MatrixSync = MatrixSync
   { syncSince :: Maybe Text
+  , syncMode :: !MatrixSyncMode
   }
+
+data MatrixSyncMode
+  = MatrixInitialSync
+  | MatrixLongPollSync
 
 newtype MatrixJoinedMembers = MatrixJoinedMembers
   { joinedMembersRoomId :: MatrixRoomId
@@ -463,10 +478,10 @@ class MatrixAPI request where
 instance MatrixAPI MatrixSync where
   type MatrixResponse MatrixSync = SyncResponse
 
-  call driver MatrixSync{syncSince} = do
+  call driver request@MatrixSync{syncSince} = do
     let sinceLabel :: Text
         sinceLabel = maybe "<initial>" (const "<next_batch>") syncSince
-    matrixJsonCall driver "sync" [i|sync since=#{sinceLabel}|] (\token -> matrixSyncOptions token syncSince)
+    matrixJsonCall driver "sync" [i|sync since=#{sinceLabel}|] (\token -> matrixSyncOptions token request)
       GET
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "sync")
       NoReqBody
@@ -919,13 +934,13 @@ matrixEndpointText :: Text -> [Text] -> Text
 matrixEndpointText homeserver path =
   Text.dropWhileEnd (== '/') homeserver <> "/" <> Text.intercalate "/" path
 
-matrixSyncOptions :: Text -> Maybe Text -> Option scheme -> Option scheme
-matrixSyncOptions token since baseOptions =
+matrixSyncOptions :: Text -> MatrixSync -> Option scheme -> Option scheme
+matrixSyncOptions token MatrixSync{syncSince, syncMode} baseOptions =
   baseOptions
     <> matrixAuth token
     <> responseTimeout matrixSyncResponseTimeoutMicroseconds
-    <> "timeout" =: matrixSyncTimeoutMilliseconds
-    <> maybe mempty ("since" =:) since
+    <> "timeout" =: matrixSyncTimeoutMilliseconds syncMode
+    <> maybe mempty ("since" =:) syncSince
 
 newtype MatrixRefreshRequest = MatrixRefreshRequest
   { requestRefreshToken :: Text
@@ -2550,8 +2565,15 @@ newtype RedactEventResponse = RedactEventResponse
   deriving (Show, Generic)
     deriving Aeson.FromJSON via (PrefixedSnakeJSON "redaction" RedactEventResponse)
 
-matrixSyncTimeoutMilliseconds :: Int
-matrixSyncTimeoutMilliseconds = 30000
+matrixSyncTimeoutMilliseconds :: MatrixSyncMode -> Int
+matrixSyncTimeoutMilliseconds = \case
+  MatrixInitialSync ->
+    0
+  MatrixLongPollSync ->
+    matrixLongPollSyncTimeoutMilliseconds
+
+matrixLongPollSyncTimeoutMilliseconds :: Int
+matrixLongPollSyncTimeoutMilliseconds = 30000
 
 matrixSyncResponseTimeoutMicroseconds :: Int
 matrixSyncResponseTimeoutMicroseconds = 40000000
