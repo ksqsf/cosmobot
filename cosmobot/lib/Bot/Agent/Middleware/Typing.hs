@@ -72,8 +72,8 @@ safeSetTyping message timeoutMillis =
 
 typingNotificationTimeoutMillis :: Int
 typingNotificationTimeoutMillis =
-  10000
+  30000
 
 typingNotificationRefreshMicroseconds :: Int
 typingNotificationRefreshMicroseconds =
-  5 * 1000000
+  20 * 1000000
