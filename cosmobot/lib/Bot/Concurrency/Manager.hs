@@ -5,72 +5,72 @@ Stability   : experimental
 -}
 
 module Bot.Concurrency.Manager
-  ( ManagedId (..)
-  , ManagedKind (..)
-  , ManagedStatus (..)
-  , ManagedEntry (..)
-  , ManagedSnapshot (..)
-  , ManagedParent (..)
-  , rootManagedParent
-  , childManagedParent
-  , managedEntryFinished
+  ( ResourceId (..)
+  , ResourceKind (..)
+  , ResourceStatus (..)
+  , ResourceInfo (..)
+  , ResourceSnapshot (..)
+  , Parent (..)
+  , rootParent
+  , childParent
+  , resourceFinished
   )
 where
 
 import Bot.Prelude
 import Data.Time (UTCTime)
 
-newtype ManagedId = ManagedId
-  { unManagedId :: Integer
+newtype ResourceId = ResourceId
+  { unResourceId :: Integer
   }
   deriving stock (Eq, Ord, Show)
 
-data ManagedKind
-  = ManagedTask
-  | ManagedResource
-  | ManagedTerminal
-  | ManagedSubagent
-  | ManagedDriverSession
-  | ManagedStreamPump
+data ResourceKind
+  = Task
+  | Resource
+  | Terminal
+  | Subagent
+  | DriverSession
+  | StreamPump
   deriving stock (Eq, Ord, Show)
 
-data ManagedStatus
-  = ManagedRunning
-  | ManagedCompleted
-  | ManagedFailed !Text
-  | ManagedCancelled
-  | ManagedReleased
+data ResourceStatus
+  = Running
+  | Completed
+  | Failed !Text
+  | Cancelled
+  | Released
   deriving stock (Eq, Show)
 
-data ManagedParent
-  = RootManaged
-  | ChildManaged !ManagedId
+data Parent
+  = Root
+  | Child !ResourceId
   deriving stock (Eq, Ord, Show)
 
-data ManagedEntry = ManagedEntry
-  { id :: !ManagedId
-  , kind :: !ManagedKind
+data ResourceInfo = ResourceInfo
+  { id :: !ResourceId
+  , kind :: !ResourceKind
   , label :: !Text
-  , parent :: !ManagedParent
-  , status :: !ManagedStatus
+  , parent :: !Parent
+  , status :: !ResourceStatus
   , startedAt :: !UTCTime
   , finishedAt :: !(Maybe UTCTime)
   }
   deriving stock (Eq, Show)
 
-data ManagedSnapshot = ManagedSnapshot
-  { entries :: ![ManagedEntry]
+data ResourceSnapshot = ResourceSnapshot
+  { resources :: ![ResourceInfo]
   }
   deriving stock (Eq, Show)
 
-rootManagedParent :: ManagedParent
-rootManagedParent =
-  RootManaged
+rootParent :: Parent
+rootParent =
+  Root
 
-childManagedParent :: ManagedId -> ManagedParent
-childManagedParent =
-  ChildManaged
+childParent :: ResourceId -> Parent
+childParent =
+  Child
 
-managedEntryFinished :: ManagedEntry -> Bool
-managedEntryFinished entry =
-  isJust entry.finishedAt
+resourceFinished :: ResourceInfo -> Bool
+resourceFinished resource =
+  isJust resource.finishedAt
