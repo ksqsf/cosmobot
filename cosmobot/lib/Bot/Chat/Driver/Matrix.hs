@@ -692,31 +692,53 @@ refreshMatrixAccessToken auth expiredToken =
                         }
                   IORef.writeIORef auth.authState refreshedState
                   pure response.refreshedAccessToken
-            refreshWithToken `catch` \(err :: MatrixApiException) ->
-              if matrixAuthTokenRejected err
-                then do
-                  logWarning "Matrix refresh token was rejected; logging in again"
-                  reloginMatrixAccessToken auth
-                else
-                  throwIO err
+            refreshWithToken `catchSync` \err -> do
+              logWarning [i|Matrix refresh token failed; logging in again: #{displayException err}|]
+              reloginMatrixAccessToken auth
 
 reloginMatrixAccessToken
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Prim :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
   => MatrixAuth
   -> Eff es Text
 reloginMatrixAccessToken auth =
   case (auth.authConfig.loginUser, auth.authConfig.loginPassword) of
     (Just user, Just password) -> do
-      logInfo "Matrix access token expired and no refresh token is available; logging in again"
-      response <- matrixLogin auth.authConfig user password
-      let refreshedState = MatrixAuthState
-            { authAccessToken = Just response.loginAccessToken
-            , authRefreshToken = response.loginRefreshToken
-            }
-      IORef.writeIORef auth.authState refreshedState
-      pure response.loginAccessToken
+      logInfo [i|Matrix logging in again; attempts=#{matrixReloginAttempts}|]
+      retryingMatrixLogin auth user password
     _ ->
       throwIO (userError "Matrix access token expired and no refresh token or login credentials are configured.")
+
+retryingMatrixLogin
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixAuth
+  -> Text
+  -> Text
+  -> Eff es Text
+retryingMatrixLogin auth user password =
+  attemptLogin 1
+  where
+    attemptLogin attempt =
+      loginOnce `catchSync` \err ->
+        if attempt < matrixReloginAttempts
+          then do
+            logWarning [i|Matrix relogin attempt #{attempt}/#{matrixReloginAttempts} failed: #{displayException err}; retrying in #{matrixReloginDelaySeconds} seconds|]
+            threadDelay matrixReloginDelayMicroseconds
+            attemptLogin (attempt + 1)
+          else do
+            logError [i|Matrix relogin attempt #{attempt}/#{matrixReloginAttempts} failed: #{displayException err}|]
+            throwIO err
+
+    loginOnce = do
+      response <- matrixLogin auth.authConfig user password
+      storeMatrixLoginResponse auth response
+      pure response.loginAccessToken
+
+storeMatrixLoginResponse :: Prim :> es => MatrixAuth -> MatrixLoginResponse -> Eff es ()
+storeMatrixLoginResponse auth response =
+  IORef.writeIORef auth.authState MatrixAuthState
+    { authAccessToken = Just response.loginAccessToken
+    , authRefreshToken = response.loginRefreshToken
+    }
 
 matrixAuthTokenRejected :: MatrixApiException -> Bool
 matrixAuthTokenRejected = \case
@@ -2561,6 +2583,15 @@ matrixApiResponseTimeoutMicroseconds = 10000000
 
 matrixMediaDownloadResponseTimeoutMicroseconds :: Int
 matrixMediaDownloadResponseTimeoutMicroseconds = 60000000
+
+matrixReloginAttempts :: Int
+matrixReloginAttempts = 12
+
+matrixReloginDelaySeconds :: Int
+matrixReloginDelaySeconds = 180
+
+matrixReloginDelayMicroseconds :: Int
+matrixReloginDelayMicroseconds = matrixReloginDelaySeconds * 1000000
 
 matrixRetryDelayMicroseconds :: Int
 matrixRetryDelayMicroseconds = 5000000
