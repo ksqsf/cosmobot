@@ -348,6 +348,16 @@ test-suite chat-platform-spec
                     , websockets
     hs-source-dirs:   test
 
+test-suite config-spec
+    import:           warnings
+                    , language
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          ConfigSpec.hs
+    build-depends:    temporary
+                    , text
+    hs-source-dirs:   test
+
 test-suite scheduler-spec
     import:           warnings
                     , language
