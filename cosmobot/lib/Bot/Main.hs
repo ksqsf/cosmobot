@@ -24,6 +24,7 @@ import qualified Bot.Effect.Typst as Typst
 import qualified Bot.LLM.OpenAI as OpenAI
 import qualified Bot.Media.Interpreter as Media
 import qualified Bot.RPC.Audit as RPCAudit
+import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
 import qualified Data.Aeson as Aeson
@@ -57,24 +58,24 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
   threads <- newThreadStore
   rpcState <- runConcurrent RPC.newRpcState
   let runStack = runConcurrent
-               . runGracefulTermination
-               . runTimeout
-               . runFileSystem
-               . runProcess
-               . runConcurrent
-               . runBotLog cfg.logLevel
-               . StorageSQLite.runStorageSQLitePath cfg.sqlitePath
-               . HTTP.runHTTP
-               . Media.runMedia cfg.media
-               . AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
-               . ChatLog.runChatLog
-               . Memory.runMemory cfg.memory
-               . Skills.runSkills cfg.skills
-               . Scheduler.runScheduler
-               . TypstCLI.runTypst
-               . OpenAI.runLLM cfg.llm
-               . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
-               . Lifecycle.runLifecycle cfg.media
+             . runGracefulTermination
+             . runTimeout
+             . runFileSystem
+             . runProcess
+             . runConcurrent
+             . runBotLog cfg.logLevel
+             . StorageSQLite.runStorageSQLitePath cfg.sqlitePath
+             . HTTP.runHTTP
+             . Media.runMedia cfg.media
+             . AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
+             . ChatLog.runChatLog
+             . Memory.runMemory cfg.memory
+             . Skills.runSkills cfg.skills
+             . Scheduler.runScheduler
+             . TypstCLI.runTypst
+             . OpenAI.runLLM cfg.llm
+             . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
+             . Lifecycle.runLifecycle cfg.media
   runStack do
     logInfo "Cosmobot stand by!"
     let allStreams =
@@ -85,12 +86,11 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
           consumeWith
             (routes cfg threads)
             (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
-        rpcServer =
-          RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks
 
-    concurrently_
-      rpcServer
-      messageConsumer
+    let RPCConfig.Config{enabled = rpcEnabled} = cfg.rpc
+    if rpcEnabled
+      then concurrently_ (RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks) messageConsumer
+      else messageConsumer
 
 routes
   :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)

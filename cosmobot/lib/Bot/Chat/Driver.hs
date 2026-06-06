@@ -36,13 +36,14 @@ import qualified Data.Vector as Vector
 import Effectful.FileSystem (FileSystem)
 import Effectful.Timeout
 import qualified Streaming as S
+import System.IO.Error (userError)
 
 data ChatDrivers = ChatDrivers
-  { qq :: !QQ.QQDriver
-  , telegram :: !Telegram.TelegramDriver
-  , matrix :: !Matrix.MatrixDriver
-  , discord :: !Discord.DiscordDriver
-  , rpc :: !RPCDriver.RpcChatDriver
+  { qq :: !(Maybe QQ.QQDriver)
+  , telegram :: !(Maybe Telegram.TelegramDriver)
+  , matrix :: !(Maybe Matrix.MatrixDriver)
+  , discord :: !(Maybe Discord.DiscordDriver)
+  , rpc :: !(Maybe RPCDriver.RpcChatDriver)
   , rpcState :: !RPC.RpcState
   }
 
@@ -187,7 +188,7 @@ instance ChatDriver ChatDrivers where
       setTyping driver message timeoutMillis
 
 withMessageDriver
-  :: ChatDriverEffects ChatDrivers es
+  :: (ChatDriverEffects ChatDrivers es, IOE :> es)
   => ChatDrivers
   -> IncomingMessage
   -> (forall driver. (ChatDriver driver, ChatDriverEffects driver es) => driver -> Eff es a)
@@ -195,15 +196,19 @@ withMessageDriver
 withMessageDriver drivers message action =
   case message.platform of
     PlatformQQ ->
-      action (NormalizingChatDriver drivers.qq)
+      maybe missingDriver (action . NormalizingChatDriver) drivers.qq
     PlatformTelegram ->
-      action (NormalizingChatDriver drivers.telegram)
+      maybe missingDriver (action . NormalizingChatDriver) drivers.telegram
     PlatformMatrix ->
-      action (NormalizingChatDriver drivers.matrix)
+      maybe missingDriver (action . NormalizingChatDriver) drivers.matrix
     PlatformDiscord ->
-      action (NormalizingChatDriver drivers.discord)
+      maybe missingDriver (action . NormalizingChatDriver) drivers.discord
     PlatformRPC ->
-      action (NormalizingChatDriver drivers.rpc)
+      maybe missingDriver (action . NormalizingChatDriver) drivers.rpc
+  where
+    platformText = show message.platform :: String
+    missingDriver =
+      throwIO (userError [i|#{platformText} driver is not configured.|])
 
 withChatDriverMaybe
   :: (KatipE :> es)
@@ -262,38 +267,66 @@ normalizeOutgoingReplyBody driver body =
 
 runChatDrivers
   :: (KatipE :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
-  => QQ.Config
-  -> Telegram.Config
-  -> Matrix.Config
-  -> Discord.Config
+  => Maybe QQ.Config
+  -> Maybe Telegram.Config
+  -> Maybe Matrix.Config
+  -> Maybe Discord.Config
   -> RPCConfig.Config
   -> RPC.RpcState
-  -> Eff (Chat.Chat : es) a
-  -> Eff es a
+  -> Eff (Chat.Chat : es) ()
+  -> Eff es ()
 runChatDrivers qqConfig telegramConfig matrixConfig discordConfig rpcConfig rpcState action = do
-  qq <- QQ.newQQDriver qqConfig
-  let telegram = Telegram.newTelegramDriver telegramConfig
-  matrix <- Matrix.newMatrixDriver matrixConfig
-  discord <- Discord.newDiscordDriver discordConfig
+  qq <- traverse QQ.newQQDriver qqConfig
+  let telegram = Telegram.newTelegramDriver <$> telegramConfig
+  matrix <- traverse Matrix.newMatrixDriver matrixConfig
+  discord <- traverse Discord.newDiscordDriver discordConfig
   let drivers = ChatDrivers
         { qq
         , telegram
         , matrix
         , discord
-        , rpc = RPCDriver.rpcChatDriver rpcConfig rpcState
+        , rpc = RPCDriver.rpcChatDriver rpcConfig rpcState <$ guard rpcConfig.enabled
         , rpcState
         }
-  runChatDriversWith drivers action
+  if hasConfiguredChatDriver drivers
+    then runChatDriversWith drivers action
+    else logInfo "No chat drivers or RPC server are configured; exiting."
+
+hasConfiguredChatDriver :: ChatDrivers -> Bool
+hasConfiguredChatDriver drivers =
+  any isJust
+    [ void drivers.qq
+    , void drivers.telegram
+    , void drivers.matrix
+    , void drivers.discord
+    , void drivers.rpc
+    ]
 
 runChatDriversWith
   :: (KatipE :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
   => ChatDrivers
-  -> Eff (Chat.Chat : es) a
-  -> Eff es a
+  -> Eff (Chat.Chat : es) ()
+  -> Eff es ()
 runChatDriversWith drivers inner = do
-  Discord.runDiscordDriver drivers.discord $
-    QQ.runQQDriver drivers.qq $
+  runMaybeDiscordDriver drivers.discord $
+    runMaybeQQDriver drivers.qq $
       Chat.runChatWithHandler (chatDriversHandler drivers) inner
+
+runMaybeQQDriver
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => Maybe QQ.QQDriver
+  -> Eff es a
+  -> Eff es a
+runMaybeQQDriver =
+  maybe id QQ.runQQDriver
+
+runMaybeDiscordDriver
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es)
+  => Maybe Discord.DiscordDriver
+  -> Eff es a
+  -> Eff es a
+runMaybeDiscordDriver =
+  maybe id Discord.runDiscordDriver
 
 chatDriversHandler
   :: forall es.
@@ -332,12 +365,13 @@ incomingMessages
 incomingMessages drivers =
   Media.normalizeIncomingMessages $
     StreamUtil.mergeStreams
-    [ QQ.incomingMessages drivers.qq
-    , Telegram.incomingMessages drivers.telegram
-    , Matrix.incomingMessages drivers.matrix
-    , Discord.incomingMessages drivers.discord
-    , RPC.incomingMessages drivers.rpcState
-    ]
+    (catMaybes
+      [ QQ.incomingMessages <$> drivers.qq
+      , Telegram.incomingMessages <$> drivers.telegram
+      , Matrix.incomingMessages <$> drivers.matrix
+      , Discord.incomingMessages <$> drivers.discord
+      , RPC.incomingMessages drivers.rpcState <$ drivers.rpc
+      ])
 
 normalizeJsonMediaUrls :: Media.Media :> es => (Text -> Eff es Text) -> Aeson.Value -> Eff es Aeson.Value
 normalizeJsonMediaUrls normalizePlatformMediaRef = \case

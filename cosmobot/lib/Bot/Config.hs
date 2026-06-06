@@ -60,10 +60,10 @@ import Toml.Schema
 
 -- | Fully normalized runtime configuration.
 data BotConfig = BotConfig
-  { qq       :: !QQ.Config
-  , telegram :: !Telegram.Config
-  , matrix   :: !Matrix.Config
-  , discord :: !Discord.Config
+  { qq       :: !(Maybe QQ.Config)
+  , telegram :: !(Maybe Telegram.Config)
+  , matrix   :: !(Maybe Matrix.Config)
+  , discord :: !(Maybe Discord.Config)
   , llm      :: !LLMConfig.Config
   , media    :: !MediaConfig.Config
   , tool     :: !Agent.ToolConfig
@@ -114,7 +114,7 @@ instance FromValue FileConfig where
   fromValue = parseTableFromValue $ FileConfig
     <$> fmap (fromMaybe defaultLogFileConfig) (optKey "log")
     <*> fmap (fromMaybe defaultStorageFileConfig) (optKey "storage")
-    <*> reqKey "driver"
+    <*> fmap (fromMaybe defaultDriverFileConfig) (optKey "driver")
     <*> reqKey "llm"
     <*> fmap (fromMaybe MediaConfig.defaultConfig) (optKey "media")
     <*> fmap (fromMaybe AgentConfig.defaultFileConfig) (optKey "tool")
@@ -124,19 +124,27 @@ instance FromValue FileConfig where
     <*> reqKey "handler"
 
 data DriverFileConfig = DriverFileConfig
-  { qq       :: !QQConfig.FileConfig
-  , telegram :: !TelegramConfig.FileConfig
-  , matrix   :: !MatrixConfig.FileConfig
-  , discord :: !DiscordConfig.FileConfig
+  { qq       :: !(Maybe QQConfig.FileConfig)
+  , telegram :: !(Maybe TelegramConfig.FileConfig)
+  , matrix   :: !(Maybe MatrixConfig.FileConfig)
+  , discord :: !(Maybe DiscordConfig.FileConfig)
   }
   deriving (Show)
 
+defaultDriverFileConfig :: DriverFileConfig
+defaultDriverFileConfig = DriverFileConfig
+  { qq = Nothing
+  , telegram = Nothing
+  , matrix = Nothing
+  , discord = Nothing
+  }
+
 instance FromValue DriverFileConfig where
   fromValue = parseTableFromValue $ DriverFileConfig
-    <$> reqKey "qq"
-    <*> reqKey "telegram"
-    <*> fmap (fromMaybe MatrixConfig.defaultFileConfig) (optKey "matrix")
-    <*> fmap (fromMaybe DiscordConfig.defaultFileConfig) (optKey "discord")
+    <$> optKey "qq"
+    <*> optKey "telegram"
+    <*> optKey "matrix"
+    <*> optKey "discord"
 
 data HandlerFileConfig = HandlerFileConfig
   { admin   :: !AdminConfig
@@ -211,10 +219,10 @@ toBotConfig cfg =
       }
   in
   BotConfig
-    { qq = QQConfig.toRuntimeConfig qqFileConfig
-    , telegram = TelegramConfig.toRuntimeConfig telegramFileConfig
-    , matrix = MatrixConfig.toRuntimeConfig matrixFileConfig
-    , discord = DiscordConfig.toRuntimeConfig discordFileConfig
+    { qq = QQConfig.toRuntimeConfig <$> qqFileConfig
+    , telegram = TelegramConfig.toRuntimeConfig <$> telegramFileConfig
+    , matrix = MatrixConfig.toRuntimeConfig <$> (matrixFileConfig >>= configuredMatrixFileConfig)
+    , discord = DiscordConfig.toRuntimeConfig <$> (discordFileConfig >>= configuredDiscordFileConfig)
     , llm = LLMConfig.toRuntimeConfig cfg.llm
     , media = cfg.media
     , tool = AgentConfig.toToolConfig cfg.tool
@@ -227,14 +235,22 @@ toBotConfig cfg =
     , sqlitePath = cfg.storage.sqlitePath
     }
 
-configuredBotIds :: QQConfig.FileConfig -> TelegramConfig.FileConfig -> MatrixConfig.FileConfig -> DiscordConfig.FileConfig -> [(ChatPlatform, Text)]
+configuredBotIds :: Maybe QQConfig.FileConfig -> Maybe TelegramConfig.FileConfig -> Maybe MatrixConfig.FileConfig -> Maybe DiscordConfig.FileConfig -> [(ChatPlatform, Text)]
 configuredBotIds qqCfg telegramCfg matrixCfg discordCfg =
   catMaybes
-    [ (PlatformQQ,) . Text.pack . show <$> qqCfg.botId
-    , (PlatformTelegram,) <$> telegramBotIdText telegramCfg.botId
-    , (PlatformMatrix,) <$> matrixCfg.botId
-    , (PlatformDiscord,) <$> discordCfg.botId
+    [ (PlatformQQ,) . Text.pack . show <$> (qqCfg >>= (.botId))
+    , (PlatformTelegram,) <$> (telegramCfg >>= telegramBotIdText . (.botId))
+    , (PlatformMatrix,) <$> (matrixCfg >>= (.botId))
+    , (PlatformDiscord,) <$> (discordCfg >>= (.botId))
     ]
+
+configuredMatrixFileConfig :: MatrixConfig.FileConfig -> Maybe MatrixConfig.FileConfig
+configuredMatrixFileConfig cfg =
+  cfg <$ guard (isJust cfg.loginUser && isJust cfg.loginPassword)
+
+configuredDiscordFileConfig :: DiscordConfig.FileConfig -> Maybe DiscordConfig.FileConfig
+configuredDiscordFileConfig cfg =
+  cfg <$ guard (not (Text.null (Text.strip cfg.botToken)))
 
 telegramBotIdText :: Maybe TelegramConfig.TelegramBotId -> Maybe Text
 telegramBotIdText = \case
