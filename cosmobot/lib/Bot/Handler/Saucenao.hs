@@ -11,6 +11,7 @@ module Bot.Handler.Saucenao
 where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import Bot.Core.Route
 import Bot.Core.Message
@@ -35,7 +36,7 @@ saucenaoCommand =
 
 -- | Routes for SauceNAO reverse image search commands.
 saucenaoHandlers
-  :: (Chat.Chat :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es)
   => SaucenaoConfig
   -> [RouteHandler es]
 saucenaoHandlers saucenaoCfg =
@@ -43,13 +44,13 @@ saucenaoHandlers saucenaoCfg =
   ]
 
 saucenaoRoute
-  :: (Chat.Chat :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es)
   => SaucenaoConfig
   -> RouteHandler es
 saucenaoRoute saucenaoCfg =
   stopOn (command saucenaoCommand) \message _ -> do
     logInfo [i|matched saucenao route: #{incomingMessageLogLine message}|]
-    spawnTask (sendSaucenaoResults saucenaoCfg message)
+    Concurrency.startTask "saucenao.search" (sendSaucenaoResults saucenaoCfg message)
 
 sendSaucenaoResults
   :: (Chat.Chat :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es)

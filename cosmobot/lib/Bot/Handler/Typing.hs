@@ -11,6 +11,7 @@ module Bot.Handler.Typing
 where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Typst as Typst
 import Bot.Core.Route
@@ -36,7 +37,7 @@ tigerRankCommand = "!hbcj"
 
 -- | Routes that render typing leaderboard snapshots.
 typingHandlers
-  :: (Chat.Chat :> es, HTTP.HTTP :> es, Typst.Typst :> es, KatipE :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Typst.Typst :> es, KatipE :> es, IOE :> es)
   => [RouteHandler es]
 typingHandlers =
   [ rankRoute championshipRankCommand "锦标赛成绩" "锦标赛排行榜生成失败。" fetchChampionshipRows
@@ -44,7 +45,7 @@ typingHandlers =
   ]
 
 rankRoute
-  :: (Chat.Chat :> es, Typst.Typst :> es, KatipE :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Typst.Typst :> es, KatipE :> es, IOE :> es)
   => Text
   -> Text
   -> Text
@@ -54,7 +55,7 @@ rankRoute commandText titleSuffix failureMessage fetchRows =
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (command commandText) \message _ -> do
       logInfo [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
-      spawnTask (sendRankImage titleSuffix failureMessage fetchRows message)
+      Concurrency.startTask "typing.rank" (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage
   :: (Chat.Chat :> es, Typst.Typst :> es, KatipE :> es, IOE :> es)

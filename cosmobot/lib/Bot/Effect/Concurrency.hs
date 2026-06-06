@@ -16,7 +16,10 @@ module Bot.Effect.Concurrency
   , rootParent
   , childParent
   , resourceFinished
+  , startTask
+  , startTaskWithHandle
   , spawnResource
+  , spawnResourceWithHandle
   , registerResource
   , releaseResource
   , cancelResource
@@ -89,8 +92,25 @@ resourceFinished :: ResourceInfo -> Bool
 resourceFinished resource =
   isJust resource.finishedAt
 
+startTask
+  :: Concurrency :> es
+  => Text
+  -> Eff es ()
+  -> Eff es ()
+startTask label action =
+  void $ spawnResource Task label action
+
+startTaskWithHandle
+  :: Concurrency :> es
+  => Text
+  -> (ResourceHandle -> Eff es ())
+  -> Eff es ()
+startTaskWithHandle label action =
+  void $ spawnResourceWithHandle Task label action
+
 data Concurrency :: Effect where
   SpawnResource :: ResourceKind -> Text -> m () -> Concurrency m ResourceHandle
+  SpawnResourceWithHandle :: ResourceKind -> Text -> (ResourceHandle -> m ()) -> Concurrency m ResourceHandle
   RegisterResource :: ResourceKind -> Text -> m () -> Concurrency m ResourceHandle
   ReleaseResource :: ResourceId -> Concurrency m Bool
   CancelResource :: ResourceId -> Concurrency m Bool
@@ -108,6 +128,15 @@ spawnResource
   -> Eff es ResourceHandle
 spawnResource kind label action =
   send (SpawnResource kind label action)
+
+spawnResourceWithHandle
+  :: Concurrency :> es
+  => ResourceKind
+  -> Text
+  -> (ResourceHandle -> Eff es ())
+  -> Eff es ResourceHandle
+spawnResourceWithHandle kind label action =
+  send (SpawnResourceWithHandle kind label action)
 
 registerResource
   :: Concurrency :> es

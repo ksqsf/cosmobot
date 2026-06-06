@@ -7,12 +7,14 @@ where
 
 import Bot.Prelude
 import Bot.Config
+import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Route
 import qualified Bot.Lifecycle as Lifecycle
 import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as MediaEffect
@@ -46,6 +48,7 @@ import qualified System.Posix.Signals as Signals
 import Effectful.Timeout
 import Effectful.Process
 import Effectful.FileSystem
+import qualified Effectful.Ki as Ki
 
 -- | Start the bot using @config.toml@ from the current working directory.
 main :: IO ()
@@ -58,6 +61,8 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
   threads <- newThreadStore
   rpcState <- runConcurrent RPC.newRpcState
   let runStack = runConcurrent
+             . Ki.runStructuredConcurrency
+             . ConcurrencyManager.runConcurrencyManager
              . runGracefulTermination
              . runTimeout
              . runFileSystem
@@ -93,7 +98,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
       else messageConsumer
 
 routes
-  :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> [RouteHandler es]

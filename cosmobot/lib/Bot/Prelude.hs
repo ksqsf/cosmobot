@@ -9,7 +9,6 @@ module Bot.Prelude
   , module Data.String.Interpolate
   , module Effectful
   , module Effectful.Concurrent
-  , module Effectful.Concurrent.Async
   , module Effectful.Dispatch.Dynamic
   , module Bot.Log
   , module Effectful.Exception
@@ -17,7 +16,6 @@ module Bot.Prelude
   , module Effectful.Prim.IORef
   , Stream
   , Of
-  , spawnTask
   )
 where
 
@@ -50,7 +48,6 @@ import Bot.Log
 
 import Effectful
 import Effectful.Concurrent
-import Effectful.Concurrent.Async
 import Effectful.Dispatch.Dynamic
 import Effectful.Exception
 import Effectful.Fail
@@ -61,17 +58,3 @@ import Effectful.Prim.IORef
 -- ---------------------------------------------------------------------------
 
 import Streaming (Stream, Of)
-
--- ---------------------------------------------------------------------------
--- Helpers
--- ---------------------------------------------------------------------------
-
-spawnTask :: (KatipE :> es, Concurrent :> es) => Eff es () -> Eff es ()
-spawnTask action = void $ forkIO do
-  try action >>= \case
-    Right () -> pure ()
-    Left err
-      | Just ThreadKilled <- fromException err -> do
-        tid <- myThreadId
-        logInfo [i|Thread #{tid} was killed|]
-      | otherwise -> logWarning [i|Forked action failed: #{show err :: String}|]

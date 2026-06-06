@@ -17,6 +17,7 @@ import Bot.Core.Transcript
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
@@ -42,6 +43,7 @@ type HandlerEffects es =
   ( Chat.Chat :> es
   , ChatLog.ChatLog :> es
   , AgentAudit.AgentAudit :> es
+  , Concurrency.Concurrency :> es
   , HTTP.HTTP :> es
   , LLM.LLM :> es
   , Media.Media :> es
@@ -86,7 +88,8 @@ drawRoute
 drawRoute cfg threads =
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (command cfg.drawCommand) \message prompt ->
-      spawnTask (startDrawThread "matched draw route" cfg threads message prompt)
+      Concurrency.startTask "ask.draw" $
+        startDrawThread "matched draw route" cfg threads message prompt
 
 askRoute
   :: HandlerEffects es
@@ -98,11 +101,13 @@ askRoute
 askRoute toolCfg cfg threads =
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (askPrefix cfg) \message prompt ->
-      spawnTask (startAskThread "matched ask route" toolCfg cfg threads message prompt)
+      Concurrency.startTaskWithHandle "ask.command" \resource ->
+        startAskThread "matched ask route" toolCfg cfg threads resource message prompt
 
 haltRoute
   :: Chat.Chat :> es
   => Storage.Storage :> es
+  => Concurrency.Concurrency :> es
   => KatipE :> es
   => Prim :> es
   => Concurrent :> es
@@ -111,7 +116,7 @@ haltRoute
   -> RouteHandler es
 haltRoute threads =
   stopOn (command "!halt" *> replyToMessage) \message parentId -> do
-    halted <- haltThread threads (threadMessageKey message parentId)
+    halted <- haltThread threads Concurrency.cancelResource (threadMessageKey message parentId)
     if halted
       then logInfo "halted"
       else logInfo "couldn't halt active thread"
@@ -125,7 +130,8 @@ privateRoute
   -> RouteHandler es
 privateRoute toolCfg cfg threads =
   stopOn privateMessage \message prompt ->
-    spawnTask (startAskThread "matched private ask route" toolCfg cfg threads message prompt)
+    Concurrency.startTaskWithHandle "ask.private" \resource ->
+      startAskThread "matched private ask route" toolCfg cfg threads resource message prompt
   where
     privateMessage =
       promptOrImages
@@ -142,7 +148,8 @@ mentionRoute
   -> RouteHandler es
 mentionRoute toolCfg cfg threads =
   stopOn mentionMessage \message prompt ->
-    spawnTask (startAskThread "matched bot mention route" toolCfg cfg threads message prompt)
+    Concurrency.startTaskWithHandle "ask.mention" \resource ->
+      startAskThread "matched bot mention route" toolCfg cfg threads resource message prompt
   where
     mentionMessage =
       promptOrImages
@@ -159,7 +166,7 @@ continueRoute
   -> RouteHandler es
 continueRoute toolCfg cfg threads =
   stopOn continuedMessage \message parentId ->
-    spawnTask do
+    Concurrency.startTaskWithHandle "ask.continue" \resource -> do
       let parentKey = threadMessageKey message parentId
       parentTranscript <- lookupThreadTranscript threads parentKey
       case parentTranscript of
@@ -168,9 +175,9 @@ continueRoute toolCfg cfg threads =
               logDebug [i|Ignoring reply to unknown thread message: #{show parentId :: String}|]
               logInfo [i|Ignoring unknown thread reply: #{messageIdText parentId}|]
           | otherwise ->
-              startThreadFromReply toolCfg cfg threads message parentId
+              startThreadFromReply toolCfg cfg threads resource message parentId
         Just transcript ->
-          continueThread toolCfg cfg threads message parentKey transcript
+          continueThread toolCfg cfg threads resource message parentKey transcript
   where
     continuedMessage =
       replyToMessage <* notAskPrefix cfg <* notCommand cfg.drawCommand
@@ -192,10 +199,11 @@ startAskThread
   -> Agent.ToolConfig
   -> AskHandlerConfig
   -> ThreadStore
+  -> Concurrency.ResourceHandle
   -> IncomingMessage
   -> Text
   -> Eff es ()
-startAskThread label toolCfg cfg threads message prompt = do
+startAskThread label toolCfg cfg threads resource message prompt = do
   logDebug [i|#{label}: #{show message :: String}|]
   logInfo [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
@@ -203,7 +211,7 @@ startAskThread label toolCfg cfg threads message prompt = do
   let contextPrompt = promptWithReferencedContext prompt referenced contextImages
   let input = inputWithImages contextPrompt contextImages
   transcript <- startTranscript cfg message input
-  void $ runAskAgentThread toolCfg cfg threads Nothing message input transcript
+  void $ runAskAgentThread toolCfg cfg threads resource Nothing message input transcript
 
 startDrawThread
   :: HandlerEffects es
@@ -239,10 +247,11 @@ startThreadFromReply
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ThreadStore
+  -> Concurrency.ResourceHandle
   -> IncomingMessage
   -> MessageId
   -> Eff es ()
-startThreadFromReply toolCfg cfg threads message parentId = do
+startThreadFromReply toolCfg cfg threads resource message parentId = do
   logDebug [i|starting thread from mentioned reply: #{show message :: String}|]
   logInfo [i|starting thread from mentioned reply: #{incomingMessageLogLine message}|]
   referenced <- Chat.getMessageContent message parentId
@@ -251,24 +260,25 @@ startThreadFromReply toolCfg cfg threads message parentId = do
   unless (Text.null prompt && null contextImages) do
     let input = inputWithImages prompt contextImages
     transcript <- startTranscript cfg message input
-    void $ runAskAgentThread toolCfg cfg threads (Just (threadMessageKey message parentId)) message input transcript
+    void $ runAskAgentThread toolCfg cfg threads resource (Just (threadMessageKey message parentId)) message input transcript
 
 continueThread
   :: HandlerEffects es
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ThreadStore
+  -> Concurrency.ResourceHandle
   -> IncomingMessage
   -> ThreadMessageKey
   -> Transcript
   -> Eff es ()
-continueThread toolCfg cfg threads message parentKey transcript = do
+continueThread toolCfg cfg threads resource message parentKey transcript = do
   logDebug [i|continuing thread: #{show message :: String}|]
   logInfo [i|continuing thread: #{incomingMessageLogLine message}|]
   let input = inputWithImages (promptOrImageDefault message.text message.imageUrls) message.imageUrls
   let nextTranscript =
         appendUserInput input transcript
-  void $ runAskAgentThread toolCfg cfg threads (Just parentKey) message input nextTranscript
+  void $ runAskAgentThread toolCfg cfg threads resource (Just parentKey) message input nextTranscript
 
 drawTranscript
   :: (LLM.LLM :> es, KatipE :> es)

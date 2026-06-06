@@ -20,6 +20,7 @@ import Bot.Core.Route (isSuperuser)
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
@@ -62,15 +63,16 @@ runAskAgentThread
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ThreadStore
+  -> Concurrency.ResourceHandle
   -> Maybe ThreadMessageKey
   -> IncomingMessage
   -> MessageInput
   -> Transcript
   -> Eff es (Text, Transcript)
-runAskAgentThread toolCfg cfg threads parentMessageKey message input transcript = do
+runAskAgentThread toolCfg cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
   agentRun <- Agent.startAgentRun (agentContext toolCfg cfg message input) Agent.defaultTools
-  withActiveReply threads parentMessageKey message transcript \activeReply -> do
+  withActiveReply threads resource parentMessageKey message transcript \activeReply -> do
     reply <- streamAgentReply cfg observer agentRun activeReply message transcript
     commitAgentReply observer activeReply message reply
 
@@ -248,9 +250,9 @@ discardActiveReply activeReply =
 
 data ActiveReplyState = ActiveReplyState
   { threads :: !ThreadStore
+  , resource :: !Concurrency.ResourceHandle
   , parentMessageKey :: !(Maybe ThreadMessageKey)
   , message :: !IncomingMessage
-  , threadId :: !ThreadId
   , baseTranscript :: !Transcript
   , activeRef :: !(IORef.IORef (Maybe ActiveThreadHandle))
   }
@@ -258,20 +260,20 @@ data ActiveReplyState = ActiveReplyState
 withActiveReply
   :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => ThreadStore
+  -> Concurrency.ResourceHandle
   -> Maybe ThreadMessageKey
   -> IncomingMessage
   -> Transcript
   -> (ActiveReplyState -> Eff es a)
   -> Eff es a
-withActiveReply threads parentMessageKey message baseTranscript use = do
-  threadId <- myThreadId
+withActiveReply threads resource parentMessageKey message baseTranscript use = do
   activeRef <- IORef.newIORef Nothing
   let activeReply =
         ActiveReplyState
           { threads
+          , resource
           , parentMessageKey
           , message
-          , threadId
           , baseTranscript
           , activeRef
           }
@@ -301,7 +303,7 @@ ensureActiveReply activeState messageId transcript = do
     Just{} ->
       pure existing
     Nothing -> do
-      active <- rememberActiveThread activeState.threads activeState.parentMessageKey (threadMessageKey activeState.message <$> messageId) activeState.threadId transcript
+      active <- rememberActiveThread activeState.threads activeState.parentMessageKey (threadMessageKey activeState.message <$> messageId) activeState.resource transcript
       IORef.writeIORef activeState.activeRef active
       pure active
 

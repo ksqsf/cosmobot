@@ -13,12 +13,13 @@ import Bot.Agent.Core
 import Bot.Agent.Types (AgentContext (..))
 import Bot.Core.Message (IncomingMessage (..))
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as Concurrency
 import Bot.Prelude
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Effectful.Prim.IORef as IORef
 
 withTypingNotification
-  :: (Chat.Chat :> es, KatipE :> es, Prim :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => AgentProgram transient context es
   -> AgentProgram transient context es
 withTypingNotification program =
@@ -34,13 +35,13 @@ withTypingNotification program =
       program.agentRun.context.message
 
 startTypingNotification
-  :: (Chat.Chat :> es, KatipE :> es, Prim :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => IncomingMessage
   -> Eff es (IORef.IORef Bool)
 startTypingNotification message = do
   active <- IORef.newIORef True
   safeSetTyping message typingNotificationTimeoutMillis
-  spawnTask (typingNotificationLoop active message)
+  Concurrency.startTask "agent.typing" (typingNotificationLoop active message)
   pure active
 
 stopTypingNotification :: Prim :> es => IORef.IORef Bool -> Eff es ()

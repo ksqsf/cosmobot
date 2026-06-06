@@ -28,6 +28,7 @@ where
 import Bot.Core.Message
 import Bot.Core.Thread
 import Bot.Core.Transcript
+import Bot.Effect.Concurrency (ResourceHandle (..), ResourceId)
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude hiding (newIORef, readIORef, atomicModifyIORef, writeIORef, atomicModifyIORef')
@@ -65,7 +66,7 @@ data ActiveThread = ActiveThread
   , activeMessageKeys :: !(IORef [ThreadMessageKey])
   , activeCurrent :: !(IORef Transcript)
   , activeDone :: !(MVar.MVar Transcript)
-  , activeThreadId :: !ThreadId
+  , activeResource :: !ResourceHandle
   }
 
 newtype ActiveThreadHandle = ActiveThreadHandle ActiveThread
@@ -140,16 +141,16 @@ rememberActiveThread
   => ThreadStore
   -> Maybe ThreadMessageKey
   -> Maybe ThreadMessageKey
-  -> ThreadId
+  -> ResourceHandle
   -> Transcript
   -> Eff es (Maybe ActiveThreadHandle)
 rememberActiveThread _ _ Nothing _ _ =
   pure Nothing
-rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey (Just messageKey) threadId transcript = do
+rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey (Just messageKey) resource transcript = do
   messageKeys <- newIORef [messageKey]
   current <- newIORef transcript
   done <- MVar.newEmptyMVar
-  let active = ActiveThread{activeMessageKey = messageKey, activeParentMessageKey = parentMessageKey, activeMessageKeys = messageKeys, activeCurrent = current, activeDone = done, activeThreadId = threadId}
+  let active = ActiveThread{activeMessageKey = messageKey, activeParentMessageKey = parentMessageKey, activeMessageKeys = messageKeys, activeCurrent = current, activeDone = done, activeResource = resource}
   atomicModifyIORef' activeRef \activeMap ->
     (Map.insert messageKey active activeMap, ())
   pure (Just (ActiveThreadHandle active))
@@ -189,8 +190,13 @@ finishActiveThreadCurrent store (ActiveThreadHandle active) = do
   transcript <- readIORef active.activeCurrent
   finishActiveThread store (ActiveThreadHandle active) transcript
 
-haltThread :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es) => ThreadStore -> ThreadMessageKey -> Eff es Bool
-haltThread store@ThreadStore{activeThreadStore = activeRef} messageKey = do
+haltThread
+  :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es)
+  => ThreadStore
+  -> (ResourceId -> Eff es Bool)
+  -> ThreadMessageKey
+  -> Eff es Bool
+haltThread store@ThreadStore{activeThreadStore = activeRef} cancel messageKey = do
   active <- Map.lookup messageKey <$> readIORef activeRef
   case active of
     Nothing ->
@@ -198,7 +204,7 @@ haltThread store@ThreadStore{activeThreadStore = activeRef} messageKey = do
     Just activeThread -> do
       transcript <- readIORef activeThread.activeCurrent
       messageKeys <- readIORef activeThread.activeMessageKeys
-      killThread activeThread.activeThreadId
+      void $ cancel activeThread.activeResource.resourceId
       traverse_ (\activeMessageKey -> rememberThreadTranscriptFrom store activeThread.activeParentMessageKey (Just activeMessageKey) transcript) messageKeys
       void $ MVar.tryPutMVar activeThread.activeDone transcript
       atomicModifyIORef' activeRef \activeMap ->

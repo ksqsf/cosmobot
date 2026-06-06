@@ -18,6 +18,7 @@ import Bot.Core.Message
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Route
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
@@ -76,13 +77,13 @@ safebooruLinkRows =
 
 -- | Routes for public Safebooru image commands.
 safebooruHandlers
-  :: (Chat.Chat :> es, HTTP.HTTP :> es, Storage.Storage :> es, KatipE :> es, IOE :> es, Concurrent :> es, Fail :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Storage.Storage :> es, KatipE :> es, IOE :> es, Fail :> es)
   => [RouteHandler es]
 safebooruHandlers =
   safebooruHandlersWith (searchSafebooruImageLinks)
 
 safebooruHandlersWith
-  :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es, IOE :> es, Concurrent :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, KatipE :> es, IOE :> es)
   => SafebooruSearch es
   -> [RouteHandler es]
 safebooruHandlersWith search =
@@ -90,7 +91,7 @@ safebooruHandlersWith search =
   ]
 
 safebooruRoute
-  :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es, Concurrent :> es, IOE :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, KatipE :> es, IOE :> es)
   => SafebooruSearch es
   -> RouteHandler es
 safebooruRoute search =
@@ -100,7 +101,7 @@ safebooruRoute search =
         void $ Chat.replyTo message err
       Right request -> do
         logInfo [i|matched safebooru route: #{incomingMessageLogLine message}|]
-        spawnTask (sendSafebooruImages search message request)
+        Concurrency.startTask "safebooru.search" (sendSafebooruImages search message request)
 
 ballCommandArgs :: MessageFilter Text
 ballCommandArgs =

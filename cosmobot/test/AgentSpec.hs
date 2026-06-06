@@ -11,6 +11,7 @@ import qualified Bot.AgentAudit.Storage as AgentAuditStorage
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Chat.Driver.Types (ChatDriverEffects)
 import qualified Bot.Chat.Driver.Types as Driver
+import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Thread
 import Bot.Core.Transcript
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -18,6 +19,7 @@ import Bot.Core.Route (runHandlers)
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
@@ -57,6 +59,7 @@ import qualified Data.Text.IO as TextIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Data.Unique
 import Effectful.FileSystem (FileSystem, runFileSystem)
+import qualified Effectful.Ki as Ki
 import qualified Effectful.FileSystem as FS
 import Effectful.Process (Process, runProcess)
 import Effectful.Timeout (Timeout, runTimeout)
@@ -75,6 +78,7 @@ type AgentStack =
   '[ Chat.Chat
    , AgentAudit.AgentAudit
    , ChatLog.ChatLog
+   , Concurrency.Concurrency
    , LLM.LLM
    , Media.Media
    , Skills.Skills
@@ -1450,17 +1454,23 @@ testEditableChatStreamingSplitsLongReplies = do
 testChunkedActiveThreadAliasesEverySentReply :: IO ()
 testChunkedActiveThreadAliasesEverySentReply = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
   store <- newThreadStore
-  threadId <- forkIO (threadDelay 60_000_000)
+  cancelled <- liftIO (IORef.newIORef [])
   let baseTranscript = startWithUser "hello"
       partialTranscript = appendAssistant "partial answer" baseTranscript
-  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) threadId baseTranscript
+      resource = Concurrency.ResourceHandle (Concurrency.ResourceId 1)
+      cancel resourceId = do
+        liftIO $ IORef.modifyIORef' cancelled (resourceId :)
+        pure True
+  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) resource baseTranscript
   addActiveThreadMessage store active (messageKey 2)
   updateActiveThread active partialTranscript
-  halted <- haltThread store (messageKey 2)
+  halted <- haltThread store cancel (messageKey 2)
   firstLookup <- lookupThreadTranscript store (messageKey 1)
   secondLookup <- lookupThreadTranscript store (messageKey 2)
+  cancelledResources <- liftIO (IORef.readIORef cancelled)
   liftIO do
     halted @?= True
+    cancelledResources @?= [Concurrency.ResourceId 1]
     (show firstLookup :: String) @?= show (Just partialTranscript)
     (show secondLookup :: String) @?= show (Just partialTranscript)
 
@@ -2324,58 +2334,60 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
   -> Eff AgentStack a
   -> IO a
 runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced memoryCfg skillsCfg rendered captured answers chatMock referencedMessage imageGenerate imageEdit action = do
+  let runStack =
+        runFileSystem
+          . runProcess
+          . runTimeout
+          . runConcurrent
+          . runFail
+          . runPrim
+          . Ki.runStructuredConcurrency
+          . ConcurrencyManager.runConcurrencyManager
+          . runTestLog
+          . StorageSQLite.runStorageSQLitePath ":memory:"
+          . HTTP.runHTTP
+          . TypstTest.runTypstWith (mockTypstRender rendered)
+          . Scheduler.runScheduler
+          . Memory.runMemory memoryCfg
+          . Skills.runSkills skillsCfg
+          . Media.runMediaPassthrough
+          . LLMTest.runLLMWith
+              (\messages -> do
+                  lift $ captureMessages captured messages
+                  S.yield "unused text stream answer"
+                  pure "unused text stream answer")
+              (\options messages -> do
+                  lift $ captureMessages captured messages
+                  answer <- liftIO (imageGenerate options messages)
+                  S.yield answer
+                  pure answer)
+              (\options prompt imageRefs maskRef -> do
+                  answer <- liftIO (imageEdit options prompt imageRefs maskRef)
+                  S.yield answer
+                  pure answer)
+              (\_ messages -> do
+                  lift $ captureMessages captured messages
+                  S.yield "unused audio answer"
+                  pure "unused audio answer")
+              (\_ messages -> do
+                  lift $ captureMessages captured messages
+                  answer <- liftIO (popAnswer answers)
+                  case answer of
+                    LLM.ChatFinalAnswer{content} ->
+                      S.yield content
+                    LLM.ChatToolRequest{content}
+                      | Text.null content -> pure ()
+                      | otherwise -> S.yield content
+                  pure answer)
+          . ChatLog.runChatLog
+          . AgentAudit.runAgentAudit
+          . Chat.runChatWith defaultAgentMockChatDriver
+              { agentReply = mockReply chatMock
+              , agentFetchMessage = \_ _ -> pure referencedMessage
+              , agentUserAvatar = mockUserAvatar chatMock
+              }
   result <-
-    runEff $
-      runFileSystem $
-        runProcess $
-          runTimeout $
-            runConcurrent $
-              runFail $
-                runPrim $
-                  runTestLog $
-                    StorageSQLite.runStorageSQLitePath ":memory:" $
-                      HTTP.runHTTP $
-                        TypstTest.runTypstWith (mockTypstRender rendered) $
-                        Scheduler.runScheduler $
-                          Memory.runMemory memoryCfg $
-                            Skills.runSkills skillsCfg $
-                              Media.runMediaPassthrough $
-                                LLMTest.runLLMWith
-                                (\messages -> do
-                                    lift $ captureMessages captured messages
-                                    S.yield "unused text stream answer"
-                                    pure "unused text stream answer")
-                                (\options messages -> do
-                                    lift $ captureMessages captured messages
-                                    answer <- liftIO (imageGenerate options messages)
-                                    S.yield answer
-                                    pure answer)
-                                (\options prompt imageRefs maskRef -> do
-                                    answer <- liftIO (imageEdit options prompt imageRefs maskRef)
-                                    S.yield answer
-                                    pure answer)
-                                (\_ messages -> do
-                                    lift $ captureMessages captured messages
-                                    S.yield "unused audio answer"
-                                    pure "unused audio answer")
-                                (\_ messages -> do
-                                    lift $ captureMessages captured messages
-                                    answer <- liftIO (popAnswer answers)
-                                    case answer of
-                                      LLM.ChatFinalAnswer{content} ->
-                                        S.yield content
-                                      LLM.ChatToolRequest{content}
-                                        | Text.null content -> pure ()
-                                        | otherwise -> S.yield content
-                                    pure answer) $
-                                ChatLog.runChatLog $
-                                  AgentAudit.runAgentAudit $
-                                    Chat.runChatWith defaultAgentMockChatDriver
-                                      { agentReply = mockReply chatMock
-                                      , agentFetchMessage = \_ _ -> pure referencedMessage
-                                      , agentUserAvatar = mockUserAvatar chatMock
-                                      }
-                                      action
+    runEff (runStack action)
   either assertFailure pure result
 
 runAgentWithStreamingAnswers
@@ -2385,38 +2397,40 @@ runAgentWithStreamingAnswers
   -> IO a
 runAgentWithStreamingAnswers answers chatMock action = do
   rendered <- IORef.newIORef ([] :: [Text])
+  let runStack =
+        runFileSystem
+          . runProcess
+          . runTimeout
+          . runConcurrent
+          . runFail
+          . runPrim
+          . Ki.runStructuredConcurrency
+          . ConcurrencyManager.runConcurrencyManager
+          . runTestLog
+          . StorageSQLite.runStorageSQLitePath ":memory:"
+          . HTTP.runHTTP
+          . TypstTest.runTypstWith (mockTypstRender rendered)
+          . Scheduler.runScheduler
+          . Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+          . Skills.runSkills defaultTestSkillsConfig
+          . Media.runMediaPassthrough
+          . LLMTest.runLLMWith
+              (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
+              (\_ _ -> S.yield "unused image answer" $> "unused image answer")
+              (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
+              (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
+              (\_ _ -> do
+                  streamingAnswer <- liftIO (popStreamingAnswer answers)
+                  traverse_ S.yield streamingAnswer.chunks
+                  pure streamingAnswer.answer)
+          . ChatLog.runChatLog
+          . AgentAudit.runAgentAudit
+          . Chat.runChatWith defaultAgentMockChatDriver
+              { agentReply = mockReply chatMock
+              , agentUserAvatar = mockUserAvatar chatMock
+              }
   result <-
-    runEff $
-      runFileSystem $
-        runProcess $
-          runTimeout $
-            runConcurrent $
-              runFail $
-                runPrim $
-                  runTestLog $
-                    StorageSQLite.runStorageSQLitePath ":memory:" $
-                      HTTP.runHTTP $
-                        TypstTest.runTypstWith (mockTypstRender rendered) $
-                        Scheduler.runScheduler $
-                          Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused") $
-                            Skills.runSkills defaultTestSkillsConfig $
-                              Media.runMediaPassthrough $
-                                LLMTest.runLLMWith
-                                (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
-                                (\_ _ -> S.yield "unused image answer" $> "unused image answer")
-                                (\_ _ _ _ -> S.yield "unused image edit answer" $> "unused image edit answer")
-                                (\_ _ -> S.yield "unused audio answer" $> "unused audio answer")
-                                (\_ _ -> do
-                                    streamingAnswer <- liftIO (popStreamingAnswer answers)
-                                    traverse_ S.yield streamingAnswer.chunks
-                                    pure streamingAnswer.answer) $
-                                ChatLog.runChatLog $
-                                  AgentAudit.runAgentAudit $
-                                    Chat.runChatWith defaultAgentMockChatDriver
-                                      { agentReply = mockReply chatMock
-                                      , agentUserAvatar = mockUserAvatar chatMock
-                                      }
-                                      action
+    runEff (runStack action)
   either assertFailure pure result
 
 defaultTestSkillsConfig :: SkillsStore.SkillsConfig

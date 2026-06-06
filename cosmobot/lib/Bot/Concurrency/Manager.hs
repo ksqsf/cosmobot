@@ -51,6 +51,9 @@ runConcurrencyOperation managerState localEnv operation =
     Concurrency.SpawnResource kind label action ->
       localLift localEnv (ConcUnlift Persistent Unlimited) \runLocal ->
         spawnResourceIn managerState kind label (runLocal action)
+    Concurrency.SpawnResourceWithHandle kind label action ->
+      localLift localEnv (ConcUnlift Persistent Unlimited) \runLocal ->
+        spawnResourceWithHandleIn managerState kind label (runLocal . action)
     Concurrency.RegisterResource kind label cleanup ->
       localLift localEnv (ConcUnlift Persistent Unlimited) \runLocal ->
         registerResourceIn managerState kind label (runLocal cleanup)
@@ -72,14 +75,25 @@ spawnResourceIn
   -> Text
   -> Eff es ()
   -> Eff es ResourceHandle
-spawnResourceIn managerState kind label action = do
+spawnResourceIn managerState kind label action =
+  spawnResourceWithHandleIn managerState kind label (const action)
+
+spawnResourceWithHandleIn
+  :: (IOE :> es, Prim :> es, Concurrent :> es, Ki.StructuredConcurrency :> es)
+  => ManagerState es
+  -> ResourceKind
+  -> Text
+  -> (ResourceHandle -> Eff es ())
+  -> Eff es ResourceHandle
+spawnResourceWithHandleIn managerState kind label action = do
   resourceInfo <- newResourceInfo managerState kind label
+  let handle = ResourceHandle{resourceId = resourceInfo.id}
   started <- MVar.newEmptyMVar
   registered <- MVar.newEmptyMVar
   thread <- Ki.fork managerState.rootScope do
     MVar.putMVar started =<< myThreadId
     MVar.takeMVar registered
-    runResourceAction managerState resourceInfo.id action
+    runResourceAction managerState resourceInfo.id (action handle)
   threadId <- MVar.takeMVar started
   let runtime = ResourceRuntime
         { info = resourceInfo
@@ -89,7 +103,7 @@ spawnResourceIn managerState kind label action = do
         }
   insertRuntime managerState runtime
   MVar.putMVar registered ()
-  pure ResourceHandle{resourceId = resourceInfo.id}
+  pure handle
 
 registerResourceIn
   :: (IOE :> es, Prim :> es)

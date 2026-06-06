@@ -13,6 +13,7 @@ where
 import Bot.Core.Message
 import Bot.Core.Route
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Storage as Storage
 import Bot.Handler.Admin.Config
 import Bot.Prelude
@@ -27,7 +28,7 @@ import Effectful.FileSystem (FileSystem)
 import qualified Effectful.Process.Typed as TypedProcess
 import qualified System.Exit as Exit
 
-adminHandlers :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
+adminHandlers :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
 adminHandlers cfg =
   [ pingRoute
   , titleRoute
@@ -83,14 +84,14 @@ parseTitleArgs rawArgs = do
   guard (not (Text.null userId) && userId /= "0" && not (Text.null title))
   pure (userId, title)
 
-upgradeRoute :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
+upgradeRoute :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
 upgradeRoute cfg =
   requireAuth
     isSuperuser
     (\message -> void $ Chat.replyTo message "只有 superuser 可以执行 upgrade。")
     (stopOn (command "!upgrade") \message _ -> handleUpgrade cfg message)
 
-handleUpgrade :: (Chat.Chat :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
+handleUpgrade :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> IncomingMessage -> Eff es ()
 handleUpgrade cfg message = do
   let scriptPath = cfg.script
   actionKey <- liftIO newLifecycleActionKey
@@ -99,7 +100,7 @@ handleUpgrade cfg message = do
   case result of
     Right running -> do
       void $ Chat.replyTo message [i|已启动 upgrade 脚本：#{Text.pack scriptPath}|]
-      spawnTask (reportUpgradeScriptExit startupAction message running)
+      Concurrency.startTask "admin.upgrade" (reportUpgradeScriptExit startupAction message running)
     Left err -> do
       Lifecycle.deleteStartupAction startupAction
       void $ Chat.replyTo message [i|upgrade 脚本启动失败：#{show err :: String}|]
