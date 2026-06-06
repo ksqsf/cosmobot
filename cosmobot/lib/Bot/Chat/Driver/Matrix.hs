@@ -644,7 +644,7 @@ eitherCall
 eitherCall label driver request = do
   available <- matrixAuthAvailable driver
   if available
-    then first (\err -> [i|Matrix #{label} failed: #{displayException err}|]) <$> trySync (call driver request)
+    then first (matrixUserFacingExceptionText label) <$> trySync (call driver request)
     else pure (Left [i|Matrix #{label} requires a configured access token, refresh token, or login credentials.|])
 
 withMatrixAccessToken
@@ -660,13 +660,12 @@ withMatrixAccessToken auth action = do
     Nothing ->
       refreshMatrixAccessToken auth ""
   action token `catch` \(err :: MatrixApiException) ->
-    if matrixAccessTokenExpired err
+    if matrixAuthTokenRejected err
       then do
         refreshed <- refreshMatrixAccessToken auth token
-        action refreshed `catch` \(retryErr :: MatrixApiException) ->
-          throwIO (userError (Text.unpack (matrixApiExceptionMessage retryErr)))
+        action refreshed
       else
-        throwIO (userError (Text.unpack (matrixApiExceptionMessage err)))
+        throwIO err
 
 refreshMatrixAccessToken
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
@@ -694,7 +693,7 @@ refreshMatrixAccessToken auth expiredToken =
                   IORef.writeIORef auth.authState refreshedState
                   pure response.refreshedAccessToken
             refreshWithToken `catch` \(err :: MatrixApiException) ->
-              if matrixAccessTokenExpired err
+              if matrixAuthTokenRejected err
                 then do
                   logWarning "Matrix refresh token was rejected; logging in again"
                   reloginMatrixAccessToken auth
@@ -719,10 +718,10 @@ reloginMatrixAccessToken auth =
     _ ->
       throwIO (userError "Matrix access token expired and no refresh token or login credentials are configured.")
 
-matrixAccessTokenExpired :: MatrixApiException -> Bool
-matrixAccessTokenExpired = \case
+matrixAuthTokenRejected :: MatrixApiException -> Bool
+matrixAuthTokenRejected = \case
   MatrixApiException _ status err ->
-    HTTPStatus.statusCode status == 401 && err.errcode == "M_UNKNOWN_TOKEN"
+    HTTPStatus.statusCode status == 401 && err.errcode `elem` ["M_UNKNOWN_TOKEN", "M_FORBIDDEN"]
   MatrixTransportException{} ->
     False
 
@@ -741,6 +740,24 @@ matrixApiExceptionMessage = \case
     [i|Matrix API request failed (#{method}): HTTP #{HTTPStatus.statusCode status} #{matrixErrorResponseText err}|]
   MatrixTransportException method message ->
     [i|Matrix API request failed (#{method}): #{message}|]
+
+matrixUserFacingExceptionText :: Text -> SomeException -> Text
+matrixUserFacingExceptionText label err =
+  case fromException err of
+    Just matrixErr ->
+      matrixUserFacingApiError label matrixErr
+    Nothing ->
+      [i|Matrix #{label} failed: #{displayException err}|]
+
+matrixUserFacingApiError :: Text -> MatrixApiException -> Text
+matrixUserFacingApiError label = \case
+  MatrixApiException _ status err
+    | matrixAuthTokenRejected (MatrixApiException label status err) ->
+        [i|Matrix #{label} failed: Matrix authentication failed after retrying login.|]
+    | otherwise ->
+        [i|Matrix #{label} failed: HTTP #{HTTPStatus.statusCode status}.|]
+  MatrixTransportException{} ->
+    [i|Matrix #{label} failed: Matrix transport error.|]
 
 matrixErrorResponseText :: MatrixErrorResponse -> Text
 matrixErrorResponseText err =
@@ -1502,22 +1519,23 @@ uploadFileMatrix
   -> Eff es (Either Text MessageId)
 uploadFileMatrix driver message path =
   case viaNonEmpty head message.chatAliases of
-    Just roomId -> do
-      let fileName = matrixUploadFileName path
-          mime = Mime.mimeFromName (Text.pack path)
-      size <- FileSystem.getFileSize path
-      uploaded <- uploadMedia driver path fileName mime
-      response <- sendFileMessage driver roomId (matrixReplyTo message) MatrixFileMessage
-        { msgtype = matrixFileMsgtype mime
-        , body = fileName
-        , filename = fileName
-        , url = uploaded.contentUri
-        , info = MatrixFileInfo
-            { mimetype = mime
-            , size = size
-            }
-        }
-      pure (matrixMessageIdResult response)
+    Just roomId ->
+      matrixUserFacingEither "file upload" do
+        let fileName = matrixUploadFileName path
+            mime = Mime.mimeFromName (Text.pack path)
+        size <- FileSystem.getFileSize path
+        uploaded <- uploadMedia driver path fileName mime
+        response <- sendFileMessage driver roomId (matrixReplyTo message) MatrixFileMessage
+          { msgtype = matrixFileMsgtype mime
+          , body = fileName
+          , filename = fileName
+          , url = uploaded.contentUri
+          , info = MatrixFileInfo
+              { mimetype = mime
+              , size = size
+              }
+          }
+        pure (matrixMessageIdResult response)
     _ ->
       pure (Left "Matrix file upload requires a Matrix room id.")
 
@@ -1555,7 +1573,7 @@ tryMatrixSendImage driver roomId replyRelation imageRef = do
   result <- trySync (sendMatrixImage driver roomId replyRelation imageRef)
   pure case result of
     Left err ->
-      Left [i|Matrix image reply failed for #{imageRef}: #{displayException err}|]
+      Left (matrixUserFacingExceptionText [i|image reply for #{imageRef}|] err)
     Right response ->
       response
 
@@ -1607,17 +1625,28 @@ sendMatrixAudio
   -> Maybe Text
   -> Eff es (Either Text MessageId)
 sendMatrixAudio driver roomId audioRef caption =
-  case matrixMxcRef audioRef of
-    Just contentUri -> do
-      let fileName = "audio"
-      response <- sendFileMessage driver roomId Nothing (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
-      pure (matrixMessageIdResult response)
-    Nothing ->
-      withMatrixAudioFile audioRef \path fileName mime -> do
-        size <- FileSystem.getFileSize path
-        uploaded <- uploadMedia driver path fileName mime
-        response <- sendFileMessage driver roomId Nothing (matrixAudioMessage caption fileName uploaded.contentUri mime size)
+  matrixUserFacingEither "audio reply" do
+    case matrixMxcRef audioRef of
+      Just contentUri -> do
+        let fileName = "audio"
+        response <- sendFileMessage driver roomId Nothing (matrixAudioMessage caption fileName contentUri "application/octet-stream" 0)
         pure (matrixMessageIdResult response)
+      Nothing ->
+        withMatrixAudioFile audioRef \path fileName mime -> do
+          size <- FileSystem.getFileSize path
+          uploaded <- uploadMedia driver path fileName mime
+          response <- sendFileMessage driver roomId Nothing (matrixAudioMessage caption fileName uploaded.contentUri mime size)
+          pure (matrixMessageIdResult response)
+
+matrixUserFacingEither
+  :: KatipE :> es
+  => Text
+  -> Eff es (Either Text a)
+  -> Eff es (Either Text a)
+matrixUserFacingEither label action =
+  action `catch` \(err :: MatrixApiException) -> do
+    logWarning [i|#{matrixApiExceptionMessage err}|]
+    pure (Left (matrixUserFacingApiError label err))
 
 matrixMessageIdResult :: Either Text SendMessageResponse -> Either Text MessageId
 matrixMessageIdResult =
