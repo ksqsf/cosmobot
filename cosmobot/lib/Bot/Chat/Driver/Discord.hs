@@ -37,11 +37,11 @@ import Bot.Core.Message
 import Bot.Prelude
 import Bot.Util.Aeson
 import qualified Bot.Effect.HTTP as HTTP
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
 import Commonmark
 import qualified Commonmark.Entity as Commonmark
 import Commonmark.Extensions
-import qualified Control.Concurrent.Async as Async
 import qualified Control.Concurrent.Chan as Chan
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
@@ -102,7 +102,7 @@ newDiscordDriver config = do
   pure DiscordDriver{config, eventChan}
 
 instance Driver.ChatDriver DiscordDriver where
-  type ChatDriverEffects DiscordDriver es = (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Media.Media :> es)
+  type ChatDriverEffects DiscordDriver es = (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Media.Media :> es)
 
   driverPlatform _ =
     PlatformDiscord
@@ -210,24 +210,25 @@ triggerTyping driver channelId =
   discordNoResponseRequest driver.config POST ["channels", channelId, "typing"]
 
 runDiscordDriver
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => DiscordDriver
   -> Eff es a
   -> Eff es a
-runDiscordDriver driver inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO -> do
+runDiscordDriver driver inner = do
   let cfg = driver.config
       eventChan = driver.eventChan
-      runInner = runInIO inner
   if discordEnabled cfg
-    then liftIO $ Async.withAsync (runInIO $ discordConnectionLoop cfg eventChan) \_ -> runInner
-    else runInner
+    then do
+      worker <- Concurrency.spawnTask "discord.gateway" (discordConnectionLoop cfg eventChan)
+      inner `finally` void (Concurrency.cancelResource worker.resourceId)
+    else inner
 
 discordEnabled :: Config -> Bool
 discordEnabled cfg =
   not (Text.null (Text.strip cfg.botToken))
 
 discordConnectionLoop
-  :: (IOE :> es, KatipE :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Config
   -> Chan.Chan Message
   -> Eff es ()
@@ -242,7 +243,7 @@ discordConnectionLoop cfg eventChan =
     threadDelay discordReconnectDelayMicroseconds
 
 runDiscordConnectionOnce
-  :: (IOE :> es, KatipE :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Config
   -> Chan.Chan Message
   -> Eff es (Either String ())
@@ -288,7 +289,7 @@ discordTlsSettings =
     }
 
 runGatewayConnection
-  :: (IOE :> es, KatipE :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Config
   -> Chan.Chan Message
   -> WS.Connection
@@ -307,7 +308,7 @@ runGatewayConnection cfg eventChan conn = do
       logInfo [i|Discord gateway expected HELLO, got op=#{op}|]
 
 runDiscordGatewaySession
-  :: (IOE :> es, KatipE :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Chan.Chan Message
   -> MVar.MVar (Maybe Int)
   -> MVar.MVar Bool
@@ -316,28 +317,28 @@ runDiscordGatewaySession
   -> Eff es ()
 runDiscordGatewaySession eventChan lastSequence heartbeatAck heartbeatInterval conn = do
   done <- MVar.newEmptyMVar
-  heartbeatThread <- forkGatewayThread done (heartbeatLoop conn lastSequence heartbeatAck heartbeatInterval)
-  readerThread <- forkGatewayThread done (readGatewayEvents eventChan lastSequence heartbeatAck conn)
+  heartbeat <- forkGatewayThread "heartbeat" done (heartbeatLoop conn lastSequence heartbeatAck heartbeatInterval)
+  reader <- forkGatewayThread "reader" done (readGatewayEvents eventChan lastSequence heartbeatAck conn)
   reason <- MVar.takeMVar done
   logInfo [i|Discord gateway connection ending: #{displayException reason}|]
   closeDiscordGatewayForReconnect conn
-  killThread heartbeatThread
-  killThread readerThread
+  void $ Concurrency.cancelResource heartbeat.resourceId
+  void $ Concurrency.cancelResource reader.resourceId
   throwIO reason
 
 forkGatewayThread
-  :: (IOE :> es, Concurrent :> es)
-  => MVar.MVar SomeException
+  :: Concurrency.Concurrency :> es
+  => Text
+  -> MVar.MVar SomeException
   -> Eff es ()
-  -> Eff es ThreadId
-forkGatewayThread done action =
-  forkIO do
-    result <- try action
-    case result of
-      Left err ->
-        void (MVar.tryPutMVar done err)
-      Right () ->
-        void (MVar.tryPutMVar done (toException ThreadKilled))
+  -> Eff es Concurrency.ResourceHandle
+forkGatewayThread label done action = Concurrency.spawnTask [i|discord.gateway.#{label}|] do
+  result <- try action
+  case result of
+    Left err ->
+      void (MVar.tryPutMVar done err)
+    Right () ->
+      void (MVar.tryPutMVar done (toException ThreadKilled))
 
 closeDiscordGatewayForReconnect :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es ()
 closeDiscordGatewayForReconnect conn =

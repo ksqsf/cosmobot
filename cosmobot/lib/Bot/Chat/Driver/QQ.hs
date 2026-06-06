@@ -24,10 +24,10 @@ where
 
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Control.Concurrent.Async as Async
 import qualified Control.Concurrent.Chan as Chan
 import qualified Data.IORef as IORef
 import qualified Data.Aeson as Aeson
@@ -76,7 +76,7 @@ newQQDriver config = do
   pure QQDriver{config, eventChan, actionChan}
 
 instance Driver.ChatDriver QQDriver where
-  type ChatDriverEffects QQDriver es = (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
+  type ChatDriverEffects QQDriver es = (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es, Media.Media :> es)
 
   driverPlatform _ =
     PlatformQQ
@@ -138,13 +138,13 @@ qqStreamingMessageLimit :: Int
 qqStreamingMessageLimit = 4000
 
 runQQDriver
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => QQDriver
   -> Eff es a
   -> Eff es a
-runQQDriver driver inner = withEffToIO (ConcUnlift Persistent Unlimited) $ \runInIO ->
-  liftIO $ Async.withAsync (runInIO $ qqConnectionLoop cfg eventChan actionChan) \_ ->
-    runInIO inner
+runQQDriver driver inner = do
+  worker <- Concurrency.spawnTask "qq.connection" (qqConnectionLoop cfg eventChan actionChan)
+  inner `finally` void (Concurrency.cancelResource worker.resourceId)
   where
     cfg = driver.config
     eventChan = driver.eventChan
@@ -173,7 +173,7 @@ sendAction driver value = do
 data ActionRequest = ActionRequest !Aeson.Value !(MVar ActionResponse)
 
 qqConnectionLoop
-  :: (IOE :> es, KatipE :> es, Concurrent :> es, Timeout :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Timeout :> es, Concurrency.Concurrency :> es)
   => Config
   -> Chan.Chan Event
   -> Chan.Chan ActionRequest
@@ -189,7 +189,7 @@ qqConnectionLoop cfg eventChan actionChan =
     threadDelay qqReconnectDelayMicroseconds
 
 runQQConnectionOnce
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Config
   -> Chan.Chan Event
   -> Chan.Chan ActionRequest
@@ -210,7 +210,7 @@ runQQConnectionOnce cfg eventChan actionChan =
       pure (Left (displayException err))
 
 runConnection
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Chan.Chan Event
   -> Chan.Chan ActionRequest
   -> WS.Connection
@@ -220,24 +220,25 @@ runConnection eventChan actionChan conn = do
   actionCounter <- liftIO (newMVar (1 :: Integer))
   done <- liftIO newEmptyMVar
   lastFrameAt <- liftIO (getCurrentTime >>= IORef.newIORef)
-  readerThread <- forkConnectionThread done (readFrames eventChan pendingResponses lastFrameAt conn)
-  sender <- forkConnectionThread done (sendActions actionChan pendingResponses actionCounter conn)
-  monitor <- forkConnectionThread done (monitorConnectionHeartbeat lastFrameAt)
+  reader <- forkConnectionThread "reader" done (readFrames eventChan pendingResponses lastFrameAt conn)
+  sender <- forkConnectionThread "sender" done (sendActions actionChan pendingResponses actionCounter conn)
+  monitor <- forkConnectionThread "heartbeat-monitor" done (monitorConnectionHeartbeat lastFrameAt)
   reason <- liftIO (takeMVar done)
   logInfo [i|QQ websocket connection ending: #{show reason :: String}|]
   closeWebSocketForReconnect conn
-  stopConnectionThread "reader" readerThread
+  stopConnectionThread "reader" reader
   stopConnectionThread "sender" sender
   stopConnectionThread "heartbeat monitor" monitor
   failPendingResponses pendingResponses
   logInfo "QQ websocket connection ended"
 
 forkConnectionThread
-  :: (IOE :> es, KatipE :> es, Concurrent :> es)
-  => MVar SomeException
+  :: Concurrency.Concurrency :> es
+  => Text
+  -> MVar SomeException
   -> Eff es ()
-  -> Eff es ThreadId
-forkConnectionThread done action = forkIO do
+  -> Eff es Concurrency.ResourceHandle
+forkConnectionThread label done action = Concurrency.spawnTask [i|qq.websocket.#{label}|] do
   result <- try action
   case result of
     Left err ->
@@ -283,9 +284,9 @@ closeWebSocketForReconnect conn = do
     Just (Right ()) ->
       pure ()
 
-stopConnectionThread :: (Timeout :> es, KatipE :> es, Concurrent :> es) => Text -> ThreadId -> Eff es ()
-stopConnectionThread label threadId = do
-  result <- timeout qqConnectionThreadStopTimeoutMicroseconds (killThread threadId)
+stopConnectionThread :: (Timeout :> es, KatipE :> es, Concurrency.Concurrency :> es) => Text -> Concurrency.ResourceHandle -> Eff es ()
+stopConnectionThread label handle = do
+  result <- timeout qqConnectionThreadStopTimeoutMicroseconds (Concurrency.cancelResource handle.resourceId)
   when (isNothing result) $
     logInfo [i|QQ websocket #{label} thread did not stop before reconnect; continuing|]
 

@@ -314,7 +314,7 @@ runChatDriversWith drivers inner = do
       Chat.runChatWithHandler (chatDriversHandler drivers) inner
 
 runMaybeQQDriver
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Maybe QQ.QQDriver
   -> Eff es a
   -> Eff es a
@@ -322,7 +322,7 @@ runMaybeQQDriver =
   maybe id QQ.runQQDriver
 
 runMaybeDiscordDriver
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Maybe Discord.DiscordDriver
   -> Eff es a
   -> Eff es a
