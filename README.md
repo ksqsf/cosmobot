@@ -171,6 +171,7 @@ name = "Doraemon"                # Your agent's name
 command = "!ask"                 # The "handler command" way to start a conversation
 draw_command = "!draw"           # The "handler command" way to draw
 agent_max_turns = 12             # Max number of tool turms
+context_compaction_threshold_ktokens = 1000 # Compact after provider-reported usage reaches 1M tokens
 system_prompt = "You are Doraemon, an AI agent powered by Cosmobot. Respond concisely."
 ```
 

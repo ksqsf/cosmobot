@@ -15,6 +15,7 @@ module Bot.AgentAudit.Types
 where
 
 import Bot.Core.Message
+import qualified Bot.LLM.Types as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import Data.Time (UTCTime)
@@ -27,7 +28,15 @@ data ToolCallTrace = ToolCallTrace
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 data AgentAuditEvent
-  = ToolCallStarted
+  = ModelTurnFinished
+      { runId :: !Text
+      , turn :: !Int
+      , answerKind :: !Text
+      , contentLength :: !Int
+      , toolCalls :: ![ToolCallTrace]
+      , tokenUsage :: !(Maybe LLM.TokenUsage)
+      }
+  | ToolCallStarted
       { runId :: !Text
       , turn :: !Int
       , toolCall :: !ToolCallTrace
@@ -89,6 +98,7 @@ data ToolUseDetail = ToolUseDetail
 
 eventRunId :: AgentAuditEvent -> Text
 eventRunId = \case
+  ModelTurnFinished{runId} -> runId
   ToolCallStarted{runId} -> runId
   ToolCallFinished{runId} -> runId
   AgentRunInterrupted{runId} -> runId

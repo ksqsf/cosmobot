@@ -18,6 +18,7 @@ main =
       [ testCase "drivers table may be omitted" testDriversTableMayBeOmitted
       , testCase "configured telegram driver is enabled alone" testConfiguredTelegramDriverEnabledAlone
       , testCase "incomplete matrix and discord driver tables are disabled" testIncompleteMatrixAndDiscordDisabled
+      , testCase "ask context compaction threshold uses ktokens" testAskCompactionThresholdUsesKTokens
       ]
 
 testDriversTableMayBeOmitted :: IO ()
@@ -69,6 +70,15 @@ testIncompleteMatrixAndDiscordDisabled = do
     [ (PlatformMatrix, "@bot:matrix.example.test")
     , (PlatformDiscord, "424242")
     ]
+
+testAskCompactionThresholdUsesKTokens :: IO ()
+testAskCompactionThresholdUsesKTokens = do
+  cfg <- loadConfigText $
+    minimalConfig
+      <> Text.unlines
+        [ "context_compaction_threshold_ktokens = 123"
+        ]
+  cfg.handlers.ask.contextCompactionThresholdKTokens @?= 123
 
 minimalConfig :: Text
 minimalConfig =

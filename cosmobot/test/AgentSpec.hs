@@ -205,6 +205,7 @@ main =
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "reply body parses structured content" testReplyBodyParsesStructuredContent
       , testCase "LLM tool request content streams immediately when enabled" testLLMToolRequestContentStreamsImmediatelyWhenEnabled
+      , testCase "LLM streaming response preserves token usage" testLLMStreamingResponsePreservesTokenUsage
       , testCase "LLM image stream request asks only for final image" testLLMImageStreamRequestAsksOnlyForFinalImage
       , testCase "LLM audio speech request includes provider options" testLLMAudioSpeechRequestIncludesProviderOptions
       , testCase "LLM image stream completed event yields final image bytes" testLLMImageStreamCompletedEventYieldsFinalImage
@@ -751,15 +752,21 @@ testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
 
 testAgentCompactsOldTranscriptContextBeforeModelTurn :: IO ()
 testAgentCompactsOldTranscriptContextBeforeModelTurn = do
-  answers <- IORef.newIORef [chatAnswer "done" []]
+  answers <- IORef.newIORef
+    [ chatAnswerWithUsage highTokenUsage "" [toolCall "call-1" "message_info" (Aeson.object [])]
+    , chatAnswer "done" []
+    ]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   let longTranscript =
         Transcript (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    Agent.runAgent 4 agentContext [] longTranscript
+    agentRun <- Agent.startAgentRun agentContext Agent.defaultTools
+    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000 agentRun
+    _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program longTranscript)
+    pure ()
   requests <- IORef.readIORef captured
   case requests of
-    [_summaryRequest, compactedRequest] ->
+    [_firstModelRequest, _summaryRequest, compactedRequest] ->
       case compactedRequest of
         summaryMessage : remainingMessages -> do
           summaryMessage.role @?= "system"
@@ -769,21 +776,24 @@ testAgentCompactsOldTranscriptContextBeforeModelTurn = do
             other ->
               assertFailure [i|expected compacted summary text, got #{show other :: String}|]
           length remainingMessages @?= 20
-          map (.role) remainingMessages @?= replicate 20 "user"
+          assertBool "retained messages include the recent tool exchange" ("tool" `elem` map (.role) remainingMessages)
         other ->
           assertFailure [i|expected compacted request messages, got #{show other :: String}|]
     other ->
-      assertFailure [i|expected summary request and compacted model request, got #{length other}|]
+      assertFailure [i|expected first request, summary request, and compacted request, got #{length other}|]
 
 testAgentAnnouncesContextCompaction :: IO ()
 testAgentAnnouncesContextCompaction = do
-  answers <- IORef.newIORef [chatAnswer "done" []]
+  answers <- IORef.newIORef
+    [ chatAnswerWithUsage highTokenUsage "" [toolCall "call-1" "message_info" (Aeson.object [])]
+    , chatAnswer "done" []
+    ]
   replies <- IORef.newIORef ([] :: [Text])
   let longTranscript =
         Transcript (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
   _ <- runAgentWith answers (ChatMock (Just replies) (Just "46") Nothing) do
-    agentRun <- Agent.startAgentRun agentContext []
-    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun
+    agentRun <- Agent.startAgentRun agentContext Agent.defaultTools
+    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000 agentRun
     _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program longTranscript)
     pure ()
   sent <- IORef.readIORef replies
@@ -870,15 +880,15 @@ testAskHandlerInjectsStartupSkillMetadata = withTempDir "skills-test" \skillsDir
 testAgentAuditRecordsToolEvents :: IO ()
 testAgentAuditRecordsToolEvents = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "fetch_url" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])]
+    [ chatAnswerWithUsage highTokenUsage "" [toolCall "call-1" "fetch_url" (Aeson.object ["url" Aeson..= ("https://example.test" :: Text)])]
     , chatAnswer "done" []
     ]
   fetches <- IORef.newIORef (0 :: Int)
-  toolUses <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+  (toolUses, records) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     agentRun <- Agent.startAgentRun (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches]
-    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun
+    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun
     _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program (startWithUser "fetch it"))
-    AgentAudit.queryRecentToolUses 10
+    (,) <$> AgentAudit.queryRecentToolUses 10 <*> AgentAudit.queryRecentAuditRecords 10
   case toolUses of
     [toolUse] -> do
       toolUse.toolName @?= "fetch_url"
@@ -890,6 +900,7 @@ testAgentAuditRecordsToolEvents = do
       toolUse.result @?= Just "fetched"
     _ ->
       assertFailure [i|expected one tool use, got #{length toolUses}|]
+  assertBool "expected model token usage in audit records" (any hasHighTokenUsage records)
 
 testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns :: IO ()
 testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns = do
@@ -969,7 +980,7 @@ testAgentAuditStorageOmitsLargeToolResults =
                               Chat.runChatWith NoopChatDriver
                               do
                                 agentRun <- Agent.startAgentRun agentContext [largeAuditResultTool toolResultText]
-                                void $ S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun) (startWithUser "audit large result"))
+                                void $ S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun) (startWithUser "audit large result"))
                                 uses <- AgentAudit.queryRecentToolUses 10
                                 mediaFiles <- Media.listMediaFiles
                                 pure (uses, mediaFiles)
@@ -1057,7 +1068,7 @@ testAgentAuditRecordsStructuredToolFailureCategory = do
     ]
   toolUses <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     agentRun <- Agent.startAgentRun agentContext Agent.defaultTools
-    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun
+    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun
     _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program (startWithUser "run command"))
     AgentAudit.queryRecentToolUses 10
   case toolUses of
@@ -1211,6 +1222,26 @@ testLLMToolRequestContentStreamsImmediatelyWhenEnabled = do
       map (.name) (toList toolCalls) @?= ["message_info"]
     Right other ->
       assertFailure [i|expected tool request stream result, got #{show other :: String}|]
+    Left err ->
+      assertFailure (Text.unpack err)
+
+testLLMStreamingResponsePreservesTokenUsage :: IO ()
+testLLMStreamingResponsePreservesTokenUsage = do
+  let usage = Aeson.object
+        [ "prompt_tokens" Aeson..= (900 :: Int)
+        , "completion_tokens" Aeson..= (200 :: Int)
+        , "total_tokens" Aeson..= (1100 :: Int)
+        ]
+      payloads =
+        [ streamPayload (Aeson.object ["content" Aeson..= ("done" :: Text)])
+        , Aeson.object
+            [ "choices" Aeson..= ([] :: [Aeson.Value])
+            , "usage" Aeson..= usage
+            ]
+        ]
+  case LLMTransport.chatStreamTextFromPayloads True payloads of
+    Right (_outputs, answer) ->
+      LLM.chatAnswerTokenUsage answer @?= Just highTokenUsage
     Left err ->
       assertFailure (Text.unpack err)
 
@@ -1606,7 +1637,7 @@ testThreadStorageOmitsLargeToolResults =
                               Chat.runChatWith NoopChatDriver
                               do
                                 agentRun <- Agent.startAgentRun agentContext [largeResultTool result]
-                                outputs S.:> agentResult <- S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 agentRun) (startWithUser "fetch"))
+                                outputs S.:> agentResult <- S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun) (startWithUser "fetch"))
                                 pure (agentOutputText outputs, agentResult.transcript)
                         rememberThreadTranscript store (Just (messageKey 1)) transcript
                         loaded <- lookupThreadTranscript store (messageKey 1)
@@ -2422,11 +2453,29 @@ popStreamingAnswer answers =
 
 chatAnswer :: Text -> [LLM.ToolCall] -> LLM.ChatAnswer
 chatAnswer content calls =
-  case nonEmpty calls of
-    Nothing ->
-      LLM.ChatFinalAnswer content
-    Just toolCalls ->
-      LLM.ChatToolRequest{content, toolCalls}
+  LLM.chatAnswer content calls
+
+chatAnswerWithUsage :: LLM.TokenUsage -> Text -> [LLM.ToolCall] -> LLM.ChatAnswer
+chatAnswerWithUsage usage content calls =
+  LLM.withChatAnswerTokenUsage (Just usage) (chatAnswer content calls)
+
+highTokenUsage :: LLM.TokenUsage
+highTokenUsage =
+  LLM.TokenUsage
+    { promptTokens = 900
+    , completionTokens = 200
+    , totalTokens = 1100
+    }
+
+hasHighTokenUsage :: AgentAudit.AgentAuditRecord -> Bool
+hasHighTokenUsage record =
+  case record.event of
+    AgentAudit.ModelTurnFinished{tokenUsage = Just usage} ->
+      usage.totalTokens == highTokenUsage.totalTokens &&
+        usage.promptTokens == highTokenUsage.promptTokens &&
+        usage.completionTokens == highTokenUsage.completionTokens
+    _ ->
+      False
 
 toolCall :: Text -> Text -> Aeson.Value -> LLM.ToolCall
 toolCall callId name arguments =
@@ -2468,7 +2517,7 @@ runAgentWithToolMessageCapture maxTurns context tools transcript recorded rememb
             liftIO $ IORef.modifyIORef' recorded (<> [body])
         )
           . Agent.withLinkingToolEmittedMessagesToThread sink
-          $ Agent.defaultAgentProgram AgentAudit.agentAuditObserver maxTurns agentRun
+          $ Agent.defaultAgentProgram AgentAudit.agentAuditObserver maxTurns 1000000 agentRun
   outputs S.:> result <- S.toList (Agent.runAgentProgramStreaming program transcript)
   pure (agentOutputText outputs, result.transcript)
 
@@ -2587,6 +2636,7 @@ askHandlerConfig =
     , drawCommand = "!draw"
     , systemPrompt = "base system prompt"
     , agentMaxTurns = 4
+    , contextCompactionThresholdKTokens = 1000
     , botIds = [(PlatformQQ, "2044933066")]
     }
 

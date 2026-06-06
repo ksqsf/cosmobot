@@ -110,6 +110,7 @@ data AgentEvent
       , answerKind :: !Text
       , contentLength :: !Int
       , toolCalls :: ![LLM.ToolCall]
+      , tokenUsage :: !(Maybe LLM.TokenUsage)
       }
   | ToolCallStarted
       { runId :: !Text

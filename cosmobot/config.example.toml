@@ -142,3 +142,4 @@ delete_patterns = []
 command = "!ask"
 draw_command = "!draw"
 agent_max_turns = 4
+context_compaction_threshold_ktokens = 1000

@@ -114,6 +114,7 @@ handleToolLimit runId turn _content calls answered = do
     , status = "tool_limit"
     , finalText = message
     , turnsUsed = turn
+    , tokenUsage = Nothing
     }
 
 safeToolCall :: LLM.ToolCall -> Eff es ToolResult -> Eff es ToolResult

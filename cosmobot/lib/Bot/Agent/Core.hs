@@ -43,6 +43,7 @@ data AgentCompletion = AgentCompletion
   , status :: !Text
   , finalText :: !Text
   , turnsUsed :: !Int
+  , tokenUsage :: !(Maybe LLM.TokenUsage)
   }
 
 -- | Per-agent-run tool environment.
@@ -64,6 +65,7 @@ data AgentRun es = AgentRun
 data AgentState transient = AgentState
   { transcript    :: !Transcript
   , turn         :: !Int
+  , modelTokenUsage :: !(Maybe LLM.TokenUsage)
   , transient    :: !(HList.HList transient)
   }
 

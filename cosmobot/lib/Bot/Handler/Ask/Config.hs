@@ -20,6 +20,7 @@ data AskHandlerConfig = AskHandlerConfig
   , drawCommand      :: !Text
   , systemPrompt     :: !Text
   , agentMaxTurns    :: !Int
+  , contextCompactionThresholdKTokens :: !Int
   , botIds           :: ![(ChatPlatform, Text)]
   }
   deriving (Show)
@@ -31,11 +32,15 @@ instance FromValue AskHandlerConfig where
     drawCommand <- fromMaybe "!draw" <$> optKey "draw_command"
     systemPrompt <- reqKey "system_prompt"
     agentMaxTurns <- fromMaybe 4 <$> optKey "agent_max_turns"
+    contextCompactionThresholdKTokens <- fromMaybe 1000 <$> optKey "context_compaction_threshold_ktokens"
+    when (contextCompactionThresholdKTokens <= 0) do
+      fail "handler.ask.context_compaction_threshold_ktokens must be positive"
     pure AskHandlerConfig
       { name = name
       , command = command
       , drawCommand = drawCommand
       , systemPrompt = systemPrompt
       , agentMaxTurns = agentMaxTurns
+      , contextCompactionThresholdKTokens = contextCompactionThresholdKTokens
       , botIds = []
       }

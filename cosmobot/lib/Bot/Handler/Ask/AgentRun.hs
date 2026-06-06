@@ -137,11 +137,11 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
   do
     let sink = Agent.ToolEmittedMessageSink (rememberToolEmittedMessage activeReply)
         program =
-          ( Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessage message)
+            ( Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessage message)
           . Agent.withLinkingToolEmittedMessagesToThread sink
           . Agent.withNormalizingToolReplies
           )
-            (Agent.defaultAgentProgram observer cfg.agentMaxTurns agentRun)
+            (Agent.defaultAgentProgram observer cfg.agentMaxTurns (compactionThresholdTokens cfg) agentRun)
     (lastReply, replyResult) <-
       S.mapM_
         (recordReplyUpdate activeReply)
@@ -227,6 +227,10 @@ threadLink result parentMessageId linkedMessageId =
     , parentMessageId
     , linkedMessageId
     }
+
+compactionThresholdTokens :: AskHandlerConfig -> Int
+compactionThresholdTokens cfg =
+  cfg.contextCompactionThresholdKTokens * 1000
 
 rememberToolEmittedMessage
   :: (Prim :> es, Concurrent :> es)

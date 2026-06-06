@@ -254,10 +254,10 @@ askOpenAIWithToolsStreaming
   -> Stream (Of Text) (Eff es) ChatAnswer
 askOpenAIWithToolsStreaming Config{chatProvider = Nothing} _ _ = do
   S.yield chatNotConfiguredMessage
-  pure (ChatFinalAnswer chatNotConfiguredMessage)
+  pure (chatAnswer chatNotConfiguredMessage [])
 askOpenAIWithToolsStreaming Config{chatProvider = Just ChatProviderConfig{apiKey = Nothing}} _ _ = do
   S.yield chatApiKeyNotConfiguredMessage
-  pure (ChatFinalAnswer chatApiKeyNotConfiguredMessage)
+  pure (chatAnswer chatApiKeyNotConfiguredMessage [])
 askOpenAIWithToolsStreaming Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Just key, model, reasoningEffort, requestTimeout}} functionTools messages = do
   let requestEndpoint = chatCompletionsEndpoint cfg
       request = ChatCompletionRequest
@@ -1014,12 +1014,13 @@ data StreamState = StreamState
   { contentAccumulator :: !TextBuilder.Builder
   , toolAccumulator :: !(Map Int PartialToolCall)
   , pendingContentOutputs :: ![Text]
+  , tokenUsage :: !(Maybe TokenUsage)
   }
   deriving (Generic)
 
 emptyStreamState :: StreamState
 emptyStreamState =
-  StreamState mempty Map.empty []
+  StreamState mempty Map.empty [] Nothing
 
 data PartialToolCall = PartialToolCall
   { partialId :: !(Maybe Text)
@@ -1033,9 +1034,10 @@ emptyPartialToolCall = PartialToolCall Nothing Nothing mempty
 
 streamStateAnswer :: StreamState -> ChatAnswer
 streamStateAnswer streamState =
-  chatAnswer
-    (Text.strip (builderToStrictText streamState.contentAccumulator))
-    (mapMaybe completePartialToolCall (Map.elems streamState.toolAccumulator))
+  withChatAnswerTokenUsage streamState.tokenUsage $
+    chatAnswer
+      (Text.strip (builderToStrictText streamState.contentAccumulator))
+      (mapMaybe completePartialToolCall (Map.elems streamState.toolAccumulator))
 
 completePartialToolCall :: PartialToolCall -> Maybe ToolCall
 completePartialToolCall PartialToolCall{partialId, partialName, partialArguments} = do
@@ -1053,7 +1055,7 @@ builderToStrictText =
 
 applyStreamChunk :: Bool -> StreamState -> ChatCompletionStreamChunk -> (StreamState, [Text])
 applyStreamChunk emitContentDeltas streamState chunk =
-  foldl' applyStreamChoice (streamState, []) chunk.choices
+  foldl' applyStreamChoice (streamStateWithUsage streamState chunk.usage, []) chunk.choices
   where
     applyStreamChoice (acc, outputs) StreamChoice{delta} =
       let contentDelta = fromMaybe "" delta.content
@@ -1067,6 +1069,15 @@ applyStreamChunk emitContentDeltas streamState chunk =
           then outputs <> [contentDelta]
           else outputs
       )
+
+streamStateWithUsage :: StreamState -> Maybe TokenUsage -> StreamState
+streamStateWithUsage streamState usage =
+  StreamState
+    { contentAccumulator = streamState.contentAccumulator
+    , toolAccumulator = streamState.toolAccumulator
+    , pendingContentOutputs = streamState.pendingContentOutputs
+    , tokenUsage = usage <|> streamState.tokenUsage
+    }
 
 appendPendingContent :: Text -> [Text] -> [Text]
 appendPendingContent content chunks
@@ -1095,12 +1106,15 @@ applyToolCallDelta acc delta =
 
 data ChatCompletionStreamChunk = ChatCompletionStreamChunk
   { choices :: ![StreamChoice]
+  , usage :: !(Maybe TokenUsage)
   }
   deriving (Show)
 
 instance Aeson.FromJSON ChatCompletionStreamChunk where
-  parseJSON = Aeson.withObject "ChatCompletionStreamChunk" $ \o ->
-    ChatCompletionStreamChunk . fromMaybe [] <$> o Aeson..:? "choices"
+  parseJSON = Aeson.withObject "ChatCompletionStreamChunk" $ \o -> do
+    choices <- fromMaybe [] <$> o Aeson..:? "choices"
+    usage <- o Aeson..:? "usage"
+    pure ChatCompletionStreamChunk{choices, usage}
 
 streamPayloadError :: Aeson.Value -> Maybe Text
 streamPayloadError = \case

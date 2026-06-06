@@ -11,6 +11,7 @@ module Bot.LLM.Types
   , MessageContent (..)
   , ContentPart (..)
   , ChatAnswer (..)
+  , TokenUsage (..)
   , FunctionTool (..)
   , ToolCall (..)
   , userText
@@ -24,6 +25,8 @@ module Bot.LLM.Types
   , chatAnswer
   , chatAnswerContent
   , chatAnswerToolCalls
+  , chatAnswerTokenUsage
+  , withChatAnswerTokenUsage
   )
 where
 
@@ -228,10 +231,12 @@ instance Aeson.ToJSON FunctionTool where
 data ChatAnswer
   = ChatFinalAnswer
       { content :: !Text
+      , tokenUsage :: !(Maybe TokenUsage)
       }
   | ChatToolRequest
       { content   :: !Text
       , toolCalls :: !(NonEmpty ToolCall)
+      , tokenUsage :: !(Maybe TokenUsage)
       }
   deriving (Show, Generic)
 
@@ -242,13 +247,35 @@ instance Aeson.ToJSON ChatAnswer where
       , "toolCalls" Aeson..= chatAnswerToolCalls answer
       ]
 
+data TokenUsage = TokenUsage
+  { promptTokens :: !Int
+  , completionTokens :: !Int
+  , totalTokens :: !Int
+  }
+  deriving (Eq, Show, Generic)
+
+instance Aeson.FromJSON TokenUsage where
+  parseJSON = Aeson.withObject "TokenUsage" $ \o -> do
+    promptTokens <- o Aeson..: "prompt_tokens"
+    completionTokens <- o Aeson..: "completion_tokens"
+    totalTokens <- o Aeson..: "total_tokens"
+    pure TokenUsage{promptTokens, completionTokens, totalTokens}
+
+instance Aeson.ToJSON TokenUsage where
+  toJSON TokenUsage{promptTokens, completionTokens, totalTokens} =
+    Aeson.object
+      [ "prompt_tokens" Aeson..= promptTokens
+      , "completion_tokens" Aeson..= completionTokens
+      , "total_tokens" Aeson..= totalTokens
+      ]
+
 chatAnswer :: Text -> [ToolCall] -> ChatAnswer
 chatAnswer content calls =
   case nonEmpty calls of
     Nothing ->
-      ChatFinalAnswer content
+      ChatFinalAnswer{content, tokenUsage = Nothing}
     Just toolCalls ->
-      ChatToolRequest{content, toolCalls}
+      ChatToolRequest{content, toolCalls, tokenUsage = Nothing}
 
 chatAnswerContent :: ChatAnswer -> Text
 chatAnswerContent = \case
@@ -263,6 +290,20 @@ chatAnswerToolCalls = \case
     []
   ChatToolRequest{toolCalls} ->
     toList toolCalls
+
+chatAnswerTokenUsage :: ChatAnswer -> Maybe TokenUsage
+chatAnswerTokenUsage = \case
+  ChatFinalAnswer{tokenUsage} ->
+    tokenUsage
+  ChatToolRequest{tokenUsage} ->
+    tokenUsage
+
+withChatAnswerTokenUsage :: Maybe TokenUsage -> ChatAnswer -> ChatAnswer
+withChatAnswerTokenUsage usage = \case
+  ChatFinalAnswer{content} ->
+    ChatFinalAnswer{content, tokenUsage = usage}
+  ChatToolRequest{content, toolCalls} ->
+    ChatToolRequest{content, toolCalls, tokenUsage = usage}
 
 -- | A single function call requested by the model.
 data ToolCall = ToolCall

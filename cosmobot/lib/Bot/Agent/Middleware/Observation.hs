@@ -92,21 +92,23 @@ withObservation observer program =
     }
   where
     modelDecisionFinished runId turn = \case
-      ModelAnswered AgentCompletion{finalText} ->
+      ModelAnswered AgentCompletion{finalText, tokenUsage} ->
         ModelTurnFinished
           { runId = runId
           , turn = turn
           , answerKind = "final"
           , contentLength = Text.length finalText
           , toolCalls = []
+          , tokenUsage
           }
-      ModelNeedsTools ToolTurnState{toolContent, toolCalls} ->
+      ModelNeedsTools ToolTurnState{agentState, toolContent, toolCalls} ->
         ModelTurnFinished
           { runId = runId
           , turn = turn
           , answerKind = "tool_request"
           , contentLength = Text.length toolContent
           , toolCalls = toList toolCalls
+          , tokenUsage = agentState.modelTokenUsage
           }
 
 transcriptMessageCount :: AgentState transient -> Int

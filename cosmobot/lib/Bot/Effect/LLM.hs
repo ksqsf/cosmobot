@@ -35,8 +35,12 @@ module Bot.Effect.LLM
   , MessageContent (..)
   , ContentPart (..)
   , ChatAnswer (..)
+  , TokenUsage (..)
   , FunctionTool (..)
   , ToolCall (..)
+  , chatAnswer
+  , chatAnswerTokenUsage
+  , withChatAnswerTokenUsage
   , userText
   , userWithImages
   , systemText

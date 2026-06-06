@@ -25,6 +25,15 @@ recordAgentEvent recordEvent event =
 
 agentAuditEvent :: Agent.AgentEvent -> Maybe AgentAuditEvent
 agentAuditEvent = \case
+  Agent.ModelTurnFinished{runId, turn, answerKind, contentLength, toolCalls, tokenUsage} ->
+    Just ModelTurnFinished
+      { runId
+      , turn
+      , answerKind
+      , contentLength
+      , toolCalls = map toolCallTrace toolCalls
+      , tokenUsage
+      }
   Agent.ToolCallStarted{runId, turn, toolCall} ->
     Just ToolCallStarted
       { runId
@@ -40,8 +49,6 @@ agentAuditEvent = \case
   Agent.AgentRunStarted{} ->
     Nothing
   Agent.ModelTurnStarted{} ->
-    Nothing
-  Agent.ModelTurnFinished{} ->
     Nothing
   Agent.AgentRunFinished{} ->
     Nothing

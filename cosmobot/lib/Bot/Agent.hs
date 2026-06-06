@@ -139,7 +139,11 @@ runPreparedAgentStreaming
   -> Transcript
   -> Stream (Of AgentStreamOutput) (Eff es) AgentResult
 runPreparedAgentStreaming maxTurns agentRun transcript =
-  runAgentProgramStreaming (plainAgentProgram maxTurns agentRun) transcript
+  runAgentProgramStreaming (plainAgentProgram maxTurns defaultCompactionTokenThreshold agentRun) transcript
+
+defaultCompactionTokenThreshold :: Int
+defaultCompactionTokenThreshold =
+  1000000
 
 runAgentProgramStreaming
   :: (LLM.LLM :> es)
@@ -173,26 +177,27 @@ initialAgentState transient transcript =
   AgentState
     { transcript = closeInterruptedToolCalls transcript
     , turn = 1
+    , modelTokenUsage = Nothing
     , transient
     }
 
-defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es) => AgentObserver ObservationContext es -> Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
-defaultAgentProgram observer maxTurns agentRun =
+defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es) => AgentObserver ObservationContext es -> Int -> Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
+defaultAgentProgram observer maxTurns compactionTokenThreshold agentRun =
   ( withTypingNotification
   . withToolLimit maxTurns
   . withToolResultCompaction
   . withObservation observer
   . withToolMessage
-  . withContextCompactionNotice
+  . withContextCompactionNotice compactionTokenThreshold
   . withToolFailureRecovery
   )
     (emptyAgentProgram (NextModelInput Nothing HList.:& HList.HNil) agentRun)
 
-plainAgentProgram :: (LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es) => Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
-plainAgentProgram maxTurns agentRun =
+plainAgentProgram :: (LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es) => Int -> Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
+plainAgentProgram maxTurns compactionTokenThreshold agentRun =
   ( withToolLimit maxTurns
   . withToolResultCompaction
-  . withContextCompaction
+  . withContextCompaction compactionTokenThreshold
   . withToolFailureRecovery
   )
     (emptyAgentProgram (NextModelInput Nothing HList.:& HList.HNil) agentRun)
@@ -224,11 +229,13 @@ modelDecision
 modelDecision agentRun agentState answer =
   case answer of
     LLM.ChatFinalAnswer{content} ->
-      pure (ModelAnswered (agentCompletion agentRun "answered" content agentState.turn answered))
+      pure (ModelAnswered (agentCompletion agentRun "answered" content agentState.turn (LLM.chatAnswerTokenUsage answer) answered))
     LLM.ChatToolRequest{content, toolCalls} -> do
       S.yield (AgentToolCallNotification toolCalls)
-      pure (ModelNeedsTools ToolTurnState{agentState, answered, toolContent = content, toolCalls})
+      pure (ModelNeedsTools ToolTurnState{agentState = observedState, answered, toolContent = content, toolCalls})
   where
+    observedState =
+      agentState{modelTokenUsage = LLM.chatAnswerTokenUsage answer}
     answered =
       appendMessage (LLM.assistantAnswer answer) agentState.transcript
 
@@ -344,11 +351,12 @@ toolImageContextText call result =
 -- * Completion
 -----------------------------------------------------------------------------------------
 
-agentCompletion :: AgentRun es -> Text -> Text -> Int -> Transcript -> AgentCompletion
-agentCompletion agentRun status answer turnsUsed transcript =
+agentCompletion :: AgentRun es -> Text -> Text -> Int -> Maybe LLM.TokenUsage -> Transcript -> AgentCompletion
+agentCompletion agentRun status answer turnsUsed tokenUsage transcript =
   AgentCompletion
     { result = AgentResult{runId = agentRun.runId, transcript}
     , status
     , finalText = answer
     , turnsUsed
+    , tokenUsage
     }

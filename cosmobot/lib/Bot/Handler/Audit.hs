@@ -14,6 +14,7 @@ import Bot.Core.Route
 import Bot.Core.Thread
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import Bot.Storage.Thread
@@ -167,6 +168,9 @@ renderAuditRecord record =
 
 renderAuditEvent :: Integer -> AgentAudit.AgentAuditEvent -> Text
 renderAuditEvent recordId = \case
+  AgentAudit.ModelTurnFinished{runId, turn, answerKind, contentLength, toolCalls, tokenUsage} ->
+    let usage = maybe "tokens=unreported" renderTokenUsage tokenUsage
+    in [i|model_finished run=#{runId} turn=#{turn} kind=#{answerKind} content_chars=#{contentLength} tool_calls=#{length toolCalls} #{usage}|]
   AgentAudit.ToolCallStarted{runId, turn, toolCall} ->
     let toolName = toolCall.name
         auditId :: Text
@@ -179,6 +183,11 @@ renderAuditEvent recordId = \case
   AgentAudit.AgentThreadLinked{runId, linkedMessageId, parentMessageId} ->
     let parent = maybe "-" messageIdText parentMessageId
     in [i|`thread_linked` run=#{runId} message=#{messageIdText linkedMessageId} parent=#{parent}|]
+
+renderTokenUsage :: LLM.TokenUsage -> Text
+renderTokenUsage usage =
+  let LLM.TokenUsage{promptTokens, completionTokens, totalTokens} = usage
+  in [i|tokens=#{totalTokens} prompt=#{promptTokens} completion=#{completionTokens}|]
 
 renderMessageIds :: [Maybe MessageId] -> Text
 renderMessageIds messageIds =
