@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.System.Typst.CLI
   ( runTypst
   , withRenderedTypst
+  , typstOutputFileName
   , TypstOutputFormat
   )
 where
@@ -15,7 +16,10 @@ import Bot.Prelude
 import Bot.System.Typst.Types
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Util.Image as Image
+import qualified Crypto.Hash as CryptoHash
 import qualified Data.Text.IO as TextIO
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Effectful.FileSystem (FileSystem)
 import Effectful.Process
 import qualified Effectful.Temporary as Temporary
@@ -47,9 +51,8 @@ withRenderedTypst format source action =
 
 renderTypst :: (IOE :> es, KatipE :> es, Fail :> es, FileSystem :> es, Process :> es) => TypstOutputFormat -> FilePath -> Text -> Eff es FilePath
 renderTypst format dir source = do
-  let extName = typstFormatToExtName format
-      typstPath = dir </> "document" <.> "typ"
-      outputPath = dir </> "document" <.> toString extName
+  let typstPath = dir </> "document" <.> "typ"
+      outputPath = dir </> Text.unpack (typstOutputFileName format source)
   liftIO $ TextIO.writeFile typstPath source
   logInfo [i|Rendering Typst document: #{typstPath}|]
   (code, _out, err) <-
@@ -61,3 +64,11 @@ renderTypst format dir source = do
     ExitFailure _ -> do
       Image.removeFilesIfExists [typstPath, outputPath]
       throwIO (userError ("typst failed: " <> err))
+
+typstOutputFileName :: TypstOutputFormat -> Text -> Text
+typstOutputFileName format source =
+  "typst-" <> Text.take 16 digest <> "." <> typstFormatToExtName format
+  where
+    digest =
+      Text.pack . show $
+        (CryptoHash.hash (TextEncoding.encodeUtf8 source) :: CryptoHash.Digest CryptoHash.SHA256)
