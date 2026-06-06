@@ -218,7 +218,7 @@ matrixStreamingMessageLimit :: Int
 matrixStreamingMessageLimit = 4000
 
 matrixEditChunkChars :: Int
-matrixEditChunkChars = 64
+matrixEditChunkChars = 128
 
 loadSyncToken :: Storage.Storage :> es => Eff es (Maybe Text)
 loadSyncToken =
