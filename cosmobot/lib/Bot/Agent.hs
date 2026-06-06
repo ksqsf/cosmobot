@@ -84,6 +84,7 @@ import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import Bot.Agent.Tools (defaultTools)
 import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
@@ -181,7 +182,7 @@ initialAgentState transient transcript =
     , transient
     }
 
-defaultAgentProgram :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es) => AgentObserver ObservationContext es -> Int -> Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
+defaultAgentProgram :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es) => AgentObserver ObservationContext es -> Int -> Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
 defaultAgentProgram observer maxTurns compactionTokenThreshold agentRun =
   ( withTypingNotification
   . withToolLimit maxTurns

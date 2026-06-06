@@ -318,16 +318,16 @@ runDiscordGatewaySession
 runDiscordGatewaySession eventChan lastSequence heartbeatAck heartbeatInterval conn = do
   done <- MVar.newEmptyMVar
   heartbeat <- forkGatewayThread "heartbeat" done (heartbeatLoop conn lastSequence heartbeatAck heartbeatInterval)
-  reader <- forkGatewayThread "reader" done (readGatewayEvents eventChan lastSequence heartbeatAck conn)
+  eventReader <- forkGatewayThread "reader" done (readGatewayEvents eventChan lastSequence heartbeatAck conn)
   reason <- MVar.takeMVar done
   logInfo [i|Discord gateway connection ending: #{displayException reason}|]
   closeDiscordGatewayForReconnect conn
   void $ Concurrency.cancelResource heartbeat.resourceId
-  void $ Concurrency.cancelResource reader.resourceId
+  void $ Concurrency.cancelResource eventReader.resourceId
   throwIO reason
 
 forkGatewayThread
-  :: Concurrency.Concurrency :> es
+  :: (Concurrency.Concurrency :> es, Concurrent :> es)
   => Text
   -> MVar.MVar SomeException
   -> Eff es ()

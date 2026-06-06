@@ -220,20 +220,20 @@ runConnection eventChan actionChan conn = do
   actionCounter <- liftIO (newMVar (1 :: Integer))
   done <- liftIO newEmptyMVar
   lastFrameAt <- liftIO (getCurrentTime >>= IORef.newIORef)
-  reader <- forkConnectionThread "reader" done (readFrames eventChan pendingResponses lastFrameAt conn)
+  frameReader <- forkConnectionThread "reader" done (readFrames eventChan pendingResponses lastFrameAt conn)
   sender <- forkConnectionThread "sender" done (sendActions actionChan pendingResponses actionCounter conn)
   monitor <- forkConnectionThread "heartbeat-monitor" done (monitorConnectionHeartbeat lastFrameAt)
   reason <- liftIO (takeMVar done)
   logInfo [i|QQ websocket connection ending: #{show reason :: String}|]
   closeWebSocketForReconnect conn
-  stopConnectionThread "reader" reader
+  stopConnectionThread "reader" frameReader
   stopConnectionThread "sender" sender
   stopConnectionThread "heartbeat monitor" monitor
   failPendingResponses pendingResponses
   logInfo "QQ websocket connection ended"
 
 forkConnectionThread
-  :: Concurrency.Concurrency :> es
+  :: (Concurrency.Concurrency :> es, Concurrent :> es)
   => Text
   -> MVar SomeException
   -> Eff es ()
@@ -285,8 +285,8 @@ closeWebSocketForReconnect conn = do
       pure ()
 
 stopConnectionThread :: (Timeout :> es, KatipE :> es, Concurrency.Concurrency :> es) => Text -> Concurrency.ResourceHandle -> Eff es ()
-stopConnectionThread label handle = do
-  result <- timeout qqConnectionThreadStopTimeoutMicroseconds (Concurrency.cancelResource handle.resourceId)
+stopConnectionThread label resourceHandle = do
+  result <- timeout qqConnectionThreadStopTimeoutMicroseconds (Concurrency.cancelResource resourceHandle.resourceId)
   when (isNothing result) $
     logInfo [i|QQ websocket #{label} thread did not stop before reconnect; continuing|]
 

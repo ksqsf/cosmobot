@@ -49,20 +49,22 @@ runConcurrencyOperation
 runConcurrencyOperation managerState localEnv operation =
   case operation of
     Concurrency.SpawnResource kind label action ->
-      localLift localEnv (ConcUnlift Persistent Unlimited) \runLocal ->
-        spawnResourceIn managerState kind label (runLocal action)
+      localUnlift localEnv (ConcUnlift Persistent Unlimited) \unlift ->
+        spawnResourceIn managerState kind label (unlift action)
     Concurrency.SpawnResourceWithHandle kind label action ->
-      localLift localEnv (ConcUnlift Persistent Unlimited) \runLocal ->
-        spawnResourceWithHandleIn managerState kind label (runLocal . action)
+      localUnlift localEnv (ConcUnlift Persistent Unlimited) \unlift ->
+        spawnResourceWithHandleIn managerState kind label (unlift . action)
     Concurrency.RegisterResource kind label cleanup ->
-      localLift localEnv (ConcUnlift Persistent Unlimited) \runLocal ->
-        registerResourceIn managerState kind label (runLocal cleanup)
+      localUnlift localEnv (ConcUnlift Persistent Unlimited) \unlift ->
+        registerResourceIn managerState kind label (unlift cleanup)
     Concurrency.ReleaseResource resourceId ->
       releaseResourceIn managerState resourceId
     Concurrency.CancelResource resourceId ->
       cancelResourceIn managerState resourceId
-    Concurrency.AwaitResource handle ->
-      awaitResourceIn managerState handle
+    Concurrency.AwaitResource resourceHandle ->
+      awaitResourceIn managerState resourceHandle
+    Concurrency.SleepMicroseconds microseconds ->
+      threadDelay microseconds
     Concurrency.ListResources ->
       listResourcesIn managerState
     Concurrency.LookupResource resourceId ->
@@ -87,13 +89,13 @@ spawnResourceWithHandleIn
   -> Eff es ResourceHandle
 spawnResourceWithHandleIn managerState kind label action = do
   resourceInfo <- newResourceInfo managerState kind label
-  let handle = ResourceHandle{resourceId = resourceInfo.id}
+  let resourceHandle = ResourceHandle{resourceId = resourceInfo.id}
   started <- MVar.newEmptyMVar
   registered <- MVar.newEmptyMVar
   thread <- Ki.fork managerState.rootScope do
     MVar.putMVar started =<< myThreadId
     MVar.takeMVar registered
-    runResourceAction managerState resourceInfo.id (action handle)
+    runResourceAction managerState resourceInfo.id (action resourceHandle)
   threadId <- MVar.takeMVar started
   let runtime = ResourceRuntime
         { info = resourceInfo
@@ -103,7 +105,7 @@ spawnResourceWithHandleIn managerState kind label action = do
         }
   insertRuntime managerState runtime
   MVar.putMVar registered ()
-  pure handle
+  pure resourceHandle
 
 registerResourceIn
   :: (IOE :> es, Prim :> es)
@@ -181,8 +183,8 @@ awaitResourceIn
   => ManagerState es
   -> ResourceHandle
   -> Eff es ()
-awaitResourceIn managerState handle =
-  liftMaybeThread managerState handle.resourceId >>= \case
+awaitResourceIn managerState resourceHandle =
+  liftMaybeThread managerState resourceHandle.resourceId >>= \case
     Nothing ->
       pure ()
     Just thread ->

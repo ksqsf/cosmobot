@@ -44,6 +44,7 @@ runAskAgentThread
   :: ( Chat.Chat :> es
      , ChatLog.ChatLog :> es
      , AgentAudit.AgentAudit :> es
+     , Concurrency.Concurrency :> es
      , HTTP.HTTP :> es
      , LLM.LLM :> es
      , Media.Media :> es
@@ -121,6 +122,7 @@ currentMessageSystemPrompt cfg message =
 streamAgentReply
   :: ( Chat.Chat :> es
      , ChatLog.ChatLog :> es
+     , Concurrency.Concurrency :> es
      , LLM.LLM :> es
      , Media.Media :> es
      , Storage.Storage :> es

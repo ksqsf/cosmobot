@@ -27,6 +27,7 @@ module Bot.Effect.Concurrency
   , releaseResource
   , cancelResource
   , awaitResource
+  , sleepMicroseconds
   , listResources
   , lookupResource
   )
@@ -144,6 +145,11 @@ raceTasks_ leftLabel leftAction rightLabel rightAction = do
   void $ cancelResource right.resourceId
   either throwIO pure result
   where
+    capture
+      :: (Concurrent :> es, IOE :> es)
+      => MVar.MVar (Either SomeException ())
+      -> Eff es ()
+      -> Eff es ()
     capture done action =
       try action >>= void . MVar.tryPutMVar done
 
@@ -154,6 +160,7 @@ data Concurrency :: Effect where
   ReleaseResource :: ResourceId -> Concurrency m Bool
   CancelResource :: ResourceId -> Concurrency m Bool
   AwaitResource :: ResourceHandle -> Concurrency m ()
+  SleepMicroseconds :: Int -> Concurrency m ()
   ListResources :: Concurrency m ResourceSnapshot
   LookupResource :: ResourceId -> Concurrency m (Maybe ResourceInfo)
 
@@ -197,6 +204,10 @@ cancelResource =
 awaitResource :: Concurrency :> es => ResourceHandle -> Eff es ()
 awaitResource =
   send . AwaitResource
+
+sleepMicroseconds :: Concurrency :> es => Int -> Eff es ()
+sleepMicroseconds =
+  send . SleepMicroseconds
 
 listResources :: Concurrency :> es => Eff es ResourceSnapshot
 listResources =
