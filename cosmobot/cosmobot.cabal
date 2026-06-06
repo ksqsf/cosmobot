@@ -82,6 +82,7 @@ common lib-deps
                     , directory
                     , filepath
                     , effectful
+                    , ki-effectful
                     , katip-effectful
                     , streaming
                     , streaming-bytestring
@@ -217,6 +218,7 @@ library
         Bot.Effect.Chat
         Bot.Effect.ChatDriver
         Bot.Effect.ChatLog
+        Bot.Effect.Concurrency
         Bot.Effect.HTTP
         Bot.Effect.LLM
         Bot.Effect.Media
