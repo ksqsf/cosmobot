@@ -207,6 +207,7 @@ library
         Bot.ChatLog.Record
         Bot.ChatLog.Types
         Bot.Config
+        Bot.Concurrency.Manager
         Bot.Core.Thread
         Bot.Core.Transcript
         Bot.Core.Message
