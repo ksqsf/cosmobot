@@ -256,6 +256,8 @@ runDiscordConnectionOnce cfg eventChan =
       pure (Left (show handshakeErr))
     `catch` \(ioErr :: IOException) ->
       pure (Left (show ioErr))
+    `catchSync` \err ->
+      pure (Left (displayException err))
 
 runSecureWebSocketClient :: String -> String -> WS.ClientApp a -> IO a
 runSecureWebSocketClient host path app = do
@@ -299,11 +301,51 @@ runGatewayConnection cfg eventChan conn = do
       logInfo "Discord gateway connected"
       lastSequence <- MVar.newMVar firstEnvelope.s
       heartbeatAck <- MVar.newMVar True
-      heartbeatThread <- forkIO (heartbeatLoop conn lastSequence heartbeatAck hello.heartbeatInterval)
       identifyGateway cfg conn
-      readGatewayEvents eventChan lastSequence heartbeatAck conn `finally` killThread heartbeatThread
+      runDiscordGatewaySession eventChan lastSequence heartbeatAck hello.heartbeatInterval conn
     op ->
       logInfo [i|Discord gateway expected HELLO, got op=#{op}|]
+
+runDiscordGatewaySession
+  :: (IOE :> es, KatipE :> es, Concurrent :> es)
+  => Chan.Chan Message
+  -> MVar.MVar (Maybe Int)
+  -> MVar.MVar Bool
+  -> Int
+  -> WS.Connection
+  -> Eff es ()
+runDiscordGatewaySession eventChan lastSequence heartbeatAck heartbeatInterval conn = do
+  done <- MVar.newEmptyMVar
+  heartbeatThread <- forkGatewayThread done (heartbeatLoop conn lastSequence heartbeatAck heartbeatInterval)
+  readerThread <- forkGatewayThread done (readGatewayEvents eventChan lastSequence heartbeatAck conn)
+  reason <- MVar.takeMVar done
+  logInfo [i|Discord gateway connection ending: #{displayException reason}|]
+  closeDiscordGatewayForReconnect conn
+  killThread heartbeatThread
+  killThread readerThread
+  throwIO reason
+
+forkGatewayThread
+  :: (IOE :> es, Concurrent :> es)
+  => MVar.MVar SomeException
+  -> Eff es ()
+  -> Eff es ThreadId
+forkGatewayThread done action =
+  forkIO do
+    result <- try action
+    case result of
+      Left err ->
+        void (MVar.tryPutMVar done err)
+      Right () ->
+        void (MVar.tryPutMVar done (toException ThreadKilled))
+
+closeDiscordGatewayForReconnect :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es ()
+closeDiscordGatewayForReconnect conn =
+  trySync (liftIO $ WS.sendClose conn ("reconnect" :: Text)) >>= \case
+    Left err ->
+      logDebug [i|Discord gateway close during reconnect failed: #{show err :: String}|]
+    Right () ->
+      pure ()
 
 heartbeatLoop
   :: (IOE :> es, KatipE :> es, Concurrent :> es)
@@ -322,6 +364,7 @@ heartbeatLoop conn lastSequence heartbeatAck intervalMs = forever do
     else do
       logInfo "Discord gateway heartbeat ACK timed out; closing connection"
       liftIO $ WS.sendClose conn ("heartbeat ACK timeout" :: Text)
+      throwIO (userError "Discord gateway heartbeat ACK timed out")
 
 readGatewayEvents
   :: (IOE :> es, KatipE :> es, Concurrent :> es)

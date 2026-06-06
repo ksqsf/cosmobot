@@ -206,6 +206,8 @@ runQQConnectionOnce cfg eventChan actionChan =
       pure (Left (show handshakeErr))
     `catch` \(ioErr :: IOException) ->
       pure (Left (show ioErr))
+    `catchSync` \err ->
+      pure (Left (displayException err))
 
 runConnection
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
