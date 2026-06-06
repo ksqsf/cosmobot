@@ -78,7 +78,6 @@ type AgentStack =
   '[ Chat.Chat
    , AgentAudit.AgentAudit
    , ChatLog.ChatLog
-   , Concurrency.Concurrency
    , LLM.LLM
    , Media.Media
    , Skills.Skills
@@ -88,6 +87,8 @@ type AgentStack =
    , HTTP.HTTP
    , StorageEffect.Storage
    , KatipE
+   , Concurrency.Concurrency
+   , Ki.StructuredConcurrency
    , Prim
    , Fail
    , Concurrent

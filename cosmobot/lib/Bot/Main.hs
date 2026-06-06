@@ -94,7 +94,12 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
 
     let RPCConfig.Config{enabled = rpcEnabled} = cfg.rpc
     if rpcEnabled
-      then concurrently_ (RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks) messageConsumer
+      then
+        Concurrency.raceTasks_
+          "rpc.server"
+          (RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks)
+          "message.consumer"
+          messageConsumer
       else messageConsumer
 
 routes
@@ -120,14 +125,17 @@ runBotLog level inner =
     logInfo [i|Log level: #{show level :: String}|]
     logExceptionAt ErrorS inner
 
-runGracefulTermination :: (IOE :> es, Concurrent :> es) => Eff es a -> Eff es ()
+runGracefulTermination :: (IOE :> es, Concurrency.Concurrency :> es, Concurrent :> es) => Eff es () -> Eff es ()
 runGracefulTermination inner = do
   shutdown <- MVar.newEmptyMVar
   _termHandler <- installHandler shutdown Signals.sigTERM
   _intHandler  <- installHandler shutdown Signals.sigINT
 
-  -- inner will be canceled by asynchronous exceptions
-  race_ inner (MVar.takeMVar shutdown)
+  Concurrency.raceTasks_
+    "main.inner"
+    inner
+    "main.shutdown"
+    (MVar.takeMVar shutdown)
 
   where
     installHandler shutdown signal = liftIO do

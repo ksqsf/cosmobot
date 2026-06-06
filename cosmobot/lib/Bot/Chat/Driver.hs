@@ -20,6 +20,7 @@ import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Chat.Driver.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatDriver as ChatDriverEffect
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
@@ -266,7 +267,7 @@ normalizeOutgoingReplyBody driver body =
   Media.normalizeReplyBody body >>= ReplyBody.traverseReplyImageUrls (normalizeMediaRef driver)
 
 runChatDrivers
-  :: (KatipE :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
+  :: (KatipE :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
   => Maybe QQ.Config
   -> Maybe Telegram.Config
   -> Maybe Matrix.Config
@@ -303,7 +304,7 @@ hasConfiguredChatDriver drivers =
     ]
 
 runChatDriversWith
-  :: (KatipE :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
+  :: (KatipE :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
   => ChatDrivers
   -> Eff (Chat.Chat : es) ()
   -> Eff es ()
@@ -332,6 +333,7 @@ chatDriversHandler
   :: forall es.
      ( ChatDriverEffects ChatDrivers es
      , HTTP.HTTP :> es
+     , Concurrency.Concurrency :> es
      , Media.Media :> es
      , Storage.Storage :> es
      , KatipE :> es
@@ -353,6 +355,7 @@ chatDriversHandler drivers localEnv = \case
 
 incomingMessages
   :: HTTP.HTTP :> es
+  => Concurrency.Concurrency :> es
   => Media.Media :> es
   => Storage.Storage :> es
   => KatipE :> es

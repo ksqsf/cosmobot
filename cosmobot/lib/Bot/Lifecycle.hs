@@ -11,6 +11,7 @@ module Bot.Lifecycle
 where
 
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Config as MediaConfig
@@ -21,7 +22,7 @@ import qualified Data.Set as Set
 import Effectful.FileSystem (FileSystem)
 
 runLifecycle
-  :: (Chat.Chat :> es, Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
   => MediaConfig.Config
   -> Eff es a
   -> Eff es a
@@ -43,7 +44,7 @@ runStartupActions = do
         logWarning [i|Startup reply lifecycle action #{actionId} failed and was deleted: #{show err :: String}|]
 
 withMediaGc
-  :: (Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
+  :: (Concurrency.Concurrency :> es, Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
   => MediaConfig.Config
   -> Eff es a
   -> Eff es a
@@ -51,8 +52,8 @@ withMediaGc mediaConfig inner
   | not mediaConfig.gc.enabled =
       inner
   | otherwise = do
-      worker <- forkIO (mediaGcLoop mediaConfig)
-      inner `finally` killThread worker
+      worker <- Concurrency.spawnTask "media.gc" (mediaGcLoop mediaConfig)
+      inner `finally` void (Concurrency.cancelResource worker.resourceId)
 
 mediaGcLoop
   :: (Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)

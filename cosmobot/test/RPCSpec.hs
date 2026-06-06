@@ -3,7 +3,9 @@ module Main (main) where
 import Bot.Prelude
 import Bot.Chat.Driver.Types
 import qualified Bot.Chat.Driver.RPC as RPCDriver
+import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Message
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as EffectHTTP
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
@@ -25,6 +27,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Unique (hashUnique, newUnique)
 import Effectful.FileSystem (runFileSystem)
+import qualified Effectful.Ki as Ki
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.Process (Process, runProcess)
@@ -555,7 +558,7 @@ testDeleteSessionCascadesForkDescendants =
 
 testWebSocketServerAuthenticatesAndHandlesRequests :: IO ()
 testWebSocketServerAuthenticatesAndHandlesRequests = do
-  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  result <- timeout 2_000_000 $ runRpcServerTest do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
     port <- (fromIntegral :: Socket.PortNumber -> Int) <$> liftIO (Socket.socketPort listenSocket)
@@ -595,7 +598,7 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
 
 testHttpServerRejectsNonRpcPaths :: IO ()
 testHttpServerRejectsNonRpcPaths = do
-  result <- timeout 2_000_000 $ runEff $ runConcurrent $ runFileSystem $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  result <- timeout 2_000_000 $ runRpcServerTest do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
     port <- fromIntegral <$> liftIO (Socket.socketPort listenSocket)
@@ -753,6 +756,21 @@ assertUnauthorizedRejected = \case
 
 runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
 runTestLog action = startKatipE "rpc-spec" "test" action
+
+runRpcServerTest
+  :: Eff '[Media.Media, Storage.Storage, KatipE, FileSystem.FileSystem, Concurrency.Concurrency, Ki.StructuredConcurrency, Prim, Concurrent, IOE] a
+  -> IO a
+runRpcServerTest action =
+  runEff $
+    ( runConcurrent
+    . runPrim
+    . Ki.runStructuredConcurrency
+    . ConcurrencyManager.runConcurrencyManager
+    . runFileSystem
+    . runTestLog
+    . StorageSQLite.runStorageSQLitePath ":memory:"
+    . Media.runMediaPassthrough
+    ) action
 
 runRpcStorage :: FilePath -> Eff '[Media.Media, EffectHTTP.HTTP, Storage.Storage, KatipE, Process, FileSystem.FileSystem, Concurrent, Fail, IOE] a -> IO a
 runRpcStorage path action =

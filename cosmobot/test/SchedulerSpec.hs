@@ -1,11 +1,14 @@
 module Main (main) where
 
+import qualified Bot.Concurrency.Manager as ConcurrencyManager
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Effectful.Ki as Ki
 import Effectful.Timeout (Timeout, runTimeout)
 import qualified Streaming.Prelude as S
 import Test.Tasty hiding (Timeout)
@@ -95,7 +98,7 @@ testDeletedElapsedScheduleIsNotDelivered = runSchedulerTest do
     map (.scheduleId) schedules @?= []
 
 testPendingSchedulesPersistAcrossSchedulerRestart :: IO ()
-testPendingSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runConcurrent $ StorageSQLite.runStorageSQLitePath ":memory:" do
+testPendingSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
   Scheduler.runScheduler do
     _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask persisted")
     pure ()
@@ -106,7 +109,7 @@ testPendingSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runCon
       map ((.text) . (.message)) schedules @?= ["!ask persisted"]
 
 testElapsedSchedulesPersistAcrossSchedulerRestart :: IO ()
-testElapsedSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runConcurrent $ StorageSQLite.runStorageSQLitePath ":memory:" do
+testElapsedSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
   Scheduler.runScheduler do
     _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "!ask after restart")
     pure ()
@@ -118,10 +121,23 @@ testElapsedSchedulesPersistAcrossSchedulerRestart = runEff $ runTimeout $ runCon
       length schedules @?= 0
 
 runSchedulerTest
-  :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, Concurrent, Timeout, IOE] a
+  :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, Concurrency.Concurrency, Ki.StructuredConcurrency, Prim, Concurrent, Timeout, IOE] a
   -> IO a
 runSchedulerTest action =
-  runEff $ runTimeout $ runConcurrent $ StorageSQLite.runStorageSQLitePath ":memory:" $ Scheduler.runScheduler action
+  runSchedulerStorage (Scheduler.runScheduler action)
+
+runSchedulerStorage
+  :: Eff '[StorageEffect.Storage, Concurrency.Concurrency, Ki.StructuredConcurrency, Prim, Concurrent, Timeout, IOE] a
+  -> IO a
+runSchedulerStorage action =
+  runEff $
+    ( runTimeout
+    . runConcurrent
+    . runPrim
+    . Ki.runStructuredConcurrency
+    . ConcurrencyManager.runConcurrencyManager
+    . StorageSQLite.runStorageSQLitePath ":memory:"
+    ) action
 
 messageFrom :: Text -> Text -> IncomingMessage
 messageFrom senderId text =

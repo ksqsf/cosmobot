@@ -139,6 +139,7 @@ common test-deps
                     , http-client
                     , http-types
                     , jsonrpc
+                    , ki-effectful
                     , memory
                     , network
                     , process

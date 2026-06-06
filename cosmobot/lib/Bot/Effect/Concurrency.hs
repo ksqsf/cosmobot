@@ -18,6 +18,9 @@ module Bot.Effect.Concurrency
   , resourceFinished
   , startTask
   , startTaskWithHandle
+  , spawnTask
+  , spawnStreamPump
+  , raceTasks_
   , spawnResource
   , spawnResourceWithHandle
   , registerResource
@@ -31,6 +34,7 @@ where
 
 import Bot.Prelude
 import Data.Time (UTCTime)
+import qualified Effectful.Concurrent.MVar as MVar
 
 newtype ResourceId = ResourceId
   { unResourceId :: Integer
@@ -97,16 +101,51 @@ startTask
   => Text
   -> Eff es ()
   -> Eff es ()
-startTask label action =
-  void $ spawnResource Task label action
+startTask label =
+  void . spawnTask label
 
 startTaskWithHandle
   :: Concurrency :> es
   => Text
   -> (ResourceHandle -> Eff es ())
   -> Eff es ()
-startTaskWithHandle label action =
-  void $ spawnResourceWithHandle Task label action
+startTaskWithHandle label =
+  void . spawnResourceWithHandle Task label
+
+spawnTask
+  :: Concurrency :> es
+  => Text
+  -> Eff es ()
+  -> Eff es ResourceHandle
+spawnTask =
+  spawnResource Task
+
+spawnStreamPump
+  :: Concurrency :> es
+  => Text
+  -> Eff es ()
+  -> Eff es ResourceHandle
+spawnStreamPump =
+  spawnResource StreamPump
+
+raceTasks_
+  :: (Concurrency :> es, Concurrent :> es, IOE :> es)
+  => Text
+  -> Eff es ()
+  -> Text
+  -> Eff es ()
+  -> Eff es ()
+raceTasks_ leftLabel leftAction rightLabel rightAction = do
+  done <- MVar.newEmptyMVar
+  left <- spawnTask leftLabel (capture done leftAction)
+  right <- spawnTask rightLabel (capture done rightAction)
+  result <- MVar.takeMVar done
+  void $ cancelResource left.resourceId
+  void $ cancelResource right.resourceId
+  either throwIO pure result
+  where
+    capture done action =
+      try action >>= void . MVar.tryPutMVar done
 
 data Concurrency :: Effect where
   SpawnResource :: ResourceKind -> Text -> m () -> Concurrency m ResourceHandle

@@ -11,6 +11,7 @@ where
 
 import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Message
+import qualified Bot.Effect.Concurrency as Concurrency
 import Bot.Prelude
 import Bot.Scheduler.State
 import Bot.Scheduler.Types
@@ -24,7 +25,7 @@ import Effectful.Timeout
 
 -- | Interpret scheduled messages with an in-memory delay queue.
 runScheduler
-  :: (IOE :> es, Storage.Storage :> es, Concurrent :> es, Timeout :> es)
+  :: (IOE :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, Concurrent :> es, Timeout :> es)
   => Eff (Scheduler : es) a
   -> Eff es a
 runScheduler inner = do
@@ -33,7 +34,7 @@ runScheduler inner = do
   queue <- STM.newTBQueueIO scheduledMessageQueueCapacity
   schedulerStateVar <- MVar.newMVar (schedulerStateFromStoredMessages nextScheduleId storedMessages)
   schedulerWake <- MVar.newEmptyMVar
-  worker <- forkIO (schedulerWorker schedulerStateVar schedulerWake queue)
+  worker <- Concurrency.spawnTask "scheduler.worker" (schedulerWorker schedulerStateVar schedulerWake queue)
   interpret
     (\_ -> \case
       ScheduleMessage delaySeconds message -> do
@@ -60,7 +61,7 @@ runScheduler inner = do
         SchedulerStorage.deleteScheduledMessage pending.scheduleId
         pure pending.message)
     inner
-    `finally` killThread worker
+    `finally` void (Concurrency.cancelResource worker.resourceId)
 
 schedulerWorker
   :: (Concurrent :> es, IOE :> es, Timeout :> es)

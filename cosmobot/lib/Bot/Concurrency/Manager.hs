@@ -129,14 +129,11 @@ runResourceAction
   -> Eff es ()
   -> Eff es ()
 runResourceAction managerState resourceId action =
-  try action >>= \case
+  trySync action >>= \case
     Right () ->
       finishResource managerState resourceId Completed
-    Left err
-      | Just ThreadKilled <- fromException err ->
-          finishResource managerState resourceId Cancelled
-      | otherwise ->
-          finishResource managerState resourceId (Failed (Text.pack (show err)))
+    Left err ->
+      finishResource managerState resourceId (Failed (Text.pack (show err)))
 
 releaseResourceIn
   :: (IOE :> es, Prim :> es)
@@ -148,7 +145,7 @@ releaseResourceIn managerState resourceId =
     Nothing ->
       pure False
     Just runtime
-      | isJust runtime.thread ->
+      | resourceFinished runtime.info || isJust runtime.thread ->
           pure False
       | otherwise -> do
           result <- traverse trySync runtime.cleanup
@@ -166,13 +163,18 @@ cancelResourceIn
   -> Eff es Bool
 cancelResourceIn managerState resourceId = do
   runtime <- lookupRuntime managerState resourceId
-  case runtime >>= (.threadId) of
+  case runtime of
     Nothing ->
-      releaseResourceIn managerState resourceId
-    Just threadId -> do
-      killThread threadId
-      finishResource managerState resourceId Cancelled
-      pure True
+      pure False
+    Just resource
+      | resourceFinished resource.info ->
+          pure False
+      | Just threadId <- resource.threadId -> do
+          killThread threadId
+          finishResource managerState resourceId Cancelled
+          pure True
+      | otherwise ->
+          releaseResourceIn managerState resourceId
 
 awaitResourceIn
   :: (Prim :> es, Ki.StructuredConcurrency :> es)

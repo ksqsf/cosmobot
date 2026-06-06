@@ -1,7 +1,9 @@
 module Main (main) where
 
 import Bot.Prelude
+import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Util.Stream as StreamUtil
+import qualified Effectful.Ki as Ki
 import qualified Streaming
 import qualified Streaming.Prelude as S
 import System.IO.Error (userError)
@@ -18,7 +20,7 @@ main =
 
 testFailedInputDoesNotStopMergedStream :: IO ()
 testFailedInputDoesNotStopMergedStream = do
-  result <- timeout 1_000_000 $ runEff $ runConcurrent $ runTestLog do
+  result <- timeout 1_000_000 $ runEff $ runConcurrent $ runPrim $ Ki.runStructuredConcurrency $ ConcurrencyManager.runConcurrencyManager $ runTestLog do
     S.toList_ $
       StreamUtil.mergeStreams
         [ Streaming.lift (throwIO (userError "stopped"))

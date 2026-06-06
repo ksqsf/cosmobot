@@ -12,7 +12,7 @@ module Bot.Util.Stream
 where
 
 import Bot.Prelude
-import qualified Effectful.Concurrent.Async as Async
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Effectful.Concurrent.STM as STM
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
@@ -34,12 +34,15 @@ bracketStream acquire release use = do
 -- with this project's GHC 9.6 toolchain. Keep this small local version until
 -- that dependency chain is usable here.
 mergeStreams
-  :: (KatipE :> es, Concurrent :> es)
+  :: (KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es)
   => [Stream (Of a) (Eff es) ()]
   -> Stream (Of a) (Eff es) ()
 mergeStreams streams = do
   queue <- S.lift (STM.newTBQueueIO streamQueueCapacity)
-  pumps <- S.lift $ traverse (Async.async . pump queue) streams
+  pumps <- S.lift $
+    traverse
+      (\(index, stream) -> Concurrency.spawnStreamPump [i|stream.merge.#{index}|] (pump queue stream))
+      (zip [(1 :: Int)..] streams)
   readMerged (length streams) queue `streamFinally` cleanupPumps pumps
 
 streamQueueCapacity :: Natural
@@ -107,9 +110,9 @@ streamFinally stream cleanup =
           S.yield item
           go rest
 
-cleanupPumps :: Concurrent :> es => [Async.Async ()] -> Eff es ()
+cleanupPumps :: Concurrency.Concurrency :> es => [Concurrency.ResourceHandle] -> Eff es ()
 cleanupPumps pumps =
-  traverse_ Async.cancel pumps
+  traverse_ (void . Concurrency.cancelResource . (.resourceId)) pumps
 
 pump
   :: (KatipE :> es, Concurrent :> es)
