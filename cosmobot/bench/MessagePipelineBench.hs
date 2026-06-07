@@ -1,5 +1,6 @@
 module Main (main) where
 
+import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Storage.SQLite as StorageSQLite
@@ -12,6 +13,7 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
 import qualified Data.List as List
 import qualified Data.Text as Text
+import qualified Effectful.Ki as Ki
 import Effectful.Timeout (runTimeout)
 import qualified Streaming.Prelude as S
 import Test.Tasty.Bench
@@ -133,13 +135,16 @@ mergedChatLogRouteDispatch messages = do
   handled <- IORef.newIORef 0
   runEff $
     runConcurrent $
-      runBenchmarkLog $
-        StorageSQLite.runStorageSQLitePath ":memory:" $
-        ChatLog.runChatLog do
-          consumeWith
-            (benchmarkHandlers handled)
-            (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams (map S.each (chunks 4 messages))))
-          liftIO (IORef.readIORef handled)
+      runPrim $
+        Ki.runStructuredConcurrency $
+          ConcurrencyManager.runConcurrencyManager $
+            runBenchmarkLog $
+              StorageSQLite.runStorageSQLitePath ":memory:" $
+              ChatLog.runChatLog do
+                consumeWith
+                  (benchmarkHandlers handled)
+                  (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams (map S.each (chunks 4 messages))))
+                liftIO (IORef.readIORef handled)
 
 routeFilterScore :: [IncomingMessage] -> Int
 routeFilterScore =
@@ -196,10 +201,13 @@ mergeOnly messages = do
   seen <- IORef.newIORef 0
   runEff $
     runConcurrent $
-      runBenchmarkLog $
-        S.mapM_
-          (\_ -> liftIO $ IORef.modifyIORef' seen (+ 1))
-          (StreamUtil.mergeStreams (map S.each (chunks 4 messages)))
+      runPrim $
+        Ki.runStructuredConcurrency $
+          ConcurrencyManager.runConcurrencyManager $
+            runBenchmarkLog $
+              S.mapM_
+                (\_ -> liftIO $ IORef.modifyIORef' seen (+ 1))
+                (StreamUtil.mergeStreams (map S.each (chunks 4 messages)))
   IORef.readIORef seen
 
 schedulerDueMessages :: [IncomingMessage] -> IO Int
@@ -207,14 +215,17 @@ schedulerDueMessages messages =
   runEff $
     runTimeout $
       runConcurrent $
-        StorageSQLite.runStorageSQLitePath ":memory:" $
-          Scheduler.runScheduler do
-            traverse_ (Scheduler.scheduleMessage 0) messages
-            ref <- liftIO (IORef.newIORef 0)
-            S.mapM_
-              (\_ -> liftIO $ IORef.modifyIORef' ref (+ 1))
-              (S.take (length messages) Scheduler.scheduledMessages)
-            liftIO (IORef.readIORef ref)
+        runPrim $
+          Ki.runStructuredConcurrency $
+            ConcurrencyManager.runConcurrencyManager $
+              StorageSQLite.runStorageSQLitePath ":memory:" $
+                Scheduler.runScheduler do
+                  traverse_ (Scheduler.scheduleMessage 0) messages
+                  ref <- liftIO (IORef.newIORef 0)
+                  S.mapM_
+                    (\_ -> liftIO $ IORef.modifyIORef' ref (+ 1))
+                    (S.take (length messages) Scheduler.scheduledMessages)
+                  liftIO (IORef.readIORef ref)
 
 lastMessage :: [IncomingMessage] -> IncomingMessage
 lastMessage [] =
