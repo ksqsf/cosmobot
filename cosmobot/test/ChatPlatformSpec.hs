@@ -47,6 +47,7 @@ main =
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
       , testCase "Matrix image message includes media URL" testMatrixImageMessageIncludesMediaUrl
       , testCase "Matrix encrypted image message includes media URL" testMatrixEncryptedImageMessageIncludesMediaUrl
+      , testCase "Matrix referenced image without body includes media URL" testMatrixReferencedImageWithoutBodyIncludesMediaUrl
       , testCase "Matrix encrypted image bytes decrypt and verify ciphertext hash" testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix edit event is ignored" testMatrixEditEventIsIgnored
@@ -311,6 +312,12 @@ testMatrixEncryptedImageMessageIncludesMediaUrl = do
   let incoming = Matrix.eventToIncomingMessage matrixEncryptedImageRoomEvent
   ((.text) <$> incoming) @?= Just "image.png"
   ((.imageUrls) <$> incoming) @?= Just ["mxc://example.org/encrypted-image"]
+
+testMatrixReferencedImageWithoutBodyIncludesMediaUrl :: IO ()
+testMatrixReferencedImageWithoutBodyIncludesMediaUrl = do
+  let referenced = Matrix.matrixReferencedMessage matrixImageWithoutBodyRoomEvent.event
+  ((.text) <$> referenced) @?= Just ""
+  ((.imageUrls) <$> referenced) @?= Just ["mxc://example.org/bodyless-image"]
 
 testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash :: IO ()
 testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash = do
@@ -651,6 +658,24 @@ matrixEncryptedImageRoomEvent =
                     [ "sha256" Aeson..= ("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" :: Text)
                     ]
                 ]
+            , "info" Aeson..= Aeson.object
+                [ "mimetype" Aeson..= ("image/png" :: Text)
+                ]
+            ]
+        }
+    }
+
+matrixImageWithoutBodyRoomEvent :: Matrix.RoomEvent
+matrixImageWithoutBodyRoomEvent =
+  matrixRoomEvent
+    { Matrix.event = matrixRoomEvent.event
+        { Matrix.content = matrixRoomEvent.event.content
+            { Matrix.msgtype = Just "m.image"
+            , Matrix.body = Nothing
+            }
+        , Matrix.raw = matrixImageRawContent
+            [ "msgtype" Aeson..= ("m.image" :: Text)
+            , "url" Aeson..= ("mxc://example.org/bodyless-image" :: Text)
             , "info" Aeson..= Aeson.object
                 [ "mimetype" Aeson..= ("image/png" :: Text)
                 ]

@@ -23,6 +23,7 @@ module Bot.Chat.Driver.Matrix
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
+  , matrixReferencedMessage
   , decryptMatrixEncryptedBytesForTest
   , formatMatrixMarkdown
   , formatMatrixMarkdownWithMentionNames
@@ -1184,7 +1185,7 @@ replyToMatrix driver message body =
       pure (Left "Matrix reply requires a Matrix room id.")
 
 getMessageContentMatrix
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
   => MatrixDriver
   -> IncomingMessage
   -> MessageId
@@ -1193,7 +1194,7 @@ getMessageContentMatrix driver message messageId =
   case viaNonEmpty head message.chatAliases of
     Just roomId -> do
       fetched <- fetchEvent driver (matrixRoomId roomId) (matrixEventId (messageIdText messageId))
-      pure (matrixReferencedMessage =<< fetched)
+      join <$> traverse (normalizeMatrixReferencedEvent driver) fetched
     _ ->
       pure Nothing
 
@@ -1270,14 +1271,38 @@ matrixMentionText userId body =
 matrixReferencedMessage :: Event -> Maybe ReferencedMessage
 matrixReferencedMessage event = do
   guard (event.type_ == "m.room.message")
-  body <- event.content.body
+  let body = fromMaybe "" event.content.body
+      imageUrls = matrixEventImageUrls event.raw
+  guard (not (Text.null (Text.strip body)) || not (null imageUrls))
   pure ReferencedMessage
     { messageId = matrixEventMessageId <$> event.eventId
     , senderDisplayName = Just event.sender
     , senderIdentifier = Just event.sender
     , text = Text.strip body
-    , imageUrls = matrixEventImageUrls event.raw
+    , imageUrls
     }
+
+normalizeMatrixReferencedEvent
+  :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> Event
+  -> Eff es (Maybe ReferencedMessage)
+normalizeMatrixReferencedEvent driver event =
+  traverse withNormalizedImages (matrixReferencedMessage event)
+  where
+    withNormalizedImages message = do
+      imageUrls <- case matrixEventImageMediaRefs event.raw of
+        [] ->
+          normalizeMatrixMediaRefs driver message.imageUrls
+        mediaRefs ->
+          normalizeMatrixMediaRefsWithMetadata driver mediaRefs
+      pure ReferencedMessage
+        { messageId = message.messageId
+        , senderDisplayName = message.senderDisplayName
+        , senderIdentifier = message.senderIdentifier
+        , text = message.text
+        , imageUrls
+        }
 
 normalizeMatrixIncomingMessage :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> IncomingMessage -> Eff es IncomingMessage
 normalizeMatrixIncomingMessage driver message = do
