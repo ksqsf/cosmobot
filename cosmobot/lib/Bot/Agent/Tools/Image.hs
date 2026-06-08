@@ -79,10 +79,10 @@ editImageTool = Tool
 
 viewImageTool :: Media.Media :> es => Tool es
 viewImageTool = Tool
-  { name = "image_cache"
-  , description = "Download an image URL into the media cache and make its media id available as image context for the next model turn. This tool does not send a chat message."
+  { name = "image_view"
+  , description = "Make an image URL available as image context."
   , parameters = objectSchema
-      [ fieldText "url" "Image URL to add to the current model context. Use an http://, https://, data:image/*, or existing media: URL."
+      [ fieldText "url" "Image URL to add to the current model context. Use an http://, https://, data:image/*, mxc:// (in Matrix), or existing media: media ID."
       ]
       ["url"]
   , noisy = False
