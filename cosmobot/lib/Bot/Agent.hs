@@ -92,6 +92,7 @@ import qualified Bot.Util.HList as HList
 import qualified Data.Foldable as Foldable
 import qualified Data.Text as Text
 import Data.Unique (hashUnique, newUnique)
+import qualified Effectful.Concurrent.Async as Async
 import qualified Streaming.Prelude as S
 
 -----------------------------------------------------------------------------------------
@@ -100,7 +101,7 @@ import qualified Streaming.Prelude as S
 
 -- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
 runAgent
-  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
@@ -112,7 +113,7 @@ runAgent maxTurns context tools transcript = do
 
 -- | Run an LLM/tool loop, streaming assistant content chunks.
 runAgentStreaming
-  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
@@ -122,7 +123,7 @@ runAgentStreaming maxTurns context =
   runAgentStreamingWith maxTurns context
 
 runAgentStreamingWith
-  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es)
+  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => Int
   -> AgentContext es
   -> [Tool es]
@@ -134,7 +135,7 @@ runAgentStreamingWith maxTurns context tools transcript = do
   pure result.transcript
 
 runPreparedAgentStreaming
-  :: (LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es)
+  :: (LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => Int
   -> AgentRun es
   -> Transcript
@@ -147,7 +148,7 @@ defaultCompactionTokenThreshold =
   1000000
 
 runAgentProgramStreaming
-  :: (LLM.LLM :> es)
+  :: (LLM.LLM :> es, Concurrent :> es)
   => AgentProgram transient '[] es
   -> Transcript
   -> Stream (Of AgentStreamOutput) (Eff es) AgentResult
@@ -218,7 +219,7 @@ runModelPhase program context agentState = do
   answer <- askNext program.agentRun transcript
   modelDecision program.agentRun agentState answer
 
-runToolTurn :: AgentProgram transient '[] es -> ToolTurn transient es
+runToolTurn :: Concurrent :> es => AgentProgram transient '[] es -> ToolTurn transient es
 runToolTurn program toolState =
   program.aroundToolTurn HList.HNil toolState (toolPhase program toolState)
 
@@ -242,7 +243,8 @@ modelDecision agentRun agentState answer =
 
 -- | Interpret one tool phase and advance to the next model phase.
 toolPhase
-  :: AgentProgram transient '[] es
+  :: Concurrent :> es
+  => AgentProgram transient '[] es
   -> ToolTurnState transient
   -> Eff es (AgentState transient)
 toolPhase program ToolTurnState{agentState, answered, toolCalls} = do
@@ -312,13 +314,14 @@ replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
 
 -- | Execute requested tools and append their tool-result messages.
 continueWithToolCalls
-  :: AgentProgram transient '[] es
+  :: Concurrent :> es
+  => AgentProgram transient '[] es
   -> Int
   -> Transcript
   -> NonEmpty LLM.ToolCall
   -> Eff es Transcript
 continueWithToolCalls program turn answered calls = do
-  executions <- traverse (executeToolCall program turn) calls
+  executions <- Async.mapConcurrently (executeToolCall program turn) calls
   let executionList = toList executions
       next = appendMessages (map (\(resultMessage, _, _) -> resultMessage) executionList <> concatMap (\(_, imageMessages, _) -> imageMessages) executionList) answered
   pure next
