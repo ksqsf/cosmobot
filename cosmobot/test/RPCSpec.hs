@@ -32,6 +32,7 @@ import qualified Effectful.Ki as Ki
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.Process (Process, runProcess)
+import qualified Effectful.Timeout as EffectfulTimeout
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types as Http
 import qualified JSONRPC
@@ -795,7 +796,7 @@ runRpcServerTest action =
     . Media.runMediaPassthrough
     ) action
 
-runRpcStorage :: FilePath -> Eff '[Media.Media, EffectHTTP.HTTP, Storage.Storage, KatipE, Process, FileSystem.FileSystem, Concurrent, Fail, IOE] a -> IO a
+runRpcStorage :: FilePath -> Eff '[Media.Media, EffectfulTimeout.Timeout, EffectHTTP.HTTP, Storage.Storage, KatipE, Process, FileSystem.FileSystem, Concurrent, Fail, IOE] a -> IO a
 runRpcStorage path action =
   runEff $
   runFailIO $
@@ -805,6 +806,7 @@ runRpcStorage path action =
   runTestLog $
   StorageSQLite.runStorageSQLitePath path $
   BotHTTP.runHTTP $
+  EffectfulTimeout.runTimeout $
   MediaInterpreter.runMedia (testMediaConfig path) $ action
 
 testMediaConfig :: FilePath -> MediaConfig.Config

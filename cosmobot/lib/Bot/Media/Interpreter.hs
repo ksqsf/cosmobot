@@ -20,6 +20,7 @@ import Bot.Prelude
 import qualified Data.Text as Text
 import Effectful.FileSystem (FileSystem)
 import Effectful.Process (Process)
+import qualified Effectful.Timeout as Timeout
 import qualified Network.HTTP.Client as Client
 
 data Runtime = Runtime
@@ -29,7 +30,7 @@ data Runtime = Runtime
   }
 
 runMedia
-  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, HTTP.HTTP :> es, Storage.Storage :> es)
+  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, HTTP.HTTP :> es, Storage.Storage :> es, Timeout.Timeout :> es)
   => MediaConfig.Config
   -> Eff (Media : es) a
   -> Eff es a
@@ -70,7 +71,11 @@ runMedia cfg inner = do
     )
     inner
 
-normalizeRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es Text
+mediaNormalizeTimeoutMicroseconds :: Int
+mediaNormalizeTimeoutMicroseconds =
+  15_000_000
+
+normalizeRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es) => Runtime -> Text -> Eff es Text
 normalizeRef runtime ref
   | Cache.isMediaId ref =
       pure ref
@@ -83,10 +88,7 @@ normalizeRef runtime ref
           cacheObject runtime Nothing mediaObject
   | "http://" `Text.isPrefixOf` Text.toLower (Text.strip ref) ||
       "https://" `Text.isPrefixOf` Text.toLower (Text.strip ref) = do
-      downloaded <- (Just <$> MediaObject.downloadObject runtime.manager ref) `catchSync` \err -> do
-        logError [i|Remote media download failed: #{show err :: String}|]
-        pure Nothing
-      maybe (pure ref) (cacheObject runtime (Just (Text.strip ref))) downloaded
+      normalizeRemoteRef runtime ref
   | "file://" `Text.isPrefixOf` Text.strip ref = do
       mediaObject <- (Just <$> MediaObject.fileObject ref) `catchSync` \err -> do
         logError [i|Local media read failed: #{show err :: String}|]
@@ -95,7 +97,37 @@ normalizeRef runtime ref
   | otherwise =
       pure ref
 
-publicRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es) => Runtime -> Text -> Eff es Text
+normalizeRemoteRef
+  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es)
+  => Runtime
+  -> Text
+  -> Eff es Text
+normalizeRemoteRef runtime ref = do
+  result <- Timeout.timeout mediaNormalizeTimeoutMicroseconds $
+    normalizeRemoteRefUnsafe runtime ref
+  case result of
+    Just (Just normalized) ->
+      pure normalized
+    Just Nothing ->
+      pure ref
+    Nothing -> do
+      logWarning [i|Remote media normalization timed out; keeping original ref: #{Text.take 160 ref}|]
+      pure ref
+
+normalizeRemoteRefUnsafe
+  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es)
+  => Runtime
+  -> Text
+  -> Eff es (Maybe Text)
+normalizeRemoteRefUnsafe runtime ref =
+  ( do
+      downloaded <- MediaObject.downloadObject runtime.manager ref
+      Just <$> cacheObject runtime (Just (Text.strip ref)) downloaded
+  ) `catchSync` \err -> do
+    logError [i|Remote media download failed: #{show err :: String}|]
+    pure Nothing
+
+publicRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es) => Runtime -> Text -> Eff es Text
 publicRef runtime ref =
   case Cache.parseMediaId ref of
     Nothing -> normalizeRef runtime ref >>= publicRef runtime

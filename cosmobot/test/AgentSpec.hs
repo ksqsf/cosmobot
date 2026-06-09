@@ -580,17 +580,19 @@ testViewImageToolCachesImageForContext =
       let cacheDir = dir </> "cache"
           cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = cacheDir}
           imageUrl = "data:image/png;base64,iVBORw0KGgpmYWtl" :: Text
-      runResult <- runEff $
-        runFileSystem $
-          runProcess $
-            runFail $
-              runConcurrent $
-                runTestLog $
-                  StorageSQLite.runStorageSQLitePath dbPath $
-                    HTTP.runHTTP $
-                      MediaInterpreter.runMedia cfg do
-                      runner <- ImageTools.viewImageTool.start agentContext
-                      runner (Aeson.object ["url" Aeson..= imageUrl])
+          runStack =
+            runFileSystem
+              . runProcess
+              . runFail
+              . runConcurrent
+              . runTestLog
+              . StorageSQLite.runStorageSQLitePath dbPath
+              . HTTP.runHTTP
+              . runTimeout
+              . MediaInterpreter.runMedia cfg
+      runResult <- runEff $ runStack do
+        runner <- ImageTools.viewImageTool.start agentContext
+        runner (Aeson.object ["url" Aeson..= imageUrl])
       toolResult <- either assertFailure pure runResult
       case toolResult of
         Agent.ToolSucceeded{content, imageUrls} -> do
@@ -609,28 +611,30 @@ testReadMediaTextToolReadsCachedSlices =
     withTempDir "read-media-text-cache" \dir -> do
       let cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = dir </> "cache"}
           content = "abcdefg" :: Text
-      runResult <- runEff $
-        runFileSystem $
-          runProcess $
-            runFail $
-              runConcurrent $
-                runTestLog $
-                  StorageSQLite.runStorageSQLitePath dbPath $
-                    HTTP.runHTTP $
-                      MediaInterpreter.runMedia cfg do
-                      mediaRef <- Media.storeMediaObject Media.MediaObject
-                        { bytes = Q.fromStrict (TextEncoding.encodeUtf8 content)
-                        , mimeType = "text/plain; charset=utf-8"
-                        , sourceName = Just "sample.txt"
-                        }
-                      let mediaId = maybe "" (\ref -> fromMaybe ref (Text.stripPrefix "media:" ref)) mediaRef
-                      runner <- MediaTools.readMediaTextTool.start agentContext
-                      result <- runner (Aeson.object
-                        [ "media_id" Aeson..= mediaId
-                        , "offset" Aeson..= (2 :: Int)
-                        , "size" Aeson..= (3 :: Int)
-                        ])
-                      pure (mediaRef, result)
+          runStack =
+            runFileSystem
+              . runProcess
+              . runFail
+              . runConcurrent
+              . runTestLog
+              . StorageSQLite.runStorageSQLitePath dbPath
+              . HTTP.runHTTP
+              . runTimeout
+              . MediaInterpreter.runMedia cfg
+      runResult <- runEff $ runStack do
+        mediaRef <- Media.storeMediaObject Media.MediaObject
+          { bytes = Q.fromStrict (TextEncoding.encodeUtf8 content)
+          , mimeType = "text/plain; charset=utf-8"
+          , sourceName = Just "sample.txt"
+          }
+        let mediaId = maybe "" (\ref -> fromMaybe ref (Text.stripPrefix "media:" ref)) mediaRef
+        runner <- MediaTools.readMediaTextTool.start agentContext
+        result <- runner (Aeson.object
+          [ "media_id" Aeson..= mediaId
+          , "offset" Aeson..= (2 :: Int)
+          , "size" Aeson..= (3 :: Int)
+          ])
+        pure (mediaRef, result)
       (mediaRef, result) <- either assertFailure pure runResult
       let tool = MediaTools.readMediaTextTool :: Agent.Tool AgentStack
       assertBool "expected stored media ref" (maybe False ("media:mf_" `Text.isPrefixOf`) mediaRef)
@@ -968,6 +972,7 @@ testAgentAuditStorageOmitsLargeToolResults =
               . runTestLog
               . StorageSQLite.runStorageSQLitePath dbPath
               . HTTP.runHTTP
+              . runTimeout
               . MediaInterpreter.runMedia cfg
               . LLMTest.runLLMWith
                   (\_ -> S.yield "unused text stream answer" $> "unused text stream answer")
@@ -1631,6 +1636,7 @@ testThreadStorageOmitsLargeToolResults =
               . runTestLog
               . StorageSQLite.runStorageSQLitePath dbPath
               . HTTP.runHTTP
+              . runTimeout
               . MediaInterpreter.runMedia cfg
       runResult <- runEff $ runStack do
         store <- newThreadStore
