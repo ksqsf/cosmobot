@@ -22,7 +22,12 @@ import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Storage.ChatLog as ChatLogStorage
+import qualified Effectful.Timeout as Timeout
 import qualified Streaming.Prelude as S
+
+chatLogRecordTimeoutMicroseconds :: Int
+chatLogRecordTimeoutMicroseconds =
+  1_000_000
 
 -- | Append-only chat log used by agent tools for local context.
 data ChatLog :: Effect where
@@ -53,12 +58,16 @@ recordMessage message =
 
 -- | Record every incoming message passing through a stream.
 recordIncomingMessages
-  :: ChatLog :> es
+  :: (ChatLog :> es, KatipE :> es, Timeout.Timeout :> es)
   => Stream (Of IncomingMessage) (Eff es) ()
   -> Stream (Of IncomingMessage) (Eff es) ()
 recordIncomingMessages =
   S.mapM \message -> do
-    recordMessage message
+    Timeout.timeout chatLogRecordTimeoutMicroseconds (recordMessage message) >>= \case
+      Just () ->
+        pure ()
+      Nothing ->
+        logWarning [i|chat log record timed out; continuing route dispatch: #{incomingMessageLogLine message}|]
     pure message
 
 -- | Record a logical self reply in the same chat as its triggering message.

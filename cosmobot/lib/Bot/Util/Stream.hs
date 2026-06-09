@@ -31,7 +31,7 @@ bracketStream acquire release use = do
 -- The @streaming-concurrency@ package provides @Streaming.Concurrent@ with a
 -- similar @withMergedStreams@ helper, but its current Hackage release depends
 -- on older @streaming-with@ / @streaming-bytestring@ bounds that do not solve
--- with this project's GHC 9.6 toolchain. Keep this small local version until
+-- with this project's GHC 9.10 toolchain. Keep this small local version until
 -- that dependency chain is usable here.
 mergeStreams
   :: (KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es)

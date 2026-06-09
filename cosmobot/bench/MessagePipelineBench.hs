@@ -122,6 +122,7 @@ chatLogRouteDispatch messages = do
   handled <- IORef.newIORef 0
   runEff $
     runConcurrent $
+      runTimeout $
       runBenchmarkLog $
         StorageSQLite.runStorageSQLitePath ":memory:" $
         ChatLog.runChatLog do
@@ -135,6 +136,7 @@ mergedChatLogRouteDispatch messages = do
   handled <- IORef.newIORef 0
   runEff $
     runConcurrent $
+      runTimeout $
       runPrim $
         Ki.runStructuredConcurrency $
           ConcurrencyManager.runConcurrencyManager $
