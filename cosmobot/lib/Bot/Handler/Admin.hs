@@ -15,6 +15,7 @@ import Bot.Core.Route
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Effect.Skills as Skills
 import Bot.Handler.Admin.Config
 import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as Lifecycle
@@ -28,9 +29,10 @@ import Effectful.FileSystem (FileSystem)
 import qualified Effectful.Process.Typed as TypedProcess
 import qualified System.Exit as Exit
 
-adminHandlers :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
+adminHandlers :: (Chat.Chat :> es, Skills.Skills :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
 adminHandlers cfg =
   [ pingRoute
+  , reloadRoute
   , titleRoute
   , echoRoute
   ] <> maybeToList (upgradeRoute <$> cfg.upgrade)
@@ -42,6 +44,18 @@ pingRoute =
 handlePing :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 handlePing message _ =
   void $ Chat.replyTo message "pong"
+
+reloadRoute :: (Chat.Chat :> es, Skills.Skills :> es) => RouteHandler es
+reloadRoute =
+  requireAuth
+    isSuperuser
+    (\message -> void $ Chat.replyTo message "只有 superuser 可以 reload。")
+    (stopOn (command "!reload") handleReload)
+
+handleReload :: (Chat.Chat :> es, Skills.Skills :> es) => IncomingMessage -> Text -> Eff es ()
+handleReload message _ = do
+  Skills.reloadSkills
+  void $ Chat.replyTo message "已重新载入 skill 列表。"
 
 echoRoute :: Chat.Chat :> es => RouteHandler es
 echoRoute =
