@@ -1,9 +1,14 @@
 module Main (main) where
 
 import Bot.Chat.Driver.Types (ChatDriverEffects)
+import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
+import qualified Bot.Effect.Skills as Skills
+import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Skills as SkillsStore
 import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Core.Route
@@ -15,8 +20,14 @@ import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as LifecycleStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import System.FilePath ((</>))
 import Effectful.FileSystem (runFileSystem)
-import Effectful.Process (runProcess)
+import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import qualified Effectful.Temporary as Temporary
+import Effectful.Process (Process, runProcess)
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -36,6 +47,7 @@ main =
   defaultMain $
     testGroup "admin"
       [ testCase "ping replies pong for any sender" testPingRepliesPong
+      , testCase "reload reloads skill list" testReloadReloadsSkillList
       , testCase "title rejects non-superusers" testTitleRejectsNonSuperuser
       , testCase "title validates arguments" testTitleValidatesArguments
       , testCase "title sets group member title" testTitleSetsGroupMemberTitle
@@ -52,6 +64,28 @@ testPingRepliesPong = do
   actions <- runAdmin defaultAdminConfig replies message
   IORef.readIORef replies >>= (@?= ["pong"])
   assertBool "no startup actions queued" (null actions)
+
+testReloadReloadsSkillList :: IO ()
+testReloadReloadsSkillList =
+  runEff $
+    runPrim $
+    runConcurrent $
+    runFileSystem $
+    Temporary.runTemporary $
+      Temporary.withSystemTempDirectory "cosmobot-admin-skills-" \tmp -> do
+        replies <- liftIO $ IORef.newIORef ([] :: [Text])
+        let skillsCfg = SkillsStore.SkillsConfig tmp
+            skillDir = tmp </> "demo"
+            skillPath = skillDir </> "SKILL.md"
+        FileSystem.createDirectory skillDir
+        writeTextFile skillPath "---\nname: old-skill\ndescription: old description\n---\n"
+        prompt <-
+          raise $
+            runAdminWithSkills defaultAdminConfig skillsCfg replies (messageWith "!reload" emptyMessageDigest{senderIsSuperuser = True}) do
+              writeTextFile skillPath "---\nname: new-skill\ndescription: new description\n---\n"
+        liftIO $ IORef.readIORef replies >>= (@?= ["已重新载入 skill 列表。"])
+        liftIO $ assertBool "reloaded prompt includes updated skill" ("new-skill" `Text.isInfixOf` prompt)
+        liftIO $ assertBool "reloaded prompt drops old skill" (not ("old-skill" `Text.isInfixOf` prompt))
 
 testTitleRejectsNonSuperuser :: IO ()
 testTitleRejectsNonSuperuser = do
@@ -126,8 +160,10 @@ testLifecycleStartupRepliesAreDeletedAfterDrain :: IO ()
 testLifecycleStartupRepliesAreDeletedAfterDrain = do
   replies <- IORef.newIORef ([] :: [Text])
   remaining <- runEff $
+    runPrim $
     runConcurrent $
     runFileSystem $
+    ConcurrencyManager.runConcurrencyManager $
     runTestLog $
       StorageSQLite.runStorageSQLitePath ":memory:" $
         Media.runMediaPassthrough $
@@ -137,6 +173,10 @@ testLifecycleStartupRepliesAreDeletedAfterDrain = do
             LifecycleStorage.loadStartupActions
   IORef.readIORef replies >>= (@?= ["cosmobot 重启完成啦 (｡•̀ᴗ-)✧"])
   assertBool "startup actions deleted after drain" (null remaining)
+
+writeTextFile :: FileSystem.FileSystem :> es => FilePath -> Text -> Eff es ()
+writeTextFile path text =
+  FileSystemByteString.writeFile path (TextEncoding.encodeUtf8 text)
 
 upgradeConfig :: AdminConfig
 upgradeConfig =
@@ -170,6 +210,25 @@ runAdminWithDelay :: Int -> AdminConfig -> IORef.IORef [Text] -> IncomingMessage
 runAdminWithDelay delayMicros cfg replies incoming =
   runAdminWithDelayAndTitle delayMicros cfg replies Nothing False incoming
 
+runAdminWithSkills
+  :: (Concurrent :> es, FileSystem.FileSystem :> es, IOE :> es, Prim :> es)
+  => AdminConfig
+  -> SkillsStore.SkillsConfig
+  -> IORef.IORef [Text]
+  -> IncomingMessage
+  -> Eff (Skills.Skills : Concurrency.Concurrency : Process : Chat.Chat : Storage.Storage : KatipE : es) ()
+  -> Eff es Text
+runAdminWithSkills cfg skillsCfg replies incoming beforeReload =
+  runTestLog $
+    StorageSQLite.runStorageSQLitePath ":memory:" $
+      Chat.runChatWith (testChatDriver replies Nothing False) $
+        runProcess $
+          ConcurrencyManager.runConcurrencyManager $
+            Skills.runSkills skillsCfg do
+            beforeReload
+            runHandlers (adminHandlers cfg) incoming
+            Skills.skillsSystemPrompt
+
 runAdminWithDelayAndTitle
   :: Int
   -> AdminConfig
@@ -180,6 +239,7 @@ runAdminWithDelayAndTitle
   -> IO [LifecycleStorage.StoredStartupAction]
 runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incoming =
   runEff $
+    runPrim $
     runConcurrent $
     runTestLog $
       StorageSQLite.runStorageSQLitePath ":memory:" $
@@ -193,6 +253,8 @@ runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incomin
       runFileSystem
         . runProcess
         . runConcurrent
+        . ConcurrencyManager.runConcurrencyManager
+        . Skills.runSkills (SkillsStore.SkillsConfig "skills")
 
 testChatDriver
   :: IOE :> es

@@ -3,8 +3,10 @@ module Main (main) where
 import Bot.Core.Message
 import Bot.Core.Route
 import Bot.Chat.Driver.Types (ChatDriverEffects)
+import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.Concurrency as ConcurrencyEffect
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Handler.Safebooru
@@ -90,11 +92,13 @@ testPublicRouteAndCommandBoundary = do
 
 runSafebooruFlow
   :: IORef.IORef [Text]
-  -> Eff '[StorageEffect.Storage, Chat.Chat, KatipE, Concurrent, IOE] ()
+  -> Eff '[StorageEffect.Storage, Chat.Chat, KatipE, ConcurrencyEffect.Concurrency, Concurrent, Prim, IOE] ()
   -> IO ()
 runSafebooruFlow replies action =
   runEff $
+    runPrim $
     runConcurrent $
+    ConcurrencyManager.runConcurrencyManager $
     runTestLog $
       Chat.runChatWith (testChatDriver replies) $
         StorageSQLite.runStorageSQLitePath ":memory:" $
