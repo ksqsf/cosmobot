@@ -28,11 +28,13 @@ main =
 testNormalExitCancelsAndAwaits :: Assertion
 testNormalExitCancelsAndAwaits = do
   result <- timeout 1_000_000 $ runManaged do
+    started <- MVar.newEmptyMVar
     stopped <- MVar.newEmptyMVar
     runConcurrencyManager do
       void $
         Concurrency.fork "worker" $
-          never `finally` MVar.putMVar stopped ()
+          (MVar.putMVar started () >> never) `finally` MVar.putMVar stopped ()
+      MVar.takeMVar started
     MVar.takeMVar stopped
   result @?= Just ()
 
