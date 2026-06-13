@@ -170,6 +170,9 @@ instance Driver.ChatDriver MatrixDriver where
   sendReplyMessage =
     replyToMatrix
 
+  sendStreamingReplyMessage =
+    streamingReplyToMatrix
+
   replyAudio =
     replyAudioMatrix
 
@@ -271,7 +274,7 @@ joinedMemberCount driver roomId = do
 
 sendText :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Either Text SendMessageResponse)
 sendText driver roomId replyToEventId body =
-  sendTextWithMentionsStreamComplete driver roomId replyToEventId body [] False
+  sendTextWithMentionsStreamComplete driver roomId replyToEventId body [] True
 
 sendTextWithMentions :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es (Either Text SendMessageResponse)
 sendTextWithMentions driver roomId replyToEventId body mentionUserIds =
@@ -1222,6 +1225,25 @@ replyToMatrix
   -> Text
   -> Eff es (Either Text MessageId)
 replyToMatrix driver message body =
+  replyToMatrixWithStreamComplete driver True message body
+
+streamingReplyToMatrix
+  :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> Text
+  -> Eff es (Either Text MessageId)
+streamingReplyToMatrix driver message body =
+  replyToMatrixWithStreamComplete driver False message body
+
+replyToMatrixWithStreamComplete
+  :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> Bool
+  -> IncomingMessage
+  -> Text
+  -> Eff es (Either Text MessageId)
+replyToMatrixWithStreamComplete driver complete message body =
   case viaNonEmpty head message.chatAliases of
     Just roomId -> do
       let matrixRoom = matrixRoomId roomId
@@ -1230,12 +1252,26 @@ replyToMatrix driver message body =
           imageRefs = Chat.replyImageUrls body
       textResponse <- if Text.null (Text.strip text)
         then pure Nothing
-        else Just <$> sendText driver matrixRoom replyRelation text
+        else Just <$> sendMatrixReplyText driver complete matrixRoom replyRelation text
       imageResponses <- traverse (tryMatrixSendImage driver roomId replyRelation) imageRefs
       let responses = maybeToList textResponse <> imageResponses
       pure (matrixReplyResult responses)
     _ ->
       pure (Left "Matrix reply requires a Matrix room id.")
+
+sendMatrixReplyText
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> Bool
+  -> MatrixRoomId
+  -> Maybe MatrixReplyTo
+  -> Text
+  -> Eff es (Either Text SendMessageResponse)
+sendMatrixReplyText driver complete roomId replyRelation text
+  | complete =
+      sendText driver roomId replyRelation text
+  | otherwise =
+      sendTextWithMentionsStreamComplete driver roomId replyRelation text [] False
 
 getMessageContentMatrix
   :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)

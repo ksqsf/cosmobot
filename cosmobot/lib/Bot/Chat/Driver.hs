@@ -63,6 +63,11 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
       normalizedBody <- normalizeOutgoingReplyBody driver body
       sendReplyMessage driver message normalizedBody
 
+  sendStreamingReplyMessage (NormalizingChatDriver driver) message body =
+    withChatDriverEither message "Chat streaming reply" do
+      normalizedBody <- normalizeOutgoingReplyBody driver body
+      sendStreamingReplyMessage driver message normalizedBody
+
   replyAudio (NormalizingChatDriver driver) message audioRef caption =
     withChatDriverEither message "Audio send" do
       replyAudio driver message audioRef caption
@@ -139,6 +144,10 @@ instance ChatDriver ChatDrivers where
   sendReplyMessage drivers message body =
     withMessageDriver drivers message \driver ->
       sendReplyMessage driver message body
+
+  sendStreamingReplyMessage drivers message body =
+    withMessageDriver drivers message \driver ->
+      sendStreamingReplyMessage driver message body
 
   replyAudio drivers message audioRef caption =
     withMessageDriver drivers message \driver ->

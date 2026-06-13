@@ -200,7 +200,7 @@ ensureEditableReply message state body =
     Just{} ->
       pure (state, [])
     Nothing -> do
-      sent <- ChatDriver.sendReplyMessage message (initialEditableBody body)
+      sent <- ChatDriver.sendStreamingReplyMessage message (initialEditableBody body)
       pure (recordInitialEdit state (initialEditableBody body) sent, [sent])
 
 recordInitialEdit :: MessageOutState -> Text -> Either Text MessageId -> MessageOutState

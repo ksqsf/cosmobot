@@ -11,6 +11,7 @@ module Bot.Effect.ChatDriver
     ChatDriver (..)
   , ChatDriverHandler
   , sendReplyMessage
+  , sendStreamingReplyMessage
   , replyAudio
   , uploadFile
   , editMessage
@@ -44,6 +45,10 @@ import qualified Data.Aeson as Aeson
 -- | Platform-independent chat operations used by handlers and tools.
 data ChatDriver :: Effect where
   SendReplyMessage
+    :: IncomingMessage
+    -> Text
+    -> ChatDriver m (Either Text MessageId)
+  SendStreamingReplyMessage
     :: IncomingMessage
     -> Text
     -> ChatDriver m (Either Text MessageId)
@@ -115,6 +120,10 @@ type ChatDriverHandler es =
 sendReplyMessage :: ChatDriver :> es => IncomingMessage -> Text -> Eff es (Either Text MessageId)
 sendReplyMessage message body =
   send (SendReplyMessage message body)
+
+sendStreamingReplyMessage :: ChatDriver :> es => IncomingMessage -> Text -> Eff es (Either Text MessageId)
+sendStreamingReplyMessage message body =
+  send (SendStreamingReplyMessage message body)
 
 -- | Send an audio reference to the chat containing the incoming message.
 replyAudio :: ChatDriver :> es => IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
@@ -204,6 +213,8 @@ chatDriverEffectHandler
 chatDriverEffectHandler driver _ = \case
   SendReplyMessage message body ->
     Driver.sendReplyMessage driver message body
+  SendStreamingReplyMessage message body ->
+    Driver.sendStreamingReplyMessage driver message body
   ReplyAudio message audioRef caption ->
     Driver.replyAudio driver message audioRef caption
   UploadFile message path ->
@@ -250,6 +261,12 @@ runChatMappingReplies rewrite =
           pure (Left err)
         Right rewritten ->
           passthrough localEnv (SendReplyMessage message rewritten)
+    SendStreamingReplyMessage message body -> do
+      rewrite body >>= \case
+        Left err ->
+          pure (Left err)
+        Right rewritten ->
+          passthrough localEnv (SendStreamingReplyMessage message rewritten)
     operation ->
       passthrough localEnv operation
 
@@ -263,6 +280,10 @@ runChatRecordingSelfMessages
 runChatRecordingSelfMessages recordSelf =
   interpose $ \localEnv -> \case
     operation@(SendReplyMessage _ body) -> do
+      sent <- passthrough localEnv operation
+      recordSelf body
+      pure sent
+    operation@(SendStreamingReplyMessage _ body) -> do
       sent <- passthrough localEnv operation
       recordSelf body
       pure sent
@@ -281,6 +302,10 @@ runChatRecordingExtraMessages
 runChatRecordingExtraMessages record =
   interpose $ \localEnv -> \case
     operation@SendReplyMessage{} -> do
+      result <- passthrough localEnv operation
+      record (rightToMaybe result)
+      pure result
+    operation@SendStreamingReplyMessage{} -> do
       result <- passthrough localEnv operation
       record (rightToMaybe result)
       pure result

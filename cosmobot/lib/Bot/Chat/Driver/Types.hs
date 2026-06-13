@@ -27,6 +27,10 @@ class ChatDriver driver where
   sendReplyMessage driver _ _ =
     pure (Left [i|#{driverPlatform driver} does not support replies.|])
 
+  sendStreamingReplyMessage :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Eff es (Either Text MessageId)
+  sendStreamingReplyMessage =
+    sendReplyMessage
+
   replyAudio :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
   replyAudio driver _ _ _ =
     pure (Left [i|#{driverPlatform driver} does not support audio replies.|])
