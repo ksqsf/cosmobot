@@ -1,58 +1,58 @@
 {-|
 Module      : Bot.Effect.Concurrency
-Description : Queryable concurrency and runtime resource capability facade
+Description : Queryable concurrency capability facade
 Stability   : experimental
 -}
 
 module Bot.Effect.Concurrency
   ( Concurrency (..)
-  , ResourceId (..)
-  , ResourceKind (..)
-  , ResourceStatus (..)
-  , ResourceInfo (..)
-  , ResourceHandle (..)
-  , ResourceSnapshot (..)
+  , Id (..)
+  , Kind (..)
+  , Status (..)
+  , Info (..)
+  , Handle (..)
+  , Snapshot (..)
   , Parent (..)
   , rootParent
   , childParent
-  , resourceFinished
-  , fireTask
-  , fireTaskWithHandle
-  , spawnTopLevelTask
+  , finished
+  , fire
+  , fireWithHandle
+  , fork
   , withWorker
-  , spawnStreamPump
+  , forkStreamPump
   , raceTasks_
-  , spawnResource
-  , spawnResourceWithHandle
-  , registerResource
-  , releaseResource
-  , cancelResource
-  , awaitResource
+  , forkAs
+  , forkWithHandleAs
+  , register
+  , release
+  , cancel
+  , await
   , sleepMicroseconds
-  , listResources
-  , lookupResource
+  , list
+  , lookup
   )
 where
 
-import Bot.Prelude
+import Bot.Prelude hiding (Handle)
 import Data.Time (UTCTime)
 import qualified Effectful.Concurrent.MVar as MVar
 
-newtype ResourceId = ResourceId
-  { unResourceId :: Integer
+newtype Id = Id
+  { unId :: Integer
   }
   deriving stock (Eq, Ord, Show)
 
-data ResourceKind
+data Kind
   = Task
-  | Resource
+  | Registration
   | Terminal
   | Subagent
   | DriverSession
   | StreamPump
   deriving stock (Eq, Ord, Show)
 
-data ResourceStatus
+data Status
   = Running
   | Completed
   | Failed !Text
@@ -62,27 +62,27 @@ data ResourceStatus
 
 data Parent
   = Root
-  | Child !ResourceId
+  | Child !Id
   deriving stock (Eq, Ord, Show)
 
-data ResourceInfo = ResourceInfo
-  { id :: !ResourceId
-  , kind :: !ResourceKind
+data Info = Info
+  { id :: !Id
+  , kind :: !Kind
   , label :: !Text
   , parent :: !Parent
-  , status :: !ResourceStatus
+  , status :: !Status
   , startedAt :: !UTCTime
   , finishedAt :: !(Maybe UTCTime)
   }
   deriving stock (Eq, Show)
 
-newtype ResourceHandle = ResourceHandle
-  { resourceId :: ResourceId
+newtype Handle = Handle
+  { handleId :: Id
   }
   deriving stock (Eq, Ord, Show)
 
-data ResourceSnapshot = ResourceSnapshot
-  { resources :: ![ResourceInfo]
+data Snapshot = Snapshot
+  { entries :: ![Info]
   }
   deriving stock (Eq, Show)
 
@@ -90,37 +90,37 @@ rootParent :: Parent
 rootParent =
   Root
 
-childParent :: ResourceId -> Parent
+childParent :: Id -> Parent
 childParent =
   Child
 
-resourceFinished :: ResourceInfo -> Bool
-resourceFinished resource =
-  isJust resource.finishedAt
+finished :: Info -> Bool
+finished info =
+  isJust info.finishedAt
 
-fireTask
+fire
   :: Concurrency :> es
   => Text
   -> Eff es ()
   -> Eff es ()
-fireTask label =
-  void . spawnTopLevelTask label
+fire label =
+  void . fork label
 
-fireTaskWithHandle
+fireWithHandle
   :: Concurrency :> es
   => Text
-  -> (ResourceHandle -> Eff es ())
+  -> (Handle -> Eff es ())
   -> Eff es ()
-fireTaskWithHandle label =
-  void . spawnResourceWithHandle Task label
+fireWithHandle label =
+  void . forkWithHandleAs Task label
 
-spawnTopLevelTask
+fork
   :: Concurrency :> es
   => Text
   -> Eff es ()
-  -> Eff es ResourceHandle
-spawnTopLevelTask =
-  spawnResource Task
+  -> Eff es Handle
+fork =
+  forkAs Task
 
 withWorker
   :: Concurrency :> es
@@ -129,16 +129,16 @@ withWorker
   -> Eff es a
   -> Eff es a
 withWorker label worker inner = do
-  workerHandle <- spawnResource Task label worker
-  inner `finally` cancelAndAwaitResource workerHandle
+  workerHandle <- forkAs Task label worker
+  inner `finally` cancelAndAwait workerHandle
 
-spawnStreamPump
+forkStreamPump
   :: Concurrency :> es
   => Text
   -> Eff es ()
-  -> Eff es ResourceHandle
-spawnStreamPump =
-  spawnResource StreamPump
+  -> Eff es Handle
+forkStreamPump =
+  forkAs StreamPump
 
 raceTasks_
   :: (Concurrency :> es, Concurrent :> es, IOE :> es)
@@ -149,11 +149,12 @@ raceTasks_
   -> Eff es ()
 raceTasks_ leftLabel leftAction rightLabel rightAction = do
   done <- MVar.newEmptyMVar
-  left <- spawnTopLevelTask leftLabel (capture done leftAction)
-  right <- spawnTopLevelTask rightLabel (capture done rightAction)
-  result <- MVar.takeMVar done
-  void $ cancelResource left.resourceId
-  void $ cancelResource right.resourceId
+  left <- fork leftLabel (capture done leftAction)
+  right <- fork rightLabel (capture done rightAction)
+  let cancelBoth = do
+        cancelAndAwait left
+        cancelAndAwait right
+  result <- MVar.takeMVar done `finally` cancelBoth
   either throwIO pure result
   where
     capture
@@ -164,71 +165,71 @@ raceTasks_ leftLabel leftAction rightLabel rightAction = do
     capture done action =
       try action >>= void . MVar.tryPutMVar done
 
-cancelAndAwaitResource :: Concurrency :> es => ResourceHandle -> Eff es ()
-cancelAndAwaitResource resourceHandle = do
-  void (cancelResource resourceHandle.resourceId)
-  awaitResource resourceHandle
+cancelAndAwait :: Concurrency :> es => Handle -> Eff es ()
+cancelAndAwait workerHandle = do
+  void (cancel workerHandle.handleId)
+  await workerHandle
 
 data Concurrency :: Effect where
-  SpawnResource :: ResourceKind -> Text -> m () -> Concurrency m ResourceHandle
-  SpawnResourceWithHandle :: ResourceKind -> Text -> (ResourceHandle -> m ()) -> Concurrency m ResourceHandle
-  RegisterResource :: ResourceKind -> Text -> m () -> Concurrency m ResourceHandle
-  ReleaseResource :: ResourceId -> Concurrency m Bool
-  CancelResource :: ResourceId -> Concurrency m Bool
-  AwaitResource :: ResourceHandle -> Concurrency m ()
+  Fork :: Kind -> Text -> m () -> Concurrency m Handle
+  ForkWithHandle :: Kind -> Text -> (Handle -> m ()) -> Concurrency m Handle
+  Register :: Kind -> Text -> m () -> Concurrency m Handle
+  Release :: Id -> Concurrency m Bool
+  Cancel :: Id -> Concurrency m Bool
+  Await :: Handle -> Concurrency m ()
   SleepMicroseconds :: Int -> Concurrency m ()
-  ListResources :: Concurrency m ResourceSnapshot
-  LookupResource :: ResourceId -> Concurrency m (Maybe ResourceInfo)
+  List :: Concurrency m Snapshot
+  Lookup :: Id -> Concurrency m (Maybe Info)
 
 type instance DispatchOf Concurrency = Dynamic
 
-spawnResource
+forkAs
   :: Concurrency :> es
-  => ResourceKind
+  => Kind
   -> Text
   -> Eff es ()
-  -> Eff es ResourceHandle
-spawnResource kind label action =
-  send (SpawnResource kind label action)
+  -> Eff es Handle
+forkAs kind label action =
+  send (Fork kind label action)
 
-spawnResourceWithHandle
+forkWithHandleAs
   :: Concurrency :> es
-  => ResourceKind
+  => Kind
   -> Text
-  -> (ResourceHandle -> Eff es ())
-  -> Eff es ResourceHandle
-spawnResourceWithHandle kind label action =
-  send (SpawnResourceWithHandle kind label action)
+  -> (Handle -> Eff es ())
+  -> Eff es Handle
+forkWithHandleAs kind label action =
+  send (ForkWithHandle kind label action)
 
-registerResource
+register
   :: Concurrency :> es
-  => ResourceKind
+  => Kind
   -> Text
   -> Eff es ()
-  -> Eff es ResourceHandle
-registerResource kind label cleanup =
-  send (RegisterResource kind label cleanup)
+  -> Eff es Handle
+register kind label cleanup =
+  send (Register kind label cleanup)
 
-releaseResource :: Concurrency :> es => ResourceId -> Eff es Bool
-releaseResource =
-  send . ReleaseResource
+release :: Concurrency :> es => Id -> Eff es Bool
+release =
+  send . Release
 
-cancelResource :: Concurrency :> es => ResourceId -> Eff es Bool
-cancelResource =
-  send . CancelResource
+cancel :: Concurrency :> es => Id -> Eff es Bool
+cancel =
+  send . Cancel
 
-awaitResource :: Concurrency :> es => ResourceHandle -> Eff es ()
-awaitResource =
-  send . AwaitResource
+await :: Concurrency :> es => Handle -> Eff es ()
+await =
+  send . Await
 
 sleepMicroseconds :: Concurrency :> es => Int -> Eff es ()
 sleepMicroseconds =
   send . SleepMicroseconds
 
-listResources :: Concurrency :> es => Eff es ResourceSnapshot
-listResources =
-  send ListResources
+list :: Concurrency :> es => Eff es Snapshot
+list =
+  send List
 
-lookupResource :: Concurrency :> es => ResourceId -> Eff es (Maybe ResourceInfo)
-lookupResource =
-  send . LookupResource
+lookup :: Concurrency :> es => Id -> Eff es (Maybe Info)
+lookup =
+  send . Lookup

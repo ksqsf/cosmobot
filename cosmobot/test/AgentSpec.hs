@@ -59,7 +59,6 @@ import qualified Data.Text.IO as TextIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Data.Unique
 import Effectful.FileSystem (FileSystem, runFileSystem)
-import qualified Effectful.Ki as Ki
 import qualified Effectful.FileSystem as FS
 import Effectful.Process (Process, runProcess)
 import Effectful.Timeout (Timeout, runTimeout)
@@ -88,7 +87,6 @@ type AgentStack =
    , StorageEffect.Storage
    , KatipE
    , Concurrency.Concurrency
-   , Ki.StructuredConcurrency
    , Prim
    , Fail
    , Concurrent
@@ -533,7 +531,7 @@ testAskHandlerIncludesReferencedImageUrlsInTextContext = do
       threads <- newThreadStore
       runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
       waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
-      waitUntilResourceFinished "ask.command"
+      waitUntilFinished "ask.command"
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just request -> do
@@ -967,7 +965,6 @@ testAgentAuditStorageOmitsLargeToolResults =
               . runFail
               . runConcurrent
               . runPrim
-              . Ki.runStructuredConcurrency
               . ConcurrencyManager.runConcurrencyManager
               . runTestLog
               . StorageSQLite.runStorageSQLitePath dbPath
@@ -1465,9 +1462,9 @@ testChunkedActiveThreadAliasesEverySentReply = runEff $ runConcurrent $ runPrim 
   cancelled <- liftIO (IORef.newIORef [])
   let baseTranscript = startWithUser "hello"
       partialTranscript = appendAssistant "partial answer" baseTranscript
-      resource = Concurrency.ResourceHandle (Concurrency.ResourceId 1)
-      cancel resourceId = do
-        liftIO $ IORef.modifyIORef' cancelled (resourceId :)
+      resource = Concurrency.Handle (Concurrency.Id 1)
+      cancel handleId = do
+        liftIO $ IORef.modifyIORef' cancelled (handleId :)
         pure True
   active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) resource baseTranscript
   addActiveThreadMessage store active (messageKey 2)
@@ -1478,7 +1475,7 @@ testChunkedActiveThreadAliasesEverySentReply = runEff $ runConcurrent $ runPrim 
   cancelledResources <- liftIO (IORef.readIORef cancelled)
   liftIO do
     halted @?= True
-    cancelledResources @?= [Concurrency.ResourceId 1]
+    cancelledResources @?= [Concurrency.Id 1]
     (show firstLookup :: String) @?= show (Just partialTranscript)
     (show secondLookup :: String) @?= show (Just partialTranscript)
 
@@ -1631,7 +1628,6 @@ testThreadStorageOmitsLargeToolResults =
               . runFail
               . runConcurrent
               . runPrim
-              . Ki.runStructuredConcurrency
               . ConcurrencyManager.runConcurrencyManager
               . runTestLog
               . StorageSQLite.runStorageSQLitePath dbPath
@@ -2352,7 +2348,6 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
           . runConcurrent
           . runFail
           . runPrim
-          . Ki.runStructuredConcurrency
           . ConcurrencyManager.runConcurrencyManager
           . runTestLog
           . StorageSQLite.runStorageSQLitePath ":memory:"
@@ -2415,7 +2410,6 @@ runAgentWithStreamingAnswers answers chatMock action = do
           . runConcurrent
           . runFail
           . runPrim
-          . Ki.runStructuredConcurrency
           . ConcurrencyManager.runConcurrencyManager
           . runTestLog
           . StorageSQLite.runStorageSQLitePath ":memory:"
@@ -2714,9 +2708,9 @@ waitUntil predicate =
         threadDelay 20_000
         go (remaining - 1)
 
-waitUntilResourceFinished :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es) => Text -> Eff es ()
-waitUntilResourceFinished label =
+waitUntilFinished :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es) => Text -> Eff es ()
+waitUntilFinished label =
   waitUntil do
-    snapshot <- Concurrency.listResources
-    let matching = filter ((== label) . (.label)) snapshot.resources
+    snapshot <- Concurrency.list
+    let matching = filter ((== label) . (.label)) snapshot.entries
     pure (not (null matching) && all (Concurrency.Running /=) ((.status) <$> matching))

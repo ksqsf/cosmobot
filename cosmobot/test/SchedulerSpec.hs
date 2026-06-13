@@ -8,7 +8,6 @@ import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
-import qualified Effectful.Ki as Ki
 import Effectful.Timeout (Timeout, runTimeout)
 import qualified Streaming.Prelude as S
 import Test.Tasty hiding (Timeout)
@@ -121,20 +120,19 @@ testElapsedSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
       length schedules @?= 0
 
 runSchedulerTest
-  :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, Concurrency.Concurrency, Ki.StructuredConcurrency, Prim, Concurrent, Timeout, IOE] a
+  :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, Concurrency.Concurrency, Prim, Concurrent, Timeout, IOE] a
   -> IO a
 runSchedulerTest action =
   runSchedulerStorage (Scheduler.runScheduler action)
 
 runSchedulerStorage
-  :: Eff '[StorageEffect.Storage, Concurrency.Concurrency, Ki.StructuredConcurrency, Prim, Concurrent, Timeout, IOE] a
+  :: Eff '[StorageEffect.Storage, Concurrency.Concurrency, Prim, Concurrent, Timeout, IOE] a
   -> IO a
 runSchedulerStorage action =
   runEff $
     ( runTimeout
     . runConcurrent
     . runPrim
-    . Ki.runStructuredConcurrency
     . ConcurrencyManager.runConcurrencyManager
     . StorageSQLite.runStorageSQLitePath ":memory:"
     ) action

@@ -64,7 +64,7 @@ runAskAgentThread
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ThreadStore
-  -> Concurrency.ResourceHandle
+  -> Concurrency.Handle
   -> Maybe ThreadMessageKey
   -> IncomingMessage
   -> MessageInput
@@ -252,7 +252,7 @@ discardActiveReply activeReply =
 
 data ActiveReplyState = ActiveReplyState
   { threads :: !ThreadStore
-  , resource :: !Concurrency.ResourceHandle
+  , resource :: !Concurrency.Handle
   , parentMessageKey :: !(Maybe ThreadMessageKey)
   , message :: !IncomingMessage
   , baseTranscript :: !Transcript
@@ -262,7 +262,7 @@ data ActiveReplyState = ActiveReplyState
 withActiveReply
   :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => ThreadStore
-  -> Concurrency.ResourceHandle
+  -> Concurrency.Handle
   -> Maybe ThreadMessageKey
   -> IncomingMessage
   -> Transcript

@@ -28,10 +28,10 @@ where
 import Bot.Core.Message
 import Bot.Core.Thread
 import Bot.Core.Transcript
-import Bot.Effect.Concurrency (ResourceHandle (..), ResourceId)
+import Bot.Effect.Concurrency (Handle (..), Id)
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Storage as Storage
-import Bot.Prelude hiding (newIORef, readIORef, atomicModifyIORef, writeIORef, atomicModifyIORef')
+import Bot.Prelude hiding (Handle, newIORef, readIORef, atomicModifyIORef, writeIORef, atomicModifyIORef')
 import Bot.Storage.Prelude
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Data.Aeson as Aeson
@@ -66,7 +66,7 @@ data ActiveThread = ActiveThread
   , activeMessageKeys :: !(IORef [ThreadMessageKey])
   , activeCurrent :: !(IORef Transcript)
   , activeDone :: !(MVar.MVar Transcript)
-  , activeResource :: !ResourceHandle
+  , activeHandle :: !Handle
   }
 
 newtype ActiveThreadHandle = ActiveThreadHandle ActiveThread
@@ -141,16 +141,16 @@ rememberActiveThread
   => ThreadStore
   -> Maybe ThreadMessageKey
   -> Maybe ThreadMessageKey
-  -> ResourceHandle
+  -> Handle
   -> Transcript
   -> Eff es (Maybe ActiveThreadHandle)
 rememberActiveThread _ _ Nothing _ _ =
   pure Nothing
-rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey (Just messageKey) resource transcript = do
+rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey (Just messageKey) activeHandle transcript = do
   messageKeys <- newIORef [messageKey]
   current <- newIORef transcript
   done <- MVar.newEmptyMVar
-  let active = ActiveThread{activeMessageKey = messageKey, activeParentMessageKey = parentMessageKey, activeMessageKeys = messageKeys, activeCurrent = current, activeDone = done, activeResource = resource}
+  let active = ActiveThread{activeMessageKey = messageKey, activeParentMessageKey = parentMessageKey, activeMessageKeys = messageKeys, activeCurrent = current, activeDone = done, activeHandle}
   atomicModifyIORef' activeRef \activeMap ->
     (Map.insert messageKey active activeMap, ())
   pure (Just (ActiveThreadHandle active))
@@ -193,7 +193,7 @@ finishActiveThreadCurrent store (ActiveThreadHandle active) = do
 haltThread
   :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es)
   => ThreadStore
-  -> (ResourceId -> Eff es Bool)
+  -> (Id -> Eff es Bool)
   -> ThreadMessageKey
   -> Eff es Bool
 haltThread store@ThreadStore{activeThreadStore = activeRef} cancel messageKey = do
@@ -204,7 +204,7 @@ haltThread store@ThreadStore{activeThreadStore = activeRef} cancel messageKey = 
     Just activeThread -> do
       transcript <- readIORef activeThread.activeCurrent
       messageKeys <- readIORef activeThread.activeMessageKeys
-      void $ cancel activeThread.activeResource.resourceId
+      void $ cancel activeThread.activeHandle.handleId
       traverse_ (\activeMessageKey -> rememberThreadTranscriptFrom store activeThread.activeParentMessageKey (Just activeMessageKey) transcript) messageKeys
       void $ MVar.tryPutMVar activeThread.activeDone transcript
       atomicModifyIORef' activeRef \activeMap ->

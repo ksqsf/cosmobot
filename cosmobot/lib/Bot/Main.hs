@@ -48,7 +48,6 @@ import qualified System.Posix.Signals as Signals
 import Effectful.Timeout
 import Effectful.Process
 import Effectful.FileSystem
-import qualified Effectful.Ki as Ki
 
 -- | Start the bot using @config.toml@ from the current working directory.
 main :: IO ()
@@ -62,7 +61,6 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
   rpcState <- runConcurrent RPC.newRpcState
   let runRuntime =
         runConcurrent
-          . Ki.runStructuredConcurrency
           . runTimeout
           . runFileSystem
           . runProcess

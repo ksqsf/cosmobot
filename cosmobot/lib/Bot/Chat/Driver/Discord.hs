@@ -321,8 +321,8 @@ runDiscordGatewaySession eventChan lastSequence heartbeatAck heartbeatInterval c
   reason <- MVar.takeMVar done
   logInfo [i|Discord gateway connection ending: #{displayException reason}|]
   closeDiscordGatewayForReconnect conn
-  void $ Concurrency.cancelResource heartbeat.resourceId
-  void $ Concurrency.cancelResource eventReader.resourceId
+  void $ Concurrency.cancel heartbeat.handleId
+  void $ Concurrency.cancel eventReader.handleId
   throwIO reason
 
 forkGatewayThread
@@ -330,8 +330,8 @@ forkGatewayThread
   => Text
   -> MVar.MVar SomeException
   -> Eff es ()
-  -> Eff es Concurrency.ResourceHandle
-forkGatewayThread label done action = Concurrency.spawnTopLevelTask [i|discord.gateway.#{label}|] do
+  -> Eff es Concurrency.Handle
+forkGatewayThread label done action = Concurrency.fork [i|discord.gateway.#{label}|] do
   result <- try action
   case result of
     Left err ->

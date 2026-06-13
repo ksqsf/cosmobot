@@ -1,6 +1,6 @@
 {-|
 Module      : Bot.Concurrency.Manager
-Description : Queryable ownership model for concurrent work and resources
+Description : Queryable ownership model for concurrent work
 Stability   : experimental
 -}
 
@@ -11,235 +11,211 @@ where
 
 import qualified Bot.Effect.Concurrency as Concurrency
 import Bot.Effect.Concurrency
-import Bot.Prelude
+import Bot.Prelude hiding (Handle)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
+import qualified Effectful.Concurrent.Async as Async
 import Data.Time (getCurrentTime)
 import qualified Effectful.Concurrent.MVar as MVar
-import qualified Effectful.Ki as Ki
 
 data ManagerState es = ManagerState
-  { nextResourceId :: !(IORef ResourceId)
-  , runtimes :: !(IORef (Map ResourceId (ResourceRuntime es)))
-  , rootScope :: !Ki.Scope
+  { nextIdRef :: !(IORef Id)
+  , runtimes :: !(IORef (Map Id (EntryRuntime es)))
   }
 
-data ResourceRuntime es = ResourceRuntime
-  { info :: !ResourceInfo
-  , thread :: !(Maybe (Ki.Thread ()))
-  , cancelSignal :: !(Maybe (MVar.MVar ()))
+data EntryRuntime es = EntryRuntime
+  { info :: !Info
+  , thread :: !(Maybe (Async.Async ()))
   , cleanup :: !(Maybe (Eff es ()))
   }
 
-data ManagedActionResult
-  = ManagedActionFinished
-  | ManagedActionCancelled
-
 runConcurrencyManager
-  :: (IOE :> es, Prim :> es, Concurrent :> es, Ki.StructuredConcurrency :> es)
+  :: (IOE :> es, Prim :> es, Concurrent :> es)
   => Eff (Concurrency : es) a
   -> Eff es a
-runConcurrencyManager inner =
-  Ki.scoped \rootScope -> do
-    nextResourceId <- newIORef (ResourceId 1)
-    runtimes <- newIORef Map.empty
-    let managerState = ManagerState{nextResourceId, runtimes, rootScope}
-    interpret (runConcurrencyOperation managerState) inner
+runConcurrencyManager inner = do
+  nextIdRef <- newIORef (Id 1)
+  runtimes <- newIORef Map.empty
+  let managerState = ManagerState{nextIdRef, runtimes}
+      runInner = interpret (runConcurrencyOperation managerState) inner
+  try runInner >>= \case
+    Right result -> do
+      cancelAndAwaitAll managerState
+      releaseRegistrations managerState
+      pure result
+    Left err -> do
+      cancelAndAwaitAllWith managerState err
+      releaseRegistrations managerState
+      throwIO (err :: SomeException)
 
 runConcurrencyOperation
-  :: (IOE :> es, Prim :> es, Concurrent :> es, Ki.StructuredConcurrency :> es)
+  :: (IOE :> es, Prim :> es, Concurrent :> es)
   => ManagerState es
   -> EffectHandler Concurrency es
 runConcurrencyOperation managerState localEnv operation =
   case operation of
-    Concurrency.SpawnResource kind label action ->
+    Concurrency.Fork kind label action ->
       localUnlift localEnv managedActionUnlift \unlift ->
-        spawnResourceIn managerState kind label (unlift action)
-    Concurrency.SpawnResourceWithHandle kind label action ->
+        forkAsIn managerState kind label (unlift action)
+    Concurrency.ForkWithHandle kind label action ->
       localUnlift localEnv managedActionUnlift \unlift ->
-        spawnResourceWithHandleIn managerState kind label (unlift . action)
-    Concurrency.RegisterResource kind label cleanup ->
+        forkWithHandleAsIn managerState kind label (unlift . action)
+    Concurrency.Register kind label cleanup ->
       localUnlift localEnv managedActionUnlift \unlift ->
-        registerResourceIn managerState kind label (unlift cleanup)
-    Concurrency.ReleaseResource resourceId ->
-      releaseResourceIn managerState resourceId
-    Concurrency.CancelResource resourceId ->
-      cancelResourceIn managerState resourceId
-    Concurrency.AwaitResource resourceHandle ->
-      awaitResourceIn managerState resourceHandle
+        registerIn managerState kind label (unlift cleanup)
+    Concurrency.Release handleId ->
+      releaseIn managerState handleId
+    Concurrency.Cancel handleId ->
+      cancelIn managerState handleId
+    Concurrency.Await workerHandle ->
+      awaitIn managerState workerHandle
     Concurrency.SleepMicroseconds microseconds ->
       threadDelay microseconds
-    Concurrency.ListResources ->
-      listResourcesIn managerState
-    Concurrency.LookupResource resourceId ->
-      lookupResourceIn managerState resourceId
+    Concurrency.List ->
+      listIn managerState
+    Concurrency.Lookup handleId ->
+      lookupIn managerState handleId
 
 managedActionUnlift :: UnliftStrategy
 managedActionUnlift =
   ConcUnlift Persistent (Limited 1)
 
-spawnResourceIn
-  :: (IOE :> es, Prim :> es, Concurrent :> es, Ki.StructuredConcurrency :> es)
+forkAsIn
+  :: (IOE :> es, Prim :> es, Concurrent :> es)
   => ManagerState es
-  -> ResourceKind
+  -> Kind
   -> Text
   -> Eff es ()
-  -> Eff es ResourceHandle
-spawnResourceIn managerState kind label action =
-  spawnResourceWithHandleIn managerState kind label (const action)
+  -> Eff es Handle
+forkAsIn managerState kind label action =
+  forkWithHandleAsIn managerState kind label (const action)
 
-spawnResourceWithHandleIn
-  :: (IOE :> es, Prim :> es, Concurrent :> es, Ki.StructuredConcurrency :> es)
+forkWithHandleAsIn
+  :: (IOE :> es, Prim :> es, Concurrent :> es)
   => ManagerState es
-  -> ResourceKind
+  -> Kind
   -> Text
-  -> (ResourceHandle -> Eff es ())
-  -> Eff es ResourceHandle
-spawnResourceWithHandleIn managerState kind label action = do
-  resourceInfo <- newResourceInfo managerState kind label
-  let resourceHandle = ResourceHandle{resourceId = resourceInfo.id}
-  registered <- MVar.newEmptyMVar
-  cancelSignal <- MVar.newEmptyMVar
-  thread <- Ki.fork managerState.rootScope do
-    MVar.takeMVar registered
-    superviseResourceAction managerState resourceInfo.id cancelSignal (action resourceHandle)
-    clearResourceRuntimeHandles managerState resourceInfo.id
-  let runtime = ResourceRuntime
-        { info = resourceInfo
+  -> (Handle -> Eff es ())
+  -> Eff es Handle
+forkWithHandleAsIn managerState kind label action = mask \restore -> do
+  entryInfo <- newInfo managerState kind label
+  let workerHandle = Handle{handleId = entryInfo.id}
+  startGate <- MVar.newEmptyMVar
+  thread <- Async.async $
+    restore $
+      MVar.takeMVar startGate
+        *> runAction managerState entryInfo.id (action workerHandle)
+        `finally` clearRuntimeHandles managerState entryInfo.id
+  let runtime = EntryRuntime
+        { info = entryInfo
         , thread = Just thread
-        , cancelSignal = Just cancelSignal
         , cleanup = Nothing
         }
-  insertRuntime managerState runtime
-  MVar.putMVar registered ()
-  pure resourceHandle
+  (insertRuntime managerState runtime >> MVar.putMVar startGate ())
+    `onException` Async.cancel thread
+  pure workerHandle
 
-registerResourceIn
+registerIn
   :: (IOE :> es, Prim :> es)
   => ManagerState es
-  -> ResourceKind
+  -> Kind
   -> Text
   -> Eff es ()
-  -> Eff es ResourceHandle
-registerResourceIn managerState kind label cleanup = do
-  resourceInfo <- newResourceInfo managerState kind label
-  insertRuntime managerState ResourceRuntime
-    { info = resourceInfo
+  -> Eff es Handle
+registerIn managerState kind label cleanup = do
+  entryInfo <- newInfo managerState kind label
+  insertRuntime managerState EntryRuntime
+    { info = entryInfo
     , thread = Nothing
-    , cancelSignal = Nothing
     , cleanup = Just cleanup
     }
-  pure ResourceHandle{resourceId = resourceInfo.id}
+  pure Handle{handleId = entryInfo.id}
 
-superviseResourceAction
-  :: (IOE :> es, Prim :> es, Concurrent :> es, Ki.StructuredConcurrency :> es)
-  => ManagerState es
-  -> ResourceId
-  -> MVar.MVar ()
-  -> Eff es ()
-  -> Eff es ()
-superviseResourceAction managerState resourceId cancelSignal action =
-  Ki.scoped \scope -> do
-    result <- MVar.newEmptyMVar
-    actionThread <- Ki.fork scope (runResourceAction managerState resourceId action)
-    void $ Ki.fork scope do
-      void (Ki.atomically (Ki.await actionThread))
-      void (MVar.tryPutMVar result ManagedActionFinished)
-    void $ Ki.fork scope do
-      MVar.takeMVar cancelSignal
-      finishResource managerState resourceId Cancelled
-      void (MVar.tryPutMVar result ManagedActionCancelled)
-    MVar.takeMVar result >>= \case
-      ManagedActionFinished ->
-        pure ()
-      ManagedActionCancelled ->
-        pure ()
-
-runResourceAction
+runAction
   :: (IOE :> es, Prim :> es)
   => ManagerState es
-  -> ResourceId
+  -> Id
   -> Eff es ()
   -> Eff es ()
-runResourceAction managerState resourceId action =
+runAction managerState handleId action =
   trySync action >>= \case
     Right () ->
-      finishResource managerState resourceId Completed
+      finishEntry managerState handleId Completed
     Left err ->
-      finishResource managerState resourceId (Failed (Text.pack (show err)))
+      finishEntry managerState handleId (Failed (Text.pack (show err)))
 
-releaseResourceIn
+releaseIn
   :: (IOE :> es, Prim :> es)
   => ManagerState es
-  -> ResourceId
+  -> Id
   -> Eff es Bool
-releaseResourceIn managerState resourceId =
-  lookupRuntime managerState resourceId >>= \case
+releaseIn managerState handleId =
+  lookupRuntime managerState handleId >>= \case
     Nothing ->
       pure False
     Just runtime
-      | resourceFinished runtime.info || isJust runtime.thread ->
+      | finished runtime.info || isJust runtime.thread ->
           pure False
       | otherwise -> do
           result <- traverse trySync runtime.cleanup
           case result of
             Just (Left err) ->
-              finishResource managerState resourceId (Failed (Text.pack (show err)))
+              finishEntry managerState handleId (Failed (Text.pack (show err)))
             _ ->
-              finishResource managerState resourceId Released
+              finishEntry managerState handleId Released
           pure True
 
-cancelResourceIn
+cancelIn
   :: (IOE :> es, Prim :> es, Concurrent :> es)
   => ManagerState es
-  -> ResourceId
+  -> Id
   -> Eff es Bool
-cancelResourceIn managerState resourceId = do
-  runtime <- lookupRuntime managerState resourceId
+cancelIn managerState handleId = do
+  runtime <- lookupRuntime managerState handleId
   case runtime of
     Nothing ->
       pure False
-    Just resource
-      | resourceFinished resource.info ->
+    Just entry
+      | finished entry.info ->
           pure False
-      | Just cancelSignal <- resource.cancelSignal -> do
-          void (MVar.tryPutMVar cancelSignal ())
-          finishResource managerState resourceId Cancelled
+      | Just thread <- entry.thread -> do
+          finishEntry managerState handleId Cancelled
+          Async.cancel thread
           pure True
       | otherwise ->
-          releaseResourceIn managerState resourceId
+          releaseIn managerState handleId
 
-awaitResourceIn
-  :: (Prim :> es, Ki.StructuredConcurrency :> es)
+awaitIn
+  :: (IOE :> es, Prim :> es, Concurrent :> es)
   => ManagerState es
-  -> ResourceHandle
+  -> Handle
   -> Eff es ()
-awaitResourceIn managerState resourceHandle =
-  liftMaybeThread managerState resourceHandle.resourceId >>= \case
+awaitIn managerState workerHandle =
+  liftMaybeThread managerState workerHandle.handleId >>= \case
     Nothing ->
       pure ()
     Just thread ->
-      Ki.atomically (Ki.await thread)
+      void (Async.waitCatch thread)
 
-listResourcesIn :: Prim :> es => ManagerState es -> Eff es ResourceSnapshot
-listResourcesIn managerState =
-  ResourceSnapshot . map (.info) . Map.elems <$> readIORef managerState.runtimes
+listIn :: Prim :> es => ManagerState es -> Eff es Snapshot
+listIn managerState =
+  Snapshot . map (.info) . Map.elems <$> readIORef managerState.runtimes
 
-lookupResourceIn :: Prim :> es => ManagerState es -> ResourceId -> Eff es (Maybe ResourceInfo)
-lookupResourceIn managerState resourceId =
-  fmap (.info) . Map.lookup resourceId <$> readIORef managerState.runtimes
+lookupIn :: Prim :> es => ManagerState es -> Id -> Eff es (Maybe Info)
+lookupIn managerState handleId =
+  fmap (.info) . Map.lookup handleId <$> readIORef managerState.runtimes
 
-newResourceInfo
+newInfo
   :: (IOE :> es, Prim :> es)
   => ManagerState es
-  -> ResourceKind
+  -> Kind
   -> Text
-  -> Eff es ResourceInfo
-newResourceInfo managerState kind label = do
-  resourceId <- nextId managerState
+  -> Eff es Info
+newInfo managerState kind label = do
+  handleId <- allocateId managerState
   startedAt <- liftIO getCurrentTime
-  pure ResourceInfo
-    { id = resourceId
+  pure Info
+    { id = handleId
     , kind
     , label
     , parent = Root
@@ -248,56 +224,116 @@ newResourceInfo managerState kind label = do
     , finishedAt = Nothing
     }
 
-nextId :: Prim :> es => ManagerState es -> Eff es ResourceId
-nextId managerState =
-  atomicModifyIORef' managerState.nextResourceId \(ResourceId current) ->
-    (ResourceId (current + 1), ResourceId current)
+allocateId :: Prim :> es => ManagerState es -> Eff es Id
+allocateId managerState =
+  atomicModifyIORef' managerState.nextIdRef \(Id current) ->
+    (Id (current + 1), Id current)
 
-insertRuntime :: Prim :> es => ManagerState es -> ResourceRuntime es -> Eff es ()
+insertRuntime :: Prim :> es => ManagerState es -> EntryRuntime es -> Eff es ()
 insertRuntime managerState runtime =
   atomicModifyIORef' managerState.runtimes \runtimes ->
     (Map.insert runtime.info.id runtime runtimes, ())
 
-lookupRuntime :: Prim :> es => ManagerState es -> ResourceId -> Eff es (Maybe (ResourceRuntime es))
-lookupRuntime managerState resourceId =
-  Map.lookup resourceId <$> readIORef managerState.runtimes
+lookupRuntime :: Prim :> es => ManagerState es -> Id -> Eff es (Maybe (EntryRuntime es))
+lookupRuntime managerState handleId =
+  Map.lookup handleId <$> readIORef managerState.runtimes
 
-liftMaybeThread :: Prim :> es => ManagerState es -> ResourceId -> Eff es (Maybe (Ki.Thread ()))
-liftMaybeThread managerState resourceId = do
-  runtime <- lookupRuntime managerState resourceId
+liftMaybeThread :: Prim :> es => ManagerState es -> Id -> Eff es (Maybe (Async.Async ()))
+liftMaybeThread managerState handleId = do
+  runtime <- lookupRuntime managerState handleId
   pure (runtime >>= (.thread))
 
-finishResource
+finishEntry
   :: (IOE :> es, Prim :> es)
   => ManagerState es
-  -> ResourceId
-  -> ResourceStatus
+  -> Id
+  -> Status
   -> Eff es ()
-finishResource managerState resourceId status = do
+finishEntry managerState handleId status = do
   finishedAt <- liftIO getCurrentTime
   atomicModifyIORef' managerState.runtimes \runtimes ->
     let update runtime =
-          runtime
-            { info = runtime.info
-                { status
-                , finishedAt = Just finishedAt
+          if finished runtime.info
+            then runtime
+            else
+              runtime
+                { info = runtime.info
+                    { status
+                    , finishedAt = Just finishedAt
+                    }
+                , cleanup = Nothing
                 }
-            , cancelSignal = Nothing
-            , cleanup = Nothing
-            }
-    in (Map.adjust update resourceId runtimes, ())
+    in (Map.adjust update handleId runtimes, ())
 
-clearResourceRuntimeHandles
+clearRuntimeHandles
   :: Prim :> es
   => ManagerState es
-  -> ResourceId
+  -> Id
   -> Eff es ()
-clearResourceRuntimeHandles managerState resourceId =
+clearRuntimeHandles managerState handleId =
   atomicModifyIORef' managerState.runtimes \runtimes ->
     let update runtime =
           runtime
             { thread = Nothing
-            , cancelSignal = Nothing
             , cleanup = Nothing
             }
-    in (Map.adjust update resourceId runtimes, ())
+    in (Map.adjust update handleId runtimes, ())
+
+cancelAndAwaitAll :: (IOE :> es, Prim :> es, Concurrent :> es) => ManagerState es -> Eff es ()
+cancelAndAwaitAll managerState = do
+  threads <- liveThreads managerState
+  traverse_ cancelAndAwait threads
+  where
+    cancelAndAwait (handleId, thread) = do
+      finishEntry managerState handleId Cancelled
+      Async.cancel thread
+      void (Async.waitCatch thread)
+
+cancelAndAwaitAllWith
+  :: (IOE :> es, Prim :> es, Concurrent :> es)
+  => ManagerState es
+  -> SomeException
+  -> Eff es ()
+cancelAndAwaitAllWith managerState err = do
+  threads <- liveThreads managerState
+  traverse_ cancelAndAwaitWith threads
+  where
+    cancelAndAwaitWith (handleId, thread) = do
+      finishEntry managerState handleId Cancelled
+      Async.cancelWith thread err
+      void (Async.waitCatch thread)
+
+releaseRegistrations :: (IOE :> es, Prim :> es) => ManagerState es -> Eff es ()
+releaseRegistrations managerState = do
+  registrations <- liveRegistrations managerState
+  traverse_ releaseRegistered registrations
+  where
+    releaseRegistered (handleId, cleanup) =
+      trySync cleanup >>= \case
+        Right () ->
+          finishEntry managerState handleId Released
+        Left err ->
+          finishEntry managerState handleId (Failed (Text.pack (show err)))
+
+liveThreads :: Prim :> es => ManagerState es -> Eff es [(Id, Async.Async ())]
+liveThreads managerState =
+  selectLiveThreads . Map.elems <$> readIORef managerState.runtimes
+  where
+    selectLiveThreads runtimes =
+      [ (runtime.info.id, thread)
+      | runtime <- runtimes
+      , not (finished runtime.info)
+      , Just thread <- [runtime.thread]
+      ]
+
+liveRegistrations :: Prim :> es => ManagerState es -> Eff es [(Id, Eff es ())]
+liveRegistrations managerState =
+  liveRegistered . Map.elems <$> readIORef managerState.runtimes
+  where
+    liveRegistered runtimes =
+      [ (runtime.info.id, cleanup)
+      | runtime <- runtimes
+      , not (finished runtime.info)
+      , isNothing runtime.thread
+      , Just cleanup <- [runtime.cleanup]
+      ]

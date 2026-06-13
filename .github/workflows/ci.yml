@@ -25,9 +25,9 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ runner.os }}-ghc-9.10.3-cabal-${{ hashFiles('cosmobot.cabal') }}
+          key: ${{ runner.os }}-ghc-9.10.3-cabal-v2-${{ hashFiles('cabal.project', 'cosmobot/cosmobot.cabal', 'cosmocode/cosmocode.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-ghc-9.10.3-cabal-
+            ${{ runner.os }}-ghc-9.10.3-cabal-v2-
 
       - name: Update package index
         run: cabal update

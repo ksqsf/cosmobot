@@ -44,7 +44,7 @@ Regarding **Privacy**, we have done our best effort. For example, Alice can neve
 
 ## Cosmobot Deployment
 
-Cosmobot reads `config.yaml` from the current working directory. If it's listening for messages, you should see "Cosmobot stand by!" in the logs.
+Cosmobot reads `config.toml` from the current working directory. If it's listening for messages, you should see "Cosmobot stand by!" in the logs.
 
 There is a template config to get you started.
 

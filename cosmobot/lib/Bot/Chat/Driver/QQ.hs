@@ -236,8 +236,8 @@ forkConnectionThread
   => Text
   -> MVar SomeException
   -> Eff es ()
-  -> Eff es Concurrency.ResourceHandle
-forkConnectionThread label done action = Concurrency.spawnTopLevelTask [i|qq.websocket.#{label}|] do
+  -> Eff es Concurrency.Handle
+forkConnectionThread label done action = Concurrency.fork [i|qq.websocket.#{label}|] do
   result <- try action
   case result of
     Left err ->
@@ -283,9 +283,9 @@ closeWebSocketForReconnect conn = do
     Just (Right ()) ->
       pure ()
 
-stopConnectionThread :: (Timeout :> es, KatipE :> es, Concurrency.Concurrency :> es) => Text -> Concurrency.ResourceHandle -> Eff es ()
+stopConnectionThread :: (Timeout :> es, KatipE :> es, Concurrency.Concurrency :> es) => Text -> Concurrency.Handle -> Eff es ()
 stopConnectionThread label resourceHandle = do
-  result <- timeout qqConnectionThreadStopTimeoutMicroseconds (Concurrency.cancelResource resourceHandle.resourceId)
+  result <- timeout qqConnectionThreadStopTimeoutMicroseconds (Concurrency.cancel resourceHandle.handleId)
   when (isNothing result) $
     logInfo [i|QQ websocket #{label} thread did not stop before reconnect; continuing|]
 

@@ -82,7 +82,6 @@ common lib-deps
                     , directory
                     , filepath
                     , effectful
-                    , ki-effectful
                     , katip-effectful
                     , streaming
                     , streaming-bytestring
@@ -139,7 +138,6 @@ common test-deps
                     , http-client
                     , http-types
                     , jsonrpc
-                    , ki-effectful
                     , memory
                     , network
                     , process

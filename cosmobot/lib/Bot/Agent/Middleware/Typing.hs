@@ -39,14 +39,14 @@ withTypingScope
 withTypingScope message stream = do
   S.lift (safeSetTyping message typingNotificationTimeoutMillis)
   StreamUtil.bracketStream
-    (Concurrency.spawnTopLevelTask "agent.typing" (typingNotificationLoop message))
+    (Concurrency.fork "agent.typing" (typingNotificationLoop message))
     cancelAndAwaitTyping
     \_ -> stream
 
-cancelAndAwaitTyping :: Concurrency.Concurrency :> es => Concurrency.ResourceHandle -> Eff es ()
+cancelAndAwaitTyping :: Concurrency.Concurrency :> es => Concurrency.Handle -> Eff es ()
 cancelAndAwaitTyping typingHandle = do
-  void (Concurrency.cancelResource typingHandle.resourceId)
-  Concurrency.awaitResource typingHandle
+  void (Concurrency.cancel typingHandle.handleId)
+  Concurrency.await typingHandle
 
 typingNotificationLoop
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es)

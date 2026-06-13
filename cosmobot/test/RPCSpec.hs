@@ -28,7 +28,6 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Unique (hashUnique, newUnique)
 import Effectful.FileSystem (runFileSystem)
 import qualified Effectful.Concurrent.MVar as MVar
-import qualified Effectful.Ki as Ki
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.Process (Process, runProcess)
@@ -782,13 +781,12 @@ finishRace done action =
   try action >>= void . MVar.tryPutMVar done
 
 runRpcServerTest
-  :: Eff '[Media.Media, Storage.Storage, KatipE, FileSystem.FileSystem, Concurrency.Concurrency, Ki.StructuredConcurrency, Prim, Concurrent, IOE] a
+  :: Eff '[Media.Media, Storage.Storage, KatipE, FileSystem.FileSystem, Concurrency.Concurrency, Prim, Concurrent, IOE] a
   -> IO a
 runRpcServerTest action =
   runEff $
     ( runConcurrent
     . runPrim
-    . Ki.runStructuredConcurrency
     . ConcurrencyManager.runConcurrencyManager
     . runFileSystem
     . runTestLog

@@ -88,7 +88,7 @@ drawRoute
 drawRoute cfg threads =
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (command cfg.drawCommand) \message prompt ->
-      Concurrency.fireTask "ask.draw" $
+      Concurrency.fire "ask.draw" $
         startDrawThread "matched draw route" cfg threads message prompt
 
 askRoute
@@ -101,7 +101,7 @@ askRoute
 askRoute toolCfg cfg threads =
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (askPrefix cfg) \message prompt ->
-      Concurrency.fireTaskWithHandle "ask.command" \resource ->
+      Concurrency.fireWithHandle "ask.command" \resource ->
         startAskThread "matched ask route" toolCfg cfg threads resource message prompt
 
 haltRoute
@@ -116,7 +116,7 @@ haltRoute
   -> RouteHandler es
 haltRoute threads =
   stopOn (command "!halt" *> replyToMessage) \message parentId -> do
-    halted <- haltThread threads Concurrency.cancelResource (threadMessageKey message parentId)
+    halted <- haltThread threads Concurrency.cancel (threadMessageKey message parentId)
     if halted
       then logInfo "halted"
       else logInfo "couldn't halt active thread"
@@ -130,7 +130,7 @@ privateRoute
   -> RouteHandler es
 privateRoute toolCfg cfg threads =
   stopOn privateMessage \message prompt ->
-    Concurrency.fireTaskWithHandle "ask.private" \resource ->
+    Concurrency.fireWithHandle "ask.private" \resource ->
       startAskThread "matched private ask route" toolCfg cfg threads resource message prompt
   where
     privateMessage =
@@ -148,7 +148,7 @@ mentionRoute
   -> RouteHandler es
 mentionRoute toolCfg cfg threads =
   stopOn mentionMessage \message prompt ->
-    Concurrency.fireTaskWithHandle "ask.mention" \resource ->
+    Concurrency.fireWithHandle "ask.mention" \resource ->
       startAskThread "matched bot mention route" toolCfg cfg threads resource message prompt
   where
     mentionMessage =
@@ -166,7 +166,7 @@ continueRoute
   -> RouteHandler es
 continueRoute toolCfg cfg threads =
   stopOn continuedMessage \message parentId ->
-    Concurrency.fireTaskWithHandle "ask.continue" \resource -> do
+    Concurrency.fireWithHandle "ask.continue" \resource -> do
       let parentKey = threadMessageKey message parentId
       parentTranscript <- lookupThreadTranscript threads parentKey
       case parentTranscript of
@@ -199,7 +199,7 @@ startAskThread
   -> Agent.ToolConfig
   -> AskHandlerConfig
   -> ThreadStore
-  -> Concurrency.ResourceHandle
+  -> Concurrency.Handle
   -> IncomingMessage
   -> Text
   -> Eff es ()
@@ -247,7 +247,7 @@ startThreadFromReply
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ThreadStore
-  -> Concurrency.ResourceHandle
+  -> Concurrency.Handle
   -> IncomingMessage
   -> MessageId
   -> Eff es ()
@@ -267,7 +267,7 @@ continueThread
   => Agent.ToolConfig
   -> AskHandlerConfig
   -> ThreadStore
-  -> Concurrency.ResourceHandle
+  -> Concurrency.Handle
   -> IncomingMessage
   -> ThreadMessageKey
   -> Transcript

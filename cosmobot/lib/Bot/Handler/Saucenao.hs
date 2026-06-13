@@ -50,7 +50,7 @@ saucenaoRoute
 saucenaoRoute saucenaoCfg =
   stopOn (command saucenaoCommand) \message _ -> do
     logInfo [i|matched saucenao route: #{incomingMessageLogLine message}|]
-    Concurrency.fireTask "saucenao.search" (sendSaucenaoResults saucenaoCfg message)
+    Concurrency.fire "saucenao.search" (sendSaucenaoResults saucenaoCfg message)
 
 sendSaucenaoResults
   :: (Chat.Chat :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es)

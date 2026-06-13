@@ -109,6 +109,16 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - Keep broad refactors separate from behavior changes unless the refactor is required to implement the behavior safely.
 - Prefer composition over nested `$` chains. Write `foo . bar . baz $ xxx` instead of `foo $ bar $ baz $ xxx` when the composition form is clear.
 
+### Concurrency Rules
+
+- Use `Bot.Effect.Concurrency` for application-level background work. Modules should import it qualified and call plain API names such as `Concurrency.fork`, `Concurrency.fire`, `Concurrency.cancel`, `Concurrency.await`, `Concurrency.list`, and `Concurrency.lookup`; do not expose "resource" terminology from the concurrency API.
+- Implement the concurrency interpreter with `Effectful.Concurrent.Async`, not raw `Control.Concurrent` APIs.
+- Keep concurrency structured. Any thread started by the manager must be registered before it can run user action, and manager exit must cancel and await every live thread so no ghost threads remain.
+- Treat acquisition of async handles as a lifecycle operation: mask the create/register/start sequence, and cancel any thread that was created if registration or start signalling fails.
+- On normal manager exit, cancel and await live child threads before releasing registrations. On exceptional manager exit, use `cancelWith` so the top-level exception is thrown into each live child, then await them.
+- Do not swallow async exceptions to decide ordinary control flow. Use `finally`, `onException`, `bracket`, `mask`, and `trySync`/`catchSync` according to the intended lifecycle boundary.
+- Add focused tests in `test/ConcurrencySpec.hs` for manager lifecycle changes: normal-exit cleanup, exceptional-exit propagation, cancellation, awaiting, and any new race-sensitive acquire/register/start behavior.
+
 ### Identity And Persistence
 
 - Do not conflate chat identity with sender identity.
@@ -147,6 +157,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 
 ### Verification
 
+- Concurrency manager changes: `cabal test concurrency-spec`.
 - Agent/tool/conversation changes: `cabal test agent-spec`.
 - Scheduler changes: `cabal test scheduler-spec`.
 - Chat-log changes: `cabal test chat-log-spec`.

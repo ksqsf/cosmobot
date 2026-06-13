@@ -41,7 +41,7 @@ mergeStreams streams = do
   queue <- S.lift (STM.newTBQueueIO streamQueueCapacity)
   pumps <- S.lift $
     traverse
-      (\(index, stream) -> Concurrency.spawnStreamPump [i|stream.merge.#{index}|] (pump queue stream))
+      (\(index, stream) -> Concurrency.forkStreamPump [i|stream.merge.#{index}|] (pump queue stream))
       (zip [(1 :: Int)..] streams)
   readMerged (length streams) queue `streamFinally` cleanupPumps pumps
 
@@ -111,14 +111,14 @@ streamFinally stream cleanup =
           S.yield item
           go rest
 
-cleanupPumps :: Concurrency.Concurrency :> es => [Concurrency.ResourceHandle] -> Eff es ()
+cleanupPumps :: Concurrency.Concurrency :> es => [Concurrency.Handle] -> Eff es ()
 cleanupPumps pumps =
   traverse_ cancelAndAwaitPump pumps
 
-cancelAndAwaitPump :: Concurrency.Concurrency :> es => Concurrency.ResourceHandle -> Eff es ()
+cancelAndAwaitPump :: Concurrency.Concurrency :> es => Concurrency.Handle -> Eff es ()
 cancelAndAwaitPump pumpHandle = do
-  void (Concurrency.cancelResource pumpHandle.resourceId)
-  Concurrency.awaitResource pumpHandle
+  void (Concurrency.cancel pumpHandle.handleId)
+  Concurrency.await pumpHandle
 
 pump
   :: (KatipE :> es, Concurrent :> es)
