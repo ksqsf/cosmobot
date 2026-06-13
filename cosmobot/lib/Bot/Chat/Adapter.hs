@@ -24,10 +24,11 @@ import qualified Streaming.Prelude as S
 -- | Reply to the chat containing the incoming message.
 replyTo :: ChatDriver.ChatDriver :> es => IncomingMessage -> Text -> Eff es [Either Text MessageId]
 replyTo message body = do
-  results S.:> _ <- S.toList (streamReplyTo message (S.yield body $> ()))
-  pure case concatMap (.sentMessageResults) results of
-    [] -> [Left "Chat reply failed."]
-    sent -> sent
+  policy <- ChatDriver.messageOutPolicy message
+  let messageLimit = messageOutPolicyLimit policy
+      state = appendAnswer (nonEmptyMessageBody body) emptyMessageOutState
+  (_, sent) <- sendTextChunks messageLimit message state (answerText state)
+  pure sent
 
 streamReplyTo
   :: ChatDriver.ChatDriver :> es
@@ -92,6 +93,13 @@ messageOutResult state sentMessageResults =
     , sentMessageResults
     , answer = answerText state
     }
+
+messageOutPolicyLimit :: MessageOutPolicy -> Int
+messageOutPolicyLimit = \case
+  EditableMessage _ messageLimit ->
+    messageLimit
+  ChunkedMessage messageLimit ->
+    messageLimit
 
 streamOneReply
   :: ChatDriver.ChatDriver :> es
