@@ -221,6 +221,8 @@ main =
       , testCase "segmented replies flush final open segment" testSegmentedRepliesFlushFinalOpenSegment
       , testCase "editable chat streaming splits long replies and yields aliases" testEditableChatStreamingSplitsLongReplies
       , testCase "chunked active thread aliases every sent reply" testChunkedActiveThreadAliasesEverySentReply
+      , testCase "halt command cancels active run for current thread message" testHaltCommandCancelsCurrentThreadMessage
+      , testCase "halt command prefers replied thread message over current message" testHaltCommandPrefersRepliedThreadMessage
       , testCase "fetch_url max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "thread replies keep parent and child snapshots" testThreadRepliesKeepSnapshots
       , testCase "thread branches do not overwrite siblings" testThreadBranchesDoNotOverwriteSiblings
@@ -1478,6 +1480,49 @@ testChunkedActiveThreadAliasesEverySentReply = runEff $ runConcurrent $ runPrim 
     cancelledResources @?= [Concurrency.Id 1]
     (show firstLookup :: String) @?= show (Just partialTranscript)
     (show secondLookup :: String) @?= show (Just partialTranscript)
+
+testHaltCommandCancelsCurrentThreadMessage :: IO ()
+testHaltCommandCancelsCurrentThreadMessage = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  store <- newThreadStore
+  cancelled <- liftIO (IORef.newIORef [])
+  let baseTranscript = startWithUser "hello"
+      partialTranscript = appendAssistant "partial answer" baseTranscript
+      activeHandle = Concurrency.Handle (Concurrency.Id 1)
+      cancel handleId = do
+        liftIO $ IORef.modifyIORef' cancelled (handleId :)
+        pure True
+      haltMessage = testMessage{text = "!halt", messageId = Just (integerMessageId 2), replyToMessageId = Nothing}
+  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) activeHandle baseTranscript
+  addActiveThreadMessage store active (messageKey 2)
+  updateActiveThread active partialTranscript
+  halted <- haltThreadForMessage store cancel haltMessage
+  currentLookup <- lookupThreadTranscript store (messageKey 2)
+  cancelledHandles <- liftIO (IORef.readIORef cancelled)
+  liftIO do
+    halted @?= True
+    cancelledHandles @?= [Concurrency.Id 1]
+    (show currentLookup :: String) @?= show (Just partialTranscript)
+
+testHaltCommandPrefersRepliedThreadMessage :: IO ()
+testHaltCommandPrefersRepliedThreadMessage = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  store <- newThreadStore
+  cancelled <- liftIO (IORef.newIORef [])
+  let transcript = startWithUser "hello"
+      repliedHandle = Concurrency.Handle (Concurrency.Id 1)
+      currentHandle = Concurrency.Handle (Concurrency.Id 2)
+      cancel handleId = do
+        liftIO $ IORef.modifyIORef' cancelled (handleId :)
+        pure True
+      haltMessage = testMessage{text = "!halt", messageId = Just (integerMessageId 2), replyToMessageId = Just (integerMessageId 1)}
+  void $ rememberActiveThread store Nothing (Just (messageKey 1)) repliedHandle transcript
+  void $ rememberActiveThread store Nothing (Just (messageKey 2)) currentHandle transcript
+  halted <- haltThreadForMessage store cancel haltMessage
+  currentStillHalted <- haltThread store cancel (messageKey 2)
+  cancelledHandles <- liftIO (IORef.readIORef cancelled)
+  liftIO do
+    halted @?= True
+    currentStillHalted @?= True
+    cancelledHandles @?= [Concurrency.Id 2, Concurrency.Id 1]
 
 testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do

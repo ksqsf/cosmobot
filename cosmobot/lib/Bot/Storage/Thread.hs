@@ -21,6 +21,7 @@ module Bot.Storage.Thread
   , finishActiveThread
   , finishActiveThreadCurrent
   , haltThread
+  , haltThreadForMessage
   , loadThreadRows
   )
 where
@@ -210,6 +211,33 @@ haltThread store@ThreadStore{activeThreadStore = activeRef} cancel messageKey = 
       atomicModifyIORef' activeRef \activeMap ->
         (foldl' (flip Map.delete) activeMap messageKeys, ())
       pure True
+
+haltThreadForMessage
+  :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es)
+  => ThreadStore
+  -> (Id -> Eff es Bool)
+  -> IncomingMessage
+  -> Eff es Bool
+haltThreadForMessage store cancel message =
+  haltFirst (haltCandidateKeys message)
+  where
+    haltFirst [] =
+      pure False
+    haltFirst (messageKey : rest) =
+      haltThread store cancel messageKey >>= \case
+        True ->
+          pure True
+        False ->
+          haltFirst rest
+
+haltCandidateKeys :: IncomingMessage -> [ThreadMessageKey]
+haltCandidateKeys message =
+  ordNub (catMaybes [replyKey, currentKey])
+  where
+    replyKey =
+      threadMessageKey message <$> message.replyToMessageId
+    currentKey =
+      threadMessageKey message <$> message.messageId
 
 rememberThreadTranscript :: (Prim :> es, KatipE :> es, Storage.Storage :> es) => ThreadStore -> Maybe ThreadMessageKey -> Transcript -> Eff es ()
 rememberThreadTranscript store =

@@ -115,8 +115,8 @@ haltRoute
   => ThreadStore
   -> RouteHandler es
 haltRoute threads =
-  stopOn (command "!halt" *> replyToMessage) \message parentId -> do
-    halted <- haltThread threads Concurrency.cancel (threadMessageKey message parentId)
+  stopOn (command "!halt") \message _ -> do
+    halted <- haltThreadForMessage threads Concurrency.cancel message
     if halted
       then logInfo "halted"
       else logInfo "couldn't halt active thread"
