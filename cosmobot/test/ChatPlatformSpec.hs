@@ -50,7 +50,8 @@ main =
       , testCase "Matrix referenced image without body includes media URL" testMatrixReferencedImageWithoutBodyIncludesMediaUrl
       , testCase "Matrix encrypted image bytes decrypt and verify ciphertext hash" testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
-      , testCase "Matrix edit event is ignored" testMatrixEditEventIsIgnored
+      , testCase "Matrix edit event converts to incoming message" testMatrixEditEventConvertsToIncomingMessage
+      , testCase "Matrix incomplete stream event is ignored" testMatrixIncompleteStreamEventIsIgnored
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
       , testCase "Matrix bot mention uses mentions field only" testMatrixBotMentionUsesMentionsFieldOnly
       , testCase "Matrix Markdown renders custom HTML" testMatrixMarkdownRendersCustomHtml
@@ -390,11 +391,17 @@ testMatrixReplyRelationConvertsToReplyMessageId = do
   let incoming = Matrix.eventToIncomingMessage matrixReplyRoomEvent
   ((.replyToMessageId) <$> incoming) @?= Just (Just (textMessageId "$parent:example.org"))
 
-testMatrixEditEventIsIgnored :: IO ()
-testMatrixEditEventIsIgnored =
+testMatrixEditEventConvertsToIncomingMessage :: IO ()
+testMatrixEditEventConvertsToIncomingMessage = do
+  let incoming = Matrix.eventToIncomingMessage matrixEditRoomEvent
+  ((.messageId) <$> incoming) @?= Just (Just (textMessageId "$event:example.org"))
+  ((.text) <$> incoming) @?= Just "hello"
+
+testMatrixIncompleteStreamEventIsIgnored :: IO ()
+testMatrixIncompleteStreamEventIsIgnored =
   assertBool
-    "Matrix edit events should not trigger handlers"
-    (isNothing (Matrix.eventToIncomingMessage matrixEditRoomEvent))
+    "Matrix stream events should not trigger handlers before completion"
+    (isNothing (Matrix.eventToIncomingMessage matrixIncompleteStreamRoomEvent))
 
 testMatrixSuperuserIsMarkedInDigest :: IO ()
 testMatrixSuperuserIsMarkedInDigest = do
@@ -716,6 +723,22 @@ matrixEditRoomEvent =
                 [ "m.relates_to" Aeson..= Aeson.object
                     [ "rel_type" Aeson..= ("m.replace" :: Text)
                     , "event_id" Aeson..= ("$event:example.org" :: Text)
+                    ]
+                ]
+            ]
+        }
+    }
+
+matrixIncompleteStreamRoomEvent :: Matrix.RoomEvent
+matrixIncompleteStreamRoomEvent =
+  matrixRoomEvent
+    { Matrix.event = matrixRoomEvent.event
+        { Matrix.raw = Aeson.object
+            [ "content" Aeson..= Aeson.object
+                [ "body" Aeson..= ("streaming" :: Text)
+                , "msgtype" Aeson..= ("m.text" :: Text)
+                , "com.pfeiwu.ai.stream" Aeson..= Aeson.object
+                    [ "complete" Aeson..= False
                     ]
                 ]
             ]

@@ -123,7 +123,8 @@ instance Driver.ChatDriver (AgentMockChatDriver es0) where
   sendReplyMessage driver = driver.agentReply
   replyAudio driver = driver.agentReplyAudio
   uploadFile driver = driver.agentUploadFile
-  editMessage driver = driver.agentEditMessage
+  editMessage driver message messageId body =
+    driver.agentEditMessage message messageId body
   messageOutPolicy driver = driver.agentMessageOutPolicy
   getMessageContent driver = driver.agentFetchMessage
   getUserAvatar driver = driver.agentUserAvatar

@@ -120,8 +120,8 @@ instance Driver.ChatDriver TelegramDriver where
   uploadFile =
     uploadFileTelegram
 
-  editMessage =
-    editMessageTelegram
+  editMessage driver message messageId body =
+    editMessageTelegram driver message messageId body
 
   deleteMessage =
     deleteMessageForTelegram

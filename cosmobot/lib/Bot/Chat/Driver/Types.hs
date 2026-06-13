@@ -39,6 +39,10 @@ class ChatDriver driver where
   editMessage _ _ _ _ =
     pure False
 
+  completeMessageEdit :: ChatDriverEffects driver es => driver -> IncomingMessage -> MessageId -> Eff es Bool
+  completeMessageEdit _ _ _ =
+    pure True
+
   deleteMessage :: ChatDriverEffects driver es => driver -> IncomingMessage -> MessageId -> Eff es Bool
   deleteMessage _ _ _ =
     pure False

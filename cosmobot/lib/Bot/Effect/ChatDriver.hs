@@ -14,6 +14,7 @@ module Bot.Effect.ChatDriver
   , replyAudio
   , uploadFile
   , editMessage
+  , completeMessageEdit
   , deleteMessage
   , messageOutPolicy
   , getMessageContent
@@ -59,6 +60,10 @@ data ChatDriver :: Effect where
     :: IncomingMessage
     -> MessageId
     -> Text
+    -> ChatDriver m Bool
+  CompleteMessageEdit
+    :: IncomingMessage
+    -> MessageId
     -> ChatDriver m Bool
   DeleteMessage
     :: IncomingMessage
@@ -125,6 +130,11 @@ uploadFile message path =
 editMessage :: ChatDriver :> es => IncomingMessage -> MessageId -> Text -> Eff es Bool
 editMessage message messageId body =
   send (EditMessage message messageId body)
+
+-- | Mark an editable streaming message complete without changing its content.
+completeMessageEdit :: ChatDriver :> es => IncomingMessage -> MessageId -> Eff es Bool
+completeMessageEdit message messageId =
+  send (CompleteMessageEdit message messageId)
 
 -- | Delete or recall a previously sent message when the platform supports it.
 deleteMessage :: ChatDriver :> es => IncomingMessage -> MessageId -> Eff es Bool
@@ -200,6 +210,8 @@ chatDriverEffectHandler driver _ = \case
     Driver.uploadFile driver message path
   EditMessage message messageId body ->
     Driver.editMessage driver message messageId body
+  CompleteMessageEdit message messageId ->
+    Driver.completeMessageEdit driver message messageId
   DeleteMessage message messageId ->
     Driver.deleteMessage driver message messageId
   MessageOutPolicy message ->

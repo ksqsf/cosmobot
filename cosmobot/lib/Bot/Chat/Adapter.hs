@@ -173,6 +173,7 @@ finishEditableReply message messageLimit state = do
       pure stateWithMessage
     Just messageId ->
       editReplyIfChanged message stateWithMessage messageId editableText
+        >>= completeEditableReply message messageId
   if Text.null overflow
     then pure (stateAfterEdit, sentFirst)
     else do
@@ -220,6 +221,16 @@ editReplyIfChanged message state messageId body
   | otherwise = do
       edited <- ChatDriver.editMessage message messageId body
       pure if edited then state{lastEditedBody = body} else state
+
+completeEditableReply
+  :: ChatDriver.ChatDriver :> es
+  => IncomingMessage
+  -> MessageId
+  -> MessageOutState
+  -> Eff es MessageOutState
+completeEditableReply message messageId state = do
+  _ <- ChatDriver.completeMessageEdit message messageId
+  pure state
 
 editableBody :: Int -> Text -> Text
 editableBody messageLimit =

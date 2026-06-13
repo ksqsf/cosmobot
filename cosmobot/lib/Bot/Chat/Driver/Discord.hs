@@ -116,8 +116,8 @@ instance Driver.ChatDriver DiscordDriver where
   uploadFile =
     uploadFileDiscord
 
-  editMessage =
-    editMessageDiscord
+  editMessage driver message messageId body =
+    editMessageDiscord driver message messageId body
 
   deleteMessage =
     deleteMessageDiscord

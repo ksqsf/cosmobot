@@ -134,6 +134,7 @@ data MatrixDriver = MatrixDriver
   { config :: !Config
   , auth :: !MatrixAuth
   , eventIds :: !(IORef.IORef (Map MessageId MatrixEventId))
+  , streamTextMessages :: !(IORef.IORef (Map MatrixEventId MatrixEditMessageRequest))
   , directRoomIds :: !(IORef.IORef (Set MatrixRoomId))
   , joinedMemberCounts :: !(IORef.IORef (Map MatrixRoomId Int))
   }
@@ -144,6 +145,7 @@ newMatrixDriver
   -> Eff es MatrixDriver
 newMatrixDriver cfg = do
   eventIds <- IORef.newIORef Map.empty
+  streamTextMessages <- IORef.newIORef Map.empty
   directRoomIdsRef <- IORef.newIORef (Set.fromList (matrixRoomId <$> cfg.directRooms))
   joinedMemberCountsRef <- IORef.newIORef Map.empty
   authState <- IORef.newIORef (initialMatrixAuthState cfg)
@@ -153,6 +155,7 @@ newMatrixDriver cfg = do
     { config = cfg
     , auth
     , eventIds
+    , streamTextMessages
     , directRoomIds = directRoomIdsRef
     , joinedMemberCounts = joinedMemberCountsRef
     }
@@ -175,6 +178,9 @@ instance Driver.ChatDriver MatrixDriver where
 
   editMessage =
     editMessageMatrix
+
+  completeMessageEdit =
+    completeMessageEditMatrix
 
   deleteMessage =
     deleteMessageMatrix
@@ -265,14 +271,19 @@ joinedMemberCount driver roomId = do
 
 sendText :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Either Text SendMessageResponse)
 sendText driver roomId replyToEventId body =
-  sendTextWithMentions driver roomId replyToEventId body []
+  sendTextWithMentionsStreamComplete driver roomId replyToEventId body [] False
 
 sendTextWithMentions :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es (Either Text SendMessageResponse)
-sendTextWithMentions driver roomId replyToEventId body mentionUserIds = do
+sendTextWithMentions driver roomId replyToEventId body mentionUserIds =
+  sendTextWithMentionsStreamComplete driver roomId replyToEventId body mentionUserIds True
+
+sendTextWithMentionsStreamComplete :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Bool -> Eff es (Either Text SendMessageResponse)
+sendTextWithMentionsStreamComplete driver roomId replyToEventId body mentionUserIds complete = do
   let mentions = matrixOutgoingMentionUserIds body mentionUserIds
   mentionNames <- fetchMatrixMentionNames driver roomId mentions
-  response <- eitherCall "send m.room.message" driver (MatrixSendMessage roomId replyToEventId body mentions mentionNames)
+  response <- eitherCall "send m.room.message" driver (MatrixSendMessage roomId replyToEventId body mentions mentionNames complete)
   traverse_ (rememberMatrixEvent driver.eventIds) response
+  traverse_ (\sent -> rememberInitialStreamTextMessage driver.streamTextMessages sent.eventId body mentions mentionNames complete) response
   pure response
 
 uploadMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> FilePath -> Text -> Text -> Eff es MatrixUploadResponse
@@ -289,9 +300,27 @@ editText :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :>
 editText driver roomId eventId body = do
   let mentions = matrixOutgoingMentionUserIds body []
   mentionNames <- fetchMatrixMentionNames driver roomId mentions
-  response <- eitherCall "edit m.room.message" driver (MatrixEditMessage roomId eventId body mentions mentionNames)
+  let request = matrixEditMessageRequest eventId body mentions mentionNames False
+  response <- sendMatrixTextEdit driver roomId request
   traverse_ (rememberMatrixEvent driver.eventIds) response
+  traverse_ (const (rememberStreamTextMessage driver.streamTextMessages eventId request)) response
   pure response
+
+matrixEditMessageRequest :: MatrixEventId -> Text -> [Text] -> Map Text Text -> Bool -> MatrixEditMessageRequest
+matrixEditMessageRequest eventId body mentions mentionNames complete =
+  MatrixEditMessageRequest
+    { body = nonEmptyMatrixBody displayBody
+    , formattedBody = formatMatrixMarkdownWithMentionNames mentionNames body
+    , mentions = MatrixMentions mentions
+    , replacesEventId = eventId
+    , streamMetadata = MatrixStreamMetadata complete
+    }
+  where
+    displayBody = matrixMentionDisplayBody mentionNames body
+
+sendMatrixTextEdit :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> MatrixEditMessageRequest -> Eff es (Either Text SendMessageResponse)
+sendMatrixTextEdit driver roomId request =
+  eitherCall "edit m.room.message" driver (MatrixEditMessage roomId request)
 
 deleteEvent :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> MessageId -> Maybe MatrixEventId -> Eff es Bool
 deleteEvent driver roomId messageId knownEventId = do
@@ -333,6 +362,22 @@ typing driver roomId timeoutMs =
 rememberMatrixEvent :: Prim :> es => IORef.IORef (Map MessageId MatrixEventId) -> SendMessageResponse -> Eff es ()
 rememberMatrixEvent eventIds response =
   IORef.modifyIORef' eventIds (Map.insert (matrixEventMessageId response.eventId) response.eventId)
+
+rememberStreamTextMessage :: Prim :> es => IORef.IORef (Map MatrixEventId MatrixEditMessageRequest) -> MatrixEventId -> MatrixEditMessageRequest -> Eff es ()
+rememberStreamTextMessage streamTextMessages eventId request =
+  IORef.modifyIORef' streamTextMessages (Map.insert eventId request)
+
+rememberInitialStreamTextMessage :: Prim :> es => IORef.IORef (Map MatrixEventId MatrixEditMessageRequest) -> MatrixEventId -> Text -> [Text] -> Map Text Text -> Bool -> Eff es ()
+rememberInitialStreamTextMessage streamTextMessages eventId body mentions mentionNames complete
+  | complete =
+      pure ()
+  | otherwise =
+      rememberStreamTextMessage streamTextMessages eventId (matrixEditMessageRequest eventId body mentions mentionNames False)
+
+popStreamTextMessage :: Prim :> es => IORef.IORef (Map MatrixEventId MatrixEditMessageRequest) -> MatrixEventId -> Eff es (Maybe MatrixEditMessageRequest)
+popStreamTextMessage streamTextMessages eventId =
+  IORef.atomicModifyIORef' streamTextMessages \messages ->
+    (Map.delete eventId messages, Map.lookup eventId messages)
 
 rememberMatrixRoomState
   :: Prim :> es
@@ -416,6 +461,7 @@ data MatrixSendMessage = MatrixSendMessage
   , sendMessageBody :: !Text
   , sendMessageMentions :: ![Text]
   , sendMessageMentionNames :: !(Map Text Text)
+  , sendMessageStreamComplete :: !Bool
   }
 
 data MatrixUploadMedia = MatrixUploadMedia
@@ -432,10 +478,12 @@ data MatrixSendFile = MatrixSendFile
 
 data MatrixEditMessage = MatrixEditMessage
   { editMessageRoomId :: !MatrixRoomId
-  , editMessageEventId :: !MatrixEventId
-  , editMessageBody :: !Text
-  , editMessageMentions :: ![Text]
-  , editMessageMentionNames :: !(Map Text Text)
+  , editMessageRequest :: !MatrixEditMessageRequest
+  }
+
+data MatrixCompleteStreamMessage = MatrixCompleteStreamMessage
+  { completeStreamMessageRoomId :: !MatrixRoomId
+  , completeStreamMessageRequest :: !MatrixEditMessageRequest
   }
 
 data MatrixRedactEvent = MatrixRedactEvent
@@ -499,7 +547,7 @@ instance MatrixAPI MatrixJoinedMembers where
 instance MatrixAPI MatrixSendMessage where
   type MatrixResponse MatrixSendMessage = SendMessageResponse
 
-  call driver MatrixSendMessage{sendMessageRoomId, sendMessageReplyTo, sendMessageBody, sendMessageMentions, sendMessageMentionNames} = do
+  call driver MatrixSendMessage{sendMessageRoomId, sendMessageReplyTo, sendMessageBody, sendMessageMentions, sendMessageMentionNames, sendMessageStreamComplete} = do
     txnId <- liftIO (show <$> getMonotonicTimeNSec)
     let displayBody = matrixMentionDisplayBody sendMessageMentionNames sendMessageBody
         request = SendMessageRequest
@@ -508,6 +556,7 @@ instance MatrixAPI MatrixSendMessage where
           , formattedBody = formatMatrixMarkdownWithMentionNames sendMessageMentionNames sendMessageBody
           , replyRelation = sendMessageReplyTo
           , mentions = MatrixMentions sendMessageMentions
+          , streamMetadata = MatrixStreamMetadata sendMessageStreamComplete
           }
     matrixJsonCall driver "send m.room.message" "send m.room.message" matrixApiOptions
       PUT
@@ -532,6 +581,7 @@ instance MatrixAPI MatrixSendFile where
         request = MatrixFileMessageRequest
           { message = fileMessage
           , replyRelation = sendFileReplyTo
+          , streamMetadata = MatrixStreamMetadata True
           }
     matrixJsonCall driver [i|send #{mediaMsgtype}|] [i|send #{mediaMsgtype}|] matrixApiOptions
       PUT
@@ -541,19 +591,22 @@ instance MatrixAPI MatrixSendFile where
 instance MatrixAPI MatrixEditMessage where
   type MatrixResponse MatrixEditMessage = SendMessageResponse
 
-  call driver MatrixEditMessage{editMessageRoomId, editMessageEventId, editMessageBody, editMessageMentions, editMessageMentionNames} = do
+  call driver MatrixEditMessage{editMessageRoomId, editMessageRequest} = do
     txnId <- liftIO (show <$> getMonotonicTimeNSec)
-    let displayBody = matrixMentionDisplayBody editMessageMentionNames editMessageBody
-        request = MatrixEditMessageRequest
-          { body = nonEmptyMatrixBody displayBody
-          , formattedBody = formatMatrixMarkdownWithMentionNames editMessageMentionNames editMessageBody
-          , mentions = MatrixMentions editMessageMentions
-          , replacesEventId = editMessageEventId
-          }
     matrixJsonCall driver "edit m.room.message" "edit m.room.message" matrixApiOptions
       PUT
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText editMessageRoomId /: "send" /: "m.room.message" /: txnId)
-      (ReqBodyJson request)
+      (ReqBodyJson editMessageRequest)
+
+instance MatrixAPI MatrixCompleteStreamMessage where
+  type MatrixResponse MatrixCompleteStreamMessage = SendMessageResponse
+
+  call driver MatrixCompleteStreamMessage{completeStreamMessageRoomId, completeStreamMessageRequest} = do
+    txnId <- liftIO (show <$> getMonotonicTimeNSec)
+    matrixJsonCall driver "complete stream m.room.message" "complete stream m.room.message" matrixApiOptions
+      PUT
+      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText completeStreamMessageRoomId /: "send" /: "m.room.message" /: txnId)
+      (ReqBodyJson completeStreamMessageRequest)
 
 instance MatrixAPI MatrixRedactEvent where
   type MatrixResponse MatrixRedactEvent = Aeson.Value
@@ -1903,11 +1956,46 @@ editMessageMatrix
 editMessageMatrix driver message messageId body =
   case viaNonEmpty head message.chatAliases of
     Just roomId -> do
-      response <- editText driver (matrixRoomId roomId) (matrixEventId (messageIdText messageId)) body
-      logMatrixSendErrors [response]
-      pure (either (const False) (const True) response)
+      case matrixEditableEditText body of
+        Nothing ->
+          pure True
+        Just text -> do
+          response <- editText driver (matrixRoomId roomId) (matrixEventId (messageIdText messageId)) text
+          logMatrixSendErrors [response]
+          pure (either (const False) (const True) response)
     _ ->
       pure False
+
+completeMessageEditMatrix
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> MessageId
+  -> Eff es Bool
+completeMessageEditMatrix driver message messageId =
+  case viaNonEmpty head message.chatAliases of
+    Just roomId -> do
+      let eventId = matrixEventId (messageIdText messageId)
+      popStreamTextMessage driver.streamTextMessages eventId >>= \case
+        Nothing ->
+          pure True
+        Just request -> do
+          let completeRequest = completeMatrixEditMessageRequest request
+          response <- eitherCall "complete stream m.room.message" driver (MatrixCompleteStreamMessage (matrixRoomId roomId) completeRequest)
+          logMatrixSendErrors [response]
+          pure (either (const False) (const True) response)
+    _ ->
+      pure False
+
+matrixEditableEditText :: Text -> Maybe Text
+matrixEditableEditText body
+  | Text.null (Text.strip text) && not (null imageRefs) =
+      Nothing
+  | otherwise =
+      Just text
+  where
+    text = Chat.renderReplyBody body
+    imageRefs = Chat.replyImageUrls body
 
 deleteMessageMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
@@ -1939,7 +2027,7 @@ eventToIncomingMessageWith :: Config -> RoomEvent -> Maybe IncomingMessage
 eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event} = do
   guard (event.type_ == "m.room.message")
   guard (not (isOwnEvent cfg event))
-  guard (not (isEditEvent event))
+  guard (not (matrixStreamIncomplete event.raw))
   body <- event.content.body
   guard (not (Text.null (Text.strip body)))
   pure IncomingMessage
@@ -1967,6 +2055,8 @@ matrixEventIgnoreReason cfg RoomEvent{roomId, event}
       [i|own event; #{context}|]
   | isEditEvent event =
       [i|edit event; #{context}|]
+  | matrixStreamIncomplete event.raw =
+      [i|incomplete stream event; #{context}|]
   | isNothing event.content.body =
       [i|missing content.body; #{context}|]
   | Text.null (Text.strip (fromMaybe "" event.content.body)) =
@@ -2023,6 +2113,19 @@ isOwnEvent cfg event =
 isEditEvent :: Event -> Bool
 isEditEvent event =
   matrixRelationType event.raw == Just "m.replace"
+
+matrixStreamIncomplete :: Aeson.Value -> Bool
+matrixStreamIncomplete =
+  fromMaybe False . Aeson.parseMaybe parse
+  where
+    parse =
+      Aeson.withObject "Matrix event" \eventObject -> do
+        content <- eventObject Aeson..:? "content" Aeson..!= Aeson.Object mempty
+        Aeson.withObject "Matrix event content" parseContent content
+
+    parseContent contentObject = do
+      metadata <- contentObject Aeson..:? "com.pfeiwu.ai.stream" Aeson..!= MatrixStreamMetadata True
+      pure (not metadata.streamComplete)
 
 matrixRelationType :: Aeson.Value -> Maybe Text
 matrixRelationType =
@@ -2419,18 +2522,37 @@ data SendMessageRequest = SendMessageRequest
   , formattedBody :: !(Maybe Text)
   , replyRelation :: !(Maybe MatrixReplyTo)
   , mentions :: !MatrixMentions
+  , streamMetadata :: !MatrixStreamMetadata
   }
   deriving (Show, Generic)
 
 instance Aeson.ToJSON SendMessageRequest where
-  toJSON SendMessageRequest{msgtype, body, formattedBody, replyRelation, mentions} =
+  toJSON SendMessageRequest{msgtype, body, formattedBody, replyRelation, mentions, streamMetadata} =
     Aeson.object $
       [ "msgtype" Aeson..= msgtype
       , "body" Aeson..= body
       , "m.mentions" Aeson..= mentions
+      , matrixStreamMetadataPair streamMetadata
       ]
         <> matrixFormattedBodyFields formattedBody
         <> maybe [] (\(MatrixReplyTo eventId) -> ["m.relates_to" Aeson..= MatrixRelatesTo (Just eventId)]) replyRelation
+
+newtype MatrixStreamMetadata = MatrixStreamMetadata
+  { streamComplete :: Bool
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON MatrixStreamMetadata where
+  parseJSON = Aeson.withObject "MatrixStreamMetadata" \o ->
+    MatrixStreamMetadata <$> o Aeson..: "complete"
+
+instance Aeson.ToJSON MatrixStreamMetadata where
+  toJSON MatrixStreamMetadata{streamComplete} =
+    Aeson.object ["complete" Aeson..= streamComplete]
+
+matrixStreamMetadataPair :: MatrixStreamMetadata -> Aeson.Pair
+matrixStreamMetadataPair metadata =
+  "com.pfeiwu.ai.stream" Aeson..= metadata
 
 newtype MatrixUploadResponse = MatrixUploadResponse
   { contentUri :: Text
@@ -2457,11 +2579,12 @@ data MatrixFileMessage = MatrixFileMessage
 data MatrixFileMessageRequest = MatrixFileMessageRequest
   { message :: !MatrixFileMessage
   , replyRelation :: !(Maybe MatrixReplyTo)
+  , streamMetadata :: !MatrixStreamMetadata
   }
   deriving (Show, Generic)
 
 instance Aeson.ToJSON MatrixFileMessageRequest where
-  toJSON MatrixFileMessageRequest{message, replyRelation} =
+  toJSON MatrixFileMessageRequest{message, replyRelation, streamMetadata} =
     case Aeson.toJSON message of
       Aeson.Object fields ->
         Aeson.Object (fields <> AesonKeyMap.fromList relationFields)
@@ -2469,18 +2592,30 @@ instance Aeson.ToJSON MatrixFileMessageRequest where
         value
     where
       relationFields =
-        maybe [] (\(MatrixReplyTo eventId) -> [("m.relates_to", Aeson.toJSON (MatrixRelatesTo (Just eventId)))]) replyRelation
+        [("com.pfeiwu.ai.stream", Aeson.toJSON streamMetadata)]
+          <> maybe [] (\(MatrixReplyTo eventId) -> [("m.relates_to", Aeson.toJSON (MatrixRelatesTo (Just eventId)))]) replyRelation
 
 data MatrixEditMessageRequest = MatrixEditMessageRequest
   { body :: !Text
   , formattedBody :: !(Maybe Text)
   , mentions :: !MatrixMentions
   , replacesEventId :: !MatrixEventId
+  , streamMetadata :: !MatrixStreamMetadata
   }
   deriving (Show, Generic)
 
+completeMatrixEditMessageRequest :: MatrixEditMessageRequest -> MatrixEditMessageRequest
+completeMatrixEditMessageRequest request =
+  MatrixEditMessageRequest
+    { body = request.body
+    , formattedBody = request.formattedBody
+    , mentions = request.mentions
+    , replacesEventId = request.replacesEventId
+    , streamMetadata = MatrixStreamMetadata True
+    }
+
 instance Aeson.ToJSON MatrixEditMessageRequest where
-  toJSON MatrixEditMessageRequest{body, formattedBody, mentions, replacesEventId} =
+  toJSON MatrixEditMessageRequest{body, formattedBody, mentions, replacesEventId, streamMetadata} =
     Aeson.object $
       [ "msgtype" Aeson..= ("m.text" :: Text)
       , "body" Aeson..= ("* " <> body)
@@ -2488,10 +2623,12 @@ instance Aeson.ToJSON MatrixEditMessageRequest where
           ( [ "msgtype" Aeson..= ("m.text" :: Text)
             , "body" Aeson..= body
             , "m.mentions" Aeson..= mentions
+            , matrixStreamMetadataPair streamMetadata
             ]
               <> matrixFormattedBodyFields formattedBody
           )
       , "m.mentions" Aeson..= mentions
+      , matrixStreamMetadataPair streamMetadata
       , "m.relates_to" Aeson..= Aeson.object
           [ "rel_type" Aeson..= ("m.replace" :: Text)
           , "event_id" Aeson..= matrixEventIdText replacesEventId
