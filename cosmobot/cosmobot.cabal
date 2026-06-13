@@ -148,6 +148,8 @@ common test-deps
                     , text
                     , time
                     , toml-parser
+                    , typed-process-effectful
+                    , unix
                     , wai
                     , warp
                     , websockets

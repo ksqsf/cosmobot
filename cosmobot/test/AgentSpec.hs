@@ -7,6 +7,7 @@ import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
 import qualified Bot.Agent.Types as AgentTypes
+import Bot.Agent.Tools.Shell (runBashSafe)
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Chat.Driver.Types (ChatDriverEffects)
@@ -61,6 +62,8 @@ import Data.Unique
 import Effectful.FileSystem (FileSystem, runFileSystem)
 import qualified Effectful.FileSystem as FS
 import Effectful.Process (Process, runProcess)
+import qualified Effectful.Concurrent.Async as Async
+import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout (Timeout, runTimeout)
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Client.Internal as HTTPInternal
@@ -70,6 +73,8 @@ import qualified Network.HTTP.Types.Version as HTTPVersion
 import qualified Streaming.Prelude as S
 import System.Directory
 import System.FilePath
+import System.IO.Error (catchIOError)
+import System.Posix.Signals (nullSignal, signalProcess)
 import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit
 
@@ -238,6 +243,7 @@ main =
       , testCase "memory tool enforces non-superuser length limit" testMemoryToolEnforcesLengthLimit
       , testCase "run_bash captures stdout and stderr" testRunBashCapturesStdoutAndStderr
       , testCase "run_bash kills timed out process" testRunBashKillsTimedOutProcess
+      , testCase "run_bash kills process group when cancelled" testRunBashKillsProcessGroupWhenCancelled
       , testCase "LLM response timeout summary is concise" testLLMResponseTimeoutSummaryIsConcise
       , testCase "LLM exception summary describes LLM errors" testLLMExceptionSummaryDescribesLLMErrors
       , testCase "LLM status error summary is concise" testLLMStatusErrorSummaryIsConcise
@@ -1851,6 +1857,27 @@ testRunBashKillsTimedOutProcess = do
   let output = Text.unlines (toolOutputs transcript)
   assertBool ("timeout is reported in: " <> Text.unpack output) ("Script timed out after 1 seconds and was killed." `Text.isInfixOf` output)
   assertBool ("post-timeout output is not included in: " <> Text.unpack output) (not ("late" `Text.isInfixOf` output))
+
+testRunBashKillsProcessGroupWhenCancelled :: IO ()
+testRunBashKillsProcessGroupWhenCancelled = withTempDir "run-bash-cancel" \dir -> do
+  let pidPath = dir </> "child.pid"
+      script = [i|sleep 60 & echo $! > #{pidPath}; wait|]
+  childPid <- runEff $ runFailIO $ runConcurrent $ runTimeout $ runProcess $ TypedProcess.runTypedProcess do
+    bashThread <- Async.async (runBashSafe 30 script)
+    waitUntil (liftIO (doesFileExist pidPath))
+    pidText <- liftIO (TextIO.readFile pidPath)
+    pid <- maybe (liftIO (assertFailure [i|invalid child pid: #{pidText}|])) pure (readMaybe (Text.unpack pidText))
+    Async.cancel bashThread
+    void (Async.waitCatch bashThread)
+    waitUntil (liftIO (not <$> isProcessAlive pid))
+    pure pid
+  alive <- isProcessAlive childPid
+  assertBool [i|child process #{childPid} should be killed when run_bash is cancelled|] (not alive)
+
+isProcessAlive :: Integer -> IO Bool
+isProcessAlive pid =
+  (signalProcess nullSignal (fromInteger pid) $> True)
+    `catchIOError` \_ -> pure False
 
 testLLMResponseTimeoutSummaryIsConcise :: IO ()
 testLLMResponseTimeoutSummaryIsConcise = do

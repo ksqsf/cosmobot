@@ -6,6 +6,7 @@ Stability   : experimental
 
 module Bot.Agent.Tools.Shell
   ( runBashTool
+  , runBashSafe
   )
 where
 
@@ -17,8 +18,6 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
-import System.Posix.Signals (signalProcess, signalProcessGroup, sigKILL)
-import qualified Effectful.Process as Process
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout
 
@@ -49,10 +48,13 @@ runBashSafe timeoutSeconds script = do
         TypedProcess.setStderr TypedProcess.byteStringOutput $
         TypedProcess.shell script
   process <- TypedProcess.startProcess processConfig
+  let killProcess =
+        ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
   outcome <- timeout (effectiveTimeout * 1_000_000) (TypedProcess.waitExitCode process)
+    `onException` killProcess
   case outcome of
     Nothing -> do
-      killProcessTree (TypedProcess.unsafeProcessHandle process)
+      killProcess
       _ <- timeout processExitGraceMicroseconds (TypedProcess.waitExitCode process)
       stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
       stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
@@ -65,21 +67,6 @@ runBashSafe timeoutSeconds script = do
       stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
       stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
       pure (formatBashResult exitCode stdoutText stderrText)
-
-killProcessTree :: (IOE :> es, Process.Process :> es) => Process.ProcessHandle -> Eff es ()
-killProcessTree ph = do
-  mPid <- Process.getPid ph
-  traverse_ killPid mPid
-  where
-    killPid pid =
-      ignoreIO $
-        (liftIO $ signalProcessGroup sigKILL (fromIntegral pid))
-          `catchSync` \_ ->
-            (liftIO $ signalProcess sigKILL pid)
-
-ignoreIO :: IOE :> es => Eff es () -> Eff es ()
-ignoreIO action =
-  action `catchSync` \_ -> pure ()
 
 formatBashResult :: Show exitCode => exitCode -> Text -> Text -> Text
 formatBashResult exitCode stdoutText stderrText =

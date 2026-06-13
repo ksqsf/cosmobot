@@ -11,18 +11,19 @@ where
 
 import Bot.Prelude
 import qualified Bot.Util.Image as Image
+import qualified Bot.Util.Process as ProcessUtil
 import qualified Data.ByteString as StrictByteString
 import qualified Data.Text as Text
 import Effectful.FileSystem (FileSystem, getTemporaryDirectory)
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.FileSystem.IO (hClose)
-import Effectful.Process (Process, readProcessWithExitCode)
+import qualified Effectful.Process.Typed as TypedProcess
 import System.Exit (ExitCode (..))
 import System.FilePath ((<.>))
 import System.IO (openBinaryTempFile)
 
 compressImageBytes
-  :: (IOE :> es, FileSystem :> es, Process :> es, Fail :> es)
+  :: (IOE :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Fail :> es)
   => Image.ImageCompressionConfig
   -> StrictByteString.ByteString
   -> Eff es (Maybe (Text, StrictByteString.ByteString))
@@ -41,7 +42,7 @@ targetImageFormat cfg =
     Just "webp" -> Just "webp"
     _ -> Nothing
 
-convertImageBytes :: (IOE :> es, FileSystem :> es, Process :> es, Fail :> es) => Text -> Maybe Int -> StrictByteString.ByteString -> Eff es (Maybe (Text, StrictByteString.ByteString))
+convertImageBytes :: (IOE :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Fail :> es) => Text -> Maybe Int -> StrictByteString.ByteString -> Eff es (Maybe (Text, StrictByteString.ByteString))
 convertImageBytes format quality bytes = do
   output <- convertImageBytesToFile format quality bytes
   forM output \outputPath -> do
@@ -49,7 +50,7 @@ convertImageBytes format quality bytes = do
     Image.removeFilesIfExists [outputPath]
     pure (mimeForImageFormat format, outputBytes)
 
-convertImageBytesToFile :: (IOE :> es, FileSystem :> es, Process :> es, Fail :> es) => Text -> Maybe Int -> StrictByteString.ByteString -> Eff es (Maybe FilePath)
+convertImageBytesToFile :: (IOE :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Fail :> es) => Text -> Maybe Int -> StrictByteString.ByteString -> Eff es (Maybe FilePath)
 convertImageBytesToFile format quality bytes = do
   dir <- getTemporaryDirectory
   (inputPath, inputHandle) <- liftIO $ openBinaryTempFile dir ("cosmobot-image-input" <.> "png")
@@ -64,7 +65,7 @@ convertImageBytesToFile format quality bytes = do
         ]
           <> maybe [] (\value -> ["-quality", show (clampImageQuality value)]) quality
           <> [outputPath]
-  (code, _out, _err) <- readProcessWithExitCode "magick" args ""
+  (code, _out, _err) <- ProcessUtil.readProcessGroupWithExitCode "magick" args
   Image.removeFilesIfExists [inputPath]
   case code of
     ExitSuccess ->

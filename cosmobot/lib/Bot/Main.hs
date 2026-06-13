@@ -47,6 +47,7 @@ import qualified Effectful.Concurrent.MVar as MVar
 import qualified System.Posix.Signals as Signals
 import Effectful.Timeout
 import Effectful.Process
+import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.FileSystem
 
 -- | Start the bot using @config.toml@ from the current working directory.
@@ -63,6 +64,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
         runConcurrent
           . runTimeout
           . runFileSystem
+          . TypedProcess.runTypedProcess
           . runProcess
           . runConcurrent
       runInfrastructure =
