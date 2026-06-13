@@ -13,22 +13,18 @@ where
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
+import qualified Bot.Effect.Media as Media
 import Bot.Core.Route
 import Bot.Core.Message
 import Bot.Handler.Saucenao.Config
-import Bot.Util.Multipart
 import Bot.Prelude
 import qualified Bot.Core.ReplyBody as ReplyBody
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
-import qualified Data.ByteString as ByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Network.HTTP.Req
-import Network.HTTP.Client (RequestBody(RequestBodyBS))
-import qualified Network.HTTP.Client.MultipartFormData as Multipart
-import qualified Text.URI as URI
-import System.IO.Error (ioError, userError)
+import System.IO.Error (userError)
 
 saucenaoCommand :: Text
 saucenaoCommand =
@@ -36,7 +32,7 @@ saucenaoCommand =
 
 -- | Routes for SauceNAO reverse image search commands.
 saucenaoHandlers
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Media.Media :> es, KatipE :> es, IOE :> es)
   => SaucenaoConfig
   -> [RouteHandler es]
 saucenaoHandlers saucenaoCfg =
@@ -44,7 +40,7 @@ saucenaoHandlers saucenaoCfg =
   ]
 
 saucenaoRoute
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Media.Media :> es, KatipE :> es, IOE :> es)
   => SaucenaoConfig
   -> RouteHandler es
 saucenaoRoute saucenaoCfg =
@@ -53,7 +49,7 @@ saucenaoRoute saucenaoCfg =
     Concurrency.fire "saucenao.search" (sendSaucenaoResults saucenaoCfg message)
 
 sendSaucenaoResults
-  :: (Chat.Chat :> es, HTTP.HTTP :> es, KatipE :> es, IOE :> es)
+  :: (Chat.Chat :> es, HTTP.HTTP :> es, Media.Media :> es, KatipE :> es, IOE :> es)
   => SaucenaoConfig
   -> IncomingMessage
   -> Eff es ()
@@ -71,13 +67,13 @@ sendSaucenaoResults cfg message =
             results <- traverse (searchOne cfg) imageUrls
             let body = Text.intercalate "\n\n" (mapMaybe renderResult results)
             if Text.null body
-              then void $ Chat.replyTo message "没有找到相似度大于 90% 的结果。"
+              then void $ Chat.replyTo message "没有找到相似度大于 80% 的结果。"
               else void $ Chat.replyTo message body
   where
     handleError action =
       action `catchSync` \err -> do
         logError [i|SauceNAO search failed: #{show err :: String}|]
-        void $ Chat.replyTo message "SauceNAO 搜索失败。"
+        void $ Chat.replyTo message [i|SauceNAO 搜索失败：#{displayException err}|]
 
 fetchReferencedMessage
   :: Chat.Chat :> es
@@ -91,7 +87,7 @@ nonEmptyImageUrls referenced =
   viaNonEmpty toList referenced.imageUrls
 
 searchOne
-  :: (HTTP.HTTP :> es, IOE :> es)
+  :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es)
   => SaucenaoConfig
   -> Text
   -> Eff es (Maybe SearchResult)
@@ -108,13 +104,11 @@ data SearchResult = SearchResult
   }
   deriving (Show, Generic, Aeson.ToJSON)
 
-searchImage :: (HTTP.HTTP :> es, IOE :> es) => SaucenaoConfig -> Text -> Eff es (Maybe SearchResult)
+searchImage :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es) => SaucenaoConfig -> Text -> Eff es (Maybe SearchResult)
 searchImage cfg imageUrl = do
-  imageBytes <- downloadImage imageUrl
+  resolvedUrl <- resolveSearchImageUrl imageUrl
   value <- HTTP.runReq $
-    responseBody <$> do
-      body <- reqBodyMultipart (multipartParts cfg imageBytes)
-      req POST saucenaoUrl body jsonResponse saucenaoRequestOptions
+    responseBody <$> req GET saucenaoUrl NoReqBody jsonResponse (saucenaoSearchOptions cfg resolvedUrl)
   case join (AesonTypes.parseMaybe saucenaoApiError value) of
     Just err -> throwIO (userError (Text.unpack err))
     Nothing  -> pure ()
@@ -124,48 +118,34 @@ saucenaoUrl :: Url 'Https
 saucenaoUrl =
   https "saucenao.com" /: "search.php"
 
-downloadImage :: (HTTP.HTTP :> es, IOE :> es) => Text -> Eff es ByteString.ByteString
-downloadImage imageUrl
-  | Just path <- Text.stripPrefix "file://" imageUrl =
-      liftIO $ ByteString.readFile (Text.unpack path)
-  | otherwise = do
-      uri <- URI.mkURI imageUrl
-      case useHttpsURI uri of
-        Nothing ->
-          liftIO $ ioError (userError [i|Unsupported SauceNAO image URL: #{imageUrl}|])
-        Just (url, options) -> HTTP.runReq $
-          responseBody <$> req GET url NoReqBody bsResponse (options <> saucenaoRequestOptions)
+saucenaoSearchOptions :: SaucenaoConfig -> Text -> Option 'Https
+saucenaoSearchOptions cfg imageUrl =
+  saucenaoRequestOptions
+    <> "output_type" =: (2 :: Int)
+    <> "numres" =: (1 :: Int)
+    <> "db" =: (999 :: Int)
+    <> "url" =: imageUrl
+    <> maybe mempty ("api_key" =:) cfg.apiKey
 
-multipartParts :: SaucenaoConfig -> ByteString.ByteString -> [Multipart.Part]
-multipartParts cfg imageBytes =
-  [ textPart "output_type" "2"
-  , textPart "numres" "1"
-  , textPart "db" "999"
-  , imagePart imageBytes
-  ]
-    <> maybePart "api_key" cfg.apiKey
+resolveSearchImageUrl :: Media.Media :> es => Text -> Eff es Text
+resolveSearchImageUrl imageUrl
+  | "media:" `Text.isPrefixOf` stripped = do
+      publicUrl <- Media.publicMediaRef stripped
+      if isPublicImageUrl publicUrl
+        then pure publicUrl
+        else throwIO (userError [i|SauceNAO media id has no public URL: #{imageUrl}|])
+  | isPublicImageUrl stripped =
+      pure stripped
+  | otherwise =
+      throwIO (userError [i|Unsupported SauceNAO image URL: #{imageUrl}|])
+  where
+    stripped = Text.strip imageUrl
 
-imagePart :: ByteString.ByteString -> Multipart.Part
-imagePart imageBytes =
-  Multipart.partFileRequestBody "file" (imageFilename imageBytes) (RequestBodyBS imageBytes)
-
-imageFilename :: ByteString.ByteString -> FilePath
-imageFilename imageBytes =
-  "image." <> imageExtension imageBytes
-
-imageExtension :: ByteString.ByteString -> String
-imageExtension imageBytes
-  | ByteString.pack [0x89, 0x50, 0x4e, 0x47] `ByteString.isPrefixOf` imageBytes = "png"
-  | ByteString.pack [0xff, 0xd8, 0xff] `ByteString.isPrefixOf` imageBytes = "jpg"
-  | ByteString.pack [0x47, 0x49, 0x46, 0x38] `ByteString.isPrefixOf` imageBytes = "gif"
-  | ByteString.pack [0x42, 0x4d] `ByteString.isPrefixOf` imageBytes = "bmp"
-  | isWebP imageBytes = "webp"
-  | otherwise = "jpg"
-
-isWebP :: ByteString.ByteString -> Bool
-isWebP imageBytes =
-  ByteString.pack [0x52, 0x49, 0x46, 0x46] `ByteString.isPrefixOf` imageBytes &&
-    ByteString.pack [0x57, 0x45, 0x42, 0x50] == ByteString.take 4 (ByteString.drop 8 imageBytes)
+isPublicImageUrl :: Text -> Bool
+isPublicImageUrl url =
+  "https://" `Text.isPrefixOf` stripped || "http://" `Text.isPrefixOf` stripped
+  where
+    stripped = Text.strip url
 
 saucenaoRequestOptions :: Option scheme
 saucenaoRequestOptions =
@@ -226,7 +206,7 @@ parseSimilarity text =
 
 highSimilarityResult :: SearchResult -> Maybe SearchResult
 highSimilarityResult result
-  | result.similarity > 90 = Just result
+  | result.similarity > 80 = Just result
   | otherwise              = Nothing
 
 renderResult :: Maybe SearchResult -> Maybe Text
