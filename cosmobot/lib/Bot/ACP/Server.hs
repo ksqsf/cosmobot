@@ -392,7 +392,7 @@ dispatchPrompt acpState queue request =
     Right prompt ->
       ( State.withPromptWaiter acpState prompt.sessionId (enqueuePrompt prompt) >>= \case
           State.PromptCompleted messageId -> do
-            State.unregisterPromptMessage acpState prompt.sessionId messageId
+            State.completeSessionPrompt acpState prompt.sessionId
             pure $
               ACP.successResponse (ACP.requestId request) $
                 Aeson.object
@@ -415,7 +415,7 @@ dispatchPrompt acpState queue request =
               throwIO err
   where
     enqueuePrompt prompt = do
-      userMessage <- State.enqueueUserMessage acpState $
+      userMessage <- State.enqueuePromptMessage acpState $
         Session.SessionSend
           { sessionId = prompt.sessionId
           , text = prompt.text
@@ -430,13 +430,12 @@ dispatchPrompt acpState queue request =
           throwIO AcpPromptSessionNotFound
         Right (Just IncomingMessage{messageId}) ->
           for_ messageId \userMessageId ->
-            State.registerPromptMessage acpState prompt.sessionId userMessageId *>
-              writeMessageChunkUpdates
-                queue
-                prompt.sessionId
-                "user_message_chunk"
-                userMessageId
-                (Content.messageContentBlocks prompt.text prompt.imageUrls [])
+            writeMessageChunkUpdates
+              queue
+              prompt.sessionId
+              "user_message_chunk"
+              userMessageId
+              (Content.messageContentBlocks prompt.text prompt.imageUrls [])
 
 cancelAcpThread
   :: (Concurrency.Concurrency :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)

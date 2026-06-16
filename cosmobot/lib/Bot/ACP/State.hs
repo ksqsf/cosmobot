@@ -20,12 +20,12 @@ module Bot.ACP.State
   , openSession
   , deleteSession
   , enqueueUserMessage
+  , enqueuePromptMessage
   , incomingMessages
   , sessionIdFromMessage
   , acpSessionIdText
   , PromptCompletion (..)
-  , registerPromptMessage
-  , unregisterPromptMessage
+  , completeSessionPrompt
   , cancelSessionPrompts
   , notifyPromptComplete
   , withPromptWaiter
@@ -130,6 +130,25 @@ enqueueUserMessage acpState sessionSend =
       STM.atomically (STM.writeTChan acpState.inbound message)
       pure (Right (Just message))
 
+enqueuePromptMessage
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  => AcpState
+  -> Session.SessionSend
+  -> Eff es (Either Text (Maybe IncomingMessage))
+enqueuePromptMessage acpState sessionSend =
+  Session.appendUserMessage sessionSend >>= \case
+    Left err ->
+      pure (Left err)
+    Right Nothing ->
+      pure (Right Nothing)
+    Right (Just sessionMessage) -> do
+      message <- acpIncomingMessage sessionSend sessionMessage
+      STM.atomically do
+        for_ message.messageId \messageId ->
+          registerPromptMessageSTM acpState sessionSend.sessionId messageId
+        STM.writeTChan acpState.inbound message
+      pure (Right (Just message))
+
 incomingMessages :: Concurrent :> es => AcpState -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages acpState =
   forever do
@@ -154,15 +173,10 @@ notifyPromptComplete acpState sessionId messageId =
       Just sessionWaiters ->
         traverse_ (`STM.tryPutTMVar` PromptCompleted messageId) sessionWaiters
 
-registerPromptMessage :: Concurrent :> es => AcpState -> AcpSessionId -> MessageId -> Eff es ()
-registerPromptMessage acpState sessionId messageId =
+completeSessionPrompt :: Concurrent :> es => AcpState -> AcpSessionId -> Eff es ()
+completeSessionPrompt acpState sessionId =
   STM.atomically $
-    STM.modifyTVar' acpState.activePromptMessages (Map.insertWith (<>) sessionId [messageId])
-
-unregisterPromptMessage :: Concurrent :> es => AcpState -> AcpSessionId -> MessageId -> Eff es ()
-unregisterPromptMessage acpState sessionId messageId =
-  STM.atomically $
-    STM.modifyTVar' acpState.activePromptMessages (Map.update (removeWaiter messageId) sessionId)
+    STM.modifyTVar' acpState.activePromptMessages (Map.delete sessionId)
 
 cancelSessionPrompts :: Concurrent :> es => AcpState -> AcpSessionId -> Eff es [MessageId]
 cancelSessionPrompts acpState sessionId = do
@@ -201,6 +215,10 @@ removeWaiter waiter waiters =
       Nothing
     remaining ->
       Just remaining
+
+registerPromptMessageSTM :: AcpState -> AcpSessionId -> MessageId -> STM.STM ()
+registerPromptMessageSTM acpState sessionId messageId =
+  STM.modifyTVar' acpState.activePromptMessages (Map.insertWith (<>) sessionId [messageId])
 
 broadcastClient :: Aeson.Value -> AcpClientId -> AcpClientQueue -> STM.STM (Maybe AcpClientQueue)
 broadcastClient value _clientId (AcpClientQueue queue) = do

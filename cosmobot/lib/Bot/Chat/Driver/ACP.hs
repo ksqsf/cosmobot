@@ -46,12 +46,7 @@ instance ChatDriver AcpChatDriver where
     PlatformACP
 
   sendReplyMessage driver message body =
-    storeReply driver message body >>= \case
-      Left err ->
-        pure (Left err)
-      Right messageId -> do
-        ACP.notifyPromptComplete driver.acpState (ACP.sessionIdFromMessage message) messageId
-        pure (Right messageId)
+    storeReply driver message body
 
   sendStreamingReplyMessage driver message body =
     storeReply driver message body

@@ -55,6 +55,8 @@ main =
       , testCase "session/resume close and cancel check existing sessions" testSessionExistingRequests
       , testCase "session/cancel resolves active prompt as cancelled" testSessionCancelResolvesPrompt
       , testCase "session/prompt streams text response updates" testSessionPromptStreamsTextResponse
+      , testCase "session/prompt clears completed prompt cancellation state" testSessionPromptClearsCompletedPrompt
+      , testCase "session/prompt does not complete on nonfinal reply" testSessionPromptIgnoresNonfinalReply
       , testCase "session/prompt accepts and streams image content" testSessionPromptAcceptsAndStreamsImageContent
       , testCase "websocket server authenticates and handles initialize" testWebSocketServerAuthenticatesAndHandlesInitialize
       ]
@@ -294,6 +296,118 @@ testSessionPromptStreamsTextResponse =
         , "agent_message_chunk"
         ]
 
+testSessionPromptClearsCompletedPrompt :: IO ()
+testSessionPromptClearsCompletedPrompt =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    newResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/new" $
+        Aeson.object
+          [ "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+          , "mcpServers" Aeson..= ([] :: [Aeson.Value])
+          ]
+    sessionId <- liftIO $
+      case responseField newResponse "sessionId" of
+        Nothing ->
+          assertFailure "expected sessionId"
+        Just (value :: Text) ->
+          pure value
+    responderDone <- MVar.newEmptyMVar
+    _responder <- forkIO do
+      S.head_ (ACPState.incomingMessages acpState) >>= \case
+        Nothing ->
+          throwIO (userError "expected ACP incoming message")
+        Just incoming -> do
+          let driver = ACPDriver.acpChatDriver acpState
+          Driver.sendStreamingReplyMessage driver incoming "done" >>= \case
+            Left err ->
+              throwIO (userError (Text.unpack err))
+            Right messageId -> do
+              _ <- Driver.completeMessageEdit driver incoming messageId
+              MVar.putMVar responderDone ()
+    promptResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/prompt" $
+        Aeson.object
+          [ "sessionId" Aeson..= sessionId
+          , "prompt" Aeson..=
+              [ Aeson.object
+                  [ "type" Aeson..= ("text" :: Text)
+                  , "text" Aeson..= ("say done" :: Text)
+                  ]
+              ]
+          ]
+    MVar.takeMVar responderDone
+    cancelled <- ACPState.cancelSessionPrompts acpState (Session.SessionId sessionId)
+    liftIO do
+      responseField promptResponse "stopReason" @?= Just ("end_turn" :: Text)
+      cancelled @?= []
+
+testSessionPromptIgnoresNonfinalReply :: IO ()
+testSessionPromptIgnoresNonfinalReply =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    newResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/new" $
+        Aeson.object
+          [ "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+          , "mcpServers" Aeson..= ([] :: [Aeson.Value])
+          ]
+    sessionId <- liftIO $
+      case responseField newResponse "sessionId" of
+        Nothing ->
+          assertFailure "expected sessionId"
+        Just (value :: Text) ->
+          pure value
+    promptDone <- MVar.newEmptyMVar
+    progressSent <- MVar.newEmptyMVar
+    allowComplete <- MVar.newEmptyMVar
+    _promptTask <- Concurrency.fork "acp-spec.nonfinal.prompt" do
+      response <- ACPServer.dispatchAcpRequest acpState queue $
+        acpRequest "session/prompt" $
+          Aeson.object
+            [ "sessionId" Aeson..= sessionId
+            , "prompt" Aeson..=
+                [ Aeson.object
+                    [ "type" Aeson..= ("text" :: Text)
+                    , "text" Aeson..= ("send progress then done" :: Text)
+                    ]
+                ]
+            ]
+      MVar.putMVar promptDone response
+    _responder <- forkIO do
+      S.head_ (ACPState.incomingMessages acpState) >>= \case
+        Nothing ->
+          throwIO (userError "expected ACP incoming message")
+        Just incoming -> do
+          let driver = ACPDriver.acpChatDriver acpState
+          Driver.sendReplyMessage driver incoming "progress" >>= \case
+            Left err ->
+              throwIO (userError (Text.unpack err))
+            Right _ ->
+              MVar.putMVar progressSent ()
+          MVar.takeMVar allowComplete
+          Driver.sendStreamingReplyMessage driver incoming "done" >>= \case
+            Left err ->
+              throwIO (userError (Text.unpack err))
+            Right messageId -> do
+              _ <- Driver.completeMessageEdit driver incoming messageId
+              pure ()
+    MVar.takeMVar progressSent
+    promptBeforeComplete <- MVar.tryReadMVar promptDone
+    MVar.putMVar allowComplete ()
+    promptResponse <- MVar.takeMVar promptDone
+    events <- replicateM 3 (ACPState.readClient queue)
+    liftIO do
+      promptBeforeComplete @?= Nothing
+      responseField promptResponse "stopReason" @?= Just ("end_turn" :: Text)
+      acpEventContentText events @?=
+        [ "send progress then done"
+        , "progress"
+        , "done"
+        ]
+
 testSessionPromptAcceptsAndStreamsImageContent :: IO ()
 testSessionPromptAcceptsAndStreamsImageContent =
   runAcpStorage do
@@ -319,11 +433,12 @@ testSessionPromptAcceptsAndStreamsImageContent =
         Just incoming -> do
           liftIO (incoming.imageUrls @?= ["data:image/png;base64,AAAA"])
           let driver = ACPDriver.acpChatDriver acpState
-          Driver.sendReplyMessage driver incoming
+          Driver.sendStreamingReplyMessage driver incoming
             "done\n[image] data:image/png;base64,BBBB" >>= \case
             Left err ->
               throwIO (userError (Text.unpack err))
-            Right _ ->
+            Right messageId -> do
+              _ <- Driver.completeMessageEdit driver incoming messageId
               MVar.putMVar responderDone ()
     promptResponse <- ACPServer.dispatchAcpRequest acpState queue $
       acpRequest "session/prompt" $
@@ -529,6 +644,10 @@ acpEventContentTypes events =
 acpEventImageData :: [ACPState.AcpClientEvent] -> [Text]
 acpEventImageData events =
   mapMaybe (acpEventContentField "data") events
+
+acpEventContentText :: [ACPState.AcpClientEvent] -> [Text]
+acpEventContentText events =
+  mapMaybe (acpEventContentField "text") events
 
 acpEventContentField :: Aeson.FromJSON a => Text -> ACPState.AcpClientEvent -> Maybe a
 acpEventContentField field = \case
