@@ -54,6 +54,12 @@ data PromptParams = PromptParams
   }
   deriving (Eq, Show)
 
+data ListSessionsParams = ListSessionsParams
+  { cwd :: !(Maybe Text)
+  , cursor :: !(Maybe Text)
+  }
+  deriving (Eq, Show)
+
 runAcpServer
   :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
@@ -181,6 +187,16 @@ dispatchAcpRequest acpState queue request =
       pure (ACP.successResponse (ACP.requestId request) (Aeson.object []))
     "session/new" ->
       dispatchNewSession request
+    "session/list" ->
+      dispatchListSessions request
+    "session/load" ->
+      dispatchLoadSession queue request
+    "session/resume" ->
+      dispatchExistingSession request (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+    "session/close" ->
+      dispatchExistingSession request (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+    "session/cancel" ->
+      dispatchExistingSession request (ACP.successResponse (ACP.requestId request) (Aeson.object []))
     "session/delete" ->
       dispatchDeleteSession request
     "session/prompt" ->
@@ -194,7 +210,7 @@ initializeResponse =
     [ "protocolVersion" Aeson..= (1 :: Int)
     , "agentCapabilities" Aeson..=
         Aeson.object
-          [ "loadSession" Aeson..= False
+          [ "loadSession" Aeson..= True
           , "promptCapabilities" Aeson..=
               Aeson.object
                 [ "image" Aeson..= False
@@ -204,6 +220,9 @@ initializeResponse =
           , "sessionCapabilities" Aeson..=
               Aeson.object
                 [ "delete" Aeson..= Aeson.object []
+                , "list" Aeson..= Aeson.object []
+                , "resume" Aeson..= Aeson.object []
+                , "close" Aeson..= Aeson.object []
                 ]
           ]
     , "agentInfo" Aeson..=
@@ -242,6 +261,58 @@ dispatchDeleteSession request =
     Right sessionId -> do
       _deleted <- State.deleteSession sessionId
       pure (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+
+dispatchListSessions
+  :: Storage.Storage :> es
+  => ACP.AcpRequest
+  -> Eff es ACP.AcpResponse
+dispatchListSessions request =
+  case AesonTypes.parseEither parseListSessionsParams (ACP.requestParams request) of
+    Left err ->
+      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+    Right ListSessionsParams{cursor = Just _} ->
+      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" "Invalid session/list cursor")
+    Right ListSessionsParams{cwd} -> do
+      sessions <- filter (matchesCwd cwd) <$> Session.listSessions
+      pure $
+        ACP.successResponse (ACP.requestId request) $
+          Aeson.object
+            [ "sessions" Aeson..= map sessionInfo sessions
+            ]
+
+dispatchLoadSession
+  :: (Concurrent :> es, Storage.Storage :> es)
+  => State.AcpClientQueue
+  -> ACP.AcpRequest
+  -> Eff es ACP.AcpResponse
+dispatchLoadSession queue request =
+  case AesonTypes.parseEither parseSessionIdParams (ACP.requestParams request) of
+    Left err ->
+      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+    Right sessionId ->
+      Session.getSession sessionId >>= \case
+        Nothing ->
+          pure (ACP.errorResponse (ACP.requestId request) "not_found" "Session not found")
+        Just _ -> do
+          history <- Session.sessionHistory sessionId
+          traverse_ (writeSessionReplay queue) history
+          pure (ACP.successResponse (ACP.requestId request) Aeson.Null)
+
+dispatchExistingSession
+  :: Storage.Storage :> es
+  => ACP.AcpRequest
+  -> ACP.AcpResponse
+  -> Eff es ACP.AcpResponse
+dispatchExistingSession request response =
+  case AesonTypes.parseEither parseSessionIdParams (ACP.requestParams request) of
+    Left err ->
+      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+    Right sessionId ->
+      Session.getSession sessionId >>= \case
+        Nothing ->
+          pure (ACP.errorResponse (ACP.requestId request) "not_found" "Session not found")
+        Just _ ->
+          pure response
 
 dispatchPrompt
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
@@ -301,6 +372,17 @@ parseSessionIdParams =
   Aeson.withObject "session params" \o ->
     Session.SessionId <$> o Aeson..: "sessionId"
 
+parseListSessionsParams :: Aeson.Value -> AesonTypes.Parser ListSessionsParams
+parseListSessionsParams Aeson.Null =
+  pure ListSessionsParams{cwd = Nothing, cursor = Nothing}
+parseListSessionsParams value =
+  Aeson.withObject "session/list params" parseObject value
+  where
+    parseObject o =
+      ListSessionsParams
+        <$> o Aeson..:? "cwd"
+        <*> o Aeson..:? "cursor"
+
 parsePromptParams :: Aeson.Value -> AesonTypes.Parser PromptParams
 parsePromptParams =
   Aeson.withObject "session/prompt params" \o -> do
@@ -347,6 +429,59 @@ userMessageChunkUpdate messageId text =
           , "text" Aeson..= text
           ]
     ]
+
+writeSessionReplay
+  :: Concurrent :> es
+  => State.AcpClientQueue
+  -> Session.SessionMessage
+  -> Eff es ()
+writeSessionReplay queue message =
+  State.writeClient queue $
+    Aeson.toJSON $
+      sessionUpdateNotification message.sessionId $
+        sessionMessageChunkUpdate message
+
+sessionMessageChunkUpdate :: Session.SessionMessage -> Aeson.Value
+sessionMessageChunkUpdate message =
+  messageChunkUpdate (sessionUpdateKind message.sender) message.messageId message.text
+
+messageChunkUpdate :: Text -> MessageId -> Text -> Aeson.Value
+messageChunkUpdate updateKind messageId text =
+  Aeson.object
+    [ "sessionUpdate" Aeson..= updateKind
+    , "messageId" Aeson..= messageId
+    , "content" Aeson..=
+        Aeson.object
+          [ "type" Aeson..= ("text" :: Text)
+          , "text" Aeson..= text
+          ]
+    ]
+
+sessionUpdateKind :: Text -> Text
+sessionUpdateKind sender
+  | sender == "user" =
+      "user_message_chunk"
+  | otherwise =
+      "agent_message_chunk"
+
+sessionInfo :: Session.Session -> Aeson.Value
+sessionInfo session =
+  Aeson.object
+    ( [ "sessionId" Aeson..= State.acpSessionIdText session.sessionId
+      , "cwd" Aeson..= sessionCwd session
+      ]
+        <> maybe [] (\title -> ["title" Aeson..= title]) session.label
+    )
+
+matchesCwd :: Maybe Text -> Session.Session -> Bool
+matchesCwd Nothing _ =
+  True
+matchesCwd (Just cwd) session =
+  sessionCwd session == cwd
+
+sessionCwd :: Session.Session -> Text
+sessionCwd session =
+  fromMaybe "/" session.label
 
 notificationToRequest :: ACP.AcpNotification -> ACP.AcpRequest
 notificationToRequest notification_ =

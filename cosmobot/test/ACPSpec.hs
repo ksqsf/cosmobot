@@ -10,6 +10,7 @@ import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Session as Session
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
@@ -47,6 +48,9 @@ main =
     testGroup "acp"
       [ testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "session/new creates session and session/delete deletes it" testSessionNewAndDelete
+      , testCase "session/list returns durable sessions with cwd filter" testSessionList
+      , testCase "session/load replays durable text history" testSessionLoadReplaysHistory
+      , testCase "session/resume close and cancel check existing sessions" testSessionExistingRequests
       , testCase "session/prompt streams text response updates" testSessionPromptStreamsTextResponse
       , testCase "websocket server authenticates and handles initialize" testWebSocketServerAuthenticatesAndHandlesInitialize
       ]
@@ -85,6 +89,112 @@ testSessionNewAndDelete =
           ]
     liftIO do
       responseHasObjectResult deleteResponse @?= True
+
+testSessionList :: IO ()
+testSessionList =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    _local <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/new" $
+        Aeson.object
+          [ "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+          , "mcpServers" Aeson..= ([] :: [Aeson.Value])
+          ]
+    _other <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/new" $
+        Aeson.object
+          [ "cwd" Aeson..= ("/tmp/cosmobot-acp-other" :: Text)
+          , "mcpServers" Aeson..= ([] :: [Aeson.Value])
+          ]
+    listResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/list" $
+        Aeson.object
+          [ "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+          ]
+    liftIO do
+      responseField listResponse "sessions" @?=
+        Just
+          [ Aeson.object
+              [ "sessionId" Aeson..= ("/tmp/cosmobot-acp-spec-1" :: Text)
+              , "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+              , "title" Aeson..= Just ("/tmp/cosmobot-acp-spec" :: Text)
+              ]
+          ]
+
+testSessionLoadReplaysHistory :: IO ()
+testSessionLoadReplaysHistory =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    session <- ACPState.openSession (Just "/tmp/cosmobot-acp-spec")
+    userMessage <- ACPState.enqueueUserMessage acpState $
+      Session.SessionSend
+        { sessionId = session.sessionId
+        , text = "question"
+        , imageUrls = []
+        , attachments = []
+        , replyToMessageId = Nothing
+        }
+    incoming <- liftIO $
+      case userMessage of
+        Left err ->
+          assertFailure [i|unexpected ACP user message error: #{err}|]
+        Right Nothing ->
+          assertFailure "expected stored ACP user message"
+        Right (Just incoming) ->
+          pure incoming
+    let driver = ACPDriver.acpChatDriver acpState
+    Driver.sendReplyMessage driver incoming "answer" >>= \case
+      Left err ->
+        liftIO (assertFailure [i|unexpected ACP reply error: #{err}|])
+      Right _ ->
+        pure ()
+    (_clientId, queue) <- ACPState.registerClient acpState
+    loadResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/load" $
+        Aeson.object
+          [ "sessionId" Aeson..= ACPState.acpSessionIdText session.sessionId
+          , "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+          , "mcpServers" Aeson..= ([] :: [Aeson.Value])
+          ]
+    events <- replicateM 2 (ACPState.readClient queue)
+    liftIO do
+      responseResult loadResponse @?= Just Aeson.Null
+      acpEventUpdateKinds events @?=
+        [ "user_message_chunk"
+        , "agent_message_chunk"
+        ]
+
+testSessionExistingRequests :: IO ()
+testSessionExistingRequests =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    newResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/new" $
+        Aeson.object
+          [ "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+          , "mcpServers" Aeson..= ([] :: [Aeson.Value])
+          ]
+    sessionId <- liftIO $
+      case responseField newResponse "sessionId" of
+        Nothing ->
+          assertFailure "expected sessionId"
+        Just (value :: Text) ->
+          pure value
+    responses <- traverse (dispatchSessionIdRequest acpState queue sessionId)
+      [ "session/resume"
+      , "session/close"
+      , "session/cancel"
+      ]
+    missingResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/resume" $
+        Aeson.object
+          [ "sessionId" Aeson..= ("missing" :: Text)
+          ]
+    liftIO do
+      map responseHasObjectResult responses @?= [True, True, True]
+      responseErrorCode missingResponse @?= Just "not_found"
 
 testSessionPromptStreamsTextResponse :: IO ()
 testSessionPromptStreamsTextResponse =
@@ -203,7 +313,7 @@ initializeResponse =
       [ "protocolVersion" Aeson..= (1 :: Int)
       , "agentCapabilities" Aeson..=
           Aeson.object
-            [ "loadSession" Aeson..= False
+            [ "loadSession" Aeson..= True
             , "promptCapabilities" Aeson..=
                 Aeson.object
                   [ "image" Aeson..= False
@@ -213,6 +323,9 @@ initializeResponse =
             , "sessionCapabilities" Aeson..=
                 Aeson.object
                   [ "delete" Aeson..= Aeson.object []
+                  , "list" Aeson..= Aeson.object []
+                  , "resume" Aeson..= Aeson.object []
+                  , "close" Aeson..= Aeson.object []
                   ]
             ]
       , "agentInfo" Aeson..=
@@ -255,6 +368,43 @@ responseHasObjectResult = \case
     False
   JSONRPC.RequestMessage{} ->
     False
+
+responseResult :: ACP.AcpResponse -> Maybe Aeson.Value
+responseResult = \case
+  JSONRPC.ResponseMessage result ->
+    Just result.result
+  JSONRPC.ErrorMessage{} ->
+    Nothing
+  JSONRPC.NotificationMessage{} ->
+    Nothing
+  JSONRPC.RequestMessage{} ->
+    Nothing
+
+responseErrorCode :: ACP.AcpResponse -> Maybe Text
+responseErrorCode = \case
+  JSONRPC.ErrorMessage err -> do
+    Aeson.Object object <- err.error.errorData
+    AesonTypes.parseMaybe (Aeson..: "code") object
+  JSONRPC.ResponseMessage{} ->
+    Nothing
+  JSONRPC.NotificationMessage{} ->
+    Nothing
+  JSONRPC.RequestMessage{} ->
+    Nothing
+
+dispatchSessionIdRequest
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  => ACPState.AcpState
+  -> ACPState.AcpClientQueue
+  -> Text
+  -> Text
+  -> Eff es ACP.AcpResponse
+dispatchSessionIdRequest acpState queue sessionId method =
+  ACPServer.dispatchAcpRequest acpState queue $
+    acpRequest method $
+      Aeson.object
+        [ "sessionId" Aeson..= sessionId
+        ]
 
 acpEventUpdateKinds :: [ACPState.AcpClientEvent] -> [Text]
 acpEventUpdateKinds events =
