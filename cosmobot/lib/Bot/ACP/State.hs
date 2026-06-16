@@ -23,6 +23,10 @@ module Bot.ACP.State
   , incomingMessages
   , sessionIdFromMessage
   , acpSessionIdText
+  , PromptCompletion (..)
+  , registerPromptMessage
+  , unregisterPromptMessage
+  , cancelSessionPrompts
   , notifyPromptComplete
   , withPromptWaiter
   )
@@ -51,9 +55,9 @@ data AcpClientEvent
 
 type AcpSessionId = Session.SessionId
 
-data PromptCompletion = PromptCompletion
-  { messageId :: !MessageId
-  }
+data PromptCompletion
+  = PromptCompleted !MessageId
+  | PromptCancelled
   deriving (Eq, Show)
 
 data AcpState = AcpState
@@ -61,6 +65,7 @@ data AcpState = AcpState
   , nextClientId :: !(STM.TVar AcpClientId)
   , inbound :: !(STM.TChan IncomingMessage)
   , promptWaiters :: !(STM.TVar (Map AcpSessionId [STM.TMVar PromptCompletion]))
+  , activePromptMessages :: !(STM.TVar (Map AcpSessionId [MessageId]))
   }
 
 newAcpState :: Concurrent :> es => Eff es AcpState
@@ -69,7 +74,8 @@ newAcpState = STM.atomically do
   nextClientId <- STM.newTVar 1
   inbound <- STM.newTChan
   promptWaiters <- STM.newTVar Map.empty
-  pure AcpState{clients, nextClientId, inbound, promptWaiters}
+  activePromptMessages <- STM.newTVar Map.empty
+  pure AcpState{clients, nextClientId, inbound, promptWaiters, activePromptMessages}
 
 registerClient :: Concurrent :> es => AcpState -> Eff es (AcpClientId, AcpClientQueue)
 registerClient acpState =
@@ -146,14 +152,33 @@ notifyPromptComplete acpState sessionId messageId =
       Nothing ->
         pure ()
       Just sessionWaiters ->
-        traverse_ (`STM.tryPutTMVar` PromptCompletion{messageId}) sessionWaiters
+        traverse_ (`STM.tryPutTMVar` PromptCompleted messageId) sessionWaiters
+
+registerPromptMessage :: Concurrent :> es => AcpState -> AcpSessionId -> MessageId -> Eff es ()
+registerPromptMessage acpState sessionId messageId =
+  STM.atomically $
+    STM.modifyTVar' acpState.activePromptMessages (Map.insertWith (<>) sessionId [messageId])
+
+unregisterPromptMessage :: Concurrent :> es => AcpState -> AcpSessionId -> MessageId -> Eff es ()
+unregisterPromptMessage acpState sessionId messageId =
+  STM.atomically $
+    STM.modifyTVar' acpState.activePromptMessages (Map.update (removeWaiter messageId) sessionId)
+
+cancelSessionPrompts :: Concurrent :> es => AcpState -> AcpSessionId -> Eff es [MessageId]
+cancelSessionPrompts acpState sessionId = do
+  STM.atomically do
+    messageIds <- Map.findWithDefault [] sessionId <$> STM.readTVar acpState.activePromptMessages
+    waiters <- Map.findWithDefault [] sessionId <$> STM.readTVar acpState.promptWaiters
+    STM.modifyTVar' acpState.activePromptMessages (Map.delete sessionId)
+    traverse_ (`STM.tryPutTMVar` PromptCancelled) waiters
+    pure messageIds
 
 withPromptWaiter
   :: (Concurrent :> es, IOE :> es)
   => AcpState
   -> AcpSessionId
   -> Eff es a
-  -> Eff es MessageId
+  -> Eff es PromptCompletion
 withPromptWaiter acpState sessionId action =
   bracket acquire release use
   where
@@ -167,7 +192,7 @@ withPromptWaiter acpState sessionId action =
         STM.modifyTVar' acpState.promptWaiters (Map.update (removeWaiter waiter) sessionId)
     use waiter = do
       _ <- action
-      (.messageId) <$> STM.atomically (STM.readTMVar waiter)
+      STM.atomically (STM.readTMVar waiter)
 
 removeWaiter :: Eq a => a -> [a] -> Maybe [a]
 removeWaiter waiter waiters =

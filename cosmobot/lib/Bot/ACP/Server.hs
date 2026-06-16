@@ -16,12 +16,14 @@ where
 import qualified Bot.ACP.Config as Config
 import qualified Bot.ACP.State as State
 import qualified Bot.ACP.Types as ACP
-import Bot.Core.Message (IncomingMessage (..), MessageId)
+import Bot.Core.Message (ChatPlatform (PlatformACP), IncomingMessage (..), MessageId)
+import Bot.Core.Thread (ThreadMessageKey (..))
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import qualified Bot.Session as Session
+import Bot.Storage.Thread (ThreadStore, haltThread)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
@@ -61,11 +63,12 @@ data ListSessionsParams = ListSessionsParams
   deriving (Eq, Show)
 
 runAcpServer
-  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Prim :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
+  -> ThreadStore
   -> State.AcpState
   -> Eff es ()
-runAcpServer cfg@Config.Config{enabled} acpState =
+runAcpServer cfg@Config.Config{enabled} threads acpState =
   when enabled do
     let Config.Config{host, port} = cfg
         settings =
@@ -74,27 +77,29 @@ runAcpServer cfg@Config.Config{enabled} acpState =
     logInfo [i|ACP server listening on #{host}:#{port}; websocket endpoint /acp|]
     withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
       liftIO $
-        Warp.runSettings settings (acpServerApplication runInIO cfg acpState)
+        Warp.runSettings settings (acpServerApplication runInIO cfg threads acpState)
 
 acpServerApplication
-  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Prim :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => (forall a. Eff es a -> IO a)
   -> Config.Config
+  -> ThreadStore
   -> State.AcpState
   -> Wai.Application
-acpServerApplication runInIO cfg acpState =
+acpServerApplication runInIO cfg threads acpState =
   WaiWS.websocketsOr WS.defaultConnectionOptions websocketApp httpApp
   where
     websocketApp pending =
-      runInIO (acpServerApp cfg acpState pending)
+      runInIO (acpServerApp cfg threads acpState pending)
 
 acpServerApp
-  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Prim :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
+  -> ThreadStore
   -> State.AcpState
   -> WS.PendingConnection
   -> Eff es ()
-acpServerApp cfg acpState pending
+acpServerApp cfg threads acpState pending
   | not (requestIsAcpPath (WS.pendingRequest pending)) =
       liftIO $
         WS.rejectRequestWith pending $
@@ -105,7 +110,7 @@ acpServerApp cfg acpState pending
             }
   | requestIsAuthorized cfg (WS.pendingRequest pending) = do
       conn <- liftIO (WS.acceptRequest pending)
-      serveAcceptedClient acpState conn
+      serveAcceptedClient threads acpState conn
   | otherwise =
       liftIO $
         WS.rejectRequestWith pending $
@@ -116,18 +121,19 @@ acpServerApp cfg acpState pending
             }
 
 serveAcceptedClient
-  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
-  => State.AcpState
+  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Prim :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  => ThreadStore
+  -> State.AcpState
   -> WS.Connection
   -> Eff es ()
-serveAcceptedClient acpState conn = do
+serveAcceptedClient threads acpState conn = do
   (clientId, queue) <- State.registerClient acpState
   logDebug [i|ACP client #{clientId} connected|]
   (Concurrency.raceTasks_
       [i|acp.client.#{clientId}.writer|]
       (writeQueuedFrames queue conn)
       [i|acp.client.#{clientId}.reader|]
-      (readRequestFrames acpState queue conn)
+      (readRequestFrames threads acpState queue conn)
     `catchSync` \err ->
       logDebug [i|ACP client #{clientId} disconnected: #{displayException err}|])
     `finally` do
@@ -149,12 +155,13 @@ writeQueuedFrames queue conn =
         throwIO (AcpClientDisconnected reason)
 
 readRequestFrames
-  :: (IOE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
-  => State.AcpState
+  :: (IOE :> es, KatipE :> es, Prim :> es, Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  => ThreadStore
+  -> State.AcpState
   -> State.AcpClientQueue
   -> WS.Connection
   -> Eff es ()
-readRequestFrames acpState queue conn =
+readRequestFrames threads acpState queue conn =
   forever do
     bytes <- liftIO (WS.receiveData conn :: IO ByteString)
     response <- case Aeson.eitherDecodeStrict bytes of
@@ -163,9 +170,9 @@ readRequestFrames acpState queue conn =
       Right value ->
         case Aeson.fromJSON value of
           Aeson.Success (JSONRPC.RequestMessage request) ->
-            Just <$> dispatchAcpRequest acpState queue request
+            dispatchAcpRequestFrame threads acpState queue request
           Aeson.Success (JSONRPC.NotificationMessage notification_) -> do
-            _ <- dispatchAcpRequest acpState queue (notificationToRequest notification_)
+            _ <- dispatchAcpRequestWithThreadStore threads acpState queue (notificationToRequest notification_)
             pure Nothing
           Aeson.Error err ->
             pure (Just (ACP.invalidRequestResponse (Text.pack err)))
@@ -173,13 +180,50 @@ readRequestFrames acpState queue conn =
             pure (Just (ACP.invalidRequestResponse "Expected request or notification"))
     traverse_ (State.writeClient queue . Aeson.toJSON) response
 
+dispatchAcpRequestFrame
+  :: (KatipE :> es, Prim :> es, Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  => ThreadStore
+  -> State.AcpState
+  -> State.AcpClientQueue
+  -> ACP.AcpRequest
+  -> Eff es (Maybe ACP.AcpResponse)
+dispatchAcpRequestFrame threads acpState queue request
+  | ACP.requestMethod request == "session/prompt" = do
+      Concurrency.fire "acp.session.prompt" do
+        response <- dispatchPrompt acpState queue request
+        State.writeClient queue (Aeson.toJSON response)
+      pure Nothing
+  | otherwise =
+      Just <$> dispatchAcpRequestWithThreadStore threads acpState queue request
+
 dispatchAcpRequest
-  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  :: (Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.AcpState
   -> State.AcpClientQueue
   -> ACP.AcpRequest
   -> Eff es ACP.AcpResponse
 dispatchAcpRequest acpState queue request =
+  dispatchAcpRequestWithCancel (\_ _ -> pure ()) acpState queue request
+
+dispatchAcpRequestWithThreadStore
+  :: (Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es, KatipE :> es, Prim :> es)
+  => ThreadStore
+  -> State.AcpState
+  -> State.AcpClientQueue
+  -> ACP.AcpRequest
+  -> Eff es ACP.AcpResponse
+dispatchAcpRequestWithThreadStore threads =
+  dispatchAcpRequestWithCancel \_sessionId messageIds ->
+    traverse_ (cancelAcpThread threads) messageIds
+
+dispatchAcpRequestWithCancel
+  :: (Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  => (State.AcpSessionId -> [MessageId] -> Eff es ())
+  -> State.AcpState
+  -> State.AcpClientQueue
+  -> ACP.AcpRequest
+  -> Eff es ACP.AcpResponse
+dispatchAcpRequestWithCancel cancelMessages acpState queue request =
   case ACP.requestMethod request of
     "initialize" ->
       pure (ACP.successResponse (ACP.requestId request) initializeResponse)
@@ -196,7 +240,7 @@ dispatchAcpRequest acpState queue request =
     "session/close" ->
       dispatchExistingSession request (ACP.successResponse (ACP.requestId request) (Aeson.object []))
     "session/cancel" ->
-      dispatchExistingSession request (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+      dispatchCancelSession cancelMessages acpState request
     "session/delete" ->
       dispatchDeleteSession request
     "session/prompt" ->
@@ -314,6 +358,25 @@ dispatchExistingSession request response =
         Just _ ->
           pure response
 
+dispatchCancelSession
+  :: (Concurrent :> es, Storage.Storage :> es)
+  => (State.AcpSessionId -> [MessageId] -> Eff es ())
+  -> State.AcpState
+  -> ACP.AcpRequest
+  -> Eff es ACP.AcpResponse
+dispatchCancelSession cancelMessages acpState request =
+  case AesonTypes.parseEither parseSessionIdParams (ACP.requestParams request) of
+    Left err ->
+      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+    Right sessionId ->
+      Session.getSession sessionId >>= \case
+        Nothing ->
+          pure (ACP.errorResponse (ACP.requestId request) "not_found" "Session not found")
+        Just _ -> do
+          messageIds <- State.cancelSessionPrompts acpState sessionId
+          cancelMessages sessionId messageIds
+          pure (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+
 dispatchPrompt
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.AcpState
@@ -325,13 +388,21 @@ dispatchPrompt acpState queue request =
     Left err ->
       pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
     Right prompt ->
-      ( State.withPromptWaiter acpState prompt.sessionId (enqueuePrompt prompt) >>= \messageId ->
-          pure $
-            ACP.successResponse (ACP.requestId request) $
-              Aeson.object
-                [ "stopReason" Aeson..= ("end_turn" :: Text)
-                , "messageId" Aeson..= messageId
-                ]
+      ( State.withPromptWaiter acpState prompt.sessionId (enqueuePrompt prompt) >>= \case
+          State.PromptCompleted messageId -> do
+            State.unregisterPromptMessage acpState prompt.sessionId messageId
+            pure $
+              ACP.successResponse (ACP.requestId request) $
+                Aeson.object
+                  [ "stopReason" Aeson..= ("end_turn" :: Text)
+                  , "messageId" Aeson..= messageId
+                  ]
+          State.PromptCancelled ->
+            pure $
+              ACP.successResponse (ACP.requestId request) $
+                Aeson.object
+                  [ "stopReason" Aeson..= ("cancelled" :: Text)
+                  ]
       ) `catchSync` \err ->
           case fromException err of
             Just (AcpPromptInvalid invalidParams) ->
@@ -357,10 +428,28 @@ dispatchPrompt acpState queue request =
           throwIO AcpPromptSessionNotFound
         Right (Just IncomingMessage{messageId}) ->
           for_ messageId \userMessageId ->
-            State.writeClient queue $
-              Aeson.toJSON $
-                sessionUpdateNotification prompt.sessionId $
-                  userMessageChunkUpdate userMessageId prompt.text
+            State.registerPromptMessage acpState prompt.sessionId userMessageId *>
+              State.writeClient queue
+                ( Aeson.toJSON $
+                    sessionUpdateNotification prompt.sessionId $
+                      userMessageChunkUpdate userMessageId prompt.text
+                )
+
+cancelAcpThread
+  :: (Concurrency.Concurrency :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
+  => ThreadStore
+  -> MessageId
+  -> Eff es ()
+cancelAcpThread threads messageId =
+  void (haltThread threads Concurrency.cancel (acpThreadMessageKey messageId))
+
+acpThreadMessageKey :: MessageId -> ThreadMessageKey
+acpThreadMessageKey messageId =
+  ThreadMessageKey
+    { platform = PlatformACP
+    , chatId = Nothing
+    , messageId
+    }
 
 parseNewSessionParams :: Aeson.Value -> AesonTypes.Parser (Maybe Text)
 parseNewSessionParams =

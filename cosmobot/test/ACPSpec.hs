@@ -13,6 +13,7 @@ import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Session as Session
 import Bot.Prelude
 import qualified Bot.Storage.SQLite as StorageSQLite
+import qualified Bot.Storage.Thread as ThreadStore
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
@@ -51,6 +52,7 @@ main =
       , testCase "session/list returns durable sessions with cwd filter" testSessionList
       , testCase "session/load replays durable text history" testSessionLoadReplaysHistory
       , testCase "session/resume close and cancel check existing sessions" testSessionExistingRequests
+      , testCase "session/cancel resolves active prompt as cancelled" testSessionCancelResolvesPrompt
       , testCase "session/prompt streams text response updates" testSessionPromptStreamsTextResponse
       , testCase "websocket server authenticates and handles initialize" testWebSocketServerAuthenticatesAndHandlesInitialize
       ]
@@ -196,6 +198,48 @@ testSessionExistingRequests =
       map responseHasObjectResult responses @?= [True, True, True]
       responseErrorCode missingResponse @?= Just "not_found"
 
+testSessionCancelResolvesPrompt :: IO ()
+testSessionCancelResolvesPrompt =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    newResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/new" $
+        Aeson.object
+          [ "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+          , "mcpServers" Aeson..= ([] :: [Aeson.Value])
+          ]
+    sessionId <- liftIO $
+      case responseField newResponse "sessionId" of
+        Nothing ->
+          assertFailure "expected sessionId"
+        Just (value :: Text) ->
+          pure value
+    promptDone <- MVar.newEmptyMVar
+    _promptTask <- Concurrency.fork "acp-spec.cancel.prompt" do
+      response <- ACPServer.dispatchAcpRequest acpState queue $
+        acpRequest "session/prompt" $
+          Aeson.object
+            [ "sessionId" Aeson..= sessionId
+            , "prompt" Aeson..=
+                [ Aeson.object
+                    [ "type" Aeson..= ("text" :: Text)
+                    , "text" Aeson..= ("wait" :: Text)
+                    ]
+                ]
+            ]
+      MVar.putMVar promptDone response
+    _incoming <- S.head_ (ACPState.incomingMessages acpState)
+    cancelResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/cancel" $
+        Aeson.object
+          [ "sessionId" Aeson..= sessionId
+          ]
+    promptResponse <- MVar.takeMVar promptDone
+    liftIO do
+      responseHasObjectResult cancelResponse @?= True
+      responseField promptResponse "stopReason" @?= Just ("cancelled" :: Text)
+
 testSessionPromptStreamsTextResponse :: IO ()
 testSessionPromptStreamsTextResponse =
   runAcpStorage do
@@ -254,6 +298,7 @@ testWebSocketServerAuthenticatesAndHandlesInitialize = do
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
     port <- (fromIntegral :: Socket.PortNumber -> Int) <$> liftIO (Socket.socketPort listenSocket)
     acpState <- ACPState.newAcpState
+    threads <- ThreadStore.newThreadStore
     let cfg = ACPConfig.Config
           { enabled = True
           , host = "127.0.0.1"
@@ -265,7 +310,7 @@ testWebSocketServerAuthenticatesAndHandlesInitialize = do
             (forever do
               (clientSocket, _) <- liftIO (Socket.accept listenSocket)
               pending <- liftIO (WS.makePendingConnection clientSocket WS.defaultConnectionOptions)
-              ACPServer.acpServerApp cfg acpState pending)
+              ACPServer.acpServerApp cfg threads acpState pending)
             (liftIO (Socket.close listenSocket))
         client = do
           unauthorized <- try @WS.HandshakeException (liftIO (WS.runClient "127.0.0.1" port "/acp" \_ -> pure ()))
@@ -393,7 +438,7 @@ responseErrorCode = \case
     Nothing
 
 dispatchSessionIdRequest
-  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  :: (Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => ACPState.AcpState
   -> ACPState.AcpClientQueue
   -> Text

@@ -103,7 +103,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
             (routes cfg threads)
             (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
-    runConfiguredServers cfg rpcState acpState messageConsumer
+    runConfiguredServers cfg threads rpcState acpState messageConsumer
 
 routes
   :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
@@ -123,22 +123,24 @@ routes cfg threads =
 runConfiguredServers
   :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
+  -> ThreadStore
   -> RPC.RpcState
   -> ACP.AcpState
   -> Eff es ()
   -> Eff es ()
-runConfiguredServers cfg rpcState acpState messageConsumer =
-  runWithTaskGroup "servers" (serverTasks cfg rpcState acpState) "message.consumer" messageConsumer
+runConfiguredServers cfg threads rpcState acpState messageConsumer =
+  runWithTaskGroup "servers" (serverTasks cfg threads rpcState acpState) "message.consumer" messageConsumer
 
 serverTasks
-  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Concurrent :> es, FileSystem :> es, IOE :> es)
+  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, FileSystem :> es, IOE :> es)
   => BotConfig
+  -> ThreadStore
   -> RPC.RpcState
   -> ACP.AcpState
   -> [(Text, Eff es ())]
-serverTasks cfg rpcState acpState =
+serverTasks cfg threads rpcState acpState =
   enabledTask cfg.rpc.enabled "rpc.server" (RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks)
-    <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp acpState)
+    <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp threads acpState)
 
 enabledTask :: Bool -> Text -> Eff es () -> [(Text, Eff es ())]
 enabledTask enabled label action =

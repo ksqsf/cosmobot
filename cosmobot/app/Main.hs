@@ -5,6 +5,7 @@ import Bot.Prelude
 import qualified Bot.ACP.Server as ACPServer
 import qualified Bot.ACP.State as ACPState
 import qualified Bot.ACP.Types as ACP
+import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Main as BotMain
 import qualified Bot.RPC.Client as RpcClient
@@ -224,6 +225,8 @@ runAcpStdio :: IO ()
 runAcpStdio =
   runEff .
   runConcurrent .
+  runPrim .
+  ConcurrencyManager.runConcurrencyManager .
   FileSystem.runFileSystem .
   StorageSQLite.runStorageSQLitePath ":memory:" .
   Media.runMediaPassthrough $ do
