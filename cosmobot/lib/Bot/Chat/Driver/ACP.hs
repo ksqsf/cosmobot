@@ -11,6 +11,7 @@ module Bot.Chat.Driver.ACP
   )
 where
 
+import qualified Bot.ACP.Content as ACPContent
 import qualified Bot.ACP.State as ACP
 import qualified Bot.Chat.Types as Chat
 import Bot.Chat.Driver.Types
@@ -63,7 +64,7 @@ instance ChatDriver AcpChatDriver where
       ACP.broadcast driver.acpState $
         Aeson.toJSON $
           sessionUpdateNotification sessionId $
-            agentMessageChunkUpdate messageId text
+            agentMessageChunkUpdate messageId (ACPContent.textContentBlock text)
     pure updated
 
   completeMessageEdit driver message messageId = do
@@ -98,10 +99,8 @@ storeReply driver message body = do
       pure (Left "ACP reply did not produce a message id.")
     Right (Just storedReply) -> do
       let messageId = storedReply.messageId
-      ACP.broadcast driver.acpState $
-        Aeson.toJSON $
-          sessionUpdateNotification sessionId $
-            agentMessageChunkUpdate messageId reply.text
+      traverse_ (broadcastReplyContent driver sessionId messageId) $
+        ACPContent.messageContentBlocks reply.text reply.imageUrls (map Session.storedAttachmentToSession reply.attachments)
       pure (Right messageId)
 
 data AcpReplyContent = AcpReplyContent
@@ -128,8 +127,6 @@ acpReplyImage
   -> Eff es (Either Text SessionStorage.StoredMediaRef)
 acpReplyImage ref =
   case Text.stripPrefix "file://" (Text.strip ref) of
-    Nothing ->
-      pure (Left ref)
     Just pathText -> do
       let path = Text.unpack pathText
       exists <- FileSystem.doesFileExist path
@@ -154,6 +151,30 @@ acpReplyImage ref =
                   pure (Right (Session.storedMediaRef info url))
         else
           pure (Left ref)
+    Nothing ->
+      case Session.parseMediaId ref of
+        Nothing ->
+          pure (Left ref)
+        Just fileId ->
+          Media.mediaFileInfo fileId >>= \case
+            Nothing ->
+              pure (Left ref)
+            Just info -> do
+              url <- Media.publicMediaRef info.ref
+              pure (Right (Session.storedMediaRef info url))
+
+broadcastReplyContent
+  :: Concurrent :> es
+  => AcpChatDriver
+  -> ACP.AcpSessionId
+  -> MessageId
+  -> ACPContent.AcpContentBlock
+  -> Eff es ()
+broadcastReplyContent driver sessionId messageId content =
+  ACP.broadcast driver.acpState $
+    Aeson.toJSON $
+      sessionUpdateNotification sessionId $
+        agentMessageChunkUpdate messageId content
 
 sessionUpdateNotification :: ACP.AcpSessionId -> Aeson.Value -> JSONRPC.JSONRPCMessage
 sessionUpdateNotification sessionId update =
@@ -167,16 +188,12 @@ sessionUpdateNotification sessionId update =
           ]
       )
 
-agentMessageChunkUpdate :: MessageId -> Text -> Aeson.Value
-agentMessageChunkUpdate messageId text =
+agentMessageChunkUpdate :: MessageId -> ACPContent.AcpContentBlock -> Aeson.Value
+agentMessageChunkUpdate messageId content =
   Aeson.object
     [ "sessionUpdate" Aeson..= ("agent_message_chunk" :: Text)
     , "messageId" Aeson..= messageId
-    , "content" Aeson..=
-        Aeson.object
-          [ "type" Aeson..= ("text" :: Text)
-          , "text" Aeson..= text
-          ]
+    , "content" Aeson..= ACPContent.contentBlockValue content
     ]
 
 imageMediaType :: FilePath -> Text

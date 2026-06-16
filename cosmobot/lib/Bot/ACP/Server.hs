@@ -14,6 +14,7 @@ module Bot.ACP.Server
 where
 
 import qualified Bot.ACP.Config as Config
+import qualified Bot.ACP.Content as Content
 import qualified Bot.ACP.State as State
 import qualified Bot.ACP.Types as ACP
 import Bot.Core.Message (ChatPlatform (PlatformACP), IncomingMessage (..), MessageId)
@@ -53,6 +54,7 @@ instance Exception AcpPromptDispatchError
 data PromptParams = PromptParams
   { sessionId :: !State.AcpSessionId
   , text :: !Text
+  , imageUrls :: ![Text]
   }
   deriving (Eq, Show)
 
@@ -257,7 +259,7 @@ initializeResponse =
           [ "loadSession" Aeson..= True
           , "promptCapabilities" Aeson..=
               Aeson.object
-                [ "image" Aeson..= False
+                [ "image" Aeson..= True
                 , "audio" Aeson..= False
                 , "embeddedContext" Aeson..= False
                 ]
@@ -417,7 +419,7 @@ dispatchPrompt acpState queue request =
         Session.SessionSend
           { sessionId = prompt.sessionId
           , text = prompt.text
-          , imageUrls = []
+          , imageUrls = prompt.imageUrls
           , attachments = []
           , replyToMessageId = Nothing
           }
@@ -429,11 +431,12 @@ dispatchPrompt acpState queue request =
         Right (Just IncomingMessage{messageId}) ->
           for_ messageId \userMessageId ->
             State.registerPromptMessage acpState prompt.sessionId userMessageId *>
-              State.writeClient queue
-                ( Aeson.toJSON $
-                    sessionUpdateNotification prompt.sessionId $
-                      userMessageChunkUpdate userMessageId prompt.text
-                )
+              writeMessageChunkUpdates
+                queue
+                prompt.sessionId
+                "user_message_chunk"
+                userMessageId
+                (Content.messageContentBlocks prompt.text prompt.imageUrls [])
 
 cancelAcpThread
   :: (Concurrency.Concurrency :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
@@ -477,23 +480,8 @@ parsePromptParams =
   Aeson.withObject "session/prompt params" \o -> do
     sessionId <- Session.SessionId <$> o Aeson..: "sessionId"
     prompt <- o Aeson..: "prompt"
-    text <- parsePromptText prompt
-    pure PromptParams{sessionId, text}
-
-parsePromptText :: Aeson.Value -> AesonTypes.Parser Text
-parsePromptText =
-  Aeson.withArray "prompt" \blocks ->
-    Text.intercalate "\n" <$> traverse parseTextBlock (toList blocks)
-
-parseTextBlock :: Aeson.Value -> AesonTypes.Parser Text
-parseTextBlock =
-  Aeson.withObject "content block" \o -> do
-    contentType <- o Aeson..: "type"
-    case contentType of
-      "text" ->
-        o Aeson..: "text"
-      _ ->
-        fail [i|unsupported ACP content block type: #{contentType :: Text}|]
+    content <- Content.parsePromptContent prompt
+    pure PromptParams{sessionId, text = content.text, imageUrls = content.imageUrls}
 
 sessionUpdateNotification :: State.AcpSessionId -> Aeson.Value -> JSONRPC.JSONRPCMessage
 sessionUpdateNotification sessionId update =
@@ -507,43 +495,42 @@ sessionUpdateNotification sessionId update =
           ]
       )
 
-userMessageChunkUpdate :: MessageId -> Text -> Aeson.Value
-userMessageChunkUpdate messageId text =
-  Aeson.object
-    [ "sessionUpdate" Aeson..= ("user_message_chunk" :: Text)
-    , "messageId" Aeson..= messageId
-    , "content" Aeson..=
-        Aeson.object
-          [ "type" Aeson..= ("text" :: Text)
-          , "text" Aeson..= text
-          ]
-    ]
-
 writeSessionReplay
   :: Concurrent :> es
   => State.AcpClientQueue
   -> Session.SessionMessage
   -> Eff es ()
 writeSessionReplay queue message =
-  State.writeClient queue $
-    Aeson.toJSON $
-      sessionUpdateNotification message.sessionId $
-        sessionMessageChunkUpdate message
+  writeMessageChunkUpdates
+    queue
+    message.sessionId
+    (sessionUpdateKind message.sender)
+    message.messageId
+    (Content.messageContentBlocks message.text message.imageUrls message.attachments)
 
-sessionMessageChunkUpdate :: Session.SessionMessage -> Aeson.Value
-sessionMessageChunkUpdate message =
-  messageChunkUpdate (sessionUpdateKind message.sender) message.messageId message.text
+writeMessageChunkUpdates
+  :: Concurrent :> es
+  => State.AcpClientQueue
+  -> State.AcpSessionId
+  -> Text
+  -> MessageId
+  -> [Content.AcpContentBlock]
+  -> Eff es ()
+writeMessageChunkUpdates queue sessionId updateKind messageId blocks =
+  traverse_
+    ( State.writeClient queue
+        . Aeson.toJSON
+        . sessionUpdateNotification sessionId
+        . messageChunkUpdate updateKind messageId
+    )
+    blocks
 
-messageChunkUpdate :: Text -> MessageId -> Text -> Aeson.Value
-messageChunkUpdate updateKind messageId text =
+messageChunkUpdate :: Text -> MessageId -> Content.AcpContentBlock -> Aeson.Value
+messageChunkUpdate updateKind messageId content =
   Aeson.object
     [ "sessionUpdate" Aeson..= updateKind
     , "messageId" Aeson..= messageId
-    , "content" Aeson..=
-        Aeson.object
-          [ "type" Aeson..= ("text" :: Text)
-          , "text" Aeson..= text
-          ]
+    , "content" Aeson..= Content.contentBlockValue content
     ]
 
 sessionUpdateKind :: Text -> Text

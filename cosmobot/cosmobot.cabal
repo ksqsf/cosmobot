@@ -161,6 +161,7 @@ library
     hs-source-dirs:   lib
     exposed-modules:
         Bot.ACP.Config
+        Bot.ACP.Content
         Bot.ACP.Server
         Bot.ACP.State
         Bot.ACP.Types

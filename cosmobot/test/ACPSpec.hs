@@ -7,6 +7,7 @@ import qualified Bot.ACP.Types as ACP
 import qualified Bot.Chat.Driver.ACP as ACPDriver
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
+import Bot.Core.Message (IncomingMessage (..))
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
@@ -54,6 +55,7 @@ main =
       , testCase "session/resume close and cancel check existing sessions" testSessionExistingRequests
       , testCase "session/cancel resolves active prompt as cancelled" testSessionCancelResolvesPrompt
       , testCase "session/prompt streams text response updates" testSessionPromptStreamsTextResponse
+      , testCase "session/prompt accepts and streams image content" testSessionPromptAcceptsAndStreamsImageContent
       , testCase "websocket server authenticates and handles initialize" testWebSocketServerAuthenticatesAndHandlesInitialize
       ]
 
@@ -292,6 +294,60 @@ testSessionPromptStreamsTextResponse =
         , "agent_message_chunk"
         ]
 
+testSessionPromptAcceptsAndStreamsImageContent :: IO ()
+testSessionPromptAcceptsAndStreamsImageContent =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    newResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/new" $
+        Aeson.object
+          [ "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+          , "mcpServers" Aeson..= ([] :: [Aeson.Value])
+          ]
+    sessionId <- liftIO $
+      case responseField newResponse "sessionId" of
+        Nothing ->
+          assertFailure "expected sessionId"
+        Just (value :: Text) ->
+          pure value
+    responderDone <- MVar.newEmptyMVar
+    _responder <- forkIO do
+      S.head_ (ACPState.incomingMessages acpState) >>= \case
+        Nothing ->
+          throwIO (userError "expected ACP incoming message")
+        Just incoming -> do
+          liftIO (incoming.imageUrls @?= ["data:image/png;base64,AAAA"])
+          let driver = ACPDriver.acpChatDriver acpState
+          Driver.sendReplyMessage driver incoming
+            "done\n[image] data:image/png;base64,BBBB" >>= \case
+            Left err ->
+              throwIO (userError (Text.unpack err))
+            Right _ ->
+              MVar.putMVar responderDone ()
+    promptResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/prompt" $
+        Aeson.object
+          [ "sessionId" Aeson..= sessionId
+          , "prompt" Aeson..=
+              [ Aeson.object
+                  [ "type" Aeson..= ("text" :: Text)
+                  , "text" Aeson..= ("describe this" :: Text)
+                  ]
+              , Aeson.object
+                  [ "type" Aeson..= ("image" :: Text)
+                  , "mimeType" Aeson..= ("image/png" :: Text)
+                  , "data" Aeson..= ("AAAA" :: Text)
+                  ]
+              ]
+          ]
+    MVar.takeMVar responderDone
+    events <- replicateM 4 (ACPState.readClient queue)
+    liftIO do
+      responseField promptResponse "stopReason" @?= Just ("end_turn" :: Text)
+      acpEventContentTypes events @?= ["text", "image", "text", "image"]
+      acpEventImageData events @?= ["AAAA", "BBBB"]
+
 testWebSocketServerAuthenticatesAndHandlesInitialize :: IO ()
 testWebSocketServerAuthenticatesAndHandlesInitialize = do
   result <- timeout 2_000_000 $ runAcpStorage do
@@ -361,7 +417,7 @@ initializeResponse =
             [ "loadSession" Aeson..= True
             , "promptCapabilities" Aeson..=
                 Aeson.object
-                  [ "image" Aeson..= False
+                  [ "image" Aeson..= True
                   , "audio" Aeson..= False
                   , "embeddedContext" Aeson..= False
                   ]
@@ -463,6 +519,26 @@ acpEventUpdateKind = \case
     Aeson.Object params <- Just notification_.params
     Aeson.Object update <- AesonTypes.parseMaybe (Aeson..: "update") params
     AesonTypes.parseMaybe (Aeson..: "sessionUpdate") update
+  ACPState.AcpClientDisconnect{} ->
+    Nothing
+
+acpEventContentTypes :: [ACPState.AcpClientEvent] -> [Text]
+acpEventContentTypes events =
+  mapMaybe (acpEventContentField "type") events
+
+acpEventImageData :: [ACPState.AcpClientEvent] -> [Text]
+acpEventImageData events =
+  mapMaybe (acpEventContentField "data") events
+
+acpEventContentField :: Aeson.FromJSON a => Text -> ACPState.AcpClientEvent -> Maybe a
+acpEventContentField field = \case
+  ACPState.AcpClientSend value -> do
+    JSONRPC.NotificationMessage notification_ <- Aeson.decode (Aeson.encode value)
+    guard (notification_.method == "session/update")
+    Aeson.Object params <- Just notification_.params
+    Aeson.Object update <- AesonTypes.parseMaybe (Aeson..: "update") params
+    Aeson.Object content <- AesonTypes.parseMaybe (Aeson..: "content") update
+    AesonTypes.parseMaybe (Aeson..: fromString (Text.unpack field)) content
   ACPState.AcpClientDisconnect{} ->
     Nothing
 
