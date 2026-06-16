@@ -6,6 +6,8 @@ module Bot.Main
 where
 
 import Bot.Prelude
+import qualified Bot.ACP.Config as ACPConfig
+import qualified Bot.ACP.Server as ACPServer
 import Bot.Config
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Route
@@ -99,15 +101,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
             (routes cfg threads)
             (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
-    let RPCConfig.Config{enabled = rpcEnabled} = cfg.rpc
-    if rpcEnabled
-      then
-        Concurrency.raceTasks_
-          "rpc.server"
-          (RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks)
-          "message.consumer"
-          messageConsumer
-      else messageConsumer
+    runConfiguredServers cfg rpcState messageConsumer
 
 routes
   :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
@@ -123,6 +117,66 @@ routes cfg threads =
     <> safebooruHandlers
     <> saucenaoHandlers cfg.saucenao
     <> askHandlers cfg.tool cfg.handlers.ask threads
+
+runConfiguredServers
+  :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  => BotConfig
+  -> RPC.RpcState
+  -> Eff es ()
+  -> Eff es ()
+runConfiguredServers cfg rpcState messageConsumer =
+  runWithTaskGroup "servers" (serverTasks cfg rpcState) "message.consumer" messageConsumer
+
+serverTasks
+  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Concurrent :> es, FileSystem :> es, IOE :> es)
+  => BotConfig
+  -> RPC.RpcState
+  -> [(Text, Eff es ())]
+serverTasks cfg rpcState =
+  enabledTask cfg.rpc.enabled "rpc.server" (RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks)
+    <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp)
+
+enabledTask :: Bool -> Text -> Eff es () -> [(Text, Eff es ())]
+enabledTask enabled label action =
+  [(label, action) | enabled]
+
+runWithTaskGroup
+  :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
+  => Text
+  -> [(Text, Eff es ())]
+  -> Text
+  -> Eff es ()
+  -> Eff es ()
+runWithTaskGroup groupLabel tasks innerLabel inner =
+  case nonEmpty tasks of
+    Nothing ->
+      inner
+    Just tasks_ ->
+      let (taskLabel, task) = collapseTaskGroup groupLabel tasks_
+      in Concurrency.raceTasks_ taskLabel task innerLabel inner
+
+collapseTaskGroup
+  :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
+  => Text
+  -> NonEmpty (Text, Eff es ())
+  -> (Text, Eff es ())
+collapseTaskGroup groupLabel tasks =
+  case tasks of
+    task :| [] ->
+      task
+    task :| rest ->
+      let (_combinedLabel, combinedTask) = foldl' raceTaskPair task rest
+      in (groupLabel, combinedTask)
+
+raceTaskPair
+  :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
+  => (Text, Eff es ())
+  -> (Text, Eff es ())
+  -> (Text, Eff es ())
+raceTaskPair (leftLabel, left) (rightLabel, right) =
+  ( [i|#{leftLabel}+#{rightLabel}|]
+  , Concurrency.raceTasks_ leftLabel left rightLabel right
+  )
 
 runBotLog :: IOE :> es => Severity -> Eff (KatipE : es) a -> Eff es a
 runBotLog level inner =

@@ -160,6 +160,9 @@ library
                     , lib-deps
     hs-source-dirs:   lib
     exposed-modules:
+        Bot.ACP.Config
+        Bot.ACP.Server
+        Bot.ACP.Types
         Bot.Agent
         Bot.Agent.Config
         Bot.Agent.Transcript
@@ -318,6 +321,8 @@ executable cosmobot
     build-depends:    base >=4.18.0.0
                     , cosmobot
                     , aeson
+                    , bytestring
+                    , jsonrpc
                     , text
                     , optparse-applicative
 
@@ -412,6 +417,18 @@ test-suite rpc-spec
     main-is:          RPCSpec.hs
     build-depends:    log-base
                     , network
+                    , toml-parser
+                    , websockets
+    hs-source-dirs:   test
+
+test-suite acp-spec
+    import:           warnings
+                    , threaded
+                    , language
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          ACPSpec.hs
+    build-depends:    network
                     , toml-parser
                     , websockets
     hs-source-dirs:   test

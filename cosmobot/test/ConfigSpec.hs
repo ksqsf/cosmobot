@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Config as Config
+import qualified Bot.ACP.Config as ACPConfig
 import Bot.Chat.Driver.Telegram (Config (..))
 import Bot.Core.Message (ChatPlatform (..))
 import qualified Bot.RPC.Config as RPCConfig
@@ -30,6 +31,8 @@ testDriversTableMayBeOmitted = do
   assertBool "expected Discord driver to be disabled" (isNothing cfg.discord)
   let RPCConfig.Config{enabled = rpcEnabled} = cfg.rpc
   rpcEnabled @?= False
+  let ACPConfig.Config{enabled = acpEnabled} = cfg.acp
+  acpEnabled @?= False
 
 testConfiguredTelegramDriverEnabledAlone :: IO ()
 testConfiguredTelegramDriverEnabledAlone = do

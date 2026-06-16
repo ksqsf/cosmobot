@@ -26,6 +26,7 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Matrix.Config as MatrixConfig
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import qualified Bot.Chat.Driver.Telegram.Config as TelegramConfig
+import qualified Bot.ACP.Config as ACPConfig
 import qualified Bot.LLM.OpenAI.Config as LLMConfig
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.RPC.Config as RPCConfig
@@ -71,6 +72,7 @@ data BotConfig = BotConfig
   , memory   :: !Memory.MemoryConfig
   , skills   :: !Skills.SkillsConfig
   , rpc      :: !RPCConfig.Config
+  , acp      :: !ACPConfig.Config
   , handlers :: !HandlersConfig
   , logLevel :: !Severity
   , sqlitePath :: !FilePath
@@ -106,6 +108,7 @@ data FileConfig = FileConfig
   , memory   :: !MemoryConfig.FileConfig
   , skills   :: !SkillsConfig.FileConfig
   , rpc      :: !RPCConfig.FileConfig
+  , acp      :: !ACPConfig.FileConfig
   , handler  :: !HandlerFileConfig
   }
   deriving (Show)
@@ -121,6 +124,7 @@ instance FromValue FileConfig where
     <*> fmap (fromMaybe MemoryConfig.defaultFileConfig) (optKey "memory")
     <*> fmap (fromMaybe SkillsConfig.defaultFileConfig) (optKey "skills")
     <*> fmap (fromMaybe RPCConfig.defaultFileConfig) (optKey "rpc")
+    <*> fmap (fromMaybe ACPConfig.defaultFileConfig) (optKey "acp")
     <*> reqKey "handler"
 
 data DriverFileConfig = DriverFileConfig
@@ -230,6 +234,7 @@ toBotConfig cfg =
     , memory = MemoryConfig.toMemoryConfig cfg.memory
     , skills = SkillsConfig.toSkillsConfig cfg.skills
     , rpc = RPCConfig.toRuntimeConfig cfg.rpc
+    , acp = ACPConfig.toRuntimeConfig cfg.acp
     , handlers = HandlersConfig cfg.handler.admin askConfig cfg.handler.shutup
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath

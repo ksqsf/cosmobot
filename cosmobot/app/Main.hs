@@ -2,11 +2,16 @@
 module Main (main) where
 
 import Bot.Prelude
+import qualified Bot.ACP.Server as ACPServer
+import qualified Bot.ACP.Types as ACP
 import qualified Bot.Main as BotMain
 import qualified Bot.RPC.Client as RpcClient
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy.Char8 as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.IO as TextIO
+import qualified JSONRPC
 import Options.Applicative
 
 main :: IO ()
@@ -14,10 +19,12 @@ main =
   execParser commandInfo >>= \case
     Serve configPath -> BotMain.mainWithConfig configPath
     Rpc options rpcCommand -> RpcClient.runRpcClientCommand options rpcCommand
+    AcpStdio -> runAcpStdio
 
 data Command
   = Serve !FilePath
   | Rpc !RpcClient.RpcClientOptions !RpcClient.RpcClientCommand
+  | AcpStdio
 
 commandInfo :: ParserInfo Command
 commandInfo =
@@ -45,6 +52,10 @@ commandParser =
       <> command "rpc"
         ( info (rpcParser <**> helper) $
             progDesc "Call the local cosmobot RPC websocket service"
+        )
+      <> command "acp-stdio"
+        ( info (pure AcpStdio <**> helper) $
+            progDesc "Run a minimal ACP stdio endpoint for ACPX initialization checks"
         )
 
 serveParser :: Parser Command
@@ -204,3 +215,38 @@ rpcCallParser =
 jsonReader :: ReadM Aeson.Value
 jsonReader = eitherReader \input ->
   Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 (Text.pack input))
+
+runAcpStdio :: IO ()
+runAcpStdio =
+  processLines
+  where
+    processLines = do
+      done <- hIsEOF stdin
+      unless done do
+        TextIO.getLine >>= handleAcpLine
+        processLines
+
+    handleAcpLine line =
+      case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 line) of
+        Left err ->
+          sendAcpResponse (ACP.parseErrorResponse (Text.pack err))
+        Right messageValue ->
+          case Aeson.fromJSON messageValue of
+            Aeson.Success (JSONRPC.RequestMessage request) ->
+              ACPServer.dispatchAcpRequest request >>= sendAcpResponse
+            Aeson.Success (JSONRPC.NotificationMessage notification_) ->
+              void (ACPServer.dispatchAcpRequest (notificationToRequest notification_))
+            Aeson.Error err ->
+              sendAcpResponse (ACP.invalidRequestResponse (Text.pack err))
+            Aeson.Success _ ->
+              sendAcpResponse (ACP.invalidRequestResponse "Expected request or notification")
+
+notificationToRequest :: ACP.AcpNotification -> ACP.AcpRequest
+notificationToRequest notification_ =
+  JSONRPC.JSONRPCRequest JSONRPC.rPC_VERSION (JSONRPC.RequestId Aeson.Null) notification_.method notification_.params
+
+sendAcpResponse :: ACP.AcpResponse -> IO ()
+sendAcpResponse response = do
+  LazyByteString.putStr (Aeson.encode (Aeson.toJSON response))
+  LazyByteString.putStr "\n"
+  hFlush stdout
