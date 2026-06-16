@@ -8,6 +8,7 @@ where
 import Bot.Prelude
 import qualified Bot.ACP.Config as ACPConfig
 import qualified Bot.ACP.Server as ACPServer
+import qualified Bot.ACP.State as ACP
 import Bot.Config
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Route
@@ -62,6 +63,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
   cfg <- loadConfig configPath
   threads <- newThreadStore
   rpcState <- runConcurrent RPC.newRpcState
+  acpState <- runConcurrent ACP.newAcpState
   let runRuntime =
         runConcurrent
           . runTimeout
@@ -84,7 +86,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
           . ConcurrencyManager.runConcurrencyManager
           . runGracefulTermination
           . Scheduler.runScheduler
-          . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState
+          . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState cfg.acp.enabled acpState
           . Lifecycle.runLifecycle cfg.media
       runStack =
         runRuntime
@@ -101,7 +103,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
             (routes cfg threads)
             (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
-    runConfiguredServers cfg rpcState messageConsumer
+    runConfiguredServers cfg rpcState acpState messageConsumer
 
 routes
   :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
@@ -122,19 +124,21 @@ runConfiguredServers
   :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> RPC.RpcState
+  -> ACP.AcpState
   -> Eff es ()
   -> Eff es ()
-runConfiguredServers cfg rpcState messageConsumer =
-  runWithTaskGroup "servers" (serverTasks cfg rpcState) "message.consumer" messageConsumer
+runConfiguredServers cfg rpcState acpState messageConsumer =
+  runWithTaskGroup "servers" (serverTasks cfg rpcState acpState) "message.consumer" messageConsumer
 
 serverTasks
   :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Concurrent :> es, FileSystem :> es, IOE :> es)
   => BotConfig
   -> RPC.RpcState
+  -> ACP.AcpState
   -> [(Text, Eff es ())]
-serverTasks cfg rpcState =
+serverTasks cfg rpcState acpState =
   enabledTask cfg.rpc.enabled "rpc.server" (RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks)
-    <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp)
+    <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp acpState)
 
 enabledTask :: Bool -> Text -> Eff es () -> [(Text, Eff es ())]
 enabledTask enabled label action =

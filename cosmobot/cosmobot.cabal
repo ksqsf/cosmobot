@@ -162,6 +162,7 @@ library
     exposed-modules:
         Bot.ACP.Config
         Bot.ACP.Server
+        Bot.ACP.State
         Bot.ACP.Types
         Bot.Agent
         Bot.Agent.Config
@@ -198,6 +199,7 @@ library
         Bot.AgentAudit.Types
         Bot.Chat.Adapter
         Bot.Chat.Driver
+        Bot.Chat.Driver.ACP
         Bot.Chat.Driver.Discord
         Bot.Chat.Driver.Discord.Config
         Bot.Chat.Driver.Matrix
@@ -322,6 +324,7 @@ executable cosmobot
                     , cosmobot
                     , aeson
                     , bytestring
+                    , effectful
                     , jsonrpc
                     , text
                     , optparse-applicative

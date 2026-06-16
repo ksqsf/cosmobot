@@ -13,10 +13,12 @@ module Bot.Chat.Driver
 where
 
 import qualified Bot.Chat.Driver.QQ as QQ
+import qualified Bot.Chat.Driver.ACP as ACPDriver
 import qualified Bot.Chat.Driver.Discord as Discord
 import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.RPC as RPCDriver
 import qualified Bot.Chat.Driver.Telegram as Telegram
+import qualified Bot.ACP.State as ACP
 import Bot.Chat.Driver.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatDriver as ChatDriverEffect
@@ -45,7 +47,9 @@ data ChatDrivers = ChatDrivers
   , matrix :: !(Maybe Matrix.MatrixDriver)
   , discord :: !(Maybe Discord.DiscordDriver)
   , rpc :: !(Maybe RPCDriver.RpcChatDriver)
+  , acp :: !(Maybe ACPDriver.AcpChatDriver)
   , rpcState :: !RPC.RpcState
+  , acpState :: !ACP.AcpState
   }
 
 newtype NormalizingChatDriver driver =
@@ -136,6 +140,7 @@ instance ChatDriver ChatDrivers where
     , ChatDriverEffects (NormalizingChatDriver Matrix.MatrixDriver) es
     , ChatDriverEffects (NormalizingChatDriver Discord.DiscordDriver) es
     , ChatDriverEffects (NormalizingChatDriver RPCDriver.RpcChatDriver) es
+    , ChatDriverEffects (NormalizingChatDriver ACPDriver.AcpChatDriver) es
     )
 
   driverPlatform _ =
@@ -223,6 +228,8 @@ withMessageDriver drivers message action =
       maybe missingDriver (action . NormalizingChatDriver) drivers.discord
     PlatformRPC ->
       maybe missingDriver (action . NormalizingChatDriver) drivers.rpc
+    PlatformACP ->
+      maybe missingDriver (action . NormalizingChatDriver) drivers.acp
   where
     platformText = show message.platform :: String
     missingDriver =
@@ -291,9 +298,11 @@ runChatDrivers
   -> Maybe Discord.Config
   -> RPCConfig.Config
   -> RPC.RpcState
+  -> Bool
+  -> ACP.AcpState
   -> Eff (Chat.Chat : es) ()
   -> Eff es ()
-runChatDrivers qqConfig telegramConfig matrixConfig discordConfig rpcConfig rpcState action = do
+runChatDrivers qqConfig telegramConfig matrixConfig discordConfig rpcConfig rpcState acpEnabled acpState action = do
   qq <- traverse QQ.newQQDriver qqConfig
   let telegram = Telegram.newTelegramDriver <$> telegramConfig
   matrix <- traverse Matrix.newMatrixDriver matrixConfig
@@ -304,7 +313,9 @@ runChatDrivers qqConfig telegramConfig matrixConfig discordConfig rpcConfig rpcS
         , matrix
         , discord
         , rpc = RPCDriver.rpcChatDriver rpcConfig rpcState <$ guard rpcConfig.enabled
+        , acp = ACPDriver.acpChatDriver acpState <$ guard acpEnabled
         , rpcState
+        , acpState
         }
   if hasConfiguredChatDriver drivers
     then runChatDriversWith drivers action
@@ -318,6 +329,7 @@ hasConfiguredChatDriver drivers =
     , void drivers.matrix
     , void drivers.discord
     , void drivers.rpc
+    , void drivers.acp
     ]
 
 runChatDriversWith
@@ -395,6 +407,7 @@ incomingMessages drivers =
       , Matrix.incomingMessages <$> drivers.matrix
       , Discord.incomingMessages <$> drivers.discord
       , RPC.incomingMessages drivers.rpcState <$ drivers.rpc
+      , ACP.incomingMessages drivers.acpState <$ drivers.acp
       ])
 
 normalizeJsonMediaUrls :: Media.Media :> es => (Text -> Eff es Text) -> Aeson.Value -> Eff es Aeson.Value

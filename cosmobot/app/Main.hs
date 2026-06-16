@@ -3,14 +3,18 @@ module Main (main) where
 
 import Bot.Prelude
 import qualified Bot.ACP.Server as ACPServer
+import qualified Bot.ACP.State as ACPState
 import qualified Bot.ACP.Types as ACP
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Main as BotMain
 import qualified Bot.RPC.Client as RpcClient
+import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy.Char8 as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
+import qualified Effectful.FileSystem as FileSystem
 import qualified JSONRPC
 import Options.Applicative
 
@@ -218,28 +222,36 @@ jsonReader = eitherReader \input ->
 
 runAcpStdio :: IO ()
 runAcpStdio =
-  processLines
+  runEff .
+  runConcurrent .
+  FileSystem.runFileSystem .
+  StorageSQLite.runStorageSQLitePath ":memory:" .
+  Media.runMediaPassthrough $ do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    processLines acpState queue
   where
-    processLines = do
-      done <- hIsEOF stdin
+    processLines acpState queue = do
+      done <- liftIO (hIsEOF stdin)
       unless done do
-        TextIO.getLine >>= handleAcpLine
-        processLines
+        line <- liftIO TextIO.getLine
+        handleAcpLine acpState queue line
+        processLines acpState queue
 
-    handleAcpLine line =
+    handleAcpLine acpState queue line =
       case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 line) of
         Left err ->
-          sendAcpResponse (ACP.parseErrorResponse (Text.pack err))
+          liftIO (sendAcpResponse (ACP.parseErrorResponse (Text.pack err)))
         Right messageValue ->
           case Aeson.fromJSON messageValue of
             Aeson.Success (JSONRPC.RequestMessage request) ->
-              ACPServer.dispatchAcpRequest request >>= sendAcpResponse
+              ACPServer.dispatchAcpRequest acpState queue request >>= liftIO . sendAcpResponse
             Aeson.Success (JSONRPC.NotificationMessage notification_) ->
-              void (ACPServer.dispatchAcpRequest (notificationToRequest notification_))
+              void (ACPServer.dispatchAcpRequest acpState queue (notificationToRequest notification_))
             Aeson.Error err ->
-              sendAcpResponse (ACP.invalidRequestResponse (Text.pack err))
+              liftIO (sendAcpResponse (ACP.invalidRequestResponse (Text.pack err)))
             Aeson.Success _ ->
-              sendAcpResponse (ACP.invalidRequestResponse "Expected request or notification")
+              liftIO (sendAcpResponse (ACP.invalidRequestResponse "Expected request or notification"))
 
 notificationToRequest :: ACP.AcpNotification -> ACP.AcpRequest
 notificationToRequest notification_ =

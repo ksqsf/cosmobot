@@ -83,6 +83,8 @@ data ChatPlatform
   -- ^ Discord Gateway and REST APIs.
   | PlatformRPC
   -- ^ Local WebSocket RPC virtual chat sessions.
+  | PlatformACP
+  -- ^ Agent Client Protocol virtual chat sessions.
   deriving (Eq, Ord, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 chatPlatformKey :: ChatPlatform -> Text
@@ -97,6 +99,8 @@ chatPlatformKey = \case
     "discord"
   PlatformRPC ->
     "rpc"
+  PlatformACP ->
+    "acp"
 
 -- | Coarse chat shape shared across platforms.
 data ChatKind
