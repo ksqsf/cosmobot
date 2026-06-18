@@ -14,6 +14,7 @@ module Bot.Storage.Session
   , listSessions
   , loadSession
   , loadSessionHistory
+  , loadMessage
   , appendMessage
   , updateMessageText
   , renameSession

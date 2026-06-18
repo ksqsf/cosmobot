@@ -56,12 +56,14 @@ instance ChatDriver AcpChatDriver where
   editMessage driver message messageId body = do
     let sessionId = ACP.sessionIdFromMessage message
         text = ReplyBody.renderReplyBody body
+    previous <- fmap (.text) <$> SessionStorage.loadMessage (ACP.acpSessionIdText sessionId) messageId
     updated <- SessionStorage.updateMessageText (ACP.acpSessionIdText sessionId) messageId text
     when updated $
-      ACP.broadcast driver.acpState $
-        Aeson.toJSON $
-          sessionUpdateNotification sessionId $
-            agentMessageChunkUpdate messageId (ACPContent.textContentBlock text)
+      for_ (editedTextChunk previous text) \chunk ->
+        ACP.broadcast driver.acpState $
+          Aeson.toJSON $
+            sessionUpdateNotification sessionId $
+              agentMessageChunkUpdate messageId (ACPContent.textContentBlock chunk)
     pure updated
 
   completeMessageEdit driver message messageId = do
@@ -222,6 +224,17 @@ broadcastReplyContent driver sessionId messageId content =
     Aeson.toJSON $
       sessionUpdateNotification sessionId $
         agentMessageChunkUpdate messageId content
+
+editedTextChunk :: Maybe Text -> Text -> Maybe Text
+editedTextChunk previous text =
+  case previous >>= (`Text.stripPrefix` text) of
+    Just suffix ->
+      nonEmptyTextChunk suffix
+    Nothing ->
+      nonEmptyTextChunk text
+  where
+    nonEmptyTextChunk value =
+      guard (not (Text.null value)) $> value
 
 sessionUpdateNotification :: ACP.AcpSessionId -> Aeson.Value -> JSONRPC.JSONRPCMessage
 sessionUpdateNotification sessionId update =

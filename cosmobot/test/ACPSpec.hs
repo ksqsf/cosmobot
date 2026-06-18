@@ -304,6 +304,11 @@ testSessionPromptStreamsTextResponse =
         , "agent_message_chunk"
         , "agent_message_chunk"
         ]
+      acpEventContentText events @?=
+        [ "say hello"
+        , "hel"
+        , "lo"
+        ]
 
 testSessionPromptClearsCompletedPrompt :: IO ()
 testSessionPromptClearsCompletedPrompt =
