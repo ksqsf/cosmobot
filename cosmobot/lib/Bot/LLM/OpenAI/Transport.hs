@@ -290,6 +290,7 @@ data ChatCompletionRequest = ChatCompletionRequest
 data ImageGenerationRequest = ImageGenerationRequest
   { model :: !Text
   , prompt :: !Text
+  , outputFormat :: !(Maybe Text)
   , quality :: !(Maybe Text)
   , size :: !(Maybe Text)
   , background :: !(Maybe Text)
@@ -351,6 +352,7 @@ imageGenerationRequest provider options model prompt stream =
   ImageGenerationRequest
     { model = model
     , prompt = prompt
+    , outputFormat = provider.outputFormat
     , quality = resolved.quality
     , size = resolved.size
     , background = resolved.background
@@ -557,6 +559,7 @@ imageEditMultipartParts provider options model prompt imageUploads maskUpload =
       , multipartTextPart "stream" "true"
       , multipartTextPart "partial_images" "0"
       ]
+        <> maybeTextPart "output_format" provider.outputFormat
         <> maybeTextPart "quality" resolved.quality
         <> maybeTextPart "size" resolved.size
         <> maybeTextPart "background" (imageEditBackground model resolved.background)

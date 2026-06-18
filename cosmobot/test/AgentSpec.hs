@@ -1365,6 +1365,7 @@ testLLMImageStreamRequestAsksOnlyForFinalImage =
       Aeson.object
         [ "model" Aeson..= ("gpt-image-2" :: Text)
         , "prompt" Aeson..= ("draw this" :: Text)
+        , "output_format" Aeson..= ("webp" :: Text)
         , "stream" Aeson..= True
         , "partial_images" Aeson..= (0 :: Int)
         ]
@@ -1443,6 +1444,8 @@ testLLMLogJsonTruncatesBase64ImagePayloads = do
 imageStreamTestConfig :: LLMConfig.ImageProviderConfig
 imageStreamTestConfig =
   LLMConfig.defaultImageProviderConfig
+    { LLMConfig.outputFormat = Just "webp"
+    }
 
 audioSpeechTestConfig :: LLMConfig.AudioProviderConfig
 audioSpeechTestConfig =

@@ -136,8 +136,8 @@ storeImageFromTransport
   -> Text
   -> Q.ByteStream (Eff es) ()
   -> Stream (Of Text) (Eff es) Text
-storeImageFromTransport label ImageProviderConfig{requestTimeout} _key bytes = do
-  let mime = generatedImageMimeType
+storeImageFromTransport label ImageProviderConfig{requestTimeout, outputFormat} _key bytes = do
+  let mime = generatedImageMimeType outputFormat
       sourceName = Just (generatedImageSourceName mime)
   storeImageByteStream label requestTimeout mime sourceName bytes
 
@@ -192,9 +192,12 @@ effByteStreamToResourceTIO runInIO byteStream =
           S.yield chunk
           go rest
 
-generatedImageMimeType :: Text
-generatedImageMimeType =
-  "image/png"
+generatedImageMimeType :: Maybe Text -> Text
+generatedImageMimeType outputFormat =
+  case Text.toLower . Text.strip <$> outputFormat of
+    Just "jpeg" -> "image/jpeg"
+    Just "webp" -> "image/webp"
+    _ -> "image/png"
 
 generatedImageSourceName :: Text -> Text
 generatedImageSourceName mime =

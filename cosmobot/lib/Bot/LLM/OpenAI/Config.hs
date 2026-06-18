@@ -48,6 +48,7 @@ data ImageProviderConfig = ImageProviderConfig
   , canGenerate :: !Bool
   , canEdit :: !Bool
   , requestTimeout :: !Int
+  , outputFormat :: !(Maybe Text)
   , quality :: !(Maybe Text)
   , size :: !(Maybe Text)
   , aspectRatio :: !(Maybe Text)
@@ -93,6 +94,7 @@ defaultImageProviderConfig = ImageProviderConfig
   , canGenerate = True
   , canEdit = False
   , requestTimeout = 300
+  , outputFormat = Nothing
   , quality = Nothing
   , size = Nothing
   , aspectRatio = Nothing
@@ -135,6 +137,7 @@ data ImageProviderFileConfig = ImageProviderFileConfig
   , canGenerate :: !Bool
   , canEdit :: !Bool
   , requestTimeout :: !Int
+  , outputFormat :: !(Maybe Text)
   , quality :: !(Maybe Text)
   , size :: !(Maybe Text)
   , aspectRatio :: !(Maybe Text)
@@ -215,6 +218,7 @@ instance FromValue ImageProviderFileConfig where
     canGenerate <- fmap (fromMaybe defaultImageProviderConfig.canGenerate) (optKey "can_generate")
     canEdit <- fmap (fromMaybe defaultImageProviderConfig.canEdit) (optKey "can_edit")
     requestTimeout <- fmap (fromMaybe defaultImageProviderConfig.requestTimeout) (optKey "timeout")
+    outputFormat <- optKey "output_format"
     quality <- optKey "quality"
     size <- optKey "size"
     aspectRatio <- optKey "aspect_ratio"
@@ -228,6 +232,7 @@ instance FromValue ImageProviderFileConfig where
       , canGenerate = canGenerate
       , canEdit = canEdit
       , requestTimeout = requestTimeout
+      , outputFormat = outputFormat
       , quality = quality
       , size = size
       , aspectRatio = aspectRatio
@@ -285,6 +290,7 @@ toRuntimeImageProviderConfig cfg =
     , canGenerate = cfg.canGenerate
     , canEdit = cfg.canEdit
     , requestTimeout = cfg.requestTimeout
+    , outputFormat = cfg.outputFormat
     , quality = cfg.quality
     , size = cfg.size
     , aspectRatio = cfg.aspectRatio
