@@ -494,10 +494,21 @@ parseInitializeParams =
     fs <- Aeson.withObject "clientCapabilities" (\co -> co Aeson..:? "fs" Aeson..!= Aeson.object []) capabilities
     readTextFile <- Aeson.withObject "clientCapabilities.fs" (\fo -> fo Aeson..:? "readTextFile" Aeson..!= False) fs
     writeTextFile <- Aeson.withObject "clientCapabilities.fs" (\fo -> fo Aeson..:? "writeTextFile" Aeson..!= False) fs
-    terminal <- Aeson.withObject "clientCapabilities" (\co -> co Aeson..:? "terminal" Aeson..!= False) capabilities
+    terminal <- Aeson.withObject "clientCapabilities" (\co -> co Aeson..:? "terminal" >>= parseTerminalCapability) capabilities
     pure InitializeParams
       { clientCapabilities = State.AcpClientCapabilities{readTextFile, writeTextFile, terminal}
       }
+
+parseTerminalCapability :: Maybe Aeson.Value -> AesonTypes.Parser Bool
+parseTerminalCapability = \case
+  Nothing ->
+    pure False
+  Just (Aeson.Bool supported) ->
+    pure supported
+  Just (Aeson.Object _) ->
+    pure True
+  Just value ->
+    AesonTypes.typeMismatch "terminal capability" value
 
 parseSessionIdParams :: Aeson.Value -> AesonTypes.Parser State.AcpSessionId
 parseSessionIdParams =

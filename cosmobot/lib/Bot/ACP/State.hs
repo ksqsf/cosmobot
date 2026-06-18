@@ -173,13 +173,12 @@ requestSessionClient acpState sessionId method supported params =
       case Map.lookup sessionId activeClients >>= \clientId -> (clientId,) <$> Map.lookup clientId clients of
         Nothing ->
           pure (Left "No active ACP client for this session.")
-        Just (clientId, queue) ->
-          case Map.lookup clientId capabilitiesByClient of
-            Nothing ->
-              pure (Left "ACP client capabilities are not initialized.")
-            Just capabilities | not (supported capabilities) ->
+        Just (clientId, queue) -> do
+          let capabilities = Map.findWithDefault legacyClientCapabilities clientId capabilitiesByClient
+          if not (supported capabilities)
+            then
               pure (Left [i|ACP client does not support #{method}.|])
-            Just _ -> do
+            else do
               requestNumber <- STM.readTVar acpState.nextClientRequestId
               STM.writeTVar acpState.nextClientRequestId (requestNumber + 1)
               let requestId = JSONRPC.RequestId (Aeson.Number (fromInteger requestNumber))
@@ -192,6 +191,14 @@ requestSessionClient acpState sessionId method supported params =
     cleanupPending queue requestId =
       STM.atomically $
         STM.modifyTVar' acpState.pendingClientRequests (Map.delete (queue.clientId, requestKey requestId))
+
+legacyClientCapabilities :: AcpClientCapabilities
+legacyClientCapabilities =
+  AcpClientCapabilities
+    { readTextFile = True
+    , writeTextFile = True
+    , terminal = False
+    }
 
 withActiveSessionClient
   :: (Concurrent :> es, IOE :> es)

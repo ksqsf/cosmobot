@@ -62,10 +62,12 @@ main =
       , testCase "session/prompt does not complete on nonfinal reply" testSessionPromptIgnoresNonfinalReply
       , testCase "session/prompt accepts and streams image content" testSessionPromptAcceptsAndStreamsImageContent
       , testCase "session/prompt streams generated file images as image content" testSessionPromptStreamsGeneratedFileImageContent
-      , testCase "ACP client file read routes to active client" testClientFileReadRoutesToActiveClient
+      , testCase "ACP client file read routes to uninitialized active client" testClientFileReadRoutesToActiveClient
       , testCase "ACP client file write routes to active client" testClientFileWriteRoutesToActiveClient
       , testCase "ACP client file request checks advertised capability" testClientFileRequestChecksAdvertisedCapability
       , testCase "ACP client terminal routes to active client" testClientTerminalRoutesToActiveClient
+      , testCase "ACP client terminal rejects uninitialized active client" testClientTerminalRejectsUninitializedClient
+      , testCase "ACP client terminal defaults to unsupported for partial capabilities" testClientTerminalDefaultsToUnsupported
       , testCase "ACP client terminal checks advertised capability" testClientTerminalChecksAdvertisedCapability
       , testCase "websocket server authenticates and handles initialize" testWebSocketServerAuthenticatesAndHandlesInitialize
       ]
@@ -533,7 +535,6 @@ testClientFileReadRoutesToActiveClient =
   runAcpStorage do
     acpState <- ACPState.newAcpState
     (_clientId, queue) <- ACPState.registerClient acpState
-    initializeWithFs acpState queue True True
     let sessionId = Session.SessionId "session-1"
         message = acpToolMessage sessionId
         requestAction =
@@ -677,6 +678,33 @@ testClientTerminalRoutesToActiveClient =
           (ACPClient.runACP acpState (ACPEffect.releaseClientTerminal message "term-1"))
           (terminalRequestRoundTrip acpState queue "terminal/release" "term-1" Aeson.Null)
       liftIO $ releaseResult @?= Right ()
+
+testClientTerminalRejectsUninitializedClient :: IO ()
+testClientTerminalRejectsUninitializedClient =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    let sessionId = Session.SessionId "session-1"
+        message = acpToolMessage sessionId
+    result <- ACPState.withActiveSessionClient acpState queue sessionId $
+      ACPClient.runACP acpState $
+        ACPEffect.readClientTerminalOutput message "term-1"
+    liftIO $
+      result @?= Left "ACP client does not support terminal/output."
+
+testClientTerminalDefaultsToUnsupported :: IO ()
+testClientTerminalDefaultsToUnsupported =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    initializeWithFs acpState queue True True
+    let sessionId = Session.SessionId "session-1"
+        message = acpToolMessage sessionId
+    result <- ACPState.withActiveSessionClient acpState queue sessionId $
+      ACPClient.runACP acpState $
+        ACPEffect.readClientTerminalOutput message "term-1"
+    liftIO $
+      result @?= Left "ACP client does not support terminal/output."
 
 testClientTerminalChecksAdvertisedCapability :: IO ()
 testClientTerminalChecksAdvertisedCapability =
