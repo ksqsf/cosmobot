@@ -47,7 +47,6 @@ import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import Network.HTTP.Req
 import Optics ((%~))
-import qualified Streaming as Streaming
 import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
 import System.IO.Error (ioError, userError)
@@ -717,7 +716,7 @@ streamImageGenerationOpenAIBytes provider@ImageProviderConfig{baseUrl, model, re
     let requestPath = ["images", "generations"]
         request = imageGenerationStreamingRequestPayload provider options model (imagePromptFromMessages messages)
     httpRequest <- liftIO (sseJsonPostRequest baseUrl requestPath apiKey (secondsToMicros requestTimeout) request)
-    base64DecodedChunks (b64JsonBase64Chunks (streamHttpResponseBody httpRequest))
+    imageBytesFromCompletedEvent (streamSsePayloads (streamHttpResponseBody httpRequest))
 
 streamImageEditOpenAIBytes
   :: (HTTP.HTTP :> es, IOE :> es, Timeout.Timeout :> es, FileSystem :> es, Fail :> es)
@@ -736,7 +735,7 @@ streamImageEditOpenAIBytes cfg@ImageProviderConfig{baseUrl, model, requestTimeou
       \(imageUploads, maskUpload) -> do
         let requestPath = imageEditsPath
             parts = imageEditMultipartParts cfg options model prompt imageUploads maskUpload
-        base64DecodedChunks (b64JsonBase64Chunks (streamSseMultipartPost baseUrl requestPath key (secondsToMicros requestTimeout) parts))
+        imageBytesFromCompletedEvent (streamSseMultipartPost baseUrl requestPath key (secondsToMicros requestTimeout) parts)
 
 streamRawJsonPost
   :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es)
@@ -849,99 +848,27 @@ ensureSuccessfulStreamingResponse request response = do
 
 -- Raw Image Byte Streaming
 
-b64JsonBase64Chunks
+imageBytesFromCompletedEvent
   :: IOE :> es
   => Stream (Of StrictByteString.ByteString) (Eff es) r
   -> Stream (Of StrictByteString.ByteString) (Eff es) ()
-b64JsonBase64Chunks input =
-  findCompletedImageEvent (Q.split quote (Q.fromChunks input))
-
-findCompletedImageEvent
-  :: IOE :> es
-  => Stream (Q.ByteStream (Eff es)) (Eff es) r
-  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
-findCompletedImageEvent segments =
-  lift (Streaming.inspect segments) >>= \case
-    Left _ ->
-      lift (throwIO (LLMException "Image generation streaming response was empty: no image output."))
-    Right segment -> do
-      keyCandidate S.:> rest <- lift (Q.toStrict segment)
-      if keyCandidate == "type"
-        then imageEventTypeValueChunks rest
-        else findCompletedImageEvent rest
-
-imageEventTypeValueChunks
-  :: IOE :> es
-  => Stream (Q.ByteStream (Eff es)) (Eff es) r
-  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
-imageEventTypeValueChunks segments =
-  lift (Streaming.inspect segments) >>= \case
-    Left _ ->
-      lift (throwIO (LLMException "Image generation streaming response was empty: no image output."))
-    Right afterKeySegment -> do
-      _afterKey S.:> afterKey <- lift (Q.toStrict afterKeySegment)
-      lift (Streaming.inspect afterKey) >>= \case
-        Left _ ->
-          lift (throwIO (LLMException "Image generation streaming response was empty: no image output."))
-        Right valueSegment -> do
-          eventType S.:> afterValue <- lift (Q.toStrict valueSegment)
-          if isCompletedImageEventType (TextEncoding.decodeUtf8With TextEncoding.lenientDecode eventType)
-            then findB64JsonKey afterValue
-            else findCompletedImageEvent afterValue
-
-findB64JsonKey
-  :: IOE :> es
-  => Stream (Q.ByteStream (Eff es)) (Eff es) r
-  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
-findB64JsonKey segments =
-  lift (Streaming.inspect segments) >>= \case
-    Left _ ->
-      lift (throwIO (LLMException "Completed image generation event did not include b64_json."))
-    Right segment -> do
-      keyCandidate S.:> rest <- lift (Q.toStrict segment)
-      if keyCandidate == "b64_json"
-        then b64JsonValueChunks rest
-        else findB64JsonKey rest
+imageBytesFromCompletedEvent payloads = do
+  chunks <- lift (S.toList_ payloads)
+  payloadValues <- traverse decodePayload chunks
+  case imageGenerationStreamBytesFromPayloads payloadValues of
+    Right bytes ->
+      yieldNonEmptyBytes bytes
+    Left err ->
+      lift (throwIO (LLMException err))
+  where
+    decodePayload payload =
+      case Aeson.eitherDecodeStrict payload of
+        Right value -> pure value
+        Left err -> lift (throwIO (LLMException [i|Invalid image generation event JSON: #{Text.pack err}|]))
 
 isCompletedImageEventType :: Text -> Bool
 isCompletedImageEventType eventType =
   eventType == "image_generation.completed" || eventType == "image_edit.completed"
-
-b64JsonValueChunks
-  :: IOE :> es
-  => Stream (Q.ByteStream (Eff es)) (Eff es) r
-  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
-b64JsonValueChunks segments =
-  lift (Streaming.inspect segments) >>= \case
-    Left _ ->
-      lift (throwIO (LLMException "Image generation b64_json value was missing."))
-    Right afterKeySegment -> do
-      _afterKey S.:> afterKey <- lift (Q.toStrict afterKeySegment)
-      lift (Streaming.inspect afterKey) >>= \case
-        Left _ ->
-          lift (throwIO (LLMException "Image generation b64_json value was missing."))
-        Right valueSegment -> do
-          _rest <- Q.toChunks valueSegment
-          pure ()
-
-base64DecodedChunks
-  :: IOE :> es
-  => Stream (Of StrictByteString.ByteString) (Eff es) r
-  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
-base64DecodedChunks =
-  go StrictByteString.empty
-  where
-    go pending input =
-      lift (S.next input) >>= \case
-        Left _ ->
-          unless (StrictByteString.null pending) (decodeAndYield pending)
-        Right (chunk, rest) -> do
-          let clean = StrictByteString.filter (not . isJsonWhitespace) chunk
-              joined = pending <> clean
-              decodeLength = (StrictByteString.length joined `div` 4) * 4
-              (ready, nextPending) = StrictByteString.splitAt decodeLength joined
-          decodeAndYield ready
-          go nextPending rest
 
 decodeAndYield :: IOE :> es => StrictByteString.ByteString -> Stream (Of StrictByteString.ByteString) (Eff es) ()
 decodeAndYield bytes
@@ -957,13 +884,6 @@ decodeAndYield bytes
 yieldNonEmptyBytes :: Monad m => StrictByteString.ByteString -> Stream (Of StrictByteString.ByteString) m ()
 yieldNonEmptyBytes bytes =
   unless (StrictByteString.null bytes) (S.yield bytes)
-
-quote :: Word8
-quote = 34
-
-isJsonWhitespace :: Word8 -> Bool
-isJsonWhitespace byte =
-  byte == 32 || byte == 10 || byte == 13 || byte == 9
 
 streamChatCompletion
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
