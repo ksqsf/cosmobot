@@ -85,5 +85,6 @@ defaultTools =
   , manageSenderMemoryTool
   , manageChatMemoryTool
   , runBashTool
+  , acpTerminalTool
   , emacsEvalTool
   ]

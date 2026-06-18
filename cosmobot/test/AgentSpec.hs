@@ -7,6 +7,7 @@ import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Tools.Files as FileTools
 import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
+import qualified Bot.Agent.Tools.Shell as ShellTools
 import qualified Bot.Agent.Types as AgentTypes
 import Bot.Agent.Tools.Shell (runBashSafe)
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
@@ -184,6 +185,7 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
+      , testCase "ACP client terminal tool is ACP-only" testAcpClientTerminalToolIsAcpOnly
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "tool reply middleware normalizes reply images" testToolReplyMiddlewareNormalizesReplyImages
       , testCase "tool reply middleware rejects uncached remote images" testToolReplyMiddlewareRejectsUncachedRemoteImages
@@ -285,6 +287,14 @@ testAcpClientFileToolsAreAcpOnly = do
   assertBool "write tool should be hidden outside ACP" (not (writeTool.allowed agentContext))
   assertBool "read tool should be visible for ACP" (readTool.allowed acpContext)
   assertBool "write tool should be visible for ACP" (writeTool.allowed acpContext)
+
+testAcpClientTerminalToolIsAcpOnly :: IO ()
+testAcpClientTerminalToolIsAcpOnly = do
+  let terminalTool = ShellTools.acpTerminalTool :: Agent.Tool AgentStack
+      acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
+  terminalTool.name @?= "acp_terminal"
+  assertBool "terminal tool should be hidden outside ACP" (not (terminalTool.allowed agentContext))
+  assertBool "terminal tool should be visible for ACP" (terminalTool.allowed acpContext)
 
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do
@@ -2639,6 +2649,16 @@ runTestACP =
       pure (Left "ACP client file test interpreter is not configured.")
     ACP.WriteClientFile{} ->
       pure (Left "ACP client file test interpreter is not configured.")
+    ACP.CreateClientTerminal{} ->
+      pure (Left "ACP client terminal test interpreter is not configured.")
+    ACP.ReadClientTerminalOutput{} ->
+      pure (Left "ACP client terminal test interpreter is not configured.")
+    ACP.WaitForClientTerminalExit{} ->
+      pure (Left "ACP client terminal test interpreter is not configured.")
+    ACP.KillClientTerminal{} ->
+      pure (Left "ACP client terminal test interpreter is not configured.")
+    ACP.ReleaseClientTerminal{} ->
+      pure (Left "ACP client terminal test interpreter is not configured.")
 
 popAnswer :: IORef.IORef [LLM.ChatAnswer] -> IO LLM.ChatAnswer
 popAnswer answers =

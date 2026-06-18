@@ -6,12 +6,15 @@ Stability   : experimental
 
 module Bot.Agent.Tools.Shell
   ( runBashTool
+  , acpTerminalTool
   , runBashSafe
   )
 where
 
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
+import Bot.Core.Message
+import qualified Bot.Effect.ACP as ACP
 import Bot.Prelude
 import qualified Bot.Util.Process as ProcessUtil
 import qualified Data.Aeson as Aeson
@@ -37,6 +40,56 @@ runBashTool = Tool
         result <- runBashSafe timeoutSeconds (Text.unpack script)
         pure (toolText result)
   }
+
+acpTerminalTool :: ACP.ACP :> es => Tool es
+acpTerminalTool = Tool
+  { name = "acp_terminal"
+  , description = "Run or manage a terminal command in the connected ACP client workspace. Actions: create, output, wait_for_exit, kill, release."
+  , parameters = objectSchema
+      [ fieldText "action" "One of: create, output, wait_for_exit, kill, release."
+      , fieldText "terminal_id" "Terminal id returned by create."
+      , fieldText "command" "Command to execute for create."
+      , fieldTextArray "args" "Command arguments for create."
+      , ("env", envSchema)
+      , fieldText "cwd" "Working directory for create. Defaults to the ACP session cwd."
+      , fieldInteger "output_byte_limit" "Maximum retained output bytes for create."
+      ]
+      ["action"]
+  , noisy = False
+  , allowed = acpOnly
+  , start = \context -> pure \args ->
+      withParsedToolArgs parseAcpTerminalArgs args \call ->
+        runAcpTerminalCall context.message call >>= \case
+          Left err ->
+            pure (clientFailure err)
+          Right value ->
+            pure (toolText value)
+  }
+
+data AcpTerminalCall
+  = AcpTerminalCreate !ACP.TerminalCreate
+  | AcpTerminalOutput !Text
+  | AcpTerminalWaitForExit !Text
+  | AcpTerminalKill !Text
+  | AcpTerminalRelease !Text
+  deriving (Eq, Show)
+
+runAcpTerminalCall :: ACP.ACP :> es => IncomingMessage -> AcpTerminalCall -> Eff es (Either Text Text)
+runAcpTerminalCall message = \case
+  AcpTerminalCreate create ->
+    fmap (\terminalId -> jsonText (Aeson.object ["terminalId" Aeson..= terminalId])) <$> ACP.createClientTerminal message create
+  AcpTerminalOutput terminalId ->
+    fmap (\output -> jsonText (Aeson.object
+      [ "output" Aeson..= output.output
+      , "truncated" Aeson..= output.truncated
+      , "exitStatus" Aeson..= fmap terminalExitStatusValue output.exitStatus
+      ])) <$> ACP.readClientTerminalOutput message terminalId
+  AcpTerminalWaitForExit terminalId ->
+    fmap (jsonText . terminalExitStatusValue) <$> ACP.waitForClientTerminalExit message terminalId
+  AcpTerminalKill terminalId ->
+    fmap (const "Terminal killed.") <$> ACP.killClientTerminal message terminalId
+  AcpTerminalRelease terminalId ->
+    fmap (const "Terminal released.") <$> ACP.releaseClientTerminal message terminalId
 
 runBashSafe :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Int -> String -> Eff es Text
 runBashSafe timeoutSeconds script = do
@@ -88,3 +141,84 @@ runBashArgs =
     when (timeoutSeconds <= 0) do
       fail "timeout_seconds must be positive."
     pure (script, timeoutSeconds)
+
+parseAcpTerminalArgs :: Aeson.Value -> AesonTypes.Parser AcpTerminalCall
+parseAcpTerminalArgs =
+  Aeson.withObject "acp_terminal arguments" \o -> do
+    action <- o Aeson..: Key.fromText "action"
+    case action :: Text of
+      "create" -> do
+        command <- o Aeson..: Key.fromText "command"
+        args <- fromMaybe [] <$> o Aeson..:? Key.fromText "args"
+        envValues <- fromMaybe [] <$> o Aeson..:? Key.fromText "env"
+        env <- traverse
+          ( Aeson.withObject "environment variable" \envObject ->
+              (,)
+                <$> envObject Aeson..: Key.fromText "name"
+                <*> envObject Aeson..: Key.fromText "value"
+          )
+          envValues
+        cwd <- nonEmptyText =<< o Aeson..:? Key.fromText "cwd"
+        outputByteLimit <- o Aeson..:? Key.fromText "output_byte_limit"
+        pure $
+          AcpTerminalCreate ACP.TerminalCreate
+            { command
+            , args
+            , env
+            , cwd
+            , outputByteLimit
+            }
+      "output" ->
+        AcpTerminalOutput <$> requiredTerminalId o
+      "wait_for_exit" ->
+        AcpTerminalWaitForExit <$> requiredTerminalId o
+      "kill" ->
+        AcpTerminalKill <$> requiredTerminalId o
+      "release" ->
+        AcpTerminalRelease <$> requiredTerminalId o
+      _ ->
+        fail "action must be one of: create, output, wait_for_exit, kill, release."
+
+requiredTerminalId :: AesonTypes.Object -> AesonTypes.Parser Text
+requiredTerminalId o =
+  o Aeson..: Key.fromText "terminal_id"
+
+nonEmptyText :: Maybe Text -> AesonTypes.Parser (Maybe Text)
+nonEmptyText value =
+  pure do
+    text <- value
+    guard (not (Text.null (Text.strip text)))
+    pure text
+
+terminalExitStatusValue :: ACP.TerminalExitStatus -> Aeson.Value
+terminalExitStatusValue status =
+  Aeson.object
+    [ "exitCode" Aeson..= status.exitCode
+    , "signal" Aeson..= status.signal
+    ]
+
+acpOnly :: AgentContext es -> Bool
+acpOnly context =
+  context.message.platform == PlatformACP
+
+clientFailure :: Text -> ToolResult
+clientFailure err =
+  toolFailure (permanentArgumentFailure err err).failure
+
+envSchema :: Aeson.Value
+envSchema =
+  Aeson.object
+    [ "type" Aeson..= ("array" :: Text)
+    , "description" Aeson..= ("Environment variables for create." :: Text)
+    , "items" Aeson..=
+        Aeson.object
+          [ "type" Aeson..= ("object" :: Text)
+          , "properties" Aeson..=
+              Aeson.object
+                [ "name" Aeson..= Aeson.object ["type" Aeson..= ("string" :: Text)]
+                , "value" Aeson..= Aeson.object ["type" Aeson..= ("string" :: Text)]
+                ]
+          , "required" Aeson..= ["name" :: Text, "value"]
+          , "additionalProperties" Aeson..= False
+          ]
+    ]

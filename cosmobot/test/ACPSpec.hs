@@ -65,6 +65,8 @@ main =
       , testCase "ACP client file read routes to active client" testClientFileReadRoutesToActiveClient
       , testCase "ACP client file write routes to active client" testClientFileWriteRoutesToActiveClient
       , testCase "ACP client file request checks advertised capability" testClientFileRequestChecksAdvertisedCapability
+      , testCase "ACP client terminal routes to active client" testClientTerminalRoutesToActiveClient
+      , testCase "ACP client terminal checks advertised capability" testClientTerminalChecksAdvertisedCapability
       , testCase "websocket server authenticates and handles initialize" testWebSocketServerAuthenticatesAndHandlesInitialize
       ]
 
@@ -590,6 +592,101 @@ testClientFileRequestChecksAdvertisedCapability =
     liftIO $
       result @?= Left "ACP client does not support fs/read_text_file."
 
+testClientTerminalRoutesToActiveClient :: IO ()
+testClientTerminalRoutesToActiveClient =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    initializeWithTerminal acpState queue True
+    let sessionId = Session.SessionId "session-1"
+        message = acpToolMessage sessionId
+        terminalCreate = ACPEffect.TerminalCreate
+          { command = "printf"
+          , args = ["hello"]
+          , env = [("LANG", "C")]
+          , cwd = Just "/tmp/project"
+          , outputByteLimit = Just 1024
+          }
+    ACPState.withActiveSessionClient acpState queue sessionId do
+      (createResult, ()) <- Async.concurrently
+          (ACPClient.runACP acpState (ACPEffect.createClientTerminal message terminalCreate))
+          do
+            request <- readClientRequest queue
+            liftIO do
+              request.method @?= "terminal/create"
+              request.params @?=
+                Aeson.object
+                  [ "sessionId" Aeson..= ("session-1" :: Text)
+                  , "command" Aeson..= ("printf" :: Text)
+                  , "args" Aeson..= ["hello" :: Text]
+                  , "env" Aeson..=
+                      [ Aeson.object
+                          [ "name" Aeson..= ("LANG" :: Text)
+                          , "value" Aeson..= ("C" :: Text)
+                          ]
+                      ]
+                  , "cwd" Aeson..= ("/tmp/project" :: Text)
+                  , "outputByteLimit" Aeson..= (1024 :: Int)
+                  ]
+            resolveClientRequest acpState queue request (Aeson.object ["terminalId" Aeson..= ("term-1" :: Text)])
+      liftIO $ createResult @?= Right "term-1"
+
+      (outputResult, ()) <- Async.concurrently
+          (ACPClient.runACP acpState (ACPEffect.readClientTerminalOutput message "term-1"))
+          do
+            terminalRequestRoundTrip acpState queue "terminal/output" "term-1" $
+              Aeson.object
+                [ "output" Aeson..= ("hello" :: Text)
+                , "truncated" Aeson..= False
+                , "exitStatus" Aeson..=
+                    Aeson.object
+                      [ "exitCode" Aeson..= (0 :: Int)
+                      , "signal" Aeson..= Aeson.Null
+                      ]
+                ]
+      liftIO $
+        outputResult @?=
+          Right ACPEffect.TerminalOutput
+            { output = "hello"
+            , truncated = False
+            , exitStatus = Just ACPEffect.TerminalExitStatus{exitCode = Just 0, signal = Nothing}
+            }
+
+      (waitResult, ()) <- Async.concurrently
+          (ACPClient.runACP acpState (ACPEffect.waitForClientTerminalExit message "term-1"))
+          do
+            terminalRequestRoundTrip acpState queue "terminal/wait_for_exit" "term-1" $
+              Aeson.object
+                [ "exitCode" Aeson..= (0 :: Int)
+                , "signal" Aeson..= Aeson.Null
+                ]
+      liftIO $
+        waitResult @?= Right ACPEffect.TerminalExitStatus{exitCode = Just 0, signal = Nothing}
+
+      (killResult, ()) <- Async.concurrently
+          (ACPClient.runACP acpState (ACPEffect.killClientTerminal message "term-1"))
+          (terminalRequestRoundTrip acpState queue "terminal/kill" "term-1" Aeson.Null)
+      liftIO $ killResult @?= Right ()
+
+      (releaseResult, ()) <- Async.concurrently
+          (ACPClient.runACP acpState (ACPEffect.releaseClientTerminal message "term-1"))
+          (terminalRequestRoundTrip acpState queue "terminal/release" "term-1" Aeson.Null)
+      liftIO $ releaseResult @?= Right ()
+
+testClientTerminalChecksAdvertisedCapability :: IO ()
+testClientTerminalChecksAdvertisedCapability =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    initializeWithTerminal acpState queue False
+    let sessionId = Session.SessionId "session-1"
+        message = acpToolMessage sessionId
+    result <- ACPState.withActiveSessionClient acpState queue sessionId $
+      ACPClient.runACP acpState $
+        ACPEffect.readClientTerminalOutput message "term-1"
+    liftIO $
+      result @?= Left "ACP client does not support terminal/output."
+
 testWebSocketServerAuthenticatesAndHandlesInitialize :: IO ()
 testWebSocketServerAuthenticatesAndHandlesInitialize = do
   result <- timeout 2_000_000 $ runAcpStorage do
@@ -708,6 +805,25 @@ initializeWithFs acpState queue readTextFile writeTextFile = do
         ]
   liftIO $ response @?= initializeResponse
 
+initializeWithTerminal
+  :: (Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  => ACPState.AcpState
+  -> ACPState.AcpClientQueue
+  -> Bool
+  -> Eff es ()
+initializeWithTerminal acpState queue terminal = do
+  response <- ACPServer.dispatchAcpRequest acpState queue $
+    acpRequest "initialize" $
+      Aeson.object
+        [ "protocolVersion" Aeson..= (1 :: Int)
+        , "clientCapabilities" Aeson..=
+            Aeson.object
+              [ "terminal" Aeson..= terminal
+              ]
+        , "clientInfo" Aeson..= Aeson.object []
+        ]
+  liftIO $ response @?= initializeResponse
+
 readClientRequest :: (Concurrent :> es, IOE :> es) => ACPState.AcpClientQueue -> Eff es ACP.AcpRequest
 readClientRequest queue =
   ACPState.readClient queue >>= \case
@@ -732,6 +848,25 @@ resolveClientRequest acpState queue request result = do
     JSONRPC.ResponseMessage $
       JSONRPC.JSONRPCResponse JSONRPC.rPC_VERSION request.id result
   liftIO $ assertBool "expected client response to resolve pending request" resolved
+
+terminalRequestRoundTrip
+  :: (Concurrent :> es, IOE :> es)
+  => ACPState.AcpState
+  -> ACPState.AcpClientQueue
+  -> Text
+  -> Text
+  -> Aeson.Value
+  -> Eff es ()
+terminalRequestRoundTrip acpState queue method terminalId result = do
+  request <- readClientRequest queue
+  liftIO do
+    request.method @?= method
+    request.params @?=
+      Aeson.object
+        [ "sessionId" Aeson..= ("session-1" :: Text)
+        , "terminalId" Aeson..= terminalId
+        ]
+  resolveClientRequest acpState queue request result
 
 acpToolMessage :: ACPState.AcpSessionId -> IncomingMessage
 acpToolMessage sessionId =

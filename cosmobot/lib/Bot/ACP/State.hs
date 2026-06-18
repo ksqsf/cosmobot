@@ -57,6 +57,7 @@ type AcpClientId = Integer
 data AcpClientCapabilities = AcpClientCapabilities
   { readTextFile :: !Bool
   , writeTextFile :: !Bool
+  , terminal :: !Bool
   }
   deriving (Eq, Show)
 

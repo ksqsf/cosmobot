@@ -24,11 +24,21 @@ runACP :: (Concurrent :> es, IOE :> es, Storage.Storage :> es) => State.AcpState
 runACP acpState =
   interpret \_ -> \case
     ACP.ReadClientFile message path line limit ->
-      clientFileRequest acpState message "fs/read_text_file" (.readTextFile) (readTextFileParams path line limit) parseReadTextFileResult
+      clientRequest acpState message "fs/read_text_file" (.readTextFile) (readTextFileParams path line limit) parseReadTextFileResult
     ACP.WriteClientFile message path content ->
-      clientFileRequest acpState message "fs/write_text_file" (.writeTextFile) (writeTextFileParams path content) parseWriteTextFileResult
+      clientRequest acpState message "fs/write_text_file" (.writeTextFile) (writeTextFileParams path content) parseUnitResult
+    ACP.CreateClientTerminal message create ->
+      clientRequest acpState message "terminal/create" (.terminal) (terminalCreateParams create) parseTerminalCreateResult
+    ACP.ReadClientTerminalOutput message terminalId ->
+      clientRequest acpState message "terminal/output" (.terminal) (terminalIdParams terminalId) parseTerminalOutputResult
+    ACP.WaitForClientTerminalExit message terminalId ->
+      clientRequest acpState message "terminal/wait_for_exit" (.terminal) (terminalIdParams terminalId) parseTerminalExitStatus
+    ACP.KillClientTerminal message terminalId ->
+      clientRequest acpState message "terminal/kill" (.terminal) (terminalIdParams terminalId) parseUnitResult
+    ACP.ReleaseClientTerminal message terminalId ->
+      clientRequest acpState message "terminal/release" (.terminal) (terminalIdParams terminalId) parseUnitResult
 
-clientFileRequest
+clientRequest
   :: (Concurrent :> es, IOE :> es, Storage.Storage :> es)
   => State.AcpState
   -> IncomingMessage
@@ -37,9 +47,9 @@ clientFileRequest
   -> (Text -> Maybe Text -> Aeson.Value)
   -> (Aeson.Value -> AesonTypes.Parser a)
   -> Eff es (Either Text a)
-clientFileRequest acpState message method supported params parseResult
+clientRequest acpState message method supported params parseResult
   | message.platform /= PlatformACP =
-      pure (Left "ACP client file tools are only available in ACP sessions.")
+      pure (Left "ACP client tools are only available in ACP sessions.")
   | otherwise =
       case listToMaybe message.chatAliases of
         Nothing ->
@@ -73,6 +83,30 @@ writeTextFileParams path content sessionId cwd =
     , "content" Aeson..= content
     ]
 
+terminalCreateParams :: ACP.TerminalCreate -> Text -> Maybe Text -> Aeson.Value
+terminalCreateParams create sessionId defaultCwd =
+  Aeson.object $
+    [ "sessionId" Aeson..= sessionId
+    , "command" Aeson..= create.command
+    , "args" Aeson..= create.args
+    , "env" Aeson..=
+        [ Aeson.object
+            [ "name" Aeson..= name
+            , "value" Aeson..= value
+            ]
+        | (name, value) <- create.env
+        ]
+    ]
+      <> maybe [] (\cwd -> ["cwd" Aeson..= cwd]) (create.cwd <|> defaultCwd)
+      <> maybe [] (\limit -> ["outputByteLimit" Aeson..= limit]) create.outputByteLimit
+
+terminalIdParams :: Text -> Text -> Maybe Text -> Aeson.Value
+terminalIdParams terminalId sessionId _cwd =
+  Aeson.object
+    [ "sessionId" Aeson..= sessionId
+    , "terminalId" Aeson..= terminalId
+    ]
+
 clientPath :: Maybe Text -> Text -> Text
 clientPath cwd rawPath
   | isAbsolute path =
@@ -89,6 +123,26 @@ parseReadTextFileResult :: Aeson.Value -> AesonTypes.Parser Text
 parseReadTextFileResult =
   Aeson.withObject "fs/read_text_file result" (Aeson..: "content")
 
-parseWriteTextFileResult :: Aeson.Value -> AesonTypes.Parser ()
-parseWriteTextFileResult _ =
+parseUnitResult :: Aeson.Value -> AesonTypes.Parser ()
+parseUnitResult _ =
   pure ()
+
+parseTerminalCreateResult :: Aeson.Value -> AesonTypes.Parser Text
+parseTerminalCreateResult =
+  Aeson.withObject "terminal/create result" (Aeson..: "terminalId")
+
+parseTerminalOutputResult :: Aeson.Value -> AesonTypes.Parser ACP.TerminalOutput
+parseTerminalOutputResult =
+  Aeson.withObject "terminal/output result" \o -> do
+    exitStatus <- o Aeson..:? "exitStatus" >>= traverse parseTerminalExitStatus
+    ACP.TerminalOutput
+      <$> o Aeson..: "output"
+      <*> o Aeson..: "truncated"
+      <*> pure exitStatus
+
+parseTerminalExitStatus :: Aeson.Value -> AesonTypes.Parser ACP.TerminalExitStatus
+parseTerminalExitStatus =
+  Aeson.withObject "terminal exit status" \o ->
+    ACP.TerminalExitStatus
+      <$> o Aeson..:? "exitCode"
+      <*> o Aeson..:? "signal"

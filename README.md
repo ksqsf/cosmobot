@@ -343,7 +343,10 @@ Currently, the following tools are available:
 
 | Category | Name              | Privileged? |
 |----------|-------------------|-------------|
-| Files    | `list_directory`  | Yes         |
+| ACP      | `acp_read_client_file`  | ACP only    |
+| ACP      | `acp_write_client_file` | ACP only    |
+| ACP      | `acp_terminal`          | ACP only    |
+| Files    | `list_files`      | Yes         |
 | Files    | `read_file`       | Yes         |
 | Chat     | `chat_log`        |             |
 | Chat     | `sender_chat_log` |             |
