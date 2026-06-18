@@ -20,7 +20,7 @@ import Bot.Effect.Media (MediaObject (..))
 import qualified Bot.Effect.Storage as StorageEffect
 import Bot.Prelude
 import qualified Bot.RPC.Config as Config
-import qualified Bot.RPC.Protocol as Protocol
+import qualified Bot.JSONRPC as JSONRPC
 import qualified Bot.RPC.State as RPC
 import qualified Bot.Storage.Session as SessionStorage
 import qualified Data.Aeson as Aeson
@@ -64,7 +64,7 @@ instance ChatDriver RpcChatDriver where
         pure (Left "RPC reply did not produce a message id.")
       Right (Just storedReply) -> do
         RPC.rememberMessageNumber driver.rpcState storedReply.messageId
-        RPC.broadcast driver.rpcState (Aeson.toJSON (Protocol.notification "chat.message" (RPC.storedMessageToRpc storedReply)))
+        RPC.broadcast driver.rpcState (Aeson.toJSON (JSONRPC.notification "chat.message" (RPC.storedMessageToRpc storedReply)))
         pure (Right storedReply.messageId)
 
   replyAudio driver message audioRef caption = do
@@ -79,7 +79,7 @@ instance ChatDriver RpcChatDriver where
         text = ReplyBody.renderReplyBody body
         payload = RPC.RpcOutbound sessionId (Just messageId) text
     updated <- SessionStorage.updateMessageText (RPC.unRpcSessionId sessionId) messageId text
-    RPC.broadcast driver.rpcState (Aeson.toJSON (Protocol.notification "chat.message_update" payload))
+    RPC.broadcast driver.rpcState (Aeson.toJSON (JSONRPC.notification "chat.message_update" payload))
     pure updated
 
   messageOutPolicy _ _ =

@@ -2,21 +2,11 @@
 module Main (main) where
 
 import Bot.Prelude
-import qualified Bot.ACP.Server as ACPServer
-import qualified Bot.ACP.State as ACPState
-import qualified Bot.ACP.Types as ACP
-import qualified Bot.Concurrency.Manager as ConcurrencyManager
-import qualified Bot.Effect.Media as Media
 import qualified Bot.Main as BotMain
 import qualified Bot.RPC.Client as RpcClient
-import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
-import qualified Data.ByteString.Lazy.Char8 as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Data.Text.IO as TextIO
-import qualified Effectful.FileSystem as FileSystem
-import qualified JSONRPC
 import Options.Applicative
 
 main :: IO ()
@@ -24,12 +14,10 @@ main =
   execParser commandInfo >>= \case
     Serve configPath -> BotMain.mainWithConfig configPath
     Rpc options rpcCommand -> RpcClient.runRpcClientCommand options rpcCommand
-    AcpStdio -> runAcpStdio
 
 data Command
   = Serve !FilePath
   | Rpc !RpcClient.RpcClientOptions !RpcClient.RpcClientCommand
-  | AcpStdio
 
 commandInfo :: ParserInfo Command
 commandInfo =
@@ -57,10 +45,6 @@ commandParser =
       <> command "rpc"
         ( info (rpcParser <**> helper) $
             progDesc "Call the local cosmobot RPC websocket service"
-        )
-      <> command "acp-stdio"
-        ( info (pure AcpStdio <**> helper) $
-            progDesc "Run a minimal ACP stdio endpoint for ACPX initialization checks"
         )
 
 serveParser :: Parser Command
@@ -220,48 +204,3 @@ rpcCallParser =
 jsonReader :: ReadM Aeson.Value
 jsonReader = eitherReader \input ->
   Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 (Text.pack input))
-
-runAcpStdio :: IO ()
-runAcpStdio =
-  runEff .
-  runConcurrent .
-  runPrim .
-  ConcurrencyManager.runConcurrencyManager .
-  FileSystem.runFileSystem .
-  StorageSQLite.runStorageSQLitePath ":memory:" .
-  Media.runMediaPassthrough $ do
-    acpState <- ACPState.newAcpState
-    (_clientId, queue) <- ACPState.registerClient acpState
-    processLines acpState queue
-  where
-    processLines acpState queue = do
-      done <- liftIO (hIsEOF stdin)
-      unless done do
-        line <- liftIO TextIO.getLine
-        handleAcpLine acpState queue line
-        processLines acpState queue
-
-    handleAcpLine acpState queue line =
-      case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 line) of
-        Left err ->
-          liftIO (sendAcpResponse (ACP.parseErrorResponse (Text.pack err)))
-        Right messageValue ->
-          case Aeson.fromJSON messageValue of
-            Aeson.Success (JSONRPC.RequestMessage request) ->
-              ACPServer.dispatchAcpRequest acpState queue request >>= liftIO . sendAcpResponse
-            Aeson.Success (JSONRPC.NotificationMessage notification_) ->
-              void (ACPServer.dispatchAcpRequest acpState queue (notificationToRequest notification_))
-            Aeson.Error err ->
-              liftIO (sendAcpResponse (ACP.invalidRequestResponse (Text.pack err)))
-            Aeson.Success _ ->
-              liftIO (sendAcpResponse (ACP.invalidRequestResponse "Expected request or notification"))
-
-notificationToRequest :: ACP.AcpNotification -> ACP.AcpRequest
-notificationToRequest notification_ =
-  JSONRPC.JSONRPCRequest JSONRPC.rPC_VERSION (JSONRPC.RequestId Aeson.Null) notification_.method notification_.params
-
-sendAcpResponse :: ACP.AcpResponse -> IO ()
-sendAcpResponse response = do
-  LazyByteString.putStr (Aeson.encode (Aeson.toJSON response))
-  LazyByteString.putStr "\n"
-  hFlush stdout

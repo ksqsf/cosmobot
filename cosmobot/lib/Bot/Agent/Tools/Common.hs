@@ -25,8 +25,6 @@ where
 
 import Bot.Agent.Types
 import Bot.Prelude
-import Autodocodec (Bounds (..), boolCodec, integerWithBoundsCodec, listCodec, textCodec)
-import Autodocodec.Schema (JSONSchema, jsonSchemaVia)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -69,42 +67,35 @@ withIntegerArg key action args =
 
 fieldText :: Text -> Text -> (Text, Aeson.Value)
 fieldText name description =
-  schemaField name description (jsonSchemaVia textCodec)
+  schemaField name description [("type", Aeson.String "string")]
 
 fieldTextArray :: Text -> Text -> (Text, Aeson.Value)
 fieldTextArray name description =
-  schemaField name description (jsonSchemaVia (listCodec textCodec))
+  schemaField name description [("type", Aeson.String "array"), ("items", textSchema)]
 
 fieldTextArrayArray :: Text -> Text -> (Text, Aeson.Value)
 fieldTextArrayArray name description =
-  schemaField name description (jsonSchemaVia (listCodec (listCodec textCodec)))
+  schemaField name description [("type", Aeson.String "array"), ("items", Aeson.object [("type", Aeson.String "array"), ("items", textSchema)])]
 
 fieldInteger :: Text -> Text -> (Text, Aeson.Value)
 fieldInteger name description =
-  fieldIntegerWithBounds name Bounds{boundsLower = Just 0, boundsUpper = Nothing} description
+  schemaField name description [("type", Aeson.String "integer"), ("minimum", Aeson.Number 0)]
 
 fieldIntegerMax :: Text -> Int -> Text -> (Text, Aeson.Value)
 fieldIntegerMax name maximum description =
-  fieldIntegerWithBounds name Bounds{boundsLower = Just 0, boundsUpper = Just (fromIntegral maximum)} description
-
-fieldIntegerWithBounds :: Text -> Bounds Integer -> Text -> (Text, Aeson.Value)
-fieldIntegerWithBounds name bounds description =
-  schemaField name description (jsonSchemaVia (integerWithBoundsCodec bounds))
+  schemaField name description [("type", Aeson.String "integer"), ("minimum", Aeson.Number 0), ("maximum", Aeson.Number (fromIntegral maximum))]
 
 fieldBoolean :: Text -> Text -> (Text, Aeson.Value)
 fieldBoolean name description =
-  schemaField name description (jsonSchemaVia boolCodec)
+  schemaField name description [("type", Aeson.String "boolean")]
 
-schemaField :: Text -> Text -> JSONSchema -> (Text, Aeson.Value)
+schemaField :: Text -> Text -> [(Key.Key, Aeson.Value)] -> (Text, Aeson.Value)
 schemaField name description schema =
-  (name, withDescription description (Aeson.toJSON schema))
+  (name, Aeson.Object (KeyMap.insert "description" (Aeson.String description) (KeyMap.fromList schema)))
 
-withDescription :: Text -> Aeson.Value -> Aeson.Value
-withDescription description = \case
-  Aeson.Object object ->
-    Aeson.Object (KeyMap.insert "description" (Aeson.String description) object)
-  value ->
-    value
+textSchema :: Aeson.Value
+textSchema =
+  Aeson.object [("type", Aeson.String "string")]
 
 objectSchema :: [(Text, Aeson.Value)] -> [Text] -> Aeson.Value
 objectSchema fields required =

@@ -13,7 +13,7 @@ where
 
 import Bot.Prelude
 import qualified Bot.RPC.Config as RPCConfig
-import qualified Bot.RPC.Protocol as Protocol
+import qualified Bot.JSONRPC as RPC
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Encode.Pretty as AesonPretty
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -89,7 +89,7 @@ applyRpcClientOptions options RPCConfig.Config{enabled, host, port, token} =
     , token = fromMaybe token options.token
     }
 
-requestForCommand :: RpcClientCommand -> Protocol.RpcRequest
+requestForCommand :: RpcClientCommand -> RPC.RpcRequest
 requestForCommand = \case
   RpcAuditRecent limit ->
     rpcRequest "audit.recent" (Aeson.object ["limit" Aeson..= limit])
@@ -110,11 +110,11 @@ requestForCommand = \case
   RpcCall method params ->
     rpcRequest method params
 
-rpcRequest :: Text -> Aeson.Value -> Protocol.RpcRequest
+rpcRequest :: Text -> Aeson.Value -> RPC.RpcRequest
 rpcRequest method params =
-  Protocol.rpcRequest method params "cli-1"
+  RPC.rpcRequest method params "cli-1"
 
-requestValue :: Protocol.RpcRequest -> Aeson.Value
+requestValue :: RPC.RpcRequest -> Aeson.Value
 requestValue =
   Aeson.toJSON
 

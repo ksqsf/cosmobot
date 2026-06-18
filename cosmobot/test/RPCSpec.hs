@@ -14,7 +14,7 @@ import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.Media.Object as MediaObject
 import qualified Bot.RPC.Config as RPCConfig
-import qualified Bot.RPC.Protocol as Protocol
+import qualified Bot.JSONRPC as JSONRPC
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
 import qualified Bot.Storage.SQLite as StorageSQLite
@@ -34,7 +34,7 @@ import Effectful.Process (Process, runProcess)
 import qualified Effectful.Timeout as EffectfulTimeout
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types as Http
-import qualified JSONRPC
+import qualified JSONRPC as WireJSONRPC
 import qualified Network.Socket as Socket
 import qualified Network.Wai as Wai
 import qualified Network.Wai.Handler.Warp as Warp
@@ -81,9 +81,9 @@ main =
 testRequestParamsDefaultToEmptyObject :: IO ()
 testRequestParamsDefaultToEmptyObject = do
   let encoded = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"audit.recent\"}"
-  request <- either assertFailure pure (Aeson.eitherDecodeStrict' encoded :: Either String Protocol.RpcRequest)
+  request <- either assertFailure pure (Aeson.eitherDecodeStrict' encoded :: Either String JSONRPC.RpcRequest)
   request.jsonrpc @?= "2.0"
-  request.id @?= JSONRPC.RequestId (Aeson.String "1")
+  request.id @?= WireJSONRPC.RequestId (Aeson.String "1")
   request.method @?= "audit.recent"
   request.params @?= Aeson.Null
 
@@ -192,7 +192,7 @@ testChatSendBroadcastsNotification = do
       RPC.RpcClientDisconnect reason ->
         liftIO (assertFailure [i|unexpected RPC client disconnect: #{reason}|])
 
-  notification <- parseJson notificationValue :: IO Protocol.RpcNotification
+  notification <- parseJson notificationValue :: IO JSONRPC.RpcNotification
   notification.method @?= "chat.message"
   notification.params @?=
     Aeson.object
@@ -234,10 +234,10 @@ testSyncRequestExceptionReturnsJsonRpcError = do
       rpcRequest "audit.recent" Aeson.Null
 
   case response of
-    JSONRPC.ErrorMessage err -> do
-      err.id @?= JSONRPC.RequestId (Aeson.String "test-1")
-      JSONRPC.code err.error @?= JSONRPC.iNTERNAL_ERROR
-      JSONRPC.message err.error @?= "RPC request failed: TestRpcException \"audit exploded\""
+    WireJSONRPC.ErrorMessage err -> do
+      err.id @?= WireJSONRPC.RequestId (Aeson.String "test-1")
+      WireJSONRPC.code err.error @?= WireJSONRPC.iNTERNAL_ERROR
+      WireJSONRPC.message err.error @?= "RPC request failed: TestRpcException \"audit exploded\""
     _ ->
       assertFailure [i|expected JSON-RPC error response, got #{Aeson.encode response}|]
 
@@ -681,17 +681,17 @@ instance FromValue RpcClientConfig where
     RpcClientConfig
       <$> fmap (fromMaybe RPCConfig.defaultFileConfig) (optKey "rpc")
 
-rpcRequest :: Text -> Aeson.Value -> Protocol.RpcRequest
+rpcRequest :: Text -> Aeson.Value -> JSONRPC.RpcRequest
 rpcRequest method params =
-  Protocol.rpcRequest method params "test-1"
+  JSONRPC.rpcRequest method params "test-1"
 
-responseResult :: Aeson.Value -> Protocol.RpcResponse
+responseResult :: Aeson.Value -> JSONRPC.RpcResponse
 responseResult =
-  Protocol.successResponse (JSONRPC.RequestId (Aeson.String "test-1"))
+  JSONRPC.successResponse (WireJSONRPC.RequestId (Aeson.String "test-1"))
 
-responseError :: Text -> Text -> Protocol.RpcResponse
+responseError :: Text -> Text -> JSONRPC.RpcResponse
 responseError code message =
-  Protocol.errorResponse (JSONRPC.RequestId (Aeson.String "test-1")) code message
+  JSONRPC.errorResponse (WireJSONRPC.RequestId (Aeson.String "test-1")) code message
 
 parseJson :: Aeson.FromJSON a => Aeson.Value -> IO a
 parseJson value =
@@ -699,26 +699,26 @@ parseJson value =
     Left err -> assertFailure err
     Right parsed -> pure parsed
 
-responseAttachment :: Protocol.RpcResponse -> IO RPC.RpcChatAttachmentRef
+responseAttachment :: JSONRPC.RpcResponse -> IO RPC.RpcChatAttachmentRef
 responseAttachment = \case
-  JSONRPC.ResponseMessage result ->
+  WireJSONRPC.ResponseMessage result ->
     parseJson result.result
   other ->
     assertFailure [i|expected attachment response, got #{show other :: String}|]
 
-responseAttachmentUnsafe :: Protocol.RpcResponse -> RPC.RpcChatAttachmentRef
+responseAttachmentUnsafe :: JSONRPC.RpcResponse -> RPC.RpcChatAttachmentRef
 responseAttachmentUnsafe = \case
-  JSONRPC.ResponseMessage result ->
+  WireJSONRPC.ResponseMessage result ->
     fromMaybe (error "expected attachment response") (AesonTypes.parseMaybe Aeson.parseJSON result.result)
   _ ->
     error "expected attachment response"
 
-openSessionClient :: Int -> Text -> IO Protocol.RpcResponse
+openSessionClient :: Int -> Text -> IO JSONRPC.RpcResponse
 openSessionClient port token =
   WS.runClientWith "127.0.0.1" port "/rpc" WS.defaultConnectionOptions [("Authorization", "Bearer " <> TextEncoding.encodeUtf8 token)] \conn -> do
     WS.sendTextData conn $
       Aeson.encode $
-        Protocol.rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("integration" :: Text)]) "test-1"
+        JSONRPC.rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("integration" :: Text)]) "test-1"
     bytes <- WS.receiveData conn :: IO ByteString
     case Aeson.eitherDecodeStrict' bytes of
       Left err -> fail [i|RPC websocket response was not JSON-RPC: #{err}|]
@@ -848,20 +848,20 @@ messageValue sessionId messageId body parentMessageId =
     , "parentMessageId" Aeson..= parentMessageId
     ]
 
-responseMessageTexts :: Protocol.RpcResponse -> [Text]
+responseMessageTexts :: JSONRPC.RpcResponse -> [Text]
 responseMessageTexts response =
   case response of
-    JSONRPC.ResponseMessage result ->
+    WireJSONRPC.ResponseMessage result ->
       fromMaybe [] do
         messages <- AesonTypes.parseMaybe (Aeson.withObject "history" (Aeson..: "messages")) result.result
         traverse (AesonTypes.parseMaybe (Aeson.withObject "message" (Aeson..: "text"))) messages
     _ ->
       []
 
-responseMessageSummaries :: Protocol.RpcResponse -> [(Text, Text, Text)]
+responseMessageSummaries :: JSONRPC.RpcResponse -> [(Text, Text, Text)]
 responseMessageSummaries response =
   case response of
-    JSONRPC.ResponseMessage result ->
+    WireJSONRPC.ResponseMessage result ->
       fromMaybe [] do
         messages <- AesonTypes.parseMaybe (Aeson.withObject "history" (Aeson..: "messages")) result.result
         traverse messageSummary messages
@@ -884,10 +884,10 @@ testRpcConfig = RPCConfig.Config
   , token = "secret"
   }
 
-responseMessageAttachments :: Protocol.RpcResponse -> [[Text]]
+responseMessageAttachments :: JSONRPC.RpcResponse -> [[Text]]
 responseMessageAttachments response =
   case response of
-    JSONRPC.ResponseMessage result ->
+    WireJSONRPC.ResponseMessage result ->
       fromMaybe [] do
         messages <- AesonTypes.parseMaybe (Aeson.withObject "history" (Aeson..: "messages")) result.result
         traverse messageAttachments messages
@@ -900,45 +900,45 @@ responseMessageAttachments response =
           attachments <- o Aeson..: "attachments"
           traverse (Aeson.withObject "attachment" \attachment -> attachment Aeson..: "attachmentId" <|> attachment Aeson..: "id") attachments
 
-responseMediaStatsFiles :: Protocol.RpcResponse -> Int
+responseMediaStatsFiles :: JSONRPC.RpcResponse -> Int
 responseMediaStatsFiles response =
   case response of
-    JSONRPC.ResponseMessage result ->
+    WireJSONRPC.ResponseMessage result ->
       fromMaybe 0 do
         stats <- AesonTypes.parseMaybe (Aeson.withObject "media stats" (Aeson..: "stats")) result.result
         AesonTypes.parseMaybe (Aeson.withObject "stats" (Aeson..: "files")) stats
     _ ->
       0
 
-responseField :: Aeson.FromJSON a => Protocol.RpcResponse -> Text -> Maybe a
+responseField :: Aeson.FromJSON a => JSONRPC.RpcResponse -> Text -> Maybe a
 responseField response field =
   case response of
-    JSONRPC.ResponseMessage result ->
+    WireJSONRPC.ResponseMessage result ->
       AesonTypes.parseMaybe (Aeson.withObject "response" (Aeson..: AesonKey.fromText field)) result.result
     _ ->
       Nothing
 
-responseHasField :: Protocol.RpcResponse -> Text -> Bool
+responseHasField :: JSONRPC.RpcResponse -> Text -> Bool
 responseHasField response field =
   case response of
-    JSONRPC.ResponseMessage result ->
+    WireJSONRPC.ResponseMessage result ->
       fromMaybe False $
         AesonTypes.parseMaybe (Aeson.withObject "response" (pure . AesonKeyMap.member (AesonKey.fromText field))) result.result
     _ ->
       False
 
-responseBool :: Protocol.RpcResponse -> Text -> Maybe Bool
+responseBool :: JSONRPC.RpcResponse -> Text -> Maybe Bool
 responseBool =
   responseField
 
-responseTextList :: Protocol.RpcResponse -> Text -> [Text]
+responseTextList :: JSONRPC.RpcResponse -> Text -> [Text]
 responseTextList response field =
   fromMaybe [] (responseField response field)
 
-responsePlatformRefs :: Protocol.RpcResponse -> [(Text, Text, Text)]
+responsePlatformRefs :: JSONRPC.RpcResponse -> [(Text, Text, Text)]
 responsePlatformRefs response =
   case response of
-    JSONRPC.ResponseMessage result ->
+    WireJSONRPC.ResponseMessage result ->
       fromMaybe [] do
         refs <- AesonTypes.parseMaybe (Aeson.withObject "media" (Aeson..: "platformRefs")) result.result
         traverse platformRef refs
@@ -953,23 +953,23 @@ responsePlatformRefs response =
           ref <- o Aeson..: "platformRef"
           pure (platform, scope, ref)
 
-responseMediaLocalPath :: Protocol.RpcResponse -> Maybe FilePath
+responseMediaLocalPath :: JSONRPC.RpcResponse -> Maybe FilePath
 responseMediaLocalPath response =
   responseField response "localPath"
 
-responseErrorCode :: Protocol.RpcResponse -> Maybe Text
+responseErrorCode :: JSONRPC.RpcResponse -> Maybe Text
 responseErrorCode = \case
-  JSONRPC.ErrorMessage err ->
+  WireJSONRPC.ErrorMessage err ->
     AesonTypes.parseMaybe
       (Aeson.withObject "error data" (Aeson..: "code"))
       =<< err.error.errorData
   _ ->
     Nothing
 
-responseSessionLabel :: Protocol.RpcResponse -> Maybe Text
+responseSessionLabel :: JSONRPC.RpcResponse -> Maybe Text
 responseSessionLabel response =
   case response of
-    JSONRPC.ResponseMessage result -> do
+    WireJSONRPC.ResponseMessage result -> do
       session <- AesonTypes.parseMaybe (Aeson.withObject "rename" (Aeson..: "session")) result.result
       AesonTypes.parseMaybe (Aeson.withObject "session" (Aeson..: "label")) session
     _ ->

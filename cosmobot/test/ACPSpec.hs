@@ -4,7 +4,7 @@ import qualified Bot.ACP.Config as ACPConfig
 import qualified Bot.ACP.Client as ACPClient
 import qualified Bot.ACP.Server as ACPServer
 import qualified Bot.ACP.State as ACPState
-import qualified Bot.ACP.Types as ACP
+import qualified Bot.JSONRPC as RPC
 import qualified Bot.Chat.Driver.ACP as ACPDriver
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
@@ -722,7 +722,7 @@ testWebSocketServerAuthenticatesAndHandlesInitialize = do
       assertBool "expected unauthenticated websocket rejection" (isLeft unauthorized)
       response @?= initializeResponse
 
-initializeClient :: Int -> Text -> IO ACP.AcpResponse
+initializeClient :: Int -> Text -> IO RPC.JsonRpcResponse
 initializeClient port token =
   WS.runClientWith "127.0.0.1" port "/acp" WS.defaultConnectionOptions [("Authorization", "Bearer " <> TextEncoding.encodeUtf8 token)] \conn -> do
     WS.sendTextData conn $
@@ -746,9 +746,9 @@ initializeClient port token =
       Left err -> fail [i|ACP websocket response was not JSON-RPC: #{err}|]
       Right response -> pure response
 
-initializeResponse :: ACP.AcpResponse
+initializeResponse :: RPC.JsonRpcResponse
 initializeResponse =
-  ACP.successResponse (JSONRPC.RequestId (Aeson.String "test-1")) $
+  RPC.successResponse (JSONRPC.RequestId (Aeson.String "test-1")) $
     Aeson.object
       [ "protocolVersion" Aeson..= (1 :: Int)
       , "agentCapabilities" Aeson..=
@@ -777,7 +777,7 @@ initializeResponse =
       , "authMethods" Aeson..= ([] :: [Aeson.Value])
       ]
 
-acpRequest :: Text -> Aeson.Value -> ACP.AcpRequest
+acpRequest :: Text -> Aeson.Value -> RPC.JsonRpcRequest
 acpRequest method params =
   JSONRPC.JSONRPCRequest JSONRPC.rPC_VERSION (JSONRPC.RequestId (Aeson.String "test-1")) method params
 
@@ -824,7 +824,7 @@ initializeWithTerminal acpState queue terminal = do
         ]
   liftIO $ response @?= initializeResponse
 
-readClientRequest :: (Concurrent :> es, IOE :> es) => ACPState.AcpClientQueue -> Eff es ACP.AcpRequest
+readClientRequest :: (Concurrent :> es, IOE :> es) => ACPState.AcpClientQueue -> Eff es RPC.JsonRpcRequest
 readClientRequest queue =
   ACPState.readClient queue >>= \case
     ACPState.AcpClientSend value ->
@@ -840,7 +840,7 @@ resolveClientRequest
   :: (Concurrent :> es, IOE :> es)
   => ACPState.AcpState
   -> ACPState.AcpClientQueue
-  -> ACP.AcpRequest
+  -> RPC.JsonRpcRequest
   -> Aeson.Value
   -> Eff es ()
 resolveClientRequest acpState queue request result = do
@@ -893,7 +893,7 @@ acpToolMessage sessionId =
     , raw = Aeson.Null
     }
 
-responseField :: Aeson.FromJSON a => ACP.AcpResponse -> Text -> Maybe a
+responseField :: Aeson.FromJSON a => RPC.JsonRpcResponse -> Text -> Maybe a
 responseField response name =
   case response of
     JSONRPC.ResponseMessage result -> do
@@ -906,7 +906,7 @@ responseField response name =
     JSONRPC.RequestMessage{} ->
       Nothing
 
-responseHasObjectResult :: ACP.AcpResponse -> Bool
+responseHasObjectResult :: RPC.JsonRpcResponse -> Bool
 responseHasObjectResult = \case
   JSONRPC.ResponseMessage result ->
     case result.result of
@@ -921,7 +921,7 @@ responseHasObjectResult = \case
   JSONRPC.RequestMessage{} ->
     False
 
-responseResult :: ACP.AcpResponse -> Maybe Aeson.Value
+responseResult :: RPC.JsonRpcResponse -> Maybe Aeson.Value
 responseResult = \case
   JSONRPC.ResponseMessage result ->
     Just result.result
@@ -932,7 +932,7 @@ responseResult = \case
   JSONRPC.RequestMessage{} ->
     Nothing
 
-responseErrorCode :: ACP.AcpResponse -> Maybe Text
+responseErrorCode :: RPC.JsonRpcResponse -> Maybe Text
 responseErrorCode = \case
   JSONRPC.ErrorMessage err -> do
     Aeson.Object object <- err.error.errorData
@@ -950,7 +950,7 @@ dispatchSessionIdRequest
   -> ACPState.AcpClientQueue
   -> Text
   -> Text
-  -> Eff es ACP.AcpResponse
+  -> Eff es RPC.JsonRpcResponse
 dispatchSessionIdRequest acpState queue sessionId method =
   ACPServer.dispatchAcpRequest acpState queue $
     acpRequest method $

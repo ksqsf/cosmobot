@@ -44,7 +44,7 @@ where
 import Bot.Core.Message
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
-import qualified Bot.RPC.Protocol as Protocol
+import qualified Bot.JSONRPC as RPC
 import qualified Bot.Session as Session
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Storage.Session as Storage
@@ -162,7 +162,7 @@ broadcast rpcState value = do
 
 broadcastAuditRecord :: Concurrent :> es => RpcState -> Aeson.Value -> Eff es ()
 broadcastAuditRecord rpcState recordValue =
-  broadcast rpcState (Aeson.toJSON (Protocol.notification "audit.event" recordValue))
+  broadcast rpcState (Aeson.toJSON (RPC.notification "audit.event" recordValue))
 
 openChatSession :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> Maybe Text -> Eff es RpcChatSession
 openChatSession rpcState label = do
@@ -212,7 +212,7 @@ enqueueChatMessage rpcState chatSend = do
       rememberMessageNumber rpcState sessionMessage.messageId
       message <- rpcIncomingMessage chatSend sessionMessage
       STM.atomically (STM.writeTChan rpcState.inbound message)
-      broadcast rpcState (Aeson.toJSON (Protocol.notification "chat.message" sessionMessage))
+      broadcast rpcState (Aeson.toJSON (RPC.notification "chat.message" sessionMessage))
       pure (Right (Just message))
 
 incomingMessages :: Concurrent :> es => RpcState -> Stream (Of IncomingMessage) (Eff es) ()

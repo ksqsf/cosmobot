@@ -18,6 +18,7 @@ import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import Data.Bits ((.&.))
 import qualified Data.ByteString as StrictByteString
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Network.Mime as Mime
@@ -28,40 +29,7 @@ mimeFromName name =
 
 extensionFromMime :: Text -> Text
 extensionFromMime mime =
-  case cleanMime mime of
-    "image/apng" -> ".apng"
-    "image/avif" -> ".avif"
-    "image/bmp" -> ".bmp"
-    "image/gif" -> ".gif"
-    "image/heic" -> ".heic"
-    "image/heif" -> ".heif"
-    "image/jpeg" -> ".jpg"
-    "image/png" -> ".png"
-    "image/svg+xml" -> ".svg"
-    "image/tiff" -> ".tiff"
-    "image/webp" -> ".webp"
-    "audio/aac" -> ".aac"
-    "audio/flac" -> ".flac"
-    "audio/midi" -> ".mid"
-    "audio/mp4" -> ".m4a"
-    "audio/mpeg" -> ".mp3"
-    "audio/ogg" -> ".ogg"
-    "audio/opus" -> ".opus"
-    "audio/wav" -> ".wav"
-    "audio/webm" -> ".webm"
-    "video/avi" -> ".avi"
-    "video/mp4" -> ".mp4"
-    "video/mpeg" -> ".mpeg"
-    "video/ogg" -> ".ogv"
-    "video/quicktime" -> ".mov"
-    "video/webm" -> ".webm"
-    "application/pdf" -> ".pdf"
-    "application/gzip" -> ".gz"
-    "application/zip" -> ".zip"
-    "application/x-7z-compressed" -> ".7z"
-    "application/x-rar-compressed" -> ".rar"
-    "application/x-tar" -> ".tar"
-    _ -> ".bin"
+  maybe ".bin" ("." <>) (viaNonEmpty head =<< Map.lookup (TextEncoding.encodeUtf8 (cleanMime mime)) Mime.defaultExtensionMap)
 
 sniffMime :: StrictByteString.ByteString -> Maybe Text
 sniffMime bytes

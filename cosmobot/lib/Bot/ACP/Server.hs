@@ -16,7 +16,7 @@ where
 import qualified Bot.ACP.Config as Config
 import qualified Bot.ACP.Content as Content
 import qualified Bot.ACP.State as State
-import qualified Bot.ACP.Types as ACP
+import qualified Bot.JSONRPC as RPC
 import Bot.Core.Message (ChatPlatform (PlatformACP), IncomingMessage (..), MessageId)
 import Bot.Core.Thread (ThreadMessageKey (..))
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -173,7 +173,7 @@ readRequestFrames threads acpState queue conn =
     bytes <- liftIO (WS.receiveData conn :: IO ByteString)
     response <- case Aeson.eitherDecodeStrict bytes of
       Left err ->
-        pure (Just (ACP.parseErrorResponse (Text.pack err)))
+        pure (Just (RPC.parseErrorResponse (Text.pack err)))
       Right value ->
         case Aeson.fromJSON value of
           Aeson.Success (JSONRPC.RequestMessage request) ->
@@ -186,7 +186,7 @@ readRequestFrames threads acpState queue conn =
           Aeson.Success message@(JSONRPC.ErrorMessage{}) ->
             resolveClientMessage message
           Aeson.Error err ->
-            pure (Just (ACP.invalidRequestResponse (Text.pack err)))
+            pure (Just (RPC.invalidRequestResponse (Text.pack err)))
     traverse_ (State.writeClient queue . Aeson.toJSON) response
   where
     resolveClientMessage message =
@@ -194,17 +194,17 @@ readRequestFrames threads acpState queue conn =
         True ->
           Nothing
         False ->
-          Just (ACP.invalidRequestResponse "Unexpected ACP client response")
+          Just (RPC.invalidRequestResponse "Unexpected ACP client response")
 
 dispatchAcpRequestFrame
   :: (KatipE :> es, Prim :> es, Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => ThreadStore
   -> State.AcpState
   -> State.AcpClientQueue
-  -> ACP.AcpRequest
-  -> Eff es (Maybe ACP.AcpResponse)
+  -> RPC.JsonRpcRequest
+  -> Eff es (Maybe RPC.JsonRpcResponse)
 dispatchAcpRequestFrame threads acpState queue request
-  | ACP.requestMethod request == "session/prompt" = do
+  | RPC.requestMethod request == "session/prompt" = do
       Concurrency.fire "acp.session.prompt" do
         response <- dispatchPrompt acpState queue request
         State.writeClient queue (Aeson.toJSON response)
@@ -216,8 +216,8 @@ dispatchAcpRequest
   :: (Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.AcpState
   -> State.AcpClientQueue
-  -> ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  -> RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchAcpRequest acpState queue request =
   dispatchAcpRequestWithCancel (\_ _ -> pure ()) acpState queue request
 
@@ -226,8 +226,8 @@ dispatchAcpRequestWithThreadStore
   => ThreadStore
   -> State.AcpState
   -> State.AcpClientQueue
-  -> ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  -> RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchAcpRequestWithThreadStore threads =
   dispatchAcpRequestWithCancel \_sessionId messageIds ->
     traverse_ (cancelAcpThread threads) messageIds
@@ -237,14 +237,14 @@ dispatchAcpRequestWithCancel
   => (State.AcpSessionId -> [MessageId] -> Eff es ())
   -> State.AcpState
   -> State.AcpClientQueue
-  -> ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  -> RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchAcpRequestWithCancel cancelMessages acpState queue request =
-  case ACP.requestMethod request of
+  case RPC.requestMethod request of
     "initialize" ->
       dispatchInitialize acpState queue request
     "authenticate" ->
-      pure (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+      pure (RPC.successResponse (RPC.requestId request) (Aeson.object []))
     "session/new" ->
       dispatchNewSession request
     "session/list" ->
@@ -252,9 +252,9 @@ dispatchAcpRequestWithCancel cancelMessages acpState queue request =
     "session/load" ->
       dispatchLoadSession queue request
     "session/resume" ->
-      dispatchExistingSession request (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+      dispatchExistingSession request (RPC.successResponse (RPC.requestId request) (Aeson.object []))
     "session/close" ->
-      dispatchExistingSession request (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+      dispatchExistingSession request (RPC.successResponse (RPC.requestId request) (Aeson.object []))
     "session/cancel" ->
       dispatchCancelSession cancelMessages acpState request
     "session/delete" ->
@@ -262,7 +262,7 @@ dispatchAcpRequestWithCancel cancelMessages acpState queue request =
     "session/prompt" ->
       dispatchPrompt acpState queue request
     method ->
-      pure (ACP.errorResponse (ACP.requestId request) "method_not_found" [i|Unknown ACP method: #{method}|])
+      pure (RPC.errorResponse (RPC.requestId request) "method_not_found" [i|Unknown ACP method: #{method}|])
 
 initializeResponse :: Aeson.Value
 initializeResponse =
@@ -298,58 +298,58 @@ dispatchInitialize
   :: Concurrent :> es
   => State.AcpState
   -> State.AcpClientQueue
-  -> ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  -> RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchInitialize acpState queue request =
-  case AesonTypes.parseEither parseInitializeParams (ACP.requestParams request) of
+  case AesonTypes.parseEither parseInitializeParams (RPC.requestParams request) of
     Left err ->
-      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right InitializeParams{clientCapabilities} -> do
       State.setClientCapabilities acpState queue clientCapabilities
-      pure (ACP.successResponse (ACP.requestId request) initializeResponse)
+      pure (RPC.successResponse (RPC.requestId request) initializeResponse)
 
 dispatchNewSession
   :: Storage.Storage :> es
-  => ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  => RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchNewSession request =
-  case AesonTypes.parseEither parseNewSessionParams (ACP.requestParams request) of
+  case AesonTypes.parseEither parseNewSessionParams (RPC.requestParams request) of
     Left err ->
-      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right label -> do
       session <- State.openSession label
       pure $
-        ACP.successResponse (ACP.requestId request) $
+        RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "sessionId" Aeson..= State.acpSessionIdText session.sessionId
             ]
 
 dispatchDeleteSession
   :: (Storage.Storage :> es, FileSystem.FileSystem :> es)
-  => ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  => RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchDeleteSession request =
-  case AesonTypes.parseEither parseSessionIdParams (ACP.requestParams request) of
+  case AesonTypes.parseEither parseSessionIdParams (RPC.requestParams request) of
     Left err ->
-      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right sessionId -> do
       _deleted <- State.deleteSession sessionId
-      pure (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+      pure (RPC.successResponse (RPC.requestId request) (Aeson.object []))
 
 dispatchListSessions
   :: Storage.Storage :> es
-  => ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  => RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchListSessions request =
-  case AesonTypes.parseEither parseListSessionsParams (ACP.requestParams request) of
+  case AesonTypes.parseEither parseListSessionsParams (RPC.requestParams request) of
     Left err ->
-      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right ListSessionsParams{cursor = Just _} ->
-      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" "Invalid session/list cursor")
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" "Invalid session/list cursor")
     Right ListSessionsParams{cwd} -> do
       sessions <- filter (matchesCwd cwd) <$> Session.listSessions
       pure $
-        ACP.successResponse (ACP.requestId request) $
+        RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "sessions" Aeson..= map sessionInfo sessions
             ]
@@ -357,34 +357,34 @@ dispatchListSessions request =
 dispatchLoadSession
   :: (Concurrent :> es, Storage.Storage :> es)
   => State.AcpClientQueue
-  -> ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  -> RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchLoadSession queue request =
-  case AesonTypes.parseEither parseSessionIdParams (ACP.requestParams request) of
+  case AesonTypes.parseEither parseSessionIdParams (RPC.requestParams request) of
     Left err ->
-      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right sessionId ->
       Session.getSession sessionId >>= \case
         Nothing ->
-          pure (ACP.errorResponse (ACP.requestId request) "not_found" "Session not found")
+          pure (RPC.errorResponse (RPC.requestId request) "not_found" "Session not found")
         Just _ -> do
           history <- Session.sessionHistory sessionId
           traverse_ (writeSessionReplay queue) history
-          pure (ACP.successResponse (ACP.requestId request) Aeson.Null)
+          pure (RPC.successResponse (RPC.requestId request) Aeson.Null)
 
 dispatchExistingSession
   :: Storage.Storage :> es
-  => ACP.AcpRequest
-  -> ACP.AcpResponse
-  -> Eff es ACP.AcpResponse
+  => RPC.JsonRpcRequest
+  -> RPC.JsonRpcResponse
+  -> Eff es RPC.JsonRpcResponse
 dispatchExistingSession request response =
-  case AesonTypes.parseEither parseSessionIdParams (ACP.requestParams request) of
+  case AesonTypes.parseEither parseSessionIdParams (RPC.requestParams request) of
     Left err ->
-      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right sessionId ->
       Session.getSession sessionId >>= \case
         Nothing ->
-          pure (ACP.errorResponse (ACP.requestId request) "not_found" "Session not found")
+          pure (RPC.errorResponse (RPC.requestId request) "not_found" "Session not found")
         Just _ ->
           pure response
 
@@ -392,54 +392,54 @@ dispatchCancelSession
   :: (Concurrent :> es, Storage.Storage :> es)
   => (State.AcpSessionId -> [MessageId] -> Eff es ())
   -> State.AcpState
-  -> ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  -> RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchCancelSession cancelMessages acpState request =
-  case AesonTypes.parseEither parseSessionIdParams (ACP.requestParams request) of
+  case AesonTypes.parseEither parseSessionIdParams (RPC.requestParams request) of
     Left err ->
-      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right sessionId ->
       Session.getSession sessionId >>= \case
         Nothing ->
-          pure (ACP.errorResponse (ACP.requestId request) "not_found" "Session not found")
+          pure (RPC.errorResponse (RPC.requestId request) "not_found" "Session not found")
         Just _ -> do
           messageIds <- State.cancelSessionPrompts acpState sessionId
           cancelMessages sessionId messageIds
-          pure (ACP.successResponse (ACP.requestId request) (Aeson.object []))
+          pure (RPC.successResponse (RPC.requestId request) (Aeson.object []))
 
 dispatchPrompt
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.AcpState
   -> State.AcpClientQueue
-  -> ACP.AcpRequest
-  -> Eff es ACP.AcpResponse
+  -> RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
 dispatchPrompt acpState queue request =
-  case AesonTypes.parseEither parsePromptParams (ACP.requestParams request) of
+  case AesonTypes.parseEither parsePromptParams (RPC.requestParams request) of
     Left err ->
-      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right prompt ->
       ( State.withActiveSessionClient acpState queue prompt.sessionId $
           State.withPromptWaiter acpState prompt.sessionId (enqueuePrompt prompt) >>= \case
           State.PromptCompleted messageId -> do
             State.completeSessionPrompt acpState prompt.sessionId
             pure $
-              ACP.successResponse (ACP.requestId request) $
+              RPC.successResponse (RPC.requestId request) $
                 Aeson.object
                   [ "stopReason" Aeson..= ("end_turn" :: Text)
                   , "messageId" Aeson..= messageId
                   ]
           State.PromptCancelled ->
             pure $
-              ACP.successResponse (ACP.requestId request) $
+              RPC.successResponse (RPC.requestId request) $
                 Aeson.object
                   [ "stopReason" Aeson..= ("cancelled" :: Text)
                   ]
       ) `catchSync` \err ->
           case fromException err of
             Just (AcpPromptInvalid invalidParams) ->
-              pure (ACP.errorResponse (ACP.requestId request) "invalid_params" invalidParams)
+              pure (RPC.errorResponse (RPC.requestId request) "invalid_params" invalidParams)
             Just AcpPromptSessionNotFound ->
-              pure (ACP.errorResponse (ACP.requestId request) "not_found" "Session not found")
+              pure (RPC.errorResponse (RPC.requestId request) "not_found" "Session not found")
             Nothing ->
               throwIO err
   where
@@ -599,7 +599,7 @@ sessionCwd :: Session.Session -> Text
 sessionCwd session =
   fromMaybe "/" session.label
 
-notificationToRequest :: ACP.AcpNotification -> ACP.AcpRequest
+notificationToRequest :: RPC.JsonRpcNotification -> RPC.JsonRpcRequest
 notificationToRequest notification_ =
   JSONRPC.JSONRPCRequest JSONRPC.rPC_VERSION (JSONRPC.RequestId Aeson.Null) notification_.method notification_.params
 

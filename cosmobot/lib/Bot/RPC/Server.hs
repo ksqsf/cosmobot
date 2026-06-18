@@ -24,7 +24,7 @@ import qualified Bot.Effect.Media as Media
 import Bot.Effect.Media (MediaObject (..))
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.RPC.Config as Config
-import qualified Bot.RPC.Protocol as Protocol
+import qualified Bot.JSONRPC as RPC
 import qualified Bot.RPC.State as State
 import qualified Bot.Session as Session
 import qualified Bot.Storage.RPC as RpcStorage
@@ -46,7 +46,7 @@ import qualified Network.Wai.Handler.WebSockets as WaiWS
 import qualified Network.WebSockets as WS
 
 data RpcServerCallbacks es = RpcServerCallbacks
-  { auditMethod :: Protocol.RpcRequest -> Eff es (Maybe (Either Protocol.RpcError Aeson.Value))
+  { auditMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   }
 
 data RpcAttachmentUpload = RpcAttachmentUpload
@@ -191,7 +191,7 @@ readRequestFrames cfg rpcState callbacks queue conn =
     bytes <- liftIO (WS.receiveData conn :: IO ByteString)
     response <- case Aeson.eitherDecodeStrict bytes of
       Left err ->
-        pure (Just (Protocol.parseErrorResponse (Text.pack err)))
+        pure (Just (RPC.parseErrorResponse (Text.pack err)))
       Right value ->
         case Aeson.fromJSON value of
           Aeson.Success (JSONRPC.RequestMessage request) ->
@@ -200,17 +200,17 @@ readRequestFrames cfg rpcState callbacks queue conn =
             _ <- dispatchRpcRequestWithConfig rpcState cfg callbacks (notificationToRequest notification_)
             pure Nothing
           Aeson.Error err ->
-            pure (Just (Protocol.invalidRequestResponse (Text.pack err)))
+            pure (Just (RPC.invalidRequestResponse (Text.pack err)))
           Aeson.Success _ ->
-            pure (Just (Protocol.invalidRequestResponse "Expected request or notification"))
+            pure (Just (RPC.invalidRequestResponse "Expected request or notification"))
     traverse_ (State.writeClient queue . Aeson.toJSON) response
 
 dispatchRpcRequest
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.RpcState
   -> RpcServerCallbacks es
-  -> Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchRpcRequest rpcState callbacks request =
   dispatchRpcRequestWithConfig rpcState defaultDispatchConfig callbacks request
 
@@ -219,14 +219,14 @@ dispatchRpcRequestWithConfig
   => State.RpcState
   -> Config.Config
   -> RpcServerCallbacks es
-  -> Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchRpcRequestWithConfig rpcState cfg callbacks request =
   dispatchRpcRequestUnsafe rpcState cfg callbacks request
     `catchSync` \err ->
       pure $
-        Protocol.errorResponse
-          (Protocol.requestId request)
+        RPC.errorResponse
+          (RPC.requestId request)
           "internal_error"
           [i|RPC request failed: #{exceptionFirstLine err}|]
 
@@ -239,10 +239,10 @@ dispatchRpcRequestUnsafe
   => State.RpcState
   -> Config.Config
   -> RpcServerCallbacks es
-  -> Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchRpcRequestUnsafe rpcState _cfg callbacks request =
-  case Protocol.requestMethod request of
+  case RPC.requestMethod request of
     "chat.open_session" ->
       dispatchOpenSession rpcState request
     "chat.list_sessions" ->
@@ -275,21 +275,21 @@ dispatchRpcRequestUnsafe rpcState _cfg callbacks request =
       | "audit." `Text.isPrefixOf` method ->
           dispatchAudit callbacks request
       | otherwise ->
-          pure (methodNotFound (Protocol.requestId request) method)
+          pure (methodNotFound (RPC.requestId request) method)
 
 dispatchOpenSession
   :: (Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
-  -> Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchOpenSession rpcState request =
-  case AesonTypes.parseEither parseOpenSessionParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseOpenSessionParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right label -> do
       session <- State.openChatSession rpcState label
       pure $
-        Protocol.successResponse (Protocol.requestId request) $
+        RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "sessionId" Aeson..= rpcSessionIdText session.sessionId
             , "session" Aeson..= session
@@ -297,27 +297,27 @@ dispatchOpenSession rpcState request =
 
 dispatchListSessions
   :: Storage.Storage :> es
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchListSessions request = do
   sessions <- State.listChatSessions
   pure $
-    Protocol.successResponse (Protocol.requestId request) $
+    RPC.successResponse (RPC.requestId request) $
       Aeson.object ["sessions" Aeson..= sessions]
 
 dispatchGetSession
   :: Storage.Storage :> es
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchGetSession request =
-  case AesonTypes.parseEither parseSessionIdParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseSessionIdParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right sessionId -> do
       session <- State.getChatSession sessionId
       history <- maybe (pure []) (const (State.chatHistory sessionId)) session
       pure $
-        Protocol.successResponse (Protocol.requestId request) $
+        RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "session" Aeson..= session
             , "messages" Aeson..= history
@@ -325,16 +325,16 @@ dispatchGetSession request =
 
 dispatchHistory
   :: Storage.Storage :> es
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchHistory request =
-  case AesonTypes.parseEither parseSessionIdParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseSessionIdParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right sessionId -> do
       messages <- State.chatHistory sessionId
       pure $
-        Protocol.successResponse (Protocol.requestId request) $
+        RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "sessionId" Aeson..= rpcSessionIdText sessionId
             , "messages" Aeson..= messages
@@ -343,20 +343,20 @@ dispatchHistory request =
 dispatchFork
   :: (Concurrent :> es, Storage.Storage :> es)
   => State.RpcState
-  -> Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchFork rpcState request =
-  case AesonTypes.parseEither parseForkParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseForkParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right (sessionId, messageId, label) -> do
       forked <- State.forkChatSession rpcState sessionId messageId label
       case forked of
         Nothing ->
-          pure (Protocol.errorResponse (Protocol.requestId request) "not_found" "Session or message not found")
+          pure (RPC.errorResponse (RPC.requestId request) "not_found" "Session or message not found")
         Just session ->
           pure $
-            Protocol.successResponse (Protocol.requestId request) $
+            RPC.successResponse (RPC.requestId request) $
               Aeson.object
                 [ "sessionId" Aeson..= rpcSessionIdText session.sessionId
                 , "session" Aeson..= session
@@ -364,34 +364,34 @@ dispatchFork rpcState request =
 
 dispatchRenameSession
   :: Storage.Storage :> es
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchRenameSession request =
-  case AesonTypes.parseEither parseRenameSessionParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseRenameSessionParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right (sessionId, label) -> do
       renamed <- State.renameChatSession sessionId label
       case renamed of
         Nothing ->
-          pure (Protocol.errorResponse (Protocol.requestId request) "not_found" "Session not found")
+          pure (RPC.errorResponse (RPC.requestId request) "not_found" "Session not found")
         Just session ->
           pure $
-            Protocol.successResponse (Protocol.requestId request) $
+            RPC.successResponse (RPC.requestId request) $
               Aeson.object ["session" Aeson..= session]
 
 dispatchDeleteSession
   :: (Storage.Storage :> es, FileSystem.FileSystem :> es)
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchDeleteSession request =
-  case AesonTypes.parseEither parseSessionIdParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseSessionIdParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right sessionId -> do
       deleted <- State.deleteChatSession sessionId
       pure $
-        Protocol.successResponse (Protocol.requestId request) $
+        RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "sessionId" Aeson..= rpcSessionIdText sessionId
             , "deleted" Aeson..= deleted
@@ -399,12 +399,12 @@ dispatchDeleteSession request =
 
 dispatchUploadAttachment
   :: Media.Media :> es
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchUploadAttachment request =
-  case AesonTypes.parseEither (parseAttachmentUploadParams defaultUploadMaxBytes) (Protocol.requestParams request) of
+  case AesonTypes.parseEither (parseAttachmentUploadParams defaultUploadMaxBytes) (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right upload -> do
       storedRef <- Media.storeMediaObject $
         MediaObject
@@ -414,40 +414,40 @@ dispatchUploadAttachment request =
           }
       case storedRef of
         Nothing ->
-          pure (Protocol.errorResponse (Protocol.requestId request) "internal_error" "Media storage did not return a media ref")
+          pure (RPC.errorResponse (RPC.requestId request) "internal_error" "Media storage did not return a media ref")
         Just mediaRef ->
           case parseMediaRef mediaRef of
             Nothing ->
-              pure (Protocol.errorResponse (Protocol.requestId request) "internal_error" "Media storage did not return a media ref")
+              pure (RPC.errorResponse (RPC.requestId request) "internal_error" "Media storage did not return a media ref")
             Just fileId ->
               Media.mediaFileInfo fileId >>= \case
                 Nothing ->
-                  pure (Protocol.errorResponse (Protocol.requestId request) "internal_error" "Stored media file could not be loaded")
+                  pure (RPC.errorResponse (RPC.requestId request) "internal_error" "Stored media file could not be loaded")
                 Just media -> do
                   url <- Media.publicMediaRef mediaRef
                   pure $
-                    Protocol.successResponse (Protocol.requestId request) $
+                    RPC.successResponse (RPC.requestId request) $
                       attachmentResponse upload media url
 
 dispatchChatSend
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.RpcState
-  -> Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchChatSend rpcState request =
-  case AesonTypes.parseEither parseChatSendParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseChatSendParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right chatSend -> do
       message <- State.enqueueChatMessage rpcState chatSend
       case message of
         Left err ->
-          pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" err)
+          pure (RPC.errorResponse (RPC.requestId request) "invalid_params" err)
         Right Nothing ->
-          pure (Protocol.errorResponse (Protocol.requestId request) "not_found" "Session not found")
+          pure (RPC.errorResponse (RPC.requestId request) "not_found" "Session not found")
         Right (Just IncomingMessage{messageId}) ->
           pure $
-            Protocol.successResponse (Protocol.requestId request) $
+            RPC.successResponse (RPC.requestId request) $
               Aeson.object
                 [ "sessionId" Aeson..= rpcSessionIdText chatSend.sessionId
                 , "messageId" Aeson..= messageId
@@ -455,18 +455,18 @@ dispatchChatSend rpcState request =
 
 dispatchMediaStats
   :: Media.Media :> es
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchMediaStats request = do
-  case AesonTypes.parseEither parseMediaStatsParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseMediaStatsParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right params ->
       do
         stats <- Media.mediaCacheStats
         files <- Media.listMediaFiles
         pure $
-          Protocol.successResponse (Protocol.requestId request) $
+          RPC.successResponse (RPC.requestId request) $
             Aeson.object
               [ "stats" Aeson..= stats
               , "files" Aeson..= take params.limit files
@@ -474,16 +474,16 @@ dispatchMediaStats request = do
 
 dispatchMediaResolveSource
   :: Media.Media :> es
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchMediaResolveSource request =
-  case AesonTypes.parseEither parseMediaSourceParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseMediaSourceParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right sourceRef -> do
       mediaRef <- Media.mediaRefForSource sourceRef
       pure $
-        Protocol.successResponse (Protocol.requestId request) $
+        RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "sourceRef" Aeson..= sourceRef
             , "mediaId" Aeson..= mediaRef
@@ -492,36 +492,36 @@ dispatchMediaResolveSource request =
 
 dispatchMediaGet
   :: Media.Media :> es
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchMediaGet request =
-  case AesonTypes.parseEither parseMediaIdParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseMediaIdParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right fileId -> do
       Media.mediaCacheEntry fileId >>= \case
         Nothing ->
-          pure (Protocol.errorResponse (Protocol.requestId request) "not_found" [i|Media file not found: #{fileId}|])
+          pure (RPC.errorResponse (RPC.requestId request) "not_found" [i|Media file not found: #{fileId}|])
         Just entry -> do
           let mediaRef = entry.file.ref
           publicUrl <- Media.publicMediaRef mediaRef
           localPath <- Media.localMediaPath mediaRef
           pure $
-            Protocol.successResponse (Protocol.requestId request) $
+            RPC.successResponse (RPC.requestId request) $
               mediaEntryResponse entry publicUrl localPath
 
 dispatchMediaDelete
   :: Media.Media :> es
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchMediaDelete request =
-  case AesonTypes.parseEither parseMediaIdParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseMediaIdParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right fileId -> do
       deleted <- Media.deleteMediaFile fileId
       pure $
-        Protocol.successResponse (Protocol.requestId request) $
+        RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "fileId" Aeson..= fileId
             , "mediaId" Aeson..= ("media:" <> fileId)
@@ -530,17 +530,17 @@ dispatchMediaDelete request =
 
 dispatchMediaGc
   :: (Storage.Storage :> es, Media.Media :> es)
-  => Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchMediaGc request =
-  case AesonTypes.parseEither parseMediaGcParams (Protocol.requestParams request) of
+  case AesonTypes.parseEither parseMediaGcParams (RPC.requestParams request) of
     Left err ->
-      pure (Protocol.errorResponse (Protocol.requestId request) "invalid_params" (Text.pack err))
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right params -> do
       retained <- Set.fromList <$> RpcStorage.referencedMediaFileIds
       deleted <- Media.gcMediaCache params.maxAgeSeconds retained
       pure $
-        Protocol.successResponse (Protocol.requestId request) $
+        RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "deleted" Aeson..= deleted
             , "retainedReferencedFiles" Aeson..= Set.size retained
@@ -548,16 +548,16 @@ dispatchMediaGc request =
 
 dispatchAudit
   :: RpcServerCallbacks es
-  -> Protocol.RpcRequest
-  -> Eff es Protocol.RpcResponse
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
 dispatchAudit callbacks request =
   callbacks.auditMethod request >>= \case
     Nothing ->
-      pure (methodNotFound (Protocol.requestId request) (Protocol.requestMethod request))
+      pure (methodNotFound (RPC.requestId request) (RPC.requestMethod request))
     Just (Left err) ->
-      pure (JSONRPC.ErrorMessage (JSONRPC.JSONRPCError JSONRPC.rPC_VERSION (Protocol.requestId request) err))
+      pure (JSONRPC.ErrorMessage (JSONRPC.JSONRPCError JSONRPC.rPC_VERSION (RPC.requestId request) err))
     Just (Right value) ->
-      pure (Protocol.successResponse (Protocol.requestId request) value)
+      pure (RPC.successResponse (RPC.requestId request) value)
 
 parseOpenSessionParams :: Aeson.Value -> AesonTypes.Parser (Maybe Text)
 parseOpenSessionParams =
@@ -697,11 +697,11 @@ parseMediaGcParams = \case
         fail "maxAgeSeconds must be non-negative"
       pure MediaGcParams{maxAgeSeconds}
 
-methodNotFound :: Protocol.RequestId -> Text -> Protocol.RpcResponse
+methodNotFound :: RPC.RequestId -> Text -> RPC.RpcResponse
 methodNotFound requestId method =
-  Protocol.errorResponse requestId "method_not_found" [i|Unknown RPC method: #{method}|]
+  RPC.errorResponse requestId "method_not_found" [i|Unknown RPC method: #{method}|]
 
-notificationToRequest :: Protocol.RpcNotification -> Protocol.RpcRequest
+notificationToRequest :: RPC.RpcNotification -> RPC.RpcRequest
 notificationToRequest notification_ =
   JSONRPC.JSONRPCRequest JSONRPC.rPC_VERSION (JSONRPC.RequestId Aeson.Null) notification_.method notification_.params
 

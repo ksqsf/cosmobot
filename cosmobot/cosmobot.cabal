@@ -95,8 +95,6 @@ common lib-deps
                     , base64-bytestring
                     , aeson
                     , aeson-pretty
-                    , autodocodec
-                    , autodocodec-schema
                     , amazonka
                     , amazonka-s3
                     , string-interpolate
@@ -165,7 +163,6 @@ library
         Bot.ACP.Content
         Bot.ACP.Server
         Bot.ACP.State
-        Bot.ACP.Types
         Bot.Agent
         Bot.Agent.Config
         Bot.Agent.Transcript
@@ -251,6 +248,7 @@ library
         Bot.Handler.ShutUp.Config
         Bot.Handler.Typing
         Bot.Handler.Typing.Typst
+        Bot.JSONRPC
         Bot.LLM.OpenAI
         Bot.LLM.OpenAI.Config
         Bot.LLM.OpenAI.Retry
@@ -273,7 +271,6 @@ library
         Bot.RPC.Audit
         Bot.RPC.Client
         Bot.RPC.Config
-        Bot.RPC.Protocol
         Bot.RPC.Server
         Bot.RPC.State
         Bot.Session
@@ -304,7 +301,6 @@ library
         Bot.Util.Stream
         Bot.Util.Toml
     build-depends:    log-base
-                    , aeson-optics
                     , websockets
                     , toml-parser
 
