@@ -24,7 +24,9 @@ import Bot.Prelude
 import qualified Bot.Session as Session
 import qualified Bot.Storage.Session as SessionStorage
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified JSONRPC
@@ -95,13 +97,20 @@ storeReply driver message body = do
     Right (Just storedReply) -> do
       let messageId = storedReply.messageId
       traverse_ (broadcastReplyContent driver sessionId messageId) $
-        ACPContent.messageContentBlocks reply.text reply.imageUrls (map Session.storedAttachmentToSession reply.attachments)
+        ACPContent.messageContentBlocks reply.text reply.immediateImageUrls (map Session.storedAttachmentToSession reply.attachments)
       pure (Right messageId)
 
 data AcpReplyContent = AcpReplyContent
   { text :: !Text
   , imageUrls :: ![Text]
+  , immediateImageUrls :: ![Text]
   , attachments :: ![SessionStorage.StoredMediaRef]
+  }
+
+data AcpReplyImage = AcpReplyImage
+  { storageImageUrl :: !(Maybe Text)
+  , immediateImageUrl :: !Text
+  , storageAttachment :: !(Maybe SessionStorage.StoredMediaRef)
   }
 
 acpReplyContent
@@ -109,17 +118,18 @@ acpReplyContent
   => Text
   -> Eff es AcpReplyContent
 acpReplyContent body = do
-  converted <- traverse acpReplyImage (ReplyBody.replyImageUrls body)
+  images <- traverse acpReplyImage (ReplyBody.replyImageUrls body)
   pure AcpReplyContent
     { text = ReplyBody.renderReplyBody body
-    , imageUrls = [url | Left url <- converted]
-    , attachments = [attachment | Right attachment <- converted]
+    , imageUrls = mapMaybe (.storageImageUrl) images
+    , immediateImageUrls = map (.immediateImageUrl) images
+    , attachments = mapMaybe (.storageAttachment) images
     }
 
 acpReplyImage
   :: (Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => Text
-  -> Eff es (Either Text SessionStorage.StoredMediaRef)
+  -> Eff es AcpReplyImage
 acpReplyImage ref =
   case Text.stripPrefix "file://" (Text.strip ref) of
     Just pathText -> do
@@ -128,35 +138,77 @@ acpReplyImage ref =
       if exists
         then do
           bytes <- FileSystemByteString.readFile path
+          let mimeType = imageMediaType path
+              dataRef = dataImageRef mimeType bytes
           mediaRef <- Media.storeMediaObject $
             MediaObject
               { bytes = Q.fromStrict bytes
-              , mimeType = imageMediaType path
+              , mimeType
               , sourceName = Just (Text.pack (takeFileName path))
               }
-          case mediaRef >>= Session.parseMediaId of
-            Nothing ->
-              pure (Left ref)
-            Just fileId ->
-              Media.mediaFileInfo fileId >>= \case
-                Nothing ->
-                  pure (Left ref)
-                Just info -> do
-                  url <- Media.publicMediaRef info.ref
-                  pure (Right (Session.storedMediaRef info url))
+          attachment <- storedMediaAttachment mediaRef
+          pure AcpReplyImage
+            { storageImageUrl = Nothing
+            , immediateImageUrl = dataRef
+            , storageAttachment = attachment
+            }
         else
-          pure (Left ref)
+          pure (linkOnlyImage ref)
     Nothing ->
       case Session.parseMediaId ref of
         Nothing ->
-          pure (Left ref)
+          pure (linkOnlyImage ref)
         Just fileId ->
           Media.mediaFileInfo fileId >>= \case
             Nothing ->
-              pure (Left ref)
+              pure (linkOnlyImage ref)
             Just info -> do
               url <- Media.publicMediaRef info.ref
-              pure (Right (Session.storedMediaRef info url))
+              immediate <- mediaImmediateImageRef info
+              pure AcpReplyImage
+                { storageImageUrl = Nothing
+                , immediateImageUrl = fromMaybe url immediate
+                , storageAttachment = Just (Session.storedMediaRef info url)
+                }
+
+storedMediaAttachment
+  :: Media.Media :> es
+  => Maybe Text
+  -> Eff es (Maybe SessionStorage.StoredMediaRef)
+storedMediaAttachment mediaRef =
+  case mediaRef >>= Session.parseMediaId of
+    Nothing ->
+      pure Nothing
+    Just fileId ->
+      Media.mediaFileInfo fileId >>= \case
+        Nothing ->
+          pure Nothing
+        Just info -> do
+          url <- Media.publicMediaRef info.ref
+          pure (Just (Session.storedMediaRef info url))
+
+mediaImmediateImageRef
+  :: (FileSystem.FileSystem :> es, IOE :> es)
+  => Media.MediaFileInfo
+  -> Eff es (Maybe Text)
+mediaImmediateImageRef info
+  | info.exists && "image/" `Text.isPrefixOf` Text.toLower info.mimeType = do
+      bytes <- FileSystemByteString.readFile info.path
+      pure (Just (dataImageRef info.mimeType bytes))
+  | otherwise =
+      pure Nothing
+
+linkOnlyImage :: Text -> AcpReplyImage
+linkOnlyImage ref =
+  AcpReplyImage
+    { storageImageUrl = Just ref
+    , immediateImageUrl = ref
+    , storageAttachment = Nothing
+    }
+
+dataImageRef :: Text -> ByteString -> Text
+dataImageRef mimeType bytes =
+  "data:" <> mimeType <> ";base64," <> TextEncoding.decodeUtf8 (Base64.encode bytes)
 
 broadcastReplyContent
   :: Concurrent :> es

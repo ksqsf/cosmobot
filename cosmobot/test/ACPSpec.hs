@@ -1,14 +1,16 @@
 module Main (main) where
 
 import qualified Bot.ACP.Config as ACPConfig
+import qualified Bot.ACP.Client as ACPClient
 import qualified Bot.ACP.Server as ACPServer
 import qualified Bot.ACP.State as ACPState
 import qualified Bot.ACP.Types as ACP
 import qualified Bot.Chat.Driver.ACP as ACPDriver
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
-import Bot.Core.Message (IncomingMessage (..))
+import Bot.Core.Message (ChatKind (ChatPrivate), ChatPlatform (PlatformACP), IncomingMessage (..), MessageDigest (..))
 import qualified Bot.Effect.Concurrency as Concurrency
+import qualified Bot.Effect.ACP as ACPEffect
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Session as Session
@@ -23,6 +25,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified JSONRPC
 import qualified Network.Socket as Socket
 import qualified Network.WebSockets as WS
@@ -58,6 +61,10 @@ main =
       , testCase "session/prompt clears completed prompt cancellation state" testSessionPromptClearsCompletedPrompt
       , testCase "session/prompt does not complete on nonfinal reply" testSessionPromptIgnoresNonfinalReply
       , testCase "session/prompt accepts and streams image content" testSessionPromptAcceptsAndStreamsImageContent
+      , testCase "session/prompt streams generated file images as image content" testSessionPromptStreamsGeneratedFileImageContent
+      , testCase "ACP client file read routes to active client" testClientFileReadRoutesToActiveClient
+      , testCase "ACP client file write routes to active client" testClientFileWriteRoutesToActiveClient
+      , testCase "ACP client file request checks advertised capability" testClientFileRequestChecksAdvertisedCapability
       , testCase "websocket server authenticates and handles initialize" testWebSocketServerAuthenticatesAndHandlesInitialize
       ]
 
@@ -463,6 +470,126 @@ testSessionPromptAcceptsAndStreamsImageContent =
       acpEventContentTypes events @?= ["text", "image", "text", "image"]
       acpEventImageData events @?= ["AAAA", "BBBB"]
 
+testSessionPromptStreamsGeneratedFileImageContent :: IO ()
+testSessionPromptStreamsGeneratedFileImageContent =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    newResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/new" $
+        Aeson.object
+          [ "cwd" Aeson..= ("/tmp/cosmobot-acp-spec" :: Text)
+          , "mcpServers" Aeson..= ([] :: [Aeson.Value])
+          ]
+    sessionId <- liftIO $
+      case responseField newResponse "sessionId" of
+        Nothing ->
+          assertFailure "expected sessionId"
+        Just (value :: Text) ->
+          pure value
+    let imagePath = "/tmp/cosmobot-acp-generated-image.png"
+    FileSystemByteString.writeFile imagePath "png-bytes"
+    responderDone <- MVar.newEmptyMVar
+    _responder <- forkIO do
+      S.head_ (ACPState.incomingMessages acpState) >>= \case
+        Nothing ->
+          throwIO (userError "expected ACP incoming message")
+        Just incoming -> do
+          let driver = ACPDriver.acpChatDriver acpState
+          Driver.sendStreamingReplyMessage driver incoming
+            ("done\n[image] file://" <> Text.pack imagePath) >>= \case
+            Left err ->
+              throwIO (userError (Text.unpack err))
+            Right messageId -> do
+              _ <- Driver.completeMessageEdit driver incoming messageId
+              MVar.putMVar responderDone ()
+    promptResponse <- ACPServer.dispatchAcpRequest acpState queue $
+      acpRequest "session/prompt" $
+        Aeson.object
+          [ "sessionId" Aeson..= sessionId
+          , "prompt" Aeson..=
+              [ Aeson.object
+                  [ "type" Aeson..= ("text" :: Text)
+                  , "text" Aeson..= ("draw this" :: Text)
+                  ]
+              ]
+          ]
+    MVar.takeMVar responderDone
+    events <- replicateM 3 (ACPState.readClient queue)
+    liftIO do
+      responseField promptResponse "stopReason" @?= Just ("end_turn" :: Text)
+      acpEventContentTypes events @?= ["text", "text", "image"]
+      acpEventImageData events @?= ["cG5nLWJ5dGVz"]
+
+testClientFileReadRoutesToActiveClient :: IO ()
+testClientFileReadRoutesToActiveClient =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    initializeWithFs acpState queue True True
+    let sessionId = Session.SessionId "session-1"
+        message = acpToolMessage sessionId
+        requestAction =
+          ACPClient.runACP acpState $
+            ACPEffect.readClientFile message "notes.md" (Just 2) (Just 5)
+        responseAction = do
+          request <- readClientRequest queue
+          liftIO do
+            request.method @?= "fs/read_text_file"
+            request.params @?=
+              Aeson.object
+                [ "sessionId" Aeson..= ("session-1" :: Text)
+                , "path" Aeson..= ("notes.md" :: Text)
+                , "line" Aeson..= (2 :: Int)
+                , "limit" Aeson..= (5 :: Int)
+                ]
+          resolveClientRequest acpState queue request (Aeson.object ["content" Aeson..= ("hello" :: Text)])
+    (readResult, ()) <- ACPState.withActiveSessionClient acpState queue sessionId $
+      Async.concurrently requestAction responseAction
+    liftIO $
+      readResult @?= Right "hello"
+
+testClientFileWriteRoutesToActiveClient :: IO ()
+testClientFileWriteRoutesToActiveClient =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    initializeWithFs acpState queue True True
+    let sessionId = Session.SessionId "session-1"
+        message = acpToolMessage sessionId
+        requestAction =
+          ACPClient.runACP acpState $
+            ACPEffect.writeClientFile message "notes.md" "hello"
+        responseAction = do
+          request <- readClientRequest queue
+          liftIO do
+            request.method @?= "fs/write_text_file"
+            request.params @?=
+              Aeson.object
+                [ "sessionId" Aeson..= ("session-1" :: Text)
+                , "path" Aeson..= ("notes.md" :: Text)
+                , "content" Aeson..= ("hello" :: Text)
+                ]
+          resolveClientRequest acpState queue request Aeson.Null
+    (writeResult, ()) <- ACPState.withActiveSessionClient acpState queue sessionId $
+      Async.concurrently requestAction responseAction
+    liftIO $
+      writeResult @?= Right ()
+
+testClientFileRequestChecksAdvertisedCapability :: IO ()
+testClientFileRequestChecksAdvertisedCapability =
+  runAcpStorage do
+    acpState <- ACPState.newAcpState
+    (_clientId, queue) <- ACPState.registerClient acpState
+    initializeWithFs acpState queue False True
+    let sessionId = Session.SessionId "session-1"
+        message = acpToolMessage sessionId
+    result <- ACPState.withActiveSessionClient acpState queue sessionId $
+      ACPClient.runACP acpState $
+        ACPEffect.readClientFile message "notes.md" Nothing Nothing
+    liftIO $
+      result @?= Left "ACP client does not support fs/read_text_file."
+
 testWebSocketServerAuthenticatesAndHandlesInitialize :: IO ()
 testWebSocketServerAuthenticatesAndHandlesInitialize = do
   result <- timeout 2_000_000 $ runAcpStorage do
@@ -556,6 +683,80 @@ initializeResponse =
 acpRequest :: Text -> Aeson.Value -> ACP.AcpRequest
 acpRequest method params =
   JSONRPC.JSONRPCRequest JSONRPC.rPC_VERSION (JSONRPC.RequestId (Aeson.String "test-1")) method params
+
+initializeWithFs
+  :: (Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  => ACPState.AcpState
+  -> ACPState.AcpClientQueue
+  -> Bool
+  -> Bool
+  -> Eff es ()
+initializeWithFs acpState queue readTextFile writeTextFile = do
+  response <- ACPServer.dispatchAcpRequest acpState queue $
+    acpRequest "initialize" $
+      Aeson.object
+        [ "protocolVersion" Aeson..= (1 :: Int)
+        , "clientCapabilities" Aeson..=
+            Aeson.object
+              [ "fs" Aeson..=
+                  Aeson.object
+                    [ "readTextFile" Aeson..= readTextFile
+                    , "writeTextFile" Aeson..= writeTextFile
+                    ]
+              ]
+        , "clientInfo" Aeson..= Aeson.object []
+        ]
+  liftIO $ response @?= initializeResponse
+
+readClientRequest :: (Concurrent :> es, IOE :> es) => ACPState.AcpClientQueue -> Eff es ACP.AcpRequest
+readClientRequest queue =
+  ACPState.readClient queue >>= \case
+    ACPState.AcpClientSend value ->
+      case Aeson.fromJSON value of
+        Aeson.Success (JSONRPC.RequestMessage request) ->
+          pure request
+        other ->
+          liftIO (assertFailure [i|expected ACP client request, got #{show other :: String}|])
+    ACPState.AcpClientDisconnect reason ->
+      liftIO (assertFailure [i|unexpected ACP client disconnect: #{reason}|])
+
+resolveClientRequest
+  :: (Concurrent :> es, IOE :> es)
+  => ACPState.AcpState
+  -> ACPState.AcpClientQueue
+  -> ACP.AcpRequest
+  -> Aeson.Value
+  -> Eff es ()
+resolveClientRequest acpState queue request result = do
+  resolved <- ACPState.resolveClientResponse acpState queue $
+    JSONRPC.ResponseMessage $
+      JSONRPC.JSONRPCResponse JSONRPC.rPC_VERSION request.id result
+  liftIO $ assertBool "expected client response to resolve pending request" resolved
+
+acpToolMessage :: ACPState.AcpSessionId -> IncomingMessage
+acpToolMessage sessionId =
+  IncomingMessage
+    { platform = PlatformACP
+    , kind = ChatPrivate
+    , chatId = Nothing
+    , chatAliases = [Session.sessionIdText sessionId]
+    , digest = MessageDigest
+        { chatIsAllowed = True
+        , senderIsAllowed = True
+        , senderIsSuperuser = True
+        , mentionsBot = True
+        , botId = Just "acp"
+        }
+    , senderId = Just "acp-user"
+    , senderUsername = Just "ACP"
+    , messageId = Just "message-1"
+    , replyToMessageId = Nothing
+    , mentions = []
+    , mentionUsernames = []
+    , imageUrls = []
+    , text = ""
+    , raw = Aeson.Null
+    }
 
 responseField :: Aeson.FromJSON a => ACP.AcpResponse -> Text -> Maybe a
 responseField response name =

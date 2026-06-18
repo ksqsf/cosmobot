@@ -22,6 +22,7 @@ import Bot.Agent.Tools.Time
 import Bot.Agent.Tools.Typst
 import Bot.Agent.Tools.Web
 import Bot.Agent.Types
+import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.HTTP as HTTP
@@ -37,7 +38,8 @@ import Effectful.FileSystem
 
 -- | Built-in tools exposed to the model after per-message permission checks.
 defaultTools
-  :: Chat.Chat :> es
+  :: ACP.ACP :> es
+  => Chat.Chat :> es
   => ChatLog.ChatLog :> es
   => HTTP.HTTP :> es
   => LLM.LLM :> es
@@ -56,6 +58,8 @@ defaultTools
 defaultTools =
   [ listDirectoryTool
   , readFileTool
+  , acpReadClientFileTool
+  , acpWriteClientFileTool
   , queryChatLogTool
   , queryCurrentSenderChatLogTool
   , webSearchTool

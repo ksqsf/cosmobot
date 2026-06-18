@@ -18,6 +18,7 @@ import Bot.Core.Transcript
 import Bot.Core.Message
 import Bot.Core.Route (isSuperuser)
 import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -41,7 +42,8 @@ import Effectful.Process
 import Effectful.Timeout
 
 runAskAgentThread
-  :: ( Chat.Chat :> es
+  :: ( ACP.ACP :> es
+     , Chat.Chat :> es
      , ChatLog.ChatLog :> es
      , AgentAudit.AgentAudit :> es
      , Concurrency.Concurrency :> es

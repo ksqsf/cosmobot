@@ -6,6 +6,7 @@ module Bot.Main
 where
 
 import Bot.Prelude
+import qualified Bot.ACP.Client as ACPClient
 import qualified Bot.ACP.Config as ACPConfig
 import qualified Bot.ACP.Server as ACPServer
 import qualified Bot.ACP.State as ACP
@@ -15,6 +16,7 @@ import Bot.Core.Route
 import qualified Bot.Lifecycle as Lifecycle
 import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.ACP as ACPEffect
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -83,6 +85,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
           . ChatLog.runChatLog
           . Memory.runMemory cfg.memory
           . Skills.runSkills cfg.skills
+          . ACPClient.runACP acpState
           . ConcurrencyManager.runConcurrencyManager
           . runGracefulTermination
           . Scheduler.runScheduler
@@ -106,7 +109,7 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
     runConfiguredServers cfg threads rpcState acpState messageConsumer
 
 routes
-  :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> [RouteHandler es]
@@ -121,7 +124,7 @@ routes cfg threads =
     <> askHandlers cfg.tool cfg.handlers.ask threads
 
 runConfiguredServers
-  :: ( Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> RPC.RpcState

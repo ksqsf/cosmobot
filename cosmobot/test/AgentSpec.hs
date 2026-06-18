@@ -4,6 +4,7 @@ import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Core as AgentCore
 import qualified Bot.Agent.Tools.Audio as AudioTools
 import qualified Bot.Agent.Tools.Chat as ChatTools
+import qualified Bot.Agent.Tools.Files as FileTools
 import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
 import qualified Bot.Agent.Types as AgentTypes
@@ -18,6 +19,7 @@ import Bot.Core.Transcript
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Route (runHandlers)
 import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -35,6 +37,7 @@ import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
+import qualified Bot.Session as Session
 import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
 import Bot.Handler.Ask (askHandlers)
@@ -47,6 +50,7 @@ import qualified Bot.System.Typst.Test as TypstTest
 import qualified Bot.System.Typst.Types as TypstTypes
 import qualified Bot.Util.HList as HList
 import Bot.Prelude
+import qualified Bot.Storage.Session as SessionStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -79,7 +83,8 @@ import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit
 
 type AgentStack =
-  '[ Chat.Chat
+  '[ ACP.ACP
+   , Chat.Chat
    , AgentAudit.AgentAudit
    , ChatLog.ChatLog
    , LLM.LLM
@@ -178,6 +183,7 @@ main =
   defaultMain $
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
+      , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "tool reply middleware normalizes reply images" testToolReplyMiddlewareNormalizesReplyImages
       , testCase "tool reply middleware rejects uncached remote images" testToolReplyMiddlewareRejectsUncachedRemoteImages
@@ -192,6 +198,7 @@ main =
       , testCase "image_edit tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
       , testCase "ask handler passes referenced images to image_edit tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "ask handler includes referenced image URLs in text context" testAskHandlerIncludesReferencedImageUrlsInTextContext
+      , testCase "ACP ask handler continues durable session transcript" testAcpAskHandlerContinuesDurableSessionTranscript
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
       , testCase "media_text reads cached media text slices" testReadMediaTextToolReadsCachedSlices
@@ -266,6 +273,18 @@ testScheduleToolCreatesQueryableSchedule = do
   let scheduled = fromMaybe (error "expected a schedule") (viaNonEmpty head schedules)
   scheduled.message.text @?= "!ask check oven"
   scheduled.message.replyToMessageId @?= Nothing
+
+testAcpClientFileToolsAreAcpOnly :: IO ()
+testAcpClientFileToolsAreAcpOnly = do
+  let readTool = FileTools.acpReadClientFileTool :: Agent.Tool AgentStack
+      writeTool = FileTools.acpWriteClientFileTool :: Agent.Tool AgentStack
+      acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
+  readTool.name @?= "acp_read_client_file"
+  writeTool.name @?= "acp_write_client_file"
+  assertBool "read tool should be hidden outside ACP" (not (readTool.allowed agentContext))
+  assertBool "write tool should be hidden outside ACP" (not (writeTool.allowed agentContext))
+  assertBool "read tool should be visible for ACP" (readTool.allowed acpContext)
+  assertBool "write tool should be visible for ACP" (writeTool.allowed acpContext)
 
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do
@@ -549,6 +568,72 @@ testAskHandlerIncludesReferencedImageUrlsInTextContext = do
       requestUserImageUrls request @?= [referencedImage]
     Nothing ->
       assertFailure "expected captured LLM request"
+
+testAcpAskHandlerContinuesDurableSessionTranscript :: IO ()
+testAcpAskHandlerContinuesDurableSessionTranscript = do
+  answers <- IORef.newIORef [chatAnswer "continued" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  replies <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentCapturingMessages captured answers (ChatMock (Just replies) (Just "901") Nothing) do
+    threads <- newThreadStore
+    session <- Session.openSession (Just "/tmp/cosmobot-agent-acp-spec")
+    firstUser <- Session.appendUserMessage $
+      Session.SessionSend
+        { sessionId = session.sessionId
+        , text = "first turn"
+        , imageUrls = []
+        , attachments = []
+        , replyToMessageId = Nothing
+        }
+    case firstUser of
+      Right (Just firstMessage) ->
+        void $
+          SessionStorage.appendMessage
+            (Session.sessionIdText session.sessionId)
+            "assistant"
+            "first answer"
+            []
+            []
+            (Just firstMessage.messageId)
+            (Just firstMessage.messageId)
+      other ->
+        liftIO (assertFailure [i|expected first ACP session message, got #{show other :: String}|])
+    currentUser <- Session.appendUserMessage $
+      Session.SessionSend
+        { sessionId = session.sessionId
+        , text = "follow up"
+        , imageUrls = ["data:image/png;base64,AAAA"]
+        , attachments = []
+        , replyToMessageId = Nothing
+        }
+    currentMessageId <- case currentUser of
+      Right (Just message) ->
+        pure message.messageId
+      other ->
+        liftIO (assertFailure [i|expected current ACP session message, got #{show other :: String}|])
+    let message =
+          askHandlerMessage
+            { platform = PlatformACP
+            , kind = ChatPrivate
+            , chatId = Nothing
+            , chatAliases = [Session.sessionIdText session.sessionId]
+            , senderId = Just "acp-user"
+            , senderUsername = Just "ACP"
+            , messageId = Just currentMessageId
+            , text = "follow up"
+            , imageUrls = ["data:image/png;base64,AAAA"]
+            }
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
+    waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
+    waitUntil (liftIO $ not . null <$> IORef.readIORef replies)
+  requests <- IORef.readIORef captured
+  case viaNonEmpty head requests of
+    Just request -> do
+      chatMessageTextsByRole "user" request @?= ["first turn", "follow up"]
+      chatMessageTextsByRole "assistant" request @?= ["first answer"]
+      requestUserImageUrls request @?= ["data:image/png;base64,AAAA"]
+    Nothing ->
+      assertFailure "expected captured ACP LLM request"
 
 testGenerateImageToolPassesImageRequestOptions :: IO ()
 testGenerateImageToolPassesImageRequestOptions = do
@@ -2117,6 +2202,24 @@ requestUserImageUrls messages =
   , LLM.ImageUrlPart url <- parts
   ]
 
+chatMessageTextsByRole :: Text -> [LLM.ChatMessage] -> [Text]
+chatMessageTextsByRole role messages =
+  [ text
+  | message <- messages
+  , message.role == role
+  , text <- chatMessageTextParts message
+  ]
+
+chatMessageTextParts :: LLM.ChatMessage -> [Text]
+chatMessageTextParts message =
+  case message.content of
+    Just (LLM.TextContent text) ->
+      [text]
+    Just (LLM.PartsContent parts) ->
+      [text | LLM.TextPart text <- parts]
+    Nothing ->
+      []
+
 requestRoles :: [LLM.ChatMessage] -> [Text]
 requestRoles =
   map (.role)
@@ -2465,6 +2568,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
               , agentFetchMessage = \_ _ -> pure referencedMessage
               , agentUserAvatar = mockUserAvatar chatMock
               }
+          . runTestACP
   result <-
     runEff (runStack action)
   either assertFailure pure result
@@ -2507,6 +2611,7 @@ runAgentWithStreamingAnswers answers chatMock action = do
               { agentReply = mockReply chatMock
               , agentUserAvatar = mockUserAvatar chatMock
               }
+          . runTestACP
   result <-
     runEff (runStack action)
   either assertFailure pure result
@@ -2526,6 +2631,14 @@ mockTypstRender rendered _format source action = do
 
 runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
 runTestLog action = startKatipE "agent-spec" "test" action
+
+runTestACP :: Eff (ACP.ACP : es) a -> Eff es a
+runTestACP =
+  interpret \_ -> \case
+    ACP.ReadClientFile{} ->
+      pure (Left "ACP client file test interpreter is not configured.")
+    ACP.WriteClientFile{} ->
+      pure (Left "ACP client file test interpreter is not configured.")
 
 popAnswer :: IORef.IORef [LLM.ChatAnswer] -> IO LLM.ChatAnswer
 popAnswer answers =

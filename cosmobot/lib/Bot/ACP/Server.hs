@@ -64,6 +64,11 @@ data ListSessionsParams = ListSessionsParams
   }
   deriving (Eq, Show)
 
+data InitializeParams = InitializeParams
+  { clientCapabilities :: !State.AcpClientCapabilities
+  }
+  deriving (Eq, Show)
+
 runAcpServer
   :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Prim :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
@@ -176,11 +181,20 @@ readRequestFrames threads acpState queue conn =
           Aeson.Success (JSONRPC.NotificationMessage notification_) -> do
             _ <- dispatchAcpRequestWithThreadStore threads acpState queue (notificationToRequest notification_)
             pure Nothing
+          Aeson.Success message@(JSONRPC.ResponseMessage{}) ->
+            resolveClientMessage message
+          Aeson.Success message@(JSONRPC.ErrorMessage{}) ->
+            resolveClientMessage message
           Aeson.Error err ->
             pure (Just (ACP.invalidRequestResponse (Text.pack err)))
-          Aeson.Success _ ->
-            pure (Just (ACP.invalidRequestResponse "Expected request or notification"))
     traverse_ (State.writeClient queue . Aeson.toJSON) response
+  where
+    resolveClientMessage message =
+      State.resolveClientResponse acpState queue message <&> \case
+        True ->
+          Nothing
+        False ->
+          Just (ACP.invalidRequestResponse "Unexpected ACP client response")
 
 dispatchAcpRequestFrame
   :: (KatipE :> es, Prim :> es, Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
@@ -228,7 +242,7 @@ dispatchAcpRequestWithCancel
 dispatchAcpRequestWithCancel cancelMessages acpState queue request =
   case ACP.requestMethod request of
     "initialize" ->
-      pure (ACP.successResponse (ACP.requestId request) initializeResponse)
+      dispatchInitialize acpState queue request
     "authenticate" ->
       pure (ACP.successResponse (ACP.requestId request) (Aeson.object []))
     "session/new" ->
@@ -279,6 +293,20 @@ initializeResponse =
           ]
     , "authMethods" Aeson..= ([] :: [Aeson.Value])
     ]
+
+dispatchInitialize
+  :: Concurrent :> es
+  => State.AcpState
+  -> State.AcpClientQueue
+  -> ACP.AcpRequest
+  -> Eff es ACP.AcpResponse
+dispatchInitialize acpState queue request =
+  case AesonTypes.parseEither parseInitializeParams (ACP.requestParams request) of
+    Left err ->
+      pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
+    Right InitializeParams{clientCapabilities} -> do
+      State.setClientCapabilities acpState queue clientCapabilities
+      pure (ACP.successResponse (ACP.requestId request) initializeResponse)
 
 dispatchNewSession
   :: Storage.Storage :> es
@@ -390,7 +418,8 @@ dispatchPrompt acpState queue request =
     Left err ->
       pure (ACP.errorResponse (ACP.requestId request) "invalid_params" (Text.pack err))
     Right prompt ->
-      ( State.withPromptWaiter acpState prompt.sessionId (enqueuePrompt prompt) >>= \case
+      ( State.withActiveSessionClient acpState queue prompt.sessionId $
+          State.withPromptWaiter acpState prompt.sessionId (enqueuePrompt prompt) >>= \case
           State.PromptCompleted messageId -> do
             State.completeSessionPrompt acpState prompt.sessionId
             pure $
@@ -457,6 +486,17 @@ parseNewSessionParams :: Aeson.Value -> AesonTypes.Parser (Maybe Text)
 parseNewSessionParams =
   Aeson.withObject "session/new params" \o ->
     o Aeson..:? "cwd"
+
+parseInitializeParams :: Aeson.Value -> AesonTypes.Parser InitializeParams
+parseInitializeParams =
+  Aeson.withObject "initialize params" \o -> do
+    capabilities <- o Aeson..:? "clientCapabilities" Aeson..!= Aeson.object []
+    fs <- Aeson.withObject "clientCapabilities" (\co -> co Aeson..:? "fs" Aeson..!= Aeson.object []) capabilities
+    readTextFile <- Aeson.withObject "clientCapabilities.fs" (\fo -> fo Aeson..:? "readTextFile" Aeson..!= False) fs
+    writeTextFile <- Aeson.withObject "clientCapabilities.fs" (\fo -> fo Aeson..:? "writeTextFile" Aeson..!= False) fs
+    pure InitializeParams
+      { clientCapabilities = State.AcpClientCapabilities{readTextFile, writeTextFile}
+      }
 
 parseSessionIdParams :: Aeson.Value -> AesonTypes.Parser State.AcpSessionId
 parseSessionIdParams =

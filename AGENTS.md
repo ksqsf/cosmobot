@@ -161,10 +161,11 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - Agent/tool/conversation changes: `cabal test agent-spec`.
 - Scheduler changes: `cabal test scheduler-spec`.
 - Chat-log changes: `cabal test chat-log-spec`.
-- Shared behavior changes: `cabal test all`.
-- Executable wiring, config, cabal module lists, or handler signatures: `cabal build cosmobot`.
+- Shared behavior changes: `cabal test -j all`.
+- Executable wiring, config, cabal module lists, or handler signatures: `cabal build -j exe:cosmobot`.
 - Always run `git diff --check` before finishing.
 - Keep unrelated untracked files out of commits unless explicitly requested.
+- Always use `-j` for `cabal` build and test.
 
 ## Cosmocode
 

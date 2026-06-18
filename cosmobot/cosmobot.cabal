@@ -160,6 +160,7 @@ library
                     , lib-deps
     hs-source-dirs:   lib
     exposed-modules:
+        Bot.ACP.Client
         Bot.ACP.Config
         Bot.ACP.Content
         Bot.ACP.Server
@@ -222,6 +223,7 @@ library
         Bot.Core.ReplyBody
         Bot.Core.Route
         Bot.Effect.AgentAudit
+        Bot.Effect.ACP
         Bot.Effect.Chat
         Bot.Effect.ChatDriver
         Bot.Effect.ChatLog

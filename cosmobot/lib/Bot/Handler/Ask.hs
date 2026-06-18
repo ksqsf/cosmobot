@@ -12,8 +12,10 @@ where
 
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Failure as AgentFailure
+import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Thread
 import Bot.Core.Transcript
+import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.ChatLog as ChatLog
@@ -32,15 +34,18 @@ import Bot.Handler.Ask.Config
 import qualified Bot.Memory as MemoryStore
 import Bot.Core.Message
 import Bot.Prelude
+import qualified Bot.Session as Session
 import Bot.Storage.Thread
 import qualified Data.Foldable as Foldable
+import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import Effectful.Timeout
 import Effectful.Process
 import Effectful.FileSystem
 
 type HandlerEffects es =
-  ( Chat.Chat :> es
+  ( ACP.ACP :> es
+  , Chat.Chat :> es
   , ChatLog.ChatLog :> es
   , AgentAudit.AgentAudit :> es
   , Concurrency.Concurrency :> es
@@ -298,13 +303,62 @@ promptOrImageDefault prompt imageUrls
   where
     stripped = Text.strip prompt
 
-startTranscript :: (Memory.Memory :> es, Skills.Skills :> es) => AskHandlerConfig -> IncomingMessage -> MessageInput -> Eff es Transcript
+startTranscript :: (Memory.Memory :> es, Skills.Skills :> es, Storage.Storage :> es) => AskHandlerConfig -> IncomingMessage -> MessageInput -> Eff es Transcript
 startTranscript cfg message input = do
   skillsPrompt <- Skills.skillsSystemPrompt
   senderMemory <- loadScopedMemory (MemoryStore.senderMemoryScope message)
   chatMemory <- loadScopedMemory (MemoryStore.chatMemoryScope message)
   let systemPrompt = LLM.contextSystemPrompt cfg.systemPrompt skillsPrompt senderMemory chatMemory
-  pure (startWithSystemAndUserInput systemPrompt input)
+  case acpSessionId message of
+    Nothing ->
+      pure (startWithSystemAndUserInput systemPrompt input)
+    Just sessionId -> do
+      history <- Session.sessionHistory sessionId
+      pure $
+        if null history
+          then startWithSystemAndUserInput systemPrompt input
+          else sessionHistoryTranscript systemPrompt history
+
+acpSessionId :: IncomingMessage -> Maybe Session.SessionId
+acpSessionId message = do
+  guard (message.platform == PlatformACP)
+  Session.SessionId <$> listToMaybe message.chatAliases
+
+sessionHistoryTranscript :: Text -> [Session.SessionMessage] -> Transcript
+sessionHistoryTranscript systemPrompt history =
+  Transcript $
+    Seq.fromList $
+      systemMessages <> concatMap sessionMessageChatMessages history
+  where
+    systemMessages =
+      [LLM.systemText systemPrompt | not (Text.null systemPrompt)]
+
+sessionMessageChatMessages :: Session.SessionMessage -> [LLM.ChatMessage]
+sessionMessageChatMessages message
+  | message.sender == "user" =
+      [LLM.userWithImages message.text (sessionMessageImageRefs message)]
+  | otherwise =
+      assistantMessages message.text (sessionMessageImageRefs message)
+
+assistantMessages :: Text -> [Text] -> [LLM.ChatMessage]
+assistantMessages text imageRefs =
+  textMessages <> imageContextMessages
+  where
+    visibleImageRefs =
+      filter (not . ReplyBody.isBase64ImageRef) imageRefs
+    textMessages =
+      [LLM.assistantText text | not (Text.null (Text.strip text))] <>
+      [LLM.assistantText "Generated image." | Text.null (Text.strip text) && not (null imageRefs)]
+    imageContextMessages =
+      [ LLM.userWithImages "The previous assistant response generated this image. Use it as visual context for follow-up questions." visibleImageRefs
+      | not (null visibleImageRefs)
+      ]
+
+sessionMessageImageRefs :: Session.SessionMessage -> [Text]
+sessionMessageImageRefs message =
+  ordNub $
+    filter (not . Text.null . Text.strip) $
+      message.imageUrls <> [attachment.url | attachment <- message.attachments, attachment.kind == "image"]
 
 loadScopedMemory :: Memory.Memory :> es => Either Text MemoryStore.MemoryScope -> Eff es (Maybe Text)
 loadScopedMemory =

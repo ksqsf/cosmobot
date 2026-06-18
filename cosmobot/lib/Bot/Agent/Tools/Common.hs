@@ -130,10 +130,10 @@ newUseLimiter :: IOE :> es => Maybe Int -> Eff es (Eff es UseLimit)
 newUseLimiter maxUses = do
   uses <- liftIO (IORef.newIORef 0)
   pure do
-    currentUses <- liftIO (IORef.readIORef uses)
-    case maxUses of
-      Just limit | currentUses >= limit ->
-        pure (UseLimitReached currentUses)
-      _ -> do
-        liftIO (IORef.modifyIORef' uses (+ 1))
-        pure UseAllowed
+    liftIO $
+      IORef.atomicModifyIORef' uses \currentUses ->
+        case maxUses of
+          Just limit | currentUses >= limit ->
+            (currentUses, UseLimitReached currentUses)
+          _ ->
+            (currentUses + 1, UseAllowed)
