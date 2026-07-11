@@ -213,8 +213,9 @@ startAskThread label toolCfg cfg threads resource message prompt = do
   logInfo [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
-  let contextPrompt = promptWithReferencedContext prompt referenced contextImages
-  let input = inputWithImages contextPrompt contextImages
+  let contextFiles = referencedFiles referenced <> message.files
+  let contextPrompt = promptWithCurrentFiles (promptWithReferencedContext prompt referenced contextImages) message.files
+  let input = inputWithAttachments contextPrompt contextImages contextFiles
   transcript <- startTranscript cfg message input
   void $ runAskAgentThread toolCfg cfg threads resource Nothing message input transcript
 
@@ -232,8 +233,9 @@ startDrawThread label cfg threads message prompt = do
   logInfo [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
-  let contextPrompt = promptWithReferencedContext prompt referenced contextImages
-  let input = inputWithImages contextPrompt contextImages
+  let contextFiles = referencedFiles referenced <> message.files
+  let contextPrompt = promptWithCurrentFiles (promptWithReferencedContext prompt referenced contextImages) message.files
+  let input = inputWithAttachments contextPrompt contextImages contextFiles
   transcript <- startTranscript cfg message input
   answer <- drawTranscript transcript
   responseId <- listToMaybe . rights <$> Chat.replyTo message answer
@@ -261,9 +263,10 @@ startThreadFromReply toolCfg cfg threads resource message parentId = do
   logInfo [i|starting thread from mentioned reply: #{incomingMessageLogLine message}|]
   referenced <- Chat.getMessageContent message parentId
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
-  let prompt = promptWithReferencedContext message.text referenced contextImages
+  let contextFiles = referencedFiles referenced <> message.files
+  let prompt = promptWithCurrentFiles (promptWithReferencedContext message.text referenced contextImages) message.files
   unless (Text.null prompt && null contextImages) do
-    let input = inputWithImages prompt contextImages
+    let input = inputWithAttachments prompt contextImages contextFiles
     transcript <- startTranscript cfg message input
     void $ runAskAgentThread toolCfg cfg threads resource (Just (threadMessageKey message parentId)) message input transcript
 
@@ -280,7 +283,8 @@ continueThread
 continueThread toolCfg cfg threads resource message parentKey transcript = do
   logDebug [i|continuing thread: #{show message :: String}|]
   logInfo [i|continuing thread: #{incomingMessageLogLine message}|]
-  let input = inputWithImages (promptOrImageDefault message.text message.imageUrls) message.imageUrls
+  let prompt = promptWithCurrentFiles (promptOrImageDefault message.text message.imageUrls) message.files
+  let input = inputWithAttachments prompt message.imageUrls message.files
   let nextTranscript =
         appendUserInput input transcript
   void $ runAskAgentThread toolCfg cfg threads resource (Just parentKey) message input nextTranscript
@@ -387,7 +391,7 @@ referencedMessageContext referenced =
     else Just (Text.unlines contextLines)
   where
     contextLines =
-      referencedSenderLine referenced <> referencedTextLines referenced <> referencedImageLines referenced
+      referencedSenderLine referenced <> referencedTextLines referenced <> referencedImageLines referenced <> referencedFileLines referenced
 
 referencedSenderLine :: ReferencedMessage -> [Text]
 referencedSenderLine referenced =
@@ -408,3 +412,25 @@ referencedImageLines referenced =
   | let imageUrls = filter (not . Text.null) (map Text.strip referenced.imageUrls)
   , not (null imageUrls)
   ]
+
+referencedFileLines :: ReferencedMessage -> [Text]
+referencedFileLines referenced =
+  [ "被回复文件：" <> renderMessageFile file
+  | file <- ordNubOn (.ref) referenced.files
+  ]
+
+referencedFiles :: Maybe ReferencedMessage -> [MessageFile]
+referencedFiles =
+  maybe [] (ordNubOn (.ref) . (.files))
+
+promptWithCurrentFiles :: Text -> [MessageFile] -> Text
+promptWithCurrentFiles prompt files =
+  Text.intercalate "\n" $
+    filter (not . Text.null)
+      [ Text.strip prompt
+      , Text.unlines ["附件：" <> renderMessageFile file | file <- ordNubOn (.ref) files]
+      ]
+
+renderMessageFile :: MessageFile -> Text
+renderMessageFile file =
+  file.name <> " (" <> file.ref <> ")"

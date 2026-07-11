@@ -424,6 +424,7 @@ acpIncomingMessage sessionSend messageRow = do
     , mentions = []
     , mentionUsernames = []
     , imageUrls = llmImageUrls
+    , files = []
     , text = Session.sessionSendContextText sessionSend
     , raw = Aeson.toJSON sessionSend
     }

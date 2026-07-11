@@ -274,13 +274,19 @@ normalizeReferencedMessageMedia
   -> Eff es ReferencedMessage
 normalizeReferencedMessageMedia driver message = do
   imageUrls <- traverse (normalizeMediaRef driver >=> Media.normalizeMediaRef) message.imageUrls
+  files <- traverse normalizeFile message.files
   pure ReferencedMessage
     { messageId = message.messageId
     , senderDisplayName = message.senderDisplayName
     , senderIdentifier = message.senderIdentifier
     , text = message.text
     , imageUrls
+    , files
     }
+  where
+    normalizeFile file = do
+      ref <- normalizeMediaRef driver file.ref >>= Media.normalizeMediaRef
+      pure MessageFile{name = file.name, ref}
 
 normalizeOutgoingReplyBody
   :: (Media.Media :> es, ChatDriver driver, ChatDriverEffects driver es)
@@ -388,6 +394,7 @@ incomingMessageStreamUnlift =
 
 incomingMessages
   :: HTTP.HTTP :> es
+  => Timeout :> es
   => Concurrency.Concurrency :> es
   => Media.Media :> es
   => Storage.Storage :> es

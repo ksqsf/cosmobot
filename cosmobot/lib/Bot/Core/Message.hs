@@ -22,10 +22,13 @@ module Bot.Core.Message
     -- * Incoming messages
   , IncomingMessage (..)
   , incomingMessageLogLine
+  , MessageFile (..)
   , MessageInput (..)
   , MessageInputAttachment (..)
+  , inputWithAttachments
   , inputWithImages
   , messageInputImageUrls
+  , messageInputFiles
 
     -- * Referenced messages
   , ReferencedMessage (..)
@@ -145,16 +148,42 @@ data IncomingMessage = IncomingMessage
   , mentions  :: ![Text]
   , mentionUsernames :: ![Text]
   , imageUrls :: ![Text]
+  , files     :: ![MessageFile]
   , text      :: !Text
   , raw       :: !Aeson.Value
   }
-  deriving (Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+  deriving (Show, Generic, Aeson.ToJSON)
+
+instance Aeson.FromJSON IncomingMessage where
+  parseJSON = Aeson.withObject "IncomingMessage" \o ->
+    IncomingMessage
+      <$> o Aeson..: "platform"
+      <*> o Aeson..: "kind"
+      <*> o Aeson..:? "chatId"
+      <*> o Aeson..:? "chatAliases" Aeson..!= []
+      <*> o Aeson..: "digest"
+      <*> o Aeson..:? "senderId"
+      <*> o Aeson..:? "senderUsername"
+      <*> o Aeson..:? "messageId"
+      <*> o Aeson..:? "replyToMessageId"
+      <*> o Aeson..:? "mentions" Aeson..!= []
+      <*> o Aeson..:? "mentionUsernames" Aeson..!= []
+      <*> o Aeson..:? "imageUrls" Aeson..!= []
+      <*> o Aeson..:? "files" Aeson..!= []
+      <*> o Aeson..:? "text" Aeson..!= ""
+      <*> o Aeson..:? "raw" Aeson..!= Aeson.Null
 
 -- | Normalized user-provided input for one handler/agent turn.
 --
 -- The attachment type is intentionally algebraic so non-image inputs such as
 -- documents can be added without threading another parallel field through the
 -- handler and agent layers.
+data MessageFile = MessageFile
+  { name :: !Text
+  , ref :: !Text
+  }
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
 data MessageInput = MessageInput
   { text :: !Text
   , attachments :: ![MessageInputAttachment]
@@ -163,13 +192,18 @@ data MessageInput = MessageInput
 
 data MessageInputAttachment
   = MessageInputImageUrl !Text
+  | MessageInputFile !MessageFile
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 inputWithImages :: Text -> [Text] -> MessageInput
 inputWithImages text imageUrls =
+  inputWithAttachments text imageUrls []
+
+inputWithAttachments :: Text -> [Text] -> [MessageFile] -> MessageInput
+inputWithAttachments text imageUrls files =
   MessageInput
     { text = text
-    , attachments = map MessageInputImageUrl imageUrls
+    , attachments = map MessageInputImageUrl imageUrls <> map MessageInputFile files
     }
 
 messageInputImageUrls :: MessageInput -> [Text]
@@ -178,6 +212,12 @@ messageInputImageUrls MessageInput{attachments} =
   | MessageInputImageUrl rawUrl <- attachments
   , let url = Text.strip rawUrl
   , not (Text.null url)
+  ]
+
+messageInputFiles :: MessageInput -> [MessageFile]
+messageInputFiles MessageInput{attachments} =
+  [ file
+  | MessageInputFile file <- attachments
   ]
 
 -- | Compact one-line representation for info-level logs.
@@ -198,6 +238,7 @@ incomingMessageLogLine message =
     , "mentions=" <> show (length message.mentions + length message.mentionUsernames)
     , "mentions_bot=" <> show message.digest.mentionsBot
     , "images=" <> show (length message.imageUrls)
+    , "files=" <> show (length message.files)
     , "text=" <> previewText 80 message.text
     ]
 
@@ -224,5 +265,6 @@ data ReferencedMessage = ReferencedMessage
   , senderIdentifier :: !(Maybe Text)
   , text      :: !Text
   , imageUrls :: ![Text]
+  , files     :: ![MessageFile]
   }
   deriving (Show, Generic, Aeson.ToJSON)

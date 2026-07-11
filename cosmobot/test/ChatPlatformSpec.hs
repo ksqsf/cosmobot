@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
+import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Bot.Chat.Driver.Discord as Discord
 import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.QQ as QQ
@@ -28,10 +29,12 @@ main =
   defaultMain $
     testGroup "chat platforms"
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      , testCase "incoming message JSON defaults missing files" testIncomingMessageJsonDefaultsMissingFiles
       , testCase "QQ superuser is also allowed sender" testQqSuperuserIsAlsoAllowedSender
       , testCase "QQ self message is ignored" testQqSelfMessageIsIgnored
       , testCase "QQ CQ mention string keeps mentioned user ids" testQqCQMentionStringKeepsMentionedUserIds
       , testCase "QQ forwarded messages merge all node text" testQqForwardedMessagesMergeAllNodeText
+      , testCase "QQ file segment becomes a message file" testQqFileSegmentBecomesMessageFile
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
@@ -48,6 +51,7 @@ main =
       , testCase "Matrix image message includes media URL" testMatrixImageMessageIncludesMediaUrl
       , testCase "Matrix encrypted image message includes media URL" testMatrixEncryptedImageMessageIncludesMediaUrl
       , testCase "Matrix referenced image without body includes media URL" testMatrixReferencedImageWithoutBodyIncludesMediaUrl
+      , testCase "Matrix file message includes a message file" testMatrixFileMessageIncludesMessageFile
       , testCase "Matrix encrypted image bytes decrypt and verify ciphertext hash" testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix edit event converts to incoming message" testMatrixEditEventConvertsToIncomingMessage
@@ -62,6 +66,7 @@ main =
       , testCase "Discord CommonMark extensions render Discord Markdown" testDiscordCommonMarkExtensionsRenderDiscordMarkdown
       , testCase "Discord avatar value includes avatar URL" testDiscordAvatarValueIncludesAvatarUrl
       , testCase "Discord image context includes embeds and image links" testDiscordImageContextIncludesEmbedsAndImageLinks
+      , testCase "Discord document attachment becomes a message file" testDiscordDocumentAttachmentBecomesMessageFile
       ]
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
@@ -70,6 +75,46 @@ testQqUserMessageConvertsToIncomingMessage = do
   ((.platform) <$> incoming) @?= Just PlatformQQ
   ((.text) <$> incoming) @?= Just "hello"
   ((.digest.botId) <$> incoming) @?= Just (Just "424242")
+
+testIncomingMessageJsonDefaultsMissingFiles :: IO ()
+testIncomingMessageJsonDefaultsMissingFiles = do
+  let message = fromMaybe (error "expected QQ message") (QQ.eventToIncomingMessage (qqMessageEvent 10001))
+      legacyJson = case Aeson.toJSON message of
+        Aeson.Object fields -> Aeson.Object (AesonKeyMap.delete "files" fields)
+        _ -> error "expected message object"
+  case Aeson.fromJSON legacyJson of
+    Aeson.Success (decoded :: IncomingMessage) -> decoded.files @?= []
+    Aeson.Error err -> assertFailure err
+
+testQqFileSegmentBecomesMessageFile :: IO ()
+testQqFileSegmentBecomesMessageFile = do
+  let original :: QQ.Event
+      original = qqMessageEvent 10001
+      fileMessage = Just (Aeson.toJSON
+            [ Aeson.object
+                [ "type" Aeson..= ("file" :: Text)
+                , "data" Aeson..= Aeson.object
+                    [ "file" Aeson..= ("notes.txt" :: Text)
+                    , "file_id" Aeson..= ("file-123" :: Text)
+                    ]
+                ]
+            ])
+      event = QQ.Event
+        { QQ.time = original.time
+        , QQ.selfId = original.selfId
+        , QQ.postType = original.postType
+        , QQ.messageType = original.messageType
+        , QQ.subType = original.subType
+        , QQ.messageId = original.messageId
+        , QQ.userId = original.userId
+        , QQ.groupId = original.groupId
+        , QQ.message = fileMessage
+        , QQ.rawMessage = original.rawMessage
+        , QQ.sender = original.sender
+        , QQ.rawEvent = original.rawEvent
+        }
+      incoming = QQ.eventToIncomingMessage event
+  ((.files) <$> incoming) @?= Just [MessageFile{name = "notes.txt", ref = "qq-file:file-123"}]
 
 testQqSuperuserIsAlsoAllowedSender :: IO ()
 testQqSuperuserIsAlsoAllowedSender = do
@@ -320,6 +365,25 @@ testMatrixReferencedImageWithoutBodyIncludesMediaUrl = do
   ((.text) <$> referenced) @?= Just ""
   ((.imageUrls) <$> referenced) @?= Just ["mxc://example.org/bodyless-image"]
 
+testMatrixFileMessageIncludesMessageFile :: IO ()
+testMatrixFileMessageIncludesMessageFile = do
+  let roomEvent = matrixRoomEvent
+        { Matrix.event = matrixRoomEvent.event
+            { Matrix.content = matrixRoomEvent.event.content
+                { Matrix.msgtype = Just "m.file"
+                , Matrix.body = Just "notes.txt"
+                }
+            , Matrix.raw = matrixImageRawContent
+                [ "msgtype" Aeson..= ("m.file" :: Text)
+                , "body" Aeson..= ("notes.txt" :: Text)
+                , "url" Aeson..= ("mxc://example.org/notes" :: Text)
+                , "info" Aeson..= Aeson.object ["mimetype" Aeson..= ("text/plain" :: Text)]
+                ]
+            }
+        }
+      incoming = Matrix.eventToIncomingMessage roomEvent
+  ((.files) <$> incoming) @?= Just [MessageFile{name = "notes.txt", ref = "mxc://example.org/notes"}]
+
 testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash :: IO ()
 testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash = do
   let key = StrictByteString.replicate 32 0
@@ -491,6 +555,22 @@ testDiscordImageContextIncludesEmbedsAndImageLinks = do
     , "https://example.test/thumb.jpg"
     , "https://example.test/generated.webp?size=512"
     ]
+
+testDiscordDocumentAttachmentBecomesMessageFile :: IO ()
+testDiscordDocumentAttachmentBecomesMessageFile = do
+  let message = (discordMessageNoReference "70003")
+        { Discord.content = "document"
+        , Discord.attachments =
+            [ Discord.Attachment
+                { Discord.id = "3"
+                , Discord.filename = "notes.txt"
+                , Discord.url = "https://cdn.discordapp.com/notes.txt"
+                , Discord.contentType = Just "text/plain"
+                }
+            ]
+        }
+      incoming = fromMaybe (error "expected incoming Discord message") (Discord.eventToIncomingMessage message)
+  incoming.files @?= [MessageFile{name = "notes.txt", ref = "https://cdn.discordapp.com/notes.txt"}]
 
 avatarUrl :: Aeson.Value -> Maybe Text
 avatarUrl =

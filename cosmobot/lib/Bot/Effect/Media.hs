@@ -176,6 +176,7 @@ normalizeMediaRefs =
 normalizeIncomingMessage :: Media :> es => IncomingMessage -> Eff es IncomingMessage
 normalizeIncomingMessage message = do
   imageUrls <- normalizeMediaRefs message.imageUrls
+  files <- traverse normalizeMessageFile message.files
   pure IncomingMessage
     { platform = message.platform
     , kind = message.kind
@@ -189,6 +190,7 @@ normalizeIncomingMessage message = do
     , mentions = message.mentions
     , mentionUsernames = message.mentionUsernames
     , imageUrls
+    , files
     , text = message.text
     , raw = message.raw
     }
@@ -203,13 +205,20 @@ normalizeIncomingMessages =
 normalizeReferencedMessage :: Media :> es => ReferencedMessage -> Eff es ReferencedMessage
 normalizeReferencedMessage message = do
   imageUrls <- normalizeMediaRefs message.imageUrls
+  files <- traverse normalizeMessageFile message.files
   pure ReferencedMessage
     { messageId = message.messageId
     , senderDisplayName = message.senderDisplayName
     , senderIdentifier = message.senderIdentifier
     , text = message.text
     , imageUrls
+    , files
     }
+
+normalizeMessageFile :: Media :> es => MessageFile -> Eff es MessageFile
+normalizeMessageFile file = do
+  ref <- normalizeMediaRef file.ref
+  pure MessageFile{name = file.name, ref}
 
 normalizeReplyBody :: Media :> es => Text -> Eff es Text
 normalizeReplyBody =

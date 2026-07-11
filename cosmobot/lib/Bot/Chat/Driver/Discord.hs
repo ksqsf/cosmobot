@@ -482,6 +482,7 @@ eventToIncomingMessageWith cfg message = do
     , mentions = map (.id) message.mentions
     , mentionUsernames = mapMaybe (.username) message.mentions
     , imageUrls = messageImageUrls message
+    , files = messageFiles message
     , text = Text.strip message.content
     , raw = message.raw
     }
@@ -567,6 +568,7 @@ getMessageContentDiscord driver message messageId =
         , senderIdentifier = Just fetched.author.id
         , text = fetched.content
         , imageUrls = messageImageUrls fetched
+        , files = messageFiles fetched
         })
     _ ->
       pure Nothing
@@ -888,9 +890,17 @@ messageImageUrls message =
   , embedImage <- maybeToList embed.image <> maybeToList embed.thumbnail
   ] <>
   contentImageUrls message.content
-  where
-    attachmentIsImage attachment =
-      maybe (imageFileName attachment.filename || imageUrl attachment.url) ("image/" `Text.isPrefixOf`) attachment.contentType
+
+messageFiles :: Message -> [MessageFile]
+messageFiles message =
+  [ MessageFile{name = attachment.filename, ref = attachment.url}
+  | attachment <- message.attachments
+  , not (attachmentIsImage attachment)
+  ]
+
+attachmentIsImage :: Attachment -> Bool
+attachmentIsImage attachment =
+  maybe (imageFileName attachment.filename || imageUrl attachment.url) ("image/" `Text.isPrefixOf`) attachment.contentType
 
 contentImageUrls :: Text -> [Text]
 contentImageUrls =

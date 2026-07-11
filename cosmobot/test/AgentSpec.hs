@@ -200,6 +200,7 @@ main =
       , testCase "image_edit tool edits current message image and sends result" testEditImageToolEditsCurrentMessageImageAndSendsResult
       , testCase "ask handler passes referenced images to image_edit tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "ask handler includes referenced image URLs in text context" testAskHandlerIncludesReferencedImageUrlsInTextContext
+      , testCase "ask handler includes current and referenced files in text context" testAskHandlerIncludesFilesInTextContext
       , testCase "ACP ask handler continues durable session transcript" testAcpAskHandlerContinuesDurableSessionTranscript
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
@@ -517,6 +518,7 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
         , senderIdentifier = Just "10001"
         , text = ""
         , imageUrls = [referencedImage]
+        , files = []
         }
       message = askHandlerMessage
         { replyToMessageId = Just "70001"
@@ -547,6 +549,7 @@ testAskHandlerIncludesReferencedImageUrlsInTextContext = do
         , senderIdentifier = Just "10001"
         , text = "original image"
         , imageUrls = [referencedImage]
+        , files = []
         }
       message = askHandlerMessage
         { replyToMessageId = Just "70001"
@@ -573,9 +576,52 @@ testAskHandlerIncludesReferencedImageUrlsInTextContext = do
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just request -> do
-      let userText = Text.unlines (requestUserTextParts request)
+      let userText = Text.unlines (chatMessageTextsByRole "user" request)
       assertBool "referenced image URL should appear in text context" ("被回复图片：media:mf_replied" `Text.isInfixOf` userText)
       requestUserImageUrls request @?= [referencedImage]
+    Nothing ->
+      assertFailure "expected captured LLM request"
+
+testAskHandlerIncludesFilesInTextContext :: IO ()
+testAskHandlerIncludesFilesInTextContext = do
+  let referencedFile = MessageFile{name = "old.txt", ref = "media:mf_old"}
+      currentFile = MessageFile{name = "new.txt", ref = "media:mf_new"}
+      referenced = ReferencedMessage
+        { messageId = Just "70001"
+        , senderDisplayName = Just "Bob"
+        , senderIdentifier = Just "10001"
+        , text = ""
+        , imageUrls = []
+        , files = [referencedFile]
+        }
+      message = askHandlerMessage
+        { replyToMessageId = Just "70001"
+        , files = [currentFile]
+        , text = "krkr compare files"
+        }
+  answers <- IORef.newIORef [chatAnswer "done" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  rendered <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    defaultTestSkillsConfig
+    rendered
+    (Just captured)
+    answers
+    (ChatMock Nothing Nothing Nothing)
+    (Just referenced)
+    (\_ _ -> pure "unused image answer")
+    (\_ _ _ _ -> pure "unused image edit answer") do
+      threads <- newThreadStore
+      runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
+      waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
+      waitUntilFinished "ask.command"
+  requests <- IORef.readIORef captured
+  case viaNonEmpty head requests of
+    Just request -> do
+      let userText = Text.unlines (chatMessageTextsByRole "user" request)
+      assertBool ("referenced file should appear in text context: " <> Text.unpack userText) ("被回复文件：old.txt (media:mf_old)" `Text.isInfixOf` userText)
+      assertBool ("current file should appear in text context: " <> Text.unpack userText) ("附件：new.txt (media:mf_new)" `Text.isInfixOf` userText)
     Nothing ->
       assertFailure "expected captured LLM request"
 
@@ -2113,6 +2159,7 @@ testMessageInChat chatId =
     , mentions = testMessage.mentions
     , mentionUsernames = testMessage.mentionUsernames
     , imageUrls = testMessage.imageUrls
+    , files = testMessage.files
     , text = testMessage.text
     , raw = testMessage.raw
     }
@@ -2132,6 +2179,7 @@ testMessageWithImages imageUrls =
     , mentions = testMessage.mentions
     , mentionUsernames = testMessage.mentionUsernames
     , imageUrls = imageUrls
+    , files = testMessage.files
     , text = testMessage.text
     , raw = testMessage.raw
     }
@@ -2195,15 +2243,6 @@ imageContextUrls (Transcript messages) =
   , message.role == "user"
   , Just (LLM.PartsContent parts) <- [message.content]
   , LLM.ImageUrlPart url <- parts
-  ]
-
-requestUserTextParts :: [LLM.ChatMessage] -> [Text]
-requestUserTextParts messages =
-  [ text
-  | message <- messages
-  , message.role == "user"
-  , Just (LLM.PartsContent parts) <- [message.content]
-  , LLM.TextPart text <- parts
   ]
 
 requestUserImageUrls :: [LLM.ChatMessage] -> [Text]
@@ -2852,6 +2891,7 @@ testMessage =
     , mentions = []
     , mentionUsernames = []
     , imageUrls = []
+    , files = []
     , text = "!ask"
     , raw = Aeson.Null
     }
@@ -2887,6 +2927,7 @@ askHandlerMessage =
     , mentions = []
     , mentionUsernames = []
     , imageUrls = []
+    , files = []
     , text = "krkr 看下我的头像"
     , raw = Aeson.Null
     }

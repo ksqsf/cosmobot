@@ -108,6 +108,7 @@ scheduledAgentMessage context delaySeconds prompt =
       , mentions = original.mentions
       , mentionUsernames = original.mentionUsernames
       , imageUrls = []
+      , files = []
       , text = commandText
       , raw = Aeson.object
           [ "type" Aeson..= Aeson.String "scheduled_agent_action"

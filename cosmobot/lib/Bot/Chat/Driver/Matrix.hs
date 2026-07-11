@@ -1362,13 +1362,15 @@ matrixReferencedMessage event = do
   guard (event.type_ == "m.room.message")
   let body = fromMaybe "" event.content.body
       imageUrls = matrixEventImageUrls event.raw
-  guard (not (Text.null (Text.strip body)) || not (null imageUrls))
+      files = map fst (matrixEventFileMediaRefs event.raw)
+  guard (not (Text.null (Text.strip body)) || not (null imageUrls) || not (null files))
   pure ReferencedMessage
     { messageId = matrixEventMessageId <$> event.eventId
     , senderDisplayName = Just event.sender
     , senderIdentifier = Just event.sender
     , text = Text.strip body
     , imageUrls
+    , files
     }
 
 normalizeMatrixReferencedEvent
@@ -1385,12 +1387,14 @@ normalizeMatrixReferencedEvent driver event =
           normalizeMatrixMediaRefs driver message.imageUrls
         mediaRefs ->
           normalizeMatrixMediaRefsWithMetadata driver mediaRefs
+      files <- normalizeMatrixFiles driver (matrixEventFileMediaRefs event.raw)
       pure ReferencedMessage
         { messageId = message.messageId
         , senderDisplayName = message.senderDisplayName
         , senderIdentifier = message.senderIdentifier
         , text = message.text
         , imageUrls
+        , files
         }
 
 normalizeMatrixIncomingMessage :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> IncomingMessage -> Eff es IncomingMessage
@@ -1401,6 +1405,7 @@ normalizeMatrixIncomingMessage driver message = do
         normalizeMatrixMediaRefs driver message.imageUrls
       mediaRefs ->
         normalizeMatrixMediaRefsWithMetadata driver mediaRefs
+  files <- normalizeMatrixFiles driver (matrixEventFileMediaRefs message.raw)
   pure IncomingMessage
     { platform = message.platform
     , kind = message.kind
@@ -1414,6 +1419,7 @@ normalizeMatrixIncomingMessage driver message = do
     , mentions = message.mentions
     , mentionUsernames = message.mentionUsernames
     , imageUrls
+    , files
     , text = message.text
     , raw = message.raw
     }
@@ -1622,6 +1628,43 @@ matrixEventImageMediaRefs =
         Nothing -> do
           encryptedFile <- encrypted
           Just (encryptedFile.encryptedFileUrl, Just encryptedFile)
+
+matrixEventFileMediaRefs :: Aeson.Value -> [(MessageFile, MatrixMediaRef)]
+matrixEventFileMediaRefs =
+  fromMaybe [] . Aeson.parseMaybe (Aeson.withObject "Matrix event" \eventObject -> do
+    content <- eventObject Aeson..:? "content" Aeson..!= Aeson.Object mempty
+    Aeson.withObject "Matrix event content" parseContent content)
+  where
+    parseContent content = do
+      msgtype <- content Aeson..:? "msgtype" Aeson..!= ("" :: Text)
+      explicitName <- content Aeson..:? "filename"
+      body <- content Aeson..:? "body"
+      let name = explicitName <|> body
+      url <- content Aeson..:? "url"
+      encrypted <- content Aeson..:? "file" >>= traverse parseEncryptedFile
+      mimeType <- content Aeson..:? "info" Aeson..!= Aeson.Object mempty >>=
+        Aeson.withObject "Matrix file info" (Aeson..:? "mimetype")
+      pure do
+        guard (msgtype == "m.file")
+        fileName <- maybeToList (name >>= nonEmptyText)
+        (mediaUrl, encryptedFile) <- maybeToList (contentRef url encrypted)
+        let mediaRef = MatrixMediaRef mediaUrl (nonEmptyText =<< mimeType) encryptedFile
+        pure (MessageFile{name = fileName, ref = mediaUrl}, mediaRef)
+
+    contentRef (Just url) _ = Just (url, Nothing)
+    contentRef Nothing encrypted = do
+      file <- encrypted
+      pure (file.encryptedFileUrl, Just file)
+
+normalizeMatrixFiles
+  :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> [(MessageFile, MatrixMediaRef)]
+  -> Eff es [MessageFile]
+normalizeMatrixFiles driver =
+  traverse \(file, mediaRef) -> do
+    ref <- normalizeMatrixMediaRefWithMetadata driver mediaRef
+    pure MessageFile{name = file.name, ref}
 
 parseEncryptedFile :: Aeson.Value -> Aeson.Parser MatrixEncryptedFile
 parseEncryptedFile =
@@ -2079,6 +2122,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event} = do
     , mentions = []
     , mentionUsernames = matrixMentions cfg event.content body
     , imageUrls = matrixEventImageUrls event.raw
+    , files = map fst (matrixEventFileMediaRefs event.raw)
     , text = Text.strip body
     , raw = event.raw
     }

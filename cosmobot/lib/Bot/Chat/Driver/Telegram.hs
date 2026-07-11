@@ -247,6 +247,7 @@ resolveIncomingMessageImages driver message = do
     , mentions = message.mentions
     , mentionUsernames = message.mentionUsernames
     , imageUrls = imageUrls
+    , files = message.files
     , text = message.text
     , raw = message.raw
     }
@@ -272,6 +273,7 @@ updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
     , mentions  = messageMentionIds message
     , mentionUsernames = messageMentionUsernames message
     , imageUrls = messageImageFileIds message
+    , files = []
     , text      = messageText message
     , raw       = Aeson.toJSON message
     }
@@ -390,6 +392,7 @@ getMessageContentTelegram driver message messageId =
                     , senderIdentifier = telegramMessageSenderIdentifier referenced
                     , text = messageText referenced
                     , imageUrls = imageUrls
+                    , files = []
                     }
             _ -> pure Nothing
         Aeson.Error _ ->

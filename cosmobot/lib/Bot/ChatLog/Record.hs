@@ -51,6 +51,7 @@ selfMessage context body =
     , mentions = []
     , mentionUsernames = []
     , imageUrls = Chat.replyImageUrls body
+    , files = []
     , text = Chat.renderReplyBody body
     , raw = Aeson.object
         [ "type" Aeson..= Aeson.String "bot_message"

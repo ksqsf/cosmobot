@@ -96,8 +96,8 @@ instance Driver.ChatDriver QQDriver where
   messageOutPolicy _ _ =
     pure (Chat.ChunkedMessage qqStreamingMessageLimit)
 
-  getMessageContent driver _ messageId =
-    getMessageContentQQ driver messageId
+  getMessageContent driver message messageId =
+    getMessageContentQQ driver message.chatId messageId
 
   getSenderMemberInfo driver message =
     case (message.kind, message.chatId, message.senderId) of
@@ -303,18 +303,24 @@ websocketPath Config{path, token = Just t} =
 -- ---------------------------------------------------------------------------
 
 -- | Stream OneBot message events as platform-independent messages.
-incomingMessages :: (IOE :> es, KatipE :> es) => QQDriver -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es, Media.Media :> es)
+  => QQDriver
+  -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages driver = do
   event <- S.lift (receiveEvent driver)
   case eventToIncomingMessageWith driver.config event of
     Nothing
+      | Just upload <- groupUpload event ->
+          S.lift $ Concurrency.fire "qq.group-file-cache" (cacheGroupUpload driver upload)
       | isHeartbeatEvent event ->
           S.lift $ logDebug "Ignoring QQ heartbeat event"
       | otherwise -> do
           let Event{postType} = event
           S.lift $ logDebug [i|Ignoring QQ event: #{postType}|]
           S.lift $ logInfo [i|Ignoring QQ event: #{postType}|]
-    Just message -> do
+    Just parsedMessage -> do
+      message <- S.lift (normalizeQQMessageFiles parsedMessage)
       S.lift $ logDebug [i|incoming qq message: #{show message :: String}|]
       S.lift $ logInfo [i|incoming qq message: #{incomingMessageLogLine message}|]
       S.yield message
@@ -697,11 +703,12 @@ actionSucceeded response =
 
 -- | Fetch message text and image references by QQ message id.
 getMessageContentQQ
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
   => QQDriver
+  -> Maybe Integer
   -> MessageId
   -> Eff es (Maybe ReferencedMessage)
-getMessageContentQQ driver messageId = do
+getMessageContentQQ driver chatId messageId = do
   case messageIdInteger messageId of
     Nothing ->
       pure Nothing
@@ -716,7 +723,49 @@ getMessageContentQQ driver messageId = do
         Nothing ->
           pure Nothing
         Just value ->
-          traverse (appendForwardedMessageText driver (referencedMessageForwardIds value)) (referencedMessageFromValue value)
+          traverse (normalizeReferencedFiles chatId <=< appendForwardedMessageText driver (referencedMessageForwardIds value)) (referencedMessageFromValue value)
+
+normalizeQQMessageFiles :: Media.Media :> es => IncomingMessage -> Eff es IncomingMessage
+normalizeQQMessageFiles message = do
+  files <- traverse (normalizeQQFile message.chatId) message.files
+  pure IncomingMessage
+    { platform = message.platform
+    , kind = message.kind
+    , chatId = message.chatId
+    , chatAliases = message.chatAliases
+    , digest = message.digest
+    , senderId = message.senderId
+    , senderUsername = message.senderUsername
+    , messageId = message.messageId
+    , replyToMessageId = message.replyToMessageId
+    , mentions = message.mentions
+    , mentionUsernames = message.mentionUsernames
+    , imageUrls = message.imageUrls
+    , files
+    , text = message.text
+    , raw = message.raw
+    }
+
+normalizeReferencedFiles :: Media.Media :> es => Maybe Integer -> ReferencedMessage -> Eff es ReferencedMessage
+normalizeReferencedFiles chatId message = do
+  files <- traverse (normalizeQQFile chatId) message.files
+  pure ReferencedMessage
+    { messageId = message.messageId
+    , senderDisplayName = message.senderDisplayName
+    , senderIdentifier = message.senderIdentifier
+    , text = message.text
+    , imageUrls = message.imageUrls
+    , files
+    }
+
+normalizeQQFile :: Media.Media :> es => Maybe Integer -> MessageFile -> Eff es MessageFile
+normalizeQQFile chatId file =
+  case (chatId, Text.stripPrefix qqFileRefPrefix file.ref) of
+    (Just groupId, Just fileId) -> do
+      cached <- Media.platformMediaRef "qq" (show groupId) fileId
+      pure MessageFile{name = file.name, ref = fromMaybe file.ref cached}
+    _ ->
+      pure file
 
 appendForwardedMessageText
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
@@ -821,8 +870,8 @@ parseIntegerUserId raw =
       Nothing
 
 referencedWithText :: ReferencedMessage -> Text -> ReferencedMessage
-referencedWithText ReferencedMessage{messageId, senderDisplayName, senderIdentifier, imageUrls} text =
-  ReferencedMessage{messageId, senderDisplayName, senderIdentifier, text, imageUrls}
+referencedWithText ReferencedMessage{messageId, senderDisplayName, senderIdentifier, imageUrls, files} text =
+  ReferencedMessage{messageId, senderDisplayName, senderIdentifier, text, imageUrls, files}
 
 referencedMessageFromValue :: Aeson.Value -> Maybe ReferencedMessage
 referencedMessageFromValue = Aeson.parseMaybe $
@@ -834,6 +883,7 @@ referencedMessageFromValue = Aeson.parseMaybe $
     let messageId = integerMessageId <$> (rawMessageId :: Maybe Integer)
     let text = fromMaybe "" ((message >>= messageText) <|> rawMessage)
     let imageUrls = maybe [] messageImageUrls message
+    let files = maybe [] messageFiles message
     let senderDisplayName = sender >>= qqSenderDisplayName
     let senderIdentifier = sender >>= qqSenderIdentifier
     pure ReferencedMessage{..}
@@ -1022,6 +1072,13 @@ data Event = Event
   }
   deriving (Show)
 
+data GroupUpload = GroupUpload
+  { groupId :: !Integer
+  , fileId :: !Text
+  , fileName :: !Text
+  , busId :: !Integer
+  }
+
 instance Aeson.FromJSON Event where
   parseJSON rawEvent = Aeson.withObject "OneBotEvent" parse rawEvent
     where
@@ -1042,6 +1099,49 @@ instance Aeson.FromJSON Event where
 eventToIncomingMessage :: Event -> Maybe IncomingMessage
 eventToIncomingMessage =
   eventToIncomingMessageWith defaultMessageConfig
+
+groupUpload :: Event -> Maybe GroupUpload
+groupUpload event =
+  Aeson.parseMaybe parse event.rawEvent
+  where
+    parse = Aeson.withObject "QQ group upload" \o -> do
+      postType <- o Aeson..: "post_type"
+      noticeType <- o Aeson..: "notice_type"
+      guard (postType == ("notice" :: Text) && noticeType == ("group_upload" :: Text))
+      groupId <- o Aeson..: "group_id"
+      file <- o Aeson..: "file"
+      Aeson.withObject "QQ group upload file" (\f -> do
+        fileId <- f Aeson..: "id"
+        fileName <- f Aeson..: "name"
+        busId <- f Aeson..: "busid"
+        pure GroupUpload{groupId, fileId, fileName, busId}) file
+
+cacheGroupUpload
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
+  => QQDriver
+  -> GroupUpload
+  -> Eff es ()
+cacheGroupUpload driver upload = do
+  response <- sendAction driver (Aeson.object
+    [ "action" Aeson..= Aeson.String "get_group_file_url"
+    , "params" Aeson..= Aeson.object
+        [ "group_id" Aeson..= upload.groupId
+        , "file_id" Aeson..= upload.fileId
+        , "busid" Aeson..= upload.busId
+        ]
+    ])
+  case response.data_ >>= groupFileUrl of
+    Nothing ->
+      let name = upload.fileName
+      in logInfo [i|QQ group file URL unavailable: #{name}|]
+    Just url -> do
+      cachedRef <- Media.normalizeMediaRef url
+      when ("media:" `Text.isPrefixOf` Text.strip cachedRef) $
+        Media.storePlatformMediaRef "qq" (show upload.groupId) cachedRef upload.fileId
+
+groupFileUrl :: Aeson.Value -> Maybe Text
+groupFileUrl =
+  Aeson.parseMaybe (Aeson.withObject "QQ group file URL" (Aeson..: "url"))
 
 isHeartbeatEvent :: Event -> Bool
 isHeartbeatEvent event =
@@ -1069,6 +1169,7 @@ eventToIncomingMessageWith cfg event
       , mentions  = eventMentionIds event
       , mentionUsernames = []
       , imageUrls = maybe [] messageImageUrls event.message
+      , files = maybe [] messageFiles event.message
       , text      = fromMaybe "" ((event.message >>= messageText) <|> event.rawMessage)
       , raw       = event.rawEvent
       }
@@ -1125,6 +1226,29 @@ messageImageUrls :: Aeson.Value -> [Text]
 messageImageUrls = \case
   Aeson.Array segments -> mapMaybe imageSegmentUrl (toList segments)
   _ -> []
+
+messageFiles :: Aeson.Value -> [MessageFile]
+messageFiles = \case
+  Aeson.Array segments -> mapMaybe fileSegment (toList segments)
+  _ -> []
+
+fileSegment :: Aeson.Value -> Maybe MessageFile
+fileSegment = Aeson.parseMaybe $
+  Aeson.withObject "QQ file segment" \o -> do
+    type_ <- o Aeson..: "type"
+    guard (type_ == ("file" :: Text))
+    data_ <- o Aeson..: "data"
+    Aeson.withObject "QQ file data" (\file -> do
+      name <- file Aeson..:? "name" >>= \case
+        Just value -> pure value
+        Nothing -> file Aeson..: "file"
+      url <- file Aeson..:? "url"
+      fileId <- file Aeson..:? "file_id"
+      let ref = fromMaybe name (url <|> ((qqFileRefPrefix <>) <$> fileId))
+      pure MessageFile{name, ref}) data_
+
+qqFileRefPrefix :: Text
+qqFileRefPrefix = "qq-file:"
 
 referencedMessageForwardIds :: Aeson.Value -> [Text]
 referencedMessageForwardIds =

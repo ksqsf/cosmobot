@@ -252,6 +252,7 @@ rpcIncomingMessage chatSend messageRow = do
     , mentions = []
     , mentionUsernames = []
     , imageUrls = llmImageUrls
+    , files = []
     , text = Session.sessionSendContextText canonicalSend
     , raw = Aeson.toJSON canonicalSend
     }
