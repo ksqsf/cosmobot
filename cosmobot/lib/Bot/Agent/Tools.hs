@@ -24,6 +24,7 @@ import Bot.Agent.Tools.Terminal
 import Bot.Agent.Tools.Time
 import Bot.Agent.Tools.Typst
 import Bot.Agent.Tools.Web
+import Bot.Agent.Tools.Workspace
 import Bot.Agent.Types
 import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Chat as Chat
@@ -94,5 +95,6 @@ defaultTools =
   , sandboxBashAsyncTool
   , runBashTool
   , terminalTool
+  , workspaceTool
   , emacsEvalTool
   ]

@@ -10,6 +10,7 @@ import qualified Bot.Agent.Tools.Media as MediaTools
 import qualified Bot.Agent.Tools.Resource as ResourceTools
 import qualified Bot.Agent.Tools.Sandbox as SandboxTools
 import qualified Bot.Agent.Tools.Terminal as TerminalTools
+import qualified Bot.Agent.Tools.Workspace as WorkspaceTools
 import qualified Bot.Agent.Types as AgentTypes
 import Bot.Agent.Tools.Shell (runBashSafe)
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
@@ -300,6 +301,7 @@ testTerminalAndSandboxToolScopes = do
       createSandboxTool = SandboxTools.createSandboxTool :: Agent.Tool AgentStack
       sandboxBashAsyncTool = SandboxTools.sandboxBashAsyncTool :: Agent.Tool AgentStack
       destroyResourceTool = ResourceTools.destroyResourceTool :: Agent.Tool AgentStack
+      workspaceTool = WorkspaceTools.workspaceTool :: Agent.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
   terminalTool.name @?= "terminal"
@@ -310,6 +312,10 @@ testTerminalAndSandboxToolScopes = do
   assertBool "create sandbox should be visible to non-superusers" (createSandboxTool.allowed agentContext)
   assertBool "destroy resource should be visible to non-superusers" (destroyResourceTool.allowed agentContext)
   assertBool "sandbox async tool should require resource identity" (not (sandboxBashAsyncTool.allowed missingIdentity))
+  workspaceTool.name @?= "workspace"
+  assertBool "workspace should be hidden from non-superusers" (not (workspaceTool.allowed agentContext))
+  assertBool "workspace should be visible to superusers" (workspaceTool.allowed superuserContext)
+  assertBool "workspace should require resource identity" (not (workspaceTool.allowed superuserContext{Agent.message = testMessage{senderId = Nothing}}))
 
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do

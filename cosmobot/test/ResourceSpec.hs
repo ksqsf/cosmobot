@@ -15,10 +15,15 @@ import Bot.Handler.Resource (removeResources, resourceIds)
 import Bot.Prelude
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Resource.Sandbox as Sandbox
+import qualified Bot.Resource.Workspace as Workspace
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.Prim.IORef as IORef
+import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.Process.Typed as TypedProcess
+import qualified Data.Unique as Unique
+import System.FilePath ((</>))
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -94,6 +99,7 @@ main = defaultMain $ testGroup "resource"
   , testCase "Podman sandbox command preserves scripts as argv" testPodmanExecArguments
   , testCase "Podman sandbox parses state and truncates retained output" testPodmanOutput
   , testCase "Podman sandbox renders failures and forced cleanup" testPodmanFailures
+  , testCase "workspace create, query, update, and destroy" testWorkspaceLifecycle
   , testCase "resource command ids preserve first occurrence" $
       resourceIds "res-2 res-1 res-2 res-3" @?= ["res-2", "res-1", "res-3"]
   , testCase "resource removal reports partial results independently" testPartialRemoval
@@ -254,6 +260,33 @@ testPodmanFailures = do
   Sandbox.renderPodmanFailure "inspect" 125 "" "missing container\n" @?=
     "Podman inspect failed (exit 125): missing container"
   Sandbox.renderPodmanFailure "wait" 1 "" "" @?= "Podman wait failed (exit 1)."
+
+testWorkspaceLifecycle :: Assertion
+testWorkspaceLifecycle =
+  runEff $ runConcurrent $ FileSystem.runFileSystem $ TypedProcess.runTypedProcess do
+    tmp <- FileSystem.getTemporaryDirectory
+    unique <- liftIO Unique.newUnique
+    let root = tmp </> ("cosmobot-workspace-" <> show (Unique.hashUnique unique))
+        path = root </> "demo-work"
+        cleanup = FileSystem.removePathForcibly root
+    (do
+      Workspace.createWorkspaceAt root Workspace.WorkspaceArgs{workId = "../escape", goal = "nope"} >>= \case
+        Left err -> liftIO $ err @?= "id may contain only letters, digits, dot, underscore, and hyphen."
+        Right _ -> liftIO $ assertFailure "unsafe workspace id was accepted"
+      workspace <- Workspace.createWorkspaceAt root Workspace.WorkspaceArgs
+        { workId = "demo-work"
+        , goal = "initial goal"
+        } >>= expectRight
+      FileSystem.createDirectory (path </> "repo")
+      report <- Workspace.queryWorkspace workspace >>= expectRight
+      liftIO $ assertBool "query includes WORK.md" ("WORK.md:\ninitial goal" `Text.isInfixOf` report)
+      liftIO $ assertBool "query includes depth-one tree" ("repo" `Text.isInfixOf` report)
+      Workspace.updateWorkspace workspace "updated goal" >>= liftIO . (@?= Right ())
+      updated <- Workspace.queryWorkspace workspace >>= expectRight
+      liftIO $ assertBool "query includes updated goal" ("WORK.md:\nupdated goal" `Text.isInfixOf` updated)
+      Resource.destroyResourceObject workspace >>= liftIO . (@?= Right ())
+      FileSystem.doesDirectoryExist path >>= liftIO . (@?= False)
+      ) `finally` cleanup
 
 newTestInit :: (Prim :> es, Concurrent :> es) => Text -> Bool -> Eff es (TestInit, MVar.MVar ())
 newTestInit label failing = do

@@ -194,6 +194,7 @@ library
         Bot.Agent.Tools.Time
         Bot.Agent.Tools.Typst
         Bot.Agent.Tools.Web
+        Bot.Agent.Tools.Workspace
         Bot.Agent.Types
         Bot.AgentAudit.Observation
         Bot.AgentAudit.Projection
@@ -282,6 +283,7 @@ library
         Bot.Resource
         Bot.Resource.Sandbox
         Bot.Resource.Types
+        Bot.Resource.Workspace
         Bot.Session
         Bot.Skills
         Bot.Skills.Config
