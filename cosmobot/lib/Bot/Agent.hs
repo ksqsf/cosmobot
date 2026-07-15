@@ -37,8 +37,8 @@ module Bot.Agent
   , withRecordingToolSelfMessages
   , withTypingNotification
   , runAgent
+  , runAgentWithParent
   , runAgentStreaming
-  , defaultTools
   )
 where
 
@@ -83,7 +83,6 @@ import Bot.Agent.ToolRegistry
   , toolSchema
   )
 import qualified Bot.Agent.ToolRegistry as ToolRegistry
-import Bot.Agent.Tools (defaultTools)
 import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -109,9 +108,20 @@ runAgent
   -> [Tool es]
   -> Transcript
   -> Eff es (Text, Transcript)
-runAgent maxTurns context tools transcript = do
-  outputs S.:> result <- S.toList (runAgentStreaming maxTurns context tools transcript)
-  pure (agentStreamAnswer outputs, result)
+runAgent maxTurns = runAgentWithParent Nothing maxTurns
+
+runAgentWithParent
+  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
+  => Maybe Concurrency.Handle
+  -> Int
+  -> AgentContext es
+  -> [Tool es]
+  -> Transcript
+  -> Eff es (Text, Transcript)
+runAgentWithParent parent maxTurns context tools transcript = do
+  agentRun <- startAgentRunWithParent parent context tools
+  outputs S.:> result <- S.toList (runPreparedAgentStreaming maxTurns agentRun transcript)
+  pure (agentStreamAnswer outputs, result.transcript)
 
 -- | Run an LLM/tool loop, streaming assistant content chunks.
 runAgentStreaming

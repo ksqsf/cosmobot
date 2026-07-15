@@ -11,6 +11,7 @@ module Bot.Handler.Ask.AgentRun
 where
 
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Tools as AgentTools
 import qualified Bot.Agent.Failure as AgentFailure
 import qualified Bot.Agent.Middleware.Observation as AgentObservation
 import Bot.Core.Thread
@@ -76,7 +77,7 @@ runAskAgentThread
   -> Eff es (Text, Transcript)
 runAskAgentThread toolCfg cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
-  agentRun <- Agent.startAgentRunWithParent (Just resource) (agentContext toolCfg cfg message input) Agent.defaultTools
+  agentRun <- Agent.startAgentRunWithParent (Just resource) (agentContext toolCfg cfg message input) AgentTools.defaultTools
   withActiveReply threads resource parentMessageKey message transcript \activeReply -> do
     reply <- streamAgentReply cfg observer agentRun activeReply message transcript
     commitAgentReply observer activeReply message reply

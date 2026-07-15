@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Tools as AgentTools
 import qualified Bot.Agent.Core as AgentCore
 import qualified Bot.Agent.Tools.Audio as AudioTools
 import qualified Bot.Agent.Tools.Chat as ChatTools
@@ -9,6 +10,7 @@ import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
 import qualified Bot.Agent.Tools.Resource as ResourceTools
 import qualified Bot.Agent.Tools.Sandbox as SandboxTools
+import qualified Bot.Agent.Tools.SubAgent as SubAgentTools
 import qualified Bot.Agent.Tools.Terminal as TerminalTools
 import qualified Bot.Agent.Tools.Workspace as WorkspaceTools
 import qualified Bot.Agent.Types as AgentTypes
@@ -192,6 +194,7 @@ main =
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
       , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
+      , testCase "subagent lifecycle is shared within a chat" testSubAgentLifecycle
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "tool reply middleware normalizes reply images" testToolReplyMiddlewareNormalizesReplyImages
       , testCase "tool reply middleware rejects uncached remote images" testToolReplyMiddlewareRejectsUncachedRemoteImages
@@ -274,7 +277,7 @@ testScheduleToolCreatesQueryableSchedule = do
     , chatAnswer "scheduled" []
     ]
   (answer, schedules) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    result <- Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "remind me")
+    result <- Agent.runAgent 4 agentContext AgentTools.defaultTools (startWithUser "remind me")
     pending <- Scheduler.listScheduledMessages testMessage
     pure (fst result, pending)
   answer @?= "scheduled"
@@ -321,6 +324,27 @@ testTerminalAndSandboxToolScopes = do
   assertBool "workspace should be visible to superusers" (workspaceTool.allowed superuserContext)
   assertBool "workspace should require resource identity" (not (workspaceTool.allowed superuserContext{Agent.message = testMessage{senderId = Nothing}}))
 
+testSubAgentLifecycle :: IO ()
+testSubAgentLifecycle = do
+  answers <- IORef.newIORef []
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    let childRunner _ _ _ transcript = pure ("finished", transcript)
+        tool = SubAgentTools.subagentTool childRunner []
+        otherContext = agentContext{Agent.message = testMessage{senderId = Just "other"}}
+    createRun <- tool.start agentContext
+    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text])])
+    let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
+    sendRun <- tool.start otherContext
+    sent <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
+    liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
+    workers <- Concurrency.list
+    let worker = fromMaybe (error "missing subagent worker") (find ((== "subagent") . (.label)) workers.entries)
+    Concurrency.await Concurrency.Handle{handleId = worker.id}
+    queried <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("query" :: Text), "resource" Aeson..= resourceId])
+    liftIO $ AgentTypes.toolResultContent queried @?= "finished"
+    destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("destroy" :: Text), "resource" Aeson..= resourceId])
+    liftIO $ AgentTypes.toolResultContent destroyed @?= "Subagent destroyed."
+
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do
   answers <- IORef.newIORef
@@ -331,7 +355,7 @@ testSendReplyToolUsesChatEffect = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWith answers (ChatMock (Just replies) (Just "42") Nothing) do
-    runAgentWithToolMessageCapture 4 agentContext Agent.defaultTools (startWithUser "send it") recorded remembered
+    runAgentWithToolMessageCapture 4 agentContext AgentTools.defaultTools (startWithUser "send it") recorded remembered
   answer @?= "sent"
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= ["hello\n[image] https://example.test/image.png"])
@@ -433,7 +457,7 @@ testCurrentSenderChatLogToolQueriesChatLog = do
     ChatLog.recordMessage (chatLogMessage 302 "201" 100 "other sender needle")
     ChatLog.recordMessage (chatLogMessage 303 "200" 101 "other chat needle")
     ChatLog.recordMessage (chatLogMessage 304 "200" 100 "newer needle")
-    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "search my history")
+    Agent.runAgent 4 agentContext AgentTools.defaultTools (startWithUser "search my history")
   answer @?= "found"
   entries <- decodeSingleChatLogToolOutput transcript
   map (.text) entries @?= ["newer needle", "older needle"]
@@ -453,7 +477,7 @@ testUserAvatarToolQueriesChatEffect = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, transcript) <- runAgentWith answers (ChatMock (Just replies) (Just "44") (Just avatar)) do
-    runAgentWithToolMessageCapture 4 agentContext Agent.defaultTools (startWithUser "avatar?") recorded remembered
+    runAgentWithToolMessageCapture 4 agentContext AgentTools.defaultTools (startWithUser "avatar?") recorded remembered
   answer @?= "found"
   Text.unlines (toolOutputs transcript) @?= jsonText avatar <> "\n"
   imageContextUrls transcript @?= ["https://example.test/avatar.jpg"]
@@ -470,7 +494,7 @@ testUserAvatarToolRequiresUserId = do
     ]
   replies <- IORef.newIORef ([] :: [Text])
   (answer, transcript) <- runAgentWith answers (ChatMock (Just replies) (Just "44") Nothing) do
-    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "avatar?")
+    Agent.runAgent 4 agentContext AgentTools.defaultTools (startWithUser "avatar?")
   answer @?= "rejected"
   Text.unlines (toolOutputs transcript) @?= "Error in $: key \"user_id\" not found\n"
   IORef.readIORef replies >>= (@?= [])
@@ -483,7 +507,7 @@ testUserAvatarToolRejectsZeroUserId = do
     ]
   replies <- IORef.newIORef ([] :: [Text])
   (answer, transcript) <- runAgentWith answers (ChatMock (Just replies) (Just "44") Nothing) do
-    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "avatar?")
+    Agent.runAgent 4 agentContext AgentTools.defaultTools (startWithUser "avatar?")
   answer @?= "rejected"
   Text.unlines (toolOutputs transcript) @?= "Error in $: user_id must not be 0.\n"
   IORef.readIORef replies >>= (@?= [])
@@ -500,7 +524,7 @@ testTypstToImageToolRendersAndSendsImage = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, _) <- runAgentWithTypst rendered answers (ChatMock (Just replies) (Just "43") Nothing) do
-    runAgentWithToolMessageCapture 4 agentContext Agent.defaultTools (startWithUser "render typst") recorded remembered
+    runAgentWithToolMessageCapture 4 agentContext AgentTools.defaultTools (startWithUser "render typst") recorded remembered
   answer @?= "sent"
   IORef.readIORef rendered >>= (@?= [source])
   IORef.readIORef replies >>= (@?= ["[image] file:///tmp/cosmobot-agent-spec-typst.png"])
@@ -523,7 +547,7 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, transcript) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "47") Nothing) do
-    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) Agent.defaultTools (startWithUser "edit this") recorded remembered
+    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) AgentTools.defaultTools (startWithUser "edit this") recorded remembered
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage) LLM.defaultImageRequestOptions])
   IORef.readIORef replies >>= assertElem editedImage
@@ -727,7 +751,7 @@ testGenerateImageToolPassesImageRequestOptions = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, transcript) <- runAgentWithImageGenerate answers generateCalls generatedImage (ChatMock (Just replies) (Just "48") Nothing) do
-    runAgentWithToolMessageCapture 4 agentContext Agent.defaultTools (startWithUser "draw this") recorded remembered
+    runAgentWithToolMessageCapture 4 agentContext AgentTools.defaultTools (startWithUser "draw this") recorded remembered
   answer @?= "done"
   IORef.readIORef generateCalls >>= (@?= [ImageGenerateCall "draw a glass tower" [] expectedOptions])
   IORef.readIORef replies >>= assertElem generatedImage
@@ -874,7 +898,7 @@ testEditImageToolPassesImageRequestOptions = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, transcript) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "49") Nothing) do
-    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) Agent.defaultTools (startWithUser "edit this") recorded remembered
+    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) AgentTools.defaultTools (startWithUser "edit this") recorded remembered
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it cinematic" [inputImage] Nothing expectedOptions])
   IORef.readIORef replies >>= assertElem editedImage
@@ -905,7 +929,7 @@ testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
             , "- sender_id: 295947730"
             ]
         })
-      Agent.defaultTools
+      AgentTools.defaultTools
       (startWithSystemAndUser "base system prompt" "hello")
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
@@ -932,7 +956,7 @@ testAgentCompactsOldTranscriptContextBeforeModelTurn = do
   let longTranscript =
         Transcript (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    agentRun <- Agent.startAgentRun agentContext Agent.defaultTools
+    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
     let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000 agentRun
     _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program longTranscript)
     pure ()
@@ -964,7 +988,7 @@ testAgentAnnouncesContextCompaction = do
   let longTranscript =
         Transcript (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
   _ <- runAgentWith answers (ChatMock (Just replies) (Just "46") Nothing) do
-    agentRun <- Agent.startAgentRun agentContext Agent.defaultTools
+    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
     let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000 agentRun
     _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program longTranscript)
     pure ()
@@ -1238,7 +1262,7 @@ testAgentAuditRecordsStructuredToolFailureCategory = do
     , chatAnswer "done" []
     ]
   toolUses <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    agentRun <- Agent.startAgentRun agentContext Agent.defaultTools
+    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
     let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun
     _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program (startWithUser "run command"))
     AgentAudit.queryRecentToolUses 10
@@ -1296,7 +1320,7 @@ testAgentStreamsToolRequestContentBeforeToolNotification = do
     , chatAnswer "done" []
     ]
   outputs S.:> result <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    S.toList (Agent.runAgentStreaming 4 agentContext Agent.defaultTools (startWithUser "inspect"))
+    S.toList (Agent.runAgentStreaming 4 agentContext AgentTools.defaultTools (startWithUser "inspect"))
   streamAnswerText outputs @?= "我先查看当前消息。done"
   case outputs of
     [Agent.AgentContentDelta progress, Agent.AgentToolCallNotification toolCalls, Agent.AgentContentDelta finalChunk] -> do
@@ -1907,7 +1931,7 @@ testLLMRequestOmitsBase64GeneratedImageContext = do
           "what did you draw?"
           (appendAssistant (ReplyBody.imageDirective base64Image) (startWithUser "draw"))
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    Agent.runAgent 1 agentContext Agent.defaultTools transcript
+    Agent.runAgent 1 agentContext AgentTools.defaultTools transcript
   requests <- IORef.readIORef captured
   let encoded = jsonText requests
   assertBool "captured LLM request should not contain generated image base64" (not (base64Image `Text.isInfixOf` encoded))
@@ -1936,7 +1960,7 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
-    Agent.runAgent 8 agentContext Agent.defaultTools (startWithUser "remember this")
+    Agent.runAgent 8 agentContext AgentTools.defaultTools (startWithUser "remember this")
   answer @?= "done"
   exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
   exists @?= False
@@ -1950,7 +1974,7 @@ testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
-    Agent.runAgent 8 agentContext Agent.defaultTools (startWithUser "remember this chat")
+    Agent.runAgent 8 agentContext AgentTools.defaultTools (startWithUser "remember this chat")
   answer @?= "done"
   exists <- doesFileExist (dir </> "telegram" </> "chat" </> "100.md")
   exists @?= False
@@ -1963,7 +1987,7 @@ testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
     , chatAnswer "rejected" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
-    Agent.runAgent 4 agentContext Agent.defaultTools (startWithUser "remember too much")
+    Agent.runAgent 4 agentContext AgentTools.defaultTools (startWithUser "remember too much")
   answer @?= "rejected"
   exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
   exists @?= False
@@ -1975,7 +1999,7 @@ testRunBashCapturesStdoutAndStderr = do
     , chatAnswer "done" []
     ]
   (answer, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    Agent.runAgent 4 superuserContext Agent.defaultTools (startWithUser "run command")
+    Agent.runAgent 4 superuserContext AgentTools.defaultTools (startWithUser "run command")
   answer @?= "done"
   let output = Text.unlines (toolOutputs transcript)
   assertBool "stdout is included" ("stdout:\nstdout" `Text.isInfixOf` output)
@@ -1989,7 +2013,7 @@ testRunBashKillsTimedOutProcess = do
     , chatAnswer "done" []
     ]
   (answer, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    Agent.runAgent 4 superuserContext Agent.defaultTools (startWithUser "run slow command")
+    Agent.runAgent 4 superuserContext AgentTools.defaultTools (startWithUser "run slow command")
   answer @?= "done"
   let output = Text.unlines (toolOutputs transcript)
   assertBool ("timeout is reported in: " <> Text.unpack output) ("Script timed out after 1 seconds and was killed." `Text.isInfixOf` output)

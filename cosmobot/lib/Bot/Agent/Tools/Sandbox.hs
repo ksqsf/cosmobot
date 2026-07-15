@@ -33,11 +33,11 @@ createSandboxTool = Tool
   , parameters = objectSchema [] []
   , noisy = False
   , allowed = hasResourceIdentity
-  , start = \context -> pure \_ args ->
+  , start = \context -> pure \metadata args ->
       withParsedToolArgs emptyObject args \() ->
         case Resource.accessFromMessage context.message of
           Left err -> pure (resourceToolFailure err)
-          Right _ -> Resource.create @Sandbox.Sandbox Resource.Init{message = context.message, arguments = ()} >>= \case
+          Right _ -> Resource.createAssociated @Sandbox.Sandbox metadata.parent Resource.Init{message = context.message, arguments = ()} >>= \case
             Left err -> pure (resourceToolFailure err)
             Right sandboxId -> pure (toolText (jsonText (Aeson.object ["sandbox" Aeson..= sandboxId])))
   }

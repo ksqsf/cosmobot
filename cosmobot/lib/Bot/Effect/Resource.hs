@@ -13,6 +13,7 @@ module Bot.Effect.Resource
   , ResourceId
   , ResourceOwner (..)
   , ResourceAccess (..)
+  , ResourceScope (..)
   , Init (..)
   , ResourceObject (..)
   , ResourcePersistence (..)
@@ -23,9 +24,11 @@ module Bot.Effect.Resource
   , ownerFromMessage
   , accessFromMessage
   , create
+  , createAssociated
   , withResource
   , list
   , destroy
+  , destroyAssociated
   )
 where
 
@@ -34,15 +37,19 @@ import Bot.Prelude hiding (Handle)
 import Bot.Resource.Types
 
 data Resource :: Effect where
-  Create :: ResourceObject m a => Proxy a -> Init (CreationArgs a) -> Resource m (Either ResourceError ResourceId)
+  Create :: ResourceObject m a => Proxy a -> Maybe Handle -> Init (CreationArgs a) -> Resource m (Either ResourceError ResourceId)
   With :: ResourceObject m a => ResourceAccess -> ResourceId -> Maybe Handle -> (a -> m b) -> Resource m (Either ResourceError b)
   List :: ResourceAccess -> Resource m [SomeResourceObject]
   Destroy :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError ())
+  DestroyAssociated :: Handle -> Resource m [Either ResourceError ()]
 
 type instance DispatchOf Resource = Dynamic
 
 create :: forall a es. (Resource :> es, ResourceObject (Eff es) a) => Init (CreationArgs a) -> Eff es (Either ResourceError ResourceId)
-create = send . Create (Proxy @a)
+create = createAssociated @a Nothing
+
+createAssociated :: forall a es. (Resource :> es, ResourceObject (Eff es) a) => Maybe Handle -> Init (CreationArgs a) -> Eff es (Either ResourceError ResourceId)
+createAssociated parent = send . Create (Proxy @a) parent
 
 withResource
   :: forall a es b. (Resource :> es, ResourceObject (Eff es) a)
@@ -59,3 +66,6 @@ list = send . List
 
 destroy :: Resource :> es => ResourceAccess -> ResourceId -> Eff es (Either ResourceError ())
 destroy access = send . Destroy access
+
+destroyAssociated :: Resource :> es => Handle -> Eff es [Either ResourceError ()]
+destroyAssociated = send . DestroyAssociated

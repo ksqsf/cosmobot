@@ -41,6 +41,8 @@ data Availability
 
 data SomeResource es = SomeResource
   { owner :: !ResourceOwner
+  , scope :: !ResourceScope
+  , createdBy :: !(Maybe Concurrency.Handle)
   , sessionId :: !(Maybe Text)
   , resourceType :: !Text
   , value :: !Dynamic.Dynamic
@@ -109,6 +111,8 @@ restoreStoredResource loaders stored =
       -> SomeResource es
     restoredResource proxy object = SomeResource
       { owner = stored.owner
+      , scope = resourceScope @(Eff es) @a proxy
+      , createdBy = Nothing
       , sessionId = stored.sessionId
       , resourceType = resourceTypeName @(Eff es) @a proxy
       , value = Dynamic.toDyn object
@@ -121,6 +125,8 @@ restoreStoredResource loaders stored =
 
     unavailableResource err = SomeResource
       { owner = stored.owner
+      , scope = PersonResource
+      , createdBy = Nothing
       , sessionId = stored.sessionId
       , resourceType = stored.resourceType
       , value = Dynamic.toDyn ()
@@ -145,19 +151,21 @@ runResourceOperation
 runResourceOperation stateRef localEnv operation =
   localUnlift localEnv (ConcUnlift Persistent Unlimited) \unlift ->
     case operation of
-      Resource.Create proxy initValue -> createIn stateRef unlift proxy initValue
+      Resource.Create proxy parent initValue -> createIn stateRef unlift proxy parent initValue
       Resource.With access resourceId user callback -> withIn stateRef unlift access resourceId user callback
       Resource.List access -> listIn stateRef access
       Resource.Destroy access resourceId -> destroyIn stateRef access resourceId
+      Resource.DestroyAssociated parent -> destroyAssociatedIn stateRef parent
 
 createIn
   :: forall localEs es a. (ResourceObject (Eff localEs) a, Storage.Storage :> es, Concurrent :> es, Prim :> es, IOE :> es)
   => IORef (ManagerState es)
   -> (forall x. Eff localEs x -> Eff es x)
   -> Proxy a
+  -> Maybe Concurrency.Handle
   -> Init (CreationArgs a)
   -> Eff es (Either ResourceError ResourceId)
-createIn stateRef unlift _ initValue =
+createIn stateRef unlift _ parent initValue =
   case ownerFromMessage initValue.message of
     Left err -> pure (Left err)
     Right owner -> do
@@ -189,6 +197,8 @@ createIn stateRef unlift _ initValue =
                 PersistentResource{} -> True
               resource = SomeResource
                 { owner
+                , scope = resourceScope @(Eff localEs) @a (Proxy @a)
+                , createdBy = parent
                 , sessionId = sessionIdFromMessage initValue.message
                 , resourceType = resourceTypeName @(Eff localEs) @a (Proxy @a)
                 , value = Dynamic.toDyn object
@@ -246,7 +256,7 @@ listIn
   -> ResourceAccess
   -> Eff es [SomeResourceObject]
 listIn stateRef access = do
-  entries <- Map.toAscList . Map.filter (\resource -> mayList access resource.owner && isAvailable resource.availability) . (.resources) <$> readIORef stateRef
+  entries <- Map.toAscList . Map.filter (\resource -> mayAccess access resource && isAvailable resource.availability) . (.resources) <$> readIORef stateRef
   traverse snapshot entries
   where
     snapshot (resourceId, resource) = do
@@ -284,6 +294,15 @@ destroyIn stateRef access resourceId =
         Right (Left err) -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed err)
         Left err -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed (show err))
 
+destroyAssociatedIn
+  :: (Storage.Storage :> es, Concurrency.Concurrency :> es, Prim :> es, IOE :> es)
+  => IORef (ManagerState es)
+  -> Concurrency.Handle
+  -> Eff es [Either ResourceError ()]
+destroyAssociatedIn stateRef parent = do
+  resources <- Map.toList . Map.filter ((== Just parent) . (.createdBy)) . (.resources) <$> readIORef stateRef
+  traverse (\(resourceId, resource) -> destroyIn stateRef (ResourceAccess resource.owner False) resourceId) resources
+
 acquire
   :: Prim :> es
   => IORef (ManagerState es)
@@ -296,7 +315,7 @@ acquire stateRef access resourceId user =
     case Map.lookup resourceId state.resources of
       Nothing -> (state, Left ResourceNotFoundOrNotOwned)
       Just resource
-        | resource.owner /= access.owner -> (state, Left ResourceNotFoundOrNotOwned)
+        | not (mayAccess access resource) -> (state, Left ResourceNotFoundOrNotOwned)
         | Available users <- resource.availability ->
             let updated = resource{availability = Available (maybe users (\userHandle -> Map.insertWith (+) userHandle 1 users) user)}
             in (state{resources = Map.insert resourceId updated state.resources}, Right resource.value)
@@ -313,19 +332,18 @@ beginDestroy stateRef access resourceId =
     case Map.lookup resourceId state.resources of
       Nothing -> (state, Left ResourceNotFoundOrNotOwned)
       Just resource
-        | not (mayDestroy access resource.owner) -> (state, Left ResourceNotFoundOrNotOwned)
+        | not (mayAccess access resource) -> (state, Left ResourceNotFoundOrNotOwned)
         | Available users <- resource.availability ->
             let updated = resource{availability = Destroying}
             in (state{resources = Map.insert resourceId updated state.resources}, Right (Map.keys users, resource.destroy, resource.persistent))
         | otherwise -> (state, Left ResourceUnavailable)
 
-mayDestroy :: ResourceAccess -> ResourceOwner -> Bool
-mayDestroy access owner =
-  access.owner == owner
-    || access.superuser
-
-mayList :: ResourceAccess -> ResourceOwner -> Bool
-mayList access owner = access.superuser || access.owner == owner
+mayAccess :: ResourceAccess -> SomeResource es -> Bool
+mayAccess access resource = access.superuser || case resource.scope of
+  PersonResource -> access.owner == resource.owner
+  ChatResource ->
+    access.owner.platform == resource.owner.platform
+      && access.owner.chatId == resource.owner.chatId
 
 releaseUser :: Prim :> es => IORef (ManagerState es) -> ResourceId -> Maybe Concurrency.Handle -> Eff es ()
 releaseUser _ _ Nothing = pure ()

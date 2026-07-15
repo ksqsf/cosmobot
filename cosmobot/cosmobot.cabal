@@ -190,6 +190,7 @@ library
         Bot.Agent.Tools.Schedule
         Bot.Agent.Tools.Sandbox
         Bot.Agent.Tools.Shell
+        Bot.Agent.Tools.SubAgent
         Bot.Agent.Tools.Terminal
         Bot.Agent.Tools.Time
         Bot.Agent.Tools.Typst
@@ -282,6 +283,7 @@ library
         Bot.RPC.State
         Bot.Resource
         Bot.Resource.Sandbox
+        Bot.Resource.SubAgent
         Bot.Resource.Types
         Bot.Resource.Workspace
         Bot.Session

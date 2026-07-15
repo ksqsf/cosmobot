@@ -4,6 +4,7 @@ module Bot.Resource.Types
   ( ResourceId
   , ResourceOwner (..)
   , ResourceAccess (..)
+  , ResourceScope (..)
   , Init (..)
   , ResourceObject (..)
   , ResourcePersistence (..)
@@ -34,6 +35,9 @@ data ResourceAccess = ResourceAccess
   }
   deriving stock (Eq, Show)
 
+data ResourceScope = PersonResource | ChatResource
+  deriving stock (Eq, Show)
+
 data Init a = Init
   { message :: !IncomingMessage
   , arguments :: !a
@@ -42,6 +46,8 @@ data Init a = Init
 class Typeable a => ResourceObject m a where
   type CreationArgs a
   resourceTypeName :: proxy a -> Text
+  resourceScope :: proxy a -> ResourceScope
+  resourceScope _ = PersonResource
   resourcePersistence :: proxy a -> ResourcePersistence m a
   resourcePersistence _ = EphemeralResource
   createResourceObject :: Init (CreationArgs a) -> m (Either Text a)

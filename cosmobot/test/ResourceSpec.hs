@@ -110,6 +110,7 @@ main = defaultMain $ testGroup "resource"
   , testCase "cleanup failure restores resource for retry" testCleanupRetry
   , testCase "acquisition is blocked while destruction runs" testBlockedDuringDestroy
   , testCase "manager exit destroys resources" testShutdown
+  , testCase "associated resources are destroyed together" testAssociatedCleanup
   , testCase "persistent resources survive manager restart" testPersistentRestart
   , testCase "destroy_resource removes an owned resource" testDestroyResourceTool
   , testCase "Podman sandbox arguments preserve isolation" testPodmanArguments
@@ -212,6 +213,14 @@ testShutdown = do
     void $ Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit}
     pure destroyed
   runEff $ runConcurrent $ void (MVar.takeMVar destroyed)
+
+testAssociatedCleanup :: Assertion
+testAssociatedCleanup = runManaged do
+  parent <- Concurrency.fork "parent" (pure ())
+  (testInit, destroyed) <- newTestInit "child" False
+  _ <- Resource.createAssociated @TestObject (Just parent) Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
+  Resource.destroyAssociated parent >>= liftIO . (@?= [Right ()])
+  liftIO $ runEff $ runConcurrent $ void (MVar.takeMVar destroyed)
 
 testPersistentRestart :: Assertion
 testPersistentRestart =

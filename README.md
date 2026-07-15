@@ -316,8 +316,8 @@ The following can happen automatically:
 
 ### Resource
 
-- `!res/ls`: list resources owned by you
-- `!res/rm`: delete a resource
+- `!res/ls`: list resources available to you; superusers see every resource
+- `!res/rm <resource_id>...`: delete resources (superusers may delete any resource)
 
 ### Todo list
 
@@ -347,7 +347,7 @@ Currently, the following tools are available:
 |--------|-----------------------|-----------|
 |ACP     |`acp_read_client_file` |ACP only   |
 |ACP     |`acp_write_client_file`|ACP only   |
-|ACP     |`acp_terminal`         |ACP only   |
+|ACP     |`terminal`             |ACP only   |
 |Files   |`list_files`           |Yes        |
 |Files   |`read_file`            |Yes        |
 |Chat    |`chat_log`             |           |
@@ -368,11 +368,15 @@ Currently, the following tools are available:
 |Media   |`media_text`           |           |
 |Memory  |`sender_memory`        |           |
 |Memory  |`chat_memory`          |           |
+|Resource|`create_sandbox`       |           |
+|Resource|`sandbox_bash`         |           |
+|Resource|`destroy_resource`     |           |
+|Resource|`workspace`            |Yes        |
+|Agent   |`subagent`             |           |
 |Schedule|`schedule`             |           |
 |Schedule|`delete_schedule`      |           |
 |Schedule|`list_schedules`       |           |
 |Shell   |`run_bash`             |Yes        |
-|Terminal|`terminal`             |           |
 |Time    |`now`                  |           |
 |Typst   |`typst_render`         |           |
 |Web     |`search_web`           |           |

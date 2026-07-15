@@ -59,7 +59,7 @@ runWorkspaceCall context metadata call =
     Left err -> pure (resourceToolFailure err)
     Right access -> case call of
       CreateWorkspace arguments ->
-        Resource.create @Workspace.Workspace Resource.Init{message = context.message, arguments} <&> \case
+        Resource.createAssociated @Workspace.Workspace metadata.parent Resource.Init{message = context.message, arguments} <&> \case
           Left err -> resourceToolFailure err
           Right resourceId -> toolText (jsonText (Aeson.object
             [ "resource" Aeson..= resourceId

@@ -9,6 +9,7 @@ module Bot.Agent.Tools
   )
 where
 
+import qualified Bot.Agent as Agent
 -- import Bot.Agent.Tools.Audio
 import Bot.Agent.Tools.Chat
 import Bot.Agent.Tools.Emacs
@@ -20,6 +21,7 @@ import Bot.Agent.Tools.Resource
 import Bot.Agent.Tools.Schedule
 import Bot.Agent.Tools.Sandbox
 import Bot.Agent.Tools.Shell
+import Bot.Agent.Tools.SubAgent
 import Bot.Agent.Tools.Terminal
 import Bot.Agent.Tools.Time
 import Bot.Agent.Tools.Typst
@@ -29,6 +31,7 @@ import Bot.Agent.Types
 import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
@@ -54,6 +57,7 @@ defaultTools
   => Scheduler.Scheduler :> es
   => Typst.Typst :> es
   => Fail :> es
+  => Concurrency.Concurrency :> es
   => Concurrent :> es
   => Timeout :> es
   => KatipE :> es
@@ -61,40 +65,43 @@ defaultTools
   => FileSystem :> es
   => IOE :> es
   => [Tool es]
-defaultTools =
-  [ listDirectoryTool
-  , readFileTool
-  , acpReadClientFileTool
-  , acpWriteClientFileTool
-  , queryChatLogTool
-  , queryCurrentSenderChatLogTool
-  , webSearchTool
-  , webFetchTool
-  , datetimeTool
-  , readMediaTextTool
+defaultTools = tools
+  where
+    tools =
+      [ listDirectoryTool
+      , readFileTool
+      , acpReadClientFileTool
+      , acpWriteClientFileTool
+      , queryChatLogTool
+      , queryCurrentSenderChatLogTool
+      , webSearchTool
+      , webFetchTool
+      , datetimeTool
+      , readMediaTextTool
   -- , generateAudioTool  -- useless now
-  , viewImageTool
-  , generateImageTool
-  , editImageTool
-  , typstRenderTool
-  , sendReplyTool
-  , sendFileTool
-  , mentionUserTool
-  , senderMemberInfoTool
-  , memberInfoTool
-  , userAvatarTool
-  , listGroupMembersTool
-  , currentMessageInfoTool
-  , scheduleAgentActionTool
-  , deleteScheduledAgentActionTool
-  , listCurrentUserSchedulesTool
-  , manageSenderMemoryTool
-  , manageChatMemoryTool
-  , destroyResourceTool
-  , createSandboxTool
-  , sandboxBashTool
-  , runBashTool
-  , terminalTool
-  , workspaceTool
-  , emacsEvalTool
-  ]
+      , viewImageTool
+      , generateImageTool
+      , editImageTool
+      , typstRenderTool
+      , sendReplyTool
+      , sendFileTool
+      , mentionUserTool
+      , senderMemberInfoTool
+      , memberInfoTool
+      , userAvatarTool
+      , listGroupMembersTool
+      , currentMessageInfoTool
+      , scheduleAgentActionTool
+      , deleteScheduledAgentActionTool
+      , listCurrentUserSchedulesTool
+      , manageSenderMemoryTool
+      , manageChatMemoryTool
+      , destroyResourceTool
+      , createSandboxTool
+      , sandboxBashTool
+      , runBashTool
+      , terminalTool
+      , workspaceTool
+      , subagentTool (\parent -> Agent.runAgentWithParent parent 8) tools
+      , emacsEvalTool
+      ]
