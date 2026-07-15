@@ -42,7 +42,7 @@ handleAudit threads message args =
       | Text.toLower (Text.strip args) == "log" ->
           case message.replyToMessageId of
             Just parentId -> do
-              records <- AgentAudit.queryThreadAudit parentId
+              records <- AgentAudit.queryThreadAudit (threadMessageKey message parentId)
               void $ Chat.replyTo message (renderThreadAuditLog parentId records)
             Nothing ->
               void $ Chat.replyTo message "用法：回复一条 agent thread 消息并发送 !audit log"
@@ -50,14 +50,14 @@ handleAudit threads message args =
           case message.replyToMessageId of
             Just parentId -> do
               messageIds <- lookupThreadMessageIds threads (threadMessageKey message parentId)
-              records <- AgentAudit.queryThreadMessagesAudit messageIds
+              records <- AgentAudit.queryThreadMessagesAudit (map (threadMessageKey message) messageIds)
               void $ Chat.replyTo message (renderThreadToolUses parentId records)
             Nothing ->
               void $ Chat.replyTo message "用法：回复一条 agent thread 消息并发送 !audit all"
       | Text.null (Text.strip args) ->
           case message.replyToMessageId of
             Just parentId -> do
-              records <- AgentAudit.queryThreadAudit parentId
+              records <- AgentAudit.queryThreadAudit (threadMessageKey message parentId)
               void $ Chat.replyTo message (renderThreadToolUses parentId records)
             Nothing -> do
               toolUses <- AgentAudit.queryRecentToolUses recentAuditLimit

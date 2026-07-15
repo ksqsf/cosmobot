@@ -32,6 +32,7 @@ where
 
 import Bot.Agent.Failure
 import Bot.Core.Message
+import Bot.Core.Thread (ThreadMessageKey)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -147,6 +148,7 @@ data AgentEvent
   | AgentThreadLinked
       { runId :: !Text
       , linkedMessageId :: !MessageId
+      , linkedMessageKey :: !ThreadMessageKey
       , parentMessageId :: !(Maybe MessageId)
       }
   deriving (Eq, Show)

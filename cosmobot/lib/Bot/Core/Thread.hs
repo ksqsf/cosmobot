@@ -19,6 +19,7 @@ where
 import Bot.Core.Message
 import Bot.Core.Transcript
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 
 -- | Chat-scoped identity for a message that can anchor a thread node.
@@ -31,7 +32,7 @@ data ThreadMessageKey = ThreadMessageKey
   , chatId :: !(Maybe Integer)
   , messageId :: !MessageId
   }
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 threadMessageKey :: IncomingMessage -> MessageId -> ThreadMessageKey
 threadMessageKey message messageId =

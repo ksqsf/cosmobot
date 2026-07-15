@@ -79,18 +79,18 @@ Returns one audit record by audit id. The preferred parameter is `audit_id`;
 
 ### `audit.thread`
 
-Returns audit records associated with one message id.
+Returns audit records associated with one platform/chat-scoped message id.
 
 ```json
-{"jsonrpc":"2.0","id":"1","method":"audit.thread","params":{"message_id":"telegram-42"}}
+{"jsonrpc":"2.0","id":"1","method":"audit.thread","params":{"platform":"telegram","chat_id":42,"message_id":"7"}}
 ```
 
 ### `audit.thread_messages`
 
-Returns audit records associated with multiple message ids.
+Returns audit records associated with multiple message ids in one platform/chat.
 
 ```json
-{"jsonrpc":"2.0","id":"1","method":"audit.thread_messages","params":{"message_ids":["m1","m2"]}}
+{"jsonrpc":"2.0","id":"1","method":"audit.thread_messages","params":{"platform":"telegram","chat_id":42,"message_ids":["m1","m2"]}}
 ```
 
 ### `audit.subscribe`

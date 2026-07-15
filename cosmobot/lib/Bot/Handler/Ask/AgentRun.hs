@@ -219,7 +219,7 @@ commitAgentReply
   -> AgentReply
   -> Eff es (Text, Transcript)
 commitAgentReply observer activeReply message AgentReply{responseId, answer, result} = do
-  traverse_ (AgentObservation.observeThreadLinked observer . threadLink result (activeReply.parentMessageKey <&> (.messageId))) responseId
+  traverse_ (AgentObservation.observeThreadLinked observer . threadLink message result (activeReply.parentMessageKey <&> (.messageId))) responseId
   ChatLog.recordSelfMessage message answer
   active <- IORef.readIORef activeReply.activeRef
   case active of
@@ -229,12 +229,12 @@ commitAgentReply observer activeReply message AgentReply{responseId, answer, res
       rememberThreadTranscriptFrom activeReply.threads activeReply.parentMessageKey (threadMessageKey message <$> responseId) result.transcript
   pure (answer, result.transcript)
 
-threadLink :: Agent.AgentResult -> Maybe MessageId -> MessageId -> AgentObservation.ObservedThreadLink
-threadLink result parentMessageId linkedMessageId =
+threadLink :: IncomingMessage -> Agent.AgentResult -> Maybe MessageId -> MessageId -> AgentObservation.ObservedThreadLink
+threadLink message result parentMessageId linkedMessageId =
   AgentObservation.ObservedThreadLink
     { runId = result.runId
     , parentMessageId
-    , linkedMessageId
+    , linkedMessageKey = threadMessageKey message linkedMessageId
     }
 
 compactionThresholdTokens :: AskHandlerConfig -> Int

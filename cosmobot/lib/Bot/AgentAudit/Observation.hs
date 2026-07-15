@@ -44,8 +44,8 @@ agentAuditEvent = \case
     Just ToolCallFinished{runId, turn, toolCallId, toolName, status, result, resultLength, messageIds}
   Agent.AgentRunInterrupted{runId, reason} ->
     Just AgentRunInterrupted{runId, reason}
-  Agent.AgentThreadLinked{runId, linkedMessageId, parentMessageId} ->
-    Just AgentThreadLinked{runId, linkedMessageId, parentMessageId}
+  Agent.AgentThreadLinked{runId, linkedMessageId, linkedMessageKey, parentMessageId} ->
+    Just AgentThreadLinked{runId, linkedMessageId, linkedMessageKey = Just linkedMessageKey, parentMessageId}
   Agent.AgentRunStarted{} ->
     Nothing
   Agent.ModelTurnStarted{} ->

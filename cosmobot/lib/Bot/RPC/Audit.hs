@@ -11,7 +11,8 @@ where
 
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import Bot.Prelude
-import Bot.Core.Message (textMessageId)
+import Bot.Core.Message
+import Bot.Core.Thread
 import qualified Bot.JSONRPC as RPC
 import Bot.RPC.Server (RpcServerCallbacks (..))
 import qualified Data.Aeson as Aeson
@@ -36,11 +37,11 @@ dispatchAuditMethod request =
       parseParams request parseAuditId \auditId ->
         Aeson.toJSON <$> AgentAudit.queryAuditRecord auditId
     "audit.thread" ->
-      parseParams request parseMessageId \messageId ->
-        Aeson.toJSON <$> AgentAudit.queryThreadAudit (textMessageId messageId)
+      parseParams request parseMessageKey \messageKey ->
+        Aeson.toJSON <$> AgentAudit.queryThreadAudit messageKey
     "audit.thread_messages" ->
-      parseParams request parseMessageIds \messageIds ->
-        Aeson.toJSON <$> AgentAudit.queryThreadMessagesAudit (map textMessageId messageIds)
+      parseParams request parseMessageKeys \messageKeys ->
+        Aeson.toJSON <$> AgentAudit.queryThreadMessagesAudit messageKeys
     "audit.subscribe" ->
       pure (Right (Aeson.object ["subscribed" Aeson..= True]))
     _ ->
@@ -69,12 +70,28 @@ parseAuditId =
   Aeson.withObject "audit.get params" \o ->
     o Aeson..: "audit_id" <|> o Aeson..: "id"
 
-parseMessageId :: Aeson.Value -> AesonTypes.Parser Text
-parseMessageId =
+parseMessageKey :: Aeson.Value -> AesonTypes.Parser ThreadMessageKey
+parseMessageKey =
   Aeson.withObject "audit.thread params" \o ->
-    o Aeson..: "message_id"
+    ThreadMessageKey
+      <$> (o Aeson..: "platform" >>= parsePlatform)
+      <*> o Aeson..:? "chat_id"
+      <*> (textMessageId <$> o Aeson..: "message_id")
 
-parseMessageIds :: Aeson.Value -> AesonTypes.Parser [Text]
-parseMessageIds =
-  Aeson.withObject "audit.thread_messages params" \o ->
-    o Aeson..: "message_ids"
+parseMessageKeys :: Aeson.Value -> AesonTypes.Parser [ThreadMessageKey]
+parseMessageKeys =
+  Aeson.withObject "audit.thread_messages params" \o -> do
+    platform <- o Aeson..: "platform" >>= parsePlatform
+    chatId <- o Aeson..:? "chat_id"
+    messageIds <- o Aeson..: "message_ids"
+    pure [ThreadMessageKey{platform, chatId, messageId = textMessageId messageId} | messageId <- messageIds]
+
+parsePlatform :: Text -> AesonTypes.Parser ChatPlatform
+parsePlatform = \case
+  "qq" -> pure PlatformQQ
+  "telegram" -> pure PlatformTelegram
+  "matrix" -> pure PlatformMatrix
+  "discord" -> pure PlatformDiscord
+  "rpc" -> pure PlatformRPC
+  "acp" -> pure PlatformACP
+  _ -> fail "platform must be one of: qq, telegram, matrix, discord, rpc, acp"

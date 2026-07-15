@@ -19,6 +19,7 @@ where
 import Bot.AgentAudit.Projection
 import Bot.AgentAudit.Types
 import Bot.Core.Message
+import Bot.Core.Thread
 import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
 import Bot.Storage.Prelude
@@ -97,43 +98,65 @@ queryStoredRecord auditId = do
         pure row
   pure (viaNonEmpty head (mapMaybe storedAuditRecord rows))
 
-queryStoredThreadAudit :: Storage.Storage :> es => MessageId -> Eff es [AgentAuditRecord]
-queryStoredThreadAudit messageId =
-  queryStoredThreadMessagesAudit [messageId]
+queryStoredThreadAudit :: Storage.Storage :> es => ThreadMessageKey -> Eff es [AgentAuditRecord]
+queryStoredThreadAudit messageKey =
+  queryStoredThreadMessagesAudit [messageKey]
 
-queryStoredThreadMessagesAudit :: Storage.Storage :> es => [MessageId] -> Eff es [AgentAuditRecord]
+queryStoredThreadMessagesAudit :: Storage.Storage :> es => [ThreadMessageKey] -> Eff es [AgentAuditRecord]
 queryStoredThreadMessagesAudit [] =
   pure []
-queryStoredThreadMessagesAudit messageIds = do
-  runIds <- linkedRunIds messageIds
-  concat <$> traverse queryStoredRun runIds
+queryStoredThreadMessagesAudit messageKeys = do
+  linkedRuns <- linkedRunOccurrences messageKeys
+  ordNubOn (.id) . concat <$> traverse (uncurry queryStoredRunOccurrence) linkedRuns
 
 ensureAgentAuditTable :: Storage.Storage :> es => Eff es ()
 ensureAgentAuditTable =
   runSelda (tryCreateTable agentAuditRows)
 
-queryStoredRun :: Storage.Storage :> es => Text -> Eff es [AgentAuditRecord]
-queryStoredRun runId = do
+queryStoredRunOccurrence :: Storage.Storage :> es => Text -> ID AgentAuditRow -> Eff es [AgentAuditRecord]
+queryStoredRunOccurrence runId linkedAuditId = do
   rows <- runSelda $
     query do
       row <- select agentAuditRows
       restrict (row ! #run_id .== literal runId)
+      restrict (row ! #id .<= literal linkedAuditId)
       order (row ! #id) ascending
       pure row
-  pure (mapMaybe storedAuditRecord rows)
+  pure $ case reverse rows of
+    [] -> []
+    linked : earlier ->
+      mapMaybe storedAuditRecord (reverse (linked : takeWhile (isNothing . (.linked_message_id)) earlier))
 
-linkedRunIds :: Storage.Storage :> es => [MessageId] -> Eff es [Text]
-linkedRunIds messageIds = do
+linkedRunOccurrences :: Storage.Storage :> es => [ThreadMessageKey] -> Eff es [(Text, ID AgentAuditRow)]
+linkedRunOccurrences messageKeys = do
   rows <- runSelda $
     query do
       row <- select agentAuditRows
       restrict (row ! #linked_message_id `isIn` ids .|| row ! #parent_message_id `isIn` ids)
-      order (row ! #run_id) ascending
-      pure (row ! #run_id)
-  pure (ordNub rows)
+      order (row ! #id) ascending
+      pure row
+  pure
+    [ (eventRunId record.event, row.id)
+    | row <- rows
+    , Just record <- [storedAuditRecord row]
+    , matchesConversation messageKeys record.event
+    ]
   where
     ids =
-      map (literal . Just . messageIdText) (ordNub messageIds)
+      map (literal . Just . messageIdText . (.messageId)) (ordNub messageKeys)
+
+matchesConversation :: [ThreadMessageKey] -> AgentAuditEvent -> Bool
+matchesConversation messageKeys = \case
+  AgentThreadLinked{linkedMessageId, linkedMessageKey = Just linkedKey, parentMessageId} ->
+    any (matches linkedKey linkedMessageId parentMessageId) messageKeys
+  _ -> False
+  where
+    matches linkedKey linkedMessageId parentMessageId messageKey =
+      sameConversation linkedKey messageKey
+        && messageKey.messageId `elem` (linkedMessageId : maybeToList parentMessageId)
+
+    sameConversation left right =
+      left.platform == right.platform && left.chatId == right.chatId
 
 storedAuditRecord :: AgentAuditRow -> Maybe AgentAuditRecord
 storedAuditRecord row = do

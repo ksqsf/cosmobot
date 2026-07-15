@@ -30,7 +30,7 @@ import qualified Bot.AgentAudit.Observation as ObservationAdapter
 import Bot.AgentAudit.Projection
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
 import Bot.AgentAudit.Types
-import Bot.Core.Message
+import Bot.Core.Thread (ThreadMessageKey)
 import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
 import Data.Time (getCurrentTime)
@@ -41,8 +41,8 @@ data AgentAudit :: Effect where
   QueryAuditRecord :: Integer -> AgentAudit m (Maybe AgentAuditRecord)
   QueryRecentToolUses :: Int -> AgentAudit m [ToolUseDetail]
   QueryToolUse :: Integer -> AgentAudit m (Maybe ToolUseDetail)
-  QueryThreadAudit :: MessageId -> AgentAudit m [AgentAuditRecord]
-  QueryThreadMessagesAudit :: [MessageId] -> AgentAudit m [AgentAuditRecord]
+  QueryThreadAudit :: ThreadMessageKey -> AgentAudit m [AgentAuditRecord]
+  QueryThreadMessagesAudit :: [ThreadMessageKey] -> AgentAudit m [AgentAuditRecord]
 
 type instance DispatchOf AgentAudit = Dynamic
 
@@ -70,13 +70,13 @@ queryToolUse :: AgentAudit :> es => Integer -> Eff es (Maybe ToolUseDetail)
 queryToolUse auditId =
   send (QueryToolUse auditId)
 
-queryThreadAudit :: AgentAudit :> es => MessageId -> Eff es [AgentAuditRecord]
-queryThreadAudit messageId =
-  send (QueryThreadAudit messageId)
+queryThreadAudit :: AgentAudit :> es => ThreadMessageKey -> Eff es [AgentAuditRecord]
+queryThreadAudit messageKey =
+  send (QueryThreadAudit messageKey)
 
-queryThreadMessagesAudit :: AgentAudit :> es => [MessageId] -> Eff es [AgentAuditRecord]
-queryThreadMessagesAudit messageIds =
-  send (QueryThreadMessagesAudit messageIds)
+queryThreadMessagesAudit :: AgentAudit :> es => [ThreadMessageKey] -> Eff es [AgentAuditRecord]
+queryThreadMessagesAudit messageKeys =
+  send (QueryThreadMessagesAudit messageKeys)
 
 runAgentAudit
   :: (IOE :> es, KatipE :> es, Storage.Storage :> es)
@@ -116,10 +116,10 @@ runAgentAuditWithObserver observer inner = do
       QueryToolUse auditId -> do
         records <- AgentAuditStorage.loadStoredAuditRecords
         pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords processStartedAt maxInMemoryAgentAuditEvents records))
-      QueryThreadAudit messageId ->
-        AgentAuditStorage.queryStoredThreadAudit messageId
-      QueryThreadMessagesAudit messageIds ->
-        AgentAuditStorage.queryStoredThreadMessagesAudit messageIds
+      QueryThreadAudit messageKey ->
+        AgentAuditStorage.queryStoredThreadAudit messageKey
+      QueryThreadMessagesAudit messageKeys ->
+        AgentAuditStorage.queryStoredThreadMessagesAudit messageKeys
     )
     inner
 

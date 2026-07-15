@@ -225,6 +225,7 @@ main =
       , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
       , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
+      , testCase "thread audit is scoped by platform, chat, and run occurrence" testThreadAuditScope
       , testCase "agent audit recent records exclude synthetic restarted runs" testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns
       , testCase "agent audit storage omits large tool results" testAgentAuditStorageOmitsLargeToolResults
       , testCase "agent omits large tool results only after one model turn consumes them" testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt
@@ -1097,6 +1098,46 @@ testAgentAuditRecordsToolEvents = do
     _ ->
       assertFailure [i|expected one tool use, got #{length toolUses}|]
   assertBool "expected model token usage in audit records" (any hasHighTokenUsage records)
+
+testThreadAuditScope :: IO ()
+testThreadAuditScope = do
+  (firstRecords, secondRecords, otherPlatformRecords) <- runEff $
+    runConcurrent $
+      runPrim $
+        runTestLog $
+          StorageSQLite.runStorageSQLitePath ":memory:" do
+            AgentAuditStorage.ensureAgentAuditTable
+            let firstKey = ThreadMessageKey PlatformQQ (Just 1) "same-message"
+                secondKey = ThreadMessageKey PlatformQQ (Just 2) "same-message"
+                otherPlatformKey = ThreadMessageKey PlatformTelegram (Just 1) "same-message"
+            persistAuditOccurrence firstKey "first"
+            persistAuditOccurrence secondKey "second"
+            persistAuditOccurrence otherPlatformKey "other-platform"
+            (,,)
+              <$> AgentAuditStorage.queryStoredThreadAudit firstKey
+              <*> AgentAuditStorage.queryStoredThreadAudit secondKey
+              <*> AgentAuditStorage.queryStoredThreadAudit otherPlatformKey
+  auditToolNames firstRecords @?= ["first"]
+  auditToolNames secondRecords @?= ["second"]
+  auditToolNames otherPlatformRecords @?= ["other-platform"]
+  where
+    persistAuditOccurrence linkedKey toolName = do
+      void $ AgentAuditStorage.persistEvent staleAuditTime AgentAudit.ToolCallStarted
+        { runId = "agent-reused"
+        , turn = 1
+        , toolCall = AgentAudit.ToolCallTrace{id = "call", name = toolName, arguments = "{}"}
+        }
+      void $ AgentAuditStorage.persistEvent staleAuditTime AgentAudit.AgentThreadLinked
+        { runId = "agent-reused"
+        , linkedMessageId = linkedKey.messageId
+        , linkedMessageKey = Just linkedKey
+        , parentMessageId = Nothing
+        }
+
+    auditToolNames records =
+      [ auditCall.name
+      | AgentAudit.AgentAuditRecord{event = AgentAudit.ToolCallStarted{toolCall = auditCall}} <- records
+      ]
 
 testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns :: IO ()
 testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns = do

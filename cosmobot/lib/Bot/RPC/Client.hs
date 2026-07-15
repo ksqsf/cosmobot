@@ -27,7 +27,7 @@ import Toml.Schema
 data RpcClientCommand
   = RpcAuditRecent !Int
   | RpcAuditShow !Integer
-  | RpcAuditThread !Text
+  | RpcAuditThread !Text !(Maybe Integer) !Text
   | RpcMediaStats !Int
   | RpcMediaResolveSource !Text
   | RpcMediaGet !Text
@@ -95,8 +95,12 @@ requestForCommand = \case
     rpcRequest "audit.recent" (Aeson.object ["limit" Aeson..= limit])
   RpcAuditShow auditId ->
     rpcRequest "audit.get" (Aeson.object ["audit_id" Aeson..= auditId])
-  RpcAuditThread messageId ->
-    rpcRequest "audit.thread" (Aeson.object ["message_id" Aeson..= messageId])
+  RpcAuditThread platform chatId messageId ->
+    rpcRequest "audit.thread" (Aeson.object
+      [ "platform" Aeson..= platform
+      , "chat_id" Aeson..= chatId
+      , "message_id" Aeson..= messageId
+      ])
   RpcMediaStats limit ->
     rpcRequest "media.stats" (Aeson.object ["limit" Aeson..= limit])
   RpcMediaResolveSource sourceRef ->

@@ -26,6 +26,7 @@ import Bot.Agent.Middleware.Observation.Types
 import Bot.Agent.Middleware.Tools (ToolLimitContext (..))
 import Bot.Agent.Types
 import Bot.Core.Transcript
+import Bot.Core.Thread (ThreadMessageKey (..))
 import Bot.Core.Message (IncomingMessage (..), MessageId)
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -52,7 +53,7 @@ data ObservedToolCall = ObservedToolCall
 data ObservedThreadLink = ObservedThreadLink
   { runId :: !Text
   , parentMessageId :: !(Maybe MessageId)
-  , linkedMessageId :: !MessageId
+  , linkedMessageKey :: !ThreadMessageKey
   }
 
 withObservation
@@ -186,8 +187,13 @@ statusFromResult result
       ("ok", result)
 
 observeThreadLinked :: AgentObserver ObservationContext es -> ObservedThreadLink -> Eff es ()
-observeThreadLinked observer ObservedThreadLink{runId, parentMessageId, linkedMessageId} =
-  void $ observer.observe AgentThreadLinked{runId, linkedMessageId, parentMessageId}
+observeThreadLinked observer ObservedThreadLink{runId, parentMessageId, linkedMessageKey} =
+  void $ observer.observe AgentThreadLinked
+    { runId
+    , linkedMessageId = linkedMessageKey.messageId
+    , linkedMessageKey
+    , parentMessageId
+    }
 
 finishToolCall :: (ToolResult -> Eff es Text) -> AgentObserver ObservationContext es -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
 finishToolCall toolResultForObservation observer callInfo status result = do

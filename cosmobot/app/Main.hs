@@ -131,8 +131,10 @@ rpcAuditShowParser =
 
 rpcAuditThreadParser :: Parser RpcClient.RpcClientCommand
 rpcAuditThreadParser =
-  RpcClient.RpcAuditThread . Text.pack
-    <$> argument str (metavar "MESSAGE_ID")
+  RpcClient.RpcAuditThread
+    <$> (Text.pack <$> strOption (long "platform" <> metavar "PLATFORM"))
+    <*> optional (option auto (long "chat-id" <> metavar "CHAT_ID"))
+    <*> (Text.pack <$> argument str (metavar "MESSAGE_ID"))
 
 rpcMediaParser :: Parser RpcClient.RpcClientCommand
 rpcMediaParser =

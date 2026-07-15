@@ -15,6 +15,7 @@ module Bot.AgentAudit.Types
 where
 
 import Bot.Core.Message
+import Bot.Core.Thread (ThreadMessageKey)
 import qualified Bot.LLM.Types as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -58,6 +59,7 @@ data AgentAuditEvent
   | AgentThreadLinked
       { runId :: !Text
       , linkedMessageId :: !MessageId
+      , linkedMessageKey :: !(Maybe ThreadMessageKey)
       , parentMessageId :: !(Maybe MessageId)
       }
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
