@@ -11,11 +11,13 @@ import qualified Bot.Agent.Types as AgentTypes
 import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Effect.Storage as Storage
 import Bot.Handler.Resource (removeResources, resourceIds)
 import Bot.Prelude
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Resource.Workspace as Workspace
+import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
@@ -39,6 +41,8 @@ data BlockingObject = BlockingObject
   { destroyStarted :: !(MVar.MVar ())
   , finishDestroy :: !(MVar.MVar ())
   }
+
+newtype PersistentObject = PersistentObject Text
 
 data TestFailure = TestFailure
   deriving stock (Show)
@@ -85,6 +89,18 @@ instance Concurrent :> es => Resource.ResourceObject (Eff es) BlockingObject whe
   describeResourceObject _ _ = pure "blocking"
   probeResourceObject _ = pure (Right "healthy")
 
+instance Applicative m => Resource.ResourceObject m PersistentObject where
+  type CreationArgs PersistentObject = Text
+  resourceTypeName _ = "PersistentTest"
+  resourcePersistence _ = Resource.PersistentResource
+    { encodeResource = \(PersistentObject value) -> value
+    , restoreResource = pure . Right . PersistentObject
+    }
+  createResourceObject Resource.Init{arguments} = pure (Right (PersistentObject arguments))
+  destroyResourceObject _ = pure (Right ())
+  describeResourceObject (PersistentObject value) _ = pure value
+  probeResourceObject _ = pure (Right "healthy")
+
 main :: IO ()
 main = defaultMain $ testGroup "resource"
   [ testCase "typed heterogeneous resources and local ids" testTypedResources
@@ -94,6 +110,7 @@ main = defaultMain $ testGroup "resource"
   , testCase "cleanup failure restores resource for retry" testCleanupRetry
   , testCase "acquisition is blocked while destruction runs" testBlockedDuringDestroy
   , testCase "manager exit destroys resources" testShutdown
+  , testCase "persistent resources survive manager restart" testPersistentRestart
   , testCase "destroy_resource removes an owned resource" testDestroyResourceTool
   , testCase "Podman sandbox arguments preserve isolation" testPodmanArguments
   , testCase "Podman sandbox command preserves scripts as argv" testPodmanExecArguments
@@ -126,8 +143,14 @@ testOwnership = runManaged do
   otherAccess <- expectRight (Resource.accessFromMessage (ownerMessage{senderId = Just "other"}))
   Resource.list otherAccess >>= liftIO . (@?= [])
   Resource.destroy otherAccess resourceId >>= liftIO . (@?= Left Resource.ResourceNotFoundOrNotOwned)
-  let adminMessage = (ownerMessage{senderId = Just "admin", digest = emptyMessageDigest{senderIsSuperuser = True}})
+  let adminMessage = ownerMessage
+        { platform = PlatformDiscord
+        , chatId = Just 999
+        , senderId = Just "admin"
+        , digest = emptyMessageDigest{senderIsSuperuser = True}
+        }
   adminAccess <- expectRight (Resource.accessFromMessage adminMessage)
+  Resource.list adminAccess >>= liftIO . assertBool "superuser lists resources system-wide" . any ((== resourceId) . (.resourceId))
   Resource.destroy adminAccess resourceId >>= liftIO . (@?= Right ())
   let missing = ownerMessage{senderId = Nothing}
   liftIO $ Resource.accessFromMessage missing @?= Left Resource.MissingResourceIdentity
@@ -189,6 +212,33 @@ testShutdown = do
     void $ Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit}
     pure destroyed
   runEff $ runConcurrent $ void (MVar.takeMVar destroyed)
+
+testPersistentRestart :: Assertion
+testPersistentRestart =
+  runEff $ runConcurrent $ FileSystem.runFileSystem do
+    tmp <- FileSystem.getTemporaryDirectory
+    unique <- liftIO Unique.newUnique
+    let database = tmp </> ("cosmobot-resource-" <> show (Unique.hashUnique unique) <> ".sqlite")
+        cleanup = FileSystem.removeFile database
+    (do
+      persistentId <- liftIO $ runPersistent database do
+        persistentId <- Resource.create @PersistentObject Resource.Init{message = ownerMessage, arguments = "durable"} >>= expectRight
+        void $ Resource.create @OtherObject Resource.Init{message = ownerMessage, arguments = ()} >>= expectRight
+        pure persistentId
+      liftIO $ persistentId @?= "res-1"
+      listed <- liftIO $ runPersistent database do
+        access <- expectRight (Resource.accessFromMessage ownerMessage)
+        Resource.list access
+      liftIO $ map (\resource -> (resource.resourceId, resource.resourceType, resource.description)) listed
+        @?= [("res-1", "PersistentTest", "durable")]
+      liftIO $ runPersistent database do
+        access <- expectRight (Resource.accessFromMessage ownerMessage)
+        Resource.destroy access persistentId >>= liftIO . (@?= Right ())
+      listedAfter <- liftIO $ runPersistent database do
+        access <- expectRight (Resource.accessFromMessage ownerMessage)
+        Resource.list access
+      liftIO $ listedAfter @?= []
+      ) `finally` cleanup
 
 testDestroyResourceTool :: Assertion
 testDestroyResourceTool = runManaged do
@@ -313,11 +363,18 @@ ownerMessage = IncomingMessage
   , raw = Aeson.Null
   }
 
-type ManagedStack = '[Resource.Resource, Concurrency.Concurrency, Prim, Concurrent, IOE]
+type ManagedStack = '[Resource.Resource, Concurrency.Concurrency, Storage.Storage, Prim, Concurrent, IOE]
 
 runManaged :: Eff ManagedStack a -> IO a
 runManaged action =
-  runEff $ runConcurrent $ runPrim $ ConcurrencyManager.runConcurrencyManager $ ResourceManager.runResourceManager action
+  runEff $ runConcurrent $ runPrim $ StorageSQLite.runStorageSQLitePath ":memory:" $
+    ConcurrencyManager.runConcurrencyManager $ ResourceManager.runResourceManager action
+
+runPersistent :: FilePath -> Eff ManagedStack a -> IO a
+runPersistent database action =
+  runEff $ runConcurrent $ runPrim $ StorageSQLite.runStorageSQLitePath database $
+    ConcurrencyManager.runConcurrencyManager $
+      ResourceManager.runResourceManagerWith [ResourceManager.resourceLoader @PersistentObject] action
 
 expectRight :: Applicative m => Either e a -> m a
 expectRight = either (const (pure (error "expected Right"))) pure

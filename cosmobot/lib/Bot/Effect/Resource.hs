@@ -15,6 +15,9 @@ module Bot.Effect.Resource
   , ResourceAccess (..)
   , Init (..)
   , ResourceObject (..)
+  , ResourcePersistence (..)
+  , ResourceLoader (..)
+  , resourceLoader
   , SomeResourceObject (..)
   , ResourceError (..)
   , ownerFromMessage

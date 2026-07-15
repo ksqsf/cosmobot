@@ -11,6 +11,7 @@ Stability   : experimental
 module Bot.Agent.Tools.Shell
   ( runBashTool
   , runBashSafe
+  , runSandboxBashSafe
   )
 where
 
@@ -101,7 +102,7 @@ runInSandbox context metadata sandboxId timeoutSeconds script =
     Left err -> pure (resourceToolFailure err)
     Right access -> do
       result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.parent \sandbox ->
-        runSandboxBashSafe timeoutSeconds sandbox script
+        runSandboxBashSafe timeoutSeconds sandbox script Nothing
       pure $ case join (first renderResourceError result) of
         Left err -> clientFailure err
         Right output -> toolText output
@@ -111,9 +112,10 @@ runSandboxBashSafe
   => Int
   -> Sandbox.Sandbox
   -> Text
+  -> Maybe Int
   -> Eff es (Either Text Text)
-runSandboxBashSafe timeoutSeconds sandbox script =
-  Sandbox.createCommand sandbox script Nothing >>= \case
+runSandboxBashSafe timeoutSeconds sandbox script outputByteLimit =
+  Sandbox.createCommand sandbox script outputByteLimit >>= \case
     Left err -> pure (Left err)
     Right commandId -> run commandId `finally` void (Sandbox.releaseCommand sandbox commandId)
   where

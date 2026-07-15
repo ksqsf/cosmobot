@@ -3,7 +3,7 @@
 
 {-|
 Module      : Bot.Resource
-Description : In-memory lifecycle for chat-owned long-running objects
+Description : Lifecycle and durable registrations for chat-owned long-running objects
 Stability   : experimental
 -}
 module Bot.Resource
@@ -17,16 +17,22 @@ module Bot.Resource
   , ownerFromMessage
   , accessFromMessage
   , runResourceManager
+  , runResourceManagerWith
+  , resourceLoader
   )
 where
 
 import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude hiding (state)
 import Bot.Resource.Types
+import qualified Bot.Storage.Resource as ResourceStorage
 import qualified Data.Dynamic as Dynamic
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
+import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
 
 data Availability
@@ -41,6 +47,7 @@ data SomeResource es = SomeResource
   , describe :: Either Text Text -> Eff es Text
   , probe :: Eff es (Either Text Text)
   , destroy :: Eff es (Either Text ())
+  , persistent :: !Bool
   , availability :: !Availability
   }
 
@@ -53,16 +60,86 @@ data ManagerState es = ManagerState
   }
 
 runResourceManager
-  :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es, Prim :> es)
+  :: (Storage.Storage :> es, Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es, Prim :> es)
   => Eff (Resource.Resource : es) a
   -> Eff es a
-runResourceManager inner = do
-  stateRef <- newIORef ManagerState{nextId = 1, nextCreate = 1, accepting = True, creating = Map.empty, resources = Map.empty}
+runResourceManager = runResourceManagerWith []
+
+runResourceManagerWith
+  :: (Storage.Storage :> es, Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es, Prim :> es)
+  => [ResourceLoader (Eff es)]
+  -> Eff (Resource.Resource : es) a
+  -> Eff es a
+runResourceManagerWith loaders inner = do
+  stored <- ResourceStorage.loadResources
+  loaded <- traverse (restoreStoredResource loaders) stored
+  let resources = Map.fromList [(resource.resourceId, value) | (resource, value) <- zip stored loaded]
+      nextId = List.maximum (1 : map ((+ 1) . resourceIdNumber . (.resourceId)) stored)
+  stateRef <- newIORef ManagerState{nextId, nextCreate = 1, accepting = True, creating = Map.empty, resources}
   let runInner = interpret (runResourceOperation stateRef) inner
   runInner `finally` shutdown stateRef
 
+restoreStoredResource
+  :: forall es. (Concurrent :> es, IOE :> es)
+  => [ResourceLoader (Eff es)]
+  -> ResourceStorage.StoredResource
+  -> Eff es (SomeResource es)
+restoreStoredResource loaders stored =
+  case List.find matches loaders of
+    Nothing -> pure (unavailableResource "No loader is registered for this resource type.")
+    Just loader -> restoreWith loader
+  where
+    matches (ResourceLoader (proxy :: Proxy a)) =
+      resourceTypeName @(Eff es) @a proxy == stored.resourceType
+
+    restoreWith (ResourceLoader (proxy :: Proxy a)) =
+      case resourcePersistence @(Eff es) @a proxy of
+        EphemeralResource ->
+          pure (unavailableResource "The registered resource type is not persistent.")
+        PersistentResource{restoreResource} ->
+          trySync (restoreResource stored.payload) <&> \case
+            Right (Right object) -> restoredResource proxy object
+            Right (Left err) -> unavailableResource err
+            Left err -> unavailableResource (conciseException err)
+
+    restoredResource
+      :: forall a. ResourceObject (Eff es) a
+      => Proxy a
+      -> a
+      -> SomeResource es
+    restoredResource proxy object = SomeResource
+      { owner = stored.owner
+      , sessionId = stored.sessionId
+      , resourceType = resourceTypeName @(Eff es) @a proxy
+      , value = Dynamic.toDyn object
+      , describe = describeResourceObject object
+      , probe = probeResourceObject object
+      , destroy = destroyResourceObject object
+      , persistent = True
+      , availability = Available Map.empty
+      }
+
+    unavailableResource err = SomeResource
+      { owner = stored.owner
+      , sessionId = stored.sessionId
+      , resourceType = stored.resourceType
+      , value = Dynamic.toDyn ()
+      , describe = const (pure "unavailable")
+      , probe = pure (Left err)
+      , destroy = pure (Right ())
+      , persistent = True
+      , availability = Available Map.empty
+      }
+
+resourceIdNumber :: ResourceId -> Integer
+resourceIdNumber resourceId =
+  fromMaybe 0 (Text.stripPrefix "res-" resourceId >>= readMaybe . Text.unpack)
+
+conciseException :: Show e => e -> Text
+conciseException = Text.take 500 . show
+
 runResourceOperation
-  :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es, Prim :> es)
+  :: (Storage.Storage :> es, Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es, Prim :> es)
   => IORef (ManagerState es)
   -> EffectHandler Resource.Resource es
 runResourceOperation stateRef localEnv operation =
@@ -74,7 +151,7 @@ runResourceOperation stateRef localEnv operation =
       Resource.Destroy access resourceId -> destroyIn stateRef access resourceId
 
 createIn
-  :: forall localEs es a. (ResourceObject (Eff localEs) a, Concurrent :> es, Prim :> es)
+  :: forall localEs es a. (ResourceObject (Eff localEs) a, Storage.Storage :> es, Concurrent :> es, Prim :> es, IOE :> es)
   => IORef (ManagerState es)
   -> (forall x. Eff localEs x -> Eff es x)
   -> Proxy a
@@ -89,17 +166,28 @@ createIn stateRef unlift _ initValue =
         if state.accepting
           then
             let createId = state.nextCreate
-            in (state{nextCreate = createId + 1, creating = Map.insert createId gate state.creating}, Right createId)
+                resourceId = "res-" <> show state.nextId
+            in (state
+                  { nextId = state.nextId + 1
+                  , nextCreate = createId + 1
+                  , creating = Map.insert createId gate state.creating
+                  }
+                , Right (createId, resourceId))
           else (state, Left ResourceUnavailable)
       case reservation of
         Left err -> pure (Left err)
-        Right createId -> (mask \restore -> createAndRegister restore owner) `finally` finishCreate createId gate
+        Right (createId, resourceId) ->
+          (mask \restore -> createAndRegister restore owner resourceId) `finally` finishCreate createId gate
   where
-    createAndRegister restore owner =
+    createAndRegister restore owner resourceId =
       restore (unlift (createResourceObject @(Eff localEs) @a initValue)) >>= \case
         Left err -> pure (Left (ResourceCreationFailed err))
         Right object -> do
-          let resource = SomeResource
+          let persistence = resourcePersistence @(Eff localEs) @a (Proxy @a)
+              isPersistent = case persistence of
+                EphemeralResource -> False
+                PersistentResource{} -> True
+              resource = SomeResource
                 { owner
                 , sessionId = sessionIdFromMessage initValue.message
                 , resourceType = resourceTypeName @(Eff localEs) @a (Proxy @a)
@@ -107,16 +195,29 @@ createIn stateRef unlift _ initValue =
                 , describe = unlift . describeResourceObject object
                 , probe = unlift (probeResourceObject object)
                 , destroy = unlift (destroyResourceObject object)
+                , persistent = isPersistent
                 , availability = Available Map.empty
                 }
-          registered <- atomicModifyIORef' stateRef \state ->
-            if state.accepting
-              then
-                let resourceId = "res-" <> show state.nextId
-                in (state{nextId = state.nextId + 1, resources = Map.insert resourceId resource state.resources}, Right resourceId)
-              else (state, Left ResourceUnavailable)
-          when (isLeft registered) $ void (trySync resource.destroy)
-          pure registered
+              discard = do
+                when isPersistent $ void (trySync (ResourceStorage.deleteResource resourceId))
+                void (trySync resource.destroy)
+          persisted <- case persistence of
+            EphemeralResource -> pure (Right ())
+            PersistentResource{encodeResource} ->
+              trySync
+                (ResourceStorage.saveResource ResourceStorage.StoredResource
+                  { resourceId
+                  , resourceType = resource.resourceType
+                  , owner
+                  , sessionId = resource.sessionId
+                  , payload = encodeResource object
+                  } `onException` discard)
+          case persisted of
+            Left err -> discard $> Left (ResourceCreationFailed ("Failed to persist resource: " <> conciseException err))
+            Right () -> do
+              atomicModifyIORef' stateRef \state ->
+                (state{resources = Map.insert resourceId resource state.resources}, ())
+              pure (Right resourceId)
 
     finishCreate createId gate = do
       atomicModifyIORef' stateRef \state -> (state{creating = Map.delete createId state.creating}, ())
@@ -145,7 +246,7 @@ listIn
   -> ResourceAccess
   -> Eff es [SomeResourceObject]
 listIn stateRef access = do
-  entries <- Map.toAscList . Map.filter (\resource -> resource.owner == access.owner && isAvailable resource.availability) . (.resources) <$> readIORef stateRef
+  entries <- Map.toAscList . Map.filter (\resource -> mayList access resource.owner && isAvailable resource.availability) . (.resources) <$> readIORef stateRef
   traverse snapshot entries
   where
     snapshot (resourceId, resource) = do
@@ -163,7 +264,7 @@ sessionIdFromMessage message
   | otherwise = Nothing
 
 destroyIn
-  :: (Concurrency.Concurrency :> es, Prim :> es)
+  :: (Storage.Storage :> es, Concurrency.Concurrency :> es, Prim :> es, IOE :> es)
   => IORef (ManagerState es)
   -> ResourceAccess
   -> ResourceId
@@ -171,10 +272,15 @@ destroyIn
 destroyIn stateRef access resourceId =
   beginDestroy stateRef access resourceId >>= \case
     Left err -> pure (Left err)
-    Right (users, cleanup) -> do
+    Right (users, cleanup, persistent) -> do
       traverse_ cancelAndAwait users
       trySync cleanup >>= \case
-        Right (Right ()) -> removeDestroyed stateRef resourceId $> Right ()
+        Right (Right ()) ->
+          if persistent
+            then trySync (ResourceStorage.deleteResource resourceId) >>= \case
+              Right () -> removeDestroyed stateRef resourceId $> Right ()
+              Left err -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed (conciseException err))
+            else removeDestroyed stateRef resourceId $> Right ()
         Right (Left err) -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed err)
         Left err -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed (show err))
 
@@ -201,7 +307,7 @@ beginDestroy
   => IORef (ManagerState es)
   -> ResourceAccess
   -> ResourceId
-  -> Eff es (Either ResourceError ([Concurrency.Handle], Eff es (Either Text ())))
+  -> Eff es (Either ResourceError ([Concurrency.Handle], Eff es (Either Text ()), Bool))
 beginDestroy stateRef access resourceId =
   atomicModifyIORef' stateRef \state ->
     case Map.lookup resourceId state.resources of
@@ -210,13 +316,16 @@ beginDestroy stateRef access resourceId =
         | not (mayDestroy access resource.owner) -> (state, Left ResourceNotFoundOrNotOwned)
         | Available users <- resource.availability ->
             let updated = resource{availability = Destroying}
-            in (state{resources = Map.insert resourceId updated state.resources}, Right (Map.keys users, resource.destroy))
+            in (state{resources = Map.insert resourceId updated state.resources}, Right (Map.keys users, resource.destroy, resource.persistent))
         | otherwise -> (state, Left ResourceUnavailable)
 
 mayDestroy :: ResourceAccess -> ResourceOwner -> Bool
 mayDestroy access owner =
   access.owner == owner
-    || (access.superuser && access.owner.platform == owner.platform && access.owner.chatId == owner.chatId)
+    || access.superuser
+
+mayList :: ResourceAccess -> ResourceOwner -> Bool
+mayList access owner = access.superuser || access.owner == owner
 
 releaseUser :: Prim :> es => IORef (ManagerState es) -> ResourceId -> Maybe Concurrency.Handle -> Eff es ()
 releaseUser _ _ Nothing = pure ()
@@ -257,4 +366,4 @@ shutdown stateRef = do
     case resource.availability of
       Available users -> traverse_ cancelAndAwait (Map.keys users)
       Destroying -> pure ()
-    void (trySync resource.destroy)
+    unless resource.persistent $ void (trySync resource.destroy)

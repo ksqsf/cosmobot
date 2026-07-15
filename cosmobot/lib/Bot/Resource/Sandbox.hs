@@ -53,6 +53,15 @@ instance
 
   resourceTypeName _ = "Sandbox"
 
+  resourcePersistence _ = Resource.PersistentResource
+    { encodeResource = (.containerId)
+    , restoreResource = \payload ->
+        let containerId = Text.strip payload
+        in pure $ if validPodmanId containerId
+          then Right Sandbox{containerId}
+          else Left "Stored sandbox container id is malformed."
+    }
+
   createResourceObject _ = createSandbox
 
   destroyResourceObject sandbox =

@@ -92,7 +92,7 @@ defaultTools =
   , manageChatMemoryTool
   , destroyResourceTool
   , createSandboxTool
-  , sandboxBashAsyncTool
+  , sandboxBashTool
   , runBashTool
   , terminalTool
   , workspaceTool

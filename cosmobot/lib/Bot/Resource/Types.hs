@@ -6,6 +6,9 @@ module Bot.Resource.Types
   , ResourceAccess (..)
   , Init (..)
   , ResourceObject (..)
+  , ResourcePersistence (..)
+  , ResourceLoader (..)
+  , resourceLoader
   , SomeResourceObject (..)
   , ResourceError (..)
   , ownerFromMessage
@@ -39,10 +42,25 @@ data Init a = Init
 class Typeable a => ResourceObject m a where
   type CreationArgs a
   resourceTypeName :: proxy a -> Text
+  resourcePersistence :: proxy a -> ResourcePersistence m a
+  resourcePersistence _ = EphemeralResource
   createResourceObject :: Init (CreationArgs a) -> m (Either Text a)
   destroyResourceObject :: a -> m (Either Text ())
   describeResourceObject :: a -> Either Text Text -> m Text
   probeResourceObject :: a -> m (Either Text Text)
+
+data ResourcePersistence m a
+  = EphemeralResource
+  | PersistentResource
+      { encodeResource :: a -> Text
+      , restoreResource :: Text -> m (Either Text a)
+      }
+
+data ResourceLoader m where
+  ResourceLoader :: ResourceObject m a => Proxy a -> ResourceLoader m
+
+resourceLoader :: forall a m. ResourceObject m a => ResourceLoader m
+resourceLoader = ResourceLoader (Proxy @a)
 
 data SomeResourceObject = SomeResourceObject
   { resourceId :: !ResourceId

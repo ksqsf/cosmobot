@@ -296,6 +296,7 @@ library
         Bot.Storage.Matrix
         Bot.Storage.Prelude
         Bot.Storage.RPC
+        Bot.Storage.Resource
         Bot.Storage.Session
         Bot.Storage.Scheduler
         Bot.Storage.SQLite

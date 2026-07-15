@@ -299,19 +299,23 @@ testTerminalAndSandboxToolScopes :: IO ()
 testTerminalAndSandboxToolScopes = do
   let terminalTool = TerminalTools.terminalTool :: Agent.Tool AgentStack
       createSandboxTool = SandboxTools.createSandboxTool :: Agent.Tool AgentStack
-      sandboxBashAsyncTool = SandboxTools.sandboxBashAsyncTool :: Agent.Tool AgentStack
+      sandboxBashTool = SandboxTools.sandboxBashTool :: Agent.Tool AgentStack
       destroyResourceTool = ResourceTools.destroyResourceTool :: Agent.Tool AgentStack
       workspaceTool = WorkspaceTools.workspaceTool :: Agent.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
+      sandboxSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode sandboxBashTool.parameters))
   terminalTool.name @?= "terminal"
   assertBool "terminal tool should be hidden outside ACP" (not (terminalTool.allowed agentContext))
   assertBool "terminal tool should be visible for ACP" (terminalTool.allowed acpContext)
-  sandboxBashAsyncTool.name @?= "sandbox_bash_async"
-  assertBool "sandbox async tool should be visible to non-superusers" (sandboxBashAsyncTool.allowed agentContext)
+  sandboxBashTool.name @?= "sandbox_bash"
+  assertBool "sandbox bash schema should require a script" ("\"script\"" `Text.isInfixOf` sandboxSchema)
+  assertBool "sandbox bash schema should not expose command ids" (not ("command_id" `Text.isInfixOf` sandboxSchema))
+  assertBool "sandbox bash schema should not expose async actions" (not ("\"action\"" `Text.isInfixOf` sandboxSchema))
+  assertBool "sandbox bash tool should be visible to non-superusers" (sandboxBashTool.allowed agentContext)
   assertBool "create sandbox should be visible to non-superusers" (createSandboxTool.allowed agentContext)
   assertBool "destroy resource should be visible to non-superusers" (destroyResourceTool.allowed agentContext)
-  assertBool "sandbox async tool should require resource identity" (not (sandboxBashAsyncTool.allowed missingIdentity))
+  assertBool "sandbox bash tool should require resource identity" (not (sandboxBashTool.allowed missingIdentity))
   workspaceTool.name @?= "workspace"
   assertBool "workspace should be hidden from non-superusers" (not (workspaceTool.allowed agentContext))
   assertBool "workspace should be visible to superusers" (workspaceTool.allowed superuserContext)
