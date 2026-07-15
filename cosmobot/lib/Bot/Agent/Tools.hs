@@ -91,14 +91,10 @@ defaultTools = tools
       , userAvatarTool
       , listGroupMembersTool
       , currentMessageInfoTool
-      , scheduleAgentActionTool
-      , deleteScheduledAgentActionTool
-      , listCurrentUserSchedulesTool
-      , manageSenderMemoryTool
-      , manageChatMemoryTool
+      , scheduleTool
+      , manageMemoryTool
       , destroyResourceTool
-      , createSandboxTool
-      , sandboxBashTool
+      , sandboxTool
       , runBashTool
       , terminalTool
       , workspaceTool

@@ -29,13 +29,13 @@ subagentTool ::
 subagentTool runner availableTools =
   Tool
     { name = "subagent",
-      description = "Manage a background agent scoped to the current chat. Operations: create, send, query, destroy.",
+      description = "Manage a background agent scoped to the current chat. Operations: create, send, query, delete.",
       parameters =
         objectSchema
-          [ fieldText "op" "One of: create, send, query, destroy.",
+          [ fieldText "op" "One of: create, send, query, delete.",
             fieldText "system_prompt" "System prompt for create; empty inherits the current system prompt.",
             fieldTextArray "tools" "Tool names exposed to the subagent for create; empty exposes none.",
-            fieldText "resource" "Subagent resource id; required for send, query, and destroy.",
+            fieldText "resource" "Subagent resource id; required for send, query, and delete.",
             fieldText "prompt" "Prompt to send; required for send."
           ]
           ["op"],
@@ -94,8 +94,9 @@ parseCall = Aeson.withObject "subagent arguments" \o -> do
         <*> (fromMaybe [] <$> o Aeson..:? Key.fromText "tools")
     "send" -> Send <$> resource o <*> requiredText o "prompt"
     "query" -> Query <$> resource o
+    "delete" -> Destroy <$> resource o
     "destroy" -> Destroy <$> resource o
-    _ -> fail "op must be one of: create, send, query, destroy."
+    _ -> fail "op must be one of: create, send, query, delete."
   where
     resource o = requiredText o "resource"
     requiredText o key =

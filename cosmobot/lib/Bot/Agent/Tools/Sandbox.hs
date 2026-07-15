@@ -6,8 +6,7 @@ Description : Agent tools for chat-owned Podman sandboxes
 Stability   : experimental
 -}
 module Bot.Agent.Tools.Sandbox
-  ( createSandboxTool
-  , sandboxBashTool
+  ( sandboxTool
   )
 where
 
@@ -24,61 +23,59 @@ import qualified Data.Text as Text
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout (Timeout)
 
-createSandboxTool
-  :: (Resource.Resource :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Tool es
-createSandboxTool = Tool
-  { name = "create_sandbox"
-  , description = "Create an isolated Debian sandbox owned by the current chat and sender."
-  , parameters = objectSchema [] []
-  , noisy = False
-  , allowed = hasResourceIdentity
-  , start = \context -> pure \metadata args ->
-      withParsedToolArgs emptyObject args \() ->
-        case Resource.accessFromMessage context.message of
-          Left err -> pure (resourceToolFailure err)
-          Right _ -> Resource.createAssociated @Sandbox.Sandbox metadata.parent Resource.Init{message = context.message, arguments = ()} >>= \case
-            Left err -> pure (resourceToolFailure err)
-            Right sandboxId -> pure (toolText (jsonText (Aeson.object ["sandbox" Aeson..= sandboxId])))
-  }
-
-sandboxBashTool
+sandboxTool
   :: (Resource.Resource :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => Tool es
-sandboxBashTool = Tool
-  { name = "sandbox_bash"
-  , description = "Run a Bash script inside a sandbox and return its output when it exits."
+sandboxTool = Tool
+  { name = "sandbox"
+  , description = "Create or delete an isolated Debian sandbox, or run a Bash script in one."
   , parameters = objectSchema
-      [ fieldText "sandbox" "Sandbox id returned by create_sandbox."
-      , fieldText "script" "Bash script to execute."
+      [ fieldText "op" "One of: create, run, delete."
+      , fieldText "sandbox" "Sandbox id; required for run and delete."
+      , fieldText "script" "Bash script; required for run."
       , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the script. Defaults to 30."
       , fieldInteger "output_byte_limit" "Maximum retained output bytes. Defaults to 1048576."
       ]
-      ["sandbox", "script"]
+      ["op"]
   , noisy = False
   , allowed = hasResourceIdentity
   , start = \context -> pure \metadata args ->
-      withParsedToolArgs parseSandboxBashArgs args \(sandboxId, script, timeoutSeconds, outputByteLimit) ->
+      withParsedToolArgs sandboxArgs args \call ->
         case Resource.accessFromMessage context.message of
           Left err -> pure (resourceToolFailure err)
-          Right access -> do
-            result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.parent \sandbox ->
-              Shell.runSandboxBashSafe timeoutSeconds sandbox script outputByteLimit
-            pure $ either clientFailure toolText (join (first renderResourceError result))
+          Right access -> case call of
+            SandboxCreate ->
+              Resource.createAssociated @Sandbox.Sandbox metadata.parent Resource.Init{message = context.message, arguments = ()} <&> \case
+                Left err -> resourceToolFailure err
+                Right sandboxId -> toolText (jsonText (Aeson.object ["sandbox" Aeson..= sandboxId]))
+            SandboxRun sandboxId script timeoutSeconds outputByteLimit -> do
+              result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.parent \sandbox ->
+                Shell.runSandboxBashSafe timeoutSeconds sandbox script outputByteLimit
+              pure $ either clientFailure toolText (join (first renderResourceError result))
+            SandboxDelete sandboxId ->
+              Resource.destroy access sandboxId <&> either resourceToolFailure (const (toolText "Sandbox deleted."))
   }
 
-parseSandboxBashArgs :: Aeson.Value -> AesonTypes.Parser (Text, Text, Int, Maybe Int)
-parseSandboxBashArgs = Aeson.withObject "sandbox_bash arguments" \o -> do
-  sandboxId <- o Aeson..: Key.fromText "sandbox" >>= validText "sandbox"
-  script <- o Aeson..: Key.fromText "script" >>= validValue "script"
-  timeoutSeconds <- fromMaybe 30 <$> o Aeson..:? Key.fromText "timeout_seconds"
-  outputByteLimit <- o Aeson..:? Key.fromText "output_byte_limit"
-  when (timeoutSeconds <= 0) $ fail "timeout_seconds must be positive."
-  when (maybe False (<= 0) outputByteLimit) $ fail "output_byte_limit must be positive."
-  pure (sandboxId, script, timeoutSeconds, outputByteLimit)
+data SandboxCall
+  = SandboxCreate
+  | SandboxRun !Text !Text !Int !(Maybe Int)
+  | SandboxDelete !Text
 
-emptyObject :: Aeson.Value -> AesonTypes.Parser ()
-emptyObject = Aeson.withObject "create_sandbox arguments" (const (pure ()))
+sandboxArgs :: Aeson.Value -> AesonTypes.Parser SandboxCall
+sandboxArgs = Aeson.withObject "sandbox arguments" \o -> do
+  op <- o Aeson..: Key.fromText "op"
+  case op :: Text of
+    "create" -> pure SandboxCreate
+    "run" -> do
+      sandboxId <- o Aeson..: Key.fromText "sandbox" >>= validText "sandbox"
+      script <- o Aeson..: Key.fromText "script" >>= validValue "script"
+      timeoutSeconds <- fromMaybe 30 <$> o Aeson..:? Key.fromText "timeout_seconds"
+      outputByteLimit <- o Aeson..:? Key.fromText "output_byte_limit"
+      when (timeoutSeconds <= 0) $ fail "timeout_seconds must be positive."
+      when (maybe False (<= 0) outputByteLimit) $ fail "output_byte_limit must be positive."
+      pure (SandboxRun sandboxId script timeoutSeconds outputByteLimit)
+    "delete" -> SandboxDelete <$> (o Aeson..: Key.fromText "sandbox" >>= validText "sandbox")
+    _ -> fail "op must be one of: create, run, delete."
 
 hasResourceIdentity :: AgentContext es -> Bool
 hasResourceIdentity = isRight . Resource.accessFromMessage . (.message)

@@ -35,7 +35,7 @@ runBashTool = Tool
   , parameters = objectSchema
       [ fieldText "script" "The bash script to be executed in the cwd"
       , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the process. Defaults to 30."
-      , fieldText "sandbox" "Optional sandbox id returned by create_sandbox."
+      , fieldText "sandbox" "Optional sandbox id returned by the sandbox tool's create operation."
       ]
       ["script"]
   , noisy = False

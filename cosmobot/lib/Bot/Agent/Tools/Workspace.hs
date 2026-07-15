@@ -28,12 +28,12 @@ workspaceTool
   => Tool es
 workspaceTool = Tool
   { name = "workspace"
-  , description = "Manage dedicated /work workspaces for superuser-requested multi-step work such as repositories, git/PRs, scripts, CI, research, or ops. Create one before substantial work and keep WORK.md current with scope, path, branches/commits/PRs, validation, environment notes, and blockers. Read a repository's AGENTS.md before editing. Before GitHub push/PR operations, verify the authenticated gh user is ksqsfbot; gh may require HOME=/root, use HTTPS if SSH fails, and workflow pushes require workflow scope. Prefer a topic branch and PR with summary and validation. For scheduled feature requests, only comment with an approach and mention @ksqsf. Actions: create, query, update, destroy."
+  , description = "Manage dedicated /work workspaces for superuser-requested multi-step work such as repositories, git/PRs, scripts, CI, research, or ops. Create one before substantial work and keep WORK.md current with scope, path, branches/commits/PRs, validation, environment notes, and blockers. Read a repository's AGENTS.md before editing. Before GitHub push/PR operations, verify the authenticated gh user is ksqsfbot; gh may require HOME=/root, use HTTPS if SSH fails, and workflow pushes require workflow scope. Prefer a topic branch and PR with summary and validation. For scheduled feature requests, only comment with an approach and mention @ksqsf. Actions: create, query, update, delete."
   , parameters = objectSchema
-      [ fieldText "action" "One of: create, query, update, destroy."
+      [ fieldText "action" "One of: create, query, update, delete."
       , fieldText "id" "Short stable descriptive id for create; letters, digits, dot, underscore, and hyphen only."
       , fieldText "goal" "Initial work goal for create, or complete replacement WORK.md contents for update."
-      , fieldText "resource" "Resource id returned by create; required for query, update, and destroy."
+      , fieldText "resource" "Resource id returned by create; required for query, update, and delete."
       ]
       ["action"]
   , noisy = False
@@ -95,8 +95,9 @@ parseWorkspaceCall = Aeson.withObject "workspace arguments" \o -> do
       <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal"))
     "query" -> QueryWorkspace <$> requiredResourceId o
     "update" -> UpdateWorkspace <$> requiredResourceId o <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal")
+    "delete" -> DestroyWorkspace <$> requiredResourceId o
     "destroy" -> DestroyWorkspace <$> requiredResourceId o
-    _ -> fail "action must be one of: create, query, update, destroy."
+    _ -> fail "action must be one of: create, query, update, delete."
 
 requiredResourceId :: AesonTypes.Object -> AesonTypes.Parser Text
 requiredResourceId o = o Aeson..: Key.fromText "resource" >>= validNonEmpty "resource"

@@ -361,21 +361,16 @@ Currently, the following tools are available:
 |Chat    |`group_members`        |           |
 |Chat    |`message_info`         |           |
 |Emacs   |`emacs_eval`           |Yes        |
-|Audio   |`audio_generate`       |           |
 |Image   |`image_generate`       |           |
 |Image   |`image_edit`           |           |
-|Image   |`image_cache`          |           |
+|Image   |`image_view`           |           |
 |Media   |`media_text`           |           |
-|Memory  |`sender_memory`        |           |
-|Memory  |`chat_memory`          |           |
-|Resource|`create_sandbox`       |           |
-|Resource|`sandbox_bash`         |           |
+|Memory  |`manage_memory`        |           |
+|Resource|`sandbox`              |           |
 |Resource|`destroy_resource`     |           |
 |Resource|`workspace`            |Yes        |
 |Agent   |`subagent`             |           |
 |Schedule|`schedule`             |           |
-|Schedule|`delete_schedule`      |           |
-|Schedule|`list_schedules`       |           |
 |Shell   |`run_bash`             |Yes        |
 |Time    |`now`                  |           |
 |Typst   |`typst_render`         |           |

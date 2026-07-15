@@ -273,18 +273,20 @@ main =
 testScheduleToolCreatesQueryableSchedule :: IO ()
 testScheduleToolCreatesQueryableSchedule = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "schedule" (Aeson.object ["delay_seconds" Aeson..= (60 :: Int), "prompt" Aeson..= ("check oven" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "schedule" (Aeson.object ["op" Aeson..= ("create" :: Text), "delay_seconds" Aeson..= (60 :: Int), "prompt" Aeson..= ("check oven" :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "schedule" (Aeson.object ["op" Aeson..= ("list" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "schedule" (Aeson.object ["op" Aeson..= ("delete" :: Text), "schedule_id" Aeson..= (1 :: Integer)])]
     , chatAnswer "scheduled" []
     ]
-  (answer, schedules) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+  (answer, transcript, schedules) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     result <- Agent.runAgent 4 agentContext AgentTools.defaultTools (startWithUser "remind me")
     pending <- Scheduler.listScheduledMessages testMessage
-    pure (fst result, pending)
+    pure (fst result, snd result, pending)
   answer @?= "scheduled"
-  length schedules @?= 1
-  let scheduled = fromMaybe (error "expected a schedule") (viaNonEmpty head schedules)
-  scheduled.message.text @?= "!ask check oven"
-  scheduled.message.replyToMessageId @?= Nothing
+  assertBool "delete removes the schedule" (null schedules)
+  let output = Text.unlines (toolOutputs transcript)
+  assertBool "list output includes scheduled prompt" ("check oven" `Text.isInfixOf` output)
+  assertBool "delete output confirms removal" ("Schedule 1 has been removed." `Text.isInfixOf` output)
 
 testAcpClientFileToolsAreAcpOnly :: IO ()
 testAcpClientFileToolsAreAcpOnly = do
@@ -301,24 +303,22 @@ testAcpClientFileToolsAreAcpOnly = do
 testTerminalAndSandboxToolScopes :: IO ()
 testTerminalAndSandboxToolScopes = do
   let terminalTool = TerminalTools.terminalTool :: Agent.Tool AgentStack
-      createSandboxTool = SandboxTools.createSandboxTool :: Agent.Tool AgentStack
-      sandboxBashTool = SandboxTools.sandboxBashTool :: Agent.Tool AgentStack
+      sandboxTool = SandboxTools.sandboxTool :: Agent.Tool AgentStack
       destroyResourceTool = ResourceTools.destroyResourceTool :: Agent.Tool AgentStack
       workspaceTool = WorkspaceTools.workspaceTool :: Agent.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
-      sandboxSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode sandboxBashTool.parameters))
+      sandboxSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode sandboxTool.parameters))
   terminalTool.name @?= "terminal"
   assertBool "terminal tool should be hidden outside ACP" (not (terminalTool.allowed agentContext))
   assertBool "terminal tool should be visible for ACP" (terminalTool.allowed acpContext)
-  sandboxBashTool.name @?= "sandbox_bash"
+  sandboxTool.name @?= "sandbox"
   assertBool "sandbox bash schema should require a script" ("\"script\"" `Text.isInfixOf` sandboxSchema)
   assertBool "sandbox bash schema should not expose command ids" (not ("command_id" `Text.isInfixOf` sandboxSchema))
   assertBool "sandbox bash schema should not expose async actions" (not ("\"action\"" `Text.isInfixOf` sandboxSchema))
-  assertBool "sandbox bash tool should be visible to non-superusers" (sandboxBashTool.allowed agentContext)
-  assertBool "create sandbox should be visible to non-superusers" (createSandboxTool.allowed agentContext)
+  assertBool "sandbox tool should be visible to non-superusers" (sandboxTool.allowed agentContext)
   assertBool "destroy resource should be visible to non-superusers" (destroyResourceTool.allowed agentContext)
-  assertBool "sandbox bash tool should require resource identity" (not (sandboxBashTool.allowed missingIdentity))
+  assertBool "sandbox tool should require resource identity" (not (sandboxTool.allowed missingIdentity))
   workspaceTool.name @?= "workspace"
   assertBool "workspace should be hidden from non-superusers" (not (workspaceTool.allowed agentContext))
   assertBool "workspace should be visible to superusers" (workspaceTool.allowed superuserContext)
@@ -342,7 +342,7 @@ testSubAgentLifecycle = do
     Concurrency.await Concurrency.Handle{handleId = worker.id}
     queried <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("query" :: Text), "resource" Aeson..= resourceId])
     liftIO $ AgentTypes.toolResultContent queried @?= "finished"
-    destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("destroy" :: Text), "resource" Aeson..= resourceId])
+    destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("delete" :: Text), "resource" Aeson..= resourceId])
     liftIO $ AgentTypes.toolResultContent destroyed @?= "Subagent destroyed."
 
 testSendReplyToolUsesChatEffect :: IO ()
@@ -1954,9 +1954,9 @@ testTranscriptJsonRemainsListCompatible = do
 testMemoryToolManagesCurrentSenderMemory :: IO ()
 testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
-    , chatAnswer "" [toolCall "call-2" "sender_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
-    , chatAnswer "" [toolCall "call-3" "sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "manage_memory" (Aeson.object ["scope" Aeson..= ("sender" :: Text), "action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "manage_memory" (Aeson.object ["scope" Aeson..= ("sender" :: Text), "action" Aeson..= ("view" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "manage_memory" (Aeson.object ["scope" Aeson..= ("sender" :: Text), "action" Aeson..= ("clear" :: Text)])]
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
@@ -1968,9 +1968,9 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
 testMemoryToolManagesCurrentChatMemory :: IO ()
 testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "chat_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
-    , chatAnswer "" [toolCall "call-2" "chat_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
-    , chatAnswer "" [toolCall "call-3" "chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "manage_memory" (Aeson.object ["scope" Aeson..= ("chat" :: Text), "action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "manage_memory" (Aeson.object ["scope" Aeson..= ("chat" :: Text), "action" Aeson..= ("view" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "manage_memory" (Aeson.object ["scope" Aeson..= ("chat" :: Text), "action" Aeson..= ("clear" :: Text)])]
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
@@ -1983,7 +1983,7 @@ testMemoryToolEnforcesLengthLimit :: IO ()
 testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
   let longMemory = Text.replicate 1001 "x"
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
+    [ chatAnswer "" [toolCall "call-1" "manage_memory" (Aeson.object ["scope" Aeson..= ("sender" :: Text), "action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
     , chatAnswer "rejected" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
