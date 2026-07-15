@@ -15,6 +15,8 @@ where
 
 import qualified Bot.Memory as MemoryStore
 import Bot.Prelude
+import qualified Effectful.Concurrent.MVar as MVar
+import Effectful.Process (Process)
 
 data Memory :: Effect where
   LoadMemory :: MemoryStore.MemoryScope -> Memory m (Maybe Text)
@@ -36,14 +38,20 @@ clearMemory =
   send . ClearMemory
 
 runMemory
-  :: IOE :> es
+  :: (Concurrent :> es, IOE :> es, Process :> es)
   => MemoryStore.MemoryConfig
   -> Eff (Memory : es) a
   -> Eff es a
-runMemory cfg = interpret $ \_ -> \case
-  LoadMemory scope ->
-    MemoryStore.loadMemory cfg scope
-  ReplaceMemory scope memory ->
-    MemoryStore.replaceMemory cfg scope memory
-  ClearMemory scope ->
-    MemoryStore.clearMemory cfg scope
+runMemory cfg action = do
+  MemoryStore.initializeMemoryRepo cfg
+  lock <- MVar.newMVar ()
+  interpret (\_ -> \case
+    LoadMemory scope ->
+      MemoryStore.loadMemory cfg scope
+    ReplaceMemory scope memory ->
+      MVar.withMVar lock $ \_ ->
+        MemoryStore.replaceMemory cfg scope memory >> MemoryStore.commitMemoryUpdate cfg
+    ClearMemory scope ->
+      MVar.withMVar lock $ \_ ->
+        MemoryStore.clearMemory cfg scope >> MemoryStore.commitMemoryUpdate cfg
+    ) action

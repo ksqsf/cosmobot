@@ -86,6 +86,7 @@ import System.Directory
 import System.FilePath
 import System.IO.Error (catchIOError)
 import System.Posix.Signals (nullSignal, signalProcess)
+import qualified System.Process as Process
 import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit
 
@@ -1589,7 +1590,7 @@ testChatStreamingChunksRepliesAndYieldsUpdates = do
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, rights update.sentMessageResults, update.answer)]))
-          (Chat.streamReplyTo testMessage (S.each ["ab", "cd", "ef"] $> "abcdef"))
+          (Chat.streamReplyTo testMessage (S.each ["ab", "cd", "ef"] $> ("abcdef" :: Text)))
   let responseId = lastReply.responseId
   responseId @?= Just "1"
   result @?= "abcdef"
@@ -1613,7 +1614,7 @@ testEditableSegmentedRepliesOpenNewTail = do
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, rights update.sentMessageResults, update.answer)]))
           ( Chat.streamMultipleRepliesTo
               testMessage
-              (S.breaks Text.null (S.each ["ab", "", "cd", "ef"] $> "cdef"))
+              (S.breaks Text.null (S.each ["ab", "", "cd", "ef"] $> ("cdef" :: Text)))
           )
   let responseId = lastReply.responseId
   responseId @?= Just "2"
@@ -1637,7 +1638,7 @@ testSegmentedRepliesFlushFinalOpenSegment = do
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, rights update.sentMessageResults, update.answer)]))
           ( Chat.streamMultipleRepliesTo
               testMessage
-              (S.breaks Text.null (S.each ["last ", "segment"] $> "last segment"))
+              (S.breaks Text.null (S.each ["last ", "segment"] $> ("last segment" :: Text)))
           )
   let responseId = lastReply.responseId
   responseId @?= Just "1"
@@ -1660,7 +1661,7 @@ testEditableChatStreamingSplitsLongReplies = do
         } $
         S.mapM_
           (\update -> liftIO $ IORef.modifyIORef' updates (<> [(update.responseId, rights update.sentMessageResults, update.answer)]))
-          (Chat.streamReplyTo testMessage (S.each ["ab", "cd", "ef", "gh", "ij", "kl"] $> "abcdefghijkl"))
+          (Chat.streamReplyTo testMessage (S.each ["ab", "cd", "ef", "gh", "ij", "kl"] $> ("abcdefghijkl" :: Text)))
   let responseId = lastReply.responseId
   responseId @?= Just "1"
   result @?= "abcdefghijkl"
@@ -2008,6 +2009,9 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
   answer @?= "done"
   exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
   exists @?= False
+  doesDirectoryExist (dir </> ".git") >>= (@?= True)
+  commitSubjects <- Process.readProcess "git" ["-C", dir, "log", "--format=%s"] ""
+  Text.lines (Text.pack commitSubjects) @?= ["Update memory", "Update memory", "Initialize memory"]
 
 testMemoryToolManagesCurrentChatMemory :: IO ()
 testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
@@ -2146,6 +2150,12 @@ expiredQQImageErrorBody =
 withMemoryTempDir :: (FilePath -> IO a) -> IO a
 withMemoryTempDir action = do
   withTempDir "memory-test" action
+
+withIsolatedMemoryConfig :: MemoryStore.MemoryConfig -> (MemoryStore.MemoryConfig -> IO a) -> IO a
+withIsolatedMemoryConfig cfg action
+  | cfg.dir == "/tmp/cosmobot-agent-spec-unused" =
+      withMemoryTempDir (action . MemoryStore.MemoryConfig)
+  | otherwise = action cfg
 
 withTempDir :: String -> (FilePath -> IO a) -> IO a
 withTempDir label action = do
@@ -2628,7 +2638,8 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
   -> (LLM.ImageRequestOptions -> Text -> [Text] -> Maybe Text -> IO Text)
   -> Eff AgentStack a
   -> IO a
-runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced memoryCfg skillsCfg rendered captured answers chatMock referencedMessage imageGenerate imageEdit action = do
+runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced requestedMemoryCfg skillsCfg rendered captured answers chatMock referencedMessage imageGenerate imageEdit action =
+  withIsolatedMemoryConfig requestedMemoryCfg \memoryCfg -> do
   let runStack =
         runFileSystem
           . runProcess
@@ -2691,7 +2702,7 @@ runAgentWithStreamingAnswers
   -> ChatMock
   -> Eff AgentStack a
   -> IO a
-runAgentWithStreamingAnswers answers chatMock action = do
+runAgentWithStreamingAnswers answers chatMock action = withMemoryTempDir \memoryDir -> do
   rendered <- IORef.newIORef ([] :: [Text])
   let runStack =
         runFileSystem
@@ -2707,7 +2718,7 @@ runAgentWithStreamingAnswers answers chatMock action = do
           . HTTP.runHTTP
           . TypstTest.runTypstWith (mockTypstRender rendered)
           . Scheduler.runScheduler
-          . Memory.runMemory (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+          . Memory.runMemory (MemoryStore.MemoryConfig memoryDir)
           . Skills.runSkills defaultTestSkillsConfig
           . Media.runMediaPassthrough
           . LLMTest.runLLMWith
@@ -2891,6 +2902,10 @@ runMediaNormalizingRefs =
       pure (Just ("media:" <> sourceRef))
     Media.MediaRefForSource sourceRef ->
       pure (Just ("media:" <> sourceRef))
+    Media.GetMediaCacheEntry _ ->
+      pure Nothing
+    Media.DeleteMediaFile _ ->
+      pure False
     Media.GetMediaFileInfo _ ->
       pure Nothing
     Media.ListMediaFiles ->
@@ -2919,6 +2934,10 @@ runMediaLeavingRefs =
       pure Nothing
     Media.MediaRefForSource _ ->
       pure Nothing
+    Media.GetMediaCacheEntry _ ->
+      pure Nothing
+    Media.DeleteMediaFile _ ->
+      pure False
     Media.GetMediaFileInfo _ ->
       pure Nothing
     Media.ListMediaFiles ->
