@@ -315,10 +315,10 @@ testPartialRemoval = runManaged do
 
 testPodmanArguments :: Assertion
 testPodmanArguments =
-  Sandbox.podmanRunArgs "sandbox-name" @?=
+  Sandbox.podmanRunArgs "registry.example.test/custom:latest" "sandbox-name" @?=
     [ "run", "--detach", "--name", "sandbox-name", "--security-opt=no-new-privileges"
     , "--label", "io.cosmobot.resource=sandbox"
-    , "--", "docker.io/library/debian:stable-slim", "sleep", "infinity"
+    , "--", "registry.example.test/custom:latest", "sleep", "infinity"
     ]
 
 testPodmanExecArguments :: Assertion

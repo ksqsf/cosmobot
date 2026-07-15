@@ -49,6 +49,7 @@ data ToolConfig = ToolConfig
   , webFetchMaxUses :: !(Maybe Int)
   , webFetchMaxContentTokens :: !(Maybe Int)
   , datetime :: !Bool
+  , sandboxImage :: !Text
   }
   deriving (Show)
 
@@ -68,6 +69,7 @@ defaultToolConfig = ToolConfig
   , webFetchMaxUses = Nothing
   , webFetchMaxContentTokens = Nothing
   , datetime = False
+  , sandboxImage = "localhost/cosmobox:latest"
   }
 
 -- | Tool definition exposed to the LLM function-calling API.

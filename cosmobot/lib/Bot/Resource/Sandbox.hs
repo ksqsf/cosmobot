@@ -7,7 +7,9 @@ Description : Chat-owned Podman sandboxes
 Stability   : experimental
 -}
 module Bot.Resource.Sandbox
-  ( Sandbox
+  ( Config (..)
+  , defaultConfig
+  , Sandbox
   , SandboxOutput (..)
   , runCommand
   , podmanRunArgs
@@ -22,7 +24,9 @@ where
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
 import qualified Bot.Util.Process as ProcessUtil
+import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Unique as Unique
@@ -30,10 +34,30 @@ import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout (Timeout, timeout)
 import System.Exit (ExitCode (..))
 import qualified System.Posix.Process as Posix
+import Toml.Schema
+
+newtype Config = Config
+  { image :: Text
+  }
+  deriving stock (Eq, Show)
+
+defaultConfig :: Config
+defaultConfig = Config
+  { image = "localhost/cosmobox:latest"
+  }
+
+instance FromValue Config where
+  fromValue = parseTableFromValue do
+    image <- fromMaybe defaultConfig.image <$> optKey "image"
+    unless (validImage image) $ fail "resource.sandbox.image must be non-empty and must not contain NUL"
+    pure Config{image}
 
 data Sandbox = Sandbox
   { containerId :: !Text
+  , image :: !Text
   }
+  deriving stock (Generic)
+  deriving anyclass (Aeson.FromJSON, Aeson.ToJSON)
 
 data SandboxOutput = SandboxOutput
   { output :: !Text
@@ -46,20 +70,17 @@ data SandboxOutput = SandboxOutput
 instance
   (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => Resource.ResourceObject (Eff es) Sandbox where
-  type CreationArgs Sandbox = ()
+  type CreationArgs Sandbox = Text
 
   resourceTypeName _ = "Sandbox"
 
   resourcePersistence _ = Resource.PersistentResource
-    { encodeResource = (.containerId)
+    { encodeResource = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
     , restoreResource = \payload ->
-        let containerId = Text.strip payload
-        in pure $ if validPodmanId containerId
-          then Right Sandbox{containerId}
-          else Left "Stored sandbox container id is malformed."
+        pure $ restoreSandbox payload
     }
 
-  createResourceObject _ = createSandbox
+  createResourceObject initValue = createSandbox initValue.arguments
 
   destroyResourceObject sandbox =
     runPodman "cleanup" (podmanCleanupArgs sandbox.containerId) <&> void
@@ -69,8 +90,8 @@ instance
       <&> (>>= parseInspectRunning)
       <&> fmap (\running -> if running then "running" else "stopped")
 
-  describeResourceObject _ probeResult =
-    pure $ "debian:stable-slim [" <> either (const "unreachable") id probeResult <> "]"
+  describeResourceObject sandbox probeResult =
+    pure $ sandbox.image <> " [" <> either (const "unreachable") id probeResult <> "]"
 
   detailResourceObject sandbox =
     Resource.probeResourceObject sandbox >>= Resource.describeResourceObject sandbox <&> \description ->
@@ -98,15 +119,16 @@ runCommand timeoutSeconds sandbox script requestedLimit = do
 
 createSandbox
   :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Eff es (Either Text Sandbox)
-createSandbox = do
+  => Text
+  -> Eff es (Either Text Sandbox)
+createSandbox image = do
   unique <- liftIO Unique.newUnique
   pid <- liftIO Posix.getProcessID
   let name = "cosmobot-sandbox-" <> show pid <> "-" <> show (Unique.hashUnique unique)
       cleanup = void $ runPodman "cleanup" (podmanCleanupArgs name)
-      createAndValidate = runPodman "create" (podmanRunArgs name) >>= \case
+      createAndValidate = runPodman "create" (podmanRunArgs image name) >>= \case
         Right rawId
-          | validPodmanId (Text.strip rawId) -> pure (Right Sandbox{containerId = Text.strip rawId})
+          | validPodmanId (Text.strip rawId) -> pure (Right Sandbox{containerId = Text.strip rawId, image})
         result -> cleanup $> Left (either id (const "Podman create returned a malformed container id.") result)
   createAndValidate `onException` cleanup
 
@@ -137,12 +159,12 @@ runPodmanCommand args =
     exitCodeNumber ExitSuccess = 0
     exitCodeNumber (ExitFailure code) = code
 
-podmanRunArgs :: Text -> [String]
-podmanRunArgs name =
+podmanRunArgs :: Text -> Text -> [String]
+podmanRunArgs image name =
   [ "run", "--detach", "--name", Text.unpack name
   , "--security-opt=no-new-privileges"
   , "--label", "io.cosmobot.resource=sandbox"
-  , "--", sandboxImage, "sleep", "infinity"
+  , "--", Text.unpack image, "sleep", "infinity"
   ]
 
 podmanExecArgs :: Text -> Int -> Int -> Text -> [String]
@@ -188,14 +210,27 @@ validPodmanId value =
     && Text.length value <= 64
     && Text.all (`elem` ("0123456789abcdef" :: String)) value
 
+validImage :: Text -> Bool
+validImage value = not (Text.null (Text.strip value)) && not (Text.any (== '\NUL') value)
+
+restoreSandbox :: Text -> Either Text Sandbox
+restoreSandbox payload =
+  validate $ case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 payload) of
+    Right sandbox -> sandbox
+    Left _ -> Sandbox{containerId = Text.strip payload, image = legacyImage}
+  where
+    validate sandbox
+      | validPodmanId sandbox.containerId && validImage sandbox.image = Right sandbox
+      | otherwise = Left "Stored sandbox payload is malformed."
+
+legacyImage :: Text
+legacyImage = "docker.io/library/debian:stable-slim"
+
 commandWrapper :: String
 commandWrapper =
   "timeout --kill-after=5 \"$1\" bash -c \"$3\" 2>&1 "
     <> "| { head -c $(( $2 + 1 )); cat >/dev/null; }; "
     <> "exit ${PIPESTATUS[0]}"
-
-sandboxImage :: String
-sandboxImage = "docker.io/library/debian:stable-slim"
 
 defaultOutputByteLimit :: Int
 defaultOutputByteLimit = 1024 * 1024

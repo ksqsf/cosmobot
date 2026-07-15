@@ -28,7 +28,7 @@ sandboxTool
   => Tool es
 sandboxTool = Tool
   { name = "sandbox"
-  , description = "Create, rename, or delete an isolated, persistent Debian sandbox, or run a Bash script in one. Delete it promptly when the job is done, unless the user asks explicitly to keep it."
+  , description = "Create, rename, or delete an isolated, persistent container sandbox, or run a Bash script in one. Delete it promptly when the job is done, unless the user asks explicitly to keep it."
   , parameters = objectSchema
       [ fieldText "op" "One of: create, run, rename, delete."
       , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
@@ -46,7 +46,7 @@ sandboxTool = Tool
           Left err -> pure (resourceToolFailure err)
           Right access -> case call of
             SandboxCreate requestedName ->
-              createSandbox metadata.parent requestedName Resource.Init{message = context.message, arguments = ()} <&> \case
+              createSandbox metadata.parent requestedName Resource.Init{message = context.message, arguments = context.toolConfig.sandboxImage} <&> \case
                 Left err -> resourceToolFailure err
                 Right sandboxId -> toolText (jsonText (Aeson.object ["sandbox" Aeson..= sandboxId]))
             SandboxRun sandboxId script timeoutSeconds outputByteLimit -> do

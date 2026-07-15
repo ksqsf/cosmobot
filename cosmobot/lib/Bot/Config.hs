@@ -50,6 +50,7 @@ import Bot.Handler.ShutUp.Config
   )
 import qualified Bot.Memory as Memory
 import qualified Bot.Memory.Config as MemoryConfig
+import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Skills as Skills
 import qualified Bot.Skills.Config as SkillsConfig
 import Bot.Prelude
@@ -105,6 +106,7 @@ data FileConfig = FileConfig
   , llm      :: !LLMConfig.FileConfig
   , media    :: !MediaConfig.Config
   , tool     :: !AgentConfig.FileConfig
+  , resource :: !ResourceFileConfig
   , memory   :: !MemoryConfig.FileConfig
   , skills   :: !SkillsConfig.FileConfig
   , rpc      :: !RPCConfig.FileConfig
@@ -121,6 +123,7 @@ instance FromValue FileConfig where
     <*> reqKey "llm"
     <*> fmap (fromMaybe MediaConfig.defaultConfig) (optKey "media")
     <*> fmap (fromMaybe AgentConfig.defaultFileConfig) (optKey "tool")
+    <*> fmap (fromMaybe defaultResourceFileConfig) (optKey "resource")
     <*> fmap (fromMaybe MemoryConfig.defaultFileConfig) (optKey "memory")
     <*> fmap (fromMaybe SkillsConfig.defaultFileConfig) (optKey "skills")
     <*> fmap (fromMaybe RPCConfig.defaultFileConfig) (optKey "rpc")
@@ -149,6 +152,20 @@ instance FromValue DriverFileConfig where
     <*> optKey "telegram"
     <*> optKey "matrix"
     <*> optKey "discord"
+
+newtype ResourceFileConfig = ResourceFileConfig
+  { sandbox :: Sandbox.Config
+  }
+  deriving (Show)
+
+defaultResourceFileConfig :: ResourceFileConfig
+defaultResourceFileConfig = ResourceFileConfig
+  { sandbox = Sandbox.defaultConfig
+  }
+
+instance FromValue ResourceFileConfig where
+  fromValue = parseTableFromValue $ ResourceFileConfig
+    <$> fmap (fromMaybe Sandbox.defaultConfig) (optKey "sandbox")
 
 data HandlerFileConfig = HandlerFileConfig
   { admin   :: !AdminConfig
@@ -229,7 +246,9 @@ toBotConfig cfg =
     , discord = DiscordConfig.toRuntimeConfig <$> (discordFileConfig >>= configuredDiscordFileConfig)
     , llm = LLMConfig.toRuntimeConfig cfg.llm
     , media = cfg.media
-    , tool = AgentConfig.toToolConfig cfg.tool
+    , tool = (AgentConfig.toToolConfig cfg.tool)
+        { Agent.sandboxImage = cfg.resource.sandbox.image
+        }
     , saucenao = cfg.handler.saucenao
     , memory = MemoryConfig.toMemoryConfig cfg.memory
     , skills = SkillsConfig.toSkillsConfig cfg.skills

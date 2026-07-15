@@ -4,6 +4,9 @@ level = "info"
 [storage]
 sqlite_path = "cosmobot.sqlite3"
 
+[resource.sandbox]
+image = "localhost/cosmobox:latest"
+
 [rpc]
 enabled = false
 host = "127.0.0.1"

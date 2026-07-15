@@ -121,4 +121,5 @@ toToolConfig cfg =
     , webFetchMaxUses = cfg.webFetch.maxUses
     , webFetchMaxContentTokens = cfg.webFetch.maxContentTokens
     , datetime = cfg.datetime
+    , sandboxImage = Agent.defaultToolConfig.sandboxImage
     }

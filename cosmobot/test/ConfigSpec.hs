@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Config as Config
+import qualified Bot.Agent.Types as Agent
 import qualified Bot.ACP.Config as ACPConfig
 import Bot.Chat.Driver.Telegram (Config (..))
 import Bot.Core.Message (ChatPlatform (..))
@@ -20,6 +21,7 @@ main =
       , testCase "configured telegram driver is enabled alone" testConfiguredTelegramDriverEnabledAlone
       , testCase "incomplete matrix and discord driver tables are disabled" testIncompleteMatrixAndDiscordDisabled
       , testCase "ask context compaction threshold uses ktokens" testAskCompactionThresholdUsesKTokens
+      , testCase "sandbox image is configurable" testSandboxImage
       ]
 
 testDriversTableMayBeOmitted :: IO ()
@@ -33,6 +35,8 @@ testDriversTableMayBeOmitted = do
   rpcEnabled @?= False
   let ACPConfig.Config{enabled = acpEnabled} = cfg.acp
   acpEnabled @?= False
+  let Agent.ToolConfig{sandboxImage} = cfg.tool
+  sandboxImage @?= "localhost/cosmobox:latest"
 
 testConfiguredTelegramDriverEnabledAlone :: IO ()
 testConfiguredTelegramDriverEnabledAlone = do
@@ -82,6 +86,18 @@ testAskCompactionThresholdUsesKTokens = do
         [ "context_compaction_threshold_ktokens = 123"
         ]
   cfg.handlers.ask.contextCompactionThresholdKTokens @?= 123
+
+testSandboxImage :: IO ()
+testSandboxImage = do
+  cfg <- loadConfigText $
+    minimalConfig
+      <> Text.unlines
+        [ ""
+        , "[resource.sandbox]"
+        , "image = \"registry.example.test/custom:latest\""
+        ]
+  let Agent.ToolConfig{sandboxImage} = cfg.tool
+  sandboxImage @?= "registry.example.test/custom:latest"
 
 minimalConfig :: Text
 minimalConfig =
