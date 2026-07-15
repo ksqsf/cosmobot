@@ -186,7 +186,9 @@ library
         Bot.Agent.Tools.Image
         Bot.Agent.Tools.Media
         Bot.Agent.Tools.Memory
+        Bot.Agent.Tools.Resource
         Bot.Agent.Tools.Schedule
+        Bot.Agent.Tools.Sandbox
         Bot.Agent.Tools.Shell
         Bot.Agent.Tools.Terminal
         Bot.Agent.Tools.Time
@@ -278,7 +280,7 @@ library
         Bot.RPC.Server
         Bot.RPC.State
         Bot.Resource
-        Bot.Resource.Terminal
+        Bot.Resource.Sandbox
         Bot.Resource.Types
         Bot.Session
         Bot.Skills

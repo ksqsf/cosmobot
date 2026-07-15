@@ -6,20 +6,19 @@ module Main (main) where
 
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Agent as Agent
-import qualified Bot.Agent.Tools.Terminal as TerminalTool
+import qualified Bot.Agent.Tools.Resource as ResourceTool
 import qualified Bot.Agent.Types as AgentTypes
 import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
-import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Resource as Resource
 import Bot.Handler.Resource (removeResources, resourceIds)
 import Bot.Prelude
 import qualified Bot.Resource as ResourceManager
-import qualified Bot.Resource.Terminal as Terminal
+import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Data.Aeson as Aeson
+import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.Prim.IORef as IORef
-import qualified Effectful.Process as Process
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -90,10 +89,11 @@ main = defaultMain $ testGroup "resource"
   , testCase "cleanup failure restores resource for retry" testCleanupRetry
   , testCase "acquisition is blocked while destruction runs" testBlockedDuringDestroy
   , testCase "manager exit destroys resources" testShutdown
-  , testCase "ACP terminal uses local resource ids through release" testAcpTerminal
-  , testCase "Podman terminal arguments preserve argv and isolation" testPodmanArguments
-  , testCase "Podman terminal parses state and truncates retained output" testPodmanOutput
-  , testCase "Podman terminal renders failures and forced cleanup" testPodmanFailures
+  , testCase "destroy_resource removes an owned resource" testDestroyResourceTool
+  , testCase "Podman sandbox arguments preserve isolation" testPodmanArguments
+  , testCase "Podman sandbox command preserves scripts as argv" testPodmanExecArguments
+  , testCase "Podman sandbox parses state and truncates retained output" testPodmanOutput
+  , testCase "Podman sandbox renders failures and forced cleanup" testPodmanFailures
   , testCase "resource command ids preserve first occurrence" $
       resourceIds "res-2 res-1 res-2 res-3" @?= ["res-2", "res-1", "res-3"]
   , testCase "resource removal reports partial results independently" testPartialRemoval
@@ -184,6 +184,24 @@ testShutdown = do
     pure destroyed
   runEff $ runConcurrent $ void (MVar.takeMVar destroyed)
 
+testDestroyResourceTool :: Assertion
+testDestroyResourceTool = runManaged do
+  (testInit, destroyed) <- newTestInit "agent-owned" False
+  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
+  let context = Agent.AgentContext
+        { message = ownerMessage
+        , input = inputWithImages "" []
+        , superuser = False
+        , systemContext = ""
+        , askCommand = "!ask"
+        , toolConfig = Agent.defaultToolConfig
+        }
+      metadata = AgentTypes.ToolCallMetadata{agentRunId = "agent-1", parent = Nothing}
+  runner <- (ResourceTool.destroyResourceTool :: Agent.Tool ManagedStack).start context
+  result <- runner metadata (Aeson.object ["resource" Aeson..= resourceId])
+  liftIO $ AgentTypes.toolResultContent result @?= "Resource destroyed."
+  void (MVar.takeMVar destroyed)
+
 testPartialRemoval :: Assertion
 testPartialRemoval = runManaged do
   (okInit, _) <- newTestInit "ok" False
@@ -198,89 +216,44 @@ testPartialRemoval = runManaged do
     , "- `res-2`: cleanup failure"
     ]
 
-testAcpTerminal :: Assertion
-testAcpTerminal = do
-  calls <- runEff $ runPrim $ IORef.newIORef []
-  runTerminal calls do
-    let context = Agent.AgentContext
-          { message = ownerMessage{platform = PlatformACP, chatId = Nothing, chatAliases = ["session-7"]}
-          , input = inputWithImages "" []
-          , superuser = False
-          , systemContext = ""
-          , askCommand = "!ask"
-          , toolConfig = Agent.defaultToolConfig
-          }
-        metadata = AgentTypes.ToolCallMetadata{agentRunId = "agent-7", parent = Nothing}
-    runner <- (TerminalTool.terminalTool :: Agent.Tool TerminalStack).start context
-    createResult <- runner metadata $ Aeson.object
-      [ "action" Aeson..= ("create" :: Text)
-      , "command" Aeson..= ("sleep" :: Text)
-      , "args" Aeson..= (["10"] :: [Text])
-      ]
-    liftIO $ AgentTypes.toolResultContent createResult @?= "{\"terminalId\":\"res-1\"}"
-    outputResult <- runner metadata $ Aeson.object ["action" Aeson..= ("output" :: Text), "terminal_id" Aeson..= ("res-1" :: Text)]
-    liftIO $ AgentTypes.toolResultContent outputResult @?= "{\"exitStatus\":null,\"output\":\"still running\",\"truncated\":false}"
-    waitResult <- runner metadata $ Aeson.object ["action" Aeson..= ("wait_for_exit" :: Text), "terminal_id" Aeson..= ("res-1" :: Text)]
-    liftIO $ AgentTypes.toolResultContent waitResult @?= "{\"exitCode\":0,\"signal\":null}"
-    _ <- runner metadata $ Aeson.object ["action" Aeson..= ("kill" :: Text), "terminal_id" Aeson..= ("res-1" :: Text)]
-    access <- expectRight (Resource.accessFromMessage context.message)
-    listed <- Resource.list access
-    liftIO $ map (.resourceId) listed @?= ["res-1"]
-    liftIO $ map (.sessionId) listed @?= [Just "session-7"]
-    releaseResult <- runner metadata $ Aeson.object ["action" Aeson..= ("release" :: Text), "terminal_id" Aeson..= ("res-1" :: Text)]
-    liftIO $ AgentTypes.toolResultContent releaseResult @?= "Terminal released."
-    listedAfter <- Resource.list access
-    liftIO $ map (.resourceId) listedAfter @?= []
-  runEff (runPrim (IORef.readIORef calls)) >>= (@?=
-    [ "create"
-    , "output:remote-1"
-    , "kill:remote-1"
-    , "output:remote-1"
-    , "kill:remote-1"
-    , "release:remote-1"
-    ])
-
 testPodmanArguments :: Assertion
-testPodmanArguments = do
-  let create = ACP.TerminalCreate
-        { command = "printf"
-        , args = ["%s", "a; $(touch /tmp/nope)", "--flag"]
-        , env = [("GREETING", "hello world; $HOME")]
-        , cwd = Just "/tmp"
-        , outputByteLimit = Nothing
-        }
-  Terminal.podmanRunArgs "terminal-name" create @?=
-    [ "run", "--detach", "--name", "terminal-name", "--security-opt=no-new-privileges"
-    , "--label", "io.cosmobot.resource=terminal"
-    , "--log-opt", "max-size=1048576"
-    , "--env", "GREETING=hello world; $HOME"
-    , "--workdir", "/tmp"
-    , "--", "docker.io/library/debian:stable-slim"
-    , "bash", "-c", "exec \"$@\" 2>&1", "--", "printf"
-    , "%s", "a; $(touch /tmp/nope)", "--flag"
+testPodmanArguments =
+  Sandbox.podmanRunArgs "sandbox-name" @?=
+    [ "run", "--detach", "--name", "sandbox-name", "--security-opt=no-new-privileges"
+    , "--label", "io.cosmobot.resource=sandbox"
+    , "--", "docker.io/library/debian:stable-slim", "sleep", "infinity"
     ]
-  assertBool "supplied output limit configures Podman retention" $
-    "max-size=7" `elem` Terminal.podmanRunArgs "terminal-name" create{ACP.outputByteLimit = Just 7}
+
+testPodmanExecArguments :: Assertion
+testPodmanExecArguments = do
+  let script = "printf '%s' '$HOME; $(touch /tmp/nope)'"
+      args = Sandbox.podmanExecArgs "container-id" "cmd-10-20" 7 script
+  take 5 args @?= ["exec", "--detach", "container-id", "bash", "-c"]
+  drop (length args - 6) args @?=
+    [ "--"
+    , "/tmp/cosmobot-cmd-10-20.out"
+    , "/tmp/cosmobot-cmd-10-20.status"
+    , "/tmp/cosmobot-cmd-10-20.pid"
+    , "7"
+    , Text.unpack script
+    ]
 
 testPodmanOutput :: Assertion
 testPodmanOutput = do
-  Terminal.parseInspectState "{\"Running\":true,\"ExitCode\":0}" @?= Right Nothing
-  Terminal.parseInspectState "{\"Running\":false,\"ExitCode\":23}" @?=
-    Right (Just ACP.TerminalExitStatus{exitCode = Just 23, signal = Nothing})
-  Terminal.parseInspectState "not-json" @?= Left "Podman inspect returned malformed output."
-  Terminal.parseWaitExitStatus " 17\n" @?= Right ACP.TerminalExitStatus{exitCode = Just 17, signal = Nothing}
-  Terminal.parseWaitExitStatus "nope" @?= Left "Podman wait returned malformed output."
-  Terminal.truncateOutput 4 "abcdef" @?= ("cdef", True)
-  Terminal.truncateOutput 6 "abcdef" @?= ("abcdef", False)
-  Terminal.truncateOutput 1 "é" @?= ("", True)
-  Terminal.truncateOutput 2 "é" @?= ("é", False)
+  Sandbox.parseInspectRunning "true\n" @?= Right True
+  Sandbox.parseInspectRunning "false\n" @?= Right False
+  Sandbox.parseInspectRunning "not-json" @?= Left "Podman inspect returned malformed output."
+  Sandbox.retainOutput 4 "abcdef" @?= ("abcd", True)
+  Sandbox.retainOutput 6 "abcdef" @?= ("abcdef", False)
+  Sandbox.retainOutput 1 "é" @?= ("", True)
+  Sandbox.retainOutput 2 "é" @?= ("é", False)
 
 testPodmanFailures :: Assertion
 testPodmanFailures = do
-  Terminal.podmanCleanupArgs "container-id" @?= ["rm", "--force", "--time", "0", "--ignore", "container-id"]
-  Terminal.renderPodmanFailure "inspect" 125 "" "missing container\n" @?=
+  Sandbox.podmanCleanupArgs "container-id" @?= ["rm", "--force", "--time", "0", "--ignore", "container-id"]
+  Sandbox.renderPodmanFailure "inspect" 125 "" "missing container\n" @?=
     "Podman inspect failed (exit 125): missing container"
-  Terminal.renderPodmanFailure "wait" 1 "" "" @?= "Podman wait failed (exit 1)."
+  Sandbox.renderPodmanFailure "wait" 1 "" "" @?= "Podman wait failed (exit 1)."
 
 newTestInit :: (Prim :> es, Concurrent :> es) => Text -> Bool -> Eff es (TestInit, MVar.MVar ())
 newTestInit label failing = do
@@ -307,29 +280,11 @@ ownerMessage = IncomingMessage
   , raw = Aeson.Null
   }
 
-runManaged :: Eff '[Resource.Resource, Concurrency.Concurrency, Prim, Concurrent, IOE] a -> IO a
+type ManagedStack = '[Resource.Resource, Concurrency.Concurrency, Prim, Concurrent, IOE]
+
+runManaged :: Eff ManagedStack a -> IO a
 runManaged action =
   runEff $ runConcurrent $ runPrim $ ConcurrencyManager.runConcurrencyManager $ ResourceManager.runResourceManager action
-
-type TerminalStack = '[Resource.Resource, ACP.ACP, Concurrency.Concurrency, Prim, Process.Process, Concurrent, IOE]
-
-runTerminal :: IORef.IORef [Text] -> Eff TerminalStack a -> IO a
-runTerminal calls action =
-  runEff $ runConcurrent $ Process.runProcess $ runPrim $ ConcurrencyManager.runConcurrencyManager $ runFakeACP calls $ ResourceManager.runResourceManager action
-
-runFakeACP :: forall es a. Prim :> es => IORef.IORef [Text] -> Eff (ACP.ACP : es) a -> Eff es a
-runFakeACP calls = interpret \_ -> \case
-  ACP.ReadClientFile{} -> pure (Left "unsupported")
-  ACP.WriteClientFile{} -> pure (Left "unsupported")
-  ACP.CreateClientTerminal _ _ -> record "create" $> Right "remote-1"
-  ACP.ReadClientTerminalOutput _ terminalId ->
-    record ("output:" <> terminalId) $> Right ACP.TerminalOutput{output = "still running", truncated = False, exitStatus = Nothing}
-  ACP.WaitForClientTerminalExit{} -> pure (Right ACP.TerminalExitStatus{exitCode = Just 0, signal = Nothing})
-  ACP.KillClientTerminal _ terminalId -> record ("kill:" <> terminalId) $> Right ()
-  ACP.ReleaseClientTerminal _ terminalId -> record ("release:" <> terminalId) $> Right ()
-  where
-    record :: Text -> Eff es ()
-    record call = IORef.modifyIORef' calls (<> [call])
 
 expectRight :: Applicative m => Either e a -> m a
 expectRight = either (const (pure (error "expected Right"))) pure

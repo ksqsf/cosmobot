@@ -16,7 +16,9 @@ import Bot.Agent.Tools.Files
 import Bot.Agent.Tools.Image
 import Bot.Agent.Tools.Media
 import Bot.Agent.Tools.Memory
+import Bot.Agent.Tools.Resource
 import Bot.Agent.Tools.Schedule
+import Bot.Agent.Tools.Sandbox
 import Bot.Agent.Tools.Shell
 import Bot.Agent.Tools.Terminal
 import Bot.Agent.Tools.Time
@@ -87,6 +89,9 @@ defaultTools =
   , listCurrentUserSchedulesTool
   , manageSenderMemoryTool
   , manageChatMemoryTool
+  , destroyResourceTool
+  , createSandboxTool
+  , sandboxBashAsyncTool
   , runBashTool
   , terminalTool
   , emacsEvalTool

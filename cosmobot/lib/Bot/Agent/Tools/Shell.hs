@@ -5,6 +5,7 @@ Stability   : experimental
 -}
 
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Bot.Agent.Tools.Shell
@@ -15,7 +16,9 @@ where
 
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
+import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
+import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Util.Process as ProcessUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
@@ -24,21 +27,23 @@ import qualified Data.Text as Text
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout
 
-runBashTool :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Tool es
+runBashTool :: (Resource.Resource :> es, IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Tool es
 runBashTool = Tool
   { name = "run_bash"
   , description = "Run a bash script and obtain outputs; do not run malicious code."
   , parameters = objectSchema
       [ fieldText "script" "The bash script to be executed in the cwd"
       , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the process. Defaults to 30."
+      , fieldText "sandbox" "Optional sandbox id returned by create_sandbox."
       ]
       ["script"]
   , noisy = False
   , allowed = superuserOnly
-  , start = \_ -> pure \_ args ->
-      withParsedToolArgs runBashArgs args \(script, timeoutSeconds) -> do
-        result <- runBashSafe timeoutSeconds (Text.unpack script)
-        pure (toolText result)
+  , start = \context -> pure \metadata args ->
+      withParsedToolArgs runBashArgs args \(script, timeoutSeconds, sandboxId) ->
+        case sandboxId of
+          Nothing -> toolText <$> runBashSafe timeoutSeconds (Text.unpack script)
+          Just resourceId -> runInSandbox context metadata resourceId timeoutSeconds script
   }
 
 runBashSafe :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Int -> String -> Eff es Text
@@ -83,11 +88,82 @@ processExitGraceMicroseconds :: Int
 processExitGraceMicroseconds =
   5 * 1_000_000
 
-runBashArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int)
+runInSandbox
+  :: forall es. (Resource.Resource :> es, IOE :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es)
+  => AgentContext es
+  -> ToolCallMetadata
+  -> Text
+  -> Int
+  -> Text
+  -> Eff es ToolResult
+runInSandbox context metadata sandboxId timeoutSeconds script =
+  case Resource.accessFromMessage context.message of
+    Left err -> pure (resourceToolFailure err)
+    Right access -> do
+      result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.parent \sandbox ->
+        runSandboxBashSafe timeoutSeconds sandbox script
+      pure $ case join (first renderResourceError result) of
+        Left err -> clientFailure err
+        Right output -> toolText output
+
+runSandboxBashSafe
+  :: (IOE :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es)
+  => Int
+  -> Sandbox.Sandbox
+  -> Text
+  -> Eff es (Either Text Text)
+runSandboxBashSafe timeoutSeconds sandbox script =
+  Sandbox.createCommand sandbox script Nothing >>= \case
+    Left err -> pure (Left err)
+    Right commandId -> run commandId `finally` void (Sandbox.releaseCommand sandbox commandId)
+  where
+    run commandId = do
+      let effectiveTimeout = max 1 timeoutSeconds
+          stop = void (Sandbox.killCommand sandbox commandId)
+      outcome <- timeout (effectiveTimeout * 1_000_000) (Sandbox.waitForCommand sandbox commandId)
+        `onException` stop
+      case outcome of
+        Nothing -> do
+          stop
+          _ <- timeout processExitGraceMicroseconds (Sandbox.waitForCommand sandbox commandId)
+          Sandbox.commandOutput sandbox commandId <&> fmap (formatSandboxTimeout effectiveTimeout)
+        Just (Left err) -> pure (Left err)
+        Just (Right exitCode) ->
+          Sandbox.commandOutput sandbox commandId <&> fmap (formatSandboxResult exitCode)
+
+formatSandboxTimeout :: Int -> Sandbox.SandboxOutput -> Text
+formatSandboxTimeout timeoutSeconds output =
+  Text.strip $ Text.unlines $ filter (not . Text.null)
+    [ "Script timed out after " <> show timeoutSeconds <> " seconds and was killed."
+    , renderSandboxOutput output
+    ]
+
+formatSandboxResult :: Int -> Sandbox.SandboxOutput -> Text
+formatSandboxResult exitCode output =
+  Text.strip $ Text.unlines $ filter (not . Text.null)
+    [ renderSandboxOutput output
+    , "exit code: " <> show exitCode
+    ]
+
+renderSandboxOutput :: Sandbox.SandboxOutput -> Text
+renderSandboxOutput output
+  | Text.null output.output = ""
+  | output.truncated = "output (truncated):\n" <> output.output
+  | otherwise = "output:\n" <> output.output
+
+clientFailure :: Text -> ToolResult
+clientFailure err = toolFailure (permanentArgumentFailure err err).failure
+
+runBashArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int, Maybe Text)
 runBashArgs =
   Aeson.withObject "run bash arguments" $ \o -> do
     script <- o Aeson..: Key.fromText "script"
     timeoutSeconds <- fromMaybe 30 <$> o Aeson..:? Key.fromText "timeout_seconds"
+    sandbox <- o Aeson..:? Key.fromText "sandbox"
+    when (Text.any (== '\NUL') script) do
+      fail "script must not contain NUL."
     when (timeoutSeconds <= 0) do
       fail "timeout_seconds must be positive."
-    pure (script, timeoutSeconds)
+    when (maybe False (Text.null . Text.strip) sandbox) do
+      fail "sandbox must not be empty."
+    pure (script, timeoutSeconds, sandbox)

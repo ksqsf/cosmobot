@@ -74,4 +74,4 @@ renderResources resources =
         ("Resource type " <> resourceType <> ":")
           : map renderEntry (List.sortOn (.resourceId) entries)
     renderEntry resource =
-      "- `" <> resource.resourceId <> "` (session_id=`" <> fromMaybe "unavailable" resource.sessionId <> "`): " <> resource.description
+      "- `" <> resource.resourceId <> "`: " <> resource.description

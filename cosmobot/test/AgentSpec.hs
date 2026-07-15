@@ -7,6 +7,8 @@ import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Tools.Files as FileTools
 import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
+import qualified Bot.Agent.Tools.Resource as ResourceTools
+import qualified Bot.Agent.Tools.Sandbox as SandboxTools
 import qualified Bot.Agent.Tools.Terminal as TerminalTools
 import qualified Bot.Agent.Types as AgentTypes
 import Bot.Agent.Tools.Shell (runBashSafe)
@@ -188,7 +190,7 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
-      , testCase "terminal tool is universal with resource identity" testTerminalToolIsUniversal
+      , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "tool reply middleware normalizes reply images" testToolReplyMiddlewareNormalizesReplyImages
       , testCase "tool reply middleware rejects uncached remote images" testToolReplyMiddlewareRejectsUncachedRemoteImages
@@ -292,15 +294,22 @@ testAcpClientFileToolsAreAcpOnly = do
   assertBool "read tool should be visible for ACP" (readTool.allowed acpContext)
   assertBool "write tool should be visible for ACP" (writeTool.allowed acpContext)
 
-testTerminalToolIsUniversal :: IO ()
-testTerminalToolIsUniversal = do
+testTerminalAndSandboxToolScopes :: IO ()
+testTerminalAndSandboxToolScopes = do
   let terminalTool = TerminalTools.terminalTool :: Agent.Tool AgentStack
+      createSandboxTool = SandboxTools.createSandboxTool :: Agent.Tool AgentStack
+      sandboxBashAsyncTool = SandboxTools.sandboxBashAsyncTool :: Agent.Tool AgentStack
+      destroyResourceTool = ResourceTools.destroyResourceTool :: Agent.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
   terminalTool.name @?= "terminal"
-  assertBool "terminal tool should be visible outside ACP" (terminalTool.allowed agentContext)
+  assertBool "terminal tool should be hidden outside ACP" (not (terminalTool.allowed agentContext))
   assertBool "terminal tool should be visible for ACP" (terminalTool.allowed acpContext)
-  assertBool "terminal tool should require resource identity" (not (terminalTool.allowed missingIdentity))
+  sandboxBashAsyncTool.name @?= "sandbox_bash_async"
+  assertBool "sandbox async tool should be visible to non-superusers" (sandboxBashAsyncTool.allowed agentContext)
+  assertBool "create sandbox should be visible to non-superusers" (createSandboxTool.allowed agentContext)
+  assertBool "destroy resource should be visible to non-superusers" (destroyResourceTool.allowed agentContext)
+  assertBool "sandbox async tool should require resource identity" (not (sandboxBashAsyncTool.allowed missingIdentity))
 
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do

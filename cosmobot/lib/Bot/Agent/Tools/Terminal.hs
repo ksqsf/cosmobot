@@ -3,7 +3,7 @@
 
 {-|
 Module      : Bot.Agent.Tools.Terminal
-Description : Agent tool for chat-owned terminals
+Description : ACP client terminal tool
 Stability   : experimental
 -}
 module Bot.Agent.Tools.Terminal
@@ -15,36 +15,31 @@ import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.ACP as ACP
-import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
-import qualified Bot.Resource.Terminal as Terminal
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
-import qualified Effectful.Process.Typed as TypedProcess
 
-terminalTool
-  :: (ACP.ACP :> es, Resource.Resource :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Tool es
+terminalTool :: ACP.ACP :> es => Tool es
 terminalTool = Tool
   { name = "terminal"
-  , description = "Run or manage a terminal command. ACP uses the connected client; other chats use an isolated Debian container. Actions: create, output, wait_for_exit, kill, release."
+  , description = "Run or manage a command in the connected ACP client. Actions: create, output, wait_for_exit, kill, release."
   , parameters = objectSchema
       [ fieldText "action" "One of: create, output, wait_for_exit, kill, release."
       , fieldText "terminal_id" "Terminal id returned by create."
       , fieldText "command" "Command to execute for create."
       , fieldTextArray "args" "Command arguments for create."
       , ("env", envSchema)
-      , fieldText "cwd" "Working directory for create. Defaults to the ACP session cwd or the container default."
-      , fieldInteger "output_byte_limit" "Maximum retained output bytes for create. Defaults to 1048576."
+      , fieldText "cwd" "Working directory for create. Defaults to the ACP session cwd."
+      , fieldInteger "output_byte_limit" "Maximum retained output bytes for create."
       ]
       ["action"]
   , noisy = False
-  , allowed = isRight . Resource.accessFromMessage . (.message)
-  , start = \context -> pure \metadata args ->
+  , allowed = (== PlatformACP) . (.platform) . (.message)
+  , start = \context -> pure \_ args ->
       withParsedToolArgs parseTerminalArgs args \call ->
-        runTerminalCall metadata context.message call <&> either clientFailure toolText
+        runTerminalCall context.message call <&> either clientFailure toolText
   }
 
 data TerminalCall
@@ -56,35 +51,22 @@ data TerminalCall
   deriving (Eq, Show)
 
 runTerminalCall
-  :: forall es. (ACP.ACP :> es, Resource.Resource :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => ToolCallMetadata
-  -> IncomingMessage
+  :: ACP.ACP :> es
+  => IncomingMessage
   -> TerminalCall
   -> Eff es (Either Text Text)
-runTerminalCall metadata message call =
-  case Resource.accessFromMessage message of
-    Left err -> pure (Left (renderResourceError err))
-    Right access -> run access call
-  where
-    run access = \case
-      TerminalCreate create ->
-        Resource.create @Terminal.Terminal Resource.Init{message, arguments = create}
-          <&> first renderResourceError
-          <&> fmap (\terminalId -> jsonText (Aeson.object ["terminalId" Aeson..= terminalId]))
-      TerminalOutput terminalId ->
-        use access terminalId Terminal.terminalOutput <&> fmap (jsonText . terminalOutputValue)
-      TerminalWaitForExit terminalId ->
-        use access terminalId Terminal.terminalWaitForExit <&> fmap (jsonText . terminalExitStatusValue)
-      TerminalKill terminalId ->
-        use access terminalId Terminal.terminalKill <&> fmap (const "Terminal killed.")
-      TerminalRelease terminalId ->
-        Resource.destroy access terminalId <&> first renderResourceError <&> fmap (const "Terminal released.")
-
-    use :: forall a. Resource.ResourceAccess -> Text -> (Terminal.Terminal -> Eff es (Either Text a)) -> Eff es (Either Text a)
-    use access terminalId action =
-      Resource.withResource @Terminal.Terminal access terminalId metadata.parent action
-        <&> first renderResourceError
-        <&> join
+runTerminalCall message = \case
+  TerminalCreate create ->
+    ACP.createClientTerminal message create
+      <&> fmap (\terminalId -> jsonText (Aeson.object ["terminalId" Aeson..= terminalId]))
+  TerminalOutput terminalId ->
+    ACP.readClientTerminalOutput message terminalId <&> fmap (jsonText . terminalOutputValue)
+  TerminalWaitForExit terminalId ->
+    ACP.waitForClientTerminalExit message terminalId <&> fmap (jsonText . terminalExitStatusValue)
+  TerminalKill terminalId ->
+    ACP.killClientTerminal message terminalId <&> fmap (const "Terminal killed.")
+  TerminalRelease terminalId ->
+    ACP.releaseClientTerminal message terminalId <&> fmap (const "Terminal released.")
 
 parseTerminalArgs :: Aeson.Value -> AesonTypes.Parser TerminalCall
 parseTerminalArgs =
@@ -142,15 +124,6 @@ terminalExitStatusValue status = Aeson.object
   [ "exitCode" Aeson..= status.exitCode
   , "signal" Aeson..= status.signal
   ]
-
-renderResourceError :: Resource.ResourceError -> Text
-renderResourceError = \case
-  Resource.MissingResourceIdentity -> "Resource operations require chat and sender identity."
-  Resource.ResourceNotFoundOrNotOwned -> "Resource not found or not owned."
-  Resource.ResourceTypeMismatch -> "Resource has the wrong type."
-  Resource.ResourceUnavailable -> "Resource is being destroyed."
-  Resource.ResourceCreationFailed err -> err
-  Resource.ResourceCleanupFailed err -> err
 
 clientFailure :: Text -> ToolResult
 clientFailure err =

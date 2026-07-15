@@ -18,12 +18,15 @@ module Bot.Agent.Tools.Common
   , fieldBoolean
   , objectSchema
   , jsonText
+  , renderResourceError
+  , resourceToolFailure
   , UseLimit (..)
   , newUseLimiter
   )
 where
 
 import Bot.Agent.Types
+import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
@@ -112,6 +115,20 @@ objectSchema fields required =
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
   TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+
+renderResourceError :: Resource.ResourceError -> Text
+renderResourceError = \case
+  Resource.MissingResourceIdentity -> "Resource operations require chat and sender identity."
+  Resource.ResourceNotFoundOrNotOwned -> "Resource not found or not owned."
+  Resource.ResourceTypeMismatch -> "Resource has the wrong type."
+  Resource.ResourceUnavailable -> "Resource is being destroyed."
+  Resource.ResourceCreationFailed err -> err
+  Resource.ResourceCleanupFailed err -> err
+
+resourceToolFailure :: Resource.ResourceError -> ToolResult
+resourceToolFailure err =
+  let message = renderResourceError err
+  in toolFailure (permanentArgumentFailure message message).failure
 
 data UseLimit
   = UseAllowed
