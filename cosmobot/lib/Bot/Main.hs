@@ -22,6 +22,7 @@ import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Lifecycle as LifecycleEffect
 import qualified Bot.Effect.Media as MediaEffect
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Scheduler as Scheduler
@@ -48,8 +49,6 @@ import Bot.Storage.Thread
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.CLI as TypstCLI
 import qualified Bot.Util.Stream as StreamUtil
-import qualified Effectful.Concurrent.MVar as MVar
-import qualified System.Posix.Signals as Signals
 import Effectful.Timeout
 import Effectful.Process
 import qualified Effectful.Process.Typed as TypedProcess
@@ -61,8 +60,15 @@ main = mainWithConfig "config.toml"
 
 -- | Start the bot using the given TOML config file.
 mainWithConfig :: FilePath -> IO ()
-mainWithConfig configPath = runEff . runPrim . runFailIO $ do
+mainWithConfig configPath =
+  runOnce configPath >>= \case
+    False -> pure ()
+    True -> mainWithConfig configPath
+
+runOnce :: FilePath -> IO Bool
+runOnce configPath = runEff . runPrim . runFailIO $ do
   cfg <- loadConfig configPath
+  restartRequested <- newIORef False
   threads <- newThreadStore
   rpcState <- runConcurrent RPC.newRpcState
   acpState <- runConcurrent ACP.newAcpState
@@ -87,10 +93,9 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
           . Skills.runSkills cfg.skills
           . ACPClient.runACP acpState
           . ConcurrencyManager.runConcurrencyManager
-          . runGracefulTermination
           . Scheduler.runScheduler
           . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState cfg.acp.enabled acpState
-          . Lifecycle.runLifecycle cfg.media
+          . Lifecycle.runLifecycle cfg.media restartRequested
       runStack =
         runRuntime
           . runInfrastructure
@@ -107,9 +112,10 @@ mainWithConfig configPath = runEff . runPrim . runFailIO $ do
             (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
     runConfiguredServers cfg threads rpcState acpState messageConsumer
+  readIORef restartRequested
 
 routes
-  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> [RouteHandler es]
@@ -194,21 +200,3 @@ runBotLog level inner =
     registerScribe "stdout" stdoutScribe defaultScribeSettings
     logInfo [i|Log level: #{show level :: String}|]
     logExceptionAt ErrorS inner
-
-runGracefulTermination :: (IOE :> es, Concurrency.Concurrency :> es, Concurrent :> es) => Eff es () -> Eff es ()
-runGracefulTermination inner = do
-  shutdown <- MVar.newEmptyMVar
-  _termHandler <- installHandler shutdown Signals.sigTERM
-  _intHandler  <- installHandler shutdown Signals.sigINT
-
-  Concurrency.raceTasks_
-    "main.inner"
-    inner
-    "main.shutdown"
-    (MVar.takeMVar shutdown)
-
-  where
-    installHandler shutdown signal = liftIO do
-      Signals.installHandler signal (Signals.Catch (notify shutdown)) Nothing
-
-    notify shutdown = void . runEff . runConcurrent $ MVar.tryPutMVar shutdown ()

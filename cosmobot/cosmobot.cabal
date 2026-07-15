@@ -227,6 +227,7 @@ library
         Bot.Effect.Concurrency
         Bot.Effect.HTTP
         Bot.Effect.LLM
+        Bot.Effect.Lifecycle
         Bot.Effect.Media
         Bot.Effect.Memory
         Bot.Effect.Scheduler

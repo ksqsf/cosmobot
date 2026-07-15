@@ -7,11 +7,13 @@ Stability   : experimental
 
 module Bot.Lifecycle
   ( runLifecycle
+  , runLifecycleEffect
   )
 where
 
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
+import qualified Bot.Effect.Lifecycle as LifecycleEffect
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Config as MediaConfig
@@ -20,15 +22,69 @@ import qualified Bot.Storage.Lifecycle as LifecycleStorage
 import qualified Bot.Storage.RPC as RpcStorage
 import qualified Data.Set as Set
 import Effectful.FileSystem (FileSystem)
+import qualified Effectful.Concurrent.MVar as MVar
+import qualified System.Posix.Signals as Signals
+
+data ExitReason
+  = Stop
+  | Restart
+  deriving stock (Eq, Show)
 
 runLifecycle
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, Prim :> es, IOE :> es, KatipE :> es)
   => MediaConfig.Config
-  -> Eff es a
-  -> Eff es a
-runLifecycle mediaConfig inner =
+  -> IORef Bool
+  -> Eff (LifecycleEffect.Lifecycle : es) ()
+  -> Eff es ()
+runLifecycle mediaConfig restartRequested inner =
   withMediaGc mediaConfig $
-    bracket_ runStartupActions runShutdownActions inner
+    bracket_ runStartupActions runShutdownActions do
+      reason <- runUntilExit inner
+      when (reason == Restart) (writeIORef restartRequested True)
+
+runUntilExit
+  :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
+  => Eff (LifecycleEffect.Lifecycle : es) ()
+  -> Eff es ExitReason
+runUntilExit inner = do
+  exitRequest <- MVar.newEmptyMVar
+  result <- MVar.newEmptyMVar
+  withExitSignalHandlers exitRequest $
+    Concurrency.raceTasks_
+      "main.inner"
+      (runLifecycleEffect (void $ MVar.tryPutMVar exitRequest Restart) inner)
+      "main.shutdown"
+      (MVar.takeMVar exitRequest >>= MVar.putMVar result)
+  MVar.tryTakeMVar result >>= \case
+    Just reason -> pure reason
+    Nothing -> fromMaybe Stop <$> MVar.tryTakeMVar exitRequest
+
+withExitSignalHandlers
+  :: (Concurrent :> es, IOE :> es)
+  => MVar.MVar ExitReason
+  -> Eff es a
+  -> Eff es a
+withExitSignalHandlers exitRequest =
+  bracket install restore . const
+  where
+    install = liftIO do
+      oldTerm <- Signals.installHandler Signals.sigTERM handler Nothing
+      oldInt <- Signals.installHandler Signals.sigINT handler Nothing
+      pure (oldTerm, oldInt)
+
+    restore (oldTerm, oldInt) = liftIO do
+      void $ Signals.installHandler Signals.sigTERM oldTerm Nothing
+      void $ Signals.installHandler Signals.sigINT oldInt Nothing
+
+    handler = Signals.Catch notify
+    notify = void . runEff . runConcurrent $ MVar.tryPutMVar exitRequest Stop
+
+runLifecycleEffect
+  :: Eff es ()
+  -> Eff (LifecycleEffect.Lifecycle : es) a
+  -> Eff es a
+runLifecycleEffect onRestart =
+  interpret (\_ LifecycleEffect.RequestRestart -> onRestart)
 
 runStartupActions
   :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es)

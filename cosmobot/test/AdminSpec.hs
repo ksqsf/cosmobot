@@ -5,6 +5,7 @@ import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
+import qualified Bot.Effect.Lifecycle as LifecycleEffect
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
@@ -26,6 +27,7 @@ import System.FilePath ((</>))
 import Effectful.FileSystem (runFileSystem)
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.Temporary as Temporary
 import Effectful.Process (Process, runProcess)
 import Test.Tasty
@@ -48,6 +50,8 @@ main =
     testGroup "admin"
       [ testCase "ping replies pong for any sender" testPingRepliesPong
       , testCase "reload reloads skill list" testReloadReloadsSkillList
+      , testCase "restart rejects non-superusers" testRestartRejectsNonSuperuser
+      , testCase "restart requests process restart" testRestartRequestsProcessRestart
       , testCase "title rejects non-superusers" testTitleRejectsNonSuperuser
       , testCase "title validates arguments" testTitleValidatesArguments
       , testCase "title sets group member title" testTitleSetsGroupMemberTitle
@@ -55,6 +59,7 @@ main =
       , testCase "upgrade rejects non-superusers" testUpgradeRejectsNonSuperuser
       , testCase "upgrade reports script exit status" testUpgradeReportsScriptExitStatus
       , testCase "upgrade reports nonzero script exit status" testUpgradeReportsNonzeroScriptExitStatus
+      , testCase "lifecycle restart request restarts runtime" testLifecycleRestartRequestRestartsRuntime
       , testCase "lifecycle startup replies are deleted after drain" testLifecycleStartupRepliesAreDeletedAfterDrain
       ]
 
@@ -86,6 +91,33 @@ testReloadReloadsSkillList =
         liftIO $ IORef.readIORef replies >>= (@?= ["已重新载入 skill 列表。"])
         liftIO $ assertBool "reloaded prompt includes updated skill" ("new-skill" `Text.isInfixOf` prompt)
         liftIO $ assertBool "reloaded prompt drops old skill" (not ("old-skill" `Text.isInfixOf` prompt))
+
+testRestartRejectsNonSuperuser :: IO ()
+testRestartRejectsNonSuperuser = do
+  replies <- IORef.newIORef ([] :: [Text])
+  restarted <- IORef.newIORef False
+  runAdminRestart replies restarted (messageWith "!restart" emptyMessageDigest)
+  IORef.readIORef replies >>= (@?= ["只有 superuser 可以重启 cosmobot。"])
+  IORef.readIORef restarted >>= (@?= False)
+
+testRestartRequestsProcessRestart :: IO ()
+testRestartRequestsProcessRestart = do
+  replies <- IORef.newIORef ([] :: [Text])
+  restarted <- IORef.newIORef False
+  runAdminRestart replies restarted (messageWith "!restart" emptyMessageDigest{senderIsSuperuser = True})
+  IORef.readIORef replies >>= (@?= ["正在重启 cosmobot。"])
+  IORef.readIORef restarted >>= (@?= True)
+
+runAdminRestart :: IORef.IORef [Text] -> IORef.IORef Bool -> IncomingMessage -> IO ()
+runAdminRestart replies restarted incoming =
+  runEff $ runPrim $ runConcurrent $ runTestLog $
+    StorageSQLite.runStorageSQLitePath ":memory:" $
+      Chat.runChatWith (testChatDriver replies Nothing False) $
+        runFileSystem $ runProcess $ runConcurrent $
+          ConcurrencyManager.runConcurrencyManager $
+            Skills.runSkills (SkillsStore.SkillsConfig "skills") $
+              Lifecycle.runLifecycleEffect (liftIO $ IORef.writeIORef restarted True) $
+                runHandlers (adminHandlers defaultAdminConfig) incoming
 
 testTitleRejectsNonSuperuser :: IO ()
 testTitleRejectsNonSuperuser = do
@@ -169,10 +201,30 @@ testLifecycleStartupRepliesAreDeletedAfterDrain = do
         Media.runMediaPassthrough $
           Chat.runChatWith (testChatDriver replies Nothing False) do
             void $ LifecycleStorage.enqueueStartupReply "test-startup-reply" message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
-            Lifecycle.runLifecycle MediaConfig.defaultConfig (pure ())
+            restartRequested <- newIORef False
+            Lifecycle.runLifecycle MediaConfig.defaultConfig restartRequested (pure ())
             LifecycleStorage.loadStartupActions
   IORef.readIORef replies >>= (@?= ["cosmobot 重启完成啦 (｡•̀ᴗ-)✧"])
   assertBool "startup actions deleted after drain" (null remaining)
+
+testLifecycleRestartRequestRestartsRuntime :: IO ()
+testLifecycleRestartRequestRestartsRuntime = do
+  restarted <- IORef.newIORef False
+  stopped <- IORef.newIORef False
+  replies <- IORef.newIORef []
+  runEff $ runPrim $ runConcurrent $ runFileSystem do
+    started <- MVar.newEmptyMVar
+    ConcurrencyManager.runConcurrencyManager $
+      runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $
+        Media.runMediaPassthrough $ Chat.runChatWith (testChatDriver replies Nothing False) $
+          Lifecycle.runLifecycle MediaConfig.defaultConfig restarted do
+            Concurrency.fire "restart-test.worker" $
+              (MVar.putMVar started () >> threadDelay maxBound)
+                `finally` liftIO (IORef.writeIORef stopped True)
+            MVar.takeMVar started
+            LifecycleEffect.requestRestart
+  IORef.readIORef restarted >>= (@?= True)
+  IORef.readIORef stopped >>= (@?= True)
 
 writeTextFile :: FileSystem.FileSystem :> es => FilePath -> Text -> Eff es ()
 writeTextFile path text =
@@ -225,9 +277,10 @@ runAdminWithSkills cfg skillsCfg replies incoming beforeReload =
         runProcess $
           ConcurrencyManager.runConcurrencyManager $
             Skills.runSkills skillsCfg do
-            beforeReload
-            runHandlers (adminHandlers cfg) incoming
-            Skills.skillsSystemPrompt
+              beforeReload
+              Lifecycle.runLifecycleEffect (pure ()) $
+                runHandlers (adminHandlers cfg) incoming
+              Skills.skillsSystemPrompt
 
 runAdminWithDelayAndTitle
   :: Int
@@ -255,6 +308,7 @@ runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incomin
         . runConcurrent
         . ConcurrencyManager.runConcurrencyManager
         . Skills.runSkills (SkillsStore.SkillsConfig "skills")
+        . Lifecycle.runLifecycleEffect (pure ())
 
 testChatDriver
   :: IOE :> es
@@ -297,6 +351,7 @@ messageWith body digest =
     , mentions = []
     , mentionUsernames = []
     , imageUrls = []
+    , files = []
     , text = body
     , raw = Aeson.Null
     }

@@ -14,6 +14,7 @@ import Bot.Core.Message
 import Bot.Core.Route
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
+import qualified Bot.Effect.Lifecycle as LifecycleEffect
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Skills as Skills
 import Bot.Handler.Admin.Config
@@ -29,10 +30,11 @@ import Effectful.FileSystem (FileSystem)
 import qualified Effectful.Process.Typed as TypedProcess
 import qualified System.Exit as Exit
 
-adminHandlers :: (Chat.Chat :> es, Skills.Skills :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
+adminHandlers :: (Chat.Chat :> es, Skills.Skills :> es, LifecycleEffect.Lifecycle :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
 adminHandlers cfg =
   [ pingRoute
   , reloadRoute
+  , restartRoute
   , titleRoute
   , echoRoute
   ] <> maybeToList (upgradeRoute <$> cfg.upgrade)
@@ -56,6 +58,18 @@ handleReload :: (Chat.Chat :> es, Skills.Skills :> es) => IncomingMessage -> Tex
 handleReload message _ = do
   Skills.reloadSkills
   void $ Chat.replyTo message "已重新载入 skill 列表。"
+
+restartRoute :: (Chat.Chat :> es, LifecycleEffect.Lifecycle :> es) => RouteHandler es
+restartRoute =
+  requireAuth
+    isSuperuser
+    (\message -> void $ Chat.replyTo message "只有 superuser 可以重启 cosmobot。")
+    (stopOn (command "!restart") handleRestart)
+
+handleRestart :: (Chat.Chat :> es, LifecycleEffect.Lifecycle :> es) => IncomingMessage -> Text -> Eff es ()
+handleRestart message _ = do
+  void $ Chat.replyTo message "正在重启 cosmobot。"
+  LifecycleEffect.requestRestart
 
 echoRoute :: Chat.Chat :> es => RouteHandler es
 echoRoute =
