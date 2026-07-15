@@ -22,6 +22,7 @@ import qualified Data.Text as Text
 resourceHandlers :: (Chat.Chat :> es, Resource.Resource :> es) => [RouteHandler es]
 resourceHandlers =
   [ stopOn (command "!res/ls") handleList
+  , stopOn (command "!res/detail") handleDetail
   , stopOn (command "!res/rm") handleRemove
   , stopOn (command "!res/mv") handleRename
   ]
@@ -34,6 +35,16 @@ handleList message _ =
   withAccess message \access -> Resource.list access >>= \case
     [] -> reply message "No resources."
     resources -> reply message (renderResources resources)
+
+handleDetail :: (Chat.Chat :> es, Resource.Resource :> es) => IncomingMessage -> Text -> Eff es ()
+handleDetail message input =
+  case Text.words input of
+    [resourceId] ->
+      withAccess message \access ->
+        Resource.detail access resourceId >>= \case
+          Right description -> reply message description
+          Left _ -> reply message "Resource not found, not owned, or unavailable."
+    _ -> reply message "Usage: !res/detail <resource_name>"
 
 handleRemove :: (Chat.Chat :> es, Resource.Resource :> es) => IncomingMessage -> Text -> Eff es ()
 handleRemove message input =

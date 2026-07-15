@@ -323,6 +323,7 @@ The following can happen automatically:
 ### Resource
 
 - `!res/ls`: list resources available to you; superusers see every resource
+- `!res/detail <resource_name>`: show detailed resource information
 - `!res/rm <resource_name>...`: delete resources (superusers may delete any resource)
 - `!res/mv <resource_name> <new_name>`: rename a resource
 

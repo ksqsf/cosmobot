@@ -54,6 +54,8 @@ class Typeable a => ResourceObject m a where
   destroyResourceObject :: a -> m (Either Text ())
   describeResourceObject :: a -> Either Text Text -> m Text
   probeResourceObject :: a -> m (Either Text Text)
+  detailResourceObject :: Monad m => a -> m Text
+  detailResourceObject object = probeResourceObject object >>= describeResourceObject object
 
 data ResourcePersistence m a
   = EphemeralResource

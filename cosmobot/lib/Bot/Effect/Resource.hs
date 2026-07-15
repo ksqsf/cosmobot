@@ -29,6 +29,7 @@ module Bot.Effect.Resource
   , createAssociatedNamed
   , withResource
   , list
+  , detail
   , destroy
   , rename
   , destroyAssociated
@@ -43,6 +44,7 @@ data Resource :: Effect where
   Create :: ResourceObject m a => Proxy a -> Maybe Handle -> Maybe ResourceId -> Init (CreationArgs a) -> Resource m (Either ResourceError ResourceId)
   With :: ResourceObject m a => ResourceAccess -> ResourceId -> Maybe Handle -> (a -> m b) -> Resource m (Either ResourceError b)
   List :: ResourceAccess -> Resource m [SomeResourceObject]
+  Detail :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError Text)
   Destroy :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError ())
   Rename :: ResourceAccess -> ResourceId -> ResourceId -> Resource m (Either ResourceError ResourceId)
   DestroyAssociated :: Handle -> Resource m [Either ResourceError ()]
@@ -73,6 +75,9 @@ withResource access resourceId user callback =
 
 list :: Resource :> es => ResourceAccess -> Eff es [SomeResourceObject]
 list = send . List
+
+detail :: Resource :> es => ResourceAccess -> ResourceId -> Eff es (Either ResourceError Text)
+detail access = send . Detail access
 
 destroy :: Resource :> es => ResourceAccess -> ResourceId -> Eff es (Either ResourceError ())
 destroy access = send . Destroy access

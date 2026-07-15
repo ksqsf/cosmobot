@@ -72,6 +72,10 @@ instance
   describeResourceObject _ probeResult =
     pure $ "debian:stable-slim [" <> either (const "unreachable") id probeResult <> "]"
 
+  detailResourceObject sandbox =
+    Resource.probeResourceObject sandbox >>= Resource.describeResourceObject sandbox <&> \description ->
+      description <> "\ncontainer id: " <> sandbox.containerId
+
 runCommand
   :: (Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => Int

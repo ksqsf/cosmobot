@@ -49,6 +49,7 @@ data SomeResource es = SomeResource
   , value :: !Dynamic.Dynamic
   , describe :: Either Text Text -> Eff es Text
   , probe :: Eff es (Either Text Text)
+  , detail :: Eff es Text
   , destroy :: Eff es (Either Text ())
   , persistent :: !Bool
   , availability :: !Availability
@@ -119,6 +120,7 @@ restoreStoredResource loaders stored =
       , value = Dynamic.toDyn object
       , describe = describeResourceObject object
       , probe = probeResourceObject object
+      , detail = detailResourceObject object
       , destroy = destroyResourceObject object
       , persistent = True
       , availability = Available Map.empty
@@ -133,6 +135,7 @@ restoreStoredResource loaders stored =
       , value = Dynamic.toDyn ()
       , describe = const (pure "unavailable")
       , probe = pure (Left err)
+      , detail = pure ("unavailable: " <> err)
       , destroy = pure (Right ())
       , persistent = True
       , availability = Available Map.empty
@@ -155,6 +158,7 @@ runResourceOperation stateRef localEnv operation =
       Resource.Create proxy parent requestedName initValue -> createIn stateRef unlift proxy parent requestedName initValue
       Resource.With access resourceId user callback -> withIn stateRef unlift access resourceId user callback
       Resource.List access -> listIn stateRef access
+      Resource.Detail access resourceId -> detailIn stateRef access resourceId
       Resource.Destroy access resourceId -> destroyIn stateRef access resourceId
       Resource.Rename access resourceId newId -> renameIn stateRef access resourceId newId
       Resource.DestroyAssociated parent -> destroyAssociatedIn stateRef parent
@@ -199,6 +203,7 @@ createIn stateRef unlift _ parent requestedName initValue =
                 , value = Dynamic.toDyn object
                 , describe = unlift . describeResourceObject object
                 , probe = unlift (probeResourceObject object)
+                , detail = unlift (detailResourceObject object)
                 , destroy = unlift (destroyResourceObject object)
                 , persistent = isPersistent
                 , availability = Available Map.empty
@@ -300,6 +305,20 @@ listIn stateRef access = do
     isAvailable = \case
       Available{} -> True
       Destroying -> False
+
+detailIn
+  :: Prim :> es
+  => IORef (ManagerState es)
+  -> ResourceAccess
+  -> ResourceId
+  -> Eff es (Either ResourceError Text)
+detailIn stateRef access resourceId = do
+  resources <- (.resources) <$> readIORef stateRef
+  case Map.lookup resourceId resources of
+    Just resource
+      | mayAccess access resource, Available{} <- resource.availability -> Right <$> resource.detail
+      | mayAccess access resource -> pure (Left ResourceUnavailable)
+    _ -> pure (Left ResourceNotFoundOrNotOwned)
 
 sessionIdFromMessage :: IncomingMessage -> Maybe Text
 sessionIdFromMessage message

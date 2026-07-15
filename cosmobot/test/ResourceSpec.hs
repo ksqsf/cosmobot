@@ -145,6 +145,7 @@ testTypedResources = runManaged do
     @?= [("Test", Nothing, "alpha", Right "healthy"), ("Other", Nothing, "other", Right "healthy")]
   mismatch <- Resource.withResource @OtherObject access "res-1" Nothing (const (pure ()))
   liftIO $ mismatch @?= Left Resource.ResourceTypeMismatch
+  Resource.detail access "res-1" >>= liftIO . (@?= Right "alpha")
 
 testOwnership :: Assertion
 testOwnership = runManaged do
@@ -152,6 +153,7 @@ testOwnership = runManaged do
   resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
   otherAccess <- expectRight (Resource.accessFromMessage (ownerMessage{senderId = Just "other"}))
   Resource.list otherAccess >>= liftIO . (@?= [])
+  Resource.detail otherAccess resourceId >>= liftIO . (@?= Left Resource.ResourceNotFoundOrNotOwned)
   Resource.destroy otherAccess resourceId >>= liftIO . (@?= Left Resource.ResourceNotFoundOrNotOwned)
   let adminMessage = ownerMessage
         { platform = PlatformDiscord
@@ -161,6 +163,7 @@ testOwnership = runManaged do
         }
   adminAccess <- expectRight (Resource.accessFromMessage adminMessage)
   Resource.list adminAccess >>= liftIO . assertBool "superuser lists resources system-wide" . any ((== resourceId) . (.resourceId))
+  Resource.detail adminAccess resourceId >>= liftIO . (@?= Right "owned")
   Resource.destroy adminAccess resourceId >>= liftIO . (@?= Right ())
   let missing = ownerMessage{senderId = Nothing}
   liftIO $ Resource.accessFromMessage missing @?= Left Resource.MissingResourceIdentity
