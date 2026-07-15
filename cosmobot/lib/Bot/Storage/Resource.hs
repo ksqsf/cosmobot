@@ -10,6 +10,7 @@ module Bot.Storage.Resource
   , loadResources
   , saveResource
   , deleteResource
+  , renameResource
   )
 where
 
@@ -69,6 +70,13 @@ deleteResource resourceId = do
   ensureTable
   runSelda $ deleteFrom_ resources \row ->
     row ! #resource_id .== literal resourceId
+
+renameResource :: Storage.Storage :> es => ResourceId -> ResourceId -> Eff es ()
+renameResource oldId newId = do
+  ensureTable
+  runSelda $ update_ resources
+    (\row -> row ! #resource_id .== literal oldId)
+    (\row -> row `with` [#resource_id := literal newId])
 
 ensureTable :: Storage.Storage :> es => Eff es ()
 ensureTable = runSelda (tryCreateTable resources)

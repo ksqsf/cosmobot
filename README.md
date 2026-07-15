@@ -323,7 +323,8 @@ The following can happen automatically:
 ### Resource
 
 - `!res/ls`: list resources available to you; superusers see every resource
-- `!res/rm <resource_id>...`: delete resources (superusers may delete any resource)
+- `!res/rm <resource_name>...`: delete resources (superusers may delete any resource)
+- `!res/mv <resource_name> <new_name>`: rename a resource
 
 ### Todo list
 
@@ -373,7 +374,6 @@ Currently, the following tools are available:
 |Media   |`media_text`           |           |
 |Memory  |`manage_memory`        |           |
 |Resource|`sandbox`              |           |
-|Resource|`destroy_resource`     |           |
 |Resource|`workspace`            |Yes        |
 |Agent   |`subagent`             |           |
 |Schedule|`schedule`             |           |

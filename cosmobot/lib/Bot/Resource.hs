@@ -30,6 +30,7 @@ import Bot.Prelude hiding (state)
 import Bot.Resource.Types
 import qualified Bot.Storage.Resource as ResourceStorage
 import qualified Data.Dynamic as Dynamic
+import qualified Data.Char as Char
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
@@ -57,7 +58,7 @@ data ManagerState es = ManagerState
   { nextId :: !Integer
   , nextCreate :: !Integer
   , accepting :: !Bool
-  , creating :: !(Map Integer (MVar.MVar ()))
+  , creating :: !(Map Integer (ResourceId, MVar.MVar ()))
   , resources :: !(Map ResourceId (SomeResource es))
   }
 
@@ -151,10 +152,11 @@ runResourceOperation
 runResourceOperation stateRef localEnv operation =
   localUnlift localEnv (ConcUnlift Persistent Unlimited) \unlift ->
     case operation of
-      Resource.Create proxy parent initValue -> createIn stateRef unlift proxy parent initValue
+      Resource.Create proxy parent requestedName initValue -> createIn stateRef unlift proxy parent requestedName initValue
       Resource.With access resourceId user callback -> withIn stateRef unlift access resourceId user callback
       Resource.List access -> listIn stateRef access
       Resource.Destroy access resourceId -> destroyIn stateRef access resourceId
+      Resource.Rename access resourceId newId -> renameIn stateRef access resourceId newId
       Resource.DestroyAssociated parent -> destroyAssociatedIn stateRef parent
 
 createIn
@@ -163,24 +165,17 @@ createIn
   -> (forall x. Eff localEs x -> Eff es x)
   -> Proxy a
   -> Maybe Concurrency.Handle
+  -> Maybe ResourceId
   -> Init (CreationArgs a)
   -> Eff es (Either ResourceError ResourceId)
-createIn stateRef unlift _ parent initValue =
+createIn stateRef unlift _ parent requestedName initValue =
   case ownerFromMessage initValue.message of
     Left err -> pure (Left err)
     Right owner -> do
       gate <- MVar.newEmptyMVar
       reservation <- atomicModifyIORef' stateRef \state ->
         if state.accepting
-          then
-            let createId = state.nextCreate
-                resourceId = "res-" <> show state.nextId
-            in (state
-                  { nextId = state.nextId + 1
-                  , nextCreate = createId + 1
-                  , creating = Map.insert createId gate state.creating
-                  }
-                , Right (createId, resourceId))
+          then reserveName state gate requestedName
           else (state, Left ResourceUnavailable)
       case reservation of
         Left err -> pure (Left err)
@@ -232,6 +227,44 @@ createIn stateRef unlift _ parent initValue =
     finishCreate createId gate = do
       atomicModifyIORef' stateRef \state -> (state{creating = Map.delete createId state.creating}, ())
       void (MVar.tryPutMVar gate ())
+
+reserveName
+  :: ManagerState es
+  -> MVar.MVar ()
+  -> Maybe ResourceId
+  -> (ManagerState es, Either ResourceError (Integer, ResourceId))
+reserveName state gate requestedName =
+  case traverse validateResourceName requestedName of
+    Left err -> (state, Left err)
+    Right validName ->
+      let occupied name = Map.member name state.resources || any ((== name) . fst) state.creating
+          nextAvailable candidate =
+            let name = "res-" <> show candidate
+            in if occupied name then nextAvailable (candidate + 1) else (candidate, name)
+          (nextId, resourceId) = case validName of
+            Just name -> (state.nextId, name)
+            Nothing -> first (+ 1) (nextAvailable state.nextId)
+      in if occupied resourceId
+          then (state, Left ResourceNameAlreadyExists)
+          else
+            let createId = state.nextCreate
+            in ( state
+                  { nextId
+                  , nextCreate = createId + 1
+                  , creating = Map.insert createId (resourceId, gate) state.creating
+                  }
+               , Right (createId, resourceId)
+               )
+
+validateResourceName :: ResourceId -> Either ResourceError ResourceId
+validateResourceName name
+  | Text.null name || Text.length name > 64 = Left InvalidResourceName
+  | name == "." || name == ".." = Left InvalidResourceName
+  | Text.all validCharacter name = Right name
+  | otherwise = Left InvalidResourceName
+  where
+    validCharacter character =
+      Char.isAlphaNum character || character `elem` ("._-" :: String)
 
 withIn
   :: forall localEs es a b. (ResourceObject (Eff localEs) a, Concurrency.Concurrency :> es, Prim :> es)
@@ -293,6 +326,72 @@ destroyIn stateRef access resourceId =
             else removeDestroyed stateRef resourceId $> Right ()
         Right (Left err) -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed err)
         Left err -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed (show err))
+
+renameIn
+  :: (Storage.Storage :> es, Prim :> es, IOE :> es)
+  => IORef (ManagerState es)
+  -> ResourceAccess
+  -> ResourceId
+  -> ResourceId
+  -> Eff es (Either ResourceError ResourceId)
+renameIn stateRef access resourceId newId =
+  case validateResourceName newId of
+    Left err -> pure (Left err)
+    Right validId -> mask \_ -> beginRename stateRef access resourceId validId >>= \case
+      Left err -> pure (Left err)
+      Right Nothing -> pure (Right validId)
+      Right (Just persistent) -> do
+        let rollback = do
+              when persistent $ void $ trySync (ResourceStorage.renameResource validId resourceId)
+              rollbackRename stateRef resourceId validId
+            persist
+              | persistent = ResourceStorage.renameResource resourceId validId
+              | otherwise = pure ()
+        trySync (persist `onException` rollback) >>= \case
+          Left err -> rollbackRename stateRef resourceId validId $> Left (ResourceRenameFailed (conciseException err))
+          Right () -> finishRename stateRef validId $> Right validId
+
+beginRename
+  :: Prim :> es
+  => IORef (ManagerState es)
+  -> ResourceAccess
+  -> ResourceId
+  -> ResourceId
+  -> Eff es (Either ResourceError (Maybe Bool))
+beginRename stateRef access resourceId newId =
+  atomicModifyIORef' stateRef \state ->
+    case Map.lookup resourceId state.resources of
+      Nothing -> (state, Left ResourceNotFoundOrNotOwned)
+      Just resource
+        | not (mayAccess access resource) -> (state, Left ResourceNotFoundOrNotOwned)
+        | resourceId == newId, Available{} <- resource.availability -> (state, Right Nothing)
+        | not (isAvailableWithoutUsers resource.availability) -> (state, Left ResourceUnavailable)
+        | Map.member newId state.resources || any ((== newId) . fst) state.creating ->
+            (state, Left ResourceNameAlreadyExists)
+        | otherwise ->
+            let renamed = resource{availability = Destroying}
+                resources = Map.insert newId renamed (Map.delete resourceId state.resources)
+            in (state{resources}, Right (Just resource.persistent))
+  where
+    isAvailableWithoutUsers = \case
+      Available users -> Map.null users
+      Destroying -> False
+
+finishRename :: Prim :> es => IORef (ManagerState es) -> ResourceId -> Eff es ()
+finishRename stateRef resourceId =
+  atomicModifyIORef' stateRef \state ->
+    let finish resource = resource{availability = Available Map.empty}
+    in (state{resources = Map.adjust finish resourceId state.resources}, ())
+
+rollbackRename :: Prim :> es => IORef (ManagerState es) -> ResourceId -> ResourceId -> Eff es ()
+rollbackRename stateRef resourceId newId =
+  atomicModifyIORef' stateRef \state ->
+    case Map.lookup newId state.resources of
+      Nothing -> (state, ())
+      Just resource ->
+        let restored = resource{availability = Available Map.empty}
+            resources = Map.insert resourceId restored (Map.delete newId state.resources)
+        in (state{resources}, ())
 
 destroyAssociatedIn
   :: (Storage.Storage :> es, Concurrency.Concurrency :> es, Prim :> es, IOE :> es)
@@ -374,7 +473,7 @@ restoreDestroyed stateRef resourceId =
 shutdown :: (Concurrency.Concurrency :> es, Concurrent :> es, Prim :> es) => IORef (ManagerState es) -> Eff es ()
 shutdown stateRef = do
   createGates <- atomicModifyIORef' stateRef \state ->
-    (state{accepting = False}, Map.elems state.creating)
+    (state{accepting = False}, map snd (Map.elems state.creating))
   traverse_ MVar.takeMVar createGates
   entries <- atomicModifyIORef' stateRef \state ->
     let mark resource = resource{availability = Destroying}

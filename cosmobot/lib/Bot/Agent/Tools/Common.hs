@@ -121,8 +121,11 @@ renderResourceError = \case
   Resource.MissingResourceIdentity -> "Resource operations require chat and sender identity."
   Resource.ResourceNotFoundOrNotOwned -> "Resource not found or not owned."
   Resource.ResourceTypeMismatch -> "Resource has the wrong type."
-  Resource.ResourceUnavailable -> "Resource is being destroyed."
+  Resource.ResourceUnavailable -> "Resource is currently unavailable."
+  Resource.InvalidResourceName -> "Resource names must be 1-64 characters using only letters, digits, dot, underscore, or hyphen."
+  Resource.ResourceNameAlreadyExists -> "Resource name already exists."
   Resource.ResourceCreationFailed err -> err
+  Resource.ResourceRenameFailed err -> err
   Resource.ResourceCleanupFailed err -> err
 
 resourceToolFailure :: Resource.ResourceError -> ToolResult

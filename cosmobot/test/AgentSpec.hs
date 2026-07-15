@@ -8,7 +8,6 @@ import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Tools.Files as FileTools
 import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
-import qualified Bot.Agent.Tools.Resource as ResourceTools
 import qualified Bot.Agent.Tools.Sandbox as SandboxTools
 import qualified Bot.Agent.Tools.SubAgent as SubAgentTools
 import qualified Bot.Agent.Tools.Terminal as TerminalTools
@@ -305,7 +304,6 @@ testTerminalAndSandboxToolScopes = do
   let terminalTool = TerminalTools.terminalTool :: Agent.Tool AgentStack
       sandboxTool = SandboxTools.sandboxTool :: Agent.Tool AgentStack
       trustedBashTool = runBashTool :: Agent.Tool AgentStack
-      destroyResourceTool = ResourceTools.destroyResourceTool :: Agent.Tool AgentStack
       workspaceTool = WorkspaceTools.workspaceTool :: Agent.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
@@ -320,7 +318,6 @@ testTerminalAndSandboxToolScopes = do
   assertBool "sandbox bash schema should not expose async actions" (not ("\"action\"" `Text.isInfixOf` sandboxSchema))
   assertBool "run_bash schema should not expose sandboxes" (not ("sandbox" `Text.isInfixOf` trustedBashSchema))
   assertBool "sandbox tool should be visible to non-superusers" (sandboxTool.allowed agentContext)
-  assertBool "destroy resource should be visible to non-superusers" (destroyResourceTool.allowed agentContext)
   assertBool "sandbox tool should require resource identity" (not (sandboxTool.allowed missingIdentity))
   workspaceTool.name @?= "workspace"
   assertBool "workspace should be hidden from non-superusers" (not (workspaceTool.allowed agentContext))
@@ -335,17 +332,20 @@ testSubAgentLifecycle = do
         tool = SubAgentTools.subagentTool childRunner []
         otherContext = agentContext{Agent.message = testMessage{senderId = Just "other"}}
     createRun <- tool.start agentContext
-    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text])])
+    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text])])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
+    liftIO $ resourceId @?= "researcher"
     sendRun <- tool.start otherContext
     sent <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
     liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
     workers <- Concurrency.list
     let worker = fromMaybe (error "missing subagent worker") (find ((== "subagent") . (.label)) workers.entries)
     Concurrency.await Concurrency.Handle{handleId = worker.id}
-    queried <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("query" :: Text), "resource" Aeson..= resourceId])
+    renamed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("rename" :: Text), "resource" Aeson..= resourceId, "name" Aeson..= ("reviewer" :: Text)])
+    liftIO $ AgentTypes.toolResultContent renamed @?= "Subagent renamed: reviewer"
+    queried <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("query" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent queried @?= "finished"
-    destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("delete" :: Text), "resource" Aeson..= resourceId])
+    destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("delete" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent destroyed @?= "Subagent destroyed."
 
 testSendReplyToolUsesChatEffect :: IO ()

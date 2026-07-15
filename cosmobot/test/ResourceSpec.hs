@@ -5,9 +5,6 @@
 module Main (main) where
 
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
-import qualified Bot.Agent as Agent
-import qualified Bot.Agent.Tools.Resource as ResourceTool
-import qualified Bot.Agent.Types as AgentTypes
 import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
@@ -41,6 +38,8 @@ data BlockingObject = BlockingObject
   { destroyStarted :: !(MVar.MVar ())
   , finishDestroy :: !(MVar.MVar ())
   }
+
+data BlockingCreateObject = BlockingCreateObject
 
 newtype PersistentObject = PersistentObject Text
 
@@ -89,6 +88,15 @@ instance Concurrent :> es => Resource.ResourceObject (Eff es) BlockingObject whe
   describeResourceObject _ _ = pure "blocking"
   probeResourceObject _ = pure (Right "healthy")
 
+instance Concurrent :> es => Resource.ResourceObject (Eff es) BlockingCreateObject where
+  type CreationArgs BlockingCreateObject = (MVar.MVar (), MVar.MVar ())
+  resourceTypeName _ = "BlockingCreate"
+  createResourceObject Resource.Init{arguments = (started, finish)} =
+    MVar.putMVar started () >> MVar.takeMVar finish $> Right BlockingCreateObject
+  destroyResourceObject _ = pure (Right ())
+  describeResourceObject _ _ = pure "blocking create"
+  probeResourceObject _ = pure (Right "healthy")
+
 instance Applicative m => Resource.ResourceObject m PersistentObject where
   type CreationArgs PersistentObject = Text
   resourceTypeName _ = "PersistentTest"
@@ -112,7 +120,8 @@ main = defaultMain $ testGroup "resource"
   , testCase "manager exit destroys resources" testShutdown
   , testCase "associated resources are destroyed together" testAssociatedCleanup
   , testCase "persistent resources survive manager restart" testPersistentRestart
-  , testCase "destroy_resource removes an owned resource" testDestroyResourceTool
+  , testCase "resource names are globally unique and renameable" testResourceNames
+  , testCase "resource names are reserved during concurrent creation" testConcurrentResourceNames
   , testCase "Podman sandbox arguments preserve isolation" testPodmanArguments
   , testCase "Podman sandbox command preserves scripts as argv" testPodmanExecArguments
   , testCase "Podman sandbox parses state and truncates retained output" testPodmanOutput
@@ -155,6 +164,43 @@ testOwnership = runManaged do
   Resource.destroy adminAccess resourceId >>= liftIO . (@?= Right ())
   let missing = ownerMessage{senderId = Nothing}
   liftIO $ Resource.accessFromMessage missing @?= Left Resource.MissingResourceIdentity
+
+testResourceNames :: Assertion
+testResourceNames = runManaged do
+  (testInit, _) <- newTestInit "named" False
+  resourceId <- Resource.createNamed @TestObject "agent-choice" Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
+  liftIO $ resourceId @?= "agent-choice"
+  duplicate <- Resource.createNamed @TestObject "agent-choice" Resource.Init
+    { message = ownerMessage{senderId = Just "other"}
+    , arguments = testInit
+    }
+  liftIO $ duplicate @?= Left Resource.ResourceNameAlreadyExists
+  access <- expectRight (Resource.accessFromMessage ownerMessage)
+  Resource.rename access resourceId "renamed" >>= liftIO . (@?= Right "renamed")
+  Resource.withResource @TestObject access resourceId Nothing (pure . (.label))
+    >>= liftIO . (@?= Left Resource.ResourceNotFoundOrNotOwned)
+  Resource.withResource @TestObject access "renamed" Nothing (pure . (.label))
+    >>= liftIO . (@?= Right "named")
+  Resource.rename access "renamed" "bad name" >>= liftIO . (@?= Left Resource.InvalidResourceName)
+
+testConcurrentResourceNames :: Assertion
+testConcurrentResourceNames = runManaged do
+  started <- MVar.newEmptyMVar
+  finish <- MVar.newEmptyMVar
+  created <- MVar.newEmptyMVar
+  _ <- Concurrency.fork "create-named-resource" $
+    Resource.createNamed @BlockingCreateObject "reserved" Resource.Init
+      { message = ownerMessage
+      , arguments = (started, finish)
+      } >>= MVar.putMVar created
+  MVar.takeMVar started
+  duplicate <- Resource.createNamed @OtherObject "reserved" Resource.Init
+    { message = ownerMessage{senderId = Just "other"}
+    , arguments = ()
+    }
+  liftIO $ duplicate @?= Left Resource.ResourceNameAlreadyExists
+  MVar.putMVar finish ()
+  MVar.takeMVar created >>= liftIO . (@?= Right "reserved")
 
 testScopedException :: Assertion
 testScopedException = runManaged do
@@ -231,15 +277,16 @@ testPersistentRestart =
         cleanup = FileSystem.removeFile database
     (do
       persistentId <- liftIO $ runPersistent database do
-        persistentId <- Resource.create @PersistentObject Resource.Init{message = ownerMessage, arguments = "durable"} >>= expectRight
+        persistentId <- Resource.createNamed @PersistentObject "durable-name" Resource.Init{message = ownerMessage, arguments = "durable"} >>= expectRight
         void $ Resource.create @OtherObject Resource.Init{message = ownerMessage, arguments = ()} >>= expectRight
-        pure persistentId
-      liftIO $ persistentId @?= "res-1"
+        access <- expectRight (Resource.accessFromMessage ownerMessage)
+        Resource.rename access persistentId "renamed-durable" >>= expectRight
+      liftIO $ persistentId @?= "renamed-durable"
       listed <- liftIO $ runPersistent database do
         access <- expectRight (Resource.accessFromMessage ownerMessage)
         Resource.list access
       liftIO $ map (\resource -> (resource.resourceId, resource.resourceType, resource.description)) listed
-        @?= [("res-1", "PersistentTest", "durable")]
+        @?= [("renamed-durable", "PersistentTest", "durable")]
       liftIO $ runPersistent database do
         access <- expectRight (Resource.accessFromMessage ownerMessage)
         Resource.destroy access persistentId >>= liftIO . (@?= Right ())
@@ -248,24 +295,6 @@ testPersistentRestart =
         Resource.list access
       liftIO $ listedAfter @?= []
       ) `finally` cleanup
-
-testDestroyResourceTool :: Assertion
-testDestroyResourceTool = runManaged do
-  (testInit, destroyed) <- newTestInit "agent-owned" False
-  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
-  let context = Agent.AgentContext
-        { message = ownerMessage
-        , input = inputWithImages "" []
-        , superuser = False
-        , systemContext = ""
-        , askCommand = "!ask"
-        , toolConfig = Agent.defaultToolConfig
-        }
-      metadata = AgentTypes.ToolCallMetadata{agentRunId = "agent-1", parent = Nothing}
-  runner <- (ResourceTool.destroyResourceTool :: Agent.Tool ManagedStack).start context
-  result <- runner metadata (Aeson.object ["resource" Aeson..= resourceId])
-  liftIO $ AgentTypes.toolResultContent result @?= "Resource destroyed."
-  void (MVar.takeMVar destroyed)
 
 testPartialRemoval :: Assertion
 testPartialRemoval = runManaged do

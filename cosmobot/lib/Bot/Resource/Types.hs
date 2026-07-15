@@ -82,7 +82,10 @@ data ResourceError
   | ResourceNotFoundOrNotOwned
   | ResourceTypeMismatch
   | ResourceUnavailable
+  | InvalidResourceName
+  | ResourceNameAlreadyExists
   | ResourceCreationFailed !Text
+  | ResourceRenameFailed !Text
   | ResourceCleanupFailed !Text
   deriving stock (Eq, Show)
 

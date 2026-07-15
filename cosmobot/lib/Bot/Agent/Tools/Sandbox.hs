@@ -28,10 +28,11 @@ sandboxTool
   => Tool es
 sandboxTool = Tool
   { name = "sandbox"
-  , description = "Create or delete an isolated Debian sandbox, or run a Bash script in one."
+  , description = "Create, rename, or delete an isolated Debian sandbox, or run a Bash script in one."
   , parameters = objectSchema
-      [ fieldText "op" "One of: create, run, delete."
-      , fieldText "sandbox" "Sandbox id; required for run and delete."
+      [ fieldText "op" "One of: create, run, rename, delete."
+      , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
+      , fieldText "sandbox" "Sandbox name; required for run, rename, and delete."
       , fieldText "script" "Bash script; required for run."
       , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the script. Defaults to 30."
       , fieldInteger "output_byte_limit" "Maximum retained output bytes. Defaults to 1048576."
@@ -44,8 +45,8 @@ sandboxTool = Tool
         case Resource.accessFromMessage context.message of
           Left err -> pure (resourceToolFailure err)
           Right access -> case call of
-            SandboxCreate ->
-              Resource.createAssociated @Sandbox.Sandbox metadata.parent Resource.Init{message = context.message, arguments = ()} <&> \case
+            SandboxCreate requestedName ->
+              createSandbox metadata.parent requestedName Resource.Init{message = context.message, arguments = ()} <&> \case
                 Left err -> resourceToolFailure err
                 Right sandboxId -> toolText (jsonText (Aeson.object ["sandbox" Aeson..= sandboxId]))
             SandboxRun sandboxId script timeoutSeconds outputByteLimit -> do
@@ -54,18 +55,25 @@ sandboxTool = Tool
               pure $ either clientFailure toolText (join (first renderResourceError result))
             SandboxDelete sandboxId ->
               Resource.destroy access sandboxId <&> either resourceToolFailure (const (toolText "Sandbox deleted."))
+            SandboxRename sandboxId newName ->
+              Resource.rename access sandboxId newName <&> either resourceToolFailure (toolText . ("Sandbox renamed: " <>))
   }
+  where
+    createSandbox parent = \case
+      Nothing -> Resource.createAssociated @Sandbox.Sandbox parent
+      Just name -> Resource.createAssociatedNamed @Sandbox.Sandbox parent name
 
 data SandboxCall
-  = SandboxCreate
+  = SandboxCreate !(Maybe Text)
   | SandboxRun !Text !Text !Int !(Maybe Int)
   | SandboxDelete !Text
+  | SandboxRename !Text !Text
 
 sandboxArgs :: Aeson.Value -> AesonTypes.Parser SandboxCall
 sandboxArgs = Aeson.withObject "sandbox arguments" \o -> do
   op <- o Aeson..: Key.fromText "op"
   case op :: Text of
-    "create" -> pure SandboxCreate
+    "create" -> SandboxCreate <$> o Aeson..:? Key.fromText "name"
     "run" -> do
       sandboxId <- o Aeson..: Key.fromText "sandbox" >>= validText "sandbox"
       script <- o Aeson..: Key.fromText "script" >>= validValue "script"
@@ -75,7 +83,10 @@ sandboxArgs = Aeson.withObject "sandbox arguments" \o -> do
       when (maybe False (<= 0) outputByteLimit) $ fail "output_byte_limit must be positive."
       pure (SandboxRun sandboxId script timeoutSeconds outputByteLimit)
     "delete" -> SandboxDelete <$> (o Aeson..: Key.fromText "sandbox" >>= validText "sandbox")
-    _ -> fail "op must be one of: create, run, delete."
+    "rename" -> SandboxRename
+      <$> (o Aeson..: Key.fromText "sandbox" >>= validText "sandbox")
+      <*> (o Aeson..: Key.fromText "name" >>= validText "name")
+    _ -> fail "op must be one of: create, run, rename, delete."
 
 hasResourceIdentity :: AgentContext es -> Bool
 hasResourceIdentity = isRight . Resource.accessFromMessage . (.message)

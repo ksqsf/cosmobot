@@ -186,7 +186,6 @@ library
         Bot.Agent.Tools.Image
         Bot.Agent.Tools.Media
         Bot.Agent.Tools.Memory
-        Bot.Agent.Tools.Resource
         Bot.Agent.Tools.Schedule
         Bot.Agent.Tools.Sandbox
         Bot.Agent.Tools.Shell

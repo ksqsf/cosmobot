@@ -28,12 +28,13 @@ workspaceTool
   => Tool es
 workspaceTool = Tool
   { name = "workspace"
-  , description = "Manage dedicated /work workspaces for superuser-requested multi-step work such as repositories, git/PRs, scripts, CI, research, or ops. Create one before substantial work and keep WORK.md current with scope, path, branches/commits/PRs, validation, environment notes, and blockers. Read a repository's AGENTS.md before editing. Before GitHub push/PR operations, verify the authenticated gh user is ksqsfbot; gh may require HOME=/root, use HTTPS if SSH fails, and workflow pushes require workflow scope. Prefer a topic branch and PR with summary and validation. For scheduled feature requests, only comment with an approach and mention @ksqsf. Actions: create, query, update, delete."
+  , description = "Manage dedicated /work workspaces for superuser-requested multi-step work such as repositories, git/PRs, scripts, CI, research, or ops. Create one before substantial work and keep WORK.md current with scope, path, branches/commits/PRs, validation, environment notes, and blockers. Read a repository's AGENTS.md before editing. Before GitHub push/PR operations, verify the authenticated gh user is ksqsfbot; gh may require HOME=/root, use HTTPS if SSH fails, and workflow pushes require workflow scope. Prefer a topic branch and PR with summary and validation. For scheduled feature requests, only comment with an approach and mention @ksqsf. Actions: create, query, update, rename, delete."
   , parameters = objectSchema
-      [ fieldText "action" "One of: create, query, update, delete."
+      [ fieldText "action" "One of: create, query, update, rename, delete."
       , fieldText "id" "Short stable descriptive id for create; letters, digits, dot, underscore, and hyphen only."
+      , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
       , fieldText "goal" "Initial work goal for create, or complete replacement WORK.md contents for update."
-      , fieldText "resource" "Resource id returned by create; required for query, update, and delete."
+      , fieldText "resource" "Resource name returned by create; required for query, update, rename, and delete."
       ]
       ["action"]
   , noisy = False
@@ -43,10 +44,11 @@ workspaceTool = Tool
   }
 
 data WorkspaceCall
-  = CreateWorkspace !Workspace.WorkspaceArgs
+  = CreateWorkspace !(Maybe Text) !Workspace.WorkspaceArgs
   | QueryWorkspace !Text
   | UpdateWorkspace !Text !Text
   | DestroyWorkspace !Text
+  | RenameWorkspace !Text !Text
 
 runWorkspaceCall
   :: forall es. (Resource.Resource :> es, FileSystem.FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
@@ -58,8 +60,8 @@ runWorkspaceCall context metadata call =
   case Resource.accessFromMessage context.message of
     Left err -> pure (resourceToolFailure err)
     Right access -> case call of
-      CreateWorkspace arguments ->
-        Resource.createAssociated @Workspace.Workspace metadata.parent Resource.Init{message = context.message, arguments} <&> \case
+      CreateWorkspace requestedName arguments ->
+        createWorkspace requestedName Resource.Init{message = context.message, arguments} <&> \case
           Left err -> resourceToolFailure err
           Right resourceId -> toolText (jsonText (Aeson.object
             [ "resource" Aeson..= resourceId
@@ -72,7 +74,13 @@ runWorkspaceCall context metadata call =
       DestroyWorkspace resourceId -> use access resourceId (const (pure (Right ()))) >>= \case
         Left err -> pure (clientFailure err)
         Right () -> Resource.destroy access resourceId <&> first renderResourceError <&> resultWith "Workspace destroyed."
+      RenameWorkspace resourceId newName ->
+        Resource.rename access resourceId newName <&> first renderResourceError <&> resultWith "Workspace renamed."
   where
+    createWorkspace = \case
+      Nothing -> Resource.createAssociated @Workspace.Workspace metadata.parent
+      Just name -> Resource.createAssociatedNamed @Workspace.Workspace metadata.parent name
+
     use
       :: forall a. Resource.ResourceAccess
       -> Text
@@ -90,14 +98,17 @@ parseWorkspaceCall :: Aeson.Value -> AesonTypes.Parser WorkspaceCall
 parseWorkspaceCall = Aeson.withObject "workspace arguments" \o -> do
   action <- o Aeson..: Key.fromText "action"
   case action :: Text of
-    "create" -> CreateWorkspace <$> (Workspace.WorkspaceArgs
-      <$> (o Aeson..: Key.fromText "id" >>= validWorkId)
-      <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal"))
+    "create" -> CreateWorkspace
+      <$> o Aeson..:? Key.fromText "name"
+      <*> (Workspace.WorkspaceArgs
+        <$> (o Aeson..: Key.fromText "id" >>= validWorkId)
+        <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal"))
     "query" -> QueryWorkspace <$> requiredResourceId o
     "update" -> UpdateWorkspace <$> requiredResourceId o <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal")
     "delete" -> DestroyWorkspace <$> requiredResourceId o
     "destroy" -> DestroyWorkspace <$> requiredResourceId o
-    _ -> fail "action must be one of: create, query, update, delete."
+    "rename" -> RenameWorkspace <$> requiredResourceId o <*> (o Aeson..: Key.fromText "name" >>= validNonEmpty "name")
+    _ -> fail "action must be one of: create, query, update, rename, delete."
 
 requiredResourceId :: AesonTypes.Object -> AesonTypes.Parser Text
 requiredResourceId o = o Aeson..: Key.fromText "resource" >>= validNonEmpty "resource"

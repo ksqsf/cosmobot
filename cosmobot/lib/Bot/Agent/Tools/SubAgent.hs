@@ -29,13 +29,14 @@ subagentTool
 subagentTool runner availableTools =
   Tool
     { name = "subagent"
-    , description = "Manage a background agent scoped to the current chat. Operations: create, send, query, delete."
+    , description = "Manage a background agent scoped to the current chat. Operations: create, send, query, rename, delete."
     , parameters =
         objectSchema
-          [ fieldText "op" "One of: create, send, query, delete."
+          [ fieldText "op" "One of: create, send, query, rename, delete."
+          , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
           , fieldText "system_prompt" "System prompt for create; empty inherits the current system prompt."
           , fieldTextArray "tools" "Tool names exposed to the subagent for create; empty exposes none."
-          , fieldText "resource" "Subagent resource id; required for send, query, and delete."
+          , fieldText "resource" "Subagent resource name; required for send, query, rename, and delete."
           , fieldText "prompt" "Prompt to send; required for send."
           ]
           ["op"]
@@ -51,8 +52,8 @@ subagentTool runner availableTools =
         Left err -> pure (resourceToolFailure err)
         Right access ->
           case call of
-            Create systemPrompt toolNames ->
-              createSubAgent context metadata systemPrompt toolNames
+            Create requestedName systemPrompt toolNames ->
+              createSubAgent context metadata requestedName systemPrompt toolNames
             Send resourceId prompt ->
               use access resourceId \subagent ->
                 SubAgent.sendPrompt runner availableTools context subagent prompt
@@ -62,24 +63,31 @@ subagentTool runner availableTools =
             Destroy resourceId ->
               Resource.destroy access resourceId
                 <&> either resourceToolFailure (const (toolText "Subagent destroyed."))
+            Rename resourceId newName ->
+              Resource.rename access resourceId newName
+                <&> either resourceToolFailure (toolText . ("Subagent renamed: " <>))
       where
         use access resourceId action =
           Resource.withResource @SubAgent.SubAgent access resourceId metadata.parent action
             <&> join . first renderResourceError
             <&> either clientFailure toolText
 
-    createSubAgent context metadata systemPrompt toolNames =
+    createSubAgent context metadata requestedName systemPrompt toolNames =
       case validateTools context toolNames of
         Left err ->
           pure (clientFailure err)
         Right names ->
-          Resource.createAssociated @SubAgent.SubAgent metadata.parent
+          createResource requestedName
             Resource.Init
               { message = context.message
               , arguments = SubAgent.SubAgentArgs{systemContext, toolNames = names}
               }
             <&> either resourceToolFailure (toolText . ("Subagent created: " <>))
       where
+        createResource = \case
+          Nothing -> Resource.createAssociated @SubAgent.SubAgent metadata.parent
+          Just name -> Resource.createAssociatedNamed @SubAgent.SubAgent metadata.parent name
+
         systemContext
           | Text.null (Text.strip systemPrompt) = context.systemContext
           | otherwise = systemPrompt
@@ -94,10 +102,11 @@ subagentTool runner availableTools =
               | otherwise -> Left ("Tool is not allowed: " <> name)
 
 data Call
-  = Create !Text ![Text]
+  = Create !(Maybe Text) !Text ![Text]
   | Send !Text !Text
   | Query !Text
   | Destroy !Text
+  | Rename !Text !Text
 
 parseCall :: Aeson.Value -> AesonTypes.Parser Call
 parseCall = Aeson.withObject "subagent arguments" \o -> do
@@ -105,13 +114,15 @@ parseCall = Aeson.withObject "subagent arguments" \o -> do
   case op :: Text of
     "create" ->
       Create
-        <$> (fromMaybe "" <$> o Aeson..:? Key.fromText "system_prompt")
+        <$> o Aeson..:? Key.fromText "name"
+        <*> (fromMaybe "" <$> o Aeson..:? Key.fromText "system_prompt")
         <*> (fromMaybe [] <$> o Aeson..:? Key.fromText "tools")
     "send" -> Send <$> resource o <*> requiredText o "prompt"
     "query" -> Query <$> resource o
     "delete" -> Destroy <$> resource o
     "destroy" -> Destroy <$> resource o
-    _ -> fail "op must be one of: create, send, query, delete."
+    "rename" -> Rename <$> resource o <*> requiredText o "name"
+    _ -> fail "op must be one of: create, send, query, rename, delete."
   where
     resource o = requiredText o "resource"
     requiredText o key =

@@ -23,6 +23,7 @@ resourceHandlers :: (Chat.Chat :> es, Resource.Resource :> es) => [RouteHandler 
 resourceHandlers =
   [ stopOn (command "!res/ls") handleList
   , stopOn (command "!res/rm") handleRemove
+  , stopOn (command "!res/mv") handleRename
   ]
 
 resourceIds :: Text -> [Resource.ResourceId]
@@ -42,6 +43,18 @@ handleRemove message input =
       withAccess message \access -> do
         results <- removeResources access resourceIds_
         reply message (Text.unlines results)
+
+handleRename :: (Chat.Chat :> es, Resource.Resource :> es) => IncomingMessage -> Text -> Eff es ()
+handleRename message input =
+  case Text.words input of
+    [resourceId, newName] ->
+      withAccess message \access ->
+        Resource.rename access resourceId newName >>= \case
+          Right name -> reply message ("Resource renamed to `" <> name <> "`.")
+          Left Resource.InvalidResourceName -> reply message "Invalid resource name."
+          Left Resource.ResourceNameAlreadyExists -> reply message "Resource name already exists."
+          Left _ -> reply message "Resource not found, not owned, or unavailable."
+    _ -> reply message "Usage: !res/mv <resource_name> <new_name>"
 
 removeResources :: Resource.Resource :> es => Resource.ResourceAccess -> [Resource.ResourceId] -> Eff es [Text]
 removeResources access = traverse \resourceId ->
