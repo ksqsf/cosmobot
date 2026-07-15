@@ -6,8 +6,8 @@ module Main (main) where
 
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Tools.Terminal as TerminalTool
 import qualified Bot.Agent.Types as AgentTypes
-import qualified Bot.Agent.Tools.Shell as Shell
 import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.ACP as ACP
@@ -15,10 +15,11 @@ import qualified Bot.Effect.Resource as Resource
 import Bot.Handler.Resource (removeResources, resourceIds)
 import Bot.Prelude
 import qualified Bot.Resource as ResourceManager
+import qualified Bot.Resource.Terminal as Terminal
 import qualified Data.Aeson as Aeson
-import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.Prim.IORef as IORef
+import qualified Effectful.Process as Process
 import Test.Tasty
 import Test.Tasty.HUnit
 
@@ -90,6 +91,9 @@ main = defaultMain $ testGroup "resource"
   , testCase "acquisition is blocked while destruction runs" testBlockedDuringDestroy
   , testCase "manager exit destroys resources" testShutdown
   , testCase "ACP terminal uses local resource ids through release" testAcpTerminal
+  , testCase "Podman terminal arguments preserve argv and isolation" testPodmanArguments
+  , testCase "Podman terminal parses state and truncates retained output" testPodmanOutput
+  , testCase "Podman terminal renders failures and forced cleanup" testPodmanFailures
   , testCase "resource command ids preserve first occurrence" $
       resourceIds "res-2 res-1 res-2 res-3" @?= ["res-2", "res-1", "res-3"]
   , testCase "resource removal reports partial results independently" testPartialRemoval
@@ -98,21 +102,21 @@ main = defaultMain $ testGroup "resource"
 testTypedResources :: Assertion
 testTypedResources = runManaged do
   (testInit, _) <- newTestInit "alpha" False
-  firstResult <- Resource.create @TestObject Resource.Init{message = ownerMessage, agentId = "agent-1", arguments = testInit}
-  secondResult <- Resource.create @OtherObject Resource.Init{message = ownerMessage, agentId = "agent-2", arguments = ()}
+  firstResult <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit}
+  secondResult <- Resource.create @OtherObject Resource.Init{message = ownerMessage, arguments = ()}
   liftIO $ firstResult @?= Right "res-1"
   liftIO $ secondResult @?= Right "res-2"
   access <- expectRight (Resource.accessFromMessage ownerMessage)
   listed <- Resource.list access
-  liftIO $ map (\item -> (item.resourceType, item.agentId, item.description, item.probeResult)) listed
-    @?= [("Test", "agent-1", "alpha", Right "healthy"), ("Other", "agent-2", "other", Right "healthy")]
+  liftIO $ map (\item -> (item.resourceType, item.sessionId, item.description, item.probeResult)) listed
+    @?= [("Test", Nothing, "alpha", Right "healthy"), ("Other", Nothing, "other", Right "healthy")]
   mismatch <- Resource.withResource @OtherObject access "res-1" Nothing (const (pure ()))
   liftIO $ mismatch @?= Left Resource.ResourceTypeMismatch
 
 testOwnership :: Assertion
 testOwnership = runManaged do
   (testInit, _) <- newTestInit "owned" False
-  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, agentId = "agent", arguments = testInit} >>= expectRight
+  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
   otherAccess <- expectRight (Resource.accessFromMessage (ownerMessage{senderId = Just "other"}))
   Resource.list otherAccess >>= liftIO . (@?= [])
   Resource.destroy otherAccess resourceId >>= liftIO . (@?= Left Resource.ResourceNotFoundOrNotOwned)
@@ -125,7 +129,7 @@ testOwnership = runManaged do
 testScopedException :: Assertion
 testScopedException = runManaged do
   (testInit, _) <- newTestInit "scope" False
-  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, agentId = "agent", arguments = testInit} >>= expectRight
+  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
   access <- expectRight (Resource.accessFromMessage ownerMessage)
   _ <- trySync $ Resource.withResource @TestObject access resourceId Nothing \_ -> throwIO TestFailure
   Resource.withResource @TestObject access resourceId Nothing (pure . (.label)) >>= liftIO . (@?= Right "scope")
@@ -133,7 +137,7 @@ testScopedException = runManaged do
 testRemovalCancelsUsers :: Assertion
 testRemovalCancelsUsers = runManaged do
   (testInit, destroyed) <- newTestInit "active" False
-  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, agentId = "agent", arguments = testInit} >>= expectRight
+  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
   access <- expectRight (Resource.accessFromMessage ownerMessage)
   started <- MVar.newEmptyMVar
   stopped <- MVar.newEmptyMVar
@@ -148,7 +152,7 @@ testRemovalCancelsUsers = runManaged do
 testCleanupRetry :: Assertion
 testCleanupRetry = runManaged do
   (testInit, _) <- newTestInit "retry" True
-  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, agentId = "agent", arguments = testInit} >>= expectRight
+  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
   access <- expectRight (Resource.accessFromMessage ownerMessage)
   Resource.destroy access resourceId >>= liftIO . (@?= Left (Resource.ResourceCleanupFailed "cleanup failed"))
   Resource.withResource @TestObject access resourceId Nothing (pure . (.label)) >>= liftIO . (@?= Right "retry")
@@ -161,7 +165,6 @@ testBlockedDuringDestroy = runManaged do
   destroyed <- MVar.newEmptyMVar
   resourceId <- Resource.create @BlockingObject Resource.Init
     { message = ownerMessage
-    , agentId = "agent"
     , arguments = (destroyStarted, finishDestroy)
     } >>= expectRight
   access <- expectRight (Resource.accessFromMessage ownerMessage)
@@ -177,7 +180,7 @@ testShutdown :: Assertion
 testShutdown = do
   destroyed <- runManaged do
     (testInit, destroyed) <- newTestInit "shutdown" False
-    void $ Resource.create @TestObject Resource.Init{message = ownerMessage, agentId = "agent", arguments = testInit}
+    void $ Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit}
     pure destroyed
   runEff $ runConcurrent $ void (MVar.takeMVar destroyed)
 
@@ -185,8 +188,8 @@ testPartialRemoval :: Assertion
 testPartialRemoval = runManaged do
   (okInit, _) <- newTestInit "ok" False
   (badInit, _) <- newTestInit "bad" True
-  void $ Resource.create @TestObject Resource.Init{message = ownerMessage, agentId = "agent", arguments = okInit}
-  void $ Resource.create @TestObject Resource.Init{message = ownerMessage, agentId = "agent", arguments = badInit}
+  void $ Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = okInit}
+  void $ Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = badInit}
   access <- expectRight (Resource.accessFromMessage ownerMessage)
   results <- removeResources access (resourceIds "res-1 missing res-2 res-1")
   liftIO $ results @?=
@@ -200,7 +203,7 @@ testAcpTerminal = do
   calls <- runEff $ runPrim $ IORef.newIORef []
   runTerminal calls do
     let context = Agent.AgentContext
-          { message = ownerMessage{platform = PlatformACP}
+          { message = ownerMessage{platform = PlatformACP, chatId = Nothing, chatAliases = ["session-7"]}
           , input = inputWithImages "" []
           , superuser = False
           , systemContext = ""
@@ -208,7 +211,7 @@ testAcpTerminal = do
           , toolConfig = Agent.defaultToolConfig
           }
         metadata = AgentTypes.ToolCallMetadata{agentRunId = "agent-7", parent = Nothing}
-    runner <- (Shell.acpTerminalTool :: Agent.Tool TerminalStack).start context
+    runner <- (TerminalTool.terminalTool :: Agent.Tool TerminalStack).start context
     createResult <- runner metadata $ Aeson.object
       [ "action" Aeson..= ("create" :: Text)
       , "command" Aeson..= ("sleep" :: Text)
@@ -216,11 +219,14 @@ testAcpTerminal = do
       ]
     liftIO $ AgentTypes.toolResultContent createResult @?= "{\"terminalId\":\"res-1\"}"
     outputResult <- runner metadata $ Aeson.object ["action" Aeson..= ("output" :: Text), "terminal_id" Aeson..= ("res-1" :: Text)]
-    liftIO $ assertBool "terminal output uses the local id" ("still running" `Text.isInfixOf` AgentTypes.toolResultContent outputResult)
+    liftIO $ AgentTypes.toolResultContent outputResult @?= "{\"exitStatus\":null,\"output\":\"still running\",\"truncated\":false}"
+    waitResult <- runner metadata $ Aeson.object ["action" Aeson..= ("wait_for_exit" :: Text), "terminal_id" Aeson..= ("res-1" :: Text)]
+    liftIO $ AgentTypes.toolResultContent waitResult @?= "{\"exitCode\":0,\"signal\":null}"
     _ <- runner metadata $ Aeson.object ["action" Aeson..= ("kill" :: Text), "terminal_id" Aeson..= ("res-1" :: Text)]
     access <- expectRight (Resource.accessFromMessage context.message)
     listed <- Resource.list access
     liftIO $ map (.resourceId) listed @?= ["res-1"]
+    liftIO $ map (.sessionId) listed @?= [Just "session-7"]
     releaseResult <- runner metadata $ Aeson.object ["action" Aeson..= ("release" :: Text), "terminal_id" Aeson..= ("res-1" :: Text)]
     liftIO $ AgentTypes.toolResultContent releaseResult @?= "Terminal released."
     listedAfter <- Resource.list access
@@ -233,6 +239,48 @@ testAcpTerminal = do
     , "kill:remote-1"
     , "release:remote-1"
     ])
+
+testPodmanArguments :: Assertion
+testPodmanArguments = do
+  let create = ACP.TerminalCreate
+        { command = "printf"
+        , args = ["%s", "a; $(touch /tmp/nope)", "--flag"]
+        , env = [("GREETING", "hello world; $HOME")]
+        , cwd = Just "/tmp"
+        , outputByteLimit = Nothing
+        }
+  Terminal.podmanRunArgs "terminal-name" create @?=
+    [ "run", "--detach", "--name", "terminal-name", "--security-opt=no-new-privileges"
+    , "--label", "io.cosmobot.resource=terminal"
+    , "--log-opt", "max-size=1048576"
+    , "--env", "GREETING=hello world; $HOME"
+    , "--workdir", "/tmp"
+    , "--", "docker.io/library/debian:stable-slim"
+    , "bash", "-c", "exec \"$@\" 2>&1", "--", "printf"
+    , "%s", "a; $(touch /tmp/nope)", "--flag"
+    ]
+  assertBool "supplied output limit configures Podman retention" $
+    "max-size=7" `elem` Terminal.podmanRunArgs "terminal-name" create{ACP.outputByteLimit = Just 7}
+
+testPodmanOutput :: Assertion
+testPodmanOutput = do
+  Terminal.parseInspectState "{\"Running\":true,\"ExitCode\":0}" @?= Right Nothing
+  Terminal.parseInspectState "{\"Running\":false,\"ExitCode\":23}" @?=
+    Right (Just ACP.TerminalExitStatus{exitCode = Just 23, signal = Nothing})
+  Terminal.parseInspectState "not-json" @?= Left "Podman inspect returned malformed output."
+  Terminal.parseWaitExitStatus " 17\n" @?= Right ACP.TerminalExitStatus{exitCode = Just 17, signal = Nothing}
+  Terminal.parseWaitExitStatus "nope" @?= Left "Podman wait returned malformed output."
+  Terminal.truncateOutput 4 "abcdef" @?= ("cdef", True)
+  Terminal.truncateOutput 6 "abcdef" @?= ("abcdef", False)
+  Terminal.truncateOutput 1 "é" @?= ("", True)
+  Terminal.truncateOutput 2 "é" @?= ("é", False)
+
+testPodmanFailures :: Assertion
+testPodmanFailures = do
+  Terminal.podmanCleanupArgs "container-id" @?= ["rm", "--force", "--time", "0", "--ignore", "container-id"]
+  Terminal.renderPodmanFailure "inspect" 125 "" "missing container\n" @?=
+    "Podman inspect failed (exit 125): missing container"
+  Terminal.renderPodmanFailure "wait" 1 "" "" @?= "Podman wait failed (exit 1)."
 
 newTestInit :: (Prim :> es, Concurrent :> es) => Text -> Bool -> Eff es (TestInit, MVar.MVar ())
 newTestInit label failing = do
@@ -263,11 +311,11 @@ runManaged :: Eff '[Resource.Resource, Concurrency.Concurrency, Prim, Concurrent
 runManaged action =
   runEff $ runConcurrent $ runPrim $ ConcurrencyManager.runConcurrencyManager $ ResourceManager.runResourceManager action
 
-type TerminalStack = '[Resource.Resource, ACP.ACP, Concurrency.Concurrency, Prim, Concurrent, IOE]
+type TerminalStack = '[Resource.Resource, ACP.ACP, Concurrency.Concurrency, Prim, Process.Process, Concurrent, IOE]
 
 runTerminal :: IORef.IORef [Text] -> Eff TerminalStack a -> IO a
 runTerminal calls action =
-  runEff $ runConcurrent $ runPrim $ ConcurrencyManager.runConcurrencyManager $ runFakeACP calls $ ResourceManager.runResourceManager action
+  runEff $ runConcurrent $ Process.runProcess $ runPrim $ ConcurrencyManager.runConcurrencyManager $ runFakeACP calls $ ResourceManager.runResourceManager action
 
 runFakeACP :: forall es a. Prim :> es => IORef.IORef [Text] -> Eff (ACP.ACP : es) a -> Eff es a
 runFakeACP calls = interpret \_ -> \case

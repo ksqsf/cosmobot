@@ -7,7 +7,7 @@ import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Tools.Files as FileTools
 import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
-import qualified Bot.Agent.Tools.Shell as ShellTools
+import qualified Bot.Agent.Tools.Terminal as TerminalTools
 import qualified Bot.Agent.Types as AgentTypes
 import Bot.Agent.Tools.Shell (runBashSafe)
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
@@ -188,7 +188,7 @@ main =
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
-      , testCase "ACP client terminal tool is ACP-only" testAcpClientTerminalToolIsAcpOnly
+      , testCase "terminal tool is universal with resource identity" testTerminalToolIsUniversal
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "tool reply middleware normalizes reply images" testToolReplyMiddlewareNormalizesReplyImages
       , testCase "tool reply middleware rejects uncached remote images" testToolReplyMiddlewareRejectsUncachedRemoteImages
@@ -292,13 +292,15 @@ testAcpClientFileToolsAreAcpOnly = do
   assertBool "read tool should be visible for ACP" (readTool.allowed acpContext)
   assertBool "write tool should be visible for ACP" (writeTool.allowed acpContext)
 
-testAcpClientTerminalToolIsAcpOnly :: IO ()
-testAcpClientTerminalToolIsAcpOnly = do
-  let terminalTool = ShellTools.acpTerminalTool :: Agent.Tool AgentStack
+testTerminalToolIsUniversal :: IO ()
+testTerminalToolIsUniversal = do
+  let terminalTool = TerminalTools.terminalTool :: Agent.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
-  terminalTool.name @?= "acp_terminal"
-  assertBool "terminal tool should be hidden outside ACP" (not (terminalTool.allowed agentContext))
+      missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
+  terminalTool.name @?= "terminal"
+  assertBool "terminal tool should be visible outside ACP" (terminalTool.allowed agentContext)
   assertBool "terminal tool should be visible for ACP" (terminalTool.allowed acpContext)
+  assertBool "terminal tool should require resource identity" (not (terminalTool.allowed missingIdentity))
 
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do
@@ -536,11 +538,7 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
   replies <- IORef.newIORef ([] :: [Text])
   _ <- runAgentWithImageEditAndReferencedMessage answers editCalls editedImage (Just referenced) (ChatMock (Just replies) (Just "47") Nothing) do
     threads <- newThreadStore
-    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
-    waitUntil (liftIO $ (>= 3) . length <$> IORef.readIORef replies)
-    waitUntil do
-      toolUses <- AgentAudit.queryRecentToolUses 10
-      pure (any finishedEditImageUse toolUses)
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads message
   IORef.readIORef editCalls >>= (@?= [ImageEditCall prompt [referencedImage] Nothing LLM.defaultImageRequestOptions])
 
 testAskHandlerIncludesReferencedImageUrlsInTextContext :: IO ()
@@ -573,9 +571,7 @@ testAskHandlerIncludesReferencedImageUrlsInTextContext = do
     (\_ _ -> pure "unused image answer")
     (\_ _ _ _ -> pure "unused image edit answer") do
       threads <- newThreadStore
-      runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
-      waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
-      waitUntilFinished "ask.command"
+      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads message
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just request -> do
@@ -616,9 +612,7 @@ testAskHandlerIncludesFilesInTextContext = do
     (\_ _ -> pure "unused image answer")
     (\_ _ _ _ -> pure "unused image edit answer") do
       threads <- newThreadStore
-      runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
-      waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
-      waitUntilFinished "ask.command"
+      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads message
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just request -> do
@@ -682,9 +676,7 @@ testAcpAskHandlerContinuesDurableSessionTranscript = do
             , text = "follow up"
             , imageUrls = ["data:image/png;base64,AAAA"]
             }
-    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
-    waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
-    waitUntil (liftIO $ not . null <$> IORef.readIORef replies)
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads message
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just request -> do
@@ -966,8 +958,7 @@ testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     threads <- newThreadStore
-    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) askHandlerMessage
-    waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads askHandlerMessage
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just (message : secondMessage : _) -> do
@@ -991,8 +982,7 @@ testAskHandlerSystemContextUsesMessageBotId = do
     threads <- newThreadStore
     let cfg = askHandlerConfig{botIds = []}
         message = askHandlerMessage{digest = askHandlerMessage.digest{botId = Just "2044933066"}}
-    runHandlers (askHandlers Agent.defaultToolConfig cfg threads) message
-    waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
+    runAskHandlersAndWait Agent.defaultToolConfig cfg threads message
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just (message : secondMessage : _) -> do
@@ -1022,8 +1012,7 @@ testAskHandlerInjectsStartupSkillMetadata = withTempDir "skills-test" \skillsDir
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   _ <- runAgentCapturingMessagesWithSkills (SkillsStore.SkillsConfig skillsDir) captured answers (ChatMock Nothing Nothing Nothing) do
     threads <- newThreadStore
-    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) askHandlerMessage
-    waitUntil (liftIO $ not . null <$> IORef.readIORef captured)
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads askHandlerMessage
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
     Just (message : _) ->
@@ -1253,11 +1242,7 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
   replies <- IORef.newIORef ([] :: [Text])
   _ <- runAgentWith answers (ChatMock (Just replies) (Just "45") Nothing) do
     threads <- newThreadStore
-    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) askHandlerMessage
-    waitUntil (liftIO $ (>= 2) . length <$> IORef.readIORef replies)
-    waitUntil do
-      toolUses <- AgentAudit.queryRecentToolUses 10
-      pure (any finishedGenerateImageUse toolUses)
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads askHandlerMessage
   sent <- IORef.readIORef replies
   case sent of
     progress : _ ->
@@ -1266,22 +1251,6 @@ testAskHandlerAnnouncesNoisyToolCallsWithAuditId = do
         ("正在调用 image_generate 工具...（id=" `Text.isPrefixOf` progress && "）" `Text.isSuffixOf` progress)
     _ ->
       assertFailure [i|expected noisy tool progress reply, got #{show sent :: String}|]
-
-finishedGenerateImageUse :: AgentAudit.ToolUseDetail -> Bool
-finishedGenerateImageUse toolUse =
-  toolUse.toolName == "image_generate" && isFinished toolUse.status
-  where
-    isFinished = \case
-      AgentAudit.ToolUseFinished{} -> True
-      _ -> False
-
-finishedEditImageUse :: AgentAudit.ToolUseDetail -> Bool
-finishedEditImageUse toolUse =
-  toolUse.toolName == "image_edit" && isFinished toolUse.status
-  where
-    isFinished = \case
-      AgentAudit.ToolUseFinished{} -> True
-      _ -> False
 
 testAskHandlerFlushesStreamedContentBeforeToolCalls :: IO ()
 testAskHandlerFlushesStreamedContentBeforeToolCalls = do
@@ -1298,8 +1267,7 @@ testAskHandlerFlushesStreamedContentBeforeToolCalls = do
   replies <- IORef.newIORef ([] :: [Text])
   _ <- runAgentWithStreamingAnswers answers (ChatMock (Just replies) (Just "46") Nothing) do
     threads <- newThreadStore
-    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) askHandlerMessage
-    waitUntil (liftIO $ (>= 2) . length <$> IORef.readIORef replies)
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads askHandlerMessage
   IORef.readIORef replies >>= (@?= ["我会查天气", "我已经查到天气"])
 
 testAgentStreamsToolRequestContentBeforeToolNotification :: IO ()
@@ -2969,9 +2937,17 @@ waitUntil predicate =
         threadDelay 20_000
         go (remaining - 1)
 
-waitUntilFinished :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es) => Text -> Eff es ()
-waitUntilFinished label =
-  waitUntil do
-    snapshot <- Concurrency.list
-    let matching = filter ((== label) . (.label)) snapshot.entries
-    pure (not (null matching) && all (Concurrency.Running /=) ((.status) <$> matching))
+runAskHandlersAndWait
+  :: Agent.ToolConfig
+  -> AskHandlerConfig
+  -> ThreadStore
+  -> IncomingMessage
+  -> Eff AgentStack ()
+runAskHandlersAndWait toolConfig config threads message = do
+  before <- Concurrency.list
+  runHandlers (askHandlers toolConfig config threads) message
+  snapshotAfter <- Concurrency.list
+  let existingIds = (.id) <$> before.entries
+      started = filter ((`notElem` existingIds) . (.id)) snapshotAfter.entries
+  when (null started) (liftIO $ assertFailure "ask handler did not start background work")
+  for_ started (Concurrency.await . Concurrency.Handle . (.id))

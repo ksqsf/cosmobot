@@ -18,6 +18,7 @@ import Bot.Agent.Tools.Media
 import Bot.Agent.Tools.Memory
 import Bot.Agent.Tools.Schedule
 import Bot.Agent.Tools.Shell
+import Bot.Agent.Tools.Terminal
 import Bot.Agent.Tools.Time
 import Bot.Agent.Tools.Typst
 import Bot.Agent.Tools.Web
@@ -87,6 +88,6 @@ defaultTools =
   , manageSenderMemoryTool
   , manageChatMemoryTool
   , runBashTool
-  , acpTerminalTool
+  , terminalTool
   , emacsEvalTool
   ]

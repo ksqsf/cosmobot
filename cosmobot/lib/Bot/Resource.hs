@@ -20,6 +20,7 @@ module Bot.Resource
   )
 where
 
+import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude hiding (state)
@@ -34,7 +35,7 @@ data Availability
 
 data SomeResource es = SomeResource
   { owner :: !ResourceOwner
-  , agentId :: !Text
+  , sessionId :: !(Maybe Text)
   , resourceType :: !Text
   , value :: !Dynamic.Dynamic
   , describe :: Either Text Text -> Eff es Text
@@ -92,15 +93,15 @@ createIn stateRef unlift _ initValue =
           else (state, Left ResourceUnavailable)
       case reservation of
         Left err -> pure (Left err)
-        Right createId -> createAndRegister owner `finally` finishCreate createId gate
+        Right createId -> (mask \restore -> createAndRegister restore owner) `finally` finishCreate createId gate
   where
-    createAndRegister owner =
-      unlift (createResourceObject @(Eff localEs) @a initValue) >>= \case
+    createAndRegister restore owner =
+      restore (unlift (createResourceObject @(Eff localEs) @a initValue)) >>= \case
         Left err -> pure (Left (ResourceCreationFailed err))
         Right object -> do
           let resource = SomeResource
                 { owner
-                , agentId = initValue.agentId
+                , sessionId = sessionIdFromMessage initValue.message
                 , resourceType = resourceTypeName @(Eff localEs) @a (Proxy @a)
                 , value = Dynamic.toDyn object
                 , describe = unlift . describeResourceObject object
@@ -150,11 +151,16 @@ listIn stateRef access = do
     snapshot (resourceId, resource) = do
       probeResult <- resource.probe
       description <- resource.describe probeResult
-      pure $ SomeResourceObject resourceId resource.resourceType resource.agentId description probeResult
+      pure $ SomeResourceObject resourceId resource.resourceType resource.sessionId description probeResult
 
     isAvailable = \case
       Available{} -> True
       Destroying -> False
+
+sessionIdFromMessage :: IncomingMessage -> Maybe Text
+sessionIdFromMessage message
+  | message.platform `elem` [PlatformACP, PlatformRPC] = listToMaybe message.chatAliases
+  | otherwise = Nothing
 
 destroyIn
   :: (Concurrency.Concurrency :> es, Prim :> es)

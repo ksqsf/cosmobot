@@ -188,6 +188,7 @@ library
         Bot.Agent.Tools.Memory
         Bot.Agent.Tools.Schedule
         Bot.Agent.Tools.Shell
+        Bot.Agent.Tools.Terminal
         Bot.Agent.Tools.Time
         Bot.Agent.Tools.Typst
         Bot.Agent.Tools.Web
@@ -277,6 +278,7 @@ library
         Bot.RPC.Server
         Bot.RPC.State
         Bot.Resource
+        Bot.Resource.Terminal
         Bot.Resource.Types
         Bot.Session
         Bot.Skills

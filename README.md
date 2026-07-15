@@ -35,10 +35,7 @@ By default, the binary is statically linked with Haskell dependencies, so you ca
 
 Cosmobot is still in infancy. We do not recommend you use Cosmobot in any critical scenario.
 
-Regarding **Security**, currently, Cosmobot has ZERO security features except `superusers`! And we strongly advise you against running the agent unprotected!
-
-- Whenever the agent reacts to a message sender, the list of available tools is determined by whether they are a superuser. Privileged tools are only visible to the agent if it is responding to a superuser request.
-- However, this does NOT prevent prompt injection. A malicious chat message or webpage is very much possible to fool your agent to do dangerous things!
+Regarding **Security**, currently, Cosmobot provides only safe tools to normal users, including sandboxed terminal (by default, network is supported which may expose your IP address). But for superusers, all tools are available and is vulnerable to prompt injection.
 
 Regarding **Privacy**, we have done our best effort. For example, Alice can never query Bob's chat log. But that's about it.
 
@@ -317,6 +314,11 @@ The following can happen automatically:
 
 ## Other Handlers
 
+### Resource
+
+- `!res/ls`: list resources owned by you
+- `!res/rm`: delete a resource
+
 ### Todo list
 
 Todos are scoped by `(platform,senderId)`:
@@ -341,39 +343,40 @@ You need to provide `api_key` in `[handler.saucenao]`. Currently, only the top r
 
 Currently, the following tools are available:
 
-| Category | Name              | Privileged? |
-|----------|-------------------|-------------|
-| ACP      | `acp_read_client_file`  | ACP only    |
-| ACP      | `acp_write_client_file` | ACP only    |
-| ACP      | `acp_terminal`          | ACP only    |
-| Files    | `list_files`      | Yes         |
-| Files    | `read_file`       | Yes         |
-| Chat     | `chat_log`        |             |
-| Chat     | `sender_chat_log` |             |
-| Chat     | `send_reply`      |             |
-| Chat     | `send_file`       | Yes         |
-| Chat     | `mention_user`    |             |
-| Chat     | `sender_info`     |             |
-| Chat     | `member_info`     |             |
-| Chat     | `user_avatar`     |             |
-| Chat     | `group_members`   |             |
-| Chat     | `message_info`    |             |
-| Emacs    | `emacs_eval`      | Yes         |
-| Audio    | `audio_generate`  |             |
-| Image    | `image_generate`  |             |
-| Image    | `image_edit`      |             |
-| Image    | `image_cache`     |             |
-| Media    | `media_text`      |             |
-| Memory   | `sender_memory`   |             |
-| Memory   | `chat_memory`     |             |
-| Schedule | `schedule`        |             |
-| Schedule | `delete_schedule` |             |
-| Schedule | `list_schedules`  |             |
-| Shell    | `run_bash`        | Yes         |
-| Time     | `now`             |             |
-| Typst    | `typst_render`    |             |
-| Web      | `search_web`      |             |
-| Web      | `fetch_url`       |             |
+|Category|Name                   |Privileged?|
+|--------|-----------------------|-----------|
+|ACP     |`acp_read_client_file` |ACP only   |
+|ACP     |`acp_write_client_file`|ACP only   |
+|ACP     |`acp_terminal`         |ACP only   |
+|Files   |`list_files`           |Yes        |
+|Files   |`read_file`            |Yes        |
+|Chat    |`chat_log`             |           |
+|Chat    |`sender_chat_log`      |           |
+|Chat    |`send_reply`           |           |
+|Chat    |`send_file`            |Yes        |
+|Chat    |`mention_user`         |           |
+|Chat    |`sender_info`          |           |
+|Chat    |`member_info`          |           |
+|Chat    |`user_avatar`          |           |
+|Chat    |`group_members`        |           |
+|Chat    |`message_info`         |           |
+|Emacs   |`emacs_eval`           |Yes        |
+|Audio   |`audio_generate`       |           |
+|Image   |`image_generate`       |           |
+|Image   |`image_edit`           |           |
+|Image   |`image_cache`          |           |
+|Media   |`media_text`           |           |
+|Memory  |`sender_memory`        |           |
+|Memory  |`chat_memory`          |           |
+|Schedule|`schedule`             |           |
+|Schedule|`delete_schedule`      |           |
+|Schedule|`list_schedules`       |           |
+|Shell   |`run_bash`             |Yes        |
+|Terminal|`terminal`             |           |
+|Time    |`now`                  |           |
+|Typst   |`typst_render`         |           |
+|Web     |`search_web`           |           |
+|Web     |`fetch_url`            |           |
 
 Note:
 

@@ -20,7 +20,7 @@ type ResourceId = Text
 
 data ResourceOwner = ResourceOwner
   { platform :: !ChatPlatform
-  , chatId :: !Integer
+  , chatId :: !Text
   , senderId :: !Text
   }
   deriving stock (Eq, Ord, Show)
@@ -33,7 +33,6 @@ data ResourceAccess = ResourceAccess
 
 data Init a = Init
   { message :: !IncomingMessage
-  , agentId :: !Text
   , arguments :: !a
   }
 
@@ -48,7 +47,7 @@ class Typeable a => ResourceObject m a where
 data SomeResourceObject = SomeResourceObject
   { resourceId :: !ResourceId
   , resourceType :: !Text
-  , agentId :: !Text
+  , sessionId :: !(Maybe Text)
   , description :: !Text
   , probeResult :: !(Either Text Text)
   }
@@ -65,7 +64,9 @@ data ResourceError
 
 ownerFromMessage :: IncomingMessage -> Either ResourceError ResourceOwner
 ownerFromMessage message =
-  ResourceOwner message.platform <$> maybeToRight MissingResourceIdentity message.chatId <*> maybeToRight MissingResourceIdentity message.senderId
+  ResourceOwner message.platform
+    <$> maybeToRight MissingResourceIdentity (show <$> message.chatId <|> listToMaybe message.chatAliases)
+    <*> maybeToRight MissingResourceIdentity message.senderId
 
 accessFromMessage :: IncomingMessage -> Either ResourceError ResourceAccess
 accessFromMessage message =
