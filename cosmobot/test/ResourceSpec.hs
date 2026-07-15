@@ -283,16 +283,11 @@ testPodmanArguments =
 testPodmanExecArguments :: Assertion
 testPodmanExecArguments = do
   let script = "printf '%s' '$HOME; $(touch /tmp/nope)'"
-      args = Sandbox.podmanExecArgs "container-id" "cmd-10-20" 7 script
-  take 5 args @?= ["exec", "--detach", "container-id", "bash", "-c"]
-  drop (length args - 6) args @?=
-    [ "--"
-    , "/tmp/cosmobot-cmd-10-20.out"
-    , "/tmp/cosmobot-cmd-10-20.status"
-    , "/tmp/cosmobot-cmd-10-20.pid"
-    , "7"
-    , Text.unpack script
-    ]
+      args = Sandbox.podmanExecArgs "container-id" 30 7 script
+  take 4 args @?= ["exec", "container-id", "bash", "-c"]
+  drop (length args - 4) args @?= ["--", "30", "7", Text.unpack script]
+  assertBool "sandbox command should be synchronous" ("--detach" `notElem` args)
+  assertBool "sandbox wrapper should not use temporary files" (maybe False (not . Text.isInfixOf "/tmp" . Text.pack) (args !!? 4))
 
 testPodmanOutput :: Assertion
 testPodmanOutput = do

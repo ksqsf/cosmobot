@@ -115,23 +115,10 @@ runSandboxBashSafe
   -> Maybe Int
   -> Eff es (Either Text Text)
 runSandboxBashSafe timeoutSeconds sandbox script outputByteLimit =
-  Sandbox.createCommand sandbox script outputByteLimit >>= \case
-    Left err -> pure (Left err)
-    Right commandId -> run commandId `finally` void (Sandbox.releaseCommand sandbox commandId)
-  where
-    run commandId = do
-      let effectiveTimeout = max 1 timeoutSeconds
-          stop = void (Sandbox.killCommand sandbox commandId)
-      outcome <- timeout (effectiveTimeout * 1_000_000) (Sandbox.waitForCommand sandbox commandId)
-        `onException` stop
-      case outcome of
-        Nothing -> do
-          stop
-          _ <- timeout processExitGraceMicroseconds (Sandbox.waitForCommand sandbox commandId)
-          Sandbox.commandOutput sandbox commandId <&> fmap (formatSandboxTimeout effectiveTimeout)
-        Just (Left err) -> pure (Left err)
-        Just (Right exitCode) ->
-          Sandbox.commandOutput sandbox commandId <&> fmap (formatSandboxResult exitCode)
+  Sandbox.runCommand timeoutSeconds sandbox script outputByteLimit <&> fmap \output ->
+    if output.timedOut
+      then formatSandboxTimeout (max 1 timeoutSeconds) output
+      else formatSandboxResult (fromMaybe 1 output.exitCode) output
 
 formatSandboxTimeout :: Int -> Sandbox.SandboxOutput -> Text
 formatSandboxTimeout timeoutSeconds output =

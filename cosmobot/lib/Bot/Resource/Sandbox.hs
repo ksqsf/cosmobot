@@ -9,11 +9,7 @@ Stability   : experimental
 module Bot.Resource.Sandbox
   ( Sandbox
   , SandboxOutput (..)
-  , createCommand
-  , commandOutput
-  , waitForCommand
-  , killCommand
-  , releaseCommand
+  , runCommand
   , podmanRunArgs
   , podmanExecArgs
   , podmanCleanupArgs
@@ -27,11 +23,11 @@ import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
 import qualified Bot.Util.Process as ProcessUtil
 import qualified Data.ByteString as ByteString
-import qualified Data.Char as Char
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Unique as Unique
 import qualified Effectful.Process.Typed as TypedProcess
+import Effectful.Timeout (Timeout, timeout)
 import System.Exit (ExitCode (..))
 import qualified System.Posix.Process as Posix
 
@@ -43,6 +39,7 @@ data SandboxOutput = SandboxOutput
   { output :: !Text
   , truncated :: !Bool
   , exitCode :: !(Maybe Int)
+  , timedOut :: !Bool
   }
   deriving stock (Eq, Show)
 
@@ -75,96 +72,25 @@ instance
   describeResourceObject _ probeResult =
     pure $ "debian:stable-slim [" <> either (const "unreachable") id probeResult <> "]"
 
-createCommand
-  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Sandbox
+runCommand
+  :: (Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
+  => Int
+  -> Sandbox
   -> Text
   -> Maybe Int
-  -> Eff es (Either Text Text)
-createCommand sandbox script requestedLimit = mask \restore -> do
-  commandId <- newCommandId
-  let paths = commandPaths commandId
-      limit = fromMaybe defaultOutputByteLimit requestedLimit
-      cleanup = void (releaseCommand sandbox commandId)
-  prepared <- restore $ runPodman "prepare command" (podmanPrepareArgs sandbox.containerId paths limit)
-  case prepared of
-    Left err -> pure (Left err)
-    Right _ -> do
-      launched <- restore (runPodman "start command" (podmanExecArgs sandbox.containerId commandId limit script))
-        `onException` cleanup
-      case launched of
-        Left err -> cleanup $> Left err
-        Right rawExecId
-          | validPodmanId (Text.strip rawExecId) -> pure (Right commandId)
-          | otherwise -> cleanup $> Left "Podman exec returned a malformed command id."
-
-commandOutput
-  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Sandbox
-  -> Text
   -> Eff es (Either Text SandboxOutput)
-commandOutput sandbox commandId =
-  withCommandPaths sandbox commandId \paths -> do
-    limitResult <- readCommandFile sandbox "read command limit" paths.limit
-    outputResult <- readCommandFile sandbox "read command output" paths.output
-    statusResult <- readOptionalCommandFile sandbox paths.status
-    pure do
-      limit <- limitResult >>= maybe (Left "Sandbox command has a malformed output limit.") Right . readMaybe . Text.unpack . Text.strip
-      rawOutput <- outputResult
-      status <- statusResult >>= traverse parseExitCode
+runCommand timeoutSeconds sandbox script requestedLimit = do
+  let effectiveTimeout = max 1 timeoutSeconds
+      limit = fromMaybe defaultOutputByteLimit requestedLimit
+      args = podmanExecArgs sandbox.containerId effectiveTimeout limit script
+  outcome <- timeout ((effectiveTimeout + commandExitGraceSeconds) * 1_000_000) (runPodmanCommand args)
+  case outcome of
+    Nothing -> pure (Left "Podman command did not exit after its timeout.")
+    Just result -> pure do
+      (exitCode, rawOutput) <- result
       let (output, truncated) = retainOutput limit rawOutput
-      pure SandboxOutput{output, truncated, exitCode = status}
-
-waitForCommand
-  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Sandbox
-  -> Text
-  -> Eff es (Either Text Int)
-waitForCommand sandbox commandId =
-  withCommandPaths sandbox commandId \paths -> go paths
-  where
-    go paths = readOptionalCommandFile sandbox paths.status >>= \case
-      Left err -> pure (Left err)
-      Right Nothing -> threadDelay 20_000 >> go paths
-      Right (Just rawStatus) -> pure (parseExitCode rawStatus)
-
-killCommand
-  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Sandbox
-  -> Text
-  -> Eff es (Either Text ())
-killCommand sandbox commandId =
-  withCommandPaths sandbox commandId \paths ->
-    runPodman "kill command" (podmanKillArgs sandbox.containerId paths) <&> void
-
-releaseCommand
-  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Sandbox
-  -> Text
-  -> Eff es (Either Text ())
-releaseCommand sandbox commandId =
-  case validCommandId commandId of
-    False -> pure (Left "Sandbox command not found.")
-    True -> do
-      let paths = commandPaths commandId
-      _ <- runPodman "kill command" (podmanKillArgs sandbox.containerId paths)
-      runPodman "release command" (podmanReleaseArgs sandbox.containerId paths) <&> void
-
-withCommandPaths
-  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Sandbox
-  -> Text
-  -> (CommandPaths -> Eff es (Either Text a))
-  -> Eff es (Either Text a)
-withCommandPaths sandbox commandId action
-  | not (validCommandId commandId) = pure (Left "Sandbox command not found.")
-  | otherwise = do
-      let paths = commandPaths commandId
-      exists <- commandExists sandbox paths
-      case exists of
-        Left err -> pure (Left err)
-        Right False -> pure (Left "Sandbox command not found.")
-        Right True -> action paths
+      -- ponytail: GNU timeout reserves 124/137; add an out-of-band status channel if scripts must preserve them exactly.
+      pure SandboxOutput{output, truncated, exitCode = Just exitCode, timedOut = exitCode `elem` [124, 137]}
 
 createSandbox
   :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
@@ -180,26 +106,6 @@ createSandbox = do
         result -> cleanup $> Left (either id (const "Podman create returned a malformed container id.") result)
   createAndValidate `onException` cleanup
 
-readCommandFile
-  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Sandbox
-  -> Text
-  -> Text
-  -> Eff es (Either Text Text)
-readCommandFile sandbox operation path =
-  runPodman operation ["exec", Text.unpack sandbox.containerId, "cat", Text.unpack path]
-
-readOptionalCommandFile
-  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Sandbox
-  -> Text
-  -> Eff es (Either Text (Maybe Text))
-readOptionalCommandFile sandbox path =
-  runPodman "read command status"
-    [ "exec", Text.unpack sandbox.containerId, "bash", "-c"
-    , "if [ -f \"$1\" ]; then cat \"$1\"; fi", "--", Text.unpack path
-    ] <&> fmap (\value -> value <$ guard (not (Text.null (Text.strip value))))
-
 runPodman
   :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => Text
@@ -212,19 +118,20 @@ runPodman operation args =
     Right (ExitFailure code, stdoutText, stderrText) ->
       Left (renderPodmanFailure operation code stdoutText stderrText)
 
-commandExists
+runPodmanCommand
   :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Sandbox
-  -> CommandPaths
-  -> Eff es (Either Text Bool)
-commandExists sandbox paths =
-  trySync (ProcessUtil.readProcessGroupWithExitCode "podman"
-    ["exec", Text.unpack sandbox.containerId, "test", "-f", Text.unpack paths.limit]) <&> \case
-      Left _ -> Left "Podman is unavailable."
-      Right (ExitSuccess, _, _) -> Right True
-      Right (ExitFailure 1, "", "") -> Right False
-      Right (ExitFailure code, stdoutText, stderrText) ->
-        Left (renderPodmanFailure "find command" code stdoutText stderrText)
+  => [String]
+  -> Eff es (Either Text (Int, Text))
+runPodmanCommand args =
+  trySync (ProcessUtil.readProcessGroupWithExitCode "podman" args) <&> \case
+    Left _ -> Left "Podman is unavailable."
+    Right (ExitFailure 125, stdoutText, stderrText) ->
+      Left (renderPodmanFailure "command" 125 stdoutText stderrText)
+    Right (exitCode, stdoutText, stderrText) ->
+      Right (exitCodeNumber exitCode, stdoutText <> stderrText)
+  where
+    exitCodeNumber ExitSuccess = 0
+    exitCodeNumber (ExitFailure code) = code
 
 podmanRunArgs :: Text -> [String]
 podmanRunArgs name =
@@ -234,37 +141,13 @@ podmanRunArgs name =
   , "--", sandboxImage, "sleep", "infinity"
   ]
 
-podmanExecArgs :: Text -> Text -> Int -> Text -> [String]
-podmanExecArgs containerId commandId limit script =
-  [ "exec", "--detach", Text.unpack containerId
+podmanExecArgs :: Text -> Int -> Int -> Text -> [String]
+podmanExecArgs containerId timeoutSeconds limit script =
+  [ "exec", Text.unpack containerId
   , "bash", "-c", commandWrapper, "--"
-  , Text.unpack paths.output
-  , Text.unpack paths.status
-  , Text.unpack paths.pid
+  , show timeoutSeconds
   , show limit
   , Text.unpack script
-  ]
-  where
-    paths = commandPaths commandId
-
-podmanPrepareArgs :: Text -> CommandPaths -> Int -> [String]
-podmanPrepareArgs containerId paths limit =
-  [ "exec", Text.unpack containerId, "bash", "-c"
-  , ": > \"$1\"; rm -f \"$2\" \"$3\"; printf '%s' \"$4\" > \"$5\""
-  , "--", Text.unpack paths.output, Text.unpack paths.status, Text.unpack paths.pid
-  , show limit, Text.unpack paths.limit
-  ]
-
-podmanKillArgs :: Text -> CommandPaths -> [String]
-podmanKillArgs containerId paths =
-  [ "exec", Text.unpack containerId, "bash", "-c", killWrapper, "--"
-  , Text.unpack paths.pid, Text.unpack paths.status
-  ]
-
-podmanReleaseArgs :: Text -> CommandPaths -> [String]
-podmanReleaseArgs containerId paths =
-  [ "exec", Text.unpack containerId, "rm", "-f"
-  , Text.unpack paths.output, Text.unpack paths.status, Text.unpack paths.pid, Text.unpack paths.limit
   ]
 
 podmanCleanupArgs :: Text -> [String]
@@ -295,60 +178,23 @@ renderPodmanFailure operation code stdoutText stderrText =
   in "Podman " <> operation <> " failed (exit " <> show code <> ")"
       <> if Text.null detail then "." else ": " <> detail
 
-data CommandPaths = CommandPaths
-  { output :: !Text
-  , status :: !Text
-  , pid :: !Text
-  , limit :: !Text
-  }
-
-commandPaths :: Text -> CommandPaths
-commandPaths commandId = CommandPaths
-  { output = base <> ".out"
-  , status = base <> ".status"
-  , pid = base <> ".pid"
-  , limit = base <> ".limit"
-  }
-  where
-    base = "/tmp/cosmobot-" <> commandId
-
-newCommandId :: IOE :> es => Eff es Text
-newCommandId = do
-  unique <- liftIO Unique.newUnique
-  pid <- liftIO Posix.getProcessID
-  pure ("cmd-" <> show pid <> "-" <> show (abs (Unique.hashUnique unique)))
-
-validCommandId :: Text -> Bool
-validCommandId commandId =
-  "cmd-" `Text.isPrefixOf` commandId
-    && Text.all (\character -> Char.isDigit character || character == '-') commandId
-
 validPodmanId :: Text -> Bool
 validPodmanId value =
   Text.length value >= 12
     && Text.length value <= 64
     && Text.all (`elem` ("0123456789abcdef" :: String)) value
 
-parseExitCode :: Text -> Either Text Int
-parseExitCode raw =
-  maybe (Left "Sandbox command has a malformed exit status.") Right (readMaybe (Text.unpack (Text.strip raw)))
-
 commandWrapper :: String
 commandWrapper =
-  "output=$1; status=$2; pidfile=$3; limit=$4; script=$5; "
-    <> "setsid bash -c 'printf \"%s\" \"$$\" > \"$1\"; exec bash -c \"$2\"' -- \"$pidfile\" \"$script\" 2>&1 "
-    <> "| { head -c $((limit + 1)) > \"$output\"; cat >/dev/null; }; "
-    <> "code=${PIPESTATUS[0]}; printf '%s' \"$code\" > \"$status\"; rm -f \"$pidfile\""
-
-killWrapper :: String
-killWrapper =
-  "for ((i=0; i<500; i++)); do "
-    <> "[ -f \"$2\" ] && exit 0; "
-    <> "if [ -s \"$1\" ]; then pid=$(cat \"$1\"); kill -KILL -- \"-$pid\" 2>/dev/null || true; exit 0; fi; "
-    <> "sleep 0.01; done; exit 1"
+  "timeout --kill-after=5 \"$1\" bash -c \"$3\" 2>&1 "
+    <> "| { head -c $(( $2 + 1 )); cat >/dev/null; }; "
+    <> "exit ${PIPESTATUS[0]}"
 
 sandboxImage :: String
 sandboxImage = "docker.io/library/debian:stable-slim"
 
 defaultOutputByteLimit :: Int
 defaultOutputByteLimit = 1024 * 1024
+
+commandExitGraceSeconds :: Int
+commandExitGraceSeconds = 10
