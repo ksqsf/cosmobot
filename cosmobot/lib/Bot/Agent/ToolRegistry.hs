@@ -22,7 +22,7 @@ import qualified Data.Text.Encoding as TextEncoding
 -- | A tool runner bound to one agent run.
 data RunningTool es = RunningTool
   { name :: !Text
-  , run  :: Aeson.Value -> Eff es ToolResult
+  , run  :: ToolCallMetadata -> Aeson.Value -> Eff es ToolResult
   }
 
 toolSchema :: Tool es -> LLM.FunctionTool
@@ -43,11 +43,12 @@ startToolRun context Tool{name, start} = do
 -- per-run runner.
 runToolCall
   :: AgentContext es
+  -> ToolCallMetadata
   -> [Tool es]
   -> [RunningTool es]
   -> LLM.ToolCall
   -> Eff es ToolResult
-runToolCall context tools runningTools call =
+runToolCall context metadata tools runningTools call =
   case find ((== call.name) . (.name)) runningTools of
     Nothing ->
       case find ((== call.name) . (.name)) tools of
@@ -60,7 +61,7 @@ runToolCall context tools runningTools call =
         Left err ->
           pure (toolFailure (permanentArgumentFailure [i|Invalid JSON arguments for #{callName}: #{err}|] [i|Invalid JSON arguments for #{callName}: #{err}|]).failure)
         Right args ->
-          tool.run args
+          tool.run metadata args
   where
     callName = call.name
 

@@ -5,6 +5,7 @@ Stability   : experimental
 -}
 module Bot.Agent.Types
   ( Tool (..)
+  , ToolCallMetadata (..)
   , AgentContext (..)
   , AgentEvent (..)
   , AgentObserver (..)
@@ -31,6 +32,7 @@ where
 
 import Bot.Agent.Failure
 import Bot.Core.Message
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -74,7 +76,12 @@ data Tool es = Tool
   , parameters  :: !Aeson.Value
   , noisy       :: !Bool
   , allowed     :: AgentContext es -> Bool
-  , start       :: AgentContext es -> Eff es (Aeson.Value -> Eff es ToolResult)
+  , start       :: AgentContext es -> Eff es (ToolCallMetadata -> Aeson.Value -> Eff es ToolResult)
+  }
+
+data ToolCallMetadata = ToolCallMetadata
+  { agentRunId :: !Text
+  , parent :: !(Maybe Concurrency.Handle)
   }
 
 -- | Per-message capabilities and permissions made available to tools.

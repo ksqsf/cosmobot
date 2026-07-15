@@ -7,6 +7,7 @@ Stability   : experimental
 
 module Bot.Agent
   ( Tool (..)
+  , ToolCallMetadata (..)
   , AgentContext (..)
   , AgentEvent (..)
   , AgentObserver (..)
@@ -22,6 +23,7 @@ module Bot.Agent
   , WebSearchApi (..)
   , defaultToolConfig
   , startAgentRun
+  , startAgentRunWithParent
   , agentRunId
   , defaultAgentProgram
   , runAgentProgramStreaming
@@ -167,12 +169,16 @@ agentRunId =
 
 -- | Select tools visible to this request and start their per-run runners.
 startAgentRun :: (Chat.Chat :> es, IOE :> es) => AgentContext es -> [Tool es] -> Eff es (AgentRun es)
-startAgentRun context tools = do
+startAgentRun = startAgentRunWithParent Nothing
+
+startAgentRunWithParent :: (Chat.Chat :> es, IOE :> es) => Maybe Concurrency.Handle -> AgentContext es -> [Tool es] -> Eff es (AgentRun es)
+startAgentRunWithParent parent context tools = do
   unique <- liftIO newUnique
   let exposedTools = filter (`toolAllowed` context) tools
       runId = [i|agent-#{hashUnique unique}|]
+      toolCallMetadata = ToolCallMetadata{agentRunId = runId, parent}
   runningTools <- traverse (startToolRun context) exposedTools
-  pure AgentRun{runId, context, tools, exposedTools, runningTools}
+  pure AgentRun{runId, toolCallMetadata, context, tools, exposedTools, runningTools}
 
 initialAgentState :: HList.HList transient -> Transcript -> AgentState transient
 initialAgentState transient transcript =
@@ -333,7 +339,7 @@ continueWithToolCalls program turn answered calls = do
 executeToolCall :: AgentProgram transient '[] es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], ToolResult)
 executeToolCall program turn call = do
   result <- program.aroundToolCall turn call HList.HNil do
-    ToolRegistry.runToolCall program.agentRun.context program.agentRun.tools program.agentRun.runningTools call
+    ToolRegistry.runToolCall program.agentRun.context program.agentRun.toolCallMetadata program.agentRun.tools program.agentRun.runningTools call
   pure (LLM.toolResult call (toolResultContent result), toolImageContextMessages call result, result)
 
 toolImageContextMessages :: LLM.ToolCall -> ToolResult -> [LLM.ChatMessage]

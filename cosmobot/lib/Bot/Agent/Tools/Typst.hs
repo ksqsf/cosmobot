@@ -32,7 +32,7 @@ typstRenderTool = Tool
       ["source", "format"]
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs typstArgs args \toolArgs -> do
         Typst.withTypst toolArgs.format toolArgs.source \outputPath -> do
           sent <- case toolArgs.format of

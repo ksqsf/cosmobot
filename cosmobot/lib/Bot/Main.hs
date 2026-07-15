@@ -25,12 +25,14 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Lifecycle as LifecycleEffect
 import qualified Bot.Effect.Media as MediaEffect
 import qualified Bot.Effect.Memory as Memory
+import qualified Bot.Effect.Resource as ResourceEffect
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.LLM.OpenAI as OpenAI
 import qualified Bot.Media.Interpreter as Media
+import qualified Bot.Resource as Resource
 import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Server as RPCServer
@@ -39,6 +41,7 @@ import qualified Data.Aeson as Aeson
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Audit
+import Bot.Handler.Resource
 import Bot.Handler.Safebooru
 import Bot.Handler.Saucenao
 import Bot.Handler.ShutUp
@@ -93,6 +96,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
           . Skills.runSkills cfg.skills
           . ACPClient.runACP acpState
           . ConcurrencyManager.runConcurrencyManager
+          . Resource.runResourceManager
           . Scheduler.runScheduler
           . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState cfg.acp.enabled acpState
           . Lifecycle.runLifecycle cfg.media restartRequested
@@ -115,7 +119,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
   readIORef restartRequested
 
 routes
-  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> [RouteHandler es]
@@ -127,6 +131,7 @@ routes cfg threads =
     <> typingHandlers
     <> safebooruHandlers
     <> saucenaoHandlers cfg.saucenao
+    <> resourceHandlers
     <> askHandlers cfg.tool cfg.handlers.ask threads
 
 runConfiguredServers

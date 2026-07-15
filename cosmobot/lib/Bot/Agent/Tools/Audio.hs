@@ -30,7 +30,7 @@ generateAudioTool = Tool
       ["prompt"]
   , noisy = True
   , allowed = everyone
-  , start = \context -> pure \args -> withParsedToolArgs parseGenerateAudioArgs args \generateArgs -> do
+  , start = \context -> pure \_ args -> withParsedToolArgs parseGenerateAudioArgs args \generateArgs -> do
       generated <- LLM.askAudioWithHistoryWithOptions generateArgs.options [LLM.userText generateArgs.prompt]
       sent <- Chat.replyAudio context.message generated Nothing
       case sent of

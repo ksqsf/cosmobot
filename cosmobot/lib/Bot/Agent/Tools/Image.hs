@@ -38,7 +38,7 @@ generateImageTool = Tool
       ["prompt"]
   , noisy = True
   , allowed = everyone
-  , start = \context -> pure \args -> withParsedToolArgs parseGenerateImageArgs args \generateArgs -> do
+  , start = \context -> pure \_ args -> withParsedToolArgs parseGenerateImageArgs args \generateArgs -> do
       generated <- LLM.askImageWithHistoryWithOptions generateArgs.options [LLM.userWithImages generateArgs.prompt (contextDefaultImageUrls context)]
       case Chat.replyImageUrls generated of
         [] ->
@@ -63,7 +63,7 @@ editImageTool = Tool
       ["prompt"]
   , noisy = True
   , allowed = everyone
-  , start = \context -> pure \args -> withParsedToolArgs parseEditImageArgs args \editArgs -> do
+  , start = \context -> pure \_ args -> withParsedToolArgs parseEditImageArgs args \editArgs -> do
       let imageRefs = editImageInputRefs context editArgs
       case validateEditImageRefs imageRefs of
         Just failure ->
@@ -87,7 +87,7 @@ viewImageTool = Tool
       ["url"]
   , noisy = False
   , allowed = everyone
-  , start = \_ -> pure \args -> withTextArg "url" viewImageUrl args
+  , start = \_ -> pure \_ args -> withTextArg "url" viewImageUrl args
   }
 
 data GenerateImageArgs = GenerateImageArgs

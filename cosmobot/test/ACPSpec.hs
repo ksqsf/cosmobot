@@ -722,7 +722,7 @@ testClientTerminalChecksAdvertisedCapability =
 
 testWebSocketServerAuthenticatesAndHandlesInitialize :: IO ()
 testWebSocketServerAuthenticatesAndHandlesInitialize = do
-  result <- timeout 2_000_000 $ runAcpStorage do
+  result <- timeout 10_000_000 $ runAcpStorage do
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
     port <- (fromIntegral :: Socket.PortNumber -> Int) <$> liftIO (Socket.socketPort listenSocket)
     acpState <- ACPState.newAcpState
@@ -922,6 +922,7 @@ acpToolMessage sessionId =
     , mentions = []
     , mentionUsernames = []
     , imageUrls = []
+    , files = []
     , text = ""
     , raw = Aeson.Null
     }

@@ -31,7 +31,7 @@ scheduleAgentActionTool = Tool
       ["delay_seconds", "prompt"]
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs scheduledActionArgs args \(delaySeconds, prompt) -> do
         scheduled <- Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
         if scheduled
@@ -49,7 +49,7 @@ deleteScheduledAgentActionTool = Tool
     ["schedule_id"]
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args -> withIntegerArg "schedule_id" (\scheduleId -> do
+  , start = \context -> pure \_ args -> withIntegerArg "schedule_id" (\scheduleId -> do
       ok <- Scheduler.deleteScheduledMessage context.message scheduleId
       if ok
         then pure (toolText [i|Schedule #{scheduleId} has been removed.|])
@@ -64,7 +64,7 @@ listCurrentUserSchedulesTool = Tool
   , parameters = objectSchema [] []
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \_ -> do
+  , start = \context -> pure \_ _ -> do
       schedules <- Scheduler.listScheduledMessages context.message
       pure (toolText (jsonText (map scheduleSummary schedules)))
   }

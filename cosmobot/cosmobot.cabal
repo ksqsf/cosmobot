@@ -230,6 +230,7 @@ library
         Bot.Effect.Lifecycle
         Bot.Effect.Media
         Bot.Effect.Memory
+        Bot.Effect.Resource
         Bot.Effect.Scheduler
         Bot.Effect.Skills
         Bot.Effect.Storage
@@ -241,6 +242,7 @@ library
         Bot.Handler.Ask.AgentRun
         Bot.Handler.Ask.Config
         Bot.Handler.Audit
+        Bot.Handler.Resource
         Bot.Handler.Safebooru
         Bot.Handler.Saucenao
         Bot.Handler.Saucenao.Config
@@ -274,6 +276,8 @@ library
         Bot.RPC.Config
         Bot.RPC.Server
         Bot.RPC.State
+        Bot.Resource
+        Bot.Resource.Types
         Bot.Session
         Bot.Skills
         Bot.Skills.Config
@@ -396,6 +400,15 @@ test-suite concurrency-spec
                     , test-deps
     type:             exitcode-stdio-1.0
     main-is:          ConcurrencySpec.hs
+    hs-source-dirs:   test
+
+test-suite resource-spec
+    import:           warnings
+                    , threaded
+                    , language
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          ResourceSpec.hs
     hs-source-dirs:   test
 
 test-suite agent-spec

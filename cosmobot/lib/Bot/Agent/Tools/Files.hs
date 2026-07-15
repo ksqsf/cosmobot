@@ -36,7 +36,7 @@ listDirectoryTool = Tool
       ["path"]
   , noisy = False
   , allowed = superuserOnly
-  , start = \_ -> pure \args -> withTextArg "path" (\path -> do
+  , start = \_ -> pure \_ args -> withTextArg "path" (\path -> do
       target <- resolveSafePath path
       isDir <- liftIO (doesDirectoryExist target)
       if not isDir
@@ -57,7 +57,7 @@ readFileTool = Tool
       ["path"]
   , noisy = False
   , allowed = superuserOnly
-  , start = \_ -> pure \args -> withTextArg "path" (\path -> do
+  , start = \_ -> pure \_ args -> withTextArg "path" (\path -> do
       target <- resolveSafePath path
       isFile <- liftIO (doesFileExist target)
       if not isFile
@@ -78,7 +78,7 @@ acpReadClientFileTool = Tool
       ["path"]
   , noisy = False
   , allowed = acpOnly
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs parseReadClientFileArgs args \ReadClientFileArgs{path, line, limit} ->
         ACP.readClientFile context.message path line limit >>= \case
           Left err ->
@@ -98,7 +98,7 @@ acpWriteClientFileTool = Tool
       ["path", "content"]
   , noisy = False
   , allowed = acpOnly
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs parseWriteClientFileArgs args \WriteClientFileArgs{path, content} ->
         ACP.writeClientFile context.message path content >>= \case
           Left err ->

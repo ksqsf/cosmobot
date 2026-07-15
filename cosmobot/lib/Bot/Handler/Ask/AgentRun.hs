@@ -26,6 +26,7 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
+import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
@@ -51,6 +52,7 @@ runAskAgentThread
      , LLM.LLM :> es
      , Media.Media :> es
      , Memory.Memory :> es
+     , Resource.Resource :> es
      , Scheduler.Scheduler :> es
      , Storage.Storage :> es
      , Typst.Typst :> es
@@ -74,7 +76,7 @@ runAskAgentThread
   -> Eff es (Text, Transcript)
 runAskAgentThread toolCfg cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
-  agentRun <- Agent.startAgentRun (agentContext toolCfg cfg message input) Agent.defaultTools
+  agentRun <- Agent.startAgentRunWithParent (Just resource) (agentContext toolCfg cfg message input) Agent.defaultTools
   withActiveReply threads resource parentMessageKey message transcript \activeReply -> do
     reply <- streamAgentReply cfg observer agentRun activeReply message transcript
     commitAgentReply observer activeReply message reply

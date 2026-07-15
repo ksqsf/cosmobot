@@ -43,7 +43,7 @@ readMediaTextTool = Tool
       ["media_id"]
   , noisy = False
   , allowed = everyone
-  , start = \_ -> pure \args ->
+  , start = \_ -> pure \_ args ->
       withParsedToolArgs readMediaTextArgs args readMediaText
   }
 

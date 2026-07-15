@@ -29,6 +29,7 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
+import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Typst as Typst
 import Bot.Prelude
@@ -45,6 +46,7 @@ defaultTools
   => LLM.LLM :> es
   => Media.Media :> es
   => Memory.Memory :> es
+  => Resource.Resource :> es
   => Scheduler.Scheduler :> es
   => Typst.Typst :> es
   => Fail :> es

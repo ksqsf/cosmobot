@@ -41,7 +41,7 @@ mergeStreams streams = do
   queue <- S.lift (STM.newTBQueueIO streamQueueCapacity)
   pumps <- S.lift $
     traverse
-      (\(index, stream) -> Concurrency.forkStreamPump [i|stream.merge.#{index}|] (pump queue stream))
+      (\(index, stream) -> Concurrency.fork [i|stream.merge.#{index}|] (pump queue stream))
       (zip [(1 :: Int)..] streams)
   readMerged (length streams) queue `streamFinally` cleanupPumps pumps
 

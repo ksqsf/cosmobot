@@ -134,6 +134,7 @@ messageFromWithImages senderId text imageUrls =
     , mentions = []
     , mentionUsernames = []
     , imageUrls = imageUrls
+    , files = []
     , text = text
     , raw = Aeson.Null
     }

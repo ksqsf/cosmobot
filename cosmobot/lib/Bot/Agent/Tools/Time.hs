@@ -24,7 +24,7 @@ datetimeTool = Tool
   , parameters = objectSchema [] []
   , noisy = False
   , allowed = \context -> context.toolConfig.datetime
-  , start = \_ -> pure \_ -> do
+  , start = \_ -> pure \_ _ -> do
       now <- liftIO getCurrentTime
       zone <- liftIO getCurrentTimeZone
       let localTime = utcToLocalTime zone now

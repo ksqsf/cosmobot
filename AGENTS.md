@@ -115,9 +115,18 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - Implement the concurrency interpreter with `Effectful.Concurrent.Async`, not raw `Control.Concurrent` APIs.
 - Keep concurrency structured. Any thread started by the manager must be registered before it can run user action, and manager exit must cancel and await every live thread so no ghost threads remain.
 - Treat acquisition of async handles as a lifecycle operation: mask the create/register/start sequence, and cancel any thread that was created if registration or start signalling fails.
-- On normal manager exit, cancel and await live child threads before releasing registrations. On exceptional manager exit, use `cancelWith` so the top-level exception is thrown into each live child, then await them.
+- On normal manager exit, cancel and await live child threads. On exceptional manager exit, use `cancelWith` so the top-level exception is thrown into each live child, then await them.
 - Do not swallow async exceptions to decide ordinary control flow. Use `finally`, `onException`, `bracket`, `mask`, and `trySync`/`catchSync` according to the intended lifecycle boundary.
 - Add focused tests in `test/ConcurrencySpec.hs` for manager lifecycle changes: normal-exit cleanup, exceptional-exit propagation, cancellation, awaiting, and any new race-sensitive acquire/register/start behavior.
+
+### Resource Rules
+
+- Use `Bot.Resource` for in-memory long-running objects owned by a person in a chat. Keep `Bot.Effect.Resource` a boring facade and concrete integrations in their owning infrastructure modules.
+- Scope resources by `(platform, chatId, senderId)` and store the creating agent run as `agentId`; reject operations when chat or sender identity is missing.
+- Never let managed objects escape the manager. Use `Resource.withResource` so active concurrency handles are tracked for the callback and cleared with structured cleanup.
+- Destruction must first make the object unavailable, cancel and await active users, then run object cleanup. Restore explicit removals after cleanup failure so callers can retry; manager shutdown continues past individual cleanup failures.
+- Keep resource registrations out of `Bot.Effect.Concurrency`. Concurrency manages threads; `Bot.Resource` manages long-running objects and their cleanup.
+- Add concrete `ResourceObject` instances only for resources that exist now. Do not add speculative resource kinds such as SubAgent.
 
 ### Identity And Persistence
 

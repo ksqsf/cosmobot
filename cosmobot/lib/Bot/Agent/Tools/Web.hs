@@ -37,7 +37,7 @@ webSearchTool = Tool
       ["query"]
   , noisy = False
   , allowed = \context -> context.toolConfig.webSearchEnable
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs (webSearchArgs context.toolConfig.webSearchMaxResults) args \(query, maxResults) -> do
         let searchConfig = context.toolConfig
         results <- webSearch searchConfig query maxResults
@@ -61,7 +61,7 @@ webFetchTool = Tool
   , allowed = \context -> context.toolConfig.webFetch
   , start = \context -> do
       checkUseLimit <- newUseLimiter context.toolConfig.webFetchMaxUses
-      pure \args ->
+      pure \_ args ->
         withParsedToolArgs (webFetchArgs context.toolConfig.webFetchMaxContentTokens) args \(url, maxContentTokens) -> do
           checkUseLimit >>= \case
             UseLimitReached currentUses ->

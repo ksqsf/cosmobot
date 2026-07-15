@@ -91,6 +91,7 @@ messageWithText body =
     , mentions = []
     , mentionUsernames = []
     , imageUrls = []
+    , files = []
     , text = body
     , raw = Aeson.Null
     }

@@ -41,7 +41,7 @@ queryChatLogTool = Tool
       ["limit"]
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs queryChatLogArgs args \(limit, includeBotMessages) -> do
         entries <- ChatLog.queryChat context.message (fromInteger (max 0 limit)) includeBotMessages
         pure (toolText (jsonText entries))
@@ -58,7 +58,7 @@ queryCurrentSenderChatLogTool = Tool
       ["keywords", "limit"]
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs queryCurrentSenderChatLogArgs args \(keywords, limit) ->
         case currentSenderChatLogScopeError context.message of
           Just message ->
@@ -79,7 +79,7 @@ sendReplyTool = Tool
       []
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs sendReplyArgs args \body -> do
         sent <- Chat.replyTo context.message body
         case rights sent of
@@ -106,7 +106,7 @@ sendFileTool = Tool
       ["path"]
   , noisy = True
   , allowed = superuserOnly
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs sendFileArgs args \path -> do
         result <- Chat.uploadFile context.message path
         case result of
@@ -134,7 +134,7 @@ mentionUserTool = Tool
       ["user_id", "text"]
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs mentionUserArgs args \(userId, text) -> do
         Chat.mentionUser context.message userId text >>= \case
           Right sent -> do
@@ -155,7 +155,7 @@ senderMemberInfoTool = Tool
   , parameters = objectSchema [] []
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \_ -> do
+  , start = \context -> pure \_ _ -> do
       info <- Chat.getSenderMemberInfo context.message
       pure (toolText (maybe "No member information is available for this message." jsonText info))
   }
@@ -170,7 +170,7 @@ memberInfoTool = Tool
       ["user_id"]
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args -> withParsedToolArgs memberInfoArgs args \userId -> do
+  , start = \context -> pure \_ args -> withParsedToolArgs memberInfoArgs args \userId -> do
       info <- Chat.getMemberInfo context.message userId
       pure (toolText (maybe "No member information is available for this user in the current chat." jsonText info))
   }
@@ -185,7 +185,7 @@ userAvatarTool = Tool
       ["user_id"]
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \args ->
+  , start = \context -> pure \_ args ->
       withParsedToolArgs userAvatarArgs args \userId -> do
         avatar <- Chat.getUserAvatar context.message userId
         case avatar of
@@ -202,7 +202,7 @@ listGroupMembersTool = Tool
   , parameters = objectSchema [] []
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \_ -> do
+  , start = \context -> pure \_ _ -> do
       members <- Chat.listGroupMembers context.message
       pure (toolText (maybe "Group member listing is not available for this platform or chat." jsonText members))
   }
@@ -214,7 +214,7 @@ currentMessageInfoTool = Tool
   , parameters = objectSchema [] []
   , noisy = False
   , allowed = everyone
-  , start = \context -> pure \_ ->
+  , start = \context -> pure \_ _ ->
       pure (toolText (jsonText (currentMessageInfoValue context.message)))
   }
 

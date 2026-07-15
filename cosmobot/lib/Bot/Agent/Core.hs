@@ -55,6 +55,7 @@ data AgentCompletion = AgentCompletion
 -- agent run without putting it in 'AgentContext'.
 data AgentRun es = AgentRun
   { runId       :: !Text
+  , toolCallMetadata :: !ToolCallMetadata
   , context      :: AgentContext es
   , tools        :: [Tool es]
   , exposedTools :: [Tool es]

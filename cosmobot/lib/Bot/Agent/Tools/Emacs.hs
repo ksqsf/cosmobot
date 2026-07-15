@@ -37,7 +37,7 @@ emacsEvalTool = Tool
       ["expression"]
   , noisy = False
   , allowed = superuserOnly
-  , start = \_ -> pure \args ->
+  , start = \_ -> pure \_ args ->
       withParsedToolArgs emacsEvalArgs args \(expression, timeoutSeconds) -> do
         result <- runEmacsEval timeoutSeconds expression
         pure (toolText result)

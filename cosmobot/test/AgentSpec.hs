@@ -33,11 +33,13 @@ import qualified Bot.LLM.OpenAI.Config as LLMConfig
 import qualified Bot.LLM.OpenAI.Transport as LLMTransport
 import qualified Bot.LLM.Test as LLMTest
 import qualified Bot.Effect.Memory as Memory
+import qualified Bot.Effect.Resource as ResourceEffect
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
+import qualified Bot.Resource as ResourceManager
 import qualified Bot.Session as Session
 import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
@@ -95,9 +97,10 @@ type AgentStack =
    , Scheduler.Scheduler
    , Typst.Typst
    , HTTP.HTTP
+   , ResourceEffect.Resource
+   , Concurrency.Concurrency
    , StorageEffect.Storage
    , KatipE
-   , Concurrency.Concurrency
    , Prim
    , Fail
    , Concurrent
@@ -396,7 +399,7 @@ runSendFileTool replies upload =
         , agentUploadFile = upload
         } do
         runner <- ChatTools.sendFileTool.start superuserContext
-        runner (Aeson.object ["path" Aeson..= ("file:///tmp/report.txt" :: Text)])
+        runner testToolCallMetadata (Aeson.object ["path" Aeson..= ("file:///tmp/report.txt" :: Text)])
 
 testCurrentSenderChatLogToolQueriesChatLog :: IO ()
 testCurrentSenderChatLogToolQueriesChatLog = do
@@ -740,7 +743,7 @@ testViewImageToolCachesImageForContext =
               . MediaInterpreter.runMedia cfg
       runResult <- runEff $ runStack do
         runner <- ImageTools.viewImageTool.start agentContext
-        runner (Aeson.object ["url" Aeson..= imageUrl])
+        runner testToolCallMetadata (Aeson.object ["url" Aeson..= imageUrl])
       toolResult <- either assertFailure pure runResult
       case toolResult of
         Agent.ToolSucceeded{content, imageUrls} -> do
@@ -777,7 +780,7 @@ testReadMediaTextToolReadsCachedSlices =
           }
         let mediaId = maybe "" (\ref -> fromMaybe ref (Text.stripPrefix "media:" ref)) mediaRef
         runner <- MediaTools.readMediaTextTool.start agentContext
-        result <- runner (Aeson.object
+        result <- runner testToolCallMetadata (Aeson.object
           [ "media_id" Aeson..= mediaId
           , "offset" Aeson..= (2 :: Int)
           , "size" Aeson..= (3 :: Int)
@@ -825,7 +828,7 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
           pure (Right "50")
         } do
           runner <- AudioTools.generateAudioTool.start agentContext
-          runner args
+          runner testToolCallMetadata args
   case result of
     Agent.ToolSucceeded{content} ->
       assertBool "tool result should describe sent audio" ("Generated and sent audio message id" `Text.isInfixOf` content)
@@ -1115,9 +1118,10 @@ testAgentAuditStorageOmitsLargeToolResults =
               . runFail
               . runConcurrent
               . runPrim
-              . ConcurrencyManager.runConcurrencyManager
               . runTestLog
               . StorageSQLite.runStorageSQLitePath dbPath
+              . ConcurrencyManager.runConcurrencyManager
+              . ResourceManager.runResourceManager
               . HTTP.runHTTP
               . runTimeout
               . MediaInterpreter.runMedia cfg
@@ -1177,7 +1181,7 @@ largeAuditResultTool result =
     , parameters = Aeson.object []
     , noisy = False
     , allowed = const True
-    , start = \_ -> pure \_ ->
+    , start = \_ -> pure \_ _ ->
         pure (Agent.toolText result)
     }
 
@@ -1195,7 +1199,7 @@ testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt = do
         , parameters = Aeson.object []
         , noisy = False
         , allowed = const True
-        , start = \_ -> pure \_ -> pure (Agent.toolText largeResult)
+        , start = \_ -> pure \_ _ -> pure (Agent.toolText largeResult)
         }
   (_, transcript) <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 4 agentContext [oneShotLargeResultTool] (startWithUser "run it")
@@ -1699,7 +1703,7 @@ fakeWebFetchTool fetches = Agent.Tool
   , allowed = const True
   , start = \context -> do
       checkUseLimit <- newUseLimiter context.toolConfig.webFetchMaxUses
-      pure \_ -> do
+      pure \_ _ -> do
         checkUseLimit >>= \case
           UseLimitReached currentUses ->
             pure (Agent.toolText [i|fetch_url use limit reached for this agent run: #{currentUses}.|])
@@ -1824,9 +1828,10 @@ testThreadStorageOmitsLargeToolResults =
               . runFail
               . runConcurrent
               . runPrim
-              . ConcurrencyManager.runConcurrencyManager
               . runTestLog
               . StorageSQLite.runStorageSQLitePath dbPath
+              . ConcurrencyManager.runConcurrencyManager
+              . ResourceManager.runResourceManager
               . HTTP.runHTTP
               . runTimeout
               . MediaInterpreter.runMedia cfg
@@ -1892,7 +1897,7 @@ largeResultTool result =
     , parameters = Aeson.object []
     , noisy = False
     , allowed = const True
-    , start = \_ -> pure \_ ->
+    , start = \_ -> pure \_ _ ->
         pure (Agent.toolText result)
     }
 
@@ -2576,9 +2581,10 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced m
           . runConcurrent
           . runFail
           . runPrim
-          . ConcurrencyManager.runConcurrencyManager
           . runTestLog
           . StorageSQLite.runStorageSQLitePath ":memory:"
+          . ConcurrencyManager.runConcurrencyManager
+          . ResourceManager.runResourceManager
           . HTTP.runHTTP
           . TypstTest.runTypstWith (mockTypstRender rendered)
           . Scheduler.runScheduler
@@ -2639,9 +2645,10 @@ runAgentWithStreamingAnswers answers chatMock action = do
           . runConcurrent
           . runFail
           . runPrim
-          . ConcurrencyManager.runConcurrencyManager
           . runTestLog
           . StorageSQLite.runStorageSQLitePath ":memory:"
+          . ConcurrencyManager.runConcurrencyManager
+          . ResourceManager.runResourceManager
           . HTTP.runHTTP
           . TypstTest.runTypstWith (mockTypstRender rendered)
           . Scheduler.runScheduler
@@ -2766,6 +2773,10 @@ agentContext =
 superuserContext :: Agent.AgentContext es
 superuserContext =
   agentContext{Agent.superuser = True}
+
+testToolCallMetadata :: Agent.ToolCallMetadata
+testToolCallMetadata =
+  Agent.ToolCallMetadata{agentRunId = "agent-test", parent = Nothing}
 
 runAgentWithToolMessageCapture
   :: Int

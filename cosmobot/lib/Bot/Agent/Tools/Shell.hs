@@ -4,6 +4,9 @@ Description : Agent shell execution tool
 Stability   : experimental
 -}
 
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE UndecidableInstances #-}
+
 module Bot.Agent.Tools.Shell
   ( runBashTool
   , acpTerminalTool
@@ -15,6 +18,7 @@ import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.ACP as ACP
+import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
 import qualified Bot.Util.Process as ProcessUtil
 import qualified Data.Aeson as Aeson
@@ -35,13 +39,13 @@ runBashTool = Tool
       ["script"]
   , noisy = False
   , allowed = superuserOnly
-  , start = \_ -> pure \args ->
+  , start = \_ -> pure \_ args ->
       withParsedToolArgs runBashArgs args \(script, timeoutSeconds) -> do
         result <- runBashSafe timeoutSeconds (Text.unpack script)
         pure (toolText result)
   }
 
-acpTerminalTool :: ACP.ACP :> es => Tool es
+acpTerminalTool :: (ACP.ACP :> es, Resource.Resource :> es) => Tool es
 acpTerminalTool = Tool
   { name = "acp_terminal"
   , description = "Run or manage a terminal command in the connected ACP client workspace. Actions: create, output, wait_for_exit, kill, release."
@@ -57,9 +61,9 @@ acpTerminalTool = Tool
       ["action"]
   , noisy = False
   , allowed = acpOnly
-  , start = \context -> pure \args ->
+  , start = \context -> pure \metadata args ->
       withParsedToolArgs parseAcpTerminalArgs args \call ->
-        runAcpTerminalCall context.message call >>= \case
+        runAcpTerminalCall metadata context.message call >>= \case
           Left err ->
             pure (clientFailure err)
           Right value ->
@@ -74,22 +78,83 @@ data AcpTerminalCall
   | AcpTerminalRelease !Text
   deriving (Eq, Show)
 
-runAcpTerminalCall :: ACP.ACP :> es => IncomingMessage -> AcpTerminalCall -> Eff es (Either Text Text)
-runAcpTerminalCall message = \case
-  AcpTerminalCreate create ->
-    fmap (\terminalId -> jsonText (Aeson.object ["terminalId" Aeson..= terminalId])) <$> ACP.createClientTerminal message create
-  AcpTerminalOutput terminalId ->
-    fmap (\output -> jsonText (Aeson.object
-      [ "output" Aeson..= output.output
-      , "truncated" Aeson..= output.truncated
-      , "exitStatus" Aeson..= fmap terminalExitStatusValue output.exitStatus
-      ])) <$> ACP.readClientTerminalOutput message terminalId
-  AcpTerminalWaitForExit terminalId ->
-    fmap (jsonText . terminalExitStatusValue) <$> ACP.waitForClientTerminalExit message terminalId
-  AcpTerminalKill terminalId ->
-    fmap (const "Terminal killed.") <$> ACP.killClientTerminal message terminalId
-  AcpTerminalRelease terminalId ->
-    fmap (const "Terminal released.") <$> ACP.releaseClientTerminal message terminalId
+data AcpTerminal = AcpTerminal
+  { remoteId :: !Text
+  , message :: !IncomingMessage
+  , create :: !ACP.TerminalCreate
+  }
+
+instance ACP.ACP :> es => Resource.ResourceObject (Eff es) AcpTerminal where
+  type CreationArgs AcpTerminal = ACP.TerminalCreate
+
+  resourceTypeName _ = "Terminal"
+
+  createResourceObject Resource.Init{message, arguments} =
+    ACP.createClientTerminal message arguments <&> fmap \remoteId -> AcpTerminal{remoteId, message, create = arguments}
+
+  destroyResourceObject terminal = do
+    _ <- ACP.killClientTerminal terminal.message terminal.remoteId
+    ACP.releaseClientTerminal terminal.message terminal.remoteId
+
+  probeResourceObject terminal =
+    ACP.readClientTerminalOutput terminal.message terminal.remoteId <&> \case
+      Left err -> Left err
+      Right output -> Right $ case output.exitStatus of
+        Nothing -> "running"
+        Just status -> "exited (" <> renderExitStatus status <> ")"
+
+  describeResourceObject terminal probeResult =
+    pure $ Text.unwords $ filter (not . Text.null)
+      [ "`" <> terminal.create.command <> "`"
+      , Text.unwords (map ("`" <>) (map (<> "`") terminal.create.args))
+      , maybe "" ("cwd=`" <>) (fmap (<> "`") terminal.create.cwd)
+      , "[" <> either (const "unreachable") id probeResult <> "]"
+      ]
+
+runAcpTerminalCall :: (ACP.ACP :> es, Resource.Resource :> es) => ToolCallMetadata -> IncomingMessage -> AcpTerminalCall -> Eff es (Either Text Text)
+runAcpTerminalCall metadata message call =
+  case Resource.accessFromMessage message of
+    Left err -> pure (Left (renderResourceError err))
+    Right access -> run access call
+  where
+    run access = \case
+      AcpTerminalCreate create ->
+        Resource.create @AcpTerminal Resource.Init{message, agentId = metadata.agentRunId, arguments = create}
+          <&> first renderResourceError
+          <&> fmap (\terminalId -> jsonText (Aeson.object ["terminalId" Aeson..= terminalId]))
+      AcpTerminalOutput terminalId ->
+        use access terminalId \terminal -> ACP.readClientTerminalOutput terminal.message terminal.remoteId <&> fmap (\output -> jsonText (Aeson.object
+            [ "output" Aeson..= output.output
+            , "truncated" Aeson..= output.truncated
+            , "exitStatus" Aeson..= fmap terminalExitStatusValue output.exitStatus
+            ]))
+      AcpTerminalWaitForExit terminalId ->
+        use access terminalId \terminal -> fmap (jsonText . terminalExitStatusValue) <$> ACP.waitForClientTerminalExit terminal.message terminal.remoteId
+      AcpTerminalKill terminalId ->
+        use access terminalId \terminal -> fmap (const "Terminal killed.") <$> ACP.killClientTerminal terminal.message terminal.remoteId
+      AcpTerminalRelease terminalId ->
+        Resource.destroy access terminalId <&> first renderResourceError <&> fmap (const "Terminal released.")
+
+    use access terminalId action =
+      Resource.withResource @AcpTerminal access terminalId metadata.parent action
+        <&> first renderResourceError
+        <&> join
+
+renderResourceError :: Resource.ResourceError -> Text
+renderResourceError = \case
+  Resource.MissingResourceIdentity -> "Resource operations require chat and sender identity."
+  Resource.ResourceNotFoundOrNotOwned -> "Resource not found or not owned."
+  Resource.ResourceTypeMismatch -> "Resource has the wrong type."
+  Resource.ResourceUnavailable -> "Resource is being destroyed."
+  Resource.ResourceCreationFailed err -> err
+  Resource.ResourceCleanupFailed err -> err
+
+renderExitStatus :: ACP.TerminalExitStatus -> Text
+renderExitStatus status =
+  Text.intercalate ", " $ catMaybes
+    [ ("code=" <>) . show <$> status.exitCode
+    , ("signal=" <>) <$> status.signal
+    ]
 
 runBashSafe :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Int -> String -> Eff es Text
 runBashSafe timeoutSeconds script = do

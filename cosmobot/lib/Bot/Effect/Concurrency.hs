@@ -7,25 +7,17 @@ Stability   : experimental
 module Bot.Effect.Concurrency
   ( Concurrency (..)
   , Id (..)
-  , Kind (..)
   , Status (..)
   , Info (..)
   , Handle (..)
   , Snapshot (..)
-  , Parent (..)
-  , rootParent
-  , childParent
   , finished
   , fire
   , fireWithHandle
   , fork
+  , forkWithHandle
   , withWorker
-  , forkStreamPump
   , raceTasks_
-  , forkAs
-  , forkWithHandleAs
-  , register
-  , release
   , cancel
   , await
   , sleepMicroseconds
@@ -43,33 +35,16 @@ newtype Id = Id
   }
   deriving stock (Eq, Ord, Show)
 
-data Kind
-  = Task
-  | Registration
-  | Terminal
-  | Subagent
-  | DriverSession
-  | StreamPump
-  deriving stock (Eq, Ord, Show)
-
 data Status
   = Running
   | Completed
   | Failed !Text
   | Cancelled
-  | Released
   deriving stock (Eq, Show)
-
-data Parent
-  = Root
-  | Child !Id
-  deriving stock (Eq, Ord, Show)
 
 data Info = Info
   { id :: !Id
-  , kind :: !Kind
   , label :: !Text
-  , parent :: !Parent
   , status :: !Status
   , startedAt :: !UTCTime
   , finishedAt :: !(Maybe UTCTime)
@@ -85,14 +60,6 @@ data Snapshot = Snapshot
   { entries :: ![Info]
   }
   deriving stock (Eq, Show)
-
-rootParent :: Parent
-rootParent =
-  Root
-
-childParent :: Id -> Parent
-childParent =
-  Child
 
 finished :: Info -> Bool
 finished info =
@@ -112,15 +79,23 @@ fireWithHandle
   -> (Handle -> Eff es ())
   -> Eff es ()
 fireWithHandle label =
-  void . forkWithHandleAs Task label
+  void . forkWithHandle label
 
 fork
   :: Concurrency :> es
   => Text
   -> Eff es ()
   -> Eff es Handle
-fork =
-  forkAs Task
+fork label action =
+  send (Fork label action)
+
+forkWithHandle
+  :: Concurrency :> es
+  => Text
+  -> (Handle -> Eff es ())
+  -> Eff es Handle
+forkWithHandle label action =
+  send (ForkWithHandle label action)
 
 withWorker
   :: Concurrency :> es
@@ -129,16 +104,8 @@ withWorker
   -> Eff es a
   -> Eff es a
 withWorker label worker inner = do
-  workerHandle <- forkAs Task label worker
+  workerHandle <- fork label worker
   inner `finally` cancelAndAwait workerHandle
-
-forkStreamPump
-  :: Concurrency :> es
-  => Text
-  -> Eff es ()
-  -> Eff es Handle
-forkStreamPump =
-  forkAs StreamPump
 
 raceTasks_
   :: (Concurrency :> es, Concurrent :> es, IOE :> es)
@@ -171,10 +138,8 @@ cancelAndAwait workerHandle = do
   await workerHandle
 
 data Concurrency :: Effect where
-  Fork :: Kind -> Text -> m () -> Concurrency m Handle
-  ForkWithHandle :: Kind -> Text -> (Handle -> m ()) -> Concurrency m Handle
-  Register :: Kind -> Text -> m () -> Concurrency m Handle
-  Release :: Id -> Concurrency m Bool
+  Fork :: Text -> m () -> Concurrency m Handle
+  ForkWithHandle :: Text -> (Handle -> m ()) -> Concurrency m Handle
   Cancel :: Id -> Concurrency m Bool
   Await :: Handle -> Concurrency m ()
   SleepMicroseconds :: Int -> Concurrency m ()
@@ -182,37 +147,6 @@ data Concurrency :: Effect where
   Lookup :: Id -> Concurrency m (Maybe Info)
 
 type instance DispatchOf Concurrency = Dynamic
-
-forkAs
-  :: Concurrency :> es
-  => Kind
-  -> Text
-  -> Eff es ()
-  -> Eff es Handle
-forkAs kind label action =
-  send (Fork kind label action)
-
-forkWithHandleAs
-  :: Concurrency :> es
-  => Kind
-  -> Text
-  -> (Handle -> Eff es ())
-  -> Eff es Handle
-forkWithHandleAs kind label action =
-  send (ForkWithHandle kind label action)
-
-register
-  :: Concurrency :> es
-  => Kind
-  -> Text
-  -> Eff es ()
-  -> Eff es Handle
-register kind label cleanup =
-  send (Register kind label cleanup)
-
-release :: Concurrency :> es => Id -> Eff es Bool
-release =
-  send . Release
 
 cancel :: Concurrency :> es => Id -> Eff es Bool
 cancel =

@@ -156,6 +156,7 @@ messageFromChat senderId chatId text =
     , mentions = []
     , mentionUsernames = []
     , imageUrls = []
+    , files = []
     , text = text
     , raw = Aeson.Null
     }
