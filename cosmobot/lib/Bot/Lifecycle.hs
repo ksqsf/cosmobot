@@ -11,6 +11,7 @@ module Bot.Lifecycle
   )
 where
 
+import Bot.Core.Message (IncomingMessage)
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Lifecycle as LifecycleEffect
@@ -21,6 +22,7 @@ import Bot.Prelude
 import qualified Bot.Storage.Lifecycle as LifecycleStorage
 import qualified Bot.Storage.RPC as RpcStorage
 import qualified Data.Set as Set
+import qualified Data.Unique as Unique
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified System.Posix.Signals as Signals
@@ -43,7 +45,7 @@ runLifecycle mediaConfig restartRequested inner =
       when (reason == Restart) (writeIORef restartRequested True)
 
 runUntilExit
-  :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
+  :: (Storage.Storage :> es, Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
   => Eff (LifecycleEffect.Lifecycle : es) ()
   -> Eff es ExitReason
 runUntilExit inner = do
@@ -52,7 +54,7 @@ runUntilExit inner = do
   withExitSignalHandlers exitRequest $
     Concurrency.raceTasks_
       "main.inner"
-      (runLifecycleEffect (void $ MVar.tryPutMVar exitRequest Restart) inner)
+      (runLifecycleEffect (queueRestart exitRequest) inner)
       "main.shutdown"
       (MVar.takeMVar exitRequest >>= MVar.putMVar result)
   MVar.tryTakeMVar result >>= \case
@@ -79,12 +81,23 @@ withExitSignalHandlers exitRequest =
     handler = Signals.Catch notify
     notify = void . runEff . runConcurrent $ MVar.tryPutMVar exitRequest Stop
 
+queueRestart
+  :: (Storage.Storage :> es, Concurrent :> es, IOE :> es)
+  => MVar.MVar ExitReason
+  -> IncomingMessage
+  -> Text
+  -> Eff es ()
+queueRestart exitRequest message body = do
+  unique <- liftIO Unique.newUnique
+  void $ LifecycleStorage.enqueueStartupReply [i|restart-#{Unique.hashUnique unique}|] message body
+  void $ MVar.tryPutMVar exitRequest Restart
+
 runLifecycleEffect
-  :: Eff es ()
+  :: (IncomingMessage -> Text -> Eff es ())
   -> Eff (LifecycleEffect.Lifecycle : es) a
   -> Eff es a
 runLifecycleEffect onRestart =
-  interpret (\_ LifecycleEffect.RequestRestart -> onRestart)
+  interpret (\_ (LifecycleEffect.RequestRestart message body) -> onRestart message body)
 
 runStartupActions
   :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es)

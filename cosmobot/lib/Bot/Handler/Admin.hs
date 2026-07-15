@@ -69,7 +69,7 @@ restartRoute =
 handleRestart :: (Chat.Chat :> es, LifecycleEffect.Lifecycle :> es) => IncomingMessage -> Text -> Eff es ()
 handleRestart message _ = do
   void $ Chat.replyTo message "正在重启 cosmobot。"
-  LifecycleEffect.requestRestart
+  LifecycleEffect.requestRestart message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
 
 echoRoute :: Chat.Chat :> es => RouteHandler es
 echoRoute =

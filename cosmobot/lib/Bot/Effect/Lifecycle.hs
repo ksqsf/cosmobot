@@ -10,13 +10,14 @@ module Bot.Effect.Lifecycle
   )
 where
 
+import Bot.Core.Message
 import Bot.Prelude
 
 data Lifecycle :: Effect where
-  RequestRestart :: Lifecycle m ()
+  RequestRestart :: IncomingMessage -> Text -> Lifecycle m ()
 
 type instance DispatchOf Lifecycle = Dynamic
 
-requestRestart :: Lifecycle :> es => Eff es ()
-requestRestart =
-  send RequestRestart
+requestRestart :: Lifecycle :> es => IncomingMessage -> Text -> Eff es ()
+requestRestart message body =
+  send (RequestRestart message body)

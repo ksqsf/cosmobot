@@ -96,28 +96,35 @@ testRestartRejectsNonSuperuser :: IO ()
 testRestartRejectsNonSuperuser = do
   replies <- IORef.newIORef ([] :: [Text])
   restarted <- IORef.newIORef False
-  runAdminRestart replies restarted (messageWith "!restart" emptyMessageDigest)
+  queued <- runAdminRestart replies restarted (messageWith "!restart" emptyMessageDigest)
   IORef.readIORef replies >>= (@?= ["只有 superuser 可以重启 cosmobot。"])
   IORef.readIORef restarted >>= (@?= False)
+  queued @?= []
 
 testRestartRequestsProcessRestart :: IO ()
 testRestartRequestsProcessRestart = do
   replies <- IORef.newIORef ([] :: [Text])
   restarted <- IORef.newIORef False
-  runAdminRestart replies restarted (messageWith "!restart" emptyMessageDigest{senderIsSuperuser = True})
+  queued <- runAdminRestart replies restarted (messageWith "!restart" emptyMessageDigest{senderIsSuperuser = True})
   IORef.readIORef replies >>= (@?= ["正在重启 cosmobot。"])
   IORef.readIORef restarted >>= (@?= True)
+  queued @?= ["cosmobot 重启完成啦 (｡•̀ᴗ-)✧"]
 
-runAdminRestart :: IORef.IORef [Text] -> IORef.IORef Bool -> IncomingMessage -> IO ()
+runAdminRestart :: IORef.IORef [Text] -> IORef.IORef Bool -> IncomingMessage -> IO [Text]
 runAdminRestart replies restarted incoming =
   runEff $ runPrim $ runConcurrent $ runTestLog $
     StorageSQLite.runStorageSQLitePath ":memory:" $
       Chat.runChatWith (testChatDriver replies Nothing False) $
         runFileSystem $ runProcess $ runConcurrent $
           ConcurrencyManager.runConcurrencyManager $
-            Skills.runSkills (SkillsStore.SkillsConfig "skills") $
-              Lifecycle.runLifecycleEffect (liftIO $ IORef.writeIORef restarted True) $
+            Skills.runSkills (SkillsStore.SkillsConfig "skills") do
+              Lifecycle.runLifecycleEffect recordRestart $
                 runHandlers (adminHandlers defaultAdminConfig) incoming
+              map (.body) <$> LifecycleStorage.loadStartupActions
+  where
+    recordRestart incomingMessage body = do
+      void $ LifecycleStorage.enqueueStartupReply "test-restart" incomingMessage body
+      liftIO $ IORef.writeIORef restarted True
 
 testTitleRejectsNonSuperuser :: IO ()
 testTitleRejectsNonSuperuser = do
@@ -222,7 +229,7 @@ testLifecycleRestartRequestRestartsRuntime = do
               (MVar.putMVar started () >> threadDelay maxBound)
                 `finally` liftIO (IORef.writeIORef stopped True)
             MVar.takeMVar started
-            LifecycleEffect.requestRestart
+            LifecycleEffect.requestRestart (messageWith "!restart" emptyMessageDigest) "restart complete"
   IORef.readIORef restarted >>= (@?= True)
   IORef.readIORef stopped >>= (@?= True)
 
@@ -278,7 +285,7 @@ runAdminWithSkills cfg skillsCfg replies incoming beforeReload =
           ConcurrencyManager.runConcurrencyManager $
             Skills.runSkills skillsCfg do
               beforeReload
-              Lifecycle.runLifecycleEffect (pure ()) $
+              Lifecycle.runLifecycleEffect (\_ _ -> pure ()) $
                 runHandlers (adminHandlers cfg) incoming
               Skills.skillsSystemPrompt
 
@@ -308,7 +315,7 @@ runAdminWithDelayAndTitle delayMicros cfg replies titleCalls titleResult incomin
         . runConcurrent
         . ConcurrencyManager.runConcurrencyManager
         . Skills.runSkills (SkillsStore.SkillsConfig "skills")
-        . Lifecycle.runLifecycleEffect (pure ())
+        . Lifecycle.runLifecycleEffect (\_ _ -> pure ())
 
 testChatDriver
   :: IOE :> es

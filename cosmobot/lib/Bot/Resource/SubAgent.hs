@@ -1,16 +1,16 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
-
--- |
--- Module      : Bot.Resource.SubAgent
--- Description : Chat-scoped background agents
--- Stability   : experimental
+{-|
+Module      : Bot.Resource.SubAgent
+Description : Chat-scoped background agents
+Stability   : experimental
+-}
 module Bot.Resource.SubAgent
-  ( SubAgent,
-    SubAgentArgs (..),
-    SubAgentRunner,
-    sendPrompt,
-    queryOutput,
+  ( SubAgent
+  , SubAgentArgs (..)
+  , SubAgentRunner
+  , sendPrompt
+  , queryOutput
   )
 where
 
@@ -24,32 +24,32 @@ import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
 
 type SubAgentRunner es =
-  Maybe Concurrency.Handle ->
-  AgentContext es ->
-  [Tool es] ->
-  Transcript ->
-  Eff es (Text, Transcript)
+  Maybe Concurrency.Handle
+  -> AgentContext es
+  -> [Tool es]
+  -> Transcript
+  -> Eff es (Text, Transcript)
 
 data SubAgentArgs = SubAgentArgs
-  { systemContext :: !Text,
-    toolNames :: ![Text]
+  { systemContext :: !Text
+  , toolNames :: ![Text]
   }
 
 data SubAgent = SubAgent
-  { arguments :: !SubAgentArgs,
-    state :: !(MVar.MVar SubAgentState)
+  { arguments :: !SubAgentArgs
+  , state :: !(MVar.MVar SubAgentState)
   }
 
 data SubAgentState = SubAgentState
-  { transcript :: !(Maybe Transcript),
-    answer :: !(Maybe Text),
-    active :: !(Maybe Concurrency.Handle),
-    runs :: ![Concurrency.Handle]
+  { transcript :: !(Maybe Transcript)
+  , answer :: !(Maybe Text)
+  , active :: !(Maybe Concurrency.Handle)
+  , runs :: ![Concurrency.Handle]
   }
 
 instance
-  (Resource.Resource :> es, Concurrency.Concurrency :> es, Concurrent :> es) =>
-  Resource.ResourceObject (Eff es) SubAgent
+  (Resource.Resource :> es, Concurrency.Concurrency :> es, Concurrent :> es)
+  => Resource.ResourceObject (Eff es) SubAgent
   where
   type CreationArgs SubAgent = SubAgentArgs
 
@@ -60,10 +60,10 @@ instance
     Right . SubAgent arguments
       <$> MVar.newMVar
         SubAgentState
-          { transcript = Nothing,
-            answer = Nothing,
-            active = Nothing,
-            runs = []
+          { transcript = Nothing
+          , answer = Nothing
+          , active = Nothing
+          , runs = []
           }
 
   destroyResourceObject subagent = do
@@ -83,14 +83,14 @@ instance
     snapshot <- MVar.readMVar subagent.state
     pure (Right (if isJust snapshot.active then "generating" else "ready"))
 
-sendPrompt ::
-  (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es) =>
-  SubAgentRunner es ->
-  [Tool es] ->
-  AgentContext es ->
-  SubAgent ->
-  Text ->
-  Eff es (Either Text ())
+sendPrompt
+  :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
+  => SubAgentRunner es
+  -> [Tool es]
+  -> AgentContext es
+  -> SubAgent
+  -> Text
+  -> Eff es (Either Text ())
 sendPrompt runner availableTools context subagent prompt =
   MVar.modifyMVar subagent.state \snapshot ->
     case snapshot.active of
@@ -101,14 +101,22 @@ sendPrompt runner availableTools context subagent prompt =
             childContext = context {Agent.systemContext = subagent.arguments.systemContext}
         worker <- Concurrency.forkWithHandle "subagent" \worker -> do
           result <- trySync (runner (Just worker) childContext selectedTools transcript)
-          MVar.modifyMVar_ subagent.state \current ->
-            pure $
-              if current.active == Just worker
-                then case result of
-                  Right (answer, nextTranscript) -> current {transcript = Just nextTranscript, answer = Just answer, active = Nothing}
-                  Left err -> current {answer = Just ("Subagent failed: " <> Text.take 500 (show err)), active = Nothing}
-                else current
+          MVar.modifyMVar_ subagent.state (pure . finishRun worker result)
         pure (snapshot {active = Just worker, runs = worker : snapshot.runs}, Right ())
+
+finishRun
+  :: Concurrency.Handle
+  -> Either SomeException (Text, Transcript)
+  -> SubAgentState
+  -> SubAgentState
+finishRun worker result current
+  | current.active /= Just worker = current
+  | otherwise =
+      case result of
+        Right (answer, transcript) ->
+          current{transcript = Just transcript, answer = Just answer, active = Nothing}
+        Left err ->
+          current{answer = Just ("Subagent failed: " <> Text.take 500 (show err)), active = Nothing}
 
 queryOutput :: (Concurrent :> es) => SubAgent -> Eff es Text
 queryOutput subagent = do

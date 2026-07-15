@@ -295,6 +295,12 @@ In an allowed room/chat/group, or directly send messages from superuser/an allow
 - reply to a bot's response with `!audit`
 - `!audit <id>` for details
 
+### Administration (Superuser-only)
+
+- `!restart`: restart Cosmobot gracefully
+- `!upgrade`: run a custom upgrade script
+- `!reload`: reload skill frontmatter
+
 ### RPC
 
 See
