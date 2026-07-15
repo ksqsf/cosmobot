@@ -14,7 +14,7 @@ import qualified Bot.Agent.Tools.SubAgent as SubAgentTools
 import qualified Bot.Agent.Tools.Terminal as TerminalTools
 import qualified Bot.Agent.Tools.Workspace as WorkspaceTools
 import qualified Bot.Agent.Types as AgentTypes
-import Bot.Agent.Tools.Shell (runBashSafe)
+import Bot.Agent.Tools.Shell (runBashSafe, runBashTool)
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
 import Bot.Chat.Driver.Types (ChatDriverEffects)
@@ -304,11 +304,13 @@ testTerminalAndSandboxToolScopes :: IO ()
 testTerminalAndSandboxToolScopes = do
   let terminalTool = TerminalTools.terminalTool :: Agent.Tool AgentStack
       sandboxTool = SandboxTools.sandboxTool :: Agent.Tool AgentStack
+      trustedBashTool = runBashTool :: Agent.Tool AgentStack
       destroyResourceTool = ResourceTools.destroyResourceTool :: Agent.Tool AgentStack
       workspaceTool = WorkspaceTools.workspaceTool :: Agent.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
       sandboxSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode sandboxTool.parameters))
+      trustedBashSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode trustedBashTool.parameters))
   terminalTool.name @?= "terminal"
   assertBool "terminal tool should be hidden outside ACP" (not (terminalTool.allowed agentContext))
   assertBool "terminal tool should be visible for ACP" (terminalTool.allowed acpContext)
@@ -316,6 +318,7 @@ testTerminalAndSandboxToolScopes = do
   assertBool "sandbox bash schema should require a script" ("\"script\"" `Text.isInfixOf` sandboxSchema)
   assertBool "sandbox bash schema should not expose command ids" (not ("command_id" `Text.isInfixOf` sandboxSchema))
   assertBool "sandbox bash schema should not expose async actions" (not ("\"action\"" `Text.isInfixOf` sandboxSchema))
+  assertBool "run_bash schema should not expose sandboxes" (not ("sandbox" `Text.isInfixOf` trustedBashSchema))
   assertBool "sandbox tool should be visible to non-superusers" (sandboxTool.allowed agentContext)
   assertBool "destroy resource should be visible to non-superusers" (destroyResourceTool.allowed agentContext)
   assertBool "sandbox tool should require resource identity" (not (sandboxTool.allowed missingIdentity))
