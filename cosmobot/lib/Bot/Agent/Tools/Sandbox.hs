@@ -28,7 +28,7 @@ sandboxTool
   => Tool es
 sandboxTool = Tool
   { name = "sandbox"
-  , description = "Create, rename, or delete an isolated Debian sandbox, or run a Bash script in one."
+  , description = "Create, rename, or delete an isolated, persistent Debian sandbox, or run a Bash script in one. Delete it promptly when the job is done, unless the user asks explicitly to keep it."
   , parameters = objectSchema
       [ fieldText "op" "One of: create, run, rename, delete."
       , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
