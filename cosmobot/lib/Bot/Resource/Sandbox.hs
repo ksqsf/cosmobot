@@ -172,6 +172,7 @@ podmanRunArgs :: Text -> Text -> [String]
 podmanRunArgs image name =
   [ "run", "--detach", "--name", Text.unpack name
   , "--security-opt=no-new-privileges"
+  , "--memory=1g", "--cpus=1", "--pids-limit=256"
   , "--label", "io.cosmobot.resource=sandbox"
   , "--", Text.unpack image, "sleep", "infinity"
   ]
