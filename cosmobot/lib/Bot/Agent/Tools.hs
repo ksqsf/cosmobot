@@ -85,6 +85,7 @@ defaultTools = tools
       , typstRenderTool
       , sendReplyTool
       , sendFileTool
+      , sendMediaTool
       , mentionUserTool
       , senderMemberInfoTool
       , memberInfoTool

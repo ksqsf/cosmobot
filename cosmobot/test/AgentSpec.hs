@@ -201,6 +201,7 @@ main =
       , testCase "send file tool uploads via chat effect" testSendFileToolUploadsViaChatEffect
       , testCase "send file tool reports upload failure" testSendFileToolReportsUploadFailure
       , testCase "send file tool is noisy and superuser-only" testSendFileToolIsNoisyAndSuperuserOnly
+      , testCase "send_media uploads cached media for normal users" testSendMediaToolUploadsCachedMedia
       , testCase "current sender chatlog tool queries matching sender messages" testCurrentSenderChatLogToolQueriesChatLog
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
@@ -446,6 +447,49 @@ testSendFileToolIsNoisyAndSuperuserOnly = do
   tool.noisy @?= True
   tool.allowed agentContext @?= False
   tool.allowed superuserContext @?= True
+
+testSendMediaToolUploadsCachedMedia :: IO ()
+testSendMediaToolUploadsCachedMedia =
+  withSQLiteTempPath "send-media" \dbPath ->
+    withTempDir "send-media-cache" \dir -> do
+      uploads <- IORef.newIORef ([] :: [FilePath])
+      let cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = dir </> "cache"}
+          driver = defaultAgentMockChatDriver
+            { agentUploadFile = \_ path -> do
+                liftIO $ IORef.modifyIORef' uploads (<> [path])
+                pure (Right "902")
+            }
+          runStack =
+            runFileSystem
+              . runProcess
+              . runFail
+              . runConcurrent
+              . runTestLog
+              . StorageSQLite.runStorageSQLitePath dbPath
+              . HTTP.runHTTP
+              . runTimeout
+              . MediaInterpreter.runMedia cfg
+              . Chat.runChatWith driver
+      runResult <- runEff $ runStack do
+        mediaRef <- fromMaybe (error "expected media ref") <$> Media.storeMediaObject Media.MediaObject
+          { bytes = Q.fromStrict "generated file"
+          , mimeType = "application/octet-stream"
+          , sourceName = Just "generated.bin"
+          }
+        expectedPath <- fromMaybe (error "expected local media path") <$> Media.localMediaPath mediaRef
+        runner <- MediaTools.sendMediaTool.start agentContext
+        result <- runner testToolCallMetadata (Aeson.object ["media_id" Aeson..= mediaRef])
+        pure (expectedPath, result)
+      (expectedPath, result) <- either assertFailure pure runResult
+      let tool = MediaTools.sendMediaTool :: Agent.Tool AgentStack
+      tool.noisy @?= True
+      assertBool "send_media should be available to normal users" (tool.allowed agentContext)
+      IORef.readIORef uploads >>= (@?= [expectedPath])
+      case result of
+        Agent.ToolSucceeded{content} ->
+          assertBool "tool result should report sent media" ("Sent media media:mf_" `Text.isInfixOf` content)
+        Agent.ToolFailed{failure} ->
+          assertFailure [i|send_media failed: #{show failure :: String}|]
 
 runSendFileTool
   :: IORef.IORef [Text]

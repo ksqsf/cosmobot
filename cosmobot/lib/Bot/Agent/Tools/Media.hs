@@ -7,11 +7,13 @@ Stability   : experimental
 module Bot.Agent.Tools.Media
   ( readMediaTextTool
   , mediaToFileTool
+  , sendMediaTool
   )
 where
 
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
+import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -61,6 +63,43 @@ mediaToFileTool = Tool
   , start = \_ -> pure \_ args ->
       withTextArg "media_id" (resolveMediaPath . Text.strip) args
   }
+
+sendMediaTool :: (Chat.Chat :> es, Media.Media :> es) => Tool es
+sendMediaTool = Tool
+  { name = "send_media"
+  , description = "Send a cached media object to the current chat. Use this when the user asks for a generated or cached file to be sent."
+  , parameters = objectSchema
+      [ fieldText "media_id" "Media id to send, either mf_xxx or media:mf_xxx."
+      ]
+      ["media_id"]
+  , noisy = True
+  , allowed = everyone
+  , start = \context -> pure \_ args ->
+      withTextArg "media_id" (sendMedia context . Text.strip) args
+  }
+
+sendMedia :: (Chat.Chat :> es, Media.Media :> es) => AgentContext es -> Text -> Eff es ToolResult
+sendMedia context mediaId
+  | Text.null mediaId =
+      pure (mediaFailure "media_id must not be empty.")
+  | otherwise = Media.localMediaPath (mediaRef mediaId) >>= \case
+      Nothing ->
+        pure (mediaFailure [i|Media object not found: #{mediaId}|])
+      Just path -> Chat.uploadFile context.message path >>= \case
+        Right sent ->
+          pure (toolText [i|Sent media #{mediaId}; message id: #{show sent :: Text}|])
+        Left err -> do
+          let failureText = "发送媒体失败：" <> err
+          void $ Chat.replyTo context.message failureText
+          pure (toolFailure AgentFailure
+            { category = ExternalServiceUnavailable
+            , userMessage = failureText
+            , detail = err
+            })
+
+mediaFailure :: Text -> ToolResult
+mediaFailure message =
+  toolFailure (permanentArgumentFailure message message).failure
 
 resolveMediaPath :: Media.Media :> es => Text -> Eff es ToolResult
 resolveMediaPath mediaId
