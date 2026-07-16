@@ -74,6 +74,7 @@ instance
   type CreationArgs Sandbox = SandboxArgs
 
   resourceTypeName _ = "Sandbox"
+  resourceScope _ = Resource.ChatResource
 
   resourcePersistence _ = Resource.PersistentResource
     { encodeResource = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode

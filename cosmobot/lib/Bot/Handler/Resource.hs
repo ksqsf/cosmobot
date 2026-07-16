@@ -22,7 +22,7 @@ import qualified Data.Text as Text
 
 resourceHandlers :: (Chat.Chat :> es, Resource.Resource :> es) => [RouteHandler es]
 resourceHandlers =
-  [ documented "!res/ls" "List your resources and their remaining life." $
+  [ documented "!res/ls" "List resources accessible in this chat and their remaining life." $
       stopOn (command "!res/ls") handleList
   , documented "!res/detail <id>" "Show resource details, including its lifetime." $
       stopOn (command "!res/detail") handleDetail

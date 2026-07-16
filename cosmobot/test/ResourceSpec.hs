@@ -80,6 +80,7 @@ instance (Prim :> es, Concurrent :> es) => Resource.ResourceObject (Eff es) Test
 instance Applicative m => Resource.ResourceObject m OtherObject where
   type CreationArgs OtherObject = ()
   resourceTypeName _ = "Other"
+  resourceScope _ = Resource.ChatResource
   createResourceObject _ = pure (Right OtherObject)
   destroyResourceObject _ = pure (Right ())
   describeResourceObject _ _ = pure "other"
@@ -144,6 +145,8 @@ main = defaultMain $ testGroup "resource"
   , testCase "resource TTL has a ten-minute minimum" $ do
       Resource.ttlFromMinutes 9 @?= Left "TTL must be at least 10 minutes."
       Resource.ttlFromMinutes 10 @?= Right (Just 600)
+  , testCase "sandboxes are chat scoped" $
+      Resource.resourceScope @(Eff '[Concurrent, TypedProcess.TypedProcess, IOE]) (Proxy @Sandbox.Sandbox) @?= Resource.ChatResource
   , testCase "resource removal reports partial results independently" testPartialRemoval
   ]
 
@@ -158,6 +161,8 @@ testTypedResources = runManaged do
   listed <- Resource.list access
   liftIO $ map (\item -> (item.resourceType, item.sessionId, item.description, item.probeResult)) listed
     @?= [("Test", Nothing, "alpha", Right "healthy"), ("Other", Nothing, "other", Right "healthy")]
+  otherAccess <- expectRight (Resource.accessFromMessage (ownerMessage{senderId = Just "other"}))
+  Resource.list otherAccess >>= liftIO . ((@?= ["res-2"]) . map (.resourceId))
   liftIO $ assertBool "resource list reports life" ("life: permanent" `Text.isInfixOf` renderResources listed)
   mismatch <- Resource.withResource @OtherObject access "res-1" Nothing (const (pure ()))
   liftIO $ mismatch @?= Left Resource.ResourceTypeMismatch
