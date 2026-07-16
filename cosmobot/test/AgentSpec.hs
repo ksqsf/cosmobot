@@ -259,6 +259,7 @@ main =
       , testCase "thread branches do not overwrite siblings" testThreadBranchesDoNotOverwriteSiblings
       , testCase "thread lookup is scoped by chat" testThreadLookupIsScopedByChat
       , testCase "thread branches persist through SQLite reload" testThreadBranchesPersistThroughSQLiteReload
+      , testCase "concurrent thread stores allocate distinct ids" testConcurrentThreadStoresAllocateDistinctIds
       , testCase "thread cache miss loads evicted parent from SQLite" testThreadCacheMissLoadsEvictedParent
       , testCase "thread storage omits large tool results" testThreadStorageOmitsLargeToolResults
       , testCase "transcript omits base64 generated image context" testTranscriptOmitsBase64GeneratedImageContext
@@ -2003,6 +2004,22 @@ testThreadBranchesPersistThroughSQLiteReload =
         map rowParentMessageId rows @?= [Nothing, Just "1", Just "1", Just "2"]
         map payloadMessageCount rows @?= [2, 2, 2, 2]
         assertBool "all nodes in the reloaded tree keep the same thread storage id" (sameThreadStorageIds rows)
+
+testConcurrentThreadStoresAllocateDistinctIds :: IO ()
+testConcurrentThreadStoresAllocateDistinctIds =
+  withSQLiteTempPath "concurrent-thread-ids" \path -> runEff $ runConcurrent $ runPrim $ runTestLog $
+    StorageSQLite.runStorageSQLitePath path do
+      firstStore <- newThreadStore
+      secondStore <- newThreadStore
+      void $ Async.concurrently
+        (rememberThreadTranscript firstStore (Just (messageKey 1)) (startWithUser "first"))
+        (rememberThreadTranscript secondStore (Just (messageKey 2)) (startWithUser "second"))
+      ids <- map (.threadStorageId) <$> loadThreadRows
+      liftIO $ case ids of
+        [Just firstId, Just secondId] ->
+          assertBool "concurrent root threads should have distinct storage ids" (firstId /= secondId)
+        _ ->
+          assertFailure [i|expected two persisted thread ids, got #{show ids :: String}|]
 
 testThreadCacheMissLoadsEvictedParent :: IO ()
 testThreadCacheMissLoadsEvictedParent =

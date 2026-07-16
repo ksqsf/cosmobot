@@ -58,8 +58,7 @@ data ActiveThreadKey
   deriving (Eq, Ord)
 
 data ThreadState = ThreadState
-  { nextThreadStorageId :: !Integer
-  , threadTree :: !ThreadTree
+  { threadTree :: !ThreadTree
   , threadIds :: !(Map ThreadMessageKey Integer)
   , recentThreadIds :: ![ThreadMessageKey]
   }
@@ -126,7 +125,7 @@ threadRows =
 
 newThreadStore :: Prim :> es => Eff es ThreadStore
 newThreadStore = do
-  ref <- newIORef ThreadState{nextThreadStorageId = 1, threadTree = emptyThreadTree, threadIds = Map.empty, recentThreadIds = []}
+  ref <- newIORef ThreadState{threadTree = emptyThreadTree, threadIds = Map.empty, recentThreadIds = []}
   activeRef <- newIORef Map.empty
   pure ThreadStore{unThreadStore = ref, activeThreadStore = activeRef}
 
@@ -341,21 +340,20 @@ rememberThreadTranscriptFrom store@ThreadStore{unThreadStore = ref} parentMessag
   ensureThreadTable
   parentNode <- lookupStoredThreadNodeMaybe store parentMessageKey
   existingNode <- lookupStoredThreadNodeMaybe store (Just messageKey)
-  nextStoredThreadId <- loadNextThreadStorageId
-  (threadStorageId, storageParentMessageKey, storedMessages) <- atomicModifyIORef' ref \threadState ->
-    let threadStorageId = threadStorageIdFor threadState parentNode existingNode
-        node = StoredThreadNode
-          { threadStorageId
-          , treeNode = ThreadNode{messageKey, parentMessageKey, transcript}
-          }
-        (storageParentMessageKey, storedMessages) = transcriptMessagesForStorage parentMessageKey parentNode transcript
-        nextThreadStorageId = max nextStoredThreadId (if threadStorageId < threadState.nextThreadStorageId then threadState.nextThreadStorageId else threadStorageId + 1)
-        nextState = threadState{nextThreadStorageId = nextThreadStorageId}
-        cachedState = cacheThreadNode messageKey node nextState
-    in (cachedState, (threadStorageId, storageParentMessageKey, storedMessages))
-  saveThreadMessages messageKey threadStorageId storageParentMessageKey (messagesJson storedMessages)
-    `catchSync` \err ->
-      logError [i|Failed to persist thread: #{show err :: String}|]
+  let requestedThreadStorageId = (.threadStorageId) <$> (parentNode <|> existingNode)
+      (storageParentMessageKey, storedMessages) = transcriptMessagesForStorage parentMessageKey parentNode transcript
+  persistedThreadStorageId <-
+    (Just <$> saveThreadMessages messageKey requestedThreadStorageId storageParentMessageKey (messagesJson storedMessages))
+      `catchSync` \err ->
+        logError [i|Failed to persist thread: #{show err :: String}|] $> Nothing
+  for_ persistedThreadStorageId \threadStorageId ->
+    atomicModifyIORef' ref \threadState ->
+      let node =
+            StoredThreadNode
+              { threadStorageId
+              , treeNode = ThreadNode{messageKey, parentMessageKey, transcript}
+              }
+      in (cacheThreadNode messageKey node threadState, ())
 
 lookupStoredThreadNode :: (Prim :> es, Storage.Storage :> es) => ThreadStore -> ThreadMessageKey -> Eff es (Maybe StoredThreadNode)
 lookupStoredThreadNode store messageKey =
@@ -469,30 +467,33 @@ loadThreadMessageIdsFromStorage messageKey = do
           pure (row ! #message_id)
       pure (map textMessageId rows)
 
-loadNextThreadStorageId :: Storage.Storage :> es => Eff es Integer
-loadNextThreadStorageId = do
-  rows <- loadThreadRows
-  pure (Foldable.maximum (1 : [fromMaybe 0 row.threadStorageId + 1 | row <- rows]))
-
-saveThreadMessages :: Storage.Storage :> es => ThreadMessageKey -> Integer -> Maybe ThreadMessageKey -> Text -> Eff es ()
-saveThreadMessages messageKey threadStorageId parentMessageKey storedMessagesJson = do
+saveThreadMessages :: Storage.Storage :> es => ThreadMessageKey -> Maybe Integer -> Maybe ThreadMessageKey -> Text -> Eff es Integer
+saveThreadMessages messageKey requestedThreadStorageId parentMessageKey storedMessagesJson = do
   ensureThreadTable
-  runSelda do
+  runSelda $ transaction do
     deleteFrom_ threadRows \row ->
       threadKeyMatches messageKey row
-    insert_
-      threadRows
-      [ ThreadStorageRow
-          { id = def
-          , platform_key = chatPlatformKey messageKey.platform
-          , chat_id = fromIntegral <$> messageKey.chatId
-          , message_id = messageIdText messageKey.messageId
-          , thread_id = Just (fromIntegral threadStorageId)
-          , parent_chat_id = fromIntegral <$> (parentMessageKey >>= (.chatId))
-          , parent_message_id = messageIdText <$> (parentMessageKey <&> (.messageId))
-          , messages_json = storedMessagesJson
-          }
-      ]
+    case requestedThreadStorageId of
+      Just threadStorageId ->
+        insert_ threadRows [threadStorageRow (Just threadStorageId)] $> threadStorageId
+      Nothing -> do
+        insertedId <- insertWithPK threadRows [threadStorageRow Nothing]
+        let threadStorageId = fromIntegral (fromId insertedId)
+        update_ threadRows
+          (\row -> row ! #id .== literal insertedId)
+          (\row -> row `with` [#thread_id := literal (Just (fromIntegral threadStorageId :: Int.Int64))])
+        pure threadStorageId
+  where
+    threadStorageRow threadStorageId = ThreadStorageRow
+      { id = def
+      , platform_key = chatPlatformKey messageKey.platform
+      , chat_id = fromIntegral <$> messageKey.chatId
+      , message_id = messageIdText messageKey.messageId
+      , thread_id = fromIntegral <$> threadStorageId
+      , parent_chat_id = fromIntegral <$> (parentMessageKey >>= (.chatId))
+      , parent_message_id = messageIdText <$> (parentMessageKey <&> (.messageId))
+      , messages_json = storedMessagesJson
+      }
 
 threadRowFromStorage :: ThreadStorageRow -> ThreadRow
 threadRowFromStorage row =
@@ -550,13 +551,6 @@ cacheThreadNode messageKey node threadState =
 maxCachedThreads :: Int
 maxCachedThreads =
   4
-
-threadStorageIdFor :: ThreadState -> Maybe StoredThreadNode -> Maybe StoredThreadNode -> Integer
-threadStorageIdFor threadState parentNode existingNode =
-  fromMaybe threadState.nextThreadStorageId (parentThreadStorageId <|> existingThreadStorageId)
-  where
-    parentThreadStorageId = (.threadStorageId) <$> parentNode
-    existingThreadStorageId = (.threadStorageId) <$> existingNode
 
 messagesJson :: [LLM.ChatMessage] -> Text
 messagesJson =
