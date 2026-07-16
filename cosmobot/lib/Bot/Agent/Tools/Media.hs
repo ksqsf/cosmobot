@@ -6,6 +6,7 @@ Stability   : experimental
 
 module Bot.Agent.Tools.Media
   ( readMediaTextTool
+  , mediaToFileTool
   )
 where
 
@@ -46,6 +47,27 @@ readMediaTextTool = Tool
   , start = \_ -> pure \_ args ->
       withParsedToolArgs readMediaTextArgs args readMediaText
   }
+
+mediaToFileTool :: Media.Media :> es => Tool es
+mediaToFileTool = Tool
+  { name = "media_to_file"
+  , description = "Resolve a cached media object to its existing local cache file path. The file is not attached to agent context."
+  , parameters = objectSchema
+      [ fieldText "media_id" "Media id to resolve, either mf_xxx or media:mf_xxx."
+      ]
+      ["media_id"]
+  , noisy = False
+  , allowed = everyone
+  , start = \_ -> pure \_ args ->
+      withTextArg "media_id" (resolveMediaPath . Text.strip) args
+  }
+
+resolveMediaPath :: Media.Media :> es => Text -> Eff es ToolResult
+resolveMediaPath mediaId
+  | Text.null mediaId = pure (toolText "media_id must not be empty.")
+  | otherwise = Media.localMediaPath (mediaRef mediaId) <&> \case
+      Nothing -> toolText [i|Media object not found: #{mediaId}|]
+      Just path -> toolText (jsonText (Aeson.object ["path" Aeson..= path]))
 
 data ReadMediaTextArgs = ReadMediaTextArgs
   { mediaId :: !Text

@@ -77,6 +77,7 @@ defaultTools = tools
       , webFetchTool
       , datetimeTool
       , readMediaTextTool
+      , mediaToFileTool
   -- , generateAudioTool  -- useless now
       , viewImageTool
       , generateImageTool
@@ -91,7 +92,8 @@ defaultTools = tools
       , listGroupMembersTool
       , currentMessageInfoTool
       , scheduleTool
-      , manageMemoryTool
+      , senderMemoryTool
+      , chatMemoryTool
       , sandboxTool
       , runBashTool
       , terminalTool

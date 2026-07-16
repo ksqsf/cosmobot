@@ -5,7 +5,8 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Tools.Memory
-  ( manageMemoryTool
+  ( senderMemoryTool
+  , chatMemoryTool
   )
 where
 
@@ -20,20 +21,31 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
-manageMemoryTool :: Memory.Memory :> es => Tool es
-manageMemoryTool = Tool
-  { name = "manage_memory"
-  , description = "View, replace, or clear persistent sender or chat memory. Use sender scope for personal facts and preferences; use chat scope for shared context. Keep non-superuser memory within 1000 characters."
+senderMemoryTool :: Memory.Memory :> es => Tool es
+senderMemoryTool = memoryTool
+  "sender_memory"
+  "View, replace, or clear persistent memory for the current sender. Use it for personal facts and preferences. Keep non-superuser memory within 1000 characters."
+  senderMemoryScope
+
+chatMemoryTool :: Memory.Memory :> es => Tool es
+chatMemoryTool = memoryTool
+  "chat_memory"
+  "View, replace, or clear persistent memory shared by the current chat. Keep non-superuser memory within 1000 characters."
+  chatMemoryScope
+
+memoryTool :: Memory.Memory :> es => Text -> Text -> MemoryScope -> Tool es
+memoryTool name description scope = Tool
+  { name
+  , description
   , parameters = objectSchema
-      [ fieldText "scope" "One of: sender, chat."
-      , fieldText "action" "One of: view, replace, clear."
+      [ fieldText "action" "One of: view, replace, clear."
       , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
       ]
-      ["scope", "action"]
+      ["action"]
   , noisy = True
   , allowed = everyone
   , start = \context -> pure \_ args ->
-      withParsedToolArgs memoryArgs args \(scope, action, memory) ->
+      withParsedToolArgs memoryArgs args \(action, memory) ->
         runMemoryAction scope context action memory
   }
 
@@ -65,16 +77,11 @@ chatMemoryScope = MemoryScope
   , scopeOf = MemoryStore.chatMemoryScope
   }
 
-memoryArgs :: Aeson.Value -> AesonTypes.Parser (MemoryScope, MemoryAction, Maybe Text)
+memoryArgs :: Aeson.Value -> AesonTypes.Parser (MemoryAction, Maybe Text)
 memoryArgs =
   Aeson.withObject "memory arguments" $ \o -> do
-    scopeText <- Text.toLower . Text.strip <$> o Aeson..: Key.fromText "scope"
     actionText <- Text.toLower . Text.strip <$> o Aeson..: Key.fromText "action"
     memory <- fmap Text.strip <$> o Aeson..:? Key.fromText "memory"
-    scope <- case scopeText of
-      "sender" -> pure senderMemoryScope
-      "chat" -> pure chatMemoryScope
-      _ -> fail "scope must be one of: sender, chat"
     action <- case actionText of
       "view" ->
         pure MemoryView
@@ -86,7 +93,7 @@ memoryArgs =
         fail "action must be one of: view, replace, clear"
     when (actionText == "replace" && maybe True Text.null memory) do
       fail "memory is required when action is replace"
-    pure (scope, action, memory)
+    pure (action, memory)
 
 runMemoryAction :: Memory.Memory :> es => MemoryScope -> AgentContext es -> MemoryAction -> Maybe Text -> Eff es ToolResult
 runMemoryAction scope context action memory =

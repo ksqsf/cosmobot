@@ -214,6 +214,7 @@ main =
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
       , testCase "media_text reads cached media text slices" testReadMediaTextToolReadsCachedSlices
+      , testCase "media_to_file returns cache path without media context" testMediaToFileReturnsCachePath
       , testCase "audio_generate tool uses configured audio options and sends audio" testGenerateAudioToolUsesConfiguredAudioOptions
       , testCase "image_edit tool passes image request options" testEditImageToolPassesImageRequestOptions
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
@@ -848,6 +849,39 @@ testReadMediaTextToolReadsCachedSlices =
           assertBool "tool output should include total chars" ("\"total_chars\":7" `Text.isInfixOf` output)
         Agent.ToolFailed{failure} ->
           assertFailure [i|media_text failed: #{show failure :: String}|]
+
+testMediaToFileReturnsCachePath :: IO ()
+testMediaToFileReturnsCachePath =
+  withSQLiteTempPath "media-to-file" \dbPath ->
+    withTempDir "media-to-file-cache" \dir -> do
+      let cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = dir </> "cache"}
+          runStack =
+            runFileSystem
+              . runProcess
+              . runFail
+              . runConcurrent
+              . runTestLog
+              . StorageSQLite.runStorageSQLitePath dbPath
+              . HTTP.runHTTP
+              . runTimeout
+              . MediaInterpreter.runMedia cfg
+      runResult <- runEff $ runStack do
+        mediaRef <- fromMaybe (error "expected media ref") <$> Media.storeMediaObject Media.MediaObject
+          { bytes = Q.fromStrict "file bytes"
+          , mimeType = "application/octet-stream"
+          , sourceName = Just "sample.bin"
+          }
+        expectedPath <- fromMaybe (error "expected local media path") <$> Media.localMediaPath mediaRef
+        runner <- MediaTools.mediaToFileTool.start agentContext
+        result <- runner testToolCallMetadata (Aeson.object ["media_id" Aeson..= mediaRef])
+        pure (expectedPath, result)
+      (expectedPath, result) <- either assertFailure pure runResult
+      case result of
+        Agent.ToolSucceeded{content, imageUrls} -> do
+          assertBool "tool output should contain the cache path" (Text.pack expectedPath `Text.isInfixOf` content)
+          imageUrls @?= []
+        Agent.ToolFailed{failure} ->
+          assertFailure [i|media_to_file failed: #{show failure :: String}|]
 
 testGenerateAudioToolUsesConfiguredAudioOptions :: IO ()
 testGenerateAudioToolUsesConfiguredAudioOptions = do
@@ -2076,9 +2110,9 @@ testTranscriptJsonRemainsListCompatible = do
 testMemoryToolManagesCurrentSenderMemory :: IO ()
 testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "manage_memory" (Aeson.object ["scope" Aeson..= ("sender" :: Text), "action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
-    , chatAnswer "" [toolCall "call-2" "manage_memory" (Aeson.object ["scope" Aeson..= ("sender" :: Text), "action" Aeson..= ("view" :: Text)])]
-    , chatAnswer "" [toolCall "call-3" "manage_memory" (Aeson.object ["scope" Aeson..= ("sender" :: Text), "action" Aeson..= ("clear" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "sender_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
@@ -2093,9 +2127,9 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
 testMemoryToolManagesCurrentChatMemory :: IO ()
 testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "manage_memory" (Aeson.object ["scope" Aeson..= ("chat" :: Text), "action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
-    , chatAnswer "" [toolCall "call-2" "manage_memory" (Aeson.object ["scope" Aeson..= ("chat" :: Text), "action" Aeson..= ("view" :: Text)])]
-    , chatAnswer "" [toolCall "call-3" "manage_memory" (Aeson.object ["scope" Aeson..= ("chat" :: Text), "action" Aeson..= ("clear" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "chat_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "chat_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
@@ -2108,7 +2142,7 @@ testMemoryToolEnforcesLengthLimit :: IO ()
 testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
   let longMemory = Text.replicate 1001 "x"
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "manage_memory" (Aeson.object ["scope" Aeson..= ("sender" :: Text), "action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
+    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
     , chatAnswer "rejected" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
