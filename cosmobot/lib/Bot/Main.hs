@@ -36,6 +36,7 @@ import qualified Bot.LLM.OpenAI as OpenAI
 import qualified Bot.Media.Interpreter as Media
 import qualified Bot.Resource as Resource
 import qualified Bot.Resource.Sandbox as Sandbox
+import qualified Bot.Resource.Workspace as Workspace
 import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Server as RPCServer
@@ -99,7 +100,10 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
           . Skills.runSkills cfg.skills
           . ACPClient.runACP acpState
           . ConcurrencyManager.runConcurrencyManager
-          . Resource.runResourceManagerWith [Resource.resourceLoader @Sandbox.Sandbox]
+          . Resource.runResourceManagerWith
+              [ Resource.resourceLoader @Sandbox.Sandbox
+              , Resource.resourceLoader @Workspace.Workspace
+              ]
           . Scheduler.runScheduler
           . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState cfg.acp.enabled acpState
           . Lifecycle.runLifecycle cfg.media restartRequested

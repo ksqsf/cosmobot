@@ -11,6 +11,7 @@ module Bot.Resource.Workspace
   , WorkspaceArgs (..)
   , validateWorkId
   , createWorkspaceAt
+  , restoreWorkspaceAt
   , queryWorkspace
   , updateWorkspace
   )
@@ -49,6 +50,11 @@ instance
   resourceTypeName _ = "Workspace"
   resourceTTLSeconds = Resource.ttlFromMinutes . (.ttlMinutes)
 
+  resourcePersistence _ = Resource.PersistentResource
+    { encodeResource = (.workId)
+    , restoreResource = restoreWorkspaceAt "/work"
+    }
+
   createResourceObject Resource.Init{arguments} =
     createWorkspaceAt "/work" arguments
 
@@ -83,6 +89,20 @@ createWorkspaceAt root arguments = mask \restore -> do
             (restore (writeWork path arguments.goal) `onException` cleanup) >>= \case
               Left err -> pure (Left err)
               Right () -> Right . Workspace workId path <$> MVar.newMVar ()
+
+restoreWorkspaceAt
+  :: (FileSystem.FileSystem :> es, Concurrent :> es)
+  => FilePath
+  -> Text
+  -> Eff es (Either Text Workspace)
+restoreWorkspaceAt root payload =
+  case validateWorkId payload of
+    Left err -> pure (Left err)
+    Right workId -> do
+      let path = root </> Text.unpack workId
+      FileSystem.doesDirectoryExist path >>= \case
+        False -> pure (Left "Workspace directory is missing.")
+        True -> Right . Workspace workId path <$> MVar.newMVar ()
 
 queryWorkspace
   :: (FileSystem.FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)

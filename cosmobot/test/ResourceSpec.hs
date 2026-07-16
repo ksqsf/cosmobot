@@ -472,6 +472,17 @@ testWorkspaceLifecycle =
       Workspace.updateWorkspace workspace "updated goal" >>= liftIO . (@?= Right ())
       updated <- Workspace.queryWorkspace workspace >>= expectRight
       liftIO $ assertBool "query includes updated goal" ("WORK.md:\nupdated goal" `Text.isInfixOf` updated)
+      restored <- Workspace.restoreWorkspaceAt root "demo-work" >>= expectRight
+      Workspace.queryWorkspace restored >>= liftIO . \case
+        Right restoredReport -> assertBool "restored workspace keeps its files" ("WORK.md:\nupdated goal" `Text.isInfixOf` restoredReport)
+        Left err -> assertFailure (Text.unpack err)
+      let persistence = Resource.resourcePersistence (Proxy @Workspace.Workspace)
+            :: Resource.ResourcePersistence
+                (Eff '[FileSystem.FileSystem, Concurrent, TypedProcess.TypedProcess, IOE])
+                Workspace.Workspace
+      liftIO $ case persistence of
+        Resource.EphemeralResource -> assertFailure "workspace must be persistent"
+        Resource.PersistentResource{encodeResource} -> encodeResource workspace @?= "demo-work"
       Resource.destroyResourceObject workspace >>= liftIO . (@?= Right ())
       FileSystem.doesDirectoryExist path >>= liftIO . (@?= False)
       ) `finally` cleanup
