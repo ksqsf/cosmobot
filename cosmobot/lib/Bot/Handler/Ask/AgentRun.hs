@@ -266,7 +266,7 @@ data ActiveReplyState = ActiveReplyState
   }
 
 withActiveReply
-  :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
+  :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es, IOE :> es)
   => ThreadStore
   -> Concurrency.Handle
   -> Maybe ThreadMessageKey
@@ -275,7 +275,7 @@ withActiveReply
   -> Transcript
   -> (ActiveReplyState -> Eff es a)
   -> Eff es a
-withActiveReply threads resource parentMessageKey message prompt baseTranscript use = do
+withActiveReply threads resource parentMessageKey message prompt baseTranscript use = mask \restore -> do
   active <- rememberActiveThread threads parentMessageKey (threadMessageKey message <$> message.messageId) message prompt resource baseTranscript
   activeRef <- IORef.newIORef active
   let activeReply =
@@ -288,7 +288,7 @@ withActiveReply threads resource parentMessageKey message prompt baseTranscript 
           , baseTranscript
           , activeRef
           }
-  use activeReply `onException` discardActiveReply activeReply
+  restore (use activeReply) `onException` discardActiveReply activeReply
 
 recordReplyUpdate
   :: (Prim :> es, Concurrent :> es)

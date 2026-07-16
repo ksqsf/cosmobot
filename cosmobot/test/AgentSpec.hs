@@ -250,6 +250,7 @@ main =
       , testCase "halt command cancels active run for current thread message" testHaltCommandCancelsCurrentThreadMessage
       , testCase "halt command prefers replied thread message over current message" testHaltCommandPrefersRepliedThreadMessage
       , testCase "halt command requires prompt sender or superuser" testHaltCommandRequiresOwnerOrSuperuser
+      , testCase "active thread is listed before a platform reply exists" testActiveThreadWithoutPlatformReply
       , testCase "active thread ids are stable and chat scoped" testActiveThreadIdsAreStableAndChatScoped
       , testCase "fetch_url max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "thread replies keep parent and child snapshots" testThreadRepliesKeepSnapshots
@@ -1760,6 +1761,24 @@ testHaltCommandRequiresOwnerOrSuperuser = runEff $ runConcurrent $ runPrim $ run
     outsiderHalted @?= False
     superuserHalted @?= True
     cancelledHandles @?= [Concurrency.Id 1]
+
+testActiveThreadWithoutPlatformReply :: IO ()
+testActiveThreadWithoutPlatformReply = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  store <- newThreadStore
+  cancelled <- liftIO (IORef.newIORef [])
+  let workerId = Concurrency.Id 1
+      cancel handleId = liftIO (IORef.modifyIORef' cancelled (handleId :)) $> True
+  active <- rememberActiveThread store Nothing Nothing testMessage "run sleep 100 and say nothing" (Concurrency.Handle workerId) (startWithUser "hello")
+  listed <- listActiveThreadsForMessage store testMessage
+  halted <- haltActiveThreadsForMessage store cancel testMessage [workerId]
+  remaining <- listActiveThreadsForMessage store testMessage
+  cancelledHandles <- liftIO (IORef.readIORef cancelled)
+  liftIO do
+    isJust active @? "expected active thread handle"
+    listed @?= [ActiveThreadInfo workerId "run sleep 100 and say nothing"]
+    halted @?= [workerId]
+    remaining @?= []
+    cancelledHandles @?= [workerId]
 
 testActiveThreadIdsAreStableAndChatScoped :: IO ()
 testActiveThreadIdsAreStableAndChatScoped = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
