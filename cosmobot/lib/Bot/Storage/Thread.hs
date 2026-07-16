@@ -10,6 +10,7 @@ module Bot.Storage.Thread
   ( ThreadStore
   , ActiveThreadHandle
   , ThreadRow (..)
+  , ActiveThreadInfo (..)
   , newThreadStore
   , lookupThreadTranscript
   , lookupThreadMessageIds
@@ -22,6 +23,8 @@ module Bot.Storage.Thread
   , finishActiveThreadCurrent
   , haltThread
   , haltThreadForMessage
+  , listActiveThreadsForMessage
+  , haltActiveThreadsForMessage
   , loadThreadRows
   )
 where
@@ -63,6 +66,9 @@ data StoredThreadNode = StoredThreadNode
 
 data ActiveThread = ActiveThread
   { activeMessageKey :: !ThreadMessageKey
+  , activeChatScope :: !(Maybe ActiveChatScope)
+  , activeSenderId :: !(Maybe Text)
+  , activePrompt :: !Text
   , activeParentMessageKey :: !(Maybe ThreadMessageKey)
   , activeMessageKeys :: !(IORef [ThreadMessageKey])
   , activeCurrent :: !(IORef Transcript)
@@ -71,6 +77,15 @@ data ActiveThread = ActiveThread
   }
 
 newtype ActiveThreadHandle = ActiveThreadHandle ActiveThread
+
+data ActiveChatScope = ActiveChatScope !ChatPlatform !(Either Integer Text)
+  deriving (Eq)
+
+data ActiveThreadInfo = ActiveThreadInfo
+  { id :: !Id
+  , prompt :: !Text
+  }
+  deriving (Eq, Show)
 
 data ThreadRow = ThreadRow
   { messageKey :: !ThreadMessageKey
@@ -142,16 +157,28 @@ rememberActiveThread
   => ThreadStore
   -> Maybe ThreadMessageKey
   -> Maybe ThreadMessageKey
+  -> IncomingMessage
+  -> Text
   -> Handle
   -> Transcript
   -> Eff es (Maybe ActiveThreadHandle)
-rememberActiveThread _ _ Nothing _ _ =
+rememberActiveThread _ _ Nothing _ _ _ _ =
   pure Nothing
-rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey (Just messageKey) activeHandle transcript = do
+rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey (Just messageKey) message prompt activeHandle transcript = do
   messageKeys <- newIORef [messageKey]
   current <- newIORef transcript
   done <- MVar.newEmptyMVar
-  let active = ActiveThread{activeMessageKey = messageKey, activeParentMessageKey = parentMessageKey, activeMessageKeys = messageKeys, activeCurrent = current, activeDone = done, activeHandle}
+  let active = ActiveThread
+        { activeMessageKey = messageKey
+        , activeChatScope = activeChatScopeFromMessage message
+        , activeSenderId = message.senderId
+        , activePrompt = prompt
+        , activeParentMessageKey = parentMessageKey
+        , activeMessageKeys = messageKeys
+        , activeCurrent = current
+        , activeDone = done
+        , activeHandle
+        }
   atomicModifyIORef' activeRef \activeMap ->
     (Map.insert messageKey active activeMap, ())
   pure (Just (ActiveThreadHandle active))
@@ -218,17 +245,75 @@ haltThreadForMessage
   -> (Id -> Eff es Bool)
   -> IncomingMessage
   -> Eff es Bool
-haltThreadForMessage store cancel message =
+haltThreadForMessage store@ThreadStore{activeThreadStore = activeRef} cancel message =
   haltFirst (haltCandidateKeys message)
   where
     haltFirst [] =
       pure False
-    haltFirst (messageKey : rest) =
-      haltThread store cancel messageKey >>= \case
-        True ->
-          pure True
-        False ->
-          haltFirst rest
+    haltFirst (messageKey : rest) = do
+      active <- Map.lookup messageKey <$> readIORef activeRef
+      case active of
+        Just activeThread
+          | mayManageActiveThread message activeThread ->
+              haltThread store cancel messageKey >>= \case
+                True -> pure True
+                False -> haltFirst rest
+        _ -> haltFirst rest
+
+listActiveThreadsForMessage
+  :: Prim :> es
+  => ThreadStore
+  -> IncomingMessage
+  -> Eff es [ActiveThreadInfo]
+listActiveThreadsForMessage ThreadStore{activeThreadStore = activeRef} message =
+  case activeChatScopeFromMessage message of
+    Nothing -> pure []
+    Just scope -> do
+      active <- Map.elems <$> readIORef activeRef
+      pure
+        [ ActiveThreadInfo activeThread.activeHandle.handleId activeThread.activePrompt
+        | activeThread <- Map.elems $ Map.fromList
+            [ (activeThread.activeHandle.handleId, activeThread)
+            | activeThread <- active
+            , activeThread.activeChatScope == Just scope
+            , mayManageActiveThread message activeThread
+            ]
+        ]
+
+mayManageActiveThread :: IncomingMessage -> ActiveThread -> Bool
+mayManageActiveThread message activeThread =
+  message.digest.senderIsSuperuser
+    || maybe False ((== activeThread.activeSenderId) . Just) message.senderId
+
+haltActiveThreadsForMessage
+  :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es)
+  => ThreadStore
+  -> (Id -> Eff es Bool)
+  -> IncomingMessage
+  -> [Id]
+  -> Eff es [Id]
+haltActiveThreadsForMessage store cancel message requestedIds = do
+  active <- listActiveThreadsForMessage store message
+  fmap catMaybes $ forM active \threadInfo ->
+    if threadInfo.id `elem` requestedIds
+      then haltThreadById store cancel threadInfo.id <&> \halted -> threadInfo.id <$ guard halted
+      else pure Nothing
+
+haltThreadById
+  :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es)
+  => ThreadStore
+  -> (Id -> Eff es Bool)
+  -> Id
+  -> Eff es Bool
+haltThreadById store@ThreadStore{activeThreadStore = activeRef} cancel requestedId = do
+  active <- Map.elems <$> readIORef activeRef
+  maybe (pure False) (haltThread store cancel . (.activeMessageKey)) $
+    find ((== requestedId) . (.activeHandle.handleId)) active
+
+activeChatScopeFromMessage :: IncomingMessage -> Maybe ActiveChatScope
+activeChatScopeFromMessage message =
+  ActiveChatScope message.platform
+    <$> (Left <$> message.chatId <|> Right <$> listToMaybe message.chatAliases)
 
 haltCandidateKeys :: IncomingMessage -> [ThreadMessageKey]
 haltCandidateKeys message =

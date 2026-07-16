@@ -249,6 +249,8 @@ main =
       , testCase "chunked active thread aliases every sent reply" testChunkedActiveThreadAliasesEverySentReply
       , testCase "halt command cancels active run for current thread message" testHaltCommandCancelsCurrentThreadMessage
       , testCase "halt command prefers replied thread message over current message" testHaltCommandPrefersRepliedThreadMessage
+      , testCase "halt command requires prompt sender or superuser" testHaltCommandRequiresOwnerOrSuperuser
+      , testCase "active thread ids are stable and chat scoped" testActiveThreadIdsAreStableAndChatScoped
       , testCase "fetch_url max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "thread replies keep parent and child snapshots" testThreadRepliesKeepSnapshots
       , testCase "thread branches do not overwrite siblings" testThreadBranchesDoNotOverwriteSiblings
@@ -1686,7 +1688,7 @@ testChunkedActiveThreadAliasesEverySentReply = runEff $ runConcurrent $ runPrim 
       cancel handleId = do
         liftIO $ IORef.modifyIORef' cancelled (handleId :)
         pure True
-  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) resource baseTranscript
+  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" resource baseTranscript
   addActiveThreadMessage store active (messageKey 2)
   updateActiveThread active partialTranscript
   halted <- haltThread store cancel (messageKey 2)
@@ -1710,7 +1712,7 @@ testHaltCommandCancelsCurrentThreadMessage = runEff $ runConcurrent $ runPrim $ 
         liftIO $ IORef.modifyIORef' cancelled (handleId :)
         pure True
       haltMessage = testMessage{text = "!halt", messageId = Just (integerMessageId 2), replyToMessageId = Nothing}
-  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) activeHandle baseTranscript
+  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" activeHandle baseTranscript
   addActiveThreadMessage store active (messageKey 2)
   updateActiveThread active partialTranscript
   halted <- haltThreadForMessage store cancel haltMessage
@@ -1732,8 +1734,8 @@ testHaltCommandPrefersRepliedThreadMessage = runEff $ runConcurrent $ runPrim $ 
         liftIO $ IORef.modifyIORef' cancelled (handleId :)
         pure True
       haltMessage = testMessage{text = "!halt", messageId = Just (integerMessageId 2), replyToMessageId = Just (integerMessageId 1)}
-  void $ rememberActiveThread store Nothing (Just (messageKey 1)) repliedHandle transcript
-  void $ rememberActiveThread store Nothing (Just (messageKey 2)) currentHandle transcript
+  void $ rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" repliedHandle transcript
+  void $ rememberActiveThread store Nothing (Just (messageKey 2)) testMessage "hello" currentHandle transcript
   halted <- haltThreadForMessage store cancel haltMessage
   currentStillHalted <- haltThread store cancel (messageKey 2)
   cancelledHandles <- liftIO (IORef.readIORef cancelled)
@@ -1741,6 +1743,55 @@ testHaltCommandPrefersRepliedThreadMessage = runEff $ runConcurrent $ runPrim $ 
     halted @?= True
     currentStillHalted @?= True
     cancelledHandles @?= [Concurrency.Id 2, Concurrency.Id 1]
+
+testHaltCommandRequiresOwnerOrSuperuser :: IO ()
+testHaltCommandRequiresOwnerOrSuperuser = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  store <- newThreadStore
+  cancelled <- liftIO (IORef.newIORef [])
+  let transcript = startWithUser "hello"
+      cancel handleId = liftIO (IORef.modifyIORef' cancelled (handleId :)) $> True
+      outsider = testMessage{senderId = Just "other", replyToMessageId = Just (integerMessageId 1)}
+      superuser = outsider{digest = outsider.digest{senderIsSuperuser = True}}
+  void $ rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" (Concurrency.Handle (Concurrency.Id 1)) transcript
+  outsiderHalted <- haltThreadForMessage store cancel outsider
+  superuserHalted <- haltThreadForMessage store cancel superuser
+  cancelledHandles <- liftIO (IORef.readIORef cancelled)
+  liftIO do
+    outsiderHalted @?= False
+    superuserHalted @?= True
+    cancelledHandles @?= [Concurrency.Id 1]
+
+testActiveThreadIdsAreStableAndChatScoped :: IO ()
+testActiveThreadIdsAreStableAndChatScoped = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  store <- newThreadStore
+  cancelled <- liftIO (IORef.newIORef [])
+  let otherChat = testMessageInChat 200
+      transcript = startWithUser "hello"
+      remember message responseId workerId prompt =
+        void $ rememberActiveThread store Nothing (Just (threadMessageKey message (integerMessageId responseId))) message prompt (Concurrency.Handle (Concurrency.Id workerId)) transcript
+      cancel workerId = liftIO (IORef.modifyIORef' cancelled (<> [workerId])) $> True
+  remember testMessage 1 11 "first prompt"
+  remember testMessage 2 12 "second prompt"
+  remember otherChat 3 13 "other chat"
+  let outsider = testMessage{senderId = Just "other"}
+      superuser = outsider{digest = outsider.digest{senderIsSuperuser = True}}
+  outsiderListed <- listActiveThreadsForMessage store outsider
+  outsiderHalted <- haltActiveThreadsForMessage store cancel outsider [Concurrency.Id 11]
+  superuserListed <- listActiveThreadsForMessage store superuser
+  listed <- listActiveThreadsForMessage store testMessage
+  halted <- haltActiveThreadsForMessage store cancel testMessage [Concurrency.Id 12, Concurrency.Id 13]
+  remaining <- listActiveThreadsForMessage store testMessage
+  otherRemaining <- listActiveThreadsForMessage store otherChat
+  cancelledIds <- liftIO (IORef.readIORef cancelled)
+  liftIO do
+    outsiderListed @?= []
+    outsiderHalted @?= []
+    superuserListed @?= [ActiveThreadInfo (Concurrency.Id 11) "first prompt", ActiveThreadInfo (Concurrency.Id 12) "second prompt"]
+    listed @?= [ActiveThreadInfo (Concurrency.Id 11) "first prompt", ActiveThreadInfo (Concurrency.Id 12) "second prompt"]
+    halted @?= [Concurrency.Id 12]
+    remaining @?= [ActiveThreadInfo (Concurrency.Id 11) "first prompt"]
+    otherRemaining @?= [ActiveThreadInfo (Concurrency.Id 13) "other chat"]
+    cancelledIds @?= [Concurrency.Id 12]
 
 testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do

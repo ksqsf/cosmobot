@@ -124,12 +124,51 @@ haltRoute
   => ThreadStore
   -> RouteHandler es
 haltRoute threads =
-  withHelp (RouteHelp "!halt" "Stop the active agent thread.") $
-  stopOn (command "!halt") \message _ -> do
-    halted <- haltThreadForMessage threads Concurrency.cancel message
-    if halted
-      then logInfo "halted"
-      else logInfo "couldn't halt active thread"
+  withHelp (RouteHelp "!halt [all|<id>...]" "List or stop active agent threads in this chat.") $
+  stopOn (command "!halt") (handleHalt threads)
+
+handleHalt
+  :: (Chat.Chat :> es, Storage.Storage :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es, Concurrent :> es)
+  => ThreadStore
+  -> IncomingMessage
+  -> Text
+  -> Eff es ()
+handleHalt threads message args
+  | Text.null input, isJust message.replyToMessageId = do
+      halted <- haltThreadForMessage threads Concurrency.cancel message
+      logHalted halted
+  | Text.null input =
+      listActiveThreadsForMessage threads message >>= void . Chat.replyTo message . renderActiveThreads
+  | input == "all", isNothing message.replyToMessageId = do
+      active <- listActiveThreadsForMessage threads message
+      halted <- haltActiveThreadsForMessage threads Concurrency.cancel message (map (.id) active)
+      logInfo [i|halted #{length halted} active threads|]
+  | otherwise =
+      case traverse parseThreadId (Text.words input) of
+        Nothing ->
+          void $ Chat.replyTo message "Usage: !halt, !halt all, or !halt <id>..."
+        Just threadIds -> do
+          halted <- haltActiveThreadsForMessage threads Concurrency.cancel message (ordNub threadIds)
+          logInfo [i|halted #{length halted} requested active threads|]
+  where
+    input = Text.strip args
+    logHalted True = logInfo "halted"
+    logHalted False = logInfo "couldn't halt active thread"
+
+parseThreadId :: Text -> Maybe Concurrency.Id
+parseThreadId value = do
+  threadId <- readMaybe (toString value)
+  guard (threadId > 0)
+  pure (Concurrency.Id threadId)
+
+renderActiveThreads :: [ActiveThreadInfo] -> Text
+renderActiveThreads [] =
+  "No active threads."
+renderActiveThreads threads =
+  Text.unlines
+    [ "- " <> show thread.id.unId <> ": " <> Text.take 20 (Text.unwords (Text.words thread.prompt))
+    | thread <- threads
+    ]
 
 privateRoute
   :: HandlerEffects es

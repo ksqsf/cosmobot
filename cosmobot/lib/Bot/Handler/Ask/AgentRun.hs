@@ -78,7 +78,7 @@ runAskAgentThread
 runAskAgentThread toolCfg cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
   agentRun <- Agent.startAgentRunWithParent (Just resource) (agentContext toolCfg cfg message input) AgentTools.defaultTools
-  withActiveReply threads resource parentMessageKey message transcript \activeReply -> do
+  withActiveReply threads resource parentMessageKey message input.text transcript \activeReply -> do
     reply <- streamAgentReply cfg observer agentRun activeReply message transcript
     commitAgentReply observer activeReply message reply
 
@@ -260,6 +260,7 @@ data ActiveReplyState = ActiveReplyState
   , resource :: !Concurrency.Handle
   , parentMessageKey :: !(Maybe ThreadMessageKey)
   , message :: !IncomingMessage
+  , prompt :: !Text
   , baseTranscript :: !Transcript
   , activeRef :: !(IORef.IORef (Maybe ActiveThreadHandle))
   }
@@ -270,17 +271,20 @@ withActiveReply
   -> Concurrency.Handle
   -> Maybe ThreadMessageKey
   -> IncomingMessage
+  -> Text
   -> Transcript
   -> (ActiveReplyState -> Eff es a)
   -> Eff es a
-withActiveReply threads resource parentMessageKey message baseTranscript use = do
-  activeRef <- IORef.newIORef Nothing
+withActiveReply threads resource parentMessageKey message prompt baseTranscript use = do
+  active <- rememberActiveThread threads parentMessageKey (threadMessageKey message <$> message.messageId) message prompt resource baseTranscript
+  activeRef <- IORef.newIORef active
   let activeReply =
         ActiveReplyState
           { threads
           , resource
           , parentMessageKey
           , message
+          , prompt
           , baseTranscript
           , activeRef
           }
@@ -310,7 +314,7 @@ ensureActiveReply activeState messageId transcript = do
     Just{} ->
       pure existing
     Nothing -> do
-      active <- rememberActiveThread activeState.threads activeState.parentMessageKey (threadMessageKey activeState.message <$> messageId) activeState.resource transcript
+      active <- rememberActiveThread activeState.threads activeState.parentMessageKey (threadMessageKey activeState.message <$> messageId) activeState.message activeState.prompt activeState.resource transcript
       IORef.writeIORef activeState.activeRef active
       pure active
 
