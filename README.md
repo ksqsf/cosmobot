@@ -348,6 +348,27 @@ Reply to a message that contains an image:
 
 You need to provide `api_key` in `[handler.saucenao]`. Currently, only the top result with similarity > 90% is reported.
 
+## Long-living resources
+
+Cosmobot provides a unified abstraction for certain kinds of long-living resources, including Sandboxes, Workspaces, and SubAgents. 
+These objects can live even if the conversation is interrupted.
+
+A "Resource" can be created, operated upon, and deleted. To ease management, resources by default are subject to a parameter called "Time-To-Live" (TTL).  After the expiry, the resources are automatically deleted. But Agents cannot create permanent resources; instead, the "owner" or a superuser can manually make them permanent with `!res/permanent`.
+
+### Sandbox
+
+Sandbox is powered by Podman. See `./cosmobox/Containerfile` if you need a simple but capable container.
+
+Rootless containers are recommended due to security concerns.
+
+### Workspace
+
+Workspace is a special directory in `./work/<id>` with a file called `WORK.md`. It records the goals, progress, findings, and the todo list.
+
+### Subagent
+
+Well, just subagents.
+
 ## Agent tools
 
 Currently, the following tools are available:
@@ -363,6 +384,7 @@ Currently, the following tools are available:
 |Chat    |`sender_chat_log`      |           |
 |Chat    |`send_reply`           |           |
 |Chat    |`send_file`            |Yes        |
+|Chat    |`send_media`           |           |
 |Chat    |`mention_user`         |           |
 |Chat    |`sender_info`          |           |
 |Chat    |`member_info`          |           |
@@ -374,7 +396,9 @@ Currently, the following tools are available:
 |Image   |`image_edit`           |           |
 |Image   |`image_view`           |           |
 |Media   |`media_text`           |           |
-|Memory  |`manage_memory`        |           |
+|Media   |`media_to_file`        |           |
+|Memory  |`sender_memory`        |           |
+|Memory  |`chat_memory`          |           |
 |Resource|`sandbox`              |           |
 |Resource|`workspace`            |Yes        |
 |Agent   |`subagent`             |           |
