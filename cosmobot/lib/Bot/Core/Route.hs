@@ -34,6 +34,7 @@ module Bot.Core.Route
   , stopOn
   , requireAuth
   , withHelp
+  , collectRouteHelp
   , runRouteDecision
   , runRoute
   , runHandlers
@@ -185,6 +186,7 @@ data RouteHelp = RouteHelp
 -- | A route is an executable decision function plus optional help metadata.
 data Route es = Route
   { help   :: !(Maybe RouteHelp)
+  , helpVisible :: IncomingMessage -> Bool
   , decide :: IncomingMessage -> Eff es (RouteDecision es)
   }
 
@@ -206,6 +208,7 @@ onMatch
 onMatch matched (MessageFilter filt) handler =
   Route
     { help = Nothing
+    , helpVisible = const True
     , decide = \message ->
         pure case filt message of
           Nothing ->
@@ -221,7 +224,8 @@ requireAuth
   -> Route es
 requireAuth allowed denied route =
   route
-    { decide = \message -> do
+    { helpVisible = \message -> allowed message && route.helpVisible message
+    , decide = \message -> do
         decision <- route.decide message
         pure case decision of
           Skip ->
@@ -241,6 +245,11 @@ requireAuth allowed denied route =
 withHelp :: RouteHelp -> Route es -> Route es
 withHelp help route =
   route{help = Just help}
+
+-- | Collect help visible to this sender in route evaluation order.
+collectRouteHelp :: IncomingMessage -> [Route es] -> [RouteHelp]
+collectRouteHelp message =
+  mapMaybe \route -> guard (route.helpVisible message) *> route.help
 
 -- | Execute a route action and return whether routing should continue.
 runRouteDecision :: RouteDecision es -> Eff es Bool

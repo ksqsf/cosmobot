@@ -41,7 +41,8 @@ adminHandlers cfg =
 
 pingRoute :: Chat.Chat :> es => RouteHandler es
 pingRoute =
-  stopOn (command "!ping") handlePing
+  withHelp (RouteHelp "!ping" "Check whether the bot is responding.") $
+    stopOn (command "!ping") handlePing
 
 handlePing :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 handlePing message _ =
@@ -49,6 +50,7 @@ handlePing message _ =
 
 reloadRoute :: (Chat.Chat :> es, Skills.Skills :> es) => RouteHandler es
 reloadRoute =
+  withHelp (RouteHelp "!reload" "Reload skills (superuser only).") $
   requireAuth
     isSuperuser
     (\message -> void $ Chat.replyTo message "只有 superuser 可以 reload。")
@@ -61,6 +63,7 @@ handleReload message _ = do
 
 restartRoute :: (Chat.Chat :> es, LifecycleEffect.Lifecycle :> es) => RouteHandler es
 restartRoute =
+  withHelp (RouteHelp "!restart" "Restart cosmobot (superuser only).") $
   requireAuth
     isSuperuser
     (\message -> void $ Chat.replyTo message "只有 superuser 可以重启 cosmobot。")
@@ -73,7 +76,8 @@ handleRestart message _ = do
 
 echoRoute :: Chat.Chat :> es => RouteHandler es
 echoRoute =
-  stopOn (command "!echo") handleEcho
+  withHelp (RouteHelp "!echo <text>" "Echo text back to the chat.") $
+    stopOn (command "!echo") handleEcho
 
 handleEcho :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 handleEcho message rawArgs = do
@@ -81,6 +85,7 @@ handleEcho message rawArgs = do
 
 titleRoute :: Chat.Chat :> es => RouteHandler es
 titleRoute =
+  withHelp (RouteHelp "!title <id> <title>" "Set a group member title (superuser only).") $
   requireAuth
     isSuperuser
     (\message -> void $ Chat.replyTo message "只有 superuser 可以设置 title。")
@@ -114,6 +119,7 @@ parseTitleArgs rawArgs = do
 
 upgradeRoute :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
 upgradeRoute cfg =
+  withHelp (RouteHelp "!upgrade" "Run the configured upgrade script (superuser only).") $
   requireAuth
     isSuperuser
     (\message -> void $ Chat.replyTo message "只有 superuser 可以执行 upgrade。")

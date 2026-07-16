@@ -80,8 +80,17 @@ scratchpadRoute
   -> ScratchpadCommand
   -> RouteHandler es
 scratchpadRoute commandText commandKind =
-  stopOn (command commandText) \message args ->
-    handleScratchpadCommand commandKind message args
+  withHelp (scratchpadHelp commandKind) $
+    stopOn (command commandText) \message args ->
+      handleScratchpadCommand commandKind message args
+
+scratchpadHelp :: ScratchpadCommand -> RouteHelp
+scratchpadHelp = \case
+  TodoCommand -> RouteHelp "!todo [text]" "Add a todo, or list todos when text is omitted."
+  DoneCommand -> RouteHelp "!done <id>" "Mark a todo as done."
+  ListCommand -> RouteHelp "!list" "List todos."
+  ClearCommand -> RouteHelp "!clear" "Clear all todos."
+  RemoveCommand -> RouteHelp "!rm <id>..." "Remove todos by number."
 
 handleScratchpadCommand
   :: (Chat.Chat :> es, Storage.Storage :> es)

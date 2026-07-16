@@ -95,6 +95,7 @@ safebooruRoute
   => SafebooruSearch es
   -> RouteHandler es
 safebooruRoute search =
+  withHelp (RouteHelp "!ball <keyword> [1-5]" "Find random Safebooru images.") $
   stopOn ballCommandArgs \message args -> do
     case parseBallRequest args of
       Left err ->

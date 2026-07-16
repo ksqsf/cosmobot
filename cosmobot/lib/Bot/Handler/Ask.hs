@@ -93,6 +93,7 @@ drawRoute
   -> ThreadStore
   -> RouteHandler es
 drawRoute cfg threads =
+  withHelp (RouteHelp (cfg.drawCommand <> " <prompt>") "Generate an image from a prompt.") $
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (command cfg.drawCommand) \message prompt ->
       Concurrency.fire "ask.draw" $
@@ -106,6 +107,7 @@ askRoute
   -> ThreadStore
   -> RouteHandler es
 askRoute toolCfg cfg threads =
+  withHelp (RouteHelp (cfg.command <> " <prompt>") "Start an agent conversation.") $
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (askPrefix cfg) \message prompt ->
       Concurrency.fireWithHandle "ask.command" \resource ->
@@ -122,6 +124,7 @@ haltRoute
   => ThreadStore
   -> RouteHandler es
 haltRoute threads =
+  withHelp (RouteHelp "!halt" "Stop the active agent thread.") $
   stopOn (command "!halt") \message _ -> do
     halted <- haltThreadForMessage threads Concurrency.cancel message
     if halted

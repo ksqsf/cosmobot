@@ -26,7 +26,8 @@ auditHandlers
   => ThreadStore
   -> [RouteHandler es]
 auditHandlers threads =
-  [ requireAuth isSuperuser (\message -> void $ Chat.replyTo message "只有 superuser 可以查看 audit。") $
+  [ withHelp (RouteHelp "!audit [all|log|<id>]" "Inspect agent tool-use audit records (superuser only).") $
+    requireAuth isSuperuser (\message -> void $ Chat.replyTo message "只有 superuser 可以查看 audit。") $
       stopOn (command "!audit") (handleAudit threads)
   ]
 

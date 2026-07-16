@@ -246,6 +246,7 @@ library
         Bot.Handler.Ask.AgentRun
         Bot.Handler.Ask.Config
         Bot.Handler.Audit
+        Bot.Handler.Help
         Bot.Handler.Resource
         Bot.Handler.Safebooru
         Bot.Handler.Saucenao

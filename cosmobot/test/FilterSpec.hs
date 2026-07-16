@@ -4,6 +4,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
 import Bot.Core.Route
 import Bot.Core.Message
+import Bot.Handler.Help (renderHelp)
 import Bot.Prelude
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -20,6 +21,8 @@ main =
       , testCase "stopping matched route prevents later handlers" testStoppingMatchedRoutePreventsLaterHandlers
       , testCase "route continues to later handlers" testRouteContinueRunsLaterHandlers
       , testCase "restricted route stops after access failure" testRestrictedRouteStopsAfterAccessFailure
+      , testCase "route help is collected in parser order" testCollectRouteHelp
+      , testCase "help renders collected route metadata" testRenderHelp
       ]
 
 testCommandFilter :: IO ()
@@ -85,6 +88,27 @@ testRestrictedRouteStopsAfterAccessFailure = do
     ]
     (message "!exec whoami")
   IORef.readIORef calls >>= (@?= ["denied"])
+
+testCollectRouteHelp :: IO ()
+testCollectRouteHelp = do
+  collectRouteHelp normalMessage routes @?= [firstHelp]
+  collectRouteHelp superuserMessage routes @?= [firstHelp, secondHelp]
+  where
+    normalMessage = message "!help"
+    superuserMessage = normalMessage{digest = emptyMessageDigest{senderIsSuperuser = True}}
+    routes =
+      [ withHelp firstHelp (stopOn anything \_ _ -> pure ())
+      , stopOn anything \_ _ -> pure ()
+      , withHelp secondHelp $
+          requireAuth isSuperuser (\_ -> pure ()) (stopOn anything \_ _ -> pure ())
+      ]
+    firstHelp = RouteHelp "!first" "First command."
+    secondHelp = RouteHelp "!second <arg>" "Second command."
+
+testRenderHelp :: IO ()
+testRenderHelp =
+  renderHelp [RouteHelp "!ping" "Check the bot."]
+    @?= "Available commands:\n- `!ping` — Check the bot.\n"
 
 appendContinueCall :: IORef.IORef [Text] -> Text -> RouteHandler '[IOE]
 appendContinueCall calls label =

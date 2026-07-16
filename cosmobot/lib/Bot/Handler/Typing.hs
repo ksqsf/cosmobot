@@ -52,6 +52,7 @@ rankRoute
   -> Eff es [[Text]]
   -> RouteHandler es
 rankRoute commandText titleSuffix failureMessage fetchRows =
+  withHelp (RouteHelp commandText ("Render the " <> titleSuffix <> " leaderboard.")) $
   requireAuth canStartThread (\_ -> pure ()) $
     stopOn (command commandText) \message _ -> do
       logInfo [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]

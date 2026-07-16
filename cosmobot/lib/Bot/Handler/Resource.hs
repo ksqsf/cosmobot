@@ -22,13 +22,21 @@ import qualified Data.Text as Text
 
 resourceHandlers :: (Chat.Chat :> es, Resource.Resource :> es) => [RouteHandler es]
 resourceHandlers =
-  [ stopOn (command "!res/ls") handleList
-  , stopOn (command "!res/detail") handleDetail
-  , stopOn (command "!res/rm") handleRemove
-  , stopOn (command "!res/mv") handleRename
-  , stopOn (command "!res/keepalive") (handleLifetime "keepalive" Resource.keepAlive)
-  , stopOn (command "!res/permanent") (handleLifetime "permanent" Resource.makePermanent)
+  [ documented "!res/ls" "List your resources and their remaining life." $
+      stopOn (command "!res/ls") handleList
+  , documented "!res/detail <id>" "Show resource details, including its lifetime." $
+      stopOn (command "!res/detail") handleDetail
+  , documented "!res/rm <id>..." "Remove one or more resources." $
+      stopOn (command "!res/rm") handleRemove
+  , documented "!res/mv <id> <new-name>" "Rename a resource." $
+      stopOn (command "!res/mv") handleRename
+  , documented "!res/keepalive <id>..." "Refresh one or more resource lifetimes." $
+      stopOn (command "!res/keepalive") (handleLifetime "keepalive" Resource.keepAlive)
+  , documented "!res/permanent <id>..." "Make one or more resources permanent." $
+      stopOn (command "!res/permanent") (handleLifetime "permanent" Resource.makePermanent)
   ]
+  where
+    documented label description = withHelp RouteHelp{label, description}
 
 resourceIds :: Text -> [Resource.ResourceId]
 resourceIds = List.nub . Text.words

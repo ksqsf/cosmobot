@@ -45,6 +45,7 @@ import qualified Data.Aeson as Aeson
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Audit
+import Bot.Handler.Help
 import Bot.Handler.Resource
 import Bot.Handler.Safebooru
 import Bot.Handler.Saucenao
@@ -131,15 +132,18 @@ routes
   -> ThreadStore
   -> [RouteHandler es]
 routes cfg threads =
-  shutUpHandlers cfg.handlers.shutup
-    <> auditHandlers threads
-    <> adminHandlers cfg.handlers.admin
-    <> scratchpadHandlers
-    <> typingHandlers
-    <> safebooruHandlers
-    <> saucenaoHandlers cfg.saucenao
-    <> resourceHandlers
-    <> askHandlers cfg.tool cfg.handlers.ask threads
+  helpHandlers baseRoutes <> baseRoutes
+  where
+    baseRoutes =
+      shutUpHandlers cfg.handlers.shutup
+        <> auditHandlers threads
+        <> adminHandlers cfg.handlers.admin
+        <> scratchpadHandlers
+        <> typingHandlers
+        <> safebooruHandlers
+        <> saucenaoHandlers cfg.saucenao
+        <> resourceHandlers
+        <> askHandlers cfg.tool cfg.handlers.ask threads
 
 runConfiguredServers
   :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
