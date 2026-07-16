@@ -142,9 +142,9 @@ main = defaultMain $ testGroup "resource"
   , testCase "workspace create, query, update, and destroy" testWorkspaceLifecycle
   , testCase "resource command ids preserve first occurrence" $
       resourceIds "res-2 res-1 res-2 res-3" @?= ["res-2", "res-1", "res-3"]
-  , testCase "resource TTL has a ten-minute minimum" $ do
-      Resource.ttlFromMinutes 9 @?= Left "TTL must be at least 10 minutes."
-      Resource.ttlFromMinutes 10 @?= Right (Just 600)
+  , testCase "resource TTL has a five-minute minimum" $ do
+      Resource.ttlFromMinutes 4 @?= Left "TTL must be at least 5 minutes."
+      Resource.ttlFromMinutes 5 @?= Right (Just 300)
   , testCase "sandboxes are chat scoped" $
       Resource.resourceScope @(Eff '[Concurrent, TypedProcess.TypedProcess, IOE]) (Proxy @Sandbox.Sandbox) @?= Resource.ChatResource
   , testCase "resource removal reports partial results independently" testPartialRemoval
@@ -436,6 +436,10 @@ testPodmanExecArguments = do
   drop (length args - 4) args @?= ["--", "30", "7", Text.unpack script]
   assertBool "sandbox command should be synchronous" ("--detach" `notElem` args)
   assertBool "sandbox wrapper should not use temporary files" (maybe False (not . Text.isInfixOf "/tmp" . Text.pack) (args !!? 4))
+  Sandbox.podmanCopyFromArgs "container-id" "/work/out.bin" "/tmp/out.bin" @?=
+    ["cp", "--", "container-id:/work/out.bin", "/tmp/out.bin"]
+  Sandbox.podmanCopyToArgs "container-id" "/tmp/in.bin" "/work/in.bin" @?=
+    ["cp", "--", "/tmp/in.bin", "container-id:/work/in.bin"]
 
 testPodmanOutput :: Assertion
 testPodmanOutput = do

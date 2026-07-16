@@ -322,6 +322,7 @@ testTerminalAndSandboxToolScopes = do
   sandboxTool.name @?= "sandbox"
   assertBool "sandbox bash schema should require a script" ("\"script\"" `Text.isInfixOf` sandboxSchema)
   assertBool "sandbox create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` sandboxSchema)
+  assertBool "sandbox schema should expose media copies" (all (`Text.isInfixOf` sandboxSchema) ["file_to_media", "media_to_file"])
   assertBool "sandbox bash schema should not expose command ids" (not ("command_id" `Text.isInfixOf` sandboxSchema))
   assertBool "sandbox bash schema should not expose async actions" (not ("\"action\"" `Text.isInfixOf` sandboxSchema))
   assertBool "run_bash schema should not expose sandboxes" (not ("sandbox" `Text.isInfixOf` trustedBashSchema))
@@ -343,9 +344,9 @@ testSubAgentLifecycle = do
         schema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode tool.parameters))
     liftIO $ assertBool "subagent create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` schema)
     createRun <- tool.start agentContext
-    tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (9 :: Int)])
-    liftIO $ assertBool "subagent rejects TTL below ten minutes" ("at least 10" `Text.isInfixOf` AgentTypes.toolResultContent tooShort)
-    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text]), "ttl_minutes" Aeson..= (10 :: Int)])
+    tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (4 :: Int)])
+    liftIO $ assertBool "subagent rejects TTL below five minutes" ("at least 5" `Text.isInfixOf` AgentTypes.toolResultContent tooShort)
+    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
     liftIO $ resourceId @?= "researcher"
     sendRun <- tool.start otherContext

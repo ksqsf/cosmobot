@@ -116,7 +116,7 @@ objectSchema fields required =
 parseTTLMinutes :: AesonTypes.Object -> AesonTypes.Parser Int
 parseTTLMinutes object = do
   ttlMinutes <- object Aeson..: Key.fromText "ttl_minutes"
-  when (ttlMinutes < 10) $ fail "ttl_minutes must be at least 10."
+  when (ttlMinutes < 5) $ fail "ttl_minutes must be at least 5."
   when (ttlMinutes > maxBound `div` 60) $ fail "ttl_minutes is too large."
   pure ttlMinutes
 

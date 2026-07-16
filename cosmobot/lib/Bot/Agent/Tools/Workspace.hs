@@ -35,7 +35,7 @@ workspaceTool = Tool
       , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
       , fieldText "goal" "Initial work goal for create, or complete replacement WORK.md contents for update."
       , fieldText "resource" "Resource name returned by create; required for query, update, rename, and delete."
-      , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 10."
+      , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 5."
       ]
       ["action"]
   , noisy = False

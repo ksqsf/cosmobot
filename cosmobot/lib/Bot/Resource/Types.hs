@@ -98,7 +98,7 @@ data ResourceError
 
 ttlFromMinutes :: Int -> Either Text (Maybe Int)
 ttlFromMinutes minutes
-  | minutes < 10 = Left "TTL must be at least 10 minutes."
+  | minutes < 5 = Left "TTL must be at least 5 minutes."
   | minutes > maxBound `div` 60 = Left "TTL is too large."
   | otherwise = Right (Just (minutes * 60))
 

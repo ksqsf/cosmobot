@@ -17,7 +17,7 @@ Beware: Cosmobot is just a hobby project. Won't be big and professional like Ope
 
 ## Building
 
-Currenly, only GHC 9.10.3 and Cabal 3.14 are supported. Package versions are pinned to [Stackage LTS 24.42](https://www.stackage.org/lts-24.42). After [setting up your toolchain](https://www.haskell.org/ghcup/), to build the whole project, run:
+Currently, only GHC 9.10.3 and Cabal 3.14 are supported. Package versions are pinned to [Stackage LTS 24.42](https://www.stackage.org/lts-24.42). After [setting up your toolchain](https://www.haskell.org/ghcup/), to build the whole project, run:
 
 ```bash
 cabal build -j all
@@ -390,3 +390,4 @@ Note:
 - If the current message sender is not superuser, the priviledged tools will be not visible to the agent.
 - Some tools may be turned off in the config.
 - Most tools are always available.
+- Sandbox is by default available to everyone in the same chat, so people can collaborate on the same project.

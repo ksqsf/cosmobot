@@ -38,7 +38,7 @@ subagentTool runner availableTools =
           , fieldTextArray "tools" "Tool names exposed to the subagent for create; empty exposes none."
           , fieldText "resource" "Subagent resource name; required for send, query, rename, and delete."
           , fieldText "prompt" "Prompt to send; required for send."
-          , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 10."
+          , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 5."
           ]
           ["op"]
     , noisy = False

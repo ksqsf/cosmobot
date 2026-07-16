@@ -13,8 +13,12 @@ module Bot.Resource.Sandbox
   , Sandbox
   , SandboxOutput (..)
   , runCommand
+  , copyFileFromSandbox
+  , copyFileToSandbox
   , podmanRunArgs
   , podmanExecArgs
+  , podmanCopyFromArgs
+  , podmanCopyToArgs
   , podmanCleanupArgs
   , parseInspectRunning
   , retainOutput
@@ -121,6 +125,24 @@ runCommand timeoutSeconds sandbox script requestedLimit = do
       -- ponytail: GNU timeout reserves 124/137; add an out-of-band status channel if scripts must preserve them exactly.
       pure SandboxOutput{output, truncated, exitCode = Just exitCode, timedOut = exitCode `elem` [124, 137]}
 
+copyFileFromSandbox
+  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
+  => Sandbox
+  -> FilePath
+  -> FilePath
+  -> Eff es (Either Text ())
+copyFileFromSandbox sandbox sandboxPath localPath =
+  void <$> runPodman "copy from sandbox" (podmanCopyFromArgs sandbox.containerId sandboxPath localPath)
+
+copyFileToSandbox
+  :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
+  => Sandbox
+  -> FilePath
+  -> FilePath
+  -> Eff es (Either Text ())
+copyFileToSandbox sandbox localPath sandboxPath =
+  void <$> runPodman "copy to sandbox" (podmanCopyToArgs sandbox.containerId localPath sandboxPath)
+
 data SandboxArgs = SandboxArgs
   { image :: !Text
   , ttlMinutes :: !Int
@@ -185,6 +207,14 @@ podmanExecArgs containerId timeoutSeconds limit script =
   , show limit
   , Text.unpack script
   ]
+
+podmanCopyFromArgs :: Text -> FilePath -> FilePath -> [String]
+podmanCopyFromArgs containerId sandboxPath localPath =
+  ["cp", "--", Text.unpack containerId <> ":" <> sandboxPath, localPath]
+
+podmanCopyToArgs :: Text -> FilePath -> FilePath -> [String]
+podmanCopyToArgs containerId localPath sandboxPath =
+  ["cp", "--", localPath, Text.unpack containerId <> ":" <> sandboxPath]
 
 podmanCleanupArgs :: Text -> [String]
 podmanCleanupArgs containerId =
