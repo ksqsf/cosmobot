@@ -117,6 +117,54 @@ Persisted audit records are broadcast as `audit.event` notifications:
 Live audit events report newly persisted records. Query methods keep the normal
 audit storage behavior, including stale running-tool marking.
 
+## Manager Methods
+
+Possession of the RPC bearer token grants superuser resource access. Resource
+methods can therefore inspect or modify resources owned through any chat
+platform.
+
+### Concurrency
+
+| Method | Parameters | Result |
+|---|---|---|
+| `concurrency.list` | none | `entries`: all known tasks |
+| `concurrency.lookup` | `id` | `entry`: the task or `null` |
+| `concurrency.cancel` | `id` | `id` and `cancelled` |
+| `concurrency.await` | `id` | waits for completion, then returns `id` and `awaited` |
+
+Task entries contain `id`, `label`, `status`, `error`, `startedAt`, and
+`finishedAt`. `status` is one of `running`, `completed`, `failed`, or
+`cancelled`; `error` is populated only for failed tasks.
+
+```json
+{"jsonrpc":"2.0","id":"1","method":"concurrency.lookup","params":{"id":42}}
+```
+
+### Resources
+
+| Method | Parameters | Result |
+|---|---|---|
+| `resource.list` | none | `resources`: all available resources |
+| `resource.detail` | `id` | `id` and `detail` |
+| `resource.destroy` | `id` | `id` and `destroyed` |
+| `resource.rename` | `id`, `newId` | the renamed `id` |
+| `resource.keep_alive` | `id` | `id` and `refreshed` |
+| `resource.make_permanent` | `id` | `id` and `permanent` |
+| `resource.destroy_associated` | concurrency `id` | per-resource cleanup `results` |
+
+`resource.rename` also accepts `new_id`. Resource list entries contain `id`,
+`type`, `sessionId`, `description`, `probe`, and `remainingLifeMinutes`.
+`remainingLifeMinutes` is `null` for permanent resources. `probe` contains an
+`ok` boolean and either `result` or `error`.
+
+```json
+{"jsonrpc":"2.0","id":"2","method":"resource.keep_alive","params":{"id":"sandbox-1"}}
+```
+
+Resource failures use textual error codes such as `not_found`,
+`invalid_params`, `already_exists`, `unavailable`, and `resource_error` in
+`error.data.code`.
+
 ## Chat Methods
 
 RPC chat is exposed to the bot as the virtual `PlatformRPC` platform. Incoming

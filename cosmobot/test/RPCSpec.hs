@@ -8,6 +8,7 @@ import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as EffectHTTP
 import qualified Bot.Effect.Media as Media
+import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.HTTP as BotHTTP
 import qualified Bot.Media.Config as MediaConfig
@@ -17,6 +18,7 @@ import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.JSONRPC as JSONRPC
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
+import qualified Bot.Resource as ResourceManager
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
@@ -65,6 +67,7 @@ main =
       , testCase "chat.send broadcasts user chat notification" testChatSendBroadcastsNotification
       , testCase "client notification queue overflow disconnects slow client" testClientNotificationQueueOverflowDisconnects
       , testCase "sync request exception returns JSON-RPC error" testSyncRequestExceptionReturnsJsonRpcError
+      , testCase "resource and concurrency manager RPC methods" testManagerRpcMethods
       , testCase "media upload, send, history, and stats" testAttachmentLifecycle
       , testCase "media cache can resolve, inspect, and delete cached media" testMediaCacheResolveInspectDelete
       , testCase "remote media MIME is probed with range GET" testRemoteMediaMimeUsesRangeGetProbe
@@ -240,6 +243,33 @@ testSyncRequestExceptionReturnsJsonRpcError = do
       WireJSONRPC.message err.error @?= "RPC request failed: TestRpcException \"audit exploded\""
     _ ->
       assertFailure [i|expected JSON-RPC error response, got #{Aeson.encode response}|]
+
+testManagerRpcMethods :: IO ()
+testManagerRpcMethods = runRpcManager do
+  rpcState <- RPC.newRpcState
+  worker <- Concurrency.fork "rpc-test-worker" never
+  lookupResponse <- dispatch rpcState "concurrency.lookup" (Aeson.object ["id" Aeson..= worker.handleId.unId])
+  cancelResponse <- dispatch rpcState "concurrency.cancel" (Aeson.object ["id" Aeson..= worker.handleId.unId])
+  awaitResponse <- dispatch rpcState "concurrency.await" (Aeson.object ["id" Aeson..= worker.handleId.unId])
+  associatedResponse <- dispatch rpcState "resource.destroy_associated" (Aeson.object ["id" Aeson..= worker.handleId.unId])
+  resourceListResponse <- dispatch rpcState "resource.list" Aeson.Null
+  missingResourceResponse <- dispatch rpcState "resource.detail" (Aeson.object ["id" Aeson..= ("missing" :: Text)])
+  liftIO do
+    (responseField lookupResponse "entry" >>= responseObjectText "label") @?= Just "rpc-test-worker"
+    cancelResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "cancelled" Aeson..= True])
+    awaitResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "awaited" Aeson..= True])
+    associatedResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "results" Aeson..= ([] :: [Aeson.Value])])
+    resourceListResponse @?= responseResult (Aeson.object ["resources" Aeson..= ([] :: [Aeson.Value])])
+    responseErrorCode missingResourceResponse @?= Just "not_found"
+  where
+    dispatch rpcState method params =
+      RPCServer.dispatchRpcRequest rpcState (RPCServer.withManagerRpcCallbacks RPCServer.noRpcServerCallbacks) (rpcRequest method params)
+
+    responseObjectText :: Text -> Aeson.Value -> Maybe Text
+    responseObjectText field value =
+      AesonTypes.parseMaybe (Aeson.withObject "response object" (Aeson..: AesonKey.fromText field)) value
+
+    never = threadDelay maxBound
 
 testAttachmentLifecycle :: IO ()
 testAttachmentLifecycle =
@@ -806,6 +836,20 @@ runRpcStorage path action =
   BotHTTP.runHTTP $
   EffectfulTimeout.runTimeout $
   MediaInterpreter.runMedia (testMediaConfig path) $ action
+
+runRpcManager
+  :: Eff '[Resource.Resource, Media.Media, Storage.Storage, KatipE, FileSystem.FileSystem, Concurrency.Concurrency, Prim, Concurrent, IOE] a
+  -> IO a
+runRpcManager action =
+  runEff $
+  runConcurrent $
+  runPrim $
+  ConcurrencyManager.runConcurrencyManager $
+  runFileSystem $
+  runTestLog $
+  StorageSQLite.runStorageSQLitePath ":memory:" $
+  Media.runMediaPassthrough $
+  ResourceManager.runResourceManager action
 
 testMediaConfig :: FilePath -> MediaConfig.Config
 testMediaConfig path =

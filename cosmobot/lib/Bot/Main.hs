@@ -146,7 +146,7 @@ routes cfg threads =
         <> askHandlers cfg.tool cfg.handlers.ask threads
 
 runConfiguredServers
-  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> RPC.RpcState
@@ -157,14 +157,14 @@ runConfiguredServers cfg threads rpcState acpState messageConsumer =
   runWithTaskGroup "servers" (serverTasks cfg threads rpcState acpState) "message.consumer" messageConsumer
 
 serverTasks
-  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, FileSystem :> es, IOE :> es)
+  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, FileSystem :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> RPC.RpcState
   -> ACP.AcpState
   -> [(Text, Eff es ())]
 serverTasks cfg threads rpcState acpState =
-  enabledTask cfg.rpc.enabled "rpc.server" (RPCServer.runRpcServer cfg.rpc rpcState RPCAudit.auditRpcCallbacks)
+  enabledTask cfg.rpc.enabled "rpc.server" (RPCServer.runRpcServer cfg.rpc rpcState (RPCServer.withManagerRpcCallbacks RPCAudit.auditRpcCallbacks))
     <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp threads acpState)
 
 enabledTask :: Bool -> Text -> Eff es () -> [(Text, Eff es ())]

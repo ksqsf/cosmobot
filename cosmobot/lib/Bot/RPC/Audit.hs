@@ -14,15 +14,13 @@ import Bot.Prelude
 import Bot.Core.Message
 import Bot.Core.Thread
 import qualified Bot.JSONRPC as RPC
-import Bot.RPC.Server (RpcServerCallbacks (..))
+import Bot.RPC.Server (RpcServerCallbacks (..), noRpcServerCallbacks)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 
 auditRpcCallbacks :: AgentAudit.AgentAudit :> es => RpcServerCallbacks es
 auditRpcCallbacks =
-  RpcServerCallbacks
-    { auditMethod = dispatchAuditMethod
-    }
+  noRpcServerCallbacks{auditMethod = dispatchAuditMethod}
 
 dispatchAuditMethod
   :: AgentAudit.AgentAudit :> es

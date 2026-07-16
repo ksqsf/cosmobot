@@ -9,6 +9,7 @@ Stability   : experimental
 module Bot.RPC.Server
   ( RpcServerCallbacks (..)
   , noRpcServerCallbacks
+  , withManagerRpcCallbacks
   , runRpcServer
   , rpcServerApplication
   , rpcServerApp
@@ -18,9 +19,10 @@ module Bot.RPC.Server
 where
 
 import Bot.Prelude
-import Bot.Core.Message (IncomingMessage (..), MessageId)
+import Bot.Core.Message (ChatPlatform (PlatformRPC), IncomingMessage (..), MessageId)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
+import qualified Bot.Effect.Resource as Resource
 import Bot.Effect.Media (MediaObject (..))
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.RPC.Config as Config
@@ -29,6 +31,7 @@ import qualified Bot.RPC.State as State
 import qualified Bot.Session as Session
 import qualified Bot.Storage.RPC as RpcStorage
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
@@ -47,6 +50,7 @@ import qualified Network.WebSockets as WS
 
 data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
+  , managerMethod :: RPC.RpcRequest -> Eff es (Maybe RPC.RpcResponse)
   }
 
 data RpcAttachmentUpload = RpcAttachmentUpload
@@ -73,6 +77,15 @@ instance Exception RpcClientDisconnected
 noRpcServerCallbacks :: RpcServerCallbacks es
 noRpcServerCallbacks = RpcServerCallbacks
   { auditMethod = \_ -> pure Nothing
+  , managerMethod = \_ -> pure Nothing
+  }
+
+withManagerRpcCallbacks
+  :: (Concurrency.Concurrency :> es, Resource.Resource :> es)
+  => RpcServerCallbacks es
+  -> RpcServerCallbacks es
+withManagerRpcCallbacks callbacks = callbacks
+  { managerMethod = fmap Just . dispatchManagerRequest
   }
 
 runRpcServer
@@ -274,6 +287,8 @@ dispatchRpcRequestUnsafe rpcState _cfg callbacks request =
     method
       | "audit." `Text.isPrefixOf` method ->
           dispatchAudit callbacks request
+      | "concurrency." `Text.isPrefixOf` method || "resource." `Text.isPrefixOf` method ->
+          dispatchManager callbacks request
       | otherwise ->
           pure (methodNotFound (RPC.requestId request) method)
 
@@ -546,6 +561,261 @@ dispatchMediaGc request =
             , "retainedReferencedFiles" Aeson..= Set.size retained
             ]
 
+dispatchManagerRequest
+  :: (Concurrency.Concurrency :> es, Resource.Resource :> es)
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchManagerRequest request =
+  case RPC.requestMethod request of
+    "concurrency.list" -> dispatchConcurrencyList request
+    "concurrency.lookup" -> dispatchConcurrencyLookup request
+    "concurrency.cancel" -> dispatchConcurrencyCancel request
+    "concurrency.await" -> dispatchConcurrencyAwait request
+    "resource.list" -> dispatchResourceList request
+    "resource.detail" -> dispatchResourceDetail request
+    "resource.destroy" -> dispatchResourceDestroy request
+    "resource.rename" -> dispatchResourceRename request
+    "resource.keep_alive" -> dispatchResourceLifetime "refreshed" Resource.keepAlive request
+    "resource.make_permanent" -> dispatchResourceLifetime "permanent" Resource.makePermanent request
+    "resource.destroy_associated" -> dispatchResourceDestroyAssociated request
+    method -> pure (methodNotFound (RPC.requestId request) method)
+
+dispatchConcurrencyList
+  :: Concurrency.Concurrency :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchConcurrencyList request = do
+  snapshot <- Concurrency.list
+  pure $ RPC.successResponse (RPC.requestId request) $
+    Aeson.object ["entries" Aeson..= map concurrencyInfoValue snapshot.entries]
+
+dispatchConcurrencyLookup
+  :: Concurrency.Concurrency :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchConcurrencyLookup request =
+  withConcurrencyId request \workerId -> do
+    entry <- Concurrency.lookup workerId
+    pure $ RPC.successResponse (RPC.requestId request) $
+      Aeson.object ["entry" Aeson..= fmap concurrencyInfoValue entry]
+
+dispatchConcurrencyCancel
+  :: Concurrency.Concurrency :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchConcurrencyCancel request =
+  withConcurrencyId request \workerId -> do
+    cancelled <- Concurrency.cancel workerId
+    pure $ RPC.successResponse (RPC.requestId request) $ Aeson.object
+      [ "id" Aeson..= workerId.unId
+      , "cancelled" Aeson..= cancelled
+      ]
+
+dispatchConcurrencyAwait
+  :: Concurrency.Concurrency :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchConcurrencyAwait request =
+  withConcurrencyId request \workerId ->
+    Concurrency.lookup workerId >>= \case
+      Nothing -> pure (RPC.errorResponse (RPC.requestId request) "not_found" "Concurrency task not found.")
+      Just _ -> do
+        Concurrency.await (Concurrency.Handle workerId)
+        pure $ RPC.successResponse (RPC.requestId request) $ Aeson.object
+          [ "id" Aeson..= workerId.unId
+          , "awaited" Aeson..= True
+          ]
+
+withConcurrencyId
+  :: RPC.RpcRequest
+  -> (Concurrency.Id -> Eff es RPC.RpcResponse)
+  -> Eff es RPC.RpcResponse
+withConcurrencyId request action =
+  case AesonTypes.parseEither parseConcurrencyId (RPC.requestParams request) of
+    Left err -> pure (invalidParams request err)
+    Right workerId -> action workerId
+
+parseConcurrencyId :: Aeson.Value -> AesonTypes.Parser Concurrency.Id
+parseConcurrencyId =
+  Aeson.withObject "concurrency params" \o -> do
+    workerId <- o Aeson..: "id"
+    when (workerId < 1) (fail "id must be positive")
+    pure (Concurrency.Id workerId)
+
+concurrencyInfoValue :: Concurrency.Info -> Aeson.Value
+concurrencyInfoValue info = Aeson.object
+  [ "id" Aeson..= info.id.unId
+  , "label" Aeson..= info.label
+  , "status" Aeson..= concurrencyStatusName info.status
+  , "error" Aeson..= concurrencyStatusError info.status
+  , "startedAt" Aeson..= info.startedAt
+  , "finishedAt" Aeson..= info.finishedAt
+  ]
+
+concurrencyStatusName :: Concurrency.Status -> Text
+concurrencyStatusName = \case
+  Concurrency.Running -> "running"
+  Concurrency.Completed -> "completed"
+  Concurrency.Failed{} -> "failed"
+  Concurrency.Cancelled -> "cancelled"
+
+concurrencyStatusError :: Concurrency.Status -> Maybe Text
+concurrencyStatusError = \case
+  Concurrency.Failed err -> Just err
+  _ -> Nothing
+
+dispatchResourceList
+  :: Resource.Resource :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchResourceList request = do
+  resources <- Resource.list rpcResourceAccess
+  pure $ RPC.successResponse (RPC.requestId request) $
+    Aeson.object ["resources" Aeson..= map resourceValue resources]
+
+dispatchResourceDetail
+  :: Resource.Resource :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchResourceDetail request =
+  withResourceId request \resourceId ->
+    respondResource request (\detail -> Aeson.object ["id" Aeson..= resourceId, "detail" Aeson..= detail])
+      =<< Resource.detail rpcResourceAccess resourceId
+
+dispatchResourceDestroy
+  :: Resource.Resource :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchResourceDestroy request =
+  withResourceId request \resourceId ->
+    respondResource request (const (Aeson.object ["id" Aeson..= resourceId, "destroyed" Aeson..= True]))
+      =<< Resource.destroy rpcResourceAccess resourceId
+
+dispatchResourceRename
+  :: Resource.Resource :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchResourceRename request =
+  case AesonTypes.parseEither parseResourceRename (RPC.requestParams request) of
+    Left err -> pure (invalidParams request err)
+    Right (resourceId, newId) ->
+      respondResource request (\renamedId -> Aeson.object ["id" Aeson..= renamedId])
+        =<< Resource.rename rpcResourceAccess resourceId newId
+
+dispatchResourceLifetime
+  :: Resource.Resource :> es
+  => Text
+  -> (Resource.ResourceAccess -> Resource.ResourceId -> Eff es (Either Resource.ResourceError ()))
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchResourceLifetime resultField action request =
+  withResourceId request \resourceId ->
+    respondResource request (const (Aeson.object ["id" Aeson..= resourceId, AesonKey.fromText resultField Aeson..= True]))
+      =<< action rpcResourceAccess resourceId
+
+dispatchResourceDestroyAssociated
+  :: Resource.Resource :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchResourceDestroyAssociated request =
+  withConcurrencyId request \workerId -> do
+    results <- Resource.destroyAssociated (Concurrency.Handle workerId)
+    pure $ RPC.successResponse (RPC.requestId request) $ Aeson.object
+      [ "id" Aeson..= workerId.unId
+      , "results" Aeson..= map resourceOperationValue results
+      ]
+
+withResourceId
+  :: RPC.RpcRequest
+  -> (Resource.ResourceId -> Eff es RPC.RpcResponse)
+  -> Eff es RPC.RpcResponse
+withResourceId request action =
+  case AesonTypes.parseEither parseResourceId (RPC.requestParams request) of
+    Left err -> pure (invalidParams request err)
+    Right resourceId -> action resourceId
+
+parseResourceId :: Aeson.Value -> AesonTypes.Parser Resource.ResourceId
+parseResourceId =
+  Aeson.withObject "resource params" \o ->
+    o Aeson..: "id" >>= nonEmptyText "id"
+
+parseResourceRename :: Aeson.Value -> AesonTypes.Parser (Resource.ResourceId, Resource.ResourceId)
+parseResourceRename =
+  Aeson.withObject "resource.rename params" \o ->
+    (,)
+      <$> (o Aeson..: "id" >>= nonEmptyText "id")
+      <*> ((o Aeson..: "newId" <|> o Aeson..: "new_id") >>= nonEmptyText "newId")
+
+nonEmptyText :: String -> Text -> AesonTypes.Parser Text
+nonEmptyText label value
+  | Text.null clean = fail (label <> " must be non-empty")
+  | otherwise = pure clean
+  where
+    clean = Text.strip value
+
+resourceValue :: Resource.SomeResourceObject -> Aeson.Value
+resourceValue resource = Aeson.object
+  [ "id" Aeson..= resource.resourceId
+  , "type" Aeson..= resource.resourceType
+  , "sessionId" Aeson..= resource.sessionId
+  , "description" Aeson..= resource.description
+  , "probe" Aeson..= either
+      (\err -> Aeson.object ["ok" Aeson..= False, "error" Aeson..= err])
+      (\result -> Aeson.object ["ok" Aeson..= True, "result" Aeson..= result])
+      resource.probeResult
+  , "remainingLifeMinutes" Aeson..= resource.remainingLifeMinutes
+  ]
+
+respondResource
+  :: RPC.RpcRequest
+  -> (a -> Aeson.Value)
+  -> Either Resource.ResourceError a
+  -> Eff es RPC.RpcResponse
+respondResource request success =
+  pure . either
+    (\err -> RPC.errorResponse (RPC.requestId request) (resourceErrorCode err) (resourceErrorMessage err))
+    (RPC.successResponse (RPC.requestId request) . success)
+
+resourceErrorCode :: Resource.ResourceError -> Text
+resourceErrorCode = \case
+  Resource.ResourceNotFoundOrNotOwned -> "not_found"
+  Resource.InvalidResourceName -> "invalid_params"
+  Resource.ResourceNameAlreadyExists -> "already_exists"
+  Resource.ResourceUnavailable -> "unavailable"
+  _ -> "resource_error"
+
+resourceErrorMessage :: Resource.ResourceError -> Text
+resourceErrorMessage = \case
+  Resource.MissingResourceIdentity -> "Resource identity is missing."
+  Resource.ResourceNotFoundOrNotOwned -> "Resource not found or not owned."
+  Resource.ResourceTypeMismatch -> "Resource has the wrong type."
+  Resource.ResourceUnavailable -> "Resource is currently unavailable."
+  Resource.InvalidResourceName -> "Invalid resource name."
+  Resource.ResourceNameAlreadyExists -> "Resource name already exists."
+  Resource.ResourceCreationFailed err -> err
+  Resource.ResourceRenameFailed err -> err
+  Resource.ResourceLifetimeUpdateFailed err -> err
+  Resource.ResourceCleanupFailed err -> err
+
+resourceOperationValue :: Either Resource.ResourceError () -> Aeson.Value
+resourceOperationValue = \case
+  Right () -> Aeson.object ["ok" Aeson..= True]
+  Left err -> Aeson.object
+    [ "ok" Aeson..= False
+    , "code" Aeson..= resourceErrorCode err
+    , "error" Aeson..= resourceErrorMessage err
+    ]
+
+rpcResourceAccess :: Resource.ResourceAccess
+rpcResourceAccess = Resource.ResourceAccess
+  { owner = Resource.ResourceOwner PlatformRPC "rpc" "rpc-user"
+  , superuser = True
+  }
+
+invalidParams :: RPC.RpcRequest -> String -> RPC.RpcResponse
+invalidParams request =
+  RPC.errorResponse (RPC.requestId request) "invalid_params" . toText
+
 dispatchAudit
   :: RpcServerCallbacks es
   -> RPC.RpcRequest
@@ -558,6 +828,15 @@ dispatchAudit callbacks request =
       pure (JSONRPC.ErrorMessage (JSONRPC.JSONRPCError JSONRPC.rPC_VERSION (RPC.requestId request) err))
     Just (Right value) ->
       pure (RPC.successResponse (RPC.requestId request) value)
+
+dispatchManager
+  :: RpcServerCallbacks es
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchManager callbacks request =
+  callbacks.managerMethod request >>= \case
+    Nothing -> pure (methodNotFound (RPC.requestId request) (RPC.requestMethod request))
+    Just response -> pure response
 
 parseOpenSessionParams :: Aeson.Value -> AesonTypes.Parser (Maybe Text)
 parseOpenSessionParams =
