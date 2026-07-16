@@ -29,43 +29,48 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
+import Data.Time (UTCTime)
 
 queryChatLogTool :: ChatLog.ChatLog :> es => Tool es
 queryChatLogTool = Tool
   { name = "chat_log"
-  , description = "Return recent messages recorded in the current chat. Results are in chronological order and include sender ids, message ids, mentions, image urls, and text."
+  , description = "Return recent messages recorded in the current chat. Results are in chronological order and include timestamps, sender ids, message ids, image urls, and text. Use since or before to page through time."
   , parameters = objectSchema
       [ fieldInteger "limit" "Maximum number of recent messages to return."
       , fieldBoolean "include_bot_messages" "Whether to include bot messages. Defaults to false."
+      , fieldDateTime "since" "Return messages strictly after this ISO-8601 UTC timestamp."
+      , fieldDateTime "before" "Return messages strictly before this ISO-8601 UTC timestamp."
       ]
       ["limit"]
   , noisy = False
   , allowed = everyone
   , start = \context -> pure \_ args ->
-      withParsedToolArgs queryChatLogArgs args \(limit, includeBotMessages) -> do
-        entries <- ChatLog.queryChat context.message (fromInteger (max 0 limit)) includeBotMessages
-        pure (toolText (jsonText entries))
+      withParsedToolArgs queryChatLogArgs args \(limit, includeBotMessages, timeRange) -> do
+        entries <- ChatLog.queryChat context.message (fromInteger (max 0 limit)) includeBotMessages timeRange
+        pure (toolText (jsonText (map chatLogToolEntry entries)))
   }
 
 queryCurrentSenderChatLogTool :: ChatLog.ChatLog :> es => Tool es
 queryCurrentSenderChatLogTool = Tool
   { name = "sender_chat_log"
-  , description = "Return messages from the current sender in the current chat whose text matches any keyword group. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
+  , description = "Return messages from the current sender in the current chat whose text matches any keyword group. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100. Use since or before to page through time."
   , parameters = objectSchema
       [ fieldTextArrayArray "keywords" "Keyword groups. Each inner array is joined with '%' and wrapped with '%' for ordered fuzzy matching."
       , fieldIntegerMax "limit" 100 "Maximum number of matching messages to return. Must be <= 100."
+      , fieldDateTime "since" "Return messages strictly after this ISO-8601 UTC timestamp."
+      , fieldDateTime "before" "Return messages strictly before this ISO-8601 UTC timestamp."
       ]
       ["keywords", "limit"]
   , noisy = False
   , allowed = everyone
   , start = \context -> pure \_ args ->
-      withParsedToolArgs queryCurrentSenderChatLogArgs args \(keywords, limit) ->
+      withParsedToolArgs queryCurrentSenderChatLogArgs args \(keywords, limit, timeRange) ->
         case currentSenderChatLogScopeError context.message of
           Just message ->
             pure (toolFailure (permanentArgumentFailure message message).failure)
           Nothing -> do
-            entries <- ChatLog.queryCurrentSenderChatLog context.message keywords limit
-            pure (toolText (jsonText entries))
+            entries <- ChatLog.queryCurrentSenderChatLog context.message keywords limit timeRange
+            pure (toolText (jsonText (map chatLogToolEntry entries)))
   }
 
 sendReplyTool :: Chat.Chat :> es => Tool es
@@ -237,14 +242,27 @@ currentMessageInfoValue message =
     , "text" Aeson..= message.text
     ]
 
-queryChatLogArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Bool)
+queryChatLogArgs :: Aeson.Value -> AesonTypes.Parser (Integer, Bool, ChatLog.ChatLogTimeRange)
 queryChatLogArgs =
   Aeson.withObject "query chat log arguments" $ \o -> do
     limit <- o Aeson..: Key.fromText "limit"
     includeBotMessages <- fromMaybe False <$> o Aeson..:? Key.fromText "include_bot_messages"
-    pure (limit, includeBotMessages)
+    timeRange <- chatLogTimeRange o
+    pure (limit, includeBotMessages, timeRange)
 
-queryCurrentSenderChatLogArgs :: Aeson.Value -> AesonTypes.Parser ([[Text]], Int)
+chatLogToolEntry :: ChatLog.ChatLogEntry -> Aeson.Value
+chatLogToolEntry entry =
+  Aeson.object
+    [ "timestamp" Aeson..= entry.recordedAt
+    , "chatId" Aeson..= entry.chatId
+    , "senderId" Aeson..= entry.senderId
+    , "senderUsername" Aeson..= entry.senderUsername
+    , "messageId" Aeson..= entry.messageId
+    , "imageUrls" Aeson..= entry.imageUrls
+    , "text" Aeson..= entry.text
+    ]
+
+queryCurrentSenderChatLogArgs :: Aeson.Value -> AesonTypes.Parser ([[Text]], Int, ChatLog.ChatLogTimeRange)
 queryCurrentSenderChatLogArgs =
   Aeson.withObject "query current sender chat log arguments" $ \o -> do
     keywords <- o Aeson..: Key.fromText "keywords"
@@ -253,7 +271,16 @@ queryCurrentSenderChatLogArgs =
       fail "limit must be >= 0."
     when (limit > 100) do
       fail "limit must be <= 100."
-    pure (keywords, limit)
+    timeRange <- chatLogTimeRange o
+    pure (keywords, limit, timeRange)
+
+chatLogTimeRange :: AesonTypes.Object -> AesonTypes.Parser ChatLog.ChatLogTimeRange
+chatLogTimeRange o = do
+  since <- o Aeson..:? Key.fromText "since" :: AesonTypes.Parser (Maybe UTCTime)
+  before <- o Aeson..:? Key.fromText "before" :: AesonTypes.Parser (Maybe UTCTime)
+  when (maybe False (uncurry (>=)) ((,) <$> since <*> before)) do
+    fail "since must be earlier than before."
+  pure ChatLog.ChatLogTimeRange{since, before}
 
 currentSenderChatLogScopeError :: IncomingMessage -> Maybe Text
 currentSenderChatLogScopeError message

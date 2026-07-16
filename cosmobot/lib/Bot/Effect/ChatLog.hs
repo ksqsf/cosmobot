@@ -7,6 +7,8 @@ Stability   : experimental
 module Bot.Effect.ChatLog
   ( ChatLog
   , ChatLogEntry (..)
+  , ChatLogTimeRange (..)
+  , unboundedChatLogTimeRange
   , recordMessage
   , recordSelfMessage
   , recordIncomingMessages
@@ -42,11 +44,13 @@ data ChatLog :: Effect where
     :: IncomingMessage
     -> Int
     -> Bool
+    -> ChatLogTimeRange
     -> ChatLog m [ChatLogEntry]
   QueryCurrentSenderChatLog
     :: IncomingMessage
     -> [[Text]]
     -> Int
+    -> ChatLogTimeRange
     -> ChatLog m [ChatLogEntry]
 
 type instance DispatchOf ChatLog = Dynamic
@@ -76,14 +80,14 @@ recordSelfMessage context body =
   send (RecordSelfMessage context body)
 
 -- | Query recent messages from the current chat in chronological order.
-queryChat :: ChatLog :> es => IncomingMessage -> Int -> Bool -> Eff es [ChatLogEntry]
-queryChat message limit includeBotMessages =
-  send (QueryChat message limit includeBotMessages)
+queryChat :: ChatLog :> es => IncomingMessage -> Int -> Bool -> ChatLogTimeRange -> Eff es [ChatLogEntry]
+queryChat message limit includeBotMessages timeRange =
+  send (QueryChat message limit includeBotMessages timeRange)
 
 -- | Query current sender's messages in the current chat, newest first.
-queryCurrentSenderChatLog :: ChatLog :> es => IncomingMessage -> [[Text]] -> Int -> Eff es [ChatLogEntry]
-queryCurrentSenderChatLog message keywords limit =
-  send (QueryCurrentSenderChatLog message keywords limit)
+queryCurrentSenderChatLog :: ChatLog :> es => IncomingMessage -> [[Text]] -> Int -> ChatLogTimeRange -> Eff es [ChatLogEntry]
+queryCurrentSenderChatLog message keywords limit timeRange =
+  send (QueryCurrentSenderChatLog message keywords limit timeRange)
 
 -- | Interpret chat logging through the storage capability.
 runChatLog
@@ -97,9 +101,9 @@ runChatLog inner =
         ChatLogStorage.persistRecord (userRecord message)
       RecordSelfMessage context body ->
         ChatLogStorage.persistRecord (selfRecord context body)
-      QueryChat message limit includeBotMessages ->
-        ChatLogStorage.queryStored message limit includeBotMessages
-      QueryCurrentSenderChatLog message keywords limit ->
-        ChatLogStorage.queryCurrentSenderStored message keywords limit
+      QueryChat message limit includeBotMessages timeRange ->
+        ChatLogStorage.queryStored message limit includeBotMessages timeRange
+      QueryCurrentSenderChatLog message keywords limit timeRange ->
+        ChatLogStorage.queryCurrentSenderStored message keywords limit timeRange
     )
     inner

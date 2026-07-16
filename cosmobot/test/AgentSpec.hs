@@ -59,6 +59,9 @@ import qualified Bot.Util.HList as HList
 import Bot.Prelude
 import qualified Bot.Storage.Session as SessionStorage
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as AesonKey
+import qualified Data.Aeson.KeyMap as AesonKeyMap
+import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Foldable as Foldable
@@ -511,7 +514,7 @@ runSendFileTool replies upload =
 testCurrentSenderChatLogToolQueriesChatLog :: IO ()
 testCurrentSenderChatLogToolQueriesChatLog = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "sender_chat_log" (Aeson.object ["keywords" Aeson..= ([["needle"] :: [Text]] :: [[Text]]), "limit" Aeson..= (10 :: Int)])]
+    [ chatAnswer "" [toolCall "call-1" "sender_chat_log" (Aeson.object ["keywords" Aeson..= ([["needle"] :: [Text]] :: [[Text]]), "limit" Aeson..= (10 :: Int), "before" Aeson..= ("2100-01-01T00:00:00Z" :: Text)])]
     , chatAnswer "found" []
     ]
   (answer, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
@@ -522,7 +525,12 @@ testCurrentSenderChatLogToolQueriesChatLog = do
     Agent.runAgent 4 agentContext AgentTools.defaultTools (startWithUser "search my history")
   answer @?= "found"
   entries <- decodeSingleChatLogToolOutput transcript
-  map (.text) entries @?= ["newer needle", "older needle"]
+  texts <- traverse (either assertFailure pure . AesonTypes.parseEither (Aeson.withObject "chat log entry" (\entry -> entry Aeson..: "text" :: AesonTypes.Parser Text))) entries
+  texts @?= ["newer needle", "older needle"]
+  for_ entries \case
+    Aeson.Object entry ->
+      sort (AesonKeyMap.keys entry) @?= sort (map AesonKey.fromText ["timestamp", "chatId", "senderId", "senderUsername", "messageId", "imageUrls", "text"])
+    _ -> assertFailure "expected chat log entry object"
 
 testUserAvatarToolQueriesChatEffect :: IO ()
 testUserAvatarToolQueriesChatEffect = do
@@ -2459,7 +2467,7 @@ showSeparatedOutputs =
       Agent.AgentToolCallNotification calls ->
         ("tool", Text.intercalate ", " (toList (fmap (.name) calls)))
 
-decodeSingleChatLogToolOutput :: Transcript -> IO [ChatLog.ChatLogEntry]
+decodeSingleChatLogToolOutput :: Transcript -> IO [Aeson.Value]
 decodeSingleChatLogToolOutput transcript =
   case toolOutputs transcript of
     [output] ->

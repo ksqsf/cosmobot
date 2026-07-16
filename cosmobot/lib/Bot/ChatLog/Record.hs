@@ -20,6 +20,7 @@ import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
+import Data.Time (UTCTime)
 
 data ChatLogRecord = ChatLogRecord
   { message :: !IncomingMessage
@@ -59,10 +60,11 @@ selfMessage context body =
         ]
     }
 
-chatLogEntry :: ChatLogRecord -> ChatLogEntry
-chatLogEntry record =
+chatLogEntry :: UTCTime -> ChatLogRecord -> ChatLogEntry
+chatLogEntry recordedAt record =
   ChatLogEntry
-    { platform = record.message.platform
+    { recordedAt = Just recordedAt
+    , platform = record.message.platform
     , kind = record.message.kind
     , chatId = record.message.chatId
     , senderId = record.message.senderId

@@ -13,6 +13,7 @@ module Bot.Agent.Tools.Common
   , fieldText
   , fieldTextArray
   , fieldTextArrayArray
+  , fieldDateTime
   , fieldInteger
   , fieldIntegerMax
   , fieldBoolean
@@ -80,6 +81,10 @@ fieldTextArray name description =
 fieldTextArrayArray :: Text -> Text -> (Text, Aeson.Value)
 fieldTextArrayArray name description =
   schemaField name description [("type", Aeson.String "array"), ("items", Aeson.object [("type", Aeson.String "array"), ("items", textSchema)])]
+
+fieldDateTime :: Text -> Text -> (Text, Aeson.Value)
+fieldDateTime name description =
+  schemaField name description [("type", Aeson.String "string"), ("format", Aeson.String "date-time")]
 
 fieldInteger :: Text -> Text -> (Text, Aeson.Value)
 fieldInteger name description =

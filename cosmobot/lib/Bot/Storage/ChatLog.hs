@@ -21,6 +21,7 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Storage.Prelude
 import qualified Data.Int as Int
 import qualified Data.Text as Text
+import Data.Time (getCurrentTime)
 
 data ChatLogRow = ChatLogRow
   { id :: ID ChatLogRow
@@ -36,6 +37,7 @@ data ChatLogRow = ChatLogRow
   , mention_usernames :: Text
   , image_urls :: Text
   , body_text :: Text
+  , recorded_at :: Maybe UTCTime
   }
   deriving (Generic)
 
@@ -58,24 +60,25 @@ ensureChatLogTable =
 persistRecord :: (IOE :> es, KatipE :> es, Storage.Storage :> es) => ChatLogRecord -> Eff es ()
 persistRecord record = do
   ensureChatLogTable
-  runSelda (insert_ chatLogRows [chatLogRow (sanitizeChatLogEntry (chatLogEntry record))])
+  recordedAt <- liftIO getCurrentTime
+  runSelda (insert_ chatLogRows [chatLogRow (sanitizeChatLogEntry (chatLogEntry recordedAt record))])
     `catchSync` \err ->
       logError [i|Failed to persist chat log entry: #{show err :: String}|]
 
-queryStored :: Storage.Storage :> es => IncomingMessage -> Int -> Bool -> Eff es [ChatLogEntry]
-queryStored message limitCount includeBotMessages = do
+queryStored :: Storage.Storage :> es => IncomingMessage -> Int -> Bool -> ChatLogTimeRange -> Eff es [ChatLogEntry]
+queryStored message limitCount includeBotMessages timeRange = do
   ensureChatLogTable
   rows <- runSelda $
     query $
       queryLimit 0 (max 0 limitCount) do
         row <- select chatLogRows
-        restrict (chatLogMatches message includeBotMessages row)
+        restrict (chatLogMatches message includeBotMessages row .&& timeRangeMatches timeRange row)
         order (row ! #id) descending
         pure row
   pure (map (chatLogEntryFromRow message) (reverse rows))
 
-queryCurrentSenderStored :: Storage.Storage :> es => IncomingMessage -> [[Text]] -> Int -> Eff es [ChatLogEntry]
-queryCurrentSenderStored message keywords limitCount = do
+queryCurrentSenderStored :: Storage.Storage :> es => IncomingMessage -> [[Text]] -> Int -> ChatLogTimeRange -> Eff es [ChatLogEntry]
+queryCurrentSenderStored message keywords limitCount timeRange = do
   ensureChatLogTable
   case (message.chatId, message.senderId, keywordLikePatterns keywords) of
     (Just _, Just _, patterns@(_ : _)) -> do
@@ -83,7 +86,7 @@ queryCurrentSenderStored message keywords limitCount = do
         query $
           queryLimit 0 (boundedChatLogLimit limitCount) do
             row <- select chatLogRows
-            restrict (currentSenderChatLogMatches message patterns row)
+            restrict (currentSenderChatLogMatches message patterns row .&& timeRangeMatches timeRange row)
             order (row ! #id) descending
             pure row
       pure (map (chatLogEntryFromRow message) rows)
@@ -110,12 +113,14 @@ chatLogRow entry =
     , mention_usernames = encodeTextList entry.mentionUsernames
     , image_urls = encodeTextList entry.imageUrls
     , body_text = entry.text
+    , recorded_at = entry.recordedAt
     }
 
 chatLogEntryFromRow :: IncomingMessage -> ChatLogRow -> ChatLogEntry
 chatLogEntryFromRow context row =
   ChatLogEntry
-    { platform = context.platform
+    { recordedAt = row.recorded_at
+    , platform = context.platform
     , kind = context.kind
     , chatId = fromIntegral <$> row.chat_id
     , senderId = row.sender_id
@@ -147,6 +152,11 @@ botVisibilityMatches True _ =
   true
 botVisibilityMatches False row =
   row ! #is_bot .== literal False
+
+timeRangeMatches :: forall (backend :: Type). ChatLogTimeRange -> Row backend ChatLogRow -> Col backend Bool
+timeRangeMatches timeRange row =
+  maybe true (\since -> row ! #recorded_at .> literal (Just since)) timeRange.since
+    .&& maybe true (\before -> row ! #recorded_at .< literal (Just before)) timeRange.before
 
 currentSenderChatLogMatches :: forall (backend :: Type). IncomingMessage -> [Text] -> Row backend ChatLogRow -> Col backend Bool
 currentSenderChatLogMatches message patterns row =

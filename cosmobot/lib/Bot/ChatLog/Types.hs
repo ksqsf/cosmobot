@@ -6,16 +6,30 @@ Stability   : experimental
 
 module Bot.ChatLog.Types
   ( ChatLogEntry (..)
+  , ChatLogTimeRange (..)
+  , unboundedChatLogTimeRange
   )
 where
 
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import Data.Time (UTCTime)
+
+data ChatLogTimeRange = ChatLogTimeRange
+  { since :: !(Maybe UTCTime)
+  , before :: !(Maybe UTCTime)
+  }
+  deriving (Eq, Show)
+
+unboundedChatLogTimeRange :: ChatLogTimeRange
+unboundedChatLogTimeRange =
+  ChatLogTimeRange Nothing Nothing
 
 -- | Sanitized message record exposed to agent tools.
 data ChatLogEntry = ChatLogEntry
-  { platform :: !ChatPlatform
+  { recordedAt :: !(Maybe UTCTime)
+  , platform :: !ChatPlatform
   , kind :: !ChatKind
   , chatId :: !(Maybe Integer)
   , senderId :: !(Maybe Text)
