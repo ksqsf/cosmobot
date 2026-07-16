@@ -82,11 +82,16 @@ webSearch cfg query maxResults =
       case cfg.braveApiKey of
         Nothing -> throwIO (userError "Brave search is not configured: set tool.web_search.brave_api_key.")
         Just key -> braveSearch key query maxResults
+    WebSearchExa ->
+      case cfg.exaApiKey of
+        Nothing -> throwIO (userError "Exa search is not configured: set tool.web_search.exa_api_key.")
+        Just key -> exaSearch key query maxResults
 
 webSearchSource :: WebSearchApi -> Text
 webSearchSource = \case
   WebSearchTavily -> "tavily"
   WebSearchBrave -> "brave"
+  WebSearchExa -> "exa"
 
 tavilySearch :: HTTP.HTTP :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
 tavilySearch apiKey query maxResults = do
@@ -122,6 +127,25 @@ braveSearch apiKey query maxResults = do
   either (throwIO . userError) pure $
     AesonTypes.parseEither parseBraveResults (responseBody response)
 
+exaSearch :: HTTP.HTTP :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
+exaSearch apiKey query maxResults = do
+  response <- HTTP.runReq $
+    req POST
+      (https "api.exa.ai" /: "search")
+      (ReqBodyJson (Aeson.object
+        [ "query" Aeson..= query
+        , "numResults" Aeson..= maxResults
+        , "contents" Aeson..= Aeson.object
+            [ "highlights" Aeson..= Aeson.object ["maxCharacters" Aeson..= (1000 :: Int)]
+            ]
+        ]))
+      jsonResponse
+      ( header "x-api-key" (TextEncoding.encodeUtf8 apiKey)
+          <> webRequestOptions
+      )
+  either (throwIO . userError) pure $
+    AesonTypes.parseEither parseExaResults (responseBody response)
+
 parseTavilyResults :: Aeson.Value -> AesonTypes.Parser [Aeson.Value]
 parseTavilyResults =
   Aeson.withObject "Tavily search response" $ \o -> do
@@ -155,6 +179,19 @@ parseBraveResults =
         url <- o Aeson..: Key.fromText "url"
         snippet <- fromMaybe "" <$> o Aeson..:? Key.fromText "description"
         pure (searchResult title url snippet)
+
+parseExaResults :: Aeson.Value -> AesonTypes.Parser [Aeson.Value]
+parseExaResults =
+  Aeson.withObject "Exa search response" $ \o -> do
+    results <- o Aeson..: Key.fromText "results"
+    traverse parseResult results
+  where
+    parseResult =
+      Aeson.withObject "Exa result" $ \o -> do
+        title <- fromMaybe "" <$> o Aeson..:? Key.fromText "title"
+        url <- o Aeson..: Key.fromText "url"
+        highlights <- fromMaybe [] <$> o Aeson..:? Key.fromText "highlights"
+        pure (searchResult title url (Text.intercalate "\n" highlights))
 
 searchResult :: Text -> Text -> Text -> Aeson.Value
 searchResult title url snippet =

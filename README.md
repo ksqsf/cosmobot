@@ -190,10 +190,11 @@ Enable web searching:
 ```toml
 [tool.web_search]
 enable = true
-api = "tavily"       # tavily | brave
+api = "tavily"       # tavily | brave | exa
 max_results = 20
 tavily_api_key = "tvly-dev-something"
 brave_api_key = "some-token"
+exa_api_key = "some-token"
 ```
 
 Enable web fetching (does not require an API):

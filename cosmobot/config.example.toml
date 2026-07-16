@@ -137,6 +137,7 @@ api = "tavily"
 max_results = 5
 tavily_api_key = ""
 brave_api_key = ""
+exa_api_key = ""
 
 [handler.saucenao]
 api_key = ""

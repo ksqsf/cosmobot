@@ -22,6 +22,7 @@ main =
       , testCase "incomplete matrix and discord driver tables are disabled" testIncompleteMatrixAndDiscordDisabled
       , testCase "ask context compaction threshold uses ktokens" testAskCompactionThresholdUsesKTokens
       , testCase "sandbox image is configurable" testSandboxImage
+      , testCase "Exa web search is configurable" testExaWebSearch
       ]
 
 testDriversTableMayBeOmitted :: IO ()
@@ -98,6 +99,20 @@ testSandboxImage = do
         ]
   let Agent.ToolConfig{sandboxImage} = cfg.tool
   sandboxImage @?= "registry.example.test/custom:latest"
+
+testExaWebSearch :: IO ()
+testExaWebSearch = do
+  cfg <- loadConfigText $
+    minimalConfig
+      <> Text.unlines
+        [ ""
+        , "[tool.web_search]"
+        , "api = \"exa\""
+        , "exa_api_key = \"exa-test-key\""
+        ]
+  let Agent.ToolConfig{webSearchApi, exaApiKey} = cfg.tool
+  webSearchApi @?= Agent.WebSearchExa
+  exaApiKey @?= Just "exa-test-key"
 
 minimalConfig :: Text
 minimalConfig =
