@@ -7,6 +7,7 @@ module Bot.Handler.Resource
   ( resourceHandlers
   , resourceIds
   , removeResources
+  , renderResources
   )
 where
 
@@ -25,6 +26,8 @@ resourceHandlers =
   , stopOn (command "!res/detail") handleDetail
   , stopOn (command "!res/rm") handleRemove
   , stopOn (command "!res/mv") handleRename
+  , stopOn (command "!res/keepalive") (handleLifetime "keepalive" Resource.keepAlive)
+  , stopOn (command "!res/permanent") (handleLifetime "permanent" Resource.makePermanent)
   ]
 
 resourceIds :: Text -> [Resource.ResourceId]
@@ -67,6 +70,24 @@ handleRename message input =
           Left _ -> reply message "Resource not found, not owned, or unavailable."
     _ -> reply message "Usage: !res/mv <resource_name> <new_name>"
 
+handleLifetime
+  :: (Chat.Chat :> es, Resource.Resource :> es)
+  => Text
+  -> (Resource.ResourceAccess -> Resource.ResourceId -> Eff es (Either Resource.ResourceError ()))
+  -> IncomingMessage
+  -> Text
+  -> Eff es ()
+handleLifetime operation action message input =
+  case resourceIds input of
+    [] -> reply message ("Usage: !res/" <> operation <> " <resource_id>...")
+    resourceIds_ -> withAccess message \access -> do
+      results <- forM resourceIds_ \resourceId ->
+        action access resourceId <&> \case
+          Right () -> "- `" <> resourceId <> "`: " <> operation <> " set"
+          Left Resource.ResourceLifetimeUpdateFailed{} -> "- `" <> resourceId <> "`: persistence failure"
+          Left _ -> "- `" <> resourceId <> "`: not found/not owned/unavailable"
+      reply message (Text.unlines results)
+
 removeResources :: Resource.Resource :> es => Resource.ResourceAccess -> [Resource.ResourceId] -> Eff es [Text]
 removeResources access = traverse \resourceId ->
   Resource.destroy access resourceId <&> \case
@@ -99,3 +120,4 @@ renderResources resources =
           : map renderEntry (List.sortOn (.resourceId) entries)
     renderEntry resource =
       "- `" <> resource.resourceId <> "`: " <> resource.description
+        <> " (life: " <> maybe "permanent" ((<> "m") . show) resource.remainingLifeMinutes <> ")"

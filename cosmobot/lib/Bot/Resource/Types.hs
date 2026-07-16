@@ -12,6 +12,7 @@ module Bot.Resource.Types
   , resourceLoader
   , SomeResourceObject (..)
   , ResourceError (..)
+  , ttlFromMinutes
   , ownerFromMessage
   , accessFromMessage
   )
@@ -50,6 +51,8 @@ class Typeable a => ResourceObject m a where
   resourceScope _ = PersonResource
   resourcePersistence :: proxy a -> ResourcePersistence m a
   resourcePersistence _ = EphemeralResource
+  resourceTTLSeconds :: CreationArgs a -> Either Text (Maybe Int)
+  resourceTTLSeconds _ = Right Nothing
   createResourceObject :: Init (CreationArgs a) -> m (Either Text a)
   destroyResourceObject :: a -> m (Either Text ())
   describeResourceObject :: a -> Either Text Text -> m Text
@@ -76,6 +79,7 @@ data SomeResourceObject = SomeResourceObject
   , sessionId :: !(Maybe Text)
   , description :: !Text
   , probeResult :: !(Either Text Text)
+  , remainingLifeMinutes :: !(Maybe Int)
   }
   deriving stock (Eq, Show)
 
@@ -88,8 +92,15 @@ data ResourceError
   | ResourceNameAlreadyExists
   | ResourceCreationFailed !Text
   | ResourceRenameFailed !Text
+  | ResourceLifetimeUpdateFailed !Text
   | ResourceCleanupFailed !Text
   deriving stock (Eq, Show)
+
+ttlFromMinutes :: Int -> Either Text (Maybe Int)
+ttlFromMinutes minutes
+  | minutes < 10 = Left "TTL must be at least 10 minutes."
+  | minutes > maxBound `div` 60 = Left "TTL is too large."
+  | otherwise = Right (Just (minutes * 60))
 
 ownerFromMessage :: IncomingMessage -> Either ResourceError ResourceOwner
 ownerFromMessage message =

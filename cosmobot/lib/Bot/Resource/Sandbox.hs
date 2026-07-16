@@ -9,6 +9,7 @@ Stability   : experimental
 module Bot.Resource.Sandbox
   ( Config (..)
   , defaultConfig
+  , SandboxArgs (..)
   , Sandbox
   , SandboxOutput (..)
   , runCommand
@@ -70,7 +71,7 @@ data SandboxOutput = SandboxOutput
 instance
   (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => Resource.ResourceObject (Eff es) Sandbox where
-  type CreationArgs Sandbox = Text
+  type CreationArgs Sandbox = SandboxArgs
 
   resourceTypeName _ = "Sandbox"
 
@@ -79,6 +80,8 @@ instance
     , restoreResource = \payload ->
         pure $ restoreSandbox payload
     }
+
+  resourceTTLSeconds = Resource.ttlFromMinutes . (.ttlMinutes)
 
   createResourceObject initValue = createSandbox initValue.arguments
 
@@ -117,11 +120,16 @@ runCommand timeoutSeconds sandbox script requestedLimit = do
       -- ponytail: GNU timeout reserves 124/137; add an out-of-band status channel if scripts must preserve them exactly.
       pure SandboxOutput{output, truncated, exitCode = Just exitCode, timedOut = exitCode `elem` [124, 137]}
 
+data SandboxArgs = SandboxArgs
+  { image :: !Text
+  , ttlMinutes :: !Int
+  }
+
 createSandbox
   :: (Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Text
+  => SandboxArgs
   -> Eff es (Either Text Sandbox)
-createSandbox image = do
+createSandbox SandboxArgs{image} = do
   unique <- liftIO Unique.newUnique
   pid <- liftIO Posix.getProcessID
   let name = "cosmobot-sandbox-" <> show pid <> "-" <> show (Unique.hashUnique unique)

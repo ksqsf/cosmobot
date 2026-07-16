@@ -34,6 +34,7 @@ sandboxTool = Tool
       , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
       , fieldText "sandbox" "Sandbox name; required for run, rename, and delete."
       , fieldText "script" "Bash script; required for run."
+      , fieldInteger "ttl_minutes" "Sandbox inactivity lifetime in minutes; required for create, minimum 10."
       , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the script. Defaults to 30."
       , fieldInteger "output_byte_limit" "Maximum retained output bytes. Defaults to 1048576."
       ]
@@ -45,8 +46,11 @@ sandboxTool = Tool
         case Resource.accessFromMessage context.message of
           Left err -> pure (resourceToolFailure err)
           Right access -> case call of
-            SandboxCreate requestedName ->
-              createSandbox metadata.parent requestedName Resource.Init{message = context.message, arguments = context.toolConfig.sandboxImage} <&> \case
+            SandboxCreate requestedName ttlMinutes ->
+              createSandbox metadata.parent requestedName Resource.Init
+                { message = context.message
+                , arguments = Sandbox.SandboxArgs{image = context.toolConfig.sandboxImage, ttlMinutes}
+                } <&> \case
                 Left err -> resourceToolFailure err
                 Right sandboxId -> toolText (jsonText (Aeson.object ["sandbox" Aeson..= sandboxId]))
             SandboxRun sandboxId script timeoutSeconds outputByteLimit -> do
@@ -64,7 +68,7 @@ sandboxTool = Tool
       Just name -> Resource.createAssociatedNamed @Sandbox.Sandbox parent name
 
 data SandboxCall
-  = SandboxCreate !(Maybe Text)
+  = SandboxCreate !(Maybe Text) !Int
   | SandboxRun !Text !Text !Int !(Maybe Int)
   | SandboxDelete !Text
   | SandboxRename !Text !Text
@@ -73,7 +77,9 @@ sandboxArgs :: Aeson.Value -> AesonTypes.Parser SandboxCall
 sandboxArgs = Aeson.withObject "sandbox arguments" \o -> do
   op <- o Aeson..: Key.fromText "op"
   case op :: Text of
-    "create" -> SandboxCreate <$> o Aeson..:? Key.fromText "name"
+    "create" -> do
+      requestedName <- o Aeson..:? Key.fromText "name"
+      SandboxCreate requestedName <$> parseTTLMinutes o
     "run" -> do
       sandboxId <- o Aeson..: Key.fromText "sandbox" >>= validText "sandbox"
       script <- o Aeson..: Key.fromText "script" >>= validValue "script"

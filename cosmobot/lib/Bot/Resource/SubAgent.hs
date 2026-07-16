@@ -33,6 +33,7 @@ type SubAgentRunner es =
 data SubAgentArgs = SubAgentArgs
   { systemContext :: !Text
   , toolNames :: ![Text]
+  , ttlMinutes :: !Int
   }
 
 data SubAgent = SubAgent
@@ -55,6 +56,7 @@ instance
 
   resourceTypeName _ = "SubAgent"
   resourceScope _ = Resource.ChatResource
+  resourceTTLSeconds = Resource.ttlFromMinutes . (.ttlMinutes)
 
   createResourceObject Resource.Init {arguments} =
     Right . SubAgent arguments

@@ -9,7 +9,7 @@ import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Storage as Storage
-import Bot.Handler.Resource (removeResources, resourceIds)
+import Bot.Handler.Resource (removeResources, renderResources, resourceIds)
 import Bot.Prelude
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Resource.Sandbox as Sandbox
@@ -43,6 +43,11 @@ data BlockingCreateObject = BlockingCreateObject
 
 newtype PersistentObject = PersistentObject Text
 
+data PersistentInit = PersistentInit
+  { label :: !Text
+  , persistentTTLSeconds :: !(Maybe Int)
+  }
+
 data TestFailure = TestFailure
   deriving stock (Show)
 
@@ -52,11 +57,13 @@ data TestInit = TestInit
   { label :: !Text
   , failDestroy :: !(IORef.IORef Bool)
   , destroyed :: !(MVar.MVar ())
+  , ttlSeconds :: !(Maybe Int)
   }
 
 instance (Prim :> es, Concurrent :> es) => Resource.ResourceObject (Eff es) TestObject where
   type CreationArgs TestObject = TestInit
   resourceTypeName _ = "Test"
+  resourceTTLSeconds = Right . (.ttlSeconds)
   createResourceObject Resource.Init{arguments} = pure (Right TestObject
     { label = arguments.label
     , failDestroy = arguments.failDestroy
@@ -98,13 +105,14 @@ instance Concurrent :> es => Resource.ResourceObject (Eff es) BlockingCreateObje
   probeResourceObject _ = pure (Right "healthy")
 
 instance Applicative m => Resource.ResourceObject m PersistentObject where
-  type CreationArgs PersistentObject = Text
+  type CreationArgs PersistentObject = PersistentInit
   resourceTypeName _ = "PersistentTest"
+  resourceTTLSeconds = Right . (.persistentTTLSeconds)
   resourcePersistence _ = Resource.PersistentResource
     { encodeResource = \(PersistentObject value) -> value
     , restoreResource = pure . Right . PersistentObject
     }
-  createResourceObject Resource.Init{arguments} = pure (Right (PersistentObject arguments))
+  createResourceObject Resource.Init{arguments} = pure (Right (PersistentObject arguments.label))
   destroyResourceObject _ = pure (Right ())
   describeResourceObject (PersistentObject value) _ = pure value
   probeResourceObject _ = pure (Right "healthy")
@@ -120,6 +128,10 @@ main = defaultMain $ testGroup "resource"
   , testCase "manager exit destroys resources" testShutdown
   , testCase "associated resources are destroyed together" testAssociatedCleanup
   , testCase "persistent resources survive manager restart" testPersistentRestart
+  , testCase "finite resource life refreshes and can become permanent" testResourceLifetime
+  , testCase "finite resources expire automatically" testResourceExpiry
+  , testCase "finite resources do not expire during active use" testResourceActiveExpiry
+  , testCase "persistent resource expiry includes downtime" testPersistentExpiry
   , testCase "resource names are globally unique and renameable" testResourceNames
   , testCase "resource names are reserved during concurrent creation" testConcurrentResourceNames
   , testCase "Podman sandbox arguments preserve isolation" testPodmanArguments
@@ -129,6 +141,9 @@ main = defaultMain $ testGroup "resource"
   , testCase "workspace create, query, update, and destroy" testWorkspaceLifecycle
   , testCase "resource command ids preserve first occurrence" $
       resourceIds "res-2 res-1 res-2 res-3" @?= ["res-2", "res-1", "res-3"]
+  , testCase "resource TTL has a ten-minute minimum" $ do
+      Resource.ttlFromMinutes 9 @?= Left "TTL must be at least 10 minutes."
+      Resource.ttlFromMinutes 10 @?= Right (Just 600)
   , testCase "resource removal reports partial results independently" testPartialRemoval
   ]
 
@@ -143,9 +158,10 @@ testTypedResources = runManaged do
   listed <- Resource.list access
   liftIO $ map (\item -> (item.resourceType, item.sessionId, item.description, item.probeResult)) listed
     @?= [("Test", Nothing, "alpha", Right "healthy"), ("Other", Nothing, "other", Right "healthy")]
+  liftIO $ assertBool "resource list reports life" ("life: permanent" `Text.isInfixOf` renderResources listed)
   mismatch <- Resource.withResource @OtherObject access "res-1" Nothing (const (pure ()))
   liftIO $ mismatch @?= Left Resource.ResourceTypeMismatch
-  Resource.detail access "res-1" >>= liftIO . (@?= Right "alpha")
+  Resource.detail access "res-1" >>= liftIO . (@?= Right "alpha\nlife: permanent")
 
 testOwnership :: Assertion
 testOwnership = runManaged do
@@ -163,7 +179,7 @@ testOwnership = runManaged do
         }
   adminAccess <- expectRight (Resource.accessFromMessage adminMessage)
   Resource.list adminAccess >>= liftIO . assertBool "superuser lists resources system-wide" . any ((== resourceId) . (.resourceId))
-  Resource.detail adminAccess resourceId >>= liftIO . (@?= Right "owned")
+  Resource.detail adminAccess resourceId >>= liftIO . (@?= Right "owned\nlife: permanent")
   Resource.destroy adminAccess resourceId >>= liftIO . (@?= Right ())
   let missing = ownerMessage{senderId = Nothing}
   liftIO $ Resource.accessFromMessage missing @?= Left Resource.MissingResourceIdentity
@@ -280,7 +296,10 @@ testPersistentRestart =
         cleanup = FileSystem.removeFile database
     (do
       persistentId <- liftIO $ runPersistent database do
-        persistentId <- Resource.createNamed @PersistentObject "durable-name" Resource.Init{message = ownerMessage, arguments = "durable"} >>= expectRight
+        persistentId <- Resource.createNamed @PersistentObject "durable-name" Resource.Init
+          { message = ownerMessage
+          , arguments = PersistentInit{label = "durable", persistentTTLSeconds = Nothing}
+          } >>= expectRight
         void $ Resource.create @OtherObject Resource.Init{message = ownerMessage, arguments = ()} >>= expectRight
         access <- expectRight (Resource.accessFromMessage ownerMessage)
         Resource.rename access persistentId "renamed-durable" >>= expectRight
@@ -297,6 +316,88 @@ testPersistentRestart =
         access <- expectRight (Resource.accessFromMessage ownerMessage)
         Resource.list access
       liftIO $ listedAfter @?= []
+      ) `finally` cleanup
+
+testResourceLifetime :: Assertion
+testResourceLifetime = runManaged do
+  (testInit, _) <- newTestInit "ttl" False
+  resourceId <- Resource.create @TestObject Resource.Init
+    { message = ownerMessage
+    , arguments = testInit{ttlSeconds = Just 1}
+    } >>= expectRight
+  access <- expectRight (Resource.accessFromMessage ownerMessage)
+  otherAccess <- expectRight (Resource.accessFromMessage ownerMessage{senderId = Just "other"})
+  Resource.keepAlive otherAccess resourceId >>= liftIO . (@?= Left Resource.ResourceNotFoundOrNotOwned)
+  threadDelay 600_000
+  Resource.withResource @TestObject access resourceId Nothing (const (pure ())) >>= liftIO . (@?= Right ())
+  threadDelay 600_000
+  Resource.keepAlive access resourceId >>= liftIO . (@?= Right ())
+  Resource.detail access resourceId >>= liftIO . \case
+    Right detail -> assertBool "detail reports finite life" ("\nlife: 1m" `Text.isSuffixOf` detail)
+    Left err -> assertFailure (show err)
+  adminAccess <- expectRight (Resource.accessFromMessage ownerMessage
+    { senderId = Just "admin"
+    , digest = emptyMessageDigest{senderIsSuperuser = True}
+    })
+  Resource.makePermanent adminAccess resourceId >>= liftIO . (@?= Right ())
+  threadDelay 1_200_000
+  Resource.list access >>= liftIO . \resources ->
+    map (\resource -> (resource.resourceId, resource.remainingLifeMinutes)) resources @?= [(resourceId, Nothing)]
+
+testResourceExpiry :: Assertion
+testResourceExpiry = runManaged do
+  (testInit, destroyed) <- newTestInit "expiring" False
+  resourceId <- Resource.create @TestObject Resource.Init
+    { message = ownerMessage
+    , arguments = testInit{ttlSeconds = Just 1}
+    } >>= expectRight
+  access <- expectRight (Resource.accessFromMessage ownerMessage)
+  threadDelay 1_200_000
+  Resource.list access >>= liftIO . (@?= [])
+  MVar.tryTakeMVar destroyed >>= liftIO . (@?= Just ())
+  Resource.detail access resourceId >>= liftIO . (@?= Left Resource.ResourceNotFoundOrNotOwned)
+
+testResourceActiveExpiry :: Assertion
+testResourceActiveExpiry = runManaged do
+  (testInit, destroyed) <- newTestInit "active-ttl" False
+  resourceId <- Resource.create @TestObject Resource.Init
+    { message = ownerMessage
+    , arguments = testInit{ttlSeconds = Just 1}
+    } >>= expectRight
+  access <- expectRight (Resource.accessFromMessage ownerMessage)
+  started <- MVar.newEmptyMVar
+  finish <- MVar.newEmptyMVar
+  worker <- Concurrency.fork "active-ttl-user" $
+    void $ Resource.withResource @TestObject access resourceId Nothing \_ ->
+      MVar.putMVar started () >> MVar.takeMVar finish
+  MVar.takeMVar started
+  threadDelay 1_200_000
+  Resource.list access >>= liftIO . assertBool "active expired resource remains registered" . any ((== resourceId) . (.resourceId))
+  MVar.putMVar finish ()
+  Concurrency.await worker
+  threadDelay 200_000
+  Resource.list access >>= liftIO . (@?= [])
+  MVar.tryTakeMVar destroyed >>= liftIO . (@?= Just ())
+
+testPersistentExpiry :: Assertion
+testPersistentExpiry =
+  runEff $ runConcurrent $ FileSystem.runFileSystem do
+    tmp <- FileSystem.getTemporaryDirectory
+    unique <- liftIO Unique.newUnique
+    let database = tmp </> ("cosmobot-resource-expiry-" <> show (Unique.hashUnique unique) <> ".sqlite")
+        cleanup = FileSystem.removeFile database
+    (do
+      liftIO $ runPersistent database do
+        void $ Resource.createNamed @PersistentObject "expires" Resource.Init
+          { message = ownerMessage
+          , arguments = PersistentInit{label = "expires", persistentTTLSeconds = Just 1}
+          } >>= expectRight
+      threadDelay 1_100_000
+      listed <- liftIO $ runPersistent database do
+        threadDelay 200_000
+        access <- expectRight (Resource.accessFromMessage ownerMessage)
+        Resource.list access
+      liftIO $ listed @?= []
       ) `finally` cleanup
 
 testPartialRemoval :: Assertion
@@ -356,12 +457,13 @@ testWorkspaceLifecycle =
         path = root </> "demo-work"
         cleanup = FileSystem.removePathForcibly root
     (do
-      Workspace.createWorkspaceAt root Workspace.WorkspaceArgs{workId = "../escape", goal = "nope"} >>= \case
+      Workspace.createWorkspaceAt root Workspace.WorkspaceArgs{workId = "../escape", goal = "nope", ttlMinutes = 10} >>= \case
         Left err -> liftIO $ err @?= "id may contain only letters, digits, dot, underscore, and hyphen."
         Right _ -> liftIO $ assertFailure "unsafe workspace id was accepted"
       workspace <- Workspace.createWorkspaceAt root Workspace.WorkspaceArgs
         { workId = "demo-work"
         , goal = "initial goal"
+        , ttlMinutes = 10
         } >>= expectRight
       FileSystem.createDirectory (path </> "repo")
       report <- Workspace.queryWorkspace workspace >>= expectRight
@@ -378,7 +480,7 @@ newTestInit :: (Prim :> es, Concurrent :> es) => Text -> Bool -> Eff es (TestIni
 newTestInit label failing = do
   failDestroy <- IORef.newIORef failing
   destroyed <- MVar.newEmptyMVar
-  pure (TestInit{label, failDestroy, destroyed}, destroyed)
+  pure (TestInit{label, failDestroy, destroyed, ttlSeconds = Nothing}, destroyed)
 
 ownerMessage :: IncomingMessage
 ownerMessage = IncomingMessage

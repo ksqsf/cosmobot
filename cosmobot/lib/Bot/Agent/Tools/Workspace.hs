@@ -35,6 +35,7 @@ workspaceTool = Tool
       , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
       , fieldText "goal" "Initial work goal for create, or complete replacement WORK.md contents for update."
       , fieldText "resource" "Resource name returned by create; required for query, update, rename, and delete."
+      , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 10."
       ]
       ["action"]
   , noisy = False
@@ -102,7 +103,8 @@ parseWorkspaceCall = Aeson.withObject "workspace arguments" \o -> do
       <$> o Aeson..:? Key.fromText "name"
       <*> (Workspace.WorkspaceArgs
         <$> (o Aeson..: Key.fromText "id" >>= validWorkId)
-        <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal"))
+        <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal")
+        <*> parseTTLMinutes o)
     "query" -> QueryWorkspace <$> requiredResourceId o
     "update" -> UpdateWorkspace <$> requiredResourceId o <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal")
     "delete" -> DestroyWorkspace <$> requiredResourceId o

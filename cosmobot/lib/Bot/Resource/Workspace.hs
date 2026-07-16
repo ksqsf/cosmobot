@@ -38,6 +38,7 @@ data Workspace = Workspace
 data WorkspaceArgs = WorkspaceArgs
   { workId :: !Text
   , goal :: !Text
+  , ttlMinutes :: !Int
   }
 
 instance
@@ -46,6 +47,7 @@ instance
   type CreationArgs Workspace = WorkspaceArgs
 
   resourceTypeName _ = "Workspace"
+  resourceTTLSeconds = Resource.ttlFromMinutes . (.ttlMinutes)
 
   createResourceObject Resource.Init{arguments} =
     createWorkspaceAt "/work" arguments

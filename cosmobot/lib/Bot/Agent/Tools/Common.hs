@@ -17,6 +17,7 @@ module Bot.Agent.Tools.Common
   , fieldIntegerMax
   , fieldBoolean
   , objectSchema
+  , parseTTLMinutes
   , jsonText
   , renderResourceError
   , resourceToolFailure
@@ -112,6 +113,13 @@ objectSchema fields required =
     , "additionalProperties" Aeson..= False
     ]
 
+parseTTLMinutes :: AesonTypes.Object -> AesonTypes.Parser Int
+parseTTLMinutes object = do
+  ttlMinutes <- object Aeson..: Key.fromText "ttl_minutes"
+  when (ttlMinutes < 10) $ fail "ttl_minutes must be at least 10."
+  when (ttlMinutes > maxBound `div` 60) $ fail "ttl_minutes is too large."
+  pure ttlMinutes
+
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
   TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
@@ -126,6 +134,7 @@ renderResourceError = \case
   Resource.ResourceNameAlreadyExists -> "Resource name already exists."
   Resource.ResourceCreationFailed err -> err
   Resource.ResourceRenameFailed err -> err
+  Resource.ResourceLifetimeUpdateFailed err -> err
   Resource.ResourceCleanupFailed err -> err
 
 resourceToolFailure :: Resource.ResourceError -> ToolResult

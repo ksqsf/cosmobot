@@ -38,6 +38,7 @@ subagentTool runner availableTools =
           , fieldTextArray "tools" "Tool names exposed to the subagent for create; empty exposes none."
           , fieldText "resource" "Subagent resource name; required for send, query, rename, and delete."
           , fieldText "prompt" "Prompt to send; required for send."
+          , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 10."
           ]
           ["op"]
     , noisy = False
@@ -52,8 +53,8 @@ subagentTool runner availableTools =
         Left err -> pure (resourceToolFailure err)
         Right access ->
           case call of
-            Create requestedName systemPrompt toolNames ->
-              createSubAgent context metadata requestedName systemPrompt toolNames
+            Create requestedName systemPrompt toolNames ttlMinutes ->
+              createSubAgent context metadata requestedName systemPrompt toolNames ttlMinutes
             Send resourceId prompt ->
               use access resourceId \subagent ->
                 SubAgent.sendPrompt runner availableTools context subagent prompt
@@ -72,7 +73,7 @@ subagentTool runner availableTools =
             <&> join . first renderResourceError
             <&> either clientFailure toolText
 
-    createSubAgent context metadata requestedName systemPrompt toolNames =
+    createSubAgent context metadata requestedName systemPrompt toolNames ttlMinutes =
       case validateTools context toolNames of
         Left err ->
           pure (clientFailure err)
@@ -80,7 +81,7 @@ subagentTool runner availableTools =
           createResource requestedName
             Resource.Init
               { message = context.message
-              , arguments = SubAgent.SubAgentArgs{systemContext, toolNames = names}
+              , arguments = SubAgent.SubAgentArgs{systemContext, toolNames = names, ttlMinutes}
               }
             <&> either resourceToolFailure (toolText . ("Subagent created: " <>))
       where
@@ -102,7 +103,7 @@ subagentTool runner availableTools =
               | otherwise -> Left ("Tool is not allowed: " <> name)
 
 data Call
-  = Create !(Maybe Text) !Text ![Text]
+  = Create !(Maybe Text) !Text ![Text] !Int
   | Send !Text !Text
   | Query !Text
   | Destroy !Text
@@ -117,6 +118,7 @@ parseCall = Aeson.withObject "subagent arguments" \o -> do
         <$> o Aeson..:? Key.fromText "name"
         <*> (fromMaybe "" <$> o Aeson..:? Key.fromText "system_prompt")
         <*> (fromMaybe [] <$> o Aeson..:? Key.fromText "tools")
+        <*> parseTTLMinutes o
     "send" -> Send <$> resource o <*> requiredText o "prompt"
     "query" -> Query <$> resource o
     "delete" -> Destroy <$> resource o

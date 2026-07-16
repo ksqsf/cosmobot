@@ -8,9 +8,11 @@ Stability   : experimental
 module Bot.Storage.Resource
   ( StoredResource (..)
   , loadResources
+  , loadResourceLifetimes
   , saveResource
   , deleteResource
   , renameResource
+  , setResourceLifetime
   )
 where
 
@@ -42,6 +44,15 @@ data ResourceRow = ResourceRow
 
 instance SqlRow ResourceRow
 
+data ResourceLifetimeRow = ResourceLifetimeRow
+  { resource_id :: Text
+  , ttl_seconds :: Int
+  , expires_at :: UTCTime
+  }
+  deriving stock (Generic)
+
+instance SqlRow ResourceLifetimeRow
+
 resources :: Table ResourceRow
 resources =
   table "resources"
@@ -52,11 +63,23 @@ resources =
     , #owner_sender_id :- index
     ]
 
+resourceLifetimes :: Table ResourceLifetimeRow
+resourceLifetimes =
+  table "resource_lifetimes"
+    [ #resource_id :- primary
+    ]
+
 loadResources :: Storage.Storage :> es => Eff es [StoredResource]
 loadResources = do
   ensureTable
   rows <- runSelda $ query (select resources)
   pure (mapMaybe fromRow rows)
+
+loadResourceLifetimes :: Storage.Storage :> es => Eff es [(ResourceId, (Int, UTCTime))]
+loadResourceLifetimes = do
+  ensureTable
+  rows <- runSelda $ query (select resourceLifetimes)
+  pure [(row.resource_id, (row.ttl_seconds, row.expires_at)) | row <- rows]
 
 saveResource :: Storage.Storage :> es => StoredResource -> Eff es ()
 saveResource resource = do
@@ -68,18 +91,33 @@ saveResource resource = do
 deleteResource :: Storage.Storage :> es => ResourceId -> Eff es ()
 deleteResource resourceId = do
   ensureTable
-  runSelda $ deleteFrom_ resources \row ->
-    row ! #resource_id .== literal resourceId
+  runSelda do
+    deleteFrom_ resourceLifetimes \row -> row ! #resource_id .== literal resourceId
+    deleteFrom_ resources \row -> row ! #resource_id .== literal resourceId
 
 renameResource :: Storage.Storage :> es => ResourceId -> ResourceId -> Eff es ()
 renameResource oldId newId = do
   ensureTable
-  runSelda $ update_ resources
-    (\row -> row ! #resource_id .== literal oldId)
-    (\row -> row `with` [#resource_id := literal newId])
+  runSelda do
+    update_ resources
+      (\row -> row ! #resource_id .== literal oldId)
+      (\row -> row `with` [#resource_id := literal newId])
+    update_ resourceLifetimes
+      (\row -> row ! #resource_id .== literal oldId)
+      (\row -> row `with` [#resource_id := literal newId])
+
+setResourceLifetime :: Storage.Storage :> es => ResourceId -> Maybe (Int, UTCTime) -> Eff es ()
+setResourceLifetime resourceId lifetime = do
+  ensureTable
+  runSelda do
+    deleteFrom_ resourceLifetimes \row -> row ! #resource_id .== literal resourceId
+    for_ lifetime \(ttlSeconds, expiresAt) ->
+      insert_ resourceLifetimes [ResourceLifetimeRow resourceId ttlSeconds expiresAt]
 
 ensureTable :: Storage.Storage :> es => Eff es ()
-ensureTable = runSelda (tryCreateTable resources)
+ensureTable = runSelda do
+  tryCreateTable resources
+  tryCreateTable resourceLifetimes
 
 toRow :: StoredResource -> ResourceRow
 toRow resource = ResourceRow

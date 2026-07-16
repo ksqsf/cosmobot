@@ -310,18 +310,21 @@ testTerminalAndSandboxToolScopes = do
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
       sandboxSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode sandboxTool.parameters))
+      workspaceSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode workspaceTool.parameters))
       trustedBashSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode trustedBashTool.parameters))
   terminalTool.name @?= "terminal"
   assertBool "terminal tool should be hidden outside ACP" (not (terminalTool.allowed agentContext))
   assertBool "terminal tool should be visible for ACP" (terminalTool.allowed acpContext)
   sandboxTool.name @?= "sandbox"
   assertBool "sandbox bash schema should require a script" ("\"script\"" `Text.isInfixOf` sandboxSchema)
+  assertBool "sandbox create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` sandboxSchema)
   assertBool "sandbox bash schema should not expose command ids" (not ("command_id" `Text.isInfixOf` sandboxSchema))
   assertBool "sandbox bash schema should not expose async actions" (not ("\"action\"" `Text.isInfixOf` sandboxSchema))
   assertBool "run_bash schema should not expose sandboxes" (not ("sandbox" `Text.isInfixOf` trustedBashSchema))
   assertBool "sandbox tool should be visible to non-superusers" (sandboxTool.allowed agentContext)
   assertBool "sandbox tool should require resource identity" (not (sandboxTool.allowed missingIdentity))
   workspaceTool.name @?= "workspace"
+  assertBool "workspace create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` workspaceSchema)
   assertBool "workspace should be hidden from non-superusers" (not (workspaceTool.allowed agentContext))
   assertBool "workspace should be visible to superusers" (workspaceTool.allowed superuserContext)
   assertBool "workspace should require resource identity" (not (workspaceTool.allowed superuserContext{Agent.message = testMessage{senderId = Nothing}}))
@@ -333,8 +336,12 @@ testSubAgentLifecycle = do
     let childRunner _ _ _ transcript = pure ("finished", transcript)
         tool = SubAgentTools.subagentTool childRunner []
         otherContext = agentContext{Agent.message = testMessage{senderId = Just "other"}}
+        schema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode tool.parameters))
+    liftIO $ assertBool "subagent create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` schema)
     createRun <- tool.start agentContext
-    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text])])
+    tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (9 :: Int)])
+    liftIO $ assertBool "subagent rejects TTL below ten minutes" ("at least 10" `Text.isInfixOf` AgentTypes.toolResultContent tooShort)
+    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text]), "ttl_minutes" Aeson..= (10 :: Int)])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
     liftIO $ resourceId @?= "researcher"
     sendRun <- tool.start otherContext

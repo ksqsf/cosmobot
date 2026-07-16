@@ -21,6 +21,7 @@ module Bot.Effect.Resource
   , resourceLoader
   , SomeResourceObject (..)
   , ResourceError (..)
+  , ttlFromMinutes
   , ownerFromMessage
   , accessFromMessage
   , create
@@ -32,6 +33,8 @@ module Bot.Effect.Resource
   , detail
   , destroy
   , rename
+  , keepAlive
+  , makePermanent
   , destroyAssociated
   )
 where
@@ -47,6 +50,8 @@ data Resource :: Effect where
   Detail :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError Text)
   Destroy :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError ())
   Rename :: ResourceAccess -> ResourceId -> ResourceId -> Resource m (Either ResourceError ResourceId)
+  KeepAlive :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError ())
+  MakePermanent :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError ())
   DestroyAssociated :: Handle -> Resource m [Either ResourceError ()]
 
 type instance DispatchOf Resource = Dynamic
@@ -84,6 +89,12 @@ destroy access = send . Destroy access
 
 rename :: Resource :> es => ResourceAccess -> ResourceId -> ResourceId -> Eff es (Either ResourceError ResourceId)
 rename access resourceId = send . Rename access resourceId
+
+keepAlive :: Resource :> es => ResourceAccess -> ResourceId -> Eff es (Either ResourceError ())
+keepAlive access = send . KeepAlive access
+
+makePermanent :: Resource :> es => ResourceAccess -> ResourceId -> Eff es (Either ResourceError ())
+makePermanent access = send . MakePermanent access
 
 destroyAssociated :: Resource :> es => Handle -> Eff es [Either ResourceError ()]
 destroyAssociated = send . DestroyAssociated
