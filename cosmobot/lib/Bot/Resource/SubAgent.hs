@@ -81,6 +81,19 @@ instance
   describeResourceObject subagent _ =
     pure (show (length subagent.arguments.toolNames) <> " tools")
 
+  detailResourceObject subagent = do
+    snapshot <- MVar.readMVar subagent.state
+    pure $ Text.intercalate "\n"
+      [ "status: " <> if isJust snapshot.active then "generating" else "ready"
+      , "tools: " <> case subagent.arguments.toolNames of
+          [] -> "(none)"
+          names -> Text.intercalate ", " names
+      , "system prompt:\n" <> subagent.arguments.systemContext
+      , "output:\n" <> case snapshot.active of
+          Just _ -> "Generating"
+          Nothing -> fromMaybe "No prompt has been sent." snapshot.answer
+      ]
+
   probeResourceObject subagent = do
     snapshot <- MVar.readMVar subagent.state
     pure (Right (if isJust snapshot.active then "generating" else "ready"))
