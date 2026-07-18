@@ -24,6 +24,7 @@ module Bot.Chat.Driver.Telegram
   , Message (..)
   , MessageEntity (..)
   , PhotoSize (..)
+  , TelegramMedia (..)
   , ParseMode (..)
   , SendMessageRequest (..)
   , EditMessageTextRequest (..)
@@ -224,16 +225,17 @@ incomingMessages driver = S.for (updatesStream driver) $ \update -> do
       S.lift $ logInfo "Ignoring Telegram event"
     Just parsedMessage -> do
       message <- S.lift $
-        resolveIncomingMessageImages driver parsedMessage `catchSync` \err -> do
-          logError [i|Telegram image resolution failed: #{show err :: String}|]
+        resolveIncomingMessageMedia driver parsedMessage `catchSync` \err -> do
+          logError [i|Telegram media resolution failed: #{show err :: String}|]
           pure parsedMessage
       S.lift $ logDebug [i|incoming Telegram message: #{show message :: String}|]
       S.lift $ logInfo [i|incoming Telegram message: #{incomingMessageLogLine message}|]
       S.yield message
 
-resolveIncomingMessageImages :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> IncomingMessage -> Eff es IncomingMessage
-resolveIncomingMessageImages driver message = do
+resolveIncomingMessageMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> IncomingMessage -> Eff es IncomingMessage
+resolveIncomingMessageMedia driver message = do
   imageUrls <- traverse (fileUrl driver) message.imageUrls
+  files <- traverse (traverseMessageFileRef (fileUrl driver)) message.files
   pure IncomingMessage
     { platform = message.platform
     , kind = message.kind
@@ -247,7 +249,7 @@ resolveIncomingMessageImages driver message = do
     , mentions = message.mentions
     , mentionUsernames = message.mentionUsernames
     , imageUrls = imageUrls
-    , files = message.files
+    , files
     , text = message.text
     , raw = message.raw
     }
@@ -273,7 +275,7 @@ updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
     , mentions  = messageMentionIds message
     , mentionUsernames = messageMentionUsernames message
     , imageUrls = messageImageFileIds message
-    , files = []
+    , files = telegramMessageFiles message
     , text      = messageText message
     , raw       = Aeson.toJSON message
     }
@@ -346,6 +348,25 @@ messageImageFileIds :: Message -> [Text]
 messageImageFileIds message =
   maybe [] (maybeToList . largestPhotoFileId) message.photo
 
+telegramMessageFiles :: Message -> [MessageFile]
+telegramMessageFiles message =
+  catMaybes
+    [ telegramMessageFile "document" <$> message.document
+    , telegramMessageFile "audio" <$> message.audio
+    , telegramMessageFile "voice" <$> message.voice
+    ]
+
+telegramMessageFile :: Text -> TelegramMedia -> MessageFile
+telegramMessageFile fallback media =
+  MessageFile
+    { name = fromMaybe (fallback <> maybe "" Mime.extensionFromMime media.mimeType) media.fileName
+    , ref = media.fileId
+    }
+
+traverseMessageFileRef :: Functor f => (Text -> f Text) -> MessageFile -> f MessageFile
+traverseMessageFileRef resolve file =
+  (\ref -> MessageFile{name = file.name, ref}) <$> resolve file.ref
+
 largestPhotoFileId :: [PhotoSize] -> Maybe Text
 largestPhotoFileId =
   fmap (.fileId) . largestPhoto
@@ -386,13 +407,14 @@ getMessageContentTelegram driver message messageId =
             Just referenced
               | referenced.messageId == rawMessageId -> do
                   imageUrls <- traverse (fileUrl driver) (messageImageFileIds referenced)
+                  files <- traverse (traverseMessageFileRef (fileUrl driver)) (telegramMessageFiles referenced)
                   pure $ Just ReferencedMessage
                     { messageId = Just (integerMessageId referenced.messageId)
                     , senderDisplayName = telegramMessageSenderDisplayName referenced
                     , senderIdentifier = telegramMessageSenderIdentifier referenced
                     , text = messageText referenced
                     , imageUrls = imageUrls
-                    , files = []
+                    , files
                     }
             _ -> pure Nothing
         Aeson.Error _ ->
@@ -903,6 +925,9 @@ data Message = Message
   , caption         :: !(Maybe Text)
   , captionEntities :: !(Maybe [MessageEntity])
   , photo           :: !(Maybe [PhotoSize])
+  , document        :: !(Maybe TelegramMedia)
+  , audio           :: !(Maybe TelegramMedia)
+  , voice           :: !(Maybe TelegramMedia)
   } deriving (Show, Generic)
     deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing Message)
 
@@ -915,6 +940,14 @@ data PhotoSize = PhotoSize
   , fileSize     :: !(Maybe Integer)
   } deriving (Show, Generic)
     deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing PhotoSize)
+
+data TelegramMedia = TelegramMedia
+  { fileId       :: !Text
+  , fileUniqueId :: !Text
+  , fileName     :: !(Maybe Text)
+  , mimeType     :: !(Maybe Text)
+  } deriving (Show, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing TelegramMedia)
 
 -- | Telegram message entity metadata used for mention extraction.
 data MessageEntity = MessageEntity

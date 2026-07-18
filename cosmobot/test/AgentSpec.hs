@@ -73,6 +73,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Time (UTCTime (..), fromGregorian)
 import Data.Unique
+import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.FileSystem (FileSystem, runFileSystem)
 import qualified Effectful.FileSystem as FS
 import Effectful.Process (Process, runProcess)
@@ -343,20 +344,35 @@ testSubAgentLifecycle :: IO ()
 testSubAgentLifecycle = do
   answers <- IORef.newIORef []
   runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    let childRunner _ _ _ transcript = pure ("finished", transcript)
-        tool = SubAgentTools.subagentTool childRunner []
+    started <- MVar.newEmptyMVar
+    finish <- MVar.newEmptyMVar
+    let childRunner _ _ _ transcript =
+          MVar.putMVar started () >> MVar.takeMVar finish $> ("finished", transcript)
+        availableTools = [SandboxTools.sandboxTool]
+        tool = SubAgentTools.subagentTool childRunner availableTools
         otherContext = agentContext{Agent.message = testMessage{senderId = Just "other"}}
         schema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode tool.parameters))
     liftIO $ assertBool "subagent create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` schema)
     createRun <- tool.start agentContext
     tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (4 :: Int)])
     liftIO $ assertBool "subagent rejects TTL below five minutes" ("at least 5" `Text.isInfixOf` AgentTypes.toolResultContent tooShort)
-    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
+    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
     liftIO $ resourceId @?= "researcher"
     sendRun <- tool.start otherContext
     sent <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
     liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
+    MVar.takeMVar started
+    let access = fromRight (error "missing resource access") (ResourceEffect.accessFromMessage otherContext.message)
+    generatingDetail <- ResourceEffect.detail access resourceId
+    liftIO $ generatingDetail @?= Right (Text.intercalate "\n"
+      [ "status: generating"
+      , "tools: sandbox"
+      , "system prompt:\nResearch carefully."
+      , "output:\nGenerating"
+      , "life: 5m"
+      ])
+    MVar.putMVar finish ()
     workers <- Concurrency.list
     let worker = fromMaybe (error "missing subagent worker") (find ((== "subagent") . (.label)) workers.entries)
     Concurrency.await Concurrency.Handle{handleId = worker.id}
@@ -364,6 +380,8 @@ testSubAgentLifecycle = do
     liftIO $ AgentTypes.toolResultContent renamed @?= "Subagent renamed: reviewer"
     queried <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("query" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent queried @?= "finished"
+    finishedDetail <- ResourceEffect.detail access "reviewer"
+    liftIO $ assertBool "subagent detail reports final output" (either (const False) ("output:\nfinished" `Text.isInfixOf`) finishedDetail)
     destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("delete" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent destroyed @?= "Subagent destroyed."
 

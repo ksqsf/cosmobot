@@ -35,7 +35,9 @@ main =
       , testCase "QQ CQ mention string keeps mentioned user ids" testQqCQMentionStringKeepsMentionedUserIds
       , testCase "QQ forwarded messages merge all node text" testQqForwardedMessagesMergeAllNodeText
       , testCase "QQ file segment becomes a message file" testQqFileSegmentBecomesMessageFile
+      , testCase "QQ record segment becomes a message file" testQqRecordSegmentBecomesMessageFile
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
+      , testCase "Telegram audio becomes a message file" testTelegramAudioBecomesMessageFile
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
@@ -52,6 +54,7 @@ main =
       , testCase "Matrix encrypted image message includes media URL" testMatrixEncryptedImageMessageIncludesMediaUrl
       , testCase "Matrix referenced image without body includes media URL" testMatrixReferencedImageWithoutBodyIncludesMediaUrl
       , testCase "Matrix file message includes a message file" testMatrixFileMessageIncludesMessageFile
+      , testCase "Matrix audio message includes a message file" testMatrixAudioMessageIncludesMessageFile
       , testCase "Matrix encrypted image bytes decrypt and verify ciphertext hash" testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix edit event converts to incoming message" testMatrixEditEventConvertsToIncomingMessage
@@ -67,6 +70,7 @@ main =
       , testCase "Discord avatar value includes avatar URL" testDiscordAvatarValueIncludesAvatarUrl
       , testCase "Discord image context includes embeds and image links" testDiscordImageContextIncludesEmbedsAndImageLinks
       , testCase "Discord document attachment becomes a message file" testDiscordDocumentAttachmentBecomesMessageFile
+      , testCase "Discord audio attachment becomes a message file" testDiscordAudioAttachmentBecomesMessageFile
       ]
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
@@ -115,6 +119,31 @@ testQqFileSegmentBecomesMessageFile = do
         }
       incoming = QQ.eventToIncomingMessage event
   ((.files) <$> incoming) @?= Just [MessageFile{name = "notes.txt", ref = "qq-file:file-123"}]
+
+testQqRecordSegmentBecomesMessageFile :: IO ()
+testQqRecordSegmentBecomesMessageFile = do
+  let original = qqMessageEvent 10001
+      event = QQ.Event
+        { QQ.time = original.time
+        , QQ.selfId = original.selfId
+        , QQ.postType = original.postType
+        , QQ.messageType = original.messageType
+        , QQ.subType = original.subType
+        , QQ.messageId = original.messageId
+        , QQ.userId = original.userId
+        , QQ.groupId = original.groupId
+        , QQ.message = Just (Aeson.toJSON
+            [ Aeson.object
+                [ "type" Aeson..= ("record" :: Text)
+                , "data" Aeson..= Aeson.object ["file" Aeson..= ("https://example.test/voice.ogg" :: Text)]
+                ]
+            ])
+        , QQ.rawMessage = original.rawMessage
+        , QQ.sender = original.sender
+        , QQ.rawEvent = original.rawEvent
+        }
+  ((.files) <$> QQ.eventToIncomingMessage event)
+    @?= Just [MessageFile{name = "audio", ref = "https://example.test/voice.ogg"}]
 
 testQqSuperuserIsAlsoAllowedSender :: IO ()
 testQqSuperuserIsAlsoAllowedSender = do
@@ -192,6 +221,17 @@ testTelegramUserMessageConvertsToIncomingMessage = do
   let incoming = Telegram.updateToIncomingMessage (telegramUpdate False)
   ((.platform) <$> incoming) @?= Just PlatformTelegram
   ((.text) <$> incoming) @?= Just "hello"
+
+testTelegramAudioBecomesMessageFile :: IO ()
+testTelegramAudioBecomesMessageFile = do
+  let audio = Telegram.TelegramMedia
+        { Telegram.fileId = "audio-file-id"
+        , Telegram.fileUniqueId = "audio-unique-id"
+        , Telegram.fileName = Just "song.mp3"
+        , Telegram.mimeType = Just "audio/mpeg"
+        }
+      incoming = Telegram.updateToIncomingMessage (telegramUpdateWithMessage (telegramMessage False){Telegram.audio = Just audio})
+  ((.files) <$> incoming) @?= Just [MessageFile{name = "song.mp3", ref = "audio-file-id"}]
 
 testTelegramSuperuserIsAlsoAllowedPrivateSender :: IO ()
 testTelegramSuperuserIsAlsoAllowedPrivateSender = do
@@ -384,6 +424,20 @@ testMatrixFileMessageIncludesMessageFile = do
       incoming = Matrix.eventToIncomingMessage roomEvent
   ((.files) <$> incoming) @?= Just [MessageFile{name = "notes.txt", ref = "mxc://example.org/notes"}]
 
+testMatrixAudioMessageIncludesMessageFile :: IO ()
+testMatrixAudioMessageIncludesMessageFile = do
+  let event = matrixRoomEvent.event
+        { Matrix.content = matrixRoomEvent.event.content{Matrix.msgtype = Just "m.audio", Matrix.body = Just "voice.ogg"}
+        , Matrix.raw = matrixImageRawContent
+            [ "msgtype" Aeson..= ("m.audio" :: Text)
+            , "body" Aeson..= ("voice.ogg" :: Text)
+            , "url" Aeson..= ("mxc://example.org/voice" :: Text)
+            , "info" Aeson..= Aeson.object ["mimetype" Aeson..= ("audio/ogg" :: Text)]
+            ]
+        }
+      incoming = Matrix.eventToIncomingMessage matrixRoomEvent{Matrix.event = event}
+  ((.files) <$> incoming) @?= Just [MessageFile{name = "voice.ogg", ref = "mxc://example.org/voice"}]
+
 testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash :: IO ()
 testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash = do
   let key = StrictByteString.replicate 32 0
@@ -572,6 +626,21 @@ testDiscordDocumentAttachmentBecomesMessageFile = do
       incoming = fromMaybe (error "expected incoming Discord message") (Discord.eventToIncomingMessage message)
   incoming.files @?= [MessageFile{name = "notes.txt", ref = "https://cdn.discordapp.com/notes.txt"}]
 
+testDiscordAudioAttachmentBecomesMessageFile :: IO ()
+testDiscordAudioAttachmentBecomesMessageFile = do
+  let message = (discordMessageNoReference "70004")
+        { Discord.attachments =
+            [ Discord.Attachment
+                { Discord.id = "4"
+                , Discord.filename = "voice.ogg"
+                , Discord.url = "https://cdn.discordapp.com/voice.ogg"
+                , Discord.contentType = Just "audio/ogg"
+                }
+            ]
+        }
+      incoming = fromMaybe (error "expected incoming Discord message") (Discord.eventToIncomingMessage message)
+  incoming.files @?= [MessageFile{name = "voice.ogg", ref = "https://cdn.discordapp.com/voice.ogg"}]
+
 avatarUrl :: Aeson.Value -> Maybe Text
 avatarUrl =
   AesonTypes.parseMaybe $
@@ -644,6 +713,9 @@ telegramMessage fromBot =
     , caption = Nothing
     , captionEntities = Nothing
     , photo = Nothing
+    , document = Nothing
+    , audio = Nothing
+    , voice = Nothing
     }
 
 telegramUser :: Bool -> Telegram.User
