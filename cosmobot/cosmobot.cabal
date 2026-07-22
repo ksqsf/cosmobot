@@ -189,6 +189,7 @@ library
         Bot.Agent.Tools.Schedule
         Bot.Agent.Tools.Sandbox
         Bot.Agent.Tools.Shell
+        Bot.Agent.Tools.Skills
         Bot.Agent.Tools.SubAgent
         Bot.Agent.Tools.Terminal
         Bot.Agent.Tools.Time

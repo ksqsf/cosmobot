@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Effect.Skills
   ( Skills
   , skillsSystemPrompt
+  , loadSkill
   , reloadSkills
   , runSkills
   )
@@ -18,6 +19,7 @@ import qualified Effectful.Prim.IORef as IORef
 
 data Skills :: Effect where
   SkillsSystemPrompt :: Skills m Text
+  LoadSkill :: Text -> Skills m (Maybe Text)
   ReloadSkills :: Skills m ()
 
 type instance DispatchOf Skills = Dynamic
@@ -25,6 +27,10 @@ type instance DispatchOf Skills = Dynamic
 skillsSystemPrompt :: Skills :> es => Eff es Text
 skillsSystemPrompt =
   send SkillsSystemPrompt
+
+loadSkill :: Skills :> es => Text -> Eff es (Maybe Text)
+loadSkill =
+  send . LoadSkill
 
 reloadSkills :: Skills :> es => Eff es ()
 reloadSkills =
@@ -39,5 +45,6 @@ runSkills cfg action = do
   promptRef <- IORef.newIORef =<< SkillsStore.loadSkillsPrompt cfg
   interpret (\_ -> \case
     SkillsSystemPrompt -> (.systemPrompt) <$> IORef.readIORef promptRef
+    LoadSkill name -> SkillsStore.skillContent name <$> IORef.readIORef promptRef
     ReloadSkills -> IORef.writeIORef promptRef =<< SkillsStore.loadSkillsPrompt cfg
     ) action

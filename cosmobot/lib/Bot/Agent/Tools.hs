@@ -20,6 +20,7 @@ import Bot.Agent.Tools.Memory
 import Bot.Agent.Tools.Schedule
 import Bot.Agent.Tools.Sandbox
 import Bot.Agent.Tools.Shell
+import Bot.Agent.Tools.Skills
 import Bot.Agent.Tools.SubAgent
 import Bot.Agent.Tools.Terminal
 import Bot.Agent.Tools.Time
@@ -37,6 +38,7 @@ import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Typst as Typst
 import Bot.Prelude
 import Effectful.Timeout
@@ -54,6 +56,7 @@ defaultTools
   => Memory.Memory :> es
   => Resource.Resource :> es
   => Scheduler.Scheduler :> es
+  => Skills.Skills :> es
   => Typst.Typst :> es
   => Fail :> es
   => Concurrency.Concurrency :> es
@@ -95,6 +98,7 @@ defaultTools = tools
       , scheduleTool
       , senderMemoryTool
       , chatMemoryTool
+      , loadSkillTool
       , sandboxTool
       , runBashTool
       , terminalTool

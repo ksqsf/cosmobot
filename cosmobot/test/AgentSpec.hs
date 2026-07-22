@@ -228,6 +228,7 @@ main =
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
+      , testCase "load_skill loads only advertised skill instructions" testLoadSkillLoadsAdvertisedSkillInstructions
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
       , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
       , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
@@ -1185,11 +1186,43 @@ testAskHandlerInjectsStartupSkillMetadata = withTempDir "skills-test" \skillsDir
           assertBool "skill metadata block is included" ("<SKILLS>" `Text.isInfixOf` content)
           assertBool "skill name is included" ("haskell-refactor" `Text.isInfixOf` content)
           assertBool "skill description is included" ("Improve Haskell modules safely." `Text.isInfixOf` content)
-          assertBool "skill path is included" (Text.pack (skillsDir </> "haskell" </> "SKILL.md") `Text.isInfixOf` content)
+          assertBool "skill path is omitted" (not (Text.pack (skillsDir </> "haskell" </> "SKILL.md") `Text.isInfixOf` content))
         other ->
           assertFailure [i|expected text system content, got #{show other :: String}|]
     other ->
       assertFailure [i|expected captured ask-handler LLM request messages, got #{show (requestRoles <$> other) :: String}|]
+
+testLoadSkillLoadsAdvertisedSkillInstructions :: IO ()
+testLoadSkillLoadsAdvertisedSkillInstructions = withTempDir "skills-test" \skillsDir -> do
+  let skillDir = skillsDir </> "haskell"
+      skillPath = skillDir </> "SKILL.md"
+      skillBody = "---\nname: haskell-refactor\n---\nUse small pure functions.\n"
+  createDirectoryIfMissing True skillDir
+  TextIO.writeFile skillPath skillBody
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "load_skill" (Aeson.object ["name" Aeson..= ("haskell-refactor" :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "load_skill" (Aeson.object ["name" Aeson..= ("missing" :: Text)])]
+    , chatAnswer "done" []
+    ]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  _ <- runAgentCapturingMessagesWithSkills (SkillsStore.SkillsConfig skillsDir) captured answers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 3 agentContext AgentTools.defaultTools (startWithUser "refactor this")
+  requests <- IORef.readIORef captured
+  case requests of
+    _ : secondRequest : thirdRequest : _ -> do
+      assertBool "next model request includes skill body" $ or
+        [ skillBody `Text.isInfixOf` content
+        | message <- secondRequest
+        , Just (LLM.TextContent content) <- [message.content]
+        ]
+      assertBool "unadvertised name is rejected" $ or
+        [ content == "Skill not found."
+        | message <- thirdRequest
+        , message.role == "tool"
+        , Just (LLM.TextContent content) <- [message.content]
+        ]
+    other ->
+      assertFailure [i|expected three model requests, got #{length other}|]
 
 testAgentAuditRecordsToolEvents :: IO ()
 testAgentAuditRecordsToolEvents = do

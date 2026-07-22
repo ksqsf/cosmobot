@@ -29,6 +29,7 @@ import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Scheduler as Scheduler
+import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import Bot.Handler.Ask.Config
@@ -55,6 +56,7 @@ runAskAgentThread
      , Memory.Memory :> es
      , Resource.Resource :> es
      , Scheduler.Scheduler :> es
+     , Skills.Skills :> es
      , Storage.Storage :> es
      , Typst.Typst :> es
      , KatipE :> es
