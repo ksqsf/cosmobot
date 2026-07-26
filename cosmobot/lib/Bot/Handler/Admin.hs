@@ -37,6 +37,7 @@ adminHandlers cfg =
   , restartRoute
   , titleRoute
   , echoRoute
+  , idRoute
   ] <> maybeToList (upgradeRoute <$> cfg.upgrade)
 
 pingRoute :: Chat.Chat :> es => RouteHandler es
@@ -197,3 +198,14 @@ scriptOutput stdoutText stderrText =
       | (name, body) <- sections
       , not (Text.null body)
       ]
+
+idRoute :: Chat.Chat :> es => RouteHandler es
+idRoute =
+  withHelp (RouteHelp "!ping" "Find sender ID and chat ID.") $
+    stopOn (command "!id") handleId
+
+handleId :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
+handleId message _ = do
+  let result = "- Chat ID: " <> show message.chatId <> "\n"
+        <> "- Sender ID: " <> show message.senderId
+  void $ Chat.replyTo message result
