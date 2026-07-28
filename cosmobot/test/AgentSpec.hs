@@ -207,7 +207,8 @@ main =
       , testCase "send file tool reports upload failure" testSendFileToolReportsUploadFailure
       , testCase "send file tool is noisy and superuser-only" testSendFileToolIsNoisyAndSuperuserOnly
       , testCase "send_media uploads cached media for normal users" testSendMediaToolUploadsCachedMedia
-      , testCase "current sender chatlog tool queries matching sender messages" testCurrentSenderChatLogToolQueriesChatLog
+      , testCase "chatlog tool filters by sender" testChatLogToolFiltersBySender
+      , testCase "current sender chatlog tool queries matching sender messages globally" testCurrentSenderChatLogToolQueriesChatLog
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
@@ -540,7 +541,7 @@ runSendFileTool replies upload =
 testCurrentSenderChatLogToolQueriesChatLog :: IO ()
 testCurrentSenderChatLogToolQueriesChatLog = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "sender_chat_log" (Aeson.object ["keywords" Aeson..= ([["needle"] :: [Text]] :: [[Text]]), "limit" Aeson..= (10 :: Int), "before" Aeson..= ("2100-01-01T00:00:00Z" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "sender_log" (Aeson.object ["scope" Aeson..= ("global" :: Text), "keywords" Aeson..= ([["needle"] :: [Text]] :: [[Text]]), "limit" Aeson..= (10 :: Int), "before" Aeson..= ("2100-01-01T00:00:00Z" :: Text)])]
     , chatAnswer "found" []
     ]
   (answer, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
@@ -552,11 +553,26 @@ testCurrentSenderChatLogToolQueriesChatLog = do
   answer @?= "found"
   entries <- decodeSingleChatLogToolOutput transcript
   texts <- traverse (either assertFailure pure . AesonTypes.parseEither (Aeson.withObject "chat log entry" (\entry -> entry Aeson..: "text" :: AesonTypes.Parser Text))) entries
-  texts @?= ["newer needle", "older needle"]
+  texts @?= ["newer needle", "other chat needle", "older needle"]
   for_ entries \case
     Aeson.Object entry ->
       sort (AesonKeyMap.keys entry) @?= sort (map AesonKey.fromText ["timestamp", "chatId", "senderId", "senderUsername", "messageId", "imageUrls", "text"])
     _ -> assertFailure "expected chat log entry object"
+
+testChatLogToolFiltersBySender :: IO ()
+testChatLogToolFiltersBySender = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "chat_log" (Aeson.object ["sender" Aeson..= ("201" :: Text), "limit" Aeson..= (10 :: Int)])]
+    , chatAnswer "found" []
+    ]
+  (_, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    ChatLog.recordMessage (chatLogMessage 301 "200" 100 "alice")
+    ChatLog.recordMessage (chatLogMessage 302 "201" 100 "bob")
+    ChatLog.recordMessage (chatLogMessage 303 "201" 101 "bob elsewhere")
+    Agent.runAgent 4 agentContext AgentTools.defaultTools (startWithUser "search this chat")
+  entries <- decodeSingleChatLogToolOutput transcript
+  texts <- traverse (either assertFailure pure . AesonTypes.parseEither (Aeson.withObject "chat log entry" (\entry -> entry Aeson..: "text" :: AesonTypes.Parser Text))) entries
+  texts @?= ["bob"]
 
 testUserAvatarToolQueriesChatEffect :: IO ()
 testUserAvatarToolQueriesChatEffect = do

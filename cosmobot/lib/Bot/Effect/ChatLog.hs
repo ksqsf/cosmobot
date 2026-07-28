@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Effect.ChatLog
   ( ChatLog
   , ChatLogEntry (..)
+  , SenderChatLogScope (..)
   , ChatLogTimeRange (..)
   , unboundedChatLogTimeRange
   , recordMessage
@@ -42,12 +43,14 @@ data ChatLog :: Effect where
     -> ChatLog m ()
   QueryChat
     :: IncomingMessage
+    -> Maybe Text
     -> Int
     -> Bool
     -> ChatLogTimeRange
     -> ChatLog m [ChatLogEntry]
   QueryCurrentSenderChatLog
     :: IncomingMessage
+    -> SenderChatLogScope
     -> [[Text]]
     -> Int
     -> ChatLogTimeRange
@@ -80,14 +83,14 @@ recordSelfMessage context body =
   send (RecordSelfMessage context body)
 
 -- | Query recent messages from the current chat in chronological order.
-queryChat :: ChatLog :> es => IncomingMessage -> Int -> Bool -> ChatLogTimeRange -> Eff es [ChatLogEntry]
-queryChat message limit includeBotMessages timeRange =
-  send (QueryChat message limit includeBotMessages timeRange)
+queryChat :: ChatLog :> es => IncomingMessage -> Maybe Text -> Int -> Bool -> ChatLogTimeRange -> Eff es [ChatLogEntry]
+queryChat message sender limit includeBotMessages timeRange =
+  send (QueryChat message sender limit includeBotMessages timeRange)
 
--- | Query current sender's messages in the current chat, newest first.
-queryCurrentSenderChatLog :: ChatLog :> es => IncomingMessage -> [[Text]] -> Int -> ChatLogTimeRange -> Eff es [ChatLogEntry]
-queryCurrentSenderChatLog message keywords limit timeRange =
-  send (QueryCurrentSenderChatLog message keywords limit timeRange)
+-- | Query current sender's messages in the requested scope, newest first.
+queryCurrentSenderChatLog :: ChatLog :> es => IncomingMessage -> SenderChatLogScope -> [[Text]] -> Int -> ChatLogTimeRange -> Eff es [ChatLogEntry]
+queryCurrentSenderChatLog message scope keywords limit timeRange =
+  send (QueryCurrentSenderChatLog message scope keywords limit timeRange)
 
 -- | Interpret chat logging through the storage capability.
 runChatLog
@@ -101,9 +104,9 @@ runChatLog inner =
         ChatLogStorage.persistRecord (userRecord message)
       RecordSelfMessage context body ->
         ChatLogStorage.persistRecord (selfRecord context body)
-      QueryChat message limit includeBotMessages timeRange ->
-        ChatLogStorage.queryStored message limit includeBotMessages timeRange
-      QueryCurrentSenderChatLog message keywords limit timeRange ->
-        ChatLogStorage.queryCurrentSenderStored message keywords limit timeRange
+      QueryChat message sender limit includeBotMessages timeRange ->
+        ChatLogStorage.queryStored message sender limit includeBotMessages timeRange
+      QueryCurrentSenderChatLog message scope keywords limit timeRange ->
+        ChatLogStorage.queryCurrentSenderStored message scope keywords limit timeRange
     )
     inner

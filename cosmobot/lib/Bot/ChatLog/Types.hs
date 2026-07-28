@@ -6,6 +6,7 @@ Stability   : experimental
 
 module Bot.ChatLog.Types
   ( ChatLogEntry (..)
+  , SenderChatLogScope (..)
   , ChatLogTimeRange (..)
   , unboundedChatLogTimeRange
   )
@@ -15,6 +16,11 @@ import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import Data.Time (UTCTime)
+
+data SenderChatLogScope
+  = SenderChatLogChat
+  | SenderChatLogGlobal
+  deriving (Eq, Show)
 
 data ChatLogTimeRange = ChatLogTimeRange
   { since :: !(Maybe UTCTime)

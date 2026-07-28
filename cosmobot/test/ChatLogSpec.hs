@@ -15,7 +15,9 @@ main =
   defaultMain $
     testGroup "chat log"
       [ testCase "queries current chat in chronological order" testQueryCurrentChat
+      , testCase "filters current chat by sender" testQueryCurrentChatBySender
       , testCase "queries current sender chat log newest first by keyword groups" testQueryCurrentSenderChatLog
+      , testCase "queries current sender across chats in global scope" testQueryCurrentSenderGlobalChatLog
       , testCase "queries a bounded chat-log time window" testQueryTimeWindow
       , testCase "bot messages are hidden unless requested" testBotMessageVisibility
       , testCase "base64 image references are sanitized" testImageSanitization
@@ -26,8 +28,16 @@ testQueryCurrentChat = runChatLogTest do
   ChatLog.recordMessage (messageFromChat 100 200 "first")
   ChatLog.recordMessage (messageFromChat 101 200 "second")
   ChatLog.recordMessage (messageFromChat 102 201 "other chat")
-  entries <- ChatLog.queryChat (messageFromChat 999 200 "query") 10 False ChatLog.unboundedChatLogTimeRange
+  entries <- ChatLog.queryChat (messageFromChat 999 200 "query") Nothing 10 False ChatLog.unboundedChatLogTimeRange
   liftIO $ map (.text) entries @?= ["first", "second"]
+
+testQueryCurrentChatBySender :: IO ()
+testQueryCurrentChatBySender = runChatLogTest do
+  ChatLog.recordMessage (messageFromChat 100 200 "alice")
+  ChatLog.recordMessage (messageFromSenderInChat "201" 101 200 "bob")
+  ChatLog.recordMessage (messageFromSenderInChat "201" 102 201 "bob elsewhere")
+  entries <- ChatLog.queryChat (messageFromChat 999 200 "query") (Just "201") 10 False ChatLog.unboundedChatLogTimeRange
+  liftIO $ map (.text) entries @?= ["bob"]
 
 testQueryCurrentSenderChatLog :: IO ()
 testQueryCurrentSenderChatLog = runChatLogTest do
@@ -37,10 +47,19 @@ testQueryCurrentSenderChatLog = runChatLogTest do
   ChatLog.recordMessage (messageFromChat 103 200 "middle alpha then beta")
   ChatLog.recordMessage (messageFromChat 104 200 "new beta then alpha")
   ChatLog.recordMessage (messageFromChat 105 200 "new alpha gamma")
-  entries <- ChatLog.queryCurrentSenderChatLog (messageFromChat 999 200 "query") [["alpha", "beta"], ["gamma"]] 10 ChatLog.unboundedChatLogTimeRange
-  limited <- ChatLog.queryCurrentSenderChatLog (messageFromChat 999 200 "query") [["alpha", "beta"], ["gamma"]] 2 ChatLog.unboundedChatLogTimeRange
+  entries <- ChatLog.queryCurrentSenderChatLog (messageFromChat 999 200 "query") ChatLog.SenderChatLogChat [["alpha", "beta"], ["gamma"]] 10 ChatLog.unboundedChatLogTimeRange
+  limited <- ChatLog.queryCurrentSenderChatLog (messageFromChat 999 200 "query") ChatLog.SenderChatLogChat [["alpha", "beta"], ["gamma"]] 2 ChatLog.unboundedChatLogTimeRange
   liftIO $ map (.text) entries @?= ["new alpha gamma", "middle alpha then beta", "older alpha beta"]
   liftIO $ map (.text) limited @?= ["new alpha gamma", "middle alpha then beta"]
+
+testQueryCurrentSenderGlobalChatLog :: IO ()
+testQueryCurrentSenderGlobalChatLog = runChatLogTest do
+  ChatLog.recordMessage (messageFromChat 100 200 "same chat needle")
+  ChatLog.recordMessage (messageFromChat 101 201 "other chat needle")
+  ChatLog.recordMessage (messageFromSenderInChat "201" 102 202 "other sender needle")
+  ChatLog.recordMessage ((messageFromChat 103 203 "other platform needle"){platform = PlatformQQ})
+  entries <- ChatLog.queryCurrentSenderChatLog (messageFromChat 999 200 "query") ChatLog.SenderChatLogGlobal [["needle"]] 10 ChatLog.unboundedChatLogTimeRange
+  liftIO $ map (.text) entries @?= ["other chat needle", "same chat needle"]
 
 testQueryTimeWindow :: IO ()
 testQueryTimeWindow = runChatLogTest do
@@ -48,8 +67,8 @@ testQueryTimeWindow = runChatLogTest do
   ChatLog.recordMessage (messageFromChat 100 200 "older")
   boundary <- liftIO getCurrentTime
   ChatLog.recordMessage (messageFromChat 101 200 "newer")
-  newer <- ChatLog.queryChat context 10 False ChatLog.ChatLogTimeRange{since = Just boundary, before = Nothing}
-  older <- ChatLog.queryChat context 10 False ChatLog.ChatLogTimeRange{since = Nothing, before = Just boundary}
+  newer <- ChatLog.queryChat context Nothing 10 False ChatLog.ChatLogTimeRange{since = Just boundary, before = Nothing}
+  older <- ChatLog.queryChat context Nothing 10 False ChatLog.ChatLogTimeRange{since = Nothing, before = Just boundary}
   liftIO $ map (.text) newer @?= ["newer"]
   liftIO $ map (.text) older @?= ["older"]
   liftIO $ assertBool "queried messages include timestamps" (all (isJust . (.recordedAt)) (newer <> older))
@@ -59,8 +78,8 @@ testBotMessageVisibility = runChatLogTest do
   let context = messageFromChat 100 200 "user"
   ChatLog.recordMessage context
   ChatLog.recordSelfMessage context "bot reply"
-  userOnly <- ChatLog.queryChat context 10 False ChatLog.unboundedChatLogTimeRange
-  withBot <- ChatLog.queryChat context 10 True ChatLog.unboundedChatLogTimeRange
+  userOnly <- ChatLog.queryChat context Nothing 10 False ChatLog.unboundedChatLogTimeRange
+  withBot <- ChatLog.queryChat context Nothing 10 True ChatLog.unboundedChatLogTimeRange
   liftIO $ map (.text) userOnly @?= ["user"]
   liftIO $ map (.text) withBot @?= ["user", "bot reply"]
   liftIO $ map (.isBot) withBot @?= [False, True]
@@ -70,7 +89,7 @@ testImageSanitization :: IO ()
 testImageSanitization = runChatLogTest do
   ChatLog.recordMessage (messageFromChatWithImages 100 200 "look" [base64Image])
   ChatLog.recordSelfMessage (messageFromChat 100 200 "user") ("[image] " <> base64Image)
-  entries <- ChatLog.queryChat (messageFromChat 999 200 "query") 10 True ChatLog.unboundedChatLogTimeRange
+  entries <- ChatLog.queryChat (messageFromChat 999 200 "query") Nothing 10 True ChatLog.unboundedChatLogTimeRange
   liftIO $ map (.imageUrls) entries @?= [["[Picture]"], ["[Picture]"]]
   liftIO $ map (.text) entries @?= ["look", ""]
 

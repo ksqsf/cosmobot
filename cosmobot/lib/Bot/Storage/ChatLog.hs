@@ -65,31 +65,32 @@ persistRecord record = do
     `catchSync` \err ->
       logError [i|Failed to persist chat log entry: #{show err :: String}|]
 
-queryStored :: Storage.Storage :> es => IncomingMessage -> Int -> Bool -> ChatLogTimeRange -> Eff es [ChatLogEntry]
-queryStored message limitCount includeBotMessages timeRange = do
+queryStored :: Storage.Storage :> es => IncomingMessage -> Maybe Text -> Int -> Bool -> ChatLogTimeRange -> Eff es [ChatLogEntry]
+queryStored message sender limitCount includeBotMessages timeRange = do
   ensureChatLogTable
   rows <- runSelda $
     query $
       queryLimit 0 (max 0 limitCount) do
         row <- select chatLogRows
-        restrict (chatLogMatches message includeBotMessages row .&& timeRangeMatches timeRange row)
+        restrict (chatLogMatches message includeBotMessages row .&& optionalSenderMatches sender row .&& timeRangeMatches timeRange row)
         order (row ! #id) descending
         pure row
   pure (map (chatLogEntryFromRow message) (reverse rows))
 
-queryCurrentSenderStored :: Storage.Storage :> es => IncomingMessage -> [[Text]] -> Int -> ChatLogTimeRange -> Eff es [ChatLogEntry]
-queryCurrentSenderStored message keywords limitCount timeRange = do
+queryCurrentSenderStored :: Storage.Storage :> es => IncomingMessage -> SenderChatLogScope -> [[Text]] -> Int -> ChatLogTimeRange -> Eff es [ChatLogEntry]
+queryCurrentSenderStored message scope keywords limitCount timeRange = do
   ensureChatLogTable
-  case (message.chatId, message.senderId, keywordLikePatterns keywords) of
-    (Just _, Just _, patterns@(_ : _)) -> do
-      rows <- runSelda $
-        query $
-          queryLimit 0 (boundedChatLogLimit limitCount) do
-            row <- select chatLogRows
-            restrict (currentSenderChatLogMatches message patterns row .&& timeRangeMatches timeRange row)
-            order (row ! #id) descending
-            pure row
-      pure (map (chatLogEntryFromRow message) rows)
+  case (message.senderId, keywordLikePatterns keywords) of
+    (Just _, patterns@(_ : _))
+      | scope == SenderChatLogGlobal || isJust message.chatId -> do
+          rows <- runSelda $
+            query $
+              queryLimit 0 (boundedChatLogLimit limitCount) do
+                row <- select chatLogRows
+                restrict (currentSenderChatLogMatches scope message patterns row .&& timeRangeMatches timeRange row)
+                order (row ! #id) descending
+                pure row
+          pure (map (chatLogEntryFromRow message) rows)
     _ ->
       pure []
 
@@ -158,16 +159,29 @@ timeRangeMatches timeRange row =
   maybe true (\since -> row ! #recorded_at .> literal (Just since)) timeRange.since
     .&& maybe true (\before -> row ! #recorded_at .< literal (Just before)) timeRange.before
 
-currentSenderChatLogMatches :: forall (backend :: Type). IncomingMessage -> [Text] -> Row backend ChatLogRow -> Col backend Bool
-currentSenderChatLogMatches message patterns row =
-  chatLogMatches message False row
-    .&& senderIdMatches message.senderId row
+currentSenderChatLogMatches :: forall (backend :: Type). SenderChatLogScope -> IncomingMessage -> [Text] -> Row backend ChatLogRow -> Col backend Bool
+currentSenderChatLogMatches scope message patterns row =
+  row ! #platform_key .== literal (platformKey message.platform)
+    .&& senderChatLogScopeMatches scope message row
+    .&& botVisibilityMatches False row
+    .&& maybe false (`senderIdMatches` row) message.senderId
     .&& keywordPatternsMatch patterns row
 
-senderIdMatches :: forall (backend :: Type). Maybe Text -> Row backend ChatLogRow -> Col backend Bool
-senderIdMatches Nothing _ =
-  false
-senderIdMatches (Just senderId) row =
+senderChatLogScopeMatches :: forall (backend :: Type). SenderChatLogScope -> IncomingMessage -> Row backend ChatLogRow -> Col backend Bool
+senderChatLogScopeMatches SenderChatLogGlobal _ _ =
+  true
+senderChatLogScopeMatches SenderChatLogChat message row =
+  row ! #kind_key .== literal (kindKey message.kind)
+    .&& chatIdMatches message.chatId row
+
+optionalSenderMatches :: forall (backend :: Type). Maybe Text -> Row backend ChatLogRow -> Col backend Bool
+optionalSenderMatches Nothing _ =
+  true
+optionalSenderMatches (Just senderId) row =
+  senderIdMatches senderId row
+
+senderIdMatches :: forall (backend :: Type). Text -> Row backend ChatLogRow -> Col backend Bool
+senderIdMatches senderId row =
   row ! #sender_id .== literal (Just senderId)
 
 keywordPatternsMatch :: forall (backend :: Type). [Text] -> Row backend ChatLogRow -> Col backend Bool

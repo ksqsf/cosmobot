@@ -383,7 +383,7 @@ Currently, the following tools are available:
 |Files   |`list_files`           |Yes        |
 |Files   |`read_file`            |Yes        |
 |Chat    |`chat_log`             |           |
-|Chat    |`sender_chat_log`      |           |
+|Chat    |`sender_log`           |           |
 |Chat    |`send_reply`           |           |
 |Chat    |`send_file`            |Yes        |
 |Chat    |`send_media`           |           |

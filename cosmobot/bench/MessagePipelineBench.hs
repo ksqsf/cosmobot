@@ -200,7 +200,7 @@ chatLogRecordQuery messages = do
         StorageSQLite.runStorageSQLitePath ":memory:" $
         ChatLog.runChatLog do
           traverse_ ChatLog.recordMessage messages
-          entries <- ChatLog.queryChat (lastMessage messages) 100 True ChatLog.unboundedChatLogTimeRange
+          entries <- ChatLog.queryChat (lastMessage messages) Nothing 100 True ChatLog.unboundedChatLogTimeRange
           pure (length entries)
 
 mergeOnly :: [IncomingMessage] -> IO Int
