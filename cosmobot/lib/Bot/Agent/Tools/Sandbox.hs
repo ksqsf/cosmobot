@@ -34,11 +34,11 @@ sandboxTool
   => Tool es
 sandboxTool = Tool
   { name = "sandbox"
-  , description = "Create, rename, or delete an isolated, persistent container sandbox; run Bash; or copy files between it and the media cache. Delete it promptly when the job is done, unless the user asks explicitly to keep it."
+  , description = "Create, list, rename, or delete isolated, persistent container sandboxes; run Bash; or copy files between one and the media cache. list returns a JSON array of accessible sandbox names. Delete sandboxes promptly when the job is done, unless the user asks explicitly to keep them."
   , parameters = objectSchema
-      [ fieldText "op" "One of: create, run, file_to_media, media_to_file, rename, delete."
+      [ fieldText "op" "One of: create, list, run, file_to_media, media_to_file, rename, delete."
       , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
-      , fieldText "sandbox" "Sandbox name; required except for create."
+      , fieldText "sandbox" "Sandbox name; required except for create and list."
       , fieldText "path" "Sandbox file path; required for file_to_media and media_to_file."
       , fieldText "media_id" "Cached media id; required for media_to_file."
       , fieldText "script" "Bash script; required for run."
@@ -61,6 +61,8 @@ sandboxTool = Tool
                 } <&> \case
                 Left err -> resourceToolFailure err
                 Right sandboxId -> toolText (jsonText (Aeson.object ["sandbox" Aeson..= sandboxId]))
+            SandboxList ->
+              listResourceNames (Proxy @Sandbox.Sandbox) access
             SandboxRun sandboxId script timeoutSeconds outputByteLimit -> do
               result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.parent \sandbox ->
                 Shell.runSandboxBashSafe timeoutSeconds sandbox script outputByteLimit
@@ -89,6 +91,7 @@ sandboxTool = Tool
 
 data SandboxCall
   = SandboxCreate !(Maybe Text) !Int
+  | SandboxList
   | SandboxRun !Text !Text !Int !(Maybe Int)
   | SandboxFileToMedia !Text !FilePath
   | SandboxMediaToFile !Text !Text !FilePath
@@ -102,6 +105,7 @@ sandboxArgs = Aeson.withObject "sandbox arguments" \o -> do
     "create" -> do
       requestedName <- o Aeson..:? Key.fromText "name"
       SandboxCreate requestedName <$> parseTTLMinutes o
+    "list" -> pure SandboxList
     "run" -> do
       sandboxId <- o Aeson..: Key.fromText "sandbox" >>= validText "sandbox"
       script <- o Aeson..: Key.fromText "script" >>= validValue "script"
@@ -121,7 +125,7 @@ sandboxArgs = Aeson.withObject "sandbox arguments" \o -> do
     "rename" -> SandboxRename
       <$> (o Aeson..: Key.fromText "sandbox" >>= validText "sandbox")
       <*> (o Aeson..: Key.fromText "name" >>= validText "name")
-    _ -> fail "op must be one of: create, run, file_to_media, media_to_file, rename, delete."
+    _ -> fail "op must be one of: create, list, run, file_to_media, media_to_file, rename, delete."
 
 copyFileToMedia
   :: (Media.Media :> es, FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)

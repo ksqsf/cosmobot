@@ -29,10 +29,10 @@ subagentTool
 subagentTool runner availableTools =
   Tool
     { name = "subagent"
-    , description = "Manage background agents scoped to the current chat. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
+    , description = "Manage background agents scoped to the current chat. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
     , parameters =
         objectSchema
-          [ fieldText "op" "One of: create, send, query, wait_any, wait_all, rename, delete."
+          [ fieldText "op" "One of: create, list, send, query, wait_any, wait_all, rename, delete."
           , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
           , fieldText "system_prompt" "System prompt for create; empty inherits the current system prompt."
           , fieldTextArray "tools" "Tool names exposed to the subagent for create; empty exposes none."
@@ -56,6 +56,8 @@ subagentTool runner availableTools =
           case call of
             Create requestedName systemPrompt toolNames ttlMinutes ->
               createSubAgent context metadata requestedName systemPrompt toolNames ttlMinutes
+            ListResources ->
+              listResourceNames (Proxy @SubAgent.SubAgent) access
             Send resourceId prompt ->
               use access resourceId \subagent ->
                 SubAgent.sendPrompt runner metadata resourceId availableTools context subagent prompt
@@ -133,6 +135,7 @@ subagentTool runner availableTools =
 
 data Call
   = Create !(Maybe Text) !Text ![Text] !Int
+  | ListResources
   | Send !Text !Text
   | Query !Text
   | WaitAny !(NonEmpty Text)
@@ -150,6 +153,7 @@ parseCall = Aeson.withObject "subagent arguments" \o -> do
         <*> (fromMaybe "" <$> o Aeson..:? Key.fromText "system_prompt")
         <*> (fromMaybe [] <$> o Aeson..:? Key.fromText "tools")
         <*> parseTTLMinutes o
+    "list" -> pure ListResources
     "send" -> Send <$> resource o <*> requiredText o "prompt"
     "query" -> Query <$> resource o
     "wait_any" -> WaitAny <$> resources o
@@ -157,7 +161,7 @@ parseCall = Aeson.withObject "subagent arguments" \o -> do
     "delete" -> Destroy <$> resource o
     "destroy" -> Destroy <$> resource o
     "rename" -> Rename <$> resource o <*> requiredText o "name"
-    _ -> fail "op must be one of: create, send, query, wait_any, wait_all, rename, delete."
+    _ -> fail "op must be one of: create, list, send, query, wait_any, wait_all, rename, delete."
   where
     resource o = requiredText o "resource"
     resources o = do

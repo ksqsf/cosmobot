@@ -28,9 +28,9 @@ workspaceTool
   => Tool es
 workspaceTool = Tool
   { name = "workspace"
-  , description = "Manage dedicated /work workspaces for superuser-requested multi-step work such as repositories, git/PRs, scripts, CI, research, or ops. Create one before substantial work and keep WORK.md current with scope, path, branches/commits/PRs, validation, environment notes, and blockers. Read a repository's AGENTS.md before editing. Before GitHub push/PR operations, verify the authenticated gh user is ksqsfbot; gh may require HOME=/root, use HTTPS if SSH fails, and workflow pushes require workflow scope. Prefer a topic branch and PR with summary and validation. For scheduled feature requests, only comment with an approach and mention @ksqsf. Actions: create, query, update, rename, delete."
+  , description = "Manage dedicated /work workspaces for multi-step work such as repositories, scripts, CI, research, or operations. list returns a JSON array of accessible workspace names. Create one before substantial work, read repository instructions before editing, and keep WORK.md current with the goal, paths, branches, commits, validation, environment notes, and blockers. Verify the authenticated account and required permissions before remote operations. Prefer a topic branch and a pull request with a summary and validation. Actions: create, list, query, update, rename, delete."
   , parameters = objectSchema
-      [ fieldText "action" "One of: create, query, update, rename, delete."
+      [ fieldText "action" "One of: create, list, query, update, rename, delete."
       , fieldText "id" "Short stable descriptive id for create; letters, digits, dot, underscore, and hyphen only."
       , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
       , fieldText "goal" "Initial work goal for create, or complete replacement WORK.md contents for update."
@@ -46,6 +46,7 @@ workspaceTool = Tool
 
 data WorkspaceCall
   = CreateWorkspace !(Maybe Text) !Workspace.WorkspaceArgs
+  | ListWorkspaces
   | QueryWorkspace !Text
   | UpdateWorkspace !Text !Text
   | DestroyWorkspace !Text
@@ -68,6 +69,8 @@ runWorkspaceCall context metadata call =
             [ "resource" Aeson..= resourceId
             , "path" Aeson..= ("/work/" <> arguments.workId)
             ]))
+      ListWorkspaces ->
+        listResourceNames (Proxy @Workspace.Workspace) access
       QueryWorkspace resourceId ->
         use access resourceId Workspace.queryWorkspace <&> result
       UpdateWorkspace resourceId goal ->
@@ -105,12 +108,13 @@ parseWorkspaceCall = Aeson.withObject "workspace arguments" \o -> do
         <$> (o Aeson..: Key.fromText "id" >>= validWorkId)
         <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal")
         <*> parseTTLMinutes o)
+    "list" -> pure ListWorkspaces
     "query" -> QueryWorkspace <$> requiredResourceId o
     "update" -> UpdateWorkspace <$> requiredResourceId o <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal")
     "delete" -> DestroyWorkspace <$> requiredResourceId o
     "destroy" -> DestroyWorkspace <$> requiredResourceId o
     "rename" -> RenameWorkspace <$> requiredResourceId o <*> (o Aeson..: Key.fromText "name" >>= validNonEmpty "name")
-    _ -> fail "action must be one of: create, query, update, rename, delete."
+    _ -> fail "action must be one of: create, list, query, update, rename, delete."
 
 requiredResourceId :: AesonTypes.Object -> AesonTypes.Parser Text
 requiredResourceId o = o Aeson..: Key.fromText "resource" >>= validNonEmpty "resource"

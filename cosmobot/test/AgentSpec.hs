@@ -49,6 +49,7 @@ import qualified Bot.Resource.SubAgent as SubAgentResource
 import qualified Bot.Session as Session
 import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
+import qualified Bot.Core.Message as Message
 import Bot.Handler.Ask (askHandlers)
 import Bot.Handler.Ask.Config (AskHandlerConfig (..))
 import Bot.Handler.Audit (auditHandlers)
@@ -379,6 +380,7 @@ testSubAgentLifecycle = do
             , AgentTypes.originRunId = "agent-root"
             }
         otherContext = agentContext{Agent.message = testMessage{senderId = Just "other"}}
+        otherChatContext = agentContext{Agent.message = testMessage{Message.chatId = Just 999}}
         schema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode tool.parameters))
     liftIO $ assertBool "subagent create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` schema)
     createRun <- tool.start agentContext
@@ -387,6 +389,16 @@ testSubAgentLifecycle = do
     created <- createRun descendantMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
     liftIO $ resourceId @?= "researcher"
+    otherChatRun <- tool.start otherChatContext
+    void $ otherChatRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("hidden" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
+    listed <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("list" :: Text)])
+    liftIO $ AgentTypes.toolResultContent listed @?= "[\"researcher\"]"
+    sandboxRun <- SandboxTools.sandboxTool.start agentContext
+    listedSandboxes <- sandboxRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("list" :: Text)])
+    liftIO $ AgentTypes.toolResultContent listedSandboxes @?= "[]"
+    workspaceRun <- WorkspaceTools.workspaceTool.start superuserContext
+    listedWorkspaces <- workspaceRun testToolCallMetadata (Aeson.object ["action" Aeson..= ("list" :: Text)])
+    liftIO $ AgentTypes.toolResultContent listedWorkspaces @?= "[]"
     sendRun <- tool.start otherContext
     sent <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
     liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."

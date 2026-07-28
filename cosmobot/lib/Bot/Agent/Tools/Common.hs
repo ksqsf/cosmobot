@@ -1,3 +1,6 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+
 {-|
 Module      : Bot.Agent.Tools.Common
 Description : Shared helpers for built-in agent tools
@@ -20,6 +23,7 @@ module Bot.Agent.Tools.Common
   , objectSchema
   , parseTTLMinutes
   , jsonText
+  , listResourceNames
   , renderResourceError
   , resourceToolFailure
   , UseLimit (..)
@@ -128,6 +132,19 @@ parseTTLMinutes object = do
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
   TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+
+listResourceNames
+  :: forall es a. (Resource.Resource :> es, Resource.ResourceObject (Eff es) a)
+  => Proxy a
+  -> Resource.ResourceAccess
+  -> Eff es ToolResult
+listResourceNames resourceType access = do
+  resources <- Resource.list access
+  pure . toolText . jsonText $
+    [ resource.resourceId
+    | resource <- resources
+    , resource.resourceType == Resource.resourceTypeName @(Eff es) resourceType
+    ]
 
 renderResourceError :: Resource.ResourceError -> Text
 renderResourceError = \case
