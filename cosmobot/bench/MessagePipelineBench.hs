@@ -24,7 +24,7 @@ instance NFData BenchMessages where
     foldr (\message rest -> forceMessage message `seq` rest) () messages
 
 forceMessage :: IncomingMessage -> ()
-forceMessage IncomingMessage{platform, kind, chatId, chatAliases, digest, senderId, senderUsername, messageId, replyToMessageId, mentions, mentionUsernames, imageUrls, text, raw} =
+forceMessage IncomingMessage{platform, kind, chatId, chatAliases, digest, senderId, senderUsername, messageId, replyToMessageId, mentions, mentionUsernames, imageUrls, files, text, raw} =
   forcePlatform platform
     `seq` forceKind kind
     `seq` rnf chatId
@@ -37,6 +37,7 @@ forceMessage IncomingMessage{platform, kind, chatId, chatAliases, digest, sender
     `seq` rnf mentions
     `seq` rnf mentionUsernames
     `seq` rnf imageUrls
+    `seq` forceFiles files
     `seq` rnf text
     `seq` rnf raw
 
@@ -47,6 +48,7 @@ forcePlatform = \case
   PlatformMatrix -> ()
   PlatformDiscord -> ()
   PlatformRPC -> ()
+  PlatformACP -> ()
 
 forceKind :: ChatKind -> ()
 forceKind = \case
@@ -56,15 +58,20 @@ forceKind = \case
   ChatUnknown name -> rnf name
 
 forceDigest :: MessageDigest -> ()
-forceDigest MessageDigest{chatIsAllowed, senderIsAllowed, senderIsSuperuser, mentionsBot} =
+forceDigest MessageDigest{chatIsAllowed, senderIsAllowed, senderIsSuperuser, mentionsBot, botId} =
   rnf chatIsAllowed
     `seq` rnf senderIsAllowed
     `seq` rnf senderIsSuperuser
     `seq` rnf mentionsBot
+    `seq` rnf botId
 
 forceMaybeMessageId :: Maybe MessageId -> ()
 forceMaybeMessageId =
   maybe () (rnf . messageIdText)
+
+forceFiles :: [MessageFile] -> ()
+forceFiles =
+  foldr (\MessageFile{name, ref} rest -> rnf name `seq` rnf ref `seq` rest) ()
 
 main :: IO ()
 main =
@@ -271,6 +278,7 @@ syntheticMessage index =
     , mentions = if index `mod` 17 == 0 then ["42"] else []
     , mentionUsernames = if index `mod` 19 == 0 then ["cosmobot"] else []
     , imageUrls = if index `mod` 23 == 0 then ["https://example.test/image.png"] else []
+    , files = []
     , text = "message " <> show index <> " " <> Text.replicate (index `mod` 8) "payload "
     , raw = Aeson.Null
     }
