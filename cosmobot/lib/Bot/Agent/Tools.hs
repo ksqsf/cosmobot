@@ -22,6 +22,7 @@ import Bot.Agent.Tools.Sandbox
 import Bot.Agent.Tools.Shell
 import Bot.Agent.Tools.Skills
 import Bot.Agent.Tools.SubAgent
+import Bot.Agent.Tools.Continuation
 import Bot.Agent.Tools.Terminal
 import Bot.Agent.Tools.Time
 import Bot.Agent.Tools.Typst
@@ -103,6 +104,8 @@ defaultTools = tools
       , runBashTool
       , terminalTool
       , workspaceTool
+      , captureContinuationTool
+      , resumeContinuationTool
       , subagentTool (\parent -> Agent.runAgentWithParent parent 8) tools
       , emacsEvalTool
       ]

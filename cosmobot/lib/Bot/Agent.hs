@@ -53,6 +53,9 @@ import Bot.Agent.Middleware.ContextCompaction
   ( withContextCompaction
   , withContextCompactionNotice
   )
+import Bot.Agent.Middleware.Continuation
+  ( withContinuations
+  )
 import Bot.Agent.Middleware.Observation
   ( ObservationContext
   , withObservation
@@ -65,6 +68,10 @@ import Bot.Agent.Middleware.Tools
 import Bot.Agent.Middleware.ToolResultCompaction
   ( NextModelInput (..)
   , withToolResultCompaction
+  )
+import Bot.Agent.Tools.Continuation
+  ( ContinuationState
+  , emptyContinuationState
   )
 import Bot.Agent.Middleware.ToolEmittedMessage
   ( ToolEmittedMessageSink (..)
@@ -199,9 +206,10 @@ initialAgentState transient transcript =
     , transient
     }
 
-defaultAgentProgram :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es) => AgentObserver ObservationContext es -> Int -> Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
+defaultAgentProgram :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es) => AgentObserver ObservationContext es -> Int -> Int -> AgentRun es -> AgentProgram '[ContinuationState, NextModelInput] '[] es
 defaultAgentProgram observer maxTurns compactionTokenThreshold agentRun =
-  ( withTypingNotification
+  ( withContinuations
+  . withTypingNotification
   . withToolLimit maxTurns
   . withToolResultCompaction
   . withObservation observer
@@ -209,16 +217,17 @@ defaultAgentProgram observer maxTurns compactionTokenThreshold agentRun =
   . withContextCompactionNotice compactionTokenThreshold
   . withToolFailureRecovery
   )
-    (emptyAgentProgram (NextModelInput Nothing HList.:& HList.HNil) agentRun)
+    (emptyAgentProgram (emptyContinuationState HList.:& NextModelInput Nothing HList.:& HList.HNil) agentRun)
 
-plainAgentProgram :: (LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es) => Int -> Int -> AgentRun es -> AgentProgram '[NextModelInput] '[] es
+plainAgentProgram :: (LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es) => Int -> Int -> AgentRun es -> AgentProgram '[ContinuationState, NextModelInput] '[] es
 plainAgentProgram maxTurns compactionTokenThreshold agentRun =
-  ( withToolLimit maxTurns
+  ( withContinuations
+  . withToolLimit maxTurns
   . withToolResultCompaction
   . withContextCompaction compactionTokenThreshold
   . withToolFailureRecovery
   )
-    (emptyAgentProgram (NextModelInput Nothing HList.:& HList.HNil) agentRun)
+    (emptyAgentProgram (emptyContinuationState HList.:& NextModelInput Nothing HList.:& HList.HNil) agentRun)
 
 -----------------------------------------------------------------------------------------
 -- * Phases

@@ -19,6 +19,11 @@ import Bot.Agent.Transcript
   )
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types
+import Bot.Agent.Tools.Continuation
+  ( ContinuationState
+  , canResumeContinuation
+  , resumeContinuationTool
+  )
 import Bot.Agent.Types
 import Bot.Core.Transcript
 import qualified Bot.Effect.Chat as Chat
@@ -33,7 +38,11 @@ newtype ToolLimitContext = ToolLimitContext
   }
   deriving (Eq, Show)
 
-withToolLimit :: KatipE :> es => Int -> AgentProgram transient (ToolLimitContext ': context) es -> AgentProgram transient context es
+withToolLimit
+  :: (KatipE :> es, HList.Has ContinuationState transient)
+  => Int
+  -> AgentProgram transient (ToolLimitContext ': context) es
+  -> AgentProgram transient context es
 withToolLimit maxTurns program =
   program
     { aroundAgentRun = \context action ->
@@ -44,7 +53,8 @@ withToolLimit maxTurns program =
         decision <- program.aroundModelTurn (toolLimitContext HList.:& context) agentState action
         case decision of
           ModelNeedsTools ToolTurnState{answered, toolContent, toolCalls}
-            | agentState.turn >= toolLimitContext.maxToolTurns -> do
+            | agentState.turn >= toolLimitContext.maxToolTurns
+            , not (validResumeAtLimit program agentState toolCalls) -> do
                 lift $ logInfo [i|Agent tool turn limit reached: #{show toolCalls :: String}|]
                 ModelAnswered <$> handleToolLimit program.agentRun.runId agentState.turn toolContent toolCalls answered
           _ ->
@@ -57,6 +67,21 @@ withToolLimit maxTurns program =
   where
     toolLimitContext =
       ToolLimitContext{maxToolTurns = max 1 maxTurns}
+
+validResumeAtLimit
+  :: HList.Has ContinuationState transient
+  => AgentProgram transient context es
+  -> AgentState transient
+  -> NonEmpty LLM.ToolCall
+  -> Bool
+validResumeAtLimit program agentState calls =
+  case toList calls of
+    [call] ->
+      call.name == resumeContinuationTool.name
+        && any ((== call.name) . (.name)) program.agentRun.exposedTools
+        && canResumeContinuation (HList.get @ContinuationState agentState.transient) call
+    _ ->
+      False
 
 withToolFailureRecovery :: AgentProgram transient context es -> AgentProgram transient context es
 withToolFailureRecovery program =

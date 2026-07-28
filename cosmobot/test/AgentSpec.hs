@@ -5,6 +5,7 @@ import qualified Bot.Agent.Tools as AgentTools
 import qualified Bot.Agent.Core as AgentCore
 import qualified Bot.Agent.Tools.Audio as AudioTools
 import qualified Bot.Agent.Tools.Chat as ChatTools
+import qualified Bot.Agent.Tools.Continuation as ContinuationTools
 import qualified Bot.Agent.Tools.Files as FileTools
 import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
@@ -226,6 +227,10 @@ main =
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "agent compacts old transcript context before model turn" testAgentCompactsOldTranscriptContextBeforeModelTurn
       , testCase "agent announces context compaction" testAgentAnnouncesContextCompaction
+      , testCase "agent resumes nested continuations with JSON values" testAgentResumesNestedContinuations
+      , testCase "agent rejects continuation calls mixed with sibling tools" testAgentRejectsConcurrentContinuationCalls
+      , testCase "agent does not intercept unexposed continuation tools" testAgentDoesNotInterceptUnexposedContinuationTools
+      , testCase "agent may resume a continuation at the tool limit" testAgentResumesContinuationAtToolLimit
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
@@ -1156,6 +1161,129 @@ testAgentAnnouncesContextCompaction = do
     pure ()
   sent <- IORef.readIORef replies
   sent @?= ["正在整理较早的对话上下文..."]
+
+testAgentResumesNestedContinuations :: IO ()
+testAgentResumesNestedContinuations = do
+  let innerValue =
+        Aeson.object
+          [ "conclusion" Aeson..= ("inner complete" :: Text)
+          , "evidence" Aeson..= ([1, 2] :: [Int])
+          ]
+      outerValue =
+        Aeson.object
+          [ "selected" Aeson..= ("outer" :: Text)
+          , "nested" Aeson..= innerValue
+          ]
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "outer" "capture_continuation" (Aeson.object ["label" Aeson..= ("outer branch" :: Text)])]
+    , chatAnswer "" [toolCall "inner" "capture_continuation" (Aeson.object ["label" Aeson..= ("inner branch" :: Text)])]
+    , chatAnswer "" [toolCall "branch-tool" "message_info" (Aeson.object [])]
+    , chatAnswer "" [toolCall "resume-inner" "resume_continuation" (Aeson.object ["continuation_id" Aeson..= ("inner" :: Text), "value" Aeson..= innerValue])]
+    , chatAnswer "" [toolCall "resume-outer" "resume_continuation" (Aeson.object ["continuation_id" Aeson..= ("outer" :: Text), "value" Aeson..= outerValue])]
+    , chatAnswer "done" []
+    ]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  ((answer, transcript), toolUses) <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
+    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 6 1000000 agentRun
+    outputs S.:> result <- S.toList (Agent.runAgentProgramStreaming program (startWithUser "explore"))
+    uses <- AgentAudit.queryRecentToolUses 10
+    pure ((agentOutputText outputs, result.transcript), uses)
+  answer @?= "done"
+  map (.turn) toolUses @?= [1 .. 5]
+  requests <- IORef.readIORef captured
+  case requests of
+    [_initial, _afterOuterCapture, _afterInnerCapture, _afterBranchTool, afterInnerResume, afterOuterResume] -> do
+      let afterInnerJson = jsonText afterInnerResume
+          afterOuterJson = jsonText afterOuterResume
+      assertBool "inner resume discards its explored tool turn" (not ("branch-tool" `Text.isInfixOf` afterInnerJson))
+      assertBool "inner resume returns the JSON value" (innerValue `elem` resumedContinuationValues afterInnerResume)
+      assertBool "outer resume discards the inner continuation" (not ("\"inner\"" `Text.isInfixOf` afterOuterJson))
+      assertBool "outer resume returns the nested JSON value" (outerValue `elem` resumedContinuationValues afterOuterResume)
+    other ->
+      assertFailure [i|expected six continuation model requests, got #{length other}|]
+  let finalJson = jsonText transcript
+  assertBool "durable transcript omits abandoned inner branch" (not ("branch-tool" `Text.isInfixOf` finalJson))
+  assertBool
+    "durable transcript keeps the outer resumed value"
+    (outerValue `elem` resumedContinuationValues (Foldable.toList transcript.messages))
+
+testAgentRejectsConcurrentContinuationCalls :: IO ()
+testAgentRejectsConcurrentContinuationCalls = do
+  calls <- IORef.newIORef (0 :: Int)
+  answers <- IORef.newIORef
+    [ chatAnswer ""
+        [ toolCall "capture" "capture_continuation" (Aeson.object [])
+        , toolCall "sibling" "side_effect" (Aeson.object [])
+        ]
+    , chatAnswer "done" []
+    ]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  let sideEffectTool =
+        Agent.Tool
+          { name = "side_effect"
+          , description = "record one execution"
+          , parameters = Aeson.object []
+          , noisy = False
+          , allowed = const True
+          , start = \_ -> pure \_ _ -> do
+              liftIO $ IORef.modifyIORef' calls (+ 1)
+              pure (Agent.toolText "executed")
+          }
+      tools =
+        [ ContinuationTools.captureContinuationTool
+        , ContinuationTools.resumeContinuationTool
+        , sideEffectTool
+        ]
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 2 agentContext tools (startWithUser "capture and execute")
+  IORef.readIORef calls >>= (@?= 0)
+  requests <- IORef.readIORef captured
+  case requests of
+    [_initial, rejected] -> do
+      let failures = chatMessageTextsByRole "tool" rejected
+      length failures @?= 2
+      assertBool "every sibling call is rejected" (all ("must be called alone" `Text.isInfixOf`) failures)
+    other ->
+      assertFailure [i|expected initial and rejected requests, got #{length other}|]
+
+testAgentDoesNotInterceptUnexposedContinuationTools :: IO ()
+testAgentDoesNotInterceptUnexposedContinuationTools = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "capture" "capture_continuation" (Aeson.object [])]
+    , chatAnswer "done" []
+    ]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 2 agentContext [] (startWithUser "capture")
+  requests <- IORef.readIORef captured
+  case requests of
+    [_initial, rejected] ->
+      assertBool
+        "normal registry rejects the unexposed control tool"
+        (any ("Unknown tool: capture_continuation" `Text.isInfixOf`) (chatMessageTextsByRole "tool" rejected))
+    other ->
+      assertFailure [i|expected initial and rejected requests, got #{length other}|]
+
+testAgentResumesContinuationAtToolLimit :: IO ()
+testAgentResumesContinuationAtToolLimit = do
+  let resumedValue = Aeson.object ["finished" Aeson..= True]
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "capture" "capture_continuation" (Aeson.object [])]
+    , chatAnswer "" [toolCall "explore" "message_info" (Aeson.object [])]
+    , chatAnswer "" [toolCall "resume" "resume_continuation" (Aeson.object ["continuation_id" Aeson..= ("capture" :: Text), "value" Aeson..= resumedValue])]
+    , chatAnswer "done after resume" []
+    ]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  (answer, _) <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 3 agentContext AgentTools.defaultTools (startWithUser "explore within budget")
+  answer @?= "done after resume"
+  requests <- IORef.readIORef captured
+  case requests of
+    [_initial, _afterCapture, _afterExplore, afterResume] ->
+      assertBool "resume at the limit returns its JSON value" (resumedValue `elem` resumedContinuationValues afterResume)
+    other ->
+      assertFailure [i|expected resume to reach a fourth model request, got #{length other}|]
 
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds :: IO ()
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
@@ -2613,6 +2741,15 @@ chatMessageTextsByRole role messages =
   , message.role == role
   , text <- chatMessageTextParts message
   ]
+
+decodedToolResults :: [LLM.ChatMessage] -> [Aeson.Value]
+decodedToolResults messages =
+  mapMaybe (Aeson.decodeStrict' . TextEncoding.encodeUtf8) (chatMessageTextsByRole "tool" messages)
+
+resumedContinuationValues :: [LLM.ChatMessage] -> [Aeson.Value]
+resumedContinuationValues =
+  mapMaybe (AesonTypes.parseMaybe (Aeson.withObject "resumed continuation" (Aeson..: AesonKey.fromText "value")))
+    . decodedToolResults
 
 chatMessageTextParts :: LLM.ChatMessage -> [Text]
 chatMessageTextParts message =

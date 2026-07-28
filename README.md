@@ -403,6 +403,8 @@ Currently, the following tools are available:
 |Memory  |`chat_memory`          |           |
 |Resource|`sandbox`              |           |
 |Resource|`workspace`            |Yes        |
+|Agent   |`capture_continuation` |           |
+|Agent   |`resume_continuation`  |           |
 |Agent   |`subagent`             |           |
 |Schedule|`schedule`             |           |
 |Shell   |`run_bash`             |Yes        |

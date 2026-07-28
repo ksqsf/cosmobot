@@ -43,6 +43,7 @@ build-type:         Simple
 
 -- Extra doc files to be distributed with the package, such as a CHANGELOG or a README.
 extra-doc-files:    CHANGELOG.md
+                  , doc/Continuation.md
                   , doc/RPC.md
 
 -- Extra source files to be distributed with the package, such as examples, or a tutorial module.
@@ -169,6 +170,7 @@ library
         Bot.Agent.Core
         Bot.Agent.Failure
         Bot.Agent.Middleware.ContextCompaction
+        Bot.Agent.Middleware.Continuation
         Bot.Agent.Middleware.Observation
         Bot.Agent.Middleware.Observation.Types
         Bot.Agent.Middleware.ToolEmittedMessage
@@ -181,6 +183,7 @@ library
         Bot.Agent.Tools.Audio
         Bot.Agent.Tools.Chat
         Bot.Agent.Tools.Common
+        Bot.Agent.Tools.Continuation
         Bot.Agent.Tools.Emacs
         Bot.Agent.Tools.Files
         Bot.Agent.Tools.Image
