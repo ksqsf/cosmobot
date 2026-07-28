@@ -380,8 +380,6 @@ Currently, the following tools are available:
 |ACP     |`acp_read_client_file` |ACP only   |
 |ACP     |`acp_write_client_file`|ACP only   |
 |ACP     |`terminal`             |ACP only   |
-|Files   |`list_files`           |Yes        |
-|Files   |`read_file`            |Yes        |
 |Chat    |`chat_log`             |           |
 |Chat    |`sender_log`           |           |
 |Chat    |`send_reply`           |           |

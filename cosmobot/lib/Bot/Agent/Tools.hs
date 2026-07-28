@@ -74,9 +74,7 @@ defaultTools
 defaultTools = tools
   where
     tools =
-      [ listDirectoryTool
-      , readFileTool
-      , acpReadClientFileTool
+      [ acpReadClientFileTool
       , acpWriteClientFileTool
       , queryChatLogTool
       , queryCurrentSenderChatLogTool
