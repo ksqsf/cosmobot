@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Agent.Middleware.ToolResultCompaction
   ( NextModelInput (..)
   , maxToolResultPreviewChars
+  , maxImmediateToolResultChars
   , compactLargeToolResultText
   , compactLargeToolResultsInTranscript
   , compactLargeToolResultsInMessages
@@ -36,6 +37,10 @@ maxToolResultPreviewChars :: Int
 maxToolResultPreviewChars =
   4096
 
+maxImmediateToolResultChars :: Int
+maxImmediateToolResultChars =
+  10000
+
 newtype NextModelInput = NextModelInput
   { transcript :: Maybe Transcript
   }
@@ -59,10 +64,11 @@ withToolResultCompaction program =
         pure (clearConsumedModelInput decision)
     , aroundToolTurn = \context toolState action -> do
         fullState <- program.aroundToolTurn (toolResultObservation HList.:& context) toolState action
-        compactedTranscript <- compactLargeToolResultsInTranscript fullState.transcript
+        immediateTranscript <- compactToolResultsInTranscript maxImmediateToolResultChars fullState.transcript
+        compactedTranscript <- compactLargeToolResultsInTranscript immediateTranscript
         pure fullState
           { transcript = compactedTranscript
-          , transient = HList.put (NextModelInput (Just fullState.transcript)) fullState.transient
+          , transient = HList.put (NextModelInput (Just immediateTranscript)) fullState.transient
           }
     , aroundToolCall = \turn call context action ->
         program.aroundToolCall turn call (toolResultObservation HList.:& context) action
@@ -94,12 +100,20 @@ compactLargeToolResultsInMessages =
   traverse compactLargeToolResultMessage
 
 compactLargeToolResultsInTranscript :: Media.Media :> es => Transcript -> Eff es Transcript
-compactLargeToolResultsInTranscript (Transcript messages) =
-  Transcript . Seq.fromList <$> compactLargeToolResultsInMessages (Foldable.toList messages)
+compactLargeToolResultsInTranscript =
+  compactToolResultsInTranscript maxToolResultPreviewChars
 
 compactLargeToolResultText :: Media.Media :> es => Text -> Eff es Text
-compactLargeToolResultText text
-  | Text.length text <= maxToolResultPreviewChars || isOmittedToolResult text =
+compactLargeToolResultText =
+  compactToolResultText maxToolResultPreviewChars
+
+compactToolResultsInTranscript :: Media.Media :> es => Int -> Transcript -> Eff es Transcript
+compactToolResultsInTranscript maxChars (Transcript messages) =
+  Transcript . Seq.fromList <$> traverse (compactToolResultMessage maxChars) (Foldable.toList messages)
+
+compactToolResultText :: Media.Media :> es => Int -> Text -> Eff es Text
+compactToolResultText maxChars text
+  | Text.length text <= maxChars || isOmittedToolResult text =
       pure text
   | otherwise = do
       let bytes = TextEncoding.encodeUtf8 text
@@ -112,15 +126,19 @@ compactLargeToolResultText text
       pure (maybe (omittedWithoutMedia mime bytes text) (\ref -> omittedWithMedia ref mime bytes text) mediaRef)
 
 compactLargeToolResultMessage :: Media.Media :> es => LLM.ChatMessage -> Eff es LLM.ChatMessage
-compactLargeToolResultMessage message@LLM.ChatMessage{role = "tool", content = Just (LLM.TextContent text)} = do
-  content <- LLM.TextContent <$> compactLargeToolResultText text
+compactLargeToolResultMessage =
+  compactToolResultMessage maxToolResultPreviewChars
+
+compactToolResultMessage :: Media.Media :> es => Int -> LLM.ChatMessage -> Eff es LLM.ChatMessage
+compactToolResultMessage maxChars message@LLM.ChatMessage{role = "tool", content = Just (LLM.TextContent text)} = do
+  content <- LLM.TextContent <$> compactToolResultText maxChars text
   pure LLM.ChatMessage
     { role = message.role
     , content = Just content
     , toolCalls = message.toolCalls
     , toolCallId = message.toolCallId
     }
-compactLargeToolResultMessage message =
+compactToolResultMessage _ message =
   pure message
 
 omittedWithMedia :: Text -> Text -> StrictByteString.ByteString -> Text -> Text

@@ -256,6 +256,7 @@ main =
       , testCase "agent audit recent records exclude synthetic restarted runs" testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns
       , testCase "agent audit storage omits large tool results" testAgentAuditStorageOmitsLargeToolResults
       , testCase "agent omits large tool results only after one model turn consumes them" testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt
+      , testCase "agent hard-limits immediate tool results" testAgentHardLimitsImmediateToolResults
       , testCase "agent audit records structured tool failure category" testAgentAuditRecordsStructuredToolFailureCategory
       , testCase "chat answer JSON remains object compatible" testChatAnswerJsonRemainsObjectCompatible
       , testCase "reply body parses structured content" testReplyBodyParsesStructuredContent
@@ -2206,6 +2207,33 @@ testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt = do
       assertBool "later model turn does not keep full large tool result" (not (largeResult `Text.isInfixOf` encoded))
     other ->
       assertFailure [i|expected one continuation LLM request, got #{length other}|]
+
+testAgentHardLimitsImmediateToolResults :: IO ()
+testAgentHardLimitsImmediateToolResults = do
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "huge_result" (Aeson.object [])]
+    , chatAnswer "done" []
+    ]
+  let hugeResult = "huge-result:" <> Text.replicate 10001 "x"
+      hugeResultTool = Agent.Tool
+        { name = "huge_result"
+        , description = "return a huge result"
+        , parameters = Aeson.object []
+        , noisy = False
+        , allowed = const True
+        , start = \_ -> pure \_ _ -> pure (Agent.toolText hugeResult)
+        }
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    Agent.runAgent 4 agentContext [hugeResultTool] (startWithUser "run it")
+  requests <- IORef.readIORef captured
+  case requests of
+    [_firstRequest, secondRequest] -> do
+      let encoded = jsonText secondRequest
+      assertBool "immediate model input uses the omitted marker" ("[tool result omitted;" `Text.isInfixOf` encoded)
+      assertBool "immediate model input excludes the huge result" (not (hugeResult `Text.isInfixOf` encoded))
+    other ->
+      assertFailure [i|expected two LLM requests, got #{length other}|]
 
 testAgentAuditRecordsStructuredToolFailureCategory :: IO ()
 testAgentAuditRecordsStructuredToolFailureCategory = do
