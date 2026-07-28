@@ -254,18 +254,19 @@ replyReferencesThread
   -> IncomingMessage
   -> Eff es Bool
 replyReferencesThread threads message =
-  fetchReferencedMessage message >>= \case
-    Just referenced
-      | referenced.senderIsBot
-          || (isJust message.digest.botId && referenced.senderIdentifier == message.digest.botId) ->
-          pure True
-      | isJust message.senderId
-      , referenced.senderIdentifier == message.senderId ->
-          case threadMessageKey message <$> message.replyToMessageId of
-            Nothing -> pure False
-            Just messageKey -> isJust <$> lookupThreadTranscript threads messageKey
-    _ ->
+  case threadMessageKey message <$> message.replyToMessageId of
+    Nothing ->
       pure False
+    Just messageKey -> do
+      lookupThreadTranscript threads messageKey >>= \case
+        Just{} ->
+          pure True
+        Nothing ->
+          replyReferencesBot message
+
+replyReferencesBot :: Chat.Chat :> es => IncomingMessage -> Eff es Bool
+replyReferencesBot =
+  fmap (maybe False (.senderIsBot)) . fetchReferencedMessage
 
 askPrefix :: AskHandlerConfig -> MessageFilter Text
 askPrefix cfg =

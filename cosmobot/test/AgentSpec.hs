@@ -892,22 +892,11 @@ testAskHandlerContinuesFinishedSenderAlias = do
 testAskHandlerContinuesFinishedBotReply :: IO ()
 testAskHandlerContinuesFinishedBotReply = do
   let botReplyId = "900"
-      configuredBotId = "@krkr:ksqsf.moe"
-      referenced =
-        ReferencedMessage
-          { messageId = Just botReplyId
-          , senderDisplayName = Just "Cosmobot"
-          , senderIdentifier = Just configuredBotId
-          , senderIsBot = False
-          , text = "你好"
-          , imageUrls = []
-          , files = []
-          }
       followUp =
         askHandlerMessage
-          { messageId = Just "70002"
+          { kind = ChatPrivate
+          , messageId = Just "70002"
           , replyToMessageId = Just botReplyId
-          , digest = askHandlerMessage.digest{botId = Just configuredBotId}
           , text = "再见"
           }
   answers <- IORef.newIORef [chatAnswer "你好" [], chatAnswer "再见" []]
@@ -921,7 +910,7 @@ testAskHandlerContinuesFinishedBotReply = do
     (Just captured)
     answers
     (ChatMock (Just replies) (Just botReplyId) Nothing)
-    (Just referenced)
+    Nothing
     (\_ _ -> pure "unused image answer")
     (\_ _ _ _ -> pure "unused image edit answer") do
       threads <- newThreadStore
