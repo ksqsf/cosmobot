@@ -51,14 +51,14 @@ runLLM cfg = interpret $ \localEnv operation ->
             do
               resolved <- lift (resolveChatMessages messages)
               Retry.retryLLMStreamRequest "LLM streaming request" $
-                pure (Retry.validateTextStream (normalizeReplyResult (Transport.askOpenAIStreaming cfg resolved)))
+                pure (normalizeReplyResult (Transport.askOpenAIStreaming cfg resolved))
       LLM.AskImageStream options messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
               resolved <- lift (resolveChatMessages messages)
               Retry.retryLLMStreamRequest "LLM image streaming request" $
-                pure (Retry.validateTextStream (askImageStreamingWithMedia cfg options resolved))
+                pure (askImageStreamingWithMedia cfg options resolved)
       LLM.AskImageEditStream options prompt imageRefs maskRef ->
         pure $
           LLM.liftLocalStream liftLocal $
@@ -66,21 +66,21 @@ runLLM cfg = interpret $ \localEnv operation ->
               resolvedImageRefs <- lift (traverse Media.publicMediaRef imageRefs)
               resolvedMaskRef <- lift (traverse Media.publicMediaRef maskRef)
               Retry.retryLLMStreamRequest "LLM image edit streaming request" $
-                pure (Retry.validateTextStream (askImageEditStreamingWithMedia cfg options prompt resolvedImageRefs resolvedMaskRef))
+                pure (askImageEditStreamingWithMedia cfg options prompt resolvedImageRefs resolvedMaskRef)
       LLM.AskAudioStream options messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
               resolved <- lift (resolveChatMessages messages)
               Retry.retryLLMStreamRequest "LLM audio streaming request" $
-                pure (Retry.validateTextStream (normalizeReplyResult (Transport.askAudioOpenAIStreaming cfg options resolved)))
+                pure (normalizeReplyResult (Transport.askAudioOpenAIStreaming cfg options resolved))
       LLM.AskToolsStream tools messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
               resolved <- lift (resolveChatMessages messages)
               Retry.retryLLMStreamRequest "LLM streaming request" $
-                pure (Retry.validateChatAnswerStream (Transport.askOpenAIWithToolsStreaming cfg tools resolved))
+                pure (Transport.askOpenAIWithToolsStreaming cfg tools resolved)
 
 resolveChatMessages :: Media.Media :> es => [ChatMessage] -> Eff es [ChatMessage]
 resolveChatMessages =

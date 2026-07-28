@@ -8,9 +8,6 @@ Stability   : experimental
 module Bot.LLM.OpenAI.Retry
   ( retryLLMRequest
   , retryLLMStreamRequest
-  , validateChatAnswer
-  , validateChatAnswerStream
-  , validateTextStream
   )
 where
 
@@ -86,24 +83,3 @@ retryableEmptyResponse err =
       "empty" `Text.isInfixOf` Text.toLower message
     Nothing ->
       False
-
-validateTextStream :: IOE :> es => Stream (Of Text) (Eff es) Text -> Stream (Of Text) (Eff es) Text
-validateTextStream stream = do
-  answer <- stream
-  if Text.null (Text.strip answer)
-    then lift $ throwIO (LLM.LLMException "OpenAI response was empty: no text output.")
-    else pure answer
-
-validateChatAnswerStream :: IOE :> es => Stream (Of a) (Eff es) LLM.ChatAnswer -> Stream (Of a) (Eff es) LLM.ChatAnswer
-validateChatAnswerStream stream = do
-  answer <- stream
-  lift (validateChatAnswer answer)
-
-validateChatAnswer :: IOE :> es => LLM.ChatAnswer -> Eff es LLM.ChatAnswer
-validateChatAnswer answer =
-  case answer of
-    LLM.ChatFinalAnswer{content}
-      | Text.null (Text.strip content) ->
-          throwIO (LLM.LLMException "OpenAI response was empty: no text, image, or tool call output.")
-    _ ->
-      pure answer
