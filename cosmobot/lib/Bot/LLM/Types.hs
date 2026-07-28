@@ -251,6 +251,7 @@ data TokenUsage = TokenUsage
   { promptTokens :: !Int
   , completionTokens :: !Int
   , totalTokens :: !Int
+  , cachedPromptTokens :: !(Maybe Int)
   }
   deriving (Eq, Show, Generic)
 
@@ -259,15 +260,24 @@ instance Aeson.FromJSON TokenUsage where
     promptTokens <- o Aeson..: "prompt_tokens"
     completionTokens <- o Aeson..: "completion_tokens"
     totalTokens <- o Aeson..: "total_tokens"
-    pure TokenUsage{promptTokens, completionTokens, totalTokens}
+    promptDetails <- o Aeson..:? "prompt_tokens_details"
+    cachedPromptTokens <- traverse parseCachedPromptTokens promptDetails
+    pure TokenUsage{promptTokens, completionTokens, totalTokens, cachedPromptTokens = join cachedPromptTokens}
+    where
+      parseCachedPromptTokens =
+        Aeson.withObject "prompt_tokens_details" (Aeson..:? "cached_tokens")
 
 instance Aeson.ToJSON TokenUsage where
-  toJSON TokenUsage{promptTokens, completionTokens, totalTokens} =
-    Aeson.object
+  toJSON TokenUsage{promptTokens, completionTokens, totalTokens, cachedPromptTokens} =
+    Aeson.object $
       [ "prompt_tokens" Aeson..= promptTokens
       , "completion_tokens" Aeson..= completionTokens
       , "total_tokens" Aeson..= totalTokens
       ]
+        <>
+          [ "prompt_tokens_details" Aeson..= Aeson.object ["cached_tokens" Aeson..= cached]
+          | cached <- maybeToList cachedPromptTokens
+          ]
 
 chatAnswer :: Text -> [ToolCall] -> ChatAnswer
 chatAnswer content calls =

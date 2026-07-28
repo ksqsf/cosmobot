@@ -28,8 +28,11 @@ module Bot.Effect.Resource
   , createNamed
   , createAssociated
   , createAssociatedNamed
+  , createForRun
+  , createNamedForRun
   , withResource
   , list
+  , listCreatedByRuns
   , detail
   , destroy
   , rename
@@ -44,9 +47,10 @@ import Bot.Prelude hiding (Handle)
 import Bot.Resource.Types
 
 data Resource :: Effect where
-  Create :: ResourceObject m a => Proxy a -> Maybe Handle -> Maybe ResourceId -> Init (CreationArgs a) -> Resource m (Either ResourceError ResourceId)
+  Create :: ResourceObject m a => Proxy a -> Maybe Handle -> Maybe Text -> Maybe ResourceId -> Init (CreationArgs a) -> Resource m (Either ResourceError ResourceId)
   With :: ResourceObject m a => ResourceAccess -> ResourceId -> Maybe Handle -> (a -> m b) -> Resource m (Either ResourceError b)
   List :: ResourceAccess -> Resource m [SomeResourceObject]
+  ListCreatedByRuns :: ResourceAccess -> [Text] -> Resource m [SomeResourceObject]
   Detail :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError Text)
   Destroy :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError ())
   Rename :: ResourceAccess -> ResourceId -> ResourceId -> Resource m (Either ResourceError ResourceId)
@@ -63,10 +67,16 @@ createNamed :: forall a es. (Resource :> es, ResourceObject (Eff es) a) => Resou
 createNamed = createAssociatedNamed @a Nothing
 
 createAssociated :: forall a es. (Resource :> es, ResourceObject (Eff es) a) => Maybe Handle -> Init (CreationArgs a) -> Eff es (Either ResourceError ResourceId)
-createAssociated parent = send . Create (Proxy @a) parent Nothing
+createAssociated parent = send . Create (Proxy @a) parent Nothing Nothing
 
 createAssociatedNamed :: forall a es. (Resource :> es, ResourceObject (Eff es) a) => Maybe Handle -> ResourceId -> Init (CreationArgs a) -> Eff es (Either ResourceError ResourceId)
-createAssociatedNamed parent resourceId = send . Create (Proxy @a) parent (Just resourceId)
+createAssociatedNamed parent resourceId = send . Create (Proxy @a) parent Nothing (Just resourceId)
+
+createForRun :: forall a es. (Resource :> es, ResourceObject (Eff es) a) => Text -> Maybe Handle -> Init (CreationArgs a) -> Eff es (Either ResourceError ResourceId)
+createForRun runId parent = send . Create (Proxy @a) parent (Just runId) Nothing
+
+createNamedForRun :: forall a es. (Resource :> es, ResourceObject (Eff es) a) => Text -> Maybe Handle -> ResourceId -> Init (CreationArgs a) -> Eff es (Either ResourceError ResourceId)
+createNamedForRun runId parent resourceId = send . Create (Proxy @a) parent (Just runId) (Just resourceId)
 
 withResource
   :: forall a es b. (Resource :> es, ResourceObject (Eff es) a)
@@ -80,6 +90,9 @@ withResource access resourceId user callback =
 
 list :: Resource :> es => ResourceAccess -> Eff es [SomeResourceObject]
 list = send . List
+
+listCreatedByRuns :: Resource :> es => ResourceAccess -> [Text] -> Eff es [SomeResourceObject]
+listCreatedByRuns access = send . ListCreatedByRuns access
 
 detail :: Resource :> es => ResourceAccess -> ResourceId -> Eff es (Either ResourceError Text)
 detail access = send . Detail access

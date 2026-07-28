@@ -40,6 +40,7 @@ module Bot.Agent
   , withTypingNotification
   , runAgent
   , runAgentWithParent
+  , runObservedChildAgent
   , runAgentStreaming
   )
 where
@@ -103,9 +104,12 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
 import qualified Bot.Util.HList as HList
+import qualified Crypto.Random as CryptoRandom
+import qualified Data.ByteString as StrictByteString
+import qualified Data.ByteString.Base64.URL as Base64URL
 import qualified Data.Foldable as Foldable
 import qualified Data.Text as Text
-import Data.Unique (hashUnique, newUnique)
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.Async as Async
 import qualified Streaming.Prelude as S
 
@@ -134,6 +138,31 @@ runAgentWithParent
 runAgentWithParent parent maxTurns context tools transcript = do
   agentRun <- startAgentRunWithParent parent context tools
   outputs S.:> result <- S.toList (runPreparedAgentStreaming maxTurns agentRun transcript)
+  pure (agentStreamAnswer outputs, result.transcript)
+
+runObservedChildAgent
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, IOE :> es)
+  => AgentObserver ObservationContext es
+  -> ToolCallMetadata
+  -> Text
+  -> Concurrency.Handle
+  -> Int
+  -> AgentContext es
+  -> [Tool es]
+  -> Transcript
+  -> Eff es (Text, Transcript)
+runObservedChildAgent observer parentMetadata childLabel parent maxTurns context tools transcript = do
+  childRun <- startAgentRunWithOrigin (Just parent) (Just parentMetadata.originRunId) context tools
+  void $ observer.observe SubAgentRunStarted
+    { runId = parentMetadata.agentRunId
+    , childRunId = childRun.runId
+    , subagentId = childLabel
+    }
+  outputs S.:> result <-
+    S.toList $
+      runAgentProgramStreaming
+        (defaultAgentProgram observer maxTurns defaultCompactionTokenThreshold childRun)
+        transcript
   pure (agentStreamAnswer outputs, result.transcript)
 
 -- | Run an LLM/tool loop, streaming assistant content chunks.
@@ -195,13 +224,22 @@ startAgentRun :: (Chat.Chat :> es, IOE :> es) => AgentContext es -> [Tool es] ->
 startAgentRun = startAgentRunWithParent Nothing
 
 startAgentRunWithParent :: (Chat.Chat :> es, IOE :> es) => Maybe Concurrency.Handle -> AgentContext es -> [Tool es] -> Eff es (AgentRun es)
-startAgentRunWithParent parent context tools = do
-  unique <- liftIO newUnique
+startAgentRunWithParent parent =
+  startAgentRunWithOrigin parent Nothing
+
+startAgentRunWithOrigin :: (Chat.Chat :> es, IOE :> es) => Maybe Concurrency.Handle -> Maybe Text -> AgentContext es -> [Tool es] -> Eff es (AgentRun es)
+startAgentRunWithOrigin parent requestedOriginRunId context tools = do
+  runId <- newAgentRunId
   let exposedTools = filter (`toolAllowed` context) tools
-      runId = [i|agent-#{hashUnique unique}|]
-      toolCallMetadata = ToolCallMetadata{agentRunId = runId, parent}
+      originRunId = fromMaybe runId requestedOriginRunId
+      toolCallMetadata = ToolCallMetadata{agentRunId = runId, originRunId, parent}
   runningTools <- traverse (startToolRun context) exposedTools
   pure AgentRun{runId, toolCallMetadata, context, tools, exposedTools, runningTools}
+
+newAgentRunId :: IOE :> es => Eff es Text
+newAgentRunId = do
+  bytes <- liftIO (CryptoRandom.getRandomBytes 16 :: IO StrictByteString.ByteString)
+  pure ("agent-" <> TextEncoding.decodeUtf8 (Base64URL.encodeUnpadded bytes))
 
 initialAgentState :: HList.HList transient -> Transcript -> AgentState transient
 initialAgentState transient transcript =

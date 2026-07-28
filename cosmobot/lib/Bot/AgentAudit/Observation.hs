@@ -25,6 +25,10 @@ recordAgentEvent recordEvent event =
 
 agentAuditEvent :: Agent.AgentEvent -> Maybe AgentAuditEvent
 agentAuditEvent = \case
+  Agent.AgentRunStarted{runId, messageId, maxTurns, exposedTools} ->
+    Just AgentRunStarted{runId, messageId, maxTurns, exposedTools}
+  Agent.ModelTurnStarted{runId, turn, messageCount, exposedTools} ->
+    Just ModelTurnStarted{runId, turn, messageCount, exposedTools}
   Agent.ModelTurnFinished{runId, turn, answerKind, contentLength, toolCalls, tokenUsage} ->
     Just ModelTurnFinished
       { runId
@@ -34,6 +38,10 @@ agentAuditEvent = \case
       , toolCalls = map toolCallTrace toolCalls
       , tokenUsage
       }
+  Agent.ContextCompacted{runId, turn, messageCount, tokenUsage} ->
+    Just ContextCompacted{runId, turn, messageCount, tokenUsage}
+  Agent.SubAgentRunStarted{runId, childRunId, subagentId} ->
+    Just SubAgentRunStarted{runId, childRunId, subagentId}
   Agent.ToolCallStarted{runId, turn, toolCall} ->
     Just ToolCallStarted
       { runId
@@ -42,16 +50,12 @@ agentAuditEvent = \case
       }
   Agent.ToolCallFinished{runId, turn, toolCallId, toolName, status, result, resultLength, messageIds} ->
     Just ToolCallFinished{runId, turn, toolCallId, toolName, status, result, resultLength, messageIds}
+  Agent.AgentRunFinished{runId, status, finalLength, turnsUsed} ->
+    Just AgentRunFinished{runId, status, finalLength, turnsUsed}
   Agent.AgentRunInterrupted{runId, reason} ->
     Just AgentRunInterrupted{runId, reason}
   Agent.AgentThreadLinked{runId, linkedMessageId, linkedMessageKey, parentMessageId} ->
     Just AgentThreadLinked{runId, linkedMessageId, linkedMessageKey = Just linkedMessageKey, parentMessageId}
-  Agent.AgentRunStarted{} ->
-    Nothing
-  Agent.ModelTurnStarted{} ->
-    Nothing
-  Agent.AgentRunFinished{} ->
-    Nothing
 
 toolCallTrace :: LLM.ToolCall -> ToolCallTrace
 toolCallTrace call =

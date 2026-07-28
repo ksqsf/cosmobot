@@ -15,14 +15,15 @@ import Bot.Core.Thread
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import Bot.Storage.Thread
 import qualified Data.Text as Text
-import Data.Time (FormatTime, defaultTimeLocale, formatTime)
+import Data.Time (FormatTime, UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
 
 auditHandlers
-  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, Prim :> es)
+  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Resource.Resource :> es, Storage.Storage :> es, Prim :> es, Concurrent :> es, IOE :> es)
   => ThreadStore
   -> [RouteHandler es]
 auditHandlers threads =
@@ -35,7 +36,7 @@ auditHandlers threads =
   ]
 
 handleStats
-  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, Prim :> es)
+  :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Resource.Resource :> es, Storage.Storage :> es, Prim :> es, Concurrent :> es, IOE :> es)
   => ThreadStore
   -> IncomingMessage
   -> Text
@@ -52,9 +53,16 @@ handleStats threads message args
           messageIds <- lookupThreadMessageIds threads parentKey
           completed <- AgentAudit.queryThreadMessagesAudit (map (threadMessageKey message) messageIds)
           activeRunId <- lookupActiveThreadRunId threads parentKey
+          pendingSteers <- lookupActiveThreadPendingSteers threads parentKey
           active <- maybe (pure []) AgentAudit.queryRunAudit activeRunId
           let records = ordNubOn (.id) (linkedMessageAudit messageIds completed <> active)
-          void $ Chat.replyTo message (renderThreadStats parentId activeRunId records)
+              runIds = threadRunIds activeRunId records
+          subAgentRuns <- querySubAgentRuns runIds records
+          resources <- case Resource.accessFromMessage message of
+            Left _ -> pure []
+            Right access -> Resource.listCreatedByRuns access runIds
+          now <- liftIO getCurrentTime
+          void $ Chat.replyTo message (renderThreadStats now parentId (length messageIds) activeRunId pendingSteers records subAgentRuns resources)
 
 handleAudit
   :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Storage.Storage :> es, Prim :> es)
@@ -108,64 +116,114 @@ renderAuditList [] =
 renderAuditList toolUses =
   Text.unlines ("*Recent agent tool uses*" : map renderToolUseLine toolUses)
 
-renderThreadStats :: MessageId -> Maybe Text -> [AgentAudit.AgentAuditRecord] -> Text
-renderThreadStats parentId activeRunId records
+data SubAgentRunAudit = SubAgentRunAudit
+  { parentRunId :: !Text
+  , subagentId :: !Text
+  , runId :: !Text
+  , records :: ![AgentAudit.AgentAuditRecord]
+  }
+
+querySubAgentRuns
+  :: AgentAudit.AgentAudit :> es
+  => [Text]
+  -> [AgentAudit.AgentAuditRecord]
+  -> Eff es [SubAgentRunAudit]
+querySubAgentRuns rootRunIds rootRecords =
+  go rootRunIds (subAgentLinks rootRecords)
+  where
+    go _ [] =
+      pure []
+    go seen ((parentRunId, subagentId, runId) : pending)
+      | runId `elem` seen =
+          go seen pending
+      | otherwise = do
+          records <- AgentAudit.queryRunAudit runId
+          rest <- go (runId : seen) (pending <> subAgentLinks records)
+          pure (SubAgentRunAudit{parentRunId, subagentId, runId, records} : rest)
+
+    subAgentLinks records =
+      [ (runId, subagentId, childRunId)
+      | AgentAudit.AgentAuditRecord
+          { event = AgentAudit.SubAgentRunStarted{runId, subagentId, childRunId}
+          } <- records
+      ]
+
+renderThreadStats :: UTCTime -> MessageId -> Int -> Maybe Text -> Maybe Int -> [AgentAudit.AgentAuditRecord] -> [SubAgentRunAudit] -> [Resource.SomeResourceObject] -> Text
+renderThreadStats now parentId branchMessages activeRunId pendingSteers records subAgentRuns resources
   | null records, isNothing activeRunId =
       [i|没有找到消息 #{messageIdText parentId} 对应的 agent stats。|]
   | otherwise =
       Text.unlines $
         [ "*Thread stats*"
         , [i|- status: #{if isJust activeRunId then "active" else "complete" :: Text}|]
-        , [i|- runs: #{length runIds}|]
-        , [i|- model turns: #{length modelTurns}|]
-        , [i|- tokens: #{totalTokens} total (#{promptTokens} prompt, #{completionTokens} completion#{unreportedSuffix})|]
-        , renderCurrentTurn currentRunTurns
-        , renderContext currentUsage peakPromptTokens
-        , [i|- tool calls: #{length toolUses} (#{okTools} ok, #{failedTools} failed, #{interruptedTools} interrupted, #{length runningTools} running)|]
+        , [i|- branch: #{branchMessages} messages, #{length records} audit events|]
         ]
+          <> [ [i|- current run: `#{runId}` (phase: #{currentPhase}, #{fromMaybe 0 pendingSteers} pending steers)|]
+             | runId <- maybeToList activeRunId
+             ]
+          <> [ [i|- runs: #{length runIds} (#{length finishedRunIds} finished, #{length interruptedRunIds} interrupted#{unreportedRunsSuffix})|]
+        , [i|- model turns: #{length modelTurns}|]
+        , renderUsage "tokens" latestUsage
+        , renderCurrentTurn currentRunCompacted previousRunUsage currentRunUsage
+        , renderContextMessages contextMessageCounts
+        , renderCompactionUsage compactionUsages
+        , [i|- tool calls: #{length toolUses} (#{okTools} ok, #{failedTools} failed, #{interruptedTools} interrupted, #{length runningTools} running#{unreportedToolsSuffix})|]
+        , renderToolTime toolUses
+        , renderAgentTime runIds runDurations currentRunDuration
+        ]
+          <> maybeToList renderRunConfig
           <> [ "- running tools: " <> Text.intercalate ", " (map renderRunningTool runningTools)
              | not (null runningTools)
              ]
+          <> renderSubAgentStats now runIds subAgentRuns
+          <> renderThreadResources resources
   where
     runIds =
-      ordNub (map (AgentAudit.eventRunId . (.event)) records <> maybeToList activeRunId)
+      threadRunIds activeRunId records
     modelTurns =
       [ (runId, tokenUsage)
       | AgentAudit.AgentAuditRecord{event = AgentAudit.ModelTurnFinished{runId, tokenUsage}} <- records
       ]
+    contextMessageCounts =
+      [ messageCount
+      | AgentAudit.AgentAuditRecord{event = AgentAudit.ModelTurnStarted{messageCount}} <- records
+      ]
     allTurnUsage =
       map snd modelTurns
-    reportedUsage =
-      catMaybes allTurnUsage
-    currentUsage =
+    latestUsage =
       join (viaNonEmpty last allTurnUsage)
+    currentRunId =
+      viaNonEmpty last runIds
     currentRunTurns =
-      case viaNonEmpty last runIds of
+      case currentRunId of
         Nothing ->
           []
-        Just currentRunId ->
+        Just current ->
           [ tokenUsage
           | (runId, tokenUsage) <- modelTurns
-          , runId == currentRunId
+          , runId == current
           ]
-    promptTokens =
-      sum (map (.promptTokens) reportedUsage)
-    completionTokens =
-      sum (map (.completionTokens) reportedUsage)
-    totalTokens =
-      sum (map (.totalTokens) reportedUsage)
-    promptUsage =
-      map (.promptTokens) reportedUsage
-    peakPromptTokens =
-      foldl' max 0 promptUsage
-    unreportedTurns =
-      length (filter isNothing allTurnUsage)
-    unreportedSuffix :: Text
-    unreportedSuffix
-      | unreportedTurns == 0 =
-          ""
-      | otherwise =
-          [i|; #{unreportedTurns} unreported turns|]
+    currentRunUsage =
+      join (viaNonEmpty last currentRunTurns)
+    previousRunUsage = do
+      current <- currentRunId
+      previous <- viaNonEmpty last (filter (/= current) runIds)
+      join . viaNonEmpty last $
+        [ tokenUsage
+        | (runId, tokenUsage) <- modelTurns
+        , runId == previous
+        ]
+    currentRunCompacted =
+      any
+        (\record -> case record.event of
+          AgentAudit.ContextCompacted{runId} -> Just runId == currentRunId
+          _ -> False
+        )
+        records
+    compactionUsages =
+      [ tokenUsage
+      | AgentAudit.AgentAuditRecord{event = AgentAudit.ContextCompacted{tokenUsage}} <- records
+      ]
     toolUses =
       AgentAudit.toolUsesFromAuditRecords records
     okTools =
@@ -187,44 +245,290 @@ renderThreadStats parentId activeRunId records
     runningTools =
       [ toolUse
       | toolUse@AgentAudit.ToolUseDetail{status = AgentAudit.ToolUseInProgress} <- toolUses
+      , Just toolUse.runId == activeRunId
       ]
+    unreportedTools =
+      length toolUses - okTools - failedTools - interruptedTools - length runningTools
+    unreportedToolsSuffix :: Text
+    unreportedToolsSuffix
+      | unreportedTools <= 0 = ""
+      | otherwise = [i|, #{unreportedTools} stale/unreported|]
+    finishedRunIds =
+      ordNub
+        [ runId
+        | AgentAudit.AgentAuditRecord{event = AgentAudit.AgentRunFinished{runId}} <- records
+        ]
+    interruptedRunIds =
+      ordNub
+        [ runId
+        | AgentAudit.AgentAuditRecord{event = AgentAudit.AgentRunInterrupted{runId}} <- records
+        ]
+    reportedRunIds =
+      ordNub (finishedRunIds <> interruptedRunIds <> maybeToList activeRunId)
+    unreportedRuns =
+      length (filter (`notElem` reportedRunIds) runIds)
+    unreportedRunsSuffix :: Text
+    unreportedRunsSuffix
+      | unreportedRuns == 0 = ""
+      | otherwise = [i|, #{unreportedRuns} legacy/unreported|]
+    runDurations =
+      [(runId, runDurationMilliseconds now activeRunId runId records) | runId <- runIds]
+    currentRunDuration =
+      activeRunId >>= \runId ->
+        join (snd <$> find ((== runId) . fst) runDurations)
+    currentPhase =
+      phaseFromRecords activeRunId runningTools records
+    renderRunConfig = do
+      latestRunId <- viaNonEmpty last runIds
+      AgentAudit.AgentAuditRecord
+        { event = AgentAudit.AgentRunStarted{maxTurns, exposedTools}
+        } <- viaNonEmpty last
+          [ record
+          | record@AgentAudit.AgentAuditRecord{event} <- records
+          , AgentAudit.eventRunId event == latestRunId
+          , AgentAudit.AgentRunStarted{} <- [event]
+          ]
+      pure [i|- run config: #{maxTurns} max tool turns, #{length exposedTools} exposed tools|]
     renderRunningTool toolUse =
       let toolName = toolUse.toolName
           auditId = toolUse.auditId
-      in [i|`#{toolName}` (`id=#{auditId}`)|]
+          elapsed = max 0 (floor (diffUTCTime now toolUse.occurredAt * 1000))
+      in [i|`#{toolName}` (`id=#{auditId}`, #{renderMilliseconds elapsed})|]
 
-renderCurrentTurn :: [Maybe LLM.TokenUsage] -> Text
-renderCurrentTurn [] =
-  "- current turn: 0 total (0 prompt, 0 completion)"
-renderCurrentTurn usages
-  | null reported =
-      "- current turn: unreported"
+threadRunIds :: Maybe Text -> [AgentAudit.AgentAuditRecord] -> [Text]
+threadRunIds activeRunId records =
+  ordNub (map (AgentAudit.eventRunId . (.event)) records <> maybeToList activeRunId)
+
+renderSubAgentStats :: UTCTime -> [Text] -> [SubAgentRunAudit] -> [Text]
+renderSubAgentStats _ _ [] =
+  ["- subagents: 0 runs"]
+renderSubAgentStats now rootRunIds runs =
+  [i|- subagents: #{length runs} runs|] : concatMap (renderRun 2) rootRuns
+  where
+    rootRuns =
+      filter ((`elem` rootRunIds) . (.parentRunId)) runs
+
+    renderRun indentation SubAgentRunAudit{subagentId, runId, records} =
+      let modelUsages =
+            [ tokenUsage
+            | AgentAudit.AgentAuditRecord
+                { event = AgentAudit.ModelTurnFinished{tokenUsage}
+                } <- records
+            ]
+          compactionUsages =
+            [ tokenUsage
+            | AgentAudit.AgentAuditRecord
+                { event = AgentAudit.ContextCompacted{tokenUsage}
+                } <- records
+            ]
+          toolUses = AgentAudit.toolUsesFromAuditRecords records
+          status = subAgentRunStatus records
+          active = [runId | status == "running"]
+          duration = runDurationMilliseconds now (viaNonEmpty head active) runId records
+          durationText = maybe "time unreported" renderMilliseconds duration
+          latestUsage = join (viaNonEmpty last modelUsages)
+          children = filter ((== runId) . (.parentRunId)) runs
+          nested =
+            [spaces (indentation + 2) <> [i|- subagents: #{length children} runs|] | not (null children)]
+              <> concatMap (renderRun (indentation + 4)) children
+      in
+      [ spaces indentation <> [i|- `#{subagentId}` (`#{runId}`): #{status}, #{length modelUsages} model turns, #{length toolUses} tool calls, #{durationText}|]
+      , spaces (indentation + 2) <> renderUsage "tokens" latestUsage
+      , spaces (indentation + 2) <> renderCompactionUsage compactionUsages
+      , spaces (indentation + 2) <> renderToolTime toolUses
+      ] <> nested
+
+    spaces count =
+      Text.replicate count " "
+
+subAgentRunStatus :: [AgentAudit.AgentAuditRecord] -> Text
+subAgentRunStatus records =
+  fromMaybe "running" . viaNonEmpty last $
+    [ status
+    | AgentAudit.AgentAuditRecord{event} <- records
+    , status <- case event of
+        AgentAudit.AgentRunFinished{status} -> ["finished:" <> status]
+        AgentAudit.AgentRunInterrupted{} -> ["interrupted"]
+        _ -> []
+    ]
+
+renderThreadResources :: [Resource.SomeResourceObject] -> [Text]
+renderThreadResources resources =
+  [i|- resources: #{length resources}|]
+    : map renderResource resources
+  where
+    renderResource :: Resource.SomeResourceObject -> Text
+    renderResource resource =
+      let resourceId = resource.resourceId
+          resourceType = resource.resourceType
+          status :: Text
+          status = either ("error: " <>) id resource.probeResult
+          life :: Text
+          life = maybe "permanent" ((<> "m") . show) resource.remainingLifeMinutes
+      in [i|  - `#{resourceId}` (`#{resourceType}`): #{status}, #{life}|]
+
+renderUsage :: Text -> Maybe LLM.TokenUsage -> Text
+renderUsage label Nothing =
+  "- " <> label <> ": unreported"
+renderUsage label (Just usage) =
+  renderUsageValues label usage.totalTokens usage.promptTokens usage.completionTokens (cacheSuffix usage)
+
+renderUsageValues :: Text -> Int -> Int -> Int -> Text -> Text
+renderUsageValues label totalTokens promptTokens completionTokens cache =
+  [i|- #{label}: #{totalTokens} total (#{promptTokens} prompt, #{completionTokens} completion#{cache})|]
+
+renderCurrentTurn :: Bool -> Maybe LLM.TokenUsage -> Maybe LLM.TokenUsage -> Text
+renderCurrentTurn True _ _ =
+  "- current turn: unavailable after context compaction"
+renderCurrentTurn _ _ Nothing =
+  "- current turn: unreported"
+renderCurrentTurn _ Nothing (Just current) =
+  renderUsageValues "current turn" current.totalTokens current.promptTokens current.completionTokens ""
+renderCurrentTurn _ (Just previous) (Just current)
+  | promptTokens < 0 =
+      "- current turn: unavailable because context size decreased"
   | otherwise =
-      [i|- current turn: #{totalTokens} total (#{promptTokens} prompt, #{completionTokens} completion#{unreportedSuffix})|]
+      renderUsageValues "current turn" (promptTokens + completionTokens) promptTokens completionTokens ""
+  where
+    promptTokens =
+      current.promptTokens - previous.totalTokens
+    completionTokens =
+      current.completionTokens
+
+cacheSuffix :: LLM.TokenUsage -> Text
+cacheSuffix usage =
+  case usage.cachedPromptTokens of
+    Nothing ->
+      "; request cache: unreported"
+    Just cached ->
+      let hitRate = renderPercentage cached usage.promptTokens
+      in [i|; request cache: #{cached} hit, #{hitRate}|]
+
+renderPercentage :: Int -> Int -> Text
+renderPercentage cacheHits promptCount
+  | promptCount <= 0 =
+      "0.0%"
+  | otherwise =
+      let tenths = cacheHits * 1000 `div` promptCount
+      in [i|#{tenths `div` 10}.#{tenths `mod` 10}%|]
+
+renderCompactionUsage :: [Maybe LLM.TokenUsage] -> Text
+renderCompactionUsage [] =
+  "- context compactions: 0 calls, 0 total (0 prompt, 0 completion)"
+renderCompactionUsage usages =
+  case catMaybes usages of
+    [] ->
+      [i|- context compactions: #{length usages} calls, tokens unreported|]
+    reported ->
+      let promptTokens = sum (map (.promptTokens) reported)
+          completionTokens = sum (map (.completionTokens) reported)
+          totalTokens = sum (map (.totalTokens) reported)
+          unreported = length usages - length reported
+          suffix :: Text
+          suffix
+            | unreported == 0 = ""
+            | otherwise = [i|; #{unreported} unreported|]
+      in [i|- context compactions: #{length usages} calls, #{totalTokens} total (#{promptTokens} prompt, #{completionTokens} completion#{suffix})|]
+
+renderToolTime :: [AgentAudit.ToolUseDetail] -> Text
+renderToolTime toolUses =
+  [i|- tool time: #{renderMilliseconds (sum (mapMaybe duration toolUses))} cumulative|]
+  where
+    duration toolUse =
+      case toolUse.status of
+        AgentAudit.ToolUseFinished{durationMilliseconds} -> Just durationMilliseconds
+        AgentAudit.ToolUseInterrupted{durationMilliseconds} -> Just durationMilliseconds
+        AgentAudit.ToolUseInProgress -> Nothing
+
+renderContextMessages :: [Int] -> Text
+renderContextMessages [] =
+  "- context messages: unreported"
+renderContextMessages counts@(_ : _) =
+  let nowCount = fromMaybe 0 (viaNonEmpty last counts)
+  in [i|- context messages: #{nowCount} now / #{foldl' max 0 counts} peak|]
+
+renderAgentTime :: [Text] -> [(Text, Maybe Integer)] -> Maybe Integer -> Text
+renderAgentTime runIds runDurations currentDuration
+  | null reported =
+      [i|- agent time: unreported (#{length runIds} runs)|]
+  | otherwise =
+      [i|- agent time: #{renderMilliseconds (sum reported)} total#{currentSuffix}#{unreportedSuffix}|]
   where
     reported =
-      catMaybes usages
-    promptTokens =
-      sum (map (.promptTokens) reported)
-    completionTokens =
-      sum (map (.completionTokens) reported)
-    totalTokens =
-      sum (map (.totalTokens) reported)
-    unreportedTurns =
-      length (filter isNothing usages)
+      catMaybes (map snd runDurations)
+    currentSuffix :: Text
+    currentSuffix =
+      maybe "" (\duration -> ", " <> renderMilliseconds duration <> " current") currentDuration
+    unreportedRuns =
+      length runIds - length reported
     unreportedSuffix :: Text
     unreportedSuffix
-      | unreportedTurns == 0 =
-          ""
-      | otherwise =
-          [i|; #{unreportedTurns} unreported model turns|]
+      | unreportedRuns == 0 = ""
+      | otherwise = [i|; #{unreportedRuns} unreported runs|]
 
-renderContext :: Maybe LLM.TokenUsage -> Int -> Text
-renderContext Nothing peakPromptTokens =
-  [i|- context: unreported last / #{peakPromptTokens} peak prompt tokens|]
-renderContext (Just usage) peakPromptTokens =
-  let promptTokens = usage.promptTokens
-  in [i|- context: #{promptTokens} last / #{peakPromptTokens} peak prompt tokens|]
+renderMilliseconds :: Integer -> Text
+renderMilliseconds milliseconds =
+  let seconds = milliseconds `div` 1000
+      tenths = (milliseconds `mod` 1000) `div` 100
+  in [i|#{seconds}.#{tenths}s|]
+
+runDurationMilliseconds
+  :: UTCTime
+  -> Maybe Text
+  -> Text
+  -> [AgentAudit.AgentAuditRecord]
+  -> Maybe Integer
+runDurationMilliseconds now activeRunId runId records = do
+  startedAt <- viaNonEmpty head
+    [ occurredAt
+    | AgentAudit.AgentAuditRecord{occurredAt, event = AgentAudit.AgentRunStarted{runId = startedRunId}} <- records
+    , startedRunId == runId
+    ]
+  finishedAt <-
+    if activeRunId == Just runId
+      then Just now
+      else viaNonEmpty last
+        [ occurredAt
+        | AgentAudit.AgentAuditRecord{occurredAt, event} <- records
+        , AgentAudit.eventRunId event == runId
+        , isRunEnd event
+        ]
+  pure (max 0 (floor (diffUTCTime finishedAt startedAt * 1000)))
+  where
+    isRunEnd = \case
+      AgentAudit.AgentRunFinished{} -> True
+      AgentAudit.AgentRunInterrupted{} -> True
+      _ -> False
+
+phaseFromRecords
+  :: Maybe Text
+  -> [AgentAudit.ToolUseDetail]
+  -> [AgentAudit.AgentAuditRecord]
+  -> Text
+phaseFromRecords Nothing _ _ =
+  "complete"
+phaseFromRecords (Just runId) runningTools records
+  | not (null runningTools) =
+      "tools"
+  | otherwise =
+      maybe "starting" eventPhase . viaNonEmpty last $
+        [ record.event
+        | record <- records
+        , AgentAudit.eventRunId record.event == runId
+        ]
+  where
+    eventPhase = \case
+      AgentAudit.AgentRunStarted{} -> "starting"
+      AgentAudit.ModelTurnStarted{} -> "model"
+      AgentAudit.ModelTurnFinished{answerKind = "tool_request"} -> "tools"
+      AgentAudit.ModelTurnFinished{} -> "finishing"
+      AgentAudit.ContextCompacted{} -> "model"
+      AgentAudit.SubAgentRunStarted{} -> "tools"
+      AgentAudit.ToolCallStarted{} -> "tools"
+      AgentAudit.ToolCallFinished{} -> "between turns"
+      AgentAudit.AgentRunFinished{} -> "finishing"
+      AgentAudit.AgentRunInterrupted{} -> "interrupted"
+      AgentAudit.AgentThreadLinked{} -> "finishing"
 
 linkedMessageAudit :: [MessageId] -> [AgentAudit.AgentAuditRecord] -> [AgentAudit.AgentAuditRecord]
 linkedMessageAudit messageIds =
@@ -339,9 +643,18 @@ renderAuditRecord record =
 
 renderAuditEvent :: Integer -> AgentAudit.AgentAuditEvent -> Text
 renderAuditEvent recordId = \case
+  AgentAudit.AgentRunStarted{runId, messageId, maxTurns, exposedTools} ->
+    [i|run_started run=#{runId} message=#{maybe "-" messageIdText messageId} max_turns=#{maxTurns} exposed_tools=#{length exposedTools}|]
+  AgentAudit.ModelTurnStarted{runId, turn, messageCount, exposedTools} ->
+    [i|model_started run=#{runId} turn=#{turn} messages=#{messageCount} exposed_tools=#{length exposedTools}|]
   AgentAudit.ModelTurnFinished{runId, turn, answerKind, contentLength, toolCalls, tokenUsage} ->
     let usage = maybe "tokens=unreported" renderTokenUsage tokenUsage
     in [i|model_finished run=#{runId} turn=#{turn} kind=#{answerKind} content_chars=#{contentLength} tool_calls=#{length toolCalls} #{usage}|]
+  AgentAudit.ContextCompacted{runId, turn, messageCount, tokenUsage} ->
+    let usage = maybe "tokens=unreported" renderTokenUsage tokenUsage
+    in [i|context_compacted run=#{runId} turn=#{turn} messages_before=#{messageCount} #{usage}|]
+  AgentAudit.SubAgentRunStarted{runId, childRunId, subagentId} ->
+    [i|subagent_started run=#{runId} child_run=#{childRunId} resource=`#{subagentId}`|]
   AgentAudit.ToolCallStarted{runId, turn, toolCall} ->
     let toolName = toolCall.name
         auditId :: Text
@@ -349,6 +662,8 @@ renderAuditEvent recordId = \case
     in [i|started audit_id=#{auditId} run=#{runId} turn=#{turn} tool=`#{toolName}`|]
   AgentAudit.ToolCallFinished{runId, turn, toolName, status, resultLength} ->
     [i|finished run=#{runId} turn=#{turn} tool=`#{toolName}` status=#{status} result_chars=#{resultLength}|]
+  AgentAudit.AgentRunFinished{runId, status, finalLength, turnsUsed} ->
+    [i|run_finished run=#{runId} status=#{status} final_chars=#{finalLength} turns=#{turnsUsed}|]
   AgentAudit.AgentRunInterrupted{runId, reason} ->
     [i|run run=#{runId} reason=`#{reason}`|]
   AgentAudit.AgentThreadLinked{runId, linkedMessageId, parentMessageId} ->
@@ -357,8 +672,10 @@ renderAuditEvent recordId = \case
 
 renderTokenUsage :: LLM.TokenUsage -> Text
 renderTokenUsage usage =
-  let LLM.TokenUsage{promptTokens, completionTokens, totalTokens} = usage
-  in [i|tokens=#{totalTokens} prompt=#{promptTokens} completion=#{completionTokens}|]
+  let LLM.TokenUsage{promptTokens, completionTokens, totalTokens, cachedPromptTokens} = usage
+      cached :: Text
+      cached = maybe "unreported" show cachedPromptTokens
+  in [i|tokens=#{totalTokens} prompt=#{promptTokens} completion=#{completionTokens} cached_prompt=#{cached}|]
 
 renderMessageIds :: [Maybe MessageId] -> Text
 renderMessageIds messageIds =

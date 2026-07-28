@@ -45,6 +45,7 @@ data SomeResource es = SomeResource
   { owner :: !ResourceOwner
   , scope :: !ResourceScope
   , createdBy :: !(Maybe Concurrency.Handle)
+  , creatorRunId :: !(Maybe Text)
   , sessionId :: !(Maybe Text)
   , resourceType :: !Text
   , value :: !Dynamic.Dynamic
@@ -121,6 +122,7 @@ restoreStoredResource loaders lifetime stored =
         { owner = stored.owner
         , scope = resourceScope @(Eff es) @a proxy
         , createdBy = Nothing
+        , creatorRunId = stored.creatorRunId
         , sessionId = stored.sessionId
         , resourceType = resourceTypeName @(Eff es) @a proxy
         , value = Dynamic.toDyn object
@@ -138,6 +140,7 @@ restoreStoredResource loaders lifetime stored =
       { owner = stored.owner
       , scope = PersonResource
       , createdBy = Nothing
+      , creatorRunId = stored.creatorRunId
       , sessionId = stored.sessionId
       , resourceType = stored.resourceType
       , value = Dynamic.toDyn ()
@@ -165,9 +168,10 @@ runResourceOperation
 runResourceOperation stateRef localEnv operation =
   localUnlift localEnv (ConcUnlift Persistent Unlimited) \unlift ->
     case operation of
-      Resource.Create proxy parent requestedName initValue -> createIn stateRef unlift proxy parent requestedName initValue
+      Resource.Create proxy parent creatorRunId requestedName initValue -> createIn stateRef unlift proxy parent creatorRunId requestedName initValue
       Resource.With access resourceId user callback -> withIn stateRef unlift access resourceId user callback
       Resource.List access -> listIn stateRef access
+      Resource.ListCreatedByRuns access runIds -> listCreatedByRunsIn stateRef access runIds
       Resource.Detail access resourceId -> detailIn stateRef access resourceId
       Resource.Destroy access resourceId -> destroyIn stateRef access resourceId
       Resource.Rename access resourceId newId -> renameIn stateRef access resourceId newId
@@ -181,10 +185,11 @@ createIn
   -> (forall x. Eff localEs x -> Eff es x)
   -> Proxy a
   -> Maybe Concurrency.Handle
+  -> Maybe Text
   -> Maybe ResourceId
   -> Init (CreationArgs a)
   -> Eff es (Either ResourceError ResourceId)
-createIn stateRef unlift _ parent requestedName initValue =
+createIn stateRef unlift _ parent creatorRunId requestedName initValue =
   case ttlResult of
     Left err -> pure (Left (ResourceCreationFailed err))
     Right ttlSeconds -> createWith ttlSeconds
@@ -217,6 +222,7 @@ createIn stateRef unlift _ parent requestedName initValue =
                 { owner
                 , scope = resourceScope @(Eff localEs) @a (Proxy @a)
                 , createdBy = parent
+                , creatorRunId
                 , sessionId = sessionIdFromMessage initValue.message
                 , resourceType = resourceTypeName @(Eff localEs) @a (Proxy @a)
                 , value = Dynamic.toDyn object
@@ -242,6 +248,7 @@ createIn stateRef unlift _ parent requestedName initValue =
                       , resourceType = resource.resourceType
                       , owner
                       , sessionId = resource.sessionId
+                      , creatorRunId
                       , payload = encodeResource object
                       }
                     ResourceStorage.setResourceLifetime resourceId ((,) <$> ttlSeconds <*> expiresAt)
@@ -326,9 +333,28 @@ listIn
   => IORef (ManagerState es)
   -> ResourceAccess
   -> Eff es [SomeResourceObject]
-listIn stateRef access = do
+listIn stateRef access =
+  listMatchingIn stateRef access (const True)
+
+listCreatedByRunsIn
+  :: (Prim :> es, IOE :> es)
+  => IORef (ManagerState es)
+  -> ResourceAccess
+  -> [Text]
+  -> Eff es [SomeResourceObject]
+listCreatedByRunsIn stateRef access runIds =
+  listMatchingIn stateRef access \resource ->
+    maybe False (`elem` runIds) resource.creatorRunId
+
+listMatchingIn
+  :: (Prim :> es, IOE :> es)
+  => IORef (ManagerState es)
+  -> ResourceAccess
+  -> (SomeResource es -> Bool)
+  -> Eff es [SomeResourceObject]
+listMatchingIn stateRef access matches = do
   now <- liftIO getCurrentTime
-  entries <- Map.toAscList . Map.filter (\resource -> mayAccess access resource && isAvailable resource.availability) . (.resources) <$> readIORef stateRef
+  entries <- Map.toAscList . Map.filter (\resource -> matches resource && mayAccess access resource && isAvailable resource.availability) . (.resources) <$> readIORef stateRef
   traverse (snapshot now) entries
   where
     snapshot now (resourceId, resource) = do

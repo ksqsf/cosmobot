@@ -301,7 +301,7 @@ testPersistentRestart =
         cleanup = FileSystem.removeFile database
     (do
       persistentId <- liftIO $ runPersistent database do
-        persistentId <- Resource.createNamed @PersistentObject "durable-name" Resource.Init
+        persistentId <- Resource.createNamedForRun @PersistentObject "run-1" Nothing "durable-name" Resource.Init
           { message = ownerMessage
           , arguments = PersistentInit{label = "durable", persistentTTLSeconds = Nothing}
           } >>= expectRight
@@ -314,6 +314,10 @@ testPersistentRestart =
         Resource.list access
       liftIO $ map (\resource -> (resource.resourceId, resource.resourceType, resource.description)) listed
         @?= [("renamed-durable", "PersistentTest", "durable")]
+      createdByRun <- liftIO $ runPersistent database do
+        access <- expectRight (Resource.accessFromMessage ownerMessage)
+        Resource.listCreatedByRuns access ["run-1"]
+      liftIO $ map (.resourceId) createdByRun @?= ["renamed-durable"]
       liftIO $ runPersistent database do
         access <- expectRight (Resource.accessFromMessage ownerMessage)
         Resource.destroy access persistentId >>= liftIO . (@?= Right ())

@@ -30,6 +30,7 @@ import Bot.Agent.Tools.Web
 import Bot.Agent.Tools.Workspace
 import Bot.Agent.Types
 import qualified Bot.Effect.ACP as ACP
+import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -49,6 +50,7 @@ import Effectful.FileSystem
 -- | Built-in tools exposed to the model after per-message permission checks.
 defaultTools
   :: ACP.ACP :> es
+  => AgentAudit.AgentAudit :> es
   => Chat.Chat :> es
   => ChatLog.ChatLog :> es
   => HTTP.HTTP :> es
@@ -61,6 +63,7 @@ defaultTools
   => Typst.Typst :> es
   => Fail :> es
   => Concurrency.Concurrency :> es
+  => Prim :> es
   => Concurrent :> es
   => Timeout :> es
   => KatipE :> es
@@ -106,6 +109,9 @@ defaultTools = tools
       , workspaceTool
       , captureContinuationTool
       , resumeContinuationTool
-      , subagentTool (\parent -> Agent.runAgentWithParent parent 8) tools
+      , subagentTool
+          (\metadata subagentId parent ->
+            Agent.runObservedChildAgent AgentAudit.agentAuditObserver metadata subagentId parent 8)
+          tools
       , emacsEvalTool
       ]

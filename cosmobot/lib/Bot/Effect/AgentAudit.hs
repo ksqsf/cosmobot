@@ -124,7 +124,7 @@ runAgentAuditWithObserver observer inner = do
         records <- AgentAuditStorage.loadStoredAuditRecords
         pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords processStartedAt maxInMemoryAgentAuditEvents records))
       QueryRunAudit runId ->
-        filter ((>= processStartedAt) . (.occurredAt)) <$> AgentAuditStorage.queryStoredRunAudit runId
+        AgentAuditStorage.queryStoredRunAudit runId
       QueryThreadAudit messageKey ->
         AgentAuditStorage.queryStoredThreadAudit messageKey
       QueryThreadMessagesAudit messageKeys ->

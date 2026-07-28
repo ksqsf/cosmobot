@@ -10,8 +10,9 @@ module Bot.Agent.Middleware.ContextCompaction
 where
 
 import Bot.Agent.Core
+import Bot.Agent.Middleware.Observation.Types (AgentEventObservation (..))
 import Bot.Agent.Middleware.ToolResultCompaction (NextModelInput (..))
-import Bot.Agent.Types (AgentContext (..))
+import Bot.Agent.Types (AgentContext (..), AgentEvent (..))
 import Bot.Core.Transcript
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
@@ -38,57 +39,87 @@ withContextCompaction
   -> AgentProgram transient context es
   -> AgentProgram transient context es
 withContextCompaction tokenThreshold program =
-  withContextCompactionUsing tokenThreshold (\_ -> pure ()) program
+  withContextCompactionUsing
+    (\_ agentState -> fst <$> compactAgentState tokenThreshold (pure ()) agentState)
+    program
 
 withContextCompactionNotice
-  :: (Chat.Chat :> es, LLM.LLM :> es, HList.Has NextModelInput transient, HList.Put NextModelInput transient)
+  :: forall es transient context.
+     ( Chat.Chat :> es
+     , LLM.LLM :> es
+     , HList.Has NextModelInput transient
+     , HList.Put NextModelInput transient
+     , HList.Has (AgentEventObservation es) context
+     )
   => Int
   -> AgentProgram transient context es
   -> AgentProgram transient context es
 withContextCompactionNotice tokenThreshold program =
   withContextCompactionUsing
-    tokenThreshold
-    (\_ -> void $ Chat.replyTo program.agentRun.context.message compactionNoticeMessage)
+    (\context agentState -> do
+        (compactedState, compacted) <-
+          compactAgentState
+            tokenThreshold
+            (void $ Chat.replyTo program.agentRun.context.message compactionNoticeMessage)
+            agentState
+        for_ compacted \CompactionDetails{messageCount, tokenUsage} ->
+          void $ (HList.get @(AgentEventObservation es) context).observeAgentEvent ContextCompacted
+            { runId = program.agentRun.runId
+            , turn = agentState.turn
+            , messageCount
+            , tokenUsage
+            }
+        pure compactedState
+    )
     program
 
 withContextCompactionUsing
-  :: (LLM.LLM :> es, HList.Has NextModelInput transient, HList.Put NextModelInput transient)
-  => Int
-  -> (AgentState transient -> Eff es ())
+  :: (MiddlewareContext context -> AgentState transient -> Eff es (AgentState transient))
   -> AgentProgram transient context es
   -> AgentProgram transient context es
-withContextCompactionUsing tokenThreshold notify program =
+withContextCompactionUsing compact program =
   program
     { aroundModelTurn = \context agentState action -> do
-        compactedState <- lift (compactAgentState tokenThreshold notify agentState)
+        compactedState <- lift (compact context agentState)
         program.aroundModelTurn context compactedState action
     }
+
+data CompactionDetails = CompactionDetails
+  { messageCount :: !Int
+  , tokenUsage :: !(Maybe LLM.TokenUsage)
+  }
 
 compactAgentState
   :: (LLM.LLM :> es, HList.Has NextModelInput transient, HList.Put NextModelInput transient)
   => Int
-  -> (AgentState transient -> Eff es ())
+  -> Eff es ()
   -> AgentState transient
-  -> Eff es (AgentState transient)
+  -> Eff es (AgentState transient, Maybe CompactionDetails)
 compactAgentState tokenThreshold notify agentState
   | not (shouldCompact tokenThreshold agentState.modelTokenUsage) =
-      pure agentState
+      pure (agentState, Nothing)
   | otherwise = do
       let modelTranscript = selectedTranscript agentState
           (older, _) = compactableTranscriptParts modelTranscript
       if Seq.null older
-        then pure agentState{modelTokenUsage = Nothing}
+        then pure (agentState{modelTokenUsage = Nothing}, Nothing)
         else do
-          notify agentState
-          summary <- summarizeMessages (Foldable.toList older)
+          notify
+          (summary, tokenUsage) <- summarizeMessages (Foldable.toList older)
           let modelCompactedTranscript = compactTranscriptWithSummary summary modelTranscript
               canonicalCompactedTranscript = compactTranscriptWithSummary summary agentState.transcript
-          pure AgentState
-            { transcript = canonicalCompactedTranscript
-            , turn = agentState.turn
-            , modelTokenUsage = Nothing
-            , transient = HList.put (NextModelInput (Just modelCompactedTranscript)) agentState.transient
-            }
+          pure
+            ( AgentState
+                { transcript = canonicalCompactedTranscript
+                , turn = agentState.turn
+                , modelTokenUsage = Nothing
+                , transient = HList.put (NextModelInput (Just modelCompactedTranscript)) agentState.transient
+                }
+            , Just CompactionDetails
+                { messageCount = Foldable.length modelTranscript.messages
+                , tokenUsage
+                }
+            )
 
 selectedTranscript :: HList.Has NextModelInput transient => AgentState transient -> Transcript
 selectedTranscript agentState =
@@ -114,15 +145,16 @@ splitCompactablePrefix messages =
       (leadingToolResults, rest) = Seq.spanl ((== "tool") . (.role)) newer
   in (older <> leadingToolResults, rest)
 
-summarizeMessages :: LLM.LLM :> es => [LLM.ChatMessage] -> Eff es Text
-summarizeMessages messages =
-  Text.strip <$> LLM.askWithHistory
+summarizeMessages :: LLM.LLM :> es => [LLM.ChatMessage] -> Eff es (Text, Maybe LLM.TokenUsage)
+summarizeMessages messages = do
+  answer <- LLM.askWithTools []
     [ LLM.systemText summarySystemPrompt
     , LLM.userText [i|Summarize this chat transcript for future continuation. Preserve user goals, decisions, constraints, tool results, generated artifacts, unresolved tasks, and any facts needed to answer later follow-up messages.
 
 Transcript JSON:
 #{messagesJson messages}|]
     ]
+  pure (Text.strip answer.content, answer.tokenUsage)
 
 summarySystemPrompt :: Text
 summarySystemPrompt =

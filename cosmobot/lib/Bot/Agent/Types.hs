@@ -87,6 +87,7 @@ data Tool es = Tool
 
 data ToolCallMetadata = ToolCallMetadata
   { agentRunId :: !Text
+  , originRunId :: !Text
   , parent :: !(Maybe Concurrency.Handle)
   }
 
@@ -124,6 +125,17 @@ data AgentEvent
       , contentLength :: !Int
       , toolCalls :: ![LLM.ToolCall]
       , tokenUsage :: !(Maybe LLM.TokenUsage)
+      }
+  | ContextCompacted
+      { runId :: !Text
+      , turn :: !Int
+      , messageCount :: !Int
+      , tokenUsage :: !(Maybe LLM.TokenUsage)
+      }
+  | SubAgentRunStarted
+      { runId :: !Text
+      , childRunId :: !Text
+      , subagentId :: !Text
       }
   | ToolCallStarted
       { runId :: !Text

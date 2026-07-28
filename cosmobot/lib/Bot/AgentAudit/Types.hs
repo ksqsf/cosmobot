@@ -29,13 +29,36 @@ data ToolCallTrace = ToolCallTrace
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 data AgentAuditEvent
-  = ModelTurnFinished
+  = AgentRunStarted
+      { runId :: !Text
+      , messageId :: !(Maybe MessageId)
+      , maxTurns :: !Int
+      , exposedTools :: ![Text]
+      }
+  | ModelTurnStarted
+      { runId :: !Text
+      , turn :: !Int
+      , messageCount :: !Int
+      , exposedTools :: ![Text]
+      }
+  | ModelTurnFinished
       { runId :: !Text
       , turn :: !Int
       , answerKind :: !Text
       , contentLength :: !Int
       , toolCalls :: ![ToolCallTrace]
       , tokenUsage :: !(Maybe LLM.TokenUsage)
+      }
+  | ContextCompacted
+      { runId :: !Text
+      , turn :: !Int
+      , messageCount :: !Int
+      , tokenUsage :: !(Maybe LLM.TokenUsage)
+      }
+  | SubAgentRunStarted
+      { runId :: !Text
+      , childRunId :: !Text
+      , subagentId :: !Text
       }
   | ToolCallStarted
       { runId :: !Text
@@ -51,6 +74,12 @@ data AgentAuditEvent
       , result :: !Text
       , resultLength :: !Int
       , messageIds :: ![Maybe MessageId]
+      }
+  | AgentRunFinished
+      { runId :: !Text
+      , status :: !Text
+      , finalLength :: !Int
+      , turnsUsed :: !Int
       }
   | AgentRunInterrupted
       { runId :: !Text
@@ -100,8 +129,13 @@ data ToolUseDetail = ToolUseDetail
 
 eventRunId :: AgentAuditEvent -> Text
 eventRunId = \case
+  AgentRunStarted{runId} -> runId
+  ModelTurnStarted{runId} -> runId
   ModelTurnFinished{runId} -> runId
+  ContextCompacted{runId} -> runId
+  SubAgentRunStarted{runId} -> runId
   ToolCallStarted{runId} -> runId
   ToolCallFinished{runId} -> runId
+  AgentRunFinished{runId} -> runId
   AgentRunInterrupted{runId} -> runId
   AgentThreadLinked{runId} -> runId

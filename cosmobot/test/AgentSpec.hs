@@ -45,6 +45,7 @@ import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
 import qualified Bot.Resource as ResourceManager
+import qualified Bot.Resource.SubAgent as SubAgentResource
 import qualified Bot.Session as Session
 import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
@@ -73,7 +74,7 @@ import qualified Streaming.ByteString as Q
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
-import Data.Time (UTCTime (..), fromGregorian, getCurrentTime)
+import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
 import Data.Unique
 import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.FileSystem (FileSystem, runFileSystem)
@@ -367,17 +368,22 @@ testSubAgentLifecycle = do
   runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     started <- MVar.newEmptyMVar
     finish <- MVar.newEmptyMVar
-    let childRunner _ _ _ transcript =
+    let childRunner _ _ _ _ _ transcript =
           MVar.putMVar started () >> MVar.takeMVar finish $> ("finished", transcript)
         availableTools = [SandboxTools.sandboxTool]
         tool = SubAgentTools.subagentTool childRunner availableTools
+        descendantMetadata =
+          testToolCallMetadata
+            { Agent.agentRunId = "agent-child"
+            , AgentTypes.originRunId = "agent-root"
+            }
         otherContext = agentContext{Agent.message = testMessage{senderId = Just "other"}}
         schema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode tool.parameters))
     liftIO $ assertBool "subagent create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` schema)
     createRun <- tool.start agentContext
     tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (4 :: Int)])
     liftIO $ assertBool "subagent rejects TTL below five minutes" ("at least 5" `Text.isInfixOf` AgentTypes.toolResultContent tooShort)
-    created <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
+    created <- createRun descendantMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
     liftIO $ resourceId @?= "researcher"
     sendRun <- tool.start otherContext
@@ -385,6 +391,8 @@ testSubAgentLifecycle = do
     liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
     MVar.takeMVar started
     let access = fromRight (error "missing resource access") (ResourceEffect.accessFromMessage otherContext.message)
+    rootResources <- ResourceEffect.listCreatedByRuns access ["agent-root"]
+    liftIO $ map (.resourceId) rootResources @?= ["researcher"]
     generatingDetail <- ResourceEffect.detail access resourceId
     liftIO $ generatingDetail @?= Right (Text.intercalate "\n"
       [ "status: generating"
@@ -412,7 +420,7 @@ testSubAgentWaitOperations = do
   runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     firstGate <- MVar.newEmptyMVar
     secondGate <- MVar.newEmptyMVar
-    let childRunner _ context _ transcript = do
+    let childRunner _ _ _ context _ transcript = do
           let gate
                 | context.systemContext == "first" = firstGate
                 | otherwise = secondGate
@@ -1336,16 +1344,17 @@ testAgentCompactsOldTranscriptContextBeforeModelTurn :: IO ()
 testAgentCompactsOldTranscriptContextBeforeModelTurn = do
   answers <- IORef.newIORef
     [ chatAnswerWithUsage highTokenUsage "" [toolCall "call-1" "message_info" (Aeson.object [])]
+    , chatAnswerWithUsage (LLM.TokenUsage 500 50 550 (Just 100)) "summary" []
     , chatAnswer "done" []
     ]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   let longTranscript =
         Transcript (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
-  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+  records <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
     let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000 agentRun
     _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program longTranscript)
-    pure ()
+    AgentAudit.queryRunAudit (Agent.agentRunId agentRun)
   requests <- IORef.readIORef captured
   case requests of
     [_firstModelRequest, _summaryRequest, compactedRequest] ->
@@ -1363,11 +1372,20 @@ testAgentCompactsOldTranscriptContextBeforeModelTurn = do
           assertFailure [i|expected compacted request messages, got #{show other :: String}|]
     other ->
       assertFailure [i|expected first request, summary request, and compacted request, got #{length other}|]
+  assertBool "context compaction records its own token usage" $
+    any
+      (\case
+        AgentAudit.ContextCompacted{tokenUsage = Just usage} ->
+          usage == LLM.TokenUsage 500 50 550 (Just 100)
+        _ -> False
+      )
+      (map (.event) records)
 
 testAgentAnnouncesContextCompaction :: IO ()
 testAgentAnnouncesContextCompaction = do
   answers <- IORef.newIORef
     [ chatAnswerWithUsage highTokenUsage "" [toolCall "call-1" "message_info" (Aeson.object [])]
+    , chatAnswerWithUsage (LLM.TokenUsage 500 50 550 (Just 100)) "summary" []
     , chatAnswer "done" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -1724,6 +1742,9 @@ testAgentAuditRecordsToolEvents = do
     _ ->
       assertFailure [i|expected one tool use, got #{length toolUses}|]
   assertBool "expected model token usage in audit records" (any hasHighTokenUsage records)
+  assertBool "expected run start in audit records" (any (\case AgentAudit.AgentRunStarted{} -> True; _ -> False) (map (.event) records))
+  assertBool "expected model start in audit records" (any (\case AgentAudit.ModelTurnStarted{} -> True; _ -> False) (map (.event) records))
+  assertBool "expected run finish in audit records" (any (\case AgentAudit.AgentRunFinished{} -> True; _ -> False) (map (.event) records))
 
 testThreadStatsAccumulateRepliedBranch :: IO ()
 testThreadStatsAccumulateRepliedBranch = do
@@ -1747,18 +1768,57 @@ testThreadStatsAccumulateRepliedBranch = do
       rememberActiveThread threads "run-2" (Just answer1) (Just user2) askHandlerMessage "U2" resource transcript1
     addActiveThreadMessage threads active2 answer2
     finishActiveThread threads active2 transcript2
-    persistStatsRun "run-1" answer1 Nothing (LLM.TokenUsage 100 10 110)
-    persistStatsRun "run-2" answer2 (Just answer1.messageId) (LLM.TokenUsage 200 20 220)
+    persistStatsRun "run-1" answer1 Nothing (LLM.TokenUsage 100 10 110 (Just 40))
+    persistStatsRun "run-2" answer2 (Just answer1.messageId) (LLM.TokenUsage 200 20 220 (Just 120))
+    void $ AgentAuditStorage.persistEvent (addUTCTime 4 staleAuditTime) AgentAudit.SubAgentRunStarted
+      { runId = "run-2"
+      , childRunId = "child-run-1"
+      , subagentId = "researcher"
+      }
+    void $ AgentAuditStorage.persistEvent (addUTCTime 4 staleAuditTime) AgentAudit.AgentThreadLinked
+      { runId = "run-2"
+      , linkedMessageId = answer2.messageId
+      , linkedMessageKey = Just answer2
+      , parentMessageId = Just answer1.messageId
+      }
+    persistChildStatsRun "child-run-1" (LLM.TokenUsage 80 10 90 (Just 20))
+    void $ AgentAuditStorage.persistEvent (addUTCTime 9 staleAuditTime) AgentAudit.SubAgentRunStarted
+      { runId = "child-run-1"
+      , childRunId = "child-run-2"
+      , subagentId = "reviewer"
+      }
+    persistChildStatsRun "child-run-2" (LLM.TokenUsage 60 5 65 (Just 30))
+    let createResource runId resourceId =
+          ResourceEffect.createNamedForRun @SubAgentResource.SubAgent runId Nothing resourceId ResourceEffect.Init
+            { message = askHandlerMessage
+            , arguments = SubAgentResource.SubAgentArgs
+                { systemContext = ""
+                , toolNames = []
+                , ttlMinutes = 5
+                }
+            }
+    void (createResource "run-1" "first-resource")
+    void (createResource "run-2" "second-resource")
+    void (createResource "unrelated-run" "unrelated-resource")
     runHandlers (auditHandlers threads) (statsMessage "stats-1" answer1.messageId)
     runHandlers (auditHandlers threads) (statsMessage "stats-2" answer2.messageId)
   IORef.readIORef replies >>= \case
     [firstStats, secondStats] -> do
       assertBool [i|first answer stats should include one run; got #{firstStats}|] ("- runs: 1" `Text.isInfixOf` firstStats)
-      assertBool [i|first answer stats should include only first-run tokens; got #{firstStats}|] ("- tokens: 110 total (100 prompt, 10 completion)" `Text.isInfixOf` firstStats)
+      assertBool [i|first answer stats should include lifecycle timing; got #{firstStats}|] ("- agent time: 3.0s total" `Text.isInfixOf` firstStats)
+      assertBool [i|first answer stats should include context messages; got #{firstStats}|] ("- context messages: 2 now / 2 peak" `Text.isInfixOf` firstStats)
+      assertBool [i|first answer stats should include run config; got #{firstStats}|] ("- run config: 8 max tool turns, 2 exposed tools" `Text.isInfixOf` firstStats)
+      assertBool [i|first answer stats should include only first-run tokens; got #{firstStats}|] ("- tokens: 110 total (100 prompt, 10 completion;" `Text.isInfixOf` firstStats)
+      assertBool [i|first answer stats should include only its resource; got #{firstStats}|] ("- resources: 1" `Text.isInfixOf` firstStats && "`first-resource` (`SubAgent`): ready" `Text.isInfixOf` firstStats)
+      assertBool [i|first answer stats should exclude later resources; got #{firstStats}|] (not ("`second-resource`" `Text.isInfixOf` firstStats))
       assertBool [i|second answer stats should include both runs; got #{secondStats}|] ("- runs: 2" `Text.isInfixOf` secondStats)
-      assertBool [i|second answer stats should accumulate branch tokens; got #{secondStats}|] ("- tokens: 330 total (300 prompt, 30 completion)" `Text.isInfixOf` secondStats)
-      assertBool [i|second answer stats should show current-turn tokens; got #{secondStats}|] ("- current turn: 220 total (200 prompt, 20 completion)" `Text.isInfixOf` secondStats)
+      assertBool [i|second answer stats should show the latest complete context; got #{secondStats}|] ("- tokens: 220 total (200 prompt, 20 completion;" `Text.isInfixOf` secondStats)
+      assertBool [i|second answer stats should show only the incremental current turn; got #{secondStats}|] ("- current turn: 110 total (90 prompt, 20 completion)" `Text.isInfixOf` secondStats)
+      Text.count "request cache: 120 hit, 60.0%" secondStats @?= 1
       assertBool [i|second answer stats should count both model turns; got #{secondStats}|] ("- model turns: 2" `Text.isInfixOf` secondStats)
+      assertBool [i|second answer stats should report recursive subagents separately; got #{secondStats}|] (all (`Text.isInfixOf` secondStats) ["- subagents: 2 runs", "`researcher` (`child-run-1`)", "    - subagents: 1 runs", "`reviewer` (`child-run-2`)", "- tokens: 90 total (80 prompt, 10 completion;", "- tokens: 65 total (60 prompt, 5 completion;"])
+      assertBool [i|second answer stats should include branch resources; got #{secondStats}|] ("- resources: 2" `Text.isInfixOf` secondStats && all (`Text.isInfixOf` secondStats) ["`first-resource`", "`second-resource`"])
+      assertBool [i|thread stats should exclude unrelated resources; got #{secondStats}|] (not ("`unrelated-resource`" `Text.isInfixOf` secondStats))
     other ->
       assertFailure [i|expected two thread stats replies, got #{length other}|]
 
@@ -1786,13 +1846,31 @@ testThreadStatsShowActiveRunningTools = do
     addActiveThreadMessage threads active toolMessage
     void $ enqueueActiveThreadSteer threads steer steer.text
     now <- liftIO getCurrentTime
+    void $ AgentAuditStorage.persistEvent now AgentAudit.AgentRunStarted
+      { runId = "active-run"
+      , messageId = Just original.messageId
+      , maxTurns = 8
+      , exposedTools = ["run_bash"]
+      }
+    void $ AgentAuditStorage.persistEvent now AgentAudit.ModelTurnStarted
+      { runId = "active-run"
+      , turn = 1
+      , messageCount = 2
+      , exposedTools = ["run_bash"]
+      }
     void $ AgentAuditStorage.persistEvent now AgentAudit.ModelTurnFinished
       { runId = "active-run"
       , turn = 1
       , answerKind = "tool_request"
       , contentLength = 0
       , toolCalls = []
-      , tokenUsage = Just (LLM.TokenUsage 100 10 110)
+      , tokenUsage = Just (LLM.TokenUsage 100 10 110 (Just 40))
+      }
+    void $ AgentAuditStorage.persistEvent now AgentAudit.ModelTurnStarted
+      { runId = "active-run"
+      , turn = 2
+      , messageCount = 4
+      , exposedTools = ["run_bash"]
       }
     void $ AgentAuditStorage.persistEvent now AgentAudit.ModelTurnFinished
       { runId = "active-run"
@@ -1800,12 +1878,36 @@ testThreadStatsShowActiveRunningTools = do
       , answerKind = "tool_request"
       , contentLength = 0
       , toolCalls = [AgentAudit.ToolCallTrace "call-1" "run_bash" "{}"]
-      , tokenUsage = Just (LLM.TokenUsage 300 30 330)
+      , tokenUsage = Just (LLM.TokenUsage 300 30 330 (Just 200))
       }
     void $ AgentAuditStorage.persistEvent now AgentAudit.ToolCallStarted
       { runId = "active-run"
       , turn = 2
       , toolCall = AgentAudit.ToolCallTrace "call-1" "run_bash" "{}"
+      }
+    let staleTime = addUTCTime (-10) now
+    void $ AgentAuditStorage.persistEvent staleTime AgentAudit.AgentRunStarted
+      { runId = "stale-run"
+      , messageId = Just original.messageId
+      , maxTurns = 8
+      , exposedTools = ["fetch_url"]
+      }
+    void $ AgentAuditStorage.persistEvent staleTime AgentAudit.ToolCallStarted
+      { runId = "stale-run"
+      , turn = 1
+      , toolCall = AgentAudit.ToolCallTrace "stale-call" "fetch_url" "{}"
+      }
+    void $ AgentAuditStorage.persistEvent staleTime AgentAudit.AgentRunFinished
+      { runId = "stale-run"
+      , status = "answered"
+      , finalLength = 0
+      , turnsUsed = 1
+      }
+    void $ AgentAuditStorage.persistEvent staleTime AgentAudit.AgentThreadLinked
+      { runId = "stale-run"
+      , linkedMessageId = original.messageId
+      , linkedMessageKey = Just original
+      , parentMessageId = Nothing
       }
     for_ ["user-1", "assistant-1", "tool-message-1", "user-2"] \messageId ->
       runHandlers (auditHandlers threads) (statsMessage (textMessageId ("stats-" <> messageIdText messageId)) messageId)
@@ -1815,9 +1917,13 @@ testThreadStatsShowActiveRunningTools = do
   for_ statsReplies \reply -> do
     assertBool "every active alias should report active status" ("- status: active" `Text.isInfixOf` reply)
     assertBool "active stats should include every current-run model turn" ("- model turns: 2" `Text.isInfixOf` reply)
-    assertBool "active stats should aggregate current-turn tokens" ("- current turn: 440 total (400 prompt, 40 completion)" `Text.isInfixOf` reply)
-    assertBool "active stats should include a running tool" ("- tool calls: 1 (0 ok, 0 failed, 0 interrupted, 1 running)" `Text.isInfixOf` reply)
+    assertBool "active stats should show the latest complete context" ("- tokens: 330 total (300 prompt, 30 completion;" `Text.isInfixOf` reply)
+    assertBool "active stats should show the current user turn once" ("- current turn: 330 total (300 prompt, 30 completion)" `Text.isInfixOf` reply)
+    assertBool "active stats should expose current run phase and steer queue" ("- current run: `active-run` (phase: tools, 1 pending steers)" `Text.isInfixOf` reply)
+    assertBool "active stats should expose context message growth" ("- context messages: 4 now / 4 peak" `Text.isInfixOf` reply)
+    assertBool "active stats should separate stale historical tools" ("- tool calls: 2 (0 ok, 0 failed, 0 interrupted, 1 running, 1 stale/unreported)" `Text.isInfixOf` reply)
     assertBool "active stats should name the running tool" ("`run_bash`" `Text.isInfixOf` reply)
+    assertBool "active stats should not list a stale tool as running" (not ("`fetch_url` (`id=" `Text.isInfixOf` reply))
 
 persistStatsRun
   :: (StorageEffect.Storage :> es, KatipE :> es, IOE :> es)
@@ -1827,19 +1933,70 @@ persistStatsRun
   -> LLM.TokenUsage
   -> Eff es ()
 persistStatsRun runId linkedKey parentMessageId tokenUsage = do
-  void $ AgentAuditStorage.persistEvent staleAuditTime AgentAudit.ModelTurnFinished
+  void $ AgentAuditStorage.persistEvent staleAuditTime AgentAudit.AgentRunStarted
+    { runId
+    , messageId = Just linkedKey.messageId
+    , maxTurns = 8
+    , exposedTools = ["sandbox", "subagent"]
+    }
+  void $ AgentAuditStorage.persistEvent (addUTCTime 1 staleAuditTime) AgentAudit.ModelTurnStarted
+    { runId
+    , turn = 1
+    , messageCount = 2
+    , exposedTools = ["sandbox", "subagent"]
+    }
+  void $ AgentAuditStorage.persistEvent (addUTCTime 2 staleAuditTime) AgentAudit.ModelTurnFinished
     { runId
     , turn = 1
     , answerKind = "final"
     , contentLength = 2
     , toolCalls = []
-    , tokenUsage = Just tokenUsage
+      , tokenUsage = Just tokenUsage
+      }
+  void $ AgentAuditStorage.persistEvent (addUTCTime 3 staleAuditTime) AgentAudit.AgentRunFinished
+    { runId
+    , status = "answered"
+    , finalLength = 2
+    , turnsUsed = 1
     }
-  void $ AgentAuditStorage.persistEvent staleAuditTime AgentAudit.AgentThreadLinked
+  void $ AgentAuditStorage.persistEvent (addUTCTime 3 staleAuditTime) AgentAudit.AgentThreadLinked
     { runId
     , linkedMessageId = linkedKey.messageId
     , linkedMessageKey = Just linkedKey
     , parentMessageId
+    }
+
+persistChildStatsRun
+  :: (StorageEffect.Storage :> es, KatipE :> es, IOE :> es)
+  => Text
+  -> LLM.TokenUsage
+  -> Eff es ()
+persistChildStatsRun runId tokenUsage = do
+  void $ AgentAuditStorage.persistEvent (addUTCTime 5 staleAuditTime) AgentAudit.AgentRunStarted
+    { runId
+    , messageId = Nothing
+    , maxTurns = 8
+    , exposedTools = ["sandbox"]
+    }
+  void $ AgentAuditStorage.persistEvent (addUTCTime 6 staleAuditTime) AgentAudit.ModelTurnStarted
+    { runId
+    , turn = 1
+    , messageCount = 1
+    , exposedTools = ["sandbox"]
+    }
+  void $ AgentAuditStorage.persistEvent (addUTCTime 7 staleAuditTime) AgentAudit.ModelTurnFinished
+    { runId
+    , turn = 1
+    , answerKind = "final"
+    , contentLength = 4
+    , toolCalls = []
+    , tokenUsage = Just tokenUsage
+    }
+  void $ AgentAuditStorage.persistEvent (addUTCTime 8 staleAuditTime) AgentAudit.AgentRunFinished
+    { runId
+    , status = "answered"
+    , finalLength = 4
+    , turnsUsed = 1
     }
 
 statsMessage :: MessageId -> MessageId -> IncomingMessage
@@ -2200,6 +2357,8 @@ testLLMStreamingResponsePreservesTokenUsage = do
         [ "prompt_tokens" Aeson..= (900 :: Int)
         , "completion_tokens" Aeson..= (200 :: Int)
         , "total_tokens" Aeson..= (1100 :: Int)
+        , "prompt_tokens_details" Aeson..= Aeson.object
+            ["cached_tokens" Aeson..= (600 :: Int)]
         ]
       payloads =
         [ streamPayload (Aeson.object ["content" Aeson..= ("done" :: Text)])
@@ -3715,6 +3874,7 @@ highTokenUsage =
     { promptTokens = 900
     , completionTokens = 200
     , totalTokens = 1100
+    , cachedPromptTokens = Just 600
     }
 
 hasHighTokenUsage :: AgentAudit.AgentAuditRecord -> Bool
@@ -3752,7 +3912,7 @@ superuserContext =
 
 testToolCallMetadata :: Agent.ToolCallMetadata
 testToolCallMetadata =
-  Agent.ToolCallMetadata{agentRunId = "agent-test", parent = Nothing}
+  Agent.ToolCallMetadata{agentRunId = "agent-test", originRunId = "agent-test", parent = Nothing}
 
 runAgentWithToolMessageCapture
   :: Int

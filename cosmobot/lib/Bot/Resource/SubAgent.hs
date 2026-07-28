@@ -26,7 +26,9 @@ import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
 
 type SubAgentRunner es =
-  Maybe Concurrency.Handle
+  ToolCallMetadata
+  -> Text
+  -> Concurrency.Handle
   -> AgentContext es
   -> [Tool es]
   -> Transcript
@@ -103,12 +105,14 @@ instance
 sendPrompt
   :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
   => SubAgentRunner es
+  -> ToolCallMetadata
+  -> Text
   -> [Tool es]
   -> AgentContext es
   -> SubAgent
   -> Text
   -> Eff es (Either Text ())
-sendPrompt runner availableTools context subagent prompt =
+sendPrompt runner metadata subagentId availableTools context subagent prompt =
   MVar.modifyMVar subagent.state \snapshot ->
     case snapshot.active of
       Just _ -> pure (snapshot, Left "Subagent is still generating.")
@@ -117,7 +121,7 @@ sendPrompt runner availableTools context subagent prompt =
             selectedTools = filter ((`elem` subagent.arguments.toolNames) . (.name)) availableTools
             childContext = context {Agent.systemContext = subagent.arguments.systemContext}
         worker <- Concurrency.forkWithHandle "subagent" \worker -> do
-          result <- trySync (runner (Just worker) childContext selectedTools transcript)
+          result <- trySync (runner metadata subagentId worker childContext selectedTools transcript)
           MVar.modifyMVar_ subagent.state (pure . finishRun worker result)
         pure (snapshot {active = Just worker, runs = worker : snapshot.runs}, Right ())
 

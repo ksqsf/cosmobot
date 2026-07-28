@@ -5,13 +5,18 @@ Stability   : experimental
 -}
 module Bot.Agent.Middleware.Observation.Types
   ( ObservationContext (..)
+  , AgentEventObservation (..)
   , ToolResultObservation (..)
   , emptyObservationContext
   )
 where
 
-import Bot.Agent.Types (ToolResult)
+import Bot.Agent.Types (AgentEvent, ToolResult)
 import Bot.Prelude
+
+newtype AgentEventObservation es = AgentEventObservation
+  { observeAgentEvent :: AgentEvent -> Eff es ObservationContext
+  }
 
 newtype ObservationContext = ObservationContext
   { auditToolUseId :: Maybe Integer

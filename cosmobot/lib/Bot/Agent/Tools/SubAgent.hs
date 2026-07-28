@@ -58,7 +58,7 @@ subagentTool runner availableTools =
               createSubAgent context metadata requestedName systemPrompt toolNames ttlMinutes
             Send resourceId prompt ->
               use access resourceId \subagent ->
-                SubAgent.sendPrompt runner availableTools context subagent prompt
+                SubAgent.sendPrompt runner metadata resourceId availableTools context subagent prompt
                   <&> fmap (const "Prompt sent.")
             Query resourceId ->
               use access resourceId (fmap Right . SubAgent.queryOutput)
@@ -115,8 +115,8 @@ subagentTool runner availableTools =
             <&> either resourceToolFailure (toolText . ("Subagent created: " <>))
       where
         createResource = \case
-          Nothing -> Resource.createAssociated @SubAgent.SubAgent metadata.parent
-          Just name -> Resource.createAssociatedNamed @SubAgent.SubAgent metadata.parent name
+          Nothing -> Resource.createForRun @SubAgent.SubAgent metadata.originRunId metadata.parent
+          Just name -> Resource.createNamedForRun @SubAgent.SubAgent metadata.originRunId metadata.parent name
 
         systemContext
           | Text.null (Text.strip systemPrompt) = context.systemContext

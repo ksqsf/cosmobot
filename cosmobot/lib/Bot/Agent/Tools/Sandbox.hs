@@ -55,7 +55,7 @@ sandboxTool = Tool
           Left err -> pure (resourceToolFailure err)
           Right access -> case call of
             SandboxCreate requestedName ttlMinutes ->
-              createSandbox metadata.parent requestedName Resource.Init
+              createSandbox metadata requestedName Resource.Init
                 { message = context.message
                 , arguments = Sandbox.SandboxArgs{image = context.toolConfig.sandboxImage, ttlMinutes}
                 } <&> \case
@@ -83,9 +83,9 @@ sandboxTool = Tool
               Resource.rename access sandboxId newName <&> either resourceToolFailure (toolText . ("Sandbox renamed: " <>))
   }
   where
-    createSandbox parent = \case
-      Nothing -> Resource.createAssociated @Sandbox.Sandbox parent
-      Just name -> Resource.createAssociatedNamed @Sandbox.Sandbox parent name
+    createSandbox metadata = \case
+      Nothing -> Resource.createForRun @Sandbox.Sandbox metadata.originRunId metadata.parent
+      Just name -> Resource.createNamedForRun @Sandbox.Sandbox metadata.originRunId metadata.parent name
 
 data SandboxCall
   = SandboxCreate !(Maybe Text) !Int

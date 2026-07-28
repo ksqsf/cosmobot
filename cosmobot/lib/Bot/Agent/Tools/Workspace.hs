@@ -79,8 +79,8 @@ runWorkspaceCall context metadata call =
         Resource.rename access resourceId newName <&> first renderResourceError <&> resultWith "Workspace renamed."
   where
     createWorkspace = \case
-      Nothing -> Resource.createAssociated @Workspace.Workspace metadata.parent
-      Just name -> Resource.createAssociatedNamed @Workspace.Workspace metadata.parent name
+      Nothing -> Resource.createForRun @Workspace.Workspace metadata.originRunId metadata.parent
+      Just name -> Resource.createNamedForRun @Workspace.Workspace metadata.originRunId metadata.parent name
 
     use
       :: forall a. Resource.ResourceAccess

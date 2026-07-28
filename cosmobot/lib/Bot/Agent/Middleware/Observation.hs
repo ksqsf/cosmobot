@@ -60,15 +60,15 @@ withObservation
   :: forall transient context es.
      (HList.Has ToolLimitContext context, HList.Has (ToolResultObservation es) context)
   => AgentObserver ObservationContext es
-  -> AgentProgram transient (ObservationContext ': context) es
+  -> AgentProgram transient (ObservationContext ': AgentEventObservation es ': context) es
   -> AgentProgram transient context es
 withObservation observer program =
   program
     { aroundAgentRun = \context action ->
         withObservedAgentRun observer (HList.get @ToolLimitContext context) program.agentRun (map (.name) program.agentRun.exposedTools) do
-          program.aroundAgentRun (emptyObservationContext HList.:& context) action
+          program.aroundAgentRun (observedContext emptyObservationContext context) action
     , modelInputTranscript = \context agentState ->
-        program.modelInputTranscript (emptyObservationContext HList.:& context) agentState
+        program.modelInputTranscript (observedContext emptyObservationContext context) agentState
     , aroundModelTurn = \context agentState action ->
         let turnInfo = ObservedModelTurn
               { runId = program.agentRun.runId
@@ -77,9 +77,9 @@ withObservation observer program =
               , exposedTools = map (.name) program.agentRun.exposedTools
               , finished = modelDecisionFinished program.agentRun.runId agentState.turn
               }
-        in withObservedModelTurn observer turnInfo (program.aroundModelTurn (emptyObservationContext HList.:& context) agentState action)
+        in withObservedModelTurn observer turnInfo (program.aroundModelTurn (observedContext emptyObservationContext context) agentState action)
     , aroundToolTurn = \context toolState action ->
-        program.aroundToolTurn (emptyObservationContext HList.:& context) toolState action
+        program.aroundToolTurn (observedContext emptyObservationContext context) toolState action
     , aroundToolCall = \turn toolCall context action ->
         let observedCall = ObservedToolCall
               { runId = program.agentRun.runId
@@ -89,9 +89,12 @@ withObservation observer program =
             toolResultObservation =
               HList.get @(ToolResultObservation es) context
         in withObservedToolCall toolResultObservation.observeToolResult observer observedCall \observation ->
-             program.aroundToolCall turn toolCall (observation HList.:& context) action
+             program.aroundToolCall turn toolCall (observedContext observation context) action
     }
   where
+    observedContext observation context =
+      observation HList.:& AgentEventObservation observer.observe HList.:& context
+
     modelDecisionFinished runId turn = \case
       ModelAnswered AgentCompletion{finalText, tokenUsage} ->
         ModelTurnFinished
