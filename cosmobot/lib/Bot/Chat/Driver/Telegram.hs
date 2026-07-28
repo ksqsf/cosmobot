@@ -412,6 +412,7 @@ getMessageContentTelegram driver message messageId =
                     { messageId = Just (integerMessageId referenced.messageId)
                     , senderDisplayName = telegramMessageSenderDisplayName referenced
                     , senderIdentifier = telegramMessageSenderIdentifier referenced
+                    , senderIsBot = maybe False (.isBot) referenced.from
                     , text = messageText referenced
                     , imageUrls = imageUrls
                     , files

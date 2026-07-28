@@ -32,6 +32,7 @@ module Bot.Core.Route
   , RouteHandler
   , continueOn
   , stopOn
+  , guardRouteM
   , requireAuth
   , withHelp
   , collectRouteHelp
@@ -199,6 +200,18 @@ continueOn =
 stopOn :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> Route es
 stopOn =
   onMatch StopWith
+
+-- | Skip an otherwise matched route unless its effectful guard passes.
+guardRouteM :: (IncomingMessage -> Eff es Bool) -> Route es -> Route es
+guardRouteM allowed route =
+  route
+    { decide = \message ->
+        route.decide message >>= \case
+          Skip ->
+            pure Skip
+          matched ->
+            allowed message <&> \passes -> if passes then matched else Skip
+    }
 
 onMatch
   :: (Eff es () -> RouteDecision es)

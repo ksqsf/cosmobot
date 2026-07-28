@@ -1372,6 +1372,7 @@ matrixReferencedMessageFromEvent event = do
     { messageId = matrixEventMessageId <$> event.eventId
     , senderDisplayName = Just event.sender
     , senderIdentifier = Just event.sender
+    , senderIsBot = False
     , text = Text.strip body
     , imageUrls
     , files
@@ -1418,6 +1419,7 @@ normalizeMatrixReferencedEvent driver originalEvent =
         { messageId = message.messageId
         , senderDisplayName = message.senderDisplayName
         , senderIdentifier = message.senderIdentifier
+        , senderIsBot = Just event.sender == driver.config.userId
         , text = message.text
         , imageUrls
         , files

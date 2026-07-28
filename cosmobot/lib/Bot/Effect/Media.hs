@@ -210,6 +210,7 @@ normalizeReferencedMessage message = do
     { messageId = message.messageId
     , senderDisplayName = message.senderDisplayName
     , senderIdentifier = message.senderIdentifier
+    , senderIsBot = message.senderIsBot
     , text = message.text
     , imageUrls
     , files

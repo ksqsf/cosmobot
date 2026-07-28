@@ -263,6 +263,7 @@ data ReferencedMessage = ReferencedMessage
   { messageId :: !(Maybe MessageId)
   , senderDisplayName :: !(Maybe Text)
   , senderIdentifier :: !(Maybe Text)
+  , senderIsBot :: !Bool
   , text      :: !Text
   , imageUrls :: ![Text]
   , files     :: ![MessageFile]

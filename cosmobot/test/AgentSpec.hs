@@ -215,6 +215,7 @@ main =
       , testCase "ask handler passes referenced images to image_edit tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "ask handler includes referenced image URLs in text context" testAskHandlerIncludesReferencedImageUrlsInTextContext
       , testCase "ask handler includes current and referenced files in text context" testAskHandlerIncludesFilesInTextContext
+      , testCase "ask handler skips replies to non-bot messages" testAskHandlerSkipsRepliesToNonBotMessages
       , testCase "ACP ask handler continues durable session transcript" testAcpAskHandlerContinuesDurableSessionTranscript
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
@@ -653,6 +654,7 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
         { messageId = Just "70001"
         , senderDisplayName = Just "Bob"
         , senderIdentifier = Just "10001"
+        , senderIsBot = False
         , text = ""
         , imageUrls = [referencedImage]
         , files = []
@@ -680,6 +682,7 @@ testAskHandlerIncludesReferencedImageUrlsInTextContext = do
         { messageId = Just "70001"
         , senderDisplayName = Just "Bob"
         , senderIdentifier = Just "10001"
+        , senderIsBot = False
         , text = "original image"
         , imageUrls = [referencedImage]
         , files = []
@@ -721,6 +724,7 @@ testAskHandlerIncludesFilesInTextContext = do
         { messageId = Just "70001"
         , senderDisplayName = Just "Bob"
         , senderIdentifier = Just "10001"
+        , senderIsBot = False
         , text = ""
         , imageUrls = []
         , files = [referencedFile]
@@ -753,6 +757,41 @@ testAskHandlerIncludesFilesInTextContext = do
       assertBool ("current file should appear in text context: " <> Text.unpack userText) ("附件：new.txt (media:mf_new)" `Text.isInfixOf` userText)
     Nothing ->
       assertFailure "expected captured LLM request"
+
+testAskHandlerSkipsRepliesToNonBotMessages :: IO ()
+testAskHandlerSkipsRepliesToNonBotMessages = do
+  answers <- IORef.newIORef []
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  rendered <- IORef.newIORef ([] :: [Text])
+  let referenced = ReferencedMessage
+        { messageId = Just "70001"
+        , senderDisplayName = Just "Bob"
+        , senderIdentifier = Just "10001"
+        , senderIsBot = False
+        , text = "not a bot message"
+        , imageUrls = []
+        , files = []
+        }
+      message = askHandlerMessage
+        { replyToMessageId = Just "70001"
+        , text = "follow up"
+        }
+  _ <- runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    defaultTestSkillsConfig
+    rendered
+    (Just captured)
+    answers
+    (ChatMock Nothing Nothing Nothing)
+    (Just referenced)
+    (\_ _ -> pure "unused image answer")
+    (\_ _ _ _ -> pure "unused image edit answer") do
+      threads <- newThreadStore
+      before <- map (.id) . (.entries) <$> Concurrency.list
+      runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
+      afterSnapshot <- map (.id) . (.entries) <$> Concurrency.list
+      liftIO $ afterSnapshot @?= before
+  IORef.readIORef captured >>= assertBool "non-bot reply should not call the LLM" . null
 
 testAcpAskHandlerContinuesDurableSessionTranscript :: IO ()
 testAcpAskHandlerContinuesDurableSessionTranscript = do

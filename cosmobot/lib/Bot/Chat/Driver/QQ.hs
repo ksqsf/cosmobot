@@ -723,7 +723,7 @@ getMessageContentQQ driver chatId messageId = do
         Nothing ->
           pure Nothing
         Just value ->
-          traverse (normalizeReferencedFiles chatId <=< appendForwardedMessageText driver (referencedMessageForwardIds value)) (referencedMessageFromValue value)
+          traverse (normalizeReferencedFiles chatId <=< appendForwardedMessageText driver (referencedMessageForwardIds value)) (referencedMessageFromValue driver.config.botQQ value)
 
 normalizeQQMessageFiles :: Media.Media :> es => IncomingMessage -> Eff es IncomingMessage
 normalizeQQMessageFiles message = do
@@ -753,6 +753,7 @@ normalizeReferencedFiles chatId message = do
     { messageId = message.messageId
     , senderDisplayName = message.senderDisplayName
     , senderIdentifier = message.senderIdentifier
+    , senderIsBot = message.senderIsBot
     , text = message.text
     , imageUrls = message.imageUrls
     , files
@@ -870,11 +871,11 @@ parseIntegerUserId raw =
       Nothing
 
 referencedWithText :: ReferencedMessage -> Text -> ReferencedMessage
-referencedWithText ReferencedMessage{messageId, senderDisplayName, senderIdentifier, imageUrls, files} text =
-  ReferencedMessage{messageId, senderDisplayName, senderIdentifier, text, imageUrls, files}
+referencedWithText ReferencedMessage{messageId, senderDisplayName, senderIdentifier, senderIsBot, imageUrls, files} text =
+  ReferencedMessage{messageId, senderDisplayName, senderIdentifier, senderIsBot, text, imageUrls, files}
 
-referencedMessageFromValue :: Aeson.Value -> Maybe ReferencedMessage
-referencedMessageFromValue = Aeson.parseMaybe $
+referencedMessageFromValue :: Maybe Integer -> Aeson.Value -> Maybe ReferencedMessage
+referencedMessageFromValue botQQ = Aeson.parseMaybe $
   Aeson.withObject "ReferencedMessage" $ \o -> do
     rawMessageId <- o Aeson..:? "message_id"
     message <- o Aeson..:? "message"
@@ -886,6 +887,7 @@ referencedMessageFromValue = Aeson.parseMaybe $
     let files = maybe [] messageFiles message
     let senderDisplayName = sender >>= qqSenderDisplayName
     let senderIdentifier = sender >>= qqSenderIdentifier
+    let senderIsBot = senderIdentifier == (show <$> botQQ)
     pure ReferencedMessage{..}
 
 qqSenderDisplayName :: Aeson.Value -> Maybe Text

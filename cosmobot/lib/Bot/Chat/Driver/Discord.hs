@@ -566,6 +566,7 @@ getMessageContentDiscord driver message messageId =
         { messageId = Just (textMessageId fetched.id)
         , senderDisplayName = fetched.author.globalName <|> fetched.author.username
         , senderIdentifier = Just fetched.author.id
+        , senderIsBot = fetched.author.bot
         , text = fetched.content
         , imageUrls = messageImageUrls fetched
         , files = messageFiles fetched

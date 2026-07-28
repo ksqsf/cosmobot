@@ -214,6 +214,7 @@ continueRoute
   -> ThreadStore
   -> RouteHandler es
 continueRoute toolCfg cfg threads =
+  guardRouteM replyReferencesBot $
   stopOn continuedMessage \message parentId ->
     Concurrency.fireWithHandle "ask.continue" \resource -> do
       let parentKey = threadMessageKey message parentId
@@ -230,6 +231,10 @@ continueRoute toolCfg cfg threads =
   where
     continuedMessage =
       replyToMessage <* notAskPrefix cfg <* notCommand cfg.drawCommand
+
+replyReferencesBot :: Chat.Chat :> es => IncomingMessage -> Eff es Bool
+replyReferencesBot =
+  fmap (maybe False (.senderIsBot)) . fetchReferencedMessage
 
 askPrefix :: AskHandlerConfig -> MessageFilter Text
 askPrefix cfg =
