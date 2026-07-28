@@ -84,6 +84,10 @@ clearConsumedModelInput = \case
           { transient = HList.put (NextModelInput Nothing) toolState.agentState.transient
           }
       }
+  ModelContinues agentState ->
+    ModelContinues agentState
+      { transient = HList.put (NextModelInput Nothing) agentState.transient
+      }
 
 compactLargeToolResultsInMessages :: Media.Media :> es => [LLM.ChatMessage] -> Eff es [LLM.ChatMessage]
 compactLargeToolResultsInMessages =

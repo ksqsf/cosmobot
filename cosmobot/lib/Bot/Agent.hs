@@ -16,6 +16,7 @@ module Bot.Agent
   , AgentResult (..)
   , AgentStreamOutput (..)
   , ToolEmittedMessageSink (..)
+  , SteeringControl (..)
   , AgentFailureCategory (..)
   , AgentFailure (..)
   , AgentException (..)
@@ -35,6 +36,7 @@ module Bot.Agent
   , withLinkingToolEmittedMessagesToThread
   , withNormalizingToolReplies
   , withRecordingToolSelfMessages
+  , withSteering
   , withTypingNotification
   , runAgent
   , runAgentWithParent
@@ -59,6 +61,10 @@ import Bot.Agent.Middleware.Continuation
 import Bot.Agent.Middleware.Observation
   ( ObservationContext
   , withObservation
+  )
+import Bot.Agent.Middleware.Steering
+  ( SteeringControl (..)
+  , withSteering
   )
 import Bot.Agent.Middleware.Tools
   ( withToolFailureRecovery
@@ -305,6 +311,8 @@ agentStreamAnswer =
     AgentContentDelta chunk ->
       chunk
     AgentToolCallNotification{} ->
+      ""
+    AgentReplyBoundary ->
       ""
 
 agentRequestMessages :: AgentContext es -> Transcript -> [LLM.ChatMessage]

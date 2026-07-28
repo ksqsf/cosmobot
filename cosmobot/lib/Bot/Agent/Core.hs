@@ -37,6 +37,7 @@ data AgentResult = AgentResult
 data AgentStreamOutput
   = AgentContentDelta !Text
   | AgentToolCallNotification !(NonEmpty LLM.ToolCall)
+  | AgentReplyBoundary
 
 data AgentCompletion = AgentCompletion
   { result :: !AgentResult
@@ -73,6 +74,7 @@ data AgentState transient = AgentState
 data ModelDecision transient
   = ModelAnswered !AgentCompletion
   | ModelNeedsTools !(ToolTurnState transient)
+  | ModelContinues !(AgentState transient)
 
 type ModelTurn transient es =
   AgentState transient -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)
@@ -149,4 +151,6 @@ runAgentLoop program context modelTurn toolTurn agentState = do
       pure completion
     ModelNeedsTools toolState -> do
       continuedState <- lift (toolTurn toolState)
+      runAgentLoop program context modelTurn toolTurn continuedState
+    ModelContinues continuedState ->
       runAgentLoop program context modelTurn toolTurn continuedState

@@ -78,8 +78,9 @@ askHandlers
   -> ThreadStore
   -> [RouteHandler es]
 askHandlers toolCfg cfg threads =
-  [ drawRoute cfg threads
-  , haltRoute threads
+  [ haltRoute threads
+  , steerRoute threads
+  , drawRoute cfg threads
   , askRoute toolCfg cfg threads
   , privateRoute toolCfg cfg threads
   , mentionRoute toolCfg cfg threads
@@ -126,6 +127,21 @@ haltRoute
 haltRoute threads =
   withHelp (RouteHelp "!halt [all|<id>...]" "List or stop active agent threads in this chat.") $
   stopOn (command "!halt") (handleHalt threads)
+
+steerRoute
+  :: (Prim :> es, Concurrent :> es)
+  => ThreadStore
+  -> RouteHandler es
+steerRoute threads =
+  guardRouteM (\message -> enqueueActiveThreadSteer threads message (Text.strip message.text)) $
+    stopOn steeringMessage \_ _ -> pure ()
+  where
+    steeringMessage =
+      matching \message ->
+        isJust message.replyToMessageId
+          && not (Text.null (Text.strip message.text))
+          && null message.imageUrls
+          && null message.files
 
 handleHalt
   :: (Chat.Chat :> es, Storage.Storage :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es, Concurrent :> es)
@@ -214,7 +230,7 @@ continueRoute
   -> ThreadStore
   -> RouteHandler es
 continueRoute toolCfg cfg threads =
-  guardRouteM replyReferencesBot $
+  guardRouteM (replyReferencesThread threads) $
   stopOn continuedMessage \message parentId ->
     Concurrency.fireWithHandle "ask.continue" \resource -> do
       let parentKey = threadMessageKey message parentId
@@ -232,9 +248,24 @@ continueRoute toolCfg cfg threads =
     continuedMessage =
       replyToMessage <* notAskPrefix cfg <* notCommand cfg.drawCommand
 
-replyReferencesBot :: Chat.Chat :> es => IncomingMessage -> Eff es Bool
-replyReferencesBot =
-  fmap (maybe False (.senderIsBot)) . fetchReferencedMessage
+replyReferencesThread
+  :: (Chat.Chat :> es, Storage.Storage :> es, Prim :> es, Concurrent :> es)
+  => ThreadStore
+  -> IncomingMessage
+  -> Eff es Bool
+replyReferencesThread threads message =
+  fetchReferencedMessage message >>= \case
+    Just referenced
+      | referenced.senderIsBot
+          || (isJust message.digest.botId && referenced.senderIdentifier == message.digest.botId) ->
+          pure True
+      | isJust message.senderId
+      , referenced.senderIdentifier == message.senderId ->
+          case threadMessageKey message <$> message.replyToMessageId of
+            Nothing -> pure False
+            Just messageKey -> isJust <$> lookupThreadTranscript threads messageKey
+    _ ->
+      pure False
 
 askPrefix :: AskHandlerConfig -> MessageFilter Text
 askPrefix cfg =

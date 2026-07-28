@@ -173,6 +173,7 @@ library
         Bot.Agent.Middleware.Continuation
         Bot.Agent.Middleware.Observation
         Bot.Agent.Middleware.Observation.Types
+        Bot.Agent.Middleware.Steering
         Bot.Agent.Middleware.ToolEmittedMessage
         Bot.Agent.Middleware.ToolReplyNormalization
         Bot.Agent.Middleware.ToolResultCompaction

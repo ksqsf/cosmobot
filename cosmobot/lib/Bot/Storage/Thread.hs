@@ -18,6 +18,9 @@ module Bot.Storage.Thread
   , rememberThreadTranscriptFrom
   , rememberActiveThread
   , addActiveThreadMessage
+  , enqueueActiveThreadSteer
+  , drainActiveThreadSteers
+  , completeActiveThreadSteering
   , updateActiveThread
   , finishActiveThread
   , finishActiveThreadCurrent
@@ -74,12 +77,19 @@ data ActiveThread = ActiveThread
   , activePrompt :: !Text
   , activeParentMessageKey :: !(Maybe ThreadMessageKey)
   , activeMessageKeys :: !(IORef [ThreadMessageKey])
+  , activeSteering :: !(MVar.MVar SteeringState)
   , activeCurrent :: !(IORef Transcript)
   , activeDone :: !(MVar.MVar Transcript)
   , activeHandle :: !Handle
   }
 
 newtype ActiveThreadHandle = ActiveThreadHandle ActiveThread
+
+data SteeringState
+  = SteeringOpen !(Seq Text)
+  | SteeringCompleted
+  | SteeringFinishing
+  deriving (Eq)
 
 data ActiveChatScope = ActiveChatScope !ChatPlatform !(Either Integer Text)
   deriving (Eq)
@@ -167,6 +177,7 @@ rememberActiveThread
   -> Eff es (Maybe ActiveThreadHandle)
 rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey messageKey message prompt activeHandle transcript = do
   messageKeys <- newIORef (maybeToList messageKey)
+  steering <- MVar.newMVar (SteeringOpen Seq.empty)
   current <- newIORef transcript
   done <- MVar.newEmptyMVar
   let active = ActiveThread
@@ -175,6 +186,7 @@ rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey
         , activePrompt = prompt
         , activeParentMessageKey = parentMessageKey
         , activeMessageKeys = messageKeys
+        , activeSteering = steering
         , activeCurrent = current
         , activeDone = done
         , activeHandle
@@ -184,8 +196,63 @@ rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey
     in (foldl' (\next key -> Map.insert key active next) activeMap keys, ())
   pure (Just (ActiveThreadHandle active))
 
-addActiveThreadMessage :: Prim :> es => ThreadStore -> ActiveThreadHandle -> ThreadMessageKey -> Eff es ()
-addActiveThreadMessage ThreadStore{activeThreadStore = activeRef} (ActiveThreadHandle active) messageKey = do
+addActiveThreadMessage :: (Prim :> es, Concurrent :> es) => ThreadStore -> ActiveThreadHandle -> ThreadMessageKey -> Eff es ()
+addActiveThreadMessage ThreadStore{activeThreadStore = activeRef} (ActiveThreadHandle active) messageKey =
+  MVar.modifyMVar_ active.activeSteering \steeringState -> do
+    unless (steeringState == SteeringFinishing) $
+      addMessageAlias activeRef active messageKey
+    pure steeringState
+
+enqueueActiveThreadSteer
+  :: (Prim :> es, Concurrent :> es)
+  => ThreadStore
+  -> IncomingMessage
+  -> Text
+  -> Eff es Bool
+enqueueActiveThreadSteer ThreadStore{activeThreadStore = activeRef} message steer =
+  case threadMessageKey message <$> message.replyToMessageId of
+    Nothing ->
+      pure False
+    Just replyKey -> do
+      active <- Map.lookup (ActiveThreadMessage replyKey) <$> readIORef activeRef
+      case active of
+        Just activeThread
+          | mayManageActiveThread message activeThread ->
+              MVar.modifyMVar activeThread.activeSteering \case
+                SteeringOpen queued -> do
+                  traverse_ (addMessageAlias activeRef activeThread . threadMessageKey message) message.messageId
+                  pure (SteeringOpen (queued Seq.|> steer), True)
+                steeringState ->
+                  pure (steeringState, False)
+        _ ->
+          pure False
+
+drainActiveThreadSteers :: Concurrent :> es => ActiveThreadHandle -> Eff es [Text]
+drainActiveThreadSteers (ActiveThreadHandle active) =
+  MVar.modifyMVar active.activeSteering \case
+    SteeringOpen queued ->
+      pure (SteeringOpen Seq.empty, Foldable.toList queued)
+    steeringState ->
+      pure (steeringState, [])
+
+completeActiveThreadSteering :: Concurrent :> es => ActiveThreadHandle -> Eff es (Maybe [Text])
+completeActiveThreadSteering (ActiveThreadHandle active) =
+  MVar.modifyMVar active.activeSteering \case
+    SteeringOpen queued
+      | Seq.null queued ->
+          pure (SteeringCompleted, Nothing)
+      | otherwise ->
+          pure (SteeringOpen Seq.empty, Just (Foldable.toList queued))
+    steeringState ->
+      pure (steeringState, Nothing)
+
+addMessageAlias
+  :: Prim :> es
+  => IORef (Map ActiveThreadKey ActiveThread)
+  -> ActiveThread
+  -> ThreadMessageKey
+  -> Eff es ()
+addMessageAlias activeRef active messageKey = do
   atomicModifyIORef' active.activeMessageKeys \messageKeys ->
     let next = if messageKey `elem` messageKeys then messageKeys else messageKey : messageKeys
     in (next, ())
@@ -203,13 +270,19 @@ finishActiveThread
   -> Transcript
   -> Eff es ()
 finishActiveThread store@ThreadStore{activeThreadStore = activeRef} (ActiveThreadHandle active) transcript = do
-  updateActiveThread (ActiveThreadHandle active) transcript
-  messageKeys <- readIORef active.activeMessageKeys
-  traverse_ (\messageKey -> rememberThreadTranscriptFrom store active.activeParentMessageKey (Just messageKey) transcript) messageKeys
-  void $ MVar.tryPutMVar active.activeDone transcript
-  atomicModifyIORef' activeRef \activeMap ->
-    let keys = ActiveThreadId active.activeHandle.handleId : map ActiveThreadMessage messageKeys
-    in (foldl' (flip Map.delete) activeMap keys, ())
+  messageKeys <- MVar.modifyMVar active.activeSteering \case
+    SteeringFinishing ->
+      pure (SteeringFinishing, Nothing)
+    _ -> do
+      keys <- readIORef active.activeMessageKeys
+      pure (SteeringFinishing, Just keys)
+  for_ messageKeys \keys -> do
+    updateActiveThread (ActiveThreadHandle active) transcript
+    traverse_ (\messageKey -> rememberThreadTranscriptFrom store active.activeParentMessageKey (Just messageKey) transcript) keys
+    void $ MVar.tryPutMVar active.activeDone transcript
+    atomicModifyIORef' activeRef \activeMap ->
+      let activeKeys = ActiveThreadId active.activeHandle.handleId : map ActiveThreadMessage keys
+      in (foldl' (flip Map.delete) activeMap activeKeys, ())
 
 finishActiveThreadCurrent
   :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es)

@@ -148,7 +148,8 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
   do
     let sink = Agent.ToolEmittedMessageSink (rememberToolEmittedMessage activeReply)
         program =
-            ( Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessage message)
+            ( Agent.withSteering (activeSteeringControl activeReply)
+          . Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessage message)
           . Agent.withLinkingToolEmittedMessagesToThread sink
           . Agent.withNormalizingToolReplies
           )
@@ -202,6 +203,9 @@ agentReplyTextEvents =
           S.yield (Just chunk)
           go (appendReplyText chunk answer) rest
         Right (Agent.AgentToolCallNotification{}, rest) -> do
+          S.yield Nothing
+          go answer rest
+        Right (Agent.AgentReplyBoundary, rest) -> do
           S.yield Nothing
           go answer rest
 
@@ -267,6 +271,20 @@ data ActiveReplyState = ActiveReplyState
   , baseTranscript :: !Transcript
   , activeRef :: !(IORef.IORef (Maybe ActiveThreadHandle))
   }
+
+activeSteeringControl
+  :: (Prim :> es, Concurrent :> es)
+  => ActiveReplyState
+  -> Agent.SteeringControl es
+activeSteeringControl activeReply =
+  Agent.SteeringControl
+    { drain =
+        IORef.readIORef activeReply.activeRef
+          >>= maybe (pure []) drainActiveThreadSteers
+    , complete =
+        IORef.readIORef activeReply.activeRef
+          >>= maybe (pure Nothing) completeActiveThreadSteering
+    }
 
 withActiveReply
   :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es, IOE :> es)

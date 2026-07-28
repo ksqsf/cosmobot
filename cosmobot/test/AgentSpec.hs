@@ -233,9 +233,15 @@ main =
       , testCase "agent rejects continuation calls mixed with sibling tools" testAgentRejectsConcurrentContinuationCalls
       , testCase "agent does not intercept unexposed continuation tools" testAgentDoesNotInterceptUnexposedContinuationTools
       , testCase "agent may resume a continuation at the tool limit" testAgentResumesContinuationAtToolLimit
+      , testCase "agent steering continues after a final answer" testAgentSteeringContinuesAfterFinalAnswer
+      , testCase "agent steering waits for complete tool results" testAgentSteeringWaitsForToolResults
+      , testCase "agent steering clears saved continuations" testAgentSteeringClearsContinuations
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
+      , testCase "ask handler routes replies to active aliases as steering" testAskHandlerRoutesActiveReplyAsSteering
+      , testCase "ask handler continues a finished sender-owned alias" testAskHandlerContinuesFinishedSenderAlias
+      , testCase "ask handler continues a finished bot reply" testAskHandlerContinuesFinishedBotReply
       , testCase "load_skill loads only advertised skill instructions" testLoadSkillLoadsAdvertisedSkillInstructions
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
       , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
@@ -268,6 +274,7 @@ main =
       , testCase "halt command requires prompt sender or superuser" testHaltCommandRequiresOwnerOrSuperuser
       , testCase "active thread is listed before a platform reply exists" testActiveThreadWithoutPlatformReply
       , testCase "active thread ids are stable and chat scoped" testActiveThreadIdsAreStableAndChatScoped
+      , testCase "active thread steering is FIFO, aliased, and closed atomically" testActiveThreadSteeringLifecycle
       , testCase "fetch_url max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "thread replies keep parent and child snapshots" testThreadRepliesKeepSnapshots
       , testCase "thread branches do not overwrite siblings" testThreadBranchesDoNotOverwriteSiblings
@@ -816,6 +823,121 @@ testAskHandlerSkipsRepliesToNonBotMessages = do
       liftIO $ afterSnapshot @?= before
   IORef.readIORef captured >>= assertBool "non-bot reply should not call the LLM" . null
 
+testAskHandlerRoutesActiveReplyAsSteering :: IO ()
+testAskHandlerRoutesActiveReplyAsSteering = do
+  answers <- IORef.newIORef []
+  queued <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    threads <- newThreadStore
+    active <- fromMaybe (error "expected active thread") <$>
+      rememberActiveThread threads Nothing (Just (messageKey 1)) testMessage "start" (Concurrency.Handle (Concurrency.Id 1)) (startWithUser "start")
+    let steer =
+          testMessage
+            { messageId = Just (integerMessageId 2)
+            , replyToMessageId = Just (integerMessageId 1)
+            , text = "change direction"
+            }
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) steer
+    drainActiveThreadSteers active
+  queued @?= ["change direction"]
+
+testAskHandlerContinuesFinishedSenderAlias :: IO ()
+testAskHandlerContinuesFinishedSenderAlias = do
+  let parentId = "294869878"
+      parentMessage = askHandlerMessage
+      parentTranscript =
+        appendAssistant "first answer" (startWithUser "first")
+      referenced =
+        ReferencedMessage
+          { messageId = Just parentId
+          , senderDisplayName = Just "Alice"
+          , senderIdentifier = parentMessage.senderId
+          , senderIsBot = False
+          , text = "first"
+          , imageUrls = []
+          , files = []
+          }
+      followUp :: IncomingMessage
+      followUp =
+        askHandlerMessage
+          { messageId = Just "70002"
+          , replyToMessageId = Just parentId
+          , text = "follow up"
+          }
+  answers <- IORef.newIORef [chatAnswer "continued" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  rendered <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    defaultTestSkillsConfig
+    rendered
+    (Just captured)
+    answers
+    (ChatMock Nothing Nothing Nothing)
+    (Just referenced)
+    (\_ _ -> pure "unused image answer")
+    (\_ _ _ _ -> pure "unused image edit answer") do
+      threads <- newThreadStore
+      active <- fromMaybe (error "expected active thread") <$>
+        rememberActiveThread threads Nothing (Just (threadMessageKey parentMessage parentId)) parentMessage "first" (Concurrency.Handle (Concurrency.Id 1)) parentTranscript
+      finishActiveThread threads active parentTranscript
+      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads followUp
+  requests <- IORef.readIORef captured
+  case requests of
+    request : _ -> do
+      chatMessageTextsByRole "user" request @?= ["first", "follow up"]
+      chatMessageTextsByRole "assistant" request @?= ["first answer"]
+    [] ->
+      assertFailure "expected sender-owned alias continuation to call the LLM"
+
+testAskHandlerContinuesFinishedBotReply :: IO ()
+testAskHandlerContinuesFinishedBotReply = do
+  let botReplyId = "900"
+      configuredBotId = "@krkr:ksqsf.moe"
+      referenced =
+        ReferencedMessage
+          { messageId = Just botReplyId
+          , senderDisplayName = Just "Cosmobot"
+          , senderIdentifier = Just configuredBotId
+          , senderIsBot = False
+          , text = "你好"
+          , imageUrls = []
+          , files = []
+          }
+      followUp =
+        askHandlerMessage
+          { messageId = Just "70002"
+          , replyToMessageId = Just botReplyId
+          , digest = askHandlerMessage.digest{botId = Just configuredBotId}
+          , text = "再见"
+          }
+  answers <- IORef.newIORef [chatAnswer "你好" [], chatAnswer "再见" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  replies <- IORef.newIORef ([] :: [Text])
+  rendered <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
+    (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
+    defaultTestSkillsConfig
+    rendered
+    (Just captured)
+    answers
+    (ChatMock (Just replies) (Just botReplyId) Nothing)
+    (Just referenced)
+    (\_ _ -> pure "unused image answer")
+    (\_ _ _ _ -> pure "unused image edit answer") do
+      threads <- newThreadStore
+      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads askHandlerMessage
+      linked <- lookupThreadTranscript threads (threadMessageKey askHandlerMessage botReplyId)
+      liftIO $ assertBool "first bot reply should be a finished thread alias" (isJust linked)
+      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads followUp
+  IORef.readIORef replies >>= (@?= ["你好", "再见"])
+  requests <- IORef.readIORef captured
+  case requests of
+    [_first, continued] -> do
+      chatMessageTextsByRole "assistant" continued @?= ["你好"]
+      assertElem "再见" (chatMessageTextsByRole "user" continued)
+    other ->
+      assertFailure [i|expected two bot-reply model requests, got #{length other}|]
+
 testLLMFailureReplyLinksThread :: IO ()
 testLLMFailureReplyLinksThread = do
   answers <- IORef.newIORef [error "simulated LLM failure"]
@@ -1313,6 +1435,95 @@ testAgentResumesContinuationAtToolLimit = do
       assertBool "resume at the limit returns its JSON value" (resumedValue `elem` resumedContinuationValues afterResume)
     other ->
       assertFailure [i|expected resume to reach a fourth model request, got #{length other}|]
+
+testAgentSteeringContinuesAfterFinalAnswer :: IO ()
+testAgentSteeringContinuesAfterFinalAnswer = do
+  answers <- IORef.newIORef [chatAnswer "first answer" [], chatAnswer "steered answer" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  drains <- IORef.newIORef [[], []]
+  completions <- IORef.newIORef [Just ["change direction"], Nothing]
+  (outputs, transcript) <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
+    let steering =
+          Agent.SteeringControl
+            { Agent.drain = liftIO (popSteering [] drains)
+            , Agent.complete = liftIO (popSteering Nothing completions)
+            }
+        program =
+          Agent.withSteering steering $
+            Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun
+    streamOutputs S.:> result <- S.toList (Agent.runAgentProgramStreaming program (startWithUser "start"))
+    pure (streamOutputs, result.transcript)
+  length [() | Agent.AgentReplyBoundary <- outputs] @?= 1
+  requests <- IORef.readIORef captured
+  case requests of
+    [_initial, steered] -> do
+      chatMessageTextsByRole "assistant" steered @?= ["first answer"]
+      chatMessageTextsByRole "user" steered @?= ["start", "change direction"]
+    other ->
+      assertFailure [i|expected two steering model requests, got #{length other}|]
+  chatMessageTextsByRole "assistant" (transcriptMessagesList transcript) @?= ["first answer", "steered answer"]
+
+testAgentSteeringWaitsForToolResults :: IO ()
+testAgentSteeringWaitsForToolResults = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "info" "message_info" (Aeson.object [])]
+    , chatAnswer "done" []
+    ]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  drains <- IORef.newIORef [[], ["after the tool"]]
+  completions <- IORef.newIORef [Nothing]
+  outputs <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
+    let steering =
+          Agent.SteeringControl
+            { Agent.drain = liftIO (popSteering [] drains)
+            , Agent.complete = liftIO (popSteering Nothing completions)
+            }
+        program =
+          Agent.withSteering steering $
+            Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun
+    streamOutputs S.:> _ <- S.toList (Agent.runAgentProgramStreaming program (startWithUser "start"))
+    pure streamOutputs
+  length [() | Agent.AgentReplyBoundary <- outputs] @?= 0
+  requests <- IORef.readIORef captured
+  case requests of
+    [_initial, afterTool] -> do
+      map (.role) (drop 1 afterTool) @?= ["assistant", "tool", "user"]
+      chatMessageTextsByRole "user" afterTool @?= ["start", "after the tool"]
+    other ->
+      assertFailure [i|expected two steering model requests, got #{length other}|]
+
+testAgentSteeringClearsContinuations :: IO ()
+testAgentSteeringClearsContinuations = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "capture" "capture_continuation" (Aeson.object [])]
+    , chatAnswer "branch answer" []
+    , chatAnswer "" [toolCall "resume" "resume_continuation" (Aeson.object ["continuation_id" Aeson..= ("capture" :: Text), "value" Aeson..= Aeson.Null])]
+    , chatAnswer "done" []
+    ]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  drains <- IORef.newIORef [[], [], [], []]
+  completions <- IORef.newIORef [Just ["keep this instruction"], Nothing]
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
+    let steering =
+          Agent.SteeringControl
+            { Agent.drain = liftIO (popSteering [] drains)
+            , Agent.complete = liftIO (popSteering Nothing completions)
+            }
+        program =
+          Agent.withSteering steering $
+            Agent.defaultAgentProgram AgentAudit.agentAuditObserver 5 1000000 agentRun
+    void $ S.toList (Agent.runAgentProgramStreaming program (startWithUser "start"))
+  requests <- IORef.readIORef captured
+  case requests of
+    [_initial, _captured, _steered, rejectedResume] ->
+      assertBool
+        "steering invalidates continuations captured before the user message"
+        (any ("Continuation not found" `Text.isInfixOf`) (chatMessageTextsByRole "tool" rejectedResume))
+    other ->
+      assertFailure [i|expected four steering model requests, got #{length other}|]
 
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds :: IO ()
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
@@ -2158,6 +2369,52 @@ testActiveThreadIdsAreStableAndChatScoped = runEff $ runConcurrent $ runPrim $ r
     otherRemaining @?= [ActiveThreadInfo (Concurrency.Id 13) "other chat"]
     cancelledIds @?= [Concurrency.Id 12]
 
+testActiveThreadSteeringLifecycle :: IO ()
+testActiveThreadSteeringLifecycle = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  store <- newThreadStore
+  let transcript = startWithUser "hello"
+      firstSteer =
+        testMessage
+          { messageId = Just (integerMessageId 2)
+          , replyToMessageId = Just (integerMessageId 1)
+          , text = "first"
+          }
+      secondSteer =
+        firstSteer
+          { messageId = Just (integerMessageId 3)
+          , replyToMessageId = Just (integerMessageId 2)
+          , text = "second"
+          }
+  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" (Concurrency.Handle (Concurrency.Id 1)) transcript
+  firstAccepted <- enqueueActiveThreadSteer store firstSteer firstSteer.text
+  secondAccepted <- enqueueActiveThreadSteer store secondSteer secondSteer.text
+  queued <- drainActiveThreadSteers active
+  closed <- completeActiveThreadSteering active
+  rejectedAfterClose <- enqueueActiveThreadSteer store secondSteer "too late"
+  finishActiveThread store active transcript
+  steerAlias <- lookupThreadTranscript store (messageKey 2)
+  racing <- fromMaybe (error "expected racing active thread") <$> rememberActiveThread store Nothing (Just (messageKey 10)) testMessage "race" (Concurrency.Handle (Concurrency.Id 2)) transcript
+  let racingSteer =
+        testMessage
+          { messageId = Just (integerMessageId 11)
+          , replyToMessageId = Just (integerMessageId 10)
+          , text = "race"
+          }
+  raceResult <- Async.concurrently
+    (enqueueActiveThreadSteer store racingSteer racingSteer.text)
+    (completeActiveThreadSteering racing)
+  finishActiveThread store racing transcript
+  liftIO do
+    firstAccepted @?= True
+    secondAccepted @?= True
+    queued @?= ["first", "second"]
+    closed @?= Nothing
+    rejectedAfterClose @?= False
+    (show steerAlias :: String) @?= show (Just transcript)
+    assertBool "enqueue wins with its value, or completion closes before enqueue" $
+      raceResult == (True, Just ["race"])
+        || raceResult == (False, Nothing)
+
 testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do
   answers <- IORef.newIORef
@@ -2724,6 +2981,8 @@ showSeparatedOutputs =
         ("content", text)
       Agent.AgentToolCallNotification calls ->
         ("tool", Text.intercalate ", " (toList (fmap (.name) calls)))
+      Agent.AgentReplyBoundary ->
+        ("boundary", "")
 
 decodeSingleChatLogToolOutput :: Transcript -> IO [Aeson.Value]
 decodeSingleChatLogToolOutput transcript =
@@ -2743,6 +3002,8 @@ streamAnswerText =
     Agent.AgentContentDelta text ->
       text
     Agent.AgentToolCallNotification{} ->
+      ""
+    Agent.AgentReplyBoundary ->
       ""
 
 imageContextUrls :: Transcript -> [Text]
@@ -3231,6 +3492,14 @@ popAnswer answers =
     answer : rest ->
       (rest, answer)
 
+popSteering :: a -> IORef.IORef [a] -> IO a
+popSteering fallback values =
+  IORef.atomicModifyIORef' values \case
+    [] ->
+      ([], fallback)
+    value : rest ->
+      (rest, value)
+
 popStreamingAnswer :: IORef.IORef [StreamingAnswer] -> IO StreamingAnswer
 popStreamingAnswer answers =
   IORef.atomicModifyIORef' answers \case
@@ -3319,6 +3588,8 @@ agentOutputText =
     Agent.AgentContentDelta chunk ->
       chunk
     Agent.AgentToolCallNotification{} ->
+      ""
+    Agent.AgentReplyBoundary ->
       ""
 
 assertElem :: (Eq a, Show a) => a -> [a] -> Assertion

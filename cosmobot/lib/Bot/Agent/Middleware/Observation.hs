@@ -111,6 +111,15 @@ withObservation observer program =
           , toolCalls = toList toolCalls
           , tokenUsage = agentState.modelTokenUsage
           }
+      ModelContinues agentState ->
+        ModelTurnFinished
+          { runId = runId
+          , turn = turn
+          , answerKind = "continued"
+          , contentLength = 0
+          , toolCalls = []
+          , tokenUsage = agentState.modelTokenUsage
+          }
 
 transcriptMessageCount :: AgentState transient -> Int
 transcriptMessageCount AgentState{transcript = Transcript{messages}} =
