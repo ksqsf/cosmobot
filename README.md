@@ -8,12 +8,14 @@ Beware: Cosmobot is just a hobby project. Won't be big and professional like Ope
 
 - **Multiple platforms**: Matrix, Telegram, QQ (OneBot), or Discord.
 - **Multiple interfaces**: Both Private Chat and Group Chat are supported.
-- **Any LLM provider**: OpenAI-compatible API is supported.
-- **Capable**: Image generation/editing; Shell scripting; File sending; and the compulsory Web searching and fetching...
+- **Any LLM provider**: Any OpenAI-compatible API provider is supported.
+- **Capable**: Image generation/editing; Shell scripting; File sending; of course, Web searching and fetching. And more!
 - **Extendable**: Carefully designed abstractions allowing for super easy extension.
+- **Robust**: No resource leaks. Exceptions, concurrency, and lifecycle of long-running resources are guaranteed to be handled robustly and correctly.
+- **Safe**: Defend against prompt injection or hallucinated commands by Sandboxes.
 - **C/S architecture**: Build peripheral devices upon the core.
 - **Observable & Auditable**: Audit traces, observability over RPC
-- **Lean**: less CPU and RAM consumption; VPS-friendly.
+- **Lean**: VPS-friendly. Very low CPU or RAM consumption (consistently under 100 MiB) even under heavy load.
 
 ## Building
 
@@ -35,7 +37,7 @@ By default, the binary is statically linked with Haskell dependencies, so you ca
 
 Cosmobot is still in infancy. We do not recommend you use Cosmobot in any critical scenario.
 
-Regarding **Security**, currently, Cosmobot provides only safe tools to normal users, including sandboxed terminal (by default, network is supported which may expose your IP address). But for superusers, all tools are available and is vulnerable to prompt injection.
+Regarding **Safety**, currently, Cosmobot provides only safe tools to normal users, including sandboxed terminal (by default, network is supported which may expose your IP address). But for superusers, all tools are available, including priviledged ones. Therefore, you can configure the system prompt to make the bot prefer sandboxes whenever possible, or simply use an unprivileged user to talk to the bot, to enhance system safety.
 
 Regarding **Privacy**, we have done our best effort. For example, Alice can never query Bob's chat log. But that's about it.
 
