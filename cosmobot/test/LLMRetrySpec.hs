@@ -57,6 +57,7 @@ testRetryableFailures =
           , HTTP.ConnectionTimeout
           , HTTP.ConnectionFailure (toException (HTTP.InvalidUrlException "" "connection failed"))
           , HTTP.NoResponseDataReceived
+          , HTTP.IncompleteHeaders
           , HTTP.ConnectionClosed
           , HTTP.ResponseBodyTooShort 1 0
           ]

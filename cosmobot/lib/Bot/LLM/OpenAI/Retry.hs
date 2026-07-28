@@ -86,6 +86,8 @@ retryableHTTPContent = \case
     True
   HTTP.NoResponseDataReceived ->
     True
+  HTTP.IncompleteHeaders ->
+    True
   HTTP.ConnectionClosed ->
     True
   HTTP.ResponseBodyTooShort{} ->
