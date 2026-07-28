@@ -225,7 +225,8 @@ commitAgentReply observer activeReply message AgentReply{responseId, answer, res
   ChatLog.recordSelfMessage message answer
   active <- IORef.readIORef activeReply.activeRef
   case active of
-    Just activeHandle ->
+    Just activeHandle -> do
+      traverse_ (addActiveThreadMessage activeReply.threads activeHandle . threadMessageKey message) responseId
       finishActiveThread activeReply.threads activeHandle result.transcript
     Nothing ->
       rememberThreadTranscriptFrom activeReply.threads activeReply.parentMessageKey (threadMessageKey message <$> responseId) result.transcript

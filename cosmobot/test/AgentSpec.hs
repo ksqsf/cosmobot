@@ -218,6 +218,7 @@ main =
       , testCase "ask handler includes referenced image URLs in text context" testAskHandlerIncludesReferencedImageUrlsInTextContext
       , testCase "ask handler includes current and referenced files in text context" testAskHandlerIncludesFilesInTextContext
       , testCase "ask handler skips replies to non-bot messages" testAskHandlerSkipsRepliesToNonBotMessages
+      , testCase "LLM failure replies remain linked to their thread" testLLMFailureReplyLinksThread
       , testCase "ACP ask handler continues durable session transcript" testAcpAskHandlerContinuesDurableSessionTranscript
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
@@ -814,6 +815,18 @@ testAskHandlerSkipsRepliesToNonBotMessages = do
       afterSnapshot <- map (.id) . (.entries) <$> Concurrency.list
       liftIO $ afterSnapshot @?= before
   IORef.readIORef captured >>= assertBool "non-bot reply should not call the LLM" . null
+
+testLLMFailureReplyLinksThread :: IO ()
+testLLMFailureReplyLinksThread = do
+  answers <- IORef.newIORef [error "simulated LLM failure"]
+  replies <- IORef.newIORef []
+  linked <- runAgentWith answers (ChatMock (Just replies) (Just "900") Nothing) do
+    threads <- newThreadStore
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads askHandlerMessage
+    lookupThreadTranscript threads (threadMessageKey askHandlerMessage "900")
+  assertBool "failure reply should resolve to the original thread" (isJust linked)
+  sent <- IORef.readIORef replies
+  assertBool "expected an LLM failure reply" (any ("LLM request failed:" `Text.isPrefixOf`) sent)
 
 testAcpAskHandlerContinuesDurableSessionTranscript :: IO ()
 testAcpAskHandlerContinuesDurableSessionTranscript = do
