@@ -355,5 +355,5 @@ editableTailTarget message state messageId =
 
 nonEmptyMessageBody :: Text -> Text
 nonEmptyMessageBody body
-  | Text.null body = "LLM response was empty."
+  | Text.null body = "\x200B"
   | otherwise = body

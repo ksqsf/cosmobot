@@ -250,6 +250,7 @@ main =
       , testCase "LLM image stream ignores partial event without final image" testLLMImageStreamIgnoresPartialEventWithoutFinalImage
       , testCase "LLM log JSON truncates base64 image payloads" testLLMLogJsonTruncatesBase64ImagePayloads
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
+      , testCase "empty chat reply sends a zero-width space" testEmptyChatReplySendsZeroWidthSpace
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "editable segmented replies open a new tail after tool messages" testEditableSegmentedRepliesOpenNewTail
       , testCase "segmented replies flush final open segment" testSegmentedRepliesFlushFinalOpenSegment
@@ -1764,6 +1765,16 @@ testLLMStreamingEffectPreservesYieldedChunks = do
       content @?= "tool"
     other ->
       assertFailure [i|expected final streaming answer, got #{show other :: String}|]
+
+testEmptyChatReplySendsZeroWidthSpace :: IO ()
+testEmptyChatReplySendsZeroWidthSpace = do
+  replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  nextReplyId <- IORef.newIORef (1 :: Integer)
+  _ <- runEff $ runPrim $
+    Chat.runChatWith
+      defaultAgentMockChatDriver{agentReply = recordReply replies nextReplyId} $
+        Chat.replyTo testMessage ""
+  IORef.readIORef replies >>= (@?= [(Just "300", "\x200B")])
 
 testChatStreamingChunksRepliesAndYieldsUpdates :: IO ()
 testChatStreamingChunksRepliesAndYieldsUpdates = do
