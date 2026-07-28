@@ -14,6 +14,7 @@ module Bot.Storage.Thread
   , newThreadStore
   , lookupThreadTranscript
   , lookupThreadMessageIds
+  , lookupActiveThreadRunId
   , rememberThreadTranscript
   , rememberThreadTranscriptFrom
   , rememberActiveThread
@@ -74,6 +75,7 @@ data StoredThreadNode = StoredThreadNode
 data ActiveThread = ActiveThread
   { activeChatScope :: !(Maybe ActiveChatScope)
   , activeSenderId :: !(Maybe Text)
+  , activeRunId :: !Text
   , activePrompt :: !Text
   , activeParentMessageKey :: !(Maybe ThreadMessageKey)
   , activeMessageKeys :: !(IORef [ThreadMessageKey])
@@ -150,24 +152,37 @@ lookupThreadTranscript store@ThreadStore{activeThreadStore = activeRef} messageK
       traverse (MVar.readMVar . (.activeDone)) active
 
 lookupThreadMessageIds :: (Prim :> es, Storage.Storage :> es) => ThreadStore -> ThreadMessageKey -> Eff es [MessageId]
-lookupThreadMessageIds store@ThreadStore{unThreadStore = ref, activeThreadStore = activeRef} messageKey = do
-  active <- Map.lookup (ActiveThreadMessage messageKey) <$> readIORef activeRef
-  case active of
-    Just activeThread ->
-      map (.messageId) <$> readIORef activeThread.activeMessageKeys
-    Nothing -> do
-      node <- lookupStoredThreadNode store messageKey
-      case node of
-        Nothing ->
-          loadThreadMessageIdsFromStorage messageKey
-        Just target -> do
-          cached <- Map.toList . (.threadIds) <$> readIORef ref
-          stored <- loadThreadMessageIdsFromStorage messageKey
-          pure (ordNub (stored <> [cachedKey.messageId | (cachedKey, cachedThreadStorageId) <- cached, cachedThreadStorageId == target.threadStorageId]))
+lookupThreadMessageIds store@ThreadStore{activeThreadStore = activeRef} =
+  go []
+  where
+    go visited messageKey
+      | messageKey `elem` visited =
+          pure []
+      | otherwise = do
+          active <- Map.lookup (ActiveThreadMessage messageKey) <$> readIORef activeRef
+          (parentMessageKey, messageIds) <- case active of
+            Just activeThread -> do
+              ids <- map (.messageId) <$> readIORef activeThread.activeMessageKeys
+              pure (activeThread.activeParentMessageKey, ids)
+            Nothing -> do
+              node <- lookupStoredThreadNode store messageKey
+              case node of
+                Nothing ->
+                  loadThreadMessageIdsFromStorage messageKey <&> \ids -> (Nothing, ids)
+                Just target -> do
+                  ids <- loadThreadMessageIdsFromStorage messageKey
+                  pure (target.treeNode.parentMessageKey, ids)
+          parentIds <- maybe (pure []) (go (messageKey : visited)) parentMessageKey
+          pure (ordNub (parentIds <> messageIds))
+
+lookupActiveThreadRunId :: Prim :> es => ThreadStore -> ThreadMessageKey -> Eff es (Maybe Text)
+lookupActiveThreadRunId ThreadStore{activeThreadStore = activeRef} messageKey =
+  fmap (.activeRunId) . Map.lookup (ActiveThreadMessage messageKey) <$> readIORef activeRef
 
 rememberActiveThread
   :: (Prim :> es, Concurrent :> es)
   => ThreadStore
+  -> Text
   -> Maybe ThreadMessageKey
   -> Maybe ThreadMessageKey
   -> IncomingMessage
@@ -175,7 +190,7 @@ rememberActiveThread
   -> Handle
   -> Transcript
   -> Eff es (Maybe ActiveThreadHandle)
-rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey messageKey message prompt activeHandle transcript = do
+rememberActiveThread ThreadStore{activeThreadStore = activeRef} activeRunId parentMessageKey messageKey message prompt activeHandle transcript = do
   messageKeys <- newIORef (maybeToList messageKey)
   steering <- MVar.newMVar (SteeringOpen Seq.empty)
   current <- newIORef transcript
@@ -183,6 +198,7 @@ rememberActiveThread ThreadStore{activeThreadStore = activeRef} parentMessageKey
   let active = ActiveThread
         { activeChatScope = activeChatScopeFromMessage message
         , activeSenderId = message.senderId
+        , activeRunId
         , activePrompt = prompt
         , activeParentMessageKey = parentMessageKey
         , activeMessageKeys = messageKeys
@@ -528,17 +544,26 @@ loadThreadRow targetMessageKey = do
 loadThreadMessageIdsFromStorage :: Storage.Storage :> es => ThreadMessageKey -> Eff es [MessageId]
 loadThreadMessageIdsFromStorage messageKey = do
   target <- loadThreadRow messageKey
-  case target >>= (.threadStorageId) of
+  case target of
     Nothing ->
       pure []
-    Just targetThreadStorageId -> do
-      rows <- runSelda $
-        query do
-          row <- select threadRows
-          restrict (row ! #thread_id .== literal (Just (fromIntegral targetThreadStorageId :: Int.Int64)))
-          order (row ! #id) ascending
-          pure (row ! #message_id)
-      pure (map textMessageId rows)
+    Just targetRow ->
+      case targetRow.threadStorageId of
+        Nothing ->
+          pure []
+        Just targetThreadStorageId -> do
+          rows <- runSelda $
+            query do
+              row <- select threadRows
+              restrict (row ! #thread_id .== literal (Just (fromIntegral targetThreadStorageId :: Int.Int64)))
+              order (row ! #id) ascending
+              pure row
+          pure
+            [ row.messageKey.messageId
+            | row <- map threadRowFromStorage rows
+            , row.parentMessageKey == targetRow.parentMessageKey
+            , row.messagesJson == targetRow.messagesJson
+            ]
 
 saveThreadMessages :: Storage.Storage :> es => ThreadMessageKey -> Maybe Integer -> Maybe ThreadMessageKey -> Text -> Eff es Integer
 saveThreadMessages messageKey requestedThreadStorageId parentMessageKey storedMessagesJson = do

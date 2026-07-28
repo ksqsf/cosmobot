@@ -11,12 +11,14 @@ module Bot.Effect.AgentAudit
   , ToolCallTrace (..)
   , ToolUseDetail (..)
   , ToolUseStatus (..)
+  , eventRunId
   , agentAuditObserver
   , toolUsesFromAuditRecords
   , queryRecentAuditRecords
   , queryAuditRecord
   , queryRecentToolUses
   , queryToolUse
+  , queryRunAudit
   , queryThreadAudit
   , queryThreadMessagesAudit
   , runAgentAudit
@@ -41,6 +43,7 @@ data AgentAudit :: Effect where
   QueryAuditRecord :: Integer -> AgentAudit m (Maybe AgentAuditRecord)
   QueryRecentToolUses :: Int -> AgentAudit m [ToolUseDetail]
   QueryToolUse :: Integer -> AgentAudit m (Maybe ToolUseDetail)
+  QueryRunAudit :: Text -> AgentAudit m [AgentAuditRecord]
   QueryThreadAudit :: ThreadMessageKey -> AgentAudit m [AgentAuditRecord]
   QueryThreadMessagesAudit :: [ThreadMessageKey] -> AgentAudit m [AgentAuditRecord]
 
@@ -69,6 +72,10 @@ queryRecentToolUses limit =
 queryToolUse :: AgentAudit :> es => Integer -> Eff es (Maybe ToolUseDetail)
 queryToolUse auditId =
   send (QueryToolUse auditId)
+
+queryRunAudit :: AgentAudit :> es => Text -> Eff es [AgentAuditRecord]
+queryRunAudit runId =
+  send (QueryRunAudit runId)
 
 queryThreadAudit :: AgentAudit :> es => ThreadMessageKey -> Eff es [AgentAuditRecord]
 queryThreadAudit messageKey =
@@ -116,6 +123,8 @@ runAgentAuditWithObserver observer inner = do
       QueryToolUse auditId -> do
         records <- AgentAuditStorage.loadStoredAuditRecords
         pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords processStartedAt maxInMemoryAgentAuditEvents records))
+      QueryRunAudit runId ->
+        filter ((>= processStartedAt) . (.occurredAt)) <$> AgentAuditStorage.queryStoredRunAudit runId
       QueryThreadAudit messageKey ->
         AgentAuditStorage.queryStoredThreadAudit messageKey
       QueryThreadMessagesAudit messageKeys ->

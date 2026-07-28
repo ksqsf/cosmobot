@@ -50,6 +50,7 @@ import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
 import Bot.Handler.Ask (askHandlers)
 import Bot.Handler.Ask.Config (AskHandlerConfig (..))
+import Bot.Handler.Audit (auditHandlers)
 import qualified Bot.HTTP as HTTP
 import qualified Bot.Log as Log
 import Bot.Storage.Thread
@@ -72,7 +73,7 @@ import qualified Streaming.ByteString as Q
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
-import Data.Time (UTCTime (..), fromGregorian)
+import Data.Time (UTCTime (..), fromGregorian, getCurrentTime)
 import Data.Unique
 import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.FileSystem (FileSystem, runFileSystem)
@@ -247,6 +248,8 @@ main =
       , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
       , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
+      , testCase "thread stats accumulate the replied branch" testThreadStatsAccumulateRepliedBranch
+      , testCase "thread stats show active running tools from every alias" testThreadStatsShowActiveRunningTools
       , testCase "thread audit is scoped by platform, chat, and run occurrence" testThreadAuditScope
       , testCase "agent audit recent records exclude synthetic restarted runs" testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns
       , testCase "agent audit storage omits large tool results" testAgentAuditStorageOmitsLargeToolResults
@@ -829,7 +832,7 @@ testAskHandlerRoutesActiveReplyAsSteering = do
   queued <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     threads <- newThreadStore
     active <- fromMaybe (error "expected active thread") <$>
-      rememberActiveThread threads Nothing (Just (messageKey 1)) testMessage "start" (Concurrency.Handle (Concurrency.Id 1)) (startWithUser "start")
+      rememberActiveThread threads "test-run" Nothing (Just (messageKey 1)) testMessage "start" (Concurrency.Handle (Concurrency.Id 1)) (startWithUser "start")
     let steer =
           testMessage
             { messageId = Just (integerMessageId 2)
@@ -878,7 +881,7 @@ testAskHandlerContinuesFinishedSenderAlias = do
     (\_ _ _ _ -> pure "unused image edit answer") do
       threads <- newThreadStore
       active <- fromMaybe (error "expected active thread") <$>
-        rememberActiveThread threads Nothing (Just (threadMessageKey parentMessage parentId)) parentMessage "first" (Concurrency.Handle (Concurrency.Id 1)) parentTranscript
+        rememberActiveThread threads "test-run" Nothing (Just (threadMessageKey parentMessage parentId)) parentMessage "first" (Concurrency.Handle (Concurrency.Id 1)) parentTranscript
       finishActiveThread threads active parentTranscript
       runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads followUp
   requests <- IORef.readIORef captured
@@ -1646,6 +1649,131 @@ testAgentAuditRecordsToolEvents = do
       assertFailure [i|expected one tool use, got #{length toolUses}|]
   assertBool "expected model token usage in audit records" (any hasHighTokenUsage records)
 
+testThreadStatsAccumulateRepliedBranch :: IO ()
+testThreadStatsAccumulateRepliedBranch = do
+  answers <- IORef.newIORef []
+  replies <- IORef.newIORef []
+  runAgentWith answers (ChatMock (Just replies) (Just "stats-reply") Nothing) do
+    threads <- newThreadStore
+    let key = threadMessageKey askHandlerMessage
+        user1 = key "user-1"
+        answer1 = key "answer-1"
+        user2 = key "user-2"
+        answer2 = key "answer-2"
+        transcript1 = appendAssistant "A1" (startWithUser "U1")
+        transcript2 = appendAssistant "A2" (appendUser "U2" transcript1)
+        resource = Concurrency.Handle (Concurrency.Id 1)
+    active1 <- fromMaybe (error "expected first active thread") <$>
+      rememberActiveThread threads "run-1" Nothing (Just user1) askHandlerMessage "U1" resource (startWithUser "U1")
+    addActiveThreadMessage threads active1 answer1
+    finishActiveThread threads active1 transcript1
+    active2 <- fromMaybe (error "expected second active thread") <$>
+      rememberActiveThread threads "run-2" (Just answer1) (Just user2) askHandlerMessage "U2" resource transcript1
+    addActiveThreadMessage threads active2 answer2
+    finishActiveThread threads active2 transcript2
+    persistStatsRun "run-1" answer1 Nothing (LLM.TokenUsage 100 10 110)
+    persistStatsRun "run-2" answer2 (Just answer1.messageId) (LLM.TokenUsage 200 20 220)
+    runHandlers (auditHandlers threads) (statsMessage "stats-1" answer1.messageId)
+    runHandlers (auditHandlers threads) (statsMessage "stats-2" answer2.messageId)
+  IORef.readIORef replies >>= \case
+    [firstStats, secondStats] -> do
+      assertBool [i|first answer stats should include one run; got #{firstStats}|] ("- runs: 1" `Text.isInfixOf` firstStats)
+      assertBool [i|first answer stats should include only first-run tokens; got #{firstStats}|] ("- tokens: 110 total (100 prompt, 10 completion)" `Text.isInfixOf` firstStats)
+      assertBool [i|second answer stats should include both runs; got #{secondStats}|] ("- runs: 2" `Text.isInfixOf` secondStats)
+      assertBool [i|second answer stats should accumulate branch tokens; got #{secondStats}|] ("- tokens: 330 total (300 prompt, 30 completion)" `Text.isInfixOf` secondStats)
+      assertBool [i|second answer stats should show current-turn tokens; got #{secondStats}|] ("- current turn: 220 total (200 prompt, 20 completion)" `Text.isInfixOf` secondStats)
+      assertBool [i|second answer stats should count both model turns; got #{secondStats}|] ("- model turns: 2" `Text.isInfixOf` secondStats)
+    other ->
+      assertFailure [i|expected two thread stats replies, got #{length other}|]
+
+testThreadStatsShowActiveRunningTools :: IO ()
+testThreadStatsShowActiveRunningTools = do
+  answers <- IORef.newIORef []
+  replies <- IORef.newIORef []
+  runAgentWith answers (ChatMock (Just replies) (Just "stats-reply") Nothing) do
+    threads <- newThreadStore
+    let key = threadMessageKey askHandlerMessage
+        original = key "user-1"
+        assistant = key "assistant-1"
+        toolMessage = key "tool-message-1"
+        steer =
+          askHandlerMessage
+            { messageId = Just "user-2"
+            , replyToMessageId = Just assistant.messageId
+            , text = "steer"
+            }
+        resource = Concurrency.Handle (Concurrency.Id 1)
+        transcript = startWithUser "U1"
+    active <- fromMaybe (error "expected active thread") <$>
+      rememberActiveThread threads "active-run" Nothing (Just original) askHandlerMessage "U1" resource transcript
+    addActiveThreadMessage threads active assistant
+    addActiveThreadMessage threads active toolMessage
+    void $ enqueueActiveThreadSteer threads steer steer.text
+    now <- liftIO getCurrentTime
+    void $ AgentAuditStorage.persistEvent now AgentAudit.ModelTurnFinished
+      { runId = "active-run"
+      , turn = 1
+      , answerKind = "tool_request"
+      , contentLength = 0
+      , toolCalls = []
+      , tokenUsage = Just (LLM.TokenUsage 100 10 110)
+      }
+    void $ AgentAuditStorage.persistEvent now AgentAudit.ModelTurnFinished
+      { runId = "active-run"
+      , turn = 2
+      , answerKind = "tool_request"
+      , contentLength = 0
+      , toolCalls = [AgentAudit.ToolCallTrace "call-1" "run_bash" "{}"]
+      , tokenUsage = Just (LLM.TokenUsage 300 30 330)
+      }
+    void $ AgentAuditStorage.persistEvent now AgentAudit.ToolCallStarted
+      { runId = "active-run"
+      , turn = 2
+      , toolCall = AgentAudit.ToolCallTrace "call-1" "run_bash" "{}"
+      }
+    for_ ["user-1", "assistant-1", "tool-message-1", "user-2"] \messageId ->
+      runHandlers (auditHandlers threads) (statsMessage (textMessageId ("stats-" <> messageIdText messageId)) messageId)
+    finishActiveThread threads active transcript
+  statsReplies <- IORef.readIORef replies
+  length statsReplies @?= 4
+  for_ statsReplies \reply -> do
+    assertBool "every active alias should report active status" ("- status: active" `Text.isInfixOf` reply)
+    assertBool "active stats should include every current-run model turn" ("- model turns: 2" `Text.isInfixOf` reply)
+    assertBool "active stats should aggregate current-turn tokens" ("- current turn: 440 total (400 prompt, 40 completion)" `Text.isInfixOf` reply)
+    assertBool "active stats should include a running tool" ("- tool calls: 1 (0 ok, 0 failed, 0 interrupted, 1 running)" `Text.isInfixOf` reply)
+    assertBool "active stats should name the running tool" ("`run_bash`" `Text.isInfixOf` reply)
+
+persistStatsRun
+  :: (StorageEffect.Storage :> es, KatipE :> es, IOE :> es)
+  => Text
+  -> ThreadMessageKey
+  -> Maybe MessageId
+  -> LLM.TokenUsage
+  -> Eff es ()
+persistStatsRun runId linkedKey parentMessageId tokenUsage = do
+  void $ AgentAuditStorage.persistEvent staleAuditTime AgentAudit.ModelTurnFinished
+    { runId
+    , turn = 1
+    , answerKind = "final"
+    , contentLength = 2
+    , toolCalls = []
+    , tokenUsage = Just tokenUsage
+    }
+  void $ AgentAuditStorage.persistEvent staleAuditTime AgentAudit.AgentThreadLinked
+    { runId
+    , linkedMessageId = linkedKey.messageId
+    , linkedMessageKey = Just linkedKey
+    , parentMessageId
+    }
+
+statsMessage :: MessageId -> MessageId -> IncomingMessage
+statsMessage messageId parentId =
+  askHandlerMessage
+    { messageId = Just messageId
+    , replyToMessageId = Just parentId
+    , text = "!stats"
+    }
+
 testThreadAuditScope :: IO ()
 testThreadAuditScope = do
   (firstRecords, secondRecords, otherPlatformRecords) <- runEff $
@@ -2235,7 +2363,7 @@ testChunkedActiveThreadAliasesEverySentReply = runEff $ runConcurrent $ runPrim 
       cancel handleId = do
         liftIO $ IORef.modifyIORef' cancelled (handleId :)
         pure True
-  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" resource baseTranscript
+  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store "test-run" Nothing (Just (messageKey 1)) testMessage "hello" resource baseTranscript
   addActiveThreadMessage store active (messageKey 2)
   updateActiveThread active partialTranscript
   halted <- haltThread store cancel (messageKey 2)
@@ -2259,7 +2387,7 @@ testHaltCommandCancelsCurrentThreadMessage = runEff $ runConcurrent $ runPrim $ 
         liftIO $ IORef.modifyIORef' cancelled (handleId :)
         pure True
       haltMessage = testMessage{text = "!halt", messageId = Just (integerMessageId 2), replyToMessageId = Nothing}
-  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" activeHandle baseTranscript
+  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store "test-run" Nothing (Just (messageKey 1)) testMessage "hello" activeHandle baseTranscript
   addActiveThreadMessage store active (messageKey 2)
   updateActiveThread active partialTranscript
   halted <- haltThreadForMessage store cancel haltMessage
@@ -2281,8 +2409,8 @@ testHaltCommandPrefersRepliedThreadMessage = runEff $ runConcurrent $ runPrim $ 
         liftIO $ IORef.modifyIORef' cancelled (handleId :)
         pure True
       haltMessage = testMessage{text = "!halt", messageId = Just (integerMessageId 2), replyToMessageId = Just (integerMessageId 1)}
-  void $ rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" repliedHandle transcript
-  void $ rememberActiveThread store Nothing (Just (messageKey 2)) testMessage "hello" currentHandle transcript
+  void $ rememberActiveThread store "replied-run" Nothing (Just (messageKey 1)) testMessage "hello" repliedHandle transcript
+  void $ rememberActiveThread store "current-run" Nothing (Just (messageKey 2)) testMessage "hello" currentHandle transcript
   halted <- haltThreadForMessage store cancel haltMessage
   currentStillHalted <- haltThread store cancel (messageKey 2)
   cancelledHandles <- liftIO (IORef.readIORef cancelled)
@@ -2299,7 +2427,7 @@ testHaltCommandRequiresOwnerOrSuperuser = runEff $ runConcurrent $ runPrim $ run
       cancel handleId = liftIO (IORef.modifyIORef' cancelled (handleId :)) $> True
       outsider = testMessage{senderId = Just "other", replyToMessageId = Just (integerMessageId 1)}
       superuser = outsider{digest = outsider.digest{senderIsSuperuser = True}}
-  void $ rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" (Concurrency.Handle (Concurrency.Id 1)) transcript
+  void $ rememberActiveThread store "test-run" Nothing (Just (messageKey 1)) testMessage "hello" (Concurrency.Handle (Concurrency.Id 1)) transcript
   outsiderHalted <- haltThreadForMessage store cancel outsider
   superuserHalted <- haltThreadForMessage store cancel superuser
   cancelledHandles <- liftIO (IORef.readIORef cancelled)
@@ -2314,7 +2442,7 @@ testActiveThreadWithoutPlatformReply = runEff $ runConcurrent $ runPrim $ runTes
   cancelled <- liftIO (IORef.newIORef [])
   let workerId = Concurrency.Id 1
       cancel handleId = liftIO (IORef.modifyIORef' cancelled (handleId :)) $> True
-  active <- rememberActiveThread store Nothing Nothing testMessage "run sleep 100 and say nothing" (Concurrency.Handle workerId) (startWithUser "hello")
+  active <- rememberActiveThread store "test-run" Nothing Nothing testMessage "run sleep 100 and say nothing" (Concurrency.Handle workerId) (startWithUser "hello")
   listed <- listActiveThreadsForMessage store testMessage
   halted <- haltActiveThreadsForMessage store cancel testMessage [workerId]
   remaining <- listActiveThreadsForMessage store testMessage
@@ -2333,7 +2461,7 @@ testActiveThreadIdsAreStableAndChatScoped = runEff $ runConcurrent $ runPrim $ r
   let otherChat = testMessageInChat 200
       transcript = startWithUser "hello"
       remember message responseId workerId prompt =
-        void $ rememberActiveThread store Nothing (Just (threadMessageKey message (integerMessageId responseId))) message prompt (Concurrency.Handle (Concurrency.Id workerId)) transcript
+        void $ rememberActiveThread store [i|test-run-#{workerId}|] Nothing (Just (threadMessageKey message (integerMessageId responseId))) message prompt (Concurrency.Handle (Concurrency.Id workerId)) transcript
       cancel workerId = liftIO (IORef.modifyIORef' cancelled (<> [workerId])) $> True
   remember testMessage 1 11 "first prompt"
   remember testMessage 2 12 "second prompt"
@@ -2374,7 +2502,7 @@ testActiveThreadSteeringLifecycle = runEff $ runConcurrent $ runPrim $ runTestLo
           , replyToMessageId = Just (integerMessageId 2)
           , text = "second"
           }
-  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store Nothing (Just (messageKey 1)) testMessage "hello" (Concurrency.Handle (Concurrency.Id 1)) transcript
+  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store "test-run" Nothing (Just (messageKey 1)) testMessage "hello" (Concurrency.Handle (Concurrency.Id 1)) transcript
   firstAccepted <- enqueueActiveThreadSteer store firstSteer firstSteer.text
   secondAccepted <- enqueueActiveThreadSteer store secondSteer secondSteer.text
   queued <- drainActiveThreadSteers active
@@ -2382,7 +2510,7 @@ testActiveThreadSteeringLifecycle = runEff $ runConcurrent $ runPrim $ runTestLo
   rejectedAfterClose <- enqueueActiveThreadSteer store secondSteer "too late"
   finishActiveThread store active transcript
   steerAlias <- lookupThreadTranscript store (messageKey 2)
-  racing <- fromMaybe (error "expected racing active thread") <$> rememberActiveThread store Nothing (Just (messageKey 10)) testMessage "race" (Concurrency.Handle (Concurrency.Id 2)) transcript
+  racing <- fromMaybe (error "expected racing active thread") <$> rememberActiveThread store "racing-run" Nothing (Just (messageKey 10)) testMessage "race" (Concurrency.Handle (Concurrency.Id 2)) transcript
   let racingSteer =
         testMessage
           { messageId = Just (integerMessageId 11)

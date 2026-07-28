@@ -11,6 +11,7 @@ module Bot.AgentAudit.Storage
   , persistEvent
   , queryStoredRecent
   , queryStoredRecord
+  , queryStoredRunAudit
   , queryStoredThreadAudit
   , queryStoredThreadMessagesAudit
   )
@@ -97,6 +98,16 @@ queryStoredRecord auditId = do
         restrict (row ! #id .== literal (toId (fromIntegral auditId :: Int.Int64)))
         pure row
   pure (viaNonEmpty head (mapMaybe storedAuditRecord rows))
+
+queryStoredRunAudit :: Storage.Storage :> es => Text -> Eff es [AgentAuditRecord]
+queryStoredRunAudit runId = do
+  rows <- runSelda $
+    query do
+      row <- select agentAuditRows
+      restrict (row ! #run_id .== literal runId)
+      order (row ! #id) ascending
+      pure row
+  pure (mapMaybe storedAuditRecord rows)
 
 queryStoredThreadAudit :: Storage.Storage :> es => ThreadMessageKey -> Eff es [AgentAuditRecord]
 queryStoredThreadAudit messageKey =

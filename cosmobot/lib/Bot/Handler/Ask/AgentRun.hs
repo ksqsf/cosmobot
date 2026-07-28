@@ -80,7 +80,7 @@ runAskAgentThread
 runAskAgentThread toolCfg cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
   agentRun <- Agent.startAgentRunWithParent (Just resource) (agentContext toolCfg cfg message input) AgentTools.defaultTools
-  withActiveReply threads resource parentMessageKey message input.text transcript \activeReply -> do
+  withActiveReply threads (Agent.agentRunId agentRun) resource parentMessageKey message input.text transcript \activeReply -> do
     reply <- streamAgentReply cfg observer agentRun activeReply message transcript
     commitAgentReply observer activeReply message reply
 
@@ -264,6 +264,7 @@ discardActiveReply activeReply =
 
 data ActiveReplyState = ActiveReplyState
   { threads :: !ThreadStore
+  , runId :: !Text
   , resource :: !Concurrency.Handle
   , parentMessageKey :: !(Maybe ThreadMessageKey)
   , message :: !IncomingMessage
@@ -289,6 +290,7 @@ activeSteeringControl activeReply =
 withActiveReply
   :: (Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es, IOE :> es)
   => ThreadStore
+  -> Text
   -> Concurrency.Handle
   -> Maybe ThreadMessageKey
   -> IncomingMessage
@@ -296,12 +298,13 @@ withActiveReply
   -> Transcript
   -> (ActiveReplyState -> Eff es a)
   -> Eff es a
-withActiveReply threads resource parentMessageKey message prompt baseTranscript use = mask \restore -> do
-  active <- rememberActiveThread threads parentMessageKey (threadMessageKey message <$> message.messageId) message prompt resource baseTranscript
+withActiveReply threads runId resource parentMessageKey message prompt baseTranscript use = mask \restore -> do
+  active <- rememberActiveThread threads runId parentMessageKey (threadMessageKey message <$> message.messageId) message prompt resource baseTranscript
   activeRef <- IORef.newIORef active
   let activeReply =
         ActiveReplyState
           { threads
+          , runId
           , resource
           , parentMessageKey
           , message
@@ -335,7 +338,7 @@ ensureActiveReply activeState messageId transcript = do
     Just{} ->
       pure existing
     Nothing -> do
-      active <- rememberActiveThread activeState.threads activeState.parentMessageKey (threadMessageKey activeState.message <$> messageId) activeState.message activeState.prompt activeState.resource transcript
+      active <- rememberActiveThread activeState.threads activeState.runId activeState.parentMessageKey (threadMessageKey activeState.message <$> messageId) activeState.message activeState.prompt activeState.resource transcript
       IORef.writeIORef activeState.activeRef active
       pure active
 
