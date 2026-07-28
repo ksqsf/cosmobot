@@ -11,6 +11,8 @@ module Bot.Resource.SubAgent
   , SubAgentRunner
   , sendPrompt
   , queryOutput
+  , waitAnyOutput
+  , waitAllOutputs
   )
 where
 
@@ -139,3 +141,46 @@ queryOutput subagent = do
   pure $ case snapshot.active of
     Just _ -> "The subagent is still generating."
     Nothing -> fromMaybe "No prompt has been sent." snapshot.answer
+
+waitAnyOutput
+  :: (Concurrency.Concurrency :> es, Concurrent :> es)
+  => NonEmpty (Text, SubAgent)
+  -> Eff es (Text, Text)
+waitAnyOutput subagents = do
+  snapshots <- traverse snapshot subagents
+  case traverse requireActive snapshots of
+    Nothing ->
+      answerFor (fst (fromMaybe (error "missing ready subagent") (find (isNothing . snd) snapshots)))
+    Just activeSubagents -> do
+      winner <- Concurrency.awaitAny (snd <$> activeSubagents)
+      answerFor (fst (fromMaybe (error "missing winning subagent") (find ((== winner) . snd) activeSubagents)))
+  where
+    snapshot named@(_, subagent) =
+      (named,) . (.active) <$> MVar.readMVar subagent.state
+
+    requireActive (named, worker) =
+      (named,) <$> worker
+
+waitAllOutputs
+  :: (Concurrency.Concurrency :> es, Concurrent :> es)
+  => NonEmpty (Text, SubAgent)
+  -> Eff es (NonEmpty (Text, Text))
+waitAllOutputs =
+  traverse outputFor
+
+outputFor
+  :: (Concurrency.Concurrency :> es, Concurrent :> es)
+  => (Text, SubAgent)
+  -> Eff es (Text, Text)
+outputFor (name, subagent) = do
+  snapshot <- MVar.readMVar subagent.state
+  traverse_ Concurrency.await snapshot.active
+  answerFor (name, subagent)
+
+answerFor
+  :: Concurrent :> es
+  => (Text, SubAgent)
+  -> Eff es (Text, Text)
+answerFor (name, subagent) = do
+  finished <- MVar.readMVar subagent.state
+  pure (name, fromMaybe "No prompt has been sent." finished.answer)

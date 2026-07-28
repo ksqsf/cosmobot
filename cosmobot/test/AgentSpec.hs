@@ -201,6 +201,7 @@ main =
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
       , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
       , testCase "subagent lifecycle is shared within a chat" testSubAgentLifecycle
+      , testCase "subagent wait operations avoid polling without cancelling work" testSubAgentWaitOperations
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
       , testCase "tool reply middleware normalizes reply images" testToolReplyMiddlewareNormalizesReplyImages
       , testCase "tool reply middleware rejects uncached remote images" testToolReplyMiddlewareRejectsUncachedRemoteImages
@@ -404,6 +405,81 @@ testSubAgentLifecycle = do
     liftIO $ assertBool "subagent detail reports final output" (either (const False) ("output:\nfinished" `Text.isInfixOf`) finishedDetail)
     destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("delete" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent destroyed @?= "Subagent destroyed."
+
+testSubAgentWaitOperations :: IO ()
+testSubAgentWaitOperations = do
+  answers <- IORef.newIORef []
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    firstGate <- MVar.newEmptyMVar
+    secondGate <- MVar.newEmptyMVar
+    let childRunner _ context _ transcript = do
+          let gate
+                | context.systemContext == "first" = firstGate
+                | otherwise = secondGate
+          output <- MVar.takeMVar gate
+          pure (output, transcript)
+        tool = SubAgentTools.subagentTool childRunner []
+    run <- tool.start agentContext
+    let create name =
+          run testToolCallMetadata $
+            Aeson.object
+              [ "op" Aeson..= ("create" :: Text)
+              , "name" Aeson..= (name :: Text)
+              , "system_prompt" Aeson..= (name :: Text)
+              , "ttl_minutes" Aeson..= (5 :: Int)
+              ]
+        sendPrompt resourceId =
+          run testToolCallMetadata $
+            Aeson.object
+              [ "op" Aeson..= ("send" :: Text)
+              , "resource" Aeson..= (resourceId :: Text)
+              , "prompt" Aeson..= ("work" :: Text)
+              ]
+        wait operation =
+          run testToolCallMetadata $
+            Aeson.object
+              [ "op" Aeson..= (operation :: Text)
+              , "resources" Aeson..= (["first", "second"] :: [Text])
+              ]
+        decodeResult result =
+          fromRight (error "invalid subagent wait JSON") $
+            Aeson.eitherDecodeStrict (TextEncoding.encodeUtf8 (AgentTypes.toolResultContent result))
+
+    void (create "first")
+    void (create "second")
+    void (sendPrompt "first")
+    void (sendPrompt "second")
+
+    (waitedAny, ()) <- Async.concurrently
+      (wait "wait_any")
+      (MVar.putMVar secondGate "second output")
+    liftIO $ decodeResult waitedAny @?=
+      Aeson.object
+        [ "resource" Aeson..= ("second" :: Text)
+        , "output" Aeson..= ("second output" :: Text)
+        ]
+
+    firstStillRunning <- run testToolCallMetadata $
+      Aeson.object
+        [ "op" Aeson..= ("query" :: Text)
+        , "resource" Aeson..= ("first" :: Text)
+        ]
+    liftIO $ AgentTypes.toolResultContent firstStillRunning @?= "The subagent is still generating."
+
+    (waitedAll, ()) <- Async.concurrently
+      (wait "wait_all")
+      (MVar.putMVar firstGate "first output")
+    liftIO $ decodeResult waitedAll @?=
+      Aeson.toJSON
+        [ Aeson.object
+            [ "resource" Aeson..= ("first" :: Text)
+            , "output" Aeson..= ("first output" :: Text)
+            ]
+        , Aeson.object
+            [ "resource" Aeson..= ("second" :: Text)
+            , "output" Aeson..= ("second output" :: Text)
+            ]
+        ]
 
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do

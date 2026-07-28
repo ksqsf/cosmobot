@@ -20,6 +20,7 @@ module Bot.Effect.Concurrency
   , raceTasks_
   , cancel
   , await
+  , awaitAny
   , sleepMicroseconds
   , list
   , lookup
@@ -142,6 +143,7 @@ data Concurrency :: Effect where
   ForkWithHandle :: Text -> (Handle -> m ()) -> Concurrency m Handle
   Cancel :: Id -> Concurrency m Bool
   Await :: Handle -> Concurrency m ()
+  AwaitAny :: NonEmpty Handle -> Concurrency m Handle
   SleepMicroseconds :: Int -> Concurrency m ()
   List :: Concurrency m Snapshot
   Lookup :: Id -> Concurrency m (Maybe Info)
@@ -155,6 +157,10 @@ cancel =
 await :: Concurrency :> es => Handle -> Eff es ()
 await =
   send . Await
+
+awaitAny :: Concurrency :> es => NonEmpty Handle -> Eff es Handle
+awaitAny =
+  send . AwaitAny
 
 sleepMicroseconds :: Concurrency :> es => Int -> Eff es ()
 sleepMicroseconds =

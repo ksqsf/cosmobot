@@ -23,6 +23,7 @@ main =
       [ testCase "normal manager exit cancels and awaits running tasks" testNormalExitCancelsAndAwaits
       , testCase "top exception is thrown into running tasks" testTopExceptionPropagates
       , testCase "cancel then await returns after task cleanup" testCancelThenAwait
+      , testCase "awaitAny returns the first completion without cancelling others" testAwaitAny
       ]
 
 testNormalExitCancelsAndAwaits :: Assertion
@@ -69,6 +70,21 @@ testCancelThenAwait = do
       MVar.takeMVar cleaned
       pure cancelled
   result @?= Just True
+
+testAwaitAny :: Assertion
+testAwaitAny = do
+  result <- timeout 1_000_000 $ runManaged do
+    firstGate <- MVar.newEmptyMVar
+    secondGate <- MVar.newEmptyMVar
+    runConcurrencyManager do
+      firstWorker <- Concurrency.fork "first" (MVar.takeMVar firstGate)
+      secondWorker <- Concurrency.fork "second" (MVar.takeMVar secondGate)
+      MVar.putMVar secondGate ()
+      winner <- Concurrency.awaitAny (firstWorker :| [secondWorker])
+      firstStatus <- Concurrency.lookup firstWorker.handleId
+      MVar.putMVar firstGate ()
+      pure (winner, (.status) <$> firstStatus)
+  result @?= Just (Concurrency.Handle (Concurrency.Id 2), Just Concurrency.Running)
 
 runManaged :: Eff '[Prim, Concurrent, IOE] a -> IO a
 runManaged =

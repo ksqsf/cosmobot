@@ -61,6 +61,8 @@ runConcurrencyOperation managerState localEnv operation =
       cancelIn managerState handleId
     Concurrency.Await workerHandle ->
       awaitIn managerState workerHandle
+    Concurrency.AwaitAny workerHandles ->
+      awaitAnyIn managerState workerHandles
     Concurrency.SleepMicroseconds microseconds ->
       threadDelay microseconds
     Concurrency.List ->
@@ -145,6 +147,28 @@ awaitIn managerState workerHandle =
       pure ()
     Just thread ->
       void (Async.waitCatch thread)
+
+awaitAnyIn
+  :: (IOE :> es, Prim :> es, Concurrent :> es)
+  => ManagerState
+  -> NonEmpty Handle
+  -> Eff es Handle
+awaitAnyIn managerState workerHandles = do
+  runtimes <- readIORef managerState.runtimes
+  case find (\worker -> Map.notMember worker.handleId runtimes) workerHandles of
+    Just worker ->
+      pure worker
+    Nothing -> do
+      let workers = [(worker, (runtimes Map.! worker.handleId).thread) | worker <- toList workerHandles]
+      void (Async.waitAny (map snd workers))
+      firstCompleted workers
+  where
+    firstCompleted ((worker, thread) : remaining) =
+      Async.poll thread >>= \case
+        Just _ -> pure worker
+        Nothing -> firstCompleted remaining
+    firstCompleted [] =
+      error "awaitAny returned without a completed task"
 
 listIn :: Prim :> es => ManagerState -> Eff es Snapshot
 listIn managerState =
