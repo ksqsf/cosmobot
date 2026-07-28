@@ -31,7 +31,8 @@ import Effectful.Timeout
 
 -- | Interpret LLM requests through an OpenAI-compatible HTTP endpoint.
 runLLM
-  :: ( Fail :> es
+  :: ( Concurrent :> es
+     , Fail :> es
      , Timeout :> es
      , FileSystem :> es
      , Process :> es
@@ -51,14 +52,14 @@ runLLM cfg = interpret $ \localEnv operation ->
             do
               resolved <- lift (resolveChatMessages messages)
               Retry.retryLLMStreamRequest "LLM streaming request" $
-                pure (normalizeReplyResult (Transport.askOpenAIStreaming cfg resolved))
+                normalizeReplyResult (Transport.askOpenAIStreaming cfg resolved)
       LLM.AskImageStream options messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
               resolved <- lift (resolveChatMessages messages)
               Retry.retryLLMStreamRequest "LLM image streaming request" $
-                pure (askImageStreamingWithMedia cfg options resolved)
+                askImageStreamingWithMedia cfg options resolved
       LLM.AskImageEditStream options prompt imageRefs maskRef ->
         pure $
           LLM.liftLocalStream liftLocal $
@@ -66,21 +67,21 @@ runLLM cfg = interpret $ \localEnv operation ->
               resolvedImageRefs <- lift (traverse Media.publicMediaRef imageRefs)
               resolvedMaskRef <- lift (traverse Media.publicMediaRef maskRef)
               Retry.retryLLMStreamRequest "LLM image edit streaming request" $
-                pure (askImageEditStreamingWithMedia cfg options prompt resolvedImageRefs resolvedMaskRef)
+                askImageEditStreamingWithMedia cfg options prompt resolvedImageRefs resolvedMaskRef
       LLM.AskAudioStream options messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
               resolved <- lift (resolveChatMessages messages)
               Retry.retryLLMStreamRequest "LLM audio streaming request" $
-                pure (normalizeReplyResult (Transport.askAudioOpenAIStreaming cfg options resolved))
+                normalizeReplyResult (Transport.askAudioOpenAIStreaming cfg options resolved)
       LLM.AskToolsStream tools messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
               resolved <- lift (resolveChatMessages messages)
               Retry.retryLLMStreamRequest "LLM streaming request" $
-                pure (Transport.askOpenAIWithToolsStreaming cfg tools resolved)
+                Transport.askOpenAIWithToolsStreaming cfg tools resolved
 
 resolveChatMessages :: Media.Media :> es => [ChatMessage] -> Eff es [ChatMessage]
 resolveChatMessages =

@@ -434,6 +434,14 @@ test-suite agent-spec
                     , toml-parser
     hs-source-dirs:   test
 
+test-suite llm-retry-spec
+    import:           warnings
+                    , language
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          LLMRetrySpec.hs
+    hs-source-dirs:   test
+
 test-suite rpc-spec
     import:           warnings
                     , threaded

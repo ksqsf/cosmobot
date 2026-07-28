@@ -6,80 +6,111 @@ Stability   : experimental
 -}
 
 module Bot.LLM.OpenAI.Retry
-  ( retryLLMRequest
-  , retryLLMStreamRequest
+  ( retryLLMStreamRequest
+  , retryLLMStreamRequestWith
   )
 where
 
 import Bot.Prelude
 import qualified Bot.LLM.Types as LLM
-import qualified Data.Text as Text
+import qualified Data.ByteString.Char8 as ByteString
+import qualified Data.List as List
 import qualified Network.HTTP.Client as HTTP
+import qualified Network.HTTP.Types.Header as HTTPHeader
+import qualified Network.HTTP.Types.Status as HTTPStatus
 import qualified Streaming.Prelude as S
 
-maxLLMRequestAttempts :: Int
-maxLLMRequestAttempts =
+maxLLMRetries :: Int
+maxLLMRetries =
   3
 
-retryLLMRequest :: (IOE :> es, KatipE :> es) => Text -> Eff es a -> Eff es a
-retryLLMRequest label action =
-  go (1 :: Int)
-  where
-    go attempt =
-      action `catchSync` \err ->
-        if attempt < maxLLMRequestAttempts && retryableLLMFailure err
-          then do
-            logWarning [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
-            go (attempt + 1)
-          else
-            throwIO err
-
 retryLLMStreamRequest
-  :: (IOE :> es, KatipE :> es)
+  :: (Concurrent :> es, IOE :> es, KatipE :> es)
   => Text
-  -> Eff es (Stream (Of a) (Eff es) r)
   -> Stream (Of a) (Eff es) r
-retryLLMStreamRequest label makeStream =
-  go (1 :: Int)
+  -> Stream (Of a) (Eff es) r
+retryLLMStreamRequest =
+  retryLLMStreamRequestWith \seconds ->
+    threadDelay (seconds * 1_000_000)
+
+retryLLMStreamRequestWith
+  :: (IOE :> es, KatipE :> es)
+  => (Int -> Eff es ())
+  -> Text
+  -> Stream (Of a) (Eff es) r
+  -> Stream (Of a) (Eff es) r
+retryLLMStreamRequestWith sleep label source =
+  go 0
   where
-    go attempt = do
-      stream <- lift makeStream
-      consume attempt stream
+    go retries =
+      consume retries False source
 
-    consume attempt stream = do
-      next <- lift $
-        S.next stream `catchSync` \err ->
-          if attempt < maxLLMRequestAttempts && retryableLLMFailure err
-            then do
-              logWarning [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{attempt + 1}/#{maxLLMRequestAttempts}|]
-              S.next (go (attempt + 1))
-            else
-              throwIO err
+    consume retries yielded stream = do
+      next <- lift (trySync (S.next stream))
       case next of
-        Left result ->
+        Left err
+          | not yielded
+          , retries < maxLLMRetries
+          , retryableHTTPFailure err -> do
+              let nextRetry = retries + 1
+                  delaySeconds = retryDelaySeconds nextRetry err
+              lift do
+                logWarning [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{nextRetry + 1}/#{maxLLMRetries + 1} after #{delaySeconds}s|]
+                sleep delaySeconds
+              go nextRetry
+          | otherwise ->
+              lift (throwIO err)
+        Right (Left result) ->
           pure result
-        Right (chunk, rest) -> do
+        Right (Right (chunk, rest)) -> do
           S.yield chunk
-          consume attempt rest
-
-retryableLLMFailure :: SomeException -> Bool
-retryableLLMFailure err =
-  retryableHTTPFailure err || retryableEmptyResponse err
+          consume retries True rest
 
 retryableHTTPFailure :: SomeException -> Bool
 retryableHTTPFailure err =
   case fromException err of
-    Just (HTTP.HttpExceptionRequest _ HTTP.ResponseTimeout) ->
-      True
-    Just (HTTP.HttpExceptionRequest _ HTTP.ConnectionTimeout) ->
-      True
+    Just (HTTP.HttpExceptionRequest _ content) ->
+      retryableHTTPContent content
     _ ->
       False
 
-retryableEmptyResponse :: SomeException -> Bool
-retryableEmptyResponse err =
+retryableHTTPContent :: HTTP.HttpExceptionContent -> Bool
+retryableHTTPContent = \case
+  HTTP.StatusCodeException response _ ->
+    HTTPStatus.statusCode (HTTP.responseStatus response) `elem` [408, 425, 429, 500, 502, 503, 504]
+  HTTP.ResponseTimeout ->
+    True
+  HTTP.ConnectionTimeout ->
+    True
+  HTTP.ConnectionFailure{} ->
+    True
+  HTTP.NoResponseDataReceived ->
+    True
+  HTTP.ConnectionClosed ->
+    True
+  HTTP.ResponseBodyTooShort{} ->
+    True
+  _ ->
+    False
+
+retryDelaySeconds :: Int -> SomeException -> Int
+retryDelaySeconds retryNumber err =
+  max (2 ^ retryNumber) (fromMaybe 0 (retryAfterSeconds err))
+
+retryAfterSeconds :: SomeException -> Maybe Int
+retryAfterSeconds err =
   case fromException err of
-    Just (LLM.LLMException message) ->
-      "empty" `Text.isInfixOf` Text.toLower message
-    Nothing ->
-      False
+    Just (HTTP.HttpExceptionRequest _ (HTTP.StatusCodeException response _)) ->
+      List.lookup HTTPHeader.hRetryAfter (HTTP.responseHeaders response) >>= parseDeltaSeconds
+    _ ->
+      Nothing
+
+parseDeltaSeconds :: ByteString.ByteString -> Maybe Int
+parseDeltaSeconds raw =
+  case ByteString.readInt raw of
+    Just (seconds, rest)
+      | seconds >= 0
+      , ByteString.null rest ->
+          Just seconds
+    _ ->
+      Nothing
