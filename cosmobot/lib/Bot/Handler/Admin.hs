@@ -201,7 +201,7 @@ scriptOutput stdoutText stderrText =
 
 idRoute :: Chat.Chat :> es => RouteHandler es
 idRoute =
-  withHelp (RouteHelp "!ping" "Find sender ID and chat ID.") $
+  withHelp (RouteHelp "!id" "Find sender ID and chat ID.") $
     stopOn (command "!id") handleId
 
 handleId :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
