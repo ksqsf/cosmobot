@@ -1358,7 +1358,11 @@ matrixMentionText userId body =
     else Text.unwords [userId, text]
 
 matrixReferencedMessage :: Event -> Maybe ReferencedMessage
-matrixReferencedMessage event = do
+matrixReferencedMessage =
+  matrixReferencedMessageFromEvent . applyLatestMatrixReplacement
+
+matrixReferencedMessageFromEvent :: Event -> Maybe ReferencedMessage
+matrixReferencedMessageFromEvent event = do
   guard (event.type_ == "m.room.message")
   let body = fromMaybe "" event.content.body
       imageUrls = matrixEventImageUrls event.raw
@@ -1373,14 +1377,36 @@ matrixReferencedMessage event = do
     , files
     }
 
+applyLatestMatrixReplacement :: Event -> Event
+applyLatestMatrixReplacement event =
+  fromMaybe event do
+    replacementContent <- Aeson.parseMaybe parseLatestReplacementContent event.raw
+    content <- Aeson.parseMaybe Aeson.parseJSON replacementContent
+    raw <- case event.raw of
+      Aeson.Object fields ->
+        Just (Aeson.Object (AesonKeyMap.insert "content" replacementContent fields))
+      _ ->
+        Nothing
+    pure event{content, raw}
+  where
+    parseLatestReplacementContent =
+      Aeson.withObject "Matrix event" \eventObject -> do
+        unsigned <- eventObject Aeson..: "unsigned"
+        relations <- Aeson.withObject "Matrix unsigned" (Aeson..: "m.relations") unsigned
+        replacement <- Aeson.withObject "Matrix relations" (Aeson..: "m.replace") relations
+        replacementEventContent <- Aeson.withObject "Matrix replacement" (Aeson..: "content") replacement
+        Aeson.withObject "Matrix replacement content" (Aeson..: "m.new_content") replacementEventContent
+
 normalizeMatrixReferencedEvent
   :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
   => MatrixDriver
   -> Event
   -> Eff es (Maybe ReferencedMessage)
-normalizeMatrixReferencedEvent driver event =
-  traverse withNormalizedImages (matrixReferencedMessage event)
+normalizeMatrixReferencedEvent driver originalEvent =
+  traverse withNormalizedImages (matrixReferencedMessageFromEvent event)
   where
+    event = applyLatestMatrixReplacement originalEvent
+
     withNormalizedImages message = do
       imageUrls <- case matrixEventImageMediaRefs event.raw of
         [] ->

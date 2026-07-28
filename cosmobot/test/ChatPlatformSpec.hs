@@ -53,6 +53,7 @@ main =
       , testCase "Matrix image message includes media URL" testMatrixImageMessageIncludesMediaUrl
       , testCase "Matrix encrypted image message includes media URL" testMatrixEncryptedImageMessageIncludesMediaUrl
       , testCase "Matrix referenced image without body includes media URL" testMatrixReferencedImageWithoutBodyIncludesMediaUrl
+      , testCase "Matrix referenced message uses latest replacement" testMatrixReferencedMessageUsesLatestReplacement
       , testCase "Matrix file message includes a message file" testMatrixFileMessageIncludesMessageFile
       , testCase "Matrix audio message includes a message file" testMatrixAudioMessageIncludesMessageFile
       , testCase "Matrix encrypted image bytes decrypt and verify ciphertext hash" testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash
@@ -404,6 +405,35 @@ testMatrixReferencedImageWithoutBodyIncludesMediaUrl = do
   let referenced = Matrix.matrixReferencedMessage matrixImageWithoutBodyRoomEvent.event
   ((.text) <$> referenced) @?= Just ""
   ((.imageUrls) <$> referenced) @?= Just ["mxc://example.org/bodyless-image"]
+
+testMatrixReferencedMessageUsesLatestReplacement :: IO ()
+testMatrixReferencedMessageUsesLatestReplacement = do
+  let latestContent = Aeson.object
+        [ "msgtype" Aeson..= ("m.text" :: Text)
+        , "body" Aeson..= ("complete" :: Text)
+        ]
+      latestReplacement = Aeson.object
+        [ "content" Aeson..= Aeson.object
+            [ "m.new_content" Aeson..= latestContent
+            ]
+        ]
+      event = matrixRoomEvent.event
+        { Matrix.content = matrixRoomEvent.event.content{Matrix.body = Just "partial"}
+        , Matrix.raw = Aeson.object
+            [ "content" Aeson..= Aeson.object
+                [ "msgtype" Aeson..= ("m.text" :: Text)
+                , "body" Aeson..= ("partial" :: Text)
+                ]
+            , "unsigned" Aeson..= Aeson.object
+                [ "m.relations" Aeson..= Aeson.object
+                    [ "m.replace" Aeson..= latestReplacement
+                    ]
+                ]
+            ]
+        }
+      referenced = Matrix.matrixReferencedMessage event
+  ((.messageId) <$> referenced) @?= Just (Just (textMessageId "$event:example.org"))
+  ((.text) <$> referenced) @?= Just "complete"
 
 testMatrixFileMessageIncludesMessageFile :: IO ()
 testMatrixFileMessageIncludesMessageFile = do
