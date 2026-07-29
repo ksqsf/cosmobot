@@ -310,30 +310,63 @@ nextModel runtime restart agentState =
     modelDecision runtime (nextModel runtime restart) modelState answer
 
 runProgram
-  :: (LLM.LLM :> es, Concurrent :> es)
+  :: (LLM.LLM :> es, Concurrent :> es, KatipE :> es)
   => Runtime '[] es
   -> (TurnState -> Program es Result)
   -> Program es Result
   -> Stream (Of Output) (Eff es) Result
-runProgram runtime@Runtime{aroundToolTurn = toolTurn} restart program =
+runProgram runtime@Runtime{aroundToolTurn = toolTurn, runId} restart program =
   program.observe >>= handleStep
   where
     handleStep = \case
-      Finished result ->
+      Finished result@Result{status, turnsUsed} -> do
+        lift $ agentDebug [i|step=finished status=#{status} turns=#{turnsUsed}|]
         pure result
-      Continues next ->
+      Continues next -> do
+        lift $ agentDebug "step=continues"
         runProgram runtime restart next
-      Visible (RunModel agentState) continue ->
+      Visible (RunModel agentState@TurnState{turn, transcript}) continue -> do
+        lift $ agentDebug
+          [i|step=visible event=RunModel turn=#{turn} messages=#{transcriptMessageCount transcript}|]
         runtime.aroundModelTurn HList.HNil restart agentState
-          (\modelState -> do
-              transcript <- lift (runtime.modelInputTranscript HList.HNil modelState)
-              answer <- askNext runtime modelState transcript
+          (\modelState@TurnState{turn = modelTurn} -> do
+              inputTranscript <- lift (runtime.modelInputTranscript HList.HNil modelState)
+              answer <- askNext runtime modelState inputTranscript
+              lift $ agentDebug
+                [i|event=RunModel completed turn=#{modelTurn} answer=#{answerKind answer}|]
               (continue (modelState, answer)).observe
           )
           >>= handleStep
-      Visible (RunTools request) continue -> do
-        (continuedState, ()) <- lift $ toolTurn HList.HNil request ((, ()) <$> toolPhase runtime request)
+      Visible (RunTools request@ToolRequest{agentState = TurnState{turn}, toolCalls}) continue -> do
+        lift $ agentDebug
+          [i|step=visible event=RunTools turn=#{turn} calls=#{toolCallSummary toolCalls}|]
+        (continuedState@TurnState{turn = nextTurn, transcript}, ()) <-
+          lift $ toolTurn HList.HNil request ((, ()) <$> toolPhase runtime request)
+        lift $ agentDebug
+          [i|event=RunTools completed next_turn=#{nextTurn} messages=#{transcriptMessageCount transcript}|]
         runProgram runtime restart (continue continuedState)
+
+    agentDebug =
+      logAgentState runId
+
+logAgentState :: KatipE :> es => Text -> Text -> Eff es ()
+logAgentState runId message =
+  logDebug [i|Agent state: run=#{runId} #{message}|]
+
+answerKind :: LLM.ChatAnswer -> Text
+answerKind = \case
+  LLM.ChatFinalAnswer{} ->
+    "final"
+  LLM.ChatToolRequest{toolCalls} ->
+    "tools:" <> toolCallSummary toolCalls
+
+toolCallSummary :: NonEmpty LLM.ToolCall -> Text
+toolCallSummary =
+  Text.intercalate "," . map (\call -> call.id <> ":" <> call.name) . toList
+
+transcriptMessageCount :: Transcript -> Int
+transcriptMessageCount =
+  Foldable.length . (.messages)
 
 modelDecision
   :: Runtime context es
@@ -394,7 +427,7 @@ toolCallIdError calls
 
 -- | Interpret one tool phase and advance to the next model phase.
 toolPhase
-  :: Concurrent :> es
+  :: (Concurrent :> es, KatipE :> es)
   => Runtime '[] es
   -> ToolRequest
   -> Eff es TurnState
@@ -469,7 +502,7 @@ replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
 
 -- | Execute requested tools and append their tool-result messages.
 continueWithToolCalls
-  :: Concurrent :> es
+  :: (Concurrent :> es, KatipE :> es)
   => Runtime '[] es
   -> Int
   -> Transcript
@@ -485,11 +518,22 @@ continueWithToolCalls runtime turn answered calls = do
 --
 -- Tool failures must still produce a tool result message; otherwise the next
 -- LLM request would contain an assistant tool call without its required result.
-executeToolCall :: Concurrent :> es => Runtime '[] es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], ToolResult)
-executeToolCall runtime turn call = do
-  result <- runtime.aroundToolCall turn call HList.HNil do
-    ToolRegistry.runToolCall runtime.context runtime.toolCallMetadata runtime.tools runtime.runningTools call
+executeToolCall :: (Concurrent :> es, KatipE :> es) => Runtime '[] es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], ToolResult)
+executeToolCall runtime@Runtime{runId} turn call@LLM.ToolCall{id = callId, name, arguments} = do
+  logDebug
+    [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=started argument_chars=#{Text.length arguments}|]
+  result <-
+    runtime.aroundToolCall turn call HList.HNil
+      (ToolRegistry.runToolCall runtime.context runtime.toolCallMetadata runtime.tools runtime.runningTools call)
+      `onException` logDebug
+        [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=interrupted|]
+  logDebug
+    [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=finished status=#{toolResultStatus result} result_chars=#{Text.length (toolResultContent result)} images=#{length (toolResultImageUrls result)}|]
   pure (LLM.toolResult call (toolResultContent result), toolImageContextMessages call result, result)
+
+toolResultStatus :: ToolResult -> Text
+toolResultStatus =
+  maybe "ok" failureStatus . toolResultFailure
 
 toolImageContextMessages :: LLM.ToolCall -> ToolResult -> [LLM.ChatMessage]
 toolImageContextMessages call result =

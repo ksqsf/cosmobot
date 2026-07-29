@@ -14,6 +14,7 @@ import qualified Bot.ACP.Server as ACPServer
 import qualified Bot.ACP.State as ACP
 import Bot.Config
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
+import Bot.Core.Message (incomingMessageLogLine)
 import Bot.Core.Route
 import qualified Bot.Lifecycle as Lifecycle
 import qualified Bot.Chat.Driver as ChatDriver
@@ -120,7 +121,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
           ]
         messageConsumer =
           consumeWith
-            (routes cfg threads)
+            (zipWith withRouteDebugLogging [1 :: Int ..] (routes cfg threads))
             (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
     runConfiguredServers cfg threads rpcState acpState messageConsumer
@@ -144,6 +145,29 @@ routes cfg threads =
         <> saucenaoHandlers cfg.saucenao
         <> resourceHandlers
         <> askHandlers cfg.tool cfg.handlers.ask threads
+
+withRouteDebugLogging :: KatipE :> es => Int -> Route es -> Route es
+withRouteDebugLogging index route =
+  route
+    { decide = \message -> do
+        decision <- route.decide message
+        case decision of
+          Skip ->
+            pure ()
+          ContinueWith{} ->
+            logMatch ("continue" :: Text) message
+          StopWith{} ->
+            logMatch ("stop" :: Text) message
+        pure decision
+    }
+  where
+    logMatch decision message =
+      logDebug
+        [i|Route matched: index=#{index} label=#{routeLabel route} decision=#{decision} #{incomingMessageLogLine message}|]
+
+routeLabel :: Route es -> Text
+routeLabel route =
+  maybe "-" (.label) route.help
 
 runConfiguredServers
   :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
