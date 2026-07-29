@@ -16,6 +16,7 @@ import Bot.Core.Transcript
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Foldable as Foldable
+import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
 
 appendMessage :: LLM.ChatMessage -> Transcript -> Transcript
@@ -44,9 +45,18 @@ closeInterruptedToolCalls (Transcript messages) =
     go (message : rest)
       | message.role == "assistant" && not (null message.toolCalls) =
           let (toolResults, remaining) = span isToolResult rest
-              existingIds = mapMaybe (.toolCallId) toolResults
-              missingCalls = filter ((`notElem` existingIds) . (.id)) message.toolCalls
-          in message : toolResults <> map pausedToolResult missingCalls <> go remaining
+              existing =
+                Map.fromListWith
+                  (\_ firstResult -> firstResult)
+                  [ (toolCallId, result)
+                  | result <- toolResults
+                  , Just toolCallId <- [result.toolCallId]
+                  ]
+              resultFor call =
+                fromMaybe (pausedToolResult call) (Map.lookup call.id existing)
+          in message : map resultFor message.toolCalls <> go remaining
+      | message.role == "tool" =
+          go rest
       | otherwise =
           message : go rest
 

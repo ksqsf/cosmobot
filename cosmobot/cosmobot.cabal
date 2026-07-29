@@ -450,6 +450,15 @@ test-suite agent-core-spec
                     , tasty-quickcheck
     hs-source-dirs:   test
 
+test-suite failure-spec
+    import:           warnings
+                    , threaded
+                    , language
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          FailureSpec.hs
+    hs-source-dirs:   test
+
 test-suite llm-retry-spec
     import:           warnings
                     , language

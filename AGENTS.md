@@ -99,6 +99,10 @@ to `test/AgentCoreSpec.hs`. Compare programs up to finite `Continues` steps,
 inspect every generated `Visible` continuation, and keep these calculus
 laws separate from middleware policy scenarios in `AgentSpec.hs`.
 
+Put deterministic model/tool fault injection in `test/FailureSpec.hs`. Keep
+fault scripts and synchronization probes test-only, and assert recovery,
+cleanup, and tool-call transcript completeness together.
+
 ### Coding Rules
 
 - For Haskell code changes, use the local `haskell` skill's fast-feedback workflow: keep `ghcid --outputfile .ghcid-errors` running when practical, read `.ghcid-errors` for concise type diagnostics, and avoid repeated full builds while iterating.
@@ -171,16 +175,18 @@ laws separate from middleware policy scenarios in `AgentSpec.hs`.
 
 ### Verification
 
-- Concurrency manager changes: `cabal test -j concurrency-spec`.
-- Agent calculus changes: `cabal test -j agent-core-spec`.
-- Agent middleware/tool/conversation changes: `cabal test -j agent-spec`.
-- Scheduler changes: `cabal test -j scheduler-spec`.
-- Chat-log changes: `cabal test -j chat-log-spec`.
-- Shared behavior changes: `cabal test -j all`.
+- Concurrency manager changes: `cabal test -j concurrency-spec --test-options=--hide-successes`.
+- Agent calculus changes: `cabal test -j agent-core-spec --test-options=--hide-successes`.
+- Agent middleware/tool/conversation changes: `cabal test -j agent-spec --test-options=--hide-successes`.
+- Agent retry, failure, and cancellation changes: `cabal test -j failure-spec --test-options=--hide-successes`.
+- Scheduler changes: `cabal test -j scheduler-spec --test-options=--hide-successes`.
+- Chat-log changes: `cabal test -j chat-log-spec --test-options=--hide-successes`.
+- Shared behavior changes: `cabal test -j all --test-options=--hide-successes`.
 - Executable wiring, config, cabal module lists, or handler signatures: `cabal build -j exe:cosmobot`.
 - Always run `git diff --check` before finishing.
 - Keep unrelated untracked files out of commits unless explicitly requested.
-- Always use `-j` for `cabal` build and test.
+- Always use `-j` for `cabal` build and test, and pass
+  `--test-options=--hide-successes` to `cabal test`.
 
 ## Cosmocode
 

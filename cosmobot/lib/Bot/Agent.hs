@@ -345,15 +345,52 @@ modelDecision runtime continue agentState answer =
   case answer of
     LLM.ChatFinalAnswer{content} ->
       pure (agentCompletion runtime "answered" content agentState.turn (LLM.chatAnswerTokenUsage answer) answered)
-    LLM.ChatToolRequest{content, toolCalls} ->
-      Program do
-        S.yield (ToolCallNotification toolCalls)
-        pure (Visible (RunTools ToolRequest{agentState = observedState, answered, toolContent = content, toolCalls}) continue)
+    LLM.ChatToolRequest{content, toolCalls}
+      | Just message <- toolCallIdError toolCalls ->
+          modelProtocolError runtime agentState answer message
+      | otherwise ->
+          Program do
+            S.yield (ToolCallNotification toolCalls)
+            pure (Visible (RunTools ToolRequest{agentState = observedState, answered, toolContent = content, toolCalls}) continue)
   where
     observedState =
       agentState{modelTokenUsage = LLM.chatAnswerTokenUsage answer}
     answered =
       appendMessage (LLM.assistantAnswer answer) agentState.transcript
+
+modelProtocolError
+  :: Runtime context es
+  -> TurnState
+  -> LLM.ChatAnswer
+  -> Text
+  -> Program es Result
+modelProtocolError runtime agentState answer message =
+  Program do
+    S.yield (ContentDelta message)
+    pure . Finished $
+      agentCompletion
+        runtime
+        "model_protocol_error"
+        message
+        agentState.turn
+        (LLM.chatAnswerTokenUsage answer)
+        agentState.transcript
+
+toolCallIdError :: NonEmpty LLM.ToolCall -> Maybe Text
+toolCallIdError calls
+  | any (Text.null . Text.strip . (.id)) callList =
+      Just "Model returned a tool call with an empty id."
+  | duplicateIds@(_ : _) <-
+      mapMaybe listToMaybe
+        . filter ((> 1) . length)
+        . group
+        . sort
+        $ map (.id) callList =
+      Just [i|Model returned duplicate tool-call ids: #{Text.intercalate ", " duplicateIds}|]
+  | otherwise =
+      Nothing
+  where
+    callList = toList calls
 
 -- | Interpret one tool phase and advance to the next model phase.
 toolPhase
