@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Tools as AgentTools
 import qualified Bot.Agent.Core as AgentCore
 import qualified Bot.Agent.Tools.Audio as AudioTools
@@ -14,6 +15,7 @@ import qualified Bot.Agent.Tools.SubAgent as SubAgentTools
 import qualified Bot.Agent.Tools.Terminal as TerminalTools
 import qualified Bot.Agent.Tools.Workspace as WorkspaceTools
 import qualified Bot.Agent.Types as AgentTypes
+import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import Bot.Agent.Tools.Shell (runBashSafe, runBashTool)
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
 import Bot.Agent.Tools.Common (UseLimit (..), newUseLimiter)
@@ -200,6 +202,8 @@ main =
   defaultMain $
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
+      , testCase "tool argument DSL shares schema, decoding, and reader context" testToolArgumentDSL
+      , testCase "dynamic tool visibility is frozen for each model turn" testDynamicToolVisibilitySnapshot
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
       , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
       , testCase "subagent lifecycle is shared within a chat" testSubAgentLifecycle
@@ -305,6 +309,61 @@ main =
       , testCase "agent failure summarizes Req HTTP errors" testAgentFailureSummarizesReqHttpErrors
       ]
 
+testToolArgumentDSL :: IO ()
+testToolArgumentDSL = do
+  let definition :: AgentTool.Tool '[]
+      definition =
+        AgentTool.withDescription "Echo a value."
+        $ AgentTool.tool "echo"
+            ( (AgentTool.requiredArgument
+                ("value", Aeson.object ["type" Aeson..= ("string" :: Text)])
+                :: AgentTool.ToolArgument Text)
+            , AgentTool.withDefault (2 :: Int)
+                (AgentTool.optionalArgument
+                  ("count", Aeson.object ["type" Aeson..= ("integer" :: Text)]))
+            )
+            \value count -> do
+              context <- AgentTool.askToolContext
+              metadata <- AgentTool.askToolCallMetadata
+              let command = context.askCommand
+                  runId = metadata.agentRunId
+              pure (Agent.toolText [i|#{value}:#{count}:#{command}:#{runId}|])
+      (schema, valid, invalid) = runPureEff do
+        resolvedSchema <- AgentTool.resolveToolSchema definition agentContext (startWithUser "test") 0
+        runner <- AgentTool.startTool definition agentContext
+        validResult <- runner testToolCallMetadata (Aeson.object ["value" Aeson..= ("ok" :: Text)])
+        invalidResult <- runner testToolCallMetadata (Aeson.object [])
+        pure (resolvedSchema, validResult, invalidResult)
+      encodedSchema = jsonText schema
+  assertBool "schema includes the required field" ("\"required\":[\"value\"]" `Text.isInfixOf` encodedSchema)
+  assertBool "schema includes the optional field" ("\"count\"" `Text.isInfixOf` encodedSchema)
+  AgentTypes.toolResultContent valid @?= "ok:2:!ask:agent-test"
+  assertBool "the same argument spec rejects missing required input" ("value" `Text.isInfixOf` AgentTypes.toolResultContent invalid)
+
+testDynamicToolVisibilitySnapshot :: IO ()
+testDynamicToolVisibilitySnapshot = do
+  visible <- IORef.newIORef True
+  let definition :: AgentTool.Tool '[Concurrent, IOE]
+      definition =
+        AgentTool.hideUnlessM (\_ _ _ -> liftIO (IORef.readIORef visible))
+        . AgentTool.withDescription "Dynamically visible."
+        $ AgentTool.tool "dynamic" AgentTool.noArguments
+            (pure (Agent.toolText "ran"))
+      call = toolCall "call-1" "dynamic" (Aeson.object [])
+  (initialSchemas, beforeRefresh, refreshedSchemas, afterRefresh) <-
+    runEff $ runConcurrent do
+      running <- ToolRegistry.startToolRun agentContext definition
+      initialSchemas <- ToolRegistry.resolveToolSchemas (startWithUser "test") 0 [running]
+      liftIO (IORef.writeIORef visible False)
+      beforeRefresh <- ToolRegistry.runToolCall agentContext testToolCallMetadata [definition] [running] call
+      refreshedSchemas <- ToolRegistry.resolveToolSchemas (startWithUser "test") 1 [running]
+      afterRefresh <- ToolRegistry.runToolCall agentContext testToolCallMetadata [definition] [running] call
+      pure (initialSchemas, beforeRefresh, refreshedSchemas, afterRefresh)
+  map (.name) initialSchemas @?= ["dynamic"]
+  AgentTypes.toolResultContent beforeRefresh @?= "ran"
+  assertBool "the next turn hides the tool" (null refreshedSchemas)
+  assertBool "hidden tool calls are rejected after the next schema snapshot" ("Unknown tool" `Text.isInfixOf` AgentTypes.toolResultContent afterRefresh)
+
 testScheduleToolCreatesQueryableSchedule :: IO ()
 testScheduleToolCreatesQueryableSchedule = do
   answers <- IORef.newIORef
@@ -325,44 +384,48 @@ testScheduleToolCreatesQueryableSchedule = do
 
 testAcpClientFileToolsAreAcpOnly :: IO ()
 testAcpClientFileToolsAreAcpOnly = do
-  let readTool = FileTools.acpReadClientFileTool :: Agent.Tool AgentStack
-      writeTool = FileTools.acpWriteClientFileTool :: Agent.Tool AgentStack
+  let readTool = FileTools.acpReadClientFileTool :: AgentTool.Tool AgentStack
+      writeTool = FileTools.acpWriteClientFileTool :: AgentTool.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
-  readTool.name @?= "acp_read_client_file"
-  writeTool.name @?= "acp_write_client_file"
-  assertBool "read tool should be hidden outside ACP" (not (readTool.allowed agentContext))
-  assertBool "write tool should be hidden outside ACP" (not (writeTool.allowed agentContext))
-  assertBool "read tool should be visible for ACP" (readTool.allowed acpContext)
-  assertBool "write tool should be visible for ACP" (writeTool.allowed acpContext)
+  AgentTool.toolName readTool @?= "acp_read_client_file"
+  AgentTool.toolName writeTool @?= "acp_write_client_file"
+  assertBool "read tool should be hidden outside ACP" (not (AgentTool.toolAllowed readTool agentContext))
+  assertBool "write tool should be hidden outside ACP" (not (AgentTool.toolAllowed writeTool agentContext))
+  assertBool "read tool should be visible for ACP" (AgentTool.toolAllowed readTool acpContext)
+  assertBool "write tool should be visible for ACP" (AgentTool.toolAllowed writeTool acpContext)
 
 testTerminalAndSandboxToolScopes :: IO ()
 testTerminalAndSandboxToolScopes = do
-  let terminalTool = TerminalTools.terminalTool :: Agent.Tool AgentStack
-      sandboxTool = SandboxTools.sandboxTool :: Agent.Tool AgentStack
-      trustedBashTool = runBashTool :: Agent.Tool AgentStack
-      workspaceTool = WorkspaceTools.workspaceTool :: Agent.Tool AgentStack
+  answers <- IORef.newIORef []
+  let terminalTool = TerminalTools.terminalTool :: AgentTool.Tool AgentStack
+      sandboxTool = SandboxTools.sandboxTool :: AgentTool.Tool AgentStack
+      trustedBashTool = runBashTool :: AgentTool.Tool AgentStack
+      workspaceTool = WorkspaceTools.workspaceTool :: AgentTool.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
-      sandboxSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode sandboxTool.parameters))
-      workspaceSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode workspaceTool.parameters))
-      trustedBashSchema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode trustedBashTool.parameters))
-  terminalTool.name @?= "terminal"
-  assertBool "terminal tool should be hidden outside ACP" (not (terminalTool.allowed agentContext))
-  assertBool "terminal tool should be visible for ACP" (terminalTool.allowed acpContext)
-  sandboxTool.name @?= "sandbox"
+  (sandboxSchema, workspaceSchema, trustedBashSchema) <-
+    runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+      (,,)
+        <$> encodedToolParameters sandboxTool
+        <*> encodedToolParameters workspaceTool
+        <*> encodedToolParameters trustedBashTool
+  AgentTool.toolName terminalTool @?= "terminal"
+  assertBool "terminal tool should be hidden outside ACP" (not (AgentTool.toolAllowed terminalTool agentContext))
+  assertBool "terminal tool should be visible for ACP" (AgentTool.toolAllowed terminalTool acpContext)
+  AgentTool.toolName sandboxTool @?= "sandbox"
   assertBool "sandbox bash schema should require a script" ("\"script\"" `Text.isInfixOf` sandboxSchema)
   assertBool "sandbox create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` sandboxSchema)
   assertBool "sandbox schema should expose media copies" (all (`Text.isInfixOf` sandboxSchema) ["file_to_media", "media_to_file"])
   assertBool "sandbox bash schema should not expose command ids" (not ("command_id" `Text.isInfixOf` sandboxSchema))
   assertBool "sandbox bash schema should not expose async actions" (not ("\"action\"" `Text.isInfixOf` sandboxSchema))
   assertBool "run_bash schema should not expose sandboxes" (not ("sandbox" `Text.isInfixOf` trustedBashSchema))
-  assertBool "sandbox tool should be visible to non-superusers" (sandboxTool.allowed agentContext)
-  assertBool "sandbox tool should require resource identity" (not (sandboxTool.allowed missingIdentity))
-  workspaceTool.name @?= "workspace"
+  assertBool "sandbox tool should be visible to non-superusers" (AgentTool.toolAllowed sandboxTool agentContext)
+  assertBool "sandbox tool should require resource identity" (not (AgentTool.toolAllowed sandboxTool missingIdentity))
+  AgentTool.toolName workspaceTool @?= "workspace"
   assertBool "workspace create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` workspaceSchema)
-  assertBool "workspace should be hidden from non-superusers" (not (workspaceTool.allowed agentContext))
-  assertBool "workspace should be visible to superusers" (workspaceTool.allowed superuserContext)
-  assertBool "workspace should require resource identity" (not (workspaceTool.allowed superuserContext{Agent.message = testMessage{senderId = Nothing}}))
+  assertBool "workspace should be hidden from non-superusers" (not (AgentTool.toolAllowed workspaceTool agentContext))
+  assertBool "workspace should be visible to superusers" (AgentTool.toolAllowed workspaceTool superuserContext)
+  assertBool "workspace should require resource identity" (not (AgentTool.toolAllowed workspaceTool superuserContext{Agent.message = testMessage{senderId = Nothing}}))
 
 testSubAgentLifecycle :: IO ()
 testSubAgentLifecycle = do
@@ -381,25 +444,25 @@ testSubAgentLifecycle = do
             }
         otherContext = agentContext{Agent.message = testMessage{senderId = Just "other"}}
         otherChatContext = agentContext{Agent.message = testMessage{Message.chatId = Just 999}}
-        schema = TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode tool.parameters))
+    schema <- encodedToolParameters tool
     liftIO $ assertBool "subagent create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` schema)
-    createRun <- tool.start agentContext
+    createRun <- AgentTool.startTool tool agentContext
     tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (4 :: Int)])
     liftIO $ assertBool "subagent rejects TTL below five minutes" ("at least 5" `Text.isInfixOf` AgentTypes.toolResultContent tooShort)
     created <- createRun descendantMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
     liftIO $ resourceId @?= "researcher"
-    otherChatRun <- tool.start otherChatContext
+    otherChatRun <- AgentTool.startTool tool otherChatContext
     void $ otherChatRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("hidden" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
     listed <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("list" :: Text)])
     liftIO $ AgentTypes.toolResultContent listed @?= "[\"researcher\"]"
-    sandboxRun <- SandboxTools.sandboxTool.start agentContext
+    sandboxRun <- AgentTool.startTool SandboxTools.sandboxTool agentContext
     listedSandboxes <- sandboxRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("list" :: Text)])
     liftIO $ AgentTypes.toolResultContent listedSandboxes @?= "[]"
-    workspaceRun <- WorkspaceTools.workspaceTool.start superuserContext
+    workspaceRun <- AgentTool.startTool WorkspaceTools.workspaceTool superuserContext
     listedWorkspaces <- workspaceRun testToolCallMetadata (Aeson.object ["action" Aeson..= ("list" :: Text)])
     liftIO $ AgentTypes.toolResultContent listedWorkspaces @?= "[]"
-    sendRun <- tool.start otherContext
+    sendRun <- AgentTool.startTool tool otherContext
     sent <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
     liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
     MVar.takeMVar started
@@ -440,7 +503,7 @@ testSubAgentWaitOperations = do
           output <- MVar.takeMVar gate
           pure (output, transcript)
         tool = SubAgentTools.subagentTool childRunner []
-    run <- tool.start agentContext
+    run <- AgentTool.startTool tool agentContext
     let create name =
           run testToolCallMetadata $
             Aeson.object
@@ -522,6 +585,7 @@ testToolReplyMiddlewareNormalizesReplyImages :: IO ()
 testToolReplyMiddlewareNormalizesReplyImages = do
   replies <- IORef.newIORef ([] :: [Text])
   runEff $
+    runConcurrent $
     runMediaNormalizingRefs $
       Chat.runChatWith defaultAgentMockChatDriver { agentReply = \_ body -> do
           liftIO $ IORef.modifyIORef' replies (<> [body])
@@ -539,6 +603,7 @@ testToolReplyMiddlewareRejectsUncachedRemoteImages :: IO ()
 testToolReplyMiddlewareRejectsUncachedRemoteImages = do
   replies <- IORef.newIORef ([] :: [Text])
   result <- runEff $
+    runConcurrent $
     runMediaLeavingRefs $
       Chat.runChatWith defaultAgentMockChatDriver { agentReply = \_ body -> do
           liftIO $ IORef.modifyIORef' replies (<> [body])
@@ -582,10 +647,10 @@ testSendFileToolReportsUploadFailure = do
 
 testSendFileToolIsNoisyAndSuperuserOnly :: IO ()
 testSendFileToolIsNoisyAndSuperuserOnly = do
-  let tool = ChatTools.sendFileTool :: Agent.Tool '[Chat.Chat, IOE]
-  tool.noisy @?= True
-  tool.allowed agentContext @?= False
-  tool.allowed superuserContext @?= True
+  let tool = ChatTools.sendFileTool :: AgentTool.Tool '[Chat.Chat, IOE]
+  AgentTool.toolIsNoisy tool @?= True
+  AgentTool.toolAllowed tool agentContext @?= False
+  AgentTool.toolAllowed tool superuserContext @?= True
 
 testSendMediaToolUploadsCachedMedia :: IO ()
 testSendMediaToolUploadsCachedMedia =
@@ -616,13 +681,13 @@ testSendMediaToolUploadsCachedMedia =
           , sourceName = Just "generated.bin"
           }
         expectedPath <- fromMaybe (error "expected local media path") <$> Media.localMediaPath mediaRef
-        runner <- MediaTools.sendMediaTool.start agentContext
+        runner <- AgentTool.startTool MediaTools.sendMediaTool agentContext
         result <- runner testToolCallMetadata (Aeson.object ["media_id" Aeson..= mediaRef])
         pure (expectedPath, result)
       (expectedPath, result) <- either assertFailure pure runResult
-      let tool = MediaTools.sendMediaTool :: Agent.Tool AgentStack
-      tool.noisy @?= True
-      assertBool "send_media should be available to normal users" (tool.allowed agentContext)
+      let tool = MediaTools.sendMediaTool :: AgentTool.Tool AgentStack
+      AgentTool.toolIsNoisy tool @?= True
+      assertBool "send_media should be available to normal users" (AgentTool.toolAllowed tool agentContext)
       IORef.readIORef uploads >>= (@?= [expectedPath])
       case result of
         Agent.ToolSucceeded{content} ->
@@ -643,7 +708,7 @@ runSendFileTool replies upload =
             pure (Right "901")
         , agentUploadFile = upload
         } do
-        runner <- ChatTools.sendFileTool.start superuserContext
+        runner <- AgentTool.startTool ChatTools.sendFileTool superuserContext
         runner testToolCallMetadata (Aeson.object ["path" Aeson..= ("file:///tmp/report.txt" :: Text)])
 
 testCurrentSenderChatLogToolQueriesChatLog :: IO ()
@@ -1151,7 +1216,7 @@ testViewImageToolCachesImageForContext =
               . runTimeout
               . MediaInterpreter.runMedia cfg
       runResult <- runEff $ runStack do
-        runner <- ImageTools.viewImageTool.start agentContext
+        runner <- AgentTool.startTool ImageTools.viewImageTool agentContext
         runner testToolCallMetadata (Aeson.object ["url" Aeson..= imageUrl])
       toolResult <- either assertFailure pure runResult
       case toolResult of
@@ -1188,7 +1253,7 @@ testReadMediaTextToolReadsCachedSlices =
           , sourceName = Just "sample.txt"
           }
         let mediaId = maybe "" (\ref -> fromMaybe ref (Text.stripPrefix "media:" ref)) mediaRef
-        runner <- MediaTools.readMediaTextTool.start agentContext
+        runner <- AgentTool.startTool MediaTools.readMediaTextTool agentContext
         result <- runner testToolCallMetadata (Aeson.object
           [ "media_id" Aeson..= mediaId
           , "offset" Aeson..= (2 :: Int)
@@ -1196,10 +1261,10 @@ testReadMediaTextToolReadsCachedSlices =
           ])
         pure (mediaRef, result)
       (mediaRef, result) <- either assertFailure pure runResult
-      let tool = MediaTools.readMediaTextTool :: Agent.Tool AgentStack
+      let tool = MediaTools.readMediaTextTool :: AgentTool.Tool AgentStack
       assertBool "expected stored media ref" (maybe False ("media:mf_" `Text.isPrefixOf`) mediaRef)
-      tool.noisy @?= False
-      assertBool "media_text should be available to everyone" (tool.allowed agentContext)
+      AgentTool.toolIsNoisy tool @?= False
+      assertBool "media_text should be available to everyone" (AgentTool.toolAllowed tool agentContext)
       case result of
         Agent.ToolSucceeded{content = output} -> do
           assertBool "tool output should include requested slice" ("\"content\":\"cde\"" `Text.isInfixOf` output)
@@ -1230,7 +1295,7 @@ testMediaToFileReturnsCachePath =
           , sourceName = Just "sample.bin"
           }
         expectedPath <- fromMaybe (error "expected local media path") <$> Media.localMediaPath mediaRef
-        runner <- MediaTools.mediaToFileTool.start agentContext
+        runner <- AgentTool.startTool MediaTools.mediaToFileTool agentContext
         result <- runner testToolCallMetadata (Aeson.object ["media_id" Aeson..= mediaRef])
         pure (expectedPath, result)
       (expectedPath, result) <- either assertFailure pure runResult
@@ -1269,7 +1334,7 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
           liftIO $ IORef.modifyIORef' audioReplies (<> [(audioRef, caption)])
           pure (Right "50")
         } do
-          runner <- AudioTools.generateAudioTool.start agentContext
+          runner <- AgentTool.startTool AudioTools.generateAudioTool agentContext
           runner testToolCallMetadata args
   case result of
     Agent.ToolSucceeded{content} ->
@@ -1278,8 +1343,8 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
       assertFailure [i|expected audio generation success, got #{show failure :: String}|]
   IORef.readIORef generateCalls >>= (@?= [AudioGenerateCall "say hello" expectedOptions])
   IORef.readIORef audioReplies >>= (@?= [(generatedAudio, Nothing)])
-  let tool = AudioTools.generateAudioTool :: Agent.Tool '[Chat.Chat, LLM.LLM]
-  tool.noisy @?= True
+  let tool = AudioTools.generateAudioTool :: AgentTool.Tool '[Chat.Chat, LLM.LLM]
+  AgentTool.toolIsNoisy tool @?= True
 
 testEditImageToolPassesImageRequestOptions :: IO ()
 testEditImageToolPassesImageRequestOptions = do
@@ -1470,16 +1535,10 @@ testAgentRejectsConcurrentContinuationCalls = do
     ]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   let sideEffectTool =
-        Agent.Tool
-          { name = "side_effect"
-          , description = "record one execution"
-          , parameters = Aeson.object []
-          , noisy = False
-          , allowed = const True
-          , start = \_ -> pure \_ _ -> do
-              liftIO $ IORef.modifyIORef' calls (+ 1)
-              pure (Agent.toolText "executed")
-          }
+        AgentTool.withDescription "record one execution"
+        $ AgentTool.tool "side_effect" AgentTool.noArguments do
+            liftIO $ IORef.modifyIORef' calls (+ 1)
+            pure (Agent.toolText "executed")
       tools =
         [ ContinuationTools.captureContinuationTool
         , ContinuationTools.resumeContinuationTool
@@ -2170,17 +2229,11 @@ testAgentAuditStorageOmitsLargeToolResults =
         other ->
           assertFailure [i|expected one cached result file, got #{length other}|]
 
-largeAuditResultTool :: Text -> Agent.Tool es
+largeAuditResultTool :: Text -> AgentTool.Tool es
 largeAuditResultTool result =
-  Agent.Tool
-    { name = "large_audit_result"
-    , description = "fake large audit result"
-    , parameters = Aeson.object []
-    , noisy = False
-    , allowed = const True
-    , start = \_ -> pure \_ _ ->
-        pure (Agent.toolText result)
-    }
+  AgentTool.withDescription "fake large audit result"
+  $ AgentTool.tool "large_audit_result" AgentTool.noArguments
+      (pure (Agent.toolText result))
 
 testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt :: IO ()
 testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt = do
@@ -2190,14 +2243,10 @@ testAgentOmitsLargeToolResultAfterOneModelTurnConsumesIt = do
     , chatAnswer "done" []
     ]
   let largeResult = "large-result:" <> Text.replicate 5000 "x"
-      oneShotLargeResultTool = Agent.Tool
-        { name = "large_result"
-        , description = "return a large result"
-        , parameters = Aeson.object []
-        , noisy = False
-        , allowed = const True
-        , start = \_ -> pure \_ _ -> pure (Agent.toolText largeResult)
-        }
+      oneShotLargeResultTool =
+        AgentTool.withDescription "return a large result"
+        $ AgentTool.tool "large_result" AgentTool.noArguments
+            (pure (Agent.toolText largeResult))
   (_, transcript) <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 4 agentContext [oneShotLargeResultTool] (startWithUser "run it")
   requests <- IORef.readIORef captured
@@ -2228,14 +2277,10 @@ testAgentHardLimitsImmediateToolResults = do
     , chatAnswer "done" []
     ]
   let hugeResult = "huge-result:" <> Text.replicate 10001 "x"
-      hugeResultTool = Agent.Tool
-        { name = "huge_result"
-        , description = "return a huge result"
-        , parameters = Aeson.object []
-        , noisy = False
-        , allowed = const True
-        , start = \_ -> pure \_ _ -> pure (Agent.toolText hugeResult)
-        }
+      hugeResultTool =
+        AgentTool.withDescription "return a huge result"
+        $ AgentTool.tool "huge_result" AgentTool.noArguments
+            (pure (Agent.toolText hugeResult))
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     Agent.runAgent 4 agentContext [hugeResultTool] (startWithUser "run it")
   requests <- IORef.readIORef captured
@@ -2822,23 +2867,18 @@ testWebFetchMaxUsesLimitsCalls = do
   answer @?= "done"
   IORef.readIORef fetches >>= (@?= 1)
 
-fakeWebFetchTool :: IOE :> es => IORef.IORef Int -> Agent.Tool es
-fakeWebFetchTool fetches = Agent.Tool
-  { name = "fetch_url"
-  , description = "fake web fetch"
-  , parameters = Aeson.object []
-  , noisy = False
-  , allowed = const True
-  , start = \context -> do
-      checkUseLimit <- newUseLimiter context.toolConfig.webFetchMaxUses
-      pure \_ _ -> do
-        checkUseLimit >>= \case
+fakeWebFetchTool :: IOE :> es => IORef.IORef Int -> AgentTool.Tool es
+fakeWebFetchTool fetches =
+  AgentTool.withDescription "fake web fetch"
+  $ AgentTool.toolWithRunState "fetch_url" AgentTool.noArguments
+      (\context -> newUseLimiter context.toolConfig.webFetchMaxUses)
+      \checkUseLimit -> do
+        raise checkUseLimit >>= \case
           UseLimitReached currentUses ->
             pure (Agent.toolText [i|fetch_url use limit reached for this agent run: #{currentUses}.|])
           UseAllowed -> do
             liftIO $ IORef.modifyIORef' fetches (+ 1)
             pure (Agent.toolText "fetched")
-  }
 
 testThreadRepliesKeepSnapshots :: IO ()
 testThreadRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
@@ -3033,17 +3073,11 @@ testThreadStorageOmitsLargeToolResults =
         other ->
           assertFailure [i|expected one cached result file, got #{length other}|]
 
-largeResultTool :: Text -> Agent.Tool es
+largeResultTool :: Text -> AgentTool.Tool es
 largeResultTool result =
-  Agent.Tool
-    { name = "large_tool"
-    , description = "fake large result"
-    , parameters = Aeson.object []
-    , noisy = False
-    , allowed = const True
-    , start = \_ -> pure \_ _ ->
-        pure (Agent.toolText result)
-    }
+  AgentTool.withDescription "fake large result"
+  $ AgentTool.tool "large_tool" AgentTool.noArguments
+      (pure (Agent.toolText result))
 
 testTranscriptOmitsBase64GeneratedImageContext :: IO ()
 testTranscriptOmitsBase64GeneratedImageContext = do
@@ -3935,7 +3969,13 @@ toolCall callId name arguments =
     , arguments = jsonText arguments
     }
 
-agentContext :: Agent.AgentContext es
+encodedToolParameters :: AgentTool.Tool es -> Eff es Text
+encodedToolParameters definition = do
+  schema <- AgentTool.resolveToolSchema definition agentContext (startWithUser "") 0
+  pure . TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $
+    maybe Aeson.Null (.parameters) schema
+
+agentContext :: Agent.AgentContext
 agentContext =
   Agent.AgentContext
     { message = testMessage
@@ -3946,7 +3986,7 @@ agentContext =
     , toolConfig = Agent.defaultToolConfig
     }
 
-superuserContext :: Agent.AgentContext es
+superuserContext :: Agent.AgentContext
 superuserContext =
   agentContext{Agent.superuser = True}
 
@@ -3956,8 +3996,8 @@ testToolCallMetadata =
 
 runAgentWithToolMessageCapture
   :: Int
-  -> Agent.AgentContext AgentStack
-  -> [Agent.Tool AgentStack]
+  -> Agent.AgentContext
+  -> [AgentTool.Tool AgentStack]
   -> Transcript
   -> IORef.IORef [Text]
   -> IORef.IORef [Maybe MessageId]

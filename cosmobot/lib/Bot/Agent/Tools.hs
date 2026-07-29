@@ -10,7 +10,6 @@ module Bot.Agent.Tools
 where
 
 import qualified Bot.Agent as Agent
--- import Bot.Agent.Tools.Audio
 import Bot.Agent.Tools.Chat
 import Bot.Agent.Tools.Emacs
 import Bot.Agent.Tools.Files
@@ -28,7 +27,7 @@ import Bot.Agent.Tools.Time
 import Bot.Agent.Tools.Typst
 import Bot.Agent.Tools.Web
 import Bot.Agent.Tools.Workspace
-import Bot.Agent.Types
+import Bot.Agent.Tool
 import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
@@ -83,7 +82,6 @@ defaultTools = tools
       , datetimeTool
       , readMediaTextTool
       , mediaToFileTool
-  -- , generateAudioTool  -- useless now
       , viewImageTool
       , generateImageTool
       , editImageTool

@@ -6,8 +6,7 @@ Stability   : experimental
 -}
 
 module Bot.Agent
-  ( Tool (..)
-  , ToolCallMetadata (..)
+  ( ToolCallMetadata (..)
   , AgentContext (..)
   , AgentEvent (..)
   , AgentObserver (..)
@@ -92,11 +91,11 @@ import Bot.Agent.Middleware.Typing
   ( withTypingNotification
   )
 import Bot.Agent.ToolRegistry
-  ( startToolRun
-  , toolAllowed
-  , toolSchema
+  ( resolveToolSchemas
+  , startToolRun
   )
 import qualified Bot.Agent.ToolRegistry as ToolRegistry
+import Bot.Agent.Tool (Tool, toolAllowed)
 import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -121,7 +120,7 @@ import qualified Streaming.Prelude as S
 runAgent
   :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => Int
-  -> AgentContext es
+  -> AgentContext
   -> [Tool es]
   -> Transcript
   -> Eff es (Text, Transcript)
@@ -131,7 +130,7 @@ runAgentWithParent
   :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => Maybe Concurrency.Handle
   -> Int
-  -> AgentContext es
+  -> AgentContext
   -> [Tool es]
   -> Transcript
   -> Eff es (Text, Transcript)
@@ -147,7 +146,7 @@ runObservedChildAgent
   -> Text
   -> Concurrency.Handle
   -> Int
-  -> AgentContext es
+  -> AgentContext
   -> [Tool es]
   -> Transcript
   -> Eff es (Text, Transcript)
@@ -169,7 +168,7 @@ runObservedChildAgent observer parentMetadata childLabel parent maxTurns context
 runAgentStreaming
   :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => Int
-  -> AgentContext es
+  -> AgentContext
   -> [Tool es]
   -> Transcript
   -> Stream (Of AgentStreamOutput) (Eff es) Transcript
@@ -179,7 +178,7 @@ runAgentStreaming maxTurns context =
 runAgentStreamingWith
   :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => Int
-  -> AgentContext es
+  -> AgentContext
   -> [Tool es]
   -> Transcript
   -> Stream (Of AgentStreamOutput) (Eff es) Transcript
@@ -220,14 +219,14 @@ agentRunId =
 -----------------------------------------------------------------------------------------
 
 -- | Select tools visible to this request and start their per-run runners.
-startAgentRun :: (Chat.Chat :> es, IOE :> es) => AgentContext es -> [Tool es] -> Eff es (AgentRun es)
+startAgentRun :: (Chat.Chat :> es, Concurrent :> es, IOE :> es) => AgentContext -> [Tool es] -> Eff es (AgentRun es)
 startAgentRun = startAgentRunWithParent Nothing
 
-startAgentRunWithParent :: (Chat.Chat :> es, IOE :> es) => Maybe Concurrency.Handle -> AgentContext es -> [Tool es] -> Eff es (AgentRun es)
+startAgentRunWithParent :: (Chat.Chat :> es, Concurrent :> es, IOE :> es) => Maybe Concurrency.Handle -> AgentContext -> [Tool es] -> Eff es (AgentRun es)
 startAgentRunWithParent parent =
   startAgentRunWithOrigin parent Nothing
 
-startAgentRunWithOrigin :: (Chat.Chat :> es, IOE :> es) => Maybe Concurrency.Handle -> Maybe Text -> AgentContext es -> [Tool es] -> Eff es (AgentRun es)
+startAgentRunWithOrigin :: (Chat.Chat :> es, Concurrent :> es, IOE :> es) => Maybe Concurrency.Handle -> Maybe Text -> AgentContext -> [Tool es] -> Eff es (AgentRun es)
 startAgentRunWithOrigin parent requestedOriginRunId context tools = do
   runId <- newAgentRunId
   let exposedTools = filter (`toolAllowed` context) tools
@@ -278,14 +277,14 @@ plainAgentProgram maxTurns compactionTokenThreshold agentRun =
 -----------------------------------------------------------------------------------------
 
 runModelPhase
-  :: (LLM.LLM :> es)
+  :: (LLM.LLM :> es, Concurrent :> es)
   => AgentProgram transient context es
   -> MiddlewareContext context
   -> AgentState transient
   -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)
 runModelPhase program context agentState = do
   transcript <- lift (program.modelInputTranscript context agentState)
-  answer <- askNext program.agentRun transcript
+  answer <- askNext program.agentRun agentState transcript
   modelDecision program.agentRun agentState answer
 
 runToolTurn :: Concurrent :> es => AgentProgram transient '[] es -> ToolTurn transient es
@@ -333,14 +332,16 @@ advanceAfterTools agentState transcript =
 
 -- | Ask the LLM for the next assistant message.
 askNext
-  :: (LLM.LLM :> es)
+  :: (LLM.LLM :> es, Concurrent :> es)
   => AgentRun es
+  -> AgentState transient
   -> Transcript
   -> Stream (Of AgentStreamOutput) (Eff es) LLM.ChatAnswer
-askNext agentRun transcript = do
+askNext agentRun agentState transcript = do
+  schemas <- lift (resolveToolSchemas agentState.transcript agentState.turn agentRun.runningTools)
   S.map AgentContentDelta $
     LLM.askWithToolsStreaming
-      (map toolSchema agentRun.exposedTools)
+      schemas
       (agentRequestMessages agentRun.context transcript)
 
 agentStreamAnswer :: [AgentStreamOutput] -> Text
@@ -353,7 +354,7 @@ agentStreamAnswer =
     AgentReplyBoundary ->
       ""
 
-agentRequestMessages :: AgentContext es -> Transcript -> [LLM.ChatMessage]
+agentRequestMessages :: AgentContext -> Transcript -> [LLM.ChatMessage]
 agentRequestMessages context (Transcript messages) =
   mergeSystemContext context.systemContext (Foldable.toList messages)
 
@@ -401,7 +402,7 @@ continueWithToolCalls program turn answered calls = do
 --
 -- Tool failures must still produce a tool result message; otherwise the next
 -- LLM request would contain an assistant tool call without its required result.
-executeToolCall :: AgentProgram transient '[] es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], ToolResult)
+executeToolCall :: Concurrent :> es => AgentProgram transient '[] es -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], ToolResult)
 executeToolCall program turn call = do
   result <- program.aroundToolCall turn call HList.HNil do
     ToolRegistry.runToolCall program.agentRun.context program.agentRun.toolCallMetadata program.agentRun.tools program.agentRun.runningTools call

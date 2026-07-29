@@ -10,11 +10,9 @@ module Bot.Agent.Tools.Emacs
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import Bot.Prelude
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import System.Exit (ExitCode (..))
 import System.IO.Error (userError)
@@ -27,21 +25,18 @@ emacsSocketName =
   "cosmobot"
 
 emacsEvalTool :: (Process :> es, Timeout :> es, Concurrent :> es, IOE :> es, FileSystem :> es) => Tool es
-emacsEvalTool = Tool
-  { name = "emacs_eval"
-  , description = "Evaluate Emacs Lisp in a cosmobot-owned, persistent Emacs 30 daemon for coding, scripting, reading/writing files, starting subprocesses, managing terminals, recording temporary memory in buffers, etc. Prefer it to other tools if it uses less tokens, and always use it if there are multiple operations that can be batched."
-  , parameters = objectSchema
-      [ fieldText "expression" "Emacs Lisp expression to evaluate."
-      , fieldInteger "timeout_seconds" "Maximum seconds to wait before returning a timeout. Defaults to 10."
-      ]
-      ["expression"]
-  , noisy = False
-  , allowed = superuserOnly
-  , start = \_ -> pure \_ args ->
-      withParsedToolArgs emacsEvalArgs args \(expression, timeoutSeconds) -> do
+emacsEvalTool =
+  allowWhen superuserOnly
+  . withDescription "Evaluate Emacs Lisp in a cosmobot-owned, persistent Emacs 30 daemon for coding, scripting, reading/writing files, starting subprocesses, managing terminals, recording temporary memory in buffers, etc. Prefer it to other tools if it uses less tokens, and always use it if there are multiple operations that can be batched."
+  $ tool "emacs_eval"
+      ( validateArgument validExpression
+          (requiredText "expression" "Emacs Lisp expression to evaluate.")
+      , validateArgument validTimeout
+          (withDefault 10 (optionalInt "timeout_seconds" "Maximum seconds to wait before returning a timeout. Defaults to 10."))
+      )
+      \expression timeoutSeconds -> do
         result <- runEmacsEval timeoutSeconds expression
         pure (toolText result)
-  }
 
 runEmacsEval :: (Process :> es, Timeout :> es, FileSystem :> es) => Int -> Text -> Eff es Text
 runEmacsEval timeoutSeconds expression = do
@@ -93,13 +88,18 @@ formatProcessResult commandName exitCode stdoutText stderrText =
     , [i|command: #{commandName}|]
     ]
 
-emacsEvalArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int)
-emacsEvalArgs =
-  Aeson.withObject "emacs eval arguments" $ \o -> do
-    expression <- Text.strip <$> o Aeson..: Key.fromText "expression"
-    timeoutSeconds <- fromMaybe 10 <$> o Aeson..:? Key.fromText "timeout_seconds"
-    when (Text.null expression) do
-      fail "expression must not be empty."
-    when (timeoutSeconds <= 0) do
-      fail "timeout_seconds must be positive."
-    pure (expression, min 60 timeoutSeconds)
+validExpression :: Text -> Either Text Text
+validExpression rawExpression
+  | Text.null expression =
+      Left "expression must not be empty."
+  | otherwise =
+      Right expression
+  where
+    expression = Text.strip rawExpression
+
+validTimeout :: Int -> Either Text Int
+validTimeout timeoutSeconds
+  | timeoutSeconds <= 0 =
+      Left "timeout_seconds must be positive."
+  | otherwise =
+      Right (min 60 timeoutSeconds)

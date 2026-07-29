@@ -12,32 +12,27 @@ module Bot.Agent.Tools.Shell
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import Bot.Prelude
 import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Util.Process as ProcessUtil
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout
 
 runBashTool :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Tool es
-runBashTool = Tool
-  { name = "run_bash"
-  , description = "Run a bash script and obtain outputs; do not run malicious code."
-  , parameters = objectSchema
-      [ fieldText "script" "The bash script to be executed in the cwd"
-      , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the process. Defaults to 30."
-      ]
-      ["script"]
-  , noisy = False
-  , allowed = superuserOnly
-  , start = \_ -> pure \_ args ->
-      withParsedToolArgs runBashArgs args \(script, timeoutSeconds) ->
+runBashTool =
+  allowWhen superuserOnly
+  . withDescription "Run a bash script and obtain outputs; do not run malicious code."
+  $ tool "run_bash"
+      ( validateArgument validScript
+          (requiredText "script" "The bash script to be executed in the cwd")
+      , validateArgument validTimeout
+          (withDefault 30 (optionalInt "timeout_seconds" "Maximum seconds to wait before killing the process. Defaults to 30."))
+      )
+      \script timeoutSeconds ->
         toolText <$> runBashSafe timeoutSeconds (Text.unpack script)
-  }
 
 runBashSafe :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Int -> String -> Eff es Text
 runBashSafe timeoutSeconds script = do
@@ -114,13 +109,16 @@ renderSandboxOutput output
   | output.truncated = "output (truncated):\n" <> output.output
   | otherwise = "output:\n" <> output.output
 
-runBashArgs :: Aeson.Value -> AesonTypes.Parser (Text, Int)
-runBashArgs =
-  Aeson.withObject "run bash arguments" $ \o -> do
-    script <- o Aeson..: Key.fromText "script"
-    timeoutSeconds <- fromMaybe 30 <$> o Aeson..:? Key.fromText "timeout_seconds"
-    when (Text.any (== '\NUL') script) do
-      fail "script must not contain NUL."
-    when (timeoutSeconds <= 0) do
-      fail "timeout_seconds must be positive."
-    pure (script, timeoutSeconds)
+validScript :: Text -> Either Text Text
+validScript script
+  | Text.any (== '\NUL') script =
+      Left "script must not contain NUL."
+  | otherwise =
+      Right script
+
+validTimeout :: Int -> Either Text Int
+validTimeout timeoutSeconds
+  | timeoutSeconds <= 0 =
+      Left "timeout_seconds must be positive."
+  | otherwise =
+      Right timeoutSeconds

@@ -24,6 +24,7 @@ where
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types
 import Bot.Agent.Middleware.Tools (ToolLimitContext (..))
+import Bot.Agent.Tool (toolName)
 import Bot.Agent.Types
 import Bot.Core.Transcript
 import Bot.Core.Thread (ThreadMessageKey (..))
@@ -65,7 +66,7 @@ withObservation
 withObservation observer program =
   program
     { aroundAgentRun = \context action ->
-        withObservedAgentRun observer (HList.get @ToolLimitContext context) program.agentRun (map (.name) program.agentRun.exposedTools) do
+        withObservedAgentRun observer (HList.get @ToolLimitContext context) program.agentRun (map toolName program.agentRun.exposedTools) do
           program.aroundAgentRun (observedContext emptyObservationContext context) action
     , modelInputTranscript = \context agentState ->
         program.modelInputTranscript (observedContext emptyObservationContext context) agentState
@@ -74,7 +75,7 @@ withObservation observer program =
               { runId = program.agentRun.runId
               , turn = agentState.turn
               , messageCount = transcriptMessageCount agentState
-              , exposedTools = map (.name) program.agentRun.exposedTools
+              , exposedTools = map toolName program.agentRun.exposedTools
               , finished = modelDecisionFinished program.agentRun.runId agentState.turn
               }
         in withObservedModelTurn observer turnInfo (program.aroundModelTurn (observedContext emptyObservationContext context) agentState action)

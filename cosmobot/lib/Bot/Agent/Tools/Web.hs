@@ -11,6 +11,7 @@ module Bot.Agent.Tools.Web
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Util.Html as Html
@@ -27,49 +28,52 @@ import System.IO.Error (userError)
 import qualified Text.URI as URI
 
 webSearchTool :: HTTP.HTTP :> es => Tool es
-webSearchTool = Tool
-  { name = "search_web"
-  , description = "Search the web for current information. Returns a JSON object with the query and a results array containing title, url, and snippet."
-  , parameters = objectSchema
-      [ fieldText "query" "Search query."
-      , fieldInteger "max_results" "Maximum number of results to return. Defaults to 5 and is capped at 20."
-      ]
-      ["query"]
-  , noisy = False
-  , allowed = \context -> context.toolConfig.webSearchEnable
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs (webSearchArgs context.toolConfig.webSearchMaxResults) args \(query, maxResults) -> do
-        let searchConfig = context.toolConfig
-        results <- webSearch searchConfig query maxResults
-        pure (toolText (jsonText (Aeson.object
-          [ "query" Aeson..= query
-          , "source" Aeson..= webSearchSource searchConfig.webSearchApi
-          , "results" Aeson..= results
-          ])))
-  }
+webSearchTool =
+  allowWhen (.toolConfig.webSearchEnable)
+  . withDescription "Search the web for current information. Returns a JSON object with the query and a results array containing title, url, and snippet."
+  $ tool "search_web"
+      ( requiredText "query" "Search query."
+      , optionalInteger "max_results" "Maximum number of results to return. Defaults to 5 and is capped at 20."
+      )
+      \rawQuery requestedMaxResults -> do
+        context <- askToolContext
+        case webArguments "query" rawQuery "max_results" 20
+          (fromMaybe 5 context.toolConfig.webSearchMaxResults)
+          requestedMaxResults of
+          Left err ->
+            pure (argumentFailure err)
+          Right (query, maxResults) -> do
+            let searchConfig = context.toolConfig
+            results <- webSearch searchConfig query maxResults
+            pure (toolText (jsonText (Aeson.object
+              [ "query" Aeson..= query
+              , "source" Aeson..= webSearchSource searchConfig.webSearchApi
+              , "results" Aeson..= results
+              ])))
 
 webFetchTool :: (HTTP.HTTP :> es, IOE :> es) => Tool es
-webFetchTool = Tool
-  { name = "fetch_url"
-  , description = "Fetch a web page by URL and return extracted readable text. Supports http and https URLs."
-  , parameters = objectSchema
-      [ fieldText "url" "HTTP or HTTPS URL to fetch."
-      , fieldInteger "max_content_tokens" "Approximate maximum content tokens to return. Defaults to the configured tool.web_fetch.max_content_tokens or 50000."
-      ]
-      ["url"]
-  , noisy = False
-  , allowed = \context -> context.toolConfig.webFetch
-  , start = \context -> do
-      checkUseLimit <- newUseLimiter context.toolConfig.webFetchMaxUses
-      pure \_ args ->
-        withParsedToolArgs (webFetchArgs context.toolConfig.webFetchMaxContentTokens) args \(url, maxContentTokens) -> do
-          checkUseLimit >>= \case
-            UseLimitReached currentUses ->
-              pure (toolText [i|fetch_url use limit reached for this agent run: #{currentUses}.|])
-            UseAllowed -> do
-              page <- fetchWebPage url maxContentTokens
-              pure (toolText (jsonText page))
-  }
+webFetchTool =
+  allowWhen (.toolConfig.webFetch)
+  . withDescription "Fetch a web page by URL and return extracted readable text. Supports http and https URLs."
+  $ toolWithRunState "fetch_url"
+      ( requiredText "url" "HTTP or HTTPS URL to fetch."
+      , optionalInteger "max_content_tokens" "Approximate maximum content tokens to return. Defaults to the configured tool.web_fetch.max_content_tokens or 50000."
+      )
+      (\context -> newUseLimiter context.toolConfig.webFetchMaxUses)
+      \checkUseLimit rawUrl requestedMaxContentTokens -> do
+        context <- askToolContext
+        case webArguments "url" rawUrl "max_content_tokens" 200000
+          (fromMaybe 50000 context.toolConfig.webFetchMaxContentTokens)
+          requestedMaxContentTokens of
+          Left err ->
+            pure (argumentFailure err)
+          Right (url, maxContentTokens) ->
+            raise checkUseLimit >>= \case
+              UseLimitReached currentUses ->
+                pure (toolText [i|fetch_url use limit reached for this agent run: #{currentUses}.|])
+              UseAllowed -> do
+                page <- fetchWebPage url maxContentTokens
+                pure (toolText (jsonText page))
 
 webSearch :: HTTP.HTTP :> es => ToolConfig -> Text -> Int -> Eff es [Aeson.Value]
 webSearch cfg query maxResults =
@@ -240,24 +244,25 @@ decodeResponseBody :: ByteString.ByteString -> Text
 decodeResponseBody =
   TextEncoding.decodeUtf8With TextEncoding.lenientDecode
 
-webSearchArgs :: Maybe Int -> Aeson.Value -> AesonTypes.Parser (Text, Int)
-webSearchArgs configuredDefault =
-  Aeson.withObject "web search arguments" $ \o -> do
-    query <- Text.strip <$> o Aeson..: Key.fromText "query"
-    maxResults <- fromMaybe (fromMaybe 5 configuredDefault) <$> o Aeson..:? Key.fromText "max_results"
-    when (Text.null query) do
-      fail "query must not be empty."
-    when (maxResults <= 0) do
-      fail "max_results must be positive."
-    pure (query, min 20 maxResults)
+webArguments
+  :: Text
+  -> Text
+  -> Text
+  -> Int
+  -> Int
+  -> Maybe Integer
+  -> Either Text (Text, Int)
+webArguments textName rawText limitName limitCap defaultLimit requestedLimit
+  | Text.null text =
+      Left (textName <> " must not be empty.")
+  | limit <= 0 =
+      Left (limitName <> " must be positive.")
+  | otherwise =
+      Right (text, fromInteger (min (fromIntegral limitCap) limit))
+  where
+    text = Text.strip rawText
+    limit = fromMaybe (fromIntegral defaultLimit) requestedLimit
 
-webFetchArgs :: Maybe Int -> Aeson.Value -> AesonTypes.Parser (Text, Int)
-webFetchArgs configuredDefault =
-  Aeson.withObject "web fetch arguments" $ \o -> do
-    url <- Text.strip <$> o Aeson..: Key.fromText "url"
-    maxContentTokens <- fromMaybe (fromMaybe 50000 configuredDefault) <$> o Aeson..:? Key.fromText "max_content_tokens"
-    when (Text.null url) do
-      fail "url must not be empty."
-    when (maxContentTokens <= 0) do
-      fail "max_content_tokens must be positive."
-    pure (url, min 200000 maxContentTokens)
+argumentFailure :: Text -> ToolResult
+argumentFailure err =
+  toolFailure (permanentArgumentFailure err err).failure

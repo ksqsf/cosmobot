@@ -22,6 +22,7 @@ module Bot.Agent.Core
   )
 where
 
+import Bot.Agent.Tool (Tool)
 import Bot.Agent.ToolRegistry (RunningTool)
 import Bot.Agent.Types
 import Bot.Core.Transcript
@@ -57,7 +58,7 @@ data AgentCompletion = AgentCompletion
 data AgentRun es = AgentRun
   { runId       :: !Text
   , toolCallMetadata :: !ToolCallMetadata
-  , context      :: AgentContext es
+  , context      :: AgentContext
   , tools        :: [Tool es]
   , exposedTools :: [Tool es]
   , runningTools :: [RunningTool es]

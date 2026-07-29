@@ -12,6 +12,7 @@ module Bot.Agent.Tools.Workspace
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
@@ -26,23 +27,25 @@ import qualified Effectful.Process.Typed as TypedProcess
 workspaceTool
   :: (Resource.Resource :> es, FileSystem.FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => Tool es
-workspaceTool = Tool
-  { name = "workspace"
-  , description = "Manage dedicated /work workspaces for multi-step work such as repositories, scripts, CI, research, or operations. list returns a JSON array of accessible workspace names. Create one before substantial work, read repository instructions before editing, and keep WORK.md current with the goal, paths, branches, commits, validation, environment notes, and blockers. Verify the authenticated account and required permissions before remote operations. Prefer a topic branch and a pull request with a summary and validation. Actions: create, list, query, update, rename, delete."
-  , parameters = objectSchema
-      [ fieldText "action" "One of: create, list, query, update, rename, delete."
-      , fieldText "id" "Short stable descriptive id for create; letters, digits, dot, underscore, and hyphen only."
-      , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
-      , fieldText "goal" "Initial work goal for create, or complete replacement WORK.md contents for update."
-      , fieldText "resource" "Resource name returned by create; required for query, update, rename, and delete."
-      , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 5."
-      ]
-      ["action"]
-  , noisy = False
-  , allowed = \context -> superuserOnly context && isRight (Resource.accessFromMessage context.message)
-  , start = \context -> pure \metadata args ->
-      withParsedToolArgs parseWorkspaceCall args (runWorkspaceCall context metadata)
-  }
+workspaceTool =
+  allowWhen (\context -> superuserOnly context && isRight (Resource.accessFromMessage context.message))
+  . withDescription "Manage dedicated /work workspaces for multi-step work such as repositories, scripts, CI, research, or operations. list returns a JSON array of accessible workspace names. Create one before substantial work, read repository instructions before editing, and keep WORK.md current with the goal, paths, branches, commits, validation, environment notes, and blockers. Verify the authenticated account and required permissions before remote operations. Prefer a topic branch and a pull request with a summary and validation. Actions: create, list, query, update, rename, delete."
+  $ tool "workspace"
+      (parsedArguments
+        (objectSchema
+          [ fieldText "action" "One of: create, list, query, update, rename, delete."
+          , fieldText "id" "Short stable descriptive id for create; letters, digits, dot, underscore, and hyphen only."
+          , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
+          , fieldText "goal" "Initial work goal for create, or complete replacement WORK.md contents for update."
+          , fieldText "resource" "Resource name returned by create; required for query, update, rename, and delete."
+          , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 5."
+          ]
+          ["action"])
+        parseWorkspaceCall)
+      \call -> do
+        context <- askToolContext
+        metadata <- askToolCallMetadata
+        runWorkspaceCall context metadata call
 
 data WorkspaceCall
   = CreateWorkspace !(Maybe Text) !Workspace.WorkspaceArgs
@@ -54,7 +57,7 @@ data WorkspaceCall
 
 runWorkspaceCall
   :: forall es. (Resource.Resource :> es, FileSystem.FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => AgentContext es
+  => AgentContext
   -> ToolCallMetadata
   -> WorkspaceCall
   -> Eff es ToolResult

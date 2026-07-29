@@ -16,6 +16,7 @@ module Bot.Resource.SubAgent
   )
 where
 
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import qualified Bot.Agent.Types as Agent
 import Bot.Core.Transcript
@@ -29,7 +30,7 @@ type SubAgentRunner es =
   ToolCallMetadata
   -> Text
   -> Concurrency.Handle
-  -> AgentContext es
+  -> AgentContext
   -> [Tool es]
   -> Transcript
   -> Eff es (Text, Transcript)
@@ -108,7 +109,7 @@ sendPrompt
   -> ToolCallMetadata
   -> Text
   -> [Tool es]
-  -> AgentContext es
+  -> AgentContext
   -> SubAgent
   -> Text
   -> Eff es (Either Text ())
@@ -118,7 +119,7 @@ sendPrompt runner metadata subagentId availableTools context subagent prompt =
       Just _ -> pure (snapshot, Left "Subagent is still generating.")
       Nothing -> do
         let transcript = maybe (startWithUser prompt) (appendUser prompt) snapshot.transcript
-            selectedTools = filter ((`elem` subagent.arguments.toolNames) . (.name)) availableTools
+            selectedTools = filter ((`elem` subagent.arguments.toolNames) . toolName) availableTools
             childContext = context {Agent.systemContext = subagent.arguments.systemContext}
         worker <- Concurrency.forkWithHandle "subagent" \worker -> do
           result <- trySync (runner metadata subagentId worker childContext selectedTools transcript)

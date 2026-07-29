@@ -8,11 +8,14 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Tools.Common
-  ( everyone
-  , superuserOnly
-  , withParsedToolArgs
-  , withTextArg
-  , withIntegerArg
+  ( superuserOnly
+  , requiredText
+  , optionalText
+  , optionalInteger
+  , requiredInt
+  , optionalInt
+  , optionalBoolean
+  , optionalTextArray
   , fieldText
   , fieldTextArray
   , fieldTextArrayArray
@@ -31,6 +34,7 @@ module Bot.Agent.Tools.Common
   )
 where
 
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
@@ -40,39 +44,39 @@ import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
-import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 
-everyone :: AgentContext es -> Bool
-everyone _ =
-  True
-
-superuserOnly :: AgentContext es -> Bool
+superuserOnly :: AgentContext -> Bool
 superuserOnly =
   (.superuser)
 
-withParsedToolArgs
-  :: (Aeson.Value -> AesonTypes.Parser a)
-  -> Aeson.Value
-  -> (a -> Eff es ToolResult)
-  -> Eff es ToolResult
-withParsedToolArgs parser args action =
-  either (pure . argumentFailure . Text.pack) action (AesonTypes.parseEither parser args)
-  where
-    argumentFailure err =
-      toolFailure (permanentArgumentFailure err err).failure
+requiredText :: Text -> Text -> ToolArgument Text
+requiredText name description =
+  requiredArgument (fieldText name description)
 
-withTextArg :: Text -> (Text -> Eff es ToolResult) -> Aeson.Value -> Eff es ToolResult
-withTextArg key action args =
-  withParsedToolArgs parser args action
-  where
-    parser = Aeson.withObject "tool arguments" (Aeson..: Key.fromText key)
+optionalText :: Text -> Text -> ToolArgument (Maybe Text)
+optionalText name description =
+  optionalArgument (fieldText name description)
 
-withIntegerArg :: Text -> (Integer -> Eff es ToolResult) -> Aeson.Value -> Eff es ToolResult
-withIntegerArg key action args =
-  withParsedToolArgs parser args action
-  where
-    parser = Aeson.withObject "tool arguments" (Aeson..: Key.fromText key)
+optionalInteger :: Text -> Text -> ToolArgument (Maybe Integer)
+optionalInteger name description =
+  optionalArgument (fieldInteger name description)
+
+requiredInt :: Text -> Text -> ToolArgument Int
+requiredInt name description =
+  requiredArgument (fieldInteger name description)
+
+optionalInt :: Text -> Text -> ToolArgument (Maybe Int)
+optionalInt name description =
+  optionalArgument (fieldInteger name description)
+
+optionalBoolean :: Text -> Text -> ToolArgument (Maybe Bool)
+optionalBoolean name description =
+  optionalArgument (fieldBoolean name description)
+
+optionalTextArray :: Text -> Text -> ToolArgument (Maybe [Text])
+optionalTextArray name description =
+  optionalArgument (fieldTextArray name description)
 
 fieldText :: Text -> Text -> (Text, Aeson.Value)
 fieldText name description =

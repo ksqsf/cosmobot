@@ -10,6 +10,7 @@ module Bot.Agent.Tools.SubAgent
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
@@ -27,11 +28,11 @@ subagentTool
   -> [Tool es]
   -> Tool es
 subagentTool runner availableTools =
-  Tool
-    { name = "subagent"
-    , description = "Manage background agents scoped to the current chat. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
-    , parameters =
-        objectSchema
+  allowWhen (isRight . Resource.accessFromMessage . (.message))
+  . withDescription "Manage background agents scoped to the current chat. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
+  $ tool "subagent"
+      (parsedArguments
+        (objectSchema
           [ fieldText "op" "One of: create, list, send, query, wait_any, wait_all, rename, delete."
           , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
           , fieldText "system_prompt" "System prompt for create; empty inherits the current system prompt."
@@ -41,13 +42,12 @@ subagentTool runner availableTools =
           , fieldText "prompt" "Prompt to send; required for send."
           , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 5."
           ]
-          ["op"]
-    , noisy = False
-    , allowed = isRight . Resource.accessFromMessage . (.message)
-    , start = \context -> pure \metadata args ->
-        withParsedToolArgs parseCall args \call ->
-          runCall context metadata call
-    }
+          ["op"])
+        parseCall)
+      \call -> do
+        context <- askToolContext
+        metadata <- askToolCallMetadata
+        raise (runCall context metadata call)
   where
     runCall context metadata call =
       case Resource.accessFromMessage context.message of
@@ -127,10 +127,10 @@ subagentTool runner availableTools =
     validateTools context = traverse validate . List.nub
       where
         validate name =
-          case find ((== name) . (.name)) availableTools of
+          case find ((== name) . toolName) availableTools of
             Nothing -> Left ("Unknown tool: " <> name)
-            Just tool
-              | tool.allowed context -> Right name
+            Just definition
+              | toolAllowed definition context -> Right name
               | otherwise -> Left ("Tool is not allowed: " <> name)
 
 data Call
@@ -154,23 +154,23 @@ parseCall = Aeson.withObject "subagent arguments" \o -> do
         <*> (fromMaybe [] <$> o Aeson..:? Key.fromText "tools")
         <*> parseTTLMinutes o
     "list" -> pure ListResources
-    "send" -> Send <$> resource o <*> requiredText o "prompt"
+    "send" -> Send <$> resource o <*> requiredTextValue o "prompt"
     "query" -> Query <$> resource o
     "wait_any" -> WaitAny <$> resources o
     "wait_all" -> WaitAll <$> resources o
     "delete" -> Destroy <$> resource o
     "destroy" -> Destroy <$> resource o
-    "rename" -> Rename <$> resource o <*> requiredText o "name"
+    "rename" -> Rename <$> resource o <*> requiredTextValue o "name"
     _ -> fail "op must be one of: create, list, send, query, wait_any, wait_all, rename, delete."
   where
-    resource o = requiredText o "resource"
+    resource o = requiredTextValue o "resource"
     resources o = do
       values <- List.nub <$> o Aeson..: Key.fromText "resources"
       valid <- traverse (validateText "resources entries") values
       case valid of
         firstValue : rest -> pure (firstValue :| rest)
         [] -> fail "resources must not be empty."
-    requiredText o key =
+    requiredTextValue o key =
       o Aeson..: Key.fromText key >>= validateText (Text.unpack key)
     validateText label value =
       value <$ when (Text.null (Text.strip value)) (fail (label <> " must not be empty."))

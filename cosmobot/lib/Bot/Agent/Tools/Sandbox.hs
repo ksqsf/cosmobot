@@ -12,6 +12,7 @@ where
 
 import Bot.Agent.Tools.Common
 import qualified Bot.Agent.Tools.Shell as Shell
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Resource as Resource
@@ -32,25 +33,27 @@ import qualified System.FilePath.Posix as Posix
 sandboxTool
   :: (Media.Media :> es, Resource.Resource :> es, FileSystem :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => Tool es
-sandboxTool = Tool
-  { name = "sandbox"
-  , description = "Create, list, rename, or delete isolated, persistent container sandboxes; run Bash; or copy files between one and the media cache. list returns a JSON array of accessible sandbox names. Delete sandboxes promptly when the job is done, unless the user asks explicitly to keep them."
-  , parameters = objectSchema
-      [ fieldText "op" "One of: create, list, run, file_to_media, media_to_file, rename, delete."
-      , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
-      , fieldText "sandbox" "Sandbox name; required except for create and list."
-      , fieldText "path" "Sandbox file path; required for file_to_media and media_to_file."
-      , fieldText "media_id" "Cached media id; required for media_to_file."
-      , fieldText "script" "Bash script; required for run."
-      , fieldInteger "ttl_minutes" "Sandbox inactivity lifetime in minutes; required for create, minimum 5."
-      , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the script. Defaults to 30."
-      , fieldInteger "output_byte_limit" "Maximum retained output bytes. Defaults to 1048576."
-      ]
-      ["op"]
-  , noisy = False
-  , allowed = hasResourceIdentity
-  , start = \context -> pure \metadata args ->
-      withParsedToolArgs sandboxArgs args \call ->
+sandboxTool =
+  allowWhen hasResourceIdentity
+  . withDescription "Create, list, rename, or delete isolated, persistent container sandboxes; run Bash; or copy files between one and the media cache. list returns a JSON array of accessible sandbox names. Delete sandboxes promptly when the job is done, unless the user asks explicitly to keep them."
+  $ tool "sandbox"
+      (parsedArguments
+        (objectSchema
+          [ fieldText "op" "One of: create, list, run, file_to_media, media_to_file, rename, delete."
+          , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
+          , fieldText "sandbox" "Sandbox name; required except for create and list."
+          , fieldText "path" "Sandbox file path; required for file_to_media and media_to_file."
+          , fieldText "media_id" "Cached media id; required for media_to_file."
+          , fieldText "script" "Bash script; required for run."
+          , fieldInteger "ttl_minutes" "Sandbox inactivity lifetime in minutes; required for create, minimum 5."
+          , fieldInteger "timeout_seconds" "Maximum seconds to wait before killing the script. Defaults to 30."
+          , fieldInteger "output_byte_limit" "Maximum retained output bytes. Defaults to 1048576."
+          ]
+          ["op"])
+        sandboxArgs)
+      \call -> do
+        context <- askToolContext
+        metadata <- askToolCallMetadata
         case Resource.accessFromMessage context.message of
           Left err -> pure (resourceToolFailure err)
           Right access -> case call of
@@ -83,7 +86,6 @@ sandboxTool = Tool
               Resource.destroy access sandboxId <&> either resourceToolFailure (const (toolText "Sandbox deleted."))
             SandboxRename sandboxId newName ->
               Resource.rename access sandboxId newName <&> either resourceToolFailure (toolText . ("Sandbox renamed: " <>))
-  }
   where
     createSandbox metadata = \case
       Nothing -> Resource.createForRun @Sandbox.Sandbox metadata.originRunId metadata.parent
@@ -148,7 +150,7 @@ mediaRef value
   | "media:" `Text.isPrefixOf` value = value
   | otherwise = "media:" <> value
 
-hasResourceIdentity :: AgentContext es -> Bool
+hasResourceIdentity :: AgentContext -> Bool
 hasResourceIdentity = isRight . Resource.accessFromMessage . (.message)
 
 clientFailure :: Text -> ToolResult

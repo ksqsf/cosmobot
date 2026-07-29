@@ -13,6 +13,7 @@ import Bot.Agent.Core
 import Bot.Agent.Tools.Common (jsonText)
 import Bot.Agent.Tools.Continuation
 import Bot.Agent.Transcript (appendMessage, appendMessages)
+import Bot.Agent.Tool (toolName)
 import Bot.Agent.Types
 import Bot.Core.Transcript (Transcript)
 import qualified Bot.Effect.LLM as LLM
@@ -46,7 +47,7 @@ exposedContinuationCalls program =
   where
     isExposedContinuation call =
       isContinuationToolName call.name
-        && any ((== call.name) . (.name)) program.agentRun.exposedTools
+        && any ((== call.name) . toolName) program.agentRun.exposedTools
 
 runContinuation
   :: (HList.Has ContinuationState transient, HList.Put ContinuationState transient)

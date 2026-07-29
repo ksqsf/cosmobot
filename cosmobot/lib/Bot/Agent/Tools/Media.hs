@@ -12,13 +12,12 @@ module Bot.Agent.Tools.Media
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as StrictByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -35,50 +34,37 @@ maxReadSize =
   16384
 
 readMediaTextTool :: (Media.Media :> es, FileSystem :> es) => Tool es
-readMediaTextTool = Tool
-  { name = "media_text"
-  , description = "Read a UTF-8 text slice from a cached media object. Use this with media ids returned in omitted tool results, such as mf_xxx or media:mf_xxx. offset and size are character counts."
-  , parameters = objectSchema
-      [ fieldText "media_id" "Media id to read, either mf_xxx or media:mf_xxx."
-      , fieldInteger "offset" "Optional zero-based character offset. Defaults to 0."
-      , fieldInteger "size" "Optional maximum number of characters to return. Defaults to 4096 and is capped at 16384."
-      ]
-      ["media_id"]
-  , noisy = False
-  , allowed = everyone
-  , start = \_ -> pure \_ args ->
-      withParsedToolArgs readMediaTextArgs args readMediaText
-  }
+readMediaTextTool =
+  withDescription "Read a UTF-8 text slice from a cached media object. Use this with media ids returned in omitted tool results, such as mf_xxx or media:mf_xxx. offset and size are character counts."
+  $ tool "media_text"
+      ( validateArgument nonEmptyMediaId
+          (requiredText "media_id" "Media id to read, either mf_xxx or media:mf_xxx.")
+      , validateArgument (nonNegativeInt "offset")
+          (withDefault 0 (optionalInteger "offset" "Optional zero-based character offset. Defaults to 0."))
+      , validateArgument cappedReadSize
+          (withDefault (fromIntegral defaultReadSize) (optionalInteger "size" "Optional maximum number of characters to return. Defaults to 4096 and is capped at 16384."))
+      )
+      \mediaId offset size ->
+        readMediaText ReadMediaTextArgs{mediaId, offset, size}
 
 mediaToFileTool :: Media.Media :> es => Tool es
-mediaToFileTool = Tool
-  { name = "media_to_file"
-  , description = "Resolve a cached media object to its existing local cache file path. The file is not attached to agent context."
-  , parameters = objectSchema
-      [ fieldText "media_id" "Media id to resolve, either mf_xxx or media:mf_xxx."
-      ]
-      ["media_id"]
-  , noisy = False
-  , allowed = everyone
-  , start = \_ -> pure \_ args ->
-      withTextArg "media_id" (resolveMediaPath . Text.strip) args
-  }
+mediaToFileTool =
+  withDescription "Resolve a cached media object to its existing local cache file path. The file is not attached to agent context."
+  $ tool "media_to_file"
+      (requiredText "media_id" "Media id to resolve, either mf_xxx or media:mf_xxx.")
+      (resolveMediaPath . Text.strip)
 
 sendMediaTool :: (Chat.Chat :> es, Media.Media :> es) => Tool es
-sendMediaTool = Tool
-  { name = "send_media"
-  , description = "Send a cached media object to the current chat. Use this when the user asks for a generated or cached file to be sent."
-  , parameters = objectSchema
-      [ fieldText "media_id" "Media id to send, either mf_xxx or media:mf_xxx."
-      ]
-      ["media_id"]
-  , noisy = True
-  , allowed = everyone
-  , start = \context -> pure \_ args ->
-      withTextArg "media_id" (sendMedia context . Text.strip) args
-  }
+sendMediaTool =
+  noisy
+  . withDescription "Send a cached media object to the current chat. Use this when the user asks for a generated or cached file to be sent."
+  $ tool "send_media"
+      (requiredText "media_id" "Media id to send, either mf_xxx or media:mf_xxx.")
+      \mediaId -> do
+        context <- askToolContext
+        sendMedia context (Text.strip mediaId)
 
-sendMedia :: (Chat.Chat :> es, Media.Media :> es) => AgentContext es -> Text -> Eff es ToolResult
+sendMedia :: (Chat.Chat :> es, Media.Media :> es) => AgentContext -> Text -> Eff es ToolResult
 sendMedia context mediaId
   | Text.null mediaId =
       pure (mediaFailure "media_id must not be empty.")
@@ -114,28 +100,27 @@ data ReadMediaTextArgs = ReadMediaTextArgs
   , size :: !Int
   }
 
-readMediaTextArgs :: Aeson.Value -> AesonTypes.Parser ReadMediaTextArgs
-readMediaTextArgs =
-  Aeson.withObject "read media text arguments" \o -> do
-    mediaId <- Text.strip <$> o Aeson..: Key.fromText "media_id"
-    offset <- nonNegativeInt "offset" . fromMaybe 0 =<< o Aeson..:? Key.fromText "offset"
-    requestedSize <- nonNegativeInt "size" . fromMaybe (fromIntegral defaultReadSize) =<< o Aeson..:? Key.fromText "size"
-    when (Text.null mediaId) do
-      fail "media_id must not be empty."
-    pure ReadMediaTextArgs
-      { mediaId
-      , offset
-      , size = min maxReadSize requestedSize
-      }
+nonEmptyMediaId :: Text -> Either Text Text
+nonEmptyMediaId rawMediaId
+  | Text.null mediaId =
+      Left "media_id must not be empty."
+  | otherwise =
+      Right mediaId
+  where
+    mediaId = Text.strip rawMediaId
 
-nonNegativeInt :: Text -> Integer -> AesonTypes.Parser Int
+nonNegativeInt :: Text -> Integer -> Either Text Int
 nonNegativeInt name value
   | value < 0 =
-      fail [i|#{name} must be >= 0.|]
+      Left [i|#{name} must be >= 0.|]
   | value > fromIntegral (maxBound :: Int) =
-      fail [i|#{name} is too large.|]
+      Left [i|#{name} is too large.|]
   | otherwise =
-      pure (fromInteger value)
+      Right (fromInteger value)
+
+cappedReadSize :: Integer -> Either Text Int
+cappedReadSize =
+  fmap (min maxReadSize) . nonNegativeInt "size"
 
 readMediaText :: (Media.Media :> es, FileSystem :> es) => ReadMediaTextArgs -> Eff es ToolResult
 readMediaText ReadMediaTextArgs{mediaId, offset, size} = do

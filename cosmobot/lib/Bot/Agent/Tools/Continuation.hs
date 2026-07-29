@@ -17,6 +17,7 @@ module Bot.Agent.Tools.Continuation
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import Bot.Core.Transcript
 import qualified Bot.Effect.LLM as LLM
@@ -63,43 +64,41 @@ captureContinuationTool =
   controlTool
     "capture_continuation"
     "Agent-context setjmp. Call alone before speculative exploration. On state=captured, save continuation_id and explore; on state=resumed, use value and do not repeat the abandoned branch. One-shot, nested, and run-local. Resuming discards later model context, not tool side effects or visible output."
-    (objectSchema [fieldText "label" "Optional description of the exploration this return point precedes."] [])
+    (parsedArguments
+      (objectSchema [fieldText "label" "Optional description of the exploration this return point precedes."] [])
+      captureParser)
 
 resumeContinuationTool :: Tool es
 resumeContinuationTool =
   controlTool
     "resume_continuation"
     "Agent-context longjmp. Call alone with a continuation_id and a self-contained JSON result. Control resumes at the matching capture_continuation with state=resumed and value; this call does not return here. Consumes that continuation and newer nested ones; older captures remain. Discards model context, not tool side effects or visible output."
-    ( objectSchema
+    (parsedArguments
+      (objectSchema
         [ fieldText "continuation_id" "Exact id returned by capture_continuation."
         , ("value", Aeson.object ["description" Aeson..= ("Self-contained arbitrary JSON result returned to the capture point." :: Text)])
         ]
         ["continuation_id", "value"]
-    )
+      )
+      resumeParser)
 
-controlTool :: Text -> Text -> Aeson.Value -> Tool es
-controlTool name description parameters =
-  Tool
-    { name
-    , description
-    , parameters
-    , noisy = False
-    , allowed = everyone
-    , start = \_ -> pure \_ _ ->
-        pure (toolFailure (permanentArgumentFailure failure failure).failure)
-    }
+controlTool :: Text -> Text -> ParsedArguments a -> Tool es
+controlTool name description arguments =
+  withDescription description
+  $ tool name arguments \_ ->
+      pure (toolFailure (permanentArgumentFailure failure failure).failure)
   where
     failure = [i|Tool #{name} requires an agent program with continuation middleware.|]
 
 isContinuationToolName :: Text -> Bool
 isContinuationToolName name =
-  name == captureContinuationTool.name || name == resumeContinuationTool.name
+  name == toolName captureContinuationTool || name == toolName resumeContinuationTool
 
 continuationRequest :: LLM.ToolCall -> Maybe (Either Text ContinuationRequest)
 continuationRequest call
-  | call.name == captureContinuationTool.name =
+  | call.name == toolName captureContinuationTool =
       Just (decodeArguments call captureParser)
-  | call.name == resumeContinuationTool.name =
+  | call.name == toolName resumeContinuationTool =
       Just (decodeArguments call resumeParser)
   | otherwise =
       Nothing

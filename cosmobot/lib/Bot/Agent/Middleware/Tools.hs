@@ -24,6 +24,7 @@ import Bot.Agent.Tools.Continuation
   , canResumeContinuation
   , resumeContinuationTool
   )
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import Bot.Core.Transcript
 import qualified Bot.Effect.Chat as Chat
@@ -77,8 +78,8 @@ validResumeAtLimit
 validResumeAtLimit program agentState calls =
   case toList calls of
     [call] ->
-      call.name == resumeContinuationTool.name
-        && any ((== call.name) . (.name)) program.agentRun.exposedTools
+      call.name == toolName resumeContinuationTool
+        && any ((== call.name) . toolName) program.agentRun.exposedTools
         && canResumeContinuation (HList.get @ContinuationState agentState.transient) call
     _ ->
       False
@@ -100,9 +101,9 @@ withToolMessage program =
 
 announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => AgentProgram transient context es -> LLM.ToolCall -> MiddlewareContext context -> Eff es ()
 announceNoisyTool program call context =
-  case find ((== call.name) . (.name)) program.agentRun.tools of
-    Just tool
-      | tool.noisy ->
+  case find ((== call.name) . toolName) program.agentRun.tools of
+    Just definition
+      | toolIsNoisy definition ->
           void $ Chat.replyTo program.agentRun.context.message (toolMessageText call context)
     _ ->
       pure ()
@@ -111,11 +112,11 @@ toolMessageText :: HList.Has ObservationContext context => LLM.ToolCall -> Middl
 toolMessageText call context =
   case (HList.get @ObservationContext context).auditToolUseId of
     Just auditId ->
-      [i|正在调用 #{toolName} 工具...（id=#{auditId}）|]
+      [i|正在调用 #{calledToolName} 工具...（id=#{auditId}）|]
     Nothing ->
-      [i|正在调用 #{toolName} 工具...|]
+      [i|正在调用 #{calledToolName} 工具...|]
   where
-    toolName = call.name
+    calledToolName = call.name
 
 -- | Pause before executing another tool turn.
 --

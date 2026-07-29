@@ -12,6 +12,7 @@ where
 
 import Bot.Agent.Types
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Core.Message
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Memory as MemoryStore
@@ -34,20 +35,20 @@ chatMemoryTool = memoryTool
   chatMemoryScope
 
 memoryTool :: Memory.Memory :> es => Text -> Text -> MemoryScope -> Tool es
-memoryTool name description scope = Tool
-  { name
-  , description
-  , parameters = objectSchema
-      [ fieldText "action" "One of: view, replace, clear."
-      , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
-      ]
-      ["action"]
-  , noisy = True
-  , allowed = everyone
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs memoryArgs args \(action, memory) ->
+memoryTool name description scope =
+  noisy
+  . withDescription description
+  $ tool name
+      (parsedArguments
+        (objectSchema
+          [ fieldText "action" "One of: view, replace, clear."
+          , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
+          ]
+          ["action"])
+        memoryArgs)
+      \(action, memory) -> do
+        context <- askToolContext
         runMemoryAction scope context action memory
-  }
 
 data MemoryAction
   = MemoryView
@@ -95,7 +96,7 @@ memoryArgs =
       fail "memory is required when action is replace"
     pure (action, memory)
 
-runMemoryAction :: Memory.Memory :> es => MemoryScope -> AgentContext es -> MemoryAction -> Maybe Text -> Eff es ToolResult
+runMemoryAction :: Memory.Memory :> es => MemoryScope -> AgentContext -> MemoryAction -> Maybe Text -> Eff es ToolResult
 runMemoryAction scope context action memory =
   case scope.scopeOf context.message of
     Left err ->

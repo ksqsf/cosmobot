@@ -12,6 +12,7 @@ module Bot.Agent.Tools.Terminal
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.ACP as ACP
@@ -22,25 +23,25 @@ import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
 terminalTool :: ACP.ACP :> es => Tool es
-terminalTool = Tool
-  { name = "terminal"
-  , description = "Run or manage a command in the connected ACP client. Actions: create, output, wait_for_exit, kill, release."
-  , parameters = objectSchema
-      [ fieldText "action" "One of: create, output, wait_for_exit, kill, release."
-      , fieldText "terminal_id" "Terminal id returned by create."
-      , fieldText "command" "Command to execute for create."
-      , fieldTextArray "args" "Command arguments for create."
-      , ("env", envSchema)
-      , fieldText "cwd" "Working directory for create. Defaults to the ACP session cwd."
-      , fieldInteger "output_byte_limit" "Maximum retained output bytes for create."
-      ]
-      ["action"]
-  , noisy = False
-  , allowed = (== PlatformACP) . (.platform) . (.message)
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs parseTerminalArgs args \call ->
+terminalTool =
+  allowWhen ((== PlatformACP) . (.platform) . (.message))
+  . withDescription "Run or manage a command in the connected ACP client. Actions: create, output, wait_for_exit, kill, release."
+  $ tool "terminal"
+      (parsedArguments
+        (objectSchema
+          [ fieldText "action" "One of: create, output, wait_for_exit, kill, release."
+          , fieldText "terminal_id" "Terminal id returned by create."
+          , fieldText "command" "Command to execute for create."
+          , fieldTextArray "args" "Command arguments for create."
+          , ("env", envSchema)
+          , fieldText "cwd" "Working directory for create. Defaults to the ACP session cwd."
+          , fieldInteger "output_byte_limit" "Maximum retained output bytes for create."
+          ]
+          ["action"])
+        parseTerminalArgs)
+      \call -> do
+        context <- askToolContext
         runTerminalCall context.message call <&> either clientFailure toolText
-  }
 
 data TerminalCall
   = TerminalCreate !ACP.TerminalCreate

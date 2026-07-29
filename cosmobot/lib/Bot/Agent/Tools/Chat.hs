@@ -19,6 +19,7 @@ module Bot.Agent.Tools.Chat
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -32,93 +33,93 @@ import qualified Data.Text as Text
 import Data.Time (UTCTime)
 
 queryChatLogTool :: ChatLog.ChatLog :> es => Tool es
-queryChatLogTool = Tool
-  { name = "chat_log"
-  , description = "Return recent messages recorded in the current chat, optionally filtered by exact sender id. Results are in chronological order and include timestamps, sender ids, message ids, image urls, and text. Use since or before to page through time."
-  , parameters = objectSchema
-      [ fieldInteger "limit" "Maximum number of recent messages to return."
-      , fieldText "sender" "Optional exact sender id to include."
-      , fieldBoolean "include_bot_messages" "Whether to include bot messages. Defaults to false."
-      , fieldDateTime "since" "Return messages strictly after this ISO-8601 UTC timestamp."
-      , fieldDateTime "before" "Return messages strictly before this ISO-8601 UTC timestamp."
-      ]
-      ["limit"]
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs queryChatLogArgs args \(sender, limit, includeBotMessages, timeRange) -> do
-        entries <- ChatLog.queryChat context.message sender (fromInteger (max 0 limit)) includeBotMessages timeRange
-        pure (toolText (jsonText (map chatLogToolEntry entries)))
-  }
+queryChatLogTool =
+  withDescription "Return recent messages recorded in the current chat, optionally filtered by exact sender id. Results are in chronological order and include timestamps, sender ids, message ids, image urls, and text. Use since or before to page through time."
+  $ tool "chat_log"
+      ( requiredInt "limit" "Maximum number of recent messages to return."
+      , optionalText "sender" "Optional exact sender id to include."
+      , withDefault False (optionalBoolean "include_bot_messages" "Whether to include bot messages. Defaults to false.")
+      , optionalArgument (fieldDateTime "since" "Return messages strictly after this ISO-8601 UTC timestamp.")
+      , optionalArgument (fieldDateTime "before" "Return messages strictly before this ISO-8601 UTC timestamp.")
+      )
+      \limit sender includeBotMessages since before -> do
+        context <- askToolContext
+        case chatLogTimeRange since before of
+          Left err ->
+            pure (argumentFailure err)
+          Right timeRange -> do
+            entries <- ChatLog.queryChat context.message sender (max 0 limit) includeBotMessages timeRange
+            pure (toolText (jsonText (map chatLogToolEntry entries)))
 
 queryCurrentSenderChatLogTool :: ChatLog.ChatLog :> es => Tool es
-queryCurrentSenderChatLogTool = Tool
-  { name = "sender_log"
-  , description = "Return messages from the current sender whose text matches any keyword group. scope=chat searches only the current chat; scope=global searches all chats on the current platform. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
-  , parameters = objectSchema
-      [ fieldTextArrayArray "keywords" "Keyword groups. Each inner array is joined with '%' and wrapped with '%' for ordered fuzzy matching."
-      , fieldIntegerMax "limit" 100 "Maximum number of matching messages to return. Must be <= 100."
-      , ("scope", Aeson.object
+queryCurrentSenderChatLogTool =
+  withDescription "Return messages from the current sender whose text matches any keyword group. scope=chat searches only the current chat; scope=global searches all chats on the current platform. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
+  $ tool "sender_log"
+      ( requiredArgument (fieldTextArrayArray "keywords" "Keyword groups. Each inner array is joined with '%' and wrapped with '%' for ordered fuzzy matching.")
+      , validateArgument validSenderLogLimit
+          (requiredArgument (fieldIntegerMax "limit" 100 "Maximum number of matching messages to return. Must be <= 100."))
+      , validateArgument parseSenderChatLogScope
+          (withDefault "chat" (optionalArgument
+            ("scope", Aeson.object
           [ "type" Aeson..= ("string" :: Text)
           , "enum" Aeson..= (["chat", "global"] :: [Text])
           , "description" Aeson..= ("Search the current chat or all chats on the current platform. Defaults to chat." :: Text)
-          ])
-      , fieldDateTime "since" "Return messages strictly after this ISO-8601 UTC timestamp."
-      , fieldDateTime "before" "Return messages strictly before this ISO-8601 UTC timestamp."
-      ]
-      ["keywords", "limit"]
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs queryCurrentSenderChatLogArgs args \(scope, keywords, limit, timeRange) ->
+          ])))
+      , optionalArgument (fieldDateTime "since" "Return messages strictly after this ISO-8601 UTC timestamp.")
+      , optionalArgument (fieldDateTime "before" "Return messages strictly before this ISO-8601 UTC timestamp.")
+      )
+      \keywords limit scope since before -> do
+        context <- askToolContext
         case currentSenderChatLogScopeError scope context.message of
-          Just message ->
-            pure (toolFailure (permanentArgumentFailure message message).failure)
-          Nothing -> do
-            entries <- ChatLog.queryCurrentSenderChatLog context.message scope keywords limit timeRange
-            pure (toolText (jsonText (map chatLogToolEntry entries)))
-  }
+          Just err ->
+              pure (argumentFailure err)
+          Nothing ->
+            case chatLogTimeRange since before of
+              Left err ->
+                pure (argumentFailure err)
+              Right timeRange -> do
+                entries <- ChatLog.queryCurrentSenderChatLog context.message scope keywords limit timeRange
+                pure (toolText (jsonText (map chatLogToolEntry entries)))
 
 sendReplyTool :: Chat.Chat :> es => Tool es
-sendReplyTool = Tool
-  { name = "send_reply"
-  , description = "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
-  , parameters = objectSchema
-      [ fieldText "text" "Message text to send. May be omitted when image_urls is non-empty."
-      , fieldTextArray "image_urls" "Image URLs to send as images in the same reply. The platform must be able to fetch these URLs."
-      ]
-      []
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs sendReplyArgs args \body -> do
-        sent <- Chat.replyTo context.message body
-        case rights sent of
-          messageIds@(_:_) -> do
-            let sentText = show messageIds :: String
-            pure (toolText [i|Sent message ids: #{sentText}|])
-          [] ->
-            let err = Text.intercalate "\n" (lefts sent)
-             in
-            pure (toolFailure AgentFailure
-              { category = ExternalServiceUnavailable
-              , userMessage = [i|发送消息失败：#{err}|]
-              , detail = err
-              })
-  }
+sendReplyTool =
+  withDescription "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
+  $ tool "send_reply"
+      ( optionalText "text" "Message text to send. May be omitted when image_urls is non-empty."
+      , optionalTextArray "image_urls" "Image URLs to send as images in the same reply. The platform must be able to fetch these URLs."
+      )
+      \maybeText maybeImageUrls -> do
+        context <- askToolContext
+        let text = Text.strip (fromMaybe "" maybeText)
+            imageUrls = filter (not . Text.null) (map Text.strip (fromMaybe [] maybeImageUrls))
+            body = replyBodyWithImages text imageUrls
+        if Text.null body
+          then pure (argumentFailure "Either text or image_urls must be provided.")
+          else do
+            sent <- Chat.replyTo context.message body
+            case rights sent of
+              messageIds@(_:_) -> do
+                let sentText = show messageIds :: String
+                pure (toolText [i|Sent message ids: #{sentText}|])
+              [] ->
+                let err = Text.intercalate "\n" (lefts sent)
+                 in
+                pure (toolFailure AgentFailure
+                  { category = ExternalServiceUnavailable
+                  , userMessage = [i|发送消息失败：#{err}|]
+                  , detail = err
+                  })
 
 sendFileTool :: Chat.Chat :> es => Tool es
-sendFileTool = Tool
-  { name = "send_file"
-  , description = "Send a local file to the same chat as the current user message. The path must be readable by the bot for Telegram and Matrix. For QQ/NapCat, the path is passed to NapCat and must be accessible from the NapCat container. Use only when the user explicitly asks you to send a file."
-  , parameters = objectSchema
-      [ fieldText "path" "Local file path to send. A file:// prefix is accepted and stripped before upload."
-      ]
-      ["path"]
-  , noisy = True
-  , allowed = superuserOnly
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs sendFileArgs args \path -> do
+sendFileTool =
+  noisy
+  . allowWhen superuserOnly
+  . withDescription "Send a local file to the same chat as the current user message. The path must be readable by the bot for Telegram and Matrix. For QQ/NapCat, the path is passed to NapCat and must be accessible from the NapCat container. Use only when the user explicitly asks you to send a file."
+  $ tool "send_file"
+      (validateArgument validFilePath
+        (requiredText "path" "Local file path to send. A file:// prefix is accepted and stripped before upload."))
+      \path -> do
+        context <- askToolContext
         result <- Chat.uploadFile context.message path
         case result of
           Right sent -> do
@@ -132,21 +133,16 @@ sendFileTool = Tool
               , userMessage = failureText
               , detail = err
               })
-  }
 
 mentionUserTool :: Chat.Chat :> es => Tool es
-mentionUserTool = Tool
-  { name = "mention_user"
-  , description = "Send a reply in the current chat that mentions the given platform user id. Matrix user ids are textual, for example @user:server."
-  , parameters = objectSchema
-      [ fieldText "user_id" "Platform user id to mention."
-      , fieldText "text" "Message text to send after the mention."
-      ]
-      ["user_id", "text"]
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs mentionUserArgs args \(userId, text) -> do
+mentionUserTool =
+  withDescription "Send a reply in the current chat that mentions the given platform user id. Matrix user ids are textual, for example @user:server."
+  $ tool "mention_user"
+      ( userIdArgument "Platform user id to mention."
+      , requiredText "text" "Message text to send after the mention."
+      )
+      \userId text -> do
+        context <- askToolContext
         Chat.mentionUser context.message userId text >>= \case
           Right sent -> do
             let sentText = show sent :: String
@@ -157,77 +153,53 @@ mentionUserTool = Tool
               , userMessage = [i|发送提及消息失败：#{err}|]
               , detail = err
               })
-  }
 
 senderMemberInfoTool :: Chat.Chat :> es => Tool es
-senderMemberInfoTool = Tool
-  { name = "sender_info"
-  , description = "Get platform-provided member information for the sender of the current message in the current group chat."
-  , parameters = objectSchema [] []
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ _ -> do
+senderMemberInfoTool =
+  withDescription "Get platform-provided member information for the sender of the current message in the current group chat."
+  $ tool "sender_info" noArguments do
+      context <- askToolContext
       info <- Chat.getSenderMemberInfo context.message
       pure (toolText (maybe "No member information is available for this message." jsonText info))
-  }
 
 memberInfoTool :: Chat.Chat :> es => Tool es
-memberInfoTool = Tool
-  { name = "member_info"
-  , description = "Get platform-provided member information for any user id in the current group chat."
-  , parameters = objectSchema
-      [ fieldText "user_id" "Platform user id to query in the current group."
-      ]
-      ["user_id"]
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ args -> withParsedToolArgs memberInfoArgs args \userId -> do
-      info <- Chat.getMemberInfo context.message userId
-      pure (toolText (maybe "No member information is available for this user in the current chat." jsonText info))
-  }
+memberInfoTool =
+  withDescription "Get platform-provided member information for any user id in the current group chat."
+  $ tool "member_info"
+      (userIdArgument "Platform user id to query in the current group.")
+      \userId -> do
+        context <- askToolContext
+        info <- Chat.getMemberInfo context.message userId
+        pure (toolText (maybe "No member information is available for this user in the current chat." jsonText info))
 
 userAvatarTool :: (Chat.Chat :> es, KatipE :> es) => Tool es
-userAvatarTool = Tool
-  { name = "user_avatar"
-  , description = "Get avatar information for a platform user id and send the avatar image to the current chat."
-  , parameters = objectSchema
-      [ fieldText "user_id" "Platform user id to query. Use message_info first when the target is the current sender or a mentioned user. 0 is invalid."
-      ]
-      ["user_id"]
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs userAvatarArgs args \userId -> do
+userAvatarTool =
+  withDescription "Get avatar information for a platform user id and send the avatar image to the current chat."
+  $ tool "user_avatar"
+      (userIdArgument "Platform user id to query. Use message_info first when the target is the current sender or a mentioned user. 0 is invalid.")
+      \userId -> do
+        context <- askToolContext
         avatar <- Chat.getUserAvatar context.message userId
         case avatar of
           Nothing ->
             pure (toolText "No avatar is available for this user on this platform.")
           Just value ->
             userAvatarResult context value
-  }
 
 listGroupMembersTool :: Chat.Chat :> es => Tool es
-listGroupMembersTool = Tool
-  { name = "group_members"
-  , description = "List members in the current group chat, including platform user ids and nicknames when available. QQ groups are supported. Telegram Bot API does not expose full member lists, so Telegram may return unavailable."
-  , parameters = objectSchema [] []
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ _ -> do
+listGroupMembersTool =
+  withDescription "List members in the current group chat, including platform user ids and nicknames when available. QQ groups are supported. Telegram Bot API does not expose full member lists, so Telegram may return unavailable."
+  $ tool "group_members" noArguments do
+      context <- askToolContext
       members <- Chat.listGroupMembers context.message
       pure (toolText (maybe "Group member listing is not available for this platform or chat." jsonText members))
-  }
 
 currentMessageInfoTool :: Tool es
-currentMessageInfoTool = Tool
-  { name = "message_info"
-  , description = "Return structured metadata for the current message, including platform, chat, sender, message ids, mentions, image URLs, and text."
-  , parameters = objectSchema [] []
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ _ ->
+currentMessageInfoTool =
+  withDescription "Return structured metadata for the current message, including platform, chat, sender, message ids, mentions, image URLs, and text."
+  $ tool "message_info" noArguments do
+      context <- askToolContext
       pure (toolText (jsonText (currentMessageInfoValue context.message)))
-  }
 
 currentMessageInfoValue :: IncomingMessage -> Aeson.Value
 currentMessageInfoValue message =
@@ -248,15 +220,6 @@ currentMessageInfoValue message =
     , "text" Aeson..= message.text
     ]
 
-queryChatLogArgs :: Aeson.Value -> AesonTypes.Parser (Maybe Text, Integer, Bool, ChatLog.ChatLogTimeRange)
-queryChatLogArgs =
-  Aeson.withObject "query chat log arguments" $ \o -> do
-    sender <- o Aeson..:? Key.fromText "sender"
-    limit <- o Aeson..: Key.fromText "limit"
-    includeBotMessages <- fromMaybe False <$> o Aeson..:? Key.fromText "include_bot_messages"
-    timeRange <- chatLogTimeRange o
-    pure (sender, limit, includeBotMessages, timeRange)
-
 chatLogToolEntry :: ChatLog.ChatLogEntry -> Aeson.Value
 chatLogToolEntry entry =
   Aeson.object
@@ -269,35 +232,33 @@ chatLogToolEntry entry =
     , "text" Aeson..= entry.text
     ]
 
-queryCurrentSenderChatLogArgs :: Aeson.Value -> AesonTypes.Parser (ChatLog.SenderChatLogScope, [[Text]], Int, ChatLog.ChatLogTimeRange)
-queryCurrentSenderChatLogArgs =
-  Aeson.withObject "query current sender chat log arguments" $ \o -> do
-    scope <- parseSenderChatLogScope . fromMaybe "chat" =<< o Aeson..:? Key.fromText "scope"
-    keywords <- o Aeson..: Key.fromText "keywords"
-    limit <- o Aeson..: Key.fromText "limit"
-    when (limit < 0) do
-      fail "limit must be >= 0."
-    when (limit > 100) do
-      fail "limit must be <= 100."
-    timeRange <- chatLogTimeRange o
-    pure (scope, keywords, limit, timeRange)
-
-parseSenderChatLogScope :: Text -> AesonTypes.Parser ChatLog.SenderChatLogScope
+parseSenderChatLogScope :: Text -> Either Text ChatLog.SenderChatLogScope
 parseSenderChatLogScope = \case
   "chat" ->
-    pure ChatLog.SenderChatLogChat
+    Right ChatLog.SenderChatLogChat
   "global" ->
-    pure ChatLog.SenderChatLogGlobal
+    Right ChatLog.SenderChatLogGlobal
   _ ->
-    fail "scope must be chat or global."
+    Left "scope must be chat or global."
 
-chatLogTimeRange :: AesonTypes.Object -> AesonTypes.Parser ChatLog.ChatLogTimeRange
-chatLogTimeRange o = do
-  since <- o Aeson..:? Key.fromText "since" :: AesonTypes.Parser (Maybe UTCTime)
-  before <- o Aeson..:? Key.fromText "before" :: AesonTypes.Parser (Maybe UTCTime)
-  when (maybe False (uncurry (>=)) ((,) <$> since <*> before)) do
-    fail "since must be earlier than before."
-  pure ChatLog.ChatLogTimeRange{since, before}
+validSenderLogLimit :: Int -> Either Text Int
+validSenderLogLimit limit
+  | limit < 0 =
+      Left "limit must be >= 0."
+  | limit > 100 =
+      Left "limit must be <= 100."
+  | otherwise =
+      Right limit
+
+chatLogTimeRange
+  :: Maybe UTCTime
+  -> Maybe UTCTime
+  -> Either Text ChatLog.ChatLogTimeRange
+chatLogTimeRange since before
+  | maybe False (uncurry (>=)) ((,) <$> since <*> before) =
+      Left "since must be earlier than before."
+  | otherwise =
+      Right ChatLog.ChatLogTimeRange{since, before}
 
 currentSenderChatLogScopeError :: ChatLog.SenderChatLogScope -> IncomingMessage -> Maybe Text
 currentSenderChatLogScopeError scope message
@@ -309,23 +270,11 @@ currentSenderChatLogScopeError scope message
   | otherwise =
       Nothing
 
-mentionUserArgs :: Aeson.Value -> AesonTypes.Parser (Text, Text)
-mentionUserArgs =
-  Aeson.withObject "mention user arguments" $ \o -> do
-    userId <- validateUserId =<< parseUserIdValue =<< o Aeson..: Key.fromText "user_id"
-    text <- o Aeson..: Key.fromText "text"
-    pure (userId, text)
-
-memberInfoArgs :: Aeson.Value -> AesonTypes.Parser Text
-memberInfoArgs =
-  Aeson.withObject "member info arguments" $ \o ->
-    validateUserId =<< parseUserIdValue =<< o Aeson..: Key.fromText "user_id"
-
-userAvatarArgs :: Aeson.Value -> AesonTypes.Parser Text
-userAvatarArgs =
-  Aeson.withObject "user avatar arguments" $ \o -> do
-    userId <- o Aeson..: Key.fromText "user_id"
-    validateUserId =<< parseUserIdValue userId
+userIdArgument :: Text -> ToolArgument Text
+userIdArgument description =
+  mapArgument
+    (parseUserIdValue >=> validateUserId)
+    (requiredArgument (fieldText "user_id" description))
 
 parseUserIdValue :: Aeson.Value -> AesonTypes.Parser Text
 parseUserIdValue value =
@@ -346,7 +295,7 @@ avatarUrl =
   AesonTypes.parseMaybe $
     Aeson.withObject "user avatar" (Aeson..: Key.fromText "avatar_url")
 
-userAvatarResult :: (Chat.Chat :> es, KatipE :> es) => AgentContext es -> Aeson.Value -> Eff es ToolResult
+userAvatarResult :: (Chat.Chat :> es, KatipE :> es) => AgentContext -> Aeson.Value -> Eff es ToolResult
 userAvatarResult context value =
   case avatarUrl value of
     Nothing ->
@@ -357,24 +306,19 @@ userAvatarResult context value =
       logInfo [i|user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
       pure (toolTextWithImages (jsonText value) [url])
 
-sendReplyArgs :: Aeson.Value -> AesonTypes.Parser Text
-sendReplyArgs =
-  Aeson.withObject "send reply arguments" $ \o -> do
-    text <- Text.strip . fromMaybe "" <$> o Aeson..:? Key.fromText "text"
-    imageUrls <- map Text.strip . fromMaybe [] <$> o Aeson..:? Key.fromText "image_urls"
-    let body = replyBodyWithImages text (filter (not . Text.null) imageUrls)
-    when (Text.null body) do
-      fail "Either text or image_urls must be provided."
-    pure body
+validFilePath :: Text -> Either Text FilePath
+validFilePath rawPath
+  | Text.null (Text.strip path) =
+      Left "path must not be empty."
+  | otherwise =
+      Right (Text.unpack path)
+  where
+    stripped = Text.strip rawPath
+    path = fromMaybe stripped (Text.stripPrefix "file://" stripped)
 
-sendFileArgs :: Aeson.Value -> AesonTypes.Parser FilePath
-sendFileArgs =
-  Aeson.withObject "send file arguments" $ \o -> do
-    rawPath <- Text.strip <$> o Aeson..: Key.fromText "path"
-    let path = fromMaybe rawPath (Text.stripPrefix "file://" rawPath)
-    when (Text.null (Text.strip path)) do
-      fail "path must not be empty."
-    pure (Text.unpack path)
+argumentFailure :: Text -> ToolResult
+argumentFailure err =
+  toolFailure (permanentArgumentFailure err err).failure
 
 replyBodyWithImages :: Text -> [Text] -> Text
 replyBodyWithImages text imageUrls =

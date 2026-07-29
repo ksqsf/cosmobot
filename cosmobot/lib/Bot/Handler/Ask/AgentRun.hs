@@ -95,7 +95,7 @@ agentContext
   -> AskHandlerConfig
   -> IncomingMessage
   -> MessageInput
-  -> Agent.AgentContext es
+  -> Agent.AgentContext
 agentContext toolCfg cfg message input =
   Agent.AgentContext
     { message = message

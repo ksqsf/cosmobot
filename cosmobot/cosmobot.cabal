@@ -179,6 +179,7 @@ library
         Bot.Agent.Middleware.ToolResultCompaction
         Bot.Agent.Middleware.Typing
         Bot.Agent.Middleware.Tools
+        Bot.Agent.Tool
         Bot.Agent.ToolRegistry
         Bot.Agent.Tools
         Bot.Agent.Tools.Audio

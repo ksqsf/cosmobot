@@ -10,6 +10,7 @@ module Bot.Agent.Tools.Schedule
 where
 
 import Bot.Agent.Tools.Common
+import Bot.Agent.Tool
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.Scheduler as Scheduler
@@ -19,33 +20,33 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 
 scheduleTool :: Scheduler.Scheduler :> es => Tool es
-scheduleTool = Tool
-  { name = "schedule"
-  , description = "Create, list, or delete scheduled agent actions owned by the current user in the current chat."
-  , parameters = objectSchema
-      [ fieldText "op" "One of: create, list, delete."
-      , fieldInteger "delay_seconds" "Delay in seconds; required for create."
-      , fieldText "prompt" "Future agent prompt; required for create."
-      , fieldInteger "schedule_id" "Schedule id; required for delete."
-      ]
-      ["op"]
-  , noisy = False
-  , allowed = everyone
-  , start = \context -> pure \_ args ->
-      withParsedToolArgs scheduleArgs args \case
-        ScheduleCreate delaySeconds prompt -> do
-          scheduled <- Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
-          pure $ if scheduled
-            then toolText [i|Scheduled agent action in #{delaySeconds} seconds.|]
-            else toolText "Could not schedule agent action: scheduler is at capacity."
-        ScheduleDelete scheduleId -> do
-          deleted <- Scheduler.deleteScheduledMessage context.message scheduleId
-          pure $ toolText $ if deleted
-            then [i|Schedule #{scheduleId} has been removed.|]
-            else [i|Schedule #{scheduleId} is not available to the user.|]
-        ScheduleList ->
-          toolText . jsonText . map scheduleSummary <$> Scheduler.listScheduledMessages context.message
-  }
+scheduleTool =
+  withDescription "Create, list, or delete scheduled agent actions owned by the current user in the current chat."
+  $ tool "schedule"
+      (parsedArguments
+        (objectSchema
+          [ fieldText "op" "One of: create, list, delete."
+          , fieldInteger "delay_seconds" "Delay in seconds; required for create."
+          , fieldText "prompt" "Future agent prompt; required for create."
+          , fieldInteger "schedule_id" "Schedule id; required for delete."
+          ]
+          ["op"])
+        scheduleArgs)
+      \call -> do
+        context <- askToolContext
+        case call of
+          ScheduleCreate delaySeconds prompt -> do
+            scheduled <- Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
+            pure $ if scheduled
+              then toolText [i|Scheduled agent action in #{delaySeconds} seconds.|]
+              else toolText "Could not schedule agent action: scheduler is at capacity."
+          ScheduleDelete scheduleId -> do
+            deleted <- Scheduler.deleteScheduledMessage context.message scheduleId
+            pure $ toolText $ if deleted
+              then [i|Schedule #{scheduleId} has been removed.|]
+              else [i|Schedule #{scheduleId} is not available to the user.|]
+          ScheduleList ->
+            toolText . jsonText . map scheduleSummary <$> Scheduler.listScheduledMessages context.message
 
 data ScheduleCall
   = ScheduleCreate !Int !Text
@@ -83,7 +84,7 @@ scheduledPrompt message =
     parsePrompt =
       Aeson.withObject "scheduled action" (Aeson..: Key.fromText "prompt")
 
-scheduledAgentMessage :: AgentContext es -> Int -> Text -> IncomingMessage
+scheduledAgentMessage :: AgentContext -> Int -> Text -> IncomingMessage
 scheduledAgentMessage context delaySeconds prompt =
   let original = context.message
       commandText = context.askCommand <> " " <> prompt

@@ -1,11 +1,10 @@
 {-|
 Module      : Bot.Agent.Types
-Description : Agent tool and context types
+Description : Agent context, events, and tool results
 Stability   : experimental
 -}
 module Bot.Agent.Types
-  ( Tool (..)
-  , ToolCallMetadata (..)
+  ( ToolCallMetadata (..)
   , AgentContext (..)
   , AgentEvent (..)
   , AgentObserver (..)
@@ -36,7 +35,6 @@ import Bot.Core.Thread (ThreadMessageKey)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
-import qualified Data.Aeson as Aeson
 
 -- | Runtime configuration for agent tools.
 data ToolConfig = ToolConfig
@@ -75,16 +73,6 @@ defaultToolConfig = ToolConfig
   , sandboxImage = "localhost/cosmobox:latest"
   }
 
--- | Tool definition exposed to the LLM function-calling API.
-data Tool es = Tool
-  { name        :: !Text
-  , description :: !Text
-  , parameters  :: !Aeson.Value
-  , noisy       :: !Bool
-  , allowed     :: AgentContext es -> Bool
-  , start       :: AgentContext es -> Eff es (ToolCallMetadata -> Aeson.Value -> Eff es ToolResult)
-  }
-
 data ToolCallMetadata = ToolCallMetadata
   { agentRunId :: !Text
   , originRunId :: !Text
@@ -92,7 +80,7 @@ data ToolCallMetadata = ToolCallMetadata
   }
 
 -- | Per-message capabilities and permissions made available to tools.
-data AgentContext es = AgentContext
+data AgentContext = AgentContext
   { message :: IncomingMessage
   , input :: !MessageInput
   , superuser :: !Bool
