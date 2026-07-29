@@ -24,40 +24,88 @@ mediaHandlers :: (Chat.Chat :> es, Media.Media :> es) => [RouteHandler es]
 mediaHandlers =
   [ withHelp (RouteHelp "!media/info <media_id>..." "Show cached media information.") $
       stopOn (command "!media/info") handleInfo
-  , withHelp (RouteHelp "!media/get <media_id>..." "Get public URLs for cached media.") $
-      stopOn (command "!media/get") handleGet
+  , withHelp (RouteHelp "!media/url <media_id>..." "Get public URLs for cached media.") $
+      stopOn (command "!media/url") handleUrl
+  , withHelp (RouteHelp "!media/get <url>..." "Download URLs into the media cache (superuser only).") $
+      requireAuth isSuperuser (\message -> reply message "Only superusers can download media.") $
+        stopOn (command "!media/get") handleGet
   ]
 
 handleInfo :: (Chat.Chat :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es ()
 handleInfo message input =
-  resolveInfoMediaIds message input >>= either (reply message) (replyWithMediaInfo message)
+  resolveMediaIds "!media/info" message input >>= either (reply message) (replyWithMediaInfo message)
 
-resolveInfoMediaIds
+resolveMediaIds
   :: Chat.Chat :> es
-  => IncomingMessage
+  => Text
+  -> IncomingMessage
   -> Text
   -> Eff es (Either Text [Text])
-resolveInfoMediaIds message input
+resolveMediaIds commandName message input
   | mediaIds@(_ : _) <- ordNub (Text.words input) =
       pure (Right mediaIds)
   | Just messageId <- message.replyToMessageId =
       maybe (Left "Could not read the replied message.") referencedMediaIdsResult
         <$> Chat.getMessageContent message messageId
   | otherwise =
-      pure (Left "Usage: !media/info <media_id>..., or reply to a message containing media.")
+      pure (Left [i|Usage: #{commandName} <media_id>..., or reply to a message containing media.|])
 
 referencedMediaIdsResult :: ReferencedMessage -> Either Text [Text]
 referencedMediaIdsResult referenced =
   maybe (Left "No media ids found in the replied message.") (Right . toList)
     (viaNonEmpty id (referencedMediaIds referenced))
 
+handleUrl :: (Chat.Chat :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es ()
+handleUrl message input =
+  resolveMediaIds "!media/url" message input >>= \case
+    Left err -> reply message err
+    Right mediaIds -> traverse mediaPublicUrl mediaIds >>= reply message . jsonText
+
 handleGet :: (Chat.Chat :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es ()
 handleGet message input =
   case ordNub (Text.words input) of
     [] ->
-      reply message "Usage: !media/get <media_id>..."
-    mediaIds ->
-      traverse mediaPublicUrl mediaIds >>= reply message . jsonText
+      reply message "Usage: !media/get <url>..."
+    urls ->
+      traverse (cacheUrl message) urls >>= reply message . jsonText
+
+cacheUrl :: (Chat.Chat :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es Aeson.Value
+cacheUrl message url
+  | not (isRemoteUrl url) =
+      pure (cacheFailure url "expected an HTTP, HTTPS, or MXC URL")
+  | otherwise = do
+      result <- trySync do
+        normalized <- Chat.normalizeMediaRef message url >>= Media.normalizeMediaRef
+        case mediaIdFromRef normalized of
+          Nothing ->
+            pure Nothing
+          Just mediaId -> do
+            publicUrl <- Media.publicMediaRef normalized
+            pure (Just (mediaId, publicUrl))
+      pure $ case result of
+        Left err ->
+          cacheFailure url (toText (displayException err))
+        Right cached ->
+          maybe
+            (cacheFailure url "download or cache failed")
+            (\(mediaId, publicUrl) -> Aeson.object
+              [ "url" Aeson..= url
+              , "media_id" Aeson..= mediaId
+              , "public_url" Aeson..= publicUrl
+              ])
+            cached
+
+isRemoteUrl :: Text -> Bool
+isRemoteUrl url =
+  let normalized = Text.toLower (Text.strip url)
+  in any (`Text.isPrefixOf` normalized) ["http://", "https://", "mxc://"]
+
+cacheFailure :: Text -> Text -> Aeson.Value
+cacheFailure url err =
+  Aeson.object
+    [ "url" Aeson..= url
+    , "error" Aeson..= err
+    ]
 
 replyWithMediaInfo :: (Chat.Chat :> es, Media.Media :> es) => IncomingMessage -> [Text] -> Eff es ()
 replyWithMediaInfo message mediaIds =
@@ -98,8 +146,26 @@ mediaInfo rawMediaId = do
     Nothing -> notFound mediaId
     Just info -> Aeson.object
       [ "media_id" Aeson..= mediaId
-      , "info" Aeson..= info
+      , "info" Aeson..= safeMediaInfo info
       ]
+
+safeMediaInfo :: Media.MediaCacheEntry -> Aeson.Value
+safeMediaInfo info =
+  Aeson.object
+    [ "file" Aeson..= Aeson.object
+        [ "fileId" Aeson..= info.file.fileId
+        , "ref" Aeson..= info.file.ref
+        , "digest" Aeson..= info.file.digest
+        , "mimeType" Aeson..= info.file.mimeType
+        , "sourceName" Aeson..= info.file.sourceName
+        , "size" Aeson..= info.file.size
+        , "createdAtUnix" Aeson..= info.file.createdAtUnix
+        , "lastUsedAtUnix" Aeson..= info.file.lastUsedAtUnix
+        , "exists" Aeson..= info.file.exists
+        ]
+    , "sourceRefs" Aeson..= info.sourceRefs
+    , "platformRefs" Aeson..= info.platformRefs
+    ]
 
 mediaPublicUrl :: Media.Media :> es => Text -> Eff es Aeson.Value
 mediaPublicUrl rawMediaId = do
@@ -128,8 +194,10 @@ notFound mediaId =
     ]
 
 jsonText :: Aeson.ToJSON a => a -> Text
-jsonText =
-  TextEncoding.decodeUtf8 . LazyByteString.toStrict . AesonPretty.encodePretty
+jsonText value =
+  "```json\n"
+    <> TextEncoding.decodeUtf8 (LazyByteString.toStrict (AesonPretty.encodePretty value))
+    <> "\n```"
 
 reply :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 reply message =

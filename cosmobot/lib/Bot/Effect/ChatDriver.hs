@@ -23,6 +23,7 @@ module Bot.Effect.ChatDriver
   , getMemberInfo
   , getUserAvatar
   , listGroupMembers
+  , normalizeMediaRef
   , mentionUser
   , setMemberTitle
   , setTyping
@@ -95,6 +96,10 @@ data ChatDriver :: Effect where
   ListGroupMembers
     :: IncomingMessage
     -> ChatDriver m (Maybe Aeson.Value)
+  NormalizeMediaRef
+    :: IncomingMessage
+    -> Text
+    -> ChatDriver m Text
   MentionUser
     :: IncomingMessage
     -> Text
@@ -179,6 +184,10 @@ listGroupMembers :: ChatDriver :> es => IncomingMessage -> Eff es (Maybe Aeson.V
 listGroupMembers message =
   send (ListGroupMembers message)
 
+normalizeMediaRef :: ChatDriver :> es => IncomingMessage -> Text -> Eff es Text
+normalizeMediaRef message ref =
+  send (NormalizeMediaRef message ref)
+
 -- | Send a reply that mentions a platform user id.
 mentionUser :: ChatDriver :> es => IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
 mentionUser message userId body =
@@ -237,6 +246,8 @@ chatDriverEffectHandler driver _ = \case
     Driver.getUserAvatar driver message userId
   ListGroupMembers message ->
     Driver.listGroupMembers driver message
+  NormalizeMediaRef message ref ->
+    Driver.normalizeMediaRefForMessage driver message ref
   MentionUser message userId body ->
     Driver.mentionUser driver message userId body
   SetMemberTitle message userId title ->

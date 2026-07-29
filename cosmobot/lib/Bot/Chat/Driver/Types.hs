@@ -79,6 +79,10 @@ class ChatDriver driver where
   normalizeMediaRef _ =
     pure
 
+  normalizeMediaRefForMessage :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Eff es Text
+  normalizeMediaRefForMessage driver _ =
+    normalizeMediaRef driver
+
   mentionUser :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Text -> Eff es (Either Text MessageId)
   mentionUser driver message _ body =
     sendReplyMessage driver message body

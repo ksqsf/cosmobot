@@ -198,6 +198,10 @@ instance ChatDriver ChatDrivers where
     withMessageDriver drivers message \driver ->
       listGroupMembers driver message
 
+  normalizeMediaRefForMessage drivers message ref =
+    withMessageDriver drivers message \driver ->
+      normalizeMediaRef driver ref
+
   mentionUser drivers message userId body =
     withMessageDriver drivers message \driver ->
       mentionUser driver message userId body
