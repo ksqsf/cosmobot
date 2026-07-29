@@ -479,6 +479,7 @@ testWorkspaceLifecycle =
         , goal = "initial goal"
         , ttlMinutes = 10
         } >>= expectRight
+      Resource.detailResourceObject workspace >>= liftIO . (@?= "WORK.md:\ninitial goal")
       FileSystem.createDirectory (path </> "repo")
       report <- Workspace.queryWorkspace workspace >>= expectRight
       liftIO $ assertBool "query includes WORK.md" ("WORK.md:\ninitial goal" `Text.isInfixOf` report)

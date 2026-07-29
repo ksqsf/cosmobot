@@ -70,6 +70,10 @@ instance
   describeResourceObject workspace _ =
     pure workspace.workId
 
+  detailResourceObject workspace =
+    withWorkspace workspace $
+      readWork workspace <&> either id ("WORK.md:\n" <>)
+
 createWorkspaceAt
   :: (FileSystem.FileSystem :> es, Concurrent :> es, IOE :> es)
   => FilePath
@@ -109,11 +113,10 @@ queryWorkspace
   => Workspace
   -> Eff es (Either Text Text)
 queryWorkspace workspace = withWorkspace workspace do
-  goalResult <- attempt "read WORK.md" (FileSystemByteString.readFile (workFile workspace.path))
+  goalResult <- readWork workspace
   treeResult <- attemptProcess "query" "tree" ["-L", "1", workspace.path]
   pure do
-    goalBytes <- goalResult
-    goal <- first (const "WORK.md is not valid UTF-8.") (TextEncoding.decodeUtf8' goalBytes)
+    goal <- goalResult
     tree <- treeResult
     pure $ "WORK.md:\n" <> goal <> "\n\ntree -L 1 " <> Text.pack workspace.path <> ":\n" <> tree
 
@@ -124,6 +127,16 @@ updateWorkspace
   -> Eff es (Either Text ())
 updateWorkspace workspace goal =
   withWorkspace workspace (attempt "update WORK.md" (writeWork workspace.path goal))
+
+readWork :: FileSystem.FileSystem :> es => Workspace -> Eff es (Either Text Text)
+readWork workspace = do
+  let path = workFile workspace.path
+  FileSystem.doesFileExist path >>= \case
+    False -> pure (Left "Workspace WORK.md is missing.")
+    True ->
+      first (const "WORK.md is not valid UTF-8.")
+        . TextEncoding.decodeUtf8'
+        <$> FileSystemByteString.readFile path
 
 withWorkspace :: Concurrent :> es => Workspace -> Eff es a -> Eff es a
 withWorkspace workspace action =
