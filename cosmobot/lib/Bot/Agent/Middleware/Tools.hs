@@ -116,7 +116,7 @@ limitProgram runtime mayTransfer =
             pure (Finished result)
           Continues next ->
             pure (Continues next)
-          NeedsTools request continue
+          Visible (RunTools request) continue
             | request.agentState.turn >= runtime.maxTurns
             , not (mayTransfer request.toolCalls) -> do
                 let calls = request.toolCalls
@@ -129,7 +129,9 @@ limitProgram runtime mayTransfer =
                         calls
                         request.answered
             | otherwise ->
-                pure (NeedsTools request (go . continue))
+                pure (Visible (RunTools request) (go . continue))
+          Visible event continue ->
+            pure (Visible event (go . continue))
 
 safeToolCall :: LLM.ToolCall -> Eff es ToolResult -> Eff es ToolResult
 safeToolCall call action =

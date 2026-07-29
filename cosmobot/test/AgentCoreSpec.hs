@@ -65,16 +65,16 @@ generateProgram size =
       next <- smaller
       pure (ProgramCase (emit [i|output:#{value}|] next))
     visibleCase =
-      ProgramCase <$> (visible <$> arbitrary <*> branch <*> branch)
+      ProgramCase <$> (visible <$> arbitrary <*> arbitrary <*> branch <*> branch)
 
 propTauInvisible :: ProgramCase -> Property
 propTauInvisible ProgramCase{program} =
   tau program ~= program
 
-propVisCongruence :: Int -> ProgramCase -> ProgramCase -> Property
-propVisCongruence key ProgramCase{program = onEven} ProgramCase{program = onOdd} =
-  visible key (tau onEven) (tau onOdd)
-    ~= visible key onEven onOdd
+propVisCongruence :: Bool -> Int -> ProgramCase -> ProgramCase -> Property
+propVisCongruence useModel key ProgramCase{program = onLeft} ProgramCase{program = onRight} =
+  visible useModel key (tau onLeft) (tau onRight)
+    ~= visible useModel key onLeft onRight
 
 propFmapIsBind :: ProgramCase -> Fun Int Int -> Property
 propFmapIsBind ProgramCase{program} generated =
@@ -91,18 +91,20 @@ propBindTau ProgramCase{program} generated =
     next = arrow generated
 
 propBindVis
-  :: Int
+  :: Bool
+  -> Int
   -> ProgramCase
   -> ProgramCase
   -> Fun Int ProgramCase
   -> Property
 propBindVis
+  useModel
   key
-  ProgramCase{program = onEven}
-  ProgramCase{program = onOdd}
+  ProgramCase{program = onLeft}
+  ProgramCase{program = onRight}
   generated =
-    (visible key onEven onOdd >>= next)
-      ~= visible key (onEven >>= next) (onOdd >>= next)
+    (visible useModel key onLeft onRight >>= next)
+      ~= visible useModel key (onLeft >>= next) (onRight >>= next)
     where
       next = arrow generated
 
@@ -137,31 +139,35 @@ data Choice
   | ChooseOdd
   deriving (Eq, Show, Enum, Bounded)
 
-data Response
-  = EvenResponse
-  | OddResponse
-
-trigger :: Int -> Program '[] Response
-trigger key =
-  Program . pure $
-    NeedsTools
-      (toolRequest key)
-      (pure . responseFromState)
-
-visible
+toolVisible
   :: Int
   -> Program '[] result
   -> Program '[] result
   -> Program '[] result
-visible key onEven onOdd =
-  trigger key >>= \case
-    EvenResponse -> onEven
-    OddResponse -> onOdd
+toolVisible key onEven onOdd =
+  trigger (RunTools (toolRequest key)) >>= \turnState ->
+    if even turnState.turn then onEven else onOdd
 
-responseFromState :: TurnState -> Response
-responseFromState turnState
-  | even turnState.turn = EvenResponse
-  | otherwise = OddResponse
+modelVisible
+  :: Int
+  -> Program '[] result
+  -> Program '[] result
+  -> Program '[] result
+modelVisible key onFinal onTools =
+  trigger (RunModel (emptyState key)) >>= \(_, answer) ->
+    case answer of
+      LLM.ChatFinalAnswer{} -> onFinal
+      LLM.ChatToolRequest{} -> onTools
+
+visible
+  :: Bool
+  -> Int
+  -> Program '[] result
+  -> Program '[] result
+  -> Program '[] result
+visible useModel
+  | useModel = modelVisible
+  | otherwise = toolVisible
 
 -- Equality up to finite Tau: silently follow 'Continues', retain output and
 -- visible-event order, and compare every response branch of a visible event.
@@ -172,26 +178,37 @@ left ~= right =
 
 eutt :: Eq result => Program '[] result -> Program '[] result -> Bool
 eutt left right =
-  case (observeVisible left, observeVisible right) of
+  case (observeEvent left, observeEvent right) of
     (Returned leftOutputs leftResult, Returned rightOutputs rightResult) ->
       leftOutputs == rightOutputs && leftResult == rightResult
-    (Visible leftOutputs leftKey leftContinue, Visible rightOutputs rightKey rightContinue) ->
+    (ObservedTools leftOutputs leftKey leftContinue, ObservedTools rightOutputs rightKey rightContinue) ->
       leftOutputs == rightOutputs
         && leftKey == rightKey
         && all
           (\choice -> eutt (leftContinue (choiceState choice)) (rightContinue (choiceState choice)))
           [ChooseEven, ChooseOdd]
+    (ObservedModel leftOutputs leftTurn leftContinue, ObservedModel rightOutputs rightTurn rightContinue) ->
+      leftOutputs == rightOutputs
+        && leftTurn == rightTurn
+        && all
+          (\response -> eutt (leftContinue response) (rightContinue response))
+          modelResponses
     _ ->
       False
 
-data Visible result
+data ObservedEvent result
   = Returned ![ObservedOutput] !result
-  | Visible ![ObservedOutput] !Text !(TurnState -> Program '[] result)
+  | ObservedTools ![ObservedOutput] !Text !(TurnState -> Program '[] result)
+  | ObservedModel ![ObservedOutput] !Int !((TurnState, LLM.ChatAnswer) -> Program '[] result)
 
-observeVisible :: Program '[] result -> Visible result
-observeVisible =
+observeEvent :: Program '[] result -> ObservedEvent result
+observeEvent =
   runPureEff . go []
   where
+    go
+      :: [ObservedOutput]
+      -> Program '[] value
+      -> Eff '[] (ObservedEvent value)
     go prior program = do
       outputs S.:> step <- S.toList program.observe
       let observed = prior <> map observeOutput outputs
@@ -200,8 +217,16 @@ observeVisible =
           pure (Returned observed result)
         Continues next ->
           go observed next
-        NeedsTools request continue ->
-          pure (Visible observed request.toolContent continue)
+        Visible (RunTools request) continue ->
+          pure (ObservedTools observed request.toolContent continue)
+        Visible (RunModel turnState) continue ->
+          pure (ObservedModel observed turnState.turn continue)
+
+modelResponses :: [(TurnState, LLM.ChatAnswer)]
+modelResponses =
+  [ (emptyState 0, LLM.ChatFinalAnswer "answer" Nothing)
+  , (emptyState 1, LLM.ChatToolRequest "" (toolCall 0 :| []) Nothing)
+  ]
 
 data ObservedOutput
   = ObservedContent !Text
@@ -231,13 +256,15 @@ toolRequest key =
     { agentState = emptyState 0
     , answered = emptyTranscript
     , toolContent = [i|#{key}|]
-    , toolCalls =
-        LLM.ToolCall
-          { id = [i|call-#{key}|]
-          , name = "algebra"
-          , arguments = "{}"
-          }
-          :| []
+    , toolCalls = toolCall key :| []
+    }
+
+toolCall :: Int -> LLM.ToolCall
+toolCall key =
+  LLM.ToolCall
+    { id = [i|call-#{key}|]
+    , name = "algebra"
+    , arguments = "{}"
     }
 
 emptyState :: Int -> TurnState

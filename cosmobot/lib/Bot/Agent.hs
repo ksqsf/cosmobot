@@ -203,10 +203,10 @@ agentStream
   -> Stream (Of Output) (Eff es) Result
 agentStream runtime transcript =
   runtime.aroundAgentRun HList.HNil $
-    runProgram runtime (restart (initialState transcript))
+    runProgram runtime restart (restart (initialState transcript))
   where
     restart agentState =
-      runtime.aroundProgram runtime (nextModel runtime HList.HNil restart agentState)
+      runtime.aroundProgram runtime (nextModel runtime restart agentState)
 
 runIdOf :: Runtime context es -> Text
 runIdOf =
@@ -291,22 +291,6 @@ plainRuntime compactionTokenThreshold =
   . withToolFailureRecovery
   )
 
------------------------------------------------------------------------------------------
--- * Phases
------------------------------------------------------------------------------------------
-
-runModelPhase
-  :: (LLM.LLM :> es, Concurrent :> es)
-  => Runtime context es
-  -> HList.HList context
-  -> (TurnState -> Program es Result)
-  -> TurnState
-  -> Stream (Of Output) (Eff es) (Step es Result)
-runModelPhase runtime context continue agentState = do
-  transcript <- lift (runtime.modelInputTranscript context agentState)
-  answer <- askNext runtime agentState transcript
-  modelDecision runtime continue agentState answer
-
 isResumeTransfer :: Runtime context es -> NonEmpty LLM.ToolCall -> Bool
 isResumeTransfer runtime calls =
   case toList calls of
@@ -317,48 +301,54 @@ isResumeTransfer runtime calls =
       False
 
 nextModel
-  :: (LLM.LLM :> es, Concurrent :> es)
-  => Runtime context es
-  -> HList.HList context
+  :: Runtime context es
   -> (TurnState -> Program es Result)
   -> TurnState
   -> Program es Result
-nextModel runtime context restart agentState =
-  Program $
-    runtime.aroundModelTurn
-      context
-      restart
-      agentState
-      (runModelPhase runtime context (nextModel runtime context restart))
+nextModel runtime restart agentState =
+  trigger (RunModel agentState) >>= \(modelState, answer) ->
+    modelDecision runtime (nextModel runtime restart) modelState answer
 
 runProgram
-  :: Concurrent :> es
+  :: (LLM.LLM :> es, Concurrent :> es)
   => Runtime '[] es
-  -> Program es result
-  -> Stream (Of Output) (Eff es) result
-runProgram runtime@Runtime{aroundToolTurn = toolTurn} program =
-  program.observe >>= \case
-    Finished result ->
-      pure result
-    NeedsTools request continue -> do
-      (continuedState, ()) <- lift $ toolTurn HList.HNil request ((, ()) <$> toolPhase runtime request)
-      runProgram runtime (continue continuedState)
-    Continues next ->
-      runProgram runtime next
+  -> (TurnState -> Program es Result)
+  -> Program es Result
+  -> Stream (Of Output) (Eff es) Result
+runProgram runtime@Runtime{aroundToolTurn = toolTurn} restart program =
+  program.observe >>= handleStep
+  where
+    handleStep = \case
+      Finished result ->
+        pure result
+      Continues next ->
+        runProgram runtime restart next
+      Visible (RunModel agentState) continue ->
+        runtime.aroundModelTurn HList.HNil restart agentState
+          (\modelState -> do
+              transcript <- lift (runtime.modelInputTranscript HList.HNil modelState)
+              answer <- askNext runtime modelState transcript
+              (continue (modelState, answer)).observe
+          )
+          >>= handleStep
+      Visible (RunTools request) continue -> do
+        (continuedState, ()) <- lift $ toolTurn HList.HNil request ((, ()) <$> toolPhase runtime request)
+        runProgram runtime restart (continue continuedState)
 
 modelDecision
   :: Runtime context es
   -> (TurnState -> Program es Result)
   -> TurnState
   -> LLM.ChatAnswer
-  -> Stream (Of Output) (Eff es) (Step es Result)
+  -> Program es Result
 modelDecision runtime continue agentState answer =
   case answer of
     LLM.ChatFinalAnswer{content} ->
-      pure (Finished (agentCompletion runtime "answered" content agentState.turn (LLM.chatAnswerTokenUsage answer) answered))
-    LLM.ChatToolRequest{content, toolCalls} -> do
-      S.yield (ToolCallNotification toolCalls)
-      pure (NeedsTools ToolRequest{agentState = observedState, answered, toolContent = content, toolCalls} continue)
+      pure (agentCompletion runtime "answered" content agentState.turn (LLM.chatAnswerTokenUsage answer) answered)
+    LLM.ChatToolRequest{content, toolCalls} ->
+      Program do
+        S.yield (ToolCallNotification toolCalls)
+        pure (Visible (RunTools ToolRequest{agentState = observedState, answered, toolContent = content, toolCalls}) continue)
   where
     observedState =
       agentState{modelTokenUsage = LLM.chatAnswerTokenUsage answer}

@@ -7,13 +7,15 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Core
-  ( Result (..)
+  ( AgentEvent (..)
+  , Result (..)
   , Output (..)
   , TurnState (..)
   , Program (..)
   , Runtime (..)
   , Step (..)
   , ToolRequest (..)
+  , trigger
   )
 where
 
@@ -51,12 +53,24 @@ newtype Program es result = Program
   { observe :: Stream (Of Output) (Eff es) (Step es result)
   }
 
-data Step es result
-  = Finished !result
-  | NeedsTools
-      !ToolRequest
-      !(TurnState -> Program es result)
-  | Continues !(Program es result)
+data Step es result where
+  Finished :: !result -> Step es result
+  Continues :: !(Program es result) -> Step es result
+  Visible
+    :: !(AgentEvent response)
+    -> !(response -> Program es result)
+    -> Step es result
+
+-- | Visible operations interpreted by the agent runtime.
+data AgentEvent response where
+  -- The response carries the effective state because model middleware may
+  -- rewrite it before issuing the request.
+  RunModel :: !TurnState -> AgentEvent (TurnState, LLM.ChatAnswer)
+  RunTools :: !ToolRequest -> AgentEvent TurnState
+
+trigger :: AgentEvent response -> Program es response
+trigger event =
+  Program (pure (Visible event pure))
 
 instance Functor (Program es) where
   fmap f (Program action) =
@@ -76,10 +90,10 @@ instance Monad (Program es) where
         Finished result ->
           let Program nextAction = next result
           in nextAction
-        NeedsTools request continue ->
-          pure (NeedsTools request ((>>= next) . continue))
         Continues program ->
           pure (Continues (program >>= next))
+        Visible event continue ->
+          pure (Visible event ((>>= next) . continue))
 
 mapStep
   :: (a -> b)
@@ -88,14 +102,14 @@ mapStep
 mapStep f = \case
   Finished result ->
     Finished (f result)
-  NeedsTools request continue ->
-    NeedsTools request (fmap f . continue)
   Continues program ->
     Continues (fmap f program)
+  Visible event continue ->
+    Visible event (fmap f . continue)
 
 -- | Runtime wiring for the agent algorithm.
 --
--- The core loop stays as direct model/tool recursion, while cross-cutting
+-- The core loop stays as direct event interpretation, while cross-cutting
 -- behavior gets named middleware boundaries. For example, transcript
 -- compaction belongs in 'aroundModelTurn': it can rewrite state before the
 -- next LLM request without changing tool execution or completion handling.

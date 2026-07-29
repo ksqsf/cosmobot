@@ -52,15 +52,17 @@ handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
             pure (Finished result)
           Continues next ->
             pure (Continues next)
-          NeedsTools request continue ->
+          Visible (RunTools request) continue ->
             case exposedContinuationCalls runtime request.toolCalls of
               [] ->
-                pure (NeedsTools request (go nextOrdinal saved . continue))
+                pure (Visible (RunTools request) (go nextOrdinal saved . continue))
               [call]
                 | [_] <- toList request.toolCalls ->
                     handleCall nextOrdinal saved request continue call
               _ ->
                 handleConcurrent nextOrdinal saved request continue
+          Visible event continue ->
+            pure (Visible event (go nextOrdinal saved . continue))
 
     handleCall nextOrdinal saved request continue call =
       case continuationRequest call of

@@ -108,7 +108,7 @@ withObservation observer program@Runtime{aroundToolTurn = toolTurn} =
           , toolCalls = []
           , tokenUsage
           }
-      NeedsTools ToolRequest{agentState, toolContent, toolCalls} _ ->
+      Visible (RunTools ToolRequest{agentState, toolContent, toolCalls}) _ ->
         ModelTurnFinished
           { runId = runId
           , turn = initialState.turn
@@ -118,6 +118,15 @@ withObservation observer program@Runtime{aroundToolTurn = toolTurn} =
           , tokenUsage = agentState.modelTokenUsage
           }
       Continues _ ->
+        ModelTurnFinished
+          { runId = runId
+          , turn = initialState.turn
+          , answerKind = "continued"
+          , contentLength = 0
+          , toolCalls = []
+          , tokenUsage = initialState.modelTokenUsage
+          }
+      Visible (RunModel _) _ ->
         ModelTurnFinished
           { runId = runId
           , turn = initialState.turn

@@ -81,15 +81,19 @@ clearConsumedModelInput
 clearConsumedModelInput = \case
   Finished result ->
     Finished result
-  NeedsTools toolState continue ->
-    NeedsTools toolState
-      { agentState = toolState.agentState
-          { nextModelTranscript = Nothing
-          }
-      }
-      continue
   Continues program ->
     Continues program
+  Visible (RunTools toolState) continue ->
+    Visible
+      ( RunTools toolState
+          { agentState = toolState.agentState
+              { nextModelTranscript = Nothing
+              }
+          }
+      )
+      continue
+  Visible event continue ->
+    Visible event continue
 
 compactLargeToolResultsInMessages :: Media.Media :> es => [LLM.ChatMessage] -> Eff es [LLM.ChatMessage]
 compactLargeToolResultsInMessages =

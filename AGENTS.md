@@ -55,7 +55,7 @@ Avoid import cycles when extracting from effects. Prefer explicit callback recor
 
 When changing the agent loop or middleware:
 
-- Start in `Bot.Agent.Core` only to change the generic calculus vocabulary: `Program`, `Step`, `TurnState`, or `Runtime`. Keep the execution fold in `Bot.Agent` as direct model/tool recursion; do not add persistence, audit, media, chat logging, platform linking, or handler policy there.
+- Start in `Bot.Agent.Core` only to change the generic calculus vocabulary: `Program`, `Step`, `AgentEvent`, `TurnState`, or `Runtime`. Keep the execution fold in `Bot.Agent` as direct event interpretation; do not add persistence, audit, media, chat logging, platform linking, or handler policy there.
 - Add cross-cutting behavior as `Bot.Agent.Middleware.*`, then compose it in `Bot.Agent.defaultRuntime` or the handler-specific runtime assembly. Add new modules to `cosmobot.cabal`.
 - Use `TurnState` only for state that must survive across model/tool turns. Middleware-private state belongs in lexical closures; typed dynamic context belongs in the middleware HList.
 - Use the `Runtime context` HList for dynamic middleware environment passed from outer middleware to inner middleware. Use this for values like `ObservationContext`, `EventObservation`, and `ToolResultObservation`.
@@ -96,7 +96,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 
 For changes to `Program`, `Step`, or their instances, add algebraic properties
 to `test/AgentCoreSpec.hs`. Compare programs up to finite `Continues` steps,
-inspect every generated `NeedsTools` continuation, and keep these calculus
+inspect every generated `Visible` continuation, and keep these calculus
 laws separate from middleware policy scenarios in `AgentSpec.hs`.
 
 ### Coding Rules
