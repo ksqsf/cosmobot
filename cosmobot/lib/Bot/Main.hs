@@ -47,6 +47,7 @@ import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Audit
 import Bot.Handler.Help
+import Bot.Handler.Media
 import Bot.Handler.Resource
 import Bot.Handler.Safebooru
 import Bot.Handler.Saucenao
@@ -139,6 +140,7 @@ routes cfg threads =
       shutUpHandlers cfg.handlers.shutup
         <> auditHandlers threads
         <> adminHandlers cfg.handlers.admin
+        <> mediaHandlers
         <> scratchpadHandlers
         <> typingHandlers
         <> safebooruHandlers

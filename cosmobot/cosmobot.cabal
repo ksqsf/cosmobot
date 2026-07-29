@@ -254,6 +254,7 @@ library
         Bot.Handler.Ask.Config
         Bot.Handler.Audit
         Bot.Handler.Help
+        Bot.Handler.Media
         Bot.Handler.Resource
         Bot.Handler.Safebooru
         Bot.Handler.Saucenao
@@ -365,6 +366,14 @@ test-suite scratchpad-spec
     type:             exitcode-stdio-1.0
     main-is:          ScratchpadSpec.hs
     build-depends:    toml-parser
+    hs-source-dirs:   test
+
+test-suite media-handler-spec
+    import:           warnings
+                    , language
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          MediaHandlerSpec.hs
     hs-source-dirs:   test
 
 test-suite chat-platform-spec
