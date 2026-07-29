@@ -5,7 +5,7 @@ Description : Agent tool for chat-scoped background agents
 Stability   : experimental
 -}
 module Bot.Agent.Tools.SubAgent
-  ( subagentTool
+  ( subagentTools
   )
 where
 
@@ -17,39 +17,55 @@ import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
 import qualified Bot.Resource.SubAgent as SubAgent
 import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.List as List
 import qualified Data.Text as Text
 
-subagentTool
+subagentTools
   :: (Resource.Resource :> es, Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
   => SubAgent.SubAgentRunner es
   -> [Tool es]
-  -> Tool es
-subagentTool runner availableTools =
-  tagged [workTag]
-  . allowWhen (isRight . Resource.accessFromMessage . (.message))
-  . withDescription "Manage background agents scoped to the current chat. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
-  $ tool "subagent"
-      (parsedArguments
-        (objectSchema
-          [ fieldText "op" "One of: create, list, send, query, wait_any, wait_all, rename, delete."
-          , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
-          , fieldText "system_prompt" "System prompt for create; empty inherits the current system prompt."
-          , fieldTextArray "tools" "Tool names exposed to the subagent for create; empty exposes none."
-          , fieldText "resource" "Subagent resource name; required for send, query, rename, and delete."
-          , fieldTextArray "resources" "Non-empty subagent resource names; required for wait_any and wait_all."
-          , fieldText "prompt" "Prompt to send; required for send."
-          , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 5."
-          ]
-          ["op"])
-        parseCall)
-      \call -> do
-        context <- askToolContext
-        metadata <- askToolCallMetadata
-        raise (runCall context metadata call)
+  -> [Tool es]
+subagentTools runner availableTools =
+  [ expose "Create a background agent scoped to the current chat."
+      $ tool "subagent_create"
+          ( optionalText "name" "Optional globally unique resource name."
+          , withDefault "" (optionalText "system_prompt" "System prompt; empty inherits the current agent's system prompt.")
+          , withDefault [] (optionalTextArray "tools" "Exact tool names exposed to the subagent; empty exposes none.")
+          , ttlMinutesArgument
+          )
+          \requestedName systemPrompt toolNames ttlMinutes ->
+            run (Create requestedName systemPrompt toolNames ttlMinutes)
+  , expose "List accessible subagent resource names as a JSON array."
+      $ tool "subagent_list" noArguments (run ListResources)
+  , expose "Send a prompt to an idle subagent, starting a background run."
+      $ tool "subagent_send"
+          (resourceArgument, nonEmptyTextArgument "prompt" "Prompt to send.")
+          \resourceId prompt -> run (Send resourceId prompt)
+  , expose "Return a subagent's current or final output. Prefer subagent_wait_any or subagent_wait_all instead of polling while it runs."
+      $ tool "subagent_query" resourceArgument (run . Query)
+  , expose "Wait until any named subagent finishes. Already-ready resources return immediately and unfinished agents are not cancelled."
+      $ tool "subagent_wait_any" resourcesArgument (run . WaitAny)
+  , expose "Wait until all named subagents finish without cancelling them."
+      $ tool "subagent_wait_all" resourcesArgument (run . WaitAll)
+  , expose "Rename an accessible subagent."
+      $ tool "subagent_rename"
+          (resourceArgument, nonEmptyTextArgument "name" "New globally unique resource name.")
+          \resourceId newName -> run (Rename resourceId newName)
+  , expose "Delete an accessible subagent and stop any active run."
+      $ tool "subagent_delete" resourceArgument (run . Destroy)
+  ]
   where
+    expose description =
+      tagged [subagentTag]
+      . allowWhen (isRight . Resource.accessFromMessage . (.message))
+      . withDescription description
+
+    run call = do
+      context <- askToolContext
+      metadata <- askToolCallMetadata
+      raise (runCall context metadata call)
+
     runCall context metadata call =
       case Resource.accessFromMessage context.message of
         Left err -> pure (resourceToolFailure err)
@@ -144,37 +160,29 @@ data Call
   | Destroy !Text
   | Rename !Text !Text
 
-parseCall :: Aeson.Value -> AesonTypes.Parser Call
-parseCall = Aeson.withObject "subagent arguments" \o -> do
-  op <- o Aeson..: Key.fromText "op"
-  case op :: Text of
-    "create" ->
-      Create
-        <$> o Aeson..:? Key.fromText "name"
-        <*> (fromMaybe "" <$> o Aeson..:? Key.fromText "system_prompt")
-        <*> (fromMaybe [] <$> o Aeson..:? Key.fromText "tools")
-        <*> parseTTLMinutes o
-    "list" -> pure ListResources
-    "send" -> Send <$> resource o <*> requiredTextValue o "prompt"
-    "query" -> Query <$> resource o
-    "wait_any" -> WaitAny <$> resources o
-    "wait_all" -> WaitAll <$> resources o
-    "delete" -> Destroy <$> resource o
-    "destroy" -> Destroy <$> resource o
-    "rename" -> Rename <$> resource o <*> requiredTextValue o "name"
-    _ -> fail "op must be one of: create, list, send, query, wait_any, wait_all, rename, delete."
-  where
-    resource o = requiredTextValue o "resource"
-    resources o = do
-      values <- List.nub <$> o Aeson..: Key.fromText "resources"
-      valid <- traverse (validateText "resources entries") values
-      case valid of
-        firstValue : rest -> pure (firstValue :| rest)
-        [] -> fail "resources must not be empty."
-    requiredTextValue o key =
-      o Aeson..: Key.fromText key >>= validateText (Text.unpack key)
-    validateText label value =
-      value <$ when (Text.null (Text.strip value)) (fail (label <> " must not be empty."))
+resourceArgument :: ToolArgument Text
+resourceArgument =
+  nonEmptyTextArgument "resource" "Existing subagent resource name."
+
+resourcesArgument :: ToolArgument (NonEmpty Text)
+resourcesArgument =
+  mapArgument validResources
+    (requiredArgument (fieldTextArray "resources" "Non-empty subagent resource names."))
+
+nonEmptyTextArgument :: Text -> Text -> ToolArgument Text
+nonEmptyTextArgument name description =
+  mapArgument (validText (Text.unpack name)) (requiredText name description)
+
+validResources :: [Text] -> AesonTypes.Parser (NonEmpty Text)
+validResources values = do
+  valid <- traverse (validText "resources entries") (List.nub values)
+  case valid of
+    firstValue : rest -> pure (firstValue :| rest)
+    [] -> fail "resources must not be empty."
+
+validText :: String -> Text -> AesonTypes.Parser Text
+validText label value =
+  value <$ when (Text.null (Text.strip value)) (fail (label <> " must not be empty."))
 
 clientFailure :: Text -> ToolResult
 clientFailure err = toolFailure (permanentArgumentFailure err err).failure

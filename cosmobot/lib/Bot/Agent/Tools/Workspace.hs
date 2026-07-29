@@ -7,7 +7,7 @@ Description : Agent tool for superuser workspaces
 Stability   : experimental
 -}
 module Bot.Agent.Tools.Workspace
-  ( workspaceTool
+  ( workspaceTools
   )
 where
 
@@ -18,35 +18,50 @@ import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
 import qualified Bot.Resource.Workspace as Workspace
 import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.Process.Typed as TypedProcess
 
-workspaceTool
+workspaceTools
   :: (Resource.Resource :> es, FileSystem.FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Tool es
-workspaceTool =
-  tagged [workTag]
-  . allowWhen (\context -> superuserOnly context && isRight (Resource.accessFromMessage context.message))
-  . withDescription "Manage dedicated /work workspaces for multi-step work such as repositories, scripts, CI, research, or operations. list returns a JSON array of accessible workspace names. Create one before substantial work, read repository instructions before editing, and keep WORK.md current with the goal, paths, branches, commits, validation, environment notes, and blockers. Verify the authenticated account and required permissions before remote operations. Prefer a topic branch and a pull request with a summary and validation. Actions: create, list, query, update, rename, delete."
-  $ tool "workspace"
-      (parsedArguments
-        (objectSchema
-          [ fieldText "action" "One of: create, list, query, update, rename, delete."
-          , fieldText "id" "Short stable descriptive id for create; letters, digits, dot, underscore, and hyphen only."
-          , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
-          , fieldText "goal" "Initial work goal for create, or complete replacement WORK.md contents for update."
-          , fieldText "resource" "Resource name returned by create; required for query, update, rename, and delete."
-          , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 5."
-          ]
-          ["action"])
-        parseWorkspaceCall)
-      \call -> do
-        context <- askToolContext
-        metadata <- askToolCallMetadata
-        runWorkspaceCall context metadata call
+  => [Tool es]
+workspaceTools =
+  [ expose "Create a dedicated /work workspace before substantial multi-step work. Read repository instructions before editing; keep WORK.md current with the goal, paths, branches, commits, validation, environment notes, and blockers. Verify authentication and permissions before remote operations; prefer a topic branch and pull request."
+      $ tool "workspace_create"
+          ( optionalText "name" "Optional globally unique resource name."
+          , mapArgument validWorkId
+              (requiredText "id" "Short stable descriptive id using letters, digits, dot, underscore, or hyphen.")
+          , nonEmptyTextArgument "goal" "Initial work goal."
+          , ttlMinutesArgument
+          )
+          \requestedName workId goal ttlMinutes ->
+            run (CreateWorkspace requestedName Workspace.WorkspaceArgs{workId, goal, ttlMinutes})
+  , expose "List accessible workspace names as a JSON array."
+      $ tool "workspace_list" noArguments (run ListWorkspaces)
+  , expose "Read an existing workspace's path and WORK.md state."
+      $ tool "workspace_query" resourceArgument (run . QueryWorkspace)
+  , expose "Replace an existing workspace's WORK.md contents."
+      $ tool "workspace_update"
+          (resourceArgument, nonEmptyTextArgument "goal" "Complete replacement WORK.md contents.")
+          \resourceId goal -> run (UpdateWorkspace resourceId goal)
+  , expose "Rename an accessible workspace."
+      $ tool "workspace_rename"
+          (resourceArgument, nonEmptyTextArgument "name" "New globally unique resource name.")
+          \resourceId newName -> run (RenameWorkspace resourceId newName)
+  , expose "Delete an accessible workspace."
+      $ tool "workspace_delete" resourceArgument (run . DestroyWorkspace)
+  ]
+  where
+    expose description =
+      tagged [workspaceTag]
+      . allowWhen (\context -> superuserOnly context && isRight (Resource.accessFromMessage context.message))
+      . withDescription description
+
+    run call = do
+      context <- askToolContext
+      metadata <- askToolCallMetadata
+      runWorkspaceCall context metadata call
 
 data WorkspaceCall
   = CreateWorkspace !(Maybe Text) !Workspace.WorkspaceArgs
@@ -102,26 +117,13 @@ runWorkspaceCall context metadata call =
     result = either clientFailure toolText
     resultWith message = either clientFailure (const (toolText message))
 
-parseWorkspaceCall :: Aeson.Value -> AesonTypes.Parser WorkspaceCall
-parseWorkspaceCall = Aeson.withObject "workspace arguments" \o -> do
-  action <- o Aeson..: Key.fromText "action"
-  case action :: Text of
-    "create" -> CreateWorkspace
-      <$> o Aeson..:? Key.fromText "name"
-      <*> (Workspace.WorkspaceArgs
-        <$> (o Aeson..: Key.fromText "id" >>= validWorkId)
-        <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal")
-        <*> parseTTLMinutes o)
-    "list" -> pure ListWorkspaces
-    "query" -> QueryWorkspace <$> requiredResourceId o
-    "update" -> UpdateWorkspace <$> requiredResourceId o <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal")
-    "delete" -> DestroyWorkspace <$> requiredResourceId o
-    "destroy" -> DestroyWorkspace <$> requiredResourceId o
-    "rename" -> RenameWorkspace <$> requiredResourceId o <*> (o Aeson..: Key.fromText "name" >>= validNonEmpty "name")
-    _ -> fail "action must be one of: create, list, query, update, rename, delete."
+resourceArgument :: ToolArgument Text
+resourceArgument =
+  nonEmptyTextArgument "resource" "Existing workspace resource name."
 
-requiredResourceId :: AesonTypes.Object -> AesonTypes.Parser Text
-requiredResourceId o = o Aeson..: Key.fromText "resource" >>= validNonEmpty "resource"
+nonEmptyTextArgument :: Text -> Text -> ToolArgument Text
+nonEmptyTextArgument name description =
+  mapArgument (validNonEmpty (Text.unpack name)) (requiredText name description)
 
 validWorkId :: Text -> AesonTypes.Parser Text
 validWorkId = either (fail . Text.unpack) pure . Workspace.validateWorkId

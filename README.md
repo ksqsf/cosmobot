@@ -399,11 +399,29 @@ Currently, the following tools are available:
 |Media   |`media_to_file`        |           |
 |Memory  |`sender_memory`        |           |
 |Memory  |`chat_memory`          |           |
-|Resource|`sandbox`              |           |
-|Resource|`workspace`            |Yes        |
+|Sandbox |`sandbox_create`       |           |
+|Sandbox |`sandbox_list`         |           |
+|Sandbox |`sandbox_run`          |           |
+|Sandbox |`sandbox_file_to_media`|           |
+|Sandbox |`sandbox_media_to_file`|           |
+|Sandbox |`sandbox_rename`       |           |
+|Sandbox |`sandbox_delete`       |           |
+|Workspace|`workspace_create`    |Yes        |
+|Workspace|`workspace_list`      |Yes        |
+|Workspace|`workspace_query`     |Yes        |
+|Workspace|`workspace_update`    |Yes        |
+|Workspace|`workspace_rename`    |Yes        |
+|Workspace|`workspace_delete`    |Yes        |
 |Agent   |`capture_continuation` |           |
 |Agent   |`resume_continuation`  |           |
-|Agent   |`subagent`             |           |
+|Subagent|`subagent_create`      |           |
+|Subagent|`subagent_list`        |           |
+|Subagent|`subagent_send`        |           |
+|Subagent|`subagent_query`       |           |
+|Subagent|`subagent_wait_any`    |           |
+|Subagent|`subagent_wait_all`    |           |
+|Subagent|`subagent_rename`      |           |
+|Subagent|`subagent_delete`      |           |
 |Schedule|`schedule`             |           |
 |Shell   |`run_bash`             |Yes        |
 |Time    |`now`                  |           |
@@ -415,5 +433,5 @@ Note:
 
 - If the current message sender is not superuser, the priviledged tools will be not visible to the agent.
 - Some tools may be turned off in the config.
-- Most tools are always available.
+- Non-essential tools are enabled on demand by tag.
 - Sandbox is by default available to everyone in the same chat, so people can collaborate on the same project.

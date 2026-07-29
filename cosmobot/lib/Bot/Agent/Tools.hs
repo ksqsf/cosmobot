@@ -101,15 +101,18 @@ defaultTools = tools
       , senderMemoryTool
       , chatMemoryTool
       , loadSkillTool
-      , sandboxTool
-      , runBashTool
-      , terminalTool
-      , workspaceTool
-      , captureContinuationTool
-      , resumeContinuationTool
-      , subagentTool
+      ]
+      <> sandboxTools
+      <> [ runBashTool
+         , terminalTool
+         ]
+      <> workspaceTools
+      <> [ captureContinuationTool
+         , resumeContinuationTool
+         ]
+      <> subagentTools
           (\metadata subagentId parent ->
             Agent.runObservedChildAgent AgentAudit.agentAuditObserver metadata subagentId parent 8)
           tools
-      , emacsEvalTool
-      ]
+      <> [ emacsEvalTool
+         ]
