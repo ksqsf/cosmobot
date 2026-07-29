@@ -79,11 +79,9 @@ editImageTool =
 
 viewImageTool :: Media.Media :> es => Tool es
 viewImageTool =
-  tagged [imageTag]
-  . withDescription "Make an image URL available as image context."
-  $ tool "image_view"
-      (requiredText "url" "Image URL to add to the current model context. Use an http://, https://, data:image/*, mxc:// (in Matrix), or existing media: media ID.")
-      viewImageUrl
+  tool "image_view"
+    (requiredText "url" "Image URL to add to the current model context. Use an http://, https://, data:image/*, mxc:// (in Matrix), or existing media: media ID.")
+    viewImageUrl
 
 data EditImageArgs = EditImageArgs
   { prompt :: !Text
