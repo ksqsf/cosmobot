@@ -160,11 +160,11 @@ renderThreadStats now parentId branchMessages activeRunId pendingSteers records 
         ]
           <> [ [i|- current run: `#{runId}` (phase: #{currentPhase}, #{fromMaybe 0 pendingSteers} pending steers)|]
              | runId <- maybeToList activeRunId
-             ]
+        ]
           <> [ [i|- runs: #{length runIds} (#{length finishedRunIds} finished, #{length interruptedRunIds} interrupted#{unreportedRunsSuffix})|]
         , [i|- model turns: #{length modelTurns}|]
-        , renderUsage "tokens" latestUsage
-        , renderCurrentTurn currentRunCompacted previousRunUsage currentRunUsage
+        , renderRunUsage "tokens" allTurnUsage
+        , renderRunUsage "current run" currentRunTurns
         , renderContextMessages contextMessageCounts
         , renderCompactionUsage compactionUsages
         , renderEnabledTools enabledToolGroups
@@ -185,14 +185,12 @@ renderThreadStats now parentId branchMessages activeRunId pendingSteers records 
       [ (runId, tokenUsage)
       | AgentAudit.AgentAuditRecord{event = AgentAudit.ModelTurnFinished{runId, tokenUsage}} <- records
       ]
+    allTurnUsage =
+      map snd modelTurns
     contextMessageCounts =
       [ messageCount
       | AgentAudit.AgentAuditRecord{event = AgentAudit.ModelTurnStarted{messageCount}} <- records
       ]
-    allTurnUsage =
-      map snd modelTurns
-    latestUsage =
-      join (viaNonEmpty last allTurnUsage)
     currentRunId =
       viaNonEmpty last runIds
     currentRunTurns =
@@ -204,23 +202,6 @@ renderThreadStats now parentId branchMessages activeRunId pendingSteers records 
           | (runId, tokenUsage) <- modelTurns
           , runId == current
           ]
-    currentRunUsage =
-      join (viaNonEmpty last currentRunTurns)
-    previousRunUsage = do
-      current <- currentRunId
-      previous <- viaNonEmpty last (filter (/= current) runIds)
-      join . viaNonEmpty last $
-        [ tokenUsage
-        | (runId, tokenUsage) <- modelTurns
-        , runId == previous
-        ]
-    currentRunCompacted =
-      any
-        (\record -> case record.event of
-          AgentAudit.ContextCompacted{runId} -> Just runId == currentRunId
-          _ -> False
-        )
-        records
     compactionUsages =
       [ tokenUsage
       | AgentAudit.AgentAuditRecord{event = AgentAudit.ContextCompacted{tokenUsage}} <- records
@@ -336,14 +317,13 @@ renderSubAgentStats now rootRunIds runs =
           active = [runId | status == "running"]
           duration = runDurationMilliseconds now (viaNonEmpty head active) runId records
           durationText = maybe "time unreported" renderMilliseconds duration
-          latestUsage = join (viaNonEmpty last modelUsages)
           children = filter ((== runId) . (.parentRunId)) runs
           nested =
             [spaces (indentation + 2) <> [i|- subagents: #{length children} runs|] | not (null children)]
               <> concatMap (renderRun (indentation + 4)) children
       in
       [ spaces indentation <> [i|- `#{subagentId}` (`#{runId}`): #{status}, #{length modelUsages} model turns, #{length toolUses} tool calls, #{durationText}|]
-      , spaces (indentation + 2) <> renderUsage "tokens" latestUsage
+      , spaces (indentation + 2) <> renderRunUsage "tokens" modelUsages
       , spaces (indentation + 2) <> renderCompactionUsage compactionUsages
       , spaces (indentation + 2) <> renderToolTime toolUses
       ] <> nested
@@ -390,27 +370,22 @@ renderUsage label Nothing =
 renderUsage label (Just usage) =
   renderUsageValues label usage.totalTokens usage.promptTokens usage.completionTokens (cacheSuffix usage)
 
+renderRunUsage :: Text -> [Maybe LLM.TokenUsage] -> Text
+renderRunUsage label usages =
+  renderUsage label (traverse id usages >>= viaNonEmpty sumTokenUsage)
+
+sumTokenUsage :: NonEmpty LLM.TokenUsage -> LLM.TokenUsage
+sumTokenUsage usages =
+  LLM.TokenUsage
+    { promptTokens = sum (fmap (.promptTokens) usages)
+    , completionTokens = sum (fmap (.completionTokens) usages)
+    , totalTokens = sum (fmap (.totalTokens) usages)
+    , cachedPromptTokens = sum <$> traverse (.cachedPromptTokens) usages
+    }
+
 renderUsageValues :: Text -> Int -> Int -> Int -> Text -> Text
 renderUsageValues label totalTokens promptTokens completionTokens cache =
   [i|- #{label}: #{totalTokens} total (#{promptTokens} prompt, #{completionTokens} completion#{cache})|]
-
-renderCurrentTurn :: Bool -> Maybe LLM.TokenUsage -> Maybe LLM.TokenUsage -> Text
-renderCurrentTurn True _ _ =
-  "- current turn: unavailable after context compaction"
-renderCurrentTurn _ _ Nothing =
-  "- current turn: unreported"
-renderCurrentTurn _ Nothing (Just current) =
-  renderUsageValues "current turn" current.totalTokens current.promptTokens current.completionTokens ""
-renderCurrentTurn _ (Just previous) (Just current)
-  | promptTokens < 0 =
-      "- current turn: unavailable because context size decreased"
-  | otherwise =
-      renderUsageValues "current turn" (promptTokens + completionTokens) promptTokens completionTokens ""
-  where
-    promptTokens =
-      current.promptTokens - previous.totalTokens
-    completionTokens =
-      current.completionTokens
 
 cacheSuffix :: LLM.TokenUsage -> Text
 cacheSuffix usage =

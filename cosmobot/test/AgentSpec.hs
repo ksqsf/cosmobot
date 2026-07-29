@@ -1975,9 +1975,8 @@ testThreadStatsAccumulateRepliedBranch = do
       assertBool [i|first answer stats should include only its resource; got #{firstStats}|] ("- resources: 1" `Text.isInfixOf` firstStats && "`first-resource` (`SubAgent`): ready" `Text.isInfixOf` firstStats)
       assertBool [i|first answer stats should exclude later resources; got #{firstStats}|] (not ("`second-resource`" `Text.isInfixOf` firstStats))
       assertBool [i|second answer stats should include both runs; got #{secondStats}|] ("- runs: 2" `Text.isInfixOf` secondStats)
-      assertBool [i|second answer stats should show the latest complete context; got #{secondStats}|] ("- tokens: 220 total (200 prompt, 20 completion;" `Text.isInfixOf` secondStats)
-      assertBool [i|second answer stats should show only the incremental current turn; got #{secondStats}|] ("- current turn: 110 total (90 prompt, 20 completion)" `Text.isInfixOf` secondStats)
-      Text.count "request cache: 120 hit, 60.0%" secondStats @?= 1
+      assertBool [i|second answer stats should sum the replied branch; got #{secondStats}|] ("- tokens: 330 total (300 prompt, 30 completion; request cache: 160 hit, 53.3%)" `Text.isInfixOf` secondStats)
+      assertBool [i|second answer stats should sum the latest agent run; got #{secondStats}|] ("- current run: 220 total (200 prompt, 20 completion; request cache: 120 hit, 60.0%)" `Text.isInfixOf` secondStats)
       assertBool [i|second answer stats should count both model turns; got #{secondStats}|] ("- model turns: 2" `Text.isInfixOf` secondStats)
       assertBool [i|second answer stats should show enabled tool groups above tool calls; got #{secondStats}|]
         ("- tool enabled: essential (8), work (2)\n- tool calls:" `Text.isInfixOf` secondStats)
@@ -2084,8 +2083,8 @@ testThreadStatsShowActiveRunningTools = do
   for_ statsReplies \reply -> do
     assertBool "every active alias should report active status" ("- status: active" `Text.isInfixOf` reply)
     assertBool "active stats should include every current-run model turn" ("- model turns: 2" `Text.isInfixOf` reply)
-    assertBool "active stats should show the latest complete context" ("- tokens: 330 total (300 prompt, 30 completion;" `Text.isInfixOf` reply)
-    assertBool "active stats should show the current user turn once" ("- current turn: 330 total (300 prompt, 30 completion)" `Text.isInfixOf` reply)
+    assertBool "active stats should sum every model request in the replied branch" ("- tokens: 440 total (400 prompt, 40 completion; request cache: 240 hit, 60.0%)" `Text.isInfixOf` reply)
+    assertBool "active stats should sum every model request in the current agent run" ("- current run: 440 total (400 prompt, 40 completion; request cache: 240 hit, 60.0%)" `Text.isInfixOf` reply)
     assertBool "active stats should expose current run phase and steer queue" ("- current run: `active-run` (phase: tools, 1 pending steers)" `Text.isInfixOf` reply)
     assertBool "active stats should expose context message growth" ("- context messages: 4 now / 4 peak" `Text.isInfixOf` reply)
     assertBool "active stats should expose enabled tool groups above tool calls"
