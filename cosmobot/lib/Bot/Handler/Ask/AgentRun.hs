@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-|
 Module      : Bot.Handler.Ask.AgentRun
@@ -12,7 +13,7 @@ where
 
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Tools as AgentTools
-import qualified Bot.Agent.Failure as AgentFailure
+import qualified Bot.Agent.Failure as Failure
 import qualified Bot.Agent.Middleware.Observation as AgentObservation
 import Bot.Core.Thread
 import Bot.Core.Transcript
@@ -79,15 +80,22 @@ runAskAgentThread
   -> Eff es (Text, Transcript)
 runAskAgentThread toolCfg cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
-  agentRun <- Agent.startAgentRunWithParent (Just resource) (agentContext toolCfg cfg message input) AgentTools.defaultTools
-  withActiveReply threads (Agent.agentRunId agentRun) resource parentMessageKey message input.text transcript \activeReply -> do
-    reply <- streamAgentReply cfg observer agentRun activeReply message transcript
+  baseRuntime <-
+    Agent.startRuntimeWithParent
+      (Just resource)
+      cfg.agentMaxTurns
+      (agentContext toolCfg cfg message input)
+      AgentTools.defaultTools
+  let runtime =
+        Agent.defaultRuntime observer (compactionThresholdTokens cfg) baseRuntime
+  withActiveReply threads (Agent.runIdOf runtime) resource parentMessageKey message input.text transcript \activeReply -> do
+    reply <- streamAgentReply runtime activeReply message transcript
     commitAgentReply observer activeReply message reply
 
 data AgentReply = AgentReply
   { responseId :: !(Maybe MessageId)
   , answer :: !Text
-  , result :: !Agent.AgentResult
+  , result :: !Agent.Result
   }
 
 agentContext
@@ -95,9 +103,9 @@ agentContext
   -> AskHandlerConfig
   -> IncomingMessage
   -> MessageInput
-  -> Agent.AgentContext
+  -> Agent.Context
 agentContext toolCfg cfg message input =
-  Agent.AgentContext
+  Agent.Context
     { message = message
     , input = input
     , superuser = isSuperuser message
@@ -136,15 +144,13 @@ streamAgentReply
      , KatipE :> es
      , Prim :> es
      , Concurrent :> es
-     )
-  => AskHandlerConfig
-  -> Agent.AgentObserver AgentObservation.ObservationContext es
-  -> Agent.AgentRun es
+  )
+  => Agent.Runtime '[] es
   -> ActiveReplyState
   -> IncomingMessage
   -> Transcript
   -> Eff es AgentReply
-streamAgentReply cfg observer agentRun activeReply message transcript =
+streamAgentReply runtime activeReply message transcript =
   do
     let sink = Agent.ToolEmittedMessageSink (rememberToolEmittedMessage activeReply)
         program =
@@ -153,11 +159,11 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
           . Agent.withLinkingToolEmittedMessagesToThread sink
           . Agent.withNormalizingToolReplies
           )
-            (Agent.defaultAgentProgram observer cfg.agentMaxTurns (compactionThresholdTokens cfg) agentRun)
+            runtime
     (lastReply, replyResult) <-
       S.mapM_
         (recordReplyUpdate activeReply)
-        (Chat.streamMultipleRepliesTo message (agentReplyTextSegments (Agent.runAgentProgramStreaming program transcript)))
+        (Chat.streamMultipleRepliesTo message (agentReplyTextSegments (Agent.agentStream program transcript)))
     let responseId = lastReply.responseId
         (answer, result) = replyResult
     pure AgentReply{responseId, answer, result}
@@ -172,9 +178,13 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
         pure AgentReply
           { responseId
           , answer = failureMessage
-          , result = Agent.AgentResult
-              { runId = Agent.agentRunId agentRun
+          , result = Agent.Result
+              { runId = Agent.runIdOf runtime
               , transcript = transcript
+              , status = "failed"
+              , finalText = failureMessage
+              , turnsUsed = 0
+              , tokenUsage = Nothing
               }
           }
 
@@ -182,15 +192,15 @@ streamAgentReply cfg observer agentRun activeReply message transcript =
 -- notification closes the current reply before tool progress messages appear.
 agentReplyTextSegments
   :: Prim :> es
-  => Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
-  -> Stream (Stream (Of Text) (Eff es)) (Eff es) (Text, Agent.AgentResult)
+  => Stream (Of Agent.Output) (Eff es) Agent.Result
+  -> Stream (Stream (Of Text) (Eff es)) (Eff es) (Text, Agent.Result)
 agentReplyTextSegments =
   S.maps (S.mapMaybe id) . S.breaks isNothing . agentReplyTextEvents
 
 agentReplyTextEvents
   :: Prim :> es
-  => Stream (Of Agent.AgentStreamOutput) (Eff es) Agent.AgentResult
-  -> Stream (Of (Maybe Text)) (Eff es) (Text, Agent.AgentResult)
+  => Stream (Of Agent.Output) (Eff es) Agent.Result
+  -> Stream (Of (Maybe Text)) (Eff es) (Text, Agent.Result)
 agentReplyTextEvents =
   go mempty
   where
@@ -199,13 +209,13 @@ agentReplyTextEvents =
       case next of
         Left result ->
           pure (renderReplyText answer, result)
-        Right (Agent.AgentContentDelta chunk, rest) -> do
+        Right (Agent.ContentDelta chunk, rest) -> do
           S.yield (Just chunk)
           go (appendReplyText chunk answer) rest
-        Right (Agent.AgentToolCallNotification{}, rest) -> do
+        Right (Agent.ToolCallNotification{}, rest) -> do
           S.yield Nothing
           go answer rest
-        Right (Agent.AgentReplyBoundary, rest) -> do
+        Right (Agent.ReplyBoundary, rest) -> do
           S.yield Nothing
           go answer rest
 
@@ -219,7 +229,7 @@ renderReplyText =
 
 commitAgentReply
   :: (ChatLog.ChatLog :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
-  => Agent.AgentObserver AgentObservation.ObservationContext es
+  => Agent.Observer AgentObservation.ObservationContext es
   -> ActiveReplyState
   -> IncomingMessage
   -> AgentReply
@@ -236,7 +246,7 @@ commitAgentReply observer activeReply message AgentReply{responseId, answer, res
       rememberThreadTranscriptFrom activeReply.threads activeReply.parentMessageKey (threadMessageKey message <$> responseId) result.transcript
   pure (answer, result.transcript)
 
-threadLink :: IncomingMessage -> Agent.AgentResult -> Maybe MessageId -> MessageId -> AgentObservation.ObservedThreadLink
+threadLink :: IncomingMessage -> Agent.Result -> Maybe MessageId -> MessageId -> AgentObservation.ObservedThreadLink
 threadLink message result parentMessageId linkedMessageId =
   AgentObservation.ObservedThreadLink
     { runId = result.runId
@@ -344,4 +354,4 @@ ensureActiveReply activeState messageId transcript = do
 
 llmFailureMessage :: SomeException -> Text
 llmFailureMessage err =
-  "LLM request failed: " <> (AgentFailure.agentFailureFromException err).userMessage
+  "LLM request failed: " <> (Failure.failureFromException err).userMessage

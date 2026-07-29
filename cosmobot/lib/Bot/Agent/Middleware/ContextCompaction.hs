@@ -10,10 +10,9 @@ module Bot.Agent.Middleware.ContextCompaction
 where
 
 import Bot.Agent.Core
-import Bot.Agent.Middleware.Observation.Types (AgentEventObservation (..))
-import Bot.Agent.Middleware.ToolResultCompaction (NextModelInput (..))
+import Bot.Agent.Middleware.Observation.Types (EventObservation (..))
 import Bot.Agent.Tool (toolEnableName)
-import Bot.Agent.Types (AgentContext (..), AgentEvent (..))
+import Bot.Agent.Types (Context (..), Event (..))
 import Bot.Core.Transcript
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
@@ -35,37 +34,35 @@ compactionNoticeMessage =
   "正在整理较早的对话上下文..."
 
 withContextCompaction
-  :: (LLM.LLM :> es, HList.Has NextModelInput transient, HList.Put NextModelInput transient)
+  :: LLM.LLM :> es
   => Int
-  -> AgentProgram transient context es
-  -> AgentProgram transient context es
+  -> Runtime context es
+  -> Runtime context es
 withContextCompaction tokenThreshold program =
   withContextCompactionUsing
     (\_ agentState -> fst <$> compactAgentState tokenThreshold (pure ()) agentState)
     program
 
 withContextCompactionNotice
-  :: forall es transient context.
+  :: forall es context.
      ( Chat.Chat :> es
      , LLM.LLM :> es
-     , HList.Has NextModelInput transient
-     , HList.Put NextModelInput transient
-     , HList.Has (AgentEventObservation es) context
+     , HList.Has (EventObservation es) context
      )
   => Int
-  -> AgentProgram transient context es
-  -> AgentProgram transient context es
+  -> Runtime context es
+  -> Runtime context es
 withContextCompactionNotice tokenThreshold program =
   withContextCompactionUsing
     (\context agentState -> do
         (compactedState, compacted) <-
           compactAgentState
             tokenThreshold
-            (void $ Chat.replyTo program.agentRun.context.message compactionNoticeMessage)
+            (void $ Chat.replyTo program.context.message compactionNoticeMessage)
             agentState
         for_ compacted \CompactionDetails{messageCount, tokenUsage} ->
-          void $ (HList.get @(AgentEventObservation es) context).observeAgentEvent ContextCompacted
-            { runId = program.agentRun.runId
+          void $ (HList.get @(EventObservation es) context).observeAgentEvent ContextCompacted
+            { runId = program.runId
             , turn = agentState.turn
             , messageCount
             , tokenUsage
@@ -75,14 +72,14 @@ withContextCompactionNotice tokenThreshold program =
     program
 
 withContextCompactionUsing
-  :: (MiddlewareContext context -> AgentState transient -> Eff es (AgentState transient))
-  -> AgentProgram transient context es
-  -> AgentProgram transient context es
+  :: (HList.HList context -> TurnState -> Eff es TurnState)
+  -> Runtime context es
+  -> Runtime context es
 withContextCompactionUsing compact program =
   program
-    { aroundModelTurn = \context agentState action -> do
+    { aroundModelTurn = \context continue agentState action -> do
         compactedState <- lift (compact context agentState)
-        program.aroundModelTurn context compactedState action
+        program.aroundModelTurn context continue compactedState action
     }
 
 data CompactionDetails = CompactionDetails
@@ -91,11 +88,11 @@ data CompactionDetails = CompactionDetails
   }
 
 compactAgentState
-  :: (LLM.LLM :> es, HList.Has NextModelInput transient, HList.Put NextModelInput transient)
+  :: LLM.LLM :> es
   => Int
   -> Eff es ()
-  -> AgentState transient
-  -> Eff es (AgentState transient, Maybe CompactionDetails)
+  -> TurnState
+  -> Eff es (TurnState, Maybe CompactionDetails)
 compactAgentState tokenThreshold notify agentState
   | not (shouldCompact tokenThreshold agentState.modelTokenUsage) =
       pure (agentState, Nothing)
@@ -110,11 +107,11 @@ compactAgentState tokenThreshold notify agentState
           let modelCompactedTranscript = compactTranscriptWithSummary summary modelTranscript
               canonicalCompactedTranscript = compactTranscriptWithSummary summary agentState.transcript
           pure
-            ( AgentState
+            ( TurnState
                 { transcript = canonicalCompactedTranscript
+                , nextModelTranscript = Just modelCompactedTranscript
                 , turn = agentState.turn
                 , modelTokenUsage = Nothing
-                , transient = HList.put (NextModelInput (Just modelCompactedTranscript)) agentState.transient
                 }
             , Just CompactionDetails
                 { messageCount = Foldable.length modelTranscript.messages
@@ -122,9 +119,9 @@ compactAgentState tokenThreshold notify agentState
                 }
             )
 
-selectedTranscript :: HList.Has NextModelInput transient => AgentState transient -> Transcript
+selectedTranscript :: TurnState -> Transcript
 selectedTranscript agentState =
-  fromMaybe agentState.transcript (HList.get @NextModelInput agentState.transient).transcript
+  fromMaybe agentState.transcript agentState.nextModelTranscript
 
 compactableTranscriptParts :: Transcript -> (Seq.Seq LLM.ChatMessage, Seq.Seq LLM.ChatMessage)
 compactableTranscriptParts (Transcript messages) =

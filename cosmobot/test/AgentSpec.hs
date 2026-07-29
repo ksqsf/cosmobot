@@ -645,8 +645,8 @@ testToolReplyMiddlewareNormalizesReplyImages = do
           liftIO $ IORef.modifyIORef' replies (<> [body])
           pure (Right "42")
         } do
-          agentRun <- Agent.startAgentRun agentContext []
-          let program = Agent.withNormalizingToolReplies (AgentCore.emptyAgentProgram HList.HNil agentRun)
+          runtime <- Agent.startRuntime maxBound agentContext []
+          let program = Agent.withNormalizingToolReplies runtime
           _ <- program.aroundToolCall 1 (toolCall "call-1" "send_reply" (Aeson.object [])) HList.HNil do
             void $ Chat.replyTo testMessage (ReplyBody.imageDirective "https://example.test/image.png")
             pure (Agent.toolText "done")
@@ -663,8 +663,8 @@ testToolReplyMiddlewareRejectsUncachedRemoteImages = do
           liftIO $ IORef.modifyIORef' replies (<> [body])
           pure (Right "42")
         } do
-          agentRun <- Agent.startAgentRun agentContext []
-          let program = Agent.withNormalizingToolReplies (AgentCore.emptyAgentProgram HList.HNil agentRun)
+          runtime <- Agent.startRuntime maxBound agentContext []
+          let program = Agent.withNormalizingToolReplies runtime
           program.aroundToolCall 1 (toolCall "call-1" "send_reply" (Aeson.object [])) HList.HNil do
             sent <- Chat.replyTo testMessage (ReplyBody.imageDirective "https://example.test/image.png")
             pure (Agent.toolText if null (rights sent) then Text.intercalate "\n" (lefts sent) else "sent")
@@ -1526,10 +1526,10 @@ testAgentCompactsOldTranscriptContextBeforeModelTurn = do
       longTranscript =
         Transcript (enabledPrefix <> Seq.fromList [LLM.userText [i|message #{index}|] | index <- [2 .. 51 :: Int]])
   records <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
-    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000 agentRun
-    _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program longTranscript)
-    AgentAudit.queryRunAudit (Agent.agentRunId agentRun)
+    agentRun <- Agent.startRuntime 4 agentContext AgentTools.defaultTools
+    let program = Agent.defaultRuntime AgentAudit.agentAuditObserver 1000 agentRun
+    _ <- S.mapM_ (\_ -> pure ()) (Agent.agentStream program longTranscript)
+    AgentAudit.queryRunAudit (Agent.runIdOf agentRun)
   requests <- IORef.readIORef captured
   case requests of
     [_firstModelRequest, _summaryRequest, compactedRequest] ->
@@ -1568,9 +1568,9 @@ testAgentAnnouncesContextCompaction = do
   let longTranscript =
         Transcript (Seq.fromList [LLM.userText [i|message #{index}|] | index <- [1 .. 51 :: Int]])
   _ <- runAgentWith answers (ChatMock (Just replies) (Just "46") Nothing) do
-    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
-    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000 agentRun
-    _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program longTranscript)
+    agentRun <- Agent.startRuntime 4 agentContext AgentTools.defaultTools
+    let program = Agent.defaultRuntime AgentAudit.agentAuditObserver 1000 agentRun
+    _ <- S.mapM_ (\_ -> pure ()) (Agent.agentStream program longTranscript)
     pure ()
   sent <- IORef.readIORef replies
   sent @?= ["正在整理较早的对话上下文..."]
@@ -1597,9 +1597,9 @@ testAgentResumesNestedContinuations = do
     ]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   ((answer, transcript), toolUses) <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
-    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 6 1000000 agentRun
-    outputs S.:> result <- S.toList (Agent.runAgentProgramStreaming program (startWithUser "explore"))
+    agentRun <- Agent.startRuntime 6 agentContext AgentTools.defaultTools
+    let program = Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun
+    outputs S.:> result <- S.toList (Agent.agentStream program (startWithUser "explore"))
     uses <- AgentAudit.queryRecentToolUses 10
     pure ((agentOutputText outputs, result.transcript), uses)
   answer @?= "done"
@@ -1699,7 +1699,7 @@ testAgentSteeringContinuesAfterFinalAnswer = do
   drains <- IORef.newIORef [[], []]
   completions <- IORef.newIORef [Just ["change direction"], Nothing]
   (outputs, transcript) <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
+    agentRun <- Agent.startRuntime 4 agentContext AgentTools.defaultTools
     let steering =
           Agent.SteeringControl
             { Agent.drain = liftIO (popSteering [] drains)
@@ -1707,10 +1707,10 @@ testAgentSteeringContinuesAfterFinalAnswer = do
             }
         program =
           Agent.withSteering steering $
-            Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun
-    streamOutputs S.:> result <- S.toList (Agent.runAgentProgramStreaming program (startWithUser "start"))
+            Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun
+    streamOutputs S.:> result <- S.toList (Agent.agentStream program (startWithUser "start"))
     pure (streamOutputs, result.transcript)
-  length [() | Agent.AgentReplyBoundary <- outputs] @?= 1
+  length [() | Agent.ReplyBoundary <- outputs] @?= 1
   requests <- IORef.readIORef captured
   case requests of
     [_initial, steered] -> do
@@ -1730,7 +1730,7 @@ testAgentSteeringWaitsForToolResults = do
   drains <- IORef.newIORef [[], ["after the tool"]]
   completions <- IORef.newIORef [Nothing]
   outputs <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
+    agentRun <- Agent.startRuntime 4 agentContext AgentTools.defaultTools
     let steering =
           Agent.SteeringControl
             { Agent.drain = liftIO (popSteering [] drains)
@@ -1738,10 +1738,10 @@ testAgentSteeringWaitsForToolResults = do
             }
         program =
           Agent.withSteering steering $
-            Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun
-    streamOutputs S.:> _ <- S.toList (Agent.runAgentProgramStreaming program (startWithUser "start"))
+            Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun
+    streamOutputs S.:> _ <- S.toList (Agent.agentStream program (startWithUser "start"))
     pure streamOutputs
-  length [() | Agent.AgentReplyBoundary <- outputs] @?= 0
+  length [() | Agent.ReplyBoundary <- outputs] @?= 0
   requests <- IORef.readIORef captured
   case requests of
     [_initial, afterTool] -> do
@@ -1762,7 +1762,7 @@ testAgentSteeringClearsContinuations = do
   drains <- IORef.newIORef [[], [], [], []]
   completions <- IORef.newIORef [Just ["keep this instruction"], Nothing]
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
-    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
+    agentRun <- Agent.startRuntime 5 agentContext AgentTools.defaultTools
     let steering =
           Agent.SteeringControl
             { Agent.drain = liftIO (popSteering [] drains)
@@ -1770,8 +1770,8 @@ testAgentSteeringClearsContinuations = do
             }
         program =
           Agent.withSteering steering $
-            Agent.defaultAgentProgram AgentAudit.agentAuditObserver 5 1000000 agentRun
-    void $ S.toList (Agent.runAgentProgramStreaming program (startWithUser "start"))
+            Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun
+    void $ S.toList (Agent.agentStream program (startWithUser "start"))
   requests <- IORef.readIORef captured
   case requests of
     [_initial, _captured, _steered, rejectedResume] ->
@@ -1896,9 +1896,9 @@ testAgentAuditRecordsToolEvents = do
     ]
   fetches <- IORef.newIORef (0 :: Int)
   (toolUses, records) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    agentRun <- Agent.startAgentRun (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches]
-    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun
-    _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program (startWithUser "fetch it"))
+    agentRun <- Agent.startRuntime 4 (agentContext{Agent.toolConfig = Agent.defaultToolConfig{Agent.webFetch = True}}) [fakeWebFetchTool fetches]
+    let program = Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun
+    _ <- S.mapM_ (\_ -> pure ()) (Agent.agentStream program (startWithUser "fetch it"))
     (,) <$> AgentAudit.queryRecentToolUses 10 <*> AgentAudit.queryRecentAuditRecords 10
   case toolUses of
     [toolUse] -> do
@@ -2303,8 +2303,8 @@ testAgentAuditStorageOmitsLargeToolResults =
               . AgentAudit.runAgentAudit
               . Chat.runChatWith NoopChatDriver
       runResult <- runEff $ runStack do
-        agentRun <- Agent.startAgentRun agentContext [largeAuditResultTool toolResultText]
-        void $ S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun) (startWithUser "audit large result"))
+        agentRun <- Agent.startRuntime 4 agentContext [largeAuditResultTool toolResultText]
+        void $ S.toList (Agent.agentStream (Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun) (startWithUser "audit large result"))
         uses <- AgentAudit.queryRecentToolUses 10
         mediaFiles <- Media.listMediaFiles
         pure (uses, mediaFiles)
@@ -2404,9 +2404,9 @@ testAgentAuditRecordsStructuredToolFailureCategory = do
     , chatAnswer "done" []
     ]
   toolUses <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    agentRun <- Agent.startAgentRun agentContext AgentTools.defaultTools
-    let program = Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun
-    _ <- S.mapM_ (\_ -> pure ()) (Agent.runAgentProgramStreaming program (startWithUser "run command"))
+    agentRun <- Agent.startRuntime 4 agentContext AgentTools.defaultTools
+    let program = Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun
+    _ <- S.mapM_ (\_ -> pure ()) (Agent.agentStream program (startWithUser "run command"))
     AgentAudit.queryRecentToolUses 10
   case toolUses of
     [toolUse] ->
@@ -2465,7 +2465,7 @@ testAgentStreamsToolRequestContentBeforeToolNotification = do
     S.toList (Agent.runAgentStreaming 4 agentContext AgentTools.defaultTools (startWithUser "inspect"))
   streamAnswerText outputs @?= "我先查看当前消息。done"
   case outputs of
-    [Agent.AgentContentDelta progress, Agent.AgentToolCallNotification toolCalls, Agent.AgentContentDelta finalChunk] -> do
+    [Agent.ContentDelta progress, Agent.ToolCallNotification toolCalls, Agent.ContentDelta finalChunk] -> do
       progress @?= "我先查看当前消息。"
       map (.name) (toList toolCalls) @?= ["message_info"]
       finalChunk @?= "done"
@@ -3143,8 +3143,8 @@ testThreadStorageOmitsLargeToolResults =
           $
             AgentAudit.runAgentAudit $
               Chat.runChatWith NoopChatDriver do
-                agentRun <- Agent.startAgentRun agentContext [largeResultTool result]
-                outputs S.:> agentResult <- S.toList (Agent.runAgentProgramStreaming (Agent.defaultAgentProgram AgentAudit.agentAuditObserver 4 1000000 agentRun) (startWithUser "fetch"))
+                agentRun <- Agent.startRuntime 4 agentContext [largeResultTool result]
+                outputs S.:> agentResult <- S.toList (Agent.agentStream (Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun) (startWithUser "fetch"))
                 pure (agentOutputText outputs, agentResult.transcript)
         rememberThreadTranscript store (Just (messageKey 1)) transcript
         loaded <- lookupThreadTranscript store (messageKey 1)
@@ -3339,7 +3339,7 @@ testAgentFailureSummarizesReqHttpErrors :: IO ()
 testAgentFailureSummarizesReqHttpErrors = do
   err <- expiredQQImageReqException
   let summary = LLM.llmExceptionSummary err
-  let failure = AgentTypes.agentFailureFromException err
+  let failure = AgentTypes.failureFromException err
   failure.userMessage @?= summary
 
 expiredQQImageReqException :: IO SomeException
@@ -3520,17 +3520,17 @@ transcriptMessagesList :: Transcript -> [LLM.ChatMessage]
 transcriptMessagesList (Transcript messages) =
   Foldable.toList messages
 
-showSeparatedOutputs :: [Agent.AgentStreamOutput] -> String
+showSeparatedOutputs :: [Agent.Output] -> String
 showSeparatedOutputs =
   show . map render
   where
-    render :: Agent.AgentStreamOutput -> (String, Text)
+    render :: Agent.Output -> (String, Text)
     render = \case
-      Agent.AgentContentDelta text ->
+      Agent.ContentDelta text ->
         ("content", text)
-      Agent.AgentToolCallNotification calls ->
+      Agent.ToolCallNotification calls ->
         ("tool", Text.intercalate ", " (toList (fmap (.name) calls)))
-      Agent.AgentReplyBoundary ->
+      Agent.ReplyBoundary ->
         ("boundary", "")
 
 decodeSingleChatLogToolOutput :: Transcript -> IO [Aeson.Value]
@@ -3545,14 +3545,14 @@ decodeSingleChatLogToolOutput transcript =
     outputs ->
       assertFailure [i|expected one tool output, got #{length outputs}|] >> pure []
 
-streamAnswerText :: [Agent.AgentStreamOutput] -> Text
+streamAnswerText :: [Agent.Output] -> Text
 streamAnswerText =
   Text.strip . foldMap \case
-    Agent.AgentContentDelta text ->
+    Agent.ContentDelta text ->
       text
-    Agent.AgentToolCallNotification{} ->
+    Agent.ToolCallNotification{} ->
       ""
-    Agent.AgentReplyBoundary ->
+    Agent.ReplyBoundary ->
       ""
 
 imageContextUrls :: Transcript -> [Text]
@@ -4098,9 +4098,9 @@ encodedToolParameters definition = do
   pure . TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $
     maybe Aeson.Null (.parameters) schema
 
-agentContext :: Agent.AgentContext
+agentContext :: Agent.Context
 agentContext =
-  Agent.AgentContext
+  Agent.Context
     { message = testMessage
     , input = inputWithImages testMessage.text testMessage.imageUrls
     , superuser = False
@@ -4109,7 +4109,7 @@ agentContext =
     , toolConfig = Agent.defaultToolConfig
     }
 
-superuserContext :: Agent.AgentContext
+superuserContext :: Agent.Context
 superuserContext =
   agentContext{Agent.superuser = True}
 
@@ -4119,14 +4119,14 @@ testToolCallMetadata =
 
 runAgentWithToolMessageCapture
   :: Int
-  -> Agent.AgentContext
+  -> Agent.Context
   -> [AgentTool.Tool AgentStack]
   -> Transcript
   -> IORef.IORef [Text]
   -> IORef.IORef [Maybe MessageId]
   -> Eff AgentStack (Text, Transcript)
 runAgentWithToolMessageCapture maxTurns context tools transcript recorded remembered = do
-  agentRun <- Agent.startAgentRun context tools
+  agentRun <- Agent.startRuntime maxTurns context tools
   let sink = Agent.ToolEmittedMessageSink \messageId ->
         liftIO $ IORef.modifyIORef' remembered (<> [messageId])
       program =
@@ -4134,18 +4134,18 @@ runAgentWithToolMessageCapture maxTurns context tools transcript recorded rememb
             liftIO $ IORef.modifyIORef' recorded (<> [body])
         )
           . Agent.withLinkingToolEmittedMessagesToThread sink
-          $ Agent.defaultAgentProgram AgentAudit.agentAuditObserver maxTurns 1000000 agentRun
-  outputs S.:> result <- S.toList (Agent.runAgentProgramStreaming program transcript)
+          $ Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun
+  outputs S.:> result <- S.toList (Agent.agentStream program transcript)
   pure (agentOutputText outputs, result.transcript)
 
-agentOutputText :: [Agent.AgentStreamOutput] -> Text
+agentOutputText :: [Agent.Output] -> Text
 agentOutputText =
   Text.strip . foldMap \case
-    Agent.AgentContentDelta chunk ->
+    Agent.ContentDelta chunk ->
       chunk
-    Agent.AgentToolCallNotification{} ->
+    Agent.ToolCallNotification{} ->
       ""
-    Agent.AgentReplyBoundary ->
+    Agent.ReplyBoundary ->
       ""
 
 assertElem :: (Eq a, Show a) => a -> [a] -> Assertion

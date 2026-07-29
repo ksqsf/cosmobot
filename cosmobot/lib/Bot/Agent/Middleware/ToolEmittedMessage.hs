@@ -23,8 +23,8 @@ newtype ToolEmittedMessageSink es = ToolEmittedMessageSink
 withLinkingToolEmittedMessagesToThread
   :: Chat.Chat :> es
   => ToolEmittedMessageSink es
-  -> AgentProgram transient context es
-  -> AgentProgram transient context es
+  -> Runtime context es
+  -> Runtime context es
 withLinkingToolEmittedMessagesToThread sink program =
   program
     { aroundToolCall = \turn call context action ->
@@ -35,8 +35,8 @@ withLinkingToolEmittedMessagesToThread sink program =
 withRecordingToolSelfMessages
   :: Chat.Chat :> es
   => (Text -> Eff es ())
-  -> AgentProgram transient context es
-  -> AgentProgram transient context es
+  -> Runtime context es
+  -> Runtime context es
 withRecordingToolSelfMessages recordSelfMessage program =
   program
     { aroundToolCall = \turn call context action ->

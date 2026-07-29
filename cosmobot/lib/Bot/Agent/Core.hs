@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE RankNTypes #-}
 {-|
 Module      : Bot.Agent.Core
 Description : Agent loop state and program middleware types
@@ -6,19 +7,13 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Core
-  ( AgentCompletion (..)
-  , AgentProgram (..)
-  , AgentResult (..)
-  , AgentStreamOutput (..)
-  , AgentRun (..)
-  , AgentState (..)
-  , ModelDecision (..)
-  , ModelTurn
-  , MiddlewareContext
-  , ToolTurn
-  , ToolTurnState (..)
-  , emptyAgentProgram
-  , runAgentLoop
+  ( Result (..)
+  , Output (..)
+  , TurnState (..)
+  , Program (..)
+  , Runtime (..)
+  , Step (..)
+  , ToolRequest (..)
   )
 where
 
@@ -30,61 +25,73 @@ import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Util.HList as HList
 
-data AgentResult = AgentResult
+data Result = Result
   { runId :: !Text
   , transcript :: !Transcript
-  }
-
-data AgentStreamOutput
-  = AgentContentDelta !Text
-  | AgentToolCallNotification !(NonEmpty LLM.ToolCall)
-  | AgentReplyBoundary
-
-data AgentCompletion = AgentCompletion
-  { result :: !AgentResult
   , status :: !Text
   , finalText :: !Text
   , turnsUsed :: !Int
   , tokenUsage :: !(Maybe LLM.TokenUsage)
   }
 
--- | Per-agent-run tool environment.
---
--- The original 'tools' list is kept so an unexpected or currently disallowed
--- tool call can produce a precise error. 'exposedTools' is the subset whose
--- schemas were sent to the model. 'runningTools' are the per-run tool runners;
--- each tool gets one 'start' call here, so tools may keep state local to this
--- agent run without putting it in 'AgentContext'.
-data AgentRun es = AgentRun
-  { runId       :: !Text
-  , toolCallMetadata :: !ToolCallMetadata
-  , context      :: AgentContext
-  , tools        :: [Tool es]
-  , exposedTools :: [Tool es]
-  , runningTools :: [RunningTool es]
-  }
+data Output
+  = ContentDelta !Text
+  | ToolCallNotification !(NonEmpty LLM.ToolCall)
+  | ReplyBoundary
 
 -- | Mutable position of the agent loop.
-data AgentState transient = AgentState
+data TurnState = TurnState
   { transcript    :: !Transcript
+  , nextModelTranscript :: !(Maybe Transcript)
   , turn         :: !Int
   , modelTokenUsage :: !(Maybe LLM.TokenUsage)
-  , transient    :: !(HList.HList transient)
   }
 
-data ModelDecision transient
-  = ModelAnswered !AgentCompletion
-  | ModelNeedsTools !(ToolTurnState transient)
-  | ModelContinues !(AgentState transient)
+newtype Program es result = Program
+  { observe :: Stream (Of Output) (Eff es) (Step es result)
+  }
 
-type ModelTurn transient es =
-  AgentState transient -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)
+data Step es result
+  = Finished !result
+  | NeedsTools
+      !ToolRequest
+      !(TurnState -> Program es result)
+  | Continues !(Program es result)
 
-type ToolTurn transient es =
-  ToolTurnState transient -> Eff es (AgentState transient)
+instance Functor (Program es) where
+  fmap f (Program action) =
+    Program (fmap (mapStep f) action)
 
-type MiddlewareContext context =
-  HList.HList context
+instance Applicative (Program es) where
+  pure result =
+    Program (pure (Finished result))
+
+  function <*> argument =
+    function >>= \f -> fmap f argument
+
+instance Monad (Program es) where
+  Program action >>= next =
+    Program do
+      action >>= \case
+        Finished result ->
+          let Program nextAction = next result
+          in nextAction
+        NeedsTools request continue ->
+          pure (NeedsTools request ((>>= next) . continue))
+        Continues program ->
+          pure (Continues (program >>= next))
+
+mapStep
+  :: (a -> b)
+  -> Step es a
+  -> Step es b
+mapStep f = \case
+  Finished result ->
+    Finished (f result)
+  NeedsTools request continue ->
+    NeedsTools request (fmap f . continue)
+  Continues program ->
+    Continues (fmap f program)
 
 -- | Runtime wiring for the agent algorithm.
 --
@@ -92,66 +99,59 @@ type MiddlewareContext context =
 -- behavior gets named middleware boundaries. For example, transcript
 -- compaction belongs in 'aroundModelTurn': it can rewrite state before the
 -- next LLM request without changing tool execution or completion handling.
-data AgentProgram (transient :: [Type]) (context :: [Type]) es = AgentProgram
-  { -- | Immutable per-run tool and request context.
-    agentRun :: AgentRun es
-    -- | Initial middleware-owned run state.
-  , initialTransient :: HList.HList transient
+data Runtime (context :: [Type]) es = Runtime
+  { runId :: !Text
+  , toolCallMetadata :: !ToolCallMetadata
+  , context :: Context
+    -- | All configured tools, including tools unavailable to this request.
+  , tools :: [Tool es]
+    -- | Tools whose schemas are visible to the model.
+  , exposedTools :: [Tool es]
+    -- | Per-run tool implementations.
+  , runningTools :: [RunningTool es]
+    -- | Maximum number of model-requested tool turns.
+  , maxTurns :: !Int
     -- | Select the transcript sent to the next model request. Most programs
     -- use the canonical transcript; middleware may expose a one-shot view.
-  , modelInputTranscript :: MiddlewareContext context -> AgentState transient -> Eff es Transcript
+  , modelInputTranscript :: HList.HList context -> TurnState -> Eff es Transcript
+    -- | Wrap the whole coinductive program.
+    --
+    -- The final runtime is supplied so middleware uses every installed
+    -- bracket, including wrappers added later in the composition chain.
+  , aroundProgram :: Runtime '[] es -> Program es Result -> Program es Result
     -- | Wrap one complete agent run.
-  , aroundAgentRun :: MiddlewareContext context -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
+  , aroundAgentRun :: HList.HList context -> Stream (Of Output) (Eff es) Result -> Stream (Of Output) (Eff es) Result
     -- | Wrap one complete model phase.
     --
     -- Use this for model-side middleware such as transcript compaction,
     -- timing, auditing, or exception-aware behavior around the streamed model
     -- request plus decision.
-  , aroundModelTurn :: MiddlewareContext context -> AgentState transient -> (AgentState transient -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)) -> Stream (Of AgentStreamOutput) (Eff es) (ModelDecision transient)
+  , aroundModelTurn
+      :: HList.HList context
+      -> (TurnState -> Program es Result)
+      -> TurnState
+      -> (TurnState -> Stream (Of Output) (Eff es) (Step es Result))
+      -> Stream (Of Output) (Eff es) (Step es Result)
     -- | Wrap the whole tool phase.
     --
     -- Use this for cleanup, timing, timeout, auditing, or exception-aware
     -- behavior that must cover all tool calls in the phase.
-  , aroundToolTurn :: MiddlewareContext context -> ToolTurnState transient -> Eff es (AgentState transient) -> Eff es (AgentState transient)
+  , aroundToolTurn
+      :: forall a.
+         HList.HList context
+      -> ToolRequest
+      -> Eff es (TurnState, a)
+      -> Eff es (TurnState, a)
     -- | Wrap one model-requested tool call.
     --
     -- Use this for per-call observation, failure recovery, policy, or timing
     -- without replacing the default tool registry dispatch.
-  , aroundToolCall :: Int -> LLM.ToolCall -> MiddlewareContext context -> Eff es ToolResult -> Eff es ToolResult
+  , aroundToolCall :: Int -> LLM.ToolCall -> HList.HList context -> Eff es ToolResult -> Eff es ToolResult
   }
 
-data ToolTurnState transient = ToolTurnState
-  { agentState :: !(AgentState transient)
+data ToolRequest = ToolRequest
+  { agentState :: !TurnState
   , answered   :: !Transcript
   , toolContent :: !Text
   , toolCalls  :: !(NonEmpty LLM.ToolCall)
   }
-
-emptyAgentProgram :: HList.HList transient -> AgentRun es -> AgentProgram transient context es
-emptyAgentProgram initialTransient agentRun =
-  AgentProgram
-    { agentRun
-    , initialTransient
-    , modelInputTranscript = \_ agentState -> pure agentState.transcript
-    , aroundAgentRun = \_ action -> action
-    , aroundModelTurn = \_ agentState action -> action agentState
-    , aroundToolTurn = \_ _ action -> action
-    , aroundToolCall = \_ _ _ action -> action
-    }
-
-runAgentLoop
-  :: AgentProgram transient context es
-  -> MiddlewareContext context
-  -> ModelTurn transient es
-  -> ToolTurn transient es
-  -> AgentState transient
-  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
-runAgentLoop program context modelTurn toolTurn agentState = do
-  program.aroundModelTurn context agentState modelTurn >>= \case
-    ModelAnswered completion ->
-      pure completion
-    ModelNeedsTools toolState -> do
-      continuedState <- lift (toolTurn toolState)
-      runAgentLoop program context modelTurn toolTurn continuedState
-    ModelContinues continuedState ->
-      runAgentLoop program context modelTurn toolTurn continuedState

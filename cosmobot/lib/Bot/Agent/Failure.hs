@@ -5,12 +5,10 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Failure
-  ( AgentFailureCategory (..)
-  , AgentFailure (..)
-  , AgentException (..)
-  , agentException
-  , agentFailureFromException
-  , agentFailureStatus
+  ( FailureCategory (..)
+  , Failure (..)
+  , failureFromException
+  , failureStatus
   , transientFailure
   , permanentArgumentFailure
   , permissionDeniedFailure
@@ -25,7 +23,7 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Data.Text as Text
 import qualified Network.HTTP.Client as HTTP
 
-data AgentFailureCategory
+data FailureCategory
   = TransientFailure
   | PermanentArgumentError
   | PermissionDenied
@@ -34,57 +32,52 @@ data AgentFailureCategory
   | UncertainSideEffectState
   deriving (Eq, Show)
 
-data AgentFailure = AgentFailure
-  { category :: !AgentFailureCategory
+data Failure = Failure
+  { category :: !FailureCategory
   , userMessage :: !Text
   , detail :: !Text
   }
   deriving (Eq, Show)
 
-newtype AgentException = AgentException
-  { failure :: AgentFailure
-  }
-  deriving (Show)
+instance Exception Failure
 
-instance Exception AgentException
-
-agentException :: AgentFailureCategory -> Text -> Text -> AgentException
-agentException category userMessage detail =
-  AgentException AgentFailure{category, userMessage, detail}
-
-transientFailure :: Text -> Text -> AgentException
+transientFailure :: Text -> Text -> Failure
 transientFailure =
-  agentException TransientFailure
+  makeFailure TransientFailure
 
-permanentArgumentFailure :: Text -> Text -> AgentException
+permanentArgumentFailure :: Text -> Text -> Failure
 permanentArgumentFailure =
-  agentException PermanentArgumentError
+  makeFailure PermanentArgumentError
 
-permissionDeniedFailure :: Text -> Text -> AgentException
+permissionDeniedFailure :: Text -> Text -> Failure
 permissionDeniedFailure =
-  agentException PermissionDenied
+  makeFailure PermissionDenied
 
-budgetExhaustedFailure :: Text -> Text -> AgentException
+budgetExhaustedFailure :: Text -> Text -> Failure
 budgetExhaustedFailure =
-  agentException BudgetExhausted
+  makeFailure BudgetExhausted
 
-externalServiceFailure :: Text -> Text -> AgentException
+externalServiceFailure :: Text -> Text -> Failure
 externalServiceFailure =
-  agentException ExternalServiceUnavailable
+  makeFailure ExternalServiceUnavailable
 
-uncertainSideEffectFailure :: Text -> Text -> AgentException
+uncertainSideEffectFailure :: Text -> Text -> Failure
 uncertainSideEffectFailure =
-  agentException UncertainSideEffectState
+  makeFailure UncertainSideEffectState
 
-agentFailureFromException :: SomeException -> AgentFailure
-agentFailureFromException err =
+makeFailure :: FailureCategory -> Text -> Text -> Failure
+makeFailure category userMessage detail =
+  Failure{category, userMessage, detail}
+
+failureFromException :: SomeException -> Failure
+failureFromException err =
   case fromException err of
-    Just (AgentException failure) ->
+    Just failure ->
       failure
     Nothing ->
       classifyException err
 
-classifyException :: SomeException -> AgentFailure
+classifyException :: SomeException -> Failure
 classifyException err =
   case fromException err of
     Just httpErr ->
@@ -94,13 +87,13 @@ classifyException err =
         Just (LLM.LLMException message) ->
           llmFailure message
         Nothing ->
-          AgentFailure
+          Failure
             { category = ExternalServiceUnavailable
             , userMessage = LLM.llmExceptionSummary err
             , detail = Text.pack (show err)
             }
 
-httpFailure :: HTTP.HttpException -> AgentFailure
+httpFailure :: HTTP.HttpException -> Failure
 httpFailure httpErr =
   case httpErr of
     HTTP.HttpExceptionRequest _ HTTP.ResponseTimeout ->
@@ -108,22 +101,22 @@ httpFailure httpErr =
     HTTP.HttpExceptionRequest _ HTTP.ConnectionTimeout ->
       transient (LLM.llmExceptionSummary (toException httpErr))
     _ ->
-      AgentFailure
+      Failure
         { category = ExternalServiceUnavailable
         , userMessage = LLM.llmExceptionSummary (toException httpErr)
         , detail = Text.pack (show httpErr)
         }
   where
     transient message =
-      AgentFailure
+      Failure
         { category = TransientFailure
         , userMessage = message
         , detail = Text.pack (show httpErr)
         }
 
-llmFailure :: Text -> AgentFailure
+llmFailure :: Text -> Failure
 llmFailure message =
-  AgentFailure
+  Failure
     { category =
         if "empty" `Text.isInfixOf` Text.toLower message
           then TransientFailure
@@ -132,8 +125,8 @@ llmFailure message =
     , detail = message
     }
 
-agentFailureStatus :: AgentFailure -> Text
-agentFailureStatus failure =
+failureStatus :: Failure -> Text
+failureStatus failure =
   case failure.category of
     TransientFailure ->
       "transient"

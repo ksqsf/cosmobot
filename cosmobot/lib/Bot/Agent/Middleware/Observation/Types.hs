@@ -5,17 +5,17 @@ Stability   : experimental
 -}
 module Bot.Agent.Middleware.Observation.Types
   ( ObservationContext (..)
-  , AgentEventObservation (..)
+  , EventObservation (..)
   , ToolResultObservation (..)
   , emptyObservationContext
   )
 where
 
-import Bot.Agent.Types (AgentEvent, ToolResult)
+import Bot.Agent.Types (Event, ToolResult)
 import Bot.Prelude
 
-newtype AgentEventObservation es = AgentEventObservation
-  { observeAgentEvent :: AgentEvent -> Eff es ObservationContext
+newtype EventObservation es = EventObservation
+  { observeAgentEvent :: Event -> Eff es ObservationContext
   }
 
 newtype ObservationContext = ObservationContext

@@ -53,7 +53,7 @@ recordEvent :: AgentAudit :> es => AgentAuditEvent -> Eff es (Maybe Integer)
 recordEvent event =
   send (RecordEvent event)
 
-agentAuditObserver :: AgentAudit :> es => Agent.AgentObserver Observation.ObservationContext es
+agentAuditObserver :: AgentAudit :> es => Agent.Observer Observation.ObservationContext es
 agentAuditObserver =
   ObservationAdapter.agentAuditObserverWith recordEvent
 

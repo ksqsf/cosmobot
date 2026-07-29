@@ -129,7 +129,7 @@ terminalExitStatusValue status = Aeson.object
 
 clientFailure :: Text -> ToolResult
 clientFailure err =
-  toolFailure (permanentArgumentFailure err err).failure
+  toolFailure (permanentArgumentFailure err err)
 
 envSchema :: Aeson.Value
 envSchema = Aeson.object

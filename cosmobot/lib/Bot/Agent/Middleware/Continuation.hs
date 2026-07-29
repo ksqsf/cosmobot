@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE RankNTypes #-}
 {-|
 Module      : Bot.Agent.Middleware.Continuation
 Description : One-shot delimited agent continuations
@@ -22,168 +23,170 @@ import qualified Bot.Util.HList as HList
 import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 
+data Resumption es = Resumption
+  { ordinal :: !Int
+  , resume :: TurnState -> Aeson.Value -> Program es Result
+  }
+
 withContinuations
-  :: (HList.Has ContinuationState transient, HList.Put ContinuationState transient)
-  => AgentProgram transient context es
-  -> AgentProgram transient context es
-withContinuations program =
-  program
-    { aroundToolTurn = \context toolState action ->
-        case exposedContinuationCalls program toolState.toolCalls of
-          [] ->
-            program.aroundToolTurn context toolState action
-          [call]
-            | [_] <- toList toolState.toolCalls ->
-                program.aroundToolTurn context toolState $
-                  runContinuation program context toolState call
-          _ ->
-            program.aroundToolTurn context toolState $
-              rejectConcurrentCalls program context toolState
+  :: Runtime context es
+  -> Runtime context es
+withContinuations runtime =
+  runtime
+    { aroundProgram = \finalRuntime ->
+        handleContinuations finalRuntime
+          . runtime.aroundProgram finalRuntime
     }
 
-exposedContinuationCalls :: AgentProgram transient context es -> NonEmpty LLM.ToolCall -> [LLM.ToolCall]
-exposedContinuationCalls program =
+handleContinuations
+  :: Runtime '[] es
+  -> Program es Result
+  -> Program es Result
+handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
+  go 0 Map.empty
+  where
+    go nextOrdinal saved (Program action) =
+      Program do
+        action >>= \case
+          Finished result ->
+            pure (Finished result)
+          Continues next ->
+            pure (Continues next)
+          NeedsTools request continue ->
+            case exposedContinuationCalls runtime request.toolCalls of
+              [] ->
+                pure (NeedsTools request (go nextOrdinal saved . continue))
+              [call]
+                | [_] <- toList request.toolCalls ->
+                    handleCall nextOrdinal saved request continue call
+              _ ->
+                handleConcurrent nextOrdinal saved request continue
+
+    handleCall nextOrdinal saved request continue call =
+      case continuationRequest call of
+        Nothing ->
+          reject nextOrdinal saved request continue call "Unknown continuation operation."
+        Just (Left err) ->
+          reject nextOrdinal saved request continue call [i|Invalid continuation arguments: #{err}|]
+        Just (Right (CaptureContinuation label)) ->
+          case Map.lookup call.id saved of
+            Just _ ->
+              reject nextOrdinal saved request continue call "Continuation id already exists."
+            Nothing -> do
+              (nextState, result) <-
+                lift $ runControlTurn runtime toolTurn request call (captureResult call label)
+              let resumption =
+                    Resumption
+                      { ordinal = nextOrdinal
+                      , resume = \currentState value ->
+                          continue (restoreAtCapture request call currentState value)
+                      }
+                  (continuedOrdinal, continuedSaved)
+                    | isNothing (toolResultFailure result) =
+                        (nextOrdinal + 1, Map.insert call.id resumption saved)
+                    | otherwise =
+                        (nextOrdinal, saved)
+              (go continuedOrdinal continuedSaved (continue nextState)).observe
+        Just (Right (ResumeContinuation continuationId value)) ->
+          case Map.lookup continuationId saved of
+            Nothing ->
+              reject nextOrdinal saved request continue call [i|Continuation not found in this agent run: #{continuationId}|]
+            Just resumption -> do
+              (nextState, result) <-
+                lift $ runControlTurn runtime toolTurn request call (toolText (jsonText (continuationValue continuationId value)))
+              let succeeded = isNothing (toolResultFailure result)
+                  continuedSaved
+                    | succeeded = Map.filter ((< resumption.ordinal) . (.ordinal)) saved
+                    | otherwise = saved
+                  next
+                    | succeeded = resumption.resume nextState value
+                    | otherwise = continue nextState
+              (go nextOrdinal continuedSaved next).observe
+
+    reject nextOrdinal saved request continue call message = do
+      (nextState, _) <-
+        lift $ runControlTurn runtime toolTurn request call (argumentFailure message)
+      (go nextOrdinal saved (continue nextState)).observe
+
+    handleConcurrent nextOrdinal saved request continue = do
+      (nextState, ()) <-
+        lift $
+          toolTurn HList.HNil request do
+            messages <- forM (toList request.toolCalls) \call -> do
+              result <- runtime.aroundToolCall request.agentState.turn call HList.HNil $
+                pure (argumentFailure "Continuation control tools must be called alone; no tool call in this turn was executed.")
+              pure (toolResultMessage call result)
+            pure
+              ( request.agentState
+                  { transcript = appendMessages messages request.answered
+                  , turn = request.agentState.turn + 1
+                  }
+              , ()
+              )
+      (go nextOrdinal saved (continue nextState)).observe
+
+exposedContinuationCalls :: Runtime context es -> NonEmpty LLM.ToolCall -> [LLM.ToolCall]
+exposedContinuationCalls runtime =
   filter isExposedContinuation . toList
   where
     isExposedContinuation call =
       isContinuationToolName call.name
-        && any ((== call.name) . toolName) program.agentRun.exposedTools
+        && any ((== call.name) . toolName) runtime.exposedTools
 
-runContinuation
-  :: (HList.Has ContinuationState transient, HList.Put ContinuationState transient)
-  => AgentProgram transient context es
-  -> MiddlewareContext context
-  -> ToolTurnState transient
+runControlTurn
+  :: Runtime '[] es
+  -> (forall a. HList.HList '[] -> ToolRequest -> Eff es (TurnState, a) -> Eff es (TurnState, a))
+  -> ToolRequest
   -> LLM.ToolCall
-  -> Eff es (AgentState transient)
-runContinuation program context toolState call =
-  case continuationRequest call of
-    Nothing ->
-      rejectCall program context toolState call "Unknown continuation operation."
-    Just (Left err) ->
-      rejectCall program context toolState call [i|Invalid continuation arguments: #{err}|]
-    Just (Right (CaptureContinuation label)) ->
-      capture program context toolState call label
-    Just (Right (ResumeContinuation continuationId value)) ->
-      resume program context toolState call continuationId value
+  -> ToolResult
+  -> Eff es (TurnState, ToolResult)
+runControlTurn runtime toolTurn request call result =
+  toolTurn HList.HNil request do
+    observed <- runtime.aroundToolCall request.agentState.turn call HList.HNil (pure result)
+    pure
+      ( advance request.agentState (appendMessage (toolResultMessage call observed) request.answered)
+      , observed
+      )
 
-capture
-  :: (HList.Has ContinuationState transient, HList.Put ContinuationState transient)
-  => AgentProgram transient context es
-  -> MiddlewareContext context
-  -> ToolTurnState transient
-  -> LLM.ToolCall
-  -> Maybe Text
-  -> Eff es (AgentState transient)
-capture program context toolState call label = do
-  let current = HList.get @ContinuationState toolState.agentState.transient
-  case Map.lookup call.id current.saved of
-    Just _ ->
-      rejectCall program context toolState call "Continuation id already exists."
-    Nothing -> do
-      let savedContinuation =
-            SavedContinuation
-              { ordinal = current.nextOrdinal
-              , answered = toolState.answered
-              , captureCall = call
-              }
-          next =
-            current
-              { nextOrdinal = current.nextOrdinal + 1
-              , saved = Map.insert call.id savedContinuation current.saved
-              }
-          result =
-            toolText . jsonText $
-              Aeson.object
-                [ "state" Aeson..= ("captured" :: Text)
-                , "continuation_id" Aeson..= call.id
-                , "label" Aeson..= label
-                , "scope" Aeson..= ("current_agent_run" :: Text)
-                , "one_shot" Aeson..= True
-                ]
-      observed <- program.aroundToolCall toolState.agentState.turn call context (pure result)
-      let continuationState
-            | isNothing (toolResultFailure observed) = next
-            | otherwise = current
-      pure (advance toolState.agentState (appendMessage (toolResultMessage call observed) toolState.answered) continuationState)
+captureResult :: LLM.ToolCall -> Maybe Text -> ToolResult
+captureResult call label =
+  toolText . jsonText $
+    Aeson.object
+      [ "state" Aeson..= ("captured" :: Text)
+      , "continuation_id" Aeson..= call.id
+      , "label" Aeson..= label
+      , "scope" Aeson..= ("current_agent_run" :: Text)
+      , "one_shot" Aeson..= True
+      ]
 
-resume
-  :: (HList.Has ContinuationState transient, HList.Put ContinuationState transient)
-  => AgentProgram transient context es
-  -> MiddlewareContext context
-  -> ToolTurnState transient
+restoreAtCapture
+  :: ToolRequest
   -> LLM.ToolCall
-  -> Text
+  -> TurnState
   -> Aeson.Value
-  -> Eff es (AgentState transient)
-resume program context toolState call continuationId value = do
-  let current = HList.get @ContinuationState toolState.agentState.transient
-  case Map.lookup continuationId current.saved of
-    Nothing ->
-      rejectCall program context toolState call [i|Continuation not found in this agent run: #{continuationId}|]
-    Just savedContinuation -> do
-      let resumedValue =
-            Aeson.object
-              [ "state" Aeson..= ("resumed" :: Text)
-              , "continuation_id" Aeson..= continuationId
-              , "value" Aeson..= value
-              ]
-          resumeResult = toolText (jsonText resumedValue)
-          remaining =
-            current
-              { saved = Map.filter ((< savedContinuation.ordinal) . (.ordinal)) current.saved
-              }
-      observed <- program.aroundToolCall toolState.agentState.turn call context (pure resumeResult)
-      if isJust (toolResultFailure observed)
-        then
-          pure (advance toolState.agentState (appendMessage (toolResultMessage call observed) toolState.answered) current)
-        else
-          pure $
-            advance
-              toolState.agentState
-              (appendMessage (LLM.toolResult savedContinuation.captureCall (jsonText resumedValue)) savedContinuation.answered)
-              remaining
+  -> TurnState
+restoreAtCapture request call currentState value =
+  currentState
+    { transcript = resumedTranscript
+    , nextModelTranscript = Just resumedTranscript
+    }
+  where
+    resumedTranscript =
+      appendMessage (LLM.toolResult call (jsonText (continuationValue call.id value))) request.answered
 
-rejectConcurrentCalls
-  :: AgentProgram transient context es
-  -> MiddlewareContext context
-  -> ToolTurnState transient
-  -> Eff es (AgentState transient)
-rejectConcurrentCalls program context toolState = do
-  messages <- forM (toList toolState.toolCalls) \call -> do
-    result <- program.aroundToolCall toolState.agentState.turn call context $
-      pure (argumentFailure "Continuation control tools must be called alone; no tool call in this turn was executed.")
-    pure (toolResultMessage call result)
-  pure $
-    toolState.agentState
-      { transcript = appendMessages messages toolState.answered
-      , turn = toolState.agentState.turn + 1
-      }
+continuationValue :: Text -> Aeson.Value -> Aeson.Value
+continuationValue continuationId value =
+  Aeson.object
+    [ "state" Aeson..= ("resumed" :: Text)
+    , "continuation_id" Aeson..= continuationId
+    , "value" Aeson..= value
+    ]
 
-rejectCall
-  :: (HList.Has ContinuationState transient, HList.Put ContinuationState transient)
-  => AgentProgram transient context es
-  -> MiddlewareContext context
-  -> ToolTurnState transient
-  -> LLM.ToolCall
-  -> Text
-  -> Eff es (AgentState transient)
-rejectCall program context toolState call message = do
-  result <- program.aroundToolCall toolState.agentState.turn call context (pure (argumentFailure message))
-  let current = HList.get @ContinuationState toolState.agentState.transient
-  pure (advance toolState.agentState (appendMessage (toolResultMessage call result) toolState.answered) current)
-
-advance
-  :: HList.Put ContinuationState transient
-  => AgentState transient
-  -> Transcript
-  -> ContinuationState
-  -> AgentState transient
-advance agentState transcript continuationState =
+advance :: TurnState -> Transcript -> TurnState
+advance agentState transcript =
   agentState
     { transcript
     , turn = agentState.turn + 1
-    , transient = HList.put continuationState agentState.transient
     }
 
 toolResultMessage :: LLM.ToolCall -> ToolResult -> LLM.ChatMessage
@@ -192,4 +195,4 @@ toolResultMessage call =
 
 argumentFailure :: Text -> ToolResult
 argumentFailure message =
-  toolFailure (permanentArgumentFailure message message).failure
+  toolFailure (permanentArgumentFailure message message)

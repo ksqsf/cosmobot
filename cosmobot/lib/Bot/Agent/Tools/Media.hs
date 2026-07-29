@@ -67,7 +67,7 @@ sendMediaTool =
         context <- askToolContext
         sendMedia context (Text.strip mediaId)
 
-sendMedia :: (Chat.Chat :> es, Media.Media :> es) => AgentContext -> Text -> Eff es ToolResult
+sendMedia :: (Chat.Chat :> es, Media.Media :> es) => Context -> Text -> Eff es ToolResult
 sendMedia context mediaId
   | Text.null mediaId =
       pure (mediaFailure "media_id must not be empty.")
@@ -80,7 +80,7 @@ sendMedia context mediaId
         Left err -> do
           let failureText = "发送媒体失败：" <> err
           void $ Chat.replyTo context.message failureText
-          pure (toolFailure AgentFailure
+          pure (toolFailure Failure
             { category = ExternalServiceUnavailable
             , userMessage = failureText
             , detail = err
@@ -88,7 +88,7 @@ sendMedia context mediaId
 
 mediaFailure :: Text -> ToolResult
 mediaFailure message =
-  toolFailure (permanentArgumentFailure message message).failure
+  toolFailure (permanentArgumentFailure message message)
 
 resolveMediaPath :: Media.Media :> es => Text -> Eff es ToolResult
 resolveMediaPath mediaId

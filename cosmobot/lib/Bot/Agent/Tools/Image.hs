@@ -98,22 +98,22 @@ cleanImageUrls :: [Text] -> [Text]
 cleanImageUrls =
   filter (not . Text.null) . map Text.strip
 
-editImageInputRefs :: AgentContext -> EditImageArgs -> [Text]
+editImageInputRefs :: Context -> EditImageArgs -> [Text]
 editImageInputRefs context editArgs =
   if null editArgs.imageUrls
     then contextDefaultImageUrls context
     else editArgs.imageUrls
 
-contextDefaultImageUrls :: AgentContext -> [Text]
+contextDefaultImageUrls :: Context -> [Text]
 contextDefaultImageUrls context =
   messageInputImageUrls context.input
 
-validateEditImageRefs :: [Text] -> Maybe AgentFailure
+validateEditImageRefs :: [Text] -> Maybe Failure
 validateEditImageRefs imageRefs
   | null imageRefs =
-      Just ((permanentArgumentFailure "image_edit requires at least one input image." "image_edit requires at least one input image. Attach an image to the message or provide image_urls.").failure)
+      Just (permanentArgumentFailure "image_edit requires at least one input image." "image_edit requires at least one input image. Attach an image to the message or provide image_urls.")
   | length imageRefs > 16 =
-      Just ((permanentArgumentFailure "image_edit accepts at most 16 input images." "image_edit accepts at most 16 input images.").failure)
+      Just (permanentArgumentFailure "image_edit accepts at most 16 input images." "image_edit accepts at most 16 input images.")
   | otherwise =
       Nothing
 
@@ -128,7 +128,7 @@ viewImageUrl rawUrl = do
   mediaRef <- Media.normalizeMediaRef url
   if isMediaRef mediaRef
     then cachedImageContext mediaRef
-    else pure (toolFailure (permanentArgumentFailure "image_cache could not cache an image URL." "image_cache could not cache the image URL.").failure)
+    else pure (toolFailure (permanentArgumentFailure "image_cache could not cache an image URL." "image_cache could not cache the image URL."))
 
 isMediaRef :: Text -> Bool
 isMediaRef ref =
@@ -141,7 +141,7 @@ cachedImageContext mediaRef =
       | "image/" `Text.isPrefixOf` Text.toLower info.mimeType ->
           pure (toolTextWithImages [i|Added image to current context: #{mediaRef}|] [mediaRef])
     _ ->
-      pure (toolFailure (permanentArgumentFailure "image_cache URL is not a cached image." "image_cache URL is not a cached image.").failure)
+      pure (toolFailure (permanentArgumentFailure "image_cache URL is not a cached image." "image_cache URL is not a cached image."))
 
 sendImageToolResult :: Chat.Chat :> es => IncomingMessage -> Text -> [Text] -> Text -> Eff es ToolResult
 sendImageToolResult message label imageRefs body = do

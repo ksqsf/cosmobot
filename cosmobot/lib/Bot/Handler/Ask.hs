@@ -11,7 +11,7 @@ module Bot.Handler.Ask
 where
 
 import qualified Bot.Agent as Agent
-import qualified Bot.Agent.Failure as AgentFailure
+import qualified Bot.Agent.Failure as Failure
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Thread
 import Bot.Core.Transcript
@@ -381,7 +381,7 @@ drawTranscript
 drawTranscript transcript =
   LLM.askImageWithHistory (Foldable.toList transcript.messages) `catchSync` \err -> do
     logError [i|LLM image request failed: #{show err :: String}|]
-    pure ("Image generation failed: " <> (AgentFailure.agentFailureFromException err).userMessage)
+    pure ("Image generation failed: " <> (Failure.failureFromException err).userMessage)
 
 
 promptOrImageDefault :: Text -> [Text] -> Text

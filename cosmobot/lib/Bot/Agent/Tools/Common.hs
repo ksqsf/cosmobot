@@ -56,7 +56,7 @@ workTag :: NamedTag
 workTag =
   NamedTag "work" "Create media, manage memory and schedules, run commands, and use workspaces or subagents."
 
-superuserOnly :: AgentContext -> Bool
+superuserOnly :: Context -> Bool
 superuserOnly =
   (.superuser)
 
@@ -176,7 +176,7 @@ renderResourceError = \case
 resourceToolFailure :: Resource.ResourceError -> ToolResult
 resourceToolFailure err =
   let message = renderResourceError err
-  in toolFailure (permanentArgumentFailure message message).failure
+  in toolFailure (permanentArgumentFailure message message)
 
 data UseLimit
   = UseAllowed

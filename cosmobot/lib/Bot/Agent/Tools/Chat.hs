@@ -111,7 +111,7 @@ sendReplyTool =
               [] ->
                 let err = Text.intercalate "\n" (lefts sent)
                  in
-                pure (toolFailure AgentFailure
+                pure (toolFailure Failure
                   { category = ExternalServiceUnavailable
                   , userMessage = [i|发送消息失败：#{err}|]
                   , detail = err
@@ -143,7 +143,7 @@ sendFileTool =
           Left err -> do
             let failureText = "发送文件失败：" <> err
             void $ Chat.replyTo context.message failureText
-            pure (toolFailure AgentFailure
+            pure (toolFailure Failure
               { category = ExternalServiceUnavailable
               , userMessage = failureText
               , detail = err
@@ -164,7 +164,7 @@ mentionUserTool =
             let sentText = show sent :: String
             pure (toolText [i|Sent mention message id: #{sentText}|])
           Left err ->
-            pure (toolFailure AgentFailure
+            pure (toolFailure Failure
               { category = ExternalServiceUnavailable
               , userMessage = [i|发送提及消息失败：#{err}|]
               , detail = err
@@ -316,7 +316,7 @@ avatarUrl =
   AesonTypes.parseMaybe $
     Aeson.withObject "user avatar" (Aeson..: Key.fromText "avatar_url")
 
-userAvatarResult :: (Chat.Chat :> es, KatipE :> es) => AgentContext -> Aeson.Value -> Eff es ToolResult
+userAvatarResult :: (Chat.Chat :> es, KatipE :> es) => Context -> Aeson.Value -> Eff es ToolResult
 userAvatarResult context value =
   case avatarUrl value of
     Nothing ->
@@ -339,7 +339,7 @@ validFilePath rawPath
 
 argumentFailure :: Text -> ToolResult
 argumentFailure err =
-  toolFailure (permanentArgumentFailure err err).failure
+  toolFailure (permanentArgumentFailure err err)
 
 replyBodyWithImages :: Text -> [Text] -> Text
 replyBodyWithImages text imageUrls =

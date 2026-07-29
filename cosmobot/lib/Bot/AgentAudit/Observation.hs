@@ -15,15 +15,15 @@ import Bot.AgentAudit.Types
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 
-agentAuditObserverWith :: (AgentAuditEvent -> Eff es (Maybe Integer)) -> Agent.AgentObserver Observation.ObservationContext es
+agentAuditObserverWith :: (AgentAuditEvent -> Eff es (Maybe Integer)) -> Agent.Observer Observation.ObservationContext es
 agentAuditObserverWith recordEvent =
-  Agent.AgentObserver{Agent.observe = recordAgentEvent recordEvent}
+  recordAgentEvent recordEvent
 
-recordAgentEvent :: (AgentAuditEvent -> Eff es (Maybe Integer)) -> Agent.AgentEvent -> Eff es Observation.ObservationContext
+recordAgentEvent :: (AgentAuditEvent -> Eff es (Maybe Integer)) -> Agent.Event -> Eff es Observation.ObservationContext
 recordAgentEvent recordEvent event =
   observationContext <$> maybe (pure Nothing) recordEvent (agentAuditEvent event)
 
-agentAuditEvent :: Agent.AgentEvent -> Maybe AgentAuditEvent
+agentAuditEvent :: Agent.Event -> Maybe AgentAuditEvent
 agentAuditEvent = \case
   Agent.AgentRunStarted{runId, messageId, maxTurns, exposedTools} ->
     Just AgentRunStarted{runId, messageId, maxTurns, exposedTools}

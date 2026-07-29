@@ -265,4 +265,4 @@ webArguments textName rawText limitName limitCap defaultLimit requestedLimit
 
 argumentFailure :: Text -> ToolResult
 argumentFailure err =
-  toolFailure (permanentArgumentFailure err err).failure
+  toolFailure (permanentArgumentFailure err err)

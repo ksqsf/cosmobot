@@ -58,7 +58,7 @@ data WorkspaceCall
 
 runWorkspaceCall
   :: forall es. (Resource.Resource :> es, FileSystem.FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => AgentContext
+  => Context
   -> ToolCallMetadata
   -> WorkspaceCall
   -> Eff es ToolResult
@@ -132,4 +132,4 @@ validNonEmpty label value
   | otherwise = pure value
 
 clientFailure :: Text -> ToolResult
-clientFailure err = toolFailure (permanentArgumentFailure err err).failure
+clientFailure err = toolFailure (permanentArgumentFailure err err)

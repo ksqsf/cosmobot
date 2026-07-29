@@ -96,7 +96,7 @@ memoryArgs =
       fail "memory is required when action is replace"
     pure (action, memory)
 
-runMemoryAction :: Memory.Memory :> es => MemoryScope -> AgentContext -> MemoryAction -> Maybe Text -> Eff es ToolResult
+runMemoryAction :: Memory.Memory :> es => MemoryScope -> Context -> MemoryAction -> Maybe Text -> Eff es ToolResult
 runMemoryAction scope context action memory =
   case scope.scopeOf context.message of
     Left err ->

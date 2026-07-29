@@ -55,16 +55,16 @@ Avoid import cycles when extracting from effects. Prefer explicit callback recor
 
 When changing the agent loop or middleware:
 
-- Start in `Bot.Agent.Core` only to change generic loop vocabulary: `AgentRun`, `AgentState`, `AgentProgram`, `ModelDecision`, or `runAgentLoop`. Keep `runAgentLoop` as direct model/tool recursion; do not add persistence, audit, media, chat logging, platform linking, or handler policy there.
-- Add cross-cutting behavior as `Bot.Agent.Middleware.*`, then compose it in `Bot.Agent.defaultAgentProgram` or the handler-specific program assembly. Add new modules to `cosmobot.cabal`.
-- Use `AgentState transient` only for state that must survive across model/tool turns. Add an HList field and initialize it through `emptyAgentProgram`.
-- Use `MiddlewareContext context` for dynamic middleware environment passed from outer middleware to inner middleware. Use this for values like `ToolLimitContext`, `ObservationContext`, and `ToolResultObservation`.
-- Do not add general-purpose fields to `AgentContext`. It is for per-message tool capabilities, permissions, input, and system context.
+- Start in `Bot.Agent.Core` only to change the generic calculus vocabulary: `Program`, `Step`, `TurnState`, or `Runtime`. Keep the execution fold in `Bot.Agent` as direct model/tool recursion; do not add persistence, audit, media, chat logging, platform linking, or handler policy there.
+- Add cross-cutting behavior as `Bot.Agent.Middleware.*`, then compose it in `Bot.Agent.defaultRuntime` or the handler-specific runtime assembly. Add new modules to `cosmobot.cabal`.
+- Use `TurnState` only for state that must survive across model/tool turns. Middleware-private state belongs in lexical closures; typed dynamic context belongs in the middleware HList.
+- Use the `Runtime context` HList for dynamic middleware environment passed from outer middleware to inner middleware. Use this for values like `ObservationContext`, `EventObservation`, and `ToolResultObservation`.
+- Do not add general-purpose fields to `Context`. It is for per-message tool capabilities, permissions, input, and system context.
 - Do not make tools return platform message ids through `ToolResult`. Tool-emitted chat messages should be captured by `Chat` interposition middleware.
 
 Choose the hook by the behavior you need:
 
-- Change the conversation sent to the LLM: implement `modelInputConversation`.
+- Change the transcript sent to the LLM: implement `modelInputTranscript`.
 - Wrap a whole run: implement `aroundAgentRun`.
 - Wrap one model request/decision: implement `aroundModelTurn`.
 - Wrap a whole tool phase after a tool request: implement `aroundToolTurn`.
@@ -72,7 +72,7 @@ Choose the hook by the behavior you need:
 
 Use the existing middleware contracts this way:
 
-- For large tool results, use `withToolResultCompaction`. It stores the full result in media cache, keeps the full result for the immediate next model turn via transient `NextModelInput`, leaves later canonical conversation state omitted, and provides `ToolResultObservation` to inner middleware.
+- For large tool results, use `withToolResultCompaction`. It stores the full result in media cache, keeps the immediate model view in `TurnState.nextModelTranscript`, leaves later canonical conversation state omitted, and provides `ToolResultObservation` to inner middleware.
 - For lifecycle/audit events, use `withObservation`. It may read typed context, but it should not import media, storage, chat drivers, or concrete audit storage.
 - For noisy tool announcements, use `withToolMessage`. It expects `ObservationContext` so audit ids can appear in progress messages.
 - For platform messages emitted by tools, use `withLinkingToolEmittedMessagesToConversation` with a handler-owned sink. The handler knows the active conversation; the agent core does not.
@@ -93,6 +93,11 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - audit event result shape;
 - tool-emitted chat message linking;
 - middleware ordering when context is provided by one middleware and consumed by another.
+
+For changes to `Program`, `Step`, or their instances, add algebraic properties
+to `test/AgentCoreSpec.hs`. Compare programs up to finite `Continues` steps,
+inspect every generated `NeedsTools` continuation, and keep these calculus
+laws separate from middleware policy scenarios in `AgentSpec.hs`.
 
 ### Coding Rules
 
@@ -166,10 +171,11 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 
 ### Verification
 
-- Concurrency manager changes: `cabal test concurrency-spec`.
-- Agent/tool/conversation changes: `cabal test agent-spec`.
-- Scheduler changes: `cabal test scheduler-spec`.
-- Chat-log changes: `cabal test chat-log-spec`.
+- Concurrency manager changes: `cabal test -j concurrency-spec`.
+- Agent calculus changes: `cabal test -j agent-core-spec`.
+- Agent middleware/tool/conversation changes: `cabal test -j agent-spec`.
+- Scheduler changes: `cabal test -j scheduler-spec`.
+- Chat-log changes: `cabal test -j chat-log-spec`.
 - Shared behavior changes: `cabal test -j all`.
 - Executable wiring, config, cabal module lists, or handler signatures: `cabal build -j exe:cosmobot`.
 - Always run `git diff --check` before finishing.

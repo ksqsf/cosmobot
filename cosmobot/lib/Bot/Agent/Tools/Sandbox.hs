@@ -151,11 +151,11 @@ mediaRef value
   | "media:" `Text.isPrefixOf` value = value
   | otherwise = "media:" <> value
 
-hasResourceIdentity :: AgentContext -> Bool
+hasResourceIdentity :: Context -> Bool
 hasResourceIdentity = isRight . Resource.accessFromMessage . (.message)
 
 clientFailure :: Text -> ToolResult
-clientFailure err = toolFailure (permanentArgumentFailure err err).failure
+clientFailure err = toolFailure (permanentArgumentFailure err err)
 
 validText :: String -> Text -> AesonTypes.Parser Text
 validText label value = do

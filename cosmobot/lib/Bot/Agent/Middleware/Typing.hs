@@ -10,7 +10,7 @@ module Bot.Agent.Middleware.Typing
 where
 
 import Bot.Agent.Core
-import Bot.Agent.Types (AgentContext (..))
+import Bot.Agent.Types (Context (..))
 import Bot.Core.Message (IncomingMessage (..))
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -20,8 +20,8 @@ import qualified Streaming as S
 
 withTypingNotification
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es)
-  => AgentProgram transient context es
-  -> AgentProgram transient context es
+  => Runtime context es
+  -> Runtime context es
 withTypingNotification program =
   program
     { aroundAgentRun = \context action ->
@@ -29,13 +29,13 @@ withTypingNotification program =
     }
   where
     message =
-      program.agentRun.context.message
+      program.context.message
 
 withTypingScope
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es)
   => IncomingMessage
-  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
-  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
+  -> Stream (Of Output) (Eff es) Result
+  -> Stream (Of Output) (Eff es) Result
 withTypingScope message stream = do
   S.lift (safeSetTyping message typingNotificationTimeoutMillis)
   StreamUtil.bracketStream

@@ -177,4 +177,4 @@ parseCall = Aeson.withObject "subagent arguments" \o -> do
       value <$ when (Text.null (Text.strip value)) (fail (label <> " must not be empty."))
 
 clientFailure :: Text -> ToolResult
-clientFailure err = toolFailure (permanentArgumentFailure err err).failure
+clientFailure err = toolFailure (permanentArgumentFailure err err)

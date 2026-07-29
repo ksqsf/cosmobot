@@ -6,8 +6,7 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Middleware.Tools
-  ( ToolLimitContext (..)
-  , withToolFailureRecovery
+  ( withToolFailureRecovery
   , withToolLimit
   , withToolMessage
   )
@@ -19,11 +18,6 @@ import Bot.Agent.Transcript
   )
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types
-import Bot.Agent.Tools.Continuation
-  ( ContinuationState
-  , canResumeContinuation
-  , resumeContinuationTool
-  )
 import Bot.Agent.Tool
 import Bot.Agent.Types
 import Bot.Core.Transcript
@@ -34,64 +28,14 @@ import qualified Bot.Util.HList as HList
 import qualified Data.Text as Text
 import qualified Streaming.Prelude as S
 
-newtype ToolLimitContext = ToolLimitContext
-  { maxToolTurns :: Int
-  }
-  deriving (Eq, Show)
-
-withToolLimit
-  :: (KatipE :> es, HList.Has ContinuationState transient)
-  => Int
-  -> AgentProgram transient (ToolLimitContext ': context) es
-  -> AgentProgram transient context es
-withToolLimit maxTurns program =
-  program
-    { aroundAgentRun = \context action ->
-        program.aroundAgentRun (toolLimitContext HList.:& context) action
-    , modelInputTranscript = \context agentState ->
-        program.modelInputTranscript (toolLimitContext HList.:& context) agentState
-    , aroundModelTurn = \context agentState action -> do
-        decision <- program.aroundModelTurn (toolLimitContext HList.:& context) agentState action
-        case decision of
-          ModelNeedsTools ToolTurnState{answered, toolContent, toolCalls}
-            | agentState.turn >= toolLimitContext.maxToolTurns
-            , not (validResumeAtLimit program agentState toolCalls) -> do
-                lift $ logInfo [i|Agent tool turn limit reached: #{show toolCalls :: String}|]
-                ModelAnswered <$> handleToolLimit program.agentRun.runId agentState.turn toolContent toolCalls answered
-          _ ->
-            pure decision
-    , aroundToolTurn = \context toolState action ->
-        program.aroundToolTurn (toolLimitContext HList.:& context) toolState action
-    , aroundToolCall = \turn call context action ->
-        program.aroundToolCall turn call (toolLimitContext HList.:& context) action
-    }
-  where
-    toolLimitContext =
-      ToolLimitContext{maxToolTurns = max 1 maxTurns}
-
-validResumeAtLimit
-  :: HList.Has ContinuationState transient
-  => AgentProgram transient context es
-  -> AgentState transient
-  -> NonEmpty LLM.ToolCall
-  -> Bool
-validResumeAtLimit program agentState calls =
-  case toList calls of
-    [call] ->
-      call.name == toolName resumeContinuationTool
-        && any ((== call.name) . toolName) program.agentRun.exposedTools
-        && canResumeContinuation (HList.get @ContinuationState agentState.transient) call
-    _ ->
-      False
-
-withToolFailureRecovery :: AgentProgram transient context es -> AgentProgram transient context es
+withToolFailureRecovery :: Runtime context es -> Runtime context es
 withToolFailureRecovery program =
   program
     { aroundToolCall = \turn call context action ->
         safeToolCall call (program.aroundToolCall turn call context action)
     }
 
-withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => AgentProgram transient context es -> AgentProgram transient context es
+withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => Runtime context es -> Runtime context es
 withToolMessage program =
   program
     { aroundToolCall = \turn call context action -> do
@@ -99,16 +43,16 @@ withToolMessage program =
         program.aroundToolCall turn call context action
     }
 
-announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => AgentProgram transient context es -> LLM.ToolCall -> MiddlewareContext context -> Eff es ()
+announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => Runtime context es -> LLM.ToolCall -> HList.HList context -> Eff es ()
 announceNoisyTool program call context =
-  case find ((== call.name) . toolName) program.agentRun.tools of
+  case find ((== call.name) . toolName) program.tools of
     Just definition
       | toolIsNoisy definition ->
-          void $ Chat.replyTo program.agentRun.context.message (toolMessageText call context)
+          void $ Chat.replyTo program.context.message (toolMessageText call context)
     _ ->
       pure ()
 
-toolMessageText :: HList.Has ObservationContext context => LLM.ToolCall -> MiddlewareContext context -> Text
+toolMessageText :: HList.Has ObservationContext context => LLM.ToolCall -> HList.HList context -> Text
 toolMessageText call context =
   case (HList.get @ObservationContext context).auditToolUseId of
     Just auditId ->
@@ -130,23 +74,67 @@ handleToolLimit
   -> Text
   -> NonEmpty LLM.ToolCall
   -> Transcript
-  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
+  -> Stream (Of Output) (Eff es) Result
 handleToolLimit runId turn _content calls answered = do
   let paused = appendMessages (toList (fmap pausedToolResult calls)) answered
       message = toolLimitMessage calls
-  S.yield (AgentContentDelta message)
-  pure AgentCompletion
-    { result = AgentResult{runId, transcript = paused}
+  S.yield (ContentDelta message)
+  pure Result
+    { runId
+    , transcript = paused
     , status = "tool_limit"
     , finalText = message
     , turnsUsed = turn
     , tokenUsage = Nothing
     }
 
+withToolLimit
+  :: KatipE :> es
+  => (Runtime '[] es -> NonEmpty LLM.ToolCall -> Bool)
+  -> Runtime context es
+  -> Runtime context es
+withToolLimit mayTransfer runtime =
+  runtime
+    { aroundProgram = \finalRuntime ->
+        limitProgram finalRuntime (mayTransfer finalRuntime)
+          . runtime.aroundProgram finalRuntime
+    }
+
+limitProgram
+  :: KatipE :> es
+  => Runtime '[] es
+  -> (NonEmpty LLM.ToolCall -> Bool)
+  -> Program es Result
+  -> Program es Result
+limitProgram runtime mayTransfer =
+  go
+  where
+    go (Program action) =
+      Program do
+        action >>= \case
+          Finished result ->
+            pure (Finished result)
+          Continues next ->
+            pure (Continues next)
+          NeedsTools request continue
+            | request.agentState.turn >= runtime.maxTurns
+            , not (mayTransfer request.toolCalls) -> do
+                let calls = request.toolCalls
+                lift $ logInfo [i|Agent tool turn limit reached: #{show calls :: String}|]
+                Finished
+                  <$> handleToolLimit
+                        runtime.runId
+                        request.agentState.turn
+                        request.toolContent
+                        calls
+                        request.answered
+            | otherwise ->
+                pure (NeedsTools request (go . continue))
+
 safeToolCall :: LLM.ToolCall -> Eff es ToolResult -> Eff es ToolResult
 safeToolCall call action =
   action `catchSync` \err -> do
-    let failure = agentFailureFromException err
+    let failure = failureFromException err
         message = failure.userMessage
     pure (toolFailure failure{userMessage = [i|Tool #{callName} failed: #{message}|]})
   where

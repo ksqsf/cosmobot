@@ -30,7 +30,7 @@ type SubAgentRunner es =
   ToolCallMetadata
   -> Text
   -> Concurrency.Handle
-  -> AgentContext
+  -> Context
   -> [Tool es]
   -> Transcript
   -> Eff es (Text, Transcript)
@@ -109,7 +109,7 @@ sendPrompt
   -> ToolCallMetadata
   -> Text
   -> [Tool es]
-  -> AgentContext
+  -> Context
   -> SubAgent
   -> Text
   -> Eff es (Either Text ())

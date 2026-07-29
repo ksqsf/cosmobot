@@ -5,20 +5,19 @@ Stability   : experimental
 -}
 module Bot.Agent.Types
   ( ToolCallMetadata (..)
-  , AgentContext (..)
-  , AgentEvent (..)
-  , AgentObserver (..)
-  , AgentFailureCategory (..)
-  , AgentFailure (..)
-  , AgentException (..)
-  , agentFailureFromException
-  , agentFailureStatus
+  , Context (..)
+  , Event (..)
+  , Observer
+  , FailureCategory (..)
+  , Failure (..)
+  , failureFromException
+  , failureStatus
   , permanentArgumentFailure
   , permissionDeniedFailure
   , ToolConfig (..)
   , WebSearchApi (..)
   , defaultToolConfig
-  , ignoreAgentObserver
+  , ignoreObserver
   , ToolResult (..)
   , toolText
   , toolTextWithImages
@@ -80,7 +79,7 @@ data ToolCallMetadata = ToolCallMetadata
   }
 
 -- | Per-message capabilities and permissions made available to tools.
-data AgentContext = AgentContext
+data Context = Context
   { message :: IncomingMessage
   , input :: !MessageInput
   , superuser :: !Bool
@@ -93,7 +92,7 @@ data AgentContext = AgentContext
 --
 -- Observers translate these into concrete side effects such as persistent
 -- audit rows. The loop itself should only emit these domain events.
-data AgentEvent
+data Event
   = AgentRunStarted
       { runId :: !Text
       , messageId :: !(Maybe MessageId)
@@ -159,13 +158,12 @@ data AgentEvent
       }
   deriving (Eq, Show)
 
-newtype AgentObserver ctx es = AgentObserver
-  { observe :: AgentEvent -> Eff es ctx
-  }
+type Observer ctx es =
+  Event -> Eff es ctx
 
-ignoreAgentObserver :: ctx -> AgentObserver ctx es
-ignoreAgentObserver ctx =
-  AgentObserver{observe = \_ -> pure ctx}
+ignoreObserver :: ctx -> Observer ctx es
+ignoreObserver ctx =
+  const (pure ctx)
 
 -- | One tool call outcome. Failures are still returned as tool results because
 -- OpenAI-compatible history requires every requested tool call to have a
@@ -176,7 +174,7 @@ data ToolResult
       , imageUrls :: ![Text]
       }
   | ToolFailed
-      { failure :: !AgentFailure
+      { failure :: !Failure
       }
 
 toolText :: Text -> ToolResult
@@ -187,7 +185,7 @@ toolTextWithImages :: Text -> [Text] -> ToolResult
 toolTextWithImages content imageUrls =
   ToolSucceeded content imageUrls
 
-toolFailure :: AgentFailure -> ToolResult
+toolFailure :: Failure -> ToolResult
 toolFailure failure =
   ToolFailed failure
 
@@ -205,7 +203,7 @@ toolResultImageUrls = \case
   ToolFailed{} ->
     []
 
-toolResultFailure :: ToolResult -> Maybe AgentFailure
+toolResultFailure :: ToolResult -> Maybe Failure
 toolResultFailure = \case
   ToolSucceeded{} ->
     Nothing

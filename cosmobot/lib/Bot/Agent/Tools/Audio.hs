@@ -35,4 +35,4 @@ generateAudioTool =
             let sentText = show messageId :: String
             pure (toolText [i|Generated and sent audio message id: #{sentText}|])
           Left err ->
-            pure (toolFailure (externalServiceFailure ("发送音频失败：" <> err) err).failure)
+            pure (toolFailure (externalServiceFailure ("发送音频失败：" <> err) err))

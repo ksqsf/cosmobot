@@ -52,10 +52,10 @@ acpWriteClientFileTool =
           Right () ->
             pure (toolText "File written.")
 
-acpOnly :: AgentContext -> Bool
+acpOnly :: Context -> Bool
 acpOnly context =
   context.message.platform == PlatformACP
 
 clientFileFailure :: Text -> ToolResult
 clientFileFailure err =
-  toolFailure (permanentArgumentFailure err err).failure
+  toolFailure (permanentArgumentFailure err err)

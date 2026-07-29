@@ -55,7 +55,7 @@ type ToolRunner es =
   ToolCallMetadata -> Aeson.Value -> Eff es ToolResult
 
 data ToolCallContext = ToolCallContext
-  { agentContext :: !AgentContext
+  { agentContext :: !Context
   , metadata :: !ToolCallMetadata
   }
 
@@ -64,7 +64,7 @@ type ToolAction es =
 
 askToolContext
   :: Reader.Reader ToolCallContext :> es
-  => Eff es AgentContext
+  => Eff es Context
 askToolContext =
   Reader.ask @ToolCallContext <&> (.agentContext)
 
@@ -345,10 +345,10 @@ argumentsObjectSchema fields required =
 data Tool es = Tool
   { name :: !Text
   , tags :: ![ToolTag]
-  , schemaResolver :: AgentContext -> Transcript -> Int -> Eff es (Maybe LLM.FunctionTool)
+  , schemaResolver :: Context -> Transcript -> Int -> Eff es (Maybe LLM.FunctionTool)
   , noisyFlag :: !Bool
-  , allowedPredicate :: AgentContext -> Bool
-  , runnerFactory :: AgentContext -> Eff es (ToolRunner es)
+  , allowedPredicate :: Context -> Bool
+  , runnerFactory :: Context -> Eff es (ToolRunner es)
   }
 
 tool
@@ -364,7 +364,7 @@ toolWithRunState
   :: ToolArguments arguments
   => Text
   -> arguments
-  -> (AgentContext -> Eff es state)
+  -> (Context -> Eff es state)
   -> (state -> ToolHandler arguments es)
   -> Tool es
 toolWithRunState name arguments initialize handler =
@@ -395,9 +395,9 @@ toolWithRunState name arguments initialize handler =
     }
   where
     argumentFailure err =
-      toolFailure (permanentArgumentFailure err err).failure
+      toolFailure (permanentArgumentFailure err err)
 
-allowWhen :: (AgentContext -> Bool) -> Tool es -> Tool es
+allowWhen :: (Context -> Bool) -> Tool es -> Tool es
 allowWhen predicate definition =
   definition
     { allowedPredicate = \context ->
@@ -413,7 +413,7 @@ noisy definition =
   definition{noisyFlag = True}
 
 mapSchemaM
-  :: (AgentContext -> Transcript -> Int -> LLM.FunctionTool -> Eff es (Maybe LLM.FunctionTool))
+  :: (Context -> Transcript -> Int -> LLM.FunctionTool -> Eff es (Maybe LLM.FunctionTool))
   -> Tool es
   -> Tool es
 mapSchemaM transform definition =
@@ -427,7 +427,7 @@ mapSchemaM transform definition =
     }
 
 hideUnlessM
-  :: (AgentContext -> Transcript -> Int -> Eff es Bool)
+  :: (Context -> Transcript -> Int -> Eff es Bool)
   -> Tool es
   -> Tool es
 hideUnlessM predicate =
@@ -439,7 +439,7 @@ withDescription :: Text -> Tool es -> Tool es
 withDescription =
   withDescriptionBy . const
 
-withDescriptionBy :: (AgentContext -> Text) -> Tool es -> Tool es
+withDescriptionBy :: (Context -> Text) -> Tool es -> Tool es
 withDescriptionBy description =
   mapSchemaM \context _ _ schema ->
     pure (Just schema{LLM.description = description context})
@@ -454,7 +454,7 @@ toolTags Tool{tags} =
 
 resolveToolSchema
   :: Tool es
-  -> AgentContext
+  -> Context
   -> Transcript
   -> Int
   -> Eff es (Maybe LLM.FunctionTool)
@@ -470,10 +470,10 @@ toolIsNoisy :: Tool es -> Bool
 toolIsNoisy Tool{noisyFlag} =
   noisyFlag
 
-toolAllowed :: Tool es -> AgentContext -> Bool
+toolAllowed :: Tool es -> Context -> Bool
 toolAllowed Tool{allowedPredicate} =
   allowedPredicate
 
-startTool :: Tool es -> AgentContext -> Eff es (ToolRunner es)
+startTool :: Tool es -> Context -> Eff es (ToolRunner es)
 startTool Tool{runnerFactory} =
   runnerFactory

@@ -440,6 +440,16 @@ test-suite agent-spec
                     , toml-parser
     hs-source-dirs:   test
 
+test-suite agent-core-spec
+    import:           warnings
+                    , language
+                    , test-deps
+    type:             exitcode-stdio-1.0
+    main-is:          AgentCoreSpec.hs
+    build-depends:    QuickCheck
+                    , tasty-quickcheck
+    hs-source-dirs:   test
+
 test-suite llm-retry-spec
     import:           warnings
                     , language

@@ -23,7 +23,6 @@ where
 
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types
-import Bot.Agent.Middleware.Tools (ToolLimitContext (..))
 import Bot.Agent.Tool (toolName)
 import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import Bot.Agent.Types
@@ -44,7 +43,7 @@ data ObservedModelTurn result = ObservedModelTurn
   , messageCount :: !Int
   , exposedTools :: ![Text]
   , toolGroups :: ![(Text, Int)]
-  , finished :: result -> AgentEvent
+  , finished :: result -> Event
   }
 
 data ObservedToolCall = ObservedToolCall
@@ -60,33 +59,33 @@ data ObservedThreadLink = ObservedThreadLink
   }
 
 withObservation
-  :: forall transient context es.
-     (HList.Has ToolLimitContext context, HList.Has (ToolResultObservation es) context)
-  => AgentObserver ObservationContext es
-  -> AgentProgram transient (ObservationContext ': AgentEventObservation es ': context) es
-  -> AgentProgram transient context es
-withObservation observer program =
+  :: forall context es.
+     HList.Has (ToolResultObservation es) context
+  => Observer ObservationContext es
+  -> Runtime (ObservationContext ': EventObservation es ': context) es
+  -> Runtime context es
+withObservation observer program@Runtime{aroundToolTurn = toolTurn} =
   program
     { aroundAgentRun = \context action ->
-        withObservedAgentRun observer (HList.get @ToolLimitContext context) program.agentRun (map toolName program.agentRun.exposedTools) do
+        withObservedAgentRun observer program (map toolName program.exposedTools) do
           program.aroundAgentRun (observedContext emptyObservationContext context) action
     , modelInputTranscript = \context agentState ->
         program.modelInputTranscript (observedContext emptyObservationContext context) agentState
-    , aroundModelTurn = \context agentState action ->
+    , aroundModelTurn = \context continue agentState action ->
         let turnInfo = ObservedModelTurn
-              { runId = program.agentRun.runId
+              { runId = program.runId
               , turn = agentState.turn
               , messageCount = transcriptMessageCount agentState
-              , exposedTools = map toolName program.agentRun.exposedTools
-              , toolGroups = ToolRegistry.enabledToolGroups agentState.transcript program.agentRun.runningTools
-              , finished = modelDecisionFinished program.agentRun.runId agentState.turn
+              , exposedTools = map toolName program.exposedTools
+              , toolGroups = ToolRegistry.enabledToolGroups agentState.transcript program.runningTools
+              , finished = modelDecisionFinished program.runId agentState
               }
-        in withObservedModelTurn observer turnInfo (program.aroundModelTurn (observedContext emptyObservationContext context) agentState action)
+        in withObservedModelTurn observer turnInfo (program.aroundModelTurn (observedContext emptyObservationContext context) continue agentState action)
     , aroundToolTurn = \context toolState action ->
-        program.aroundToolTurn (observedContext emptyObservationContext context) toolState action
+        toolTurn (observedContext emptyObservationContext context) toolState action
     , aroundToolCall = \turn toolCall context action ->
         let observedCall = ObservedToolCall
-              { runId = program.agentRun.runId
+              { runId = program.runId
               , turn = turn
               , toolCall = toolCall
               }
@@ -97,61 +96,60 @@ withObservation observer program =
     }
   where
     observedContext observation context =
-      observation HList.:& AgentEventObservation observer.observe HList.:& context
+      observation HList.:& EventObservation observer HList.:& context
 
-    modelDecisionFinished runId turn = \case
-      ModelAnswered AgentCompletion{finalText, tokenUsage} ->
+    modelDecisionFinished runId initialState = \case
+      Finished Result{finalText, tokenUsage} ->
         ModelTurnFinished
           { runId = runId
-          , turn = turn
+          , turn = initialState.turn
           , answerKind = "final"
           , contentLength = Text.length finalText
           , toolCalls = []
           , tokenUsage
           }
-      ModelNeedsTools ToolTurnState{agentState, toolContent, toolCalls} ->
+      NeedsTools ToolRequest{agentState, toolContent, toolCalls} _ ->
         ModelTurnFinished
           { runId = runId
-          , turn = turn
+          , turn = initialState.turn
           , answerKind = "tool_request"
           , contentLength = Text.length toolContent
           , toolCalls = toList toolCalls
           , tokenUsage = agentState.modelTokenUsage
           }
-      ModelContinues agentState ->
+      Continues _ ->
         ModelTurnFinished
           { runId = runId
-          , turn = turn
+          , turn = initialState.turn
           , answerKind = "continued"
           , contentLength = 0
           , toolCalls = []
-          , tokenUsage = agentState.modelTokenUsage
+          , tokenUsage = initialState.modelTokenUsage
           }
 
-transcriptMessageCount :: AgentState transient -> Int
-transcriptMessageCount AgentState{transcript = Transcript{messages}} =
+transcriptMessageCount :: TurnState -> Int
+transcriptMessageCount TurnState{transcript = Transcript{messages}} =
   Foldable.length messages
 
 withObservedAgentRun
-  :: AgentObserver ObservationContext es
-  -> ToolLimitContext
-  -> AgentRun es
+  :: Observer ObservationContext es
+  -> Runtime context es
   -> [Text]
-  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
-  -> Stream (Of AgentStreamOutput) (Eff es) AgentCompletion
-withObservedAgentRun observer toolLimit agentRun exposedTools action =
+  -> Stream (Of Output) (Eff es) Result
+  -> Stream (Of Output) (Eff es) Result
+withObservedAgentRun observer runtime exposedTools action =
   catchStream
     ( do
-        lift $ void $ observer.observe AgentRunStarted
-          { runId = agentRun.runId
-          , messageId = agentRun.context.message.messageId
-          , maxTurns = toolLimit.maxToolTurns
+        lift $ void $ observer AgentRunStarted
+          { runId = runtime.runId
+          , messageId = runtime.context.message.messageId
+          , maxTurns = runtime.maxTurns
           , exposedTools
           }
         result <- action
-        let AgentCompletion{status, finalText, turnsUsed} = result
-        lift $ void $ observer.observe AgentRunFinished
-          { runId = agentRun.runId
+        let Result{status, finalText, turnsUsed} = result
+        lift $ void $ observer AgentRunFinished
+          { runId = runtime.runId
           , status
           , finalLength = Text.length finalText
           , turnsUsed
@@ -159,16 +157,16 @@ withObservedAgentRun observer toolLimit agentRun exposedTools action =
         pure result
     )
     \err -> do
-      lift $ void $ observer.observe AgentRunInterrupted{runId = agentRun.runId, reason = interruptedReason err}
+      lift $ void $ observer AgentRunInterrupted{runId = runtime.runId, reason = interruptedReason err}
       lift $ throwIO err
 
 withObservedModelTurn
-  :: AgentObserver ObservationContext es
+  :: Observer ObservationContext es
   -> ObservedModelTurn result
-  -> Stream (Of AgentStreamOutput) (Eff es) result
-  -> Stream (Of AgentStreamOutput) (Eff es) result
+  -> Stream (Of Output) (Eff es) result
+  -> Stream (Of Output) (Eff es) result
 withObservedModelTurn observer turnInfo action = do
-  lift $ void $ observer.observe ModelTurnStarted
+  lift $ void $ observer ModelTurnStarted
     { runId = turnInfo.runId
     , turn = turnInfo.turn
     , messageCount = turnInfo.messageCount
@@ -176,17 +174,17 @@ withObservedModelTurn observer turnInfo action = do
     , toolGroups = turnInfo.toolGroups
     }
   result <- action
-  lift $ void $ observer.observe (turnInfo.finished result)
+  lift $ void $ observer (turnInfo.finished result)
   pure result
 
 withObservedToolCall
   :: (ToolResult -> Eff es Text)
-  -> AgentObserver ObservationContext es
+  -> Observer ObservationContext es
   -> ObservedToolCall
   -> (ObservationContext -> Eff es ToolResult)
   -> Eff es ToolResult
 withObservedToolCall toolResultForObservation observer callInfo action = do
-  observation <- observer.observe ToolCallStarted
+  observation <- observer ToolCallStarted
     { runId = callInfo.runId
     , turn = callInfo.turn
     , toolCall = callInfo.toolCall
@@ -199,23 +197,23 @@ withObservedToolCall toolResultForObservation observer callInfo action = do
 statusFromResult :: ToolResult -> (Text, ToolResult)
 statusFromResult result
   | Just failure <- toolResultFailure result =
-      (agentFailureStatus failure, result)
+      (failureStatus failure, result)
   | otherwise =
       ("ok", result)
 
-observeThreadLinked :: AgentObserver ObservationContext es -> ObservedThreadLink -> Eff es ()
+observeThreadLinked :: Observer ObservationContext es -> ObservedThreadLink -> Eff es ()
 observeThreadLinked observer ObservedThreadLink{runId, parentMessageId, linkedMessageKey} =
-  void $ observer.observe AgentThreadLinked
+  void $ observer AgentThreadLinked
     { runId
     , linkedMessageId = linkedMessageKey.messageId
     , linkedMessageKey
     , parentMessageId
     }
 
-finishToolCall :: (ToolResult -> Eff es Text) -> AgentObserver ObservationContext es -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
+finishToolCall :: (ToolResult -> Eff es Text) -> Observer ObservationContext es -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
 finishToolCall toolResultForObservation observer callInfo status result = do
   observedResult <- toolResultForObservation result
-  void $ observer.observe ToolCallFinished
+  void $ observer ToolCallFinished
     { runId = callInfo.runId
     , turn = callInfo.turn
     , toolCallId = callInfo.toolCall.id

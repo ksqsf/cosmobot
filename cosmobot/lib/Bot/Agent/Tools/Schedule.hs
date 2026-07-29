@@ -85,7 +85,7 @@ scheduledPrompt message =
     parsePrompt =
       Aeson.withObject "scheduled action" (Aeson..: Key.fromText "prompt")
 
-scheduledAgentMessage :: AgentContext -> Int -> Text -> IncomingMessage
+scheduledAgentMessage :: Context -> Int -> Text -> IncomingMessage
 scheduledAgentMessage context delaySeconds prompt =
   let original = context.message
       commandText = context.askCommand <> " " <> prompt

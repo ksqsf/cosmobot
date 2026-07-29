@@ -94,22 +94,20 @@ The two tools are model-visible control forms interpreted by
 `Bot.Agent.Middleware.Continuation`, rather than ordinary external
 capabilities.
 
-The middleware uses `aroundToolTurn`, where it can see both the pre-tool
-`AgentState` and the assistant message containing the tool call. Captured
-continuations live in the run-local transient HList state and contain:
-
-- the assistant/tool-call transcript at the capture point;
-- the original capture `ToolCall`;
-- a monotonically increasing nesting ordinal.
+The middleware wraps the coinductive agent `Program` through
+`aroundProgram`. A captured continuation is the actual `Program`
+resumption closure together with a monotonically increasing nesting
+ordinal. The saved map is lexical to that program run; it is not part
+of `TurnState` or the typed middleware context.
 
 The continuation ID is the original tool-call ID. On resume, the
 middleware:
 
 1. records the `resume_continuation` call through normal tool
    observation;
-2. replaces the current transcript with the saved capture transcript;
-3. appends a tool result to the original capture call containing the
-   JSON value;
+2. invokes the saved resumption with the current state and JSON value;
+3. restores the capture transcript and appends a tool result to the
+   original capture call;
 4. removes the resumed continuation and all newer nested
    continuations;
 5. advances the current tool-turn counter instead of restoring the old
@@ -118,6 +116,10 @@ middleware:
 The last rule prevents continuations from bypassing the agent
 tool-turn limit.  A valid, sole `resume_continuation` may execute at
 the limit so the agent can escape a branch and produce a final answer.
+
+A steering restart re-enters the complete `aroundProgram` composition
+and therefore starts with an empty continuation map. Ordinary
+model/tool recursion stays inside the current program scope.
 
 The middleware intercepts a continuation name only when that tool is
 present in the run's exposed tools. Mixed continuation and sibling

@@ -38,7 +38,7 @@ data RunningTool es = RunningTool
   }
 
 -- | Start a tool for this agent run.
-startToolRun :: Concurrent :> es => AgentContext -> Tool es -> Eff es (RunningTool es)
+startToolRun :: Concurrent :> es => Context -> Tool es -> Eff es (RunningTool es)
 startToolRun context definition = do
   currentSchema <- MVar.newMVar Nothing
   run <- startTool definition context
@@ -175,7 +175,7 @@ duplicateNames schemas =
 -- per-run runner.
 runToolCall
   :: Concurrent :> es
-  => AgentContext
+  => Context
   -> ToolCallMetadata
   -> [Tool es]
   -> [RunningTool es]
@@ -186,17 +186,17 @@ runToolCall context metadata tools runningTools call =
     Nothing ->
       case find ((== call.name) . toolName) tools of
         Just definition | not (toolAllowed definition context) ->
-          pure (toolFailure (permissionDeniedFailure [i|Permission denied for tool: #{callName}|] [i|Tool #{callName} is not allowed in this agent context.|]).failure)
+          pure (toolFailure (permissionDeniedFailure [i|Permission denied for tool: #{callName}|] [i|Tool #{callName} is not allowed in this agent context.|]))
         _ ->
-          pure (toolFailure (permanentArgumentFailure [i|Unknown tool: #{callName}|] [i|The model requested an unknown tool: #{callName}|]).failure)
+          pure (toolFailure (permanentArgumentFailure [i|Unknown tool: #{callName}|] [i|The model requested an unknown tool: #{callName}|]))
     Just runningTool ->
       case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 call.arguments) of
         Left err ->
-          pure (toolFailure (permanentArgumentFailure [i|Invalid JSON arguments for #{callName}: #{err}|] [i|Invalid JSON arguments for #{callName}: #{err}|]).failure)
+          pure (toolFailure (permanentArgumentFailure [i|Invalid JSON arguments for #{callName}: #{err}|] [i|Invalid JSON arguments for #{callName}: #{err}|]))
         Right args ->
           case toolEnableArgumentError runningTools callName args of
             Just err ->
-              pure (toolFailure (permanentArgumentFailure err err).failure)
+              pure (toolFailure (permanentArgumentFailure err err))
             Nothing ->
               runningTool.run metadata args
   where

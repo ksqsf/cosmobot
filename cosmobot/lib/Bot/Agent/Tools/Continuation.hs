@@ -5,12 +5,8 @@ Stability   : experimental
 -}
 module Bot.Agent.Tools.Continuation
   ( ContinuationRequest (..)
-  , ContinuationState (..)
-  , SavedContinuation (..)
   , captureContinuationTool
-  , canResumeContinuation
   , continuationRequest
-  , emptyContinuationState
   , isContinuationToolName
   , resumeContinuationTool
   )
@@ -19,45 +15,17 @@ where
 import Bot.Agent.Tools.Common
 import Bot.Agent.Tool
 import Bot.Agent.Types
-import Bot.Core.Transcript
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
-import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 
 data ContinuationRequest
   = CaptureContinuation !(Maybe Text)
   | ResumeContinuation !Text !Aeson.Value
-
-data SavedContinuation = SavedContinuation
-  { ordinal :: !Int
-  , answered :: !Transcript
-  , captureCall :: !LLM.ToolCall
-  }
-
-data ContinuationState = ContinuationState
-  { nextOrdinal :: !Int
-  , saved :: !(Map.Map Text SavedContinuation)
-  }
-
-emptyContinuationState :: ContinuationState
-emptyContinuationState =
-  ContinuationState
-    { nextOrdinal = 0
-    , saved = Map.empty
-    }
-
-canResumeContinuation :: ContinuationState -> LLM.ToolCall -> Bool
-canResumeContinuation continuationState call =
-  case continuationRequest call of
-    Just (Right (ResumeContinuation continuationId _)) ->
-      Map.member continuationId continuationState.saved
-    _ ->
-      False
 
 captureContinuationTool :: Tool es
 captureContinuationTool =
@@ -86,7 +54,7 @@ controlTool :: Text -> Text -> ParsedArguments a -> Tool es
 controlTool name description arguments =
   withDescription description
   $ tool name arguments \_ ->
-      pure (toolFailure (permanentArgumentFailure failure failure).failure)
+      pure (toolFailure (permanentArgumentFailure failure failure))
   where
     failure = [i|Tool #{name} requires an agent program with continuation middleware.|]
 

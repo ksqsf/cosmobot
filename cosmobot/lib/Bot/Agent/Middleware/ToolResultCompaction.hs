@@ -5,8 +5,7 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Middleware.ToolResultCompaction
-  ( NextModelInput (..)
-  , maxToolResultPreviewChars
+  ( maxToolResultPreviewChars
   , maxImmediateToolResultChars
   , compactLargeToolResultText
   , compactLargeToolResultsInTranscript
@@ -41,35 +40,34 @@ maxImmediateToolResultChars :: Int
 maxImmediateToolResultChars =
   10000
 
-newtype NextModelInput = NextModelInput
-  { transcript :: Maybe Transcript
-  }
-
 withToolResultCompaction
-  :: (Media.Media :> es, HList.Has NextModelInput transient, HList.Put NextModelInput transient)
-  => AgentProgram transient (ToolResultObservation es ': context) es
-  -> AgentProgram transient context es
-withToolResultCompaction program =
+  :: Media.Media :> es
+  => Runtime (ToolResultObservation es ': context) es
+  -> Runtime context es
+withToolResultCompaction program@Runtime{aroundToolTurn = toolTurn} =
   program
     { aroundAgentRun = \context action ->
         program.aroundAgentRun (toolResultObservation HList.:& context) action
     , modelInputTranscript = \context agentState ->
-        case (HList.get @NextModelInput agentState.transient).transcript of
+        case agentState.nextModelTranscript of
           Just transcript ->
             pure transcript
           Nothing ->
             program.modelInputTranscript (toolResultObservation HList.:& context) agentState
-    , aroundModelTurn = \context agentState action -> do
-        decision <- program.aroundModelTurn (toolResultObservation HList.:& context) agentState action
+    , aroundModelTurn = \context continue agentState action -> do
+        decision <- program.aroundModelTurn (toolResultObservation HList.:& context) continue agentState action
         pure (clearConsumedModelInput decision)
     , aroundToolTurn = \context toolState action -> do
-        fullState <- program.aroundToolTurn (toolResultObservation HList.:& context) toolState action
+        (fullState, result) <- toolTurn (toolResultObservation HList.:& context) toolState action
         immediateTranscript <- compactToolResultsInTranscript maxImmediateToolResultChars fullState.transcript
         compactedTranscript <- compactLargeToolResultsInTranscript immediateTranscript
-        pure fullState
-          { transcript = compactedTranscript
-          , transient = HList.put (NextModelInput (Just immediateTranscript)) fullState.transient
-          }
+        pure
+          ( fullState
+              { transcript = compactedTranscript
+              , nextModelTranscript = Just immediateTranscript
+              }
+          , result
+          )
     , aroundToolCall = \turn call context action ->
         program.aroundToolCall turn call (toolResultObservation HList.:& context) action
     }
@@ -78,22 +76,20 @@ withToolResultCompaction program =
       ToolResultObservation (compactLargeToolResultText . toolResultContent)
 
 clearConsumedModelInput
-  :: HList.Put NextModelInput transient
-  => ModelDecision transient
-  -> ModelDecision transient
+  :: Step es result
+  -> Step es result
 clearConsumedModelInput = \case
-  ModelAnswered completion ->
-    ModelAnswered completion
-  ModelNeedsTools toolState ->
-    ModelNeedsTools toolState
+  Finished result ->
+    Finished result
+  NeedsTools toolState continue ->
+    NeedsTools toolState
       { agentState = toolState.agentState
-          { transient = HList.put (NextModelInput Nothing) toolState.agentState.transient
+          { nextModelTranscript = Nothing
           }
       }
-  ModelContinues agentState ->
-    ModelContinues agentState
-      { transient = HList.put (NextModelInput Nothing) agentState.transient
-      }
+      continue
+  Continues program ->
+    Continues program
 
 compactLargeToolResultsInMessages :: Media.Media :> es => [LLM.ChatMessage] -> Eff es [LLM.ChatMessage]
 compactLargeToolResultsInMessages =
