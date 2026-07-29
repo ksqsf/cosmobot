@@ -45,11 +45,15 @@ queryChatLogTool =
       )
       \limit sender includeBotMessages since before -> do
         context <- askToolContext
+        let senderFilter = do
+              value <- Text.strip <$> sender
+              guard (not (Text.null value))
+              pure value
         case chatLogTimeRange since before of
           Left err ->
             pure (argumentFailure err)
           Right timeRange -> do
-            entries <- ChatLog.queryChat context.message sender (max 0 limit) includeBotMessages timeRange
+            entries <- ChatLog.queryChat context.message senderFilter (max 0 limit) includeBotMessages timeRange
             pure (toolText (jsonText (map chatLogToolEntry entries)))
 
 queryCurrentSenderChatLogTool :: ChatLog.ChatLog :> es => Tool es

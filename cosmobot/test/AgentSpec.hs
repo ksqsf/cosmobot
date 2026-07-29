@@ -218,6 +218,7 @@ main =
       , testCase "send file tool is noisy and superuser-only" testSendFileToolIsNoisyAndSuperuserOnly
       , testCase "send_media uploads cached media for normal users" testSendMediaToolUploadsCachedMedia
       , testCase "chatlog tool filters by sender" testChatLogToolFiltersBySender
+      , testCase "chatlog tool treats a blank sender as no filter" testChatLogToolIgnoresBlankSender
       , testCase "current sender chatlog tool queries matching sender messages globally" testCurrentSenderChatLogToolQueriesChatLog
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
@@ -803,6 +804,27 @@ testChatLogToolFiltersBySender = do
   entries <- decodeSingleChatLogToolOutput transcript
   texts <- traverse (either assertFailure pure . AesonTypes.parseEither (Aeson.withObject "chat log entry" (\entry -> entry Aeson..: "text" :: AesonTypes.Parser Text))) entries
   texts @?= ["bob"]
+
+testChatLogToolIgnoresBlankSender :: IO ()
+testChatLogToolIgnoresBlankSender = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "chat_log" (Aeson.object
+        [ "before" Aeson..= ("2100-01-01T00:00:00Z" :: Text)
+        , "include_bot_messages" Aeson..= True
+        , "limit" Aeson..= (100 :: Int)
+        , "sender" Aeson..= ("" :: Text)
+        , "since" Aeson..= ("1970-01-01T00:00:00Z" :: Text)
+        ])]
+    , chatAnswer "found" []
+    ]
+  (_, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    ChatLog.recordMessage (chatLogMessage 301 "200" 100 "alice")
+    ChatLog.recordMessage (chatLogMessage 302 "201" 100 "bob")
+    ChatLog.recordMessage (chatLogMessage 303 "201" 101 "bob elsewhere")
+    Agent.runAgent 4 agentContext AgentTools.defaultTools (startWithEnabledTools ["chat"] "show recent messages")
+  entries <- decodeSingleChatLogToolOutput transcript
+  texts <- traverse (either assertFailure pure . AesonTypes.parseEither (Aeson.withObject "chat log entry" (\entry -> entry Aeson..: "text" :: AesonTypes.Parser Text))) entries
+  texts @?= ["alice", "bob"]
 
 testUserAvatarToolQueriesChatEffect :: IO ()
 testUserAvatarToolQueriesChatEffect = do
