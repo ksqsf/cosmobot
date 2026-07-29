@@ -28,8 +28,7 @@ auditHandlers
   -> [RouteHandler es]
 auditHandlers threads =
   [ withHelp (RouteHelp "!stats" "Show cumulative agent statistics for a replied thread message (superuser only).") $
-    requireAuth isSuperuser (\message -> void $ Chat.replyTo message "只有 superuser 可以查看 agent stats。") $
-      stopOn (command "!stats") (handleStats threads)
+    stopOn (command "!stats") (handleStats threads)
   , withHelp (RouteHelp "!audit [all|log|<id>]" "Inspect agent tool-use audit records (superuser only).") $
     requireAuth isSuperuser (\message -> void $ Chat.replyTo message "只有 superuser 可以查看 audit。") $
       stopOn (command "!audit") (handleAudit threads)
