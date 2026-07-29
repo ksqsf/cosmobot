@@ -18,6 +18,9 @@ import Bot.Core.Transcript (Transcript)
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.Types as AesonTypes
+import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.MVar as MVar
@@ -26,6 +29,7 @@ import System.IO.Error (userError)
 -- | A tool runner bound to one agent run.
 data RunningTool es = RunningTool
   { name  :: !Text
+  , tags :: ![ToolTag]
   , noisy :: !Bool
   , currentSchema :: !(MVar.MVar (Maybe LLM.FunctionTool))
   , resolveSchema :: Transcript -> Int -> Eff es (Maybe LLM.FunctionTool)
@@ -38,9 +42,10 @@ startToolRun context definition = do
   currentSchema <- MVar.newMVar Nothing
   run <- startTool definition context
   let name = toolName definition
+      tags = toolTags definition
       toolNoisy = toolIsNoisy definition
       resolveSchema = resolveToolSchema definition context
-  pure RunningTool{name, noisy = toolNoisy, currentSchema, resolveSchema, run}
+  pure RunningTool{name, tags, noisy = toolNoisy, currentSchema, resolveSchema, run}
 
 -- | Resolve and freeze the schemas visible in one model turn.
 resolveToolSchemas
@@ -57,10 +62,87 @@ resolveToolSchemas transcript turn runningTools = do
     duplicates ->
       throwIO (userError [i|Duplicate resolved tool names: #{Text.intercalate ", " duplicates}|])
   where
+    enabledTags =
+      Set.fromList
+        [ tag
+        | request <- toolEnableTagRequests transcript
+        , not (null request)
+        , all (`Set.member` availableTagNames runningTools) request
+        , tag <- request
+        ]
+
     resolve runningTool = do
-      schema <- runningTool.resolveSchema transcript turn
+      resolved <-
+        if toolTagsVisible enabledTags runningTool.tags
+          then runningTool.resolveSchema transcript turn
+          else pure Nothing
+      let schema
+            | runningTool.name == toolEnableName =
+                toolEnableSchema runningTools <$> resolved
+            | otherwise =
+                resolved
       MVar.modifyMVar_ runningTool.currentSchema (const (pure schema))
       pure schema
+
+toolTagsVisible :: Set.Set Text -> [ToolTag] -> Bool
+toolTagsVisible enabledTags =
+  any \case
+    Essential ->
+      True
+    Named tag ->
+      Set.member tag.tagName enabledTags
+
+availableNamedTags :: [RunningTool es] -> [NamedTag]
+availableNamedTags runningTools =
+  ordNub
+    [ tag
+    | runningTool <- runningTools
+    , Named tag <- runningTool.tags
+    ]
+
+availableTagNames :: [RunningTool es] -> Set.Set Text
+availableTagNames =
+  Set.fromList . map (.tagName) . availableNamedTags
+
+toolEnableSchema :: [RunningTool es] -> LLM.FunctionTool -> LLM.FunctionTool
+toolEnableSchema runningTools schema =
+  schema
+    { LLM.description =
+        Text.unlines
+          ( "Enable additional tool tags for the current thread. Enable every tag you expect to need as early as possible, preferably in one call. Enabled tags remain active in later turns."
+          : "Available tags:"
+          : map renderTag tags
+          )
+    , LLM.parameters =
+        Aeson.object
+          [ "type" Aeson..= Aeson.String "object"
+          , "properties" Aeson..= Aeson.object
+              [ "tags" Aeson..= Aeson.object
+                  [ "type" Aeson..= Aeson.String "array"
+                  , "items" Aeson..= Aeson.object
+                      [ "type" Aeson..= Aeson.String "string"
+                      , "enum" Aeson..= map (.tagName) tags
+                      ]
+                  , "minItems" Aeson..= (1 :: Int)
+                  , "description" Aeson..= ("Tool tags to enable." :: Text)
+                  ]
+              ]
+          , "required" Aeson..= (["tags"] :: [Text])
+          , "additionalProperties" Aeson..= False
+          ]
+    }
+  where
+    tags =
+      availableNamedTags runningTools
+
+    renderTag tag@NamedTag{tagName, tagDescription} =
+      [i|- #{tagName}: #{tagDescription} Tools: #{Text.intercalate ", " (toolsFor tag)}|]
+
+    toolsFor tag =
+      [ runningTool.name
+      | runningTool <- runningTools
+      , Named tag `elem` runningTool.tags
+      ]
 
 duplicateNames :: [LLM.FunctionTool] -> [Text]
 duplicateNames schemas =
@@ -93,9 +175,33 @@ runToolCall context metadata tools runningTools call =
         Left err ->
           pure (toolFailure (permanentArgumentFailure [i|Invalid JSON arguments for #{callName}: #{err}|] [i|Invalid JSON arguments for #{callName}: #{err}|]).failure)
         Right args ->
-          runningTool.run metadata args
+          case toolEnableArgumentError runningTools callName args of
+            Just err ->
+              pure (toolFailure (permanentArgumentFailure err err).failure)
+            Nothing ->
+              runningTool.run metadata args
   where
     callName = call.name
+
+toolEnableArgumentError :: [RunningTool es] -> Text -> Aeson.Value -> Maybe Text
+toolEnableArgumentError runningTools callName arguments
+  | callName /= toolEnableName =
+      Nothing
+  | otherwise =
+      case AesonTypes.parseEither parser arguments of
+        Left err ->
+          Just (toText err)
+        Right [] ->
+          Just "tags must not be empty."
+        Right requested ->
+          case filter (`Set.notMember` availableTagNames runningTools) requested of
+            [] ->
+              Nothing
+            unknown ->
+              Just [i|Unknown tool tags: #{Text.intercalate ", " (ordNub unknown)}|]
+  where
+    parser =
+      Aeson.withObject "tool_enable arguments" (Aeson..: Key.fromText "tags")
 
 findRunningTool :: Concurrent :> es => Text -> [RunningTool es] -> Eff es (Maybe (RunningTool es))
 findRunningTool _ [] =

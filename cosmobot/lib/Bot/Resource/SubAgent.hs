@@ -119,12 +119,23 @@ sendPrompt runner metadata subagentId availableTools context subagent prompt =
       Just _ -> pure (snapshot, Left "Subagent is still generating.")
       Nothing -> do
         let transcript = maybe (startWithUser prompt) (appendUser prompt) snapshot.transcript
-            selectedTools = filter ((`elem` subagent.arguments.toolNames) . toolName) availableTools
+            requestedNames = subagent.arguments.toolNames
+            requestedTools = filter ((`elem` requestedNames) . toolName) availableTools
+            needsEnable = any (any isNamedTag . toolTags) requestedTools
+            selectedTools = filter
+              (\definition ->
+                toolName definition `elem` requestedNames
+                  || needsEnable && toolName definition == toolEnableName)
+              availableTools
             childContext = context {Agent.systemContext = subagent.arguments.systemContext}
         worker <- Concurrency.forkWithHandle "subagent" \worker -> do
           result <- trySync (runner metadata subagentId worker childContext selectedTools transcript)
           MVar.modifyMVar_ subagent.state (pure . finishRun worker result)
         pure (snapshot {active = Just worker, runs = worker : snapshot.runs}, Right ())
+  where
+    isNamedTag = \case
+      Named _ -> True
+      Essential -> False
 
 finishRun
   :: Concurrency.Handle

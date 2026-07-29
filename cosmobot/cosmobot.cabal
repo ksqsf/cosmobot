@@ -186,6 +186,7 @@ library
         Bot.Agent.Tools.Chat
         Bot.Agent.Tools.Common
         Bot.Agent.Tools.Continuation
+        Bot.Agent.Tools.Meta
         Bot.Agent.Tools.Emacs
         Bot.Agent.Tools.Files
         Bot.Agent.Tools.Image

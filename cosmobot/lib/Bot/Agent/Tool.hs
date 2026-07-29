@@ -5,6 +5,8 @@ Stability   : experimental
 -}
 module Bot.Agent.Tool
   ( Tool
+  , NamedTag (..)
+  , ToolTag (..)
   , ToolRunner
   , ToolArgument
   , ParsedArguments
@@ -24,10 +26,14 @@ module Bot.Agent.Tool
   , noisy
   , resolveToolSchema
   , startTool
+  , tagged
   , tool
+  , toolEnableName
+  , toolEnableTagRequests
   , toolAllowed
   , toolIsNoisy
   , toolName
+  , toolTags
   , toolWithRunState
   , withDescription
   , withDescriptionBy
@@ -35,12 +41,14 @@ module Bot.Agent.Tool
 where
 
 import Bot.Agent.Types
-import Bot.Core.Transcript (Transcript)
+import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
+import qualified Data.Foldable as Foldable
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Reader.Static as Reader
 
 type ToolRunner es =
@@ -65,6 +73,36 @@ askToolCallMetadata
   => Eff es ToolCallMetadata
 askToolCallMetadata =
   Reader.ask @ToolCallContext <&> (.metadata)
+
+data NamedTag = NamedTag
+  { tagName :: !Text
+  , tagDescription :: !Text
+  }
+  deriving (Eq, Ord, Show)
+
+data ToolTag
+  = Named !NamedTag
+  | Essential
+  deriving (Eq, Ord, Show)
+
+toolEnableName :: Text
+toolEnableName =
+  "tool_enable"
+
+toolEnableTagRequests :: Transcript -> [[Text]]
+toolEnableTagRequests (Transcript messages) =
+  [ tags
+    | message <- Foldable.toList messages
+    , message.role == "assistant"
+    , call <- message.toolCalls
+    , call.name == toolEnableName
+    , Just tags <- [decodeTags call.arguments]
+    ]
+  where
+    decodeTags =
+      Aeson.decodeStrict' . TextEncoding.encodeUtf8
+        >=> AesonTypes.parseMaybe
+          (Aeson.withObject "tool_enable arguments" (Aeson..: Key.fromText "tags"))
 
 data ToolArgument a = ToolArgument
   { argumentName :: !Text
@@ -306,6 +344,7 @@ argumentsObjectSchema fields required =
 -- resolution may hide the tool or change its description and parameters.
 data Tool es = Tool
   { name :: !Text
+  , tags :: ![ToolTag]
   , schemaResolver :: AgentContext -> Transcript -> Int -> Eff es (Maybe LLM.FunctionTool)
   , noisyFlag :: !Bool
   , allowedPredicate :: AgentContext -> Bool
@@ -331,6 +370,7 @@ toolWithRunState
 toolWithRunState name arguments initialize handler =
   Tool
     { name
+    , tags = [Essential]
     , schemaResolver = \_ _ _ -> pure (Just LLM.FunctionTool
         { name
         , description = ""
@@ -363,6 +403,10 @@ allowWhen predicate definition =
     { allowedPredicate = \context ->
         definition.allowedPredicate context && predicate context
     }
+
+tagged :: [NamedTag] -> Tool es -> Tool es
+tagged tags definition =
+  definition{tags = map Named tags}
 
 noisy :: Tool es -> Tool es
 noisy definition =
@@ -403,6 +447,10 @@ withDescriptionBy description =
 toolName :: Tool es -> Text
 toolName Tool{name} =
   name
+
+toolTags :: Tool es -> [ToolTag]
+toolTags Tool{tags} =
+  tags
 
 resolveToolSchema
   :: Tool es

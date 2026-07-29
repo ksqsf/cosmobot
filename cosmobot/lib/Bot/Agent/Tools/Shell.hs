@@ -23,7 +23,8 @@ import Effectful.Timeout
 
 runBashTool :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Tool es
 runBashTool =
-  allowWhen superuserOnly
+  tagged [workTag]
+  . allowWhen superuserOnly
   . withDescription "Run a bash script and obtain outputs; do not run malicious code."
   $ tool "run_bash"
       ( validateArgument validScript

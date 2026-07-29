@@ -28,7 +28,8 @@ subagentTool
   -> [Tool es]
   -> Tool es
 subagentTool runner availableTools =
-  allowWhen (isRight . Resource.accessFromMessage . (.message))
+  tagged [workTag]
+  . allowWhen (isRight . Resource.accessFromMessage . (.message))
   . withDescription "Manage background agents scoped to the current chat. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
   $ tool "subagent"
       (parsedArguments

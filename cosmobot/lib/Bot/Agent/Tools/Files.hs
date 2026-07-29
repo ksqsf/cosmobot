@@ -19,7 +19,8 @@ import Bot.Prelude
 
 acpReadClientFileTool :: ACP.ACP :> es => Tool es
 acpReadClientFileTool =
-  allowWhen acpOnly
+  tagged [workTag]
+  . allowWhen acpOnly
   . withDescription "Read a UTF-8 text file from the connected ACP client workspace. Relative paths are resolved against the ACP session cwd."
   $ tool "acp_read_client_file"
       ( requiredText "path" "Absolute file path, or a path relative to the ACP session cwd."
@@ -36,7 +37,8 @@ acpReadClientFileTool =
 
 acpWriteClientFileTool :: ACP.ACP :> es => Tool es
 acpWriteClientFileTool =
-  allowWhen acpOnly
+  tagged [workTag]
+  . allowWhen acpOnly
   . withDescription "Write a UTF-8 text file in the connected ACP client workspace. Relative paths are resolved against the ACP session cwd."
   $ tool "acp_write_client_file"
       ( requiredText "path" "Absolute file path, or a path relative to the ACP session cwd."

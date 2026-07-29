@@ -22,6 +22,7 @@ import Bot.Agent.Tools.Shell
 import Bot.Agent.Tools.Skills
 import Bot.Agent.Tools.SubAgent
 import Bot.Agent.Tools.Continuation
+import Bot.Agent.Tools.Meta
 import Bot.Agent.Tools.Terminal
 import Bot.Agent.Tools.Time
 import Bot.Agent.Tools.Typst
@@ -73,7 +74,8 @@ defaultTools
 defaultTools = tools
   where
     tools =
-      [ acpReadClientFileTool
+      [ toolEnableTool
+      , acpReadClientFileTool
       , acpWriteClientFileTool
       , queryChatLogTool
       , queryCurrentSenderChatLogTool

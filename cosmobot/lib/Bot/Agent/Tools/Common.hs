@@ -8,7 +8,9 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Tools.Common
-  ( superuserOnly
+  ( chatTag
+  , workTag
+  , superuserOnly
   , requiredText
   , optionalText
   , optionalInteger
@@ -45,6 +47,14 @@ import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
 import qualified Data.Text.Encoding as TextEncoding
+
+chatTag :: NamedTag
+chatTag =
+  NamedTag "chat" "Interact with the current chat, messages, members, files, and media."
+
+workTag :: NamedTag
+workTag =
+  NamedTag "work" "Create media, manage memory and schedules, run commands, and use workspaces or subagents."
 
 superuserOnly :: AgentContext -> Bool
 superuserOnly =

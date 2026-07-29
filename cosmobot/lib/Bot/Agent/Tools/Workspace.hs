@@ -28,7 +28,8 @@ workspaceTool
   :: (Resource.Resource :> es, FileSystem.FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => Tool es
 workspaceTool =
-  allowWhen (\context -> superuserOnly context && isRight (Resource.accessFromMessage context.message))
+  tagged [workTag]
+  . allowWhen (\context -> superuserOnly context && isRight (Resource.accessFromMessage context.message))
   . withDescription "Manage dedicated /work workspaces for multi-step work such as repositories, scripts, CI, research, or operations. list returns a JSON array of accessible workspace names. Create one before substantial work, read repository instructions before editing, and keep WORK.md current with the goal, paths, branches, commits, validation, environment notes, and blockers. Verify the authenticated account and required permissions before remote operations. Prefer a topic branch and a pull request with a summary and validation. Actions: create, list, query, update, rename, delete."
   $ tool "workspace"
       (parsedArguments

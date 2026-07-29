@@ -20,7 +20,8 @@ import qualified Data.Text as Text
 
 typstRenderTool :: (Chat.Chat :> es, Typst.Typst :> es) => Tool es
 typstRenderTool =
-  withDescription "Render a Typst document and send it to the current chat. Use this for diagrams, tables, formulas, posters, or other precise layouts that should be generated from Typst source. The source must be a complete Typst document."
+  tagged [workTag]
+  . withDescription "Render a Typst document and send it to the current chat. Use this for diagrams, tables, formulas, posters, or other precise layouts that should be generated from Typst source. The source must be a complete Typst document."
   $ tool "typst_render"
       ( requiredText "source" "Complete Typst source. Use self-contained content; external files are not available."
       , requiredArgument (fieldText "format" "'png' or 'pdf'. For QQ: only use PNG.")

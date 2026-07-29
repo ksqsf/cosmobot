@@ -34,7 +34,8 @@ import Data.Time (UTCTime)
 
 queryChatLogTool :: ChatLog.ChatLog :> es => Tool es
 queryChatLogTool =
-  withDescription "Return recent messages recorded in the current chat, optionally filtered by exact sender id. Results are in chronological order and include timestamps, sender ids, message ids, image urls, and text. Use since or before to page through time."
+  tagged [chatTag]
+  . withDescription "Return recent messages recorded in the current chat, optionally filtered by exact sender id. Results are in chronological order and include timestamps, sender ids, message ids, image urls, and text. Use since or before to page through time."
   $ tool "chat_log"
       ( requiredInt "limit" "Maximum number of recent messages to return."
       , optionalText "sender" "Optional exact sender id to include."
@@ -53,7 +54,8 @@ queryChatLogTool =
 
 queryCurrentSenderChatLogTool :: ChatLog.ChatLog :> es => Tool es
 queryCurrentSenderChatLogTool =
-  withDescription "Return messages from the current sender whose text matches any keyword group. scope=chat searches only the current chat; scope=global searches all chats on the current platform. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
+  tagged [chatTag]
+  . withDescription "Return messages from the current sender whose text matches any keyword group. scope=chat searches only the current chat; scope=global searches all chats on the current platform. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
   $ tool "sender_log"
       ( requiredArgument (fieldTextArrayArray "keywords" "Keyword groups. Each inner array is joined with '%' and wrapped with '%' for ordered fuzzy matching.")
       , validateArgument validSenderLogLimit
@@ -83,7 +85,8 @@ queryCurrentSenderChatLogTool =
 
 sendReplyTool :: Chat.Chat :> es => Tool es
 sendReplyTool =
-  withDescription "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
+  tagged [chatTag]
+  . withDescription "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
   $ tool "send_reply"
       ( optionalText "text" "Message text to send. May be omitted when image_urls is non-empty."
       , optionalTextArray "image_urls" "Image URLs to send as images in the same reply. The platform must be able to fetch these URLs."
@@ -112,7 +115,8 @@ sendReplyTool =
 
 sendFileTool :: Chat.Chat :> es => Tool es
 sendFileTool =
-  noisy
+  tagged [chatTag]
+  . noisy
   . allowWhen superuserOnly
   . withDescriptionBy (\context ->
       "Send a local file to the same chat as the current user message. "
@@ -143,7 +147,8 @@ sendFileTool =
 
 mentionUserTool :: Chat.Chat :> es => Tool es
 mentionUserTool =
-  withDescription "Send a reply in the current chat that mentions the given platform user id. Matrix user ids are textual, for example @user:server."
+  tagged [chatTag]
+  . withDescription "Send a reply in the current chat that mentions the given platform user id. Matrix user ids are textual, for example @user:server."
   $ tool "mention_user"
       ( userIdArgument "Platform user id to mention."
       , requiredText "text" "Message text to send after the mention."
@@ -163,7 +168,8 @@ mentionUserTool =
 
 senderMemberInfoTool :: Chat.Chat :> es => Tool es
 senderMemberInfoTool =
-  withDescription "Get platform-provided member information for the sender of the current message in the current group chat."
+  tagged [chatTag]
+  . withDescription "Get platform-provided member information for the sender of the current message in the current group chat."
   $ tool "sender_info" noArguments do
       context <- askToolContext
       info <- Chat.getSenderMemberInfo context.message
@@ -171,7 +177,8 @@ senderMemberInfoTool =
 
 memberInfoTool :: Chat.Chat :> es => Tool es
 memberInfoTool =
-  withDescription "Get platform-provided member information for any user id in the current group chat."
+  tagged [chatTag]
+  . withDescription "Get platform-provided member information for any user id in the current group chat."
   $ tool "member_info"
       (userIdArgument "Platform user id to query in the current group.")
       \userId -> do
@@ -181,7 +188,8 @@ memberInfoTool =
 
 userAvatarTool :: (Chat.Chat :> es, KatipE :> es) => Tool es
 userAvatarTool =
-  withDescription "Get avatar information for a platform user id and send the avatar image to the current chat."
+  tagged [chatTag]
+  . withDescription "Get avatar information for a platform user id and send the avatar image to the current chat."
   $ tool "user_avatar"
       (userIdArgument "Platform user id to query. Use message_info first when the target is the current sender or a mentioned user. 0 is invalid.")
       \userId -> do
@@ -195,7 +203,8 @@ userAvatarTool =
 
 listGroupMembersTool :: Chat.Chat :> es => Tool es
 listGroupMembersTool =
-  withDescription "List members in the current group chat, including platform user ids and nicknames when available. QQ groups are supported. Telegram Bot API does not expose full member lists, so Telegram may return unavailable."
+  tagged [chatTag]
+  . withDescription "List members in the current group chat, including platform user ids and nicknames when available. QQ groups are supported. Telegram Bot API does not expose full member lists, so Telegram may return unavailable."
   $ tool "group_members" noArguments do
       context <- askToolContext
       members <- Chat.listGroupMembers context.message
@@ -203,7 +212,8 @@ listGroupMembersTool =
 
 currentMessageInfoTool :: Tool es
 currentMessageInfoTool =
-  withDescription "Return structured metadata for the current message, including platform, chat, sender, message ids, mentions, image URLs, and text."
+  tagged [chatTag]
+  . withDescription "Return structured metadata for the current message, including platform, chat, sender, message ids, mentions, image URLs, and text."
   $ tool "message_info" noArguments do
       context <- askToolContext
       pure (toolText (jsonText (currentMessageInfoValue context.message)))

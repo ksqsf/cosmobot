@@ -24,7 +24,8 @@ import qualified Data.Text as Text
 
 terminalTool :: ACP.ACP :> es => Tool es
 terminalTool =
-  allowWhen ((== PlatformACP) . (.platform) . (.message))
+  tagged [workTag]
+  . allowWhen ((== PlatformACP) . (.platform) . (.message))
   . withDescription "Run or manage a command in the connected ACP client. Actions: create, output, wait_for_exit, kill, release."
   $ tool "terminal"
       (parsedArguments

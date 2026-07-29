@@ -20,7 +20,8 @@ import qualified Data.Text as Text
 
 generateAudioTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
 generateAudioTool =
-  noisy
+  tagged [workTag]
+  . noisy
   . withDescription "Generate speech or other audio from a prompt and send it to the current chat. Use this when the user asks to create, synthesize, speak, narrate, or generate an audio clip. After using this tool, keep the final answer brief and do not repeat the audio reference."
   $ tool "audio_generate"
       (requiredText "prompt" "The words to be converted into audio")

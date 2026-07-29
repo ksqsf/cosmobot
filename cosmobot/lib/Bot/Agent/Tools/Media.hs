@@ -35,7 +35,8 @@ maxReadSize =
 
 readMediaTextTool :: (Media.Media :> es, FileSystem :> es) => Tool es
 readMediaTextTool =
-  withDescription "Read a UTF-8 text slice from a cached media object. Use this with media ids returned in omitted tool results, such as mf_xxx or media:mf_xxx. offset and size are character counts."
+  tagged [workTag]
+  . withDescription "Read a UTF-8 text slice from a cached media object. Use this with media ids returned in omitted tool results, such as mf_xxx or media:mf_xxx. offset and size are character counts."
   $ tool "media_text"
       ( validateArgument nonEmptyMediaId
           (requiredText "media_id" "Media id to read, either mf_xxx or media:mf_xxx.")
@@ -49,14 +50,16 @@ readMediaTextTool =
 
 mediaToFileTool :: Media.Media :> es => Tool es
 mediaToFileTool =
-  withDescription "Resolve a cached media object to its existing local cache file path. The file is not attached to agent context."
+  tagged [workTag]
+  . withDescription "Resolve a cached media object to its existing local cache file path. The file is not attached to agent context."
   $ tool "media_to_file"
       (requiredText "media_id" "Media id to resolve, either mf_xxx or media:mf_xxx.")
       (resolveMediaPath . Text.strip)
 
 sendMediaTool :: (Chat.Chat :> es, Media.Media :> es) => Tool es
 sendMediaTool =
-  noisy
+  tagged [chatTag]
+  . noisy
   . withDescription "Send a cached media object to the current chat. Use this when the user asks for a generated or cached file to be sent."
   $ tool "send_media"
       (requiredText "media_id" "Media id to send, either mf_xxx or media:mf_xxx.")

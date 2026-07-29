@@ -26,7 +26,8 @@ emacsSocketName =
 
 emacsEvalTool :: (Process :> es, Timeout :> es, Concurrent :> es, IOE :> es, FileSystem :> es) => Tool es
 emacsEvalTool =
-  allowWhen superuserOnly
+  tagged [workTag]
+  . allowWhen superuserOnly
   . withDescription "Evaluate Emacs Lisp in a cosmobot-owned, persistent Emacs 30 daemon for coding, scripting, reading/writing files, starting subprocesses, managing terminals, recording temporary memory in buffers, etc. Prefer it to other tools if it uses less tokens, and always use it if there are multiple operations that can be batched."
   $ tool "emacs_eval"
       ( validateArgument validExpression

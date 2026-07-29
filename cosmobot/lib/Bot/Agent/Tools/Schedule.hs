@@ -21,7 +21,8 @@ import qualified Data.Aeson.Types as AesonTypes
 
 scheduleTool :: Scheduler.Scheduler :> es => Tool es
 scheduleTool =
-  withDescription "Create, list, or delete scheduled agent actions owned by the current user in the current chat."
+  tagged [workTag]
+  . withDescription "Create, list, or delete scheduled agent actions owned by the current user in the current chat."
   $ tool "schedule"
       (parsedArguments
         (objectSchema

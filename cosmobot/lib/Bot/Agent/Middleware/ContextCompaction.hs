@@ -12,6 +12,7 @@ where
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types (AgentEventObservation (..))
 import Bot.Agent.Middleware.ToolResultCompaction (NextModelInput (..))
+import Bot.Agent.Tool (toolEnableName)
 import Bot.Agent.Types (AgentContext (..), AgentEvent (..))
 import Bot.Core.Transcript
 import qualified Bot.Effect.Chat as Chat
@@ -131,8 +132,25 @@ compactableTranscriptParts (Transcript messages) =
 
 compactTranscriptWithSummary :: Text -> Transcript -> Transcript
 compactTranscriptWithSummary summary transcript =
-  let (_, newer) = compactableTranscriptParts transcript
-  in Transcript (LLM.systemText (summaryMessage summary) Seq.<| newer)
+  let (older, newer) = compactableTranscriptParts transcript
+      preserved = preserveToolEnableCalls older
+  in Transcript (LLM.systemText (summaryMessage summary) Seq.<| (preserved <> newer))
+
+preserveToolEnableCalls :: Seq.Seq LLM.ChatMessage -> Seq.Seq LLM.ChatMessage
+preserveToolEnableCalls messages =
+  Seq.fromList
+    [ preserved
+    | message <- Foldable.toList messages
+    , call <- message.toolCalls
+    , call.name == toolEnableName
+    , preserved <-
+        [ LLM.ChatMessage "assistant" Nothing [call] Nothing
+        , fromMaybe (LLM.toolResult call "Enabled.") (find ((== Just call.id) . (.toolCallId)) toolResults)
+        ]
+    ]
+  where
+    toolResults =
+      filter ((== "tool") . (.role)) (Foldable.toList messages)
 
 shouldCompact :: Int -> Maybe LLM.TokenUsage -> Bool
 shouldCompact tokenThreshold usage =

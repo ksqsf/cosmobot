@@ -34,7 +34,8 @@ sandboxTool
   :: (Media.Media :> es, Resource.Resource :> es, FileSystem :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => Tool es
 sandboxTool =
-  allowWhen hasResourceIdentity
+  tagged [workTag]
+  . allowWhen hasResourceIdentity
   . withDescription "Create, list, rename, or delete isolated, persistent container sandboxes; run Bash; or copy files between one and the media cache. list returns a JSON array of accessible sandbox names. Delete sandboxes promptly when the job is done, unless the user asks explicitly to keep them."
   $ tool "sandbox"
       (parsedArguments
