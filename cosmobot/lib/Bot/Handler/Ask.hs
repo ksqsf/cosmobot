@@ -258,11 +258,15 @@ replyReferencesThread threads message =
     Nothing ->
       pure False
     Just messageKey -> do
-      lookupThreadTranscript threads messageKey >>= \case
+      lookupActiveThreadRunId threads messageKey >>= \case
         Just{} ->
-          pure True
+          pure False
         Nothing ->
-          replyReferencesBot message
+          lookupThreadTranscript threads messageKey >>= \case
+            Just{} ->
+              pure True
+            Nothing ->
+              replyReferencesBot message
 
 replyReferencesBot :: Chat.Chat :> es => IncomingMessage -> Eff es Bool
 replyReferencesBot =

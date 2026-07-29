@@ -251,7 +251,7 @@ main =
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
       , testCase "ask handler routes replies to active aliases as steering" testAskHandlerRoutesActiveReplyAsSteering
-      , testCase "ask handler continues a finished sender-owned alias" testAskHandlerContinuesFinishedSenderAlias
+      , testCase "group reply from another sender does not continue a finished user alias" testGroupReplyDoesNotContinueFinishedUserAlias
       , testCase "ask handler continues a finished bot reply" testAskHandlerContinuesFinishedBotReply
       , testCase "load_skill loads only advertised skill instructions" testLoadSkillLoadsAdvertisedSkillInstructions
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
@@ -1090,23 +1090,34 @@ testAskHandlerRoutesActiveReplyAsSteering = do
             , replyToMessageId = Just (integerMessageId 1)
             , text = "change direction"
             }
+        otherSender =
+          steer
+            { messageId = Just (integerMessageId 3)
+            , senderId = Just "201"
+            , text = "hijack"
+            }
     runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) steer
+    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) otherSender
     drainActiveThreadSteers active
   queued @?= ["change direction"]
 
-testAskHandlerContinuesFinishedSenderAlias :: IO ()
-testAskHandlerContinuesFinishedSenderAlias = do
+testGroupReplyDoesNotContinueFinishedUserAlias :: IO ()
+testGroupReplyDoesNotContinueFinishedUserAlias = do
   let parentId = "294869878"
-      parentMessage = askHandlerMessage
+      parentMessage =
+        askHandlerMessage
+          { digest = askHandlerMessage.digest{senderIsSuperuser = False}
+          , text = "krkr hi"
+          }
       parentTranscript =
-        appendAssistant "first answer" (startWithUser "first")
+        appendAssistant "hi" (startWithUser "krkr hi")
       referenced =
         ReferencedMessage
           { messageId = Just parentId
           , senderDisplayName = Just "Alice"
           , senderIdentifier = parentMessage.senderId
           , senderIsBot = False
-          , text = "first"
+          , text = "krkr hi"
           , imageUrls = []
           , files = []
           }
@@ -1114,10 +1125,12 @@ testAskHandlerContinuesFinishedSenderAlias = do
       followUp =
         askHandlerMessage
           { messageId = Just "70002"
+          , senderId = Just "another-user"
+          , digest = askHandlerMessage.digest{senderIsSuperuser = False}
           , replyToMessageId = Just parentId
           , text = "follow up"
           }
-  answers <- IORef.newIORef [chatAnswer "continued" []]
+  answers <- IORef.newIORef []
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   rendered <- IORef.newIORef ([] :: [Text])
   _ <- runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
@@ -1132,16 +1145,10 @@ testAskHandlerContinuesFinishedSenderAlias = do
     (\_ _ _ _ -> pure "unused image edit answer") do
       threads <- newThreadStore
       active <- fromMaybe (error "expected active thread") <$>
-        rememberActiveThread threads "test-run" Nothing (Just (threadMessageKey parentMessage parentId)) parentMessage "first" (Concurrency.Handle (Concurrency.Id 1)) parentTranscript
+        rememberActiveThread threads "test-run" Nothing (Just (threadMessageKey parentMessage parentId)) parentMessage "krkr hi" (Concurrency.Handle (Concurrency.Id 1)) parentTranscript
       finishActiveThread threads active parentTranscript
-      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads followUp
-  requests <- IORef.readIORef captured
-  case requests of
-    request : _ -> do
-      chatMessageTextsByRole "user" request @?= ["first", "follow up"]
-      chatMessageTextsByRole "assistant" request @?= ["first answer"]
-    [] ->
-      assertFailure "expected sender-owned alias continuation to call the LLM"
+      runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) followUp
+  IORef.readIORef captured >>= assertBool "replying to a finished user alias should not call the LLM" . null
 
 testAskHandlerContinuesFinishedBotReply :: IO ()
 testAskHandlerContinuesFinishedBotReply = do
@@ -2791,7 +2798,7 @@ testChunkedActiveThreadAliasesEverySentReply = runEff $ runConcurrent $ runPrim 
   liftIO do
     halted @?= True
     cancelledResources @?= [Concurrency.Id 1]
-    (show firstLookup :: String) @?= show (Just partialTranscript)
+    assertBool "finished user aliases should not become continuation points" (isNothing firstLookup)
     (show secondLookup :: String) @?= show (Just partialTranscript)
 
 testHaltCommandCancelsCurrentThreadMessage :: IO ()
@@ -2945,7 +2952,7 @@ testActiveThreadSteeringLifecycle = runEff $ runConcurrent $ runPrim $ runTestLo
     queued @?= ["first", "second"]
     closed @?= Nothing
     rejectedAfterClose @?= False
-    (show steerAlias :: String) @?= show (Just transcript)
+    assertBool "finished steer aliases should not become continuation points" (isNothing steerAlias)
     assertBool "enqueue wins with its value, or completion closes before enqueue" $
       raceResult == (True, Just ["race"])
         || raceResult == (False, Nothing)

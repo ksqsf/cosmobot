@@ -79,7 +79,7 @@ data ActiveThread = ActiveThread
   , activeRunId :: !Text
   , activePrompt :: !Text
   , activeParentMessageKey :: !(Maybe ThreadMessageKey)
-  , activeMessageKeys :: !(IORef [ThreadMessageKey])
+  , activeReplyMessageKeys :: !(IORef [ThreadMessageKey])
   , activeSteering :: !(MVar.MVar SteeringState)
   , activeCurrent :: !(IORef Transcript)
   , activeDone :: !(MVar.MVar Transcript)
@@ -163,7 +163,12 @@ lookupThreadMessageIds store@ThreadStore{activeThreadStore = activeRef} =
           active <- Map.lookup (ActiveThreadMessage messageKey) <$> readIORef activeRef
           (parentMessageKey, messageIds) <- case active of
             Just activeThread -> do
-              ids <- map (.messageId) <$> readIORef activeThread.activeMessageKeys
+              activeMap <- readIORef activeRef
+              let ids =
+                    [ aliasKey.messageId
+                    | (ActiveThreadMessage aliasKey, candidate) <- Map.toList activeMap
+                    , candidate.activeHandle.handleId == activeThread.activeHandle.handleId
+                    ]
               pure (activeThread.activeParentMessageKey, ids)
             Nothing -> do
               node <- lookupStoredThreadNode store messageKey
@@ -203,7 +208,7 @@ rememberActiveThread
   -> Transcript
   -> Eff es (Maybe ActiveThreadHandle)
 rememberActiveThread ThreadStore{activeThreadStore = activeRef} activeRunId parentMessageKey messageKey message prompt activeHandle transcript = do
-  messageKeys <- newIORef (maybeToList messageKey)
+  replyMessageKeys <- newIORef []
   steering <- MVar.newMVar (SteeringOpen Seq.empty)
   current <- newIORef transcript
   done <- MVar.newEmptyMVar
@@ -213,7 +218,7 @@ rememberActiveThread ThreadStore{activeThreadStore = activeRef} activeRunId pare
         , activeRunId
         , activePrompt = prompt
         , activeParentMessageKey = parentMessageKey
-        , activeMessageKeys = messageKeys
+        , activeReplyMessageKeys = replyMessageKeys
         , activeSteering = steering
         , activeCurrent = current
         , activeDone = done
@@ -227,8 +232,11 @@ rememberActiveThread ThreadStore{activeThreadStore = activeRef} activeRunId pare
 addActiveThreadMessage :: (Prim :> es, Concurrent :> es) => ThreadStore -> ActiveThreadHandle -> ThreadMessageKey -> Eff es ()
 addActiveThreadMessage ThreadStore{activeThreadStore = activeRef} (ActiveThreadHandle active) messageKey =
   MVar.modifyMVar_ active.activeSteering \steeringState -> do
-    unless (steeringState == SteeringFinishing) $
+    unless (steeringState == SteeringFinishing) do
       addMessageAlias activeRef active messageKey
+      atomicModifyIORef' active.activeReplyMessageKeys \messageKeys ->
+        let next = if messageKey `elem` messageKeys then messageKeys else messageKey : messageKeys
+        in (next, ())
     pure steeringState
 
 enqueueActiveThreadSteer
@@ -245,7 +253,7 @@ enqueueActiveThreadSteer ThreadStore{activeThreadStore = activeRef} message stee
       active <- Map.lookup (ActiveThreadMessage replyKey) <$> readIORef activeRef
       case active of
         Just activeThread
-          | mayManageActiveThread message activeThread ->
+          | maybe False ((== activeThread.activeSenderId) . Just) message.senderId ->
               MVar.modifyMVar activeThread.activeSteering \case
                 SteeringOpen queued -> do
                   traverse_ (addMessageAlias activeRef activeThread . threadMessageKey message) message.messageId
@@ -281,9 +289,6 @@ addMessageAlias
   -> ThreadMessageKey
   -> Eff es ()
 addMessageAlias activeRef active messageKey = do
-  atomicModifyIORef' active.activeMessageKeys \messageKeys ->
-    let next = if messageKey `elem` messageKeys then messageKeys else messageKey : messageKeys
-    in (next, ())
   atomicModifyIORef' activeRef \activeMap ->
     (Map.insert (ActiveThreadMessage messageKey) active activeMap, ())
 
@@ -298,19 +303,18 @@ finishActiveThread
   -> Transcript
   -> Eff es ()
 finishActiveThread store@ThreadStore{activeThreadStore = activeRef} (ActiveThreadHandle active) transcript = do
-  messageKeys <- MVar.modifyMVar active.activeSteering \case
+  replyMessageKeys <- MVar.modifyMVar active.activeSteering \case
     SteeringFinishing ->
       pure (SteeringFinishing, Nothing)
     _ -> do
-      keys <- readIORef active.activeMessageKeys
+      keys <- readIORef active.activeReplyMessageKeys
       pure (SteeringFinishing, Just keys)
-  for_ messageKeys \keys -> do
+  for_ replyMessageKeys \keys -> do
     updateActiveThread (ActiveThreadHandle active) transcript
     traverse_ (\messageKey -> rememberThreadTranscriptFrom store active.activeParentMessageKey (Just messageKey) transcript) keys
     void $ MVar.tryPutMVar active.activeDone transcript
     atomicModifyIORef' activeRef \activeMap ->
-      let activeKeys = ActiveThreadId active.activeHandle.handleId : map ActiveThreadMessage keys
-      in (foldl' (flip Map.delete) activeMap activeKeys, ())
+      (Map.filter ((/= active.activeHandle.handleId) . (.activeHandle.handleId)) activeMap, ())
 
 finishActiveThreadCurrent
   :: (Prim :> es, KatipE :> es, Storage.Storage :> es, Concurrent :> es)
