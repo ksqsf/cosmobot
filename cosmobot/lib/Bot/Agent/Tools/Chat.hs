@@ -114,7 +114,14 @@ sendFileTool :: Chat.Chat :> es => Tool es
 sendFileTool =
   noisy
   . allowWhen superuserOnly
-  . withDescription "Send a local file to the same chat as the current user message. The path must be readable by the bot for Telegram and Matrix. For QQ/NapCat, the path is passed to NapCat and must be accessible from the NapCat container. Use only when the user explicitly asks you to send a file."
+  . withDescriptionBy (\context ->
+      "Send a local file to the same chat as the current user message. "
+        <> case context.message.platform of
+          PlatformQQ ->
+            "First move or copy the file into the NapCat container, then pass its path inside that container. Do not pass the host path."
+          _ ->
+            "The path must be readable by the bot."
+        <> " Use only when the user explicitly asks you to send a file.")
   $ tool "send_file"
       (validateArgument validFilePath
         (requiredText "path" "Local file path to send. A file:// prefix is accepted and stripped before upload."))

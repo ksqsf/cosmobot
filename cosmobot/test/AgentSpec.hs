@@ -648,9 +648,22 @@ testSendFileToolReportsUploadFailure = do
 testSendFileToolIsNoisyAndSuperuserOnly :: IO ()
 testSendFileToolIsNoisyAndSuperuserOnly = do
   let tool = ChatTools.sendFileTool :: AgentTool.Tool '[Chat.Chat, IOE]
+      qqContext =
+        superuserContext
+          { Agent.message = superuserContext.message{Message.platform = PlatformQQ}
+          }
   AgentTool.toolIsNoisy tool @?= True
   AgentTool.toolAllowed tool agentContext @?= False
   AgentTool.toolAllowed tool superuserContext @?= True
+  (telegramDescription, qqDescription) <-
+    runEff
+    . Chat.runChatWith defaultAgentMockChatDriver
+    $ do
+      telegramSchema <- AgentTool.resolveToolSchema tool superuserContext (startWithUser "") 0
+      qqSchema <- AgentTool.resolveToolSchema tool qqContext (startWithUser "") 0
+      pure (foldMap (.description) telegramSchema, foldMap (.description) qqSchema)
+  assertBool "Telegram description should not mention NapCat" (not ("NapCat" `Text.isInfixOf` telegramDescription))
+  assertBool "QQ description should mention NapCat" ("NapCat" `Text.isInfixOf` qqDescription)
 
 testSendMediaToolUploadsCachedMedia :: IO ()
 testSendMediaToolUploadsCachedMedia =

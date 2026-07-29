@@ -20,7 +20,6 @@ module Bot.Agent.Tool
   , askToolCallMetadata
   , allowWhen
   , hideUnlessM
-  , mapSchema
   , mapSchemaM
   , noisy
   , resolveToolSchema
@@ -31,6 +30,7 @@ module Bot.Agent.Tool
   , toolName
   , toolWithRunState
   , withDescription
+  , withDescriptionBy
   )
 where
 
@@ -368,11 +368,6 @@ noisy :: Tool es -> Tool es
 noisy definition =
   definition{noisyFlag = True}
 
-mapSchema :: (LLM.FunctionTool -> LLM.FunctionTool) -> Tool es -> Tool es
-mapSchema transform =
-  mapSchemaM \_ _ _ schema ->
-    pure (Just (transform schema))
-
 mapSchemaM
   :: (AgentContext -> Transcript -> Int -> LLM.FunctionTool -> Eff es (Maybe LLM.FunctionTool))
   -> Tool es
@@ -397,8 +392,13 @@ hideUnlessM predicate =
       if visible then Just schema else Nothing
 
 withDescription :: Text -> Tool es -> Tool es
-withDescription description =
-  mapSchema \schema -> schema{LLM.description = description}
+withDescription =
+  withDescriptionBy . const
+
+withDescriptionBy :: (AgentContext -> Text) -> Tool es -> Tool es
+withDescriptionBy description =
+  mapSchemaM \context _ _ schema ->
+    pure (Just schema{LLM.description = description context})
 
 toolName :: Tool es -> Text
 toolName Tool{name} =
