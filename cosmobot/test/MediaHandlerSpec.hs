@@ -56,8 +56,8 @@ testMediaCommands = do
       assertBool "info JSON is in a source block" ("```json\n" `Text.isPrefixOf` infoReply && "\n```" `Text.isSuffixOf` infoReply)
       assertBool "info includes cached file metadata" ("\"fileId\": \"mf_known\"" `Text.isInfixOf` infoReply)
       assertBool "info reports missing ids" (all (`Text.isInfixOf` infoReply) ["\"media_id\": \"media:mf_missing\"", "\"error\": \"not found\""])
-      assertBool "get includes the public URL" ("https://media.example/mf_known" `Text.isInfixOf` getReply)
-      assertBool "get reports missing ids" (all (`Text.isInfixOf` getReply) ["\"media_id\": \"media:mf_missing\"", "\"error\": \"not found\""])
+      getReply @?=
+        "- media:mf_known: https://media.example/mf_known\n- media:mf_missing: not found"
     actual ->
       assertFailure [i|expected two replies, got #{length actual}|]
 
@@ -127,8 +127,7 @@ testRepliedMediaUrl = do
   runMediaHandlersWithReply replies (Just referencedMessage) do
     runHandlers mediaHandlers ((message "!media/url"){replyToMessageId = Just "parent"})
   replyBody <- viaNonEmpty head <$> IORef.readIORef replies
-  assertBool "url includes the replied media public URL" $
-    maybe False ("https://media.example/mf_known" `Text.isInfixOf`) replyBody
+  replyBody @?= Just "- media:mf_known: https://media.example/mf_known"
 
 runMediaHandlers
   :: IORef.IORef [Text]

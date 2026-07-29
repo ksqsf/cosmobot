@@ -59,7 +59,7 @@ handleUrl :: (Chat.Chat :> es, Media.Media :> es) => IncomingMessage -> Text -> 
 handleUrl message input =
   resolveMediaIds "!media/url" message input >>= \case
     Left err -> reply message err
-    Right mediaIds -> traverse mediaPublicUrl mediaIds >>= reply message . jsonText
+    Right mediaIds -> traverse mediaPublicUrl mediaIds >>= reply message . Text.intercalate "\n"
 
 handleGet :: (Chat.Chat :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es ()
 handleGet message input =
@@ -167,18 +167,15 @@ safeMediaInfo info =
     , "platformRefs" Aeson..= info.platformRefs
     ]
 
-mediaPublicUrl :: Media.Media :> es => Text -> Eff es Aeson.Value
+mediaPublicUrl :: Media.Media :> es => Text -> Eff es Text
 mediaPublicUrl rawMediaId = do
   let (mediaId, fileId) = normalizeMediaId rawMediaId
   Media.mediaCacheEntry fileId >>= \case
     Nothing ->
-      pure (notFound mediaId)
+      pure [i|- #{mediaId}: not found|]
     Just info -> do
       publicUrl <- Media.publicMediaRef info.file.ref
-      pure $ Aeson.object
-        [ "media_id" Aeson..= mediaId
-        , "public_url" Aeson..= publicUrl
-        ]
+      pure [i|- #{mediaId}: #{publicUrl}|]
 
 normalizeMediaId :: Text -> (Text, Text)
 normalizeMediaId rawMediaId =
