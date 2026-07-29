@@ -44,10 +44,11 @@ testMediaCommands = do
     runHandlers mediaHandlers (message "!media/get media:mf_known mf_missing")
   IORef.readIORef replies >>= \case
     [infoReply, getReply] -> do
-      assertBool "info includes cached file metadata" ("\"fileId\":\"mf_known\"" `Text.isInfixOf` infoReply)
-      assertBool "info reports missing ids" (all (`Text.isInfixOf` infoReply) ["\"media_id\":\"media:mf_missing\"", "\"error\":\"not found\""])
+      assertBool "info JSON is pretty-printed" ("\n" `Text.isInfixOf` infoReply)
+      assertBool "info includes cached file metadata" ("\"fileId\": \"mf_known\"" `Text.isInfixOf` infoReply)
+      assertBool "info reports missing ids" (all (`Text.isInfixOf` infoReply) ["\"media_id\": \"media:mf_missing\"", "\"error\": \"not found\""])
       assertBool "get includes the public URL" ("https://media.example/mf_known" `Text.isInfixOf` getReply)
-      assertBool "get reports missing ids" (all (`Text.isInfixOf` getReply) ["\"media_id\":\"media:mf_missing\"", "\"error\":\"not found\""])
+      assertBool "get reports missing ids" (all (`Text.isInfixOf` getReply) ["\"media_id\": \"media:mf_missing\"", "\"error\": \"not found\""])
     actual ->
       assertFailure [i|expected two replies, got #{length actual}|]
 
@@ -72,7 +73,7 @@ testRepliedMediaInfo = do
     Nothing ->
       assertFailure "expected a reply"
     Just body -> do
-      assertBool "info includes a media id from image URLs" ("\"media_id\":\"media:mf_known\"" `Text.isInfixOf` body)
+      assertBool "info includes a media id from image URLs" ("\"media_id\": \"media:mf_known\"" `Text.isInfixOf` body)
       assertBool "duplicate media ids are removed" (Text.count "\"media_id\"" body == 1)
 
 runMediaHandlers

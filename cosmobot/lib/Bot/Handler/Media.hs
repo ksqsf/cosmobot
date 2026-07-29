@@ -14,6 +14,7 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Encode.Pretty as AesonPretty
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Char as Char
 import qualified Data.Text as Text
@@ -128,7 +129,7 @@ notFound mediaId =
 
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =
-  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . AesonPretty.encodePretty
 
 reply :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 reply message =
