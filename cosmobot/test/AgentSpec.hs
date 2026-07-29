@@ -393,18 +393,27 @@ testToolTagsEnabledFromTranscript = do
       reloaded =
         fromRight (error "failed to reload enabled-tool transcript")
           (Aeson.eitherDecode (Aeson.encode chatEnabled))
-  (initialSchemas, chatSchemas, reloadedSchemas, invalidSchemas) <-
+  (initialSchemas, chatSchemas, reloadedSchemas, invalidSchemas, initialGroups, chatGroups) <-
     runEff $ runConcurrent do
       running <- traverse (ToolRegistry.startToolRun agentContext) definitions
       initialSchemas <- ToolRegistry.resolveToolSchemas (startWithUser "hello") 0 running
       chatSchemas <- ToolRegistry.resolveToolSchemas chatEnabled 1 running
       reloadedSchemas <- ToolRegistry.resolveToolSchemas reloaded 2 running
       invalidSchemas <- ToolRegistry.resolveToolSchemas (startWithEnabledTools ["unknown"] "continue") 3 running
-      pure (initialSchemas, chatSchemas, reloadedSchemas, invalidSchemas)
+      pure
+        ( initialSchemas
+        , chatSchemas
+        , reloadedSchemas
+        , invalidSchemas
+        , ToolRegistry.enabledToolGroups (startWithUser "hello") running
+        , ToolRegistry.enabledToolGroups chatEnabled running
+        )
   map (.name) initialSchemas @?= ["tool_enable", "always_test"]
   map (.name) chatSchemas @?= ["tool_enable", "always_test", "chat_test"]
   map (.name) reloadedSchemas @?= map (.name) chatSchemas
   map (.name) invalidSchemas @?= map (.name) initialSchemas
+  initialGroups @?= [("essential", 2)]
+  chatGroups @?= [("essential", 2), ("chat", 1)]
   let enableSchema = fromMaybe (error "missing tool_enable schema") (find ((== "tool_enable") . (.name)) initialSchemas)
       description = enableSchema.description
       parameters = jsonText enableSchema.parameters
@@ -2037,6 +2046,8 @@ testThreadStatsAccumulateRepliedBranch = do
       assertBool [i|second answer stats should show only the incremental current turn; got #{secondStats}|] ("- current turn: 110 total (90 prompt, 20 completion)" `Text.isInfixOf` secondStats)
       Text.count "request cache: 120 hit, 60.0%" secondStats @?= 1
       assertBool [i|second answer stats should count both model turns; got #{secondStats}|] ("- model turns: 2" `Text.isInfixOf` secondStats)
+      assertBool [i|second answer stats should show enabled tool groups above tool calls; got #{secondStats}|]
+        ("- tool enabled: essential (8), work (2)\n- tool calls:" `Text.isInfixOf` secondStats)
       assertBool [i|second answer stats should report recursive subagents separately; got #{secondStats}|] (all (`Text.isInfixOf` secondStats) ["- subagents: 2 runs", "`researcher` (`child-run-1`)", "    - subagents: 1 runs", "`reviewer` (`child-run-2`)", "- tokens: 90 total (80 prompt, 10 completion;", "- tokens: 65 total (60 prompt, 5 completion;"])
       assertBool [i|second answer stats should include branch resources; got #{secondStats}|] ("- resources: 2" `Text.isInfixOf` secondStats && all (`Text.isInfixOf` secondStats) ["`first-resource`", "`second-resource`"])
       assertBool [i|thread stats should exclude unrelated resources; got #{secondStats}|] (not ("`unrelated-resource`" `Text.isInfixOf` secondStats))
@@ -2078,6 +2089,7 @@ testThreadStatsShowActiveRunningTools = do
       , turn = 1
       , messageCount = 2
       , exposedTools = ["run_bash"]
+      , toolGroups = Just [("essential", 8)]
       }
     void $ AgentAuditStorage.persistEvent now AgentAudit.ModelTurnFinished
       { runId = "active-run"
@@ -2092,6 +2104,7 @@ testThreadStatsShowActiveRunningTools = do
       , turn = 2
       , messageCount = 4
       , exposedTools = ["run_bash"]
+      , toolGroups = Just [("essential", 8), ("work", 1)]
       }
     void $ AgentAuditStorage.persistEvent now AgentAudit.ModelTurnFinished
       { runId = "active-run"
@@ -2142,6 +2155,8 @@ testThreadStatsShowActiveRunningTools = do
     assertBool "active stats should show the current user turn once" ("- current turn: 330 total (300 prompt, 30 completion)" `Text.isInfixOf` reply)
     assertBool "active stats should expose current run phase and steer queue" ("- current run: `active-run` (phase: tools, 1 pending steers)" `Text.isInfixOf` reply)
     assertBool "active stats should expose context message growth" ("- context messages: 4 now / 4 peak" `Text.isInfixOf` reply)
+    assertBool "active stats should expose enabled tool groups above tool calls"
+      ("- tool enabled: essential (8), work (1)\n- tool calls:" `Text.isInfixOf` reply)
     assertBool "active stats should separate stale historical tools" ("- tool calls: 2 (0 ok, 0 failed, 0 interrupted, 1 running, 1 stale/unreported)" `Text.isInfixOf` reply)
     assertBool "active stats should name the running tool" ("`run_bash`" `Text.isInfixOf` reply)
     assertBool "active stats should not list a stale tool as running" (not ("`fetch_url` (`id=" `Text.isInfixOf` reply))
@@ -2165,6 +2180,7 @@ persistStatsRun runId linkedKey parentMessageId tokenUsage = do
     , turn = 1
     , messageCount = 2
     , exposedTools = ["sandbox", "subagent"]
+    , toolGroups = Just [("essential", 8), ("work", 2)]
     }
   void $ AgentAuditStorage.persistEvent (addUTCTime 2 staleAuditTime) AgentAudit.ModelTurnFinished
     { runId
@@ -2204,6 +2220,7 @@ persistChildStatsRun runId tokenUsage = do
     , turn = 1
     , messageCount = 1
     , exposedTools = ["sandbox"]
+    , toolGroups = Just [("essential", 8), ("sandbox", 7)]
     }
   void $ AgentAuditStorage.persistEvent (addUTCTime 7 staleAuditTime) AgentAudit.ModelTurnFinished
     { runId

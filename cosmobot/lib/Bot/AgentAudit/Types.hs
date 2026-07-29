@@ -40,6 +40,7 @@ data AgentAuditEvent
       , turn :: !Int
       , messageCount :: !Int
       , exposedTools :: ![Text]
+      , toolGroups :: !(Maybe [(Text, Int)])
       }
   | ModelTurnFinished
       { runId :: !Text

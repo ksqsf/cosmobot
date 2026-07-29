@@ -167,6 +167,7 @@ renderThreadStats now parentId branchMessages activeRunId pendingSteers records 
         , renderCurrentTurn currentRunCompacted previousRunUsage currentRunUsage
         , renderContextMessages contextMessageCounts
         , renderCompactionUsage compactionUsages
+        , renderEnabledTools enabledToolGroups
         , [i|- tool calls: #{length toolUses} (#{okTools} ok, #{failedTools} failed, #{interruptedTools} interrupted, #{length runningTools} running#{unreportedToolsSuffix})|]
         , renderToolTime toolUses
         , renderAgentTime runIds runDurations currentRunDuration
@@ -224,6 +225,15 @@ renderThreadStats now parentId branchMessages activeRunId pendingSteers records 
       [ tokenUsage
       | AgentAudit.AgentAuditRecord{event = AgentAudit.ContextCompacted{tokenUsage}} <- records
       ]
+    enabledToolGroups = do
+      current <- currentRunId
+      join . viaNonEmpty last $
+        [ toolGroups
+        | AgentAudit.AgentAuditRecord
+            { event = AgentAudit.ModelTurnStarted{runId, toolGroups}
+            } <- records
+        , runId == current
+        ]
     toolUses =
       AgentAudit.toolUsesFromAuditRecords records
     okTools =
@@ -366,6 +376,13 @@ renderThreadResources resources =
           life :: Text
           life = maybe "permanent" ((<> "m") . show) resource.remainingLifeMinutes
       in [i|  - `#{resourceId}` (`#{resourceType}`): #{status}, #{life}|]
+
+renderEnabledTools :: Maybe [(Text, Int)] -> Text
+renderEnabledTools Nothing =
+  "- tool enabled: unreported"
+renderEnabledTools (Just groups) =
+  "- tool enabled: "
+    <> Text.intercalate ", " [[i|#{name} (#{count})|] | (name, count) <- groups]
 
 renderUsage :: Text -> Maybe LLM.TokenUsage -> Text
 renderUsage label Nothing =

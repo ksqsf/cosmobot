@@ -27,8 +27,8 @@ agentAuditEvent :: Agent.AgentEvent -> Maybe AgentAuditEvent
 agentAuditEvent = \case
   Agent.AgentRunStarted{runId, messageId, maxTurns, exposedTools} ->
     Just AgentRunStarted{runId, messageId, maxTurns, exposedTools}
-  Agent.ModelTurnStarted{runId, turn, messageCount, exposedTools} ->
-    Just ModelTurnStarted{runId, turn, messageCount, exposedTools}
+  Agent.ModelTurnStarted{runId, turn, messageCount, exposedTools, toolGroups} ->
+    Just ModelTurnStarted{runId, turn, messageCount, exposedTools, toolGroups = Just toolGroups}
   Agent.ModelTurnFinished{runId, turn, answerKind, contentLength, toolCalls, tokenUsage} ->
     Just ModelTurnFinished
       { runId

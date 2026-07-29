@@ -25,6 +25,7 @@ import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types
 import Bot.Agent.Middleware.Tools (ToolLimitContext (..))
 import Bot.Agent.Tool (toolName)
+import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import Bot.Agent.Types
 import Bot.Core.Transcript
 import Bot.Core.Thread (ThreadMessageKey (..))
@@ -42,6 +43,7 @@ data ObservedModelTurn result = ObservedModelTurn
   , turn :: !Int
   , messageCount :: !Int
   , exposedTools :: ![Text]
+  , toolGroups :: ![(Text, Int)]
   , finished :: result -> AgentEvent
   }
 
@@ -76,6 +78,7 @@ withObservation observer program =
               , turn = agentState.turn
               , messageCount = transcriptMessageCount agentState
               , exposedTools = map toolName program.agentRun.exposedTools
+              , toolGroups = ToolRegistry.enabledToolGroups agentState.transcript program.agentRun.runningTools
               , finished = modelDecisionFinished program.agentRun.runId agentState.turn
               }
         in withObservedModelTurn observer turnInfo (program.aroundModelTurn (observedContext emptyObservationContext context) agentState action)
@@ -170,6 +173,7 @@ withObservedModelTurn observer turnInfo action = do
     , turn = turnInfo.turn
     , messageCount = turnInfo.messageCount
     , exposedTools = turnInfo.exposedTools
+    , toolGroups = turnInfo.toolGroups
     }
   result <- action
   lift $ void $ observer.observe (turnInfo.finished result)

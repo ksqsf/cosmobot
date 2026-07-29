@@ -105,6 +105,7 @@ data AgentEvent
       , turn :: !Int
       , messageCount :: !Int
       , exposedTools :: ![Text]
+      , toolGroups :: ![(Text, Int)]
       }
   | ModelTurnFinished
       { runId :: !Text

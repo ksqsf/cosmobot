@@ -6,6 +6,7 @@ Stability   : experimental
 
 module Bot.Agent.ToolRegistry
   ( RunningTool (..)
+  , enabledToolGroups
   , resolveToolSchemas
   , runToolCall
   , startToolRun
@@ -63,13 +64,7 @@ resolveToolSchemas transcript turn runningTools = do
       throwIO (userError [i|Duplicate resolved tool names: #{Text.intercalate ", " duplicates}|])
   where
     enabledTags =
-      Set.fromList
-        [ tag
-        | request <- toolEnableTagRequests transcript
-        , not (null request)
-        , all (`Set.member` availableTagNames runningTools) request
-        , tag <- request
-        ]
+      enabledTagNames transcript runningTools
 
     resolve runningTool = do
       resolved <-
@@ -83,6 +78,30 @@ resolveToolSchemas transcript turn runningTools = do
                 resolved
       MVar.modifyMVar_ runningTool.currentSchema (const (pure schema))
       pure schema
+
+enabledToolGroups :: Transcript -> [RunningTool es] -> [(Text, Int)]
+enabledToolGroups transcript runningTools =
+  ("essential", countTag Essential)
+    : [ (tag.tagName, countTag (Named tag))
+      | tag <- availableNamedTags runningTools
+      , Set.member tag.tagName enabledTags
+      ]
+  where
+    enabledTags =
+      enabledTagNames transcript runningTools
+
+    countTag tag =
+      length [() | runningTool <- runningTools, tag `elem` runningTool.tags]
+
+enabledTagNames :: Transcript -> [RunningTool es] -> Set.Set Text
+enabledTagNames transcript runningTools =
+  Set.fromList
+    [ tag
+    | request <- toolEnableTagRequests transcript
+    , not (null request)
+    , all (`Set.member` availableTagNames runningTools) request
+    , tag <- request
+    ]
 
 toolTagsVisible :: Set.Set Text -> [ToolTag] -> Bool
 toolTagsVisible enabledTags =
