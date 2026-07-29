@@ -24,7 +24,7 @@ import qualified Streaming.Prelude as S
 
 generateImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
 generateImageTool =
-  tagged [imageTag]
+  tagged [workTag]
   . noisy
   . withDescription "Generate an actual image from a prompt and send it to the current chat. Use this when the user *literally* asks to *draw*, *create*, or *generate* an image, including scheduled future image requests. After using this tool, keep the final answer brief and do not repeat the image URL. Never use this when the user is merely asking for, finding, or searching for an image; instead, use the web search tool."
   $ tool "image_generate"
@@ -47,7 +47,7 @@ generateImageTool =
 
 editImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
 editImageTool =
-  tagged [imageTag]
+  tagged [workTag]
   . noisy
   . withDescription "Edit one or more existing images with the configured image edit model and send the result to the current chat. Use this when the user asks to modify, restyle, inpaint, combine, or use attached/reference images to create an edited image. Omit image_urls to edit images attached to the current message. Use mask_image_url only when the user supplies an explicit mask image; the mask applies to the first input image."
   $ tool "image_edit"

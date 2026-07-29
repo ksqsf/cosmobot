@@ -9,11 +9,7 @@ Stability   : experimental
 
 module Bot.Agent.Tools.Common
   ( chatTag
-  , imageTag
-  , sandboxTag
-  , subagentTag
   , workTag
-  , workspaceTag
   , superuserOnly
   , requiredText
   , optionalText
@@ -30,7 +26,7 @@ module Bot.Agent.Tools.Common
   , fieldIntegerMax
   , fieldBoolean
   , objectSchema
-  , ttlMinutesArgument
+  , parseTTLMinutes
   , jsonText
   , listResourceNames
   , renderResourceError
@@ -47,6 +43,7 @@ import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
 import qualified Data.Text.Encoding as TextEncoding
@@ -55,25 +52,9 @@ chatTag :: NamedTag
 chatTag =
   NamedTag "chat" "Interact with the current chat, messages, members, files, and media."
 
-imageTag :: NamedTag
-imageTag =
-  NamedTag "image" "View, generate, and edit images."
-
-sandboxTag :: NamedTag
-sandboxTag =
-  NamedTag "sandbox" "Create and manage isolated persistent container sandboxes, run commands, and exchange files with the media cache."
-
-subagentTag :: NamedTag
-subagentTag =
-  NamedTag "subagent" "Create and manage background agents scoped to the current chat."
-
 workTag :: NamedTag
 workTag =
-  NamedTag "work" "Handle files and cached media, generate audio or Typst documents, schedule actions, and use permitted shells, terminals, or Emacs."
-
-workspaceTag :: NamedTag
-workspaceTag =
-  NamedTag "workspace" "Manage privileged /work workspaces for multi-step repository, scripting, research, and operations tasks."
+  NamedTag "work" "Create media, manage memory and schedules, run commands, and use workspaces or subagents."
 
 superuserOnly :: AgentContext -> Bool
 superuserOnly =
@@ -155,16 +136,12 @@ objectSchema fields required =
     , "additionalProperties" Aeson..= False
     ]
 
-ttlMinutesArgument :: ToolArgument Int
-ttlMinutesArgument =
-  validateArgument validTTLMinutes
-    (requiredInt "ttl_minutes" "Resource inactivity lifetime in minutes. Minimum 5.")
-
-validTTLMinutes :: Int -> Either Text Int
-validTTLMinutes ttlMinutes
-  | ttlMinutes < 5 = Left "ttl_minutes must be at least 5."
-  | ttlMinutes > maxBound `div` 60 = Left "ttl_minutes is too large."
-  | otherwise = Right ttlMinutes
+parseTTLMinutes :: AesonTypes.Object -> AesonTypes.Parser Int
+parseTTLMinutes object = do
+  ttlMinutes <- object Aeson..: Key.fromText "ttl_minutes"
+  when (ttlMinutes < 5) $ fail "ttl_minutes must be at least 5."
+  when (ttlMinutes > maxBound `div` 60) $ fail "ttl_minutes is too large."
+  pure ttlMinutes
 
 jsonText :: Aeson.ToJSON a => a -> Text
 jsonText =

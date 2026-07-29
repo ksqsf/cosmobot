@@ -19,7 +19,7 @@ import qualified Bot.Agent.Types as AgentTypes
 import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import Bot.Agent.Tools.Shell (runBashSafe, runBashTool)
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
-import Bot.Agent.Tools.Common (UseLimit (..), chatTag, imageTag, newUseLimiter, sandboxTag, subagentTag, workTag, workspaceTag)
+import Bot.Agent.Tools.Common (UseLimit (..), chatTag, newUseLimiter, workTag)
 import Bot.Chat.Driver.Types (ChatDriverEffects)
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
@@ -383,12 +383,7 @@ testToolTagsEnabledFromTranscript = do
         AgentTool.tagged [workTag]
         . AgentTool.withDescription "Work tool."
         $ AgentTool.tool "work_test" AgentTool.noArguments (pure (Agent.toolText "work"))
-      imageTool :: AgentTool.Tool '[Concurrent, IOE]
-      imageTool =
-        AgentTool.tagged [imageTag]
-        . AgentTool.withDescription "Image tool."
-        $ AgentTool.tool "image_test" AgentTool.noArguments (pure (Agent.toolText "image"))
-      definitions = [MetaTools.toolEnableTool, alwaysTool, chatTool, workTool, imageTool]
+      definitions = [MetaTools.toolEnableTool, alwaysTool, chatTool, workTool]
       chatEnabled = startWithEnabledTools ["chat"] "continue"
       reloaded =
         fromRight (error "failed to reload enabled-tool transcript")
@@ -420,8 +415,7 @@ testToolTagsEnabledFromTranscript = do
   assertBool "description encourages one early enable call" ("as early as possible" `Text.isInfixOf` description)
   assertBool "description lists chat tools" (all (`Text.isInfixOf` description) ["chat:", "chat_test"])
   assertBool "description lists work tools" (all (`Text.isInfixOf` description) ["work:", "work_test"])
-  assertBool "description lists image tools" (all (`Text.isInfixOf` description) ["image:", "image_test"])
-  assertBool "parameters enumerate available tags" (all (`Text.isInfixOf` parameters) ["\"chat\"", "\"image\"", "\"work\""])
+  assertBool "parameters enumerate available tags" (all (`Text.isInfixOf` parameters) ["\"chat\"", "\"work\""])
 
 testScheduleToolCreatesQueryableSchedule :: IO ()
 testScheduleToolCreatesQueryableSchedule = do
@@ -457,65 +451,34 @@ testTerminalAndSandboxToolScopes :: IO ()
 testTerminalAndSandboxToolScopes = do
   answers <- IORef.newIORef []
   let terminalTool = TerminalTools.terminalTool :: AgentTool.Tool AgentStack
-      sandboxTools = SandboxTools.sandboxTools :: [AgentTool.Tool AgentStack]
+      sandboxTool = SandboxTools.sandboxTool :: AgentTool.Tool AgentStack
       trustedBashTool = runBashTool :: AgentTool.Tool AgentStack
-      workspaceTools = WorkspaceTools.workspaceTools :: [AgentTool.Tool AgentStack]
+      workspaceTool = WorkspaceTools.workspaceTool :: AgentTool.Tool AgentStack
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
-  (sandboxParameters, workspaceParameters, trustedBashSchema) <-
+  (sandboxSchema, workspaceSchema, trustedBashSchema) <-
     runAgentWith answers (ChatMock Nothing Nothing Nothing) do
       (,,)
-        <$> traverse toolParameterNames sandboxTools
-        <*> traverse toolParameterNames workspaceTools
+        <$> encodedToolParameters sandboxTool
+        <*> encodedToolParameters workspaceTool
         <*> encodedToolParameters trustedBashTool
   AgentTool.toolName terminalTool @?= "terminal"
   assertBool "terminal tool should be hidden outside ACP" (not (AgentTool.toolAllowed terminalTool agentContext))
   assertBool "terminal tool should be visible for ACP" (AgentTool.toolAllowed terminalTool acpContext)
-  map AgentTool.toolName sandboxTools @?=
-    [ "sandbox_create"
-    , "sandbox_list"
-    , "sandbox_run"
-    , "sandbox_file_to_media"
-    , "sandbox_media_to_file"
-    , "sandbox_rename"
-    , "sandbox_delete"
-    ]
-  sandboxParameters @?=
-    [ ["name", "ttl_minutes"]
-    , []
-    , ["output_byte_limit", "sandbox", "script", "timeout_seconds"]
-    , ["path", "sandbox"]
-    , ["media_id", "path", "sandbox"]
-    , ["name", "sandbox"]
-    , ["sandbox"]
-    ]
-  assertBool "sandbox tools should have only the sandbox tag"
-    (all ((== [AgentTool.Named sandboxTag]) . AgentTool.toolTags) sandboxTools)
+  AgentTool.toolName sandboxTool @?= "sandbox"
+  assertBool "sandbox bash schema should require a script" ("\"script\"" `Text.isInfixOf` sandboxSchema)
+  assertBool "sandbox create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` sandboxSchema)
+  assertBool "sandbox schema should expose media copies" (all (`Text.isInfixOf` sandboxSchema) ["file_to_media", "media_to_file"])
+  assertBool "sandbox bash schema should not expose command ids" (not ("command_id" `Text.isInfixOf` sandboxSchema))
+  assertBool "sandbox bash schema should not expose async actions" (not ("\"action\"" `Text.isInfixOf` sandboxSchema))
   assertBool "run_bash schema should not expose sandboxes" (not ("sandbox" `Text.isInfixOf` trustedBashSchema))
-  assertBool "sandbox tools should be visible to non-superusers" (all (`AgentTool.toolAllowed` agentContext) sandboxTools)
-  assertBool "sandbox tools should require resource identity" (all (not . (`AgentTool.toolAllowed` missingIdentity)) sandboxTools)
-  map AgentTool.toolName workspaceTools @?=
-    [ "workspace_create"
-    , "workspace_list"
-    , "workspace_query"
-    , "workspace_update"
-    , "workspace_rename"
-    , "workspace_delete"
-    ]
-  workspaceParameters @?=
-    [ ["goal", "id", "name", "ttl_minutes"]
-    , []
-    , ["resource"]
-    , ["goal", "resource"]
-    , ["name", "resource"]
-    , ["resource"]
-    ]
-  assertBool "workspace tools should have only the workspace tag"
-    (all ((== [AgentTool.Named workspaceTag]) . AgentTool.toolTags) workspaceTools)
-  assertBool "workspace tools should be hidden from non-superusers" (all (not . (`AgentTool.toolAllowed` agentContext)) workspaceTools)
-  assertBool "workspace tools should be visible to superusers" (all (`AgentTool.toolAllowed` superuserContext) workspaceTools)
-  assertBool "workspace tools should require resource identity"
-    (all (not . (`AgentTool.toolAllowed` superuserContext{Agent.message = testMessage{senderId = Nothing}})) workspaceTools)
+  assertBool "sandbox tool should be visible to non-superusers" (AgentTool.toolAllowed sandboxTool agentContext)
+  assertBool "sandbox tool should require resource identity" (not (AgentTool.toolAllowed sandboxTool missingIdentity))
+  AgentTool.toolName workspaceTool @?= "workspace"
+  assertBool "workspace create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` workspaceSchema)
+  assertBool "workspace should be hidden from non-superusers" (not (AgentTool.toolAllowed workspaceTool agentContext))
+  assertBool "workspace should be visible to superusers" (AgentTool.toolAllowed workspaceTool superuserContext)
+  assertBool "workspace should require resource identity" (not (AgentTool.toolAllowed workspaceTool superuserContext{Agent.message = testMessage{senderId = Nothing}}))
 
 testSubAgentLifecycle :: IO ()
 testSubAgentLifecycle = do
@@ -525,14 +488,8 @@ testSubAgentLifecycle = do
     finish <- MVar.newEmptyMVar
     let childRunner _ _ _ _ selectedTools transcript =
           MVar.putMVar started (map AgentTool.toolName selectedTools) >> MVar.takeMVar finish $> ("finished", transcript)
-        availableTools = MetaTools.toolEnableTool : SandboxTools.sandboxTools
-        tools = SubAgentTools.subagentTools childRunner availableTools
-        createTool = toolNamed "subagent_create" tools
-        listTool = toolNamed "subagent_list" tools
-        sendTool = toolNamed "subagent_send" tools
-        queryTool = toolNamed "subagent_query" tools
-        renameTool = toolNamed "subagent_rename" tools
-        deleteTool = toolNamed "subagent_delete" tools
+        availableTools = [MetaTools.toolEnableTool, SandboxTools.sandboxTool]
+        tool = SubAgentTools.subagentTool childRunner availableTools
         descendantMetadata =
           testToolCallMetadata
             { Agent.agentRunId = "agent-child"
@@ -540,60 +497,36 @@ testSubAgentLifecycle = do
             }
         otherContext = agentContext{Agent.message = testMessage{senderId = Just "other"}}
         otherChatContext = agentContext{Agent.message = testMessage{Message.chatId = Just 999}}
-    liftIO $ map AgentTool.toolName tools @?=
-      [ "subagent_create"
-      , "subagent_list"
-      , "subagent_send"
-      , "subagent_query"
-      , "subagent_wait_any"
-      , "subagent_wait_all"
-      , "subagent_rename"
-      , "subagent_delete"
-      ]
-    parameters <- traverse toolParameterNames tools
-    liftIO $ parameters @?=
-      [ ["name", "system_prompt", "tools", "ttl_minutes"]
-      , []
-      , ["prompt", "resource"]
-      , ["resource"]
-      , ["resources"]
-      , ["resources"]
-      , ["name", "resource"]
-      , ["resource"]
-      ]
-    liftIO $ assertBool "subagent tools should have only the subagent tag"
-      (all ((== [AgentTool.Named subagentTag]) . AgentTool.toolTags) tools)
-    schema <- encodedToolParameters createTool
+    schema <- encodedToolParameters tool
     liftIO $ assertBool "subagent create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` schema)
-    createRun <- AgentTool.startTool createTool agentContext
-    tooShort <- createRun testToolCallMetadata (Aeson.object ["ttl_minutes" Aeson..= (4 :: Int)])
+    createRun <- AgentTool.startTool tool agentContext
+    tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (4 :: Int)])
     liftIO $ assertBool "subagent rejects TTL below five minutes" ("at least 5" `Text.isInfixOf` AgentTypes.toolResultContent tooShort)
-    created <- createRun descendantMetadata (Aeson.object ["name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox_run"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
+    created <- createRun descendantMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
     liftIO $ resourceId @?= "researcher"
-    otherChatRun <- AgentTool.startTool createTool otherChatContext
-    void $ otherChatRun testToolCallMetadata (Aeson.object ["name" Aeson..= ("hidden" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
-    listRun <- AgentTool.startTool listTool agentContext
-    listed <- listRun testToolCallMetadata (Aeson.object [])
+    otherChatRun <- AgentTool.startTool tool otherChatContext
+    void $ otherChatRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("hidden" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= ([] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
+    listed <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("list" :: Text)])
     liftIO $ AgentTypes.toolResultContent listed @?= "[\"researcher\"]"
-    sandboxRun <- AgentTool.startTool (toolNamed "sandbox_list" SandboxTools.sandboxTools) agentContext
-    listedSandboxes <- sandboxRun testToolCallMetadata (Aeson.object [])
+    sandboxRun <- AgentTool.startTool SandboxTools.sandboxTool agentContext
+    listedSandboxes <- sandboxRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("list" :: Text)])
     liftIO $ AgentTypes.toolResultContent listedSandboxes @?= "[]"
-    workspaceRun <- AgentTool.startTool (toolNamed "workspace_list" WorkspaceTools.workspaceTools) superuserContext
-    listedWorkspaces <- workspaceRun testToolCallMetadata (Aeson.object [])
+    workspaceRun <- AgentTool.startTool WorkspaceTools.workspaceTool superuserContext
+    listedWorkspaces <- workspaceRun testToolCallMetadata (Aeson.object ["action" Aeson..= ("list" :: Text)])
     liftIO $ AgentTypes.toolResultContent listedWorkspaces @?= "[]"
-    sendRun <- AgentTool.startTool sendTool otherContext
-    sent <- sendRun testToolCallMetadata (Aeson.object ["resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
+    sendRun <- AgentTool.startTool tool otherContext
+    sent <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
     liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
     selectedTools <- MVar.takeMVar started
-    liftIO $ selectedTools @?= ["tool_enable", "sandbox_run"]
+    liftIO $ selectedTools @?= ["tool_enable", "sandbox"]
     let access = fromRight (error "missing resource access") (ResourceEffect.accessFromMessage otherContext.message)
     rootResources <- ResourceEffect.listCreatedByRuns access ["agent-root"]
     liftIO $ map (.resourceId) rootResources @?= ["researcher"]
     generatingDetail <- ResourceEffect.detail access resourceId
     liftIO $ generatingDetail @?= Right (Text.intercalate "\n"
       [ "status: generating"
-      , "tools: sandbox_run"
+      , "tools: sandbox"
       , "system prompt:\nResearch carefully."
       , "output:\nGenerating"
       , "life: 5m"
@@ -602,16 +535,13 @@ testSubAgentLifecycle = do
     workers <- Concurrency.list
     let worker = fromMaybe (error "missing subagent worker") (find ((== "subagent") . (.label)) workers.entries)
     Concurrency.await Concurrency.Handle{handleId = worker.id}
-    renameRun <- AgentTool.startTool renameTool otherContext
-    renamed <- renameRun testToolCallMetadata (Aeson.object ["resource" Aeson..= resourceId, "name" Aeson..= ("reviewer" :: Text)])
+    renamed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("rename" :: Text), "resource" Aeson..= resourceId, "name" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent renamed @?= "Subagent renamed: reviewer"
-    queryRun <- AgentTool.startTool queryTool otherContext
-    queried <- queryRun testToolCallMetadata (Aeson.object ["resource" Aeson..= ("reviewer" :: Text)])
+    queried <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("query" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent queried @?= "finished"
     finishedDetail <- ResourceEffect.detail access "reviewer"
     liftIO $ assertBool "subagent detail reports final output" (either (const False) ("output:\nfinished" `Text.isInfixOf`) finishedDetail)
-    deleteRun <- AgentTool.startTool deleteTool otherContext
-    destroyed <- deleteRun testToolCallMetadata (Aeson.object ["resource" Aeson..= ("reviewer" :: Text)])
+    destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("delete" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent destroyed @?= "Subagent destroyed."
 
 testSubAgentWaitOperations :: IO ()
@@ -626,28 +556,29 @@ testSubAgentWaitOperations = do
                 | otherwise = secondGate
           output <- MVar.takeMVar gate
           pure (output, transcript)
-        tools = SubAgentTools.subagentTools childRunner []
-    createRun <- AgentTool.startTool (toolNamed "subagent_create" tools) agentContext
-    sendRun <- AgentTool.startTool (toolNamed "subagent_send" tools) agentContext
-    queryRun <- AgentTool.startTool (toolNamed "subagent_query" tools) agentContext
-    waitAnyRun <- AgentTool.startTool (toolNamed "subagent_wait_any" tools) agentContext
-    waitAllRun <- AgentTool.startTool (toolNamed "subagent_wait_all" tools) agentContext
+        tool = SubAgentTools.subagentTool childRunner []
+    run <- AgentTool.startTool tool agentContext
     let create name =
-          createRun testToolCallMetadata $
+          run testToolCallMetadata $
             Aeson.object
-              [ "name" Aeson..= (name :: Text)
+              [ "op" Aeson..= ("create" :: Text)
+              , "name" Aeson..= (name :: Text)
               , "system_prompt" Aeson..= (name :: Text)
               , "ttl_minutes" Aeson..= (5 :: Int)
               ]
         sendPrompt resourceId =
-          sendRun testToolCallMetadata $
+          run testToolCallMetadata $
             Aeson.object
-              [ "resource" Aeson..= (resourceId :: Text)
+              [ "op" Aeson..= ("send" :: Text)
+              , "resource" Aeson..= (resourceId :: Text)
               , "prompt" Aeson..= ("work" :: Text)
               ]
-        wait run =
-          run testToolCallMetadata
-            (Aeson.object ["resources" Aeson..= (["first", "second"] :: [Text])])
+        wait operation =
+          run testToolCallMetadata $
+            Aeson.object
+              [ "op" Aeson..= (operation :: Text)
+              , "resources" Aeson..= (["first", "second"] :: [Text])
+              ]
         decodeResult result =
           fromRight (error "invalid subagent wait JSON") $
             Aeson.eitherDecodeStrict (TextEncoding.encodeUtf8 (AgentTypes.toolResultContent result))
@@ -658,7 +589,7 @@ testSubAgentWaitOperations = do
     void (sendPrompt "second")
 
     (waitedAny, ()) <- Async.concurrently
-      (wait waitAnyRun)
+      (wait "wait_any")
       (MVar.putMVar secondGate "second output")
     liftIO $ decodeResult waitedAny @?=
       Aeson.object
@@ -666,13 +597,15 @@ testSubAgentWaitOperations = do
         , "output" Aeson..= ("second output" :: Text)
         ]
 
-    firstStillRunning <- queryRun testToolCallMetadata $
+    firstStillRunning <- run testToolCallMetadata $
       Aeson.object
-        ["resource" Aeson..= ("first" :: Text)]
+        [ "op" Aeson..= ("query" :: Text)
+        , "resource" Aeson..= ("first" :: Text)
+        ]
     liftIO $ AgentTypes.toolResultContent firstStillRunning @?= "The subagent is still generating."
 
     (waitedAll, ()) <- Async.concurrently
-      (wait waitAllRun)
+      (wait "wait_all")
       (MVar.putMVar firstGate "first output")
     liftIO $ decodeResult waitedAll @?=
       Aeson.toJSON
@@ -987,7 +920,7 @@ testEditImageToolEditsCurrentMessageImageAndSendsResult = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, transcript) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "47") Nothing) do
-    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) AgentTools.defaultTools (startWithEnabledTools ["image"] "edit this") recorded remembered
+    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) AgentTools.defaultTools (startWithEnabledTools ["work"] "edit this") recorded remembered
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it brighter" [inputImage] (Just maskImage) LLM.defaultImageRequestOptions])
   IORef.readIORef replies >>= assertElem editedImage
@@ -1015,7 +948,7 @@ testAskHandlerPassesReferencedImagesToEditImageTool = do
         , text = "krkr 把回复里的图调亮"
         }
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-enable" "tool_enable" (Aeson.object ["tags" Aeson..= ["image" :: Text]])]
+    [ chatAnswer "" [toolCall "call-enable" "tool_enable" (Aeson.object ["tags" Aeson..= ["work" :: Text]])]
     , chatAnswer "" [toolCall "call-1" "image_edit" (Aeson.object ["prompt" Aeson..= prompt])]
     , chatAnswer "done" []
     ]
@@ -1346,7 +1279,7 @@ testGenerateImageToolPassesImageRequestOptions = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, transcript) <- runAgentWithImageGenerate answers generateCalls generatedImage (ChatMock (Just replies) (Just "48") Nothing) do
-    runAgentWithToolMessageCapture 4 agentContext AgentTools.defaultTools (startWithEnabledTools ["image"] "draw this") recorded remembered
+    runAgentWithToolMessageCapture 4 agentContext AgentTools.defaultTools (startWithEnabledTools ["work"] "draw this") recorded remembered
   answer @?= "done"
   IORef.readIORef generateCalls >>= (@?= [ImageGenerateCall "draw a glass tower" [] expectedOptions])
   IORef.readIORef replies >>= assertElem generatedImage
@@ -1526,7 +1459,7 @@ testEditImageToolPassesImageRequestOptions = do
   recorded <- IORef.newIORef ([] :: [Text])
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   (answer, transcript) <- runAgentWithImageEdit answers editCalls editedImage (ChatMock (Just replies) (Just "49") Nothing) do
-    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) AgentTools.defaultTools (startWithEnabledTools ["image"] "edit this") recorded remembered
+    runAgentWithToolMessageCapture 4 (agentContext{Agent.message = message, Agent.input = inputWithImages message.text message.imageUrls}) AgentTools.defaultTools (startWithEnabledTools ["work"] "edit this") recorded remembered
   answer @?= "done"
   IORef.readIORef editCalls >>= (@?= [ImageEditCall "make it cinematic" [inputImage] Nothing expectedOptions])
   IORef.readIORef replies >>= assertElem editedImage
@@ -4158,22 +4091,6 @@ encodedToolParameters definition = do
   schema <- AgentTool.resolveToolSchema definition agentContext (startWithUser "") 0
   pure . TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $
     maybe Aeson.Null (.parameters) schema
-
-toolParameterNames :: AgentTool.Tool es -> Eff es [Text]
-toolParameterNames definition = do
-  schema <- AgentTool.resolveToolSchema definition agentContext (startWithUser "") 0
-  pure . sort $
-    case schema <&> (.parameters) of
-      Just (Aeson.Object parameters)
-        | Just (Aeson.Object properties) <- AesonKeyMap.lookup "properties" parameters ->
-            map (AesonKey.toText . fst) (AesonKeyMap.toList properties)
-      _ ->
-        []
-
-toolNamed :: Text -> [AgentTool.Tool es] -> AgentTool.Tool es
-toolNamed name =
-  fromMaybe (error [i|missing tool: #{name}|])
-    . find ((== name) . AgentTool.toolName)
 
 agentContext :: Agent.AgentContext
 agentContext =
