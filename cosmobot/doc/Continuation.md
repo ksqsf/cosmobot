@@ -11,16 +11,16 @@ agent captures its current model context, explores, and may later resume the
 capture point with a compact JSON value. Messages produced by the abandoned
 branch are removed from future model input.
 
-This is a *cognitive* continuation, not a transaction. It does not undo file or
-database writes, messages, resources, audit events, or output already shown to
-the user.
+However, this is only agent-level continuation. It does not undo file
+or database writes, messages, resources, audit events, or output
+already shown to the user.
 
 ## Tool Interface
 
 ### `capture_continuation`
 
-Captures the current agent position. It must be the only tool call in its model
-turn.
+Captures the current agent continuation. It must be the only tool call
+in its model turn.
 
 ```json
 {
@@ -56,8 +56,8 @@ returning:
 
 ### `resume_continuation`
 
-Abandons the current branch and returns an arbitrary JSON value from the
-matching `capture_continuation` call. It must also be called alone.
+Non-locally resume a captured continuation with an arbitrary JSON
+value. It must also be called alone.
 
 ```json
 {
@@ -69,20 +69,24 @@ matching `capture_continuation` call. It must also be called alone.
 }
 ```
 
-Continuations are one-shot and scoped to one agent run. They may be nested.
-Resuming a continuation consumes it and discards every continuation captured
-inside its abandoned branch; older outer continuations remain available.
+Continuations are one-shot and scoped to one agent run. They may be
+nested.  Resuming a continuation consumes it and discards every
+continuation captured inside its abandoned branch; older outer
+continuations remain available.
 
 ## Expected Uses
 
 - Test a hypothesis, then return only the conclusion and evidence.
-- Explore a noisy log, search, or tool result without retaining the full path.
-- Try nested alternatives and return to the appropriate decision point.
-- Recover from a locally unproductive strategy without restarting the agent.
+- Explore a noisy log, search, or tool result without retaining the
+  full path.
+- Try nested alternatives and return to the appropriate decision
+  point.
+- Recover from a locally unproductive strategy without restarting the
+  agent.
 
-Continuations are less useful for ordinary linear work, irreversible actions,
-or parallel delegation. Subagents and isolated workspaces remain better fits
-for those cases.
+Continuations are less useful for ordinary linear work, irreversible
+actions, or parallel delegation. Subagents and isolated workspaces
+remain better fits for those cases.
 
 ## Implementation
 
@@ -98,23 +102,29 @@ continuations live in the run-local transient HList state and contain:
 - the original capture `ToolCall`;
 - a monotonically increasing nesting ordinal.
 
-The continuation ID is the original tool-call ID. On resume, the middleware:
+The continuation ID is the original tool-call ID. On resume, the
+middleware:
 
-1. records the `resume_continuation` call through normal tool observation;
+1. records the `resume_continuation` call through normal tool
+   observation;
 2. replaces the current transcript with the saved capture transcript;
-3. appends a tool result to the original capture call containing the JSON value;
-4. removes the resumed continuation and all newer nested continuations;
-5. advances the current tool-turn counter instead of restoring the old counter.
+3. appends a tool result to the original capture call containing the
+   JSON value;
+4. removes the resumed continuation and all newer nested
+   continuations;
+5. advances the current tool-turn counter instead of restoring the old
+   counter.
 
-The last rule prevents continuations from bypassing the agent tool-turn limit.
-A valid, sole `resume_continuation` may execute at the limit so the agent can
-escape a branch and produce a final answer.
+The last rule prevents continuations from bypassing the agent
+tool-turn limit.  A valid, sole `resume_continuation` may execute at
+the limit so the agent can escape a branch and produce a final answer.
 
-The middleware intercepts a continuation name only when that tool is present in
-the run's exposed tools. Mixed continuation and sibling tool calls are rejected
-as a group before any sibling executes. The final conversation transcript
-contains only the selected logical history, while the append-only agent audit
-retains the actual capture, abandoned branch, and resume calls.
+The middleware intercepts a continuation name only when that tool is
+present in the run's exposed tools. Mixed continuation and sibling
+tool calls are rejected as a group before any sibling executes. The
+final conversation transcript contains only the selected logical
+history, while the append-only agent audit retains the actual capture,
+abandoned branch, and resume calls.
 
 ## Alternatives
 
@@ -127,23 +137,29 @@ accurately.
 
 ### One `callcc` or `continuation` Tool
 
-A single tool with an `op` field saves one schema but makes action selection
-less explicit. `callcc` also implies stronger semantics such as ordinary
-continuation values and unrestricted multi-shot invocation. The two verb-named
-tools expose exactly the supported actions.
+A single tool with an `op` field saves one schema but makes action
+selection less explicit.  `callcc` also implies stronger semantics
+such as ordinary continuation values and unrestricted multi-shot
+invocation. The two verb-named tools expose exactly the supported
+actions.
+
+Also `callcc` is high-order and does not immediately translate to what
+an agent expects.
 
 ### Subagents
 
-Subagents provide clean context, concurrency, independent prompts, and separate
-tool permissions. They return a result to the parent but do not restore the
-parent agent's own earlier decision point. They are preferable for delegation;
-continuations are preferable for local backtracking.
+Subagents provide clean context, concurrency, independent prompts, and
+separate tool permissions. They return a result to the parent but do
+not restore the parent agent's own earlier decision point. They are
+preferable for delegation; continuations are preferable for local
+backtracking.
 
 ### Session Forks and Transcript Compaction
 
 Session forks preserve multiple durable branches for users to revisit.
-Compaction summarizes old context. Neither provides an agent-controlled,
-one-shot return from a speculative branch with an explicit value.
+Compaction summarizes old context. Neither provides an
+agent-controlled, one-shot return from a speculative branch with an
+explicit value.
 
 ## Related Work
 

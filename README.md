@@ -35,11 +35,11 @@ By default, the binary is statically linked with Haskell dependencies, so you ca
 
 ## **WARNING**
 
-Cosmobot is still in infancy. We do not recommend you use Cosmobot in any critical scenario.
+Cosmobot is **EXPERIMENTAL**. We do not recommend you use Cosmobot in any critical scenario. There are hundreds of good agent products out there already.
 
-Regarding **Safety**, currently, Cosmobot provides only safe tools to normal users, including sandboxed terminal (by default, network is supported which may expose your IP address). But for superusers, all tools are available, including priviledged ones. Therefore, you can configure the system prompt to make the bot prefer sandboxes whenever possible, or simply use an unprivileged user to talk to the bot, to enhance system safety.
+Even though Cosmobot is already quite useful for *me* but not necessarily *you*. It is opinionated and under-documented.
 
-Regarding **Privacy**, we have done our best effort. For example, Alice can never query Bob's chat log. But that's about it.
+Cosmobot is experimental also because it tries some crazy ideas (e.g. `continuation`). They are *not* guaranteed to work well, or even work at all.
 
 ## Cosmobot Deployment
 
