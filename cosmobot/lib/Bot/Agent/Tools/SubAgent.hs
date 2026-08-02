@@ -45,17 +45,17 @@ subagentTool
 subagentTool availableTools =
   tagged [workTag]
   . allowWhen (isRight . Resource.accessFromMessage . (.message))
-  . withDescription "Manage background agents scoped to the current chat. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
+  . withDescription "Manage background agents scoped to the current chat. steer adds input to an active run. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
   $ tool "subagent"
       (parsedArguments
         (objectSchema
-          [ fieldText "op" "One of: create, list, send, query, wait_any, wait_all, rename, delete."
+          [ fieldText "op" "One of: create, list, send, steer, query, wait_any, wait_all, rename, delete."
           , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
           , fieldText "system_prompt" "System prompt for create; empty inherits the current system prompt."
           , fieldTextArray "tools" "Tool names exposed to the subagent for create; empty exposes none."
-          , fieldText "resource" "Subagent resource name; required for send, query, rename, and delete."
+          , fieldText "resource" "Subagent resource name; required for send, steer, query, rename, and delete."
           , fieldTextArray "resources" "Non-empty subagent resource names; required for wait_any and wait_all."
-          , fieldText "prompt" "Prompt to send; required for send."
+          , fieldText "prompt" "Prompt to send; required for send and steer."
           , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 5."
           ]
           ["op"])
@@ -78,6 +78,10 @@ subagentTool availableTools =
               use access resourceId \subagent ->
                 SubAgent.sendPrompt metadata resourceId availableTools context subagent prompt
                   <&> fmap (const "Prompt sent.")
+            Steer resourceId prompt ->
+              use access resourceId \subagent ->
+                SubAgent.steer subagent prompt
+                  <&> fmap (const "Steer queued.")
             Query resourceId ->
               use access resourceId (fmap Right . SubAgent.queryOutput)
             WaitAny resourceIds ->
@@ -153,6 +157,7 @@ data Call
   = Create !(Maybe Text) !Text ![Text] !Int
   | ListResources
   | Send !Text !Text
+  | Steer !Text !Text
   | Query !Text
   | WaitAny !(NonEmpty Text)
   | WaitAll !(NonEmpty Text)
@@ -171,13 +176,14 @@ parseCall = Aeson.withObject "subagent arguments" \o -> do
         <*> parseTTLMinutes o
     "list" -> pure ListResources
     "send" -> Send <$> resource o <*> requiredTextValue o "prompt"
+    "steer" -> Steer <$> resource o <*> requiredTextValue o "prompt"
     "query" -> Query <$> resource o
     "wait_any" -> WaitAny <$> resources o
     "wait_all" -> WaitAll <$> resources o
     "delete" -> Destroy <$> resource o
     "destroy" -> Destroy <$> resource o
     "rename" -> Rename <$> resource o <*> requiredTextValue o "name"
-    _ -> fail "op must be one of: create, list, send, query, wait_any, wait_all, rename, delete."
+    _ -> fail "op must be one of: create, list, send, steer, query, wait_any, wait_all, rename, delete."
   where
     resource o = requiredTextValue o "resource"
     resources o = do

@@ -9,6 +9,7 @@ module Bot.Resource.SubAgent
   ( SubAgent
   , SubAgentArgs (..)
   , sendPrompt
+  , steer
   , queryOutput
   , waitAnyOutput
   , waitAllOutputs
@@ -18,6 +19,7 @@ where
 import qualified Bot.Agent as Agent
 import Bot.Agent.Tool
 import Bot.Agent.Types
+import Bot.Core.Message (MessageInput, inputWithImages)
 import Bot.Core.Transcript
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Agent as AgentEffect
@@ -27,6 +29,8 @@ import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
+import qualified Data.Foldable as Foldable
+import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Streaming.Prelude as S
@@ -45,9 +49,16 @@ data SubAgent = SubAgent
 data SubAgentState = SubAgentState
   { transcript :: !(Maybe Transcript)
   , answer :: !(Maybe Text)
-  , active :: !(Maybe Concurrency.Handle)
+  , active :: !(Maybe ActiveRun)
   , runs :: ![Concurrency.Handle]
   }
+
+data ActiveRun = ActiveRun
+  { worker :: !Concurrency.Handle
+  , steering :: !SteeringQueue
+  }
+
+type SteeringQueue = MVar.MVar (Maybe (Seq.Seq MessageInput))
 
 instance
   (Resource.Resource :> es, Concurrency.Concurrency :> es, Concurrent :> es)
@@ -71,9 +82,9 @@ instance
 
   destroyResourceObject subagent = do
     snapshot <- MVar.readMVar subagent.state
-    for_ snapshot.active \worker -> do
-      void (Concurrency.cancel worker.handleId)
-      Concurrency.await worker
+    for_ snapshot.active \active -> do
+      void (Concurrency.cancel active.worker.handleId)
+      Concurrency.await active.worker
     results <- concat <$> traverse Resource.destroyAssociated snapshot.runs
     pure $ case lefts results of
       [] -> Right ()
@@ -123,6 +134,7 @@ sendPrompt metadata subagentId availableTools context subagent prompt =
     case snapshot.active of
       Just _ -> pure (snapshot, Left "Subagent is still generating.")
       Nothing -> do
+        steering <- newSteeringQueue
         let transcript = maybe (startWithUser prompt) (appendUser prompt) snapshot.transcript
             requestedNames = subagent.arguments.toolNames
             requestedTools = filter ((`elem` requestedNames) . toolName) availableTools
@@ -147,10 +159,12 @@ sendPrompt metadata subagentId availableTools context subagent prompt =
                   , childRunId = Agent.runIdOf runtime
                   , subagentId
                   }
-                _ S.:> agentResult <- S.toList (Agent.agentStream runtime transcript)
+                _ S.:> agentResult <- S.toList
+                  (Agent.agentStream (Agent.withSteering (steeringControl steering) runtime) transcript)
                 pure (agentResult.finalText, agentResult.transcript)
+          MVar.modifyMVar_ steering (const (pure Nothing))
           MVar.modifyMVar_ subagent.state (pure . finishRun worker result)
-        pure (snapshot {active = Just worker, runs = worker : snapshot.runs}, Right ())
+        pure (snapshot {active = Just ActiveRun{worker, steering}, runs = worker : snapshot.runs}, Right ())
   where
     isNamedTag = \case
       Named _ -> True
@@ -162,13 +176,45 @@ finishRun
   -> SubAgentState
   -> SubAgentState
 finishRun worker result current
-  | current.active /= Just worker = current
+  | ((.worker) <$> current.active) /= Just worker = current
   | otherwise =
       case result of
         Right (answer, transcript) ->
           current{transcript = Just transcript, answer = Just answer, active = Nothing}
         Left err ->
           current{answer = Just ("Subagent failed: " <> Text.take 500 (show err)), active = Nothing}
+
+steer :: Concurrent :> es => SubAgent -> Text -> Eff es (Either Text ())
+steer subagent prompt = do
+  active <- (.active) <$> MVar.readMVar subagent.state
+  case active of
+    Nothing -> pure (Left "Subagent is not generating.")
+    Just run -> do
+      accepted <- enqueueSteer run.steering (inputWithImages prompt [])
+      pure $ if accepted then Right () else Left "Subagent is not generating."
+
+newSteeringQueue :: Concurrent :> es => Eff es SteeringQueue
+newSteeringQueue =
+  MVar.newMVar (Just Seq.empty)
+
+enqueueSteer :: Concurrent :> es => SteeringQueue -> MessageInput -> Eff es Bool
+enqueueSteer steering input =
+  MVar.modifyMVar steering \case
+    Nothing -> pure (Nothing, False)
+    Just queued -> pure (Just (queued Seq.|> input), True)
+
+steeringControl :: Concurrent :> es => SteeringQueue -> Agent.SteeringControl es
+steeringControl steering =
+  Agent.SteeringControl
+    { drain = MVar.modifyMVar steering \case
+        Nothing -> pure (Nothing, [])
+        Just queued -> pure (Just Seq.empty, Foldable.toList queued)
+    , complete = MVar.modifyMVar steering \case
+        Nothing -> pure (Nothing, Nothing)
+        Just queued
+          | Seq.null queued -> pure (Nothing, Nothing)
+          | otherwise -> pure (Just Seq.empty, Just (Foldable.toList queued))
+    }
 
 queryOutput :: (Concurrent :> es) => SubAgent -> Eff es Text
 queryOutput subagent = do
@@ -191,7 +237,7 @@ waitAnyOutput subagents = do
       answerFor (fst (fromMaybe (error "missing winning subagent") (find ((== winner) . snd) activeSubagents)))
   where
     snapshot named@(_, subagent) =
-      (named,) . (.active) <$> MVar.readMVar subagent.state
+      (named,) . fmap (.worker) . (.active) <$> MVar.readMVar subagent.state
 
     requireActive (named, worker) =
       (named,) <$> worker
@@ -209,7 +255,7 @@ outputFor
   -> Eff es (Text, Text)
 outputFor (name, subagent) = do
   snapshot <- MVar.readMVar subagent.state
-  traverse_ Concurrency.await snapshot.active
+  traverse_ (Concurrency.await . (.worker)) snapshot.active
   answerFor (name, subagent)
 
 answerFor

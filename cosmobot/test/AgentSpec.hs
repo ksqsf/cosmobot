@@ -487,7 +487,8 @@ testSubAgentLifecycle = do
     [ chatAnswer "" [toolCall "block" "block" (Aeson.object [])]
     , chatAnswer "finished" []
     ]
-  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     started <- MVar.newEmptyMVar
     finish <- MVar.newEmptyMVar
     let blockTool = AgentTool.tool "block" AgentTool.noArguments do
@@ -530,6 +531,9 @@ testSubAgentLifecycle = do
       childMetadata.originRunId @?= "agent-root"
       assertBool "child has its own run id" (childMetadata.agentRunId /= descendantMetadata.agentRunId)
       assertBool "child resources are owned by its worker" (isJust childMetadata.resourceOwner)
+    steered <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("steer" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("change direction" :: Text)])
+    liftIO $ AgentTypes.toolResultContent steered @?= "Steer queued."
+    void $ sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("steer" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("then verify" :: Text)])
     let access = fromRight (error "missing resource access") (ResourceEffect.accessFromMessage otherContext.message)
     rootResources <- ResourceEffect.listCreatedByRuns access ["agent-root"]
     liftIO $ map (.resourceId) rootResources @?= ["researcher"]
@@ -549,6 +553,14 @@ testSubAgentLifecycle = do
     liftIO $ AgentTypes.toolResultContent renamed @?= "Subagent renamed: reviewer"
     queried <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("query" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent queried @?= "finished"
+    requests <- liftIO (IORef.readIORef captured)
+    liftIO $ case requests of
+      [_initial, afterTool] ->
+        chatMessageTextsByRole "user" afterTool @?= ["work", "change direction", "then verify"]
+      other ->
+        assertFailure [i|expected two subagent model requests, got #{length other}|]
+    rejectedSteer <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("steer" :: Text), "resource" Aeson..= ("reviewer" :: Text), "prompt" Aeson..= ("too late" :: Text)])
+    liftIO $ AgentTypes.toolResultContent rejectedSteer @?= "Subagent is not generating."
     finishedDetail <- ResourceEffect.detail access "reviewer"
     liftIO $ assertBool "subagent detail reports final output" (either (const False) ("output:\nfinished" `Text.isInfixOf`) finishedDetail)
     destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("delete" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
