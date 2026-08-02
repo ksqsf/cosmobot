@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedLabels #-}
+
 module Main (main) where
 
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
@@ -8,6 +10,13 @@ import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Int as Int
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import qualified Database.Selda as Selda
+import qualified Database.Selda.Backend as SeldaBackend
+import qualified Database.Selda.SQLite as SeldaSQLite
 import Effectful.Timeout (Timeout, runTimeout)
 import qualified Streaming.Prelude as S
 import Test.Tasty hiding (Timeout)
@@ -27,7 +36,36 @@ main =
       , testCase "deleted elapsed schedule is not delivered" testDeletedElapsedScheduleIsNotDelivered
       , testCase "pending schedules persist across scheduler restart" testPendingSchedulesPersistAcrossSchedulerRestart
       , testCase "elapsed schedules persist across scheduler restart" testElapsedSchedulesPersistAcrossSchedulerRestart
+      , testCase "scheduler migrates old ids to database primary keys" testSchedulerMigratesLegacyIds
+      , testCase "storage failures do not commit scheduler memory state" testStorageFailuresDoNotCommitSchedulerState
       ]
+
+data LegacyScheduledMessageRow = LegacyScheduledMessageRow
+  { legacy_id :: Selda.RowID
+  , legacy_schedule_id :: Int.Int64
+  , legacy_due_at_unix_seconds :: Int.Int64
+  , legacy_platform_key :: Text
+  , legacy_chat_id :: Maybe Int.Int64
+  , legacy_sender_id :: Maybe Text
+  , legacy_sender_username :: Maybe Text
+  , legacy_message_json :: Text
+  }
+  deriving (Generic)
+
+instance Selda.SqlRow LegacyScheduledMessageRow
+
+legacyScheduledMessages :: Selda.Table LegacyScheduledMessageRow
+legacyScheduledMessages =
+  Selda.tableFieldMod "scheduled_messages"
+    [ #legacy_id Selda.:- Selda.untypedAutoPrimary
+    , #legacy_schedule_id Selda.:- Selda.unique
+    , #legacy_due_at_unix_seconds Selda.:- Selda.index
+    , #legacy_platform_key Selda.:- Selda.index
+    , #legacy_chat_id Selda.:- Selda.index
+    , #legacy_sender_id Selda.:- Selda.index
+    , #legacy_sender_username Selda.:- Selda.index
+    ]
+    (fromMaybe "" . Text.stripPrefix "legacy_")
 
 testScheduledMessagesAreScopedByCurrentUser :: IO ()
 testScheduledMessagesAreScopedByCurrentUser = runSchedulerTest do
@@ -119,6 +157,60 @@ testElapsedSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
       ((.text) <$> delivered) @?= Just "!ask after restart"
       length schedules @?= 0
 
+testSchedulerMigratesLegacyIds :: IO ()
+testSchedulerMigratesLegacyIds = runEff $
+  withSQLiteConnection \connection -> do
+    let legacyMessage = messageFrom "200" "!ask legacy"
+    liftIO $ SeldaBackend.runSeldaT
+      (do
+        Selda.tryCreateTable legacyScheduledMessages
+        Selda.insert_ legacyScheduledMessages
+          [ LegacyScheduledMessageRow
+              { legacy_id = Selda.def
+              , legacy_schedule_id = 7
+              , legacy_due_at_unix_seconds = maxBound
+              , legacy_platform_key = "telegram"
+              , legacy_chat_id = Just 100
+              , legacy_sender_id = Just "200"
+              , legacy_sender_username = Just "alice"
+              , legacy_message_json = encodeMessage legacyMessage
+              }
+          ])
+      connection
+    runTimeout $
+      runConcurrent $
+        runPrim $
+          ConcurrencyManager.runConcurrencyManager $
+            StorageSQLite.runStorageSQLite connection $
+              Scheduler.runScheduler do
+                before <- Scheduler.listScheduledMessages legacyMessage
+                _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask new")
+                migrated <- Scheduler.listScheduledMessages legacyMessage
+                liftIO do
+                  map (.scheduleId) before @?= [7]
+                  map (.scheduleId) migrated @?= [7, 8]
+
+testStorageFailuresDoNotCommitSchedulerState :: IO ()
+testStorageFailuresDoNotCommitSchedulerState = runEff $
+  withSQLiteConnection \connection ->
+    runTimeout $
+      runConcurrent $
+        runPrim $
+          ConcurrencyManager.runConcurrencyManager $
+            StorageSQLite.runStorageSQLite connection $
+              Scheduler.runScheduler do
+                _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask persisted")
+                liftIO (SeldaBackend.seldaClose connection)
+                failedCreate <- trySync $
+                  Scheduler.scheduleMessage 60 (messageFrom "200" "!ask phantom")
+                failedDelete <- trySync $
+                  Scheduler.deleteScheduledMessage (messageFrom "200" "delete") 1
+                schedules <- Scheduler.listScheduledMessages (messageFrom "200" "list")
+                liftIO do
+                  assertBool "create should report the storage failure" (isLeft failedCreate)
+                  assertBool "delete should report the storage failure" (isLeft failedDelete)
+                  map (.scheduleId) schedules @?= [1]
+
 runSchedulerTest
   :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, Concurrency.Concurrency, Prim, Concurrent, Timeout, IOE] a
   -> IO a
@@ -136,6 +228,18 @@ runSchedulerStorage action =
     . ConcurrencyManager.runConcurrencyManager
     . StorageSQLite.runStorageSQLitePath ":memory:"
     ) action
+
+encodeMessage :: IncomingMessage -> Text
+encodeMessage =
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+
+withSQLiteConnection
+  :: (SeldaBackend.SeldaConnection SeldaSQLite.SQLite -> Eff '[IOE] a)
+  -> Eff '[IOE] a
+withSQLiteConnection =
+  bracket
+    (liftIO (SeldaSQLite.sqliteOpen ":memory:"))
+    (\connection -> void (trySync (liftIO (SeldaBackend.seldaClose connection))))
 
 messageFrom :: Text -> Text -> IncomingMessage
 messageFrom senderId text =

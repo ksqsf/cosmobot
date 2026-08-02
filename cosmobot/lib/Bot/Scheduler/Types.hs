@@ -38,8 +38,7 @@ data PendingMessage = PendingMessage
   }
 
 data SchedulerState = SchedulerState
-  { nextScheduleId :: !Integer
-  , pendingById :: !(Map Integer PendingMessage)
+  { pendingById :: !(Map Integer PendingMessage)
   , pendingByDue :: !(Set PendingDue)
   }
   deriving (Generic)

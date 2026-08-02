@@ -7,10 +7,9 @@ Stability   : experimental
 module Bot.Scheduler.State
   ( schedulerStateFromStoredMessages
   , popDueMessagesFromState
-  , registerPendingMessageInState
+  , rememberStoredMessage
   , deletePendingMessageFromState
   , scheduledMessage
-  , storedScheduledMessage
   , sameMessageOwner
   )
 where
@@ -22,11 +21,10 @@ import Bot.Scheduler.Types
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
-schedulerStateFromStoredMessages :: Integer -> [SchedulerStorage.StoredScheduledMessage] -> SchedulerState
-schedulerStateFromStoredMessages nextScheduleId storedMessages =
+schedulerStateFromStoredMessages :: [SchedulerStorage.StoredScheduledMessage] -> SchedulerState
+schedulerStateFromStoredMessages storedMessages =
   SchedulerState
-    { nextScheduleId
-    , pendingById = Map.fromList [(pending.scheduleId, pending) | pending <- pendingMessages]
+    { pendingById = Map.fromList [(pending.scheduleId, pending) | pending <- pendingMessages]
     , pendingByDue = Set.fromList [PendingDue{dueAtUnixSeconds = pending.dueAtUnixSeconds, scheduleId = pending.scheduleId} | pending <- pendingMessages]
     }
   where
@@ -60,24 +58,21 @@ popDueMessagesFromState now schedulerState =
                   nextState = current{pendingById = nextById, pendingByDue = rest}
               in go nextState (maybe acc (: acc) pendingMessage)
 
-registerPendingMessageInState :: Integer -> Int -> IncomingMessage -> SchedulerState -> (SchedulerState, PendingMessage)
-registerPendingMessageInState now delaySeconds message schedulerState =
+rememberStoredMessage :: SchedulerStorage.StoredScheduledMessage -> SchedulerState -> (SchedulerState, PendingMessage)
+rememberStoredMessage stored schedulerState =
   (nextState, pendingMessage)
   where
-    scheduleId = schedulerState.nextScheduleId
-    dueAt = now + fromIntegral (max 0 delaySeconds)
     pendingMessage = PendingMessage
-      { scheduleId = scheduleId
-      , dueAtUnixSeconds = dueAt
-      , message = message
+      { scheduleId = stored.scheduleId
+      , dueAtUnixSeconds = stored.dueAtUnixSeconds
+      , message = stored.message
       }
     due = PendingDue
-      { dueAtUnixSeconds = dueAt
-      , scheduleId = scheduleId
+      { dueAtUnixSeconds = pendingMessage.dueAtUnixSeconds
+      , scheduleId = pendingMessage.scheduleId
       }
     nextState = schedulerState
-      { nextScheduleId = scheduleId + 1
-      , pendingById = Map.insert scheduleId pendingMessage schedulerState.pendingById
+      { pendingById = Map.insert pendingMessage.scheduleId pendingMessage schedulerState.pendingById
       , pendingByDue = Set.insert due schedulerState.pendingByDue
       }
 
@@ -108,14 +103,6 @@ scheduledMessage now pending =
     , message = pending.message
     }
 
-storedScheduledMessage :: PendingMessage -> SchedulerStorage.StoredScheduledMessage
-storedScheduledMessage pending =
-  SchedulerStorage.StoredScheduledMessage
-    { scheduleId = pending.scheduleId
-    , dueAtUnixSeconds = pending.dueAtUnixSeconds
-    , message = pending.message
-    }
-
 remainingSecondsUntil :: Integer -> Integer -> Int
 remainingSecondsUntil now dueAt
   | dueAt <= now = 0
@@ -138,4 +125,3 @@ sameSender left right =
       left.senderUsername == right.senderUsername
     _ ->
       False
-

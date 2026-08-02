@@ -143,6 +143,7 @@ common test-deps
                     , req
                     , regex-tdfa
                     , selda
+                    , selda-sqlite
                     , streaming
                     , streaming-bytestring
                     , text
