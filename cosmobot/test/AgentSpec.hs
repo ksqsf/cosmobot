@@ -89,7 +89,7 @@ import qualified Effectful.FileSystem.IO.ByteString as FSByteString
 import Effectful.Process (Process, runProcess)
 import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Process.Typed as TypedProcess
-import Effectful.Timeout (Timeout, runTimeout)
+import Effectful.Timeout (Timeout, runTimeout, timeout)
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Client.Internal as HTTPInternal
 import qualified Network.HTTP.Req as Req
@@ -285,6 +285,7 @@ main =
       , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "agent audit migrates legacy records without changing ids" testAgentAuditMigratesLegacyRecords
+      , testCase "SQLite storage pool runs actions concurrently" testSQLiteStoragePoolRunsActionsConcurrently
       , testCase "thread stats accumulate the replied branch" testThreadStatsAccumulateRepliedBranch
       , testCase "thread stats show active running tools from every alias" testThreadStatsShowActiveRunningTools
       , testCase "thread audit is scoped by platform, chat, and run occurrence" testThreadAuditScope
@@ -2056,6 +2057,37 @@ testAgentAuditMigratesLegacyRecords =
           other -> assertFailure ("expected migrated finished tool use, got " <> show other)
       Nothing ->
         assertFailure "expected migrated tool use"
+
+testSQLiteStoragePoolRunsActionsConcurrently :: IO ()
+testSQLiteStoragePoolRunsActionsConcurrently =
+  withSQLiteTempPath "storage-pool" \dbPath -> do
+    concurrent <- runEff $
+      runTimeout $
+        runConcurrent $
+          runPrim $
+            StorageSQLite.runStorageSQLitePath dbPath $
+              withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+                runInIO do
+                  firstStarted <- MVar.newEmptyMVar
+                  secondStarted <- MVar.newEmptyMVar
+                  release <- MVar.newEmptyMVar
+                  let holdConnection started =
+                        StorageEffect.runSelda $
+                          liftIO $
+                            runInIO do
+                              MVar.putMVar started ()
+                              MVar.takeMVar release
+                  firstWorker <- Async.async (holdConnection firstStarted)
+                  MVar.takeMVar firstStarted
+                  secondWorker <- Async.async (holdConnection secondStarted)
+                  startedTogether <- isJust <$> timeout 1_000_000 (MVar.takeMVar secondStarted)
+                  MVar.putMVar release ()
+                  unless startedTogether (MVar.takeMVar secondStarted)
+                  MVar.putMVar release ()
+                  Async.wait firstWorker
+                  Async.wait secondWorker
+                  pure startedTogether
+    assertBool "separate pooled connections should execute concurrently" concurrent
 
 testThreadStatsAccumulateRepliedBranch :: IO ()
 testThreadStatsAccumulateRepliedBranch = do
