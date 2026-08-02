@@ -14,16 +14,16 @@ is interpreted without becoming special cases in the core recursion.
 ### 1.1 `Program`
 
 ```haskell
-newtype Program es result = Program
-  { observe :: Stream (Of Output) (Eff es) (Step es result)
+newtype Program m result = Program
+  { observe :: Stream (Of Output) m (Step m result)
   }
 ```
 
-`Program es result` describes the remainder of an agent computation.
+`Program m result` describes the remainder of an agent computation.
 
 | Parameter | Meaning |
 |---|---|
-| `es` | The Effectful effect row available while observing the program |
+| `m` | The carrier used while observing the program |
 | `result` | The value returned when the whole computation finishes |
 
 Calling `observe` exposes one layer of the computation. That observation may
@@ -36,19 +36,19 @@ or even a non-terminating computation, without first building the whole tree.
 ### 1.2 `Step` and `AgentEvent`
 
 ```haskell
-data Step es result where
+data Step m result where
   Finished
     :: result
-    -> Step es result
+    -> Step m result
 
   Continues
-    :: Program es result
-    -> Step es result
+    :: Program m result
+    -> Step m result
 
   Visible
     :: AgentEvent response
-    -> (response -> Program es result)
-    -> Step es result
+    -> (response -> Program m result)
+    -> Step m result
 
 data AgentEvent response where
   RunModel
@@ -80,7 +80,7 @@ type.
 The continuation is existentially typed with the event response:
 
 ```haskell
-response -> Program es result
+response -> Program m result
 ```
 
 The event handler does not need to know which model function to call next. It
@@ -90,7 +90,7 @@ the remainder of the computation.
 `trigger` lifts one event into a program:
 
 ```haskell
-trigger :: AgentEvent response -> Program es response
+trigger :: Monad m => AgentEvent response -> Program m response
 ```
 
 For example, the model step is ordinary monadic composition:
@@ -214,21 +214,22 @@ The complete definition contains run metadata, tools, and a set of
 middleware hooks:
 
 ```haskell
-data Runtime (context :: [Type]) es = Runtime
+data Runtime (context :: [Type]) m = Runtime
   { runId :: !Text
+  , toolCallMetadata :: !ToolCallMetadata
   , context :: Context
-  , tools :: [Tool es]
-  , exposedTools :: [Tool es]
-  , runningTools :: [RunningTool es]
+  , tools :: [Tool m]
+  , exposedTools :: [Tool m]
+  , runningTools :: [RunningTool m]
   , maxTurns :: !Int
   , modelInputTranscript
-      :: HList context -> TurnState -> Eff es Transcript
+      :: HList context -> TurnState -> m Transcript
   , aroundProgram
-      :: Runtime '[] es -> Program es Result -> Program es Result
+      :: Runtime '[] m -> Program m Result -> Program m Result
   , aroundAgentRun
       :: HList context
-      -> Stream (Of Output) (Eff es) Result
-      -> Stream (Of Output) (Eff es) Result
+      -> Stream (Of Output) m Result
+      -> Stream (Of Output) m Result
   , aroundModelTurn :: ...
   , aroundToolTurn :: ...
   , aroundToolCall :: ...
@@ -240,7 +241,7 @@ The two type parameters have separate roles:
 | Parameter | Meaning |
 |---|---|
 | `context` | The typed middleware context still required by the runtime |
-| `es` | Effects available to the runtime and program |
+| `m` | The carrier shared by the runtime, program, and tools |
 
 The type-level `context` must not be confused with the value-level `Context`
 field. The value-level `Context` contains request information such as the
@@ -252,21 +253,41 @@ inner middleware.
 then installs behavior by updating one or more fields.
 
 Before execution, all typed context requirements must be discharged, leaving
-a `Runtime '[] es`.
+a `Runtime '[] m`.
+
+### 3.1 `Program` and the `Agent` effect
+
+`Program m` describes what an agent does: its model/tool control flow. The
+`Agent` effect opens the scope in which one such agent runs:
+
+```haskell
+Agent.withRun ... \runtime ->
+  consume (Agent.agentStream runtime transcript)
+```
+
+The function after `withRun` is the scoped body: it receives the prepared
+runtime and performs the actual run. This lets the surrounding scope supply
+execution context such as origin identity and resource ownership before the
+body starts.
+
+Root agents and child agents therefore have the same shape. A child simply
+opens another scope with locally adjusted context; it is not a different kind
+of runner. `Program` remains the computation being interpreted, while the
+`Agent` effect supplies the scope in which it is interpreted.
 
 ## 4. Middleware design
 
 Most middleware is a runtime transformation:
 
 ```haskell
-Runtime context es -> Runtime context es
+Runtime context m -> Runtime context m
 ```
 
 A middleware that provides a typed context value may instead remove a
 requirement:
 
 ```haskell
-Runtime (Provided ': context) es -> Runtime context es
+Runtime (Provided ': context) m -> Runtime context m
 ```
 
 ### 4.1 Choose the narrowest hook
@@ -302,10 +323,11 @@ A minimal model-turn middleware looks like this:
 
 ```haskell
 withModelTurnObserver
-  :: (TurnState -> Eff es ())
-  -> (Step es Result -> Eff es ())
-  -> Runtime context es
-  -> Runtime context es
+  :: Monad m
+  => (TurnState -> m ())
+  -> (Step m Result -> m ())
+  -> Runtime context m
+  -> Runtime context m
 withModelTurnObserver before after runtime =
   runtime
     { aroundModelTurn = \context continue state action -> do
@@ -344,7 +366,7 @@ A middleware can add policy in any branch, but it must preserve both
 `Continues` and every `Visible` continuation. Otherwise it only applies to the
 first observed layer.
 
-`aroundProgram` also receives the final `Runtime '[] es`. Structural
+`aroundProgram` also receives the final `Runtime '[] m`. Structural
 middleware that needs to execute tools or inspect final tool exposure can use
 the complete middleware chain instead of bypassing middleware installed
 later.
@@ -357,8 +379,8 @@ is a provider:
 ```haskell
 withToolResultCompaction
   :: Media.Media :> es
-  => Runtime (ToolResultObservation es ': context) es
-  -> Runtime context es
+  => Runtime (ToolResultObservation es ': context) (Eff es)
+  -> Runtime context (Eff es)
 ```
 
 It constructs a `ToolResultObservation` and pushes it onto the HList whenever
@@ -367,7 +389,7 @@ with `HList.Has`.
 
 The type checker consequently verifies middleware context wiring. If no
 middleware provides a required value, the chain cannot become
-`Runtime '[] es` and cannot be passed to `agentStream`.
+`Runtime '[] (Eff es)` and cannot be passed to `agentStream`.
 
 ### 4.5 Middleware composition
 
@@ -388,7 +410,7 @@ defaultRuntime observer threshold =
 
 The runner does not recognize tool limits or continuations specially. Every
 entry in this chain is a `Runtime` transformation, and the final result has
-type `Runtime '[] es`.
+type `Runtime '[] (Eff es)`.
 
 ## 5. Adding middleware
 
@@ -452,10 +474,10 @@ practical layers into each observation:
 
 1. `Stream` can emit several `Output` values before exposing the next
    structural step.
-2. Observation runs in `Eff es`, rather than reifying every infrastructure
+2. Observation runs in the carrier `m`, rather than reifying every infrastructure
    effect into the event GADT.
 
-If `Output` is treated as another visible event and `Eff es` as the base
+If `Output` is treated as another visible event and `m` as the base
 interpretation capability, `Program` has the same recursive semantics as an
 ITree. Its `Monad` instance is the standard ITree bind: continue after
 `Finished`, preserve `Continues`, and compose after every `Visible`
@@ -463,12 +485,13 @@ continuation.
 
 ## 7. Summary
 
-The design reduces to four relationships:
+The design reduces to five relationships:
 
 1. `Program` describes the remaining agent computation.
 2. `Step` exposes return, silent continuation, or a typed `AgentEvent`.
 3. Middleware composes narrow `Runtime` hooks around that computation.
-4. `runProgram` interprets the program into a stream with a final `Result`.
+4. The `Agent` effect opens the execution scope for root or nested runs.
+5. `runProgram` interprets the program into a stream with a final `Result`.
 
 Most new agent policy should therefore be a middleware transformation, not a
 change to the core recursion. The core calculus only needs to change when the

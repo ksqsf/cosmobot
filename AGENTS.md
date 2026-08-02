@@ -56,6 +56,9 @@ Avoid import cycles when extracting from effects. Prefer explicit callback recor
 When changing the agent loop or middleware:
 
 - Start in `Bot.Agent.Core` only to change the generic calculus vocabulary: `Program`, `Step`, `AgentEvent`, `TurnState`, or `Runtime`. Keep the execution fold in `Bot.Agent` as direct event interpretation; do not add persistence, audit, media, chat logging, platform linking, or handler policy there.
+- Keep `Program`, `Step`, `Runtime`, tools, and observers polymorphic in their carrier `m`. Specialize them to `Eff es` at application boundaries; do not recover an effect row from `m` with a type family.
+- Start every agent through the higher-order `Bot.Effect.Agent` capability. Main agents and child agents use the same `Agent.withRun`; differences such as origin identity and resource ownership are interpreter-local metadata installed with `Agent.withAgentMetadata`, not fields on `RunAgent`, runner callbacks, or separate child-runner APIs.
+- Treat a main agent as an ordinary root run, not as a resource-manager object or a separate runner kind. The default interpreter gives a root run its own origin id; callers may locally inject a `resourceOwner`. A managed child inherits the originating run id and uses its worker as `resourceOwner`; the `Agent` effect itself remains unaware of those policies.
 - Add cross-cutting behavior as `Bot.Agent.Middleware.*`, then compose it in `Bot.Agent.defaultRuntime` or the handler-specific runtime assembly. Add new modules to `cosmobot.cabal`.
 - Use `TurnState` only for state that must survive across model/tool turns. Middleware-private state belongs in lexical closures; typed dynamic context belongs in the middleware HList.
 - Use the `Runtime context` HList for dynamic middleware environment passed from outer middleware to inner middleware. Use this for values like `ObservationContext`, `EventObservation`, and `ToolResultObservation`.
@@ -135,7 +138,7 @@ cleanup, and tool-call transcript completeness together.
 - Never let managed objects escape the manager. Use `Resource.withResource` so active concurrency handles are tracked for the callback and cleared with structured cleanup.
 - Destruction must first make the object unavailable, cancel and await active users, then run object cleanup. Restore explicit removals after cleanup failure so callers can retry; manager shutdown continues past individual cleanup failures.
 - Keep resource registrations out of `Bot.Effect.Concurrency`. Concurrency manages threads; `Bot.Resource` manages long-running objects and their cleanup.
-- Add concrete `ResourceObject` instances only for resources that exist now. Do not add speculative resource kinds such as SubAgent.
+- Add concrete `ResourceObject` instances only for resources that exist now; do not add speculative resource kinds.
 
 ### Identity And Persistence
 
