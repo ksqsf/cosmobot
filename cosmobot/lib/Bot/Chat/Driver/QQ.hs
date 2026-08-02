@@ -2,7 +2,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-|
 Module      : Bot.Chat.Driver.QQ
-Description : QQ/NapCat OneBot v11 chat driver
+Description : QQ OneBot v11 chat driver
 Stability   : experimental
 -}
 
@@ -19,6 +19,7 @@ module Bot.Chat.Driver.QQ
   , forwardedMessagesText
   , readActionResponse
   , getUserAvatar
+  , base64FileRef
   )
 where
 
@@ -33,6 +34,7 @@ import qualified Data.IORef as IORef
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
@@ -44,6 +46,8 @@ import qualified Streaming as S
 import qualified Streaming.Prelude as S
 import System.FilePath (takeFileName)
 import qualified Effectful.Concurrent.MVar as MVar
+import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.Timeout
 
 -- ---------------------------------------------------------------------------
@@ -76,7 +80,7 @@ newQQDriver config = do
   pure QQDriver{config, eventChan, actionChan}
 
 instance Driver.ChatDriver QQDriver where
-  type ChatDriverEffects QQDriver es = (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es, Media.Media :> es)
+  type ChatDriverEffects QQDriver es = (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es, FileSystem.FileSystem :> es, Media.Media :> es)
 
   driverPlatform _ =
     PlatformQQ
@@ -485,7 +489,7 @@ dispatchActionResponse pendingResponses response =
 
 -- | Reply to a QQ private or group message.
 replyToQQ
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => QQDriver
   -> IncomingMessage
   -> Text
@@ -517,7 +521,7 @@ replyToQQ driver message body =
 
 -- | Send a reply that mentions a QQ user where the platform supports it.
 mentionUserQQ
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => QQDriver
   -> IncomingMessage
   -> Text
@@ -547,10 +551,9 @@ mentionUserQQ driver message userId body =
         ])
     _ -> pure (Left "QQ mention reply requires a QQ group id or private sender id.")
 
--- | Send a file segment through OneBot. The path is interpreted by NapCat, so
--- when NapCat runs in Docker it must be visible inside that container.
+-- | Send a file segment through OneBot without requiring a shared filesystem.
 uploadFileQQ
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, FileSystem.FileSystem :> es)
   => QQDriver
   -> IncomingMessage
   -> FilePath
@@ -558,25 +561,27 @@ uploadFileQQ
 uploadFileQQ driver message path =
   case (message.kind, message.chatId, message.senderId) of
     (ChatGroup, Just groupId, _) -> do
+      fileRef <- localFileRef path
       response <- sendFileMessage driver "send_group_msg"
         [ "group_id" Aeson..= groupId
-        , "message" Aeson..= fileMessage path
+        , "message" Aeson..= fileMessage path fileRef
         ]
       qqMessageIdResult "send_group_msg" response
     (ChatPrivate, _, Just rawUserId)
       | Just userId <- parseIntegerUserId rawUserId -> do
+      fileRef <- localFileRef path
       response <- sendFileMessage driver "send_private_msg"
         [ "user_id" Aeson..= userId
-        , "message" Aeson..= fileMessage path
+        , "message" Aeson..= fileMessage path fileRef
         ]
       qqMessageIdResult "send_private_msg" response
     _ ->
       pure (Left "QQ file upload requires a QQ group or private chat with a known target.")
 
--- | Send an audio record segment through OneBot, falling back to NapCat file
+-- | Send an audio record segment through OneBot, falling back to file
 -- upload for local files if the adapter rejects record sending.
 replyAudioQQ
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, FileSystem.FileSystem :> es)
   => QQDriver
   -> IncomingMessage
   -> Text
@@ -640,13 +645,13 @@ qqMessageIdResult action response =
     then pure (maybe (Left (qqMalformedMessageResponseText action)) (Right . integerMessageId) (responseMessageId response))
     else pure (Left (qqUploadFailureText action response))
 
-fileMessage :: FilePath -> Aeson.Value
-fileMessage path =
+fileMessage :: FilePath -> Text -> Aeson.Value
+fileMessage path file =
   Aeson.toJSON
     [ Aeson.object
         [ "type" Aeson..= Aeson.String "file"
         , "data" Aeson..= Aeson.object
-            [ "file" Aeson..= path
+            [ "file" Aeson..= file
             , "name" Aeson..= qqUploadFileName path
             ]
         ]
@@ -659,7 +664,7 @@ qqUploadFileName path =
 
 qqUploadFailureText :: Text -> ActionResponse -> Text
 qqUploadFailureText action response =
-  [i|QQ #{action} failed: status=#{statusText}, retcode=#{retcodeText}, message=#{responseMessage}. Make sure the file path is accessible from the NapCat container.|]
+  [i|QQ #{action} failed: status=#{statusText}, retcode=#{retcodeText}, message=#{responseMessage}.|]
   where
     statusText = show response.status :: String
     retcodeText = show response.retcode :: String
@@ -824,7 +829,7 @@ getGroupMemberList driver groupId =
         ]
     ])
 
--- | Set a QQ group member's special title through OneBot/NapCat.
+-- | Set a QQ group member's special title through OneBot.
 setGroupMemberTitleQQ
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
   => QQDriver
@@ -908,7 +913,7 @@ nonEmptyText value =
   Text.strip <$> value >>= \text ->
     text <$ guard (not (Text.null text))
 
-replyMessage :: (IOE :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es Aeson.Value
+replyMessage :: (IOE :> es, FileSystem.FileSystem :> es, Media.Media :> es) => IncomingMessage -> Text -> Eff es Aeson.Value
 replyMessage message body =
   Aeson.toJSON <$> maybe textOnly withReply message.messageId
   where
@@ -926,7 +931,7 @@ replyMessage message body =
         ] <>
       ) <$> replyContent text imageUrls
 
-mentionMessage :: (IOE :> es, Media.Media :> es) => IncomingMessage -> Integer -> Text -> Eff es Aeson.Value
+mentionMessage :: (IOE :> es, FileSystem.FileSystem :> es, Media.Media :> es) => IncomingMessage -> Integer -> Text -> Eff es Aeson.Value
 mentionMessage message userId body =
   Aeson.toJSON <$> maybe mentionOnly withReply message.messageId
   where
@@ -960,25 +965,25 @@ mentionContent userId body =
       ]
   ]
 
-replyContent :: (IOE :> es, Media.Media :> es) => Text -> [Text] -> Eff es [Aeson.Value]
+replyContent :: (IOE :> es, FileSystem.FileSystem :> es, Media.Media :> es) => Text -> [Text] -> Eff es [Aeson.Value]
 replyContent body imageUrls = do
   imageSegments <- traverse imageSegment imageUrls
   pure $
     [ textSegment body | not (Text.null body) ]
       <> imageSegments
 
-audioMessage :: IOE :> es => Text -> Maybe Text -> Eff es Aeson.Value
+audioMessage :: (IOE :> es, FileSystem.FileSystem :> es) => Text -> Maybe Text -> Eff es Aeson.Value
 audioMessage audioRef caption =
   Aeson.toJSON <$> audioContent audioRef caption
 
-audioContent :: IOE :> es => Text -> Maybe Text -> Eff es [Aeson.Value]
+audioContent :: (IOE :> es, FileSystem.FileSystem :> es) => Text -> Maybe Text -> Eff es [Aeson.Value]
 audioContent audioRef caption = do
   record <- recordSegment audioRef
   pure $
     maybe [] (\text -> [textSegment text | not (Text.null (Text.strip text))]) caption
       <> [record]
 
-recordSegment :: IOE :> es => Text -> Eff es Aeson.Value
+recordSegment :: (IOE :> es, FileSystem.FileSystem :> es) => Text -> Eff es Aeson.Value
 recordSegment ref =
   recordSegmentValue <$> qqAudioFile ref
 
@@ -1000,7 +1005,7 @@ textSegment body =
         ]
     ]
 
-imageSegment :: (IOE :> es, Media.Media :> es) => Text -> Eff es Aeson.Value
+imageSegment :: (IOE :> es, FileSystem.FileSystem :> es, Media.Media :> es) => Text -> Eff es Aeson.Value
 imageSegment url =
   imageSegmentValue <$> qqImageFile url
 
@@ -1013,24 +1018,26 @@ imageSegmentValue file =
         ]
     ]
 
-qqImageFile :: (IOE :> es, Media.Media :> es) => Text -> Eff es Text
+qqImageFile :: (IOE :> es, FileSystem.FileSystem :> es, Media.Media :> es) => Text -> Eff es Text
 qqImageFile url =
   qqPublicImageRef url
 
-qqPublicImageRef :: Media.Media :> es => Text -> Eff es Text
+qqPublicImageRef :: (IOE :> es, FileSystem.FileSystem :> es, Media.Media :> es) => Text -> Eff es Text
 qqPublicImageRef url =
-  maybe (pure url) Media.publicMediaRef (mediaRef url)
+  case mediaRef url of
+    Nothing -> pure url
+    Just ref -> Media.localMediaPath ref >>= maybe (Media.publicMediaRef ref) localFileRef
 
 mediaRef :: Text -> Maybe Text
 mediaRef ref =
   let stripped = Text.strip ref
   in stripped <$ guard ("media:" `Text.isPrefixOf` stripped)
 
-qqAudioFile :: IOE :> es => Text -> Eff es Text
+qqAudioFile :: (IOE :> es, FileSystem.FileSystem :> es) => Text -> Eff es Text
 qqAudioFile ref =
   case localAudioPath ref of
     Just path ->
-      pure ("file://" <> Text.pack path)
+      localFileRef path
     Nothing ->
       pure (fromMaybe ref (dataAudioBase64 ref))
 
@@ -1056,6 +1063,14 @@ dataAudioBase64 ref = do
   let (_, encodedWithMarker) = Text.breakOn ";base64," rest
   encoded <- Text.stripPrefix ";base64," encodedWithMarker
   pure ("base64://" <> encoded)
+
+localFileRef :: (IOE :> es, FileSystem.FileSystem :> es) => FilePath -> Eff es Text
+localFileRef path =
+  base64FileRef <$> FileSystemByteString.readFile path
+
+base64FileRef :: ByteString -> Text
+base64FileRef =
+  ("base64://" <>) . TextEncoding.decodeUtf8 . Base64.encode
 
 -- | Raw OneBot event fields needed by the message parser.
 data Event = Event

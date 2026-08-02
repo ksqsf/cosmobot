@@ -36,6 +36,7 @@ main =
       , testCase "QQ forwarded messages merge all node text" testQqForwardedMessagesMergeAllNodeText
       , testCase "QQ file segment becomes a message file" testQqFileSegmentBecomesMessageFile
       , testCase "QQ record segment becomes a message file" testQqRecordSegmentBecomesMessageFile
+      , testCase "QQ sends local file bytes as a base64 resource" testQqBase64FileRef
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
       , testCase "Telegram audio becomes a message file" testTelegramAudioBecomesMessageFile
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
@@ -120,6 +121,10 @@ testQqFileSegmentBecomesMessageFile = do
         }
       incoming = QQ.eventToIncomingMessage event
   ((.files) <$> incoming) @?= Just [MessageFile{name = "notes.txt", ref = "qq-file:file-123"}]
+
+testQqBase64FileRef :: IO ()
+testQqBase64FileRef =
+  QQ.base64FileRef "cosmobot" @?= "base64://Y29zbW9ib3Q="
 
 testQqRecordSegmentBecomesMessageFile :: IO ()
 testQqRecordSegmentBecomesMessageFile = do
