@@ -26,9 +26,6 @@ module Bot.Core.Route
   , isAllowedGroup
   , isAllowedPrivate
   , isSuperuser
-  , canStartThread
-  , canStartFromReply
-  , mentionsConfiguredBot
   , RouteHandler
   , continueOn
   , stopOn
@@ -140,11 +137,6 @@ isAllowedGroup :: IncomingMessage -> Bool
 isAllowedGroup message =
   message.kind == ChatGroup && message.digest.chatIsAllowed
 
--- | Whether the message mentions the configured bot identity.
-mentionsConfiguredBot :: IncomingMessage -> Bool
-mentionsConfiguredBot message =
-  message.digest.mentionsBot
-
 -- | Whether a private message may start a thread.
 isAllowedPrivate :: IncomingMessage -> Bool
 isAllowedPrivate message =
@@ -154,22 +146,6 @@ isAllowedPrivate message =
 isSuperuser :: IncomingMessage -> Bool
 isSuperuser message =
   message.digest.senderIsSuperuser
-
--- | General admission predicate for starting a new thread.
-canStartThread :: IncomingMessage -> Bool
-canStartThread message =
-  case message.kind of
-    ChatPrivate -> isAllowedPrivate message
-    ChatGroup   -> isAllowedGroup message || mentionsConfiguredBot message
-    _           -> False
-
--- | Admission predicate for starting from a reply to an unknown message.
-canStartFromReply :: IncomingMessage -> Bool
-canStartFromReply message =
-  case message.kind of
-    ChatPrivate -> isAllowedPrivate message
-    ChatGroup   -> isAllowedGroup message && mentionsConfiguredBot message
-    _           -> False
 
 -- | The routing algebra: skip, handle and continue, or handle and stop.
 data RouteDecision es

@@ -84,48 +84,65 @@ askHandlers toolCfg tools cfg threads =
 data Policy = Policy
   { msg :: !IncomingMessage
   , calledByName :: !Bool
+  , hasPrompt :: !Bool
+  , hasImages :: !Bool
+  , hasFiles :: !Bool
   , replyTarget :: !ReplyTarget
   }
 
 data ReplyTarget
   = NoReply
-  | ActiveThread !ThreadMessageKey
+  | ActiveThread !ThreadMessageKey !Transcript
   | FinishedThread !ThreadMessageKey !Transcript
-  | UntrackedBotMessage !MessageId
   | OtherReply !MessageId
 
 data Action
-  = Steer !Text
+  = Steer !MessageInput
   | Continue !ThreadMessageKey !Transcript
-  | Fresh !FreshStart
+  | Fresh
+  | FreshFromReply !MessageId
   | Ignore
-
-data FreshStart
-  = FreshAsk !Text
-  | FreshPrivate !Text
-  | FreshMention !Text
-  | FreshReply !MessageId
 
 decide :: Policy -> Action
 decide policy
+  -- Reply to a "steerable message" (which must be owned by the current sender)
   | ActiveThread{} <- policy.replyTarget
-  , Just steer <- steeringText policy.msg =
+  , Just steer <- steeringInput policy =
       Steer steer
-  | policy.calledByName
-  , canStartThread policy.msg =
-      Fresh (FreshAsk (Text.strip policy.msg.text))
-  | isNothing policy.msg.replyToMessageId
-  , isAllowedPrivate policy.msg
-  , Just prompt <- promptOrImagesValue policy.msg =
-      Fresh (FreshPrivate prompt)
-  | policy.msg.digest.mentionsBot
-  , Just prompt <- promptOrImagesValue policy.msg =
-      Fresh (FreshMention prompt)
+
+  -- Continuing a finished thread
   | FinishedThread parentKey transcript <- policy.replyTarget =
       Continue parentKey transcript
-  | UntrackedBotMessage parentId <- policy.replyTarget
-  , canStartFromReply policy.msg =
-      Fresh (FreshReply parentId)
+
+  -- In an allowed group chat, mentioned or called by name, non-reply
+  -- accepting all kinds of input
+  | isAllowedGroup policy.msg
+  , NoReply <- policy.replyTarget
+  , policy.msg.kind == ChatGroup
+  , policy.msg.digest.mentionsBot || policy.calledByName
+  , policy.hasPrompt || policy.hasImages || policy.hasFiles =
+      Fresh
+
+  -- In an allowed group chat, get a reply to a non-thread message
+  -- and it does not continue, then start a new thread from the replied-to message
+  | isAllowedGroup policy.msg
+  , OtherReply msgId <- policy.replyTarget
+  , policy.msg.kind == ChatGroup
+  , policy.msg.digest.mentionsBot || policy.calledByName =
+      FreshFromReply msgId
+
+  -- In an allowed private chat, any non-reply messages start a new thread
+  | isAllowedPrivate policy.msg
+  , Nothing <- policy.msg.replyToMessageId
+  , policy.hasPrompt =
+      Fresh
+
+  -- Starting from an untracked reply
+  | OtherReply parentId <- policy.replyTarget
+  , isAllowedPrivate policy.msg || (isAllowedGroup policy.msg && policy.msg.digest.mentionsBot) =
+      FreshFromReply parentId
+
+  -- Ignore other cases.
   | otherwise =
       Ignore
 
@@ -157,80 +174,60 @@ conversationRoute toolCfg tools cfg threads =
         pure . StopWith $
           Concurrency.fireWithHandle "ask.continue" \resource ->
             continueThread toolCfg tools cfg threads resource policy.msg parentKey transcript
-      Fresh fresh ->
+      Fresh ->
         pure . StopWith $
-          Concurrency.fireWithHandle (freshWorkerName fresh) \resource ->
-            runFreshStart toolCfg tools cfg threads resource policy.msg fresh
+          Concurrency.fireWithHandle "ask.fresh" \resource ->
+            startAskThread "matched fresh ask route" toolCfg tools cfg threads resource policy.msg (Text.strip policy.msg.text)
+      FreshFromReply parentId ->
+        pure . StopWith $
+          Concurrency.fireWithHandle "ask.continue" \resource ->
+            startThreadFromReply toolCfg tools cfg threads resource policy.msg parentId
 
 classifyPolicy
-  :: (Chat.Chat :> es, Storage.Storage :> es, Prim :> es, Concurrent :> es)
+  :: (Storage.Storage :> es, Prim :> es, Concurrent :> es)
   => AskHandlerConfig
   -> ThreadStore
   -> IncomingMessage
   -> Eff es Policy
 classifyPolicy cfg threads msg = do
-  let calledByName = maybe False (\name -> isJust (runFilter (prefixedText name) msg)) cfg.name
+  let calledByName = maybe False (\name -> case prefixedText name of MessageFilter matches -> isJust (matches msg)) cfg.name
+      hasPrompt = not (Text.null (Text.strip msg.text))
+      hasImages = not (null msg.imageUrls)
+      hasFiles = not (null msg.files)
   replyTarget <-
     case threadMessageKey msg <$> msg.replyToMessageId of
       Nothing -> pure NoReply
       Just key ->
-        lookupActiveThreadRunId threads key >>= \case
-          Just{} -> pure (ActiveThread key)
+        lookupActiveThreadReply threads msg key >>= \case
+          Just (isOwner, transcript)
+            | isOwner ->
+                pure (ActiveThread key transcript)
+            | otherwise ->
+                pure (FinishedThread key transcript)
           Nothing ->
             lookupThreadTranscript threads key >>= \case
               Just transcript -> pure (FinishedThread key transcript)
-              Nothing -> do
-                repliedToBot <- replyReferencesBot msg
-                pure $ if repliedToBot then UntrackedBotMessage key.messageId else OtherReply key.messageId
-  pure Policy{msg, calledByName, replyTarget}
+              Nothing ->
+                pure (OtherReply key.messageId)
+  pure Policy{msg, calledByName, hasPrompt, hasImages, hasFiles, replyTarget}
 
 withoutActive :: ReplyTarget -> ReplyTarget
 withoutActive = \case
-  ActiveThread key -> OtherReply key.messageId
+  ActiveThread key transcript -> FinishedThread key transcript
   target -> target
 
-runFilter :: MessageFilter a -> IncomingMessage -> Maybe a
-runFilter (MessageFilter matches) = matches
-
-steeringText :: IncomingMessage -> Maybe Text
-steeringText message = do
-  guard (isJust message.replyToMessageId && null message.imageUrls && null message.files)
-  let steer = Text.strip message.text
-  steer <$ guard (not (Text.null steer))
-
-promptOrImagesValue :: IncomingMessage -> Maybe Text
-promptOrImagesValue = runFilter promptOrImages
+steeringInput :: Policy -> Maybe MessageInput
+steeringInput policy = do
+  guard (isJust policy.msg.replyToMessageId && (policy.hasPrompt || policy.hasImages || policy.hasFiles))
+  pure $
+    inputWithAttachments
+      (promptWithCurrentFiles (promptOrImageDefault policy.msg.text policy.msg.imageUrls) policy.msg.files)
+      policy.msg.imageUrls
+      policy.msg.files
 
 matchesSimpleRoute :: AskHandlerConfig -> IncomingMessage -> Bool
-matchesSimpleRoute cfg message =
-  isJust (runFilter (command cfg.command <|> command cfg.drawCommand) message)
-
-freshWorkerName :: FreshStart -> Text
-freshWorkerName = \case
-  FreshAsk{} -> "ask.command"
-  FreshPrivate{} -> "ask.private"
-  FreshMention{} -> "ask.mention"
-  FreshReply{} -> "ask.continue"
-
-runFreshStart
-  :: HandlerEffects es
-  => Agent.ToolConfig
-  -> [AgentTool.Tool es]
-  -> AskHandlerConfig
-  -> ThreadStore
-  -> Concurrency.Handle
-  -> IncomingMessage
-  -> FreshStart
-  -> Eff es ()
-runFreshStart toolCfg tools cfg threads resource message = \case
-  FreshAsk prompt ->
-    startAskThread "matched ask route" toolCfg tools cfg threads resource message prompt
-  FreshPrivate prompt ->
-    startAskThread "matched private ask route" toolCfg tools cfg threads resource message prompt
-  FreshMention prompt ->
-    startAskThread "matched bot mention route" toolCfg tools cfg threads resource message prompt
-  FreshReply parentId ->
-    startThreadFromReply toolCfg tools cfg threads resource message parentId
+matchesSimpleRoute cfg message = case command cfg.command <|> command cfg.drawCommand of
+  MessageFilter matches -> isJust (matches message)
 
 drawRoute
   :: HandlerEffects es
@@ -240,7 +237,7 @@ drawRoute
   -> RouteHandler es
 drawRoute cfg threads =
   withHelp (RouteHelp (cfg.drawCommand <> " <prompt>") "Generate an image from a prompt.") $
-  requireAuth canStartThread (\_ -> pure ()) $
+  requireAuth (\message -> isAllowedPrivate message || isAllowedGroup message || (message.kind == ChatGroup && message.digest.mentionsBot)) (\_ -> pure ()) $
     stopOn (command cfg.drawCommand) \message prompt ->
       Concurrency.fire "ask.draw" $
         startDrawThread "matched draw route" cfg threads message prompt
@@ -254,7 +251,7 @@ askRoute
   -> RouteHandler es
 askRoute toolCfg tools cfg threads =
   withHelp (RouteHelp (cfg.command <> " <prompt>") "Start an agent conversation.") $
-  requireAuth canStartThread (\_ -> pure ()) $
+  requireAuth (\message -> isAllowedPrivate message || isAllowedGroup message || (message.kind == ChatGroup && message.digest.mentionsBot)) (\_ -> pure ()) $
     stopOn (command cfg.command) \message prompt ->
       Concurrency.fireWithHandle "ask.command" \resource ->
         startAskThread "matched ask route" toolCfg tools cfg threads resource message prompt
@@ -315,10 +312,6 @@ renderActiveThreads threads =
     [ "- " <> show thread.id.unId <> ": " <> Text.take 20 (Text.unwords (Text.words thread.prompt))
     | thread <- threads
     ]
-
-replyReferencesBot :: Chat.Chat :> es => IncomingMessage -> Eff es Bool
-replyReferencesBot =
-  fmap (maybe False (.senderIsBot)) . fetchReferencedMessage
 
 startAskThread
   :: HandlerEffects es

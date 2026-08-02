@@ -53,10 +53,9 @@ rankRoute
   -> RouteHandler es
 rankRoute commandText titleSuffix failureMessage fetchRows =
   withHelp (RouteHelp commandText ("Render the " <> titleSuffix <> " leaderboard.")) $
-  requireAuth canStartThread (\_ -> pure ()) $
-    stopOn (command commandText) \message _ -> do
-      logInfo [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
-      Concurrency.fire "typing.rank" (sendRankImage titleSuffix failureMessage fetchRows message)
+  stopOn (command commandText) \message _ -> do
+    logInfo [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
+    Concurrency.fire "typing.rank" (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage
   :: (Chat.Chat :> es, Typst.Typst :> es, KatipE :> es, IOE :> es)

@@ -15,6 +15,7 @@ module Bot.Storage.Thread
   , lookupThreadTranscript
   , lookupThreadMessageIds
   , lookupActiveThreadRunId
+  , lookupActiveThreadReply
   , lookupActiveThreadPendingSteers
   , rememberThreadTranscript
   , rememberThreadTranscriptFrom
@@ -89,7 +90,7 @@ data ActiveThread = ActiveThread
 newtype ActiveThreadHandle = ActiveThreadHandle ActiveThread
 
 data SteeringState
-  = SteeringOpen !(Seq Text)
+  = SteeringOpen !(Seq MessageInput)
   | SteeringCompleted
   | SteeringFinishing
   deriving (Eq)
@@ -181,6 +182,16 @@ lookupThreadMessageIds store@ThreadStore{activeThreadStore = activeRef} =
           parentIds <- maybe (pure []) (go (messageKey : visited)) parentMessageKey
           pure (ordNub (parentIds <> messageIds))
 
+lookupActiveThreadReply :: Prim :> es => ThreadStore -> IncomingMessage -> ThreadMessageKey -> Eff es (Maybe (Bool, Transcript))
+lookupActiveThreadReply ThreadStore{activeThreadStore = activeRef} message messageKey = do
+  active <- Map.lookup (ActiveThreadMessage messageKey) <$> readIORef activeRef
+  traverse (replyState message) active
+  where
+    replyState reply thread = do
+      transcript <- readIORef thread.activeCurrent
+      let isOwner = maybe False ((== thread.activeSenderId) . Just) reply.senderId
+      pure (isOwner, transcript)
+
 lookupActiveThreadRunId :: Prim :> es => ThreadStore -> ThreadMessageKey -> Eff es (Maybe Text)
 lookupActiveThreadRunId ThreadStore{activeThreadStore = activeRef} messageKey =
   fmap (.activeRunId) . Map.lookup (ActiveThreadMessage messageKey) <$> readIORef activeRef
@@ -243,7 +254,7 @@ enqueueActiveThreadSteer
   :: (Prim :> es, Concurrent :> es)
   => ThreadStore
   -> IncomingMessage
-  -> Text
+  -> MessageInput
   -> Eff es Bool
 enqueueActiveThreadSteer ThreadStore{activeThreadStore = activeRef} message steer =
   case threadMessageKey message <$> message.replyToMessageId of
@@ -263,7 +274,7 @@ enqueueActiveThreadSteer ThreadStore{activeThreadStore = activeRef} message stee
         _ ->
           pure False
 
-drainActiveThreadSteers :: Concurrent :> es => ActiveThreadHandle -> Eff es [Text]
+drainActiveThreadSteers :: Concurrent :> es => ActiveThreadHandle -> Eff es [MessageInput]
 drainActiveThreadSteers (ActiveThreadHandle active) =
   MVar.modifyMVar active.activeSteering \case
     SteeringOpen queued ->
@@ -271,7 +282,7 @@ drainActiveThreadSteers (ActiveThreadHandle active) =
     steeringState ->
       pure (steeringState, [])
 
-completeActiveThreadSteering :: Concurrent :> es => ActiveThreadHandle -> Eff es (Maybe [Text])
+completeActiveThreadSteering :: Concurrent :> es => ActiveThreadHandle -> Eff es (Maybe [MessageInput])
 completeActiveThreadSteering (ActiveThreadHandle active) =
   MVar.modifyMVar active.activeSteering \case
     SteeringOpen queued

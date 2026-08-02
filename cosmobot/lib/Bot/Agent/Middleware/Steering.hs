@@ -11,13 +11,14 @@ module Bot.Agent.Middleware.Steering
 where
 
 import Bot.Agent.Core
-import Bot.Core.Transcript (Transcript, appendUser)
+import Bot.Core.Message (MessageInput)
+import Bot.Core.Transcript (Transcript, appendUserInput)
 import Bot.Prelude
 import qualified Streaming.Prelude as S
 
 data SteeringControl es = SteeringControl
-  { drain :: !(Eff es [Text])
-  , complete :: !(Eff es (Maybe [Text]))
+  { drain :: !(Eff es [MessageInput])
+  , complete :: !(Eff es (Maybe [MessageInput]))
   }
 
 withSteering
@@ -44,7 +45,7 @@ withSteering steering program =
     }
 
 injectSteers
-  :: [Text]
+  :: [MessageInput]
   -> TurnState
   -> TurnState
 injectSteers [] agentState =
@@ -56,7 +57,7 @@ injectSteers steers agentState =
     }
 
 injectCompletedSteers
-  :: [Text]
+  :: [MessageInput]
   -> TurnState
   -> Result
   -> TurnState
@@ -67,6 +68,6 @@ injectCompletedSteers steers agentState completion =
     , modelTokenUsage = completion.tokenUsage
     }
 
-appendSteers :: [Text] -> Transcript -> Transcript
+appendSteers :: [MessageInput] -> Transcript -> Transcript
 appendSteers steers transcript =
-  foldl' (flip appendUser) transcript steers
+  foldl' (flip appendUserInput) transcript steers

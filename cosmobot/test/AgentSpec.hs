@@ -227,7 +227,7 @@ main =
       , testCase "ask handler passes referenced images to image_edit tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "ask handler includes referenced image URLs in text context" testAskHandlerIncludesReferencedImageUrlsInTextContext
       , testCase "ask handler includes current and referenced files in text context" testAskHandlerIncludesFilesInTextContext
-      , testCase "ask handler only handles replies to non-bot messages when mentioned" testAskHandlerHandlesMentionedReplyToNonBotMessage
+      , testCase "ask handler requires mention for group non-bot replies but not private replies" testAskHandlerHandlesReplyToNonBotMessageByChatKind
       , testCase "LLM failure replies remain linked to their thread" testLLMFailureReplyLinksThread
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
@@ -1041,9 +1041,9 @@ testAskHandlerIncludesFilesInTextContext = do
     Nothing ->
       assertFailure "expected captured LLM request"
 
-testAskHandlerHandlesMentionedReplyToNonBotMessage :: IO ()
-testAskHandlerHandlesMentionedReplyToNonBotMessage = do
-  answers <- IORef.newIORef [chatAnswer "mentioned" []]
+testAskHandlerHandlesReplyToNonBotMessageByChatKind :: IO ()
+testAskHandlerHandlesReplyToNonBotMessageByChatKind = do
+  answers <- IORef.newIORef [chatAnswer "mentioned" [], chatAnswer "private" []]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   rendered <- IORef.newIORef ([] :: [Text])
   let referenced = ReferencedMessage
@@ -1065,6 +1065,12 @@ testAskHandlerHandlesMentionedReplyToNonBotMessage = do
           , digest = message.digest{mentionsBot = True}
           , text = "@bot follow up"
           }
+      privateReply =
+        message
+          { messageId = Just "70003"
+          , kind = ChatPrivate
+          , chatId = Nothing
+          }
   _ <- runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
     (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
     defaultTestSkillsConfig
@@ -1082,11 +1088,12 @@ testAskHandlerHandlesMentionedReplyToNonBotMessage = do
       liftIO $ afterSnapshot @?= before
       liftIO $ IORef.readIORef captured >>= assertBool "unmentioned reply should not call the LLM" . null
       runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads mentioned
-  IORef.readIORef captured >>= assertEqual "mentioned reply should call the LLM once" 1 . length
+      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads privateReply
+  IORef.readIORef captured >>= assertEqual "mentioned group and unmentioned private replies should call the LLM" 2 . length
 
 testAskHandlerRoutesActiveReplyAsSteering :: IO ()
 testAskHandlerRoutesActiveReplyAsSteering = do
-  answers <- IORef.newIORef []
+  answers <- IORef.newIORef [chatAnswer "continued by another user" []]
   queued <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     threads <- newThreadStore
     active <- fromMaybe (error "expected active thread") <$>
@@ -1104,17 +1111,37 @@ testAskHandlerRoutesActiveReplyAsSteering = do
             , senderId = Just "201"
             , text = "hijack"
             }
-        askCommand :: IncomingMessage
         askCommand =
-          steer
+          testMessage
             { messageId = Just (integerMessageId 4)
+            , replyToMessageId = Just (integerMessageId 1)
             , text = "!ask start over"
             }
+        imageSteer =
+          testMessage
+            { messageId = Just (integerMessageId 5)
+            , replyToMessageId = Just (integerMessageId 1)
+            , imageUrls = ["media:image"]
+            , text = ""
+            }
+        steerFile = MessageFile{name = "notes.txt", ref = "media:file"}
+        fileSteer =
+          testMessage
+            { messageId = Just (integerMessageId 6)
+            , replyToMessageId = Just (integerMessageId 1)
+            , files = [steerFile]
+            , text = ""
+            }
     runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) steer
-    runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) otherSender
+    runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) imageSteer
+    runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) fileSteer
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads otherSender
     runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) askCommand
     drainActiveThreadSteers active
-  queued @?= ["change direction", "!ask start over"]
+  map (.text) queued @?= ["change direction", "请根据图片回答。", "附件：notes.txt (media:file)\n", "!ask start over"]
+  map messageInputImageUrls queued @?= [[], ["media:image"], [], []]
+  map messageInputFiles queued @?= [[], [], [MessageFile{name = "notes.txt", ref = "media:file"}], []]
+  IORef.readIORef answers >>= assertBool "other sender should continue from the active snapshot" . null
 
 testGroupReplyDoesNotContinueFinishedUserAlias :: IO ()
 testGroupReplyDoesNotContinueFinishedUserAlias = do
@@ -1679,7 +1706,7 @@ testAgentSteeringContinuesAfterFinalAnswer = do
   answers <- IORef.newIORef [chatAnswer "first answer" [], chatAnswer "steered answer" []]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   drains <- IORef.newIORef [[], []]
-  completions <- IORef.newIORef [Just ["change direction"], Nothing]
+  completions <- IORef.newIORef [Just [inputWithImages "change direction" []], Nothing]
   (outputs, transcript) <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     agentRun <- Agent.startRuntime 4 agentContext AgentTools.defaultTools
     let steering =
@@ -1709,7 +1736,7 @@ testAgentSteeringWaitsForToolResults = do
     , chatAnswer "done" []
     ]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
-  drains <- IORef.newIORef [[], ["after the tool"]]
+  drains <- IORef.newIORef [[], [inputWithImages "after the tool" []]]
   completions <- IORef.newIORef [Nothing]
   outputs <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     agentRun <- Agent.startRuntime 4 agentContext AgentTools.defaultTools
@@ -1742,7 +1769,7 @@ testAgentSteeringClearsContinuations = do
     ]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   drains <- IORef.newIORef [[], [], [], []]
-  completions <- IORef.newIORef [Just ["keep this instruction"], Nothing]
+  completions <- IORef.newIORef [Just [inputWithImages "keep this instruction" []], Nothing]
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     agentRun <- Agent.startRuntime 5 agentContext AgentTools.defaultTools
     let steering =
@@ -1997,7 +2024,7 @@ testThreadStatsShowActiveRunningTools = do
       rememberActiveThread threads "active-run" Nothing (Just original) askHandlerMessage "U1" resource transcript
     addActiveThreadMessage threads active assistant
     addActiveThreadMessage threads active toolMessage
-    void $ enqueueActiveThreadSteer threads steer steer.text
+    void $ enqueueActiveThreadSteer threads steer (inputWithImages steer.text [])
     now <- liftIO getCurrentTime
     void $ AgentAuditStorage.persistEvent now AgentAudit.AgentRunStarted
       { runId = "active-run"
@@ -2910,11 +2937,11 @@ testActiveThreadSteeringLifecycle = runEff $ runConcurrent $ runPrim $ runTestLo
           , text = "second"
           }
   active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store "test-run" Nothing (Just (messageKey 1)) testMessage "hello" (Concurrency.Handle (Concurrency.Id 1)) transcript
-  firstAccepted <- enqueueActiveThreadSteer store firstSteer firstSteer.text
-  secondAccepted <- enqueueActiveThreadSteer store secondSteer secondSteer.text
+  firstAccepted <- enqueueActiveThreadSteer store firstSteer (inputWithImages firstSteer.text [])
+  secondAccepted <- enqueueActiveThreadSteer store secondSteer (inputWithImages secondSteer.text [])
   queued <- drainActiveThreadSteers active
   closed <- completeActiveThreadSteering active
-  rejectedAfterClose <- enqueueActiveThreadSteer store secondSteer "too late"
+  rejectedAfterClose <- enqueueActiveThreadSteer store secondSteer (inputWithImages "too late" [])
   finishActiveThread store active transcript
   steerAlias <- lookupThreadTranscript store (messageKey 2)
   racing <- fromMaybe (error "expected racing active thread") <$> rememberActiveThread store "racing-run" Nothing (Just (messageKey 10)) testMessage "race" (Concurrency.Handle (Concurrency.Id 2)) transcript
@@ -2925,18 +2952,18 @@ testActiveThreadSteeringLifecycle = runEff $ runConcurrent $ runPrim $ runTestLo
           , text = "race"
           }
   raceResult <- Async.concurrently
-    (enqueueActiveThreadSteer store racingSteer racingSteer.text)
+    (enqueueActiveThreadSteer store racingSteer (inputWithImages racingSteer.text []))
     (completeActiveThreadSteering racing)
   finishActiveThread store racing transcript
   liftIO do
     firstAccepted @?= True
     secondAccepted @?= True
-    queued @?= ["first", "second"]
+    map (.text) queued @?= ["first", "second"]
     closed @?= Nothing
     rejectedAfterClose @?= False
     assertBool "finished steer aliases should not become continuation points" (isNothing steerAlias)
     assertBool "enqueue wins with its value, or completion closes before enqueue" $
-      raceResult == (True, Just ["race"])
+      raceResult == (True, Just [inputWithImages "race" []])
         || raceResult == (False, Nothing)
 
 testWebFetchMaxUsesLimitsCalls :: IO ()

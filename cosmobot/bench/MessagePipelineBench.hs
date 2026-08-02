@@ -163,7 +163,6 @@ routeFilterScore =
         + matched (fromGroups [100, 101, 102, 103]) message
         + matched promptOrImages message
         + matched notReply message
-        + bool 0 1 (canStartThread message)
     matched (MessageFilter filt) message =
       maybe 0 (const 1) (filt message)
 
