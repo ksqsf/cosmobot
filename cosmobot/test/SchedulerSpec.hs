@@ -163,7 +163,10 @@ testSchedulerMigratesLegacyIds = runEff $
     let legacyMessage = messageFrom "200" "!ask legacy"
     liftIO $ SeldaBackend.runSeldaT
       (do
-        Selda.tryCreateTable legacyScheduledMessages
+        SeldaBackend.withBackend \backend -> liftIO $ void $
+          SeldaBackend.runStmt backend
+            "CREATE TABLE \"scheduled_messages\"(\n      \"id\" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,\n      \"schedule_id\" BIGINT NOT NULL UNIQUE,\n      \"due_at_unix_seconds\" BIGINT NOT NULL,\n      \"platform_key\" TEXT NOT NULL,\n      \"chat_id\" BIGINT NULL,\n      \"sender_id\" TEXT NULL,\n      \"sender_username\" TEXT NULL,\n      \"message_json\" TEXT NOT NULL,\n      UNIQUE(\"schedule_id\")\n    )"
+            []
         Selda.insert_ legacyScheduledMessages
           [ LegacyScheduledMessageRow
               { legacy_id = Selda.def

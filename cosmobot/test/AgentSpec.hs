@@ -82,6 +82,7 @@ import qualified Data.Text.IO as TextIO
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
 import Data.Unique
 import qualified Database.Selda as Selda
+import qualified Database.Selda.Backend as SeldaBackend
 import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.FileSystem (FileSystem, runFileSystem)
 import qualified Effectful.FileSystem as FS
@@ -2033,7 +2034,10 @@ testAgentAuditMigratesLegacyRecords =
           runTestLog $
             StorageSQLite.runStorageSQLitePath dbPath $
               StorageEffect.runSelda do
-                Selda.tryCreateTable legacyAuditRows
+                SeldaBackend.withBackend \backend -> liftIO $ void $
+                  SeldaBackend.runStmt backend
+                    "CREATE TABLE \"audit_log\"\n  ( id INTEGER PRIMARY KEY\n  , run_id TEXT NOT NULL\n  , occurred_at DATETIME NOT NULL\n  , linked_message_id TEXT\n  , parent_message_id TEXT\n  , event_json TEXT NOT NULL\n  )"
+                    []
                 key <- Selda.insertWithPK legacyAuditRows [legacyRow staleAuditTime started]
                 Selda.insert_ legacyAuditRows [legacyRow (addUTCTime 1 staleAuditTime) finished]
                 pure (fromIntegral (Selda.fromId key))

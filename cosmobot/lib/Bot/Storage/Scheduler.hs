@@ -22,35 +22,8 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Int as Int
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Database.Selda.Migrations as SeldaMigrations
-import qualified Database.Selda.Unsafe as SeldaUnsafe
-
-data LegacyScheduledMessageRow = LegacyScheduledMessageRow
-  { legacy_id :: RowID
-  , legacy_schedule_id :: Int.Int64
-  , legacy_due_at_unix_seconds :: Int.Int64
-  , legacy_platform_key :: Text
-  , legacy_chat_id :: Maybe Int.Int64
-  , legacy_sender_id :: Maybe Text
-  , legacy_sender_username :: Maybe Text
-  , legacy_message_json :: Text
-  }
-  deriving (Generic)
-
-instance SqlRow LegacyScheduledMessageRow
-
-legacyScheduledMessages :: Table LegacyScheduledMessageRow
-legacyScheduledMessages =
-  tableFieldMod "scheduled_messages"
-    [ #legacy_id :- untypedAutoPrimary
-    , #legacy_schedule_id :- unique
-    , #legacy_due_at_unix_seconds :- index
-    , #legacy_platform_key :- index
-    , #legacy_chat_id :- index
-    , #legacy_sender_id :- index
-    , #legacy_sender_username :- index
-    ]
-    (fromMaybe "" . Text.stripPrefix "legacy_")
+import qualified Database.Selda.Backend as SeldaBackend
+import qualified Database.Selda.SQLite as SeldaSQLite
 
 data StoredScheduledMessage = StoredScheduledMessage
   { scheduleId :: !Integer
@@ -126,27 +99,34 @@ deleteScheduledMessage scheduleId = do
 
 ensureScheduledMessagesTable :: Storage.Storage :> es => Eff es ()
 ensureScheduledMessagesTable =
-  runSelda do
-    tryCreateTable legacyScheduledMessages
-    SeldaMigrations.autoMigrate True
-      [ [ SeldaMigrations.Migration
-            legacyScheduledMessages
-            scheduledMessages
-            (pure . migrateLegacyScheduledMessageRow)
-        ]
-      ]
+  runSelda (transaction migrateScheduledMessagesTable)
 
-migrateLegacyScheduledMessageRow :: Row (s :: Type) LegacyScheduledMessageRow -> Row s ScheduledMessageRow
-migrateLegacyScheduledMessageRow legacy =
-  new
-    [ #id := SeldaUnsafe.cast (legacy ! #legacy_schedule_id)
-    , #due_at_unix_seconds := legacy ! #legacy_due_at_unix_seconds
-    , #platform_key := legacy ! #legacy_platform_key
-    , #chat_id := legacy ! #legacy_chat_id
-    , #sender_id := legacy ! #legacy_sender_id
-    , #sender_username := legacy ! #legacy_sender_username
-    , #message_json := legacy ! #legacy_message_json
-    ]
+migrateScheduledMessagesTable :: SeldaT SeldaSQLite.SQLite IO ()
+migrateScheduledMessagesTable =
+  SeldaBackend.withBackend \backend -> liftIO do
+    runStatement backend [i|CREATE TABLE IF NOT EXISTS scheduled_messages (#{scheduledMessageColumns})|]
+    (_, rows) <- SeldaBackend.runStmt backend "PRAGMA table_info(scheduled_messages)" []
+    let columns = [name | _ : SeldaBackend.SqlString name : _ <- rows]
+    when ("schedule_id" `elem` columns) do
+      runStatement backend "DROP TABLE IF EXISTS scheduled_messages_new"
+      runStatement backend [i|CREATE TABLE scheduled_messages_new (#{scheduledMessageColumns})|]
+      runStatement backend "INSERT INTO scheduled_messages_new (id, due_at_unix_seconds, platform_key, chat_id, sender_id, sender_username, message_json) SELECT schedule_id, due_at_unix_seconds, platform_key, chat_id, sender_id, sender_username, message_json FROM scheduled_messages"
+      runStatement backend "DROP TABLE scheduled_messages"
+      runStatement backend "ALTER TABLE scheduled_messages_new RENAME TO scheduled_messages"
+    traverse_ (runStatement backend)
+      [ "CREATE INDEX IF NOT EXISTS scheduled_messages_due_at_idx ON scheduled_messages(due_at_unix_seconds)"
+      , "CREATE INDEX IF NOT EXISTS scheduled_messages_platform_idx ON scheduled_messages(platform_key)"
+      , "CREATE INDEX IF NOT EXISTS scheduled_messages_chat_idx ON scheduled_messages(chat_id)"
+      , "CREATE INDEX IF NOT EXISTS scheduled_messages_sender_idx ON scheduled_messages(sender_id)"
+      , "CREATE INDEX IF NOT EXISTS scheduled_messages_username_idx ON scheduled_messages(sender_username)"
+      ]
+  where
+    runStatement backend statement =
+      void (SeldaBackend.runStmt backend statement [])
+
+scheduledMessageColumns :: Text
+scheduledMessageColumns =
+  "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, due_at_unix_seconds BIGINT NOT NULL, platform_key TEXT NOT NULL, chat_id BIGINT NULL, sender_id TEXT NULL, sender_username TEXT NULL, message_json TEXT NOT NULL"
 
 storedScheduledMessageFromRow :: ScheduledMessageRow -> Maybe StoredScheduledMessage
 storedScheduledMessageFromRow row = do

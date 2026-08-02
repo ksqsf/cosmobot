@@ -27,32 +27,9 @@ import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Int as Int
-import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Database.Selda.Migrations as SeldaMigrations
+import qualified Database.Selda.Backend as SeldaBackend
 import qualified Database.Selda.SQLite as SeldaSQLite
-
-data LegacyAgentAuditRow = LegacyAgentAuditRow
-  { legacy_id :: RowID
-  , legacy_run_id :: Text
-  , legacy_occurred_at :: UTCTime
-  , legacy_linked_message_id :: Maybe Text
-  , legacy_parent_message_id :: Maybe Text
-  , legacy_event_json :: Text
-  }
-  deriving (Generic)
-
-instance SqlRow LegacyAgentAuditRow
-
-legacyAgentAuditRows :: Table LegacyAgentAuditRow
-legacyAgentAuditRows =
-  tableFieldMod "audit_log"
-    [ #legacy_id :- untypedAutoPrimary
-    , #legacy_run_id :- index
-    , #legacy_linked_message_id :- index
-    , #legacy_parent_message_id :- index
-    ]
-    (fromMaybe "" . Text.stripPrefix "legacy_")
 
 data AgentAuditRow = AgentAuditRow
   { id :: RowID
@@ -164,16 +141,9 @@ queryStoredThreadMessagesAudit messageKeys = do
 
 ensureAgentAuditTable :: Storage.Storage :> es => Eff es ()
 ensureAgentAuditTable =
-  runSelda do
-    tryCreateTable legacyAgentAuditRows
-    SeldaMigrations.autoMigrate True
-      [ [ SeldaMigrations.Migration
-            legacyAgentAuditRows
-            agentAuditRows
-            (pure . migrateLegacyAgentAuditRow)
-        ]
-      ]
-    transaction backfillAuditIndexColumns
+  runSelda $ transaction do
+    migrateAgentAuditTable
+    backfillAuditIndexColumns
 
 queryStoredRecentToolStarts :: Storage.Storage :> es => Int -> Eff es [AgentAuditRecord]
 queryStoredRecentToolStarts limit = do
@@ -213,18 +183,27 @@ queryStoredRelatedToolEvents starts = do
       | AgentAuditRecord{event = ToolCallStarted{runId}} <- starts
       ]
 
-migrateLegacyAgentAuditRow :: Row (s :: Type) LegacyAgentAuditRow -> Row s AgentAuditRow
-migrateLegacyAgentAuditRow legacy =
-  new
-    [ #id := legacy ! #legacy_id
-    , #run_id := legacy ! #legacy_run_id
-    , #occurred_at := legacy ! #legacy_occurred_at
-    , #linked_message_id := legacy ! #legacy_linked_message_id
-    , #parent_message_id := legacy ! #legacy_parent_message_id
-    , #event_json := legacy ! #legacy_event_json
-    , #event_kind := literal ""
-    , #tool_call_id := literal Nothing
-    ]
+migrateAgentAuditTable :: SeldaT SeldaSQLite.SQLite IO ()
+migrateAgentAuditTable =
+  SeldaBackend.withBackend \backend -> liftIO do
+    runStatement backend
+      "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, occurred_at DATETIME NOT NULL, linked_message_id TEXT, parent_message_id TEXT, event_json TEXT NOT NULL, event_kind TEXT NOT NULL DEFAULT '', tool_call_id TEXT)"
+    (_, rows) <- SeldaBackend.runStmt backend "PRAGMA table_info(audit_log)" []
+    let columns = [name | _ : SeldaBackend.SqlString name : _ <- rows]
+    unless ("event_kind" `elem` columns) $
+      runStatement backend "ALTER TABLE audit_log ADD COLUMN event_kind TEXT NOT NULL DEFAULT ''"
+    unless ("tool_call_id" `elem` columns) $
+      runStatement backend "ALTER TABLE audit_log ADD COLUMN tool_call_id TEXT"
+    traverse_ (runStatement backend)
+      [ "CREATE INDEX IF NOT EXISTS audit_log_run_id_idx ON audit_log(run_id)"
+      , "CREATE INDEX IF NOT EXISTS audit_log_linked_message_id_idx ON audit_log(linked_message_id)"
+      , "CREATE INDEX IF NOT EXISTS audit_log_parent_message_id_idx ON audit_log(parent_message_id)"
+      , "CREATE INDEX IF NOT EXISTS audit_log_event_kind_idx ON audit_log(event_kind)"
+      , "CREATE INDEX IF NOT EXISTS audit_log_tool_call_id_idx ON audit_log(tool_call_id)"
+      ]
+  where
+    runStatement backend statement =
+      void (SeldaBackend.runStmt backend statement [])
 
 backfillAuditIndexColumns :: SeldaT SeldaSQLite.SQLite IO ()
 backfillAuditIndexColumns = do
