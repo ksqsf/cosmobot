@@ -114,15 +114,6 @@ decide policy
   | FinishedThread parentKey transcript <- policy.replyTarget =
       Continue parentKey transcript
 
-  -- In an allowed group chat, mentioned or called by name, non-reply
-  -- accepting all kinds of input
-  | isAllowedGroup policy.msg
-  , NoReply <- policy.replyTarget
-  , policy.msg.kind == ChatGroup
-  , policy.msg.digest.mentionsBot || policy.calledByName
-  , policy.hasPrompt || policy.hasImages || policy.hasFiles =
-      Fresh
-
   -- In an allowed group chat, get a reply to a non-thread message
   -- and it does not continue, then start a new thread from the replied-to message
   | isAllowedGroup policy.msg
@@ -131,13 +122,28 @@ decide policy
   , policy.msg.digest.mentionsBot || policy.calledByName =
       FreshFromReply msgId
 
-  -- In an allowed private chat, any non-reply messages start a new thread
+  -- Similarly, in an allowed private chat, but do not require explicit triggers
+  | isAllowedPrivate policy.msg
+  , OtherReply msgId <- policy.replyTarget
+  , policy.msg.kind == ChatPrivate =
+      FreshFromReply msgId
+
+  -- In an allowed private chat, any non-reply messages start a new thread.
   | isAllowedPrivate policy.msg
   , Nothing <- policy.msg.replyToMessageId
   , policy.hasPrompt =
       Fresh
 
-  -- Starting from an untracked reply
+  -- In an allowed group chat, mentioned or called by name, non-reply.
+  -- accepting all kinds of input
+  | isAllowedGroup policy.msg
+  , NoReply <- policy.replyTarget
+  , policy.msg.kind == ChatGroup
+  , policy.msg.digest.mentionsBot || policy.calledByName
+  , policy.hasPrompt || policy.hasImages || policy.hasFiles =
+      Fresh
+
+  -- Starting from an untracked reply.
   | OtherReply parentId <- policy.replyTarget
   , isAllowedPrivate policy.msg || (isAllowedGroup policy.msg && policy.msg.digest.mentionsBot) =
       FreshFromReply parentId
