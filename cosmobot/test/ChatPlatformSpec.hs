@@ -198,22 +198,64 @@ testQqCQMentionStringKeepsMentionedUserIds = do
 
 testQqForwardedMessagesMergeAllNodeText :: IO ()
 testQqForwardedMessagesMergeAllNodeText =
-  QQ.forwardedMessagesText forwardedMessages @?= "first\nsecond\nthird"
+  QQ.forwardedMessagesText forwardedMessages @?= Text.intercalate "\n"
+    [ "Alice (QQ: 10001):"
+    , "<cosmobot:forwarded_msg>"
+    , "Bob (QQ: 10002):"
+    , "nested"
+    , "[image]"
+    , "</cosmobot:forwarded_msg>"
+    , "Carol (QQ: 10003):"
+    , "second"
+    , "[file: notes.txt]"
+    , "third"
+    ]
   where
     forwardedMessages = Aeson.object
-      [ "messages" Aeson..=
+      [ "message" Aeson..=
           [ Aeson.object
               [ "type" Aeson..= ("node" :: Text)
+              , "raw_message" Aeson..= ("[CQ:forward,id=nested-forward,content=&#91;object Object&#93;]" :: Text)
               , "data" Aeson..= Aeson.object
-                  [ "content" Aeson..=
-                      [ textSegment "first"
-                      , imageSegment "https://example.test/ignored.png"
+                  [ "nickname" Aeson..= ("Alice" :: Text)
+                  , "user_id" Aeson..= ("10001" :: Text)
+                  , "content" Aeson..=
+                      [ Aeson.object
+                          [ "type" Aeson..= ("forward" :: Text)
+                          , "data" Aeson..= Aeson.object
+                              [ "id" Aeson..= ("nested-forward" :: Text)
+                              , "content" Aeson..=
+                                  [ Aeson.object
+                                      [ "type" Aeson..= ("node" :: Text)
+                                      , "data" Aeson..= Aeson.object
+                                          [ "name" Aeson..= ("Bob" :: Text)
+                                          , "uin" Aeson..= (10002 :: Integer)
+                                          , "content" Aeson..=
+                                              [ textSegment "nested"
+                                              , imageSegment "https://example.test/ignored.png"
+                                              ]
+                                          ]
+                                      ]
+                                  ]
+                              ]
+                          ]
                       ]
                   ]
               ]
           , Aeson.object
-              [ "content" Aeson..=
+              [ "sender" Aeson..= Aeson.object
+                  [ "nickname" Aeson..= ("Carol" :: Text)
+                  , "user_id" Aeson..= ("10003" :: Text)
+                  ]
+              , "content" Aeson..=
                   [ textSegment "second"
+                  , Aeson.object
+                      [ "type" Aeson..= ("file" :: Text)
+                      , "data" Aeson..= Aeson.object
+                          [ "name" Aeson..= ("notes.txt" :: Text)
+                          , "file" Aeson..= ("notes.txt" :: Text)
+                          ]
+                      ]
                   ]
               ]
           , Aeson.object

@@ -38,6 +38,7 @@ import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
 import Data.Time.Clock (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
@@ -728,7 +729,7 @@ getMessageContentQQ driver chatId messageId = do
         Nothing ->
           pure Nothing
         Just value ->
-          traverse (normalizeReferencedFiles chatId <=< appendForwardedMessageText driver (referencedMessageForwardIds value)) (referencedMessageFromValue driver.config.botQQ value)
+          traverse (normalizeReferencedFiles chatId <=< appendForwardedMessages driver (referencedMessageForwardSources value)) (referencedMessageFromValue driver.config.botQQ value)
 
 normalizeQQMessageFiles :: Media.Media :> es => IncomingMessage -> Eff es IncomingMessage
 normalizeQQMessageFiles message = do
@@ -773,29 +774,61 @@ normalizeQQFile chatId file =
     _ ->
       pure file
 
-appendForwardedMessageText
+appendForwardedMessages
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
   => QQDriver
-  -> [Text]
+  -> [ForwardedSource]
   -> ReferencedMessage
   -> Eff es ReferencedMessage
-appendForwardedMessageText driver forwardIds referenced = do
-  forwardedTexts <- traverse (getForwardedMessageText driver) forwardIds
-  pure (referencedWithText referenced (joinMessageTexts (referenced.text : forwardedTexts)))
+appendForwardedMessages driver sources referenced = do
+  forwarded <- foldMapM (expandForwardedSource driver Set.empty) sources
+  pure ReferencedMessage
+    { messageId = referenced.messageId
+    , senderDisplayName = referenced.senderDisplayName
+    , senderIdentifier = referenced.senderIdentifier
+    , senderIsBot = referenced.senderIsBot
+    , text = joinMessageTexts [referenced.text, forwarded.text]
+    , imageUrls = referenced.imageUrls <> forwarded.imageUrls
+    , files = referenced.files <> forwarded.files
+    }
 
-getForwardedMessageText
+expandForwardedSource
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
   => QQDriver
-  -> Text
-  -> Eff es Text
-getForwardedMessageText driver forwardId = do
-  response <- sendAction driver (Aeson.object
-    [ "action" Aeson..= Aeson.String "get_forward_msg"
-    , "params" Aeson..= Aeson.object
-        [ "id" Aeson..= forwardId
-        ]
-    ])
-  pure (maybe "" forwardedMessagesText response.data_)
+  -> Set.Set Text
+  -> ForwardedSource
+  -> Eff es ForwardedContent
+expandForwardedSource driver seen source =
+  wrapForwardedContent <$> case source of
+    ForwardedInline forwardId content
+      | maybe False (`Set.member` seen) forwardId ->
+          pure mempty
+      | otherwise ->
+          expandForwardedValue driver (maybe seen (`Set.insert` seen) forwardId) content
+    ForwardedReference forwardId
+      | forwardId `Set.member` seen ->
+          pure mempty
+      | otherwise -> do
+          response <- sendAction driver (Aeson.object
+            [ "action" Aeson..= Aeson.String "get_forward_msg"
+            , "params" Aeson..= Aeson.object
+                [ "id" Aeson..= forwardId
+                ]
+            ])
+          maybe (pure mempty) (expandForwardedValue driver (Set.insert forwardId seen)) response.data_
+
+expandForwardedValue
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> Set.Set Text
+  -> Aeson.Value
+  -> Eff es ForwardedContent
+expandForwardedValue driver seen value =
+  foldMapM expandNode (forwardedMessageNodes value)
+  where
+    expandNode node = do
+      nested <- foldMapM (expandForwardedSource driver seen) node.sources
+      pure (node.content <> nested)
 
 -- | Fetch platform-provided QQ group member information.
 getGroupMemberInfo
@@ -874,10 +907,6 @@ parseIntegerUserId raw =
       Just userId
     _ ->
       Nothing
-
-referencedWithText :: ReferencedMessage -> Text -> ReferencedMessage
-referencedWithText ReferencedMessage{messageId, senderDisplayName, senderIdentifier, senderIsBot, imageUrls, files} text =
-  ReferencedMessage{messageId, senderDisplayName, senderIdentifier, senderIsBot, text, imageUrls, files}
 
 referencedMessageFromValue :: Maybe Integer -> Aeson.Value -> Maybe ReferencedMessage
 referencedMessageFromValue botQQ = Aeson.parseMaybe $
@@ -1269,49 +1298,191 @@ fileSegment = Aeson.parseMaybe $
 qqFileRefPrefix :: Text
 qqFileRefPrefix = "qq-file:"
 
-referencedMessageForwardIds :: Aeson.Value -> [Text]
-referencedMessageForwardIds =
-  Aeson.parseMaybe (Aeson.withObject "ReferencedMessageForwardIds" (Aeson..:? "message")) >>> \case
-    Just (Just message) -> messageForwardIds message
+data ForwardedContent = ForwardedContent
+  { text :: !Text
+  , imageUrls :: ![Text]
+  , files :: ![MessageFile]
+  }
+
+instance Semigroup ForwardedContent where
+  left <> right =
+    ForwardedContent
+      { text = joinMessageTexts [left.text, right.text]
+      , imageUrls = left.imageUrls <> right.imageUrls
+      , files = left.files <> right.files
+      }
+
+instance Monoid ForwardedContent where
+  mempty = ForwardedContent "" [] []
+
+data ForwardedSource
+  = ForwardedInline !(Maybe Text) !Aeson.Value
+  | ForwardedReference !Text
+
+data ForwardedNode = ForwardedNode
+  { content :: !ForwardedContent
+  , sources :: ![ForwardedSource]
+  }
+
+referencedMessageForwardSources :: Aeson.Value -> [ForwardedSource]
+referencedMessageForwardSources =
+  Aeson.parseMaybe (Aeson.withObject "ReferencedMessageForwardSources" (Aeson..:? "message")) >>> \case
+    Just (Just message) -> messageForwardSources message
     _ -> []
 
-messageForwardIds :: Aeson.Value -> [Text]
-messageForwardIds = \case
-  Aeson.Array segments -> mapMaybe forwardSegmentId (toList segments)
+messageForwardSources :: Aeson.Value -> [ForwardedSource]
+messageForwardSources = \case
+  Aeson.Array segments -> mapMaybe forwardedSegmentSource (toList segments)
   _ -> []
 
-forwardSegmentId :: Aeson.Value -> Maybe Text
-forwardSegmentId = \case
+forwardedSegmentSource :: Aeson.Value -> Maybe ForwardedSource
+forwardedSegmentSource = \case
   Aeson.Object obj
-    | Just (Aeson.String "forward") <- KeyMap.lookup "type" obj
-    , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj
-    , Just (Aeson.String id_) <- KeyMap.lookup "id" data_
-    , not (Text.null id_) ->
-        Just id_
+    | Just (Aeson.String type_) <- KeyMap.lookup "type" obj
+    , type_ `elem` ["forward", "node"]
+    , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj -> do
+        let forwardId = KeyMap.lookup "id" data_ >>= forwardIdText
+        case KeyMap.lookup "content" data_ of
+          Just content -> Just (ForwardedInline forwardId content)
+          Nothing | type_ == "forward" -> ForwardedReference <$> forwardId
+          Nothing -> Nothing
+  _ -> Nothing
+
+forwardIdText :: Aeson.Value -> Maybe Text
+forwardIdText = identifierText
+
+identifierText :: Aeson.Value -> Maybe Text
+identifierText = \case
+  Aeson.String value -> nonEmptyText (Just value)
+  value -> show <$> parseReplyId value
+
+valueString :: Aeson.Value -> Maybe Text
+valueString = \case
+  Aeson.String value -> Just value
   _ -> Nothing
 
 forwardedMessagesText :: Aeson.Value -> Text
 forwardedMessagesText =
-  joinMessageTexts . forwardedMessageTexts
+  (.text) . forwardedMessagesContent
 
-forwardedMessageTexts :: Aeson.Value -> [Text]
-forwardedMessageTexts = \case
+forwardedMessagesContent :: Aeson.Value -> ForwardedContent
+forwardedMessagesContent =
+  foldMap flattenNode . forwardedMessageNodes
+  where
+    flattenNode node =
+      node.content <> foldMap flattenSource node.sources
+    flattenSource = \case
+      ForwardedInline _ content -> wrapForwardedContent (forwardedMessagesContent content)
+      ForwardedReference _ -> mempty
+
+wrapForwardedContent :: ForwardedContent -> ForwardedContent
+wrapForwardedContent content
+  | Text.null content.text = content
+  | otherwise = ForwardedContent
+      { text = "<cosmobot:forwarded_msg>\n" <> content.text <> "\n</cosmobot:forwarded_msg>"
+      , imageUrls = content.imageUrls
+      , files = content.files
+      }
+
+forwardedMessageNodes :: Aeson.Value -> [ForwardedNode]
+forwardedMessageNodes value =
+  forwardedNode <$> forwardedMessageValues value
+
+forwardedMessageValues :: Aeson.Value -> [Aeson.Value]
+forwardedMessageValues value = case value of
   Aeson.Object obj
     | Just (Aeson.Array messages) <- KeyMap.lookup "messages" obj ->
-        mapMaybe forwardedMessageNodeText (toList messages)
+        toList messages
+    | Just (Aeson.Array messages) <- KeyMap.lookup "message" obj ->
+        toList messages
     | Just (Aeson.Array messages) <- KeyMap.lookup "content" obj ->
-        mapMaybe forwardedMessageNodeText (toList messages)
+        toList messages
   Aeson.Array messages ->
-    mapMaybe forwardedMessageNodeText (toList messages)
-  message ->
-    maybeToList (messageText message)
+    toList messages
+  _ ->
+    [value]
 
-forwardedMessageNodeText :: Aeson.Value -> Maybe Text
-forwardedMessageNodeText value =
-  nonEmptyText
-    (forwardedNodeContent value >>= messageText)
-    <|> nonEmptyText (forwardedNodeRawMessage value)
-    <|> nonEmptyText (messageText value)
+forwardedNode :: Aeson.Value -> ForwardedNode
+forwardedNode value =
+  ForwardedNode
+    { content = renderForwardedNode sender content
+    , sources
+    }
+  where
+    payload = fromMaybe value (forwardedNodeContent value)
+    sender = forwardedNodeSender value
+    sources = messageForwardSources payload
+    parsedContent = messageContent payload
+    content
+      | null sources = withRawFallback parsedContent (forwardedNodeRawMessage value)
+      | otherwise = parsedContent
+
+data ForwardedSender = ForwardedSender
+  { nickname :: !(Maybe Text)
+  , userId :: !(Maybe Text)
+  }
+
+forwardedNodeSender :: Aeson.Value -> ForwardedSender
+forwardedNodeSender value =
+  fromMaybe (ForwardedSender Nothing Nothing) (Aeson.parseMaybe parser value)
+  where
+    parser = Aeson.withObject "ForwardedMessageSender" \o -> do
+      type_ <- o Aeson..:? "type"
+      data_ <- o Aeson..:? "data"
+      sender <- o Aeson..:? "sender"
+      let fields = case (type_ :: Maybe Text, data_ :: Maybe Aeson.Value, sender :: Maybe Aeson.Value) of
+            (Just "node", Just (Aeson.Object nodeData), _) -> nodeData
+            (_, _, Just (Aeson.Object senderData)) -> senderData
+            _ -> o
+          nickname =
+            nonEmptyText (valueString =<< KeyMap.lookup "nickname" fields)
+              <|> nonEmptyText (valueString =<< KeyMap.lookup "name" fields)
+              <|> nonEmptyText (valueString =<< KeyMap.lookup "card" fields)
+          userId =
+            (KeyMap.lookup "user_id" fields <|> KeyMap.lookup "uin" fields)
+              >>= identifierText
+      pure ForwardedSender{nickname, userId}
+
+renderForwardedNode :: ForwardedSender -> ForwardedContent -> ForwardedContent
+renderForwardedNode sender content =
+  ForwardedContent
+    { text = joinMessageTexts (senderLine <> bodyLines)
+    , imageUrls = content.imageUrls
+    , files = content.files
+    }
+  where
+    senderLine = case (sender.nickname, sender.userId) of
+      (Just nickname, Just userId) -> [nickname <> " (QQ: " <> userId <> "):"]
+      (Just nickname, Nothing) -> [nickname <> ":"]
+      (Nothing, Just userId) -> ["QQ " <> userId <> ":"]
+      (Nothing, Nothing) -> []
+    bodyLines =
+      [content.text | not (Text.null content.text)]
+        <> replicate (length content.imageUrls) "[image]"
+        <> ["[file: " <> file.name <> "]" | file <- content.files]
+
+messageContent :: Aeson.Value -> ForwardedContent
+messageContent value =
+  ForwardedContent
+    { text = case value of
+        Aeson.Object _ -> Text.strip (segmentText value)
+        _ -> fromMaybe "" (messageText value)
+    , imageUrls = case value of
+        Aeson.Object _ -> maybeToList (imageSegmentUrl value)
+        _ -> messageImageUrls value
+    , files = case value of
+        Aeson.Object _ -> maybeToList (fileSegment value)
+        _ -> messageFiles value
+    }
+
+withRawFallback :: ForwardedContent -> Maybe Text -> ForwardedContent
+withRawFallback content rawMessage
+  | Text.null content.text = ForwardedContent
+      { text = fromMaybe "" (nonEmptyText rawMessage)
+      , imageUrls = content.imageUrls
+      , files = content.files
+      }
+  | otherwise = content
 
 forwardedNodeContent :: Aeson.Value -> Maybe Aeson.Value
 forwardedNodeContent =
