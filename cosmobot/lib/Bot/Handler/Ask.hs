@@ -11,11 +11,10 @@ module Bot.Handler.Ask
 where
 
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Failure as Failure
-import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Thread
 import Bot.Core.Transcript
-import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.ChatLog as ChatLog
@@ -35,18 +34,15 @@ import Bot.Handler.Ask.Config
 import qualified Bot.Memory as MemoryStore
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Bot.Session as Session
 import Bot.Storage.Thread
 import qualified Data.Foldable as Foldable
-import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import Effectful.Timeout
 import Effectful.Process
 import Effectful.FileSystem
 
 type HandlerEffects es =
-  ( ACP.ACP :> es
-  , Chat.Chat :> es
+  ( Chat.Chat :> es
   , ChatLog.ChatLog :> es
   , AgentAudit.AgentAudit :> es
   , Concurrency.Concurrency :> es
@@ -74,18 +70,167 @@ askHandlers
   :: HandlerEffects es
   => ChatLog.ChatLog :> es
   => Agent.ToolConfig
+  -> [AgentTool.Tool es]
   -> AskHandlerConfig
   -> ThreadStore
   -> [RouteHandler es]
-askHandlers toolCfg cfg threads =
+askHandlers toolCfg tools cfg threads =
   [ haltRoute threads
-  , steerRoute threads
+  , conversationRoute toolCfg tools cfg threads
   , drawRoute cfg threads
-  , askRoute toolCfg cfg threads
-  , privateRoute toolCfg cfg threads
-  , mentionRoute toolCfg cfg threads
-  , continueRoute toolCfg cfg threads
+  , askRoute toolCfg tools cfg threads
   ]
+
+data Policy = Policy
+  { msg :: !IncomingMessage
+  , calledByName :: !Bool
+  , replyTarget :: !ReplyTarget
+  }
+
+data ReplyTarget
+  = NoReply
+  | ActiveThread !ThreadMessageKey
+  | FinishedThread !ThreadMessageKey !Transcript
+  | UntrackedBotMessage !MessageId
+  | OtherReply !MessageId
+
+data Action
+  = Steer !Text
+  | Continue !ThreadMessageKey !Transcript
+  | Fresh !FreshStart
+  | Ignore
+
+data FreshStart
+  = FreshAsk !Text
+  | FreshPrivate !Text
+  | FreshMention !Text
+  | FreshReply !MessageId
+
+decide :: Policy -> Action
+decide policy
+  | ActiveThread{} <- policy.replyTarget
+  , Just steer <- steeringText policy.msg =
+      Steer steer
+  | policy.calledByName
+  , canStartThread policy.msg =
+      Fresh (FreshAsk (Text.strip policy.msg.text))
+  | isNothing policy.msg.replyToMessageId
+  , isAllowedPrivate policy.msg
+  , Just prompt <- promptOrImagesValue policy.msg =
+      Fresh (FreshPrivate prompt)
+  | policy.msg.digest.mentionsBot
+  , Just prompt <- promptOrImagesValue policy.msg =
+      Fresh (FreshMention prompt)
+  | FinishedThread parentKey transcript <- policy.replyTarget =
+      Continue parentKey transcript
+  | UntrackedBotMessage parentId <- policy.replyTarget
+  , canStartFromReply policy.msg =
+      Fresh (FreshReply parentId)
+  | otherwise =
+      Ignore
+
+conversationRoute
+  :: HandlerEffects es
+  => Agent.ToolConfig
+  -> [AgentTool.Tool es]
+  -> AskHandlerConfig
+  -> ThreadStore
+  -> RouteHandler es
+conversationRoute toolCfg tools cfg threads =
+  Route Nothing (const True) \message -> do
+    policy <- classifyPolicy cfg threads message
+    routeAction policy (decide policy)
+  where
+    routeAction policy = \case
+      Steer steer ->
+        enqueueActiveThreadSteer threads policy.msg steer >>= \case
+          True -> pure (StopWith (pure ()))
+          False -> do
+            refreshed <- classifyPolicy cfg threads policy.msg
+            let fallback = refreshed{replyTarget = withoutActive refreshed.replyTarget}
+            routeAction fallback (decide fallback)
+      _ | matchesSimpleRoute cfg policy.msg ->
+        pure Skip
+      Ignore ->
+        pure Skip
+      Continue parentKey transcript ->
+        pure . StopWith $
+          Concurrency.fireWithHandle "ask.continue" \resource ->
+            continueThread toolCfg tools cfg threads resource policy.msg parentKey transcript
+      Fresh fresh ->
+        pure . StopWith $
+          Concurrency.fireWithHandle (freshWorkerName fresh) \resource ->
+            runFreshStart toolCfg tools cfg threads resource policy.msg fresh
+
+classifyPolicy
+  :: (Chat.Chat :> es, Storage.Storage :> es, Prim :> es, Concurrent :> es)
+  => AskHandlerConfig
+  -> ThreadStore
+  -> IncomingMessage
+  -> Eff es Policy
+classifyPolicy cfg threads msg = do
+  let calledByName = maybe False (\name -> isJust (runFilter (prefixedText name) msg)) cfg.name
+  replyTarget <-
+    case threadMessageKey msg <$> msg.replyToMessageId of
+      Nothing -> pure NoReply
+      Just key ->
+        lookupActiveThreadRunId threads key >>= \case
+          Just{} -> pure (ActiveThread key)
+          Nothing ->
+            lookupThreadTranscript threads key >>= \case
+              Just transcript -> pure (FinishedThread key transcript)
+              Nothing -> do
+                repliedToBot <- replyReferencesBot msg
+                pure $ if repliedToBot then UntrackedBotMessage key.messageId else OtherReply key.messageId
+  pure Policy{msg, calledByName, replyTarget}
+
+withoutActive :: ReplyTarget -> ReplyTarget
+withoutActive = \case
+  ActiveThread key -> OtherReply key.messageId
+  target -> target
+
+runFilter :: MessageFilter a -> IncomingMessage -> Maybe a
+runFilter (MessageFilter matches) = matches
+
+steeringText :: IncomingMessage -> Maybe Text
+steeringText message = do
+  guard (isJust message.replyToMessageId && null message.imageUrls && null message.files)
+  let steer = Text.strip message.text
+  steer <$ guard (not (Text.null steer))
+
+promptOrImagesValue :: IncomingMessage -> Maybe Text
+promptOrImagesValue = runFilter promptOrImages
+
+matchesSimpleRoute :: AskHandlerConfig -> IncomingMessage -> Bool
+matchesSimpleRoute cfg message =
+  isJust (runFilter (command cfg.command <|> command cfg.drawCommand) message)
+
+freshWorkerName :: FreshStart -> Text
+freshWorkerName = \case
+  FreshAsk{} -> "ask.command"
+  FreshPrivate{} -> "ask.private"
+  FreshMention{} -> "ask.mention"
+  FreshReply{} -> "ask.continue"
+
+runFreshStart
+  :: HandlerEffects es
+  => Agent.ToolConfig
+  -> [AgentTool.Tool es]
+  -> AskHandlerConfig
+  -> ThreadStore
+  -> Concurrency.Handle
+  -> IncomingMessage
+  -> FreshStart
+  -> Eff es ()
+runFreshStart toolCfg tools cfg threads resource message = \case
+  FreshAsk prompt ->
+    startAskThread "matched ask route" toolCfg tools cfg threads resource message prompt
+  FreshPrivate prompt ->
+    startAskThread "matched private ask route" toolCfg tools cfg threads resource message prompt
+  FreshMention prompt ->
+    startAskThread "matched bot mention route" toolCfg tools cfg threads resource message prompt
+  FreshReply parentId ->
+    startThreadFromReply toolCfg tools cfg threads resource message parentId
 
 drawRoute
   :: HandlerEffects es
@@ -102,17 +247,17 @@ drawRoute cfg threads =
 
 askRoute
   :: HandlerEffects es
-  => IOE :> es
   => Agent.ToolConfig
+  -> [AgentTool.Tool es]
   -> AskHandlerConfig
   -> ThreadStore
   -> RouteHandler es
-askRoute toolCfg cfg threads =
+askRoute toolCfg tools cfg threads =
   withHelp (RouteHelp (cfg.command <> " <prompt>") "Start an agent conversation.") $
   requireAuth canStartThread (\_ -> pure ()) $
-    stopOn (askPrefix cfg) \message prompt ->
+    stopOn (command cfg.command) \message prompt ->
       Concurrency.fireWithHandle "ask.command" \resource ->
-        startAskThread "matched ask route" toolCfg cfg threads resource message prompt
+        startAskThread "matched ask route" toolCfg tools cfg threads resource message prompt
 
 haltRoute
   :: Chat.Chat :> es
@@ -127,21 +272,6 @@ haltRoute
 haltRoute threads =
   withHelp (RouteHelp "!halt [all|<id>...]" "List or stop active agent threads in this chat.") $
   stopOn (command "!halt") (handleHalt threads)
-
-steerRoute
-  :: (Prim :> es, Concurrent :> es)
-  => ThreadStore
-  -> RouteHandler es
-steerRoute threads =
-  guardRouteM (\message -> enqueueActiveThreadSteer threads message (Text.strip message.text)) $
-    stopOn steeringMessage \_ _ -> pure ()
-  where
-    steeringMessage =
-      matching \message ->
-        isJust message.replyToMessageId
-          && not (Text.null (Text.strip message.text))
-          && null message.imageUrls
-          && null message.files
 
 handleHalt
   :: (Chat.Chat :> es, Storage.Storage :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es, Concurrent :> es)
@@ -186,114 +316,22 @@ renderActiveThreads threads =
     | thread <- threads
     ]
 
-privateRoute
-  :: HandlerEffects es
-  => Concurrent :> es
-  => Agent.ToolConfig
-  -> AskHandlerConfig
-  -> ThreadStore
-  -> RouteHandler es
-privateRoute toolCfg cfg threads =
-  stopOn privateMessage \message prompt ->
-    Concurrency.fireWithHandle "ask.private" \resource ->
-      startAskThread "matched private ask route" toolCfg cfg threads resource message prompt
-  where
-    privateMessage =
-      promptOrImages
-        <* matching isAllowedPrivate
-        <* notReply
-        <* notAskPrefix cfg
-        <* notCommand cfg.drawCommand
-
-mentionRoute
-  :: HandlerEffects es
-  => Agent.ToolConfig
-  -> AskHandlerConfig
-  -> ThreadStore
-  -> RouteHandler es
-mentionRoute toolCfg cfg threads =
-  stopOn mentionMessage \message prompt ->
-    Concurrency.fireWithHandle "ask.mention" \resource ->
-      startAskThread "matched bot mention route" toolCfg cfg threads resource message prompt
-  where
-    mentionMessage =
-      promptOrImages
-        <* matching mentionsConfiguredBot
-        <* notReply
-        <* notAskPrefix cfg
-        <* notCommand cfg.drawCommand
-
-continueRoute
-  :: HandlerEffects es
-  => Agent.ToolConfig
-  -> AskHandlerConfig
-  -> ThreadStore
-  -> RouteHandler es
-continueRoute toolCfg cfg threads =
-  guardRouteM (replyReferencesThread threads) $
-  stopOn continuedMessage \message parentId ->
-    Concurrency.fireWithHandle "ask.continue" \resource -> do
-      let parentKey = threadMessageKey message parentId
-      parentTranscript <- lookupThreadTranscript threads parentKey
-      case parentTranscript of
-        Nothing
-          | not (canStartFromReply message) -> do
-              logDebug [i|Ignoring reply to unknown thread message: #{show parentId :: String}|]
-              logInfo [i|Ignoring unknown thread reply: #{messageIdText parentId}|]
-          | otherwise ->
-              startThreadFromReply toolCfg cfg threads resource message parentId
-        Just transcript ->
-          continueThread toolCfg cfg threads resource message parentKey transcript
-  where
-    continuedMessage =
-      replyToMessage <* notAskPrefix cfg <* notCommand cfg.drawCommand
-
-replyReferencesThread
-  :: (Chat.Chat :> es, Storage.Storage :> es, Prim :> es, Concurrent :> es)
-  => ThreadStore
-  -> IncomingMessage
-  -> Eff es Bool
-replyReferencesThread threads message =
-  case threadMessageKey message <$> message.replyToMessageId of
-    Nothing ->
-      pure False
-    Just messageKey -> do
-      lookupActiveThreadRunId threads messageKey >>= \case
-        Just{} ->
-          pure False
-        Nothing ->
-          lookupThreadTranscript threads messageKey >>= \case
-            Just{} ->
-              pure True
-            Nothing ->
-              replyReferencesBot message
-
 replyReferencesBot :: Chat.Chat :> es => IncomingMessage -> Eff es Bool
 replyReferencesBot =
   fmap (maybe False (.senderIsBot)) . fetchReferencedMessage
-
-askPrefix :: AskHandlerConfig -> MessageFilter Text
-askPrefix cfg =
-  command cfg.command <|> maybe empty prefixedText cfg.name
-
-notAskPrefix :: AskHandlerConfig -> MessageFilter IncomingMessage
-notAskPrefix cfg =
-  let MessageFilter matches = askPrefix cfg
-  in
-  rejecting \message ->
-    isJust (matches message)
 
 startAskThread
   :: HandlerEffects es
   => Text
   -> Agent.ToolConfig
+  -> [AgentTool.Tool es]
   -> AskHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle
   -> IncomingMessage
   -> Text
   -> Eff es ()
-startAskThread label toolCfg cfg threads resource message prompt = do
+startAskThread label toolCfg tools cfg threads resource message prompt = do
   logDebug [i|#{label}: #{show message :: String}|]
   logInfo [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
@@ -302,7 +340,7 @@ startAskThread label toolCfg cfg threads resource message prompt = do
   let contextPrompt = promptWithCurrentFiles (promptWithReferencedContext prompt referenced contextImages) message.files
   let input = inputWithAttachments contextPrompt contextImages contextFiles
   transcript <- startTranscript cfg message input
-  void $ runAskAgentThread toolCfg cfg threads resource Nothing message input transcript
+  void $ runAskAgentThread toolCfg tools cfg threads resource Nothing message input transcript
 
 startDrawThread
   :: HandlerEffects es
@@ -337,13 +375,14 @@ fetchReferencedMessage message =
 startThreadFromReply
   :: HandlerEffects es
   => Agent.ToolConfig
+  -> [AgentTool.Tool es]
   -> AskHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle
   -> IncomingMessage
   -> MessageId
   -> Eff es ()
-startThreadFromReply toolCfg cfg threads resource message parentId = do
+startThreadFromReply toolCfg tools cfg threads resource message parentId = do
   logDebug [i|starting thread from mentioned reply: #{show message :: String}|]
   logInfo [i|starting thread from mentioned reply: #{incomingMessageLogLine message}|]
   referenced <- Chat.getMessageContent message parentId
@@ -353,11 +392,12 @@ startThreadFromReply toolCfg cfg threads resource message parentId = do
   unless (Text.null prompt && null contextImages) do
     let input = inputWithAttachments prompt contextImages contextFiles
     transcript <- startTranscript cfg message input
-    void $ runAskAgentThread toolCfg cfg threads resource (Just (threadMessageKey message parentId)) message input transcript
+    void $ runAskAgentThread toolCfg tools cfg threads resource (Just (threadMessageKey message parentId)) message input transcript
 
 continueThread
   :: HandlerEffects es
   => Agent.ToolConfig
+  -> [AgentTool.Tool es]
   -> AskHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle
@@ -365,14 +405,14 @@ continueThread
   -> ThreadMessageKey
   -> Transcript
   -> Eff es ()
-continueThread toolCfg cfg threads resource message parentKey transcript = do
+continueThread toolCfg tools cfg threads resource message parentKey transcript = do
   logDebug [i|continuing thread: #{show message :: String}|]
   logInfo [i|continuing thread: #{incomingMessageLogLine message}|]
   let prompt = promptWithCurrentFiles (promptOrImageDefault message.text message.imageUrls) message.files
   let input = inputWithAttachments prompt message.imageUrls message.files
   let nextTranscript =
         appendUserInput input transcript
-  void $ runAskAgentThread toolCfg cfg threads resource (Just parentKey) message input nextTranscript
+  void $ runAskAgentThread toolCfg tools cfg threads resource (Just parentKey) message input nextTranscript
 
 drawTranscript
   :: (LLM.LLM :> es, KatipE :> es)
@@ -392,62 +432,13 @@ promptOrImageDefault prompt imageUrls
   where
     stripped = Text.strip prompt
 
-startTranscript :: (Memory.Memory :> es, Skills.Skills :> es, Storage.Storage :> es) => AskHandlerConfig -> IncomingMessage -> MessageInput -> Eff es Transcript
+startTranscript :: (Memory.Memory :> es, Skills.Skills :> es) => AskHandlerConfig -> IncomingMessage -> MessageInput -> Eff es Transcript
 startTranscript cfg message input = do
   skillsPrompt <- Skills.skillsSystemPrompt
   senderMemory <- loadScopedMemory (MemoryStore.senderMemoryScope message)
   chatMemory <- loadScopedMemory (MemoryStore.chatMemoryScope message)
   let systemPrompt = LLM.contextSystemPrompt cfg.systemPrompt skillsPrompt senderMemory chatMemory
-  case acpSessionId message of
-    Nothing ->
-      pure (startWithSystemAndUserInput systemPrompt input)
-    Just sessionId -> do
-      history <- Session.sessionHistory sessionId
-      pure $
-        if null history
-          then startWithSystemAndUserInput systemPrompt input
-          else sessionHistoryTranscript systemPrompt history
-
-acpSessionId :: IncomingMessage -> Maybe Session.SessionId
-acpSessionId message = do
-  guard (message.platform == PlatformACP)
-  Session.SessionId <$> listToMaybe message.chatAliases
-
-sessionHistoryTranscript :: Text -> [Session.SessionMessage] -> Transcript
-sessionHistoryTranscript systemPrompt history =
-  Transcript $
-    Seq.fromList $
-      systemMessages <> concatMap sessionMessageChatMessages history
-  where
-    systemMessages =
-      [LLM.systemText systemPrompt | not (Text.null systemPrompt)]
-
-sessionMessageChatMessages :: Session.SessionMessage -> [LLM.ChatMessage]
-sessionMessageChatMessages message
-  | message.sender == "user" =
-      [LLM.userWithImages message.text (sessionMessageImageRefs message)]
-  | otherwise =
-      assistantMessages message.text (sessionMessageImageRefs message)
-
-assistantMessages :: Text -> [Text] -> [LLM.ChatMessage]
-assistantMessages text imageRefs =
-  textMessages <> imageContextMessages
-  where
-    visibleImageRefs =
-      filter (not . ReplyBody.isBase64ImageRef) imageRefs
-    textMessages =
-      [LLM.assistantText text | not (Text.null (Text.strip text))] <>
-      [LLM.assistantText "Generated image." | Text.null (Text.strip text) && not (null imageRefs)]
-    imageContextMessages =
-      [ LLM.userWithImages "The previous assistant response generated this image. Use it as visual context for follow-up questions." visibleImageRefs
-      | not (null visibleImageRefs)
-      ]
-
-sessionMessageImageRefs :: Session.SessionMessage -> [Text]
-sessionMessageImageRefs message =
-  ordNub $
-    filter (not . Text.null . Text.strip) $
-      message.imageUrls <> [attachment.url | attachment <- message.attachments, attachment.kind == "image"]
+  pure (startWithSystemAndUserInput systemPrompt input)
 
 loadScopedMemory :: Memory.Memory :> es => Either Text MemoryStore.MemoryScope -> Eff es (Maybe Text)
 loadScopedMemory =

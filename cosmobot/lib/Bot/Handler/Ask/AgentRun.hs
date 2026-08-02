@@ -12,7 +12,7 @@ module Bot.Handler.Ask.AgentRun
 where
 
 import qualified Bot.Agent as Agent
-import qualified Bot.Agent.Tools as AgentTools
+import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Failure as Failure
 import qualified Bot.Agent.Middleware.Observation as AgentObservation
 import Bot.Core.Thread
@@ -20,7 +20,6 @@ import Bot.Core.Transcript
 import Bot.Core.Message
 import Bot.Core.Route (isSuperuser)
 import qualified Bot.Effect.AgentAudit as AgentAudit
-import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -46,8 +45,7 @@ import Effectful.Process
 import Effectful.Timeout
 
 runAskAgentThread
-  :: ( ACP.ACP :> es
-     , Chat.Chat :> es
+  :: ( Chat.Chat :> es
      , ChatLog.ChatLog :> es
      , AgentAudit.AgentAudit :> es
      , Concurrency.Concurrency :> es
@@ -70,6 +68,7 @@ runAskAgentThread
      , IOE :> es
      )
   => Agent.ToolConfig
+  -> [AgentTool.Tool es]
   -> AskHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle
@@ -78,14 +77,14 @@ runAskAgentThread
   -> MessageInput
   -> Transcript
   -> Eff es (Text, Transcript)
-runAskAgentThread toolCfg cfg threads resource parentMessageKey message input transcript = do
+runAskAgentThread toolCfg tools cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
   baseRuntime <-
     Agent.startRuntimeWithParent
       (Just resource)
       cfg.agentMaxTurns
       (agentContext toolCfg cfg message input)
-      AgentTools.defaultTools
+      tools
   let runtime =
         Agent.defaultRuntime observer (compactionThresholdTokens cfg) baseRuntime
   withActiveReply threads (Agent.runIdOf runtime) resource parentMessageKey message input.text transcript \activeReply -> do

@@ -8,6 +8,7 @@ module Bot.Main
 where
 
 import Bot.Prelude
+import qualified Bot.Agent.Tools as AgentTools
 import qualified Bot.ACP.Client as ACPClient
 import qualified Bot.ACP.Config as ACPConfig
 import qualified Bot.ACP.Server as ACPServer
@@ -146,7 +147,7 @@ routes cfg threads =
         <> safebooruHandlers
         <> saucenaoHandlers cfg.saucenao
         <> resourceHandlers
-        <> askHandlers cfg.tool cfg.handlers.ask threads
+        <> askHandlers cfg.tool (AgentTools.defaultToolsWith AgentTools.acpTools) cfg.handlers.ask threads
 
 withRouteDebugLogging :: KatipE :> es => Int -> Route es -> Route es
 withRouteDebugLogging index route =

@@ -6,6 +6,8 @@ Stability   : experimental
 
 module Bot.Agent.Tools
   ( defaultTools
+  , defaultToolsWith
+  , acpTools
   )
 where
 
@@ -49,8 +51,7 @@ import Effectful.FileSystem
 
 -- | Built-in tools exposed to the model after per-message permission checks.
 defaultTools
-  :: ACP.ACP :> es
-  => AgentAudit.AgentAudit :> es
+  :: AgentAudit.AgentAudit :> es
   => Chat.Chat :> es
   => ChatLog.ChatLog :> es
   => HTTP.HTTP :> es
@@ -73,10 +74,35 @@ defaultTools
   => [Tool es]
 defaultTools = tools
   where
+    tools = defaultToolsWith []
+
+defaultToolsWith
+  :: AgentAudit.AgentAudit :> es
+  => Chat.Chat :> es
+  => ChatLog.ChatLog :> es
+  => HTTP.HTTP :> es
+  => LLM.LLM :> es
+  => Media.Media :> es
+  => Memory.Memory :> es
+  => Resource.Resource :> es
+  => Scheduler.Scheduler :> es
+  => Skills.Skills :> es
+  => Typst.Typst :> es
+  => Fail :> es
+  => Concurrency.Concurrency :> es
+  => Prim :> es
+  => Concurrent :> es
+  => Timeout :> es
+  => KatipE :> es
+  => Process :> es
+  => FileSystem :> es
+  => IOE :> es
+  => [Tool es]
+  -> [Tool es]
+defaultToolsWith extraTools = tools
+  where
     tools =
       [ toolEnableTool
-      , acpReadClientFileTool
-      , acpWriteClientFileTool
       , queryChatLogTool
       , queryCurrentSenderChatLogTool
       , webSearchTool
@@ -103,7 +129,6 @@ defaultTools = tools
       , loadSkillTool
       , sandboxTool
       , runBashTool
-      , terminalTool
       , workspaceTool
       , captureContinuationTool
       , resumeContinuationTool
@@ -112,4 +137,11 @@ defaultTools = tools
             Agent.runObservedChildAgent AgentAudit.agentAuditObserver metadata subagentId parent 8)
           tools
       , emacsEvalTool
-      ]
+      ] <> extraTools
+
+acpTools :: ACP.ACP :> es => [Tool es]
+acpTools =
+  [ acpReadClientFileTool
+  , acpWriteClientFileTool
+  , terminalTool
+  ]

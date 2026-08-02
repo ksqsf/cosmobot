@@ -49,7 +49,6 @@ import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Resource.SubAgent as SubAgentResource
-import qualified Bot.Session as Session
 import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
 import qualified Bot.Core.Message as Message
@@ -64,7 +63,6 @@ import qualified Bot.System.Typst.Test as TypstTest
 import qualified Bot.System.Typst.Types as TypstTypes
 import qualified Bot.Util.HList as HList
 import Bot.Prelude
-import qualified Bot.Storage.Session as SessionStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as AesonKeyMap
@@ -229,9 +227,8 @@ main =
       , testCase "ask handler passes referenced images to image_edit tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "ask handler includes referenced image URLs in text context" testAskHandlerIncludesReferencedImageUrlsInTextContext
       , testCase "ask handler includes current and referenced files in text context" testAskHandlerIncludesFilesInTextContext
-      , testCase "ask handler skips replies to non-bot messages" testAskHandlerSkipsRepliesToNonBotMessages
+      , testCase "ask handler only handles replies to non-bot messages when mentioned" testAskHandlerHandlesMentionedReplyToNonBotMessage
       , testCase "LLM failure replies remain linked to their thread" testLLMFailureReplyLinksThread
-      , testCase "ACP ask handler continues durable session transcript" testAcpAskHandlerContinuesDurableSessionTranscript
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
       , testCase "image_view rejects local file URLs without reading them" testViewImageToolRejectsLocalFileUrls
@@ -1044,9 +1041,9 @@ testAskHandlerIncludesFilesInTextContext = do
     Nothing ->
       assertFailure "expected captured LLM request"
 
-testAskHandlerSkipsRepliesToNonBotMessages :: IO ()
-testAskHandlerSkipsRepliesToNonBotMessages = do
-  answers <- IORef.newIORef []
+testAskHandlerHandlesMentionedReplyToNonBotMessage :: IO ()
+testAskHandlerHandlesMentionedReplyToNonBotMessage = do
+  answers <- IORef.newIORef [chatAnswer "mentioned" []]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   rendered <- IORef.newIORef ([] :: [Text])
   let referenced = ReferencedMessage
@@ -1062,6 +1059,12 @@ testAskHandlerSkipsRepliesToNonBotMessages = do
         { replyToMessageId = Just "70001"
         , text = "follow up"
         }
+      mentioned =
+        message
+          { messageId = Just "70002"
+          , digest = message.digest{mentionsBot = True}
+          , text = "@bot follow up"
+          }
   _ <- runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced
     (MemoryStore.MemoryConfig "/tmp/cosmobot-agent-spec-unused")
     defaultTestSkillsConfig
@@ -1074,10 +1077,12 @@ testAskHandlerSkipsRepliesToNonBotMessages = do
     (\_ _ _ _ -> pure "unused image edit answer") do
       threads <- newThreadStore
       before <- map (.id) . (.entries) <$> Concurrency.list
-      runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) message
+      runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) message
       afterSnapshot <- map (.id) . (.entries) <$> Concurrency.list
       liftIO $ afterSnapshot @?= before
-  IORef.readIORef captured >>= assertBool "non-bot reply should not call the LLM" . null
+      liftIO $ IORef.readIORef captured >>= assertBool "unmentioned reply should not call the LLM" . null
+      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads mentioned
+  IORef.readIORef captured >>= assertEqual "mentioned reply should call the LLM once" 1 . length
 
 testAskHandlerRoutesActiveReplyAsSteering :: IO ()
 testAskHandlerRoutesActiveReplyAsSteering = do
@@ -1086,7 +1091,8 @@ testAskHandlerRoutesActiveReplyAsSteering = do
     threads <- newThreadStore
     active <- fromMaybe (error "expected active thread") <$>
       rememberActiveThread threads "test-run" Nothing (Just (messageKey 1)) testMessage "start" (Concurrency.Handle (Concurrency.Id 1)) (startWithUser "start")
-    let steer =
+    let steer :: IncomingMessage
+        steer =
           testMessage
             { messageId = Just (integerMessageId 2)
             , replyToMessageId = Just (integerMessageId 1)
@@ -1098,10 +1104,17 @@ testAskHandlerRoutesActiveReplyAsSteering = do
             , senderId = Just "201"
             , text = "hijack"
             }
-    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) steer
-    runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) otherSender
+        askCommand :: IncomingMessage
+        askCommand =
+          steer
+            { messageId = Just (integerMessageId 4)
+            , text = "!ask start over"
+            }
+    runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) steer
+    runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) otherSender
+    runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) askCommand
     drainActiveThreadSteers active
-  queued @?= ["change direction"]
+  queued @?= ["change direction", "!ask start over"]
 
 testGroupReplyDoesNotContinueFinishedUserAlias :: IO ()
 testGroupReplyDoesNotContinueFinishedUserAlias = do
@@ -1149,7 +1162,7 @@ testGroupReplyDoesNotContinueFinishedUserAlias = do
       active <- fromMaybe (error "expected active thread") <$>
         rememberActiveThread threads "test-run" Nothing (Just (threadMessageKey parentMessage parentId)) parentMessage "krkr hi" (Concurrency.Handle (Concurrency.Id 1)) parentTranscript
       finishActiveThread threads active parentTranscript
-      runHandlers (askHandlers Agent.defaultToolConfig askHandlerConfig threads) followUp
+      runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) followUp
   IORef.readIORef captured >>= assertBool "replying to a finished user alias should not call the LLM" . null
 
 testAskHandlerContinuesFinishedBotReply :: IO ()
@@ -1201,70 +1214,6 @@ testLLMFailureReplyLinksThread = do
   assertBool "failure reply should resolve to the original thread" (isJust linked)
   sent <- IORef.readIORef replies
   assertBool "expected an LLM failure reply" (any ("LLM request failed:" `Text.isPrefixOf`) sent)
-
-testAcpAskHandlerContinuesDurableSessionTranscript :: IO ()
-testAcpAskHandlerContinuesDurableSessionTranscript = do
-  answers <- IORef.newIORef [chatAnswer "continued" []]
-  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
-  replies <- IORef.newIORef ([] :: [Text])
-  _ <- runAgentCapturingMessages captured answers (ChatMock (Just replies) (Just "901") Nothing) do
-    threads <- newThreadStore
-    session <- Session.openSession (Just "/tmp/cosmobot-agent-acp-spec")
-    firstUser <- Session.appendUserMessage $
-      Session.SessionSend
-        { sessionId = session.sessionId
-        , text = "first turn"
-        , imageUrls = []
-        , attachments = []
-        , replyToMessageId = Nothing
-        }
-    case firstUser of
-      Right (Just firstMessage) ->
-        void $
-          SessionStorage.appendMessage
-            (Session.sessionIdText session.sessionId)
-            "assistant"
-            "first answer"
-            []
-            []
-            (Just firstMessage.messageId)
-            (Just firstMessage.messageId)
-      other ->
-        liftIO (assertFailure [i|expected first ACP session message, got #{show other :: String}|])
-    currentUser <- Session.appendUserMessage $
-      Session.SessionSend
-        { sessionId = session.sessionId
-        , text = "follow up"
-        , imageUrls = ["data:image/png;base64,AAAA"]
-        , attachments = []
-        , replyToMessageId = Nothing
-        }
-    currentMessageId <- case currentUser of
-      Right (Just message) ->
-        pure message.messageId
-      other ->
-        liftIO (assertFailure [i|expected current ACP session message, got #{show other :: String}|])
-    let message =
-          askHandlerMessage
-            { platform = PlatformACP
-            , kind = ChatPrivate
-            , chatId = Nothing
-            , chatAliases = [Session.sessionIdText session.sessionId]
-            , senderId = Just "acp-user"
-            , senderUsername = Just "ACP"
-            , messageId = Just currentMessageId
-            , text = "follow up"
-            , imageUrls = ["data:image/png;base64,AAAA"]
-            }
-    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads message
-  requests <- IORef.readIORef captured
-  case viaNonEmpty head requests of
-    Just request -> do
-      chatMessageTextsByRole "user" request @?= ["first turn", "follow up"]
-      chatMessageTextsByRole "assistant" request @?= ["first answer"]
-      requestUserImageUrls request @?= ["data:image/png;base64,AAAA"]
-    Nothing ->
-      assertFailure "expected captured ACP LLM request"
 
 testGenerateImageToolPassesImageRequestOptions :: IO ()
 testGenerateImageToolPassesImageRequestOptions = do
@@ -4359,7 +4308,7 @@ runAskHandlersAndWait
   -> Eff AgentStack ()
 runAskHandlersAndWait toolConfig config threads message = do
   before <- Concurrency.list
-  runHandlers (askHandlers toolConfig config threads) message
+  runHandlers (askHandlers toolConfig AgentTools.defaultTools config threads) message
   snapshotAfter <- Concurrency.list
   let existingIds = (.id) <$> before.entries
       started = filter ((`notElem` existingIds) . (.id)) snapshotAfter.entries
