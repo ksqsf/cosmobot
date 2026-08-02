@@ -140,12 +140,15 @@ streamReply push finish state hasChunks input = do
           pure (Just update, result)
       | otherwise ->
           pure (Nothing, result)
+    Right (chunk, rest)
+      | Text.null chunk ->
+          streamReply push finish state hasChunks rest
     Right (chunk, rest) -> do
       let stateWithAnswer = appendAnswer chunk state
           body = answerText stateWithAnswer
       (updated, sent) <- lift (push stateWithAnswer chunk body)
       S.yield (messageOutResult updated sent)
-      streamReply push finish updated (hasChunks || not (Text.null chunk)) rest
+      streamReply push finish updated True rest
 
 pushEditableReplyChunk
   :: ChatDriver.ChatDriver :> es

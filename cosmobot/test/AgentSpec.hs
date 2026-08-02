@@ -305,6 +305,7 @@ main =
       , testCase "LLM log JSON truncates base64 image payloads" testLLMLogJsonTruncatesBase64ImagePayloads
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
       , testCase "empty chat reply sends a zero-width space" testEmptyChatReplySendsZeroWidthSpace
+      , testCase "empty streaming chunks are ignored" testEmptyStreamingChunksAreIgnored
       , testCase "chat streaming chunks replies and yields updates" testChatStreamingChunksRepliesAndYieldsUpdates
       , testCase "editable segmented replies open a new tail after tool messages" testEditableSegmentedRepliesOpenNewTail
       , testCase "segmented replies flush final open segment" testSegmentedRepliesFlushFinalOpenSegment
@@ -2825,6 +2826,30 @@ testEmptyChatReplySendsZeroWidthSpace = do
       defaultAgentMockChatDriver{agentReply = recordReply replies nextReplyId} $
         Chat.replyTo testMessage ""
   IORef.readIORef replies >>= (@?= [(Just "300", "\x200B")])
+
+testEmptyStreamingChunksAreIgnored :: IO ()
+testEmptyStreamingChunksAreIgnored = do
+  replies <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  edits <- IORef.newIORef ([] :: [(MessageId, Text)])
+  updates <- IORef.newIORef ([] :: [Text])
+  nextReplyId <- IORef.newIORef (1 :: Integer)
+  let stream chunks = runEff $ runPrim $
+        Chat.runChatWith
+          defaultAgentMockChatDriver
+            { agentReply = recordReply replies nextReplyId
+            , agentEditMessage = recordEdit edits
+            , agentMessageOutPolicy = \_ -> pure (Chat.EditableMessage 2 100)
+            } $
+            S.mapM_
+              (\update -> liftIO $ IORef.modifyIORef' updates (<> [update.answer]))
+              (Chat.streamReplyTo testMessage (S.each chunks $> ()))
+  _ <- stream [""]
+  IORef.readIORef replies >>= (@?= [])
+  IORef.readIORef updates >>= (@?= [])
+  _ <- stream ["", "answer"]
+  IORef.readIORef replies >>= (@?= [(Just "300", "answer")])
+  IORef.readIORef edits >>= (@?= [])
+  IORef.readIORef updates >>= (@?= ["answer", "answer"])
 
 testChatStreamingChunksRepliesAndYieldsUpdates :: IO ()
 testChatStreamingChunksRepliesAndYieldsUpdates = do
