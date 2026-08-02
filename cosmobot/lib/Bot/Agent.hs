@@ -21,7 +21,6 @@ module Bot.Agent
   , ToolConfig (..)
   , WebSearchApi (..)
   , defaultToolConfig
-  , startRuntime
   , startRuntimeWithParent
   , runIdOf
   , defaultRuntime
@@ -35,10 +34,7 @@ module Bot.Agent
   , withRecordingToolSelfMessages
   , withSteering
   , withTypingNotification
-  , runAgent
-  , runAgentWithParent
   , runObservedChildAgent
-  , runAgentStreaming
   )
 where
 
@@ -50,8 +46,7 @@ import Bot.Agent.Transcript
   )
 import Bot.Agent.Core
 import Bot.Agent.Middleware.ContextCompaction
-  ( withContextCompaction
-  , withContextCompactionNotice
+  ( withContextCompactionNotice
   )
 import Bot.Agent.Middleware.Continuation
   ( withContinuations
@@ -114,33 +109,6 @@ import qualified Streaming.Prelude as S
 -- * Public runners
 -----------------------------------------------------------------------------------------
 
--- | Run an LLM/tool loop until the model answers or the tool turn limit is hit.
-runAgent
-  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
-  => Int
-  -> Context
-  -> [Tool es]
-  -> Transcript
-  -> Eff es (Text, Transcript)
-runAgent maxTurns = runAgentWithParent Nothing maxTurns
-
-runAgentWithParent
-  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
-  => Maybe Concurrency.Handle
-  -> Int
-  -> Context
-  -> [Tool es]
-  -> Transcript
-  -> Eff es (Text, Transcript)
-runAgentWithParent parent maxTurns context tools transcript = do
-  runtime <- startRuntimeWithParent parent maxTurns context tools
-  outputs S.:> result <-
-    S.toList $
-      agentStream
-        (plainRuntime defaultCompactionTokenThreshold runtime)
-        transcript
-  pure (agentStreamAnswer outputs, result.transcript)
-
 runObservedChildAgent
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, IOE :> es)
   => Observer ObservationContext es
@@ -166,32 +134,6 @@ runObservedChildAgent observer parentMetadata childLabel parent maxTurns context
         transcript
   pure (agentStreamAnswer outputs, result.transcript)
 
--- | Run an LLM/tool loop, streaming assistant content chunks.
-runAgentStreaming
-  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
-  => Int
-  -> Context
-  -> [Tool es]
-  -> Transcript
-  -> Stream (Of Output) (Eff es) Transcript
-runAgentStreaming maxTurns context =
-  runAgentStreamingWith maxTurns context
-
-runAgentStreamingWith
-  :: (Chat.Chat :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Concurrent :> es, IOE :> es)
-  => Int
-  -> Context
-  -> [Tool es]
-  -> Transcript
-  -> Stream (Of Output) (Eff es) Transcript
-runAgentStreamingWith maxTurns context tools transcript = do
-  runtime <- lift (startRuntime maxTurns context tools)
-  result <-
-    agentStream
-      (plainRuntime defaultCompactionTokenThreshold runtime)
-      transcript
-  pure result.transcript
-
 defaultCompactionTokenThreshold :: Int
 defaultCompactionTokenThreshold =
   1000000
@@ -215,10 +157,6 @@ runIdOf =
 -----------------------------------------------------------------------------------------
 -- * Run setup
 -----------------------------------------------------------------------------------------
-
--- | Select visible tools and construct an identity-middleware runtime.
-startRuntime :: (Chat.Chat :> es, Concurrent :> es, IOE :> es) => Int -> Context -> [Tool es] -> Eff es (Runtime context es)
-startRuntime = startRuntimeWithParent Nothing
 
 startRuntimeWithParent :: (Chat.Chat :> es, Concurrent :> es, IOE :> es) => Maybe Concurrency.Handle -> Int -> Context -> [Tool es] -> Eff es (Runtime context es)
 startRuntimeWithParent parent =
@@ -275,19 +213,6 @@ defaultRuntime observer compactionTokenThreshold =
   . withObservation observer
   . withToolMessage
   . withContextCompactionNotice compactionTokenThreshold
-  . withToolFailureRecovery
-  )
-
-plainRuntime
-  :: (LLM.LLM :> es, Media.Media :> es, KatipE :> es, IOE :> es)
-  => Int
-  -> Runtime '[ToolResultObservation es] es
-  -> Runtime '[] es
-plainRuntime compactionTokenThreshold =
-  ( withContinuations
-  . withToolLimit isResumeTransfer
-  . withToolResultCompaction
-  . withContextCompaction compactionTokenThreshold
   . withToolFailureRecovery
   )
 
