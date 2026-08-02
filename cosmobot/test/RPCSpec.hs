@@ -43,7 +43,7 @@ import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.WebSockets as WS
 import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath ((</>), takeDirectory, takeExtension)
 import System.Timeout
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -70,6 +70,7 @@ main =
       , testCase "resource and concurrency manager RPC methods" testManagerRpcMethods
       , testCase "media upload, send, history, and stats" testAttachmentLifecycle
       , testCase "media cache can resolve, inspect, and delete cached media" testMediaCacheResolveInspectDelete
+      , testCase "media cache sniffs streamed image content" testMediaCacheSniffsStreamedImageContent
       , testCase "remote media MIME is probed with range GET" testRemoteMediaMimeUsesRangeGetProbe
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
@@ -389,6 +390,19 @@ testMediaCacheResolveInspectDelete =
     responseBool deleteResponse "deleted" @?= Just True
     responseErrorCode getAfterDeleteResponse @?= Just "not_found"
     fileExistsAfterDelete @?= False
+
+testMediaCacheSniffsStreamedImageContent :: IO ()
+testMediaCacheSniffsStreamedImageContent =
+  withSQLiteTempPath "rpc-media-sniff" \path -> do
+    info <- runRpcStorage path do
+      mediaRef <- fromMaybe (error "expected stored media ref") <$> Media.storeMediaObject Media.MediaObject
+        { Media.bytes = Q.fromStrict "\x89PNG\r\n\x1a\ncontent"
+        , Media.mimeType = "application/octet-stream"
+        , Media.sourceName = Just "image.bin"
+        }
+      fromMaybe (error "expected stored media info") <$> Media.mediaFileInfoByRef mediaRef
+    info.mimeType @?= "image/png"
+    takeExtension info.path @?= ".png"
 
 testChatSessionsPersistAcrossRestart :: IO ()
 testChatSessionsPersistAcrossRestart =

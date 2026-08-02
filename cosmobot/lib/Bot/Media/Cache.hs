@@ -46,6 +46,8 @@ import qualified Data.Time.Clock.POSIX as POSIX
 import Control.Monad.Trans.Resource (runResourceT)
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO as FileSystemIO
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Effectful.Temporary as Temporary
 import qualified Streaming.ByteString as Q
 import Streaming (Of (..))
@@ -351,6 +353,14 @@ storeMediaObject cfg sourceRef mediaObject = do
       temporaryFileId <- newFileId
       let temporaryPath = temporaryDirectory </> Text.unpack temporaryFileId <.> "tmp"
       liftIO (runResourceT (Q.writeFile temporaryPath mediaObject.bytes))
+      header <- FileSystemIO.withBinaryFile temporaryPath FileSystemIO.ReadMode (`FileSystemByteString.hGet` 512)
+      let sniffedMime = Mime.sniffMime header
+          storedMediaObject = MediaObject
+            { bytes = mediaObject.bytes
+            , mimeType = fromMaybe mediaObject.mimeType sniffedMime
+            , sourceName = mediaObject.sourceName
+            }
+          extension = maybe (extensionFor storedMediaObject) Mime.extensionFromMime sniffedMime
       digest <- contentDigestFile temporaryPath
       lookupCachedDigest cfg digest >>= \case
         Just cached -> do
@@ -358,7 +368,7 @@ storeMediaObject cfg sourceRef mediaObject = do
             linkSourceRef ref cached.fileId
           pure (ReusedCachedMedia cached)
         Nothing ->
-          CreatedCachedMedia <$> storeStreamedMediaFile cfg sourceRef mediaObject digest temporaryPath
+          CreatedCachedMedia <$> storeStreamedMediaFile cfg sourceRef storedMediaObject extension digest temporaryPath
 
 storeStreamedMediaFile
   :: (Storage.Storage :> es, FileSystem :> es, IOE :> es)
@@ -366,10 +376,11 @@ storeStreamedMediaFile
   -> Maybe Text
   -> MediaObject
   -> Text
+  -> Text
   -> FilePath
   -> Eff es CachedMedia
-storeStreamedMediaFile cfg sourceRef mediaObject digest temporaryPath = do
-  let relativePath = Text.unpack digest <.> Text.unpack (Text.dropWhile (== '.') (extensionFor mediaObject))
+storeStreamedMediaFile cfg sourceRef mediaObject extension digest temporaryPath = do
+  let relativePath = Text.unpack digest <.> Text.unpack (Text.dropWhile (== '.') extension)
       finalPath = cfg.directory </> relativePath
   exists <- FileSystem.doesFileExist finalPath
   unless exists $
