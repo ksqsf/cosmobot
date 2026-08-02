@@ -275,6 +275,18 @@ opens another scope with locally adjusted context; it is not a different kind
 of runner. `Program` remains the computation being interpreted, while the
 `Agent` effect supplies the scope in which it is interpreted.
 
+### 3.2 Subagents
+
+Root agents and subagents previously used separate runners, duplicating setup
+and allowing their behavior to drift. Now both follow the same
+`Agent.withRun -> agentStream` path; a subagent is simply an ordinary agent
+whose background lifetime and reusable conversation are managed as a resource.
+Because identity and ownership are supplied around the run instead of encoded
+in it, starting a subagent needs no child-specific runner. This removes a
+separate concept, lets any agent start another agent through the same effect,
+keeps resource lifetime out of the agent calculus, and makes changes to the
+agent loop or middleware apply uniformly to every run.
+
 ## 4. Middleware design
 
 Most middleware is a runtime transformation:
