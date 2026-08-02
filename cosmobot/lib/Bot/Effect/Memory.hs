@@ -16,6 +16,7 @@ where
 import qualified Bot.Memory as MemoryStore
 import Bot.Prelude
 import qualified Effectful.Concurrent.MVar as MVar
+import Effectful.FileSystem (FileSystem)
 import Effectful.Process (Process)
 
 data Memory :: Effect where
@@ -38,7 +39,7 @@ clearMemory =
   send . ClearMemory
 
 runMemory
-  :: (Concurrent :> es, IOE :> es, Process :> es)
+  :: (Concurrent :> es, FileSystem :> es, IOE :> es, Process :> es)
   => MemoryStore.MemoryConfig
   -> Eff (Memory : es) a
   -> Eff es a
@@ -50,8 +51,8 @@ runMemory cfg action = do
       MemoryStore.loadMemory cfg scope
     ReplaceMemory scope memory ->
       MVar.withMVar lock $ \_ ->
-        MemoryStore.replaceMemory cfg scope memory >> MemoryStore.commitMemoryUpdate cfg
+        MemoryStore.replaceMemory cfg scope memory
     ClearMemory scope ->
       MVar.withMVar lock $ \_ ->
-        MemoryStore.clearMemory cfg scope >> MemoryStore.commitMemoryUpdate cfg
+        MemoryStore.clearMemory cfg scope
     ) action

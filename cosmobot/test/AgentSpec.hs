@@ -332,6 +332,7 @@ main =
       , testCase "memory tool manages current sender memory" testMemoryToolManagesCurrentSenderMemory
       , testCase "memory tool manages current chat memory" testMemoryToolManagesCurrentChatMemory
       , testCase "memory tool enforces non-superuser length limit" testMemoryToolEnforcesLengthLimit
+      , testCase "memory update rolls back when git commit fails" testMemoryUpdateRollsBackOnCommitFailure
       , testCase "run_bash captures stdout and stderr" testRunBashCapturesStdoutAndStderr
       , testCase "run_bash kills timed out process" testRunBashKillsTimedOutProcess
       , testCase "run_bash kills process group when cancelled" testRunBashKillsProcessGroupWhenCancelled
@@ -3463,6 +3464,30 @@ testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
   answer @?= "rejected"
   exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
   exists @?= False
+
+testMemoryUpdateRollsBackOnCommitFailure :: IO ()
+testMemoryUpdateRollsBackOnCommitFailure = withMemoryTempDir \dir -> do
+  let cfg = MemoryStore.MemoryConfig dir
+      scope = MemoryStore.SenderMemory PlatformTelegram "200"
+      runStore = runEff . runFileSystem . runProcess
+  runStore do
+    MemoryStore.initializeMemoryRepo cfg
+    MemoryStore.replaceMemory cfg scope "old memory"
+
+  let hook = dir </> ".git" </> "hooks" </> "pre-commit"
+  TextIO.writeFile hook "#!/bin/sh\nexit 1\n"
+  permissions <- getPermissions hook
+  setPermissions hook permissions{executable = True}
+
+  (result, current) <- runStore do
+    result <- trySync (MemoryStore.replaceMemory cfg scope "new memory")
+    current <- MemoryStore.loadMemory cfg scope
+    pure (result, current)
+  case result of
+    Left _ -> pure ()
+    Right () -> assertFailure "memory update unexpectedly succeeded"
+  current @?= Just "old memory"
+  Process.readProcess "git" ["-C", dir, "status", "--porcelain"] "" >>= (@?= "")
 
 testRunBashCapturesStdoutAndStderr :: IO ()
 testRunBashCapturesStdoutAndStderr = do

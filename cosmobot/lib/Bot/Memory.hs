@@ -14,7 +14,6 @@ module Bot.Memory
   , replaceMemory
   , clearMemory
   , initializeMemoryRepo
-  , commitMemoryUpdate
   , memoryPath
   )
 where
@@ -23,9 +22,12 @@ import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.List as List
 import qualified Data.Text as Text
-import qualified Data.Text.IO as TextIO
+import qualified Data.Text.Encoding as TextEncoding
+import Effectful.FileSystem (FileSystem)
+import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import qualified Effectful.FileSystem.IO.File as FileSystemFile
 import Effectful.Process (Process, proc, readCreateProcessWithExitCode)
-import System.Directory
 import System.Exit (ExitCode (..))
 import System.FilePath
 import System.IO.Error (userError)
@@ -60,39 +62,83 @@ chatMemoryScope message =
     Just chatId ->
       Right (ChatMemory message.platform chatId)
 
-loadMemory :: IOE :> es => MemoryConfig -> MemoryScope -> Eff es (Maybe Text)
-loadMemory cfg scope = liftIO do
-  exists <- doesFileExist path
+loadMemory :: FileSystem :> es => MemoryConfig -> MemoryScope -> Eff es (Maybe Text)
+loadMemory cfg scope = do
+  exists <- FileSystem.doesFileExist path
   if exists
-    then nonEmptyMemory <$> TextIO.readFile path
+    then nonEmptyMemory . TextEncoding.decodeUtf8 <$> FileSystemByteString.readFile path
     else pure Nothing
   where
     path = memoryPath cfg scope
 
-replaceMemory :: IOE :> es => MemoryConfig -> MemoryScope -> Text -> Eff es ()
-replaceMemory cfg scope memory = liftIO do
-  createDirectoryIfMissing True (takeDirectory path)
-  TextIO.writeFile path (Text.strip memory)
-  where
-    path = memoryPath cfg scope
+replaceMemory :: (FileSystem :> es, IOE :> es, Process :> es) => MemoryConfig -> MemoryScope -> Text -> Eff es ()
+replaceMemory cfg scope memory =
+  updateMemory cfg scope $ \path -> do
+    FileSystem.createDirectoryIfMissing True (takeDirectory path)
+    FileSystemFile.writeBinaryFileAtomic path (TextEncoding.encodeUtf8 (Text.strip memory))
 
-clearMemory :: IOE :> es => MemoryConfig -> MemoryScope -> Eff es ()
-clearMemory cfg scope = liftIO do
-  exists <- doesFileExist path
-  when exists (removeFile path)
-  where
-    path = memoryPath cfg scope
+clearMemory :: (FileSystem :> es, IOE :> es, Process :> es) => MemoryConfig -> MemoryScope -> Eff es ()
+clearMemory cfg scope =
+  updateMemory cfg scope removeMemoryFile
 
-initializeMemoryRepo :: (IOE :> es, Process :> es) => MemoryConfig -> Eff es ()
+initializeMemoryRepo :: (FileSystem :> es, IOE :> es, Process :> es) => MemoryConfig -> Eff es ()
 initializeMemoryRepo cfg = do
-  liftIO $ createDirectoryIfMissing True cfg.dir
+  FileSystem.createDirectoryIfMissing True cfg.dir
   runGit cfg ["init", "--quiet"]
   hasHead <- gitSucceeds cfg ["rev-parse", "--verify", "HEAD"]
   commitMemory cfg (if hasHead then "Update memory" else "Initialize memory") (not hasHead)
 
-commitMemoryUpdate :: (IOE :> es, Process :> es) => MemoryConfig -> Eff es ()
-commitMemoryUpdate cfg =
-  commitMemory cfg "Update memory" False
+updateMemory
+  :: (FileSystem :> es, IOE :> es, Process :> es)
+  => MemoryConfig
+  -> MemoryScope
+  -> (FilePath -> Eff es ())
+  -> Eff es ()
+updateMemory cfg scope update = mask \restore -> do
+  previous <- readMemoryFile path
+  restore (update path >> commitMemoryPath cfg path)
+    `onException` rollbackMemoryFile cfg path previous
+  where
+    path = memoryPath cfg scope
+
+readMemoryFile :: FileSystem :> es => FilePath -> Eff es (Maybe ByteString)
+readMemoryFile path = do
+  exists <- FileSystem.doesFileExist path
+  if exists
+    then Just <$> FileSystemByteString.readFile path
+    else pure Nothing
+
+rollbackMemoryFile
+  :: (FileSystem :> es, IOE :> es, Process :> es)
+  => MemoryConfig
+  -> FilePath
+  -> Maybe ByteString
+  -> Eff es ()
+rollbackMemoryFile cfg path previous = do
+  case previous of
+    Nothing -> removeMemoryFile path
+    Just contents -> FileSystemFile.writeBinaryFileAtomic path contents
+  runGit cfg ["reset", "--quiet", "HEAD", "--", makeRelative cfg.dir path]
+
+removeMemoryFile :: FileSystem :> es => FilePath -> Eff es ()
+removeMemoryFile path = do
+  exists <- FileSystem.doesFileExist path
+  when exists (FileSystem.removeFile path)
+
+commitMemoryPath :: (IOE :> es, Process :> es) => MemoryConfig -> FilePath -> Eff es ()
+commitMemoryPath cfg path = do
+  stageMemoryPath cfg path
+  changed <- not <$> gitSucceeds cfg ["diff", "--cached", "--quiet", "--", makeRelative cfg.dir path]
+  when changed $
+    runGit cfg
+      [ "-c", "user.name=Cosmobot"
+      , "-c", "user.email=cosmobot@localhost"
+      , "commit", "--quiet", "-m", "Update memory"
+      ]
+
+stageMemoryPath :: (IOE :> es, Process :> es) => MemoryConfig -> FilePath -> Eff es ()
+stageMemoryPath cfg path =
+  runGit cfg ["add", "--all", "--", makeRelative cfg.dir path]
 
 commitMemory :: (IOE :> es, Process :> es) => MemoryConfig -> String -> Bool -> Eff es ()
 commitMemory cfg message allowEmpty = do
