@@ -83,6 +83,7 @@ import Data.Unique
 import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.FileSystem (FileSystem, runFileSystem)
 import qualified Effectful.FileSystem as FS
+import qualified Effectful.FileSystem.IO.ByteString as FSByteString
 import Effectful.Process (Process, runProcess)
 import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Process.Typed as TypedProcess
@@ -233,6 +234,7 @@ main =
       , testCase "ACP ask handler continues durable session transcript" testAcpAskHandlerContinuesDurableSessionTranscript
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
       , testCase "image_cache tool caches image for current context" testViewImageToolCachesImageForContext
+      , testCase "image_view rejects local file URLs without reading them" testViewImageToolRejectsLocalFileUrls
       , testCase "media_text reads cached media text slices" testReadMediaTextToolReadsCachedSlices
       , testCase "media_to_file returns cache path without media context" testMediaToFileReturnsCachePath
       , testCase "audio_generate tool uses configured audio options and sends audio" testGenerateAudioToolUsesConfiguredAudioOptions
@@ -1325,6 +1327,37 @@ testViewImageToolCachesImageForContext =
               assertFailure [i|expected one image context ref, got #{show other :: String}|]
         Agent.ToolFailed{failure} ->
           assertFailure [i|image_cache failed: #{show failure :: String}|]
+
+testViewImageToolRejectsLocalFileUrls :: IO ()
+testViewImageToolRejectsLocalFileUrls =
+  withSQLiteTempPath "view-image-local-file" \dbPath ->
+    withTempDir "view-image-local-file-media" \dir -> do
+      let cacheDir = dir </> "cache"
+          secretPath = dir </> "secret.png"
+          fileRef = "file://" <> Text.pack secretPath
+          cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = cacheDir}
+          runStack =
+            runFileSystem
+              . runProcess
+              . runFail
+              . runConcurrent
+              . runTestLog
+              . StorageSQLite.runStorageSQLitePath dbPath
+              . HTTP.runHTTP
+              . runTimeout
+              . MediaInterpreter.runMedia cfg
+      runResult <- runEff $ runStack do
+        void Media.mediaCacheStats
+        FSByteString.writeFile secretPath "secret"
+        runner <- AgentTool.startTool ImageTools.viewImageTool agentContext
+        result <- runner testToolCallMetadata (Aeson.object ["url" Aeson..= fileRef])
+        cached <- Media.mediaRefForSource fileRef
+        pure (result, cached)
+      (result, cached) <- either assertFailure pure runResult
+      cached @?= Nothing
+      case result of
+        Agent.ToolFailed{} -> pure ()
+        Agent.ToolSucceeded{} -> assertFailure "image_view accepted a local file URL"
 
 testReadMediaTextToolReadsCachedSlices :: IO ()
 testReadMediaTextToolReadsCachedSlices =

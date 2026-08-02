@@ -121,12 +121,20 @@ nonEmptyText text =
   in if Text.null stripped then Nothing else Just stripped
 
 viewImageUrl :: Media.Media :> es => Text -> Eff es ToolResult
-viewImageUrl rawUrl = do
-  let url = Text.strip rawUrl
-  mediaRef <- Media.normalizeMediaRef url
-  if isMediaRef mediaRef
-    then cachedImageContext mediaRef
-    else pure (toolFailure (permanentArgumentFailure "image_cache could not cache an image URL." "image_cache could not cache the image URL."))
+viewImageUrl rawUrl
+  | not (supportedViewImageUrl url) =
+      pure (toolFailure (permanentArgumentFailure "image_view does not support this URL scheme." "image_view accepts only HTTP(S), data:image/*, mxc://, or existing media: references."))
+  | otherwise = do
+      mediaRef <- Media.normalizeMediaRef url
+      if isMediaRef mediaRef
+        then cachedImageContext mediaRef
+        else pure (toolFailure (permanentArgumentFailure "image_view could not cache an image URL." "image_view could not cache the image URL."))
+  where
+    url = Text.strip rawUrl
+
+supportedViewImageUrl :: Text -> Bool
+supportedViewImageUrl url =
+  isMediaRef url || any (`Text.isPrefixOf` Text.toLower url) ["http://", "https://", "data:image/", "mxc://"]
 
 isMediaRef :: Text -> Bool
 isMediaRef ref =
@@ -139,7 +147,7 @@ cachedImageContext mediaRef =
       | "image/" `Text.isPrefixOf` Text.toLower info.mimeType ->
           pure (toolTextWithImages [i|Added image to current context: #{mediaRef}|] [mediaRef])
     _ ->
-      pure (toolFailure (permanentArgumentFailure "image_cache URL is not a cached image." "image_cache URL is not a cached image."))
+      pure (toolFailure (permanentArgumentFailure "image_view URL is not a cached image." "image_view URL is not a cached image."))
 
 sendImageToolResult :: Chat.Chat :> es => IncomingMessage -> Text -> [Text] -> Text -> Eff es ToolResult
 sendImageToolResult message label imageRefs body = do
