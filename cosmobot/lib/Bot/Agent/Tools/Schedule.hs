@@ -19,7 +19,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 
-scheduleTool :: Scheduler.Scheduler :> es => Tool es
+scheduleTool :: Scheduler.Scheduler :> es => Tool (Eff es)
 scheduleTool =
   tagged [workTag]
   . withDescription "Create, list, or delete scheduled agent actions owned by the current user in the current chat."

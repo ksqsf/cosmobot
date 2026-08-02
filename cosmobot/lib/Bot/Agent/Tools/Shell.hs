@@ -21,7 +21,7 @@ import qualified Data.Text as Text
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout
 
-runBashTool :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Tool es
+runBashTool :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Tool (Eff es)
 runBashTool =
   tagged [workTag]
   . allowWhen superuserOnly

@@ -51,8 +51,8 @@ import qualified Data.Foldable as Foldable
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Reader.Static as Reader
 
-type ToolRunner es =
-  ToolCallMetadata -> Aeson.Value -> Eff es ToolResult
+type ToolRunner m =
+  ToolCallMetadata -> Aeson.Value -> m ToolResult
 
 data ToolCallContext = ToolCallContext
   { agentContext :: !Context
@@ -342,13 +342,13 @@ argumentsObjectSchema fields required =
 -- Use the smart constructor and combinators rather than constructing this
 -- value directly. A tool's name is its stable dispatch identity; schema
 -- resolution may hide the tool or change its description and parameters.
-data Tool es = Tool
+data Tool m = Tool
   { name :: !Text
   , tags :: ![ToolTag]
-  , schemaResolver :: Context -> Transcript -> Int -> Eff es (Maybe LLM.FunctionTool)
+  , schemaResolver :: Context -> Transcript -> Int -> m (Maybe LLM.FunctionTool)
   , noisyFlag :: !Bool
   , allowedPredicate :: Context -> Bool
-  , runnerFactory :: Context -> Eff es (ToolRunner es)
+  , runnerFactory :: Context -> m (ToolRunner m)
   }
 
 tool
@@ -356,7 +356,7 @@ tool
   => Text
   -> arguments
   -> ToolHandler arguments es
-  -> Tool es
+  -> Tool (Eff es)
 tool name arguments handler =
   toolWithRunState name arguments (const (pure ())) (const handler)
 
@@ -366,7 +366,7 @@ toolWithRunState
   -> arguments
   -> (Context -> Eff es state)
   -> (state -> ToolHandler arguments es)
-  -> Tool es
+  -> Tool (Eff es)
 toolWithRunState name arguments initialize handler =
   Tool
     { name
@@ -397,25 +397,26 @@ toolWithRunState name arguments initialize handler =
     argumentFailure err =
       toolFailure (permanentArgumentFailure err err)
 
-allowWhen :: (Context -> Bool) -> Tool es -> Tool es
+allowWhen :: (Context -> Bool) -> Tool m -> Tool m
 allowWhen predicate definition =
   definition
     { allowedPredicate = \context ->
         definition.allowedPredicate context && predicate context
     }
 
-tagged :: [NamedTag] -> Tool es -> Tool es
+tagged :: [NamedTag] -> Tool m -> Tool m
 tagged tags definition =
   definition{tags = map Named tags}
 
-noisy :: Tool es -> Tool es
+noisy :: Tool m -> Tool m
 noisy definition =
   definition{noisyFlag = True}
 
 mapSchemaM
-  :: (Context -> Transcript -> Int -> LLM.FunctionTool -> Eff es (Maybe LLM.FunctionTool))
-  -> Tool es
-  -> Tool es
+  :: Monad m
+  => (Context -> Transcript -> Int -> LLM.FunctionTool -> m (Maybe LLM.FunctionTool))
+  -> Tool m
+  -> Tool m
 mapSchemaM transform definition =
   definition
     { schemaResolver = \context transcript turn -> do
@@ -427,37 +428,39 @@ mapSchemaM transform definition =
     }
 
 hideUnlessM
-  :: (Context -> Transcript -> Int -> Eff es Bool)
-  -> Tool es
-  -> Tool es
+  :: Monad m
+  => (Context -> Transcript -> Int -> m Bool)
+  -> Tool m
+  -> Tool m
 hideUnlessM predicate =
   mapSchemaM \context transcript turn schema ->
     predicate context transcript turn <&> \visible ->
       if visible then Just schema else Nothing
 
-withDescription :: Text -> Tool es -> Tool es
+withDescription :: Monad m => Text -> Tool m -> Tool m
 withDescription =
   withDescriptionBy . const
 
-withDescriptionBy :: (Context -> Text) -> Tool es -> Tool es
+withDescriptionBy :: Monad m => (Context -> Text) -> Tool m -> Tool m
 withDescriptionBy description =
   mapSchemaM \context _ _ schema ->
     pure (Just schema{LLM.description = description context})
 
-toolName :: Tool es -> Text
+toolName :: Tool m -> Text
 toolName Tool{name} =
   name
 
-toolTags :: Tool es -> [ToolTag]
+toolTags :: Tool m -> [ToolTag]
 toolTags Tool{tags} =
   tags
 
 resolveToolSchema
-  :: Tool es
+  :: Functor m
+  => Tool m
   -> Context
   -> Transcript
   -> Int
-  -> Eff es (Maybe LLM.FunctionTool)
+  -> m (Maybe LLM.FunctionTool)
 resolveToolSchema Tool{name, schemaResolver} context transcript turn =
   fmap (fmap \schema -> LLM.FunctionTool
     { name
@@ -466,14 +469,14 @@ resolveToolSchema Tool{name, schemaResolver} context transcript turn =
     })
     (schemaResolver context transcript turn)
 
-toolIsNoisy :: Tool es -> Bool
+toolIsNoisy :: Tool m -> Bool
 toolIsNoisy Tool{noisyFlag} =
   noisyFlag
 
-toolAllowed :: Tool es -> Context -> Bool
+toolAllowed :: Tool m -> Context -> Bool
 toolAllowed Tool{allowedPredicate} =
   allowedPredicate
 
-startTool :: Tool es -> Context -> Eff es (ToolRunner es)
+startTool :: Tool m -> Context -> m (ToolRunner m)
 startTool Tool{runnerFactory} =
   runnerFactory

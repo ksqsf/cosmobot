@@ -22,7 +22,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
-terminalTool :: ACP.ACP :> es => Tool es
+terminalTool :: ACP.ACP :> es => Tool (Eff es)
 terminalTool =
   tagged [workTag]
   . allowWhen ((== PlatformACP) . (.platform) . (.message))

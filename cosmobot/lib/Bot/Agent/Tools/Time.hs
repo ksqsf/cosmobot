@@ -18,7 +18,7 @@ import qualified Data.Text as Text
 import Data.Time
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 
-datetimeTool :: IOE :> es => Tool es
+datetimeTool :: IOE :> es => Tool (Eff es)
 datetimeTool =
   allowWhen (.toolConfig.datetime)
   . withDescription "Return the current date and time in UTC and in the bot host's local timezone."

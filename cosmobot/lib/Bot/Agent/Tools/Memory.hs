@@ -22,19 +22,19 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
-senderMemoryTool :: Memory.Memory :> es => Tool es
+senderMemoryTool :: Memory.Memory :> es => Tool (Eff es)
 senderMemoryTool = memoryTool
   "sender_memory"
   "View, replace, or clear persistent memory for the current sender. Use it for personal facts and preferences. Keep non-superuser memory within 1000 characters."
   senderMemoryScope
 
-chatMemoryTool :: Memory.Memory :> es => Tool es
+chatMemoryTool :: Memory.Memory :> es => Tool (Eff es)
 chatMemoryTool = memoryTool
   "chat_memory"
   "View, replace, or clear persistent memory shared by the current chat. Keep non-superuser memory within 1000 characters."
   chatMemoryScope
 
-memoryTool :: Memory.Memory :> es => Text -> Text -> MemoryScope -> Tool es
+memoryTool :: Memory.Memory :> es => Text -> Text -> MemoryScope -> Tool (Eff es)
 memoryTool name description scope =
   noisy
   . withDescription description

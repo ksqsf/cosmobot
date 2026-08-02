@@ -28,14 +28,14 @@ import qualified Bot.Util.HList as HList
 import qualified Data.Text as Text
 import qualified Streaming.Prelude as S
 
-withToolFailureRecovery :: Runtime context es -> Runtime context es
+withToolFailureRecovery :: Runtime context (Eff es) -> Runtime context (Eff es)
 withToolFailureRecovery program =
   program
     { aroundToolCall = \turn call context action ->
         safeToolCall call (program.aroundToolCall turn call context action)
     }
 
-withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => Runtime context es -> Runtime context es
+withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => Runtime context (Eff es) -> Runtime context (Eff es)
 withToolMessage program =
   program
     { aroundToolCall = \turn call context action -> do
@@ -43,7 +43,7 @@ withToolMessage program =
         program.aroundToolCall turn call context action
     }
 
-announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => Runtime context es -> LLM.ToolCall -> HList.HList context -> Eff es ()
+announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => Runtime context (Eff es) -> LLM.ToolCall -> HList.HList context -> Eff es ()
 announceNoisyTool program call context =
   case find ((== call.name) . toolName) program.tools of
     Just definition
@@ -90,9 +90,9 @@ handleToolLimit runId turn _content calls answered = do
 
 withToolLimit
   :: KatipE :> es
-  => (Runtime '[] es -> NonEmpty LLM.ToolCall -> Bool)
-  -> Runtime context es
-  -> Runtime context es
+  => (Runtime '[] (Eff es) -> NonEmpty LLM.ToolCall -> Bool)
+  -> Runtime context (Eff es)
+  -> Runtime context (Eff es)
 withToolLimit mayTransfer runtime =
   runtime
     { aroundProgram = \finalRuntime ->
@@ -102,10 +102,10 @@ withToolLimit mayTransfer runtime =
 
 limitProgram
   :: KatipE :> es
-  => Runtime '[] es
+  => Runtime '[] (Eff es)
   -> (NonEmpty LLM.ToolCall -> Bool)
-  -> Program es Result
-  -> Program es Result
+  -> Program (Eff es) Result
+  -> Program (Eff es) Result
 limitProgram runtime mayTransfer =
   go
   where

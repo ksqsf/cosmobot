@@ -18,7 +18,7 @@ import Bot.Prelude
 import Bot.System.Typst.Types
 import qualified Data.Text as Text
 
-typstRenderTool :: (Chat.Chat :> es, Typst.Typst :> es) => Tool es
+typstRenderTool :: (Chat.Chat :> es, Typst.Typst :> es) => Tool (Eff es)
 typstRenderTool =
   tagged [workTag]
   . withDescription "Render a Typst document and send it to the current chat. Use this for diagrams, tables, formulas, posters, or other precise layouts that should be generated from Typst source. The source must be a complete Typst document."

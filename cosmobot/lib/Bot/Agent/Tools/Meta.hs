@@ -14,7 +14,7 @@ import Bot.Agent.Types
 import Bot.Prelude
 import qualified Data.Text as Text
 
-toolEnableTool :: Tool es
+toolEnableTool :: Tool (Eff es)
 toolEnableTool =
   withDescription "Enable additional tool tags for the current thread."
   $ tool toolEnableName

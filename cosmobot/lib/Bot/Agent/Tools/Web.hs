@@ -27,7 +27,7 @@ import Network.HTTP.Req
 import System.IO.Error (userError)
 import qualified Text.URI as URI
 
-webSearchTool :: HTTP.HTTP :> es => Tool es
+webSearchTool :: HTTP.HTTP :> es => Tool (Eff es)
 webSearchTool =
   allowWhen (.toolConfig.webSearchEnable)
   . withDescription "Search the web for current information. Returns a JSON object with the query and a results array containing title, url, and snippet."
@@ -51,7 +51,7 @@ webSearchTool =
               , "results" Aeson..= results
               ])))
 
-webFetchTool :: (HTTP.HTTP :> es, IOE :> es) => Tool es
+webFetchTool :: (HTTP.HTTP :> es, IOE :> es) => Tool (Eff es)
 webFetchTool =
   allowWhen (.toolConfig.webFetch)
   . withDescription "Fetch a web page by URL and return extracted readable text. Supports http and https URLs."

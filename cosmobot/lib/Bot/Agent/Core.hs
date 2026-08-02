@@ -49,17 +49,17 @@ data TurnState = TurnState
   , modelTokenUsage :: !(Maybe LLM.TokenUsage)
   }
 
-newtype Program es result = Program
-  { observe :: Stream (Of Output) (Eff es) (Step es result)
+newtype Program m result = Program
+  { observe :: Stream (Of Output) m (Step m result)
   }
 
-data Step es result where
-  Finished :: !result -> Step es result
-  Continues :: !(Program es result) -> Step es result
+data Step m result where
+  Finished :: !result -> Step m result
+  Continues :: !(Program m result) -> Step m result
   Visible
     :: !(AgentEvent response)
-    -> !(response -> Program es result)
-    -> Step es result
+    -> !(response -> Program m result)
+    -> Step m result
 
 -- | Visible operations interpreted by the agent runtime.
 data AgentEvent response where
@@ -68,22 +68,22 @@ data AgentEvent response where
   RunModel :: !TurnState -> AgentEvent (TurnState, LLM.ChatAnswer)
   RunTools :: !ToolRequest -> AgentEvent TurnState
 
-trigger :: AgentEvent response -> Program es response
+trigger :: Monad m => AgentEvent response -> Program m response
 trigger event =
   Program (pure (Visible event pure))
 
-instance Functor (Program es) where
+instance Monad m => Functor (Program m) where
   fmap f (Program action) =
     Program (fmap (mapStep f) action)
 
-instance Applicative (Program es) where
+instance Monad m => Applicative (Program m) where
   pure result =
     Program (pure (Finished result))
 
   function <*> argument =
     function >>= \f -> fmap f argument
 
-instance Monad (Program es) where
+instance Monad m => Monad (Program m) where
   Program action >>= next =
     Program do
       action >>= \case
@@ -96,9 +96,10 @@ instance Monad (Program es) where
           pure (Visible event ((>>= next) . continue))
 
 mapStep
-  :: (a -> b)
-  -> Step es a
-  -> Step es b
+  :: Monad m
+  => (a -> b)
+  -> Step m a
+  -> Step m b
 mapStep f = \case
   Finished result ->
     Finished (f result)
@@ -113,28 +114,28 @@ mapStep f = \case
 -- behavior gets named middleware boundaries. For example, transcript
 -- compaction belongs in 'aroundModelTurn': it can rewrite state before the
 -- next LLM request without changing tool execution or completion handling.
-data Runtime (context :: [Type]) es = Runtime
+data Runtime (context :: [Type]) m = Runtime
   { runId :: !Text
   , toolCallMetadata :: !ToolCallMetadata
   , context :: Context
     -- | All configured tools, including tools unavailable to this request.
-  , tools :: [Tool es]
+  , tools :: [Tool m]
     -- | Tools whose schemas are visible to the model.
-  , exposedTools :: [Tool es]
+  , exposedTools :: [Tool m]
     -- | Per-run tool implementations.
-  , runningTools :: [RunningTool es]
+  , runningTools :: [RunningTool m]
     -- | Maximum number of model-requested tool turns.
   , maxTurns :: !Int
     -- | Select the transcript sent to the next model request. Most programs
     -- use the canonical transcript; middleware may expose a one-shot view.
-  , modelInputTranscript :: HList.HList context -> TurnState -> Eff es Transcript
+  , modelInputTranscript :: HList.HList context -> TurnState -> m Transcript
     -- | Wrap the whole coinductive program.
     --
     -- The final runtime is supplied so middleware uses every installed
     -- bracket, including wrappers added later in the composition chain.
-  , aroundProgram :: Runtime '[] es -> Program es Result -> Program es Result
+  , aroundProgram :: Runtime '[] m -> Program m Result -> Program m Result
     -- | Wrap one complete agent run.
-  , aroundAgentRun :: HList.HList context -> Stream (Of Output) (Eff es) Result -> Stream (Of Output) (Eff es) Result
+  , aroundAgentRun :: HList.HList context -> Stream (Of Output) m Result -> Stream (Of Output) m Result
     -- | Wrap one complete model phase.
     --
     -- Use this for model-side middleware such as transcript compaction,
@@ -142,10 +143,10 @@ data Runtime (context :: [Type]) es = Runtime
     -- request plus decision.
   , aroundModelTurn
       :: HList.HList context
-      -> (TurnState -> Program es Result)
+      -> (TurnState -> Program m Result)
       -> TurnState
-      -> (TurnState -> Stream (Of Output) (Eff es) (Step es Result))
-      -> Stream (Of Output) (Eff es) (Step es Result)
+      -> (TurnState -> Stream (Of Output) m (Step m Result))
+      -> Stream (Of Output) m (Step m Result)
     -- | Wrap the whole tool phase.
     --
     -- Use this for cleanup, timing, timeout, auditing, or exception-aware
@@ -154,13 +155,13 @@ data Runtime (context :: [Type]) es = Runtime
       :: forall a.
          HList.HList context
       -> ToolRequest
-      -> Eff es (TurnState, a)
-      -> Eff es (TurnState, a)
+      -> m (TurnState, a)
+      -> m (TurnState, a)
     -- | Wrap one model-requested tool call.
     --
     -- Use this for per-call observation, failure recovery, policy, or timing
     -- without replacing the default tool registry dispatch.
-  , aroundToolCall :: Int -> LLM.ToolCall -> HList.HList context -> Eff es ToolResult -> Eff es ToolResult
+  , aroundToolCall :: Int -> LLM.ToolCall -> HList.HList context -> m ToolResult -> m ToolResult
   }
 
 data ToolRequest = ToolRequest

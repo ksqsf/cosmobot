@@ -61,9 +61,9 @@ data ObservedThreadLink = ObservedThreadLink
 withObservation
   :: forall context es.
      HList.Has (ToolResultObservation es) context
-  => Observer ObservationContext es
-  -> Runtime (ObservationContext ': EventObservation es ': context) es
-  -> Runtime context es
+  => Observer ObservationContext (Eff es)
+  -> Runtime (ObservationContext ': EventObservation es ': context) (Eff es)
+  -> Runtime context (Eff es)
 withObservation observer program@Runtime{aroundToolTurn = toolTurn} =
   program
     { aroundAgentRun = \context action ->
@@ -141,8 +141,8 @@ transcriptMessageCount TurnState{transcript = Transcript{messages}} =
   Foldable.length messages
 
 withObservedAgentRun
-  :: Observer ObservationContext es
-  -> Runtime context es
+  :: Observer ObservationContext (Eff es)
+  -> Runtime context (Eff es)
   -> [Text]
   -> Stream (Of Output) (Eff es) Result
   -> Stream (Of Output) (Eff es) Result
@@ -170,7 +170,7 @@ withObservedAgentRun observer runtime exposedTools action =
       lift $ throwIO err
 
 withObservedModelTurn
-  :: Observer ObservationContext es
+  :: Observer ObservationContext (Eff es)
   -> ObservedModelTurn result
   -> Stream (Of Output) (Eff es) result
   -> Stream (Of Output) (Eff es) result
@@ -188,7 +188,7 @@ withObservedModelTurn observer turnInfo action = do
 
 withObservedToolCall
   :: (ToolResult -> Eff es Text)
-  -> Observer ObservationContext es
+  -> Observer ObservationContext (Eff es)
   -> ObservedToolCall
   -> (ObservationContext -> Eff es ToolResult)
   -> Eff es ToolResult
@@ -210,7 +210,7 @@ statusFromResult result
   | otherwise =
       ("ok", result)
 
-observeThreadLinked :: Observer ObservationContext es -> ObservedThreadLink -> Eff es ()
+observeThreadLinked :: Observer ObservationContext (Eff es) -> ObservedThreadLink -> Eff es ()
 observeThreadLinked observer ObservedThreadLink{runId, parentMessageId, linkedMessageKey} =
   void $ observer AgentThreadLinked
     { runId
@@ -219,7 +219,7 @@ observeThreadLinked observer ObservedThreadLink{runId, parentMessageId, linkedMe
     , parentMessageId
     }
 
-finishToolCall :: (ToolResult -> Eff es Text) -> Observer ObservationContext es -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
+finishToolCall :: (ToolResult -> Eff es Text) -> Observer ObservationContext (Eff es) -> ObservedToolCall -> Text -> ToolResult -> Eff es ()
 finishToolCall toolResultForObservation observer callInfo status result = do
   observedResult <- toolResultForObservation result
   void $ observer ToolCallFinished

@@ -27,7 +27,7 @@ data ContinuationRequest
   = CaptureContinuation !(Maybe Text)
   | ResumeContinuation !Text !Aeson.Value
 
-captureContinuationTool :: Tool es
+captureContinuationTool :: Tool (Eff es)
 captureContinuationTool =
   controlTool
     "capture_continuation"
@@ -36,7 +36,7 @@ captureContinuationTool =
       (objectSchema [fieldText "label" "Optional description of the exploration this return point precedes."] [])
       captureParser)
 
-resumeContinuationTool :: Tool es
+resumeContinuationTool :: Tool (Eff es)
 resumeContinuationTool =
   controlTool
     "resume_continuation"
@@ -50,7 +50,7 @@ resumeContinuationTool =
       )
       resumeParser)
 
-controlTool :: Text -> Text -> ParsedArguments a -> Tool es
+controlTool :: Text -> Text -> ParsedArguments a -> Tool (Eff es)
 controlTool name description arguments =
   withDescription description
   $ tool name arguments \_ ->

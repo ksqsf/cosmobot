@@ -12,7 +12,12 @@ where
 import Bot.Agent.Tools.Common
 import Bot.Agent.Tool
 import Bot.Agent.Types
+import qualified Bot.Effect.Agent as Agent
+import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
+import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
 import qualified Bot.Resource.SubAgent as SubAgent
@@ -23,11 +28,21 @@ import qualified Data.List as List
 import qualified Data.Text as Text
 
 subagentTool
-  :: (Resource.Resource :> es, Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
-  => SubAgent.SubAgentRunner es
-  -> [Tool es]
-  -> Tool es
-subagentTool runner availableTools =
+  :: ( Agent.Agent :> es
+     , AgentAudit.AgentAudit :> es
+     , Chat.Chat :> es
+     , Concurrency.Concurrency :> es
+     , LLM.LLM :> es
+     , Media.Media :> es
+     , Resource.Resource :> es
+     , KatipE :> es
+     , Prim :> es
+     , Concurrent :> es
+     , IOE :> es
+     )
+  => [Tool (Eff es)]
+  -> Tool (Eff es)
+subagentTool availableTools =
   tagged [workTag]
   . allowWhen (isRight . Resource.accessFromMessage . (.message))
   . withDescription "Manage background agents scoped to the current chat. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
@@ -61,7 +76,7 @@ subagentTool runner availableTools =
               listResourceNames (Proxy @SubAgent.SubAgent) access
             Send resourceId prompt ->
               use access resourceId \subagent ->
-                SubAgent.sendPrompt runner metadata resourceId availableTools context subagent prompt
+                SubAgent.sendPrompt metadata resourceId availableTools context subagent prompt
                   <&> fmap (const "Prompt sent.")
             Query resourceId ->
               use access resourceId (fmap Right . SubAgent.queryOutput)
@@ -77,7 +92,7 @@ subagentTool runner availableTools =
                 <&> either resourceToolFailure (toolText . ("Subagent renamed: " <>))
       where
         use access resourceId action =
-          Resource.withResource @SubAgent.SubAgent access resourceId metadata.parent action
+          Resource.withResource @SubAgent.SubAgent access resourceId metadata.resourceOwner action
             <&> join . first renderResourceError
             <&> either clientFailure toolText
 
@@ -96,7 +111,7 @@ subagentTool runner availableTools =
                     gather firstSubagent ((nextId, subagent) : rest) nextIds
 
                 acquire resourceId' callback =
-                  Resource.withResource @SubAgent.SubAgent access' resourceId' metadata.parent callback
+                  Resource.withResource @SubAgent.SubAgent access' resourceId' metadata.resourceOwner callback
                     <&> join
 
         outputValue (resourceId, output) =
@@ -118,8 +133,8 @@ subagentTool runner availableTools =
             <&> either resourceToolFailure (toolText . ("Subagent created: " <>))
       where
         createResource = \case
-          Nothing -> Resource.createForRun @SubAgent.SubAgent metadata.originRunId metadata.parent
-          Just name -> Resource.createNamedForRun @SubAgent.SubAgent metadata.originRunId metadata.parent name
+          Nothing -> Resource.createForRun @SubAgent.SubAgent metadata.originRunId metadata.resourceOwner
+          Just name -> Resource.createNamedForRun @SubAgent.SubAgent metadata.originRunId metadata.resourceOwner name
 
         systemContext
           | Text.null (Text.strip systemPrompt) = context.systemContext

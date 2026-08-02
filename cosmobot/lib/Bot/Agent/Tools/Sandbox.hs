@@ -32,7 +32,7 @@ import qualified System.FilePath.Posix as Posix
 
 sandboxTool
   :: (Media.Media :> es, Resource.Resource :> es, FileSystem :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Tool es
+  => Tool (Eff es)
 sandboxTool =
   tagged [workTag]
   . allowWhen hasResourceIdentity
@@ -68,11 +68,11 @@ sandboxTool =
             SandboxList ->
               listResourceNames (Proxy @Sandbox.Sandbox) access
             SandboxRun sandboxId script timeoutSeconds outputByteLimit -> do
-              result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.parent \sandbox ->
+              result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.resourceOwner \sandbox ->
                 Shell.runSandboxBashSafe timeoutSeconds sandbox script outputByteLimit
               pure $ either clientFailure toolText (join (first renderResourceError result))
             SandboxFileToMedia sandboxId path -> do
-              result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.parent \sandbox ->
+              result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.resourceOwner \sandbox ->
                 copyFileToMedia sandbox path
               pure $ either resourceToolFailure (either clientFailure toolText) result
             SandboxMediaToFile sandboxId mediaId path -> do
@@ -80,7 +80,7 @@ sandboxTool =
               case localPath of
                 Nothing -> pure (clientFailure [i|Media object not found: #{mediaId}|])
                 Just source -> do
-                  result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.parent \sandbox ->
+                  result <- Resource.withResource @Sandbox.Sandbox access sandboxId metadata.resourceOwner \sandbox ->
                     Sandbox.copyFileToSandbox sandbox source path
                   pure $ either resourceToolFailure (either clientFailure (const (toolText "Media copied to sandbox."))) result
             SandboxDelete sandboxId ->
@@ -89,8 +89,8 @@ sandboxTool =
               Resource.rename access sandboxId newName <&> either resourceToolFailure (toolText . ("Sandbox renamed: " <>))
   where
     createSandbox metadata = \case
-      Nothing -> Resource.createForRun @Sandbox.Sandbox metadata.originRunId metadata.parent
-      Just name -> Resource.createNamedForRun @Sandbox.Sandbox metadata.originRunId metadata.parent name
+      Nothing -> Resource.createForRun @Sandbox.Sandbox metadata.originRunId metadata.resourceOwner
+      Just name -> Resource.createNamedForRun @Sandbox.Sandbox metadata.originRunId metadata.resourceOwner name
 
 data SandboxCall
   = SandboxCreate !(Maybe Text) !Int

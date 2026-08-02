@@ -15,7 +15,7 @@ import Bot.AgentAudit.Types
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 
-agentAuditObserverWith :: (AgentAuditEvent -> Eff es (Maybe Integer)) -> Agent.Observer Observation.ObservationContext es
+agentAuditObserverWith :: (AgentAuditEvent -> Eff es (Maybe Integer)) -> Agent.Observer Observation.ObservationContext (Eff es)
 agentAuditObserverWith recordEvent =
   recordAgentEvent recordEvent
 

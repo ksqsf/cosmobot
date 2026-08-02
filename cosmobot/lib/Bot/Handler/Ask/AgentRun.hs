@@ -21,6 +21,7 @@ import Bot.Core.Transcript
 import Bot.Core.Message
 import Bot.Core.Route (isSuperuser)
 import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.Agent as AgentEffect
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -50,6 +51,7 @@ runAskAgentThread
   :: ( Chat.Chat :> es
      , ChatLog.ChatLog :> es
      , AgentAudit.AgentAudit :> es
+     , AgentEffect.Agent :> es
      , Concurrency.Concurrency :> es
      , HTTP.HTTP :> es
      , LLM.LLM :> es
@@ -70,7 +72,7 @@ runAskAgentThread
      , IOE :> es
      )
   => Agent.ToolConfig
-  -> [AgentTool.Tool es]
+  -> [AgentTool.Tool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle
@@ -82,17 +84,21 @@ runAskAgentThread
 runAskAgentThread toolCfg tools cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
   systemPrompt <- askSystemPrompt cfg message
-  baseRuntime <-
-    Agent.startRuntimeWithParent
-      (Just resource)
+  Agent.withAgentMetadata
+    (\runId -> Agent.ToolCallMetadata
+      { agentRunId = runId
+      , originRunId = runId
+      , resourceOwner = Just resource
+      }) $
+    Agent.withRun
       cfg.agentMaxTurns
+      (compactionThresholdTokens cfg)
       (agentContext toolCfg cfg message input systemPrompt)
       tools
-  let runtime =
-        Agent.defaultRuntime observer (compactionThresholdTokens cfg) baseRuntime
-  withActiveReply threads (Agent.runIdOf runtime) resource parentMessageKey message input.text transcript \activeReply -> do
-    reply <- streamAgentReply runtime activeReply message transcript
-    commitAgentReply observer activeReply message reply
+      \runtime ->
+        withActiveReply threads (Agent.runIdOf runtime) resource parentMessageKey message input.text transcript \activeReply -> do
+          reply <- streamAgentReply runtime activeReply message transcript
+          commitAgentReply observer activeReply message reply
 
 data AgentReply = AgentReply
   { responseId :: !(Maybe MessageId)
@@ -162,7 +168,7 @@ streamAgentReply
      , Prim :> es
      , Concurrent :> es
   )
-  => Agent.Runtime '[] es
+  => Agent.Runtime '[] (Eff es)
   -> ActiveReplyState
   -> IncomingMessage
   -> Transcript
@@ -246,7 +252,7 @@ renderReplyText =
 
 commitAgentReply
   :: (ChatLog.ChatLog :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
-  => Agent.Observer AgentObservation.ObservationContext es
+  => Agent.Observer AgentObservation.ObservationContext (Eff es)
   -> ActiveReplyState
   -> IncomingMessage
   -> AgentReply

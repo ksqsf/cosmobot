@@ -33,7 +33,7 @@ maxReadSize :: Int
 maxReadSize =
   16384
 
-readMediaTextTool :: (Media.Media :> es, FileSystem :> es) => Tool es
+readMediaTextTool :: (Media.Media :> es, FileSystem :> es) => Tool (Eff es)
 readMediaTextTool =
   tagged [workTag]
   . withDescription "Read a UTF-8 text slice from a cached media object. Use this with media ids returned in omitted tool results, such as mf_xxx or media:mf_xxx. offset and size are character counts."
@@ -48,7 +48,7 @@ readMediaTextTool =
       \mediaId offset size ->
         readMediaText ReadMediaTextArgs{mediaId, offset, size}
 
-mediaToFileTool :: Media.Media :> es => Tool es
+mediaToFileTool :: Media.Media :> es => Tool (Eff es)
 mediaToFileTool =
   tagged [workTag]
   . withDescription "Resolve a cached media object to its existing local cache file path. The file is not attached to agent context."
@@ -56,7 +56,7 @@ mediaToFileTool =
       (requiredText "media_id" "Media id to resolve, either mf_xxx or media:mf_xxx.")
       (resolveMediaPath . Text.strip)
 
-sendMediaTool :: (Chat.Chat :> es, Media.Media :> es) => Tool es
+sendMediaTool :: (Chat.Chat :> es, Media.Media :> es) => Tool (Eff es)
 sendMediaTool =
   tagged [chatTag]
   . noisy

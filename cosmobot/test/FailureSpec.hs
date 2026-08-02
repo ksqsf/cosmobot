@@ -785,7 +785,7 @@ singleToolModel calls toolName _ _ = do
     then pure (LLM.chatAnswer "" [toolCall "middleware-tool" toolName])
     else S.yield "done" $> LLM.chatAnswer "done" []
 
-countedTool :: IORef.IORef Int -> Tool.Tool TestEffects
+countedTool :: IORef.IORef Int -> Tool.Tool (Eff TestEffects)
 countedTool executions =
   Tool.tool "counted" Tool.noArguments do
     liftIO $ IORef.modifyIORef' executions (+ 1)
@@ -1350,16 +1350,16 @@ testRunFinishedObserverFailure = do
     assertBool "run interruption should follow" (any isRunInterrupted observed)
 
 compactingRuntime
-  :: [Tool.Tool TestEffects]
-  -> Eff TestEffects (AgentCore.Runtime '[] TestEffects)
+  :: [Tool.Tool (Eff TestEffects)]
+  -> Eff TestEffects (AgentCore.Runtime '[] (Eff TestEffects))
 compactingRuntime tools =
   ToolResultCompaction.withToolResultCompaction
     <$> testRuntimeFor @'[ToolResultObservation TestEffects] tools
 
 observedRuntime
-  :: Agent.Observer Observation.ObservationContext TestEffects
-  -> [Tool.Tool TestEffects]
-  -> Eff TestEffects (AgentCore.Runtime '[] TestEffects)
+  :: Agent.Observer Observation.ObservationContext (Eff TestEffects)
+  -> [Tool.Tool (Eff TestEffects)]
+  -> Eff TestEffects (AgentCore.Runtime '[] (Eff TestEffects))
 observedRuntime observer tools = do
   runtime <-
     testRuntimeFor
@@ -1378,7 +1378,7 @@ largeResultTool
   :: IORef.IORef Int
   -> Text
   -> [Text]
-  -> Tool.Tool TestEffects
+  -> Tool.Tool (Eff TestEffects)
 largeResultTool executions result imageUrls =
   Tool.tool "large" Tool.noArguments do
     liftIO $ IORef.modifyIORef' executions (+ 1)
@@ -1570,7 +1570,7 @@ planTool
   -> Int
   -> Bool
   -> LLM.ToolCall
-  -> Tool.Tool TestEffects
+  -> Tool.Tool (Eff TestEffects)
 planTool executions index fails call =
   Tool.tool call.name Tool.noArguments do
     liftIO $ IORef.atomicModifyIORef' executions \calls -> (call.name : calls, ())
@@ -1606,7 +1606,7 @@ assertToolMessagesComplete label =
           go rest
 
 runTestAgent
-  :: [Tool.Tool TestEffects]
+  :: [Tool.Tool (Eff TestEffects)]
   -> Transcript
   -> Eff TestEffects ([Agent.Output], Agent.Result)
 runTestAgent tools transcript = do
@@ -1614,14 +1614,14 @@ runTestAgent tools transcript = do
   S.toList (Agent.agentStream runtime transcript) <&> \(outputs S.:> result) ->
     (outputs, result)
 
-testRuntime :: [Tool.Tool TestEffects] -> Eff TestEffects (AgentCore.Runtime '[] TestEffects)
+testRuntime :: [Tool.Tool (Eff TestEffects)] -> Eff TestEffects (AgentCore.Runtime '[] (Eff TestEffects))
 testRuntime =
   testRuntimeFor
 
 testRuntimeFor
   :: forall context.
-     [Tool.Tool TestEffects]
-  -> Eff TestEffects (AgentCore.Runtime context TestEffects)
+     [Tool.Tool (Eff TestEffects)]
+  -> Eff TestEffects (AgentCore.Runtime context (Eff TestEffects))
 testRuntimeFor tools = do
   runningTools <- traverse (ToolRegistry.startToolRun testContext) tools
   pure $
@@ -1632,7 +1632,7 @@ testRuntimeFor tools = do
             Agent.ToolCallMetadata
               { agentRunId = "failure-spec"
               , originRunId = "failure-spec"
-              , parent = Nothing
+              , resourceOwner = Nothing
               }
         , context = testContext
         , tools

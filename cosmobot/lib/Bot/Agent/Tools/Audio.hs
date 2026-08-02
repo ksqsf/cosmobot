@@ -18,7 +18,7 @@ import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Text as Text
 
-generateAudioTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool es
+generateAudioTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool (Eff es)
 generateAudioTool =
   tagged [workTag]
   . noisy

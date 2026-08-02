@@ -42,8 +42,8 @@ maxImmediateToolResultChars =
 
 withToolResultCompaction
   :: Media.Media :> es
-  => Runtime (ToolResultObservation es ': context) es
-  -> Runtime context es
+  => Runtime (ToolResultObservation es ': context) (Eff es)
+  -> Runtime context (Eff es)
 withToolResultCompaction program@Runtime{aroundToolTurn = toolTurn} =
   program
     { aroundAgentRun = \context action ->
@@ -76,8 +76,8 @@ withToolResultCompaction program@Runtime{aroundToolTurn = toolTurn} =
       ToolResultObservation (compactLargeToolResultText . toolResultContent)
 
 clearConsumedModelInput
-  :: Step es result
-  -> Step es result
+  :: Step (Eff es) result
+  -> Step (Eff es) result
 clearConsumedModelInput = \case
   Finished result ->
     Finished result

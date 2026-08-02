@@ -28,6 +28,7 @@ import Bot.Core.Transcript
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Route (runHandlers)
 import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.Agent as AgentEffect
 import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
@@ -104,6 +105,7 @@ type AgentStack =
   '[ ACP.ACP
    , Chat.Chat
    , AgentAudit.AgentAudit
+   , AgentEffect.Agent
    , ChatLog.ChatLog
    , LLM.LLM
    , Media.Media
@@ -313,7 +315,7 @@ main =
 
 testToolArgumentDSL :: IO ()
 testToolArgumentDSL = do
-  let definition :: AgentTool.Tool '[]
+  let definition :: AgentTool.Tool (Eff '[])
       definition =
         AgentTool.withDescription "Echo a value."
         $ AgentTool.tool "echo"
@@ -345,7 +347,7 @@ testToolArgumentDSL = do
 testDynamicToolVisibilitySnapshot :: IO ()
 testDynamicToolVisibilitySnapshot = do
   visible <- IORef.newIORef True
-  let definition :: AgentTool.Tool '[Concurrent, IOE]
+  let definition :: AgentTool.Tool (Eff '[Concurrent, IOE])
       definition =
         AgentTool.hideUnlessM (\_ _ _ -> liftIO (IORef.readIORef visible))
         . AgentTool.withDescription "Dynamically visible."
@@ -368,16 +370,16 @@ testDynamicToolVisibilitySnapshot = do
 
 testToolTagsEnabledFromTranscript :: IO ()
 testToolTagsEnabledFromTranscript = do
-  let alwaysTool :: AgentTool.Tool '[Concurrent, IOE]
+  let alwaysTool :: AgentTool.Tool (Eff '[Concurrent, IOE])
       alwaysTool =
         AgentTool.withDescription "Always available."
         $ AgentTool.tool "always_test" AgentTool.noArguments (pure (Agent.toolText "always"))
-      chatTool :: AgentTool.Tool '[Concurrent, IOE]
+      chatTool :: AgentTool.Tool (Eff '[Concurrent, IOE])
       chatTool =
         AgentTool.tagged [chatTag]
         . AgentTool.withDescription "Chat tool."
         $ AgentTool.tool "chat_test" AgentTool.noArguments (pure (Agent.toolText "chat"))
-      workTool :: AgentTool.Tool '[Concurrent, IOE]
+      workTool :: AgentTool.Tool (Eff '[Concurrent, IOE])
       workTool =
         AgentTool.tagged [workTag]
         . AgentTool.withDescription "Work tool."
@@ -436,8 +438,8 @@ testScheduleToolCreatesQueryableSchedule = do
 
 testAcpClientFileToolsAreAcpOnly :: IO ()
 testAcpClientFileToolsAreAcpOnly = do
-  let readTool = FileTools.acpReadClientFileTool :: AgentTool.Tool AgentStack
-      writeTool = FileTools.acpWriteClientFileTool :: AgentTool.Tool AgentStack
+  let readTool = FileTools.acpReadClientFileTool :: AgentTool.Tool (Eff AgentStack)
+      writeTool = FileTools.acpWriteClientFileTool :: AgentTool.Tool (Eff AgentStack)
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
   AgentTool.toolName readTool @?= "acp_read_client_file"
   AgentTool.toolName writeTool @?= "acp_write_client_file"
@@ -449,10 +451,10 @@ testAcpClientFileToolsAreAcpOnly = do
 testTerminalAndSandboxToolScopes :: IO ()
 testTerminalAndSandboxToolScopes = do
   answers <- IORef.newIORef []
-  let terminalTool = TerminalTools.terminalTool :: AgentTool.Tool AgentStack
-      sandboxTool = SandboxTools.sandboxTool :: AgentTool.Tool AgentStack
-      trustedBashTool = runBashTool :: AgentTool.Tool AgentStack
-      workspaceTool = WorkspaceTools.workspaceTool :: AgentTool.Tool AgentStack
+  let terminalTool = TerminalTools.terminalTool :: AgentTool.Tool (Eff AgentStack)
+      sandboxTool = SandboxTools.sandboxTool :: AgentTool.Tool (Eff AgentStack)
+      trustedBashTool = runBashTool :: AgentTool.Tool (Eff AgentStack)
+      workspaceTool = WorkspaceTools.workspaceTool :: AgentTool.Tool (Eff AgentStack)
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
   (sandboxSchema, workspaceSchema, trustedBashSchema) <-
@@ -481,14 +483,20 @@ testTerminalAndSandboxToolScopes = do
 
 testSubAgentLifecycle :: IO ()
 testSubAgentLifecycle = do
-  answers <- IORef.newIORef []
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "block" "block" (Aeson.object [])]
+    , chatAnswer "finished" []
+    ]
   runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     started <- MVar.newEmptyMVar
     finish <- MVar.newEmptyMVar
-    let childRunner _ _ _ _ selectedTools transcript =
-          MVar.putMVar started (map AgentTool.toolName selectedTools) >> MVar.takeMVar finish $> ("finished", transcript)
-        availableTools = [MetaTools.toolEnableTool, SandboxTools.sandboxTool]
-        tool = SubAgentTools.subagentTool childRunner availableTools
+    let blockTool = AgentTool.tool "block" AgentTool.noArguments do
+          childMetadata <- AgentTool.askToolCallMetadata
+          MVar.putMVar started childMetadata
+          MVar.takeMVar finish
+          pure (Agent.toolText "finished")
+        availableTools = [MetaTools.toolEnableTool, SandboxTools.sandboxTool, blockTool]
+        tool = SubAgentTools.subagentTool availableTools
         descendantMetadata =
           testToolCallMetadata
             { Agent.agentRunId = "agent-child"
@@ -501,7 +509,7 @@ testSubAgentLifecycle = do
     createRun <- AgentTool.startTool tool agentContext
     tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (4 :: Int)])
     liftIO $ assertBool "subagent rejects TTL below five minutes" ("at least 5" `Text.isInfixOf` AgentTypes.toolResultContent tooShort)
-    created <- createRun descendantMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
+    created <- createRun descendantMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox", "block"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
     liftIO $ resourceId @?= "researcher"
     otherChatRun <- AgentTool.startTool tool otherChatContext
@@ -515,17 +523,20 @@ testSubAgentLifecycle = do
     listedWorkspaces <- workspaceRun testToolCallMetadata (Aeson.object ["action" Aeson..= ("list" :: Text)])
     liftIO $ AgentTypes.toolResultContent listedWorkspaces @?= "[]"
     sendRun <- AgentTool.startTool tool otherContext
-    sent <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
+    sent <- sendRun descendantMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
     liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
-    selectedTools <- MVar.takeMVar started
-    liftIO $ selectedTools @?= ["tool_enable", "sandbox"]
+    childMetadata <- MVar.takeMVar started
+    liftIO $ do
+      childMetadata.originRunId @?= "agent-root"
+      assertBool "child has its own run id" (childMetadata.agentRunId /= descendantMetadata.agentRunId)
+      assertBool "child resources are owned by its worker" (isJust childMetadata.resourceOwner)
     let access = fromRight (error "missing resource access") (ResourceEffect.accessFromMessage otherContext.message)
     rootResources <- ResourceEffect.listCreatedByRuns access ["agent-root"]
     liftIO $ map (.resourceId) rootResources @?= ["researcher"]
     generatingDetail <- ResourceEffect.detail access resourceId
     liftIO $ generatingDetail @?= Right (Text.intercalate "\n"
       [ "status: generating"
-      , "tools: sandbox"
+      , "tools: sandbox, block"
       , "system prompt:\nResearch carefully."
       , "output:\nGenerating"
       , "life: 5m"
@@ -545,17 +556,26 @@ testSubAgentLifecycle = do
 
 testSubAgentWaitOperations :: IO ()
 testSubAgentWaitOperations = do
-  answers <- IORef.newIORef []
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "block-1" "block" (Aeson.object [])]
+    , chatAnswer "" [toolCall "block-2" "block" (Aeson.object [])]
+    , chatAnswer "finished" []
+    , chatAnswer "finished" []
+    ]
   runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     firstGate <- MVar.newEmptyMVar
     secondGate <- MVar.newEmptyMVar
-    let childRunner _ _ _ context _ transcript = do
-          let gate
-                | context.systemContext == "first" = firstGate
-                | otherwise = secondGate
-          output <- MVar.takeMVar gate
-          pure (output, transcript)
-        tool = SubAgentTools.subagentTool childRunner []
+    firstStarted <- MVar.newEmptyMVar
+    secondStarted <- MVar.newEmptyMVar
+    let blockTool = AgentTool.tool "block" AgentTool.noArguments do
+          context <- AgentTool.askToolContext
+          let (started, gate)
+                | context.systemContext == "first" = (firstStarted, firstGate)
+                | otherwise = (secondStarted, secondGate)
+          MVar.putMVar started ()
+          MVar.takeMVar gate
+          pure (Agent.toolText "finished")
+        tool = SubAgentTools.subagentTool [blockTool]
     run <- AgentTool.startTool tool agentContext
     let create name =
           run testToolCallMetadata $
@@ -563,6 +583,7 @@ testSubAgentWaitOperations = do
               [ "op" Aeson..= ("create" :: Text)
               , "name" Aeson..= (name :: Text)
               , "system_prompt" Aeson..= (name :: Text)
+              , "tools" Aeson..= (["block"] :: [Text])
               , "ttl_minutes" Aeson..= (5 :: Int)
               ]
         sendPrompt resourceId =
@@ -586,14 +607,16 @@ testSubAgentWaitOperations = do
     void (create "second")
     void (sendPrompt "first")
     void (sendPrompt "second")
+    MVar.takeMVar firstStarted
+    MVar.takeMVar secondStarted
 
     (waitedAny, ()) <- Async.concurrently
       (wait "wait_any")
-      (MVar.putMVar secondGate "second output")
+      (MVar.putMVar secondGate ())
     liftIO $ decodeResult waitedAny @?=
       Aeson.object
         [ "resource" Aeson..= ("second" :: Text)
-        , "output" Aeson..= ("second output" :: Text)
+        , "output" Aeson..= ("finished" :: Text)
         ]
 
     firstStillRunning <- run testToolCallMetadata $
@@ -605,16 +628,16 @@ testSubAgentWaitOperations = do
 
     (waitedAll, ()) <- Async.concurrently
       (wait "wait_all")
-      (MVar.putMVar firstGate "first output")
+      (MVar.putMVar firstGate ())
     liftIO $ decodeResult waitedAll @?=
       Aeson.toJSON
         [ Aeson.object
             [ "resource" Aeson..= ("first" :: Text)
-            , "output" Aeson..= ("first output" :: Text)
+            , "output" Aeson..= ("finished" :: Text)
             ]
         , Aeson.object
             [ "resource" Aeson..= ("second" :: Text)
-            , "output" Aeson..= ("second output" :: Text)
+            , "output" Aeson..= ("finished" :: Text)
             ]
         ]
 
@@ -700,7 +723,7 @@ testSendFileToolReportsUploadFailure = do
 
 testSendFileToolIsNoisyAndSuperuserOnly :: IO ()
 testSendFileToolIsNoisyAndSuperuserOnly = do
-  let tool = ChatTools.sendFileTool :: AgentTool.Tool '[Chat.Chat, IOE]
+  let tool = ChatTools.sendFileTool :: AgentTool.Tool (Eff '[Chat.Chat, IOE])
       qqContext =
         superuserContext
           { Agent.message = superuserContext.message{Message.platform = PlatformQQ}
@@ -751,7 +774,7 @@ testSendMediaToolUploadsCachedMedia =
         result <- runner testToolCallMetadata (Aeson.object ["media_id" Aeson..= mediaRef])
         pure (expectedPath, result)
       (expectedPath, result) <- either assertFailure pure runResult
-      let tool = MediaTools.sendMediaTool :: AgentTool.Tool AgentStack
+      let tool = MediaTools.sendMediaTool :: AgentTool.Tool (Eff AgentStack)
       AgentTool.toolIsNoisy tool @?= True
       assertBool "send_media should be available to normal users" (AgentTool.toolAllowed tool agentContext)
       IORef.readIORef uploads >>= (@?= [expectedPath])
@@ -1378,7 +1401,7 @@ testReadMediaTextToolReadsCachedSlices =
           ])
         pure (mediaRef, result)
       (mediaRef, result) <- either assertFailure pure runResult
-      let tool = MediaTools.readMediaTextTool :: AgentTool.Tool AgentStack
+      let tool = MediaTools.readMediaTextTool :: AgentTool.Tool (Eff AgentStack)
       assertBool "expected stored media ref" (maybe False ("media:mf_" `Text.isPrefixOf`) mediaRef)
       AgentTool.toolIsNoisy tool @?= False
       assertBool "media_text should be available to everyone" (AgentTool.toolAllowed tool agentContext)
@@ -1460,7 +1483,7 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
       assertFailure [i|expected audio generation success, got #{show failure :: String}|]
   IORef.readIORef generateCalls >>= (@?= [AudioGenerateCall "say hello" expectedOptions])
   IORef.readIORef audioReplies >>= (@?= [(generatedAudio, Nothing)])
-  let tool = AudioTools.generateAudioTool :: AgentTool.Tool '[Chat.Chat, LLM.LLM]
+  let tool = AudioTools.generateAudioTool :: AgentTool.Tool (Eff '[Chat.Chat, LLM.LLM])
   AgentTool.toolIsNoisy tool @?= True
 
 testEditImageToolPassesImageRequestOptions :: IO ()
@@ -2355,7 +2378,7 @@ testAgentAuditStorageOmitsLargeToolResults =
         other ->
           assertFailure [i|expected one cached result file, got #{length other}|]
 
-largeAuditResultTool :: Text -> AgentTool.Tool es
+largeAuditResultTool :: Text -> AgentTool.Tool (Eff es)
 largeAuditResultTool result =
   AgentTool.withDescription "fake large audit result"
   $ AgentTool.tool "large_audit_result" AgentTool.noArguments
@@ -2993,7 +3016,7 @@ testWebFetchMaxUsesLimitsCalls = do
   answer @?= "done"
   IORef.readIORef fetches >>= (@?= 1)
 
-fakeWebFetchTool :: IOE :> es => IORef.IORef Int -> AgentTool.Tool es
+fakeWebFetchTool :: IOE :> es => IORef.IORef Int -> AgentTool.Tool (Eff es)
 fakeWebFetchTool fetches =
   AgentTool.withDescription "fake web fetch"
   $ AgentTool.toolWithRunState "fetch_url" AgentTool.noArguments
@@ -3199,7 +3222,7 @@ testThreadStorageOmitsLargeToolResults =
         other ->
           assertFailure [i|expected one cached result file, got #{length other}|]
 
-largeResultTool :: Text -> AgentTool.Tool es
+largeResultTool :: Text -> AgentTool.Tool (Eff es)
 largeResultTool result =
   AgentTool.withDescription "fake large result"
   $ AgentTool.tool "large_tool" AgentTool.noArguments
@@ -3965,6 +3988,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced r
                       | otherwise -> S.yield content
                   pure answer)
           . ChatLog.runChatLog
+          . Agent.runAgent
           . AgentAudit.runAgentAudit
           . Chat.runChatWith defaultAgentMockChatDriver
               { agentReply = mockReply chatMock
@@ -4010,6 +4034,7 @@ runAgentWithStreamingAnswers answers chatMock action = withMemoryTempDir \memory
                   traverse_ S.yield streamingAnswer.chunks
                   pure streamingAnswer.answer)
           . ChatLog.runChatLog
+          . Agent.runAgent
           . AgentAudit.runAgentAudit
           . Chat.runChatWith defaultAgentMockChatDriver
               { agentReply = mockReply chatMock
@@ -4113,7 +4138,7 @@ toolCall callId name arguments =
     , arguments = jsonText arguments
     }
 
-encodedToolParameters :: AgentTool.Tool es -> Eff es Text
+encodedToolParameters :: AgentTool.Tool (Eff es) -> Eff es Text
 encodedToolParameters definition = do
   schema <- AgentTool.resolveToolSchema definition agentContext (startWithUser "") 0
   pure . TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $
@@ -4136,20 +4161,21 @@ superuserContext =
 
 testToolCallMetadata :: Agent.ToolCallMetadata
 testToolCallMetadata =
-  Agent.ToolCallMetadata{agentRunId = "agent-test", originRunId = "agent-test", parent = Nothing}
+  Agent.ToolCallMetadata{agentRunId = "agent-test", originRunId = "agent-test", resourceOwner = Nothing}
 
 startTestRuntime
-  :: Int
+  :: (Chat.Chat :> es, Concurrent :> es, IOE :> es)
+  => Int
   -> Agent.Context
-  -> [AgentTool.Tool AgentStack]
-  -> Eff AgentStack (Agent.Runtime context AgentStack)
+  -> [AgentTool.Tool (Eff es)]
+  -> Eff es (Agent.Runtime context (Eff es))
 startTestRuntime =
-  Agent.startRuntimeWithParent Nothing
+  Agent.startRuntime
 
 runTestAgent
   :: Int
   -> Agent.Context
-  -> [AgentTool.Tool AgentStack]
+  -> [AgentTool.Tool (Eff AgentStack)]
   -> Transcript
   -> Eff AgentStack (Text, Transcript)
 runTestAgent maxTurns context tools transcript = do
@@ -4161,7 +4187,7 @@ runTestAgent maxTurns context tools transcript = do
 runTestAgentStreaming
   :: Int
   -> Agent.Context
-  -> [AgentTool.Tool AgentStack]
+  -> [AgentTool.Tool (Eff AgentStack)]
   -> Transcript
   -> Stream (Of Agent.Output) (Eff AgentStack) Transcript
 runTestAgentStreaming maxTurns context tools transcript = do
@@ -4172,7 +4198,7 @@ runTestAgentStreaming maxTurns context tools transcript = do
 runAgentWithToolMessageCapture
   :: Int
   -> Agent.Context
-  -> [AgentTool.Tool AgentStack]
+  -> [AgentTool.Tool (Eff AgentStack)]
   -> Transcript
   -> IORef.IORef [Text]
   -> IORef.IORef [Maybe MessageId]

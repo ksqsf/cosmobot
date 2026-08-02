@@ -17,8 +17,8 @@ import qualified Data.Text as Text
 
 withNormalizingToolReplies
   :: (Chat.Chat :> es, Media.Media :> es)
-  => Runtime context es
-  -> Runtime context es
+  => Runtime context (Eff es)
+  -> Runtime context (Eff es)
 withNormalizingToolReplies program =
   program
     { aroundToolCall = \turn call context action ->

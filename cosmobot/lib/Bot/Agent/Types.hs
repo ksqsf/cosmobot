@@ -75,7 +75,7 @@ defaultToolConfig = ToolConfig
 data ToolCallMetadata = ToolCallMetadata
   { agentRunId :: !Text
   , originRunId :: !Text
-  , parent :: !(Maybe Concurrency.Handle)
+  , resourceOwner :: !(Maybe Concurrency.Handle)
   }
 
 -- | Per-message capabilities and permissions made available to tools.
@@ -158,10 +158,10 @@ data Event
       }
   deriving (Eq, Show)
 
-type Observer ctx es =
-  Event -> Eff es ctx
+type Observer ctx m =
+  Event -> m ctx
 
-ignoreObserver :: ctx -> Observer ctx es
+ignoreObserver :: Applicative m => ctx -> Observer ctx m
 ignoreObserver ctx =
   const (pure ctx)
 

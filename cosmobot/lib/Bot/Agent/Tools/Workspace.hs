@@ -26,7 +26,7 @@ import qualified Effectful.Process.Typed as TypedProcess
 
 workspaceTool
   :: (Resource.Resource :> es, FileSystem.FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Tool es
+  => Tool (Eff es)
 workspaceTool =
   tagged [workTag]
   . allowWhen (\context -> superuserOnly context && isRight (Resource.accessFromMessage context.message))
@@ -86,8 +86,8 @@ runWorkspaceCall context metadata call =
         Resource.rename access resourceId newName <&> first renderResourceError <&> resultWith "Workspace renamed."
   where
     createWorkspace = \case
-      Nothing -> Resource.createForRun @Workspace.Workspace metadata.originRunId metadata.parent
-      Just name -> Resource.createNamedForRun @Workspace.Workspace metadata.originRunId metadata.parent name
+      Nothing -> Resource.createForRun @Workspace.Workspace metadata.originRunId metadata.resourceOwner
+      Just name -> Resource.createNamedForRun @Workspace.Workspace metadata.originRunId metadata.resourceOwner name
 
     use
       :: forall a. Resource.ResourceAccess
@@ -95,7 +95,7 @@ runWorkspaceCall context metadata call =
       -> (Workspace.Workspace -> Eff es (Either Text a))
       -> Eff es (Either Text a)
     use access resourceId action =
-      Resource.withResource @Workspace.Workspace access resourceId metadata.parent action
+      Resource.withResource @Workspace.Workspace access resourceId metadata.resourceOwner action
         <&> first renderResourceError
         <&> join
 

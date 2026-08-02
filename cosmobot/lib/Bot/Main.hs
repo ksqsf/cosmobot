@@ -8,6 +8,7 @@ module Bot.Main
 where
 
 import Bot.Prelude
+import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Tools as AgentTools
 import qualified Bot.ACP.Client as ACPClient
 import qualified Bot.ACP.Config as ACPConfig
@@ -20,6 +21,7 @@ import Bot.Core.Route
 import qualified Bot.Lifecycle as Lifecycle
 import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.Agent as AgentEffect
 import qualified Bot.Effect.ACP as ACPEffect
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
@@ -98,7 +100,8 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
           . TypstCLI.runTypst
           . OpenAI.runLLM cfg.llm
       runApplication =
-        AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
+        Agent.runAgent
+          . AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
           . ChatLog.runChatLog
           . Memory.runMemory cfg.memory
           . Skills.runSkills cfg.skills
@@ -130,7 +133,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
   readIORef restartRequested
 
 routes
-  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, AgentEffect.Agent :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> [RouteHandler es]

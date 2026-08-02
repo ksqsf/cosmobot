@@ -20,8 +20,8 @@ import qualified Streaming as S
 
 withTypingNotification
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es)
-  => Runtime context es
-  -> Runtime context es
+  => Runtime context (Eff es)
+  -> Runtime context (Eff es)
 withTypingNotification program =
   program
     { aroundAgentRun = \context action ->

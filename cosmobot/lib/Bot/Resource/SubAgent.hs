@@ -8,7 +8,6 @@ Stability   : experimental
 module Bot.Resource.SubAgent
   ( SubAgent
   , SubAgentArgs (..)
-  , SubAgentRunner
   , sendPrompt
   , queryOutput
   , waitAnyOutput
@@ -16,24 +15,21 @@ module Bot.Resource.SubAgent
   )
 where
 
+import qualified Bot.Agent as Agent
 import Bot.Agent.Tool
 import Bot.Agent.Types
-import qualified Bot.Agent.Types as Agent
 import Bot.Core.Transcript
 import qualified Bot.Effect.Concurrency as Concurrency
+import qualified Bot.Effect.Agent as AgentEffect
+import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
-
-type SubAgentRunner es =
-  ToolCallMetadata
-  -> Text
-  -> Concurrency.Handle
-  -> Context
-  -> [Tool es]
-  -> Transcript
-  -> Eff es (Text, Transcript)
+import qualified Streaming.Prelude as S
 
 data SubAgentArgs = SubAgentArgs
   { systemContext :: !Text
@@ -104,16 +100,25 @@ instance
     pure (Right (if isJust snapshot.active then "generating" else "ready"))
 
 sendPrompt
-  :: (Concurrency.Concurrency :> es, Concurrent :> es, IOE :> es)
-  => SubAgentRunner es
-  -> ToolCallMetadata
+  :: ( AgentEffect.Agent :> es
+     , AgentAudit.AgentAudit :> es
+     , Chat.Chat :> es
+     , Concurrency.Concurrency :> es
+     , LLM.LLM :> es
+     , Media.Media :> es
+     , KatipE :> es
+     , Prim :> es
+     , Concurrent :> es
+     , IOE :> es
+     )
+  => ToolCallMetadata
   -> Text
-  -> [Tool es]
+  -> [Tool (Eff es)]
   -> Context
   -> SubAgent
   -> Text
   -> Eff es (Either Text ())
-sendPrompt runner metadata subagentId availableTools context subagent prompt =
+sendPrompt metadata subagentId availableTools context subagent prompt =
   MVar.modifyMVar subagent.state \snapshot ->
     case snapshot.active of
       Just _ -> pure (snapshot, Left "Subagent is still generating.")
@@ -129,7 +134,21 @@ sendPrompt runner metadata subagentId availableTools context subagent prompt =
               availableTools
             childContext = context {Agent.systemContext = subagent.arguments.systemContext}
         worker <- Concurrency.forkWithHandle "subagent" \worker -> do
-          result <- trySync (runner metadata subagentId worker childContext selectedTools transcript)
+          result <- trySync do
+            Agent.withAgentMetadata
+              (\runId -> ToolCallMetadata
+                { agentRunId = runId
+                , originRunId = metadata.originRunId
+                , resourceOwner = Just worker
+                }) $
+              Agent.withRun 8 1000000 childContext selectedTools \runtime -> do
+                void $ AgentAudit.agentAuditObserver SubAgentRunStarted
+                  { runId = metadata.agentRunId
+                  , childRunId = Agent.runIdOf runtime
+                  , subagentId
+                  }
+                _ S.:> agentResult <- S.toList (Agent.agentStream runtime transcript)
+                pure (agentResult.finalText, agentResult.transcript)
           MVar.modifyMVar_ subagent.state (pure . finishRun worker result)
         pure (snapshot {active = Just worker, runs = worker : snapshot.runs}, Right ())
   where

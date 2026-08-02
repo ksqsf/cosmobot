@@ -11,7 +11,6 @@ module Bot.Agent.Tools
   )
 where
 
-import qualified Bot.Agent as Agent
 import Bot.Agent.Tools.Chat
 import Bot.Agent.Tools.Emacs
 import Bot.Agent.Tools.Files
@@ -32,6 +31,7 @@ import Bot.Agent.Tools.Web
 import Bot.Agent.Tools.Workspace
 import Bot.Agent.Tool
 import qualified Bot.Effect.ACP as ACP
+import qualified Bot.Effect.Agent as Agent
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
@@ -51,7 +51,8 @@ import Effectful.FileSystem
 
 -- | Built-in tools exposed to the model after per-message permission checks.
 defaultTools
-  :: AgentAudit.AgentAudit :> es
+  :: Agent.Agent :> es
+  => AgentAudit.AgentAudit :> es
   => Chat.Chat :> es
   => ChatLog.ChatLog :> es
   => HTTP.HTTP :> es
@@ -71,13 +72,14 @@ defaultTools
   => Process :> es
   => FileSystem :> es
   => IOE :> es
-  => [Tool es]
+  => [Tool (Eff es)]
 defaultTools = tools
   where
     tools = defaultToolsWith []
 
 defaultToolsWith
-  :: AgentAudit.AgentAudit :> es
+  :: Agent.Agent :> es
+  => AgentAudit.AgentAudit :> es
   => Chat.Chat :> es
   => ChatLog.ChatLog :> es
   => HTTP.HTTP :> es
@@ -97,8 +99,8 @@ defaultToolsWith
   => Process :> es
   => FileSystem :> es
   => IOE :> es
-  => [Tool es]
-  -> [Tool es]
+  => [Tool (Eff es)]
+  -> [Tool (Eff es)]
 defaultToolsWith extraTools = tools
   where
     tools =
@@ -132,14 +134,11 @@ defaultToolsWith extraTools = tools
       , workspaceTool
       , captureContinuationTool
       , resumeContinuationTool
-      , subagentTool
-          (\metadata subagentId parent ->
-            Agent.runObservedChildAgent AgentAudit.agentAuditObserver metadata subagentId parent 8)
-          tools
+      , subagentTool tools
       , emacsEvalTool
       ] <> extraTools
 
-acpTools :: ACP.ACP :> es => [Tool es]
+acpTools :: ACP.ACP :> es => [Tool (Eff es)]
 acpTools =
   [ acpReadClientFileTool
   , acpWriteClientFileTool

@@ -36,8 +36,8 @@ compactionNoticeMessage =
 withContextCompaction
   :: LLM.LLM :> es
   => Int
-  -> Runtime context es
-  -> Runtime context es
+  -> Runtime context (Eff es)
+  -> Runtime context (Eff es)
 withContextCompaction tokenThreshold program =
   withContextCompactionUsing
     (\_ agentState -> fst <$> compactAgentState tokenThreshold (pure ()) agentState)
@@ -50,8 +50,8 @@ withContextCompactionNotice
      , HList.Has (EventObservation es) context
      )
   => Int
-  -> Runtime context es
-  -> Runtime context es
+  -> Runtime context (Eff es)
+  -> Runtime context (Eff es)
 withContextCompactionNotice tokenThreshold program =
   withContextCompactionUsing
     (\context agentState -> do
@@ -73,8 +73,8 @@ withContextCompactionNotice tokenThreshold program =
 
 withContextCompactionUsing
   :: (HList.HList context -> TurnState -> Eff es TurnState)
-  -> Runtime context es
-  -> Runtime context es
+  -> Runtime context (Eff es)
+  -> Runtime context (Eff es)
 withContextCompactionUsing compact program =
   program
     { aroundModelTurn = \context continue agentState action -> do

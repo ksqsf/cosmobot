@@ -23,8 +23,8 @@ data SteeringControl es = SteeringControl
 
 withSteering
   :: SteeringControl es
-  -> Runtime context es
-  -> Runtime context es
+  -> Runtime context (Eff es)
+  -> Runtime context (Eff es)
 withSteering steering program =
   program
     { aroundModelTurn = \context continue agentState action -> do

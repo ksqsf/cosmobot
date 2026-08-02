@@ -15,7 +15,7 @@ import Bot.Agent.Types
 import qualified Bot.Effect.Skills as Skills
 import Bot.Prelude
 
-loadSkillTool :: Skills.Skills :> es => Tool es
+loadSkillTool :: Skills.Skills :> es => Tool (Eff es)
 loadSkillTool =
   withDescription "Load the full instructions for an available skill by name."
   $ tool "load_skill"

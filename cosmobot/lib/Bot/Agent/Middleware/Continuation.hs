@@ -25,12 +25,12 @@ import qualified Data.Map.Strict as Map
 
 data Resumption es = Resumption
   { ordinal :: !Int
-  , resume :: TurnState -> Aeson.Value -> Program es Result
+  , resume :: TurnState -> Aeson.Value -> Program (Eff es) Result
   }
 
 withContinuations
-  :: Runtime context es
-  -> Runtime context es
+  :: Runtime context (Eff es)
+  -> Runtime context (Eff es)
 withContinuations runtime =
   runtime
     { aroundProgram = \finalRuntime ->
@@ -39,9 +39,9 @@ withContinuations runtime =
     }
 
 handleContinuations
-  :: Runtime '[] es
-  -> Program es Result
-  -> Program es Result
+  :: Runtime '[] (Eff es)
+  -> Program (Eff es) Result
+  -> Program (Eff es) Result
 handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
   go 0 Map.empty
   where
@@ -127,7 +127,7 @@ handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
               )
       (go nextOrdinal saved (continue nextState)).observe
 
-exposedContinuationCalls :: Runtime context es -> NonEmpty LLM.ToolCall -> [LLM.ToolCall]
+exposedContinuationCalls :: Runtime context (Eff es) -> NonEmpty LLM.ToolCall -> [LLM.ToolCall]
 exposedContinuationCalls runtime =
   filter isExposedContinuation . toList
   where
@@ -136,7 +136,7 @@ exposedContinuationCalls runtime =
         && any ((== call.name) . toolName) runtime.exposedTools
 
 runControlTurn
-  :: Runtime '[] es
+  :: Runtime '[] (Eff es)
   -> (forall a. HList.HList '[] -> ToolRequest -> Eff es (TurnState, a) -> Eff es (TurnState, a))
   -> ToolRequest
   -> LLM.ToolCall

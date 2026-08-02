@@ -17,7 +17,7 @@ import Bot.Core.Message
 import qualified Bot.Effect.ACP as ACP
 import Bot.Prelude
 
-acpReadClientFileTool :: ACP.ACP :> es => Tool es
+acpReadClientFileTool :: ACP.ACP :> es => Tool (Eff es)
 acpReadClientFileTool =
   tagged [workTag]
   . allowWhen acpOnly
@@ -35,7 +35,7 @@ acpReadClientFileTool =
           Right content ->
             pure (toolText content)
 
-acpWriteClientFileTool :: ACP.ACP :> es => Tool es
+acpWriteClientFileTool :: ACP.ACP :> es => Tool (Eff es)
 acpWriteClientFileTool =
   tagged [workTag]
   . allowWhen acpOnly

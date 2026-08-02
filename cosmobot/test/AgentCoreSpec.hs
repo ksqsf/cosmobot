@@ -29,7 +29,7 @@ main =
 -- instances. Generated visible events have two continuations, and 'eutt'
 -- checks both.
 newtype ProgramCase = ProgramCase
-  { program :: Program '[] Int
+  { program :: Program (Eff '[]) Int
   }
 
 instance Show ProgramCase where
@@ -120,15 +120,15 @@ propKleisliAssociativity ProgramCase{program} generatedF generatedG =
     f = arrow generatedF
     g = arrow generatedG
 
-arrow :: Fun Int ProgramCase -> Int -> Program '[] Int
+arrow :: Fun Int ProgramCase -> Int -> Program (Eff '[]) Int
 arrow generated =
   (.program) . applyFun generated
 
-tau :: Program '[] result -> Program '[] result
+tau :: Program (Eff '[]) result -> Program (Eff '[]) result
 tau =
   Program . pure . Continues
 
-emit :: Text -> Program '[] result -> Program '[] result
+emit :: Text -> Program (Eff '[]) result -> Program (Eff '[]) result
 emit output next =
   Program do
     S.yield (ContentDelta output)
@@ -141,18 +141,18 @@ data Choice
 
 toolVisible
   :: Int
-  -> Program '[] result
-  -> Program '[] result
-  -> Program '[] result
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
 toolVisible key onEven onOdd =
   trigger (RunTools (toolRequest key)) >>= \turnState ->
     if even turnState.turn then onEven else onOdd
 
 modelVisible
   :: Int
-  -> Program '[] result
-  -> Program '[] result
-  -> Program '[] result
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
 modelVisible key onFinal onTools =
   trigger (RunModel (emptyState key)) >>= \(_, answer) ->
     case answer of
@@ -162,21 +162,21 @@ modelVisible key onFinal onTools =
 visible
   :: Bool
   -> Int
-  -> Program '[] result
-  -> Program '[] result
-  -> Program '[] result
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
 visible useModel
   | useModel = modelVisible
   | otherwise = toolVisible
 
 -- Equality up to finite Tau: silently follow 'Continues', retain output and
 -- visible-event order, and compare every response branch of a visible event.
-(~=) :: (Eq result, Show result) => Program '[] result -> Program '[] result -> Property
+(~=) :: (Eq result, Show result) => Program (Eff '[]) result -> Program (Eff '[]) result -> Property
 left ~= right =
   counterexample "programs are not equivalent up to Tau" $
     eutt left right
 
-eutt :: Eq result => Program '[] result -> Program '[] result -> Bool
+eutt :: Eq result => Program (Eff '[]) result -> Program (Eff '[]) result -> Bool
 eutt left right =
   case (observeEvent left, observeEvent right) of
     (Returned leftOutputs leftResult, Returned rightOutputs rightResult) ->
@@ -198,16 +198,16 @@ eutt left right =
 
 data ObservedEvent result
   = Returned ![ObservedOutput] !result
-  | ObservedTools ![ObservedOutput] !Text !(TurnState -> Program '[] result)
-  | ObservedModel ![ObservedOutput] !Int !((TurnState, LLM.ChatAnswer) -> Program '[] result)
+  | ObservedTools ![ObservedOutput] !Text !(TurnState -> Program (Eff '[]) result)
+  | ObservedModel ![ObservedOutput] !Int !((TurnState, LLM.ChatAnswer) -> Program (Eff '[]) result)
 
-observeEvent :: Program '[] result -> ObservedEvent result
+observeEvent :: Program (Eff '[]) result -> ObservedEvent result
 observeEvent =
   runPureEff . go []
   where
     go
       :: [ObservedOutput]
-      -> Program '[] value
+      -> Program (Eff '[]) value
       -> Eff '[] (ObservedEvent value)
     go prior program = do
       outputs S.:> step <- S.toList program.observe
