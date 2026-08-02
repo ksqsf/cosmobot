@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedLabels #-}
+
 module Main (main) where
 
 import qualified Bot.Agent as Agent
@@ -79,6 +81,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Time (UTCTime (..), addUTCTime, fromGregorian, getCurrentTime)
 import Data.Unique
+import qualified Database.Selda as Selda
 import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.FileSystem (FileSystem, runFileSystem)
 import qualified Effectful.FileSystem as FS
@@ -178,6 +181,28 @@ data StreamingAnswer = StreamingAnswer
   , answer :: !LLM.ChatAnswer
   }
 
+data LegacyAuditRow = LegacyAuditRow
+  { legacy_id :: Selda.RowID
+  , legacy_run_id :: Text
+  , legacy_occurred_at :: UTCTime
+  , legacy_linked_message_id :: Maybe Text
+  , legacy_parent_message_id :: Maybe Text
+  , legacy_event_json :: Text
+  }
+  deriving (Generic)
+
+instance Selda.SqlRow LegacyAuditRow
+
+legacyAuditRows :: Selda.Table LegacyAuditRow
+legacyAuditRows =
+  Selda.tableFieldMod "audit_log"
+    [ #legacy_id Selda.:- Selda.untypedAutoPrimary
+    , #legacy_run_id Selda.:- Selda.index
+    , #legacy_linked_message_id Selda.:- Selda.index
+    , #legacy_parent_message_id Selda.:- Selda.index
+    ]
+    (fromMaybe "" . Text.stripPrefix "legacy_")
+
 data ImageGenerateCall = ImageGenerateCall
   { prompt :: !Text
   , imageRefs :: ![Text]
@@ -259,6 +284,7 @@ main =
       , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
       , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
+      , testCase "agent audit migrates legacy records without changing ids" testAgentAuditMigratesLegacyRecords
       , testCase "thread stats accumulate the replied branch" testThreadStatsAccumulateRepliedBranch
       , testCase "thread stats show active running tools from every alias" testThreadStatsShowActiveRunningTools
       , testCase "thread audit is scoped by platform, chat, and run occurrence" testThreadAuditScope
@@ -1971,6 +1997,64 @@ testAgentAuditRecordsToolEvents = do
   assertBool "expected run start in audit records" (any (\case AgentAudit.AgentRunStarted{} -> True; _ -> False) (map (.event) records))
   assertBool "expected model start in audit records" (any (\case AgentAudit.ModelTurnStarted{} -> True; _ -> False) (map (.event) records))
   assertBool "expected run finish in audit records" (any (\case AgentAudit.AgentRunFinished{} -> True; _ -> False) (map (.event) records))
+
+testAgentAuditMigratesLegacyRecords :: IO ()
+testAgentAuditMigratesLegacyRecords =
+  withSQLiteTempPath "audit-migration" \dbPath -> do
+    let started = AgentAudit.ToolCallStarted
+          { runId = "legacy-run"
+          , turn = 1
+          , toolCall = AgentAudit.ToolCallTrace "legacy-call" "fetch_url" "{}"
+          }
+        finished = AgentAudit.ToolCallFinished
+          { runId = "legacy-run"
+          , turn = 1
+          , toolCallId = "legacy-call"
+          , toolName = "fetch_url"
+          , status = "ok"
+          , result = "legacy result"
+          , resultLength = 13
+          , messageIds = []
+          }
+        legacyRow occurredAt event = LegacyAuditRow
+          { legacy_id = Selda.def
+          , legacy_run_id = AgentAudit.eventRunId event
+          , legacy_occurred_at = occurredAt
+          , legacy_linked_message_id = Nothing
+          , legacy_parent_message_id = Nothing
+          , legacy_event_json = jsonText event
+          }
+    startId <- runEff $
+      runConcurrent $
+        runPrim $
+          runTestLog $
+            StorageSQLite.runStorageSQLitePath dbPath $
+              StorageEffect.runSelda do
+                Selda.tryCreateTable legacyAuditRows
+                key <- Selda.insertWithPK legacyAuditRows [legacyRow staleAuditTime started]
+                Selda.insert_ legacyAuditRows [legacyRow (addUTCTime 1 staleAuditTime) finished]
+                pure (fromIntegral (Selda.fromId key))
+    (stored, toolUse) <- runEff $
+      runConcurrent $
+        runPrim $
+          runTestLog $
+            StorageSQLite.runStorageSQLitePath dbPath $
+              AgentAudit.runAgentAudit $
+                (,) <$> AgentAudit.queryAuditRecord startId <*> AgentAudit.queryToolUse startId
+    stored @?= Just AgentAudit.AgentAuditRecord
+      { id = startId
+      , occurredAt = staleAuditTime
+      , event = started
+      }
+    case toolUse of
+      Just use -> do
+        use.auditId @?= startId
+        use.result @?= Just "legacy result"
+        case use.status of
+          AgentAudit.ToolUseFinished{status} -> status @?= "ok"
+          other -> assertFailure ("expected migrated finished tool use, got " <> show other)
+      Nothing ->
+        assertFailure "expected migrated tool use"
 
 testThreadStatsAccumulateRepliedBranch :: IO ()
 testThreadStatsAccumulateRepliedBranch = do

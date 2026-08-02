@@ -11,6 +11,8 @@ module Bot.AgentAudit.Types
   , ToolUseDetail (..)
   , ToolUseStatus (..)
   , eventRunId
+  , toolUsesFromAuditRecords
+  , toolUsesFromRecords
   )
 where
 
@@ -19,7 +21,8 @@ import Bot.Core.Thread (ThreadMessageKey)
 import qualified Bot.LLM.Types as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
-import Data.Time (UTCTime)
+import qualified Data.Map.Strict as Map
+import Data.Time (UTCTime, diffUTCTime)
 
 data ToolCallTrace = ToolCallTrace
   { id :: !Text
@@ -140,3 +143,90 @@ eventRunId = \case
   AgentRunFinished{runId} -> runId
   AgentRunInterrupted{runId} -> runId
   AgentThreadLinked{runId} -> runId
+
+toolUsesFromRecords :: UTCTime -> Int -> [AgentAuditRecord] -> [ToolUseDetail]
+toolUsesFromRecords processStartedAt limit records =
+  takeLast (max 0 limit) (map markStale (toolUsesFromAuditRecords records))
+  where
+    markStale toolUse
+      | toolUse.status == ToolUseInProgress
+      , toolUse.occurredAt < processStartedAt =
+          toolUse
+            { finishedAt = Just processStartedAt
+            , status = ToolUseInterrupted
+                { reason = "restarted"
+                , durationMilliseconds = floor (diffUTCTime processStartedAt toolUse.occurredAt * 1000)
+                }
+            }
+      | otherwise =
+          toolUse
+
+toolUsesFromAuditRecords :: [AgentAuditRecord] -> [ToolUseDetail]
+toolUsesFromAuditRecords records =
+  mapMaybe (toolUseDetail finishes interruptions) (filter isToolStart records)
+  where
+    finishes =
+      Map.fromList
+        [ ((event.runId, event.toolCallId), record)
+        | record@AgentAuditRecord{event = event@ToolCallFinished{}} <- records
+        ]
+    interruptions =
+      Map.fromList
+        [ (event.runId, record)
+        | record@AgentAuditRecord{event = event@AgentRunInterrupted{}} <- records
+        ]
+
+    toolUseDetail finishesByCall interruptionsByRun AgentAuditRecord{id = auditId, occurredAt, event = ToolCallStarted{runId, turn, toolCall}} =
+      let finished = Map.lookup (runId, toolCall.id) finishesByCall
+          interrupted = Map.lookup runId interruptionsByRun
+      in Just ToolUseDetail
+        { auditId
+        , occurredAt
+        , finishedAt = (.occurredAt) <$> (finished <|> interrupted)
+        , runId
+        , turn
+        , toolName = toolCall.name
+        , toolCallId = toolCall.id
+        , arguments = toolCall.arguments
+        , status = toolUseStatus occurredAt finished interrupted
+        , result = finished >>= finishedResult
+        , messageIds = maybe [] finishedMessageIds finished
+        }
+    toolUseDetail _ _ _ =
+      Nothing
+
+    toolUseStatus startedAt (Just finished) _ =
+      finishedStatus startedAt finished
+    toolUseStatus startedAt Nothing (Just interrupted) =
+      interruptedStatus startedAt interrupted
+    toolUseStatus _ Nothing Nothing =
+      ToolUseInProgress
+
+    finishedStatus startedAt AgentAuditRecord{occurredAt = finishedAt, event = ToolCallFinished{status}} =
+      ToolUseFinished
+        { status
+        , durationMilliseconds = floor (diffUTCTime finishedAt startedAt * 1000)
+        }
+    finishedStatus _ _ =
+      ToolUseInProgress
+
+    interruptedStatus startedAt AgentAuditRecord{occurredAt = interruptedAt, event = AgentRunInterrupted{reason}} =
+      ToolUseInterrupted
+        { reason
+        , durationMilliseconds = floor (diffUTCTime interruptedAt startedAt * 1000)
+        }
+    interruptedStatus _ _ =
+      ToolUseInProgress
+
+    finishedResult AgentAuditRecord{event = ToolCallFinished{result}} = Just result
+    finishedResult _ = Nothing
+
+    finishedMessageIds AgentAuditRecord{event = ToolCallFinished{messageIds}} = messageIds
+    finishedMessageIds _ = []
+
+    isToolStart AgentAuditRecord{event = ToolCallStarted{}} = True
+    isToolStart _ = False
+
+takeLast :: Int -> [a] -> [a]
+takeLast n values =
+  drop (max 0 (length values - n)) values

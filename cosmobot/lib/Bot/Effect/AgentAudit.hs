@@ -29,7 +29,6 @@ where
 import qualified Bot.Agent.Middleware.Observation.Types as Observation
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.AgentAudit.Observation as ObservationAdapter
-import Bot.AgentAudit.Projection
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
 import Bot.AgentAudit.Types
 import Bot.Core.Thread (ThreadMessageKey)
@@ -113,16 +112,15 @@ runAgentAuditWithObserver observer inner = do
             }
         pure persistedId
       QueryRecentAuditRecords limit -> do
-        records <- AgentAuditStorage.queryStoredRecent maxInMemoryAgentAuditEvents
-        pure (takeRecentAuditRecords limit records)
+        AgentAuditStorage.queryStoredRecent limit
       QueryAuditRecord auditId ->
         AgentAuditStorage.queryStoredRecord auditId
       QueryRecentToolUses limit -> do
-        records <- AgentAuditStorage.loadStoredAuditRecords
+        records <- AgentAuditStorage.queryStoredRecentToolUses limit
         pure (toolUsesFromRecords processStartedAt limit records)
       QueryToolUse auditId -> do
-        records <- AgentAuditStorage.loadStoredAuditRecords
-        pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords processStartedAt maxInMemoryAgentAuditEvents records))
+        records <- AgentAuditStorage.queryStoredToolUse auditId
+        pure (find ((== auditId) . (.auditId)) (toolUsesFromRecords processStartedAt 1 records))
       QueryRunAudit runId ->
         AgentAuditStorage.queryStoredRunAudit runId
       QueryThreadAudit messageKey ->
@@ -131,7 +129,3 @@ runAgentAuditWithObserver observer inner = do
         AgentAuditStorage.queryStoredThreadMessagesAudit messageKeys
     )
     inner
-
-takeRecentAuditRecords :: Int -> [AgentAuditRecord] -> [AgentAuditRecord]
-takeRecentAuditRecords limit records =
-  drop (max 0 (length records - max 0 limit)) records
