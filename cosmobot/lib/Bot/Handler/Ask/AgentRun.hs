@@ -8,6 +8,7 @@ Stability   : experimental
 
 module Bot.Handler.Ask.AgentRun
   ( runAskAgentThread
+  , askSystemPrompt
   )
 where
 
@@ -33,6 +34,7 @@ import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import Bot.Handler.Ask.Config
+import qualified Bot.Memory as MemoryStore
 import Bot.Prelude
 import Bot.Storage.Thread
 import qualified Data.Text as Text
@@ -79,11 +81,12 @@ runAskAgentThread
   -> Eff es (Text, Transcript)
 runAskAgentThread toolCfg tools cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
+  systemPrompt <- askSystemPrompt cfg message
   baseRuntime <-
     Agent.startRuntimeWithParent
       (Just resource)
       cfg.agentMaxTurns
-      (agentContext toolCfg cfg message input)
+      (agentContext toolCfg cfg message input systemPrompt)
       tools
   let runtime =
         Agent.defaultRuntime observer (compactionThresholdTokens cfg) baseRuntime
@@ -102,16 +105,31 @@ agentContext
   -> AskHandlerConfig
   -> IncomingMessage
   -> MessageInput
+  -> Text
   -> Agent.Context
-agentContext toolCfg cfg message input =
+agentContext toolCfg cfg message input systemPrompt =
   Agent.Context
     { message = message
     , input = input
     , superuser = isSuperuser message
-    , systemContext = currentMessageSystemPrompt cfg message
+    , systemContext = systemPrompt
     , askCommand = cfg.command
     , toolConfig = toolCfg
     }
+
+askSystemPrompt :: (Memory.Memory :> es, Skills.Skills :> es) => AskHandlerConfig -> IncomingMessage -> Eff es Text
+askSystemPrompt cfg message = do
+  skillsPrompt <- Skills.skillsSystemPrompt
+  senderMemory <- loadScopedMemory (MemoryStore.senderMemoryScope message)
+  chatMemory <- loadScopedMemory (MemoryStore.chatMemoryScope message)
+  pure . Text.intercalate "\n\n" $
+    [ LLM.contextSystemPrompt cfg.systemPrompt skillsPrompt senderMemory chatMemory
+    , currentMessageSystemPrompt cfg message
+    ]
+
+loadScopedMemory :: Memory.Memory :> es => Either Text MemoryStore.MemoryScope -> Eff es (Maybe Text)
+loadScopedMemory =
+  either (const (pure Nothing)) Memory.loadMemory
 
 currentMessageSystemPrompt :: AskHandlerConfig -> IncomingMessage -> Text
 currentMessageSystemPrompt cfg message =

@@ -29,13 +29,13 @@ import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import Bot.Core.Route
-import Bot.Handler.Ask.AgentRun (runAskAgentThread)
+import Bot.Handler.Ask.AgentRun (askSystemPrompt, runAskAgentThread)
 import Bot.Handler.Ask.Config
-import qualified Bot.Memory as MemoryStore
 import Bot.Core.Message
 import Bot.Prelude
 import Bot.Storage.Thread
 import qualified Data.Foldable as Foldable
+import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import Effectful.Timeout
 import Effectful.Process
@@ -332,7 +332,7 @@ startAskThread label toolCfg tools cfg threads resource message prompt = do
   let contextFiles = referencedFiles referenced <> message.files
   let contextPrompt = promptWithCurrentFiles (promptWithReferencedContext prompt referenced contextImages) message.files
   let input = inputWithAttachments contextPrompt contextImages contextFiles
-  transcript <- startTranscript cfg message input
+  let transcript = startWithUserInput input
   void $ runAskAgentThread toolCfg tools cfg threads resource Nothing message input transcript
 
 startDrawThread
@@ -352,8 +352,9 @@ startDrawThread label cfg threads message prompt = do
   let contextFiles = referencedFiles referenced <> message.files
   let contextPrompt = promptWithCurrentFiles (promptWithReferencedContext prompt referenced contextImages) message.files
   let input = inputWithAttachments contextPrompt contextImages contextFiles
-  transcript <- startTranscript cfg message input
-  answer <- drawTranscript transcript
+  let transcript = startWithUserInput input
+  systemPrompt <- askSystemPrompt cfg message
+  answer <- drawTranscript systemPrompt transcript
   responseId <- listToMaybe . rights <$> Chat.replyTo message answer
   ChatLog.recordSelfMessage message answer
   rememberThreadTranscript threads (threadMessageKey message <$> responseId) (appendAssistant answer transcript)
@@ -384,7 +385,7 @@ startThreadFromReply toolCfg tools cfg threads resource message parentId = do
   let prompt = promptWithCurrentFiles (promptWithReferencedContext message.text referenced contextImages) message.files
   unless (Text.null prompt && null contextImages) do
     let input = inputWithAttachments prompt contextImages contextFiles
-    transcript <- startTranscript cfg message input
+    let transcript = startWithUserInput input
     void $ runAskAgentThread toolCfg tools cfg threads resource (Just (threadMessageKey message parentId)) message input transcript
 
 continueThread
@@ -404,15 +405,34 @@ continueThread toolCfg tools cfg threads resource message parentKey transcript =
   let prompt = promptWithCurrentFiles (promptOrImageDefault message.text message.imageUrls) message.files
   let input = inputWithAttachments prompt message.imageUrls message.files
   let nextTranscript =
-        appendUserInput input transcript
+        appendUserInput input (withoutLegacySystemPrompt transcript)
   void $ runAskAgentThread toolCfg tools cfg threads resource (Just parentKey) message input nextTranscript
+
+withoutLegacySystemPrompt :: Transcript -> Transcript
+withoutLegacySystemPrompt transcript@(Transcript messages) =
+  case Seq.viewl messages of
+    message Seq.:< rest
+      | message.role == "system"
+      , not (isCompactionSummary message) ->
+          Transcript rest
+    _ ->
+      transcript
+
+isCompactionSummary :: LLM.ChatMessage -> Bool
+isCompactionSummary message =
+  case message.content of
+    Just (LLM.TextContent content) ->
+      "The earlier transcript was compacted." `Text.isPrefixOf` content
+    _ ->
+      False
 
 drawTranscript
   :: (LLM.LLM :> es, KatipE :> es)
-  => Transcript
+  => Text
+  -> Transcript
   -> Eff es Text
-drawTranscript transcript =
-  LLM.askImageWithHistory (Foldable.toList transcript.messages) `catchSync` \err -> do
+drawTranscript systemPrompt transcript =
+  LLM.askImageWithHistory (LLM.systemText systemPrompt : Foldable.toList transcript.messages) `catchSync` \err -> do
     logError [i|LLM image request failed: #{show err :: String}|]
     pure ("Image generation failed: " <> (Failure.failureFromException err).userMessage)
 
@@ -424,18 +444,6 @@ promptOrImageDefault prompt imageUrls
   | otherwise = "请根据图片回答。"
   where
     stripped = Text.strip prompt
-
-startTranscript :: (Memory.Memory :> es, Skills.Skills :> es) => AskHandlerConfig -> IncomingMessage -> MessageInput -> Eff es Transcript
-startTranscript cfg message input = do
-  skillsPrompt <- Skills.skillsSystemPrompt
-  senderMemory <- loadScopedMemory (MemoryStore.senderMemoryScope message)
-  chatMemory <- loadScopedMemory (MemoryStore.chatMemoryScope message)
-  let systemPrompt = LLM.contextSystemPrompt cfg.systemPrompt skillsPrompt senderMemory chatMemory
-  pure (startWithSystemAndUserInput systemPrompt input)
-
-loadScopedMemory :: Memory.Memory :> es => Either Text MemoryStore.MemoryScope -> Eff es (Maybe Text)
-loadScopedMemory =
-  either (const (pure Nothing)) Memory.loadMemory
 
 promptWithReferencedContext :: Text -> Maybe ReferencedMessage -> [Text] -> Text
 promptWithReferencedContext prompt referenced imageUrls =

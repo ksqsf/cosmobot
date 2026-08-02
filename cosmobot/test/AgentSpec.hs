@@ -1199,6 +1199,7 @@ testAskHandlerContinuesFinishedBotReply = do
         askHandlerMessage
           { kind = ChatPrivate
           , messageId = Just "70002"
+          , senderId = Just "another-user"
           , replyToMessageId = Just botReplyId
           , text = "再见"
           }
@@ -1220,6 +1221,10 @@ testAskHandlerContinuesFinishedBotReply = do
       runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads askHandlerMessage
       linked <- lookupThreadTranscript threads (threadMessageKey askHandlerMessage botReplyId)
       liftIO $ assertBool "first bot reply should be a finished thread alias" (isJust linked)
+      liftIO $ assertBool "persisted transcript should not contain a system prompt" $
+        all ((/= "system") . (.role)) (maybe [] (Foldable.toList . (.messages)) linked)
+      rememberThreadTranscript threads (Just (threadMessageKey askHandlerMessage botReplyId)) $
+        appendAssistant "你好" (startWithSystemAndUser "legacy memory for sender 295947730" "krkr 看下我的头像")
       runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads followUp
   IORef.readIORef replies >>= (@?= ["你好", "再见"])
   requests <- IORef.readIORef captured
@@ -1227,6 +1232,13 @@ testAskHandlerContinuesFinishedBotReply = do
     [_first, continued] -> do
       chatMessageTextsByRole "assistant" continued @?= ["你好"]
       assertElem "再见" (chatMessageTextsByRole "user" continued)
+      case chatMessageTextsByRole "system" continued of
+        [systemPrompt] -> do
+          assertBool "continued request uses the current sender" ("- sender_id: another-user" `Text.isInfixOf` systemPrompt)
+          assertBool "continued request drops the original sender context" (not ("- sender_id: 295947730" `Text.isInfixOf` systemPrompt))
+          assertBool "continued request drops a legacy persisted system prompt" (not ("legacy memory" `Text.isInfixOf` systemPrompt))
+        other ->
+          assertFailure [i|expected one rebuilt system prompt, got #{show other :: String}|]
     other ->
       assertFailure [i|expected two bot-reply model requests, got #{length other}|]
 
