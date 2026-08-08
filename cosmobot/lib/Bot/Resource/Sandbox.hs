@@ -196,7 +196,7 @@ podmanRunArgs image name =
   , "--security-opt=no-new-privileges"
   , "--memory=1g", "--cpus=1", "--pids-limit=256"
   , "--label", "io.cosmobot.resource=sandbox"
-  , "--", Text.unpack image, "sleep", "infinity"
+  , "--", Text.unpack image, "tini", "--", "sleep", "infinity"
   ]
 
 podmanExecArgs :: Text -> Int -> Int -> Text -> [String]

@@ -429,7 +429,7 @@ testPodmanArguments =
     [ "run", "--detach", "--name", "sandbox-name", "--security-opt=no-new-privileges"
     , "--memory=1g", "--cpus=1", "--pids-limit=256"
     , "--label", "io.cosmobot.resource=sandbox"
-    , "--", "registry.example.test/custom:latest", "sleep", "infinity"
+    , "--", "registry.example.test/custom:latest", "tini", "--", "sleep", "infinity"
     ]
 
 testPodmanExecArguments :: Assertion
