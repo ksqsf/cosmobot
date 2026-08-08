@@ -2,26 +2,38 @@ FROM docker.io/library/debian:stable-slim
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
-    curl \
-    file \
-    git \
-    jq \
-    less \
-    procps \
-    python3 \
-    python3-pip \
-    python3-venv \
-    ripgrep \
-    tini \
-    tree \
-    unzip \
-    wget \
-    xz-utils \
-    zip \
-    ghc \
-    cabal-install \
-    && rm -rf /var/lib/apt/lists/*
+        build-essential \
+        ca-certificates \
+        cabal-install \
+        cmake \
+        curl \
+        fd-find \
+        file \
+        gdb \
+        ghc \
+        git \
+        hyperfine \
+        jq \
+        just \
+        less \
+        lsof \
+        make \
+        ninja-build \
+        parallel \
+        pkg-config \
+        procps \
+        python3 \
+        ripgrep \
+        strace \
+        time \
+        tini \
+        tree \
+        unzip \
+        wget \
+        xz-utils \
+        zip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | \
+        XDG_BIN_HOME=/usr/bin UV_NO_MODIFY_PATH=1 sh
 
 WORKDIR /workspace
