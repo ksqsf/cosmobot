@@ -20,7 +20,6 @@ import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Int as Int
-import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Database.Selda.Backend as SeldaBackend
 import qualified Database.Selda.SQLite as SeldaSQLite
