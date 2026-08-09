@@ -1435,7 +1435,8 @@ normalizeMatrixIncomingMessage driver message = do
         normalizeMatrixMediaRefsWithMetadata driver mediaRefs
   files <- normalizeMatrixFiles driver (matrixEventFileMediaRefs message.raw)
   pure IncomingMessage
-    { platform = message.platform
+    { eventKind = message.eventKind
+    , platform = message.platform
     , kind = message.kind
     , chatId = message.chatId
     , chatAliases = message.chatAliases
@@ -2132,29 +2133,59 @@ eventToIncomingMessage =
   eventToIncomingMessageWith defaultConfig
 
 eventToIncomingMessageWith :: Config -> RoomEvent -> Maybe IncomingMessage
-eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event} = do
-  guard (event.type_ == "m.room.message")
-  guard (not (isOwnEvent cfg event))
-  guard (not (matrixStreamIncomplete event.raw))
-  body <- event.content.body
-  guard (not (Text.null (Text.strip body)))
-  pure IncomingMessage
-    { platform = PlatformMatrix
-    , kind = if roomIsDirect then ChatPrivate else ChatGroup
-    , chatId = Just (stableTextId (matrixRoomIdText roomId))
-    , chatAliases = [matrixRoomIdText roomId]
-    , digest = matrixMessageDigest cfg roomId event body
-    , senderId = Just event.sender
-    , senderUsername = Just event.sender
-    , messageId = matrixEventMessageId <$> event.eventId
-    , replyToMessageId = matrixEventMessageId <$> event.content.replyToEventId
-    , mentions = []
-    , mentionUsernames = matrixMentions cfg event.content body
-    , imageUrls = matrixEventImageUrls event.raw
-    , files = map fst (matrixEventFileMediaRefs event.raw)
-    , text = Text.strip body
-    , raw = event.raw
-    }
+eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
+  | event.type_ == "m.room.redaction" = do
+      redactedEventId <- matrixRedactedEventId event.raw
+      pure IncomingMessage
+        { eventKind = IncomingMessageDeleted
+        , platform = PlatformMatrix
+        , kind = if roomIsDirect then ChatPrivate else ChatGroup
+        , chatId = Just (stableTextId (matrixRoomIdText roomId))
+        , chatAliases = [matrixRoomIdText roomId]
+        , digest = matrixMessageDigest cfg roomId event ""
+        , senderId = Just event.sender
+        , senderUsername = Just event.sender
+        , messageId = Just (matrixEventMessageId redactedEventId)
+        , replyToMessageId = Nothing
+        , mentions = []
+        , mentionUsernames = []
+        , imageUrls = []
+        , files = []
+        , text = ""
+        , raw = event.raw
+        }
+  | otherwise = do
+      guard (event.type_ == "m.room.message")
+      guard (not (isOwnEvent cfg event))
+      guard (not (matrixStreamIncomplete event.raw))
+      body <- event.content.body
+      guard (not (Text.null (Text.strip body)))
+      pure IncomingMessage
+        { eventKind = IncomingMessageCreated
+        , platform = PlatformMatrix
+        , kind = if roomIsDirect then ChatPrivate else ChatGroup
+        , chatId = Just (stableTextId (matrixRoomIdText roomId))
+        , chatAliases = [matrixRoomIdText roomId]
+        , digest = matrixMessageDigest cfg roomId event body
+        , senderId = Just event.sender
+        , senderUsername = Just event.sender
+        , messageId = matrixEventMessageId <$> event.eventId
+        , replyToMessageId = matrixEventMessageId <$> event.content.replyToEventId
+        , mentions = []
+        , mentionUsernames = matrixMentions cfg event.content body
+        , imageUrls = matrixEventImageUrls event.raw
+        , files = map fst (matrixEventFileMediaRefs event.raw)
+        , text = Text.strip body
+        , raw = event.raw
+        }
+
+matrixRedactedEventId :: Aeson.Value -> Maybe MatrixEventId
+matrixRedactedEventId =
+  Aeson.parseMaybe $ Aeson.withObject "Matrix redaction event" \o ->
+    (matrixEventId <$> o Aeson..: "redacts")
+      <|> do
+        content <- o Aeson..: "content"
+        Aeson.withObject "Matrix redaction content" (fmap matrixEventId . (Aeson..: "redacts")) content
 
 matrixEventIgnoreReason :: Config -> RoomEvent -> Text
 matrixEventIgnoreReason cfg RoomEvent{roomId, event}

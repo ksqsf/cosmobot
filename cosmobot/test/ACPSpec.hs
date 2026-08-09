@@ -904,7 +904,8 @@ terminalRequestRoundTrip acpState queue method terminalId result = do
 acpToolMessage :: ACPState.AcpSessionId -> IncomingMessage
 acpToolMessage sessionId =
   IncomingMessage
-    { platform = PlatformACP
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformACP
     , kind = ChatPrivate
     , chatId = Nothing
     , chatAliases = [Session.sessionIdText sessionId]

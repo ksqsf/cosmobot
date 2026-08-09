@@ -77,11 +77,25 @@ askHandlers
   -> ThreadStore
   -> [RouteHandler es]
 askHandlers toolCfg tools cfg threads =
-  [ haltRoute threads
+  [ deletedMessageRoute threads
+  , haltRoute threads
   , conversationRoute toolCfg tools cfg threads
   , drawRoute cfg threads
   , askRoute toolCfg tools cfg threads
   ]
+
+deletedMessageRoute
+  :: (Storage.Storage :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es, Concurrent :> es)
+  => ThreadStore
+  -> RouteHandler es
+deletedMessageRoute threads =
+  stopOn (matching ((== IncomingMessageDeleted) . (.eventKind))) \message _ ->
+    for_ message.messageId \messageId -> do
+      let messageKey = threadMessageKey message messageId
+      runId <- lookupActiveThreadRunId threads messageKey
+      halted <- haltThread threads Concurrency.cancel messageKey
+      when halted $
+        logInfo [i|Halted agent run after active thread message deletion: run_id=#{fromMaybe "-" runId} message_id=#{messageIdText messageId} #{incomingMessageLogLine message}|]
 
 data Policy = Policy
   { msg :: !IncomingMessage

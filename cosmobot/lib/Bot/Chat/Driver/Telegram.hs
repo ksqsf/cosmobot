@@ -265,7 +265,8 @@ resolveIncomingMessageMedia driver message = do
   imageUrls <- traverse (fileUrl driver) message.imageUrls
   files <- traverse (traverseMessageFileRef (fileUrl driver)) message.files
   pure IncomingMessage
-    { platform = message.platform
+    { eventKind = message.eventKind
+    , platform = message.platform
     , kind = message.kind
     , chatId = message.chatId
     , chatAliases = message.chatAliases
@@ -291,7 +292,8 @@ updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
   message <- telegramMessage
   guard (not (isBotMessage message))
   pure IncomingMessage
-    { platform  = PlatformTelegram
+    { eventKind = IncomingMessageCreated
+    , platform  = PlatformTelegram
     , kind      = telegramChatKind message.chat.type_
     , chatId    = Just message.chat.id
     , chatAliases = telegramChatAliases message.chat

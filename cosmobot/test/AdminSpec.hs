@@ -346,7 +346,8 @@ message =
 messageWith :: Text -> MessageDigest -> IncomingMessage
 messageWith body digest =
   IncomingMessage
-    { platform = PlatformTelegram
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just 100
     , chatAliases = []

@@ -1773,7 +1773,8 @@ testContext =
   Agent.Context
     { message =
         IncomingMessage
-          { platform = PlatformRPC
+          { eventKind = IncomingMessageCreated
+          , platform = PlatformRPC
           , kind = ChatPrivate
           , chatId = Just 1
           , chatAliases = []

@@ -141,7 +141,8 @@ message =
 messageFrom :: Text -> Text -> IncomingMessage
 messageFrom senderId text =
   IncomingMessage
-    { platform = PlatformTelegram
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just 100
     , chatAliases = []

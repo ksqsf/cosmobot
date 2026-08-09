@@ -16,6 +16,7 @@ module Bot.Chat.Driver.Discord
   , GatewayEnvelope (..)
   , GatewayHello (..)
   , Message (..)
+  , DeletedMessage (..)
   , User (..)
   , Attachment (..)
   , Embed (..)
@@ -26,6 +27,7 @@ module Bot.Chat.Driver.Discord
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
+  , deletedEventToIncomingMessageWith
   , formatDiscordMarkdown
   , discordUserAvatarValue
   )
@@ -92,8 +94,12 @@ defaultConfig = Config
 
 data DiscordDriver = DiscordDriver
   { config :: !Config
-  , eventChan :: !(Chan.Chan Message)
+  , eventChan :: !(Chan.Chan GatewayEvent)
   }
+
+data GatewayEvent
+  = GatewayMessageCreated !Message
+  | GatewayMessageDeleted !DeletedMessage
 
 newDiscordDriver :: IOE :> es => Config -> Eff es DiscordDriver
 newDiscordDriver config = do
@@ -168,7 +174,7 @@ discordEditChunkChars = 512
 discordMessageTextLimit :: Int
 discordMessageTextLimit = 2000
 
-receiveEvent :: IOE :> es => DiscordDriver -> Eff es Message
+receiveEvent :: IOE :> es => DiscordDriver -> Eff es GatewayEvent
 receiveEvent driver =
   liftIO (Chan.readChan driver.eventChan)
 
@@ -228,7 +234,7 @@ discordEnabled cfg =
 discordConnectionLoop
   :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Config
-  -> Chan.Chan Message
+  -> Chan.Chan GatewayEvent
   -> Eff es ()
 discordConnectionLoop cfg eventChan =
   forever do
@@ -243,7 +249,7 @@ discordConnectionLoop cfg eventChan =
 runDiscordConnectionOnce
   :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Config
-  -> Chan.Chan Message
+  -> Chan.Chan GatewayEvent
   -> Eff es (Either String ())
 runDiscordConnectionOnce cfg eventChan =
   (Right <$> withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
@@ -289,7 +295,7 @@ discordTlsSettings =
 runGatewayConnection
   :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Config
-  -> Chan.Chan Message
+  -> Chan.Chan GatewayEvent
   -> WS.Connection
   -> Eff es ()
 runGatewayConnection cfg eventChan conn = do
@@ -307,7 +313,7 @@ runGatewayConnection cfg eventChan conn = do
 
 runDiscordGatewaySession
   :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
-  => Chan.Chan Message
+  => Chan.Chan GatewayEvent
   -> MVar.MVar (Maybe Int)
   -> MVar.MVar Bool
   -> Int
@@ -367,7 +373,7 @@ heartbeatLoop conn lastSequence heartbeatAck intervalMs = forever do
 
 readGatewayEvents
   :: (IOE :> es, KatipE :> es, Concurrent :> es)
-  => Chan.Chan Message
+  => Chan.Chan GatewayEvent
   -> MVar.MVar (Maybe Int)
   -> MVar.MVar Bool
   -> WS.Connection
@@ -378,7 +384,10 @@ readGatewayEvents eventChan lastSequence heartbeatAck conn = forever do
   case (envelope.op, envelope.t) of
     (0, Just "MESSAGE_CREATE") -> do
       message :: Message <- parseGatewayData "Discord message create" envelope.d
-      liftIO $ Chan.writeChan eventChan message
+      liftIO $ Chan.writeChan eventChan (GatewayMessageCreated message)
+    (0, Just "MESSAGE_DELETE") -> do
+      deleted :: DeletedMessage <- parseGatewayData "Discord message delete" envelope.d
+      liftIO $ Chan.writeChan eventChan (GatewayMessageDeleted deleted)
     (1, _) -> do
       sequenceNumber <- MVar.readMVar lastSequence
       liftIO $ WS.sendTextData conn (Aeson.encode (heartbeatPayload sequenceNumber))
@@ -449,7 +458,10 @@ incomingMessages driver = do
 incomingMessagesLoop :: (IOE :> es, KatipE :> es) => DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessagesLoop driver = do
   event <- S.lift (receiveEvent driver)
-  case eventToIncomingMessageWith driver.config event of
+  let incoming = case event of
+        GatewayMessageCreated message -> eventToIncomingMessageWith driver.config message
+        GatewayMessageDeleted deleted -> Just (deletedEventToIncomingMessageWith driver.config deleted)
+  case incoming of
     Nothing -> do
       S.lift $ logDebug "Ignoring Discord event"
       S.lift $ logInfo "Ignoring Discord event"
@@ -469,7 +481,8 @@ eventToIncomingMessageWith cfg message = do
   guard (not message.author.bot)
   guard (not (Text.null (Text.strip message.content)) || not (null message.attachments))
   pure IncomingMessage
-    { platform = PlatformDiscord
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformDiscord
     , kind = if isJust message.guildId then ChatGroup else ChatPrivate
     , chatId = Just (discordSnowflakeNumber message.channelId)
     , chatAliases = catMaybes [Just message.channelId, message.guildId]
@@ -484,6 +497,32 @@ eventToIncomingMessageWith cfg message = do
     , files = messageFiles message
     , text = Text.strip message.content
     , raw = message.raw
+    }
+
+deletedEventToIncomingMessageWith :: Config -> DeletedMessage -> IncomingMessage
+deletedEventToIncomingMessageWith cfg deleted =
+  IncomingMessage
+    { eventKind = IncomingMessageDeleted
+    , platform = PlatformDiscord
+    , kind = if isJust deleted.guildId then ChatGroup else ChatPrivate
+    , chatId = Just (discordSnowflakeNumber deleted.channelId)
+    , chatAliases = catMaybes [Just deleted.channelId, deleted.guildId]
+    , digest = emptyMessageDigest
+        { chatIsAllowed =
+            discordSnowflakeNumber deleted.channelId `elem` cfg.allowedChannels
+              || maybe False ((`elem` cfg.allowedGuilds) . discordSnowflakeNumber) deleted.guildId
+        , botId = cfg.botId
+        }
+    , senderId = Nothing
+    , senderUsername = Nothing
+    , messageId = Just (textMessageId deleted.id)
+    , replyToMessageId = Nothing
+    , mentions = []
+    , mentionUsernames = []
+    , imageUrls = []
+    , files = []
+    , text = ""
+    , raw = deleted.raw
     }
 
 discordMessageDigest :: Config -> Message -> MessageDigest
@@ -1087,6 +1126,23 @@ instance Aeson.FromJSON Message where
       <*> fmap (fromMaybe []) (o Aeson..:? "mentions")
       <*> o Aeson..:? "referenced_message"
       <*> o Aeson..:? "message_reference"
+      <*> pure value
+    ) value
+
+data DeletedMessage = DeletedMessage
+  { id :: !Text
+  , channelId :: !Text
+  , guildId :: !(Maybe Text)
+  , raw :: !Aeson.Value
+  }
+  deriving (Show, Generic)
+
+instance Aeson.FromJSON DeletedMessage where
+  parseJSON value = Aeson.withObject "DeletedMessage" (\o ->
+    DeletedMessage
+      <$> o Aeson..: "id"
+      <*> o Aeson..: "channel_id"
+      <*> o Aeson..:? "guild_id"
       <*> pure value
     ) value
 

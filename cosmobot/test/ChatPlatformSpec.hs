@@ -29,6 +29,7 @@ main =
   defaultMain $
     testGroup "chat platforms"
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      , testCase "QQ recall converts to a deleted incoming message" testQqRecallConvertsToDeletedMessage
       , testCase "incoming message JSON defaults missing files" testIncomingMessageJsonDefaultsMissingFiles
       , testCase "QQ superuser is also allowed sender" testQqSuperuserIsAlsoAllowedSender
       , testCase "QQ self message is ignored" testQqSelfMessageIsIgnored
@@ -51,6 +52,7 @@ main =
       , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
+      , testCase "Matrix redaction converts to a deleted incoming message" testMatrixRedactionConvertsToDeletedMessage
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
       , testCase "Matrix image message includes media URL" testMatrixImageMessageIncludesMediaUrl
       , testCase "Matrix encrypted image message includes media URL" testMatrixEncryptedImageMessageIncludesMediaUrl
@@ -67,6 +69,7 @@ main =
       , testCase "Matrix Markdown renders custom HTML" testMatrixMarkdownRendersCustomHtml
       , testCase "Matrix Markdown renders user ids as mention links" testMatrixMarkdownRendersUserIdsAsMentionLinks
       , testCase "Discord message converts to incoming message" testDiscordMessageConvertsToIncomingMessage
+      , testCase "Discord delete converts to a deleted incoming message" testDiscordDeleteConvertsToDeletedMessage
       , testCase "Discord self message is ignored" testDiscordSelfMessageIsIgnored
       , testCase "Discord superuser and bot mention are marked" testDiscordSuperuserAndBotMentionAreMarked
       , testCase "Discord CommonMark extensions render Discord Markdown" testDiscordCommonMarkExtensionsRenderDiscordMarkdown
@@ -83,14 +86,31 @@ testQqUserMessageConvertsToIncomingMessage = do
   ((.text) <$> incoming) @?= Just "hello"
   ((.digest.botId) <$> incoming) @?= Just (Just "424242")
 
+testQqRecallConvertsToDeletedMessage :: IO ()
+testQqRecallConvertsToDeletedMessage = do
+  let original = qqMessageEvent 10001
+      recall = original
+        { QQ.postType = "notice"
+        , QQ.rawEvent = Aeson.object
+            [ "post_type" Aeson..= ("notice" :: Text)
+            , "notice_type" Aeson..= ("group_recall" :: Text)
+            ]
+        }
+      incoming = fromMaybe (error "expected QQ recall") (QQ.eventToIncomingMessage recall)
+  incoming.eventKind @?= IncomingMessageDeleted
+  incoming.messageId @?= Just (integerMessageId 80001)
+  incoming.chatId @?= Just 90001
+
 testIncomingMessageJsonDefaultsMissingFiles :: IO ()
 testIncomingMessageJsonDefaultsMissingFiles = do
   let message = fromMaybe (error "expected QQ message") (QQ.eventToIncomingMessage (qqMessageEvent 10001))
       legacyJson = case Aeson.toJSON message of
-        Aeson.Object fields -> Aeson.Object (AesonKeyMap.delete "files" fields)
+        Aeson.Object fields -> Aeson.Object (AesonKeyMap.delete "eventKind" (AesonKeyMap.delete "files" fields))
         _ -> error "expected message object"
   case Aeson.fromJSON legacyJson of
-    Aeson.Success (decoded :: IncomingMessage) -> decoded.files @?= []
+    Aeson.Success (decoded :: IncomingMessage) -> do
+      decoded.files @?= []
+      decoded.eventKind @?= IncomingMessageCreated
     Aeson.Error err -> assertFailure err
 
 testQqFileSegmentBecomesMessageFile :: IO ()
@@ -509,6 +529,23 @@ testMatrixMessageConvertsToIncomingMessage = do
   ((.senderUsername) <$> incoming) @?= Just (Just "@alice:example.org")
   ((.text) <$> incoming) @?= Just "hello"
 
+testMatrixRedactionConvertsToDeletedMessage :: IO ()
+testMatrixRedactionConvertsToDeletedMessage = do
+  let original = matrixRoomEvent.event
+      redaction = matrixRoomEvent
+        { Matrix.event = original
+            { Matrix.type_ = "m.room.redaction"
+            , Matrix.raw = Aeson.object
+                [ "type" Aeson..= ("m.room.redaction" :: Text)
+                , "redacts" Aeson..= ("$deleted:example.org" :: Text)
+                ]
+            }
+        }
+      incoming = fromMaybe (error "expected Matrix redaction") (Matrix.eventToIncomingMessage redaction)
+  incoming.eventKind @?= IncomingMessageDeleted
+  incoming.messageId @?= Just (textMessageId "$deleted:example.org")
+  incoming.chatAliases @?= ["!room:example.org"]
+
 testMatrixDirectRoomConvertsToPrivateMessage :: IO ()
 testMatrixDirectRoomConvertsToPrivateMessage = do
   let incoming = Matrix.eventToIncomingMessage matrixDirectRoomEvent
@@ -709,6 +746,19 @@ testDiscordMessageConvertsToIncomingMessage = do
   ((.mentions) <$> incoming) @?= Just ["424242"]
   ((.imageUrls) <$> incoming) @?= Just ["https://cdn.discordapp.com/image.png"]
   ((.text) <$> incoming) @?= Just "hello <@424242>"
+
+testDiscordDeleteConvertsToDeletedMessage :: IO ()
+testDiscordDeleteConvertsToDeletedMessage = do
+  let deleted = Discord.DeletedMessage
+        { Discord.id = "123456789012345678"
+        , Discord.channelId = "987654321098765432"
+        , Discord.guildId = Just "111111111111111111"
+        , Discord.raw = Aeson.Null
+        }
+      incoming = Discord.deletedEventToIncomingMessageWith discordConfig deleted
+  incoming.eventKind @?= IncomingMessageDeleted
+  incoming.messageId @?= Just (textMessageId "123456789012345678")
+  incoming.kind @?= ChatGroup
 
 testDiscordSelfMessageIsIgnored :: IO ()
 testDiscordSelfMessageIsIgnored =

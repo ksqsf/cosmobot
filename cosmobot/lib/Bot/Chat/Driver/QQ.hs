@@ -730,7 +730,8 @@ normalizeQQMessageFiles :: Media.Media :> es => IncomingMessage -> Eff es Incomi
 normalizeQQMessageFiles message = do
   files <- traverse (normalizeQQFile message.chatId) message.files
   pure IncomingMessage
-    { platform = message.platform
+    { eventKind = message.eventKind
+    , platform = message.platform
     , kind = message.kind
     , chatId = message.chatId
     , chatAliases = message.chatAliases
@@ -1195,10 +1196,31 @@ isHeartbeatEvent event =
 
 eventToIncomingMessageWith :: Config -> Event -> Maybe IncomingMessage
 eventToIncomingMessageWith cfg event
+  | isRecallEvent event = do
+      recalledMessageId <- integerMessageId <$> event.messageId
+      pure IncomingMessage
+        { eventKind = IncomingMessageDeleted
+        , platform = PlatformQQ
+        , kind = maybe ChatPrivate (const ChatGroup) event.groupId
+        , chatId = event.groupId <|> event.userId
+        , chatAliases = []
+        , digest = qqMessageDigest cfg event
+        , senderId = show <$> event.userId
+        , senderUsername = Nothing
+        , messageId = Just recalledMessageId
+        , replyToMessageId = Nothing
+        , mentions = []
+        , mentionUsernames = []
+        , imageUrls = []
+        , files = []
+        , text = ""
+        , raw = event.rawEvent
+        }
   | event.postType /= "message" = Nothing
   | isSelfMessage event = Nothing
   | otherwise = Just IncomingMessage
-      { platform  = PlatformQQ
+      { eventKind = IncomingMessageCreated
+      , platform  = PlatformQQ
       , kind      = oneBotChatKind event.messageType
       , chatId    = event.groupId <|> event.userId
       , chatAliases = []
@@ -1214,6 +1236,14 @@ eventToIncomingMessageWith cfg event
       , text      = fromMaybe "" ((event.message >>= messageText) <|> event.rawMessage)
       , raw       = event.rawEvent
       }
+
+isRecallEvent :: Event -> Bool
+isRecallEvent event =
+  event.postType == "notice"
+    && Aeson.parseMaybe
+      (Aeson.withObject "QQ recall event" (Aeson..: "notice_type"))
+      event.rawEvent
+      `elem` [Just ("group_recall" :: Text), Just "friend_recall"]
 
 defaultMessageConfig :: Config
 defaultMessageConfig =

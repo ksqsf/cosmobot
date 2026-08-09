@@ -128,7 +128,8 @@ waitUntil label predicate =
 message :: Text -> IncomingMessage
 message body =
   IncomingMessage
-    { platform = PlatformTelegram
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just 100
     , chatAliases = []

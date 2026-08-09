@@ -40,7 +40,8 @@ selfRecord context body =
 selfMessage :: IncomingMessage -> Text -> IncomingMessage
 selfMessage context body =
   IncomingMessage
-    { platform = context.platform
+    { eventKind = IncomingMessageCreated
+    , platform = context.platform
     , kind = context.kind
     , chatId = context.chatId
     , chatAliases = context.chatAliases

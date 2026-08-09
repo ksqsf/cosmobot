@@ -21,6 +21,7 @@ module Bot.Core.Message
 
     -- * Incoming messages
   , IncomingMessage (..)
+  , IncomingMessageEventKind (..)
   , incomingMessageLogLine
   , MessageFile (..)
   , MessageInput (..)
@@ -135,8 +136,14 @@ emptyMessageDigest =
     }
 
 -- | Platform-normalized message consumed by handlers.
+data IncomingMessageEventKind
+  = IncomingMessageCreated
+  | IncomingMessageDeleted
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
 data IncomingMessage = IncomingMessage
-  { platform  :: !ChatPlatform
+  { eventKind :: !IncomingMessageEventKind
+  , platform  :: !ChatPlatform
   , kind      :: !ChatKind
   , chatId    :: !(Maybe Integer)
   , chatAliases :: ![Text]
@@ -157,7 +164,8 @@ data IncomingMessage = IncomingMessage
 instance Aeson.FromJSON IncomingMessage where
   parseJSON = Aeson.withObject "IncomingMessage" \o ->
     IncomingMessage
-      <$> o Aeson..: "platform"
+      <$> o Aeson..:? "eventKind" Aeson..!= IncomingMessageCreated
+      <*> o Aeson..: "platform"
       <*> o Aeson..: "kind"
       <*> o Aeson..:? "chatId"
       <*> o Aeson..:? "chatAliases" Aeson..!= []
@@ -225,6 +233,7 @@ incomingMessageLogLine :: IncomingMessage -> Text
 incomingMessageLogLine message =
   Text.unwords
     [ "platform=" <> show message.platform
+    , "event=" <> show message.eventKind
     , "kind=" <> show message.kind
     , "chat=" <> showMaybe message.chatId
     , "chat_allowed=" <> show message.digest.chatIsAllowed

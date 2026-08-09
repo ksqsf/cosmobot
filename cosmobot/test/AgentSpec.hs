@@ -315,6 +315,7 @@ main =
       , testCase "editable chat streaming splits long replies and yields aliases" testEditableChatStreamingSplitsLongReplies
       , testCase "chunked active thread aliases every sent reply" testChunkedActiveThreadAliasesEverySentReply
       , testCase "halt command cancels active run for current thread message" testHaltCommandCancelsCurrentThreadMessage
+      , testCase "deleting a bot reply halts its active run" testDeletingBotReplyHaltsActiveRun
       , testCase "halt command prefers replied thread message over current message" testHaltCommandPrefersRepliedThreadMessage
       , testCase "halt command requires prompt sender or superuser" testHaltCommandRequiresOwnerOrSuperuser
       , testCase "active thread is listed before a platform reply exists" testActiveThreadWithoutPlatformReply
@@ -3038,6 +3039,24 @@ testHaltCommandCancelsCurrentThreadMessage = runEff $ runConcurrent $ runPrim $ 
     cancelledHandles @?= [Concurrency.Id 1]
     (show currentLookup :: String) @?= show (Just partialTranscript)
 
+testDeletingBotReplyHaltsActiveRun :: IO ()
+testDeletingBotReplyHaltsActiveRun = do
+  answers <- IORef.newIORef []
+  remaining <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    store <- newThreadStore
+    let triggerKey = messageKey 1
+        replyKey = messageKey 2
+        deleted = testMessage
+          { eventKind = IncomingMessageDeleted
+          , messageId = Just (integerMessageId 2)
+          , text = ""
+          }
+    active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store "deleted-run" Nothing (Just triggerKey) testMessage "hello" (Concurrency.Handle (Concurrency.Id 999)) (startWithUser "hello")
+    addActiveThreadMessage store active replyKey
+    runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig store) deleted
+    lookupActiveThreadRunId store triggerKey
+  remaining @?= Nothing
+
 testHaltCommandPrefersRepliedThreadMessage :: IO ()
 testHaltCommandPrefersRepliedThreadMessage = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
   store <- newThreadStore
@@ -3683,7 +3702,8 @@ messageKey =
 testMessageInChat :: Integer -> IncomingMessage
 testMessageInChat chatId =
   IncomingMessage
-    { platform = testMessage.platform
+    { eventKind = IncomingMessageCreated
+    , platform = testMessage.platform
     , kind = testMessage.kind
     , chatId = Just chatId
     , chatAliases = testMessage.chatAliases
@@ -3703,7 +3723,8 @@ testMessageInChat chatId =
 testMessageWithImages :: [Text] -> IncomingMessage
 testMessageWithImages imageUrls =
   IncomingMessage
-    { platform = testMessage.platform
+    { eventKind = IncomingMessageCreated
+    , platform = testMessage.platform
     , kind = testMessage.kind
     , chatId = testMessage.chatId
     , chatAliases = testMessage.chatAliases
@@ -4512,7 +4533,8 @@ mockUserAvatar ChatMock{userAvatar} _ _ =
 testMessage :: IncomingMessage
 testMessage =
   IncomingMessage
-    { platform = PlatformTelegram
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just 100
     , chatAliases = []
@@ -4544,7 +4566,8 @@ askHandlerConfig =
 askHandlerMessage :: IncomingMessage
 askHandlerMessage =
   IncomingMessage
-    { platform = PlatformQQ
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformQQ
     , kind = ChatGroup
     , chatId = Just 906230260
     , chatAliases = []

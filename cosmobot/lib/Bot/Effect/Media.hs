@@ -178,7 +178,8 @@ normalizeIncomingMessage message = do
   imageUrls <- normalizeMediaRefs message.imageUrls
   files <- traverse normalizeMessageFile message.files
   pure IncomingMessage
-    { platform = message.platform
+    { eventKind = message.eventKind
+    , platform = message.platform
     , kind = message.kind
     , chatId = message.chatId
     , chatAliases = message.chatAliases

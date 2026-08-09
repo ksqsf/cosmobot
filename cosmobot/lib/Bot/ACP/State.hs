@@ -406,7 +406,8 @@ acpIncomingMessage
 acpIncomingMessage sessionSend messageRow = do
   llmImageUrls <- Session.sessionSendLlmImageUrls sessionSend
   pure IncomingMessage
-    { platform = PlatformACP
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformACP
     , kind = ChatPrivate
     , chatId = Nothing
     , chatAliases = [Session.sessionIdText sessionSend.sessionId]

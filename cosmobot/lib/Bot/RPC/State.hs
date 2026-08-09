@@ -234,7 +234,8 @@ rpcIncomingMessage chatSend messageRow = do
           }
   llmImageUrls <- Session.sessionSendLlmImageUrls canonicalSend
   pure IncomingMessage
-    { platform = PlatformRPC
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformRPC
     , kind = ChatPrivate
     , chatId = Nothing
     , chatAliases = [sessionText]

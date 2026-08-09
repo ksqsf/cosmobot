@@ -107,7 +107,8 @@ messageFromChat messageId chatId text =
 messageFromChatWithImages :: Integer -> Integer -> Text -> [Text] -> IncomingMessage
 messageFromChatWithImages messageId chatId text imageUrls =
   IncomingMessage
-    { platform = PlatformTelegram
+    { eventKind = IncomingMessageCreated
+    , platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just chatId
     , chatAliases = []

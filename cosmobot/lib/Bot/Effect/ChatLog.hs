@@ -70,11 +70,12 @@ recordIncomingMessages
   -> Stream (Of IncomingMessage) (Eff es) ()
 recordIncomingMessages =
   S.mapM \message -> do
-    Timeout.timeout chatLogRecordTimeoutMicroseconds (recordMessage message) >>= \case
-      Just () ->
-        pure ()
-      Nothing ->
-        logWarning [i|chat log record timed out; continuing route dispatch: #{incomingMessageLogLine message}|]
+    when (message.eventKind == IncomingMessageCreated) $
+      Timeout.timeout chatLogRecordTimeoutMicroseconds (recordMessage message) >>= \case
+        Just () ->
+          pure ()
+        Nothing ->
+          logWarning [i|chat log record timed out; continuing route dispatch: #{incomingMessageLogLine message}|]
     pure message
 
 -- | Record a logical self reply in the same chat as its triggering message.
