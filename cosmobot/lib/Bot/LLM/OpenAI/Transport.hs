@@ -894,18 +894,34 @@ streamChatCompletion
   -> Int
   -> ChatCompletionRequest
   -> Stream (Of Text) (Eff es) ChatAnswer
-streamChatCompletion emitContentDeltas baseUrl path apiKey timeoutMicros request =
-  processPayloads (streamSseJsonPost baseUrl path apiKey timeoutMicros request) emptyStreamState
+streamChatCompletion emitContentDeltas baseUrl path apiKey timeoutMicros request = do
+  startedAt <- lift monotonicMilliseconds
+  processPayloads startedAt Nothing Nothing (streamSseJsonPost baseUrl path apiKey timeoutMicros request) emptyStreamState
   where
-    processPayloads payloads streamState = do
+    processPayloads startedAt firstEventAt firstOutputAt payloads streamState = do
       lift (S.next payloads) >>= \case
         Left () -> do
-          traverse_ S.yield (finishStreamOutputs emitContentDeltas streamState)
+          finishedAt <- lift monotonicMilliseconds
+          let finalOutputs = finishStreamOutputs emitContentDeltas streamState
+              completedFirstOutputAt =
+                firstOutputAt <|> if any (not . Text.null) finalOutputs then Just finishedAt else Nothing
+          lift $ logDebug [i|LLM stream timing first_event_ms=#{renderElapsed startedAt firstEventAt} first_output_ms=#{renderElapsed startedAt completedFirstOutputAt} total_ms=#{finishedAt - startedAt}|]
+          traverse_ S.yield finalOutputs
           pure (streamStateAnswer streamState)
         Right (payload, rest) -> do
+          eventAt <- lift monotonicMilliseconds
           (next, outputs) <- lift (processPayload payload streamState)
+          outputAt <- lift monotonicMilliseconds
           traverse_ S.yield outputs
-          processPayloads rest next
+          processPayloads
+            startedAt
+            (firstEventAt <|> Just eventAt)
+            (firstOutputAt <|> if any (not . Text.null) outputs then Just outputAt else Nothing)
+            rest
+            next
+
+    renderElapsed startedAt =
+      maybe "unreported" (Text.pack . show . subtract startedAt)
 
     processPayload payload streamState =
       case Aeson.eitherDecodeStrict' payload of
@@ -923,6 +939,10 @@ streamChatCompletion emitContentDeltas baseUrl path apiKey timeoutMicros request
                   pure (streamState, [])
                 Right chunk ->
                   pure (applyStreamChunk emitContentDeltas streamState chunk)
+
+monotonicMilliseconds :: IOE :> es => Eff es Integer
+monotonicMilliseconds =
+  fromIntegral . (`div` 1_000_000) <$> liftIO getMonotonicTimeNSec
 
 dropLast :: [a] -> [a]
 dropLast [] = []

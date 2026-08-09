@@ -28,6 +28,7 @@ import qualified Streaming.Prelude as S
 import Effectful.FileSystem
 import Effectful.Process
 import Effectful.Timeout
+import GHC.Clock (getMonotonicTimeNSec)
 
 -- | Interpret LLM requests through an OpenAI-compatible HTTP endpoint.
 runLLM
@@ -50,14 +51,14 @@ runLLM cfg = interpret $ \localEnv operation ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
-              resolved <- lift (resolveChatMessages messages)
+              resolved <- lift (resolveChatMessagesTimed messages)
               Retry.retryLLMStreamRequest "LLM streaming request" $
                 normalizeReplyResult (Transport.askOpenAIStreaming cfg resolved)
       LLM.AskImageStream options messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
-              resolved <- lift (resolveChatMessages messages)
+              resolved <- lift (resolveChatMessagesTimed messages)
               Retry.retryLLMStreamRequest "LLM image streaming request" $
                 askImageStreamingWithMedia cfg options resolved
       LLM.AskImageEditStream options prompt imageRefs maskRef ->
@@ -72,20 +73,47 @@ runLLM cfg = interpret $ \localEnv operation ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
-              resolved <- lift (resolveChatMessages messages)
+              resolved <- lift (resolveChatMessagesTimed messages)
               Retry.retryLLMStreamRequest "LLM audio streaming request" $
                 normalizeReplyResult (Transport.askAudioOpenAIStreaming cfg options resolved)
       LLM.AskToolsStream tools messages ->
         pure $
           LLM.liftLocalStream liftLocal $
             do
-              resolved <- lift (resolveChatMessages messages)
+              resolved <- lift (resolveChatMessagesTimed messages)
               Retry.retryLLMStreamRequest "LLM streaming request" $
                 Transport.askOpenAIWithToolsStreaming cfg tools resolved
 
 resolveChatMessages :: Media.Media :> es => [ChatMessage] -> Eff es [ChatMessage]
 resolveChatMessages =
   traverse resolveChatMessage
+
+resolveChatMessagesTimed :: (IOE :> es, KatipE :> es, Media.Media :> es) => [ChatMessage] -> Eff es [ChatMessage]
+resolveChatMessagesTimed messages = do
+  startedAt <- monotonicMilliseconds
+  resolved <- resolveChatMessages messages
+  finishedAt <- monotonicMilliseconds
+  let refs = chatImageRefs messages
+  logDebug [i|LLM media resolution media_refs=#{length refs} distinct_refs=#{length (ordNub refs)} duration_ms=#{finishedAt - startedAt}|]
+  pure resolved
+
+chatImageRefs :: [ChatMessage] -> [Text]
+chatImageRefs =
+  concatMap messageImageRefs
+
+messageImageRefs :: ChatMessage -> [Text]
+messageImageRefs message =
+  case message.content of
+    Just (PartsContent parts) ->
+      [ ref
+      | ImageUrlPart ref <- parts
+      ]
+    _ ->
+      []
+
+monotonicMilliseconds :: IOE :> es => Eff es Integer
+monotonicMilliseconds =
+  fromIntegral . (`div` 1_000_000) <$> liftIO getMonotonicTimeNSec
 
 resolveChatMessage :: Media.Media :> es => ChatMessage -> Eff es ChatMessage
 resolveChatMessage message =

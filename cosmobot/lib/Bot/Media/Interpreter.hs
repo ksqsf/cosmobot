@@ -30,7 +30,7 @@ data Runtime = Runtime
   }
 
 runMedia
-  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, HTTP.HTTP :> es, Storage.Storage :> es, Timeout.Timeout :> es)
+  :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, HTTP.HTTP :> es, Storage.Storage :> es, Timeout.Timeout :> es)
   => MediaConfig.Config
   -> Eff (Media : es) a
   -> Eff es a
@@ -75,7 +75,7 @@ mediaNormalizeTimeoutMicroseconds :: Int
 mediaNormalizeTimeoutMicroseconds =
   15_000_000
 
-normalizeRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es) => Runtime -> Text -> Eff es Text
+normalizeRef :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es) => Runtime -> Text -> Eff es Text
 normalizeRef runtime ref
   | Cache.isMediaId ref =
       pure ref
@@ -98,7 +98,7 @@ normalizeRef runtime ref
       pure ref
 
 normalizeRemoteRef
-  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es)
+  :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es)
   => Runtime
   -> Text
   -> Eff es Text
@@ -115,7 +115,7 @@ normalizeRemoteRef runtime ref = do
       pure ref
 
 normalizeRemoteRefUnsafe
-  :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es)
+  :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es)
   => Runtime
   -> Text
   -> Eff es (Maybe Text)
@@ -127,7 +127,7 @@ normalizeRemoteRefUnsafe runtime ref =
     logError [i|Remote media download failed: #{show err :: String}|]
     pure Nothing
 
-publicRef :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es) => Runtime -> Text -> Eff es Text
+publicRef :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es) => Runtime -> Text -> Eff es Text
 publicRef runtime ref =
   case Cache.parseMediaId ref of
     Nothing -> normalizeRef runtime ref >>= publicRef runtime
@@ -146,7 +146,7 @@ localPath runtime ref =
     Just fileId ->
       fmap (.path) <$> Cache.loadCachedMedia (cacheConfig runtime) fileId
 
-cacheObject :: (IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es) => Runtime -> Maybe Text -> MediaObject -> Eff es Text
+cacheObject :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es) => Runtime -> Maybe Text -> MediaObject -> Eff es Text
 cacheObject runtime sourceRef mediaObject = do
   prepared <- prepareMediaObject runtime mediaObject
   Cache.cacheMediaObject (cacheConfig runtime) sourceRef prepared >>= \case

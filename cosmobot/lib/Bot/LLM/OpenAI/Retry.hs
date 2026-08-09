@@ -19,6 +19,7 @@ import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types.Header as HTTPHeader
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import qualified Streaming.Prelude as S
+import GHC.Clock (getMonotonicTimeNSec)
 
 maxLLMRetries :: Int
 maxLLMRetries =
@@ -43,9 +44,11 @@ retryLLMStreamRequestWith sleep label source =
   go 0
   where
     go retries =
-      consume retries False source
+      do
+        startedAt <- lift monotonicMilliseconds
+        consume startedAt retries False source
 
-    consume retries yielded stream = do
+    consume startedAt retries yielded stream = do
       next <- lift (trySync (S.next stream))
       case next of
         Left err
@@ -55,7 +58,8 @@ retryLLMStreamRequestWith sleep label source =
               let nextRetry = retries + 1
                   delaySeconds = retryDelaySeconds nextRetry err
               lift do
-                logWarning [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{nextRetry + 1}/#{maxLLMRetries + 1} after #{delaySeconds}s|]
+                finishedAt <- monotonicMilliseconds
+                logWarning [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{nextRetry + 1}/#{maxLLMRetries + 1} after #{delaySeconds}s elapsed_ms=#{finishedAt - startedAt}|]
                 sleep delaySeconds
               go nextRetry
           | otherwise ->
@@ -64,7 +68,11 @@ retryLLMStreamRequestWith sleep label source =
           pure result
         Right (Right (chunk, rest)) -> do
           S.yield chunk
-          consume retries True rest
+          consume startedAt retries True rest
+
+monotonicMilliseconds :: IOE :> es => Eff es Integer
+monotonicMilliseconds =
+  fromIntegral . (`div` 1_000_000) <$> liftIO getMonotonicTimeNSec
 
 retryableHTTPFailure :: SomeException -> Bool
 retryableHTTPFailure err =

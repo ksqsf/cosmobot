@@ -113,6 +113,7 @@ common lib-deps
                     , wai-websockets
                     , warp
                     , jsonrpc
+                    , lrucache
                     , optics
                     , time
                     , temporary

@@ -23,10 +23,13 @@ import qualified Bot.Media.Config as MediaConfig
 import Bot.Media.S3.Config
 import Bot.Prelude
 import qualified Data.ByteString as StrictByteString
+import qualified Data.Cache.LRU as LRU
 import qualified Data.Text as Text
+import qualified Effectful.Concurrent.MVar as MVar
 import qualified Streaming.ByteString as Q
 import qualified Data.Text.Encoding as TextEncoding
 import Effectful.FileSystem (FileSystem)
+import GHC.Clock (getMonotonicTimeNSec)
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import System.IO.Error (ioError, userError)
@@ -34,12 +37,15 @@ import System.IO.Error (ioError, userError)
 data Runtime = Runtime
   { cfg :: !MediaConfig.Config
   , env :: !(Maybe AWS.Env)
+  , publicObjects :: !(MVar.MVar (LRU.LRU Text Text))
   }
 
-newRuntime :: IOE :> es => HTTP.Manager -> MediaConfig.Config -> Eff es Runtime
+newRuntime :: (Concurrent :> es, IOE :> es) => HTTP.Manager -> MediaConfig.Config -> Eff es Runtime
 newRuntime manager cfg = do
   env <- if cfg.s3.enabled then Just <$> createAmazonkaEnv manager cfg.s3 else pure Nothing
-  pure Runtime{cfg, env}
+  publicObjects <- MVar.newMVar (LRU.newLRU (Just 512))
+  pure Runtime{cfg, env, publicObjects}
+
 
 createAmazonkaEnv :: IOE :> es => HTTP.Manager -> Config -> Eff es AWS.Env
 createAmazonkaEnv manager cfg = do
@@ -78,27 +84,64 @@ configureAddressing cfg service =
     _ ->
       service{AWS.s3AddressingStyle = AWS.S3AddressingStyleAuto}
 
-ensurePublicObject :: (IOE :> es, KatipE :> es, FileSystem :> es) => Runtime -> Cache.CachedMedia -> Eff es Text
+ensurePublicObject :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es) => Runtime -> Cache.CachedMedia -> Eff es Text
 ensurePublicObject runtime cached =
   case publicObjectUrl runtime.cfg cached of
     Nothing ->
       pure (Cache.mediaIdForFileId cached.fileId)
     Just url -> do
-      uploadPublicObject False runtime cached
-      pure url
+      startedAt <- monotonicMilliseconds
+      let cachedFileId = cached.fileId
+      cachedUrl <- MVar.modifyMVar runtime.publicObjects \cache ->
+        let (next, found) = LRU.lookup cachedFileId cache
+        in pure (next, found)
+      case cachedUrl of
+        Just cachedPublicUrl -> do
+          finishedAt <- monotonicMilliseconds
+          logDebug [i|S3 publicize outcome=cache_hit file_id=#{cachedFileId} duration_ms=#{finishedAt - startedAt}|]
+          pure cachedPublicUrl
+        Nothing -> do
+          uploaded <- storeObject False runtime cached
+          for_ uploaded (rememberPublicObject runtime cachedFileId)
+          finishedAt <- monotonicMilliseconds
+          let outcome = if isJust uploaded then "cache_miss_published" else "failed" :: Text
+          logDebug [i|S3 publicize outcome=#{outcome} file_id=#{cachedFileId} duration_ms=#{finishedAt - startedAt}|]
+          pure url
 
-uploadPublicObject :: (IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es ()
-uploadPublicObject forceUpload runtime cached =
+uploadPublicObject :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es ()
+uploadPublicObject False runtime cached =
+  case publicObjectUrl runtime.cfg cached of
+    Just _ ->
+      void (ensurePublicObject runtime cached)
+    Nothing ->
+      void (storeObject False runtime cached)
+uploadPublicObject True runtime cached =
   when runtime.cfg.s3.enabled do
-    void (storeObject forceUpload runtime cached)
+    startedAt <- monotonicMilliseconds
+    let cachedFileId = cached.fileId
+    uploaded <- storeObject True runtime cached
+    for_ uploaded (rememberPublicObject runtime cachedFileId)
+    finishedAt <- monotonicMilliseconds
+    let outcome
+          | isJust uploaded = "forced_upload" :: Text
+          | otherwise = "failed"
+    logDebug [i|S3 publicize outcome=#{outcome} file_id=#{cachedFileId} duration_ms=#{finishedAt - startedAt}|]
 
-storeObject :: (IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
+rememberPublicObject :: Concurrent :> es => Runtime -> Text -> Text -> Eff es ()
+rememberPublicObject runtime fileId url =
+  MVar.modifyMVar_ runtime.publicObjects (pure . LRU.insert fileId url)
+
+monotonicMilliseconds :: IOE :> es => Eff es Integer
+monotonicMilliseconds =
+  fromIntegral . (`div` 1_000_000) <$> liftIO getMonotonicTimeNSec
+
+storeObject :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
 storeObject forceUpload runtime cached =
   storeObjectUnsafe forceUpload runtime cached `catchSync` \err -> do
     logError [i|S3 media upload skipped: #{show err :: String}|]
     pure Nothing
 
-storeObjectUnsafe :: (IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
+storeObjectUnsafe :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
 storeObjectUnsafe _ Runtime{cfg, env = Nothing} _
   | not cfg.s3.enabled =
       pure Nothing
@@ -109,14 +152,20 @@ storeObjectUnsafe forceUpload Runtime{cfg, env = Just env} cached
       pure Nothing
   | otherwise = do
       ensureS3Config cfg.s3
-      let key = objectKey cfg.s3 cached
-      objectExists env cfg.s3 key >>= \case
-        True | not forceUpload -> do
-          logDebug [i|S3 media upload skipped; object already exists: key=#{key}|]
-          pure (publicObjectUrl cfg cached)
-        _ -> do
+      if forceUpload
+        then do
           uploadObject env cfg.s3 key cached
           pure (publicObjectUrl cfg cached)
+        else
+          objectExists env cfg.s3 key >>= \case
+            True -> do
+              logDebug [i|S3 media upload skipped; object already exists: key=#{key}|]
+              pure (publicObjectUrl cfg cached)
+            False -> do
+              uploadObject env cfg.s3 key cached
+              pure (publicObjectUrl cfg cached)
+  where
+    key = objectKey cfg.s3 cached
 
 objectExists :: IOE :> es => AWS.Env -> Config -> Text -> Eff es Bool
 objectExists env cfg key = do

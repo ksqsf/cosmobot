@@ -2167,7 +2167,8 @@ testThreadStatsAccumulateRepliedBranch = do
   IORef.readIORef replies >>= \case
     [firstStats, secondStats] -> do
       assertBool [i|first answer stats should include one run; got #{firstStats}|] ("- runs: 1" `Text.isInfixOf` firstStats)
-      assertBool [i|first answer stats should include lifecycle timing; got #{firstStats}|] ("- agent time: 3.0s total" `Text.isInfixOf` firstStats)
+      assertBool [i|first answer stats should include lifecycle timing; got #{firstStats}|] ("- run wall time: 3.0s total (includes model and tools)" `Text.isInfixOf` firstStats)
+      assertBool [i|first answer stats should include model timing; got #{firstStats}|] ("- model time: 1.0s completed" `Text.isInfixOf` firstStats)
       assertBool [i|first answer stats should include context messages; got #{firstStats}|] ("- context messages: 2 now / 2 peak" `Text.isInfixOf` firstStats)
       assertBool [i|first answer stats should include run config; got #{firstStats}|] ("- run config: 8 max tool turns, 2 exposed tools" `Text.isInfixOf` firstStats)
       assertBool [i|first answer stats should include only first-run tokens; got #{firstStats}|] ("- tokens: 110 total (100 prompt, 10 completion;" `Text.isInfixOf` firstStats)

@@ -169,7 +169,8 @@ renderThreadStats now parentId branchMessages activeRunId pendingSteers records 
         , renderEnabledTools enabledToolGroups
         , [i|- tool calls: #{length toolUses} (#{okTools} ok, #{failedTools} failed, #{interruptedTools} interrupted, #{length runningTools} running#{unreportedToolsSuffix})|]
         , renderToolTime toolUses
-        , renderAgentTime runIds runDurations currentRunDuration
+        , renderModelTime modelDurations
+        , renderRunWallTime runIds runDurations currentRunDuration
         ]
           <> maybeToList renderRunConfig
           <> [ "- running tools: " <> Text.intercalate ", " (map renderRunningTool runningTools)
@@ -268,6 +269,8 @@ renderThreadStats now parentId branchMessages activeRunId pendingSteers records 
         join (snd <$> find ((== runId) . fst) runDurations)
     currentPhase =
       phaseFromRecords activeRunId runningTools records
+    modelDurations =
+      modelTurnDurations now activeRunId currentPhase records
     renderRunConfig = do
       latestRunId <- viaNonEmpty last runIds
       AgentAudit.AgentAuditRecord
@@ -312,6 +315,7 @@ renderSubAgentStats now rootRunIds runs =
                 } <- records
             ]
           toolUses = AgentAudit.toolUsesFromAuditRecords records
+          modelDurations = modelTurnDurations now Nothing "complete" records
           status = subAgentRunStatus records
           active = [runId | status == "running"]
           duration = runDurationMilliseconds now (viaNonEmpty head active) runId records
@@ -323,6 +327,7 @@ renderSubAgentStats now rootRunIds runs =
       in
       [ spaces indentation <> [i|- `#{subagentId}` (`#{runId}`): #{status}, #{length modelUsages} model turns, #{length toolUses} tool calls, #{durationText}|]
       , spaces (indentation + 2) <> renderRunUsage "tokens" modelUsages
+      , spaces (indentation + 2) <> renderModelTime modelDurations
       , spaces (indentation + 2) <> renderCompactionUsage compactionUsages
       , spaces (indentation + 2) <> renderToolTime toolUses
       ] <> nested
@@ -423,7 +428,7 @@ renderCompactionUsage usages =
 
 renderToolTime :: [AgentAudit.ToolUseDetail] -> Text
 renderToolTime toolUses =
-  [i|- tool time: #{renderMilliseconds (sum (mapMaybe duration toolUses))} cumulative|]
+  [i|- tool time: #{renderMilliseconds (sum (mapMaybe duration toolUses))} cumulative across calls|]
   where
     duration toolUse =
       case toolUse.status of
@@ -438,12 +443,39 @@ renderContextMessages counts@(_ : _) =
   let nowCount = fromMaybe 0 (viaNonEmpty last counts)
   in [i|- context messages: #{nowCount} now / #{foldl' max 0 counts} peak|]
 
-renderAgentTime :: [Text] -> [(Text, Maybe Integer)] -> Maybe Integer -> Text
-renderAgentTime runIds runDurations currentDuration
+renderModelTime :: [(Bool, Maybe Integer)] -> Text
+renderModelTime durations
   | null reported =
-      [i|- agent time: unreported (#{length runIds} runs)|]
+      [i|- model time: unreported (#{length durations} turns)|]
   | otherwise =
-      [i|- agent time: #{renderMilliseconds (sum reported)} total#{currentSuffix}#{unreportedSuffix}|]
+      [i|- model time: #{renderMilliseconds (sum completed)} completed#{currentSuffix}#{unreportedSuffix}|]
+  where
+    completed =
+      [ duration
+      | (False, Just duration) <- durations
+      ]
+    current =
+      [ duration
+      | (True, Just duration) <- durations
+      ]
+    reported = completed <> current
+    currentSuffix :: Text
+    currentSuffix =
+      case current of
+        [] -> ""
+        values -> [i|, #{renderMilliseconds (sum values)} current|]
+    unreported = length durations - length reported
+    unreportedSuffix :: Text
+    unreportedSuffix
+      | unreported == 0 = ""
+      | otherwise = [i|; #{unreported} unreported|]
+
+renderRunWallTime :: [Text] -> [(Text, Maybe Integer)] -> Maybe Integer -> Text
+renderRunWallTime runIds runDurations currentDuration
+  | null reported =
+      [i|- run wall time: unreported (#{length runIds} runs)|]
+  | otherwise =
+      [i|- run wall time: #{renderMilliseconds (sum reported)} total (includes model and tools)#{currentSuffix}#{unreportedSuffix}|]
   where
     reported =
       catMaybes (map snd runDurations)
@@ -456,6 +488,42 @@ renderAgentTime runIds runDurations currentDuration
     unreportedSuffix
       | unreportedRuns == 0 = ""
       | otherwise = [i|; #{unreportedRuns} unreported runs|]
+
+modelTurnDurations
+  :: UTCTime
+  -> Maybe Text
+  -> Text
+  -> [AgentAudit.AgentAuditRecord]
+  -> [(Bool, Maybe Integer)]
+modelTurnDurations now activeRunId currentPhase records =
+  map duration starts
+  where
+    starts =
+      [ record
+      | record@AgentAudit.AgentAuditRecord{event = AgentAudit.ModelTurnStarted{}} <- records
+      ]
+    duration AgentAudit.AgentAuditRecord{id = startedId, occurredAt = startedAt, event = AgentAudit.ModelTurnStarted{runId, turn}} =
+      case viaNonEmpty head
+        [ occurredAt
+        | AgentAudit.AgentAuditRecord{id = finishedId, occurredAt, event = AgentAudit.ModelTurnFinished{runId = finishedRunId, turn = finishedTurn}} <- records
+        , finishedId > startedId
+        , finishedRunId == runId
+        , finishedTurn == turn
+        ] of
+        Just finishedAt ->
+          (False, Just (millisecondsBetween startedAt finishedAt))
+        Nothing
+          | activeRunId == Just runId
+          , currentPhase == "model" ->
+              (True, Just (millisecondsBetween startedAt now))
+          | otherwise ->
+              (False, Nothing)
+    duration _ =
+      (False, Nothing)
+
+millisecondsBetween :: UTCTime -> UTCTime -> Integer
+millisecondsBetween startedAt finishedAt =
+  max 0 (floor (diffUTCTime finishedAt startedAt * 1000))
 
 renderMilliseconds :: Integer -> Text
 renderMilliseconds milliseconds =
@@ -484,7 +552,7 @@ runDurationMilliseconds now activeRunId runId records = do
         , AgentAudit.eventRunId event == runId
         , isRunEnd event
         ]
-  pure (max 0 (floor (diffUTCTime finishedAt startedAt * 1000)))
+  pure (millisecondsBetween startedAt finishedAt)
   where
     isRunEnd = \case
       AgentAudit.AgentRunFinished{} -> True
