@@ -62,7 +62,6 @@ import qualified Network.WebSockets as WS
 import qualified Network.WebSockets.Stream as WSStream
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
-import System.FilePath (takeFileName)
 import System.IO.Error (userError)
 
 data Config = Config
@@ -201,9 +200,9 @@ listGuildMembers :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> 
 listGuildMembers driver guildId =
   discordGetRequest driver.config ["guilds", guildId, "members"]
 
-uploadDiscordFile :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es) => DiscordDriver -> Text -> Maybe Text -> FilePath -> Eff es Message
-uploadDiscordFile driver channelId content path =
-  discordUploadFile driver.config channelId content path
+uploadDiscordFile :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es) => DiscordDriver -> Text -> Maybe Text -> FilePath -> Maybe Text -> Eff es Message
+uploadDiscordFile driver channelId content path fileName =
+  discordUploadFile driver.config channelId content path fileName
 
 triggerTyping :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Eff es ()
 triggerTyping driver channelId =
@@ -537,7 +536,7 @@ sendDiscordImage driver channelId replyReference imageRef = do
       createMessage driver channelId (createMessageRequest url replyReference)
     Nothing ->
       withDiscordImageFile resolvedRef \path ->
-        uploadDiscordFile driver channelId Nothing path
+        uploadDiscordFile driver channelId Nothing path Nothing
 
 editMessageDiscord :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> MessageId -> Text -> Eff es Bool
 editMessageDiscord driver message messageId body =
@@ -588,16 +587,16 @@ replyAudioDiscord driver message audioRef caption =
   case discordChannelId message of
     Just channelId -> do
       sent <- withDiscordImageFile audioRef \path ->
-        uploadDiscordFile driver channelId (formatDiscordMarkdown . Chat.renderReplyBody <$> caption) path
+        uploadDiscordFile driver channelId (formatDiscordMarkdown . Chat.renderReplyBody <$> caption) path Nothing
       pure (Right (textMessageId sent.id))
     _ ->
       pure (Left "Discord audio reply requires a Discord channel id.")
 
-uploadFileDiscord :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
-uploadFileDiscord driver message path =
+uploadFileDiscord :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => DiscordDriver -> IncomingMessage -> FilePath -> Maybe Text -> Eff es (Either Text MessageId)
+uploadFileDiscord driver message path fileName =
   case discordChannelId message of
     Just channelId -> do
-      sent <- uploadDiscordFile driver channelId Nothing path
+      sent <- uploadDiscordFile driver channelId Nothing path fileName
       pure (Right (textMessageId sent.id))
     _ ->
       pure (Left "Discord file upload requires a Discord channel id.")
@@ -998,8 +997,9 @@ discordUploadFile
   -> Text
   -> Maybe Text
   -> FilePath
+  -> Maybe Text
   -> Eff es Message
-discordUploadFile cfg channelId content path = do
+discordUploadFile cfg channelId content path fileName = do
   manager <- HTTP.manager
   base <- liftIO $ Client.parseRequest [i|https://discord.com/api/v10/channels/#{channelId}/messages|]
   let payload = Aeson.object
@@ -1015,7 +1015,7 @@ discordUploadFile cfg channelId content path = do
           }
       parts =
         [ Multipart.partLBS "payload_json" (Aeson.encode payload)
-        , Multipart.partFileRequestBodyM "files[0]" (takeFileName path) (Client.streamFile path)
+        , Multipart.partFileRequestBodyM "files[0]" (Text.unpack (Driver.uploadFileName path fileName)) (Client.streamFile path)
         ]
   multipartRequest <- liftIO $ Multipart.formDataBody parts request
   response <- liftIO $ Client.httpLbs multipartRequest manager

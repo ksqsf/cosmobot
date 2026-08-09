@@ -135,7 +135,7 @@ sendFileTool =
         (requiredText "path" "Local file path to send. A file:// prefix is accepted and stripped before upload."))
       \path -> do
         context <- askToolContext
-        result <- Chat.uploadFile context.message path
+        result <- Chat.uploadFile context.message path Nothing
         case result of
           Right sent -> do
             let sentText = show sent :: String

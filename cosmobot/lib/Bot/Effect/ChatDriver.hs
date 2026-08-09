@@ -61,6 +61,7 @@ data ChatDriver :: Effect where
   UploadFile
     :: IncomingMessage
     -> FilePath
+    -> Maybe Text
     -> ChatDriver m (Either Text MessageId)
   EditMessage
     :: IncomingMessage
@@ -136,9 +137,9 @@ replyAudio message audioRef caption =
   send (ReplyAudio message audioRef caption)
 
 -- | Upload a local file to the chat containing the incoming message.
-uploadFile :: ChatDriver :> es => IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
-uploadFile message path =
-  send (UploadFile message path)
+uploadFile :: ChatDriver :> es => IncomingMessage -> FilePath -> Maybe Text -> Eff es (Either Text MessageId)
+uploadFile message path fileName =
+  send (UploadFile message path fileName)
 
 -- | Edit a previously sent message when the platform supports it.
 editMessage :: ChatDriver :> es => IncomingMessage -> MessageId -> Text -> Eff es Bool
@@ -226,8 +227,8 @@ chatDriverEffectHandler driver _ = \case
     Driver.sendStreamingReplyMessage driver message body
   ReplyAudio message audioRef caption ->
     Driver.replyAudio driver message audioRef caption
-  UploadFile message path ->
-    Driver.uploadFile driver message path
+  UploadFile message path fileName ->
+    Driver.uploadFile driver message path fileName
   EditMessage message messageId body ->
     Driver.editMessage driver message messageId body
   CompleteMessageEdit message messageId ->

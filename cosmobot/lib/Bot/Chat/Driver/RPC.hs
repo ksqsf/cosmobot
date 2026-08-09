@@ -71,8 +71,8 @@ instance ChatDriver RpcChatDriver where
     let body = maybe audioRef (\c -> c <> "\n" <> audioRef) caption
     sendReplyMessage driver message body
 
-  uploadFile driver message path =
-    sendReplyMessage driver message ("Uploaded file: " <> Text.pack path)
+  uploadFile driver message path fileName =
+    sendReplyMessage driver message ("Uploaded file: " <> uploadFileName path fileName)
 
   editMessage driver message messageId body = do
     let sessionId = RPC.sessionIdFromMessage message

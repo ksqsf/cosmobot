@@ -45,7 +45,6 @@ import Data.Time.Clock (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
 import qualified Network.WebSockets as WS
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
-import System.FilePath (takeFileName)
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
@@ -558,14 +557,15 @@ uploadFileQQ
   => QQDriver
   -> IncomingMessage
   -> FilePath
+  -> Maybe Text
   -> Eff es (Either Text MessageId)
-uploadFileQQ driver message path =
+uploadFileQQ driver message path fileName =
   case (message.kind, message.chatId, message.senderId) of
     (ChatGroup, Just groupId, _) -> do
       fileRef <- localFileRef path
       response <- sendFileMessage driver "send_group_msg"
         [ "group_id" Aeson..= groupId
-        , "message" Aeson..= fileMessage path fileRef
+        , "message" Aeson..= fileMessage path fileName fileRef
         ]
       qqMessageIdResult "send_group_msg" response
     (ChatPrivate, _, Just rawUserId)
@@ -573,7 +573,7 @@ uploadFileQQ driver message path =
       fileRef <- localFileRef path
       response <- sendFileMessage driver "send_private_msg"
         [ "user_id" Aeson..= userId
-        , "message" Aeson..= fileMessage path fileRef
+        , "message" Aeson..= fileMessage path fileName fileRef
         ]
       qqMessageIdResult "send_private_msg" response
     _ ->
@@ -612,7 +612,7 @@ replyAudioQQ driver message audioRef caption =
       | actionSucceeded response =
           qqMessageIdResult action response
       | Just path <- localAudioPath audioRef =
-          uploadFileQQ driver message path
+          uploadFileQQ driver message path Nothing
       | otherwise =
           pure (Left (qqUploadFailureText action response))
 
@@ -646,22 +646,17 @@ qqMessageIdResult action response =
     then pure (maybe (Left (qqMalformedMessageResponseText action)) (Right . integerMessageId) (responseMessageId response))
     else pure (Left (qqUploadFailureText action response))
 
-fileMessage :: FilePath -> Text -> Aeson.Value
-fileMessage path file =
+fileMessage :: FilePath -> Maybe Text -> Text -> Aeson.Value
+fileMessage path fileName file =
   Aeson.toJSON
     [ Aeson.object
         [ "type" Aeson..= Aeson.String "file"
         , "data" Aeson..= Aeson.object
             [ "file" Aeson..= file
-            , "name" Aeson..= qqUploadFileName path
+            , "name" Aeson..= Driver.uploadFileName path fileName
             ]
         ]
     ]
-
-qqUploadFileName :: FilePath -> Text
-qqUploadFileName path =
-  let name = Text.pack (takeFileName path)
-  in if Text.null name then "file" else name
 
 qqUploadFailureText :: Text -> ActionResponse -> Text
 qqUploadFailureText action response =

@@ -76,9 +76,9 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
     withChatDriverEither message "Audio send" do
       replyAudio driver message audioRef caption
 
-  uploadFile (NormalizingChatDriver driver) message path =
+  uploadFile (NormalizingChatDriver driver) message path fileName =
     withChatDriverEither message "File upload" do
-      uploadFile driver message path
+      uploadFile driver message path fileName
 
   editMessage (NormalizingChatDriver driver) message messageId body =
     fromMaybe False <$> withChatDriverMaybe message "chat edit" do
@@ -158,9 +158,9 @@ instance ChatDriver ChatDrivers where
     withMessageDriver drivers message \driver ->
       replyAudio driver message audioRef caption
 
-  uploadFile drivers message path =
+  uploadFile drivers message path fileName =
     withMessageDriver drivers message \driver ->
-      uploadFile driver message path
+      uploadFile driver message path fileName
 
   editMessage drivers message messageId body =
     withMessageDriver drivers message \driver ->

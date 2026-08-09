@@ -1738,12 +1738,13 @@ uploadFileMatrix
   => MatrixDriver
   -> IncomingMessage
   -> FilePath
+  -> Maybe Text
   -> Eff es (Either Text MessageId)
-uploadFileMatrix driver message path =
+uploadFileMatrix driver message path requestedFileName =
   case viaNonEmpty head message.chatAliases of
     Just roomId ->
       matrixUserFacingEither "file upload" do
-        let fileName = matrixUploadFileName path
+        let fileName = Driver.uploadFileName path requestedFileName
             mime = Mime.mimeFromName (Text.pack path)
         size <- FileSystem.getFileSize path
         uploaded <- uploadMedia driver path fileName mime

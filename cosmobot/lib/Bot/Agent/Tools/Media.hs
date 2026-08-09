@@ -62,19 +62,21 @@ sendMediaTool =
   . noisy
   . withDescription "Send a cached media object to the current chat. Use this when the user asks for a generated or cached file to be sent."
   $ tool "send_media"
-      (requiredText "media_id" "Media id to send, either mf_xxx or media:mf_xxx.")
-      \mediaId -> do
+      ( requiredText "media_id" "Media id to send, either mf_xxx or media:mf_xxx."
+      , optionalText "filename" "Optional filename shown to the user. Defaults to the cached file name."
+      )
+      \mediaId fileName -> do
         context <- askToolContext
-        sendMedia context (Text.strip mediaId)
+        sendMedia context (Text.strip mediaId) (Text.strip <$> fileName)
 
-sendMedia :: (Chat.Chat :> es, Media.Media :> es) => Context -> Text -> Eff es ToolResult
-sendMedia context mediaId
+sendMedia :: (Chat.Chat :> es, Media.Media :> es) => Context -> Text -> Maybe Text -> Eff es ToolResult
+sendMedia context mediaId fileName
   | Text.null mediaId =
       pure (mediaFailure "media_id must not be empty.")
   | otherwise = Media.localMediaPath (mediaRef mediaId) >>= \case
       Nothing ->
         pure (mediaFailure [i|Media object not found: #{mediaId}|])
-      Just path -> Chat.uploadFile context.message path >>= \case
+      Just path -> Chat.uploadFile context.message path fileName >>= \case
         Right sent ->
           pure (toolText [i|Sent media #{mediaId}; message id: #{show sent :: Text}|])
         Left err -> do

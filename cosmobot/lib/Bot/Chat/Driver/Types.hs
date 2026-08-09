@@ -9,6 +9,7 @@ Stability   : experimental
 
 module Bot.Chat.Driver.Types
   ( ChatDriver (..)
+  , uploadFileName
   )
 where
 
@@ -16,6 +17,8 @@ import Bot.Core.Message
 import qualified Bot.Chat.Types as Chat
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.Text as Text
+import System.FilePath (takeFileName)
 
 class ChatDriver driver where
   type ChatDriverEffects driver (es :: [Effect]) :: Constraint
@@ -35,8 +38,8 @@ class ChatDriver driver where
   replyAudio driver _ _ _ =
     pure (Left [i|#{driverPlatform driver} does not support audio replies.|])
 
-  uploadFile :: ChatDriverEffects driver es => driver -> IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
-  uploadFile driver _ _ =
+  uploadFile :: ChatDriverEffects driver es => driver -> IncomingMessage -> FilePath -> Maybe Text -> Eff es (Either Text MessageId)
+  uploadFile driver _ _ _ =
     pure (Left [i|#{driverPlatform driver} does not support file uploads.|])
 
   editMessage :: ChatDriverEffects driver es => driver -> IncomingMessage -> MessageId -> Text -> Eff es Bool
@@ -94,3 +97,15 @@ class ChatDriver driver where
   setTyping :: ChatDriverEffects driver es => driver -> IncomingMessage -> Int -> Eff es ()
   setTyping _ _ _ =
     pure ()
+
+uploadFileName :: FilePath -> Maybe Text -> Text
+uploadFileName path requested =
+  fromMaybe fallback (requested >>= nonEmptyBaseName)
+  where
+    fallback = nonEmptyOrFile (Text.pack (takeFileName path))
+    nonEmptyBaseName raw =
+      let name = Text.pack (takeFileName (Text.unpack (Text.strip raw)))
+      in name <$ guard (not (Text.null name))
+    nonEmptyOrFile name
+      | Text.null name = "file"
+      | otherwise = name

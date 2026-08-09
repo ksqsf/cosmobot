@@ -140,7 +140,7 @@ instance Driver.ChatDriver NoopChatDriver where
 data AgentMockChatDriver es = AgentMockChatDriver
   { agentReply :: IncomingMessage -> Text -> Eff es (Either Text MessageId)
   , agentReplyAudio :: IncomingMessage -> Text -> Maybe Text -> Eff es (Either Text MessageId)
-  , agentUploadFile :: IncomingMessage -> FilePath -> Eff es (Either Text MessageId)
+  , agentUploadFile :: IncomingMessage -> FilePath -> Maybe Text -> Eff es (Either Text MessageId)
   , agentEditMessage :: IncomingMessage -> MessageId -> Text -> Eff es Bool
   , agentMessageOutPolicy :: IncomingMessage -> Eff es Chat.MessageOutPolicy
   , agentFetchMessage :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
@@ -164,7 +164,7 @@ defaultAgentMockChatDriver =
   AgentMockChatDriver
     { agentReply = \_ _ -> pure (Left "noop reply")
     , agentReplyAudio = \_ _ _ -> pure (Right "audio")
-    , agentUploadFile = \_ _ -> pure (Right "upload")
+    , agentUploadFile = \_ _ _ -> pure (Right "upload")
     , agentEditMessage = \_ _ _ -> pure False
     , agentMessageOutPolicy = \_ -> pure (Chat.ChunkedMessage 1800)
     , agentFetchMessage = \_ _ -> pure Nothing
@@ -243,6 +243,7 @@ main =
       , testCase "send file tool uploads via chat effect" testSendFileToolUploadsViaChatEffect
       , testCase "send file tool reports upload failure" testSendFileToolReportsUploadFailure
       , testCase "send file tool is noisy and superuser-only" testSendFileToolIsNoisyAndSuperuserOnly
+      , testCase "chat upload filenames are safe basenames" testUploadFileName
       , testCase "send_media uploads cached media for normal users" testSendMediaToolUploadsCachedMedia
       , testCase "chatlog tool filters by sender" testChatLogToolFiltersBySender
       , testCase "chatlog tool treats a blank sender as no filter" testChatLogToolIgnoresBlankSender
@@ -737,23 +738,23 @@ testToolReplyMiddlewareRejectsUncachedRemoteImages = do
 
 testSendFileToolUploadsViaChatEffect :: IO ()
 testSendFileToolUploadsViaChatEffect = do
-  uploads <- IORef.newIORef ([] :: [FilePath])
+  uploads <- IORef.newIORef ([] :: [(FilePath, Maybe Text)])
   replies <- IORef.newIORef ([] :: [Text])
-  result <- runSendFileTool replies \_ path -> do
-    liftIO $ IORef.modifyIORef' uploads (<> [path])
+  result <- runSendFileTool replies \_ path fileName -> do
+    liftIO $ IORef.modifyIORef' uploads (<> [(path, fileName)])
     pure (Right "900")
   case result of
     Agent.ToolSucceeded{content} ->
       assertBool "tool result should describe sent file" ("Sent file /tmp/report.txt" `Text.isInfixOf` content)
     Agent.ToolFailed{failure} ->
       assertFailure [i|expected file upload success, got #{show failure :: String}|]
-  IORef.readIORef uploads >>= (@?= ["/tmp/report.txt"])
+  IORef.readIORef uploads >>= (@?= [("/tmp/report.txt", Nothing)])
   IORef.readIORef replies >>= (@?= [])
 
 testSendFileToolReportsUploadFailure :: IO ()
 testSendFileToolReportsUploadFailure = do
   replies <- IORef.newIORef ([] :: [Text])
-  result <- runSendFileTool replies \_ _ ->
+  result <- runSendFileTool replies \_ _ _ ->
     pure (Left "upload failed")
   case result of
     Agent.ToolFailed{failure} -> do
@@ -783,15 +784,21 @@ testSendFileToolIsNoisyAndSuperuserOnly = do
   assertBool "Telegram description should not mention NapCat" (not ("NapCat" `Text.isInfixOf` telegramDescription))
   assertBool "QQ description should mention NapCat" ("NapCat" `Text.isInfixOf` qqDescription)
 
+testUploadFileName :: IO ()
+testUploadFileName = do
+  Driver.uploadFileName "/tmp/cache.bin" Nothing @?= "cache.bin"
+  Driver.uploadFileName "/tmp/cache.bin" (Just "../report.txt") @?= "report.txt"
+  Driver.uploadFileName "/tmp/cache.bin" (Just " ") @?= "cache.bin"
+
 testSendMediaToolUploadsCachedMedia :: IO ()
 testSendMediaToolUploadsCachedMedia =
   withSQLiteTempPath "send-media" \dbPath ->
     withTempDir "send-media-cache" \dir -> do
-      uploads <- IORef.newIORef ([] :: [FilePath])
+      uploads <- IORef.newIORef ([] :: [(FilePath, Maybe Text)])
       let cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = dir </> "cache"}
           driver = defaultAgentMockChatDriver
-            { agentUploadFile = \_ path -> do
-                liftIO $ IORef.modifyIORef' uploads (<> [path])
+            { agentUploadFile = \_ path fileName -> do
+                liftIO $ IORef.modifyIORef' uploads (<> [(path, fileName)])
                 pure (Right "902")
             }
           runStack =
@@ -813,22 +820,28 @@ testSendMediaToolUploadsCachedMedia =
           }
         expectedPath <- fromMaybe (error "expected local media path") <$> Media.localMediaPath mediaRef
         runner <- AgentTool.startTool MediaTools.sendMediaTool agentContext
-        result <- runner testToolCallMetadata (Aeson.object ["media_id" Aeson..= mediaRef])
-        pure (expectedPath, result)
-      (expectedPath, result) <- either assertFailure pure runResult
+        defaultResult <- runner testToolCallMetadata (Aeson.object ["media_id" Aeson..= mediaRef])
+        namedResult <- runner testToolCallMetadata (Aeson.object
+          [ "media_id" Aeson..= mediaRef
+          , "filename" Aeson..= ("../report.bin" :: Text)
+          ])
+        pure (expectedPath, defaultResult, namedResult)
+      (expectedPath, defaultResult, namedResult) <- either assertFailure pure runResult
       let tool = MediaTools.sendMediaTool :: AgentTool.Tool (Eff AgentStack)
       AgentTool.toolIsNoisy tool @?= True
       assertBool "send_media should be available to normal users" (AgentTool.toolAllowed tool agentContext)
-      IORef.readIORef uploads >>= (@?= [expectedPath])
-      case result of
-        Agent.ToolSucceeded{content} ->
-          assertBool "tool result should report sent media" ("Sent media media:mf_" `Text.isInfixOf` content)
-        Agent.ToolFailed{failure} ->
-          assertFailure [i|send_media failed: #{show failure :: String}|]
+      IORef.readIORef uploads >>= (@?= [(expectedPath, Nothing), (expectedPath, Just "../report.bin")])
+      traverse_ assertSendMediaSucceeded [defaultResult, namedResult]
+  where
+    assertSendMediaSucceeded = \case
+      Agent.ToolSucceeded{content} ->
+        assertBool "tool result should report sent media" ("Sent media media:mf_" `Text.isInfixOf` content)
+      Agent.ToolFailed{failure} ->
+        assertFailure [i|send_media failed: #{show failure :: String}|]
 
 runSendFileTool
   :: IORef.IORef [Text]
-  -> (IncomingMessage -> FilePath -> Eff '[IOE] (Either Text MessageId))
+  -> (IncomingMessage -> FilePath -> Maybe Text -> Eff '[IOE] (Either Text MessageId))
   -> IO Agent.ToolResult
 runSendFileTool replies upload =
   runEff $
