@@ -49,8 +49,12 @@ class Typeable a => ResourceObject m a where
   resourceTypeName :: proxy a -> Text
   resourceScope :: proxy a -> ResourceScope
   resourceScope _ = PersonResource
+  resourceIdPrefix :: proxy a -> Text
+  resourceIdPrefix _ = "res"
   resourcePersistence :: proxy a -> ResourcePersistence m a
   resourcePersistence _ = EphemeralResource
+  resourceListed :: proxy a -> Bool
+  resourceListed _ = True
   resourceTTLSeconds :: CreationArgs a -> Either Text (Maybe Int)
   resourceTTLSeconds _ = Right Nothing
   createResourceObject :: Init (CreationArgs a) -> m (Either Text a)

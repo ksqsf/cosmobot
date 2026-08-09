@@ -54,6 +54,7 @@ data SomeResource es = SomeResource
   , detail :: Eff es Text
   , destroy :: Eff es (Either Text ())
   , persistent :: !Bool
+  , listed :: !Bool
   , ttlSeconds :: !(Maybe Int)
   , expiresAt :: !(Maybe UTCTime)
   , availability :: !Availability
@@ -131,6 +132,7 @@ restoreStoredResource loaders lifetime stored =
         , detail = detailResourceObject object
         , destroy = destroyResourceObject object
         , persistent = True
+        , listed = resourceListed @(Eff es) @a proxy
         , ttlSeconds = fst <$> lifetime
         , expiresAt = snd <$> lifetime
         , availability = Available Map.empty 0
@@ -149,6 +151,7 @@ restoreStoredResource loaders lifetime stored =
       , detail = pure ("unavailable: " <> err)
       , destroy = pure (Right ())
       , persistent = True
+      , listed = True
       , ttlSeconds = fst <$> lifetime
       , expiresAt = snd <$> lifetime
       , availability = Available Map.empty 0
@@ -156,7 +159,7 @@ restoreStoredResource loaders lifetime stored =
 
 resourceIdNumber :: ResourceId -> Integer
 resourceIdNumber resourceId =
-  fromMaybe 0 (Text.stripPrefix "res-" resourceId >>= readMaybe . Text.unpack)
+  fromMaybe 0 (readMaybe (Text.unpack (snd (Text.breakOnEnd "-" resourceId))))
 
 conciseException :: Show e => e -> Text
 conciseException = Text.take 500 . show
@@ -202,7 +205,7 @@ createIn stateRef unlift _ parent creatorRunId requestedName initValue =
         gate <- MVar.newEmptyMVar
         reservation <- atomicModifyIORef' stateRef \state ->
           if state.accepting
-            then reserveName state gate requestedName
+            then reserveName state gate requestedName (resourceIdPrefix @(Eff localEs) @a (Proxy @a))
             else (state, Left ResourceUnavailable)
         case reservation of
           Left err -> pure (Left err)
@@ -231,6 +234,7 @@ createIn stateRef unlift _ parent creatorRunId requestedName initValue =
                 , detail = unlift (detailResourceObject object)
                 , destroy = unlift (destroyResourceObject object)
                 , persistent = isPersistent
+                , listed = resourceListed @(Eff localEs) @a (Proxy @a)
                 , ttlSeconds
                 , expiresAt
                 , availability = Available Map.empty 0
@@ -268,14 +272,15 @@ reserveName
   :: ManagerState es
   -> MVar.MVar ()
   -> Maybe ResourceId
+  -> Text
   -> (ManagerState es, Either ResourceError (Integer, ResourceId))
-reserveName state gate requestedName =
+reserveName state gate requestedName prefix =
   case traverse validateResourceName requestedName of
     Left err -> (state, Left err)
     Right validName ->
       let occupied name = Map.member name state.resources || any ((== name) . fst) state.creating
           nextAvailable candidate =
-            let name = "res-" <> show candidate
+            let name = prefix <> "-" <> show candidate
             in if occupied name then nextAvailable (candidate + 1) else (candidate, name)
           (nextId, resourceId) = case validName of
             Just name -> (state.nextId, name)
@@ -354,7 +359,7 @@ listMatchingIn
   -> Eff es [SomeResourceObject]
 listMatchingIn stateRef access matches = do
   now <- liftIO getCurrentTime
-  entries <- Map.toAscList . Map.filter (\resource -> matches resource && mayAccess access resource && isAvailable resource.availability) . (.resources) <$> readIORef stateRef
+  entries <- Map.toAscList . Map.filter (\resource -> resource.listed && matches resource && mayAccess access resource && isAvailable resource.availability) . (.resources) <$> readIORef stateRef
   traverse (snapshot now) entries
   where
     snapshot now (resourceId, resource) = do

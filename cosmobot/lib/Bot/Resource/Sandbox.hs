@@ -10,7 +10,7 @@ module Bot.Resource.Sandbox
   ( Config (..)
   , defaultConfig
   , SandboxArgs (..)
-  , Sandbox
+  , Sandbox (..)
   , SandboxOutput (..)
   , runCommand
   , copyFileFromSandbox

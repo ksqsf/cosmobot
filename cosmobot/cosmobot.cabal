@@ -294,6 +294,7 @@ library
         Bot.RPC.State
         Bot.Resource
         Bot.Resource.Sandbox
+        Bot.Resource.Command
         Bot.Resource.SubAgent
         Bot.Resource.Types
         Bot.Resource.Workspace

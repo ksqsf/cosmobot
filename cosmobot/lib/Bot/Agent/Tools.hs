@@ -130,6 +130,7 @@ defaultToolsWith extraTools = tools
       , chatMemoryTool
       , loadSkillTool
       , sandboxTool
+      , commandTool
       , runBashTool
       , workspaceTool
       , captureContinuationTool

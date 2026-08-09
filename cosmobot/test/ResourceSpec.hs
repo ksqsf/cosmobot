@@ -13,6 +13,7 @@ import Bot.Handler.Resource (removeResources, renderResources, resourceIds)
 import Bot.Prelude
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Resource.Sandbox as Sandbox
+import qualified Bot.Resource.Command as Command
 import qualified Bot.Resource.Workspace as Workspace
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
@@ -147,6 +148,8 @@ main = defaultMain $ testGroup "resource"
       Resource.ttlFromMinutes 5 @?= Right (Just 300)
   , testCase "sandboxes are chat scoped" $
       Resource.resourceScope @(Eff '[Concurrent, TypedProcess.TypedProcess, IOE]) (Proxy @Sandbox.Sandbox) @?= Resource.ChatResource
+  , testCase "commands stay out of the generic resource list" $
+      Resource.resourceListed @(Eff '[Resource.Resource, Concurrency.Concurrency, Concurrent]) (Proxy @Command.Command) @?= False
   , testCase "resource removal reports partial results independently" testPartialRemoval
   ]
 
