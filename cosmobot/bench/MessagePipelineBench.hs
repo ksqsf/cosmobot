@@ -24,8 +24,9 @@ instance NFData BenchMessages where
     foldr (\message rest -> forceMessage message `seq` rest) () messages
 
 forceMessage :: IncomingMessage -> ()
-forceMessage IncomingMessage{platform, kind, chatId, chatAliases, digest, senderId, senderUsername, messageId, replyToMessageId, mentions, mentionUsernames, imageUrls, files, text, raw} =
-  forcePlatform platform
+forceMessage IncomingMessage{eventKind, platform, kind, chatId, chatAliases, digest, senderId, senderUsername, messageId, replyToMessageId, mentions, mentionUsernames, imageUrls, files, text, raw} =
+  forceEventKind eventKind
+    `seq` forcePlatform platform
     `seq` forceKind kind
     `seq` rnf chatId
     `seq` rnf chatAliases
@@ -49,6 +50,11 @@ forcePlatform = \case
   PlatformDiscord -> ()
   PlatformRPC -> ()
   PlatformACP -> ()
+
+forceEventKind :: IncomingMessageEventKind -> ()
+forceEventKind = \case
+  IncomingMessageCreated -> ()
+  IncomingMessageDeleted -> ()
 
 forceKind :: ChatKind -> ()
 forceKind = \case
@@ -260,7 +266,8 @@ syntheticMessages count =
 syntheticMessage :: Int -> IncomingMessage
 syntheticMessage index =
   IncomingMessage
-    { platform = platform
+    { eventKind = IncomingMessageCreated
+    , platform = platform
     , kind = kind
     , chatId = Just (fromIntegral (100 + index `mod` 32))
     , chatAliases = []
