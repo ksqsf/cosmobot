@@ -79,6 +79,7 @@ common lib-deps
                     , containers
                     , commonmark
                     , commonmark-extensions
+                    , parsec
                     , crypton
                     , directory
                     , filepath

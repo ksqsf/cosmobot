@@ -26,17 +26,22 @@ module Bot.Chat.Driver.Telegram
   , PhotoSize (..)
   , TelegramMedia (..)
   , ParseMode (..)
+  , InputRichMessage (..)
+  , InputRichMessageMedia (..)
+  , InputRichMedia (..)
+  , ReplyParameters (..)
+  , SendRichMessageRequest (..)
   , SendMessageRequest (..)
   , EditMessageTextRequest (..)
   , SendPhotoRequest (..)
   , SendDocumentRequest (..)
   , SendVoiceRequest (..)
-  , TelegramFormatted (..)
   , TelegramException (..)
   , TelegramResult
   , parseTelegramResult
-  , formatTelegramMarkdown
+  , formatTelegramRichHtml
   , telegramFailureReplyText
+  , richMessageFallbackAllowed
   , incomingMessages
   , updateToIncomingMessage
   , updateToIncomingMessageWith
@@ -52,31 +57,51 @@ import Bot.Util.Multipart
 import Bot.Util.Aeson
 import Bot.Core.Message
 import Commonmark hiding (escapeHtml)
-import qualified Commonmark.Entity as Commonmark
+import Commonmark.Blocks
+  ( BlockData (..)
+  , BlockSpec (..)
+  , BlockStartResult (..)
+  , addNodeToStack
+  , defBlockData
+  , defaultFinalizer
+  , getBlockText
+  )
+import Commonmark.Inlines (InlineParser, withAttributes)
+import Commonmark.TokParsers (anyTok, nonindentSpaces, symbol)
 import Commonmark.Extensions
   ( HasFootnote (..)
   , HasMath (..)
+  , HasPipeTable (..)
+  , HasSubscript (..)
+  , HasSuperscript (..)
   , HasStrikethrough (..)
   , HasTaskList (..)
+  , ColAlignment (..)
+  , autolinkSpec
   , footnoteSpec
   , mathSpec
+  , pipeTableSpec
+  , subscriptSpec
+  , superscriptSpec
   , strikethroughSpec
   , taskListSpec
   )
-import Data.List (maximum)
+import Data.List (lookup, maximum)
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.Char as Char
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.Lazy as LazyText
+import Data.Tree (Tree (..))
 import qualified Network.HTTP.Client as Client
 import Network.HTTP.Req
 import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Network.HTTP.Types.Header as HTTPHeader
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
+import qualified Text.Parsec as Parsec
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import qualified Effectful.Temporary as Temporary
@@ -167,7 +192,10 @@ telegramEditChunkChars :: Int
 telegramEditChunkChars = 512
 
 telegramMessageTextLimit :: Int
-telegramMessageTextLimit = 4096
+telegramMessageTextLimit = 30000
+
+telegramLegacyMessageTextLimit :: Int
+telegramLegacyMessageTextLimit = 4096
 
 -- ---------------------------------------------------------------------------
 -- Typeclass
@@ -545,6 +573,19 @@ newtype TelegramException = TelegramException Text
 instance Exception TelegramException where
   displayException (TelegramException message) = Text.unpack message
 
+withRichMessageFallback :: IOE :> es => Text -> Eff es a -> Eff es a -> Eff es a
+withRichMessageFallback text action fallback =
+  action `catchSync` \err ->
+    case fromException err :: Maybe TelegramException of
+      Just telegramError
+        | richMessageFallbackAllowed text telegramError -> fallback
+      _ -> throwIO err
+
+richMessageFallbackAllowed :: Text -> TelegramException -> Bool
+richMessageFallbackAllowed text (TelegramException message) =
+  Text.length text <= telegramLegacyMessageTextLimit
+    && "Bad Request:" `Text.isPrefixOf` message
+
 data TelegramResult
   = Ok  Aeson.Value
   | Err Text
@@ -668,226 +709,238 @@ parseModeText ParseModeHTML       = "HTML"
 -- Formatting
 -- ---------------------------------------------------------------------------
 
-data TelegramFormatted = TelegramFormatted
-  { formattedText :: !Text
-  , formattedEntities :: ![MessageEntity]
+data TelegramRichHtml = TelegramRichHtml
+  { value :: !(Html ())
+  , containsBlock :: !Bool
   }
-  deriving (Show, Typeable)
+  deriving (Show)
 
-instance Semigroup TelegramFormatted where
-  left <> right =
-    TelegramFormatted
-      { formattedText = left.formattedText <> right.formattedText
-      , formattedEntities = left.formattedEntities <> map (shiftEntity (utf16Length left.formattedText)) right.formattedEntities
-      }
+instance Semigroup TelegramRichHtml where
+  left <> right = TelegramRichHtml
+    { value = left.value <> right.value
+    , containsBlock = left.containsBlock || right.containsBlock
+    }
 
-instance Monoid TelegramFormatted where
-  mempty = TelegramFormatted "" []
+instance Monoid TelegramRichHtml where
+  mempty = TelegramRichHtml mempty False
 
-instance Rangeable TelegramFormatted where
+instance Rangeable TelegramRichHtml where
   ranged _ = id
 
-instance HasAttributes TelegramFormatted where
-  addAttributes _ = id
+instance HasAttributes TelegramRichHtml where
+  addAttributes attrs html =
+    html{value = addAttributes attrs html.value}
 
-instance ToPlainText TelegramFormatted where
-  toPlainText = (.formattedText)
+instance ToPlainText TelegramRichHtml where
+  toPlainText = toPlainText . (.value)
 
-instance IsInline TelegramFormatted where
-  lineBreak = formattedTextOnly "\n"
-  softBreak = formattedTextOnly "\n"
-  str = formattedTextOnly
-  entity raw =
-    formattedTextOnly (fromMaybe raw (Commonmark.lookupEntity (Text.drop 1 raw)))
-  escapedChar = formattedTextOnly . Text.singleton
-  emph = wrapFormattedEntity "italic" Nothing Nothing
-  strong = wrapFormattedEntity "bold" Nothing Nothing
-  link target _title = wrapFormattedEntity "text_link" (Just target) Nothing
-  image target _title description =
-    if Text.null description.formattedText
-      then formattedTextOnly target
-      else description
-  code text = wrapFormattedEntity "code" Nothing Nothing (formattedTextOnly text)
-  rawInline _ text = formattedTextOnly text
+instance IsInline TelegramRichHtml where
+  lineBreak = inlineHtml (lineBreak :: Html ())
+  softBreak = inlineHtml (softBreak :: Html ())
+  str = inlineHtml . str
+  entity = inlineHtml . entity
+  escapedChar = inlineHtml . escapedChar
+  emph = mapRichHtml emph
+  strong = mapRichHtml strong
+  link target title = mapRichHtml (link target title)
+  image = telegramRichMedia
+  code = inlineHtml . code
+  rawInline format = inlineHtml . rawInline format
 
-instance IsBlock TelegramFormatted TelegramFormatted where
-  paragraph body = body <> formattedTextOnly "\n\n"
-  plain body = body <> formattedTextOnly "\n"
-  thematicBreak = formattedTextOnly "────────\n\n"
-  blockQuote body = body
-  codeBlock info text =
-    wrapFormattedEntity "pre" Nothing (nonEmptyText (Text.takeWhile (not . Char.isSpace) info)) (formattedTextOnly text)
-      <> formattedTextOnly "\n\n"
-  heading _ body =
-    wrapFormattedEntity "bold" Nothing Nothing body <> formattedTextOnly "\n\n"
-  rawBlock _ text = formattedTextOnly text
+instance IsBlock TelegramRichHtml TelegramRichHtml where
+  paragraph html
+    | html.containsBlock = html
+    | otherwise = blockHtml (paragraph html.value)
+  plain html
+    | html.containsBlock = html
+    | otherwise = inlineHtml (plain html.value)
+  thematicBreak = blockHtml (thematicBreak :: Html ())
+  blockQuote = blockHtml . blockQuote . (.value)
+  codeBlock info = blockHtml . codeBlock info
+  heading level = blockHtml . heading level . (.value)
+  rawBlock format = blockHtml . rawBlock format
   referenceLinkDefinition _ _ = mempty
-  list listType _ items =
-    mconcat (zipWith renderItem [(1 :: Int)..] items) <> formattedTextOnly "\n"
+  list listType spacing = blockHtml . list listType spacing . map (.value)
+
+instance HasStrikethrough TelegramRichHtml where
+  strikethrough = mapRichHtml strikethrough
+
+instance HasSubscript TelegramRichHtml where
+  subscript = mapRichHtml subscript
+
+instance HasSuperscript TelegramRichHtml where
+  superscript = mapRichHtml superscript
+
+instance HasMath TelegramRichHtml where
+  inlineMath = inlineHtml . htmlInline "tg-math" . Just . htmlText
+  displayMath = blockHtml . htmlBlock "tg-math-block" . Just . htmlText
+
+instance HasTaskList TelegramRichHtml TelegramRichHtml where
+  taskList listType spacing items =
+    blockHtml $ list listType spacing (map taskItem items)
     where
-      renderItem index item =
-        formattedTextOnly (listItemPrefix listType index)
-          <> indentFormattedContinuation "  " (trimFormattedEnd item)
-          <> formattedTextOnly "\n"
+      taskItem (checked, item) =
+        checkbox checked <> item.value
+      checkbox checked =
+        addAttribute ("type", "checkbox")
+        . (if checked then addAttribute ("checked", "") else id)
+        $ htmlInline "input" Nothing
 
-instance HasStrikethrough TelegramFormatted where
-  strikethrough = wrapFormattedEntity "strikethrough" Nothing Nothing
+instance HasPipeTable TelegramRichHtml TelegramRichHtml where
+  pipeTable alignments headers rows =
+    blockHtml $ htmlBlock "table" $ Just $
+      tableRow "th" alignments headers <> mconcat (map (tableRow "td" alignments) rows)
 
-instance HasMath TelegramFormatted where
-  inlineMath text =
-    wrapFormattedEntity "code" Nothing Nothing (formattedTextOnly text)
-  displayMath text =
-    wrapFormattedEntity "pre" Nothing Nothing (formattedTextOnly text)
-
-instance HasTaskList TelegramFormatted TelegramFormatted where
-  taskList _ _ items =
-    mconcat (map renderItem items) <> formattedTextOnly "\n"
-    where
-      renderItem (checked, item) =
-        formattedTextOnly (taskListItemPrefix checked)
-          <> indentFormattedContinuation "  " (trimFormattedEnd item)
-          <> formattedTextOnly "\n"
-
-instance HasFootnote TelegramFormatted TelegramFormatted where
-  footnote number _label body =
-    formattedTextOnly ("[" <> show number <> "]: ")
-      <> indentFormattedContinuation "    " (trimFormattedEnd body)
-      <> formattedTextOnly "\n"
+instance HasFootnote TelegramRichHtml TelegramRichHtml where
+  footnote _ label body =
+    blockHtml $ addAttribute ("name", "note-" <> label) $
+      htmlBlock "tg-reference" (Just body.value)
   footnoteList =
     mconcat
-  footnoteRef number _label _body =
-    formattedTextOnly ("[" <> number <> "]")
+  footnoteRef number label _ =
+    inlineHtml $ addAttribute ("href", "#note-" <> label) $
+      htmlInline "a" (Just (htmlText ("[" <> number <> "]")))
 
-listItemPrefix :: ListType -> Int -> Text
-listItemPrefix (BulletList _) _ =
-  "• "
-listItemPrefix (OrderedList start _ delimiter) index =
-  orderedItemPrefix delimiter (start + index - 1)
+inlineHtml :: Html () -> TelegramRichHtml
+inlineHtml value =
+  TelegramRichHtml{value, containsBlock = False}
 
-orderedItemPrefix :: DelimiterType -> Int -> Text
-orderedItemPrefix Period number =
-  show number <> ". "
-orderedItemPrefix OneParen number =
-  show number <> ") "
-orderedItemPrefix TwoParens number =
-  "(" <> show number <> ") "
+blockHtml :: Html () -> TelegramRichHtml
+blockHtml value =
+  TelegramRichHtml{value, containsBlock = True}
 
-taskListItemPrefix :: Bool -> Text
-taskListItemPrefix False =
-  "☐ "
-taskListItemPrefix True =
-  "☑ "
+mapRichHtml :: (Html () -> Html ()) -> TelegramRichHtml -> TelegramRichHtml
+mapRichHtml action html =
+  html{value = action html.value}
 
-telegramMarkdownSyntax :: SyntaxSpec Identity TelegramFormatted TelegramFormatted
-telegramMarkdownSyntax =
-  strikethroughSpec
+telegramRichMedia :: Text -> Text -> TelegramRichHtml -> TelegramRichHtml
+telegramRichMedia target title description
+  | Just emojiId <- Text.stripPrefix "tg://emoji?id=" target =
+      inlineHtml $
+        htmlRaw ("<tg-emoji emoji-id=\"" <> escapeHtml emojiId <> "\">")
+          <> description.value
+          <> htmlRaw "</tg-emoji>"
+  | Just (unix, format) <- telegramTime target =
+      inlineHtml $
+        htmlRaw ("<tg-time unix=\"" <> escapeHtml unix <> "\"" <> maybe "" (\value -> " format=\"" <> escapeHtml value <> "\"") format <> ">")
+          <> description.value
+          <> htmlRaw "</tg-time>"
+  | isHttpUrl target =
+      blockHtml $ case nonEmptyText (Text.strip title) of
+        Nothing -> media
+        Just caption -> htmlBlock "figure" (Just (media <> htmlBlock "figcaption" (Just (htmlText caption))))
+  | otherwise =
+      description
+  where
+    tag = telegramMediaTag target
+    media =
+      addAttribute ("src", target) $
+        if tag == "img"
+          then htmlBlock tag Nothing
+          else htmlBlock tag (Just mempty)
+
+telegramTime :: Text -> Maybe (Text, Maybe Text)
+telegramTime target = do
+  query <- Text.stripPrefix "tg://time?" target
+  let parameters = map (Text.breakOn "=") (Text.splitOn "&" query)
+      parameter name = Text.drop 1 <$> lookup name parameters
+  unix <- parameter "unix"
+  pure (unix, parameter "format")
+
+telegramMediaTag :: Text -> Text
+telegramMediaTag target
+  | mime == "image/gif" = "video"
+  | "video/" `Text.isPrefixOf` mime = "video"
+  | "audio/" `Text.isPrefixOf` mime = "audio"
+  | otherwise = "img"
+  where
+    mime = Text.toLower (Mime.mimeFromName (Text.takeWhile (`notElem` ['?', '#']) target))
+
+isHttpUrl :: Text -> Bool
+isHttpUrl target =
+  let lower = Text.toLower (Text.strip target)
+  in "http://" `Text.isPrefixOf` lower || "https://" `Text.isPrefixOf` lower
+
+tableRow :: Text -> [ColAlignment] -> [TelegramRichHtml] -> Html ()
+tableRow cellTag alignments cells =
+  htmlBlock "tr" . Just . mconcat $
+    zipWith renderCell (alignments <> repeat DefaultAlignedCol) cells
+  where
+    renderCell alignment cell =
+      htmlRaw ("<" <> cellTag <> alignmentAttribute alignment <> ">")
+        <> cell.value
+        <> htmlRaw ("</" <> cellTag <> ">")
+    alignmentAttribute LeftAlignedCol = " align=\"left\""
+    alignmentAttribute CenterAlignedCol = " align=\"center\""
+    alignmentAttribute RightAlignedCol = " align=\"right\""
+    alignmentAttribute DefaultAlignedCol = ""
+
+telegramRichHtmlSyntax :: SyntaxSpec Identity TelegramRichHtml TelegramRichHtml
+telegramRichHtmlSyntax =
+  latexMathSpec
     <> mathSpec
+    <> subscriptSpec
+    <> superscriptSpec
+    <> strikethroughSpec
     <> taskListSpec
     <> footnoteSpec
+    <> autolinkSpec
     <> defaultSyntaxSpec
+    <> pipeTableSpec
 
-formatTelegramMarkdown :: Text -> TelegramFormatted
-formatTelegramMarkdown input =
-  case runIdentity (commonmarkWith telegramMarkdownSyntax "telegram-message" input) of
-    Left _ ->
-      formattedTextOnly input
-    Right formatted ->
-      trimFormattedEnd formatted
-
-formattedTextOnly :: Text -> TelegramFormatted
-formattedTextOnly text =
-  TelegramFormatted text []
-
-wrapFormattedEntity :: Text -> Maybe Text -> Maybe Text -> TelegramFormatted -> TelegramFormatted
-wrapFormattedEntity type_ url language body
-  | Text.null body.formattedText = body
-  | otherwise =
-      body
-        { formattedEntities =
-            MessageEntity
-              { type_ = type_
-              , offset = 0
-              , length = utf16Length body.formattedText
-              , url = url
-              , language = language
-              , user = Nothing
-              }
-            : body.formattedEntities
-        }
-
-shiftEntity :: Integer -> MessageEntity -> MessageEntity
-shiftEntity shift MessageEntity{type_, offset, length = entityLength, url, language, user} =
-  MessageEntity{type_, offset = offset + shift, length = entityLength, url, language, user}
-
-trimFormattedEnd :: TelegramFormatted -> TelegramFormatted
-trimFormattedEnd formatted =
-  let trimmedText = Text.dropWhileEnd Char.isSpace formatted.formattedText
-      trimmedLength = utf16Length trimmedText
-  in TelegramFormatted
-      { formattedText = trimmedText
-      , formattedEntities = mapMaybe (trimEntityToLength trimmedLength) formatted.formattedEntities
-      }
-
-trimEntityToLength :: Integer -> MessageEntity -> Maybe MessageEntity
-trimEntityToLength textLength messageEntity@MessageEntity{type_, offset, length = entityLength, url, language, user}
-  | offset >= textLength =
-      Nothing
-  | entityEnd <= textLength =
-      Just messageEntity
-  | otherwise =
-      let nextLength = textLength - offset
-      in if nextLength <= 0
-        then Nothing
-        else Just MessageEntity{type_, offset, length = nextLength, url, language, user}
-  where
-    entityEnd = offset + entityLength
-
-indentFormattedContinuation :: Text -> TelegramFormatted -> TelegramFormatted
-indentFormattedContinuation indent formatted
-  | Text.null indent = formatted
-  | otherwise =
-      TelegramFormatted
-        { formattedText = Text.intercalate ("\n" <> indent) (Text.splitOn "\n" formatted.formattedText)
-        , formattedEntities = map (indentEntity formatted.formattedText indentLength) formatted.formattedEntities
-        }
-  where
-    indentLength = utf16Length indent
-
-indentEntity :: Text -> Integer -> MessageEntity -> MessageEntity
-indentEntity text indentLength MessageEntity{type_, offset, length = entityLength, url, language, user} =
-  MessageEntity
-    { type_ = type_
-    , offset = offset + indentLength * newlinesBefore
-    , length = entityLength + indentLength * newlinesInside
-    , url = url
-    , language = language
-    , user = user
+latexMathSpec :: (Monad m, IsBlock il bl, IsInline il, HasMath il, HasMath bl) => SyntaxSpec m il bl
+latexMathSpec =
+  mempty
+    { syntaxBlockSpecs = [latexDisplayMathBlockSpec]
+    , syntaxInlineParsers = [withAttributes parseLatexMath]
     }
-  where
-    newlinesBefore = countNewlinesBeforeUtf16Offset offset text
-    newlinesInside =
-      countNewlinesBeforeUtf16Offset (offset + entityLength) text - newlinesBefore
 
-countNewlinesBeforeUtf16Offset :: Integer -> Text -> Integer
-countNewlinesBeforeUtf16Offset limit =
-  go 0 0 . Text.unpack
-  where
-    go _ count [] = count
-    go position count (char : rest)
-      | nextPosition > limit = count
-      | otherwise =
-          go nextPosition (if char == '\n' then count + 1 else count) rest
-      where
-        nextPosition = position + utf16CharLength char
+parseLatexMath :: (Monad m, HasMath il) => InlineParser m il
+parseLatexMath = Parsec.try do
+  void (symbol '\\')
+  void (symbol '(')
+  inlineMath . untokenize <$> latexMathContents ')'
 
-utf16CharLength :: Char -> Integer
-utf16CharLength char
-  | Char.ord char > 0xffff = 2
-  | otherwise = 1
+latexMathContents :: Monad m => Char -> InlineParser m [Tok]
+latexMathContents closing = do
+  token <- anyTok
+  case token.tokType of
+    Symbol '\\' -> do
+      next <- anyTok
+      case next.tokType of
+        Symbol char | char == closing -> pure []
+        _ -> (token :) . (next :) <$> latexMathContents closing
+    _ -> (token :) <$> latexMathContents closing
 
-utf16Length :: Text -> Integer
-utf16Length =
-  (`div` 2) . fromIntegral . ByteString.length . TextEncoding.encodeUtf16LE
+latexDisplayMathBlockSpec :: (Monad m, IsBlock il bl, HasMath bl) => BlockSpec m il bl
+latexDisplayMathBlockSpec = BlockSpec
+  { blockType = "LatexDisplayMath"
+  , blockStart = Parsec.try do
+      nonindentSpaces
+      position <- Parsec.getPosition
+      void (symbol '\\')
+      void (symbol '[')
+      contents <- Parsec.manyTill anyTok (Parsec.try (symbol '\\' *> symbol ']'))
+      addNodeToStack $ Node
+        (defBlockData latexDisplayMathBlockSpec)
+          { blockLines = [contents]
+          , blockStartPos = [position]
+          }
+        []
+      pure BlockStartMatch
+  , blockCanContain = const False
+  , blockContainsLines = False
+  , blockParagraph = False
+  , blockContinue = const empty
+  , blockConstructor = pure . displayMath . untokenize . getBlockText
+  , blockFinalize = defaultFinalizer
+  }
+
+formatTelegramRichHtml :: Text -> Text
+formatTelegramRichHtml input =
+  case runIdentity (commonmarkWith telegramRichHtmlSyntax "telegram-message" input) of
+    Left _ -> escapeHtml input
+    Right html -> Text.strip (LazyText.toStrict (renderHtml html.value))
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -1106,19 +1159,67 @@ instance TelegramRequest SendMessageRequest where
   type TelegramResponse SendMessageRequest = Message
   telegramMethod _ = "sendMessage"
 
+data InputRichMedia = InputRichMedia
+  { type_ :: !Text
+  , media :: !Text
+  } deriving (Show, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSON InputRichMedia)
+
+data InputRichMessageMedia = InputRichMessageMedia
+  { id :: !Text
+  , media :: !InputRichMedia
+  } deriving (Show, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSON InputRichMessageMedia)
+
+data InputRichMessage = InputRichMessage
+  { html :: !Text
+  , media :: !(Maybe [InputRichMessageMedia])
+  } deriving (Show, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing InputRichMessage)
+
+-- | Minimal reply target used by outgoing Telegram messages.
+newtype ReplyParameters = ReplyParameters
+  { messageId :: Integer
+  } deriving (Show, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSON ReplyParameters)
+
+-- | Request payload for Telegram @sendRichMessage@.
+data SendRichMessageRequest = SendRichMessageRequest
+  { chatId              :: !Integer
+  , messageThreadId     :: !(Maybe Integer)
+  , richMessage         :: !InputRichMessage
+  , disableNotification :: !(Maybe Bool)
+  , replyParameters     :: !(Maybe ReplyParameters)
+  } deriving (Show, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing SendRichMessageRequest)
+
+instance TelegramRequest SendRichMessageRequest where
+  type TelegramResponse SendRichMessageRequest = Message
+  telegramMethod _ = "sendRichMessage"
+
 -- | Request payload for Telegram @editMessageText@.
 data EditMessageTextRequest = EditMessageTextRequest
-  { chatId                :: !Integer
-  , messageId             :: !Integer
-  , text                  :: !Text
-  , parseMode             :: !(Maybe ParseMode)
-  , entities              :: !(Maybe [MessageEntity])
-  , disableWebPagePreview :: !(Maybe Bool)
+  { chatId      :: !Integer
+  , messageId   :: !Integer
+  , richMessage :: !InputRichMessage
   } deriving (Show, Generic)
     deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing EditMessageTextRequest)
 
 instance TelegramRequest EditMessageTextRequest where
   type TelegramResponse EditMessageTextRequest = Message
+  telegramMethod _ = "editMessageText"
+
+data EditPlainMessageTextRequest = EditPlainMessageTextRequest
+  { chatId    :: !Integer
+  , messageId :: !Integer
+  , text      :: !Text
+  , parseMode :: !(Maybe ParseMode)
+  , entities  :: !(Maybe [MessageEntity])
+  } deriving (Show, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing EditPlainMessageTextRequest)
+
+instance TelegramRequest EditPlainMessageTextRequest where
+  type TelegramResponse EditPlainMessageTextRequest = Message
   telegramMethod _ = "editMessageText"
 
 -- | Request payload for Telegram @sendPhoto@.
@@ -1377,15 +1478,24 @@ editMessageTelegram
 editMessageTelegram driver message messageId body =
   case (message.chatId, messageIdInteger messageId) of
     (Just chatId, Just rawMessageId) -> do
-      let formatted = formatTelegramMarkdown body
-      void $ callTelegram driver EditMessageTextRequest
-        { chatId = chatId
-        , messageId = rawMessageId
-        , text = formatted.formattedText
-        , parseMode = Nothing
-        , entities = Just formatted.formattedEntities
-        , disableWebPagePreview = Just True
-        }
+      let text = ChatEffect.renderReplyBody body
+      void $
+        withRichMessageFallback text
+          (callTelegram driver EditMessageTextRequest
+            { chatId = chatId
+            , messageId = rawMessageId
+            , richMessage = InputRichMessage
+                { html = formatTelegramRichHtml text
+                , media = Nothing
+                }
+            })
+          (callTelegram driver EditPlainMessageTextRequest
+            { chatId = chatId
+            , messageId = rawMessageId
+            , text = text
+            , parseMode = Nothing
+            , entities = Nothing
+            })
       pure True
     _ ->
       pure False
@@ -1552,45 +1662,127 @@ escapeHtml =
     c   -> Text.singleton c
 
 replyTextAndImages :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Maybe Integer -> Text -> Eff es Message
-replyTextAndImages driver chatId replyToMessageId body =
-  case ChatEffect.replyImageUrls body of
-    [] -> sendText (ChatEffect.renderReplyBody body)
-    firstImage : restImages -> do
-      let formattedCaption = nonEmptyText (ChatEffect.renderReplyBody body) <&> formatTelegramMarkdown
-      firstSent <- sendImageRequest driver SendPhotoRequest
+replyTextAndImages driver chatId replyToMessageId body = do
+  let text = ChatEffect.renderReplyBody body
+      images = ChatEffect.replyImageUrls body
+  withRichMessageFallback text
+    (do
+      (richMessage, mediaParts) <- prepareRichMessage driver text images
+      sendPreparedRichMessage driver SendRichMessageRequest
         { chatId = chatId
         , messageThreadId = Nothing
-        , photo = firstImage
-        , caption = (.formattedText) <$> formattedCaption
-        , parseMode = Nothing
-        , captionEntities = (.formattedEntities) <$> formattedCaption
+        , richMessage = richMessage
         , disableNotification = Nothing
-        , replyToMessageId = replyToMessageId
-        }
-      traverse_ (sendImage Nothing) restImages
-      pure firstSent
+        , replyParameters = ReplyParameters <$> replyToMessageId
+        } mediaParts)
+    (legacyReply text images)
   where
-    sendText text =
-      let formatted = formatTelegramMarkdown text
-      in callTelegram driver SendMessageRequest
-      { chatId = chatId
-      , messageThreadId = Nothing
-      , text = formatted.formattedText
-      , parseMode = Nothing
-      , entities = Just formatted.formattedEntities
-      , disableNotification = Nothing
-      , replyToMessageId = replyToMessageId
-      }
+    legacyReply text = \case
+      [] ->
+        callTelegram driver SendMessageRequest
+            { chatId = chatId
+            , messageThreadId = Nothing
+            , text = text
+            , parseMode = Nothing
+            , entities = Nothing
+            , disableNotification = Nothing
+            , replyToMessageId = replyToMessageId
+            }
+      firstImage : restImages -> do
+        firstSent <- sendImageRequest driver SendPhotoRequest
+          { chatId = chatId
+          , messageThreadId = Nothing
+          , photo = firstImage
+          , caption = nonEmptyText text
+          , parseMode = Nothing
+          , captionEntities = Nothing
+          , disableNotification = Nothing
+          , replyToMessageId = replyToMessageId
+          }
+        traverse_ (sendImage Nothing) restImages
+        pure firstSent
     sendImage caption photo = void $ sendImageRequest driver SendPhotoRequest
-      { chatId = chatId
-      , messageThreadId = Nothing
-      , photo = photo
-      , caption = caption
-      , parseMode = Nothing
-      , captionEntities = Nothing
-      , disableNotification = Nothing
-      , replyToMessageId = Nothing
+        { chatId = chatId
+        , messageThreadId = Nothing
+        , photo = photo
+        , caption = caption
+        , parseMode = Nothing
+        , captionEntities = Nothing
+        , disableNotification = Nothing
+        , replyToMessageId = Nothing
+        }
+
+data PreparedRichMedia = PreparedRichMedia
+  { block :: !Text
+  , input :: !(Maybe InputRichMessageMedia)
+  , part :: !(Maybe Multipart.Part)
+  }
+
+prepareRichMessage
+  :: (Media.Media :> es)
+  => TelegramDriver
+  -> Text
+  -> [Text]
+  -> Eff es (InputRichMessage, [Multipart.Part])
+prepareRichMessage driver text refs = do
+  prepared <- zipWithM (prepareRichPhoto driver) [(1 :: Int)..] refs
+  let html = Text.intercalate "\n" $ filter (not . Text.null) (formatTelegramRichHtml text : map (.block) prepared)
+      media = viaNonEmpty toList (mapMaybe (.input) prepared)
+  pure
+    ( InputRichMessage{html, media}
+    , mapMaybe (.part) prepared
+    )
+
+prepareRichPhoto :: Media.Media :> es => TelegramDriver -> Int -> Text -> Eff es PreparedRichMedia
+prepareRichPhoto driver index ref =
+  Media.platformMediaRef "telegram" (telegramMediaScope driver) ref >>= \case
+    Just telegramFileId ->
+      pure (referenced telegramFileId Nothing)
+    Nothing ->
+      Media.localMediaPath ref >>= \case
+        Just path ->
+          let attachment = "rich-media-" <> show index
+          in pure (referenced ("attach://" <> attachment) (Just (telegramFilePart attachment path Nothing)))
+        Nothing ->
+          pure PreparedRichMedia
+            { block = [i|<img src="#{escapeHtml ref}"/>|]
+            , input = Nothing
+            , part = Nothing
+            }
+  where
+    mediaId = "media-" <> show index
+    referenced mediaRef part = PreparedRichMedia
+      { block = [i|<img src="tg://photo?id=#{mediaId}"/>|]
+      , input = Just InputRichMessageMedia
+          { id = mediaId
+          , media = InputRichMedia
+              { type_ = "photo"
+              , media = mediaRef
+              }
+          }
+      , part = part
       }
+
+sendPreparedRichMessage
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  => TelegramDriver
+  -> SendRichMessageRequest
+  -> [Multipart.Part]
+  -> Eff es Message
+sendPreparedRichMessage driver request mediaParts
+  | null mediaParts =
+      callTelegram driver request
+  | otherwise =
+      apiMultipartCall driver.config "sendRichMessage" (richMessageParts request <> mediaParts)
+
+richMessageParts :: SendRichMessageRequest -> [Multipart.Part]
+richMessageParts SendRichMessageRequest{..} =
+  [ textPart "chat_id" (show chatId)
+  , textPart "rich_message" (jsonText richMessage)
+  ]
+    <> maybePart "message_thread_id" (show <$> messageThreadId)
+    <> maybePart "disable_notification" (boolText <$> disableNotification)
+    <> maybePart "reply_parameters" (jsonText <$> replyParameters)
 
 sendImageRequest :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendPhotoRequest -> Eff es Message
 sendImageRequest driver request =

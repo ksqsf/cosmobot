@@ -42,11 +42,12 @@ main =
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
-      , testCase "Telegram CommonMark formatting emits UTF-16 entities" testTelegramCommonMarkFormattingEmitsUtf16Entities
-      , testCase "Telegram CommonMark extensions render supported Telegram formatting" testTelegramCommonMarkExtensionsRenderSupportedTelegramFormatting
-      , testCase "Telegram CommonMark extensions render footnotes and math" testTelegramCommonMarkExtensionsRenderFootnotesAndMath
-      , testCase "Telegram CommonMark list items keep line breaks" testTelegramCommonMarkListItemsKeepLineBreaks
-      , testCase "Telegram CommonMark nested lists keep continuation indentation" testTelegramCommonMarkNestedListsKeepContinuationIndentation
+      , testCase "Telegram rich messages use HTML, media, and structured replies" testTelegramRichMessageRequest
+      , testCase "Telegram rich-message edits keep HTML content" testTelegramRichMessageEditRequest
+      , testCase "Telegram rich-message fallback is safe" testTelegramRichMessageFallback
+      , testCase "Telegram CommonMark renders rich HTML" testTelegramCommonMarkRendersRichHtml
+      , testCase "Telegram display math spans paragraphs" testTelegramDisplayMathSpansParagraphs
+      , testCase "Telegram CommonMark renders rich media blocks" testTelegramCommonMarkRendersRichMedia
       , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
@@ -328,58 +329,156 @@ testTelegramReferencedMessageIncludesSenderIdentity = do
   ((\user -> maybe (Text.pack (show user.id :: String)) ("@" <>) user.username) <$> (fetched >>= (.from))) @?= Just "@bob"
   (fetched >>= (.text)) @?= Just "quoted"
 
-testTelegramCommonMarkFormattingEmitsUtf16Entities :: IO ()
-testTelegramCommonMarkFormattingEmitsUtf16Entities = do
-  let formatted = Telegram.formatTelegramMarkdown "**你👍あ** and [リンク](https://example.test) `值`"
-  formatted.formattedText @?= "你👍あ and リンク 值"
-  assertEntity formatted "bold" 0 4 Nothing Nothing
-  assertEntity formatted "text_link" 9 3 (Just "https://example.test") Nothing
-  assertEntity formatted "code" 13 1 Nothing Nothing
+testTelegramRichMessageRequest :: IO ()
+testTelegramRichMessageRequest =
+  Aeson.toJSON
+    Telegram.SendRichMessageRequest
+      { Telegram.chatId = 42
+      , Telegram.messageThreadId = Nothing
+      , Telegram.richMessage = Telegram.InputRichMessage
+          { Telegram.html = "<h1>Heading</h1>"
+          , Telegram.media = Just
+              [ Telegram.InputRichMessageMedia
+                  { Telegram.id = "media-1"
+                  , Telegram.media = Telegram.InputRichMedia
+                      { Telegram.type_ = "photo"
+                      , Telegram.media = "attach://rich-media-1"
+                      }
+                  }
+              ]
+          }
+      , Telegram.disableNotification = Nothing
+      , Telegram.replyParameters = Just (Telegram.ReplyParameters 7)
+      }
+    @?= Aeson.object
+      [ "chat_id" Aeson..= (42 :: Integer)
+      , "rich_message" Aeson..= Aeson.object
+          [ "html" Aeson..= ("<h1>Heading</h1>" :: Text)
+          , "media" Aeson..=
+              [ Aeson.object
+                  [ "id" Aeson..= ("media-1" :: Text)
+                  , "media" Aeson..= Aeson.object
+                      [ "type" Aeson..= ("photo" :: Text)
+                      , "media" Aeson..= ("attach://rich-media-1" :: Text)
+                      ]
+                  ]
+              ]
+          ]
+      , "reply_parameters" Aeson..= Aeson.object
+          [ "message_id" Aeson..= (7 :: Integer)
+          ]
+      ]
 
-  let pre = Telegram.formatTelegramMarkdown "```haskell\nmain = putStrLn \"こんにちは👍\"\n```"
-  pre.formattedText @?= "main = putStrLn \"こんにちは👍\""
-  assertEntity pre "pre" 0 25 Nothing (Just "haskell")
+testTelegramRichMessageEditRequest :: IO ()
+testTelegramRichMessageEditRequest =
+  Aeson.toJSON
+    Telegram.EditMessageTextRequest
+      { Telegram.chatId = 42
+      , Telegram.messageId = 8
+      , Telegram.richMessage = Telegram.InputRichMessage
+          { Telegram.html = "<p><strong>updated</strong></p>"
+          , Telegram.media = Nothing
+          }
+      }
+    @?= Aeson.object
+      [ "chat_id" Aeson..= (42 :: Integer)
+      , "message_id" Aeson..= (8 :: Integer)
+      , "rich_message" Aeson..= Aeson.object
+          [ "html" Aeson..= ("<p><strong>updated</strong></p>" :: Text)
+          ]
+      ]
 
-testTelegramCommonMarkExtensionsRenderSupportedTelegramFormatting :: IO ()
-testTelegramCommonMarkExtensionsRenderSupportedTelegramFormatting = do
-  let strike = Telegram.formatTelegramMarkdown "~~old~~ and **new**"
-  strike.formattedText @?= "old and new"
-  assertEntity strike "strikethrough" 0 3 Nothing Nothing
-  assertEntity strike "bold" 8 3 Nothing Nothing
+testTelegramRichMessageFallback :: IO ()
+testTelegramRichMessageFallback = do
+  assertBool "short bad requests can use the legacy request" $
+    Telegram.richMessageFallbackAllowed "body" (Telegram.TelegramException "Bad Request: can't parse rich message")
+  assertBool "transport failures must not risk duplicate sends" $
+    not (Telegram.richMessageFallbackAllowed "body" (Telegram.TelegramException "connection reset"))
+  assertBool "legacy requests cannot carry long rich messages" $
+    not (Telegram.richMessageFallbackAllowed (Text.replicate 4097 "x") (Telegram.TelegramException "Bad Request: can't parse rich message"))
 
-  let tasks = Telegram.formatTelegramMarkdown "- [ ] todo\n- [x] **done**"
-  tasks.formattedText @?= "☐ todo\n☑ done"
-  assertEntity tasks "bold" 9 4 Nothing Nothing
+testTelegramCommonMarkRendersRichHtml :: IO ()
+testTelegramCommonMarkRendersRichHtml = do
+  let html = Telegram.formatTelegramRichHtml $ Text.unlines
+        [ "# Heading"
+        , ""
+        , "**bold** ~~old~~ H~2~O x^2^ and $x+y$"
+        , ""
+        , "- [x] done"
+        , "- [ ] todo"
+        , ""
+        , "| left | right |"
+        , "|:-----|------:|"
+        , "| 1 | 2 |"
+        , ""
+        , "[^a]: **detail**"
+        , ""
+        , "note[^a]"
+        , ""
+        , "![👍](tg://emoji?id=5368324170671202286) ![tomorrow](tg://time?unix=1647531900&format=wDT)"
+        , ""
+        , "Inline: \\(E = mc^2\\)"
+        , ""
+        , "\\[ \\sum_{i=1}^{n} i = \\frac{n(n+1)}{2} \\]"
+        , ""
+        , "\\[ \\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi} \\]"
+        , ""
+        , "\\[ A = \\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix} \\]"
+        , ""
+        , "`\\(not math\\)`"
+        ]
+  traverse_ (\tag -> assertBool ("expected Telegram rich HTML tag: " <> Text.unpack tag <> " in " <> Text.unpack html) (tag `Text.isInfixOf` html))
+    [ "<h1>Heading</h1>"
+    , "<strong>bold</strong>"
+    , "<del>old</del>"
+    , "<sub>2</sub>"
+    , "<sup>2</sup>"
+    , "<tg-math>x+y</tg-math>"
+    , "<input type=\"checkbox\" checked=\"\" />"
+    , "<table>"
+    , "<th align=\"left\">left</th>"
+    , "<td align=\"right\">2</td>"
+    , "<tg-reference name=\"note-a\">"
+    , "<a href=\"#note-a\">[1]</a>"
+    , "<tg-emoji emoji-id=\"5368324170671202286\">👍</tg-emoji>"
+    , "<tg-time unix=\"1647531900\" format=\"wDT\">tomorrow</tg-time>"
+    , "<tg-math>E = mc^2</tg-math>"
+    , "<tg-math-block> \\sum_{i=1}^{n} i = \\frac{n(n+1)}{2} </tg-math-block>"
+    , "<tg-math-block> \\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi} </tg-math-block>"
+    , "<tg-math-block> A = \\begin{pmatrix} 1 &amp; 2 \\\\ 3 &amp; 4 \\end{pmatrix} </tg-math-block>"
+    , "<code>\\(not math\\)</code>"
+    ]
 
-testTelegramCommonMarkExtensionsRenderFootnotesAndMath :: IO ()
-testTelegramCommonMarkExtensionsRenderFootnotesAndMath = do
-  let footnotes = Telegram.formatTelegramMarkdown "note[^a]\n\n[^a]: **detail**"
-  footnotes.formattedText @?= "note[1]\n\n[1]: detail"
-  assertEntity footnotes "bold" 14 6 Nothing Nothing
+testTelegramDisplayMathSpansParagraphs :: IO ()
+testTelegramDisplayMathSpansParagraphs =
+  Telegram.formatTelegramRichHtml input @?= expected
+  where
+    input = Text.unlines
+      [ "\\[ \\begin{pmatrix}X \\\\ Y \\\\ Z\\end{pmatrix}"
+      , ""
+      , "\\begin{pmatrix} -\\frac{95}{2} & -\\frac{95}{2} & \\frac{277}{12} \\\\ -\\frac{91}{2} & \\frac{91}{2} & 0 \\\\ -6 & -6 & 1 \\end{pmatrix} \\begin{pmatrix}a \\\\ b \\\\ c\\end{pmatrix}. \\tag{2} \\]"
+      ]
+    expected = "<tg-math-block> \\begin{pmatrix}X \\\\ Y \\\\ Z\\end{pmatrix}\n\n\\begin{pmatrix} -\\frac{95}{2} &amp; -\\frac{95}{2} &amp; \\frac{277}{12} \\\\ -\\frac{91}{2} &amp; \\frac{91}{2} &amp; 0 \\\\ -6 &amp; -6 &amp; 1 \\end{pmatrix} \\begin{pmatrix}a \\\\ b \\\\ c\\end{pmatrix}. \\tag{2} </tg-math-block>"
 
-  let math = Telegram.formatTelegramMarkdown "Use $x^2$ and $$y$$"
-  math.formattedText @?= "Use x^2 and y"
-  assertEntity math "code" 4 3 Nothing Nothing
-  assertEntity math "pre" 12 1 Nothing Nothing
-
-  let rule = Telegram.formatTelegramMarkdown "a\n\n---\n\nb"
-  rule.formattedText @?= "a\n\n────────\n\nb"
-
-testTelegramCommonMarkListItemsKeepLineBreaks :: IO ()
-testTelegramCommonMarkListItemsKeepLineBreaks = do
-  let formatted = Telegram.formatTelegramMarkdown "- first\n- second\n- **third**"
-  formatted.formattedText @?= "• first\n• second\n• third"
-  assertEntity formatted "bold" 19 5 Nothing Nothing
-
-  let ordered = Telegram.formatTelegramMarkdown "3. first\n4. second\n5. **third**"
-  ordered.formattedText @?= "3. first\n4. second\n5. third"
-  assertEntity ordered "bold" 22 5 Nothing Nothing
-
-testTelegramCommonMarkNestedListsKeepContinuationIndentation :: IO ()
-testTelegramCommonMarkNestedListsKeepContinuationIndentation = do
-  let formatted = Telegram.formatTelegramMarkdown "- parent\n  - child\n  - **bold**\n- next"
-  formatted.formattedText @?= "• parent\n  • child\n  • bold\n• next"
-  assertEntity formatted "bold" 23 4 Nothing Nothing
+testTelegramCommonMarkRendersRichMedia :: IO ()
+testTelegramCommonMarkRendersRichMedia = do
+  let html = Telegram.formatTelegramRichHtml $ Text.unlines
+        [ "![](https://example.test/photo.jpg)"
+        , ""
+        , "![](https://example.test/video.mp4 \"Video caption\")"
+        , ""
+        , "![](https://example.test/audio.mp3)"
+        , ""
+        , "$$E = mc^2$$"
+        ]
+  traverse_ (\tag -> assertBool ("expected Telegram rich media tag: " <> Text.unpack tag <> " in " <> Text.unpack html) (tag `Text.isInfixOf` html))
+    [ "<img src=\"https://example.test/photo.jpg\" />"
+    , "<figure>"
+    , "<video src=\"https://example.test/video.mp4\"></video>"
+    , "<figcaption>Video caption</figcaption>"
+    , "<audio src=\"https://example.test/audio.mp3\"></audio>"
+    , "<tg-math-block>E = mc^2</tg-math-block>"
+    ]
 
 testTelegramOkFalseBecomesTelegramExceptionDescription :: IO ()
 testTelegramOkFalseBecomesTelegramExceptionDescription = do
@@ -400,22 +499,6 @@ testTelegramFailureReplyIsConcise =
 exceptionFirstLine :: Exception err => err -> Text
 exceptionFirstLine =
   Text.takeWhile (/= '\n') . toText . displayException
-
-assertEntity :: Telegram.TelegramFormatted -> Text -> Integer -> Integer -> Maybe Text -> Maybe Text -> Assertion
-assertEntity formatted type_ offset entityLength url language =
-  case find matches formatted.formattedEntities of
-    Just _ ->
-      pure ()
-    Nothing ->
-      let actual = formatted.formattedEntities
-      in assertFailure [i|expected Telegram entity #{show (type_, offset, entityLength, url, language) :: String}, got #{show actual :: String}|]
-  where
-    matches entity =
-      entity.type_ == type_
-        && entity.offset == offset
-        && entity.length == entityLength
-        && entity.url == url
-        && entity.language == language
 
 testMatrixMessageConvertsToIncomingMessage :: IO ()
 testMatrixMessageConvertsToIncomingMessage = do
