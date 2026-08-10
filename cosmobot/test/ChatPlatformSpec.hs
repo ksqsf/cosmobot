@@ -34,6 +34,7 @@ main =
       , testCase "QQ superuser is also allowed sender" testQqSuperuserIsAlsoAllowedSender
       , testCase "QQ self message is ignored" testQqSelfMessageIsIgnored
       , testCase "QQ CQ mention string keeps mentioned user ids" testQqCQMentionStringKeepsMentionedUserIds
+      , testCase "QQ reply strips its leading mention" testQqReplyStripsLeadingMention
       , testCase "QQ forwarded messages merge all node text" testQqForwardedMessagesMergeAllNodeText
       , testCase "QQ file segment becomes a message file" testQqFileSegmentBecomesMessageFile
       , testCase "QQ record segment becomes a message file" testQqRecordSegmentBecomesMessageFile
@@ -62,6 +63,10 @@ main =
       , testCase "Matrix audio message includes a message file" testMatrixAudioMessageIncludesMessageFile
       , testCase "Matrix encrypted image bytes decrypt and verify ciphertext hash" testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
+      , testCase "Matrix reply relation strips multiline fallback" testMatrixReplyRelationStripsMultilineFallback
+      , testCase "Matrix reply relation strips emote fallback" testMatrixReplyRelationStripsEmoteFallback
+      , testCase "Matrix reply relation preserves an ordinary leading quote" testMatrixReplyRelationPreservesOrdinaryLeadingQuote
+      , testCase "Matrix quote without reply relation is preserved" testMatrixQuoteWithoutReplyRelationIsPreserved
       , testCase "Matrix edit event converts to incoming message" testMatrixEditEventConvertsToIncomingMessage
       , testCase "Matrix incomplete stream event is ignored" testMatrixIncompleteStreamEventIsIgnored
       , testCase "Matrix superuser is marked in digest" testMatrixSuperuserIsMarkedInDigest
@@ -216,6 +221,30 @@ testQqCQMentionStringKeepsMentionedUserIds = do
   incoming.mentions @?= ["123456", show qqBotUserId]
   incoming.text @?= "@123456 hi @424242"
   incoming.digest.mentionsBot @?= True
+
+testQqReplyStripsLeadingMention :: IO ()
+testQqReplyStripsLeadingMention = do
+  let arrayMessage = Aeson.toJSON
+        [ Aeson.object
+            [ "type" Aeson..= ("reply" :: Text)
+            , "data" Aeson..= Aeson.object ["id" Aeson..= (80000 :: Integer)]
+            ]
+        , Aeson.object
+            [ "type" Aeson..= ("at" :: Text)
+            , "data" Aeson..= Aeson.object ["qq" Aeson..= (123456 :: Integer)]
+            ]
+        , textSegment " hello"
+        ]
+  ((.text) <$> QQ.eventToIncomingMessage (qqEvent arrayMessage)) @?= Just "hello"
+  ((.text) <$> QQ.eventToIncomingMessage (qqEvent (Aeson.String "[CQ:reply,id=80000][CQ:at,qq=123456] hello"))) @?= Just "hello"
+  where
+    qqEvent message =
+      case Aeson.fromJSON (Aeson.object
+        [ "post_type" Aeson..= ("message" :: Text)
+        , "message" Aeson..= message
+        ]) of
+        Aeson.Success event -> event
+        Aeson.Error err -> error (toText err)
 
 testQqForwardedMessagesMergeAllNodeText :: IO ()
 testQqForwardedMessagesMergeAllNodeText =
@@ -705,6 +734,50 @@ testMatrixReplyRelationConvertsToReplyMessageId :: IO ()
 testMatrixReplyRelationConvertsToReplyMessageId = do
   let incoming = Matrix.eventToIncomingMessage matrixReplyRoomEvent
   ((.replyToMessageId) <$> incoming) @?= Just (Just (textMessageId "$parent:example.org"))
+
+testMatrixReplyRelationStripsMultilineFallback :: IO ()
+testMatrixReplyRelationStripsMultilineFallback = do
+  let event = matrixReplyRoomEvent
+        { Matrix.event = matrixReplyRoomEvent.event
+            { Matrix.content = matrixReplyRoomEvent.event.content
+                { Matrix.body = Just "> <@alice:example.org> first line\n> \n> second line\n\nreply"
+                }
+            }
+        }
+  ((.text) <$> Matrix.eventToIncomingMessage event) @?= Just "reply"
+
+testMatrixReplyRelationStripsEmoteFallback :: IO ()
+testMatrixReplyRelationStripsEmoteFallback = do
+  let event = matrixReplyRoomEvent
+        { Matrix.event = matrixReplyRoomEvent.event
+            { Matrix.content = matrixReplyRoomEvent.event.content
+                { Matrix.body = Just "> * <@alice:example.org> waves\n\nreply"
+                }
+            }
+        }
+  ((.text) <$> Matrix.eventToIncomingMessage event) @?= Just "reply"
+
+testMatrixReplyRelationPreservesOrdinaryLeadingQuote :: IO ()
+testMatrixReplyRelationPreservesOrdinaryLeadingQuote = do
+  let event = matrixReplyRoomEvent
+        { Matrix.event = matrixReplyRoomEvent.event
+            { Matrix.content = matrixReplyRoomEvent.event.content
+                { Matrix.body = Just "> an ordinary quote\n\nreply"
+                }
+            }
+        }
+  ((.text) <$> Matrix.eventToIncomingMessage event) @?= Just "> an ordinary quote\n\nreply"
+
+testMatrixQuoteWithoutReplyRelationIsPreserved :: IO ()
+testMatrixQuoteWithoutReplyRelationIsPreserved = do
+  let event = matrixRoomEvent
+        { Matrix.event = matrixRoomEvent.event
+            { Matrix.content = matrixRoomEvent.event.content
+                { Matrix.body = Just "> <@alice:example.org> quoted\n\nreply"
+                }
+            }
+        }
+  ((.text) <$> Matrix.eventToIncomingMessage event) @?= Just "> <@alice:example.org> quoted\n\nreply"
 
 testMatrixEditEventConvertsToIncomingMessage :: IO ()
 testMatrixEditEventConvertsToIncomingMessage = do

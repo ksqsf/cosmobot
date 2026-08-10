@@ -2175,9 +2175,28 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
         , mentionUsernames = matrixMentions cfg event.content body
         , imageUrls = matrixEventImageUrls event.raw
         , files = map fst (matrixEventFileMediaRefs event.raw)
-        , text = Text.strip body
+        , text = Text.strip (matrixReplyBody event.content body)
         , raw = event.raw
         }
+
+matrixReplyBody :: EventContent -> Text -> Text
+matrixReplyBody content body
+  | isJust content.replyToEventId
+  , firstLine : _ <- Text.lines body
+  , isMatrixReplyFallbackFirstLine firstLine =
+      Text.unlines (dropWhile (Text.isPrefixOf "> ") (Text.lines body))
+  | otherwise =
+      body
+
+isMatrixReplyFallbackFirstLine :: Text -> Bool
+isMatrixReplyFallbackFirstLine line =
+  case Text.words line of
+    ">" : "*" : userId : _ -> isFallbackUserId userId
+    ">" : userId : _ -> isFallbackUserId userId
+    _ -> False
+  where
+    isFallbackUserId token =
+      maybe False isMatrixUserId (Text.stripPrefix "<" token >>= Text.stripSuffix ">")
 
 matrixRedactedEventId :: Aeson.Value -> Maybe MatrixEventId
 matrixRedactedEventId =

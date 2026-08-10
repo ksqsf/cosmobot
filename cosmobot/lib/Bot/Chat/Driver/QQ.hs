@@ -726,6 +726,38 @@ getMessageContentQQ driver chatId messageId = do
         Just value ->
           traverse (normalizeReferencedFiles chatId <=< appendForwardedMessages driver (referencedMessageForwardSources value)) (referencedMessageFromValue driver.config.botQQ value)
 
+stripQQReplyMention :: Maybe Aeson.Value -> Text -> Text
+stripQQReplyMention message fallback =
+  fromMaybe fallback (message >>= qqReplyMention)
+
+qqReplyMention :: Aeson.Value -> Maybe Text
+qqReplyMention (Aeson.Array segments) =
+  case toList segments of
+    reply : mention : rest
+      | isJust (replySegmentId reply)
+      , isJust (mentionSegmentId mention) ->
+          Just (Text.strip (foldMap segmentText (reply : rest)))
+    _ -> Nothing
+qqReplyMention (Aeson.String text) = do
+  (reply, afterReply) <- cqSegmentAtStart "reply" text
+  guard (isJust (rawFieldValue "id" reply))
+  (mention, remaining) <- cqSegmentAtStart "at" afterReply
+  guard (isJust (rawMentionValue mention))
+  pure (Text.strip (rawMessageText remaining))
+qqReplyMention _ =
+  Nothing
+
+cqSegmentAtStart :: Text -> Text -> Maybe (Text, Text)
+cqSegmentAtStart type_ text = do
+  rest <- Text.stripPrefix ("[CQ:" <> type_ <> ",") text
+  let (fields, suffix) = Text.breakOn "]" rest
+  guard (not (Text.null suffix))
+  pure (fields, Text.drop 1 suffix)
+
+rawFieldValue :: Text -> Text -> Maybe Text
+rawFieldValue name fields =
+  Text.stripPrefix (name <> "=") =<< find (Text.isPrefixOf (name <> "=")) (Text.splitOn "," fields)
+
 normalizeQQMessageFiles :: Media.Media :> es => IncomingMessage -> Eff es IncomingMessage
 normalizeQQMessageFiles message = do
   files <- traverse (normalizeQQFile message.chatId) message.files
@@ -1233,7 +1265,7 @@ eventToIncomingMessageWith cfg event
       , mentionUsernames = []
       , imageUrls = maybe [] messageImageUrls event.message
       , files = maybe [] messageFiles event.message
-      , text      = fromMaybe "" ((event.message >>= messageText) <|> event.rawMessage)
+      , text      = stripQQReplyMention event.message (fromMaybe "" ((event.message >>= messageText) <|> event.rawMessage))
       , raw       = event.rawEvent
       }
 
@@ -1600,9 +1632,8 @@ rawMentionId segment = do
   rawMentionValue segment
 
 rawMentionValue :: Text -> Maybe Text
-rawMentionValue segment = do
-  field <- find (Text.isPrefixOf "qq=") (Text.splitOn "," segment)
-  pure (Text.drop (Text.length "qq=") field)
+rawMentionValue =
+  rawFieldValue "qq"
 
 mentionSegmentId :: Aeson.Value -> Maybe Text
 mentionSegmentId = \case
