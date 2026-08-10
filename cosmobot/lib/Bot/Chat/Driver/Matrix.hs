@@ -23,6 +23,7 @@ module Bot.Chat.Driver.Matrix
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
+  , syncInvitedRoomIds
   , matrixReferencedMessage
   , decryptMatrixEncryptedBytesForTest
   , formatMatrixMarkdown
@@ -244,6 +245,7 @@ sync driver since = do
     { syncSince = since
     , syncMode = matrixSyncMode since
     }
+  acceptInvitations driver response
   rememberMatrixRoomState driver.directRoomIds driver.joinedMemberCounts response
   pure (Just response)
 
@@ -518,6 +520,10 @@ data MatrixSetTyping = MatrixSetTyping
   , typingTimeoutMs :: !Int
   }
 
+newtype MatrixJoinRoom = MatrixJoinRoom
+  { joinRoomId :: MatrixRoomId
+  }
+
 class MatrixAPI request where
   type MatrixResponse request
 
@@ -546,6 +552,15 @@ instance MatrixAPI MatrixJoinedMembers where
       GET
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText joinedMembersRoomId /: "joined_members")
       NoReqBody
+
+instance MatrixAPI MatrixJoinRoom where
+  type MatrixResponse MatrixJoinRoom = Aeson.Value
+
+  call driver MatrixJoinRoom{joinRoomId} =
+    matrixJsonCall driver "join room" [i|join room=#{joinRoomId}|] matrixApiOptions
+      POST
+      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText joinRoomId /: "join")
+      (ReqBodyJson (Aeson.object []))
 
 instance MatrixAPI MatrixSendMessage where
   type MatrixResponse MatrixSendMessage = SendMessageResponse
@@ -1170,6 +1185,24 @@ syncEvents directRoomIds response =
 syncDirectRoomIds :: SyncResponse -> Set MatrixRoomId
 syncDirectRoomIds =
   Set.fromList . fmap matrixRoomId . (.directRooms) . (.accountData)
+
+syncInvitedRoomIds :: SyncResponse -> [Text]
+syncInvitedRoomIds =
+  Map.keys . (.invite) . (.rooms)
+
+acceptInvitations
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> SyncResponse
+  -> Eff es ()
+acceptInvitations driver response =
+  for_ (syncInvitedRoomIds response) \roomId -> do
+    result <- eitherCall "accept room invitation" driver (MatrixJoinRoom (matrixRoomId roomId))
+    case result of
+      Right _ -> logInfo [i|Accepted Matrix room invitation: #{roomId}|]
+      Left reason -> do
+        logError [i|Failed to accept Matrix room invitation #{roomId}: #{reason}|]
+        throwIO (userError (Text.unpack reason))
 
 syncJoinedMemberCounts :: SyncResponse -> [(MatrixRoomId, Int)]
 syncJoinedMemberCounts response =
@@ -2450,7 +2483,7 @@ instance Aeson.FromJSON SyncResponse where
   parseJSON = Aeson.withObject "SyncResponse" \o ->
     SyncResponse
       <$> o Aeson..: "next_batch"
-      <*> o Aeson..:? "rooms" Aeson..!= Rooms Map.empty
+      <*> o Aeson..:? "rooms" Aeson..!= Rooms Map.empty Map.empty
       <*> o Aeson..:? "account_data" Aeson..!= AccountData []
 
 newtype AccountData = AccountData
@@ -2489,14 +2522,17 @@ accountDataEventDirectRooms event
       Aeson.withObject "m.direct content" \o ->
         traverse Aeson.parseJSON (AesonKeyMap.elems o)
 
-newtype Rooms = Rooms
+data Rooms = Rooms
   { join :: Map Text JoinedRoom
+  , invite :: Map Text Aeson.Value
   }
   deriving (Show, Generic)
 
 instance Aeson.FromJSON Rooms where
   parseJSON = Aeson.withObject "Rooms" \o ->
-    Rooms <$> o Aeson..:? "join" Aeson..!= Map.empty
+    Rooms
+      <$> o Aeson..:? "join" Aeson..!= Map.empty
+      <*> o Aeson..:? "invite" Aeson..!= Map.empty
 
 data JoinedRoom = JoinedRoom
   { timeline :: Timeline

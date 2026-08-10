@@ -16,6 +16,7 @@ module Bot.Chat.Driver.QQ
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
+  , invitationAction
   , forwardedMessagesText
   , readActionResponse
   , getUserAvatar
@@ -317,6 +318,8 @@ incomingMessages driver = do
     Nothing
       | Just upload <- groupUpload event ->
           S.lift $ Concurrency.fire "qq.group-file-cache" (cacheGroupUpload driver upload)
+      | Just action <- invitationAction event ->
+          S.lift $ Concurrency.fire "qq.invitation" (acceptInvitation driver action)
       | isHeartbeatEvent event ->
           S.lift $ logDebug "Ignoring QQ heartbeat event"
       | otherwise -> do
@@ -1216,6 +1219,49 @@ cacheGroupUpload driver upload = do
 groupFileUrl :: Aeson.Value -> Maybe Text
 groupFileUrl =
   Aeson.parseMaybe (Aeson.withObject "QQ group file URL" (Aeson..: "url"))
+
+-- | OneBot requests that invite this bot into a new conversation.
+invitationAction :: Event -> Maybe Aeson.Value
+invitationAction event
+  | event.postType /= "request" = Nothing
+  | otherwise =
+      Aeson.parseMaybe (Aeson.withObject "QQ invitation" \o -> do
+        requestType <- o Aeson..: "request_type" :: Aeson.Parser Text
+        flag <- o Aeson..: "flag" :: Aeson.Parser Text
+        case requestType of
+          "friend" ->
+            pure (Aeson.object
+              [ "action" Aeson..= ("set_friend_add_request" :: Text)
+              , "params" Aeson..= Aeson.object
+                  [ "flag" Aeson..= (flag :: Text)
+                  , "approve" Aeson..= True
+                  ]
+              ])
+          "group" -> do
+            subType <- o Aeson..: "sub_type"
+            guard (subType == ("invite" :: Text))
+            pure (Aeson.object
+              [ "action" Aeson..= ("set_group_add_request" :: Text)
+              , "params" Aeson..= Aeson.object
+                  [ "flag" Aeson..= flag
+                  , "sub_type" Aeson..= subType
+                  , "approve" Aeson..= True
+                  ]
+              ])
+          _ -> empty) event.rawEvent
+
+acceptInvitation
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => QQDriver
+  -> Aeson.Value
+  -> Eff es ()
+acceptInvitation driver action = do
+  response <- sendAction driver action
+  case response.status of
+    Just "ok" -> logInfo "Accepted QQ invitation"
+    _ ->
+      let ActionResponse{message = failure} = response
+      in logWarning [i|Failed to accept QQ invitation: #{fromMaybe "unknown error" failure}|]
 
 isHeartbeatEvent :: Event -> Bool
 isHeartbeatEvent event =

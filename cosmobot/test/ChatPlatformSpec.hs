@@ -29,6 +29,7 @@ main =
   defaultMain $
     testGroup "chat platforms"
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      , testCase "QQ invitation actions accept friend and group invites" testQqInvitationActions
       , testCase "QQ recall converts to a deleted incoming message" testQqRecallConvertsToDeletedMessage
       , testCase "incoming message JSON defaults missing files" testIncomingMessageJsonDefaultsMissingFiles
       , testCase "QQ superuser is also allowed sender" testQqSuperuserIsAlsoAllowedSender
@@ -53,6 +54,7 @@ main =
       , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
+      , testCase "Matrix sync finds room invitations" testMatrixSyncFindsRoomInvitations
       , testCase "Matrix redaction converts to a deleted incoming message" testMatrixRedactionConvertsToDeletedMessage
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
       , testCase "Matrix image message includes media URL" testMatrixImageMessageIncludesMediaUrl
@@ -90,6 +92,12 @@ testQqUserMessageConvertsToIncomingMessage = do
   ((.platform) <$> incoming) @?= Just PlatformQQ
   ((.text) <$> incoming) @?= Just "hello"
   ((.digest.botId) <$> incoming) @?= Just (Just "424242")
+
+testQqInvitationActions :: IO ()
+testQqInvitationActions = do
+  QQ.invitationAction (qqRequestEvent "friend" Nothing) @?= Just (qqInvitationAction "set_friend_add_request" Nothing)
+  QQ.invitationAction (qqRequestEvent "group" (Just "invite")) @?= Just (qqInvitationAction "set_group_add_request" (Just "invite"))
+  QQ.invitationAction (qqRequestEvent "group" (Just "add")) @?= Nothing
 
 testQqRecallConvertsToDeletedMessage :: IO ()
 testQqRecallConvertsToDeletedMessage = do
@@ -558,6 +566,18 @@ testMatrixMessageConvertsToIncomingMessage = do
   ((.senderUsername) <$> incoming) @?= Just (Just "@alice:example.org")
   ((.text) <$> incoming) @?= Just "hello"
 
+testMatrixSyncFindsRoomInvitations :: IO ()
+testMatrixSyncFindsRoomInvitations = do
+  let response = Aeson.object
+        [ "next_batch" Aeson..= ("token" :: Text)
+        , "rooms" Aeson..= Aeson.object
+            [ "invite" Aeson..= Aeson.object ["!dm:example.org" Aeson..= Aeson.object []]
+            ]
+        ]
+  case Aeson.fromJSON response of
+    Aeson.Success syncResponse -> Matrix.syncInvitedRoomIds syncResponse @?= ["!dm:example.org"]
+    Aeson.Error err -> assertFailure err
+
 testMatrixRedactionConvertsToDeletedMessage :: IO ()
 testMatrixRedactionConvertsToDeletedMessage = do
   let original = matrixRoomEvent.event
@@ -945,6 +965,31 @@ qqMessageEvent userId =
     , sender = Nothing
     , rawEvent = Aeson.Null
     }
+
+qqRequestEvent :: Text -> Maybe Text -> QQ.Event
+qqRequestEvent requestType requestSubType =
+  (qqMessageEvent 10001)
+    { QQ.postType = "request"
+    , QQ.subType = requestSubType
+    , QQ.rawEvent = Aeson.object
+        ( [ "request_type" Aeson..= requestType
+          , "flag" Aeson..= ("request-flag" :: Text)
+          ]
+            <> maybe [] (pure . ("sub_type" Aeson..=)) requestSubType
+        )
+    }
+
+qqInvitationAction :: Text -> Maybe Text -> Aeson.Value
+qqInvitationAction action requestSubType =
+  Aeson.object
+    [ "action" Aeson..= action
+    , "params" Aeson..= Aeson.object
+        ( [ "flag" Aeson..= ("request-flag" :: Text)
+          , "approve" Aeson..= True
+          ]
+            <> maybe [] (pure . ("sub_type" Aeson..=)) requestSubType
+        )
+    ]
 
 qqBotUserId :: Integer
 qqBotUserId =
