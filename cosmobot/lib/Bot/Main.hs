@@ -30,6 +30,7 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Lifecycle as LifecycleEffect
 import qualified Bot.Effect.Media as MediaEffect
+import qualified Bot.Effect.Matrix as MatrixEffect
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Resource as ResourceEffect
 import qualified Bot.Effect.Scheduler as Scheduler
@@ -133,7 +134,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
   readIORef restartRequested
 
 routes
-  :: ( ACPEffect.ACP :> es, AgentEffect.Agent :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, AgentEffect.Agent :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, MatrixEffect.Matrix :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> [RouteHandler es]

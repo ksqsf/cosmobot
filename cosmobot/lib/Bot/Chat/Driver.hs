@@ -25,6 +25,7 @@ import qualified Bot.Effect.ChatDriver as ChatDriverEffect
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Media as Media
+import qualified Bot.Effect.Matrix as MatrixEffect
 import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Message
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -311,7 +312,7 @@ runChatDrivers
   -> RPC.RpcState
   -> Bool
   -> ACP.AcpState
-  -> Eff (Chat.Chat : es) ()
+  -> Eff (MatrixEffect.Matrix : Chat.Chat : es) ()
   -> Eff es ()
 runChatDrivers qqConfig telegramConfig matrixConfig discordConfig rpcConfig rpcState acpEnabled acpState action = do
   qq <- traverse QQ.newQQDriver qqConfig
@@ -346,12 +347,13 @@ hasConfiguredChatDriver drivers =
 runChatDriversWith
   :: (KatipE :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
   => ChatDrivers
-  -> Eff (Chat.Chat : es) ()
+  -> Eff (MatrixEffect.Matrix : Chat.Chat : es) ()
   -> Eff es ()
 runChatDriversWith drivers inner = do
   runMaybeDiscordDriver drivers.discord $
     runMaybeQQDriver drivers.qq $
-      Chat.runChatWithHandler (chatDriversHandler drivers) inner
+      Chat.runChatWithHandler (chatDriversHandler drivers) $
+        Matrix.runMatrixClient drivers.matrix inner
 
 runMaybeQQDriver
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)

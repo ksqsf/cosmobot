@@ -11,6 +11,8 @@ Stability   : experimental
 module Bot.Chat.Driver.Matrix
   ( MatrixDriver
   , newMatrixDriver
+  , runMatrixClient
+  , matrixClientJsonCall
   , chatHandler
   , Config (..)
   , SyncResponse (..)
@@ -33,6 +35,7 @@ where
 
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Media as Media
+import qualified Bot.Effect.Matrix as Matrix
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Mime as Mime
 import qualified Bot.Storage.Matrix as MatrixStorage
@@ -224,6 +227,37 @@ chatHandler
   -> Chat.ChatHandler es
 chatHandler =
   Chat.chatDriverHandler
+
+runMatrixClient
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => Maybe MatrixDriver
+  -> Eff (Matrix.Matrix : es) a
+  -> Eff es a
+runMatrixClient driver =
+  interpret \_ -> \case
+    Matrix.MatrixClientCall request ->
+      maybe
+        (liftIO (ioError (userError "Matrix driver is not configured.")))
+        (`matrixClientRequest` request)
+        driver
+
+matrixClientRequest
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> Matrix.MatrixClientRequest
+  -> Eff es Aeson.Value
+matrixClientRequest driver Matrix.MatrixClientRequest{method, path, query, body} =
+  case (method, body) of
+    (Matrix.MatrixGet, Nothing) -> matrixClientJsonCall driver "client request" "client request" requestOptions GET requestUrl NoReqBody
+    (Matrix.MatrixDelete, Nothing) -> matrixClientJsonCall driver "client request" "client request" requestOptions DELETE requestUrl NoReqBody
+    (Matrix.MatrixPost, Just value) -> matrixClientJsonCall driver "client request" "client request" requestOptions POST requestUrl (ReqBodyJson value)
+    (Matrix.MatrixPut, Just value) -> matrixClientJsonCall driver "client request" "client request" requestOptions PUT requestUrl (ReqBodyJson value)
+    _ -> liftIO (ioError (userError "Invalid Matrix client request body."))
+  where
+    requestUrl :: forall scheme. Url scheme -> Url scheme
+    requestUrl baseUrl = List.foldl' (/:) baseUrl path
+    requestOptions :: forall scheme. Option scheme -> Option scheme
+    requestOptions options = List.foldl' (\current (key, value) -> current <> (key =: value)) options query
 
 matrixStreamingMessageLimit :: Int
 matrixStreamingMessageLimit = 4000
@@ -539,7 +573,7 @@ instance MatrixAPI MatrixSync where
   call driver request@MatrixSync{syncSince} = do
     let sinceLabel :: Text
         sinceLabel = maybe "<initial>" (const "<next_batch>") syncSince
-    matrixJsonCall driver "sync" [i|sync since=#{sinceLabel}|] (\token -> matrixSyncOptions token request)
+    matrixClientJsonCall driver "sync" [i|sync since=#{sinceLabel}|] (matrixSyncOptions request)
       GET
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "sync")
       NoReqBody
@@ -548,7 +582,7 @@ instance MatrixAPI MatrixJoinedMembers where
   type MatrixResponse MatrixJoinedMembers = JoinedMembersResponse
 
   call driver MatrixJoinedMembers{joinedMembersRoomId} =
-    matrixJsonCall driver "joined_members" [i|joined_members room=#{joinedMembersRoomId}|] matrixApiOptions
+    matrixClientJsonCall driver "joined_members" [i|joined_members room=#{joinedMembersRoomId}|] matrixApiOptions
       GET
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText joinedMembersRoomId /: "joined_members")
       NoReqBody
@@ -557,7 +591,7 @@ instance MatrixAPI MatrixJoinRoom where
   type MatrixResponse MatrixJoinRoom = Aeson.Value
 
   call driver MatrixJoinRoom{joinRoomId} =
-    matrixJsonCall driver "join room" [i|join room=#{joinRoomId}|] matrixApiOptions
+    matrixClientJsonCall driver "join room" [i|join room=#{joinRoomId}|] matrixApiOptions
       POST
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText joinRoomId /: "join")
       (ReqBodyJson (Aeson.object []))
@@ -576,7 +610,7 @@ instance MatrixAPI MatrixSendMessage where
           , mentions = MatrixMentions sendMessageMentions
           , streamMetadata = MatrixStreamMetadata sendMessageStreamComplete
           }
-    matrixJsonCall driver "send m.room.message" "send m.room.message" matrixApiOptions
+    matrixClientJsonCall driver "send m.room.message" "send m.room.message" matrixApiOptions
       PUT
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText sendMessageRoomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson request)
@@ -585,7 +619,7 @@ instance MatrixAPI MatrixUploadMedia where
   type MatrixResponse MatrixUploadMedia = MatrixUploadResponse
 
   call driver MatrixUploadMedia{uploadMediaPath, uploadMediaFileName, uploadMediaMime} =
-    matrixJsonCall driver "upload media" "upload media" (\token -> matrixUploadOptions token uploadMediaFileName uploadMediaMime)
+    matrixClientJsonCall driver "upload media" "upload media" (matrixUploadOptions uploadMediaFileName uploadMediaMime)
       POST
       (\baseUrl -> baseUrl /: "_matrix" /: "media" /: "v3" /: "upload")
       (ReqBodyFile uploadMediaPath)
@@ -601,7 +635,7 @@ instance MatrixAPI MatrixSendFile where
           , replyRelation = sendFileReplyTo
           , streamMetadata = MatrixStreamMetadata True
           }
-    matrixJsonCall driver [i|send #{mediaMsgtype}|] [i|send #{mediaMsgtype}|] matrixApiOptions
+    matrixClientJsonCall driver [i|send #{mediaMsgtype}|] [i|send #{mediaMsgtype}|] matrixApiOptions
       PUT
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: sendFileRoomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson request)
@@ -611,7 +645,7 @@ instance MatrixAPI MatrixEditMessage where
 
   call driver MatrixEditMessage{editMessageRoomId, editMessageRequest} = do
     txnId <- liftIO (show <$> getMonotonicTimeNSec)
-    matrixJsonCall driver "edit m.room.message" "edit m.room.message" matrixApiOptions
+    matrixClientJsonCall driver "edit m.room.message" "edit m.room.message" matrixApiOptions
       PUT
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText editMessageRoomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson editMessageRequest)
@@ -621,7 +655,7 @@ instance MatrixAPI MatrixCompleteStreamMessage where
 
   call driver MatrixCompleteStreamMessage{completeStreamMessageRoomId, completeStreamMessageRequest} = do
     txnId <- liftIO (show <$> getMonotonicTimeNSec)
-    matrixJsonCall driver "complete stream m.room.message" "complete stream m.room.message" matrixApiOptions
+    matrixClientJsonCall driver "complete stream m.room.message" "complete stream m.room.message" matrixApiOptions
       PUT
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText completeStreamMessageRoomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson completeStreamMessageRequest)
@@ -632,7 +666,7 @@ instance MatrixAPI MatrixRedactEvent where
   call driver MatrixRedactEvent{redactRoomId, redactEventId} = do
     txnId <- liftIO (show <$> getMonotonicTimeNSec)
     let request = RedactEventRequest{reason = Nothing}
-    matrixJsonCall driver "redact event" "redact event" matrixApiOptions
+    matrixClientJsonCall driver "redact event" "redact event" matrixApiOptions
       PUT
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: redactRoomId /: "redact" /: matrixEventIdText redactEventId /: txnId)
       (ReqBodyJson request)
@@ -641,7 +675,7 @@ instance MatrixAPI MatrixFetchEvent where
   type MatrixResponse MatrixFetchEvent = Event
 
   call driver MatrixFetchEvent{fetchEventRoomId, fetchEventId} =
-    matrixJsonCall driver "room event" [i|room event room=#{fetchEventRoomId}|] matrixApiOptions
+    matrixClientJsonCall driver "room event" [i|room event room=#{fetchEventRoomId}|] matrixApiOptions
       GET
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText fetchEventRoomId /: "event" /: matrixEventIdText fetchEventId)
       NoReqBody
@@ -651,7 +685,7 @@ instance MatrixAPI MatrixFetchMember where
 
   call driver MatrixFetchMember{fetchMemberRoomId, fetchMemberUserId} = do
     content :: MatrixMemberContent <-
-      matrixJsonCall driver "room member" [i|room member room=#{fetchMemberRoomId}|] matrixApiOptions
+      matrixClientJsonCall driver "room member" [i|room member room=#{fetchMemberRoomId}|] matrixApiOptions
         GET
         (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText fetchMemberRoomId /: "state" /: "m.room.member" /: fetchMemberUserId)
         NoReqBody
@@ -662,7 +696,7 @@ instance MatrixAPI MatrixFetchProfile where
 
   call driver MatrixFetchProfile{fetchProfileUserId} = do
     profile :: MatrixProfileContent <-
-      matrixJsonCall driver "profile" "profile" matrixApiOptions
+      matrixClientJsonCall driver "profile" "profile" matrixApiOptions
         GET
         (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "profile" /: fetchProfileUserId)
         NoReqBody
@@ -696,7 +730,7 @@ instance MatrixAPI MatrixSetTyping where
 
   call driver MatrixSetTyping{typingRoomId, typingUserId, typingTimeoutMs} = do
     let request = SetTypingRequest typingTimeoutMs
-    matrixJsonCall driver "set typing" [i|set typing room=#{matrixRoomIdText typingRoomId} user=#{typingUserId}|] matrixApiOptions
+    matrixClientJsonCall driver "set typing" [i|set typing room=#{matrixRoomIdText typingRoomId} user=#{typingUserId}|] matrixApiOptions
       PUT
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText typingRoomId /: "typing" /: typingUserId)
       (ReqBodyJson request)
@@ -932,7 +966,7 @@ matrixUnauthenticatedJsonCall cfg method logMessage addOptions httpMethod buildU
   responseBody <$> matrixUnauthenticatedCall cfg method logMessage addOptions \baseUrl options ->
     req httpMethod (buildUrl baseUrl) body jsonResponse options
 
-matrixJsonCall
+matrixClientJsonCall
   :: ( HTTP.HTTP :> es
      , IOE :> es
      , KatipE :> es
@@ -946,24 +980,25 @@ matrixJsonCall
   => MatrixDriver
   -> Text
   -> Text
-  -> (forall scheme. Text -> Option scheme -> Option scheme)
+  -> (forall scheme. Option scheme -> Option scheme)
   -> method
   -> (forall scheme. Url scheme -> Url scheme)
   -> body
   -> Eff es response
-matrixJsonCall driver method logMessage addOptions httpMethod buildUrl body =
+matrixClientJsonCall driver method logMessage addOptions httpMethod buildUrl body =
   withMatrixAccessToken driver.auth \token ->
-    matrixUnauthenticatedJsonCall driver.config method logMessage (addOptions token) httpMethod buildUrl body
+    matrixUnauthenticatedJsonCall driver.config method logMessage
+      (\baseOptions -> matrixApiOptions (addOptions (baseOptions <> matrixAuth token)))
+      httpMethod buildUrl body
 
-matrixApiOptions :: Text -> Option scheme -> Option scheme
-matrixApiOptions token baseOptions =
+matrixApiOptions :: Option scheme -> Option scheme
+matrixApiOptions baseOptions =
   baseOptions
-    <> matrixAuth token
     <> responseTimeout matrixApiResponseTimeoutMicroseconds
 
-matrixUploadOptions :: Text -> Text -> Text -> Option scheme -> Option scheme
-matrixUploadOptions token fileName mime baseOptions =
-  matrixApiOptions token baseOptions
+matrixUploadOptions :: Text -> Text -> Option scheme -> Option scheme
+matrixUploadOptions fileName mime baseOptions =
+  baseOptions
     <> header "Content-Type" (TextEncoding.encodeUtf8 mime)
     <> "filename" =: fileName
 
@@ -1028,10 +1063,9 @@ matrixEndpointText :: Text -> [Text] -> Text
 matrixEndpointText homeserver path =
   Text.dropWhileEnd (== '/') homeserver <> "/" <> Text.intercalate "/" path
 
-matrixSyncOptions :: Text -> MatrixSync -> Option scheme -> Option scheme
-matrixSyncOptions token MatrixSync{syncSince, syncMode} baseOptions =
+matrixSyncOptions :: MatrixSync -> Option scheme -> Option scheme
+matrixSyncOptions MatrixSync{syncSince, syncMode} baseOptions =
   baseOptions
-    <> matrixAuth token
     <> responseTimeout matrixSyncResponseTimeoutMicroseconds
     <> "timeout" =: matrixSyncTimeoutMilliseconds syncMode
     <> maybe mempty ("since" =:) syncSince

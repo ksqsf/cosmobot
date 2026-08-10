@@ -196,6 +196,7 @@ library
         Bot.Agent.Tools.Image
         Bot.Agent.Tools.Media
         Bot.Agent.Tools.Memory
+        Bot.Agent.Tools.Matrix
         Bot.Agent.Tools.Schedule
         Bot.Agent.Tools.Sandbox
         Bot.Agent.Tools.Shell
@@ -244,6 +245,7 @@ library
         Bot.Effect.LLM
         Bot.Effect.Lifecycle
         Bot.Effect.Media
+        Bot.Effect.Matrix
         Bot.Effect.Memory
         Bot.Effect.Resource
         Bot.Effect.Scheduler

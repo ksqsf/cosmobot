@@ -12,6 +12,7 @@ import qualified Bot.Agent.Tools.Continuation as ContinuationTools
 import qualified Bot.Agent.Tools.Files as FileTools
 import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
+import qualified Bot.Agent.Tools.Matrix as MatrixTools
 import qualified Bot.Agent.Tools.Meta as MetaTools
 import qualified Bot.Agent.Tools.Sandbox as SandboxTools
 import qualified Bot.Agent.Tools.SubAgent as SubAgentTools
@@ -38,6 +39,7 @@ import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
+import qualified Bot.Effect.Matrix as Matrix
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.LLM.OpenAI.Config as LLMConfig
@@ -107,6 +109,7 @@ import Test.Tasty.HUnit
 
 type AgentStack =
   '[ ACP.ACP
+   , Matrix.Matrix
    , Chat.Chat
    , AgentAudit.AgentAudit
    , AgentEffect.Agent
@@ -235,6 +238,7 @@ main =
       , testCase "tool tags are enabled from the thread transcript" testToolTagsEnabledFromTranscript
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
       , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
+      , testCase "matrix request tool is Matrix-superuser-only" testMatrixRequestToolScope
       , testCase "subagent lifecycle is shared within a chat" testSubAgentLifecycle
       , testCase "subagent wait operations avoid polling without cancelling work" testSubAgentWaitOperations
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
@@ -512,6 +516,15 @@ testTerminalAndSandboxToolScopes = do
   assertBool "workspace should be hidden from non-superusers" (not (AgentTool.toolAllowed workspaceTool agentContext))
   assertBool "workspace should be visible to superusers" (AgentTool.toolAllowed workspaceTool superuserContext)
   assertBool "workspace should require resource identity" (not (AgentTool.toolAllowed workspaceTool superuserContext{Agent.message = testMessage{senderId = Nothing}}))
+
+testMatrixRequestToolScope :: IO ()
+testMatrixRequestToolScope = do
+  let tool = MatrixTools.matrixRequestTool :: AgentTool.Tool (Eff AgentStack)
+      matrixAdmin = superuserContext{Agent.message = testMessage{Message.platform = PlatformMatrix}}
+      matrixUser = matrixAdmin{Agent.superuser = False}
+  assertBool "matrix request is hidden outside Matrix" (not (AgentTool.toolAllowed tool superuserContext))
+  assertBool "matrix request is hidden from Matrix non-superusers" (not (AgentTool.toolAllowed tool matrixUser))
+  assertBool "matrix request is available to Matrix superusers" (AgentTool.toolAllowed tool matrixAdmin)
 
 testSubAgentLifecycle :: IO ()
 testSubAgentLifecycle = do
@@ -4211,7 +4224,8 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced r
               { agentReply = mockReply chatMock
               , agentFetchMessage = \_ _ -> pure referencedMessage
               , agentUserAvatar = mockUserAvatar chatMock
-              }
+          }
+          . runTestMatrix
           . runTestACP
   result <-
     runEff (runStack action)
@@ -4257,6 +4271,7 @@ runAgentWithStreamingAnswers answers chatMock action = withMemoryTempDir \memory
               { agentReply = mockReply chatMock
               , agentUserAvatar = mockUserAvatar chatMock
               }
+          . runTestMatrix
           . runTestACP
   result <-
     runEff (runStack action)
@@ -4432,6 +4447,12 @@ runAgentWithToolMessageCapture maxTurns context tools transcript recorded rememb
           $ Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun
   outputs S.:> result <- S.toList (Agent.agentStream program transcript)
   pure (agentOutputText outputs, result.transcript)
+
+runTestMatrix :: Eff (Matrix.Matrix : es) a -> Eff es a
+runTestMatrix =
+  interpret \_ -> \case
+    Matrix.MatrixClientCall _ ->
+      pure Aeson.Null
 
 agentOutputText :: [Agent.Output] -> Text
 agentOutputText =
