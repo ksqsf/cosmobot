@@ -28,8 +28,11 @@ mimeFromName name =
   TextEncoding.decodeUtf8 (Mime.defaultMimeLookup name)
 
 extensionFromMime :: Text -> Text
-extensionFromMime mime =
-  maybe ".bin" ("." <>) (viaNonEmpty head =<< Map.lookup (TextEncoding.encodeUtf8 (cleanMime mime)) Mime.defaultExtensionMap)
+extensionFromMime mime
+  | cleanMime mime == "image/jpeg" =
+      ".jpg"
+  | otherwise =
+      maybe ".bin" ("." <>) (viaNonEmpty head =<< Map.lookup (TextEncoding.encodeUtf8 (cleanMime mime)) Mime.defaultExtensionMap)
 
 sniffMime :: StrictByteString.ByteString -> Maybe Text
 sniffMime bytes

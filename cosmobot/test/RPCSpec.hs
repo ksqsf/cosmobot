@@ -71,6 +71,7 @@ main =
       , testCase "media upload, send, history, and stats" testAttachmentLifecycle
       , testCase "media cache can resolve, inspect, and delete cached media" testMediaCacheResolveInspectDelete
       , testCase "media cache sniffs streamed image content" testMediaCacheSniffsStreamedImageContent
+      , testCase "media cache uses the JPEG extension" testMediaCacheUsesJpegExtension
       , testCase "remote media MIME is probed with range GET" testRemoteMediaMimeUsesRangeGetProbe
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
@@ -403,6 +404,18 @@ testMediaCacheSniffsStreamedImageContent =
       fromMaybe (error "expected stored media info") <$> Media.mediaFileInfoByRef mediaRef
     info.mimeType @?= "image/png"
     takeExtension info.path @?= ".png"
+
+testMediaCacheUsesJpegExtension :: IO ()
+testMediaCacheUsesJpegExtension =
+  withSQLiteTempPath "rpc-media-jpeg-extension" \path -> do
+    publicUrl <- runRpcStorage path do
+      mediaRef <- fromMaybe (error "expected stored media ref") <$> Media.storeMediaObject Media.MediaObject
+        { Media.bytes = Q.fromStrict "\xff\xd8\xffcontent"
+        , Media.mimeType = "application/octet-stream"
+        , Media.sourceName = Nothing
+        }
+      Media.publicMediaRef mediaRef
+    assertBool "public URL should use .jpg rather than .jpe" (".jpg" `Text.isSuffixOf` publicUrl)
 
 testChatSessionsPersistAcrossRestart :: IO ()
 testChatSessionsPersistAcrossRestart =
