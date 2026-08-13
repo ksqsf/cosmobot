@@ -18,6 +18,7 @@ main =
     testGroup "agent core interaction-tree laws"
       [ testProperty "Tau t ≈ t" propTauInvisible
       , testProperty "Vis is congruent when every continuation is" propVisCongruence
+      , testProperty "lift pure ≈ pure" propLiftPure
       , testProperty "fmap agrees with bind and pure" propFmapIsBind
       , testProperty "bind preserves Tau" propBindTau
       , testProperty "bind distributes through Vis" propBindVis
@@ -75,6 +76,10 @@ propVisCongruence :: Bool -> Int -> ProgramCase -> ProgramCase -> Property
 propVisCongruence useModel key ProgramCase{program = onLeft} ProgramCase{program = onRight} =
   visible useModel key (tau onLeft) (tau onRight)
     ~= visible useModel key onLeft onRight
+
+propLiftPure :: Int -> Property
+propLiftPure value =
+  (lift (pure value) :: Program (Eff '[]) Int) ~= pure value
 
 propFmapIsBind :: ProgramCase -> Fun Int Int -> Property
 propFmapIsBind ProgramCase{program} generated =

@@ -95,6 +95,10 @@ instance Monad m => Monad (Program m) where
         Visible event continue ->
           pure (Visible event ((>>= next) . continue))
 
+instance MonadTrans Program where
+  lift action =
+    Program (Finished <$> lift action)
+
 mapStep
   :: Monad m
   => (a -> b)
