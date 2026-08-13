@@ -171,6 +171,7 @@ library
         Bot.ACP.State
         Bot.Agent
         Bot.Agent.Config
+        Bot.Agent.Control
         Bot.Agent.Transcript
         Bot.Agent.Core
         Bot.Agent.Failure
@@ -178,12 +179,14 @@ library
         Bot.Agent.Middleware.Continuation
         Bot.Agent.Middleware.Observation
         Bot.Agent.Middleware.Observation.Types
+        Bot.Agent.Middleware.Python
         Bot.Agent.Middleware.Steering
         Bot.Agent.Middleware.ToolEmittedMessage
         Bot.Agent.Middleware.ToolReplyNormalization
         Bot.Agent.Middleware.ToolResultCompaction
         Bot.Agent.Middleware.Typing
         Bot.Agent.Middleware.Tools
+        Bot.Agent.Program.Python
         Bot.Agent.Tool
         Bot.Agent.ToolRegistry
         Bot.Agent.Tools
@@ -192,6 +195,7 @@ library
         Bot.Agent.Tools.Common
         Bot.Agent.Tools.Continuation
         Bot.Agent.Tools.Meta
+        Bot.Agent.Tools.Python
         Bot.Agent.Tools.Emacs
         Bot.Agent.Tools.Files
         Bot.Agent.Tools.Image
@@ -458,12 +462,12 @@ test-suite agent-spec
                     , toml-parser
     hs-source-dirs:   test
 
-test-suite agent-core-spec
+test-suite program-spec
     import:           warnings
                     , language
                     , test-deps
     type:             exitcode-stdio-1.0
-    main-is:          AgentCoreSpec.hs
+    main-is:          ProgramSpec.hs
     build-depends:    QuickCheck
                     , tasty-quickcheck
     hs-source-dirs:   test

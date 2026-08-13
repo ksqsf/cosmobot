@@ -11,12 +11,12 @@ module Bot.Agent.Middleware.Continuation
 where
 
 import Bot.Agent.Core
+import Bot.Agent.Control (finishToolTurn)
 import Bot.Agent.Tools.Common (jsonText)
 import Bot.Agent.Tools.Continuation
-import Bot.Agent.Transcript (appendMessage, appendMessages)
+import Bot.Agent.Transcript (appendMessage)
 import Bot.Agent.Tool (toolName)
 import Bot.Agent.Types
-import Bot.Core.Transcript (Transcript)
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Util.HList as HList
@@ -111,20 +111,10 @@ handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
       (go nextOrdinal saved (continue nextState)).observe
 
     handleConcurrent nextOrdinal saved request continue = do
-      (nextState, ()) <-
-        lift $
-          toolTurn HList.HNil request do
-            messages <- forM (toList request.toolCalls) \call -> do
-              result <- runtime.aroundToolCall request.agentState.turn call HList.HNil $
-                pure (argumentFailure "Continuation control tools must be called alone; no tool call in this turn was executed.")
-              pure (toolResultMessage call result)
-            pure
-              ( request.agentState
-                  { transcript = appendMessages messages request.answered
-                  , turn = request.agentState.turn + 1
-                  }
-              , ()
-              )
+      (nextState, _) <- lift $ finishToolTurn toolTurn request $
+        forM request.toolCalls \call -> do
+          runtime.aroundToolCall request.agentState.turn call HList.HNil $
+            pure (argumentFailure "Continuation control tools must be called alone; no tool call in this turn was executed.")
       (go nextOrdinal saved (continue nextState)).observe
 
 exposedContinuationCalls :: Runtime context (Eff es) -> NonEmpty LLM.ToolCall -> [LLM.ToolCall]
@@ -143,12 +133,9 @@ runControlTurn
   -> ToolResult
   -> Eff es (TurnState, ToolResult)
 runControlTurn runtime toolTurn request call result =
-  toolTurn HList.HNil request do
-    observed <- runtime.aroundToolCall request.agentState.turn call HList.HNil (pure result)
-    pure
-      ( advance request.agentState (appendMessage (toolResultMessage call observed) request.answered)
-      , observed
-      )
+  finishToolTurn toolTurn request do
+    (:| []) <$> runtime.aroundToolCall request.agentState.turn call HList.HNil (pure result)
+  <&> \(nextState, results) -> (nextState, head results)
 
 captureResult :: LLM.ToolCall -> Maybe Text -> ToolResult
 captureResult call label =
@@ -183,17 +170,6 @@ continuationValue continuationId value =
     , "continuation_id" Aeson..= continuationId
     , "value" Aeson..= value
     ]
-
-advance :: TurnState -> Transcript -> TurnState
-advance agentState transcript =
-  agentState
-    { transcript
-    , turn = agentState.turn + 1
-    }
-
-toolResultMessage :: LLM.ToolCall -> ToolResult -> LLM.ChatMessage
-toolResultMessage call =
-  LLM.toolResult call . toolResultContent
 
 argumentFailure :: Text -> ToolResult
 argumentFailure message =

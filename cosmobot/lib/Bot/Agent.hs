@@ -43,10 +43,10 @@ where
 import Bot.Core.Transcript
 import Bot.Agent.Transcript
   ( appendMessage
-  , appendMessages
   , closeInterruptedToolCalls
   )
 import Bot.Agent.Core
+import Bot.Agent.Control (finishToolTurn)
 import Bot.Agent.Middleware.ContextCompaction
   ( withContextCompactionNotice
   )
@@ -273,7 +273,7 @@ interpretAgentEvent
   => Runtime '[] (Eff es)
   -> AgentEvent response
   -> Stream (Of Output) (Eff es) response
-interpretAgentEvent runtime@Runtime{aroundToolTurn = toolTurn} = \case
+interpretAgentEvent runtime = \case
   RunModel agentState@TurnState{turn, transcript} -> do
     lift $ logAgentState runtime.runId
       [i|step=visible event=RunModel turn=#{turn} messages=#{transcriptMessageCount transcript}|]
@@ -288,7 +288,7 @@ interpretAgentEvent runtime@Runtime{aroundToolTurn = toolTurn} = \case
       logAgentState runtime.runId
         [i|step=visible event=RunTools turn=#{turn} calls=#{toolCallSummary toolCalls}|]
       continuedState@TurnState{turn = nextTurn, transcript} <-
-        fst <$> toolTurn HList.HNil request ((, ()) <$> toolPhase runtime request)
+        fst <$> toolPhase runtime request
       logAgentState runtime.runId
         [i|event=RunTools completed next_turn=#{nextTurn} messages=#{transcriptMessageCount transcript}|]
       pure continuedState
@@ -375,17 +375,10 @@ toolPhase
   :: (Concurrent :> es, KatipE :> es)
   => Runtime '[] (Eff es)
   -> ToolRequest
-  -> Eff es TurnState
-toolPhase runtime ToolRequest{agentState, answered, toolCalls} = do
-  nextTranscript <- continueWithToolCalls runtime agentState.turn answered toolCalls
-  pure (advanceAfterTools agentState nextTranscript)
-
-advanceAfterTools :: TurnState -> Transcript -> TurnState
-advanceAfterTools agentState transcript =
-  agentState
-    { transcript = transcript
-    , turn = agentState.turn + 1
-    }
+  -> Eff es (TurnState, NonEmpty ToolResult)
+toolPhase runtime@Runtime{aroundToolTurn = toolTurn} request =
+  finishToolTurn toolTurn request $
+    Async.mapConcurrently (executeToolCall runtime request.agentState.turn) request.toolCalls
 
 -----------------------------------------------------------------------------------------
 -- * Model helpers
@@ -435,25 +428,11 @@ replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
 -- * Tool execution
 -----------------------------------------------------------------------------------------
 
--- | Execute requested tools and append their tool-result messages.
-continueWithToolCalls
-  :: (Concurrent :> es, KatipE :> es)
-  => Runtime '[] (Eff es)
-  -> Int
-  -> Transcript
-  -> NonEmpty LLM.ToolCall
-  -> Eff es Transcript
-continueWithToolCalls runtime turn answered calls = do
-  executions <- Async.mapConcurrently (executeToolCall runtime turn) calls
-  let executionList = toList executions
-      next = appendMessages (map (\(resultMessage, _, _) -> resultMessage) executionList <> concatMap (\(_, imageMessages, _) -> imageMessages) executionList) answered
-  pure next
-
 -- | Run one tool call and convert failures into tool-visible text.
 --
 -- Tool failures must still produce a tool result message; otherwise the next
 -- LLM request would contain an assistant tool call without its required result.
-executeToolCall :: (Concurrent :> es, KatipE :> es) => Runtime '[] (Eff es) -> Int -> LLM.ToolCall -> Eff es (LLM.ChatMessage, [LLM.ChatMessage], ToolResult)
+executeToolCall :: (Concurrent :> es, KatipE :> es) => Runtime '[] (Eff es) -> Int -> LLM.ToolCall -> Eff es ToolResult
 executeToolCall runtime@Runtime{runId} turn call@LLM.ToolCall{id = callId, name, arguments} = do
   logDebug
     [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=started argument_chars=#{Text.length arguments}|]
@@ -464,26 +443,11 @@ executeToolCall runtime@Runtime{runId} turn call@LLM.ToolCall{id = callId, name,
         [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=interrupted|]
   logDebug
     [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=finished status=#{toolResultStatus result} result_chars=#{Text.length (toolResultContent result)} images=#{length (toolResultImageUrls result)}|]
-  pure (LLM.toolResult call (toolResultContent result), toolImageContextMessages call result, result)
+  pure result
 
 toolResultStatus :: ToolResult -> Text
 toolResultStatus =
   maybe "ok" failureStatus . toolResultFailure
-
-toolImageContextMessages :: LLM.ToolCall -> ToolResult -> [LLM.ChatMessage]
-toolImageContextMessages call result =
-  [ LLM.userWithImages (toolImageContextText call result) imageUrls
-  | let imageUrls = toolResultImageUrls result
-  , not (null imageUrls)
-  ]
-
-toolImageContextText :: LLM.ToolCall -> ToolResult -> Text
-toolImageContextText call result =
-  Text.strip [i|Image context returned by tool #{calledToolName}:
-#{toolContent}|]
-  where
-    calledToolName = call.name
-    toolContent = toolResultContent result
 
 -----------------------------------------------------------------------------------------
 -- * Completion

@@ -101,7 +101,7 @@ middleware.
 
 The definitions live in
 [`Bot.Agent.Core`](../lib/Bot/Agent/Core.hs). Their algebraic properties live in
-[`AgentCoreSpec`](../test/AgentCoreSpec.hs).
+[`ProgramSpec`](../test/ProgramSpec.hs).
 
 ## Interpretation and streaming
 

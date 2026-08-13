@@ -98,7 +98,7 @@ For agent changes, add or update focused tests in `test/AgentSpec.hs` for:
 - middleware ordering when context is provided by one middleware and consumed by another.
 
 For changes to `Program`, `Step`, or their instances, add algebraic properties
-to `test/AgentCoreSpec.hs`. Compare programs up to finite `Continues` steps,
+to `test/ProgramSpec.hs`. Compare programs up to finite `Continues` steps,
 inspect every generated `Visible` continuation, and keep these calculus
 laws separate from middleware policy scenarios in `AgentSpec.hs`.
 
@@ -179,7 +179,7 @@ cleanup, and tool-call transcript completeness together.
 ### Verification
 
 - Concurrency manager changes: `cabal test -j concurrency-spec --test-options=--hide-successes`.
-- Agent calculus changes: `cabal test -j agent-core-spec --test-options=--hide-successes`.
+- Agent calculus changes: `cabal test -j program-spec --test-options=--hide-successes`.
 - Agent middleware/tool/conversation changes: `cabal test -j agent-spec --test-options=--hide-successes`.
 - Agent retry, failure, and cancellation changes: `cabal test -j failure-spec --test-options=--hide-successes`.
 - Scheduler changes: `cabal test -j scheduler-spec --test-options=--hide-successes`.

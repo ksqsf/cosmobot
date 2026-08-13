@@ -3,13 +3,25 @@
 module Main (main) where
 
 import Bot.Agent.Core
+import Bot.Agent.Control (finishToolTurn)
+import Bot.Agent.Middleware.Python (interpretPython)
+import Bot.Agent.Program.Python
+import Bot.Agent.Tool (NamedTag (..), Tool, ToolTag (..), toolTags)
+import Bot.Agent.Tools.Python
+import Bot.Agent.Types (permanentArgumentFailure, toolText, toolTextWithImages)
 import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Sequence as Seq
+import qualified Data.Foldable as Foldable
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Prelude (Show (show))
 import qualified Streaming.Prelude as S hiding (show)
 import Test.Tasty
+import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck
 
 main :: IO ()
@@ -24,6 +36,14 @@ main =
       , testProperty "bind distributes through Vis" propBindVis
       , testProperty "bind preserves model and tool continuations" propBindBothEvents
       , testProperty "Kleisli associativity" propKleisliAssociativity
+      , testGroup "Python structural interpretation"
+          [ testCase "enters Python before applying the saved continuation" testPythonEntry
+          , testCase "completed and failed exits each apply the saved continuation once" testPythonExits
+          , testCase "mixed batches reject before Python or sibling work" testPythonMixedBatch
+          , testCase "unrelated nodes and continuation branches are preserved" testPythonPreservesUnrelated
+          , testCase "tool turn keeps results before image context" testToolTurnMessageOrder
+          , testCase "run_python is a special composition tool" testPythonToolContract
+          ]
       ]
 
 -- QuickCheck generates the real core type. The wrapper exists only because a
@@ -150,6 +170,133 @@ propKleisliAssociativity ProgramCase{program} generatedF generatedG =
   where
     f = arrow generatedF
     g = arrow generatedG
+
+testPythonEntry :: Assertion
+testPythonEntry =
+  case observeEvent (pythonTransform enteredInterpreter solePythonProgram) of
+    Returned outputs (turn, contents) -> do
+      outputs @?= [ObservedContent "python-state", ObservedContent "continued"]
+      turn @?= 1
+      contents @?= ["done"]
+    _ ->
+      assertFailure "run_python was not structurally consumed"
+  where
+    enteredInterpreter _ _ _ =
+      emit "python-state" (pure (PythonCompleted "done"))
+
+testPythonExits :: Assertion
+testPythonExits = do
+  assertExit (PythonCompleted "complete") ["complete"]
+  assertExit
+    (PythonFailed (permanentArgumentFailure "failed" "failed"))
+    ["failed"]
+  where
+    assertExit exit expected =
+      case observeEvent (pythonTransform (\_ _ _ -> pure exit) solePythonProgram) of
+        Returned outputs (turn, contents) -> do
+          outputs @?= [ObservedContent "continued"]
+          turn @?= 1
+          contents @?= expected
+        _ ->
+          assertFailure "Python exit did not resume its saved continuation"
+
+testPythonMixedBatch :: Assertion
+testPythonMixedBatch =
+  case observeEvent (pythonTransform enteredInterpreter mixedPythonProgram) of
+    Returned outputs (turn, contents) -> do
+      outputs @?= [ObservedContent "continued"]
+      turn @?= 1
+      length contents @?= 2
+      assertBool "every mixed-batch call gets a protocol result" $
+        all ("must be called alone" `Text.isInfixOf`) contents
+    _ ->
+      assertFailure "mixed run_python batch was not rejected as one program"
+  where
+    enteredInterpreter _ _ _ =
+      emit "python-state" (pure (PythonCompleted "must not run"))
+
+testPythonPreservesUnrelated :: Assertion
+testPythonPreservesUnrelated = do
+  let original = tau (emit "before" (bothVisible 7 (pure (1 :: Int)) (pure 2) (pure 3) (pure 4)))
+      transformed = pythonTransform (\_ _ _ -> pure (PythonCompleted "unused")) original
+  assertBool "unrelated branches changed" (eutt original transformed)
+
+testToolTurnMessageOrder :: Assertion
+testToolTurnMessageOrder = do
+  let firstCall = LLM.ToolCall "call-1" "first" "{}"
+      secondCall = LLM.ToolCall "call-2" "second" "{}"
+      request = requestWith (firstCall :| [secondCall])
+      results = toolTextWithImages "first-result\n" ["https://example.invalid/image"] :| [toolText "second-result"]
+      (continuedState, _) = runPureEff (finishToolTurn (\_ _ action -> action) request (pure results))
+      messages = Foldable.toList continuedState.transcript.messages
+  map (\message -> (message.role, messageText message)) messages @?=
+    [ ("tool", "first-result\n")
+    , ("tool", "second-result")
+    , ("user", "Image context returned by tool first:\nfirst-result")
+    ]
+
+testPythonToolContract :: Assertion
+testPythonToolContract = do
+  toolTags (runPythonTool :: Tool (Eff '[])) @?=
+    [Named (NamedTag "special" "Compose multiple tools with programmatic control flow.")]
+  assertBool "description must recommend run_python for composing multiple tools" $
+    all (`Text.isInfixOf` runPythonDescription)
+      [ "compose the other tools"
+      , "multiple tool calls"
+      , "sequencing, branching, loops, aggregation, or recovery"
+      ]
+
+messageText :: LLM.ChatMessage -> Text
+messageText message =
+  case message.content of
+    Just (LLM.TextContent content) -> content
+    Just (LLM.PartsContent (LLM.TextPart content : _)) -> content
+    _ -> ""
+
+pythonTransform
+  :: (ToolRequest -> LLM.ToolCall -> PythonRequest -> Program (Eff '[]) PythonExit)
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
+pythonTransform interpreter =
+  interpretPython interpreter [runPythonToolName] (\_ _ action -> action)
+
+solePythonProgram :: Program (Eff '[]) (Int, [Text])
+solePythonProgram =
+  runTools (requestWith (pythonCall "complete" :| [])) >>= continued
+
+mixedPythonProgram :: Program (Eff '[]) (Int, [Text])
+mixedPythonProgram =
+  runTools (requestWith (pythonCall "mixed" :| [toolCall 9])) >>= continued
+
+continued :: TurnState -> Program (Eff '[]) (Int, [Text])
+continued continuedState =
+  emit "continued" (pure (continuedState.turn, transcriptToolTexts continuedState.transcript))
+
+requestWith :: NonEmpty LLM.ToolCall -> ToolRequest
+requestWith calls =
+  ToolRequest
+    { agentState = emptyState 0
+    , answered = emptyTranscript
+    , toolContent = ""
+    , toolCalls = calls
+    }
+
+pythonCall :: Text -> LLM.ToolCall
+pythonCall code =
+  LLM.ToolCall
+    { id = "call-python"
+    , name = runPythonToolName
+    , arguments = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $
+        Aeson.object ["code" Aeson..= code]
+    }
+
+transcriptToolTexts :: Transcript -> [Text]
+transcriptToolTexts (Transcript messages) =
+  [ content
+  | message <- Foldable.toList messages
+  , message.role == "tool"
+  , Just (LLM.TextContent content) <- [message.content]
+  ]
 
 arrow :: Fun Int ProgramCase -> Int -> Program (Eff '[]) Int
 arrow generated =

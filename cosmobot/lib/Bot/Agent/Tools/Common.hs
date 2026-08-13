@@ -9,6 +9,7 @@ Stability   : experimental
 
 module Bot.Agent.Tools.Common
   ( chatTag
+  , specialTag
   , workTag
   , superuserOnly
   , requiredText
@@ -51,6 +52,10 @@ import qualified Data.Text.Encoding as TextEncoding
 chatTag :: NamedTag
 chatTag =
   NamedTag "chat" "Interact with the current chat, messages, members, files, and media."
+
+specialTag :: NamedTag
+specialTag =
+  NamedTag "special" "Compose multiple tools with programmatic control flow."
 
 workTag :: NamedTag
 workTag =
