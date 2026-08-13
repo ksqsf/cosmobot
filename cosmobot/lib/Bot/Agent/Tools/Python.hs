@@ -4,11 +4,13 @@ module Bot.Agent.Tools.Python
   , runPythonRequest
   , runPythonTool
   , runPythonToolName
+  , isPythonProgramControl
   )
 where
 
 import Bot.Agent.Tool
 import Bot.Agent.Tools.Common (requiredText, specialTag)
+import Bot.Agent.Tools.Continuation (isContinuationToolName)
 import Bot.Agent.Types
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -26,6 +28,12 @@ newtype PythonRequest = PythonRequest
 runPythonToolName :: Text
 runPythonToolName =
   "run_python"
+
+isPythonProgramControl :: Text -> Bool
+isPythonProgramControl name =
+  name == runPythonToolName
+    || name == toolEnableName
+    || isContinuationToolName name
 
 runPythonTool :: Tool (Eff es)
 runPythonTool =

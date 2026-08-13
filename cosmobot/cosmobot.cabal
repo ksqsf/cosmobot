@@ -158,6 +158,9 @@ common test-deps
                     , warp
                     , websockets
 
+common test-build
+    ghc-options:       -O0
+
 library
     import:           warnings
                     , language
@@ -367,6 +370,7 @@ test-suite filter-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          FilterSpec.hs
     build-depends:    toml-parser
@@ -376,6 +380,7 @@ test-suite scratchpad-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          ScratchpadSpec.hs
     build-depends:    toml-parser
@@ -385,6 +390,7 @@ test-suite media-handler-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          MediaHandlerSpec.hs
     hs-source-dirs:   test
@@ -393,6 +399,7 @@ test-suite chat-platform-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          ChatPlatformSpec.hs
     build-depends:    base64-bytestring
@@ -406,6 +413,7 @@ test-suite config-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          ConfigSpec.hs
     build-depends:    temporary
@@ -416,6 +424,7 @@ test-suite scheduler-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          SchedulerSpec.hs
     build-depends:    toml-parser
@@ -426,6 +435,7 @@ test-suite stream-spec
                     , threaded
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          StreamSpec.hs
     build-depends:    toml-parser
@@ -436,6 +446,7 @@ test-suite concurrency-spec
                     , threaded
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          ConcurrencySpec.hs
     hs-source-dirs:   test
@@ -445,6 +456,7 @@ test-suite resource-spec
                     , threaded
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          ResourceSpec.hs
     hs-source-dirs:   test
@@ -454,6 +466,7 @@ test-suite agent-spec
                     , threaded
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          AgentSpec.hs
     build-depends:    http-client
@@ -466,6 +479,7 @@ test-suite program-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          ProgramSpec.hs
     build-depends:    QuickCheck
@@ -477,6 +491,7 @@ test-suite failure-spec
                     , threaded
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          FailureSpec.hs
     hs-source-dirs:   test
@@ -485,6 +500,7 @@ test-suite llm-retry-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          LLMRetrySpec.hs
     hs-source-dirs:   test
@@ -494,6 +510,7 @@ test-suite rpc-spec
                     , threaded
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          RPCSpec.hs
     build-depends:    log-base
@@ -507,6 +524,7 @@ test-suite acp-spec
                     , threaded
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          ACPSpec.hs
     build-depends:    network
@@ -518,6 +536,7 @@ test-suite llm-openai-config-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          LLMOpenAIConfigSpec.hs
     build-depends:    toml-parser
@@ -527,6 +546,7 @@ test-suite chat-log-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          ChatLogSpec.hs
     build-depends:    toml-parser
@@ -536,6 +556,7 @@ test-suite typing-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          TypingSpec.hs
     hs-source-dirs:   test
@@ -544,6 +565,7 @@ test-suite admin-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          AdminSpec.hs
     build-depends:    toml-parser
@@ -553,6 +575,7 @@ test-suite shutup-spec
     import:           warnings
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          ShutUpSpec.hs
     build-depends:    toml-parser
@@ -563,6 +586,7 @@ test-suite safebooru-spec
                     , threaded
                     , language
                     , test-deps
+                    , test-build
     type:             exitcode-stdio-1.0
     main-is:          SafebooruSpec.hs
     build-depends:    log-base

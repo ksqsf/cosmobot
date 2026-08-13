@@ -6,6 +6,8 @@ import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Tools as AgentTools
 import qualified Bot.Agent.Core as AgentCore
+import qualified Bot.Agent.Middleware.Python as PythonMiddleware
+import qualified Bot.Agent.Program.Python as PythonProgram
 import qualified Bot.Agent.Tools.Audio as AudioTools
 import qualified Bot.Agent.Tools.Chat as ChatTools
 import qualified Bot.Agent.Tools.Continuation as ContinuationTools
@@ -14,6 +16,7 @@ import qualified Bot.Agent.Tools.Image as ImageTools
 import qualified Bot.Agent.Tools.Media as MediaTools
 import qualified Bot.Agent.Tools.Matrix as MatrixTools
 import qualified Bot.Agent.Tools.Meta as MetaTools
+import qualified Bot.Agent.Tools.Python as PythonTools
 import qualified Bot.Agent.Tools.Sandbox as SandboxTools
 import qualified Bot.Agent.Tools.SubAgent as SubAgentTools
 import qualified Bot.Agent.Tools.Terminal as TerminalTools
@@ -235,6 +238,9 @@ main =
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
       , testCase "tool argument DSL shares schema, decoding, and reader context" testToolArgumentDSL
       , testCase "dynamic tool visibility is frozen for each model turn" testDynamicToolVisibilitySnapshot
+      , testCase "Python nested tools reuse frozen registry dispatch without transcript entries" testPythonNestedRegistryDispatch
+      , testCase "Python rejects every program control before starting a sibling" testPythonRejectsProgramControls
+      , testCase "Python nested ids, ordering, and budget are host-owned" testPythonNestedIdsAndBudget
       , testCase "tool tags are enabled from the thread transcript" testToolTagsEnabledFromTranscript
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
       , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
@@ -404,6 +410,136 @@ testDynamicToolVisibilitySnapshot = do
   AgentTypes.toolResultContent beforeRefresh @?= "ran"
   assertBool "the next turn hides the tool" (null refreshedSchemas)
   assertBool "hidden tool calls are rejected after the next schema snapshot" ("Unknown tool" `Text.isInfixOf` AgentTypes.toolResultContent afterRefresh)
+
+testPythonNestedRegistryDispatch :: IO ()
+testPythonNestedRegistryDispatch = do
+  visible <- IORef.newIORef True
+  nestedResults <- IORef.newIORef Nothing
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("compose" :: Text)])]
+    , chatAnswer "done" []
+    ]
+  let dynamicTool :: AgentTool.Tool (Eff AgentStack)
+      dynamicTool =
+        AgentTool.hideUnlessM (\_ _ _ -> liftIO (IORef.readIORef visible))
+        . AgentTool.withDescription "Visible for the frozen model turn."
+        $ AgentTool.tool "python_dynamic" AgentTool.noArguments (pure (Agent.toolText "dynamic-ran"))
+      deniedTool :: AgentTool.Tool (Eff AgentStack)
+      deniedTool =
+        AgentTool.allowWhen (const False)
+        . AgentTool.withDescription "Denied in this context."
+        $ AgentTool.tool "python_denied" AgentTool.noArguments (pure (Agent.toolText "must-not-run"))
+      interpreter runTools _ _ _ = do
+        lift (liftIO (IORef.writeIORef visible False))
+        results <- lift $ runTools 1
+          ( PythonProgram.PythonToolCall "python_dynamic" "{}"
+          :| [PythonProgram.PythonToolCall "python_denied" "{}"]
+          )
+        lift (liftIO (IORef.writeIORef nestedResults (Just results)))
+        pure (PythonProgram.PythonCompleted "nested complete")
+  transcript <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, dynamicTool, deniedTool]
+    let pythonRuntime = PythonMiddleware.withPythonInterpreter interpreter runtime
+    _outputs S.:> result <- S.toList (Agent.agentStream pythonRuntime (startWithEnabledTools ["special"] "compose"))
+    pure result.transcript
+  Just (dynamicResult :| [deniedResult]) <- IORef.readIORef nestedResults
+  AgentTypes.toolResultContent dynamicResult @?= "dynamic-ran"
+  fmap (.category) (AgentTypes.toolResultFailure deniedResult) @?= Just AgentTypes.PermissionDenied
+  toolOutputs transcript @?= ["nested complete"]
+  assertBool "nested calls must not add assistant/tool transcript entries" $
+    null
+      [ call
+      | message <- Foldable.toList transcript.messages
+      , call <- message.toolCalls
+      , "/python/" `Text.isInfixOf` call.id
+      ]
+
+testPythonRejectsProgramControls :: IO ()
+testPythonRejectsProgramControls = do
+  started <- IORef.newIORef (0 :: Int)
+  observed <- IORef.newIORef ([] :: [Agent.ToolResult])
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("controls" :: Text)])]
+    , chatAnswer "done" []
+    ]
+  let markerTool :: AgentTool.Tool (Eff AgentStack)
+      markerTool =
+        AgentTool.withDescription "Records dispatch."
+        $ AgentTool.tool "python_marker" AgentTool.noArguments do
+            liftIO $ IORef.atomicModifyIORef' started (\count -> (count + 1, ()))
+            pure (Agent.toolText "ran")
+      controls = ["run_python", "tool_enable", "capture_continuation", "resume_continuation"]
+      interpreter runTools _ _ _ = do
+        results <- lift $ forM (zip [1 ..] controls) \(rpcId, control) ->
+          runTools rpcId
+            ( PythonProgram.PythonToolCall "python_marker" "{}"
+            :| [PythonProgram.PythonToolCall control "{}"]
+            )
+        lift (liftIO (IORef.writeIORef observed (concatMap toList results)))
+        pure (PythonProgram.PythonCompleted "controls rejected")
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, markerTool]
+    void . S.toList $ Agent.agentStream
+      (PythonMiddleware.withPythonInterpreter interpreter runtime)
+      (startWithEnabledTools ["special"] "reject controls")
+  IORef.readIORef started >>= (@?= 0)
+  results <- IORef.readIORef observed
+  length results @?= 8
+  assertBool "every rejected batch member receives the same argument failure" $
+    all
+      (maybe False (\failure -> failure.category == AgentTypes.PermanentArgumentError && "program-control" `Text.isInfixOf` failure.userMessage) . AgentTypes.toolResultFailure)
+      results
+
+testPythonNestedIdsAndBudget :: IO ()
+testPythonNestedIdsAndBudget = do
+  started <- IORef.newIORef (0 :: Int)
+  observed <- IORef.newIORef Nothing
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("budget" :: Text)])]
+    , chatAnswer "done" []
+    ]
+  let markerTool :: AgentTool.Tool (Eff AgentStack)
+      markerTool =
+        AgentTool.withDescription "Counts nested dispatch."
+        $ AgentTool.tool "python_budgeted" AgentTool.noArguments do
+            liftIO $ IORef.atomicModifyIORef' started (\count -> (count + 1, ()))
+            pure (Agent.toolText "ran")
+      batch = PythonProgram.PythonToolCall "python_budgeted" "{}" :| replicate 15 (PythonProgram.PythonToolCall "python_budgeted" "{}")
+      finalBatch = PythonProgram.PythonToolCall "python_budgeted" "{}" :| replicate 13 (PythonProgram.PythonToolCall "python_budgeted" "{}")
+      interpreter runTools _ _ _ = do
+        rejected <- lift $ runTools 1
+          ( PythonProgram.PythonToolCall "python_budgeted" "{}"
+          :| [PythonProgram.PythonToolCall "run_python" "{}"]
+          )
+        duplicate <- lift $ runTools 1 (PythonProgram.PythonToolCall "python_budgeted" "{}" :| [])
+        fullBatches <- lift $ traverse (\rpcId -> runTools rpcId batch) (2 :| [3, 4])
+        finalResults <- lift $ runTools 5 finalBatch
+        exhausted <- lift $ runTools 6 (PythonProgram.PythonToolCall "python_budgeted" "{}" :| [])
+        lift (liftIO (IORef.writeIORef observed (Just (fullBatches <> (finalResults :| []), rejected, duplicate, exhausted))))
+        pure (PythonProgram.PythonCompleted "budget checked")
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, markerTool]
+    let withIds = runtime
+          { AgentCore.aroundToolCall = \turn call context action -> do
+              _ <- runtime.aroundToolCall turn call context action
+              pure (Agent.toolText call.id)
+          }
+    void . S.toList $ Agent.agentStream
+      (PythonMiddleware.withPythonInterpreter interpreter withIds)
+      (startWithEnabledTools ["special"] "check budget")
+  IORef.readIORef started >>= (@?= 62)
+  Just (successful, rejected, duplicate :| [], exhausted :| []) <- IORef.readIORef observed
+  let returnedIds = map AgentTypes.toolResultContent (concatMap toList (toList successful))
+      expectedIds =
+        [[i|outer-python/python/#{rpcId}/#{index}|] | rpcId <- [2 :: Int .. 4], index <- [0 :: Int .. 15]]
+        <> [[i|outer-python/python/5/#{index}|] | index <- [0 :: Int .. 13]]
+  returnedIds @?= expectedIds
+  assertBool "synthetic ids are bounded before audit middleware" $
+    all ((<= 256) . Text.length) returnedIds
+  assertBool "rejected calls consume the independent nested-call budget" $
+    all (isJust . AgentTypes.toolResultFailure) rejected
+  fmap (.category) (AgentTypes.toolResultFailure duplicate) @?= Just AgentTypes.PermanentArgumentError
+  fmap (.category) (AgentTypes.toolResultFailure exhausted) @?= Just AgentTypes.BudgetExhausted
 
 testToolTagsEnabledFromTranscript :: IO ()
 testToolTagsEnabledFromTranscript = do

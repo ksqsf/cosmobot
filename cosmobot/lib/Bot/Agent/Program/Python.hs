@@ -1,11 +1,19 @@
 module Bot.Agent.Program.Python
-  ( PythonExit (..)
+  ( PythonToolCall (..)
+  , PythonExit (..)
   , pythonExitResult
   )
 where
 
 import Bot.Agent.Types
 import Bot.Prelude
+
+-- | One worker-originated call. The host, not Python, supplies the audit id.
+data PythonToolCall = PythonToolCall
+  { name :: !Text
+  , arguments :: !Text
+  }
+  deriving stock (Eq, Show)
 
 data PythonExit
   = PythonCompleted !Text

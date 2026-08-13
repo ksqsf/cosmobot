@@ -8,7 +8,7 @@ import Bot.Agent.Middleware.Python (interpretPython)
 import Bot.Agent.Program.Python
 import Bot.Agent.Tool (NamedTag (..), Tool, ToolTag (..), toolTags)
 import Bot.Agent.Tools.Python
-import Bot.Agent.Types (permanentArgumentFailure, toolText, toolTextWithImages)
+import Bot.Agent.Types (ToolResult, permanentArgumentFailure, toolText, toolTextWithImages)
 import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -181,7 +181,7 @@ testPythonEntry =
     _ ->
       assertFailure "run_python was not structurally consumed"
   where
-    enteredInterpreter _ _ _ =
+    enteredInterpreter _ _ _ _ =
       emit "python-state" (pure (PythonCompleted "done"))
 
 testPythonExits :: Assertion
@@ -192,7 +192,7 @@ testPythonExits = do
     ["failed"]
   where
     assertExit exit expected =
-      case observeEvent (pythonTransform (\_ _ _ -> pure exit) solePythonProgram) of
+      case observeEvent (pythonTransform (\_ _ _ _ -> pure exit) solePythonProgram) of
         Returned outputs (turn, contents) -> do
           outputs @?= [ObservedContent "continued"]
           turn @?= 1
@@ -212,13 +212,13 @@ testPythonMixedBatch =
     _ ->
       assertFailure "mixed run_python batch was not rejected as one program"
   where
-    enteredInterpreter _ _ _ =
+    enteredInterpreter _ _ _ _ =
       emit "python-state" (pure (PythonCompleted "must not run"))
 
 testPythonPreservesUnrelated :: Assertion
 testPythonPreservesUnrelated = do
   let original = tau (emit "before" (bothVisible 7 (pure (1 :: Int)) (pure 2) (pure 3) (pure 4)))
-      transformed = pythonTransform (\_ _ _ -> pure (PythonCompleted "unused")) original
+      transformed = pythonTransform (\_ _ _ _ -> pure (PythonCompleted "unused")) original
   assertBool "unrelated branches changed" (eutt original transformed)
 
 testToolTurnMessageOrder :: Assertion
@@ -254,11 +254,19 @@ messageText message =
     _ -> ""
 
 pythonTransform
-  :: (ToolRequest -> LLM.ToolCall -> PythonRequest -> Program (Eff '[]) PythonExit)
+  :: ( (Int -> NonEmpty PythonToolCall -> Eff '[] (NonEmpty ToolResult))
+       -> ToolRequest
+       -> LLM.ToolCall
+       -> PythonRequest
+       -> Program (Eff '[]) PythonExit
+     )
   -> Program (Eff '[]) result
   -> Program (Eff '[]) result
 pythonTransform interpreter =
-  interpretPython interpreter [runPythonToolName] (\_ _ action -> action)
+  interpretPython
+    (interpreter (\_ -> pure . fmap (const (toolText "unused"))))
+    [runPythonToolName]
+    (\_ _ action -> action)
 
 solePythonProgram :: Program (Eff '[]) (Int, [Text])
 solePythonProgram =
