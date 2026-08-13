@@ -68,6 +68,8 @@ withToolResultCompaction program@Runtime{aroundToolTurn = toolTurn} =
               }
           , result
           )
+    , aroundControlCall = \turn call context action ->
+        program.aroundControlCall turn call (toolResultObservation HList.:& context) action
     , aroundToolCall = \turn call context action ->
         program.aroundToolCall turn call (toolResultObservation HList.:& context) action
     }

@@ -31,14 +31,19 @@ import qualified Streaming.Prelude as S
 withToolFailureRecovery :: Runtime context (Eff es) -> Runtime context (Eff es)
 withToolFailureRecovery program =
   program
-    { aroundToolCall = \turn call context action ->
+    { aroundControlCall = \turn call context action ->
+        safeToolCall call (program.aroundControlCall turn call context action)
+    , aroundToolCall = \turn call context action ->
         safeToolCall call (program.aroundToolCall turn call context action)
     }
 
 withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => Runtime context (Eff es) -> Runtime context (Eff es)
 withToolMessage program =
   program
-    { aroundToolCall = \turn call context action -> do
+    { aroundControlCall = \turn call context action -> do
+        announceNoisyTool program call context
+        program.aroundControlCall turn call context action
+    , aroundToolCall = \turn call context action -> do
         announceNoisyTool program call context
         program.aroundToolCall turn call context action
     }

@@ -29,7 +29,7 @@ type PythonInterpreter es =
   -> ToolRequest
   -> LLM.ToolCall
   -> PythonRequest
-  -> Program (Eff es) PythonExit
+  -> Eff es PythonExit
 
 withPythonInterpreter
   :: Concurrent :> es
@@ -46,17 +46,24 @@ withPythonInterpreter interpreter runtime =
           . runtime.aroundProgram finalRuntime
     }
   where
-    pythonProgram finalRuntime request outerCall pythonRequest = do
-      nestedState <- lift (MVar.newMVar (NestedToolState maxNestedToolCalls 1))
-      interpreter
-        (runPythonTools finalRuntime request.agentState.turn outerCall.id nestedState)
-        request
-        outerCall
-        pythonRequest
+    pythonProgram finalRuntime request outerCall parsedRequest =
+      lift $
+        finalRuntime.aroundControlCall request.agentState.turn outerCall HList.HNil do
+          case parsedRequest of
+            Left err ->
+              pure (argumentFailure [i|Invalid run_python arguments: #{err}|])
+            Right pythonRequest -> do
+              nestedState <- MVar.newMVar (NestedToolState maxNestedToolCalls 1)
+              pythonExitResult
+                <$> interpreter
+                  (runPythonTools finalRuntime request.agentState.turn outerCall.id nestedState)
+                  request
+                  outerCall
+                  pythonRequest
 
 interpretPython
   :: Monad m
-  => (ToolRequest -> LLM.ToolCall -> PythonRequest -> Program m PythonExit)
+  => (ToolRequest -> LLM.ToolCall -> Either Text PythonRequest -> Program m ToolResult)
   -> [Text]
   -> (forall a. HList.HList '[] -> ToolRequest -> m (TurnState, a) -> m (TurnState, a))
   -> Program m result
@@ -86,10 +93,8 @@ interpretPython interpreter exposedToolNames toolTurn =
     handleCall request continue call =
       (do
         result <- case runPythonRequest call of
-          Just (Right pythonRequest) ->
-            pythonExitResult <$> interpreter request call pythonRequest
-          Just (Left err) ->
-            pure (argumentFailure [i|Invalid run_python arguments: #{err}|])
+          Just parsedRequest ->
+            interpreter request call parsedRequest
           Nothing ->
             pure (argumentFailure "Unknown Python control operation.")
         resume request continue ((call, result) :| [])

@@ -3,6 +3,7 @@
 
 module Bot.Agent.Control
   ( finishToolTurn
+  , runControlTurn
   )
 where
 
@@ -34,6 +35,18 @@ finishToolTurn aroundToolTurn request action =
           }
       , results
       )
+
+runControlTurn
+  :: Monad m
+  => Runtime '[] m
+  -> ToolRequest
+  -> LLM.ToolCall
+  -> m ToolResult
+  -> m (TurnState, ToolResult)
+runControlTurn Runtime{aroundToolTurn, aroundControlCall} request call action =
+  finishToolTurn aroundToolTurn request do
+    (:| []) <$> aroundControlCall request.agentState.turn call HList.HNil action
+  <&> \(nextState, results) -> (nextState, head results)
 
 toolResultMessage :: LLM.ToolCall -> ToolResult -> LLM.ChatMessage
 toolResultMessage call =

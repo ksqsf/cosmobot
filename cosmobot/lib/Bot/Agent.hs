@@ -201,6 +201,7 @@ startRuntime maxTurns context tools = do
     , aroundAgentRun = \_ action -> action
     , aroundModelTurn = \_ agentState action -> action agentState
     , aroundToolTurn = \_ _ action -> action
+    , aroundControlCall = \_ _ _ action -> action
     , aroundToolCall = \_ _ _ action -> action
     }
 

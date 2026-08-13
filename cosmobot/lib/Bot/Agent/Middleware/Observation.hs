@@ -83,6 +83,16 @@ withObservation observer program@Runtime{aroundToolTurn = toolTurn} =
         in withObservedModelTurn observer turnInfo (program.aroundModelTurn (observedContext emptyObservationContext context) agentState action)
     , aroundToolTurn = \context toolState action ->
         toolTurn (observedContext emptyObservationContext context) toolState action
+    , aroundControlCall = \turn toolCall context action ->
+        let observedCall = ObservedToolCall
+              { runId = program.runId
+              , turn = turn
+              , toolCall = toolCall
+              }
+            toolResultObservation =
+              HList.get @(ToolResultObservation es) context
+        in withObservedToolCall toolResultObservation.observeToolResult observer observedCall \observation ->
+             program.aroundControlCall turn toolCall (observedContext observation context) action
     , aroundToolCall = \turn toolCall context action ->
         let observedCall = ObservedToolCall
               { runId = program.runId

@@ -170,6 +170,11 @@ data Runtime (context :: [Type]) m = Runtime
       -> ToolRequest
       -> m (TurnState, a)
       -> m (TurnState, a)
+    -- | Wrap one model-issued control call for its complete carrier lifetime.
+    --
+    -- Control forms such as run_python are not registry tools, but retain the
+    -- same failure, observation, progress, and result-observation lifecycle.
+  , aroundControlCall :: Int -> LLM.ToolCall -> HList.HList context -> m ToolResult -> m ToolResult
     -- | Wrap one model-requested tool call.
     --
     -- Use this for per-call observation, failure recovery, policy, or timing

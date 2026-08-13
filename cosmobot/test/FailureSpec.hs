@@ -23,6 +23,7 @@ import qualified Bot.LLM.OpenAI.Retry as Retry
 import qualified Bot.LLM.OpenAI.Transport as LLMTransport
 import qualified Bot.LLM.Test as LLMTest
 import Bot.Prelude
+import qualified Bot.Util.HList as HList
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.Foldable as Foldable
@@ -86,6 +87,7 @@ main =
       , testCase "model cancellation releases the response stream" testModelCancellation
       , testCase "tool exception becomes one protocol-complete failure result" testToolFailure
       , testCase "post-tool middleware failure replaces success exactly once" testPostToolMiddlewareFailure
+      , testCase "control-call recovery converts sync failure but preserves async cancellation" testControlCallFailureRecovery
       , testCase "unknown and malformed tool calls each receive a result" testInvalidToolCalls
       , testCase "concurrent tool failure does not discard sibling success" testMixedConcurrentTools
       , testCase "async tool failure is not swallowed and cancels its sibling" testAsyncToolFailure
@@ -382,6 +384,28 @@ testPostToolMiddlewareFailure = do
           && not ("success that must not leak" `Text.isInfixOf` failure)
     other ->
       assertFailure [i|expected one post-middleware failure, got #{show other :: String}|]
+
+testControlCallFailureRecovery :: Assertion
+testControlCallFailureRecovery = do
+  answers <- IORef.newIORef []
+  (syncResult, asyncResult) <- runFailureModel (scriptedModel answers) do
+    runtime <- AgentTools.withToolFailureRecovery <$> testRuntime []
+    let call = toolCall "control-1" "run_python"
+    syncResult <- runtime.aroundControlCall 1 call HList.HNil (throwIO (InjectedFailure "control failed"))
+    asyncResult <- try @SomeException $
+      runtime.aroundControlCall 1 call HList.HNil (throwIO ThreadKilled)
+    pure (syncResult, asyncResult)
+  case syncResult of
+    Agent.ToolFailed{failure} ->
+      assertBool "sync failure should retain the call name and cause" $
+        all (`Text.isInfixOf` failure.userMessage) ["Tool run_python failed:", "control failed"]
+    Agent.ToolSucceeded{} ->
+      assertFailure "sync control failure was not converted to ToolFailed"
+  case asyncResult of
+    Left err ->
+      fromException err @?= Just ThreadKilled
+    Right{} ->
+      assertFailure "async control cancellation was converted to a tool result"
 
 testInvalidToolCalls :: Assertion
 testInvalidToolCalls = do
@@ -1644,6 +1668,7 @@ testRuntimeFor tools = do
         , aroundAgentRun = \_ stream -> stream
         , aroundModelTurn = \_ agentState action -> action agentState
         , aroundToolTurn = \_ _ action -> action
+        , aroundControlCall = \_ _ _ action -> action
         , aroundToolCall = \_ _ _ action -> action
         }
 

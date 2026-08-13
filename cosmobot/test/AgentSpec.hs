@@ -7,6 +7,10 @@ import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Tools as AgentTools
 import qualified Bot.Agent.Core as AgentCore
 import qualified Bot.Agent.Middleware.Python as PythonMiddleware
+import qualified Bot.Agent.Middleware.Observation as AgentObservation
+import qualified Bot.Agent.Middleware.Observation.Types as ObservationTypes
+import qualified Bot.Agent.Middleware.ToolResultCompaction as ToolResultCompaction
+import qualified Bot.Agent.Middleware.Tools as ToolMiddleware
 import qualified Bot.Agent.Program.Python as PythonProgram
 import qualified Bot.Agent.Tools.Audio as AudioTools
 import qualified Bot.Agent.Tools.Chat as ChatTools
@@ -241,6 +245,9 @@ main =
       , testCase "Python nested tools reuse frozen registry dispatch without transcript entries" testPythonNestedRegistryDispatch
       , testCase "Python rejects every program control before starting a sibling" testPythonRejectsProgramControls
       , testCase "Python nested ids, ordering, and budget are host-owned" testPythonNestedIdsAndBudget
+      , testCase "Python outer and nested calls retain distinct audit and message scopes" testPythonControlAndNestedScopes
+      , testCase "malformed Python call keeps outer lifecycle without entering interpreter" testPythonMalformedControlLifecycle
+      , testCase "mixed Python model batch reaches no control or ordinary call scope" testPythonMixedBatchHasNoCallSideEffects
       , testCase "tool tags are enabled from the thread transcript" testToolTagsEnabledFromTranscript
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
       , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
@@ -430,12 +437,12 @@ testPythonNestedRegistryDispatch = do
         . AgentTool.withDescription "Denied in this context."
         $ AgentTool.tool "python_denied" AgentTool.noArguments (pure (Agent.toolText "must-not-run"))
       interpreter runTools _ _ _ = do
-        lift (liftIO (IORef.writeIORef visible False))
-        results <- lift $ runTools 1
+        liftIO (IORef.writeIORef visible False)
+        results <- runTools 1
           ( PythonProgram.PythonToolCall "python_dynamic" "{}"
           :| [PythonProgram.PythonToolCall "python_denied" "{}"]
           )
-        lift (liftIO (IORef.writeIORef nestedResults (Just results)))
+        liftIO (IORef.writeIORef nestedResults (Just results))
         pure (PythonProgram.PythonCompleted "nested complete")
   transcript <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, dynamicTool, deniedTool]
@@ -470,12 +477,12 @@ testPythonRejectsProgramControls = do
             pure (Agent.toolText "ran")
       controls = ["run_python", "tool_enable", "capture_continuation", "resume_continuation"]
       interpreter runTools _ _ _ = do
-        results <- lift $ forM (zip [1 ..] controls) \(rpcId, control) ->
+        results <- forM (zip [1 ..] controls) \(rpcId, control) ->
           runTools rpcId
             ( PythonProgram.PythonToolCall "python_marker" "{}"
             :| [PythonProgram.PythonToolCall control "{}"]
             )
-        lift (liftIO (IORef.writeIORef observed (concatMap toList results)))
+        liftIO (IORef.writeIORef observed (concatMap toList results))
         pure (PythonProgram.PythonCompleted "controls rejected")
   runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, markerTool]
@@ -507,15 +514,15 @@ testPythonNestedIdsAndBudget = do
       batch = PythonProgram.PythonToolCall "python_budgeted" "{}" :| replicate 15 (PythonProgram.PythonToolCall "python_budgeted" "{}")
       finalBatch = PythonProgram.PythonToolCall "python_budgeted" "{}" :| replicate 13 (PythonProgram.PythonToolCall "python_budgeted" "{}")
       interpreter runTools _ _ _ = do
-        rejected <- lift $ runTools 1
+        rejected <- runTools 1
           ( PythonProgram.PythonToolCall "python_budgeted" "{}"
           :| [PythonProgram.PythonToolCall "run_python" "{}"]
           )
-        duplicate <- lift $ runTools 1 (PythonProgram.PythonToolCall "python_budgeted" "{}" :| [])
-        fullBatches <- lift $ traverse (\rpcId -> runTools rpcId batch) (2 :| [3, 4])
-        finalResults <- lift $ runTools 5 finalBatch
-        exhausted <- lift $ runTools 6 (PythonProgram.PythonToolCall "python_budgeted" "{}" :| [])
-        lift (liftIO (IORef.writeIORef observed (Just (fullBatches <> (finalResults :| []), rejected, duplicate, exhausted))))
+        duplicate <- runTools 1 (PythonProgram.PythonToolCall "python_budgeted" "{}" :| [])
+        fullBatches <- traverse (\rpcId -> runTools rpcId batch) (2 :| [3, 4])
+        finalResults <- runTools 5 finalBatch
+        exhausted <- runTools 6 (PythonProgram.PythonToolCall "python_budgeted" "{}" :| [])
+        liftIO (IORef.writeIORef observed (Just (fullBatches <> (finalResults :| []), rejected, duplicate, exhausted)))
         pure (PythonProgram.PythonCompleted "budget checked")
   runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, markerTool]
@@ -540,6 +547,164 @@ testPythonNestedIdsAndBudget = do
     all (isJust . AgentTypes.toolResultFailure) rejected
   fmap (.category) (AgentTypes.toolResultFailure duplicate) @?= Just AgentTypes.PermanentArgumentError
   fmap (.category) (AgentTypes.toolResultFailure exhausted) @?= Just AgentTypes.BudgetExhausted
+
+testPythonControlAndNestedScopes :: IO ()
+testPythonControlAndNestedScopes = do
+  events <- IORef.newIORef ([] :: [Agent.Event])
+  replies <- IORef.newIORef ([] :: [Text])
+  recorded <- IORef.newIORef ([] :: [Text])
+  remembered <- IORef.newIORef ([] :: [Maybe MessageId])
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("emit" :: Text)])]
+    , chatAnswer "done" []
+    ]
+  let emittingTool :: AgentTool.Tool (Eff AgentStack)
+      emittingTool =
+        AgentTool.withDescription "Emits one platform message."
+        $ AgentTool.tool "python_emit" AgentTool.noArguments do
+            void $ Chat.replyTo testMessage "nested emitted"
+            pure (Agent.toolText "nested result")
+      largeResult = Text.replicate 5000 "x"
+      interpreter runTools _ _ _ = do
+        _ :| [] <- runTools 1 (PythonProgram.PythonToolCall "python_emit" "{}" :| [])
+        pure (PythonProgram.PythonCompleted largeResult)
+      observer event = do
+        liftIO $ IORef.modifyIORef' events (<> [event])
+        pure $ case event of
+          Agent.ToolCallStarted{} -> ObservationTypes.ObservationContext (Just 1)
+          _ -> ObservationTypes.emptyObservationContext
+  runAgentWith answers (ChatMock (Just replies) (Just "42") Nothing) do
+    runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, emittingTool]
+    let observed =
+          PythonMiddleware.withPythonInterpreter interpreter
+          . ToolResultCompaction.withToolResultCompaction
+          . AgentObservation.withObservation observer
+          . ToolMiddleware.withToolMessage
+          . ToolMiddleware.withToolFailureRecovery
+          $ runtime
+        sink = Agent.ToolEmittedMessageSink \messageId ->
+          liftIO $ IORef.modifyIORef' remembered (<> [messageId])
+        program =
+          (Agent.withRecordingToolSelfMessages \body ->
+            liftIO $ IORef.modifyIORef' recorded (<> [body]))
+          . Agent.withLinkingToolEmittedMessagesToThread sink
+          $ observed
+    void . S.toList $ Agent.agentStream program (startWithEnabledTools ["special"] "compose and emit")
+  allEvents <- IORef.readIORef events
+  let lifecycle = toolLifecycle allEvents
+  lifecycle @?=
+    [ ("started", "outer-python", "run_python")
+    , ("started", "outer-python/python/1/0", "python_emit")
+    , ("finished", "outer-python/python/1/0", "python_emit")
+    , ("finished", "outer-python", "run_python")
+    ]
+  let finishedResults =
+        [ (toolName, result)
+        | Agent.ToolCallFinished{toolName, result} <- allEvents
+        ]
+      finishedResult name = snd <$> find ((== name) . fst) finishedResults
+  finishedResult "python_emit" @?= Just "nested result"
+  assertBool "outer control result should use the normal audit compaction view" $
+    maybe False ("[tool result omitted;" `Text.isPrefixOf`) (finishedResult "run_python")
+  IORef.readIORef recorded >>= (@?= ["nested emitted"])
+  IORef.readIORef remembered >>= (@?= [Just "42"])
+  IORef.readIORef replies >>= \case
+    [announcement, emitted] -> do
+      assertBool "outer run_python should be announced once" $
+        "正在调用 run_python 工具" `Text.isInfixOf` announcement
+      emitted @?= "nested emitted"
+    sent ->
+      assertFailure [i|expected one outer announcement and one nested message, got #{show sent :: String}|]
+  where
+    toolLifecycle :: [Agent.Event] -> [(Text, Text, Text)]
+    toolLifecycle = mapMaybe \case
+      Agent.ToolCallStarted{toolCall = call} ->
+        Just ("started", call.id, call.name)
+      Agent.ToolCallFinished{toolCallId, toolName} ->
+        Just ("finished", toolCallId, toolName)
+      _ ->
+        Nothing
+
+testPythonMalformedControlLifecycle :: IO ()
+testPythonMalformedControlLifecycle = do
+  events <- IORef.newIORef ([] :: [Agent.Event])
+  replies <- IORef.newIORef ([] :: [Text])
+  interpreterEntries <- IORef.newIORef (0 :: Int)
+  answers <- IORef.newIORef
+    [ chatAnswer ""
+        [LLM.ToolCall "outer-malformed" PythonTools.runPythonToolName "[]"]
+    , chatAnswer "done" []
+    ]
+  let interpreter _ _ _ _ = do
+        liftIO $ IORef.modifyIORef' interpreterEntries (+ 1)
+        pure (PythonProgram.PythonCompleted "must not enter")
+      observer event = do
+        liftIO $ IORef.modifyIORef' events (<> [event])
+        pure $ case event of
+          Agent.ToolCallStarted{} -> ObservationTypes.ObservationContext (Just 1)
+          _ -> ObservationTypes.emptyObservationContext
+  runAgentWith answers (ChatMock (Just replies) (Just "42") Nothing) do
+    runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool]
+    let program =
+          PythonMiddleware.withPythonInterpreter interpreter
+          . ToolResultCompaction.withToolResultCompaction
+          . AgentObservation.withObservation observer
+          . ToolMiddleware.withToolMessage
+          . ToolMiddleware.withToolFailureRecovery
+          $ runtime
+    void . S.toList $ Agent.agentStream program (startWithEnabledTools ["special"] "malformed")
+  IORef.readIORef interpreterEntries >>= (@?= 0)
+  lifecycle <- mapMaybe controlLifecycle <$> IORef.readIORef events
+  lifecycle @?=
+    [ ("started", "outer-malformed", "run_python")
+    , ("finished:permanent_argument_error", "outer-malformed", "run_python")
+    ]
+  sent <- IORef.readIORef replies
+  length sent @?= 1
+  where
+    controlLifecycle :: Agent.Event -> Maybe (Text, Text, Text)
+    controlLifecycle = \case
+      Agent.ToolCallStarted{toolCall = call} ->
+        Just ("started", call.id, call.name)
+      Agent.ToolCallFinished{toolCallId, toolName, status} ->
+        Just ("finished:" <> status, toolCallId, toolName)
+      _ ->
+        Nothing
+
+testPythonMixedBatchHasNoCallSideEffects :: IO ()
+testPythonMixedBatchHasNoCallSideEffects = do
+  controlScopes <- IORef.newIORef (0 :: Int)
+  ordinaryScopes <- IORef.newIORef (0 :: Int)
+  interpreterEntries <- IORef.newIORef (0 :: Int)
+  markerRuns <- IORef.newIORef (0 :: Int)
+  answers <- IORef.newIORef
+    [ chatAnswer ""
+        [ toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("mixed" :: Text)])
+        , toolCall "ordinary" "python_marker" (Aeson.object [])
+        ]
+    , chatAnswer "done" []
+    ]
+  let markerTool :: AgentTool.Tool (Eff AgentStack)
+      markerTool =
+        AgentTool.withDescription "Must not run in a mixed control batch."
+        $ AgentTool.tool "python_marker" AgentTool.noArguments do
+            liftIO $ IORef.modifyIORef' markerRuns (+ 1)
+            pure (Agent.toolText "ran")
+      interpreter _ _ _ _ = do
+        liftIO $ IORef.modifyIORef' interpreterEntries (+ 1)
+        pure (PythonProgram.PythonCompleted "must not enter")
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, markerTool]
+    let counted = runtime
+          { AgentCore.aroundControlCall = \_ _ _ action ->
+              liftIO (IORef.modifyIORef' controlScopes (+ 1)) >> action
+          , AgentCore.aroundToolCall = \_ _ _ action ->
+              liftIO (IORef.modifyIORef' ordinaryScopes (+ 1)) >> action
+          }
+    void . S.toList $ Agent.agentStream
+      (PythonMiddleware.withPythonInterpreter interpreter counted)
+      (startWithEnabledTools ["special"] "reject mixed")
+  traverse_ (>>= (@?= 0)) [IORef.readIORef controlScopes, IORef.readIORef ordinaryScopes, IORef.readIORef interpreterEntries, IORef.readIORef markerRuns]
 
 testToolTagsEnabledFromTranscript :: IO ()
 testToolTagsEnabledFromTranscript = do

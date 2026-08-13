@@ -11,7 +11,7 @@ module Bot.Agent.Middleware.Continuation
 where
 
 import Bot.Agent.Core
-import Bot.Agent.Control (finishToolTurn)
+import Bot.Agent.Control (finishToolTurn, runControlTurn)
 import Bot.Agent.Tools.Common (jsonText)
 import Bot.Agent.Tools.Continuation
 import Bot.Agent.Transcript (appendMessage)
@@ -76,7 +76,7 @@ handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
               reject nextOrdinal saved request continue call "Continuation id already exists."
             Nothing -> do
               (nextState, result) <-
-                lift $ runControlTurn runtime toolTurn request call (captureResult call label)
+                lift $ runControlTurn runtime request call (pure (captureResult call label))
               let resumption =
                     Resumption
                       { ordinal = nextOrdinal
@@ -95,7 +95,7 @@ handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
               reject nextOrdinal saved request continue call [i|Continuation not found in this agent run: #{continuationId}|]
             Just resumption -> do
               (nextState, result) <-
-                lift $ runControlTurn runtime toolTurn request call (toolText (jsonText (continuationValue continuationId value)))
+                lift $ runControlTurn runtime request call (pure (toolText (jsonText (continuationValue continuationId value))))
               let succeeded = isNothing (toolResultFailure result)
                   continuedSaved
                     | succeeded = Map.filter ((< resumption.ordinal) . (.ordinal)) saved
@@ -107,7 +107,7 @@ handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
 
     reject nextOrdinal saved request continue call message = do
       (nextState, _) <-
-        lift $ runControlTurn runtime toolTurn request call (argumentFailure message)
+        lift $ runControlTurn runtime request call (pure (argumentFailure message))
       (go nextOrdinal saved (continue nextState)).observe
 
     handleConcurrent nextOrdinal saved request continue = do
@@ -124,18 +124,6 @@ exposedContinuationCalls runtime =
     isExposedContinuation call =
       isContinuationToolName call.name
         && any ((== call.name) . toolName) runtime.exposedTools
-
-runControlTurn
-  :: Runtime '[] (Eff es)
-  -> (forall a. HList.HList '[] -> ToolRequest -> Eff es (TurnState, a) -> Eff es (TurnState, a))
-  -> ToolRequest
-  -> LLM.ToolCall
-  -> ToolResult
-  -> Eff es (TurnState, ToolResult)
-runControlTurn runtime toolTurn request call result =
-  finishToolTurn toolTurn request do
-    (:| []) <$> runtime.aroundToolCall request.agentState.turn call HList.HNil (pure result)
-  <&> \(nextState, results) -> (nextState, head results)
 
 captureResult :: LLM.ToolCall -> Maybe Text -> ToolResult
 captureResult call label =
