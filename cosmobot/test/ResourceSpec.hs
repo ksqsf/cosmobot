@@ -5,6 +5,9 @@
 module Main (main) where
 
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
+import qualified Bot.Agent.Program.Python as PythonProgram
+import qualified Bot.Agent.Tools.Python as PythonTools
+import qualified Bot.Agent.Types as AgentTypes
 import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
@@ -12,6 +15,7 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Handler.Resource (removeResources, renderResources, resourceIds)
 import Bot.Prelude
 import qualified Bot.Resource as ResourceManager
+import qualified Bot.Resource.Python as Python
 import qualified Bot.Resource.Python.Protocol as PythonProtocol
 import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Resource.Command as Command
@@ -21,12 +25,14 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
+import qualified Effectful.Concurrent.Async as Async
+import Effectful.Timeout (Timeout, runTimeout)
 import qualified Effectful.Prim.IORef as IORef
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.Process.Typed as TypedProcess
 import qualified Data.Unique as Unique
 import System.FilePath ((</>))
-import Test.Tasty
+import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit
 
 data TestObject = TestObject
@@ -157,6 +163,15 @@ main = defaultMain $ testGroup "resource"
       [ testCase "round-trips Unicode and embedded newlines" testPythonFrameRoundTrip
       , testCase "rejects malformed and oversized frames" testPythonFrameFailures
       ]
+  , testGroup "anonymous Python worker"
+      [ testCase "runs sequential nested calls in one resource lease" testPythonSequentialCalls
+      , testCase "maps terminal responses" testPythonTerminalResponses
+      , testCase "fails malformed, duplicate, EOF, and timed-out sessions" testPythonAbnormalResponses
+      , testCase "owner cancellation finalizes the worker" testPythonOwnerCancellation
+      , testCase "cleanup is idempotent and failure is logged then forgotten" testPythonCleanupRace
+      , testCase "one worker accepts only one concurrent run" testPythonConcurrentRunClaim
+      , testCase "a fake launch cannot be reused" testPythonLaunchCannotBeReused
+      ]
   ]
 
 testPythonFrameRoundTrip :: Assertion
@@ -198,6 +213,180 @@ testPythonFrameFailures = do
   case PythonProtocol.encodeFrame (Aeson.String (Text.replicate PythonProtocol.maxRpcBytes "x")) of
     Left PythonProtocol.FrameTooLarge{} -> pure ()
     other -> assertFailure [i|expected oversized encoding failure, got #{other}|]
+
+testPythonSequentialCalls :: Assertion
+testPythonSequentialCalls = do
+  (outcome, calls, writes, cleanup) <- runManagedPython do
+    let frames =
+          [ pythonFrame $ toolsRunMessage 1
+              [Aeson.object ["name" Aeson..= ("first" :: Text), "args" Aeson..= Aeson.object ["value" Aeson..= (1 :: Int)]]]
+          , pythonFrame $ toolsRunMessage 2
+              [Aeson.object ["name" Aeson..= ("second" :: Text), "args" Aeson..= Aeson.object []]]
+          , pythonFrame $ completedMessage "continue with this"
+          ]
+    (arguments, probe) <- Python.newFakePythonArgs (Python.FakeFrames frames) 1_000_000 False
+    calls <- MVar.newMVar []
+    access <- expectRight (Resource.accessFromMessage ownerMessage)
+    outcome <- Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \worker ->
+      Python.runPythonState
+        (\rpcId nested -> do
+          MVar.modifyMVarMasked_ calls (pure . (<> [(rpcId, fmap (.name) nested)]))
+          pure (nested $> AgentTypes.toolText [i|rpc #{rpcId}|]))
+        worker
+        (PythonTools.PythonRequest "compose()")
+    (outcome,,,) <$> MVar.readMVar calls <*> Python.fakeWrittenFrames probe <*> Python.fakeCleanupSnapshot probe
+  outcome @?= Right (PythonProgram.PythonCompleted "continue with this")
+  calls @?= [(1, "first" :| []), (2, "second" :| [])]
+  length writes @?= 3
+  cleanup @?= Python.FakeCleanupSnapshot 1 1 1 0
+
+testPythonTerminalResponses :: Assertion
+testPythonTerminalResponses = do
+  runOnePython [pythonFrame (completedMessage "exact content")]
+    >>= (@?= PythonProgram.PythonCompleted "exact content")
+  runOnePython [pythonFrame (failedMessage "exact failure")] >>= \case
+    PythonProgram.PythonFailed failure -> do
+      failure.category @?= AgentTypes.PermanentArgumentError
+      failure.userMessage @?= "exact failure"
+      failure.detail @?= "exact failure"
+    result -> assertFailure [i|expected controlled failure, got #{show result :: String}|]
+  let oversized = Text.replicate (PythonProtocol.maxControlBytes `div` 3 + 1) "界"
+  runOnePython [pythonFrame (completedMessage oversized)]
+    >>= assertPythonFailure AgentTypes.ExternalServiceUnavailable
+
+testPythonAbnormalResponses :: Assertion
+testPythonAbnormalResponses = do
+  runOnePython ["not json\n"]
+    >>= assertPythonFailure AgentTypes.ExternalServiceUnavailable
+  runOnePython
+    [ pythonFrame (toolsRunMessage 1 [Aeson.object ["name" Aeson..= ("first" :: Text), "args" Aeson..= Aeson.object []]])
+    , pythonFrame (toolsRunMessage 1 [Aeson.object ["name" Aeson..= ("again" :: Text), "args" Aeson..= Aeson.object []]])
+    ] >>= assertPythonFailure AgentTypes.ExternalServiceUnavailable
+  runOnePython [] >>= assertPythonFailure AgentTypes.PermanentArgumentError
+  timedOut <- runManagedPython do
+    (arguments, _probe) <- Python.newFakePythonArgs Python.FakeBlocked 20_000 False
+    access <- expectRight (Resource.accessFromMessage ownerMessage)
+    result <- Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \worker ->
+      Python.runPythonState emptyRunTools worker (PythonTools.PythonRequest "wait()")
+    pure (fromRight (error "anonymous Python resource failed") result)
+  assertPythonFailure AgentTypes.BudgetExhausted timedOut
+
+testPythonOwnerCancellation :: Assertion
+testPythonOwnerCancellation = do
+  cleanup <- runManagedPython do
+    (arguments, probe) <- Python.newFakePythonArgs Python.FakeBlocked 30_000_000 False
+    access <- expectRight (Resource.accessFromMessage ownerMessage)
+    owner <- Concurrency.forkWithHandle "cancel Python owner" \workerHandle ->
+      void $ Python.withAnonymousPython access (Just workerHandle) (Resource.Init ownerMessage arguments) \pythonWorker ->
+        Python.runPythonState emptyRunTools pythonWorker (PythonTools.PythonRequest "wait()")
+    Python.waitForFakeWrite probe
+    void (Concurrency.cancel owner.handleId)
+    Concurrency.await owner
+    Python.fakeCleanupSnapshot probe
+  cleanup @?= Python.FakeCleanupSnapshot 1 1 1 0
+
+testPythonCleanupRace :: Assertion
+testPythonCleanupRace = do
+  (results, unavailable, cleanup) <- runManagedPython do
+    (arguments, probe) <- Python.newFakePythonArgs (Python.FakeFrames []) 1_000_000 True
+    access <- expectRight (Resource.accessFromMessage ownerMessage)
+    resourceId <- Resource.createAssociated @Python.PythonWorker Nothing (Resource.Init ownerMessage arguments) >>= expectRight
+    results <- Async.concurrently
+      (Resource.destroy access resourceId)
+      (Resource.destroy access resourceId)
+    unavailable <- Resource.withResource @Python.PythonWorker access resourceId Nothing (const (pure ()))
+    (results, unavailable,) <$> Python.fakeCleanupSnapshot probe
+  assertBool "one concurrent destroy succeeds" (Right () `elem` [fst results, snd results])
+  unavailable @?= Left Resource.ResourceNotFoundOrNotOwned
+  cleanup @?= Python.FakeCleanupSnapshot 1 1 1 1
+
+testPythonConcurrentRunClaim :: Assertion
+testPythonConcurrentRunClaim = do
+  (results, writes, cleanup) <- runManagedPython do
+    (arguments, probe) <- Python.newFakePythonArgs
+      Python.FakeBlocked
+      1_000_000
+      False
+    access <- expectRight (Resource.accessFromMessage ownerMessage)
+    results <- Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \worker ->
+      mask \restore -> do
+        firstRun <- Async.async $ restore (Python.runPythonState emptyRunTools worker (PythonTools.PythonRequest "first"))
+        Python.waitForFakeWrite probe
+        secondRun <- Python.runPythonState emptyRunTools worker (PythonTools.PythonRequest "second")
+        sent <- Python.sendFakeFrame probe (pythonFrame (completedMessage "done"))
+        unless sent (error "failed to release fake Python worker")
+        firstResult <- Async.wait firstRun
+        pure (firstResult, secondRun)
+    (results,,) <$> Python.fakeWrittenFrames probe <*> Python.fakeCleanupSnapshot probe
+  case results of
+    Right (PythonProgram.PythonCompleted "done", PythonProgram.PythonFailed{}) -> pure ()
+    Right (PythonProgram.PythonFailed{}, PythonProgram.PythonCompleted "done") -> pure ()
+    other -> assertFailure [i|expected one completed and one rejected run, got #{show other :: String}|]
+  length writes @?= 1
+  cleanup @?= Python.FakeCleanupSnapshot 1 1 1 0
+
+testPythonLaunchCannotBeReused :: Assertion
+testPythonLaunchCannotBeReused = do
+  (firstRun, secondRun) <- runManagedPython do
+    (arguments, _probe) <- Python.newFakePythonArgs
+      (Python.FakeFrames [pythonFrame (completedMessage "done")])
+      1_000_000
+      False
+    access <- expectRight (Resource.accessFromMessage ownerMessage)
+    let run = Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \worker ->
+          Python.runPythonState emptyRunTools worker (PythonTools.PythonRequest "pass")
+    (,) <$> run <*> run
+  firstRun @?= Right (PythonProgram.PythonCompleted "done")
+  case secondRun of
+    Left (Resource.ResourceCreationFailed message) ->
+      assertBool "reuse failure is explicit" ("only be used once" `Text.isInfixOf` message)
+    result -> assertFailure [i|expected launch reuse failure, got #{show result :: String}|]
+
+runOnePython :: [ByteString] -> IO PythonProgram.PythonExit
+runOnePython frames = runManagedPython do
+  (arguments, _probe) <- Python.newFakePythonArgs (Python.FakeFrames frames) 1_000_000 False
+  access <- expectRight (Resource.accessFromMessage ownerMessage)
+  result <- Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \worker ->
+    Python.runPythonState emptyRunTools worker (PythonTools.PythonRequest "pass")
+  pure (fromRight (error "anonymous Python resource failed") result)
+
+emptyRunTools
+  :: Applicative m
+  => Int
+  -> NonEmpty PythonProgram.PythonToolCall
+  -> m (NonEmpty AgentTypes.ToolResult)
+emptyRunTools _ calls = pure (calls $> AgentTypes.toolText "nested")
+
+assertPythonFailure :: AgentTypes.FailureCategory -> PythonProgram.PythonExit -> Assertion
+assertPythonFailure category = \case
+  PythonProgram.PythonFailed failure -> failure.category @?= category
+  result -> assertFailure [i|expected Python failure, got #{show result :: String}|]
+
+pythonFrame :: Aeson.Value -> ByteString
+pythonFrame = either (error . show) id . PythonProtocol.encodeFrame
+
+toolsRunMessage :: Int -> [Aeson.Value] -> Aeson.Value
+toolsRunMessage rpcId calls = Aeson.object
+  [ "jsonrpc" Aeson..= ("2.0" :: Text)
+  , "id" Aeson..= rpcId
+  , "method" Aeson..= ("tools.run" :: Text)
+  , "params" Aeson..= Aeson.object ["calls" Aeson..= calls]
+  ]
+
+completedMessage :: Text -> Aeson.Value
+completedMessage content =
+  runResultMessage (Aeson.object ["kind" Aeson..= ("completed" :: Text), "content" Aeson..= content])
+
+failedMessage :: Text -> Aeson.Value
+failedMessage message =
+  runResultMessage (Aeson.object ["kind" Aeson..= ("failed" :: Text), "message" Aeson..= message])
+
+runResultMessage :: Aeson.Value -> Aeson.Value
+runResultMessage result = Aeson.object
+  [ "jsonrpc" Aeson..= ("2.0" :: Text)
+  , "id" Aeson..= ("host:run" :: Text)
+  , "result" Aeson..= result
+  ]
 
 testTypedResources :: Assertion
 testTypedResources = runManaged do
@@ -579,10 +768,27 @@ ownerMessage = IncomingMessage
 
 type ManagedStack = '[Resource.Resource, Concurrency.Concurrency, Storage.Storage, Prim, Concurrent, IOE]
 
+type ManagedPythonStack =
+  '[ Resource.Resource
+   , Concurrency.Concurrency
+   , Storage.Storage
+   , KatipE
+   , Timeout
+   , Prim
+   , Concurrent
+   , IOE
+   ]
+
 runManaged :: Eff ManagedStack a -> IO a
 runManaged action =
   runEff $ runConcurrent $ runPrim $ StorageSQLite.runStorageSQLitePath ":memory:" $
     ConcurrencyManager.runConcurrencyManager $ ResourceManager.runResourceManager action
+
+runManagedPython :: Eff ManagedPythonStack a -> IO a
+runManagedPython action =
+  runEff $ runConcurrent $ runPrim $ runTimeout $ startKatipE "resource-spec" "test" $
+    StorageSQLite.runStorageSQLitePath ":memory:" $
+      ConcurrencyManager.runConcurrencyManager $ ResourceManager.runResourceManager action
 
 runPersistent :: FilePath -> Eff ManagedStack a -> IO a
 runPersistent database action =

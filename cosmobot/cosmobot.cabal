@@ -304,6 +304,7 @@ library
         Bot.RPC.Server
         Bot.RPC.State
         Bot.Resource
+        Bot.Resource.Python
         Bot.Resource.Python.Protocol
         Bot.Resource.Sandbox
         Bot.Resource.Command

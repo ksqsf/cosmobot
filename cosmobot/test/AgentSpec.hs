@@ -60,6 +60,8 @@ import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
 import qualified Bot.Resource as ResourceManager
+import qualified Bot.Resource.Python as PythonResource
+import qualified Bot.Resource.Python.Protocol as PythonProtocol
 import qualified Bot.Resource.SubAgent as SubAgentResource
 import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
@@ -243,6 +245,7 @@ main =
       , testCase "tool argument DSL shares schema, decoding, and reader context" testToolArgumentDSL
       , testCase "dynamic tool visibility is frozen for each model turn" testDynamicToolVisibilitySnapshot
       , testCase "Python nested tools reuse frozen registry dispatch without transcript entries" testPythonNestedRegistryDispatch
+      , testCase "Python resource protocol resumes the existing continuation" testPythonResourceContinuation
       , testCase "Python rejects every program control before starting a sibling" testPythonRejectsProgramControls
       , testCase "Python nested ids, ordering, and budget are host-owned" testPythonNestedIdsAndBudget
       , testCase "Python outer and nested calls retain distinct audit and message scopes" testPythonControlAndNestedScopes
@@ -460,6 +463,54 @@ testPythonNestedRegistryDispatch = do
       , call <- message.toolCalls
       , "/python/" `Text.isInfixOf` call.id
       ]
+
+testPythonResourceContinuation :: IO ()
+testPythonResourceContinuation = do
+  seen <- IORef.newIORef ([] :: [Text])
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("compose" :: Text)])]
+    , chatAnswer "continued once" []
+    ]
+  let nestedTool :: AgentTool.Tool (Eff AgentStack)
+      nestedTool = AgentTool.withDescription "Records protocol dispatch." $
+        AgentTool.tool "python_protocol_marker" AgentTool.noArguments do
+          liftIO $ IORef.modifyIORef' seen (<> ["ran"])
+          pure (Agent.toolText "nested result")
+      frame = either (error . show) id . PythonProtocol.encodeFrame
+      frames =
+        [ frame $ Aeson.object
+            [ "jsonrpc" Aeson..= ("2.0" :: Text)
+            , "id" Aeson..= (1 :: Int)
+            , "method" Aeson..= ("tools.run" :: Text)
+            , "params" Aeson..= Aeson.object
+                [ "calls" Aeson..=
+                    [Aeson.object ["name" Aeson..= ("python_protocol_marker" :: Text), "args" Aeson..= Aeson.object []]]
+                ]
+            ]
+        , frame $ Aeson.object
+            [ "jsonrpc" Aeson..= ("2.0" :: Text)
+            , "id" Aeson..= ("host:run" :: Text)
+            , "result" Aeson..= Aeson.object
+                [ "kind" Aeson..= ("completed" :: Text)
+                , "content" Aeson..= ("resource complete" :: Text)
+                ]
+            ]
+        ]
+  transcript <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    (arguments, _probe) <- PythonResource.newFakePythonArgs (PythonResource.FakeFrames frames) 1_000_000 False
+    let access = fromRight (error "missing Python resource access") (ResourceEffect.accessFromMessage agentContext.message)
+        interpreter runTools _request _outerCall pythonRequest = do
+          result <- PythonResource.withAnonymousPython access Nothing (ResourceEffect.Init agentContext.message arguments) \worker ->
+            PythonResource.runPythonState runTools worker pythonRequest
+          pure (fromRight (error "anonymous Python resource failed") result)
+    runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, nestedTool]
+    _outputs S.:> result <- S.toList $ Agent.agentStream
+      (PythonMiddleware.withPythonInterpreter interpreter runtime)
+      (startWithEnabledTools ["special"] "compose")
+    pure result.transcript
+  IORef.readIORef seen >>= (@?= ["ran"])
+  toolOutputs transcript @?= ["resource complete"]
+  assertBool "the existing continuation consumed the second model answer" . null =<< IORef.readIORef answers
 
 testPythonRejectsProgramControls :: IO ()
 testPythonRejectsProgramControls = do
