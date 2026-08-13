@@ -2,7 +2,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-|
 Module      : Bot.Agent.Core
-Description : Agent program state and middleware types
+Description : Agent program calculus and runtime types
 Stability   : experimental
 -}
 

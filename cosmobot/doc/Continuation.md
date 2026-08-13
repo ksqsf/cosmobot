@@ -81,8 +81,7 @@ continuations remain available.
   full path.
 - Try nested alternatives and return to the appropriate decision
   point.
-- Recover from a locally unproductive strategy without restarting the
-  agent.
+- Recover from a locally unproductive strategy and retain the active run.
 
 Continuations are less useful for ordinary linear work, irreversible
 actions, or parallel delegation. Subagents and isolated workspaces
@@ -117,9 +116,11 @@ The last rule prevents continuations from bypassing the agent
 tool-turn limit.  A valid, sole `resume_continuation` may execute at
 the limit so the agent can escape a branch and produce a final answer.
 
-A steering restart re-enters the complete `aroundProgram` composition
-and therefore starts with an empty continuation map. Ordinary
-model/tool recursion stays inside the current program scope.
+Late steering is an `aroundProgram` structural transformation. It captures a
+visible `RunModel` continuation and, after a final answer, constructs another
+`RunModel` before reusing that continuation. The resulting `Continues` boundary
+starts with an empty continuation map. Ordinary model/tool recursion stays
+inside the current program scope.
 
 The middleware intercepts a continuation name only when that tool is
 present in the run's exposed tools. Mixed continuation and sibling
