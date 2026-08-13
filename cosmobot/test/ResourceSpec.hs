@@ -250,7 +250,7 @@ testPythonTerminalResponses = do
       failure.userMessage @?= "exact failure"
       failure.detail @?= "exact failure"
     result -> assertFailure [i|expected controlled failure, got #{show result :: String}|]
-  let oversized = Text.replicate (PythonProtocol.maxControlBytes `div` 3 + 1) "界"
+  let oversized = Text.replicate (PythonProtocol.maxCompletedBytes `div` 3 + 1) "界"
   runOnePython [pythonFrame (completedMessage oversized)]
     >>= assertPythonFailure AgentTypes.ExternalServiceUnavailable
 

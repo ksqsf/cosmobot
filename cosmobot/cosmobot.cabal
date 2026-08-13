@@ -47,8 +47,10 @@ extra-doc-files:    CHANGELOG.md
                   , doc/Continuation.md
                   , doc/RPC.md
 
+data-files:         python/cosmobot_worker.py
+
 -- Extra source files to be distributed with the package, such as examples, or a tutorial module.
--- extra-source-files:
+extra-source-files: python/test_cosmobot_worker.py
 
 common warnings
     ghc-options: -Wall

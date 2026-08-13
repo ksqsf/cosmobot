@@ -4,6 +4,7 @@ module Bot.Resource.Python.Protocol
   , WorkerMessage (..)
   , maxRpcBytes
   , maxControlBytes
+  , maxCompletedBytes
   , encodeFrame
   , decodeFrame
   , pythonRunRequest
@@ -50,6 +51,9 @@ maxRpcBytes = 4 * 1024 * 1024
 
 maxControlBytes :: Int
 maxControlBytes = 8 * 1024
+
+maxCompletedBytes :: Int
+maxCompletedBytes = 1024 * 1024
 
 encodeFrame :: Aeson.ToJSON a => a -> Either FrameError ByteString
 encodeFrame value
@@ -142,14 +146,14 @@ parseWorkerMessage = first Text.pack . AesonTypes.parseEither parser
       case kind of
         "completed" -> do
           content <- object Aeson..: Key.fromText "content"
-          validateBound "completion content" content
+          validateBound maxCompletedBytes "completion content" content
           pure (RunCompleted content)
         "failed" -> do
           message <- object Aeson..: Key.fromText "message"
           when (Text.null message) (fail "failure message must be non-empty")
-          validateBound "failure message" message
+          validateBound maxControlBytes "failure message" message
           pure (RunFailed message)
         _ -> fail "unknown python.run result kind"
 
-    validateBound label value =
-      when (ByteString.length (TextEncoding.encodeUtf8 value) > maxControlBytes) (fail (label <> " exceeds limit"))
+    validateBound limit label value =
+      when (ByteString.length (TextEncoding.encodeUtf8 value) > limit) (fail (label <> " exceeds limit"))
