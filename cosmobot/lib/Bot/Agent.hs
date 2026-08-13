@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-|
 Module      : Bot.Agent
-Description : Agent loop and extensible tool framework
+Description : Agent program and extensible tool framework
 Stability   : experimental
 -}
 
@@ -169,11 +169,10 @@ agentStream
   -> Transcript
   -> Stream (Of Output) (Eff es) Result
 agentStream runtime transcript =
-  runtime.aroundAgentRun HList.HNil $
-    runProgram runtime restart (restart (initialState transcript))
-  where
-    restart agentState =
-      runtime.aroundProgram runtime (nextModel runtime restart agentState)
+  runtime.aroundAgentRun HList.HNil
+    . runProgram runtime
+    . runtime.aroundProgram runtime
+    $ agentProgram runtime (initialState transcript)
 
 runIdOf :: Runtime context (Eff es) -> Text
 runIdOf =
@@ -245,22 +244,20 @@ isResumeTransfer runtime calls =
     _ ->
       False
 
-nextModel
+agentProgram
   :: Runtime context (Eff es)
-  -> (TurnState -> Program (Eff es) Result)
   -> TurnState
   -> Program (Eff es) Result
-nextModel runtime restart agentState =
-  trigger (RunModel agentState) >>= \(modelState, answer) ->
-    modelDecision runtime (nextModel runtime restart) modelState answer
+agentProgram runtime agentState = do
+  (modelState, answer) <- runModel agentState
+  interpretModelAnswer runtime modelState answer
 
 runProgram
   :: (LLM.LLM :> es, Concurrent :> es, KatipE :> es)
   => Runtime '[] (Eff es)
-  -> (TurnState -> Program (Eff es) Result)
   -> Program (Eff es) Result
   -> Stream (Of Output) (Eff es) Result
-runProgram runtime@Runtime{aroundToolTurn = toolTurn, runId} restart program =
+runProgram runtime@Runtime{aroundToolTurn = toolTurn, runId} program =
   program.observe >>= handleStep
   where
     handleStep = \case
@@ -269,11 +266,11 @@ runProgram runtime@Runtime{aroundToolTurn = toolTurn, runId} restart program =
         pure result
       Continues next -> do
         lift $ agentDebug "step=continues"
-        runProgram runtime restart next
+        runProgram runtime next
       Visible (RunModel agentState@TurnState{turn, transcript}) continue -> do
         lift $ agentDebug
           [i|step=visible event=RunModel turn=#{turn} messages=#{transcriptMessageCount transcript}|]
-        runtime.aroundModelTurn HList.HNil restart agentState
+        runtime.aroundModelTurn HList.HNil (runtime.aroundProgram runtime . agentProgram runtime) agentState
           (\modelState@TurnState{turn = modelTurn} -> do
               inputTranscript <- lift (runtime.modelInputTranscript HList.HNil modelState)
               answer <- askNext runtime modelState inputTranscript
@@ -289,7 +286,7 @@ runProgram runtime@Runtime{aroundToolTurn = toolTurn, runId} restart program =
           lift $ toolTurn HList.HNil request ((, ()) <$> toolPhase runtime request)
         lift $ agentDebug
           [i|event=RunTools completed next_turn=#{nextTurn} messages=#{transcriptMessageCount transcript}|]
-        runProgram runtime restart (continue continuedState)
+        runProgram runtime (continue continuedState)
 
     agentDebug =
       logAgentState runId
@@ -313,23 +310,24 @@ transcriptMessageCount :: Transcript -> Int
 transcriptMessageCount =
   Foldable.length . (.messages)
 
-modelDecision
+interpretModelAnswer
   :: Runtime context (Eff es)
-  -> (TurnState -> Program (Eff es) Result)
   -> TurnState
   -> LLM.ChatAnswer
   -> Program (Eff es) Result
-modelDecision runtime continue agentState answer =
+interpretModelAnswer runtime agentState answer =
   case answer of
     LLM.ChatFinalAnswer{content} ->
       pure (agentCompletion runtime "answered" content agentState.turn (LLM.chatAnswerTokenUsage answer) answered)
     LLM.ChatToolRequest{content, toolCalls}
       | Just message <- toolCallIdError toolCalls ->
           modelProtocolError runtime agentState answer message
-      | otherwise ->
+      | otherwise -> do
           Program do
             S.yield (ToolCallNotification toolCalls)
-            pure (Visible (RunTools ToolRequest{agentState = observedState, answered, toolContent = content, toolCalls}) continue)
+            pure (Finished ())
+          nextState <- runTools ToolRequest{agentState = observedState, answered, toolContent = content, toolCalls}
+          agentProgram runtime nextState
   where
     observedState =
       agentState{modelTokenUsage = LLM.chatAnswerTokenUsage answer}

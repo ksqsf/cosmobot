@@ -2,7 +2,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-|
 Module      : Bot.Agent.Core
-Description : Agent loop state and program middleware types
+Description : Agent program state and middleware types
 Stability   : experimental
 -}
 
@@ -15,6 +15,8 @@ module Bot.Agent.Core
   , Runtime (..)
   , Step (..)
   , ToolRequest (..)
+  , runModel
+  , runTools
   , trigger
   )
 where
@@ -41,7 +43,7 @@ data Output
   | ToolCallNotification !(NonEmpty LLM.ToolCall)
   | ReplyBoundary
 
--- | Mutable position of the agent loop.
+-- | Current state of the agent program.
 data TurnState = TurnState
   { transcript    :: !Transcript
   , nextModelTranscript :: !(Maybe Transcript)
@@ -71,6 +73,14 @@ data AgentEvent response where
 trigger :: Monad m => AgentEvent response -> Program m response
 trigger event =
   Program (pure (Visible event pure))
+
+runModel :: Monad m => TurnState -> Program m (TurnState, LLM.ChatAnswer)
+runModel =
+  trigger . RunModel
+
+runTools :: Monad m => ToolRequest -> Program m TurnState
+runTools =
+  trigger . RunTools
 
 instance Monad m => Functor (Program m) where
   fmap f (Program action) =
@@ -114,7 +124,7 @@ mapStep f = \case
 
 -- | Runtime wiring for the agent algorithm.
 --
--- The core loop stays as direct event interpretation, while cross-cutting
+-- The core program stays as direct event interpretation, while cross-cutting
 -- behavior gets named middleware boundaries. For example, transcript
 -- compaction belongs in 'aroundModelTurn': it can rewrite state before the
 -- next LLM request without changing tool execution or completion handling.
