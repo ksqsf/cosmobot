@@ -27,22 +27,45 @@ withSteering
   -> Runtime context (Eff es)
 withSteering steering program =
   program
-    { aroundModelTurn = \context continue agentState action -> do
+    { aroundProgram = \finalRuntime ->
+        program.aroundProgram finalRuntime . steerProgram steering
+    , aroundModelTurn = \context agentState action -> do
         pending <- lift steering.drain
         let steeredState = injectSteers pending agentState
-        decision <- program.aroundModelTurn context continue steeredState action
-        case decision of
+        program.aroundModelTurn context steeredState action
+    }
+
+steerProgram
+  :: SteeringControl es
+  -> Program (Eff es) Result
+  -> Program (Eff es) Result
+steerProgram steering (Program action) =
+  Program do
+    action >>= \case
+      Finished result ->
+        pure (Finished result)
+      Continues next ->
+        pure (Continues (steerProgram steering next))
+      Visible event@(RunModel _) continue ->
+        pure (Visible event (completeModel continue))
+      Visible event continue ->
+        pure (Visible event (steerProgram steering . continue))
+  where
+    completeModel continue response@(agentState, _) =
+      Program do
+        (continue response).observe >>= \case
           Finished completion ->
             lift steering.complete >>= \case
               Nothing ->
-                pure decision
+                pure (Finished completion)
               Just steers -> do
                 S.yield ReplyBoundary
-                pure . Continues . continue $
-                  injectCompletedSteers steers steeredState completion
-          _ ->
-            pure decision
-    }
+                pure . Continues . steerProgram steering $
+                  runModel (injectCompletedSteers steers agentState completion) >>= continue
+          Continues next ->
+            pure (Continues (steerProgram steering next))
+          Visible event next ->
+            pure (Visible event (steerProgram steering . next))
 
 injectSteers
   :: [MessageInput]

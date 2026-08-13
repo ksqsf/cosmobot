@@ -54,9 +54,9 @@ withToolResultCompaction program@Runtime{aroundToolTurn = toolTurn} =
             pure transcript
           Nothing ->
             program.modelInputTranscript (toolResultObservation HList.:& context) agentState
-    , aroundModelTurn = \context continue agentState action -> do
-        decision <- program.aroundModelTurn (toolResultObservation HList.:& context) continue agentState action
-        pure (clearConsumedModelInput decision)
+    , aroundModelTurn = \context agentState action ->
+        clearConsumedModelInput
+          <$> program.aroundModelTurn (toolResultObservation HList.:& context) agentState action
     , aroundToolTurn = \context toolState action -> do
         (fullState, result) <- toolTurn (toolResultObservation HList.:& context) toolState action
         immediateTranscript <- compactToolResultsInTranscript maxImmediateToolResultChars fullState.transcript
@@ -76,24 +76,10 @@ withToolResultCompaction program@Runtime{aroundToolTurn = toolTurn} =
       ToolResultObservation (compactLargeToolResultText . toolResultContent)
 
 clearConsumedModelInput
-  :: Step (Eff es) result
-  -> Step (Eff es) result
-clearConsumedModelInput = \case
-  Finished result ->
-    Finished result
-  Continues program ->
-    Continues program
-  Visible (RunTools toolState) continue ->
-    Visible
-      ( RunTools toolState
-          { agentState = toolState.agentState
-              { nextModelTranscript = Nothing
-              }
-          }
-      )
-      continue
-  Visible event continue ->
-    Visible event continue
+  :: (TurnState, answer)
+  -> (TurnState, answer)
+clearConsumedModelInput (agentState, answer) =
+  (agentState{nextModelTranscript = Nothing}, answer)
 
 compactLargeToolResultsInMessages :: Media.Media :> es => [LLM.ChatMessage] -> Eff es [LLM.ChatMessage]
 compactLargeToolResultsInMessages =

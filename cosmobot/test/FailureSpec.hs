@@ -676,7 +676,7 @@ testModelTurnAcquireFailure = do
     runtime <- testRuntime []
     let faulting =
           runtime
-            { AgentCore.aroundModelTurn = \_ _ _ _ ->
+            { AgentCore.aroundModelTurn = \_ _ _ ->
                 lift $ throwIO (InjectedFailure "model-turn acquire failure")
             }
     void $ S.toList (Agent.agentStream faulting (startWithUser "model acquire"))
@@ -690,8 +690,8 @@ testModelTurnReleaseFailure = do
     runtime@AgentCore.Runtime{AgentCore.aroundModelTurn = innerModelTurn} <- testRuntime []
     let faulting =
           runtime
-            { AgentCore.aroundModelTurn = \context continue agentState action -> do
-                void $ innerModelTurn context continue agentState action
+            { AgentCore.aroundModelTurn = \context agentState action -> do
+                void $ innerModelTurn context agentState action
                 lift $ throwIO (InjectedFailure "model-turn release failure")
             }
     void $ S.toList (Agent.agentStream faulting (startWithUser "model release"))
@@ -1642,7 +1642,7 @@ testRuntimeFor tools = do
         , modelInputTranscript = \_ agentState -> pure agentState.transcript
         , aroundProgram = \_ program -> program
         , aroundAgentRun = \_ stream -> stream
-        , aroundModelTurn = \_ _ agentState action -> action agentState
+        , aroundModelTurn = \_ agentState action -> action agentState
         , aroundToolTurn = \_ _ action -> action
         , aroundToolCall = \_ _ _ action -> action
         }

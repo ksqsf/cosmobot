@@ -153,14 +153,13 @@ data Runtime (context :: [Type]) m = Runtime
     -- | Wrap one complete model phase.
     --
     -- Use this for model-side middleware such as transcript compaction,
-    -- timing, auditing, or exception-aware behavior around the streamed model
-    -- request plus decision.
+    -- timing, auditing, or exception-aware behavior around one streamed model
+    -- request and response.
   , aroundModelTurn
       :: HList.HList context
-      -> (TurnState -> Program m Result)
       -> TurnState
-      -> (TurnState -> Stream (Of Output) m (Step m Result))
-      -> Stream (Of Output) m (Step m Result)
+      -> (TurnState -> Stream (Of Output) m (TurnState, LLM.ChatAnswer))
+      -> Stream (Of Output) m (TurnState, LLM.ChatAnswer)
     -- | Wrap the whole tool phase.
     --
     -- Use this for cleanup, timing, timeout, auditing, or exception-aware

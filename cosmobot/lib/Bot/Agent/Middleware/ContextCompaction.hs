@@ -77,9 +77,9 @@ withContextCompactionUsing
   -> Runtime context (Eff es)
 withContextCompactionUsing compact program =
   program
-    { aroundModelTurn = \context continue agentState action -> do
+    { aroundModelTurn = \context agentState action -> do
         compactedState <- lift (compact context agentState)
-        program.aroundModelTurn context continue compactedState action
+        program.aroundModelTurn context compactedState action
     }
 
 data CompactionDetails = CompactionDetails

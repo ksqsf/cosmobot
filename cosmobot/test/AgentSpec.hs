@@ -277,6 +277,7 @@ main =
       , testCase "agent does not intercept unexposed continuation tools" testAgentDoesNotInterceptUnexposedContinuationTools
       , testCase "agent may resume a continuation at the tool limit" testAgentResumesContinuationAtToolLimit
       , testCase "agent steering continues after a final answer" testAgentSteeringContinuesAfterFinalAnswer
+      , testCase "agent steering preserves surrounding model middleware" testAgentSteeringPreservesModelMiddleware
       , testCase "agent steering waits for complete tool results" testAgentSteeringWaitsForToolResults
       , testCase "agent steering clears saved continuations" testAgentSteeringClearsContinuations
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
@@ -1832,6 +1833,36 @@ testAgentSteeringContinuesAfterFinalAnswer = do
     other ->
       assertFailure [i|expected two steering model requests, got #{length other}|]
   chatMessageTextsByRole "assistant" (transcriptMessagesList transcript) @?= ["first answer", "steered answer"]
+
+testAgentSteeringPreservesModelMiddleware :: IO ()
+testAgentSteeringPreservesModelMiddleware = do
+  answers <- IORef.newIORef [chatAnswer "first answer" [], chatAnswer "steered answer" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  drains <- IORef.newIORef [[], []]
+  completions <- IORef.newIORef [Just [inputWithImages "change direction" []], Nothing]
+  outsideTurns <- IORef.newIORef (0 :: Int)
+  insideTurns <- IORef.newIORef (0 :: Int)
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    agentRun <- startTestRuntime 4 agentContext AgentTools.defaultTools
+    let steering =
+          Agent.SteeringControl
+            { Agent.drain = liftIO (popSteering [] drains)
+            , Agent.complete = liftIO (popSteering Nothing completions)
+            }
+        countModelTurns counter runtime =
+          runtime
+            { AgentCore.aroundModelTurn = \context agentState action -> do
+                liftIO $ IORef.modifyIORef' counter (+ 1)
+                runtime.aroundModelTurn context agentState action
+            }
+        program =
+          countModelTurns outsideTurns
+            . Agent.withSteering steering
+            . countModelTurns insideTurns
+            $ Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun
+    void $ S.toList (Agent.agentStream program (startWithUser "start"))
+  IORef.readIORef outsideTurns >>= (@?= 2)
+  IORef.readIORef insideTurns >>= (@?= 2)
 
 testAgentSteeringWaitsForToolResults :: IO ()
 testAgentSteeringWaitsForToolResults = do

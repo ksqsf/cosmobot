@@ -106,32 +106,36 @@ limitProgram
   -> (NonEmpty LLM.ToolCall -> Bool)
   -> Program (Eff es) Result
   -> Program (Eff es) Result
-limitProgram runtime mayTransfer =
-  go
-  where
-    go (Program action) =
-      Program do
-        action >>= \case
-          Finished result ->
-            pure (Finished result)
-          Continues next ->
-            pure (Continues next)
-          Visible (RunTools request) continue
-            | request.agentState.turn >= runtime.maxTurns
-            , not (mayTransfer request.toolCalls) -> do
-                let calls = request.toolCalls
-                lift $ logInfo [i|Agent tool turn limit reached: #{show calls :: String}|]
-                Finished
-                  <$> handleToolLimit
-                        runtime.runId
-                        request.agentState.turn
-                        request.toolContent
-                        calls
-                        request.answered
-            | otherwise ->
-                pure (Visible (RunTools request) (go . continue))
-          Visible event continue ->
-            pure (Visible event (go . continue))
+limitProgram runtime mayTransfer (Program action) =
+  Program $ action >>= \case
+    Finished result ->
+      pure (Finished result)
+    Continues next ->
+      pure (Continues (limitProgram runtime mayTransfer next))
+    Visible (RunTools request) continue
+      | request.agentState.turn >= runtime.maxTurns
+      , not (mayTransfer request.toolCalls) ->
+          finishAtLimit runtime request
+      | otherwise ->
+          pure (Visible (RunTools request) (limitProgram runtime mayTransfer . continue))
+    Visible event continue ->
+      pure (Visible event (limitProgram runtime mayTransfer . continue))
+
+finishAtLimit
+  :: KatipE :> es
+  => Runtime '[] (Eff es)
+  -> ToolRequest
+  -> Stream (Of Output) (Eff es) (Step (Eff es) Result)
+finishAtLimit runtime request = do
+  let calls = request.toolCalls
+  lift $ logInfo [i|Agent tool turn limit reached: #{show calls :: String}|]
+  Finished
+    <$> handleToolLimit
+          runtime.runId
+          request.agentState.turn
+          request.toolContent
+          calls
+          request.answered
 
 safeToolCall :: LLM.ToolCall -> Eff es ToolResult -> Eff es ToolResult
 safeToolCall call action =

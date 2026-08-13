@@ -71,16 +71,16 @@ withObservation observer program@Runtime{aroundToolTurn = toolTurn} =
           program.aroundAgentRun (observedContext emptyObservationContext context) action
     , modelInputTranscript = \context agentState ->
         program.modelInputTranscript (observedContext emptyObservationContext context) agentState
-    , aroundModelTurn = \context continue agentState action ->
+    , aroundModelTurn = \context agentState action ->
         let turnInfo = ObservedModelTurn
               { runId = program.runId
               , turn = agentState.turn
               , messageCount = transcriptMessageCount agentState
               , exposedTools = map toolName program.exposedTools
               , toolGroups = ToolRegistry.enabledToolGroups agentState.transcript program.runningTools
-              , finished = modelDecisionFinished program.runId agentState
+              , finished = modelTurnFinished program.runId
               }
-        in withObservedModelTurn observer turnInfo (program.aroundModelTurn (observedContext emptyObservationContext context) continue agentState action)
+        in withObservedModelTurn observer turnInfo (program.aroundModelTurn (observedContext emptyObservationContext context) agentState action)
     , aroundToolTurn = \context toolState action ->
         toolTurn (observedContext emptyObservationContext context) toolState action
     , aroundToolCall = \turn toolCall context action ->
@@ -98,43 +98,26 @@ withObservation observer program@Runtime{aroundToolTurn = toolTurn} =
     observedContext observation context =
       observation HList.:& EventObservation observer HList.:& context
 
-    modelDecisionFinished runId initialState = \case
-      Finished Result{finalText, tokenUsage} ->
-        ModelTurnFinished
-          { runId = runId
-          , turn = initialState.turn
-          , answerKind = "final"
-          , contentLength = Text.length finalText
-          , toolCalls = []
-          , tokenUsage
-          }
-      Visible (RunTools ToolRequest{agentState, toolContent, toolCalls}) _ ->
-        ModelTurnFinished
-          { runId = runId
-          , turn = initialState.turn
-          , answerKind = "tool_request"
-          , contentLength = Text.length toolContent
-          , toolCalls = toList toolCalls
-          , tokenUsage = agentState.modelTokenUsage
-          }
-      Continues _ ->
-        ModelTurnFinished
-          { runId = runId
-          , turn = initialState.turn
-          , answerKind = "continued"
-          , contentLength = 0
-          , toolCalls = []
-          , tokenUsage = initialState.modelTokenUsage
-          }
-      Visible (RunModel _) _ ->
-        ModelTurnFinished
-          { runId = runId
-          , turn = initialState.turn
-          , answerKind = "continued"
-          , contentLength = 0
-          , toolCalls = []
-          , tokenUsage = initialState.modelTokenUsage
-          }
+    modelTurnFinished runId (agentState, answer) =
+      case answer of
+        LLM.ChatFinalAnswer{content} ->
+          ModelTurnFinished
+            { runId = runId
+            , turn = agentState.turn
+            , answerKind = "final"
+            , contentLength = Text.length content
+            , toolCalls = []
+            , tokenUsage = LLM.chatAnswerTokenUsage answer
+            }
+        LLM.ChatToolRequest{content, toolCalls} ->
+          ModelTurnFinished
+            { runId = runId
+            , turn = agentState.turn
+            , answerKind = "tool_request"
+            , contentLength = Text.length content
+            , toolCalls = toList toolCalls
+            , tokenUsage = LLM.chatAnswerTokenUsage answer
+            }
 
 transcriptMessageCount :: TurnState -> Int
 transcriptMessageCount TurnState{transcript = Transcript{messages}} =

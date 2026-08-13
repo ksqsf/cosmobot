@@ -199,7 +199,7 @@ startRuntime maxTurns context tools = do
     , modelInputTranscript = \_ agentState -> pure agentState.transcript
     , aroundProgram = \_ program -> program
     , aroundAgentRun = \_ action -> action
-    , aroundModelTurn = \_ _ agentState action -> action agentState
+    , aroundModelTurn = \_ agentState action -> action agentState
     , aroundToolTurn = \_ _ action -> action
     , aroundToolCall = \_ _ _ action -> action
     }
@@ -257,39 +257,41 @@ runProgram
   => Runtime '[] (Eff es)
   -> Program (Eff es) Result
   -> Stream (Of Output) (Eff es) Result
-runProgram runtime@Runtime{aroundToolTurn = toolTurn, runId} program =
-  program.observe >>= handleStep
-  where
-    handleStep = \case
-      Finished result@Result{status, turnsUsed} -> do
-        lift $ agentDebug [i|step=finished status=#{status} turns=#{turnsUsed}|]
-        pure result
-      Continues next -> do
-        lift $ agentDebug "step=continues"
-        runProgram runtime next
-      Visible (RunModel agentState@TurnState{turn, transcript}) continue -> do
-        lift $ agentDebug
-          [i|step=visible event=RunModel turn=#{turn} messages=#{transcriptMessageCount transcript}|]
-        runtime.aroundModelTurn HList.HNil (runtime.aroundProgram runtime . agentProgram runtime) agentState
-          (\modelState@TurnState{turn = modelTurn} -> do
-              inputTranscript <- lift (runtime.modelInputTranscript HList.HNil modelState)
-              answer <- askNext runtime modelState inputTranscript
-              lift $ agentDebug
-                [i|event=RunModel completed turn=#{modelTurn} answer=#{answerKind answer}|]
-              (continue (modelState, answer)).observe
-          )
-          >>= handleStep
-      Visible (RunTools request@ToolRequest{agentState = TurnState{turn}, toolCalls}) continue -> do
-        lift $ agentDebug
-          [i|step=visible event=RunTools turn=#{turn} calls=#{toolCallSummary toolCalls}|]
-        (continuedState@TurnState{turn = nextTurn, transcript}, ()) <-
-          lift $ toolTurn HList.HNil request ((, ()) <$> toolPhase runtime request)
-        lift $ agentDebug
-          [i|event=RunTools completed next_turn=#{nextTurn} messages=#{transcriptMessageCount transcript}|]
-        runProgram runtime (continue continuedState)
+runProgram runtime program =
+  program.observe >>= \case
+    Finished result@Result{status, turnsUsed} -> do
+      lift $ logAgentState runtime.runId [i|step=finished status=#{status} turns=#{turnsUsed}|]
+      pure result
+    Continues next -> do
+      lift $ logAgentState runtime.runId "step=continues"
+      runProgram runtime next
+    Visible event continue ->
+      interpretAgentEvent runtime event >>= runProgram runtime . continue
 
-    agentDebug =
-      logAgentState runId
+interpretAgentEvent
+  :: (LLM.LLM :> es, Concurrent :> es, KatipE :> es)
+  => Runtime '[] (Eff es)
+  -> AgentEvent response
+  -> Stream (Of Output) (Eff es) response
+interpretAgentEvent runtime@Runtime{aroundToolTurn = toolTurn} = \case
+  RunModel agentState@TurnState{turn, transcript} -> do
+    lift $ logAgentState runtime.runId
+      [i|step=visible event=RunModel turn=#{turn} messages=#{transcriptMessageCount transcript}|]
+    runtime.aroundModelTurn HList.HNil agentState \modelState@TurnState{turn = modelTurn} -> do
+      inputTranscript <- lift (runtime.modelInputTranscript HList.HNil modelState)
+      answer <- askNext runtime modelState inputTranscript
+      lift $ logAgentState runtime.runId
+        [i|event=RunModel completed turn=#{modelTurn} answer=#{answerKind answer}|]
+      pure (modelState, answer)
+  RunTools request@ToolRequest{agentState = TurnState{turn}, toolCalls} ->
+    lift do
+      logAgentState runtime.runId
+        [i|step=visible event=RunTools turn=#{turn} calls=#{toolCallSummary toolCalls}|]
+      continuedState@TurnState{turn = nextTurn, transcript} <-
+        fst <$> toolTurn HList.HNil request ((, ()) <$> toolPhase runtime request)
+      logAgentState runtime.runId
+        [i|event=RunTools completed next_turn=#{nextTurn} messages=#{transcriptMessageCount transcript}|]
+      pure continuedState
 
 logAgentState :: KatipE :> es => Text -> Text -> Eff es ()
 logAgentState runId message =

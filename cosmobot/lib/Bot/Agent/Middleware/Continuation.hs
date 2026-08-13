@@ -51,7 +51,7 @@ handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
           Finished result ->
             pure (Finished result)
           Continues next ->
-            pure (Continues next)
+            pure (Continues (go 0 Map.empty next))
           Visible (RunTools request) continue ->
             case exposedContinuationCalls runtime request.toolCalls of
               [] ->
