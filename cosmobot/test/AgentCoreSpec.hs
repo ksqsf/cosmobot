@@ -22,6 +22,7 @@ main =
       , testProperty "fmap agrees with bind and pure" propFmapIsBind
       , testProperty "bind preserves Tau" propBindTau
       , testProperty "bind distributes through Vis" propBindVis
+      , testProperty "bind preserves model and tool continuations" propBindBothEvents
       , testProperty "Kleisli associativity" propKleisliAssociativity
       ]
 
@@ -113,6 +114,31 @@ propBindVis
     where
       next = arrow generated
 
+propBindBothEvents
+  :: Int
+  -> ProgramCase
+  -> ProgramCase
+  -> ProgramCase
+  -> ProgramCase
+  -> Fun Int ProgramCase
+  -> Property
+propBindBothEvents
+  key
+  ProgramCase{program = onFinalEven}
+  ProgramCase{program = onFinalOdd}
+  ProgramCase{program = onToolsEven}
+  ProgramCase{program = onToolsOdd}
+  generated =
+    (bothVisible key onFinalEven onFinalOdd onToolsEven onToolsOdd >>= next)
+      ~= bothVisible
+            key
+            (onFinalEven >>= next)
+            (onFinalOdd >>= next)
+            (onToolsEven >>= next)
+            (onToolsOdd >>= next)
+  where
+    next = arrow generated
+
 propKleisliAssociativity
   :: ProgramCase
   -> Fun Int ProgramCase
@@ -173,6 +199,21 @@ visible
 visible useModel
   | useModel = modelVisible
   | otherwise = toolVisible
+
+bothVisible
+  :: Int
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
+  -> Program (Eff '[]) result
+bothVisible key onFinalEven onFinalOdd onToolsEven onToolsOdd = do
+  (_, answer) <- runModel (emptyState key)
+  case answer of
+    LLM.ChatFinalAnswer{} ->
+      toolVisible key onFinalEven onFinalOdd
+    LLM.ChatToolRequest{} ->
+      toolVisible key onToolsEven onToolsOdd
 
 -- Equality up to finite Tau: silently follow 'Continues', retain output and
 -- visible-event order, and compare every response branch of a visible event.
