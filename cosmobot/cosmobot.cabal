@@ -297,6 +297,7 @@ library
         Bot.RPC.Server
         Bot.RPC.State
         Bot.Resource
+        Bot.Resource.Python.Protocol
         Bot.Resource.Sandbox
         Bot.Resource.Command
         Bot.Resource.SubAgent

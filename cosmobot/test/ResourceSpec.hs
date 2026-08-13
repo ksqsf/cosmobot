@@ -12,11 +12,13 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Handler.Resource (removeResources, renderResources, resourceIds)
 import Bot.Prelude
 import qualified Bot.Resource as ResourceManager
+import qualified Bot.Resource.Python.Protocol as PythonProtocol
 import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Resource.Command as Command
 import qualified Bot.Resource.Workspace as Workspace
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as ByteString
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.Prim.IORef as IORef
@@ -151,7 +153,51 @@ main = defaultMain $ testGroup "resource"
   , testCase "commands stay out of the generic resource list" $
       Resource.resourceListed @(Eff '[Resource.Resource, Concurrency.Concurrency, Concurrent]) (Proxy @Command.Command) @?= False
   , testCase "resource removal reports partial results independently" testPartialRemoval
+  , testGroup "Python JSON-RPC framing"
+      [ testCase "round-trips Unicode and embedded newlines" testPythonFrameRoundTrip
+      , testCase "rejects malformed and oversized frames" testPythonFrameFailures
+      ]
   ]
+
+testPythonFrameRoundTrip :: Assertion
+testPythonFrameRoundTrip = do
+  let request = Aeson.object
+        [ "jsonrpc" Aeson..= ("2.0" :: Text)
+        , "id" Aeson..= ("host:run" :: Text)
+        , "method" Aeson..= ("python.run" :: Text)
+        , "params" Aeson..= Aeson.object ["code" Aeson..= ("print('你好')\nprint('line two')" :: Text)]
+        ]
+      examples =
+        [ request
+        , Aeson.object ["kind" Aeson..= ("completed" :: Text), "content" Aeson..= ("你好\nline two\n" :: Text)]
+        , Aeson.object ["kind" Aeson..= ("failed" :: Text), "message" Aeson..= ("cannot continue" :: Text)]
+        , Aeson.toJSON
+            [ Aeson.object ["ok" Aeson..= True, "content" Aeson..= ("done" :: Text)]
+            , Aeson.object
+                [ "ok" Aeson..= False
+                , "failure" Aeson..= Aeson.object
+                    [ "category" Aeson..= ("permission_denied" :: Text)
+                    , "message" Aeson..= ("denied" :: Text)
+                    , "detail" Aeson..= ("tool is hidden" :: Text)
+                    ]
+                ]
+            ]
+        ]
+  for_ examples \example ->
+    (PythonProtocol.encodeFrame example >>= PythonProtocol.decodeFrame) @?= Right example
+
+testPythonFrameFailures :: Assertion
+testPythonFrameFailures = do
+  PythonProtocol.decodeFrame @Aeson.Value "{}" @?= Left PythonProtocol.FrameMissingNewline
+  case PythonProtocol.decodeFrame @Aeson.Value "{not json}\n" of
+    Left PythonProtocol.FrameInvalidJSON{} -> pure ()
+    other -> assertFailure [i|expected malformed JSON failure, got #{other}|]
+  let oversized = ByteString.replicate (PythonProtocol.maxRpcBytes + 1) 32 <> "\n"
+  PythonProtocol.decodeFrame @Aeson.Value oversized
+    @?= Left (PythonProtocol.FrameTooLarge (PythonProtocol.maxRpcBytes + 1))
+  case PythonProtocol.encodeFrame (Aeson.String (Text.replicate PythonProtocol.maxRpcBytes "x")) of
+    Left PythonProtocol.FrameTooLarge{} -> pure ()
+    other -> assertFailure [i|expected oversized encoding failure, got #{other}|]
 
 testTypedResources :: Assertion
 testTypedResources = runManaged do
