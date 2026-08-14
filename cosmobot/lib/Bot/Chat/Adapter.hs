@@ -276,7 +276,7 @@ finishChunkedReply message messageLimit state
           pure (state, [])
         Nothing -> do
           sent <- ChatDriver.sendReplyMessage message (nonEmptyMessageBody (answerText state))
-          pure (recordSentMessage state sent, [sent])
+          pure (recordSentMessages state sent, sent)
   | otherwise =
       sendTextChunks messageLimit (chunkTarget message state) state pending
   where
@@ -319,10 +319,10 @@ sendChunksWhile shouldSend messageLimit target state pending
   | shouldSend pending = do
       let (body, rest) = Text.splitAt messageLimit pending
       sent <- ChatDriver.sendReplyMessage target body
-      let stateAfterSend = (recordSentMessage state sent){sentOffset = state.sentOffset + Text.length body}
+      let stateAfterSend = (recordSentMessages state sent){sentOffset = state.sentOffset + Text.length body}
           nextTarget = chunkTarget target stateAfterSend
       (finished, later) <- sendChunksWhile shouldSend messageLimit nextTarget stateAfterSend rest
-      pure (finished, sent : later)
+      pure (finished, sent <> later)
   | otherwise =
       pure (state, [])
 
@@ -335,6 +335,10 @@ recordSentMessage state = \case
       { firstMessageId = state.firstMessageId <|> Just messageId
       , lastChunkMessageId = Just messageId
       }
+
+recordSentMessages :: MessageOutState -> [Either Text MessageId] -> MessageOutState
+recordSentMessages =
+  foldl' recordSentMessage
 
 appendAnswer :: Text -> MessageOutState -> MessageOutState
 appendAnswer chunk state =

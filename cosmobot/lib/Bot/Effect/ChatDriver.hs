@@ -48,7 +48,7 @@ data ChatDriver :: Effect where
   SendReplyMessage
     :: IncomingMessage
     -> Text
-    -> ChatDriver m (Either Text MessageId)
+    -> ChatDriver m [Either Text MessageId]
   SendStreamingReplyMessage
     :: IncomingMessage
     -> Text
@@ -123,7 +123,7 @@ type instance DispatchOf ChatDriver = Dynamic
 type ChatDriverHandler es =
   EffectHandler ChatDriver es
 
-sendReplyMessage :: ChatDriver :> es => IncomingMessage -> Text -> Eff es (Either Text MessageId)
+sendReplyMessage :: ChatDriver :> es => IncomingMessage -> Text -> Eff es [Either Text MessageId]
 sendReplyMessage message body =
   send (SendReplyMessage message body)
 
@@ -222,7 +222,7 @@ chatDriverEffectHandler
   -> ChatDriverHandler es
 chatDriverEffectHandler driver _ = \case
   SendReplyMessage message body ->
-    Driver.sendReplyMessage driver message body
+    Driver.sendReplyMessages driver message body
   SendStreamingReplyMessage message body ->
     Driver.sendStreamingReplyMessage driver message body
   ReplyAudio message audioRef caption ->
@@ -270,7 +270,7 @@ runChatMappingReplies rewrite =
     SendReplyMessage message body -> do
       rewrite body >>= \case
         Left err ->
-          pure (Left err)
+          pure [Left err]
         Right rewritten ->
           passthrough localEnv (SendReplyMessage message rewritten)
     SendStreamingReplyMessage message body -> do
@@ -314,9 +314,9 @@ runChatRecordingExtraMessages
 runChatRecordingExtraMessages record =
   interpose $ \localEnv -> \case
     operation@SendReplyMessage{} -> do
-      result <- passthrough localEnv operation
-      record (rightToMaybe result)
-      pure result
+      results <- passthrough localEnv operation
+      traverse_ (record . rightToMaybe) results
+      pure results
     operation@SendStreamingReplyMessage{} -> do
       result <- passthrough localEnv operation
       record (rightToMaybe result)

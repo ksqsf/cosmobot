@@ -174,6 +174,9 @@ instance Driver.ChatDriver MatrixDriver where
   sendReplyMessage =
     replyToMatrix
 
+  sendReplyMessages =
+    replyToMatrixMessages
+
   sendStreamingReplyMessage =
     streamingReplyToMatrix
 
@@ -1292,7 +1295,16 @@ replyToMatrix
   -> Text
   -> Eff es (Either Text MessageId)
 replyToMatrix driver message body =
-  replyToMatrixWithStreamComplete driver True message body
+  matrixReplyResult <$> replyToMatrixResponses driver True message body
+
+replyToMatrixMessages
+  :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => MatrixDriver
+  -> IncomingMessage
+  -> Text
+  -> Eff es [Either Text MessageId]
+replyToMatrixMessages driver message body =
+  map matrixMessageIdResult <$> replyToMatrixResponses driver True message body
 
 streamingReplyToMatrix
   :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
@@ -1301,16 +1313,16 @@ streamingReplyToMatrix
   -> Text
   -> Eff es (Either Text MessageId)
 streamingReplyToMatrix driver message body =
-  replyToMatrixWithStreamComplete driver False message body
+  matrixReplyResult <$> replyToMatrixResponses driver False message body
 
-replyToMatrixWithStreamComplete
+replyToMatrixResponses
   :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
   => MatrixDriver
   -> Bool
   -> IncomingMessage
   -> Text
-  -> Eff es (Either Text MessageId)
-replyToMatrixWithStreamComplete driver complete message body =
+  -> Eff es [Either Text SendMessageResponse]
+replyToMatrixResponses driver complete message body =
   case viaNonEmpty head message.chatAliases of
     Just roomId -> do
       let matrixRoom = matrixRoomId roomId
@@ -1321,10 +1333,9 @@ replyToMatrixWithStreamComplete driver complete message body =
         then pure Nothing
         else Just <$> sendMatrixReplyText driver complete matrixRoom replyRelation text
       imageResponses <- traverse (tryMatrixSendImage driver roomId replyRelation) imageRefs
-      let responses = maybeToList textResponse <> imageResponses
-      pure (matrixReplyResult responses)
+      pure (maybeToList textResponse <> imageResponses)
     _ ->
-      pure (Left "Matrix reply requires a Matrix room id.")
+      pure [Left "Matrix reply requires a Matrix room id."]
 
 sendMatrixReplyText
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)

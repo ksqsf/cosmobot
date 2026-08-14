@@ -30,6 +30,10 @@ class ChatDriver driver where
   sendReplyMessage driver _ _ =
     pure (Left [i|#{driverPlatform driver} does not support replies.|])
 
+  sendReplyMessages :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Eff es [Either Text MessageId]
+  sendReplyMessages driver message body =
+    (: []) <$> sendReplyMessage driver message body
+
   sendStreamingReplyMessage :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Eff es (Either Text MessageId)
   sendStreamingReplyMessage =
     sendReplyMessage
