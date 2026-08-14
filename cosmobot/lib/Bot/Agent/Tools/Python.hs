@@ -9,7 +9,7 @@ module Bot.Agent.Tools.Python
 where
 
 import Bot.Agent.Tool
-import Bot.Agent.Tools.Common (requiredText, specialTag)
+import Bot.Agent.Tools.Common (requiredText, specialTag, workTag)
 import Bot.Agent.Tools.Continuation (isContinuationToolName)
 import Bot.Agent.Types
 import qualified Bot.Effect.LLM as LLM
@@ -37,7 +37,7 @@ isPythonProgramControl name =
 
 runPythonTool :: Tool (Eff es)
 runPythonTool =
-  tagged [specialTag]
+  tagged [specialTag, workTag]
     . allowWhen (.toolConfig.python.enabled)
     . withDescriptionBy (runPythonDescriptionFor . (.toolConfig.python))
     $ tool runPythonToolName
