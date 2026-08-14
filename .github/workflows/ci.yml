@@ -32,8 +32,11 @@ jobs:
       - name: Update package index
         run: cabal update
 
+      - name: Install sandbox dependencies
+        run: sudo apt-get install --yes bubblewrap
+
       - name: Build
         run: cabal build -j all --enable-tests --enable-benchmarks
 
       - name: Test
-        run: cabal test all
+        run: cabal test -j all --test-options=--hide-successes

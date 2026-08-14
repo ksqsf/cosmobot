@@ -6,7 +6,8 @@ import Bot.Agent.Core
 import Bot.Agent.Control (finishToolTurn)
 import Bot.Agent.Middleware.Python (interpretPython)
 import Bot.Agent.Program.Python
-import Bot.Agent.Tool (NamedTag (..), Tool, ToolTag (..), toolTags)
+import Bot.Agent.Tool (Tool, ToolTag (..), toolTags)
+import Bot.Agent.Tools.Common (specialTag)
 import Bot.Agent.Tools.Python
 import Bot.Agent.Types (ToolResult, permanentArgumentFailure, toolText, toolTextWithImages)
 import Bot.Core.Transcript (Transcript (..))
@@ -260,7 +261,7 @@ testToolTurnMessageOrder = do
 testPythonToolContract :: Assertion
 testPythonToolContract = do
   toolTags (runPythonTool :: Tool (Eff '[])) @?=
-    [Named (NamedTag "special" "Compose multiple tools with programmatic control flow.")]
+    [Named specialTag]
   assertBool "description must recommend py for composing multiple tools" $
     all (`Text.isInfixOf` runPythonDescription)
       [ "compose the other tools"
