@@ -227,5 +227,5 @@ represented by the tree, and interpretation follows its continuations.
 The same boundary now admits the model-facing `py` control tool, whose
 middleware replaces that tool event with a program that executes Python and
 dispatches nested ordinary tools. [`AgentProgram.md`](AgentProgram.md)
-describes this implemented frontend and separates it from the still-future
-general DSL and foreign-continuation direction.
+describes this frontend and shows how model calls, tool orchestration, and
+recursive agents encode directly into the same calculus.
