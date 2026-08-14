@@ -206,7 +206,7 @@ pythonResourceFailure :: Resource.ResourceError -> Failure
 pythonResourceFailure = \case
   Resource.MissingResourceIdentity ->
     permanentArgumentFailure
-      "orchestrate_tools requires chat and sender identity."
+      "py requires chat and sender identity."
       "The current message does not identify both its chat and sender."
   Resource.ResourceCreationFailed detail ->
     externalServiceFailure "Python sandbox failed to start." detail

@@ -174,7 +174,7 @@ data Runtime (context :: [Type]) m = Runtime
       -> m (TurnState, a)
     -- | Wrap one model-issued control call for its complete carrier lifetime.
     --
-    -- Control forms such as orchestrate_tools are not registry tools, but retain the
+    -- Control forms such as py are not registry tools, but retain the
     -- same failure, observation, progress, and result-observation lifecycle.
   , aroundControlCall :: Int -> LLM.ToolCall -> HList.HList context -> m ToolResult -> m ToolResult
     -- | Wrap one model-requested tool call.

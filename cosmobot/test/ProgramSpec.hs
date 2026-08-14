@@ -43,7 +43,7 @@ main =
           , testCase "mixed batches reject before Python or sibling work" testPythonMixedBatch
           , testCase "unrelated nodes and continuation branches are preserved" testPythonPreservesUnrelated
           , testCase "tool turn keeps results before image context" testToolTurnMessageOrder
-          , testCase "orchestrate_tools is a special composition tool" testPythonToolContract
+          , testCase "py is a special composition tool" testPythonToolContract
           ]
       ]
 
@@ -180,7 +180,7 @@ testPythonEntry =
       turn @?= 1
       contents @?= ["done"]
     _ ->
-      assertFailure "orchestrate_tools was not structurally consumed"
+      assertFailure "py was not structurally consumed"
   where
     enteredInterpreter _ _ _ =
       emit "python-state" (pure (toolText "done"))
@@ -232,7 +232,7 @@ testPythonMixedBatch =
       assertBool "every mixed-batch call gets a protocol result" $
         all ("must be called alone" `Text.isInfixOf`) contents
     _ ->
-      assertFailure "mixed orchestrate_tools batch was not rejected as one program"
+      assertFailure "mixed py batch was not rejected as one program"
   where
     enteredInterpreter _ _ _ =
       emit "python-state" (pure (toolText "must not run"))
@@ -261,7 +261,7 @@ testPythonToolContract :: Assertion
 testPythonToolContract = do
   toolTags (runPythonTool :: Tool (Eff '[])) @?=
     [Named (NamedTag "special" "Compose multiple tools with programmatic control flow.")]
-  assertBool "description must recommend orchestrate_tools for composing multiple tools" $
+  assertBool "description must recommend py for composing multiple tools" $
     all (`Text.isInfixOf` runPythonDescription)
       [ "compose the other tools"
       , "multiple tool calls"

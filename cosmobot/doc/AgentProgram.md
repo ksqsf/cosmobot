@@ -1,6 +1,6 @@
 # Agent Programs, Python, and the Future DSL
 
-> **Status:** The program calculus, Haskell entry point, and `orchestrate_tools`
+> **Status:** The program calculus, Haskell entry point, and `py`
 > tool-composition frontend are implemented. A general DSL, Python APIs that
 > construct arbitrary agent programs, and foreign continuation handles remain
 > future work.
@@ -105,10 +105,10 @@ continue
 The producer may be the current model, the interpreter handling an event, or a
 tool that invokes another agent.
 
-## Implemented `orchestrate_tools` frontend
+## Implemented `py` frontend
 
-`orchestrate_tools` is a special agent tool implemented as structural middleware. It
-recognizes a sole exposed `orchestrate_tools` call at a `RunTools` node and replaces
+`py` is a special agent tool implemented as structural middleware. It
+recognizes a sole exposed `py` call at a `RunTools` node and replaces
 that node with a program that:
 
 1. starts a fresh sandboxed Python worker;
@@ -227,7 +227,7 @@ The repository currently provides:
 - `agentProgram` as the standard agent-run entry point;
 - `Runtime`, middleware, and `runProgram` interpretation;
 - streamed `Output` and returned `Result` values;
-- `orchestrate_tools` structural interception and resumption;
+- `py` structural interception and resumption;
 - fresh sandboxed Python execution with configured resource limits; and
 - real single- and multi-tool dispatch from Python through normal tool
   middleware.

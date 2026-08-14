@@ -481,10 +481,10 @@ testPythonConfiguration = do
         { Agent.toolConfig = Agent.defaultToolConfig{AgentTypes.python = disabledPython}
         }
       tool = PythonTools.runPythonTool :: AgentTool.Tool (Eff '[IOE])
-  assertBool "disabled Python config hides orchestrate_tools" (not (AgentTool.toolAllowed tool disabledContext))
+  assertBool "disabled Python config hides py" (not (AgentTool.toolAllowed tool disabledContext))
   schema <- runEff $ AgentTool.resolveToolSchema tool configuredContext (startWithUser "") 0
   let description = foldMap (.description) schema
-  assertBool "orchestrate_tools description uses configured limits" $
+  assertBool "py description uses configured limits" $
     "Configured limits: 7 s wall time, 5 s CPU, 96 MiB address space, and 3 total nested tool calls."
       `Text.isInfixOf` description
 
@@ -611,7 +611,7 @@ testPythonRejectsProgramControls = do
         $ AgentTool.tool "python_marker" AgentTool.noArguments do
             liftIO $ IORef.atomicModifyIORef' started (\count -> (count + 1, ()))
             pure (Agent.toolText "ran")
-      controls = ["orchestrate_tools", "tool_enable", "capture_continuation", "resume_continuation"]
+      controls = ["py", "tool_enable", "capture_continuation", "resume_continuation"]
       interpreter runTools _ _ _ = do
         results <- forM (zip [1 ..] controls) \(rpcId, control) ->
           runTools rpcId
@@ -652,7 +652,7 @@ testPythonNestedIdsAndBudget = do
       interpreter runTools _ _ _ = do
         rejected <- runTools 1
           ( PythonProgram.PythonToolCall "python_budgeted" "{}"
-          :| [PythonProgram.PythonToolCall "orchestrate_tools" "{}"]
+          :| [PythonProgram.PythonToolCall "py" "{}"]
           )
         duplicate <- runTools 1 (PythonProgram.PythonToolCall "python_budgeted" "{}" :| [])
         fullBatches <- traverse (\rpcId -> runTools rpcId batch) (2 :| [3, 4])
@@ -729,10 +729,10 @@ testPythonControlAndNestedScopes = do
   allEvents <- IORef.readIORef events
   let lifecycle = toolLifecycle allEvents
   lifecycle @?=
-    [ ("started", "outer-python", "orchestrate_tools")
+    [ ("started", "outer-python", "py")
     , ("started", "outer-python/python/1/0", "python_emit")
     , ("finished", "outer-python/python/1/0", "python_emit")
-    , ("finished", "outer-python", "orchestrate_tools")
+    , ("finished", "outer-python", "py")
     ]
   let finishedResults =
         [ (toolName, result)
@@ -741,7 +741,7 @@ testPythonControlAndNestedScopes = do
       finishedResult name = snd <$> find ((== name) . fst) finishedResults
   finishedResult "python_emit" @?= Just "nested result"
   assertBool "outer control result should use the normal audit compaction view" $
-    maybe False ("[tool result omitted;" `Text.isPrefixOf`) (finishedResult "orchestrate_tools")
+    maybe False ("[tool result omitted;" `Text.isPrefixOf`) (finishedResult "py")
   IORef.readIORef recorded >>= (@?= ["nested emitted"])
   IORef.readIORef remembered >>= (@?= [Just "42"])
   IORef.readIORef replies >>= \case
@@ -790,8 +790,8 @@ testPythonMalformedControlLifecycle = do
   IORef.readIORef interpreterEntries >>= (@?= 0)
   lifecycle <- mapMaybe controlLifecycle <$> IORef.readIORef events
   lifecycle @?=
-    [ ("started", "outer-malformed", "orchestrate_tools")
-    , ("finished:permanent_argument_error", "outer-malformed", "orchestrate_tools")
+    [ ("started", "outer-malformed", "py")
+    , ("finished:permanent_argument_error", "outer-malformed", "py")
     ]
   sent <- IORef.readIORef replies
   sent @?= []
