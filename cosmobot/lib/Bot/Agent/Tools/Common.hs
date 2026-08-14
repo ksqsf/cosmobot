@@ -55,7 +55,7 @@ chatTag =
 
 specialTag :: NamedTag
 specialTag =
-  NamedTag "special" "Compose multiple tools with programmatic control flow."
+  NamedTag "special" "Programmable tool interface. Proactively enable when you predict large results, or need to pipe/transform/compose tool results in a one-shot manner."
 
 workTag :: NamedTag
 workTag =

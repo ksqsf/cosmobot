@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trusted standard-library supervisor for one run_python invocation."""
+"""Trusted standard-library supervisor for one orchestrate_tools invocation."""
 
 from __future__ import annotations
 
@@ -266,7 +266,7 @@ def install_module(client: ChildClient) -> None:
 def reject_file_urls(event: str, args: tuple[object, ...]) -> None:
     """Reject urllib file URLs before it opens a local path."""
     if event == "urllib.Request" and str(args[0]).lower().startswith("file:"):
-        raise PermissionError("file:// URLs are disabled in run_python")
+        raise PermissionError("file:// URLs are disabled in orchestrate_tools")
 
 
 def parse_run_request(request: JsonValue) -> str:
@@ -304,7 +304,7 @@ def child_main(code: str, channel_fd: int, stdout_fd: int, stderr_fd: int) -> No
     sys.addaudithook(reject_file_urls)
     install_module(ChildClient(channel))
     try:
-        exec(compile(code, "<run_python>", "exec"), {})
+        exec(compile(code, "<orchestrate_tools>", "exec"), {})
     except BackToAgent as completed:
         write_frame(channel, {"kind": "completed", "content": completed.prompt})
     except _Fail as failed:

@@ -89,7 +89,7 @@ withPythonProgram runPython runtime =
         finalRuntime.aroundControlCall request.agentState.turn outerCall HList.HNil do
           case parsedRequest of
             Left err ->
-              pure (argumentFailure [i|Invalid run_python arguments: #{err}|])
+              pure (argumentFailure [i|Invalid orchestrate_tools arguments: #{err}|])
             Right pythonRequest ->
               pythonExitResult
                 <$> runPython
@@ -143,7 +143,7 @@ interpretPython interpretCall exposedToolNames toolTurn =
 
     rejectBatch request continue =
       (resume request continue $ request.toolCalls <&> \call ->
-        (call, argumentFailure "run_python must be called alone; no tool call in this turn was executed.")
+        (call, argumentFailure "orchestrate_tools must be called alone; no tool call in this turn was executed.")
       ).observe
 
     resume request continue executions = do

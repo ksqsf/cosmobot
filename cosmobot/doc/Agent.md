@@ -129,7 +129,7 @@ interactions.
 
 Within structural agent-program middleware, use `interpretX` and
 `XInterpreter` for code that translates an `X` structure into `Program`. For
-example, the internal `PythonInterpreter` handles a parsed `run_python`
+example, the internal `PythonInterpreter` handles a parsed `orchestrate_tools`
 control call by producing the replacement agent program that eventually
 resumes the original continuation. Elsewhere, an interpreter may translate a
 typed protocol operation into its semantic carrier result; the name still
@@ -224,7 +224,7 @@ The representation is an interaction tree adapted to streaming:
 `m` performs infrastructure effects. The complete remainder of the agent is
 represented by the tree, and interpretation follows its continuations.
 
-The same boundary now admits the model-facing `run_python` control tool, whose
+The same boundary now admits the model-facing `orchestrate_tools` control tool, whose
 middleware replaces that tool event with a program that executes Python and
 dispatches nested ordinary tools. [`AgentProgram.md`](AgentProgram.md)
 describes this implemented frontend and separates it from the still-future

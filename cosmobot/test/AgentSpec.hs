@@ -481,10 +481,10 @@ testPythonConfiguration = do
         { Agent.toolConfig = Agent.defaultToolConfig{AgentTypes.python = disabledPython}
         }
       tool = PythonTools.runPythonTool :: AgentTool.Tool (Eff '[IOE])
-  assertBool "disabled Python config hides run_python" (not (AgentTool.toolAllowed tool disabledContext))
+  assertBool "disabled Python config hides orchestrate_tools" (not (AgentTool.toolAllowed tool disabledContext))
   schema <- runEff $ AgentTool.resolveToolSchema tool configuredContext (startWithUser "") 0
   let description = foldMap (.description) schema
-  assertBool "run_python description uses configured limits" $
+  assertBool "orchestrate_tools description uses configured limits" $
     "Configured limits: 7 s wall time, 5 s CPU, 96 MiB address space, and 3 total nested tool calls."
       `Text.isInfixOf` description
 
@@ -611,7 +611,7 @@ testPythonRejectsProgramControls = do
         $ AgentTool.tool "python_marker" AgentTool.noArguments do
             liftIO $ IORef.atomicModifyIORef' started (\count -> (count + 1, ()))
             pure (Agent.toolText "ran")
-      controls = ["run_python", "tool_enable", "capture_continuation", "resume_continuation"]
+      controls = ["orchestrate_tools", "tool_enable", "capture_continuation", "resume_continuation"]
       interpreter runTools _ _ _ = do
         results <- forM (zip [1 ..] controls) \(rpcId, control) ->
           runTools rpcId
@@ -652,7 +652,7 @@ testPythonNestedIdsAndBudget = do
       interpreter runTools _ _ _ = do
         rejected <- runTools 1
           ( PythonProgram.PythonToolCall "python_budgeted" "{}"
-          :| [PythonProgram.PythonToolCall "run_python" "{}"]
+          :| [PythonProgram.PythonToolCall "orchestrate_tools" "{}"]
           )
         duplicate <- runTools 1 (PythonProgram.PythonToolCall "python_budgeted" "{}" :| [])
         fullBatches <- traverse (\rpcId -> runTools rpcId batch) (2 :| [3, 4])
@@ -729,10 +729,10 @@ testPythonControlAndNestedScopes = do
   allEvents <- IORef.readIORef events
   let lifecycle = toolLifecycle allEvents
   lifecycle @?=
-    [ ("started", "outer-python", "run_python")
+    [ ("started", "outer-python", "orchestrate_tools")
     , ("started", "outer-python/python/1/0", "python_emit")
     , ("finished", "outer-python/python/1/0", "python_emit")
-    , ("finished", "outer-python", "run_python")
+    , ("finished", "outer-python", "orchestrate_tools")
     ]
   let finishedResults =
         [ (toolName, result)
@@ -741,16 +741,14 @@ testPythonControlAndNestedScopes = do
       finishedResult name = snd <$> find ((== name) . fst) finishedResults
   finishedResult "python_emit" @?= Just "nested result"
   assertBool "outer control result should use the normal audit compaction view" $
-    maybe False ("[tool result omitted;" `Text.isPrefixOf`) (finishedResult "run_python")
+    maybe False ("[tool result omitted;" `Text.isPrefixOf`) (finishedResult "orchestrate_tools")
   IORef.readIORef recorded >>= (@?= ["nested emitted"])
   IORef.readIORef remembered >>= (@?= [Just "42"])
   IORef.readIORef replies >>= \case
-    [announcement, emitted] -> do
-      assertBool "outer run_python should be announced once" $
-        "正在调用 run_python 工具" `Text.isInfixOf` announcement
+    [emitted] ->
       emitted @?= "nested emitted"
     sent ->
-      assertFailure [i|expected one outer announcement and one nested message, got #{show sent :: String}|]
+      assertFailure [i|expected only the nested message, got #{show sent :: String}|]
   where
     toolLifecycle :: [Agent.Event] -> [(Text, Text, Text)]
     toolLifecycle = mapMaybe \case
@@ -792,11 +790,11 @@ testPythonMalformedControlLifecycle = do
   IORef.readIORef interpreterEntries >>= (@?= 0)
   lifecycle <- mapMaybe controlLifecycle <$> IORef.readIORef events
   lifecycle @?=
-    [ ("started", "outer-malformed", "run_python")
-    , ("finished:permanent_argument_error", "outer-malformed", "run_python")
+    [ ("started", "outer-malformed", "orchestrate_tools")
+    , ("finished:permanent_argument_error", "outer-malformed", "orchestrate_tools")
     ]
   sent <- IORef.readIORef replies
-  length sent @?= 1
+  sent @?= []
   where
     controlLifecycle :: Agent.Event -> Maybe (Text, Text, Text)
     controlLifecycle = \case

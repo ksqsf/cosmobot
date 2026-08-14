@@ -252,11 +252,11 @@ testPythonProtocolFailures = do
     PythonProtocol.claimToolsRequest PythonProtocol.RunSent 1
   PythonProtocol.terminalFailure (ExitFailure 152) "CPU limit"
     @?= AgentFailure.budgetExhaustedFailure
-      "Python exceeded an operating-system resource limit."
+      "Python exceeded an operating-system resource limit: ExitFailure 152: CPU limit"
       "CPU limit"
   PythonProtocol.terminalFailure (ExitFailure 1) "traceback"
     @?= AgentFailure.permanentArgumentFailure
-      "Python exited before completing."
+      "Python exited before completing: ExitFailure 1: traceback"
       "traceback"
 
 testPythonSequentialCalls :: Assertion

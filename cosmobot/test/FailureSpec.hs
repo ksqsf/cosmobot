@@ -390,7 +390,7 @@ testControlCallFailureRecovery = do
   answers <- IORef.newIORef []
   (syncResult, asyncResult) <- runFailureModel (scriptedModel answers) do
     runtime <- AgentTools.withToolFailureRecovery <$> testRuntime []
-    let call = toolCall "control-1" "run_python"
+    let call = toolCall "control-1" "orchestrate_tools"
     syncResult <- runtime.aroundControlCall 1 call HList.HNil (throwIO (InjectedFailure "control failed"))
     asyncResult <- try @SomeException $
       runtime.aroundControlCall 1 call HList.HNil (throwIO ThreadKilled)
@@ -398,7 +398,7 @@ testControlCallFailureRecovery = do
   case syncResult of
     Agent.ToolFailed{failure} ->
       assertBool "sync failure should retain the call name and cause" $
-        all (`Text.isInfixOf` failure.userMessage) ["Tool run_python failed:", "control failed"]
+        all (`Text.isInfixOf` failure.userMessage) ["Tool orchestrate_tools failed:", "control failed"]
     Agent.ToolSucceeded{} ->
       assertFailure "sync control failure was not converted to ToolFailed"
   case asyncResult of

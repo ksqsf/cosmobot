@@ -39,7 +39,7 @@ runBashTool :: (Resource.Resource :> es, FileSystem :> es, IOE :> es, Fail :> es
 runBashTool =
   tagged [workTag]
   . allowWhen (\context -> superuserOnly context && hasResourceIdentity context)
-  . withDescription "Run a bash script and obtain outputs; do not run malicious code."
+  . withDescription "Run a bash script and obtain outputs; do not run malicious code. Avoid it except when doing a whole-system-level task."
   $ tool "run_bash"
       ( validateArgument validScript
           (requiredText "script" "The bash script to be executed in the cwd")

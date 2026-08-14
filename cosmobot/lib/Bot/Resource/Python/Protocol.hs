@@ -171,12 +171,13 @@ terminalFailure :: ExitCode -> Text -> Failure
 terminalFailure exitCode stderrText =
   case exitCode of
     ExitFailure status | status `elem` [137, 152] -> budgetExhaustedFailure
-      "Python exceeded an operating-system resource limit."
+      ("Python exceeded an operating-system resource limit: " <> outcome)
       detail
     _ -> permanentArgumentFailure
-      "Python exited before completing."
+      ("Python exited before completing: " <> outcome)
       detail
   where
+    outcome = [i|#{show exitCode :: String}: #{detail}|]
     detail
       | Text.null stderrText =
           "The worker closed its protocol stream before replying to python.run."

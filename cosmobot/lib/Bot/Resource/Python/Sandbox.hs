@@ -138,7 +138,7 @@ requirePythonVersion = do
         _ -> Nothing
   case parsed of
     Just version | version >= (3 :: Int, 10 :: Int) -> pure ()
-    _ -> throwSandbox "run_python requires Python 3.10 or newer"
+    _ -> throwSandbox "orchestrate_tools requires Python 3.10 or newer"
 
 checkBubblewrap
   :: (Concurrent :> es, TypedProcess.TypedProcess :> es, Timeout :> es, IOE :> es)
