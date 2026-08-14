@@ -172,14 +172,13 @@ main = defaultMain $ testGroup "resource"
       , testCase "rejects malformed and oversized frames" testPythonFrameFailures
       , testCase "rejects malformed worker messages and RPC ids" testPythonProtocolFailures
       ]
-  , localOption (NumThreads 1) $ testGroup "anonymous Python worker"
+  , localOption (NumThreads 1) $ testGroup "Python worker"
       [ testCase "runs sequential nested calls in one resource lease" testPythonSequentialCalls
       , testCase "maps terminal responses" testPythonTerminalResponses
       , testCase "maps abnormal exit and timeout" testPythonAbnormalResponses
       , testCase "isolates host paths and bounds /work" testPythonSandbox
       , testCase "permits external HTTPS" testPythonHTTPS
       , testCase "owner cancellation finalizes the worker" testPythonOwnerCancellation
-      , testCase "startup obeys the execution deadline" testPythonStartupDeadline
       , testCase "callback delay consumes the execution deadline" testPythonCallbackDeadline
       , testCase "rejects an overflowing execution deadline" testPythonDeadlineOverflow
       , testCase "gated cleanup is idempotent" testPythonCleanupRace
@@ -265,21 +264,18 @@ testPythonSequentialCalls = do
   (outcome, calls) <- runManagedPython do
     arguments <- realPythonArgs 5_000_000
     calls <- MVar.newMVar []
-    access <- expectRight (Resource.accessFromMessage ownerMessage)
-    outcome <- Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \worker ->
-      Python.runPythonState
-        (\rpcId nested -> do
-          MVar.modifyMVarMasked_ calls (pure . (<> [(rpcId, fmap (.name) nested)]))
-          pure (nested $> AgentTypes.toolText [i|rpc #{rpcId}|]))
-        worker
-        (PythonTools.PythonRequest $ Text.unlines
-          [ "import cosmobot"
-          , "assert cosmobot.run_tool('first', {'value': 1})['content'] == 'rpc 1'"
-          , "assert cosmobot.run_tool('second', {})['content'] == 'rpc 2'"
-          , "cosmobot.complete('continue with this')"
-          ])
+    outcome <- Python.runPython Nothing (Resource.Init ownerMessage arguments)
+      (\rpcId nested -> do
+        MVar.modifyMVarMasked_ calls (pure . (<> [(rpcId, fmap (.name) nested)]))
+        pure (nested $> AgentTypes.toolText [i|rpc #{rpcId}|]))
+      (PythonTools.PythonRequest $ Text.unlines
+        [ "import cosmobot"
+        , "assert cosmobot.run_tool('first', {'value': 1})['content'] == 'rpc 1'"
+        , "assert cosmobot.run_tool('second', {})['content'] == 'rpc 2'"
+        , "cosmobot.complete('continue with this')"
+        ])
     (outcome,) <$> MVar.readMVar calls
-  outcome @?= Right (PythonProgram.PythonCompleted "continue with this")
+  outcome @?= PythonProgram.PythonCompleted "continue with this"
   calls @?= [(1, "first" :| []), (2, "second" :| [])]
 
 testPythonTerminalResponses :: Assertion
@@ -362,22 +358,19 @@ testPythonOwnerCancellation :: Assertion
 testPythonOwnerCancellation = do
   runManagedPython do
     port <- reserveLoopbackPort
-    arguments <- realPythonArgs 30_000_000
+    arguments <- realPythonArgs 5_000_000
     started <- MVar.newEmptyMVar
-    access <- expectRight (Resource.accessFromMessage ownerMessage)
     owner <- Concurrency.forkWithHandle "cancel Python owner" \workerHandle ->
-      void $ Python.withAnonymousPython access (Just workerHandle) (Resource.Init ownerMessage arguments) \pythonWorker ->
-        Python.runPythonState
-          (\_ calls -> MVar.putMVar started () $> (calls $> AgentTypes.toolText "continue"))
-          pythonWorker
-          (PythonTools.PythonRequest $ Text.unlines
-            [ "import cosmobot, socket"
-            , "listener = socket.socket()"
-            , [i|listener.bind(('127.0.0.1', #{port}))|]
-            , "listener.listen()"
-            , "cosmobot.run_tool('started', {})"
-            , "while True: pass"
-            ])
+      void $ Python.runPython (Just workerHandle) (Resource.Init ownerMessage arguments)
+        (\_ calls -> MVar.putMVar started () $> (calls $> AgentTypes.toolText "continue"))
+        (PythonTools.PythonRequest $ Text.unlines
+          [ "import cosmobot, socket"
+          , "listener = socket.socket()"
+          , [i|listener.bind(('127.0.0.1', #{port}))|]
+          , "listener.listen()"
+          , "cosmobot.run_tool('started', {})"
+          , "while True: pass"
+          ])
     MVar.takeMVar started
     canConnect port >>= liftIO . (@?= True)
     void (Concurrency.cancel owner.handleId)
@@ -425,34 +418,22 @@ testPythonCleanupRace = do
   assertBool "one concurrent destroy succeeds" (Right () `elem` [fst results, snd results])
   unavailable @?= Left Resource.ResourceNotFoundOrNotOwned
 
-testPythonStartupDeadline :: Assertion
-testPythonStartupDeadline = do
-  result <- runManagedPython do
-    arguments <- realPythonArgs 1
-    access <- expectRight (Resource.accessFromMessage ownerMessage)
-    Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \_ ->
-      pure ()
-  case result of
-    Left (Resource.ResourceCreationFailed message) ->
-      assertBool "startup timeout is reported" ("startup timed out" `Text.isInfixOf` message)
-    other -> assertFailure [i|expected startup timeout, got #{other}|]
-
 testPythonCallbackDeadline :: Assertion
 testPythonCallbackDeadline = do
   result <- runManagedPython do
-    arguments <- realPythonArgs 500_000
-    access <- expectRight (Resource.accessFromMessage ownerMessage)
-    Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \worker -> do
-      threadDelay 600_000
-      Python.runPythonState emptyRunTools worker (PythonTools.PythonRequest "pass")
-  result @?= Right (PythonProgram.PythonFailed (AgentFailure.budgetExhaustedFailure
+    arguments <- realPythonArgs 1_000_000
+    Python.runPython Nothing (Resource.Init ownerMessage arguments)
+      (\_ calls -> threadDelay 1_100_000 $> (calls $> AgentTypes.toolText "late"))
+      (PythonTools.PythonRequest "import cosmobot; cosmobot.run_tool('slow', {})")
+  result @?= PythonProgram.PythonFailed (AgentFailure.budgetExhaustedFailure
     "Python execution timed out."
-    "The Python worker exceeded its wall-time budget."))
+    "The Python worker exceeded its wall-time budget.")
 
 testPythonDeadlineOverflow :: Assertion
 testPythonDeadlineOverflow = runManagedPython do
   workerPath <- liftIO (Paths.getDataFileName "python/cosmobot_worker.py")
-  result <- Python.preparePythonArgs workerPath maxBound
+  result <- Python.preparePythonArgs workerPath
+    AgentTypes.defaultPythonConfig{AgentTypes.wallTimeoutSeconds = 3601}
   liftIO $ case result of
     Left message -> message @?= "Python execution timeout must not exceed one hour."
     Right _ -> assertFailure "expected an overflowing timeout to be rejected"
@@ -460,23 +441,21 @@ testPythonDeadlineOverflow = runManagedPython do
 testPythonFreshWork :: Assertion
 testPythonFreshWork = do
   (firstRun, secondRun) <- runManagedPython do
-    arguments <- realPythonArgs 5_000_000
-    access <- expectRight (Resource.accessFromMessage ownerMessage)
-    let run code = Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \worker ->
-          Python.runPythonState emptyRunTools worker (PythonTools.PythonRequest code)
+    arguments <- realPythonArgs 30_000_000
+    let run code = Python.runPython Nothing (Resource.Init ownerMessage arguments)
+          emptyRunTools (PythonTools.PythonRequest code)
     firstRun <- run "open('/work/marker', 'w').write('one')"
     secondRun <- run "import os; assert not os.path.exists('/work/marker')"
     pure (firstRun, secondRun)
-  firstRun @?= Right (PythonProgram.PythonCompleted "Python completed successfully.")
-  secondRun @?= Right (PythonProgram.PythonCompleted "Python completed successfully.")
+  firstRun @?= PythonProgram.PythonCompleted "Python completed successfully."
+  secondRun @?= PythonProgram.PythonCompleted "Python completed successfully."
 
 runOnePython :: Int -> Text -> IO PythonProgram.PythonExit
 runOnePython timeoutMicroseconds code = runManagedPython do
   arguments <- realPythonArgs timeoutMicroseconds
-  access <- expectRight (Resource.accessFromMessage ownerMessage)
-  result <- Python.withAnonymousPython access Nothing (Resource.Init ownerMessage arguments) \worker ->
-    Python.runPythonState emptyRunTools worker (PythonTools.PythonRequest code)
-  pure (fromRight (error "anonymous Python resource failed") result)
+  result <- Python.runPython Nothing (Resource.Init ownerMessage arguments)
+    emptyRunTools (PythonTools.PythonRequest code)
+  pure result
 
 realPythonArgs
   :: ( Concurrent :> es
@@ -489,7 +468,11 @@ realPythonArgs
   -> Eff es Python.PythonArgs
 realPythonArgs timeoutMicroseconds = do
   workerPath <- liftIO (Paths.getDataFileName "python/cosmobot_worker.py")
-  Python.preparePythonArgs workerPath timeoutMicroseconds >>= \case
+  let timeoutSeconds = max 1 ((timeoutMicroseconds + 999_999) `quot` 1_000_000)
+      config = AgentTypes.defaultPythonConfig
+        { AgentTypes.wallTimeoutSeconds = timeoutSeconds
+        }
+  Python.preparePythonArgs workerPath config >>= \case
     Left err -> error err
     Right arguments -> pure arguments
 

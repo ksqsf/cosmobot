@@ -184,7 +184,6 @@ cleanup, and tool-call transcript completeness together.
 - Agent retry, failure, and cancellation changes: `cabal test -j failure-spec --test-options=--hide-successes`.
 - Scheduler changes: `cabal test -j scheduler-spec --test-options=--hide-successes`.
 - Chat-log changes: `cabal test -j chat-log-spec --test-options=--hide-successes`.
-- Shared behavior changes: `cabal test -j all --test-options=--hide-successes`.
 - Executable wiring, config, cabal module lists, or handler signatures: `cabal build -j exe:cosmobot`.
 - Always run `git diff --check` before finishing.
 - Keep unrelated untracked files out of commits unless explicitly requested.

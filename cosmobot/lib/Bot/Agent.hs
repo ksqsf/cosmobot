@@ -127,7 +127,16 @@ withAgentMetadata
   -> Eff es a
   -> Eff es a
 withAgentMetadata metadataFor action =
-  interpose (runAgentOperation metadataFor) action
+  interpose (passthroughAgentMetadata metadataFor) action
+
+passthroughAgentMetadata
+  :: AgentEffect.Agent :> es
+  => (Text -> ToolCallMetadata)
+  -> EffectHandler AgentEffect.Agent es
+passthroughAgentMetadata metadataFor localEnv = \case
+  AgentEffect.RunAgent runtime use ->
+    passthrough localEnv $ AgentEffect.RunAgent runtime \configured ->
+      use configured{toolCallMetadata = metadataFor configured.runId}
 
 runAgentOperation
   :: (Text -> ToolCallMetadata)
@@ -188,6 +197,8 @@ startRuntime maxTurns context tools = do
   let exposedTools = filter (`toolAllowed` context) tools
       toolCallMetadata = ToolCallMetadata{agentRunId = runId, originRunId = runId, resourceOwner = Nothing}
   runningTools <- traverse (startToolRun context) exposedTools
+  let dispatchToolCall metadata =
+        ToolRegistry.runToolCall context metadata tools runningTools
   pure Runtime
     { runId
     , toolCallMetadata
@@ -195,6 +206,7 @@ startRuntime maxTurns context tools = do
     , tools
     , exposedTools
     , runningTools
+    , dispatchToolCall
     , maxTurns = max 1 maxTurns
     , modelInputTranscript = \_ agentState -> pure agentState.transcript
     , aroundProgram = \_ program -> program
@@ -439,7 +451,7 @@ executeToolCall runtime@Runtime{runId} turn call@LLM.ToolCall{id = callId, name,
     [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=started argument_chars=#{Text.length arguments}|]
   result <-
     runtime.aroundToolCall turn call HList.HNil
-      (ToolRegistry.runToolCall runtime.context runtime.toolCallMetadata runtime.tools runtime.runningTools call)
+      (runtime.dispatchToolCall runtime.toolCallMetadata call)
       `onException` logDebug
         [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=interrupted|]
   logDebug

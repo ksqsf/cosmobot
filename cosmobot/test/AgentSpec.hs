@@ -243,6 +243,8 @@ main =
       , testCase "tool argument DSL shares schema, decoding, and reader context" testToolArgumentDSL
       , testCase "dynamic tool visibility is frozen for each model turn" testDynamicToolVisibilitySnapshot
       , testCase "Python nested tools reuse frozen registry dispatch without transcript entries" testPythonNestedRegistryDispatch
+      , testCase "Python configuration controls visibility, description, and nested budget" testPythonConfiguration
+      , testCase "Python action middleware preserves root and managed-child metadata" testPythonActionMiddlewareMetadata
       , testCase "Python resource protocol resumes the existing continuation" testPythonResourceContinuation
       , testCase "Python rejects every program control before starting a sibling" testPythonRejectsProgramControls
       , testCase "Python nested ids, ordering, and budget are host-owned" testPythonNestedIdsAndBudget
@@ -447,7 +449,7 @@ testPythonNestedRegistryDispatch = do
         pure (PythonProgram.PythonCompleted "nested complete")
   transcript <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, dynamicTool, deniedTool]
-    let pythonRuntime = PythonMiddleware.withPythonInterpreter interpreter runtime
+    let pythonRuntime = PythonMiddleware.withPythonRunner interpreter runtime
     _outputs S.:> result <- S.toList (Agent.agentStream pythonRuntime (startWithEnabledTools ["special"] "compose"))
     pure result.transcript
   Just (dynamicResult :| [deniedResult]) <- IORef.readIORef nestedResults
@@ -461,6 +463,108 @@ testPythonNestedRegistryDispatch = do
       , call <- message.toolCalls
       , "/python/" `Text.isInfixOf` call.id
       ]
+
+testPythonConfiguration :: IO ()
+testPythonConfiguration = do
+  let disabledPython = AgentTypes.defaultPythonConfig{AgentTypes.enabled = False}
+      configuredPython = AgentTypes.PythonConfig
+        { enabled = True
+        , wallTimeoutSeconds = 7
+        , cpuSeconds = 5
+        , memoryMiB = 96
+        , maxToolCalls = 3
+        }
+      configuredContext = agentContext
+        { Agent.toolConfig = Agent.defaultToolConfig{AgentTypes.python = configuredPython}
+        }
+      disabledContext = agentContext
+        { Agent.toolConfig = Agent.defaultToolConfig{AgentTypes.python = disabledPython}
+        }
+      tool = PythonTools.runPythonTool :: AgentTool.Tool (Eff '[IOE])
+  assertBool "disabled Python config hides run_python" (not (AgentTool.toolAllowed tool disabledContext))
+  schema <- runEff $ AgentTool.resolveToolSchema tool configuredContext (startWithUser "") 0
+  let description = foldMap (.description) schema
+  assertBool "run_python description uses configured limits" $
+    "Configured limits: 7 s wall time, 5 s CPU, 96 MiB address space, and 3 total nested tool calls."
+      `Text.isInfixOf` description
+
+testPythonActionMiddlewareMetadata :: IO ()
+testPythonActionMiddlewareMetadata = do
+  observedMetadata <- IORef.newIORef ([] :: [Agent.ToolCallMetadata])
+  observedOwners <- IORef.newIORef ([] :: [Maybe Concurrency.Handle])
+  nestedResults <- IORef.newIORef ([] :: [[Agent.ToolResult]])
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "root-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("root" :: Text)])]
+    , chatAnswer "root finished" []
+    , chatAnswer "" [toolCall "enable-python" AgentTool.toolEnableName (Aeson.object ["tags" Aeson..= (["special"] :: [Text])])]
+    , chatAnswer "" [toolCall "child-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("child" :: Text)])]
+    , chatAnswer "child finished" []
+    ]
+  let configuredPython = AgentTypes.defaultPythonConfig{AgentTypes.maxToolCalls = 1}
+      configuredContext = agentContext
+        { Agent.toolConfig = Agent.defaultToolConfig{AgentTypes.python = configuredPython}
+        }
+      markerTool :: AgentTool.Tool (Eff AgentStack)
+      markerTool = AgentTool.withDescription "Records action-level Python metadata." $
+        AgentTool.tool "python_metadata_marker" AgentTool.noArguments do
+          metadata <- AgentTool.askToolCallMetadata
+          liftIO $ IORef.modifyIORef' observedMetadata (<> [metadata])
+          pure (Agent.toolText "recorded")
+      interpreter runTools _message resourceOwner _request = do
+        successful <- runTools 1 (PythonProgram.PythonToolCall "python_metadata_marker" "{}" :| [])
+        exhausted <- runTools 2 (PythonProgram.PythonToolCall "python_metadata_marker" "{}" :| [])
+        liftIO $ do
+          IORef.modifyIORef' observedOwners (<> [resourceOwner])
+          IORef.modifyIORef' nestedResults (<> [toList successful <> toList exhausted])
+        pure (PythonProgram.PythonCompleted "python complete")
+      descendantMetadata = testToolCallMetadata
+        { Agent.agentRunId = "agent-parent"
+        , AgentTypes.originRunId = "agent-root"
+        }
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) $
+    PythonMiddleware.withPythonMiddleware interpreter do
+      runtime <- startTestRuntime 3 configuredContext [PythonTools.runPythonTool, markerTool]
+      AgentEffect.withRun runtime \configured ->
+        void . S.toList $ Agent.agentStream configured (startWithEnabledTools ["special"] "run root Python")
+      let subagentTool = SubAgentTools.subagentTool [MetaTools.toolEnableTool, PythonTools.runPythonTool, markerTool]
+      subagentRun <- AgentTool.startTool subagentTool configuredContext
+      created <- subagentRun descendantMetadata $
+        Aeson.object
+          [ "op" Aeson..= ("create" :: Text)
+          , "name" Aeson..= ("python-child" :: Text)
+          , "system_prompt" Aeson..= ("Use Python." :: Text)
+          , "tools" Aeson..= ([PythonTools.runPythonToolName, "python_metadata_marker"] :: [Text])
+          , "ttl_minutes" Aeson..= (5 :: Int)
+          ]
+      let resourceId = fromMaybe (error "missing Python subagent id") $
+            Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created)
+      sent <- subagentRun descendantMetadata $
+        Aeson.object
+          [ "op" Aeson..= ("send" :: Text)
+          , "resource" Aeson..= resourceId
+          , "prompt" Aeson..= ("run child Python" :: Text)
+          ]
+      liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
+      workers <- Concurrency.list
+      let worker = fromMaybe (error "missing Python subagent worker") $
+            find ((== "subagent") . (.label)) workers.entries
+      Concurrency.await Concurrency.Handle{handleId = worker.id}
+  [rootMetadata, childMetadata] <- IORef.readIORef observedMetadata
+  [rootOwner, childOwner] <- IORef.readIORef observedOwners
+  rootMetadata.agentRunId @?= rootMetadata.originRunId
+  rootMetadata.resourceOwner @?= Nothing
+  rootOwner @?= Nothing
+  childMetadata.originRunId @?= "agent-root"
+  assertBool "managed child receives its own run id" (childMetadata.agentRunId /= descendantMetadata.agentRunId)
+  assertBool "managed child metadata owns resources through its worker" (isJust childMetadata.resourceOwner)
+  childOwner @?= childMetadata.resourceOwner
+  results <- IORef.readIORef nestedResults
+  length results @?= 2
+  for_ results \case
+    [successful, exhausted] -> do
+      AgentTypes.toolResultContent successful @?= "recorded"
+      fmap (.category) (AgentTypes.toolResultFailure exhausted) @?= Just AgentTypes.BudgetExhausted
+    other -> assertFailure [i|expected successful and exhausted nested results, got #{length other}|]
 
 testPythonResourceContinuation :: IO ()
 testPythonResourceContinuation = do
@@ -481,7 +585,7 @@ testPythonResourceContinuation = do
           pure (PythonProgram.PythonCompleted "resource complete")
     runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, nestedTool]
     _outputs S.:> result <- S.toList $ Agent.agentStream
-      (PythonMiddleware.withPythonInterpreter interpreter runtime)
+      (PythonMiddleware.withPythonRunner interpreter runtime)
       (startWithEnabledTools ["special"] $ Text.unlines
         [ "import cosmobot"
         , "result = cosmobot.run_tool('python_protocol_marker', {})"
@@ -519,7 +623,7 @@ testPythonRejectsProgramControls = do
   runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, markerTool]
     void . S.toList $ Agent.agentStream
-      (PythonMiddleware.withPythonInterpreter interpreter runtime)
+      (PythonMiddleware.withPythonRunner interpreter runtime)
       (startWithEnabledTools ["special"] "reject controls")
   IORef.readIORef started >>= (@?= 0)
   results <- IORef.readIORef observed
@@ -564,7 +668,7 @@ testPythonNestedIdsAndBudget = do
               pure (Agent.toolText call.id)
           }
     void . S.toList $ Agent.agentStream
-      (PythonMiddleware.withPythonInterpreter interpreter withIds)
+      (PythonMiddleware.withPythonRunner interpreter withIds)
       (startWithEnabledTools ["special"] "check budget")
   IORef.readIORef started >>= (@?= 62)
   Just (successful, rejected, duplicate :| [], exhausted :| []) <- IORef.readIORef observed
@@ -608,7 +712,7 @@ testPythonControlAndNestedScopes = do
   runAgentWith answers (ChatMock (Just replies) (Just "42") Nothing) do
     runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, emittingTool]
     let observed =
-          PythonMiddleware.withPythonInterpreter interpreter
+          PythonMiddleware.withPythonRunner interpreter
           . ToolResultCompaction.withToolResultCompaction
           . AgentObservation.withObservation observer
           . ToolMiddleware.withToolMessage
@@ -678,7 +782,7 @@ testPythonMalformedControlLifecycle = do
   runAgentWith answers (ChatMock (Just replies) (Just "42") Nothing) do
     runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool]
     let program =
-          PythonMiddleware.withPythonInterpreter interpreter
+          PythonMiddleware.withPythonRunner interpreter
           . ToolResultCompaction.withToolResultCompaction
           . AgentObservation.withObservation observer
           . ToolMiddleware.withToolMessage
@@ -734,7 +838,7 @@ testPythonMixedBatchHasNoCallSideEffects = do
               liftIO (IORef.modifyIORef' ordinaryScopes (+ 1)) >> action
           }
     void . S.toList $ Agent.agentStream
-      (PythonMiddleware.withPythonInterpreter interpreter counted)
+      (PythonMiddleware.withPythonRunner interpreter counted)
       (startWithEnabledTools ["special"] "reject mixed")
   traverse_ (>>= (@?= 0)) [IORef.readIORef controlScopes, IORef.readIORef ordinaryScopes, IORef.readIORef interpreterEntries, IORef.readIORef markerRuns]
 

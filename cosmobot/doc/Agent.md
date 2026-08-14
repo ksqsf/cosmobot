@@ -125,6 +125,22 @@ invisible to the model and user. Middleware scopes and internal boundaries can
 therefore retain their shape while `AgentEvent` stays focused on meaningful
 interactions.
 
+### Naming interpretation boundaries
+
+Within structural agent-program middleware, use `interpretX` and
+`XInterpreter` for code that translates an `X` structure into `Program`. For
+example, the internal `PythonInterpreter` handles a parsed `run_python`
+control call by producing the replacement agent program that eventually
+resumes the original continuation. Elsewhere, an interpreter may translate a
+typed protocol operation into its semantic carrier result; the name still
+describes translation, not external execution.
+
+Code that performs an external operation is a runner: name it `runX`, `RunX`,
+or `XRunner`. Starting the Python worker and exchanging its protocol messages
+is execution, not interpretation, even though it is called from the program
+interpreter. Keep implementation-shape aliases internal unless another module
+must state the contract directly.
+
 ## Program and runtime
 
 `Runtime context m` supplies tools, run metadata, event interpretation, and
@@ -208,6 +224,8 @@ The representation is an interaction tree adapted to streaming:
 `m` performs infrastructure effects. The complete remainder of the agent is
 represented by the tree, and interpretation follows its continuations.
 
-The same boundary can eventually admit programs produced outside Haskell.
-[`AgentProgram.md`](AgentProgram.md) records the envisioned DSL and Python
-direction. Its implementation remains future work.
+The same boundary now admits the model-facing `run_python` control tool, whose
+middleware replaces that tool event with a program that executes Python and
+dispatches nested ordinary tools. [`AgentProgram.md`](AgentProgram.md)
+describes this implemented frontend and separates it from the still-future
+general DSL and foreign-continuation direction.

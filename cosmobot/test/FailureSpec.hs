@@ -1662,6 +1662,8 @@ testRuntimeFor tools = do
         , tools
         , exposedTools = tools
         , runningTools
+        , dispatchToolCall = \metadata ->
+            ToolRegistry.runToolCall testContext metadata tools runningTools
         , maxTurns = 4
         , modelInputTranscript = \_ agentState -> pure agentState.transcript
         , aroundProgram = \_ program -> program

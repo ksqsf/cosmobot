@@ -5,15 +5,14 @@ module Bot.Resource.Python
   ( PythonWorker
   , PythonArgs
   , preparePythonArgs
-  , withAnonymousPython
-  , runPythonState
+  , runPython
   )
 where
 
 import Bot.Agent.Failure
 import Bot.Agent.Program.Python
 import Bot.Agent.Tools.Python (PythonRequest (..))
-import Bot.Agent.Types (ToolResult)
+import Bot.Agent.Types (PythonConfig (..), ToolResult, maxPythonWallTimeoutSeconds)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude hiding (state)
@@ -37,11 +36,13 @@ newtype PythonWorker = PythonWorker
 data PythonWorkerState
   = Gated !GatedHandles
   | Running !RunningHandles !ProtocolState
-  | Terminal
+  | StartupFailed !(Maybe GatedHandles) !Failure
 
 data GatedHandles = GatedHandles
   { sandbox :: !Sandbox.GatedSandbox
   , deadlineNanoseconds :: !Word64
+  , cpuSeconds :: !Int
+  , memoryBytes :: !Int
   }
 
 data RunningHandles = RunningHandles
@@ -52,6 +53,8 @@ data RunningHandles = RunningHandles
 data PythonArgs = PythonArgs
   { sandboxConfig :: !Sandbox.Config
   , executionTimeoutMicroseconds :: !Int
+  , cpuSeconds :: !Int
+  , memoryBytes :: !Int
   }
 
 preparePythonArgs
@@ -62,19 +65,26 @@ preparePythonArgs
      , IOE :> es
      )
   => FilePath
-  -> Int
+  -> PythonConfig
   -> Eff es (Either Text PythonArgs)
-preparePythonArgs workerPath executionTimeoutMicroseconds
-  | executionTimeoutMicroseconds <= 0 = pure (Left "Python execution timeout must be positive.")
-  | executionTimeoutMicroseconds > maxExecutionTimeoutMicroseconds =
+preparePythonArgs workerPath config
+  | config.wallTimeoutSeconds <= 0 = pure (Left "Python wall timeout must be positive.")
+  | config.wallTimeoutSeconds > maxPythonWallTimeoutSeconds =
       pure (Left "Python execution timeout must not exceed one hour.")
+  | config.cpuSeconds <= 0 = pure (Left "Python CPU limit must be positive.")
+  | config.memoryMiB <= 0 = pure (Left "Python memory limit must be positive.")
+  | config.memoryMiB > maxBound `div` (1024 * 1024) = pure (Left "Python memory limit is too large.")
   | otherwise =
       Sandbox.prepare workerPath <&> fmap \sandboxConfig ->
-        PythonArgs{sandboxConfig, executionTimeoutMicroseconds}
+        PythonArgs
+          { sandboxConfig
+          , executionTimeoutMicroseconds = config.wallTimeoutSeconds * 1_000_000
+          , cpuSeconds = config.cpuSeconds
+          , memoryBytes = config.memoryMiB * 1024 * 1024
+          }
 
 instance
   ( Concurrent :> es
-  , KatipE :> es
   , FileSystem :> es
   , TypedProcess.TypedProcess :> es
   , Timeout :> es
@@ -88,7 +98,7 @@ instance
   resourceListed _ = False
   resourceTTLSeconds arguments
     | arguments.executionTimeoutMicroseconds <= 0 = Left "Python execution timeout must be positive."
-    | arguments.executionTimeoutMicroseconds > maxExecutionTimeoutMicroseconds =
+    | arguments.executionTimeoutMicroseconds > maxPythonWallTimeoutSeconds * 1_000_000 =
         Left "Python execution timeout must not exceed one hour."
     | otherwise =
         Right (Just (ceilingSeconds arguments.executionTimeoutMicroseconds + cleanupGraceSeconds + orphanMarginSeconds))
@@ -96,23 +106,26 @@ instance
     deadlineNanoseconds <- deadlineAfter arguments.executionTimeoutMicroseconds
     trySync (restore (timeout arguments.executionTimeoutMicroseconds (Sandbox.launchGated arguments.sandboxConfig))) >>= \case
       Left err -> pure (Left (Text.take 500 (Text.pack (displayException err))))
-      Right Nothing -> pure (Left "Python sandbox startup timed out.")
+      Right Nothing ->
+        Right . PythonWorker <$> MVar.newMVar
+          (StartupFailed Nothing pythonTimeoutFailure)
       Right (Just sandbox) ->
         (Right . PythonWorker <$> MVar.newMVar
-          (Gated GatedHandles{sandbox, deadlineNanoseconds}))
+          (Gated GatedHandles
+            { sandbox
+            , deadlineNanoseconds
+            , cpuSeconds = arguments.cpuSeconds
+            , memoryBytes = arguments.memoryBytes
+            }))
           `onException` Sandbox.stopGated sandbox
   destroyResourceObject worker = do
-    owned <- MVar.modifyMVarMasked worker.state \case
-      Terminal -> pure (Terminal, Nothing)
-      Gated handles -> pure (Terminal, Just (Left handles))
-      Running handles _ -> pure (Terminal, Just (Right handles))
-    traverse_ cleanupSandbox owned
+    traverse_ cleanupSandbox . ownedSandbox =<< MVar.readMVar worker.state
     pure (Right ())
   describeResourceObject _ result = pure (either (const "unavailable") id result)
   probeResourceObject worker = MVar.readMVar worker.state <&> Right . \case
     Gated{} -> "gated"
     Running _ protocol -> Text.toLower (Text.pack (show protocol))
-    Terminal -> "terminal"
+    StartupFailed{} -> "startup failed"
 
 cleanupGraceSeconds :: Int
 cleanupGraceSeconds = 5
@@ -120,31 +133,30 @@ cleanupGraceSeconds = 5
 orphanMarginSeconds :: Int
 orphanMarginSeconds = 10
 
-maxExecutionTimeoutMicroseconds :: Int
-maxExecutionTimeoutMicroseconds = 60 * 60 * 1_000_000
-
 ceilingSeconds :: Int -> Int
 ceilingSeconds microseconds =
   let (seconds, remainder) = max 1 microseconds `quotRem` 1_000_000
   in max 1 (seconds + fromEnum (remainder /= 0))
 
+ownedSandbox :: PythonWorkerState -> Maybe (Either GatedHandles RunningHandles)
+ownedSandbox = \case
+  Gated handles -> Just (Left handles)
+  Running handles _ -> Just (Right handles)
+  StartupFailed handles _ -> Left <$> handles
+
 cleanupSandbox
   :: ( TypedProcess.TypedProcess :> es
      , FileSystem :> es
-     , Timeout :> es
-     , KatipE :> es
      , IOE :> es
-     )
+  )
   => Either GatedHandles RunningHandles
   -> Eff es ()
 cleanupSandbox owned =
-  (case owned of
+  case owned of
     Left handles -> Sandbox.stopGated handles.sandbox
-    Right handles -> Sandbox.stopRunning handles.sandbox)
-  `catchSync` \err ->
-    logWarning [i|Python worker cleanup failed after SIGKILL; forgetting the isolated worker: #{Text.take 500 (Text.pack (displayException err))}|]
+    Right handles -> Sandbox.stopRunning handles.sandbox
 
-withAnonymousPython
+withPythonWorker
   :: ( Resource.Resource :> es
      , Resource.ResourceObject (Eff es) PythonWorker
      , Concurrent :> es
@@ -158,20 +170,50 @@ withAnonymousPython
   -> Resource.Init PythonArgs
   -> (PythonWorker -> Eff es a)
   -> Eff es (Either Resource.ResourceError a)
-withAnonymousPython access resourceOwner initValue use =
+withPythonWorker access resourceOwner initValue use =
+  mask \restore -> do
+    created <- Resource.createAssociated @PythonWorker resourceOwner initValue
+    case created of
+      Left err -> pure (Left err)
+      Right resourceId ->
+        restore
+          (Resource.withResource @PythonWorker access resourceId resourceOwner use)
+          `finally` void (Resource.destroy access resourceId)
+
+runPython
+  :: ( Resource.Resource :> es
+     , Resource.ResourceObject (Eff es) PythonWorker
+     , Concurrent :> es
+     , FileSystem :> es
+     , TypedProcess.TypedProcess :> es
+     , Timeout :> es
+     , IOE :> es
+     )
+  => Maybe Concurrency.Handle
+  -> Resource.Init PythonArgs
+  -> (Int -> NonEmpty PythonToolCall -> Eff es (NonEmpty ToolResult))
+  -> PythonRequest
+  -> Eff es PythonExit
+runPython resourceOwner initValue runTools request =
   case Resource.accessFromMessage initValue.message of
-    Left err -> pure (Left err)
-    Right messageAccess
-      | messageAccess.owner /= access.owner -> pure (Left Resource.ResourceNotFoundOrNotOwned)
-      | otherwise -> mask \restore -> do
-          created <- Resource.createAssociated @PythonWorker resourceOwner initValue
-          case created of
-            Left err -> pure (Left err)
-            Right resourceId ->
-              restore
-                (Resource.withResource @PythonWorker access resourceId resourceOwner
-                  (\worker -> activateWorker worker >> use worker))
-                `finally` void (Resource.destroy access resourceId)
+    Left err -> pure (PythonFailed (pythonResourceFailure err))
+    Right access ->
+      withPythonWorker access resourceOwner initValue
+        (\worker -> runPythonWorker runTools worker request)
+        <&> either (PythonFailed . pythonResourceFailure) id
+
+pythonResourceFailure :: Resource.ResourceError -> Failure
+pythonResourceFailure = \case
+  Resource.MissingResourceIdentity ->
+    permanentArgumentFailure
+      "run_python requires chat and sender identity."
+      "The current message does not identify both its chat and sender."
+  Resource.ResourceCreationFailed detail ->
+    externalServiceFailure "Python sandbox failed to start." detail
+  err ->
+    externalServiceFailure
+      "Python worker is unavailable."
+      (Text.pack (show err))
 
 activateWorker
   :: ( Concurrent :> es
@@ -181,21 +223,33 @@ activateWorker
      , IOE :> es
      )
   => PythonWorker
-  -> Eff es ()
+  -> Eff es (Either Failure RunningHandles)
 activateWorker worker =
-  MVar.modifyMVarMasked_ worker.state \case
+  MVar.modifyMVarMasked worker.state \case
     Gated handles -> do
       remaining <- remainingMicroseconds handles.deadlineNanoseconds
-      timeout remaining (Sandbox.start handles.sandbox) >>= \case
-        Nothing -> throwIO PythonStartupTimeout
-        Just sandbox ->
-          pure (Running RunningHandles
-            { sandbox
-            , deadlineNanoseconds = handles.deadlineNanoseconds
-            } Created)
-    state -> pure state
+      trySync (timeout remaining (Sandbox.start handles.cpuSeconds handles.memoryBytes handles.sandbox)) >>= \case
+        Left err ->
+          let failure = externalServiceFailure
+                "Python sandbox failed to start."
+                (Text.take 500 (Text.pack (displayException err)))
+          in pure (StartupFailed (Just handles) failure, Left failure)
+        Right Nothing ->
+          pure (StartupFailed (Just handles) pythonTimeoutFailure, Left pythonTimeoutFailure)
+        Right (Just sandbox) ->
+          let running = RunningHandles
+                { sandbox
+                , deadlineNanoseconds = handles.deadlineNanoseconds
+                }
+          in
+          pure
+            ( Running running Created
+            , Right running
+            )
+    state@(Running handles _) -> pure (state, Right handles)
+    state@(StartupFailed _ failure) -> pure (state, Left failure)
 
-runPythonState
+runPythonWorker
   :: ( Concurrent :> es
      , Timeout :> es
      , FileSystem :> es
@@ -206,27 +260,23 @@ runPythonState
   -> PythonWorker
   -> PythonRequest
   -> Eff es PythonExit
-runPythonState runTools worker request = do
-  timeoutMicros <- workerTimeout worker
-  outcome <- trySync $ timeout timeoutMicros (runProtocol runTools worker request)
-  case outcome of
-    Left err -> failWorker worker $ externalServiceFailure
-      "Python worker failed."
-      (Text.take 500 (Text.pack (show err)))
-    Right Nothing -> failWorker worker $ budgetExhaustedFailure
-      "Python execution timed out."
-      "The Python worker exceeded its wall-time budget."
-    Right (Just result) -> pure result
+runPythonWorker runTools worker request = do
+  activateWorker worker >>= \case
+    Left failure -> failWorker worker failure
+    Right handles -> do
+      timeoutMicros <- remainingMicroseconds handles.deadlineNanoseconds
+      outcome <- trySync $ timeout timeoutMicros (runProtocol runTools worker request)
+      case outcome of
+        Left err -> failWorker worker $ externalServiceFailure
+          "Python worker failed."
+          (Text.take 500 (Text.pack (show err)))
+        Right Nothing -> failWorker worker pythonTimeoutFailure
+        Right (Just result) -> pure result
 
-workerTimeout :: (Concurrent :> es, IOE :> es) => PythonWorker -> Eff es Int
-workerTimeout worker = MVar.readMVar worker.state >>= \case
-  Gated{} -> pure 1
-  Running handles _ -> remainingMicroseconds handles.deadlineNanoseconds
-  Terminal -> pure 1
-
-data PythonStartupTimeout = PythonStartupTimeout
-  deriving stock (Show)
-  deriving anyclass (Exception)
+pythonTimeoutFailure :: Failure
+pythonTimeoutFailure = budgetExhaustedFailure
+  "Python execution timed out."
+  "The Python worker exceeded its wall-time budget."
 
 deadlineAfter :: IOE :> es => Int -> Eff es Word64
 deadlineAfter microseconds = do
@@ -307,7 +357,7 @@ beginRun worker =
     showState = \case
       Gated{} -> "gated" :: Text
       Running _ protocol -> Text.pack (show protocol)
-      Terminal -> "terminal"
+      StartupFailed{} -> "startup failed"
 
 claimRequest :: Concurrent :> es => PythonWorker -> Int -> Eff es (Either Text ())
 claimRequest worker rpcId =
@@ -357,7 +407,7 @@ transitionProtocol worker transition =
     showWorkerState = \case
       Gated{} -> "gated" :: Text
       Running _ protocol -> Text.pack (show protocol)
-      Terminal -> "terminal"
+      StartupFailed{} -> "startup failed"
 
 writeValue
   :: (FileSystem :> es, IOE :> es)

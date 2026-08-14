@@ -218,13 +218,15 @@ start
      , Timeout :> es
      , IOE :> es
      )
-  => GatedSandbox
+  => Int
+  -> Int
+  -> GatedSandbox
   -> Eff es RunningSandbox
-start gated = do
+start cpuSeconds memoryBytes gated = do
   let limits =
         [ "--pid", show gated.childPid
-        , "--cpu=20:20"
-        , "--as=536870912:536870912"
+        , [i|--cpu=#{cpuSeconds}:#{cpuSeconds}|]
+        , [i|--as=#{memoryBytes}:#{memoryBytes}|]
         , "--nproc=2:2"
         , "--nofile=64:64"
         ]
@@ -255,23 +257,19 @@ readSandboxProcess executable arguments = do
         TypedProcess.proc executable arguments
   mask \restore -> do
     process <- TypedProcess.startProcess config
-    let drainOutput = do
-          void (ProcessUtil.processOutputText (TypedProcess.getStdout process))
-          void (ProcessUtil.processOutputText (TypedProcess.getStderr process))
+    let waitAndRead = do
+          exitCode <- TypedProcess.waitExitCode process
+          stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
+          stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
+          pure (exitCode, stdoutText, stderrText)
         stopAndReap = do
           ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
-          timeout (5 * 1_000_000) (TypedProcess.waitExitCode process) >>= \case
-            Nothing -> pure ()
-            Just _ -> drainOutput
-    exitCode <- restore (TypedProcess.waitExitCode process) `onException` stopAndReap
-    stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
-    stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
-    pure (exitCode, stdoutText, stderrText)
+          void (timeout (5 * 1_000_000) waitAndRead)
+    restore waitAndRead `onException` stopAndReap
 
 stopGated
   :: ( TypedProcess.TypedProcess :> es
      , FileSystem :> es
-     , Timeout :> es
      , IOE :> es
      )
   => GatedSandbox
@@ -283,7 +281,6 @@ stopGated gated = do
 stopRunning
   :: ( TypedProcess.TypedProcess :> es
      , FileSystem :> es
-     , Timeout :> es
      , IOE :> es
      )
   => RunningSandbox
@@ -294,7 +291,6 @@ stopRunning running = do
 
 stopProcess
   :: ( TypedProcess.TypedProcess :> es
-     , Timeout :> es
      , IOE :> es
      )
   => Int
@@ -303,9 +299,7 @@ stopProcess
 stopProcess childPid process = do
   killSandboxGroup childPid
   ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
-  timeout (5 * 1_000_000) (TypedProcess.waitExitCode process) >>= \case
-    Nothing -> throwSandbox "timed out awaiting the Python sandbox after SIGKILL"
-    Just _ -> pure ()
+  void (TypedProcess.waitExitCode process)
 
 cleanupStarted
   :: ( TypedProcess.TypedProcess :> es

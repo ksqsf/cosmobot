@@ -15,6 +15,9 @@ module Bot.Agent.Types
   , permanentArgumentFailure
   , permissionDeniedFailure
   , ToolConfig (..)
+  , PythonConfig (..)
+  , defaultPythonConfig
+  , maxPythonWallTimeoutSeconds
   , WebSearchApi (..)
   , defaultToolConfig
   , ignoreObserver
@@ -47,9 +50,20 @@ data ToolConfig = ToolConfig
   , webFetchMaxUses :: !(Maybe Int)
   , webFetchMaxContentTokens :: !(Maybe Int)
   , datetime :: !Bool
+  , python :: !PythonConfig
   , sandboxImage :: !Text
   }
   deriving (Show)
+
+-- | Host-controlled limits for the Python composition tool.
+data PythonConfig = PythonConfig
+  { enabled :: !Bool
+  , wallTimeoutSeconds :: !Int
+  , cpuSeconds :: !Int
+  , memoryMiB :: !Int
+  , maxToolCalls :: !Int
+  }
+  deriving (Eq, Show)
 
 data WebSearchApi
   = WebSearchTavily
@@ -69,8 +83,21 @@ defaultToolConfig = ToolConfig
   , webFetchMaxUses = Nothing
   , webFetchMaxContentTokens = Nothing
   , datetime = False
+  , python = defaultPythonConfig
   , sandboxImage = "localhost/cosmobox:latest"
   }
+
+defaultPythonConfig :: PythonConfig
+defaultPythonConfig = PythonConfig
+  { enabled = True
+  , wallTimeoutSeconds = 30
+  , cpuSeconds = 20
+  , memoryMiB = 512
+  , maxToolCalls = 64
+  }
+
+maxPythonWallTimeoutSeconds :: Int
+maxPythonWallTimeoutSeconds = 60 * 60
 
 data ToolCallMetadata = ToolCallMetadata
   { agentRunId :: !Text

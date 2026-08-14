@@ -39,7 +39,8 @@ runPythonTool :: Tool (Eff es)
 runPythonTool =
   noisy
     . tagged [specialTag]
-    . withDescription runPythonDescription
+    . allowWhen (.toolConfig.python.enabled)
+    . withDescriptionBy (runPythonDescriptionFor . (.toolConfig.python))
     $ tool runPythonToolName
         (requiredText "code" "Complete Python source to execute with compile(..., '<run_python>', 'exec').")
         \_ -> pure (toolFailure (permanentArgumentFailure unavailable unavailable))
@@ -58,7 +59,10 @@ runPythonRequest call
         PythonRequest <$> object Aeson..: Key.fromText "code"
 
 runPythonDescription :: Text
-runPythonDescription = Text.unlines
+runPythonDescription = runPythonDescriptionFor defaultPythonConfig
+
+runPythonDescriptionFor :: PythonConfig -> Text
+runPythonDescriptionFor PythonConfig{wallTimeoutSeconds, cpuSeconds, memoryMiB, maxToolCalls} = Text.unlines
   [ "Execute a fresh, sandboxed Python 3 program that can compose the other tools visible in this model turn. Use this when a task needs multiple tool calls with sequencing, branching, loops, aggregation, or recovery; call a single tool directly when no composition is needed. run_python must be the only tool call in its model-issued batch."
   , ""
   , "The environment contains the Python standard library and an in-memory `cosmobot` module: `run_tool(name, args_json)` returns `{'content': text}` or raises `RunToolException`; `run_tools([{'name': name, 'args': args}, ...])` runs a non-empty batch concurrently, preserves input order, and raises one `RunToolException` after all outcomes if any failed. `RunToolException` exposes `name`, `index`, `failure`, and `results`. Tool names and argument schemas are exactly the tools already visible in this model request; do not guess hidden tools."
@@ -69,5 +73,5 @@ runPythonDescription = Text.unlines
   , ""
   , "Each invocation starts a new interpreter and a fresh 64 MiB tmpfs at `/work`; cwd, HOME, and temporary files are inside it, and all globals/files disappear when the call ends. The host `/usr` tree and named resolver/TLS files under `/etc` are visible read-only for the Python runtime. Caller files, the repository, host home/tmp, application config/secrets, and writable host paths are not mounted or listable. `/work` is the only ordinary writable filesystem. Host networking is inherited, including external access, IPv4/IPv6, and host loopback; do not treat the sandbox as a network trust boundary. Standard `file://` URL helpers are rejected. Child processes/threads are denied."
   , ""
-  , "Fixed limits: 30 s wall time, 20 s CPU, 512 MiB address space, 64 open files, 1 MiB stdout, 64 KiB stderr, 8 KiB completion/control text, 4 MiB per JSON-RPC frame, 64 total nested tool calls, and at most 16 calls per `run_tools` batch. `run_python`, `tool_enable`, `capture_continuation`, and `resume_continuation` cannot be called from Python. Enable every needed tool tag in an earlier model turn before using run_python."
+  , [i|Configured limits: #{wallTimeoutSeconds} s wall time, #{cpuSeconds} s CPU, #{memoryMiB} MiB address space, and #{maxToolCalls} total nested tool calls. Fixed limits: 64 open files, 1 MiB stdout, 64 KiB stderr, 8 KiB completion/control text, 4 MiB per JSON-RPC frame, and at most 16 calls per `run_tools` batch. `run_python`, `tool_enable`, `capture_continuation`, and `resume_continuation` cannot be called from Python. Enable every needed tool tag in an earlier model turn before using run_python.|]
   ]

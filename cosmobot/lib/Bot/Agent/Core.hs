@@ -138,6 +138,8 @@ data Runtime (context :: [Type]) m = Runtime
   , exposedTools :: [Tool m]
     -- | Per-run tool implementations.
   , runningTools :: [RunningTool m]
+    -- | Dispatch one call through the frozen per-run registry.
+  , dispatchToolCall :: ToolCallMetadata -> LLM.ToolCall -> m ToolResult
     -- | Maximum number of model-requested tool turns.
   , maxTurns :: !Int
     -- | Select the transcript sent to the next model request. Most programs

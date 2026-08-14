@@ -169,6 +169,8 @@ library
                     , language
                     , lib-deps
     hs-source-dirs:   lib
+    other-modules:    Paths_cosmobot
+    autogen-modules:  Paths_cosmobot
     exposed-modules:
         Bot.ACP.Client
         Bot.ACP.Config

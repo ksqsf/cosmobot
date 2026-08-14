@@ -9,7 +9,9 @@ where
 
 import Bot.Prelude
 import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Middleware.Python as PythonMiddleware
 import qualified Bot.Agent.Tools as AgentTools
+import qualified Bot.Agent.Types as AgentTypes
 import qualified Bot.ACP.Client as ACPClient
 import qualified Bot.ACP.Config as ACPConfig
 import qualified Bot.ACP.Server as ACPServer
@@ -40,6 +42,7 @@ import qualified Bot.Effect.Typst as Typst
 import qualified Bot.LLM.OpenAI as OpenAI
 import qualified Bot.Media.Interpreter as Media
 import qualified Bot.Resource as Resource
+import qualified Bot.Resource.Python as Python
 import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Resource.Workspace as Workspace
 import qualified Bot.RPC.Audit as RPCAudit
@@ -67,6 +70,7 @@ import Effectful.Timeout
 import Effectful.Process
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.FileSystem
+import qualified Paths_cosmobot as Paths
 
 -- | Start the bot using @config.toml@ from the current working directory.
 main :: IO ()
@@ -100,38 +104,50 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
           . Media.runMedia cfg.media
           . TypstCLI.runTypst
           . OpenAI.runLLM cfg.llm
-      runApplication =
-        Agent.runAgent
+      runApplication pythonArguments =
+        ConcurrencyManager.runConcurrencyManager
+          . Resource.runResourceManagerWith
+              [ Resource.resourceLoader @Sandbox.Sandbox
+              , Resource.resourceLoader @Workspace.Workspace
+              ]
+          . Agent.runAgent
+          . maybe id pythonMiddleware pythonArguments
           . AgentAudit.runAgentAuditWithObserver (RPC.broadcastAuditRecord rpcState . Aeson.toJSON)
           . ChatLog.runChatLog
           . Memory.runMemory cfg.memory
           . Skills.runSkills cfg.skills
           . ACPClient.runACP acpState
-          . ConcurrencyManager.runConcurrencyManager
-          . Resource.runResourceManagerWith
-              [ Resource.resourceLoader @Sandbox.Sandbox
-              , Resource.resourceLoader @Workspace.Workspace
-              ]
           . Scheduler.runScheduler
           . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState cfg.acp.enabled acpState
           . Lifecycle.runLifecycle cfg.media restartRequested
-      runStack =
-        runRuntime
-          . runInfrastructure
-          . runApplication
-  runStack do
-    logInfo "Cosmobot stand by!"
-    let allStreams =
-          [ Chat.incomingMessages
-          , Scheduler.scheduledMessages
-          ]
-        messageConsumer =
-          consumeWith
-            (zipWith withRouteDebugLogging [1 :: Int ..] (routes cfg threads))
-            (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
+      pythonMiddleware arguments =
+        PythonMiddleware.withPythonMiddleware \runTools message resourceOwner request ->
+          Python.runPython resourceOwner ResourceEffect.Init{message, arguments} runTools request
+  runRuntime . runInfrastructure $ do
+    pythonArguments <- preparePython cfg.tool.python
+    runApplication pythonArguments do
+      logInfo "Cosmobot stand by!"
+      let allStreams =
+            [ Chat.incomingMessages
+            , Scheduler.scheduledMessages
+            ]
+          messageConsumer =
+            consumeWith
+              (zipWith withRouteDebugLogging [1 :: Int ..] (routes cfg threads))
+              (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
-    runConfiguredServers cfg threads rpcState acpState messageConsumer
+      runConfiguredServers cfg threads rpcState acpState messageConsumer
   readIORef restartRequested
+
+preparePython
+  :: (Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Timeout :> es, Fail :> es, IOE :> es)
+  => AgentTypes.PythonConfig
+  -> Eff es (Maybe Python.PythonArgs)
+preparePython config
+  | not config.enabled = pure Nothing
+  | otherwise = do
+      workerPath <- liftIO (Paths.getDataFileName "python/cosmobot_worker.py")
+      Python.preparePythonArgs workerPath config >>= either (fail . toString) (pure . Just)
 
 routes
   :: ( ACPEffect.ACP :> es, AgentEffect.Agent :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, MatrixEffect.Matrix :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)

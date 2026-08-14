@@ -126,6 +126,13 @@ dir = "skills"
 [tool]
 datetime = false
 
+[tool.python]
+enable = true
+wall_timeout_seconds = 30
+cpu_seconds = 20
+memory_mib = 512
+max_tool_calls = 64
+
 [tool.web_fetch]
 enable = false
 max_uses = 5

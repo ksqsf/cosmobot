@@ -2,9 +2,9 @@
 {-# LANGUAGE RankNTypes #-}
 
 module Bot.Agent.Middleware.Python
-  ( PythonInterpreter
-  , interpretPython
-  , withPythonInterpreter
+  ( interpretPython
+  , withPythonMiddleware
+  , withPythonRunner
   )
 where
 
@@ -13,9 +13,11 @@ import Bot.Agent.Core
 import Bot.Agent.Failure (budgetExhaustedFailure)
 import Bot.Agent.Program.Python
 import Bot.Agent.Tool (toolName)
-import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import Bot.Agent.Tools.Python
 import Bot.Agent.Types
+import Bot.Core.Message (IncomingMessage)
+import qualified Bot.Effect.Agent as Agent
+import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Util.HList as HList
@@ -24,19 +26,55 @@ import qualified Data.Text as Text
 import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Concurrent.MVar as MVar
 
-type PythonInterpreter es =
-  (Int -> NonEmpty PythonToolCall -> Eff es (NonEmpty ToolResult))
-  -> ToolRequest
-  -> LLM.ToolCall
-  -> PythonRequest
-  -> Eff es PythonExit
+withPythonMiddleware
+  :: (Agent.Agent :> es, Concurrent :> es)
+  => ( (Int -> NonEmpty PythonToolCall -> Eff es (NonEmpty ToolResult))
+       -> IncomingMessage
+       -> Maybe Concurrency.Handle
+       -> PythonRequest
+       -> Eff es PythonExit
+     )
+  -> Eff es a
+  -> Eff es a
+withPythonMiddleware runPython =
+  interpose \localEnv -> \case
+    Agent.RunAgent runtime use ->
+      localLiftUnlift localEnv (ConcUnlift Persistent Unlimited) \liftLocal unliftLocal ->
+        let adapted maxCalls outerCallId runOne message resourceOwner pythonRequest =
+              liftLocal do
+                nestedState <- MVar.newMVar (NestedToolState maxCalls 1)
+                runPython
+                  (runPythonTools outerCallId nestedState (unliftLocal . runOne))
+                  message
+                  resourceOwner
+                  pythonRequest
+        in passthrough localEnv (Agent.RunAgent (withPythonProgram adapted runtime) use)
 
-withPythonInterpreter
+withPythonRunner
   :: Concurrent :> es
-  => PythonInterpreter es
+  => ( (Int -> NonEmpty PythonToolCall -> Eff es (NonEmpty ToolResult))
+       -> IncomingMessage
+       -> Maybe Concurrency.Handle
+       -> PythonRequest
+       -> Eff es PythonExit
+     )
   -> Runtime context (Eff es)
   -> Runtime context (Eff es)
-withPythonInterpreter interpreter runtime =
+withPythonRunner runPython =
+  withPythonProgram \maxCalls outerCallId runOne message resourceOwner pythonRequest -> do
+    nestedState <- MVar.newMVar (NestedToolState maxCalls 1)
+    runPython
+      (runPythonTools outerCallId nestedState runOne)
+      message
+      resourceOwner
+      pythonRequest
+
+withPythonProgram
+  :: Monad m
+  => PythonProgramRunner m
+  -> Runtime context m
+  -> Runtime context m
+withPythonProgram runPython runtime =
   runtime
     { aroundProgram = \finalRuntime@Runtime{aroundToolTurn = toolTurn} ->
         interpretPython
@@ -52,23 +90,26 @@ withPythonInterpreter interpreter runtime =
           case parsedRequest of
             Left err ->
               pure (argumentFailure [i|Invalid run_python arguments: #{err}|])
-            Right pythonRequest -> do
-              nestedState <- MVar.newMVar (NestedToolState maxNestedToolCalls 1)
+            Right pythonRequest ->
               pythonExitResult
-                <$> interpreter
-                  (runPythonTools finalRuntime request.agentState.turn outerCall.id nestedState)
-                  request
-                  outerCall
+                <$> runPython
+                  finalRuntime.context.toolConfig.python.maxToolCalls
+                  outerCall.id
+                  (\call ->
+                    finalRuntime.aroundToolCall request.agentState.turn call HList.HNil $
+                      finalRuntime.dispatchToolCall finalRuntime.toolCallMetadata call)
+                  finalRuntime.context.message
+                  finalRuntime.toolCallMetadata.resourceOwner
                   pythonRequest
 
 interpretPython
   :: Monad m
-  => (ToolRequest -> LLM.ToolCall -> Either Text PythonRequest -> Program m ToolResult)
+  => PythonInterpreter m
   -> [Text]
   -> (forall a. HList.HList '[] -> ToolRequest -> m (TurnState, a) -> m (TurnState, a))
   -> Program m result
   -> Program m result
-interpretPython interpreter exposedToolNames toolTurn =
+interpretPython interpretCall exposedToolNames toolTurn =
   go
   where
     go (Program action) =
@@ -94,7 +135,7 @@ interpretPython interpreter exposedToolNames toolTurn =
       (do
         result <- case runPythonRequest call of
           Just parsedRequest ->
-            interpreter request call parsedRequest
+            interpretCall request call parsedRequest
           Nothing ->
             pure (argumentFailure "Unknown Python control operation.")
         resume request continue ((call, result) :| [])
@@ -109,6 +150,21 @@ interpretPython interpreter exposedToolNames toolTurn =
       (nextState, _) <- lift $ finishToolTurn toolTurn request (pure (snd <$> executions))
       go (continue nextState)
 
+type PythonInterpreter m =
+  ToolRequest
+  -> LLM.ToolCall
+  -> Either Text PythonRequest
+  -> Program m ToolResult
+
+type PythonProgramRunner m =
+  Int
+  -> Text
+  -> (LLM.ToolCall -> m ToolResult)
+  -> IncomingMessage
+  -> Maybe Concurrency.Handle
+  -> PythonRequest
+  -> m PythonExit
+
 exposedPythonCalls :: [Text] -> NonEmpty LLM.ToolCall -> [LLM.ToolCall]
 exposedPythonCalls exposedToolNames =
   filter isExposedPython . toList
@@ -120,10 +176,6 @@ exposedPythonCalls exposedToolNames =
 argumentFailure :: Text -> ToolResult
 argumentFailure message =
   toolFailure (permanentArgumentFailure message message)
-
-maxNestedToolCalls :: Int
-maxNestedToolCalls =
-  64
 
 maxNestedBatchCalls :: Int
 maxNestedBatchCalls =
@@ -140,29 +192,19 @@ data NestedToolState = NestedToolState
 
 runPythonTools
   :: Concurrent :> es
-  => Runtime '[] (Eff es)
-  -> Int
-  -> Text
+  => Text
   -> MVar.MVar NestedToolState
+  -> (LLM.ToolCall -> Eff es ToolResult)
   -> Int
   -> NonEmpty PythonToolCall
   -> Eff es (NonEmpty ToolResult)
-runPythonTools runtime turn outerCallId nestedState rpcId calls = do
+runPythonTools outerCallId nestedState runOne rpcId calls = do
   let validated = validateNestedBatch outerCallId rpcId calls
   claimNestedBatch nestedState rpcId (length calls) validated >>= \case
     Left failure ->
       pure (calls $> toolFailure failure)
     Right nestedCalls ->
-      Async.mapConcurrently run nestedCalls
-  where
-    run call =
-      runtime.aroundToolCall turn call HList.HNil $
-        ToolRegistry.runToolCall
-          runtime.context
-          runtime.toolCallMetadata
-          runtime.tools
-          runtime.runningTools
-          call
+      Async.mapConcurrently runOne nestedCalls
 
 validateNestedBatch
   :: Text
@@ -219,5 +261,5 @@ claimNestedBatch stateVar rpcId requested validated =
             ( advanced
             , Left . budgetExhaustedFailure
                 "Python nested tool-call budget exhausted."
-                $ [i|Requested #{requested} calls with #{remainingCalls} of #{maxNestedToolCalls} remaining.|]
+                $ [i|Requested #{requested} calls with #{remainingCalls} remaining.|]
             )

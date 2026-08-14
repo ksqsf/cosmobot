@@ -410,7 +410,7 @@ testMediaCacheUsesJpegExtension =
   withSQLiteTempPath "rpc-media-jpeg-extension" \path -> do
     publicUrl <- runRpcStorage path do
       mediaRef <- fromMaybe (error "expected stored media ref") <$> Media.storeMediaObject Media.MediaObject
-        { Media.bytes = Q.fromStrict "\xff\xd8\xffcontent"
+        { Media.bytes = Q.fromStrict "\xff\xd8\xff\&content"
         , Media.mimeType = "application/octet-stream"
         , Media.sourceName = Nothing
         }

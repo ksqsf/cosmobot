@@ -23,6 +23,12 @@ main =
       , testCase "ask context compaction threshold uses ktokens" testAskCompactionThresholdUsesKTokens
       , testCase "sandbox image is configurable" testSandboxImage
       , testCase "Exa web search is configurable" testExaWebSearch
+      , testCase "Python tool defaults are safe and enabled" testPythonDefaults
+      , testCase "Python tool limits are configurable" testPythonConfig
+      , testCase "Python tool bounds must be positive" testPythonPositiveBounds
+      , testCase "Python tool converted bounds reject overflow" testPythonOverflow
+      , testCase "Python wall timeout is at most one hour" testPythonWallTimeoutBound
+      , testCase "Python tool rejects unknown keys" testPythonUnknownKey
       ]
 
 testDriversTableMayBeOmitted :: IO ()
@@ -113,6 +119,70 @@ testExaWebSearch = do
   let Agent.ToolConfig{webSearchApi, exaApiKey} = cfg.tool
   webSearchApi @?= Agent.WebSearchExa
   exaApiKey @?= Just "exa-test-key"
+
+testPythonDefaults :: IO ()
+testPythonDefaults = do
+  cfg <- loadConfigText minimalConfig
+  cfg.tool.python @?= Agent.defaultPythonConfig
+
+testPythonConfig :: IO ()
+testPythonConfig = do
+  cfg <- loadConfigText $
+    minimalConfig
+      <> Text.unlines
+        [ ""
+        , "[tool.python]"
+        , "enable = false"
+        , "wall_timeout_seconds = 45"
+        , "cpu_seconds = 25"
+        , "memory_mib = 768"
+        , "max_tool_calls = 80"
+        ]
+  cfg.tool.python @?= Agent.PythonConfig
+    { enabled = False
+    , wallTimeoutSeconds = 45
+    , cpuSeconds = 25
+    , memoryMiB = 768
+    , maxToolCalls = 80
+    }
+
+testPythonPositiveBounds :: IO ()
+testPythonPositiveBounds =
+  for_ ["wall_timeout_seconds", "cpu_seconds", "memory_mib", "max_tool_calls"] \key ->
+    assertConfigFailureContains [i|tool.python.#{key} must be positive|] $
+      pythonConfig [key <> " = 0"]
+
+testPythonOverflow :: IO ()
+testPythonOverflow =
+  assertConfigFailureContains "tool.python.memory_mib is too large" $
+    pythonConfig [[i|memory_mib = #{maxBound `div` (1024 * 1024) + 1 :: Int}|]]
+
+testPythonWallTimeoutBound :: IO ()
+testPythonWallTimeoutBound = do
+  cfg <- loadConfigText (pythonConfig ["wall_timeout_seconds = 3600"])
+  cfg.tool.python.wallTimeoutSeconds @?= 3600
+  assertConfigFailureContains "tool.python.wall_timeout_seconds must not exceed 3600" $
+    pythonConfig ["wall_timeout_seconds = 3601"]
+
+testPythonUnknownKey :: IO ()
+testPythonUnknownKey =
+  assertConfigFailureContains "unknown tool.python keys: timeout" $
+    pythonConfig ["timeout = 30"]
+
+pythonConfig :: [Text] -> Text
+pythonConfig fields =
+  minimalConfig <> Text.unlines ("" : "[tool.python]" : fields)
+
+assertConfigFailureContains :: Text -> Text -> IO ()
+assertConfigFailureContains expected source = do
+  outcome <- runEff $ trySync (liftIO (loadConfigText source))
+  case outcome of
+    Left err ->
+      assertBool
+        [i|expected config error containing #{expected}, got #{displayException err}|]
+        (expected `Text.isInfixOf` Text.pack (displayException err))
+    Right cfg ->
+      assertFailure [i|expected config failure, got #{show cfg :: String}|]
 
 minimalConfig :: Text
 minimalConfig =
