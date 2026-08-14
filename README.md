@@ -41,6 +41,10 @@ Even though Cosmobot is already quite useful for *me* but not necessarily *you*.
 
 Cosmobot is experimental also because it tries some crazy ideas (e.g. `continuation`). They are *not* guaranteed to work well, or even work at all.
 
+> It's also noteworthy that Cosmobot is built upon a unified agent calculus based on ITree, which allows direct encoding of advanced techniques like Programmatic Tool Calling, CodeAct, Recursive Language Models, etc.
+> Combined with the carefully designed and engineered abstractions, they should Just Work™ on Cosmobot and you need not worry about resource leaks.
+> Stay tuned for more crazy ideas!
+
 ## Cosmobot Deployment
 
 Cosmobot reads `config.toml` from the current working directory. If it's listening for messages, you should see "Cosmobot stand by!" in the logs.
@@ -186,6 +190,22 @@ Enable date time:
 [tool]
 datetime = true
 ```
+
+Enable programmatic tool composition:
+
+```toml
+[tool.python]
+enable = true
+wall_timeout_seconds = 30
+cpu_seconds = 20
+memory_mib = 512
+max_tool_calls = 64
+```
+
+The `py` tool runs a fresh sandboxed Python program that can sequence, branch,
+loop over, and concurrently invoke the other tools visible to the agent. Its
+final output returns to the model as one tool result. The Python sandbox
+requires Linux, Python 3, and `bubblewrap` at `/usr/bin/bwrap`.
 
 Enable web searching:
 
@@ -401,6 +421,7 @@ Currently, the following tools are available:
 |Memory  |`chat_memory`          |           |
 |Resource|`sandbox`              |           |
 |Resource|`workspace`            |Yes        |
+|Agent   |`py`                   |           |
 |Agent   |`capture_continuation` |           |
 |Agent   |`resume_continuation`  |           |
 |Agent   |`subagent`             |           |
