@@ -264,9 +264,10 @@ testPythonToolContract = do
     [Named specialTag]
   assertBool "description must recommend py for composing multiple tools" $
     all (`Text.isInfixOf` runPythonDescription)
-      [ "compose the other tools"
-      , "multiple tool calls"
+      [ "multiple tool calls"
       , "sequencing, branching, loops, aggregation, or recovery"
+      , "def run_tool(name: str, args: Json) -> ToolSuccess"
+      , "def run_tools(calls: list[ToolCall]) -> list[ToolSuccess]"
       ]
 
 messageText :: LLM.ChatMessage -> Text
