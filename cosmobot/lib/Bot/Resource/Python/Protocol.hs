@@ -10,11 +10,13 @@ module Bot.Resource.Python.Protocol
   , pythonRunRequest
   , toolsRunResponse
   , parseWorkerMessage
+  , claimToolsRequest
+  , terminalFailure
   )
 where
 
 import Bot.Agent.Program.Python (PythonToolCall (..))
-import Bot.Agent.Failure (Failure (..))
+import Bot.Agent.Failure (Failure (..), budgetExhaustedFailure, permanentArgumentFailure)
 import Bot.Agent.Types (ToolResult, failureStatus, toolResultContent, toolResultFailure)
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -24,6 +26,7 @@ import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import System.Exit (ExitCode (..))
 
 data FrameError
   = FrameTooLarge !Int
@@ -157,3 +160,24 @@ parseWorkerMessage = first Text.pack . AesonTypes.parseEither parser
 
     validateBound limit label value =
       when (ByteString.length (TextEncoding.encodeUtf8 value) > limit) (fail (label <> " exceeds limit"))
+
+claimToolsRequest :: ProtocolState -> Int -> Either Text ProtocolState
+claimToolsRequest (Waiting expected) rpcId
+  | rpcId == expected = Right (Waiting (expected + 1))
+  | otherwise = Left [i|expected tools.run id #{expected}, got #{rpcId}|]
+claimToolsRequest _ _ = Left "tools.run request arrived outside Waiting state"
+
+terminalFailure :: ExitCode -> Text -> Failure
+terminalFailure exitCode stderrText =
+  case exitCode of
+    ExitFailure status | status `elem` [137, 152] -> budgetExhaustedFailure
+      "Python exceeded an operating-system resource limit."
+      detail
+    _ -> permanentArgumentFailure
+      "Python exited before completing."
+      detail
+  where
+    detail
+      | Text.null stderrText =
+          "The worker closed its protocol stream before replying to python.run."
+      | otherwise = stderrText

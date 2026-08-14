@@ -38,6 +38,7 @@ main =
       , testProperty "Kleisli associativity" propKleisliAssociativity
       , testGroup "Python structural interpretation"
           [ testCase "enters Python before applying the saved continuation" testPythonEntry
+          , testCase "orchestrates multiple tools before resuming once" testPythonMultiToolOrchestration
           , testCase "completed and failed exits each apply the saved continuation once" testPythonExits
           , testCase "mixed batches reject before Python or sibling work" testPythonMixedBatch
           , testCase "unrelated nodes and continuation branches are preserved" testPythonPreservesUnrelated
@@ -183,6 +184,27 @@ testPythonEntry =
   where
     enteredInterpreter _ _ _ =
       emit "python-state" (pure (toolText "done"))
+
+testPythonMultiToolOrchestration :: Assertion
+testPythonMultiToolOrchestration =
+  case observeEvent (pythonTransform interpreter solePythonProgram) of
+    Returned outputs (turn, contents) -> do
+      outputs @?=
+        [ ObservedContent "tool:first"
+        , ObservedContent "tool:second:first-result"
+        , ObservedContent "continued"
+        ]
+      turn @?= 1
+      contents @?= ["first-result + second-result"]
+    _ ->
+      assertFailure "multi-tool Python orchestration did not resume its saved continuation"
+  where
+    interpreter _ _ (Right _) = do
+      firstResult <- emit "tool:first" (pure "first-result")
+      secondResult <- emit ("tool:second:" <> firstResult) (pure "second-result")
+      pure (toolText (firstResult <> " + " <> secondResult))
+    interpreter _ _ (Left err) =
+      pure (toolText err)
 
 testPythonExits :: Assertion
 testPythonExits = do

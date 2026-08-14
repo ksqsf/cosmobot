@@ -60,8 +60,6 @@ import qualified Bot.Effect.Storage as StorageEffect
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
 import qualified Bot.Resource as ResourceManager
-import qualified Bot.Resource.Python as PythonResource
-import qualified Bot.Resource.Python.Protocol as PythonProtocol
 import qualified Bot.Resource.SubAgent as SubAgentResource
 import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
@@ -476,37 +474,20 @@ testPythonResourceContinuation = do
         AgentTool.tool "python_protocol_marker" AgentTool.noArguments do
           liftIO $ IORef.modifyIORef' seen (<> ["ran"])
           pure (Agent.toolText "nested result")
-      frame = either (error . show) id . PythonProtocol.encodeFrame
-      frames =
-        [ frame $ Aeson.object
-            [ "jsonrpc" Aeson..= ("2.0" :: Text)
-            , "id" Aeson..= (1 :: Int)
-            , "method" Aeson..= ("tools.run" :: Text)
-            , "params" Aeson..= Aeson.object
-                [ "calls" Aeson..=
-                    [Aeson.object ["name" Aeson..= ("python_protocol_marker" :: Text), "args" Aeson..= Aeson.object []]]
-                ]
-            ]
-        , frame $ Aeson.object
-            [ "jsonrpc" Aeson..= ("2.0" :: Text)
-            , "id" Aeson..= ("host:run" :: Text)
-            , "result" Aeson..= Aeson.object
-                [ "kind" Aeson..= ("completed" :: Text)
-                , "content" Aeson..= ("resource complete" :: Text)
-                ]
-            ]
-        ]
   transcript <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
-    (arguments, _probe) <- PythonResource.newFakePythonArgs (PythonResource.FakeFrames frames) 1_000_000 False
-    let access = fromRight (error "missing Python resource access") (ResourceEffect.accessFromMessage agentContext.message)
-        interpreter runTools _request _outerCall pythonRequest = do
-          result <- PythonResource.withAnonymousPython access Nothing (ResourceEffect.Init agentContext.message arguments) \worker ->
-            PythonResource.runPythonState runTools worker pythonRequest
-          pure (fromRight (error "anonymous Python resource failed") result)
+    let interpreter runTools _request _outerCall _pythonRequest = do
+          results <- runTools 1 (PythonProgram.PythonToolCall "python_protocol_marker" "{}" :| [])
+          liftIO $ AgentTypes.toolResultContent (head results) @?= "nested result"
+          pure (PythonProgram.PythonCompleted "resource complete")
     runtime <- startTestRuntime 3 agentContext [PythonTools.runPythonTool, nestedTool]
     _outputs S.:> result <- S.toList $ Agent.agentStream
       (PythonMiddleware.withPythonInterpreter interpreter runtime)
-      (startWithEnabledTools ["special"] "compose")
+      (startWithEnabledTools ["special"] $ Text.unlines
+        [ "import cosmobot"
+        , "result = cosmobot.run_tool('python_protocol_marker', {})"
+        , "assert result['content'] == 'nested result'"
+        , "cosmobot.complete('resource complete')"
+        ])
     pure result.transcript
   IORef.readIORef seen >>= (@?= ["ran"])
   toolOutputs transcript @?= ["resource complete"]

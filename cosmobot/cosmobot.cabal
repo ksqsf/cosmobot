@@ -51,6 +51,7 @@ data-files:         python/cosmobot_worker.py
 
 -- Extra source files to be distributed with the package, such as examples, or a tutorial module.
 extra-source-files: python/test_cosmobot_worker.py
+                    pyproject.toml
 
 common warnings
     ghc-options: -Wall
@@ -308,6 +309,7 @@ library
         Bot.Resource
         Bot.Resource.Python
         Bot.Resource.Python.Protocol
+        Bot.Resource.Python.Sandbox
         Bot.Resource.Sandbox
         Bot.Resource.Command
         Bot.Resource.SubAgent
@@ -462,6 +464,8 @@ test-suite resource-spec
                     , test-build
     type:             exitcode-stdio-1.0
     main-is:          ResourceSpec.hs
+    other-modules:    Paths_cosmobot
+    autogen-modules:  Paths_cosmobot
     hs-source-dirs:   test
 
 test-suite agent-spec

@@ -25,6 +25,7 @@ import Bot.Agent.Tools.Skills
 import Bot.Agent.Tools.SubAgent
 import Bot.Agent.Tools.Continuation
 import Bot.Agent.Tools.Meta
+import Bot.Agent.Tools.Python
 import Bot.Agent.Tools.Terminal
 import Bot.Agent.Tools.Time
 import Bot.Agent.Tools.Typst
@@ -137,6 +138,7 @@ defaultToolsWith extraTools = tools
       , sandboxTool
       , commandTool
       , runBashTool
+      , runPythonTool
       , workspaceTool
       , captureContinuationTool
       , resumeContinuationTool

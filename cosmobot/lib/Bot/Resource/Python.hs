@@ -4,14 +4,7 @@
 module Bot.Resource.Python
   ( PythonWorker
   , PythonArgs
-  , FakeInput (..)
-  , FakeWorkerProbe
-  , FakeCleanupSnapshot (..)
-  , newFakePythonArgs
-  , fakeWrittenFrames
-  , waitForFakeWrite
-  , sendFakeFrame
-  , fakeCleanupSnapshot
+  , preparePythonArgs
   , withAnonymousPython
   , runPythonState
   )
@@ -25,108 +18,68 @@ import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude hiding (state)
 import Bot.Resource.Python.Protocol
+import qualified Bot.Resource.Python.Sandbox as Sandbox
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as ByteString
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
+import Effectful.FileSystem (FileSystem)
+import qualified Effectful.FileSystem.IO as FileSystemIO
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
+import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout (Timeout, timeout)
+import GHC.Clock (getMonotonicTimeNSec)
 
 newtype PythonWorker = PythonWorker
   { state :: MVar.MVar PythonWorkerState
   }
 
 data PythonWorkerState
-  = Paused !PausedHandles
+  = Gated !GatedHandles
   | Running !RunningHandles !ProtocolState
   | Terminal
 
-newtype PausedHandles = PausedHandles FakeTransport
-newtype RunningHandles = RunningHandles FakeTransport
+data GatedHandles = GatedHandles
+  { sandbox :: !Sandbox.GatedSandbox
+  , deadlineNanoseconds :: !Word64
+  }
+
+data RunningHandles = RunningHandles
+  { sandbox :: !Sandbox.RunningSandbox
+  , deadlineNanoseconds :: !Word64
+  }
 
 data PythonArgs = PythonArgs
-  { transport :: !FakeTransport
+  { sandboxConfig :: !Sandbox.Config
   , executionTimeoutMicroseconds :: !Int
   }
 
-data FakeInput
-  = FakeFrames ![ByteString]
-  | FakeBlocked
-
-data FakeTransport = FakeTransport
-  { input :: !(Either (MVar.MVar ByteString) (MVar.MVar [ByteString]))
-  , writes :: !(MVar.MVar [ByteString])
-  , wroteFrame :: !(MVar.MVar ())
-  , launchClaimed :: !(MVar.MVar Bool)
-  , cleanup :: !(MVar.MVar FakeCleanupState)
-  , timeoutMicroseconds :: !Int
-  }
-
-newtype FakeWorkerProbe = FakeWorkerProbe FakeTransport
-
-data FakeCleanupState = FakeCleanupState
-  { failCleanup :: !Bool
-  , cleanupAttempts :: !Int
-  , cleanupKills :: !Int
-  , cleanupAwaits :: !Int
-  , cleanupLoggedFailures :: !Int
-  }
-
-data FakeCleanupSnapshot = FakeCleanupSnapshot
-  { attempts :: !Int
-  , kills :: !Int
-  , awaits :: !Int
-  , loggedFailures :: !Int
-  }
-  deriving stock (Eq, Show)
-
-newFakePythonArgs
-  :: Concurrent :> es
-  => FakeInput
+preparePythonArgs
+  :: ( Concurrent :> es
+     , FileSystem :> es
+     , TypedProcess.TypedProcess :> es
+     , Timeout :> es
+     , IOE :> es
+     )
+  => FilePath
   -> Int
-  -> Bool
-  -> Eff es (PythonArgs, FakeWorkerProbe)
-newFakePythonArgs fakeInput executionTimeoutMicroseconds failCleanup = do
-  input <- case fakeInput of
-    FakeFrames frames -> Right <$> MVar.newMVar frames
-    FakeBlocked -> Left <$> MVar.newEmptyMVar
-  writes <- MVar.newMVar []
-  wroteFrame <- MVar.newEmptyMVar
-  launchClaimed <- MVar.newMVar False
-  cleanup <- MVar.newMVar FakeCleanupState
-    { failCleanup
-    , cleanupAttempts = 0
-    , cleanupKills = 0
-    , cleanupAwaits = 0
-    , cleanupLoggedFailures = 0
-    }
-  let timeoutMicroseconds = executionTimeoutMicroseconds
-      transport = FakeTransport{input, writes, wroteFrame, launchClaimed, cleanup, timeoutMicroseconds}
-  pure (PythonArgs{transport, executionTimeoutMicroseconds}, FakeWorkerProbe transport)
+  -> Eff es (Either Text PythonArgs)
+preparePythonArgs workerPath executionTimeoutMicroseconds
+  | executionTimeoutMicroseconds <= 0 = pure (Left "Python execution timeout must be positive.")
+  | executionTimeoutMicroseconds > maxExecutionTimeoutMicroseconds =
+      pure (Left "Python execution timeout must not exceed one hour.")
+  | otherwise =
+      Sandbox.prepare workerPath <&> fmap \sandboxConfig ->
+        PythonArgs{sandboxConfig, executionTimeoutMicroseconds}
 
-fakeWrittenFrames :: Concurrent :> es => FakeWorkerProbe -> Eff es [ByteString]
-fakeWrittenFrames (FakeWorkerProbe transport) =
-  MVar.readMVar transport.writes
-
-waitForFakeWrite :: Concurrent :> es => FakeWorkerProbe -> Eff es ()
-waitForFakeWrite (FakeWorkerProbe transport) =
-  MVar.readMVar transport.wroteFrame
-
-sendFakeFrame :: Concurrent :> es => FakeWorkerProbe -> ByteString -> Eff es Bool
-sendFakeFrame (FakeWorkerProbe transport) frame =
-  case transport.input of
-    Left notifier -> MVar.tryPutMVar notifier frame
-    Right _ -> pure False
-
-fakeCleanupSnapshot :: Concurrent :> es => FakeWorkerProbe -> Eff es FakeCleanupSnapshot
-fakeCleanupSnapshot (FakeWorkerProbe transport) = do
-  cleanup <- MVar.readMVar transport.cleanup
-  pure FakeCleanupSnapshot
-    { attempts = cleanup.cleanupAttempts
-    , kills = cleanup.cleanupKills
-    , awaits = cleanup.cleanupAwaits
-    , loggedFailures = cleanup.cleanupLoggedFailures
-    }
-
-instance (Concurrent :> es, KatipE :> es) => Resource.ResourceObject (Eff es) PythonWorker where
+instance
+  ( Concurrent :> es
+  , KatipE :> es
+  , FileSystem :> es
+  , TypedProcess.TypedProcess :> es
+  , Timeout :> es
+  , IOE :> es
+  ) => Resource.ResourceObject (Eff es) PythonWorker where
   type CreationArgs PythonWorker = PythonArgs
   resourceTypeName _ = "PythonWorker"
   resourceScope _ = Resource.PersonResource
@@ -135,25 +88,29 @@ instance (Concurrent :> es, KatipE :> es) => Resource.ResourceObject (Eff es) Py
   resourceListed _ = False
   resourceTTLSeconds arguments
     | arguments.executionTimeoutMicroseconds <= 0 = Left "Python execution timeout must be positive."
+    | arguments.executionTimeoutMicroseconds > maxExecutionTimeoutMicroseconds =
+        Left "Python execution timeout must not exceed one hour."
     | otherwise =
         Right (Just (ceilingSeconds arguments.executionTimeoutMicroseconds + cleanupGraceSeconds + orphanMarginSeconds))
-  createResourceObject Resource.Init{arguments} = do
-    claimed <- MVar.modifyMVarMasked arguments.transport.launchClaimed \case
-      False -> pure (True, True)
-      True -> pure (True, False)
-    if claimed
-      then Right . PythonWorker <$> MVar.newMVar (Paused (PausedHandles arguments.transport))
-      else pure (Left "Python worker launch may only be used once.")
+  createResourceObject Resource.Init{arguments} = mask \restore -> do
+    deadlineNanoseconds <- deadlineAfter arguments.executionTimeoutMicroseconds
+    trySync (restore (timeout arguments.executionTimeoutMicroseconds (Sandbox.launchGated arguments.sandboxConfig))) >>= \case
+      Left err -> pure (Left (Text.take 500 (Text.pack (displayException err))))
+      Right Nothing -> pure (Left "Python sandbox startup timed out.")
+      Right (Just sandbox) ->
+        (Right . PythonWorker <$> MVar.newMVar
+          (Gated GatedHandles{sandbox, deadlineNanoseconds}))
+          `onException` Sandbox.stopGated sandbox
   destroyResourceObject worker = do
     owned <- MVar.modifyMVarMasked worker.state \case
       Terminal -> pure (Terminal, Nothing)
-      Paused (PausedHandles handles) -> pure (Terminal, Just handles)
-      Running (RunningHandles handles) _ -> pure (Terminal, Just handles)
-    traverse_ cleanupTransport owned
+      Gated handles -> pure (Terminal, Just (Left handles))
+      Running handles _ -> pure (Terminal, Just (Right handles))
+    traverse_ cleanupSandbox owned
     pure (Right ())
   describeResourceObject _ result = pure (either (const "unavailable") id result)
   probeResourceObject worker = MVar.readMVar worker.state <&> Right . \case
-    Paused{} -> "paused"
+    Gated{} -> "gated"
     Running _ protocol -> Text.toLower (Text.pack (show protocol))
     Terminal -> "terminal"
 
@@ -163,30 +120,38 @@ cleanupGraceSeconds = 5
 orphanMarginSeconds :: Int
 orphanMarginSeconds = 10
 
+maxExecutionTimeoutMicroseconds :: Int
+maxExecutionTimeoutMicroseconds = 60 * 60 * 1_000_000
+
 ceilingSeconds :: Int -> Int
 ceilingSeconds microseconds =
   let (seconds, remainder) = max 1 microseconds `quotRem` 1_000_000
   in max 1 (seconds + fromEnum (remainder /= 0))
 
-cleanupTransport :: (Concurrent :> es, KatipE :> es) => FakeTransport -> Eff es ()
-cleanupTransport transport = do
-  failure <- MVar.modifyMVarMasked transport.cleanup \current ->
-    let failed = current.failCleanup
-        next :: FakeCleanupState
-        next = current
-          { cleanupAttempts = current.cleanupAttempts + 1
-          , cleanupKills = current.cleanupKills + 1
-          , cleanupAwaits = current.cleanupAwaits + 1
-          , cleanupLoggedFailures = current.cleanupLoggedFailures + fromEnum failed
-          }
-    in pure (next, failed)
-  when failure $
-    logWarning "Python worker cleanup failed after SIGKILL; forgetting the isolated worker as an accepted leak."
+cleanupSandbox
+  :: ( TypedProcess.TypedProcess :> es
+     , FileSystem :> es
+     , Timeout :> es
+     , KatipE :> es
+     , IOE :> es
+     )
+  => Either GatedHandles RunningHandles
+  -> Eff es ()
+cleanupSandbox owned =
+  (case owned of
+    Left handles -> Sandbox.stopGated handles.sandbox
+    Right handles -> Sandbox.stopRunning handles.sandbox)
+  `catchSync` \err ->
+    logWarning [i|Python worker cleanup failed after SIGKILL; forgetting the isolated worker: #{Text.take 500 (Text.pack (displayException err))}|]
 
 withAnonymousPython
   :: ( Resource.Resource :> es
      , Resource.ResourceObject (Eff es) PythonWorker
      , Concurrent :> es
+     , FileSystem :> es
+     , TypedProcess.TypedProcess :> es
+     , Timeout :> es
+     , IOE :> es
      )
   => Resource.ResourceAccess
   -> Maybe Concurrency.Handle
@@ -208,14 +173,35 @@ withAnonymousPython access resourceOwner initValue use =
                   (\worker -> activateWorker worker >> use worker))
                 `finally` void (Resource.destroy access resourceId)
 
-activateWorker :: Concurrent :> es => PythonWorker -> Eff es ()
+activateWorker
+  :: ( Concurrent :> es
+     , TypedProcess.TypedProcess :> es
+     , FileSystem :> es
+     , Timeout :> es
+     , IOE :> es
+     )
+  => PythonWorker
+  -> Eff es ()
 activateWorker worker =
   MVar.modifyMVarMasked_ worker.state \case
-    Paused (PausedHandles handles) -> pure (Running (RunningHandles handles) Created)
+    Gated handles -> do
+      remaining <- remainingMicroseconds handles.deadlineNanoseconds
+      timeout remaining (Sandbox.start handles.sandbox) >>= \case
+        Nothing -> throwIO PythonStartupTimeout
+        Just sandbox ->
+          pure (Running RunningHandles
+            { sandbox
+            , deadlineNanoseconds = handles.deadlineNanoseconds
+            } Created)
     state -> pure state
 
 runPythonState
-  :: (Concurrent :> es, Timeout :> es, IOE :> es)
+  :: ( Concurrent :> es
+     , Timeout :> es
+     , FileSystem :> es
+     , TypedProcess.TypedProcess :> es
+     , IOE :> es
+     )
   => (Int -> NonEmpty PythonToolCall -> Eff es (NonEmpty ToolResult))
   -> PythonWorker
   -> PythonRequest
@@ -232,14 +218,32 @@ runPythonState runTools worker request = do
       "The Python worker exceeded its wall-time budget."
     Right (Just result) -> pure result
 
-workerTimeout :: Concurrent :> es => PythonWorker -> Eff es Int
-workerTimeout worker = MVar.readMVar worker.state <&> \case
-  Paused (PausedHandles handles) -> handles.timeoutMicroseconds
-  Running (RunningHandles handles) _ -> handles.timeoutMicroseconds
-  Terminal -> 1
+workerTimeout :: (Concurrent :> es, IOE :> es) => PythonWorker -> Eff es Int
+workerTimeout worker = MVar.readMVar worker.state >>= \case
+  Gated{} -> pure 1
+  Running handles _ -> remainingMicroseconds handles.deadlineNanoseconds
+  Terminal -> pure 1
+
+data PythonStartupTimeout = PythonStartupTimeout
+  deriving stock (Show)
+  deriving anyclass (Exception)
+
+deadlineAfter :: IOE :> es => Int -> Eff es Word64
+deadlineAfter microseconds = do
+  now <- liftIO getMonotonicTimeNSec
+  pure (now + fromIntegral microseconds * 1_000)
+
+remainingMicroseconds :: IOE :> es => Word64 -> Eff es Int
+remainingMicroseconds deadline = do
+  now <- liftIO getMonotonicTimeNSec
+  pure (max 1 (fromIntegral ((deadline - min deadline now) `quot` 1_000)))
 
 runProtocol
-  :: (Concurrent :> es, IOE :> es)
+  :: ( Concurrent :> es
+     , FileSystem :> es
+     , TypedProcess.TypedProcess :> es
+     , IOE :> es
+     )
   => (Int -> NonEmpty PythonToolCall -> Eff es (NonEmpty ToolResult))
   -> PythonWorker
   -> PythonRequest
@@ -254,9 +258,9 @@ runProtocol runTools worker request = do
   where
     loop handles = do
       readFrameValue handles >>= \case
-        Left "EOF" -> failWorker worker $ permanentArgumentFailure
-          "Python exited before completing."
-          "The worker closed its protocol stream before replying to python.run."
+        Left "EOF" -> do
+          (exitCode, stderrText) <- Sandbox.terminalOutcome handles.sandbox
+          failWorker worker (terminalFailure exitCode stderrText)
         Left err -> protocolFailure err
         Right value -> case parseWorkerMessage value of
           Left err -> protocolFailure err
@@ -270,7 +274,9 @@ runProtocol runTools worker request = do
               Right () -> do
                 results <- runTools rpcId calls
                 writeValue handles (toolsRunResponse rpcId results) >>= \case
-                  Left err -> protocolFailure err
+                  Left err -> failWorker worker $ uncertainSideEffectFailure
+                    "Python lost contact after nested tools ran; their side effects may have happened."
+                    (Text.take 500 err)
                   Right () -> loop handles
 
     protocolFailure detail =
@@ -282,7 +288,7 @@ runProtocol runTools worker request = do
         (Text.take 500 detail)
 
 startProtocol
-  :: Concurrent :> es
+  :: (Concurrent :> es, FileSystem :> es, IOE :> es)
   => PythonWorker
   -> RunningHandles
   -> Text
@@ -299,18 +305,16 @@ beginRun worker =
     state -> pure (state, Left [i|Python worker is not ready: #{showState state}|])
   where
     showState = \case
-      Paused{} -> "paused" :: Text
+      Gated{} -> "gated" :: Text
       Running _ protocol -> Text.pack (show protocol)
       Terminal -> "terminal"
 
 claimRequest :: Concurrent :> es => PythonWorker -> Int -> Eff es (Either Text ())
 claimRequest worker rpcId =
   MVar.modifyMVarMasked worker.state \case
-    Running handles (Waiting nextRpcId)
-      | rpcId == nextRpcId ->
-          pure (Running handles (Waiting (nextRpcId + 1)), Right ())
-      | otherwise ->
-          pure (Running handles (Waiting nextRpcId), Left [i|expected tools.run id #{nextRpcId}, got #{rpcId}|])
+    Running handles protocol -> case claimToolsRequest protocol rpcId of
+      Left err -> pure (Running handles protocol, Left err)
+      Right next -> pure (Running handles next, Right ())
     state -> pure (state, Left "tools.run request arrived outside Waiting state")
 
 completeWorker :: Concurrent :> es => PythonWorker -> Text -> Eff es PythonExit
@@ -351,24 +355,48 @@ transitionProtocol worker transition =
     state -> pure (state, Left [i|Python worker is unavailable: #{showWorkerState state}|])
   where
     showWorkerState = \case
-      Paused{} -> "paused" :: Text
+      Gated{} -> "gated" :: Text
       Running _ protocol -> Text.pack (show protocol)
       Terminal -> "terminal"
 
-writeValue :: Concurrent :> es => RunningHandles -> Aeson.Value -> Eff es (Either Text ())
-writeValue (RunningHandles transport) value =
+writeValue
+  :: (FileSystem :> es, IOE :> es)
+  => RunningHandles
+  -> Aeson.Value
+  -> Eff es (Either Text ())
+writeValue handles value =
   case encodeFrame value of
     Left err -> pure (Left (Text.pack (show err)))
-    Right frame -> do
-      MVar.modifyMVarMasked_ transport.writes (pure . (<> [frame]))
-      void (MVar.tryPutMVar transport.wroteFrame ())
-      pure (Right ())
+    Right frame ->
+      trySync
+        (FileSystemByteString.hPut (Sandbox.stdinHandle handles.sandbox) frame
+          >> FileSystemIO.hFlush (Sandbox.stdinHandle handles.sandbox))
+        <&> first (Text.pack . displayException)
 
-readFrameValue :: Concurrent :> es => RunningHandles -> Eff es (Either Text Aeson.Value)
-readFrameValue (RunningHandles transport) = do
-  next <- case transport.input of
-    Left notifier -> MVar.takeMVar notifier <&> Right
-    Right frames -> MVar.modifyMVarMasked frames \case
-      [] -> pure ([], Left "EOF")
-      frame : rest -> pure (rest, Right frame)
-  pure $ next >>= first (Text.pack . show) . decodeFrame
+readFrameValue
+  :: (FileSystem :> es, IOE :> es)
+  => RunningHandles
+  -> Eff es (Either Text Aeson.Value)
+readFrameValue handles = do
+  readBoundedFrame (Sandbox.stdoutHandle handles.sandbox) <&>
+    (>>= first (Text.pack . show) . decodeFrame)
+
+readBoundedFrame :: FileSystem :> es => Handle -> Eff es (Either Text ByteString)
+readBoundedFrame output = go 0 []
+  where
+    go size chunks = do
+      chunk <- FileSystemByteString.hGetSome output 4096
+      if ByteString.null chunk
+        then pure (Left "EOF")
+        else case ByteString.elemIndex 10 chunk of
+          Nothing
+            | size + ByteString.length chunk > maxRpcBytes ->
+                pure (Left "Python worker frame exceeds the 4 MiB limit.")
+            | otherwise -> go (size + ByteString.length chunk) (chunk : chunks)
+          Just newlineAt
+            | size + newlineAt > maxRpcBytes ->
+                pure (Left "Python worker frame exceeds the 4 MiB limit.")
+            | not (ByteString.null (ByteString.drop (newlineAt + 1) chunk)) ->
+                pure (Left "Python worker sent bytes after its frame.")
+            | otherwise ->
+                pure (Right (ByteString.concat (reverse (ByteString.take (newlineAt + 1) chunk : chunks))))
