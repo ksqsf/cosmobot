@@ -68,11 +68,6 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
       normalizedBody <- normalizeOutgoingReplyBody driver body
       sendReplyMessage driver message normalizedBody
 
-  sendReplyMessages (NormalizingChatDriver driver) message body =
-    withChatDriverResults message "Chat reply" do
-      normalizedBody <- normalizeOutgoingReplyBody driver body
-      sendReplyMessages driver message normalizedBody
-
   sendStreamingReplyMessage (NormalizingChatDriver driver) message body =
     withChatDriverEither message "Chat streaming reply" do
       normalizedBody <- normalizeOutgoingReplyBody driver body
@@ -155,10 +150,6 @@ instance ChatDriver ChatDrivers where
   sendReplyMessage drivers message body =
     withMessageDriver drivers message \driver ->
       sendReplyMessage driver message body
-
-  sendReplyMessages drivers message body =
-    withMessageDriver drivers message \driver ->
-      sendReplyMessages driver message body
 
   sendStreamingReplyMessage drivers message body =
     withMessageDriver drivers message \driver ->
@@ -273,19 +264,6 @@ withChatDriverEither message label action =
         messageText = [i|#{label} failed on #{platformText}: #{displayException err}|]
     logInfo messageText
     pure (Left messageText)
-
-withChatDriverResults
-  :: KatipE :> es
-  => IncomingMessage
-  -> Text
-  -> Eff es [Either Text MessageId]
-  -> Eff es [Either Text MessageId]
-withChatDriverResults message label action =
-  action `catchSync` \err -> do
-    let platformText = show message.platform :: String
-        messageText = [i|#{label} failed on #{platformText}: #{displayException err}|]
-    logInfo messageText
-    pure [Left messageText]
 
 defaultMessageOutPolicy :: Chat.MessageOutPolicy
 defaultMessageOutPolicy =
