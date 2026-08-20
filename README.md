@@ -1,5 +1,7 @@
 # Cosmobot
 
+> FULL DISCLAIMER: Most of the code is LLM-generated!
+
 Cosmobot is a lightweight and extensible AI agent framework. It can receive user messages from [Matrix](https://matrix.org/), Telegram, QQ (OneBot), and Discord. It can even act like a ChatBot in a group chat for fun!
 
 Beware: Cosmobot is just a hobby project. Won't be big and professional like OpenClaw. /jk
