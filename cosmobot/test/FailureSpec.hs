@@ -4,6 +4,7 @@ import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Core as AgentCore
 import qualified Bot.Agent.Middleware.Continuation as Continuation
 import qualified Bot.Agent.Middleware.Observation as Observation
+import qualified Bot.Agent.Middleware.Python as PythonMiddleware
 import Bot.Agent.Middleware.Observation.Types
   ( EventObservation
   , ToolResultObservation
@@ -15,6 +16,8 @@ import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import qualified Bot.Agent.Transcript as AgentTranscript
 import qualified Bot.Agent.Tools.Continuation as ContinuationTools
 import Bot.Agent.Tools.Common (jsonText)
+import qualified Bot.Agent.Program.Python as PythonProgram
+import qualified Bot.Agent.Tools.Python as PythonTools
 import Bot.Core.Message
 import Bot.Core.Transcript
 import qualified Bot.Effect.LLM as LLM
@@ -88,6 +91,7 @@ main =
       , testCase "tool exception becomes one protocol-complete failure result" testToolFailure
       , testCase "post-tool middleware failure replaces success exactly once" testPostToolMiddlewareFailure
       , testCase "control-call recovery converts sync failure but preserves async cancellation" testControlCallFailureRecovery
+      , testCase "Python host failure preserves completed nested side effects" testPythonHostFailureAfterSideEffect
       , testCase "unknown and malformed tool calls each receive a result" testInvalidToolCalls
       , testCase "concurrent tool failure does not discard sibling success" testMixedConcurrentTools
       , testCase "async tool failure is not swallowed and cancels its sibling" testAsyncToolFailure
@@ -406,6 +410,33 @@ testControlCallFailureRecovery = do
       fromException err @?= Just ThreadKilled
     Right{} ->
       assertFailure "async control cancellation was converted to a tool result"
+
+testPythonHostFailureAfterSideEffect :: Assertion
+testPythonHostFailureAfterSideEffect = do
+  answers <- IORef.newIORef
+    [ LLM.chatAnswer "" [toolCallWithArguments "python-outer" "py" "{\"code\":\"compose\"}"]
+    , LLM.chatAnswer "recovered" []
+    ]
+  executions <- IORef.newIORef (0 :: Int)
+  let sideEffect = Tool.tool "python_side_effect" Tool.noArguments do
+        liftIO $ IORef.modifyIORef' executions (+ 1)
+        pure (Agent.toolText "committed")
+      runner runTools _message _owner _request = do
+        void $ runTools 1 (PythonProgram.PythonToolCall "python_side_effect" "{}" :| [])
+        throwIO (InjectedFailure "host write failed after nested side effect")
+  (_, result) <- runFailureModel (scriptedModel answers) do
+    runtime <- testRuntime [PythonTools.runPythonTool, sideEffect]
+    let configured = PythonMiddleware.withPythonRunner runner runtime
+    S.toList (Agent.agentStream configured (startWithUser "compose"))
+      <&> \(outputs S.:> final) -> (outputs, final)
+  IORef.readIORef executions >>= (@?= 1)
+  case toolResults result.transcript of
+    [("python-outer", failure)] ->
+      assertBool "outer Python failure omitted the host write error" $
+        "host write failed after nested side effect" `Text.isInfixOf` failure
+    other ->
+      assertFailure [i|expected one failed outer Python result, got #{show other :: String}|]
+  assertToolProtocolComplete result.transcript
 
 testInvalidToolCalls :: Assertion
 testInvalidToolCalls = do

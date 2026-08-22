@@ -4,6 +4,18 @@
 
 module Main (main) where
 
+import qualified Bot.Agent as Agent
+import qualified Bot.Agent.Core as AgentCore
+import qualified Bot.Agent.Middleware.Python as PythonMiddleware
+import qualified Bot.Agent.Middleware.Tools as AgentMiddleware
+import qualified Bot.Agent.Tool as AgentTool
+import qualified Bot.Agent.ToolRegistry as ToolRegistry
+import qualified Bot.Agent.Tools.Meta as MetaTools
+import Bot.Core.Transcript (Transcript (..), startWithUser)
+import qualified Bot.Effect.LLM as LLM
+import qualified Bot.LLM.Test as LLMTest
+import qualified Streaming.Prelude as S
+
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Agent.Program.Python as PythonProgram
 import qualified Bot.Agent.Failure as AgentFailure
@@ -41,7 +53,6 @@ import System.FilePath ((</>))
 import System.Exit (ExitCode (..))
 import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit
-import Test.Tasty.Runners (NumThreads (..))
 
 data TestObject = TestObject
   { label :: !Text
@@ -172,10 +183,13 @@ main = defaultMain $ testGroup "resource"
       , testCase "rejects malformed and oversized frames" testPythonFrameFailures
       , testCase "rejects malformed worker messages and RPC ids" testPythonProtocolFailures
       ]
-  , localOption (NumThreads 1) $ testGroup "Python worker"
+  , dependentTestGroup "Python worker" AllFinish
       [ testCase "runs sequential nested calls in one resource lease" testPythonSequentialCalls
+      , testCase "runs the complete model, middleware, worker, tools, and resumed-model cycle" testPythonAgentFullStack
       , testCase "maps terminal responses" testPythonTerminalResponses
       , testCase "maps abnormal exit and timeout" testPythonAbnormalResponses
+      , testCase "fails closed on injected worker protocol faults" testPythonWorkerFaultMatrix
+      , testCase "rejects a missing worker prerequisite" testPythonMissingPrerequisite
       , testCase "isolates host paths and bounds /work" testPythonSandbox
       , testCase "permits external HTTPS" testPythonHTTPS
       , testCase "owner cancellation finalizes the worker" testPythonOwnerCancellation
@@ -262,7 +276,7 @@ testPythonProtocolFailures = do
 testPythonSequentialCalls :: Assertion
 testPythonSequentialCalls = do
   (outcome, calls) <- runManagedPython do
-    arguments <- realPythonArgs 5_000_000
+    arguments <- realPythonArgs 10_000_000
     calls <- MVar.newMVar []
     outcome <- Python.runPython Nothing (Resource.Init ownerMessage arguments)
       (\rpcId nested -> do
@@ -278,17 +292,101 @@ testPythonSequentialCalls = do
   outcome @?= PythonProgram.PythonCompleted "continue with this"
   calls @?= [(1, "first" :| []), (2, "second" :| [])]
 
+testPythonAgentFullStack :: Assertion
+testPythonAgentFullStack = runManagedPython do
+  arguments <- realPythonArgs 10_000_000
+  answers <- IORef.newIORef
+    [ LLM.chatAnswer ""
+        [ LLM.ToolCall "enable-python" AgentTool.toolEnableName
+            "{\"tags\":[\"special\"]}"
+        ]
+    , LLM.chatAnswer ""
+        [ LLM.ToolCall "python-outer" PythonTools.runPythonToolName
+            "{\"code\":\"import cosmobot\\na = cosmobot.run_tool('python_first', {})\\nb = cosmobot.run_tool('python_second', {})\\ncosmobot.complete(a['content'] + '+' + b['content'])\"}"
+        ]
+    , LLM.chatAnswer "resumed" []
+    ]
+  executions <- IORef.newIORef ([] :: [Text])
+  let recorded name content = AgentTool.tool name AgentTool.noArguments do
+        IORef.modifyIORef' executions (<> [name])
+        pure (AgentTypes.toolText content)
+      tools =
+        [ MetaTools.toolEnableTool
+        , PythonTools.runPythonTool
+        , recorded "python_first" "one"
+        , recorded "python_second" "two"
+        ]
+      context = AgentTypes.Context
+        { message = ownerMessage
+        , input = inputWithImages "compose" []
+        , superuser = False
+        , systemContext = ""
+        , askCommand = "!ask"
+        , toolConfig = AgentTypes.defaultToolConfig
+        }
+      model _ _ = do
+        answer <- lift $ IORef.atomicModifyIORef' answers \case
+          next : rest -> (rest, next)
+          [] -> error "full-stack Python model received an unexpected request"
+        pure answer
+  LLMTest.runLLMWith
+    (\_ -> pure "unused")
+    (\_ _ -> pure "unused")
+    (\_ _ _ _ -> pure "unused")
+    (\_ _ -> pure "unused")
+    model do
+      runningTools <- traverse (ToolRegistry.startToolRun context) tools
+      let metadata = AgentTypes.ToolCallMetadata
+            { agentRunId = "python-system"
+            , originRunId = "python-system"
+            , resourceOwner = Nothing
+            }
+          runtime = AgentMiddleware.withToolFailureRecovery AgentCore.Runtime
+            { runId = "python-system"
+            , toolCallMetadata = metadata
+            , context
+            , tools
+            , exposedTools = tools
+            , runningTools
+            , dispatchToolCall = \callMetadata turn transcript call ->
+                ToolRegistry.runToolCallWithTranscript context callMetadata turn transcript tools runningTools call
+            , maxTurns = 4
+            , modelInputTranscript = \_ turnState -> pure turnState.transcript
+            , aroundProgram = \_ program -> program
+            , aroundAgentRun = \_ stream -> stream
+            , aroundModelTurn = \_ turnState action -> action turnState
+            , aroundToolTurn = \_ _ action -> action
+            , aroundControlCall = \_ _ _ action -> action
+            , aroundToolCall = \_ _ _ action -> action
+            }
+          configured = PythonMiddleware.withPythonRunner
+            (\runTools message owner request ->
+              Python.runPython owner (Resource.Init message arguments) runTools request)
+            runtime
+      _outputs S.:> result <- S.toList (Agent.agentStream configured (startWithUser "compose"))
+      executed <- IORef.readIORef executions
+      liftIO $ do
+        executed @?= ["python_first", "python_second"]
+        result.status @?= "answered"
+        let outerResult = listToMaybe
+              [ content
+              | message <- toList result.transcript.messages
+              , message.toolCallId == Just "python-outer"
+              , Just (LLM.TextContent content) <- [message.content]
+              ]
+        outerResult @?= Just "one+two"
+
 testPythonTerminalResponses :: Assertion
 testPythonTerminalResponses = do
-  runOnePython 5_000_000 "import cosmobot; cosmobot.complete('exact content')"
+  runOnePython 10_000_000 "import cosmobot; cosmobot.complete('exact content')"
     >>= (@?= PythonProgram.PythonCompleted "exact content")
-  runOnePython 5_000_000 "import cosmobot; cosmobot.fail('exact failure')" >>= \case
+  runOnePython 10_000_000 "import cosmobot; cosmobot.fail('exact failure')" >>= \case
     PythonProgram.PythonFailed failure -> do
       failure.category @?= AgentTypes.PermanentArgumentError
       failure.userMessage @?= "exact failure"
       failure.detail @?= "exact failure"
     result -> assertFailure [i|expected controlled failure, got #{show result :: String}|]
-  runOnePython 5_000_000 "print('captured stdout', end='')"
+  runOnePython 10_000_000 "print('captured stdout', end='')"
     >>= (@?= PythonProgram.PythonCompleted "captured stdout")
 
 testPythonAbnormalResponses :: Assertion
@@ -297,6 +395,25 @@ testPythonAbnormalResponses = do
     >>= assertPythonFailure AgentTypes.PermanentArgumentError
   runOnePython 50_000 "while True: pass"
     >>= assertPythonFailure AgentTypes.BudgetExhausted
+
+testPythonWorkerFaultMatrix :: Assertion
+testPythonWorkerFaultMatrix = do
+  let permanentPrograms =
+        [ "if True print('syntax error')"
+        , "import sys; sys.exit(0)"
+        , "import cosmobot; cosmobot.complete(1)"
+        , "import cosmobot; cosmobot.fail('')"
+        , [i|import cosmobot; cosmobot.complete('x' * #{PythonProtocol.maxCompletedBytes + 1})|]
+        ]
+  for_ permanentPrograms \program ->
+    runOnePython 10_000_000 program >>= assertPythonFailure AgentTypes.PermanentArgumentError
+
+testPythonMissingPrerequisite :: Assertion
+testPythonMissingPrerequisite = runManagedPython do
+  Python.preparePythonArgs "/definitely/missing/cosmobot_worker.py" AgentTypes.defaultPythonConfig >>= \case
+    Left message -> liftIO $ assertBool "missing worker path was not reported" $
+      "missing Python sandbox prerequisite" `Text.isInfixOf` message
+    Right _ -> liftIO $ assertFailure "missing Python worker unexpectedly passed health checks"
 
 testPythonSandbox :: Assertion
 testPythonSandbox = do
@@ -313,6 +430,8 @@ testPythonSandbox = do
     , [i|assert not os.path.lexists(#{workspaceLiteral})|]
     , "assert set(os.listdir('/work')) == {'tmp'}"
     , "assert set(os.listdir('/')) == {'dev', 'etc', 'lib', 'lib64', 'opt', 'usr', 'work'}"
+    , "assert not any(key.endswith(('_TOKEN', '_SECRET', '_PASSWORD', '_KEY')) for key in os.environ)"
+    , "import socket; assert socket.has_ipv6"
     , "usr_readonly = False"
     , "try: open('/usr/cosmobot-write-probe', 'w').close()"
     , "except OSError as exc: usr_readonly = exc.errno in (errno.EROFS, errno.EACCES)"
