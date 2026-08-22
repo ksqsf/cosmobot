@@ -33,7 +33,9 @@ jobs:
         run: cabal update
 
       - name: Install sandbox dependencies
-        run: sudo apt-get install --yes bubblewrap
+        run: |
+          sudo apt-get install --yes bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Build
         run: cabal build -j all --enable-tests --enable-benchmarks
