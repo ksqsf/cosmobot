@@ -119,7 +119,7 @@ Special notes:
   + Make sure to enable Intents in Discord Developer Portal. For example, you really need to enable Message Content Intent as the bot needs to read message contents.
 
 
-Cosmobot on Matrix is highly recommended. It has the best Markdown support (including tables!), streaming, typing feedback, and all Cosmobot features. With some effort, you can talk to Cosmobot in an E2EE room which gives you superior privacy protection.
+Cosmobot on Matrix or Telegram is highly recommended. Both platforms have superb Markdown support (including tables!), streaming, typing feedback, and all Cosmobot features. On Matrix, you can even talk to Cosmobot in an E2EE room which gives you superior privacy protection.
 
 
 ### LLM providers
@@ -387,7 +387,7 @@ Rootless containers are recommended due to security concerns.
 
 ### Workspace
 
-Workspace is a special directory in `./work/<id>` with a file called `WORK.md`. It records the goals, progress, findings, and the todo list.
+Workspace is a special directory in `/work/<id>` with a file called `WORK.md`. It records the goals, progress, findings, and the todo list.
 
 ### Subagent
 
