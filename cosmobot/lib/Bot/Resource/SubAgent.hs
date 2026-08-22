@@ -153,7 +153,7 @@ sendPrompt metadata subagentId availableTools context subagent prompt =
                 , originRunId = metadata.originRunId
                 , resourceOwner = Just worker
                 }) $
-              Agent.withRun 8 1000000 childContext selectedTools \runtime -> do
+              Agent.withRun 8 ContextCompaction 1000000 childContext selectedTools \runtime -> do
                 void $ AgentAudit.agentAuditObserver SubAgentRunStarted
                   { runId = metadata.agentRunId
                   , childRunId = Agent.runIdOf runtime

@@ -7,6 +7,7 @@ import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Tools as AgentTools
 import qualified Bot.Agent.Core as AgentCore
 import qualified Bot.Agent.Middleware.Python as PythonMiddleware
+import qualified Bot.Agent.Middleware.RecursiveTranscript as RecursiveTranscript
 import qualified Bot.Agent.Middleware.Observation as AgentObservation
 import qualified Bot.Agent.Middleware.Observation.Types as ObservationTypes
 import qualified Bot.Agent.Middleware.ToolResultCompaction as ToolResultCompaction
@@ -24,6 +25,7 @@ import qualified Bot.Agent.Tools.Python as PythonTools
 import qualified Bot.Agent.Tools.Sandbox as SandboxTools
 import qualified Bot.Agent.Tools.SubAgent as SubAgentTools
 import qualified Bot.Agent.Tools.Terminal as TerminalTools
+import qualified Bot.Agent.Tools.Transcript as TranscriptTools
 import qualified Bot.Agent.Tools.Workspace as WorkspaceTools
 import qualified Bot.Agent.Types as AgentTypes
 import qualified Bot.Agent.ToolRegistry as ToolRegistry
@@ -287,6 +289,11 @@ main =
       , testCase "image_edit tool passes image request options" testEditImageToolPassesImageRequestOptions
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "agent compacts old transcript context before model turn" testAgentCompactsOldTranscriptContextBeforeModelTurn
+      , testCase "recursive transcript externalizes only the model view" testRecursiveTranscriptExternalizesModelView
+      , testCase "recursive transcript query can launch nested child agents" testRecursiveTranscriptQueryLaunchesNestedChildren
+      , testCase "recursive transcript child reads hidden canonical evidence" testRecursiveTranscriptChildReadsHiddenEvidence
+      , testCase "transcript search returns only regex matches" testTranscriptSearchRegex
+      , testCase "transcript read caps ranges at 200 messages" testTranscriptReadCapsRange
       , testCase "agent announces context compaction" testAgentAnnouncesContextCompaction
       , testCase "agent resumes nested continuations with JSON values" testAgentResumesNestedContinuations
       , testCase "agent rejects continuation calls mixed with sibling tools" testAgentRejectsConcurrentContinuationCalls
@@ -485,7 +492,7 @@ testPythonConfiguration = do
   schema <- runEff $ AgentTool.resolveToolSchema tool configuredContext (startWithUser "") 0
   let description = foldMap (.description) schema
   assertBool "py description uses configured limits" $
-    "Configured limits: 7 s wall time, 5 s CPU, 96 MiB address space, and 3 total nested tool calls."
+    "Limits: 7 s wall, 5 s CPU, 96 MiB memory, 3 nested calls, and 16 calls per batch."
       `Text.isInfixOf` description
 
 testPythonActionMiddlewareMetadata :: IO ()
@@ -2105,6 +2112,160 @@ testAgentCompactsOldTranscriptContextBeforeModelTurn = do
         _ -> False
       )
       (map (.event) records)
+
+testRecursiveTranscriptExternalizesModelView :: IO ()
+testRecursiveTranscriptExternalizesModelView = do
+  let canonical = Transcript (Seq.fromList
+        [ LLM.systemText "system"
+        , LLM.userText (Text.replicate 100 "old")
+        , LLM.assistantText "old answer"
+        , LLM.userText "current"
+        ])
+      projected = RecursiveTranscript.externalizeTranscript 1 canonical
+  length canonical.messages @?= 4
+  map (.role) (toList projected.messages) @?= ["system", "system", "user"]
+  case toList projected.messages of
+    [_, notice, current] -> do
+      assertBool "projection advertises transcript retrieval" ("transcript tool" `Text.isInfixOf` plainMessageContent notice)
+      plainMessageContent current @?= "current"
+    _ -> assertFailure "expected system prefix, externalization notice, and current user turn"
+  where
+    plainMessageContent LLM.ChatMessage{content = Just (LLM.TextContent text)} = text
+    plainMessageContent _ = ""
+
+testRecursiveTranscriptQueryLaunchesNestedChildren :: IO ()
+testRecursiveTranscriptQueryLaunchesNestedChildren = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "root-query" "transcript" queryArguments]
+    , chatAnswer "" [toolCall "child-query" "transcript" queryArguments]
+    , chatAnswer "" [toolCall "grandchild-read" "transcript" (Aeson.object
+        [ "op" Aeson..= ("read" :: Text)
+        , "start_message" Aeson..= (0 :: Int)
+        , "message_count" Aeson..= (4 :: Int)
+        ])]
+    , chatAnswer "grandchild found the evidence" []
+    , chatAnswer "child synthesized the evidence" []
+    , chatAnswer "root finished" []
+    ]
+  let canonical = Transcript (Seq.fromList
+        [ LLM.systemText "system"
+        , LLM.userText "old requirement"
+        , LLM.assistantText "old response"
+        , LLM.userText "current question"
+        ])
+  (finalText, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) $
+    runTestAgent 6 agentContext AgentTools.defaultTools canonical
+  finalText @?= "root finished"
+  assertBool "root receives the recursive child answer" $
+    any ("child synthesized the evidence" `Text.isInfixOf`) (toolOutputs transcript)
+  assertBool "all nested model responses were consumed" . null =<< IORef.readIORef answers
+  where
+    queryArguments = Aeson.object
+      [ "op" Aeson..= ("query" :: Text)
+      , "start_message" Aeson..= (0 :: Int)
+      , "message_count" Aeson..= (4 :: Int)
+      , "prompt" Aeson..= ("What requirement was mentioned?" :: Text)
+      ]
+
+testRecursiveTranscriptChildReadsHiddenEvidence :: IO ()
+testRecursiveTranscriptChildReadsHiddenEvidence = do
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "root-query" "transcript" (Aeson.object
+        [ "op" Aeson..= ("query" :: Text)
+        , "start_message" Aeson..= (1 :: Int)
+        , "message_count" Aeson..= (2 :: Int)
+        , "prompt" Aeson..= ("Recover the hidden requirement." :: Text)
+        ])]
+    , chatAnswer "" [toolCall "child-read" "transcript" (Aeson.object
+        [ "op" Aeson..= ("read" :: Text)
+        , "start_message" Aeson..= (0 :: Int)
+        , "message_count" Aeson..= (2 :: Int)
+        ])]
+    , chatAnswer "child recovered it" []
+    , chatAnswer "root finished" []
+    ]
+  let canonical = Transcript (Seq.fromList
+        [ LLM.systemText "system"
+        , LLM.userText (Text.replicate 20 "hidden canonical evidence ")
+        , LLM.assistantText "old answer"
+        , LLM.userText "current question"
+        ])
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    runtime <- startTestRuntime 6 agentContext [TranscriptTools.transcriptTool]
+    _ S.:> result <- S.toList $ Agent.agentStream
+      (Agent.defaultRuntimeWithStrategy AgentAudit.agentAuditObserver AgentTypes.RecursiveTranscript 1 runtime)
+      canonical
+    pure result.finalText
+  requests <- IORef.readIORef captured
+  case requests of
+    rootRequest : _ : childAfterRead : _ -> do
+      assertBool "root model view externalizes old evidence" $
+        not ("hidden canonical evidence" `Text.isInfixOf` requestText rootRequest)
+      assertBool "child transcript tool remains bound to canonical evidence" $
+        "hidden canonical evidence" `Text.isInfixOf` requestText childAfterRead
+    _ -> assertFailure [i|expected four model requests, got #{length requests}|]
+
+testTranscriptSearchRegex :: IO ()
+testTranscriptSearchRegex = do
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "search" "transcript" (Aeson.object
+        [ "op" Aeson..= ("search" :: Text)
+        , "pattern" Aeson..= ("TODO-[0-9]+" :: Text)
+        ])]
+    , chatAnswer "done" []
+    ]
+  let transcript = Transcript (Seq.fromList
+        [ LLM.userText "TODO-42 matched"
+        , LLM.assistantText "NOTE-7 ignored"
+        , LLM.userText "continue"
+        ])
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) $
+    runTestAgent 3 agentContext [TranscriptTools.transcriptTool] transcript
+  requests <- IORef.readIORef captured
+  case requests of
+    [_initial, afterSearch] -> do
+      assertBool "matching message is returned" ("TODO-42 matched" `Text.isInfixOf` requestToolText afterSearch)
+      assertBool "non-matching message is omitted" (not ("NOTE-7 ignored" `Text.isInfixOf` requestToolText afterSearch))
+    _ -> assertFailure [i|expected two model requests, got #{length requests}|]
+
+testTranscriptReadCapsRange :: IO ()
+testTranscriptReadCapsRange = do
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "read" "transcript" (Aeson.object
+        [ "op" Aeson..= ("read" :: Text)
+        , "start_message" Aeson..= (0 :: Int)
+        , "message_count" Aeson..= (1000 :: Int)
+        ])]
+    , chatAnswer "done" []
+    ]
+  let transcript = Transcript . Seq.fromList $
+        [ LLM.userText [i|message-#{index}|]
+        | index <- [0 :: Int .. 204]
+        ]
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) $
+    runTestAgent 3 agentContext [TranscriptTools.transcriptTool] transcript
+  requests <- IORef.readIORef captured
+  case requests of
+    [_initial, afterRead] -> do
+      assertBool "last included message is returned" ("message-199" `Text.isInfixOf` requestToolText afterRead)
+      assertBool "messages beyond the cap are omitted" (not ("message-200" `Text.isInfixOf` requestToolText afterRead))
+    _ -> assertFailure [i|expected two model requests, got #{length requests}|]
+
+requestText :: [LLM.ChatMessage] -> Text
+requestText = Text.unlines . mapMaybe messageText
+  where
+    messageText LLM.ChatMessage{content = Just (LLM.TextContent text)} = Just text
+    messageText LLM.ChatMessage{content = Just (LLM.PartsContent parts)} =
+      Just . Text.unlines $ mapMaybe partText parts
+    messageText _ = Nothing
+    partText (LLM.TextPart text) = Just text
+    partText (LLM.ImageUrlPart url) = Just url
+
+requestToolText :: [LLM.ChatMessage] -> Text
+requestToolText = requestText . filter ((== "tool") . (.role))
 
 testAgentAnnouncesContextCompaction :: IO ()
 testAgentAnnouncesContextCompaction = do
@@ -5047,6 +5208,7 @@ askHandlerConfig =
     , drawCommand = "!draw"
     , systemPrompt = "base system prompt"
     , agentMaxTurns = 4
+    , contextStrategy = AgentTypes.ContextCompaction
     , contextCompactionThresholdKTokens = 1000
     , botIds = [(PlatformQQ, "2044933066")]
     }

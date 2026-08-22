@@ -92,6 +92,7 @@ runAskAgentThread toolCfg tools cfg threads resource parentMessageKey message in
       }) $
     Agent.withRun
       cfg.agentMaxTurns
+      cfg.contextStrategy
       (compactionThresholdTokens cfg)
       (agentContext toolCfg cfg message input systemPrompt)
       tools

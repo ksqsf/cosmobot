@@ -4,7 +4,8 @@ Description : Agent context, events, and tool results
 Stability   : experimental
 -}
 module Bot.Agent.Types
-  ( ToolCallMetadata (..)
+  ( ContextStrategy (..)
+  , ToolCallMetadata (..)
   , Context (..)
   , Event (..)
   , Observer
@@ -37,6 +38,11 @@ import Bot.Core.Thread (ThreadMessageKey)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+
+data ContextStrategy
+  = ContextCompaction
+  | RecursiveTranscript
+  deriving (Eq, Show)
 
 -- | Runtime configuration for agent tools.
 data ToolConfig = ToolConfig

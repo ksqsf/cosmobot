@@ -9,13 +9,14 @@ module Bot.Agent.ToolRegistry
   , enabledToolGroups
   , resolveToolSchemas
   , runToolCall
+  , runToolCallWithTranscript
   , startToolRun
   )
 where
 
 import Bot.Agent.Tool
 import Bot.Agent.Types
-import Bot.Core.Transcript (Transcript)
+import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
@@ -34,14 +35,14 @@ data RunningTool m = RunningTool
   , noisy :: !Bool
   , currentSchema :: !(MVar.MVar (Maybe LLM.FunctionTool))
   , resolveSchema :: Transcript -> Int -> m (Maybe LLM.FunctionTool)
-  , run  :: ToolCallMetadata -> Aeson.Value -> m ToolResult
+  , run  :: ToolCallMetadata -> Int -> Transcript -> Aeson.Value -> m ToolResult
   }
 
 -- | Start a tool for this agent run.
 startToolRun :: Concurrent :> es => Context -> Tool (Eff es) -> Eff es (RunningTool (Eff es))
 startToolRun context definition = do
   currentSchema <- MVar.newMVar Nothing
-  run <- startTool definition context
+  run <- startToolWithTranscript definition context
   let name = toolName definition
       tags = toolTags definition
       toolNoisy = toolIsNoisy definition
@@ -181,7 +182,20 @@ runToolCall
   -> [RunningTool (Eff es)]
   -> LLM.ToolCall
   -> Eff es ToolResult
-runToolCall context metadata tools runningTools call =
+runToolCall context metadata =
+  runToolCallWithTranscript context metadata 0 (Transcript mempty)
+
+runToolCallWithTranscript
+  :: Concurrent :> es
+  => Context
+  -> ToolCallMetadata
+  -> Int
+  -> Transcript
+  -> [Tool (Eff es)]
+  -> [RunningTool (Eff es)]
+  -> LLM.ToolCall
+  -> Eff es ToolResult
+runToolCallWithTranscript context metadata turn transcript tools runningTools call =
   findRunningTool call.name runningTools >>= \case
     Nothing ->
       case find ((== call.name) . toolName) tools of
@@ -198,7 +212,7 @@ runToolCall context metadata tools runningTools call =
             Just err ->
               pure (toolFailure (permanentArgumentFailure err err))
             Nothing ->
-              runningTool.run metadata args
+              runningTool.run metadata turn transcript args
   where
     callName = call.name
 

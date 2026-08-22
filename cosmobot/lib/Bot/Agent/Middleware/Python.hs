@@ -97,7 +97,7 @@ withPythonProgram runPython runtime =
                   outerCall.id
                   (\call ->
                     finalRuntime.aroundToolCall request.agentState.turn call HList.HNil $
-                      finalRuntime.dispatchToolCall finalRuntime.toolCallMetadata call)
+                      finalRuntime.dispatchToolCall finalRuntime.toolCallMetadata request.agentState.turn request.agentState.transcript call)
                   finalRuntime.context.message
                   finalRuntime.toolCallMetadata.resourceOwner
                   pythonRequest

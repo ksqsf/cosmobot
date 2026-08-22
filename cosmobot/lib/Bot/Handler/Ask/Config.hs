@@ -10,6 +10,7 @@ module Bot.Handler.Ask.Config
 where
 
 import Bot.Prelude
+import Bot.Agent.Types (ContextStrategy (..))
 import Bot.Core.Message (ChatPlatform)
 import Toml.Schema
 
@@ -20,6 +21,7 @@ data AskHandlerConfig = AskHandlerConfig
   , drawCommand      :: !Text
   , systemPrompt     :: !Text
   , agentMaxTurns    :: !Int
+  , contextStrategy  :: !ContextStrategy
   , contextCompactionThresholdKTokens :: !Int
   , botIds           :: ![(ChatPlatform, Text)]
   }
@@ -32,6 +34,11 @@ instance FromValue AskHandlerConfig where
     drawCommand <- fromMaybe "!draw" <$> optKey "draw_command"
     systemPrompt <- reqKey "system_prompt"
     agentMaxTurns <- fromMaybe 4 <$> optKey "agent_max_turns"
+    contextStrategyText <- fromMaybe ("compaction" :: Text) <$> optKey "context_strategy"
+    contextStrategy <- case contextStrategyText of
+      "compaction" -> pure ContextCompaction
+      "recursive_transcript" -> pure RecursiveTranscript
+      _ -> fail "handler.ask.context_strategy must be compaction or recursive_transcript"
     contextCompactionThresholdKTokens <- fromMaybe 1000 <$> optKey "context_compaction_threshold_ktokens"
     when (contextCompactionThresholdKTokens <= 0) do
       fail "handler.ask.context_compaction_threshold_ktokens must be positive"
@@ -41,6 +48,7 @@ instance FromValue AskHandlerConfig where
       , drawCommand = drawCommand
       , systemPrompt = systemPrompt
       , agentMaxTurns = agentMaxTurns
+      , contextStrategy = contextStrategy
       , contextCompactionThresholdKTokens = contextCompactionThresholdKTokens
       , botIds = []
       }

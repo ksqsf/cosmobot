@@ -27,6 +27,7 @@ module Bot.Agent
   , startRuntime
   , runIdOf
   , defaultRuntime
+  , defaultRuntimeWithStrategy
   , agentStream
   , ToolResult (..)
   , toolText
@@ -49,6 +50,9 @@ import Bot.Agent.Core
 import Bot.Agent.Control (finishToolTurn)
 import Bot.Agent.Middleware.ContextCompaction
   ( withContextCompactionNotice
+  )
+import Bot.Agent.Middleware.RecursiveTranscript
+  ( withRecursiveTranscript
   )
 import Bot.Agent.Middleware.Continuation
   ( withContinuations
@@ -161,15 +165,16 @@ withRun
      , IOE :> es
      )
   => Int
+  -> ContextStrategy
   -> Int
   -> Context
   -> [Tool (Eff es)]
   -> (Runtime '[] (Eff es) -> Eff es a)
   -> Eff es a
-withRun maxTurns compactionTokenThreshold context tools use = do
+withRun maxTurns contextStrategy contextTokenThreshold context tools use = do
   baseRuntime <- startRuntime maxTurns context tools
   AgentEffect.withRun
-    (defaultRuntime AgentAudit.agentAuditObserver compactionTokenThreshold baseRuntime)
+    (defaultRuntimeWithStrategy AgentAudit.agentAuditObserver contextStrategy contextTokenThreshold baseRuntime)
     use
 
 agentStream
@@ -197,8 +202,8 @@ startRuntime maxTurns context tools = do
   let exposedTools = filter (`toolAllowed` context) tools
       toolCallMetadata = ToolCallMetadata{agentRunId = runId, originRunId = runId, resourceOwner = Nothing}
   runningTools <- traverse (startToolRun context) exposedTools
-  let dispatchToolCall metadata =
-        ToolRegistry.runToolCall context metadata tools runningTools
+  let dispatchToolCall metadata turn transcript =
+        ToolRegistry.runToolCallWithTranscript context metadata turn transcript tools runningTools
   pure Runtime
     { runId
     , toolCallMetadata
@@ -238,15 +243,29 @@ defaultRuntime
   -> Runtime '[ObservationContext, EventObservation es, ToolResultObservation es] (Eff es)
   -> Runtime '[] (Eff es)
 defaultRuntime observer compactionTokenThreshold =
+  defaultRuntimeWithStrategy observer ContextCompaction compactionTokenThreshold
+
+defaultRuntimeWithStrategy
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es)
+  => Observer ObservationContext (Eff es)
+  -> ContextStrategy
+  -> Int
+  -> Runtime '[ObservationContext, EventObservation es, ToolResultObservation es] (Eff es)
+  -> Runtime '[] (Eff es)
+defaultRuntimeWithStrategy observer contextStrategy contextTokenThreshold =
   ( withContinuations
   . withToolLimit isResumeTransfer
   . withTypingNotification
   . withToolResultCompaction
   . withObservation observer
   . withToolMessage
-  . withContextCompactionNotice compactionTokenThreshold
+  . contextMiddleware
   . withToolFailureRecovery
   )
+  where
+    contextMiddleware = case contextStrategy of
+      ContextCompaction -> withContextCompactionNotice contextTokenThreshold
+      RecursiveTranscript -> withRecursiveTranscript contextTokenThreshold
 
 isResumeTransfer :: Runtime context (Eff es) -> NonEmpty LLM.ToolCall -> Bool
 isResumeTransfer runtime calls =
@@ -391,7 +410,7 @@ toolPhase
   -> Eff es (TurnState, NonEmpty ToolResult)
 toolPhase runtime@Runtime{aroundToolTurn = toolTurn} request =
   finishToolTurn toolTurn request $
-    Async.mapConcurrently (executeToolCall runtime request.agentState.turn) request.toolCalls
+    Async.mapConcurrently (executeToolCall runtime request.agentState) request.toolCalls
 
 -----------------------------------------------------------------------------------------
 -- * Model helpers
@@ -445,13 +464,14 @@ replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
 --
 -- Tool failures must still produce a tool result message; otherwise the next
 -- LLM request would contain an assistant tool call without its required result.
-executeToolCall :: (Concurrent :> es, KatipE :> es) => Runtime '[] (Eff es) -> Int -> LLM.ToolCall -> Eff es ToolResult
-executeToolCall runtime@Runtime{runId} turn call@LLM.ToolCall{id = callId, name, arguments} = do
+executeToolCall :: (Concurrent :> es, KatipE :> es) => Runtime '[] (Eff es) -> TurnState -> LLM.ToolCall -> Eff es ToolResult
+executeToolCall runtime@Runtime{runId} agentState call@LLM.ToolCall{id = callId, name, arguments} = do
+  let turn = agentState.turn
   logDebug
     [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=started argument_chars=#{Text.length arguments}|]
   result <-
     runtime.aroundToolCall turn call HList.HNil
-      (runtime.dispatchToolCall runtime.toolCallMetadata call)
+      (runtime.dispatchToolCall runtime.toolCallMetadata turn agentState.transcript call)
       `onException` logDebug
         [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=interrupted|]
   logDebug

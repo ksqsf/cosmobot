@@ -28,6 +28,7 @@ import Bot.Agent.Tools.Meta
 import Bot.Agent.Tools.Python
 import Bot.Agent.Tools.Terminal
 import Bot.Agent.Tools.Time
+import Bot.Agent.Tools.Transcript
 import Bot.Agent.Tools.Typst
 import Bot.Agent.Tools.Web
 import Bot.Agent.Tools.Workspace
@@ -110,6 +111,7 @@ defaultToolsWith extraTools = tools
   where
     tools =
       [ toolEnableTool
+      , transcriptTool
       , queryChatLogTool
       , queryCurrentSenderChatLogTool
       , webSearchTool

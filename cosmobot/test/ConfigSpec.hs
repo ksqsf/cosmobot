@@ -21,6 +21,7 @@ main =
       , testCase "configured telegram driver is enabled alone" testConfiguredTelegramDriverEnabledAlone
       , testCase "incomplete matrix and discord driver tables are disabled" testIncompleteMatrixAndDiscordDisabled
       , testCase "ask context compaction threshold uses ktokens" testAskCompactionThresholdUsesKTokens
+      , testCase "ask recursive transcript strategy is configurable" testAskRecursiveTranscriptStrategy
       , testCase "sandbox image is configurable" testSandboxImage
       , testCase "Exa web search is configurable" testExaWebSearch
       , testCase "Python tool defaults are safe and enabled" testPythonDefaults
@@ -93,6 +94,15 @@ testAskCompactionThresholdUsesKTokens = do
         [ "context_compaction_threshold_ktokens = 123"
         ]
   cfg.handlers.ask.contextCompactionThresholdKTokens @?= 123
+
+testAskRecursiveTranscriptStrategy :: IO ()
+testAskRecursiveTranscriptStrategy = do
+  cfg <- loadConfigText $
+    minimalConfig
+      <> Text.unlines
+        [ "context_strategy = \"recursive_transcript\""
+        ]
+  cfg.handlers.ask.contextStrategy @?= Agent.RecursiveTranscript
 
 testSandboxImage :: IO ()
 testSandboxImage = do

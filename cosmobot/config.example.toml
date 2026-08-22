@@ -159,4 +159,5 @@ delete_patterns = []
 command = "!ask"
 draw_command = "!draw"
 agent_max_turns = 4
+context_strategy = "compaction" # "compaction" or "recursive_transcript"
 context_compaction_threshold_ktokens = 1000

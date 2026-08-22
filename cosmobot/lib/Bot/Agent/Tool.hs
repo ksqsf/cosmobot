@@ -20,12 +20,15 @@ module Bot.Agent.Tool
   , withDefault
   , askToolContext
   , askToolCallMetadata
+  , askToolTurn
+  , askToolTranscript
   , allowWhen
   , hideUnlessM
   , mapSchemaM
   , noisy
   , resolveToolSchema
   , startTool
+  , startToolWithTranscript
   , tagged
   , tool
   , toolEnableName
@@ -54,9 +57,14 @@ import qualified Effectful.Reader.Static as Reader
 type ToolRunner m =
   ToolCallMetadata -> Aeson.Value -> m ToolResult
 
+type ContextualToolRunner m =
+  ToolCallMetadata -> Int -> Transcript -> Aeson.Value -> m ToolResult
+
 data ToolCallContext = ToolCallContext
   { agentContext :: !Context
   , metadata :: !ToolCallMetadata
+  , turn :: !Int
+  , transcript :: !Transcript
   }
 
 type ToolAction es =
@@ -73,6 +81,18 @@ askToolCallMetadata
   => Eff es ToolCallMetadata
 askToolCallMetadata =
   Reader.ask @ToolCallContext <&> (.metadata)
+
+askToolTurn
+  :: Reader.Reader ToolCallContext :> es
+  => Eff es Int
+askToolTurn =
+  Reader.ask @ToolCallContext <&> (.turn)
+
+askToolTranscript
+  :: Reader.Reader ToolCallContext :> es
+  => Eff es Transcript
+askToolTranscript =
+  Reader.ask @ToolCallContext <&> (.transcript)
 
 data NamedTag = NamedTag
   { tagName :: !Text
@@ -348,7 +368,7 @@ data Tool m = Tool
   , schemaResolver :: Context -> Transcript -> Int -> m (Maybe LLM.FunctionTool)
   , noisyFlag :: !Bool
   , allowedPredicate :: Context -> Bool
-  , runnerFactory :: Context -> m (ToolRunner m)
+  , runnerFactory :: Context -> m (ContextualToolRunner m)
   }
 
 tool
@@ -380,7 +400,7 @@ toolWithRunState name arguments initialize handler =
     , allowedPredicate = const True
     , runnerFactory = \context -> do
         initialized <- initialize context
-        pure \metadata rawArguments ->
+        pure \metadata turn transcript rawArguments ->
           case AesonTypes.parseEither
             (parseToolHandler arguments (handler initialized))
             rawArguments of
@@ -390,6 +410,8 @@ toolWithRunState name arguments initialize handler =
                 Reader.runReader ToolCallContext
                   { agentContext = context
                   , metadata
+                  , turn
+                  , transcript
                   }
                   action
     }
@@ -477,6 +499,11 @@ toolAllowed :: Tool m -> Context -> Bool
 toolAllowed Tool{allowedPredicate} =
   allowedPredicate
 
-startTool :: Tool m -> Context -> m (ToolRunner m)
-startTool Tool{runnerFactory} =
+startTool :: Functor m => Tool m -> Context -> m (ToolRunner m)
+startTool definition context =
+  (\run metadata arguments -> run metadata 0 (Transcript mempty) arguments)
+    <$> startToolWithTranscript definition context
+
+startToolWithTranscript :: Tool m -> Context -> m (ContextualToolRunner m)
+startToolWithTranscript Tool{runnerFactory} =
   runnerFactory
