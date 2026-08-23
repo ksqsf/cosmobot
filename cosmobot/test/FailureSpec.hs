@@ -14,6 +14,7 @@ import qualified Bot.Agent.Middleware.Tools as AgentTools
 import qualified Bot.Agent.Tool as Tool
 import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import qualified Bot.Agent.Transcript as AgentTranscript
+import qualified Bot.Agent.Types as AgentTypes
 import qualified Bot.Agent.Tools.Continuation as ContinuationTools
 import Bot.Agent.Tools.Common (jsonText)
 import qualified Bot.Agent.Program.Python as PythonProgram
@@ -1442,7 +1443,7 @@ observedRuntime observer tools = do
   pure $
     AgentTools.withToolFailureRecovery
       . ToolResultCompaction.withToolResultCompaction
-      . Observation.withObservation observer
+      . Observation.withObservation observer AgentTypes.ContextCompaction
       $ runtime
 
 largeResultTool

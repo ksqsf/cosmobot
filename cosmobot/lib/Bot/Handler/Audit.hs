@@ -165,7 +165,7 @@ renderThreadStats now parentId branchMessages activeRunId pendingSteers records 
         , renderRunUsage "tokens" allTurnUsage
         , renderRunUsage "current run" currentRunTurns
         , renderContextMessages contextMessageCounts
-        , renderCompactionUsage compactionUsages
+        , renderContextStrategyUsage currentContextStrategy compactionUsages recursiveTranscriptFlushes
         , renderEnabledTools enabledToolGroups
         , [i|- tool calls: #{length toolUses} (#{okTools} ok, #{failedTools} failed, #{interruptedTools} interrupted, #{length runningTools} running#{unreportedToolsSuffix})|]
         , renderToolTime toolUses
@@ -206,6 +206,20 @@ renderThreadStats now parentId branchMessages activeRunId pendingSteers records 
       [ tokenUsage
       | AgentAudit.AgentAuditRecord{event = AgentAudit.ContextCompacted{tokenUsage}} <- records
       ]
+    recursiveTranscriptFlushes =
+      length
+        [ ()
+        | AgentAudit.AgentAuditRecord{event = AgentAudit.RecursiveTranscriptFlushed{}} <- records
+        ]
+    currentContextStrategy = do
+      current <- currentRunId
+      join . viaNonEmpty last $
+        [ contextStrategy
+        | AgentAudit.AgentAuditRecord
+            { event = AgentAudit.AgentRunStarted{runId, contextStrategy}
+            } <- records
+        , runId == current
+        ]
     enabledToolGroups = do
       current <- currentRunId
       join . viaNonEmpty last $
@@ -314,6 +328,20 @@ renderSubAgentStats now rootRunIds runs =
                 { event = AgentAudit.ContextCompacted{tokenUsage}
                 } <- records
             ]
+          recursiveTranscriptFlushes =
+            length
+              [ ()
+              | AgentAudit.AgentAuditRecord
+                  { event = AgentAudit.RecursiveTranscriptFlushed{}
+                  } <- records
+              ]
+          contextStrategy =
+            join . viaNonEmpty last $
+              [ strategy
+              | AgentAudit.AgentAuditRecord
+                  { event = AgentAudit.AgentRunStarted{contextStrategy = strategy}
+                  } <- records
+              ]
           toolUses = AgentAudit.toolUsesFromAuditRecords records
           modelDurations = modelTurnDurations now Nothing "complete" records
           status = subAgentRunStatus records
@@ -328,7 +356,7 @@ renderSubAgentStats now rootRunIds runs =
       [ spaces indentation <> [i|- `#{subagentId}` (`#{runId}`): #{status}, #{length modelUsages} model turns, #{length toolUses} tool calls, #{durationText}|]
       , spaces (indentation + 2) <> renderRunUsage "tokens" modelUsages
       , spaces (indentation + 2) <> renderModelTime modelDurations
-      , spaces (indentation + 2) <> renderCompactionUsage compactionUsages
+      , spaces (indentation + 2) <> renderContextStrategyUsage contextStrategy compactionUsages recursiveTranscriptFlushes
       , spaces (indentation + 2) <> renderToolTime toolUses
       ] <> nested
 
@@ -425,6 +453,12 @@ renderCompactionUsage usages =
             | unreported == 0 = ""
             | otherwise = [i|; #{unreported} unreported|]
       in [i|- context compactions: #{length usages} calls, #{totalTokens} total (#{promptTokens} prompt, #{completionTokens} completion#{suffix})|]
+
+renderContextStrategyUsage :: Maybe Text -> [Maybe LLM.TokenUsage] -> Int -> Text
+renderContextStrategyUsage (Just "recursive_transcript") _ flushes =
+  [i|- recursive transcript flushes: #{flushes}|]
+renderContextStrategyUsage _ compactions _ =
+  renderCompactionUsage compactions
 
 renderToolTime :: [AgentAudit.ToolUseDetail] -> Text
 renderToolTime toolUses =
@@ -582,6 +616,7 @@ phaseFromRecords (Just runId) runningTools records
       AgentAudit.ModelTurnFinished{answerKind = "tool_request"} -> "tools"
       AgentAudit.ModelTurnFinished{} -> "finishing"
       AgentAudit.ContextCompacted{} -> "model"
+      AgentAudit.RecursiveTranscriptFlushed{} -> "model"
       AgentAudit.SubAgentRunStarted{} -> "tools"
       AgentAudit.ToolCallStarted{} -> "tools"
       AgentAudit.ToolCallFinished{} -> "between turns"
@@ -712,6 +747,8 @@ renderAuditEvent recordId = \case
   AgentAudit.ContextCompacted{runId, turn, messageCount, tokenUsage} ->
     let usage = maybe "tokens=unreported" renderTokenUsage tokenUsage
     in [i|context_compacted run=#{runId} turn=#{turn} messages_before=#{messageCount} #{usage}|]
+  AgentAudit.RecursiveTranscriptFlushed{runId, turn} ->
+    [i|recursive_transcript_flushed run=#{runId} turn=#{turn}|]
   AgentAudit.SubAgentRunStarted{runId, childRunId, subagentId} ->
     [i|subagent_started run=#{runId} child_run=#{childRunId} resource=`#{subagentId}`|]
   AgentAudit.ToolCallStarted{runId, turn, toolCall} ->

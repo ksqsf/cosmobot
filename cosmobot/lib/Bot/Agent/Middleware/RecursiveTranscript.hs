@@ -11,25 +11,45 @@ module Bot.Agent.Middleware.RecursiveTranscript
 where
 
 import Bot.Agent.Core
+import Bot.Agent.Middleware.Observation.Types (EventObservation (..))
+import Bot.Agent.Types (Event (..))
 import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+import qualified Bot.Util.HList as HList
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 
-withRecursiveTranscript :: Monad m => Int -> Runtime context m -> Runtime context m
+withRecursiveTranscript
+  :: forall es context.
+     HList.Has (EventObservation es) context
+  => Int
+  -> Runtime context (Eff es)
+  -> Runtime context (Eff es)
 withRecursiveTranscript tokenThreshold runtime =
   runtime
-    { modelInputTranscript = \finalRuntime turnState -> do
-        transcript <- runtime.modelInputTranscript finalRuntime turnState
-        pure (externalizeTranscript tokenThreshold transcript)
+    { modelInputTranscript = \context turnState -> do
+        transcript <- runtime.modelInputTranscript context turnState
+        case externalizedTranscript tokenThreshold transcript of
+          Nothing -> pure transcript
+          Just projected -> do
+            void $ (HList.get @(EventObservation es) context).observeAgentEvent
+              RecursiveTranscriptFlushed
+                { runId = runtime.runId
+                , turn = turnState.turn
+                }
+            pure projected
     }
 
 externalizeTranscript :: Int -> Transcript -> Transcript
-externalizeTranscript tokenThreshold transcript@Transcript{messages}
-  | hiddenTokenEstimate < tokenThreshold = transcript
-  | Seq.null hidden = transcript
-  | otherwise = Transcript (systemPrefix <> Seq.singleton notice <> currentTurn)
+externalizeTranscript tokenThreshold transcript =
+  fromMaybe transcript (externalizedTranscript tokenThreshold transcript)
+
+externalizedTranscript :: Int -> Transcript -> Maybe Transcript
+externalizedTranscript tokenThreshold Transcript{messages}
+  | hiddenTokenEstimate < tokenThreshold = Nothing
+  | Seq.null hidden = Nothing
+  | otherwise = Just (Transcript (systemPrefix <> Seq.singleton notice <> currentTurn))
   where
     messageList = toList messages
     systemCount = length (takeWhile ((== "system") . (.role)) messageList)

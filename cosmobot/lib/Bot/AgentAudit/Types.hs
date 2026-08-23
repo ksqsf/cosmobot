@@ -37,6 +37,7 @@ data AgentAuditEvent
       , messageId :: !(Maybe MessageId)
       , maxTurns :: !Int
       , exposedTools :: ![Text]
+      , contextStrategy :: !(Maybe Text)
       }
   | ModelTurnStarted
       { runId :: !Text
@@ -58,6 +59,10 @@ data AgentAuditEvent
       , turn :: !Int
       , messageCount :: !Int
       , tokenUsage :: !(Maybe LLM.TokenUsage)
+      }
+  | RecursiveTranscriptFlushed
+      { runId :: !Text
+      , turn :: !Int
       }
   | SubAgentRunStarted
       { runId :: !Text
@@ -137,6 +142,7 @@ eventRunId = \case
   ModelTurnStarted{runId} -> runId
   ModelTurnFinished{runId} -> runId
   ContextCompacted{runId} -> runId
+  RecursiveTranscriptFlushed{runId} -> runId
   SubAgentRunStarted{runId} -> runId
   ToolCallStarted{runId} -> runId
   ToolCallFinished{runId} -> runId

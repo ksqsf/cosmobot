@@ -239,6 +239,7 @@ auditEventKind = \case
   ModelTurnStarted{} -> "model_turn_started"
   ModelTurnFinished{} -> "model_turn_finished"
   ContextCompacted{} -> "context_compacted"
+  RecursiveTranscriptFlushed{} -> "recursive_transcript_flushed"
   SubAgentRunStarted{} -> "subagent_run_started"
   ToolCallStarted{} -> toolCallStartedKind
   ToolCallFinished{} -> toolCallFinishedKind

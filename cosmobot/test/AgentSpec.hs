@@ -292,6 +292,7 @@ main =
       , testCase "agent request merges current message context into system prompt" testAgentRequestMergesCurrentMessageContextIntoSystemPrompt
       , testCase "agent compacts old transcript context before model turn" testAgentCompactsOldTranscriptContextBeforeModelTurn
       , testCase "recursive transcript externalizes only the model view" testRecursiveTranscriptExternalizesModelView
+      , testCase "recursive transcript records every flush" testRecursiveTranscriptRecordsEveryFlush
       , testCase "recursive transcript query can launch nested child agents" testRecursiveTranscriptQueryLaunchesNestedChildren
       , testCase "recursive transcript child reads hidden canonical evidence" testRecursiveTranscriptChildReadsHiddenEvidence
       , testCase "transcript search returns only regex matches" testTranscriptSearchRegex
@@ -316,6 +317,7 @@ main =
       , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
       , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
+      , testCase "agent audit decodes legacy run strategy" testAgentAuditDecodesLegacyRunStrategy
       , testCase "agent audit migrates legacy records without changing ids" testAgentAuditMigratesLegacyRecords
       , testCase "SQLite storage pool runs actions concurrently" testSQLiteStoragePoolRunsActionsConcurrently
       , testCase "thread stats accumulate the replied branch" testThreadStatsAccumulateRepliedBranch
@@ -723,7 +725,7 @@ testPythonControlAndNestedScopes = do
     let observed =
           PythonMiddleware.withPythonRunner interpreter
           . ToolResultCompaction.withToolResultCompaction
-          . AgentObservation.withObservation observer
+          . AgentObservation.withObservation observer AgentTypes.ContextCompaction
           . ToolMiddleware.withToolMessage
           . ToolMiddleware.withToolFailureRecovery
           $ runtime
@@ -791,7 +793,7 @@ testPythonMalformedControlLifecycle = do
     let program =
           PythonMiddleware.withPythonRunner interpreter
           . ToolResultCompaction.withToolResultCompaction
-          . AgentObservation.withObservation observer
+          . AgentObservation.withObservation observer AgentTypes.ContextCompaction
           . ToolMiddleware.withToolMessage
           . ToolMiddleware.withToolFailureRecovery
           $ runtime
@@ -2135,6 +2137,37 @@ testRecursiveTranscriptExternalizesModelView = do
     plainMessageContent LLM.ChatMessage{content = Just (LLM.TextContent text)} = text
     plainMessageContent _ = ""
 
+testRecursiveTranscriptRecordsEveryFlush :: IO ()
+testRecursiveTranscriptRecordsEveryFlush = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "noop-1" "noop" (Aeson.object [])]
+    , chatAnswer "done" []
+    ]
+  let noop =
+        AgentTool.withDescription "No operation."
+          $ AgentTool.tool "noop" AgentTool.noArguments (pure (Agent.toolText "ok"))
+      canonical = Transcript (Seq.fromList
+        [ LLM.systemText "system"
+        , LLM.userText (Text.replicate 20 "hidden history ")
+        , LLM.assistantText "old answer"
+        , LLM.userText "current question"
+        ])
+  records <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    runtime <- startTestRuntime 2 agentContext [noop]
+    _ <- S.toList $ Agent.agentStream
+      (Agent.defaultRuntimeWithStrategy AgentAudit.agentAuditObserver AgentTypes.RecursiveTranscript 1 runtime)
+      canonical
+    AgentAudit.queryRecentAuditRecords 20
+  let flushCount = length
+        [ ()
+        | AgentAudit.AgentAuditRecord{event = AgentAudit.RecursiveTranscriptFlushed{}} <- records
+        ]
+      events = [event | AgentAudit.AgentAuditRecord{event} <- records]
+  unless (flushCount == 2) $
+    assertFailure [i|expected 2 recursive transcript flushes, got #{flushCount}: #{show events :: String}|]
+  [contextStrategy | AgentAudit.AgentAuditRecord{event = AgentAudit.AgentRunStarted{contextStrategy}} <- records]
+    @?= [Just "recursive_transcript"]
+
 testRecursiveTranscriptQueryLaunchesNestedChildren :: IO ()
 testRecursiveTranscriptQueryLaunchesNestedChildren = do
   answers <- IORef.newIORef
@@ -2658,6 +2691,24 @@ testAgentAuditRecordsToolEvents = do
   assertBool "expected model start in audit records" (any (\case AgentAudit.ModelTurnStarted{} -> True; _ -> False) (map (.event) records))
   assertBool "expected run finish in audit records" (any (\case AgentAudit.AgentRunFinished{} -> True; _ -> False) (map (.event) records))
 
+testAgentAuditDecodesLegacyRunStrategy :: Assertion
+testAgentAuditDecodesLegacyRunStrategy = do
+  let current = AgentAudit.AgentRunStarted
+        { runId = "legacy-run"
+        , messageId = Nothing
+        , maxTurns = 8
+        , exposedTools = []
+        , contextStrategy = Just "context_compaction"
+        }
+      legacy = case Aeson.toJSON current of
+        Aeson.Object object -> Aeson.Object (AesonKeyMap.delete "contextStrategy" object)
+        value -> value
+  case Aeson.fromJSON legacy of
+    Aeson.Success AgentAudit.AgentRunStarted{contextStrategy} ->
+      contextStrategy @?= Nothing
+    other ->
+      assertFailure [i|failed to decode legacy run start: #{show other :: String}|]
+
 testAgentAuditMigratesLegacyRecords :: IO ()
 testAgentAuditMigratesLegacyRecords =
   withSQLiteTempPath "audit-migration" \dbPath -> do
@@ -2772,8 +2823,8 @@ testThreadStatsAccumulateRepliedBranch = do
       rememberActiveThread threads "run-2" (Just answer1) (Just user2) askHandlerMessage "U2" resource transcript1
     addActiveThreadMessage threads active2 answer2
     finishActiveThread threads active2 transcript2
-    persistStatsRun "run-1" answer1 Nothing (LLM.TokenUsage 100 10 110 (Just 40))
-    persistStatsRun "run-2" answer2 (Just answer1.messageId) (LLM.TokenUsage 200 20 220 (Just 120))
+    persistStatsRun "run-1" "context_compaction" answer1 Nothing (LLM.TokenUsage 100 10 110 (Just 40))
+    persistStatsRun "run-2" "recursive_transcript" answer2 (Just answer1.messageId) (LLM.TokenUsage 200 20 220 (Just 120))
     void $ AgentAuditStorage.persistEvent (addUTCTime 4 staleAuditTime) AgentAudit.SubAgentRunStarted
       { runId = "run-2"
       , childRunId = "child-run-1"
@@ -2812,6 +2863,8 @@ testThreadStatsAccumulateRepliedBranch = do
       assertBool [i|first answer stats should include lifecycle timing; got #{firstStats}|] ("- run wall time: 3.0s total (includes model and tools)" `Text.isInfixOf` firstStats)
       assertBool [i|first answer stats should include model timing; got #{firstStats}|] ("- model time: 1.0s completed" `Text.isInfixOf` firstStats)
       assertBool [i|first answer stats should include context messages; got #{firstStats}|] ("- context messages: 2 now / 2 peak" `Text.isInfixOf` firstStats)
+      assertBool [i|compaction stats should hide recursive transcript flushes; got #{firstStats}|]
+        ("- context compactions: 1 calls, tokens unreported" `Text.isInfixOf` firstStats && not ("recursive transcript flushes" `Text.isInfixOf` firstStats))
       assertBool [i|first answer stats should include run config; got #{firstStats}|] ("- run config: 8 max tool turns, 2 exposed tools" `Text.isInfixOf` firstStats)
       assertBool [i|first answer stats should include only first-run tokens; got #{firstStats}|] ("- tokens: 110 total (100 prompt, 10 completion;" `Text.isInfixOf` firstStats)
       assertBool [i|first answer stats should include only its resource; got #{firstStats}|] ("- resources: 1" `Text.isInfixOf` firstStats && "`first-resource` (`SubAgent`): ready" `Text.isInfixOf` firstStats)
@@ -2820,6 +2873,9 @@ testThreadStatsAccumulateRepliedBranch = do
       assertBool [i|second answer stats should sum the replied branch; got #{secondStats}|] ("- tokens: 330 total (300 prompt, 30 completion; request cache: 160 hit, 53.3%)" `Text.isInfixOf` secondStats)
       assertBool [i|second answer stats should sum the latest agent run; got #{secondStats}|] ("- current run: 220 total (200 prompt, 20 completion; request cache: 120 hit, 60.0%)" `Text.isInfixOf` secondStats)
       assertBool [i|second answer stats should count both model turns; got #{secondStats}|] ("- model turns: 2" `Text.isInfixOf` secondStats)
+      let rootStats = fst (Text.breakOn "- subagents:" secondStats)
+      assertBool [i|recursive transcript stats should hide compaction summary; got #{rootStats}|]
+        ("- recursive transcript flushes: 2" `Text.isInfixOf` rootStats && not ("context compactions" `Text.isInfixOf` rootStats))
       assertBool [i|second answer stats should show enabled tool groups above tool calls; got #{secondStats}|]
         ("- tool enabled: essential (8), work (2)\n- tool calls:" `Text.isInfixOf` secondStats)
       assertBool [i|second answer stats should report recursive subagents separately; got #{secondStats}|] (all (`Text.isInfixOf` secondStats) ["- subagents: 2 runs", "`researcher` (`child-run-1`)", "    - subagents: 1 runs", "`reviewer` (`child-run-2`)", "- tokens: 90 total (80 prompt, 10 completion;", "- tokens: 65 total (60 prompt, 5 completion;"])
@@ -2857,6 +2913,7 @@ testThreadStatsShowActiveRunningTools = do
       , messageId = Just original.messageId
       , maxTurns = 8
       , exposedTools = ["run_bash"]
+      , contextStrategy = Just "context_compaction"
       }
     void $ AgentAuditStorage.persistEvent now AgentAudit.ModelTurnStarted
       { runId = "active-run"
@@ -2899,6 +2956,7 @@ testThreadStatsShowActiveRunningTools = do
       , messageId = Just original.messageId
       , maxTurns = 8
       , exposedTools = ["fetch_url"]
+      , contextStrategy = Just "context_compaction"
       }
     void $ AgentAuditStorage.persistEvent staleTime AgentAudit.ToolCallStarted
       { runId = "stale-run"
@@ -2938,16 +2996,18 @@ testThreadStatsShowActiveRunningTools = do
 persistStatsRun
   :: (StorageEffect.Storage :> es, KatipE :> es, IOE :> es)
   => Text
+  -> Text
   -> ThreadMessageKey
   -> Maybe MessageId
   -> LLM.TokenUsage
   -> Eff es ()
-persistStatsRun runId linkedKey parentMessageId tokenUsage = do
+persistStatsRun runId contextStrategy linkedKey parentMessageId tokenUsage = do
   void $ AgentAuditStorage.persistEvent staleAuditTime AgentAudit.AgentRunStarted
     { runId
     , messageId = Just linkedKey.messageId
     , maxTurns = 8
     , exposedTools = ["sandbox", "subagent"]
+    , contextStrategy = Just contextStrategy
     }
   void $ AgentAuditStorage.persistEvent (addUTCTime 1 staleAuditTime) AgentAudit.ModelTurnStarted
     { runId
@@ -2964,6 +3024,20 @@ persistStatsRun runId linkedKey parentMessageId tokenUsage = do
     , toolCalls = []
       , tokenUsage = Just tokenUsage
       }
+  case contextStrategy of
+    "context_compaction" ->
+      void $ AgentAuditStorage.persistEvent (addUTCTime 2 staleAuditTime) AgentAudit.ContextCompacted
+        { runId
+        , turn = 1
+        , messageCount = 2
+        , tokenUsage = Nothing
+        }
+    "recursive_transcript" ->
+      replicateM_ 2 $ void $ AgentAuditStorage.persistEvent (addUTCTime 2 staleAuditTime) AgentAudit.RecursiveTranscriptFlushed
+        { runId
+        , turn = 1
+        }
+    _ -> pure ()
   void $ AgentAuditStorage.persistEvent (addUTCTime 3 staleAuditTime) AgentAudit.AgentRunFinished
     { runId
     , status = "answered"
@@ -2988,6 +3062,7 @@ persistChildStatsRun runId tokenUsage = do
     , messageId = Nothing
     , maxTurns = 8
     , exposedTools = ["sandbox"]
+    , contextStrategy = Just "context_compaction"
     }
   void $ AgentAuditStorage.persistEvent (addUTCTime 6 staleAuditTime) AgentAudit.ModelTurnStarted
     { runId

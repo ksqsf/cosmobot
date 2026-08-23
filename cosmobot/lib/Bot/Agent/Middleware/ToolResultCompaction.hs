@@ -51,7 +51,9 @@ withToolResultCompaction program@Runtime{aroundToolTurn = toolTurn} =
     , modelInputTranscript = \context agentState ->
         case agentState.nextModelTranscript of
           Just transcript ->
-            pure transcript
+            program.modelInputTranscript
+              (toolResultObservation HList.:& context)
+              agentState{transcript, nextModelTranscript = Nothing}
           Nothing ->
             program.modelInputTranscript (toolResultObservation HList.:& context) agentState
     , aroundModelTurn = \context agentState action ->

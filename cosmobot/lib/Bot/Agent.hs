@@ -257,7 +257,7 @@ defaultRuntimeWithStrategy observer contextStrategy contextTokenThreshold =
   . withToolLimit isResumeTransfer
   . withTypingNotification
   . withToolResultCompaction
-  . withObservation observer
+  . withObservation observer contextStrategy
   . withToolMessage
   . contextMiddleware
   . withToolFailureRecovery

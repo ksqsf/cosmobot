@@ -25,8 +25,14 @@ recordAgentEvent recordEvent event =
 
 agentAuditEvent :: Agent.Event -> Maybe AgentAuditEvent
 agentAuditEvent = \case
-  Agent.AgentRunStarted{runId, messageId, maxTurns, exposedTools} ->
-    Just AgentRunStarted{runId, messageId, maxTurns, exposedTools}
+  Agent.AgentRunStarted{runId, messageId, maxTurns, exposedTools, contextStrategy} ->
+    Just AgentRunStarted
+      { runId
+      , messageId
+      , maxTurns
+      , exposedTools
+      , contextStrategy = Just (renderContextStrategy contextStrategy)
+      }
   Agent.ModelTurnStarted{runId, turn, messageCount, exposedTools, toolGroups} ->
     Just ModelTurnStarted{runId, turn, messageCount, exposedTools, toolGroups = Just toolGroups}
   Agent.ModelTurnFinished{runId, turn, answerKind, contentLength, toolCalls, tokenUsage} ->
@@ -40,6 +46,8 @@ agentAuditEvent = \case
       }
   Agent.ContextCompacted{runId, turn, messageCount, tokenUsage} ->
     Just ContextCompacted{runId, turn, messageCount, tokenUsage}
+  Agent.RecursiveTranscriptFlushed{runId, turn} ->
+    Just RecursiveTranscriptFlushed{runId, turn}
   Agent.SubAgentRunStarted{runId, childRunId, subagentId} ->
     Just SubAgentRunStarted{runId, childRunId, subagentId}
   Agent.ToolCallStarted{runId, turn, toolCall} ->
@@ -68,3 +76,8 @@ toolCallTrace call =
 observationContext :: Maybe Integer -> Observation.ObservationContext
 observationContext auditId =
   Observation.ObservationContext{Observation.auditToolUseId = auditId}
+
+renderContextStrategy :: Agent.ContextStrategy -> Text
+renderContextStrategy = \case
+  Agent.ContextCompaction -> "context_compaction"
+  Agent.RecursiveTranscript -> "recursive_transcript"

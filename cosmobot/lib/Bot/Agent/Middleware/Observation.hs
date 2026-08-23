@@ -62,12 +62,13 @@ withObservation
   :: forall context es.
      HList.Has (ToolResultObservation es) context
   => Observer ObservationContext (Eff es)
+  -> ContextStrategy
   -> Runtime (ObservationContext ': EventObservation es ': context) (Eff es)
   -> Runtime context (Eff es)
-withObservation observer program@Runtime{aroundToolTurn = toolTurn} =
+withObservation observer contextStrategy program@Runtime{aroundToolTurn = toolTurn} =
   program
     { aroundAgentRun = \context action ->
-        withObservedAgentRun observer program (map toolName program.exposedTools) do
+        withObservedAgentRun observer contextStrategy program (map toolName program.exposedTools) do
           program.aroundAgentRun (observedContext emptyObservationContext context) action
     , modelInputTranscript = \context agentState ->
         program.modelInputTranscript (observedContext emptyObservationContext context) agentState
@@ -135,11 +136,12 @@ transcriptMessageCount TurnState{transcript = Transcript{messages}} =
 
 withObservedAgentRun
   :: Observer ObservationContext (Eff es)
+  -> ContextStrategy
   -> Runtime context (Eff es)
   -> [Text]
   -> Stream (Of Output) (Eff es) Result
   -> Stream (Of Output) (Eff es) Result
-withObservedAgentRun observer runtime exposedTools action =
+withObservedAgentRun observer contextStrategy runtime exposedTools action =
   catchStream
     ( do
         lift $ void $ observer AgentRunStarted
@@ -147,6 +149,7 @@ withObservedAgentRun observer runtime exposedTools action =
           , messageId = runtime.context.message.messageId
           , maxTurns = runtime.maxTurns
           , exposedTools
+          , contextStrategy
           }
         result <- action
         let Result{status, finalText, turnsUsed} = result

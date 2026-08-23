@@ -131,6 +131,7 @@ data Event
       , messageId :: !(Maybe MessageId)
       , maxTurns :: !Int
       , exposedTools :: ![Text]
+      , contextStrategy :: !ContextStrategy
       }
   | ModelTurnStarted
       { runId :: !Text
@@ -152,6 +153,10 @@ data Event
       , turn :: !Int
       , messageCount :: !Int
       , tokenUsage :: !(Maybe LLM.TokenUsage)
+      }
+  | RecursiveTranscriptFlushed
+      { runId :: !Text
+      , turn :: !Int
       }
   | SubAgentRunStarted
       { runId :: !Text
