@@ -1,5 +1,6 @@
 packages:
   cosmobot
+  cosmobot-plugin-sdk
   cosmocode
 
 import: https://www.stackage.org/lts-24.42/cabal.config

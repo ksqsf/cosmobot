@@ -1,0 +1,45 @@
+cabal-version:      3.0
+name:               cosmobot-plugin-sdk
+version:            0.1.0.0
+synopsis:           Standalone author SDK for cosmobot plugins
+description:        Applicative declarations and JSON-RPC runtime for cosmobot plugins.
+category:           Network
+maintainer:         cosmobot contributors
+license:            MIT
+build-type:         Simple
+
+common settings
+  default-language: GHC2021
+  ghc-options:      -Wall
+
+library
+  import:           settings
+  exposed-modules:  Cosmobot.Plugin
+  hs-source-dirs:   src
+  build-depends:
+      aeson >=2.1 && <2.4
+    , base >=4.18 && <5
+    , bytestring >=0.11 && <0.13
+    , containers >=0.6 && <0.8
+    , text >=2.0 && <2.2
+
+test-suite sdk-spec
+  import:           settings
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  main-is:          Main.hs
+  build-depends:
+      aeson
+    , base
+    , cosmobot-plugin-sdk
+    , directory
+    , process
+    , text
+
+executable echo-plugin
+  import:           settings
+  hs-source-dirs:   example
+  main-is:          Main.hs
+  build-depends:
+      base
+    , cosmobot-plugin-sdk
