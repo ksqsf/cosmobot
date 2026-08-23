@@ -19,6 +19,7 @@ import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import Bot.Storage.Thread
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Data.Time (FormatTime, UTCTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime)
 
@@ -116,9 +117,11 @@ renderAuditList toolUses =
   Text.unlines ("*Recent agent tool uses*" : map renderToolUseLine toolUses)
 
 data SubAgentRunAudit = SubAgentRunAudit
-  { parentRunId :: !Text
+  { startedAuditId :: !Integer
+  , parentRunId :: !Text
   , subagentId :: !Text
   , runId :: !Text
+  , runIds :: ![Text]
   , records :: ![AgentAudit.AgentAuditRecord]
   }
 
@@ -128,24 +131,36 @@ querySubAgentRuns
   -> [AgentAudit.AgentAuditRecord]
   -> Eff es [SubAgentRunAudit]
 querySubAgentRuns rootRunIds rootRecords =
-  go rootRunIds (subAgentLinks rootRecords)
+  mergeSubAgentRuns <$> go rootRunIds (subAgentLinks rootRecords)
   where
     go _ [] =
       pure []
-    go seen ((parentRunId, subagentId, runId) : pending)
+    go seen ((startedAuditId, parentRunId, subagentId, runId) : pending)
       | runId `elem` seen =
           go seen pending
       | otherwise = do
           records <- AgentAudit.queryRunAudit runId
           rest <- go (runId : seen) (pending <> subAgentLinks records)
-          pure (SubAgentRunAudit{parentRunId, subagentId, runId, records} : rest)
+          pure (SubAgentRunAudit{startedAuditId, parentRunId, subagentId, runId, runIds = [runId], records} : rest)
 
     subAgentLinks records =
-      [ (runId, subagentId, childRunId)
+      [ (startedAuditId, runId, subagentId, childRunId)
       | AgentAudit.AgentAuditRecord
-          { event = AgentAudit.SubAgentRunStarted{runId, subagentId, childRunId}
+          { id = startedAuditId
+          , event = AgentAudit.SubAgentRunStarted{runId, subagentId, childRunId}
           } <- records
       ]
+
+mergeSubAgentRuns :: [SubAgentRunAudit] -> [SubAgentRunAudit]
+mergeSubAgentRuns =
+  sortOn (.startedAuditId) . Map.elems . Map.fromListWith merge . map (\run -> (run.subagentId, run))
+  where
+    merge left right =
+      let latest = if left.startedAuditId > right.startedAuditId then left else right
+      in latest
+        { runIds = ordNub (left.runIds <> right.runIds)
+        , records = sortOn (.id) (ordNubOn (.id) (left.records <> right.records))
+        }
 
 renderThreadStats :: UTCTime -> MessageId -> Int -> Maybe Text -> Maybe Int -> [AgentAudit.AgentAuditRecord] -> [SubAgentRunAudit] -> [Resource.SomeResourceObject] -> Text
 renderThreadStats now parentId branchMessages activeRunId pendingSteers records subAgentRuns resources
@@ -308,14 +323,14 @@ threadRunIds activeRunId records =
 
 renderSubAgentStats :: UTCTime -> [Text] -> [SubAgentRunAudit] -> [Text]
 renderSubAgentStats _ _ [] =
-  ["- subagents: 0 runs"]
+  ["- subagents: " <> renderSubAgentCount 0]
 renderSubAgentStats now rootRunIds runs =
-  [i|- subagents: #{length runs} runs|] : concatMap (renderRun 2) rootRuns
+  ("- subagents: " <> renderSubAgentCount (length runs)) : concatMap (renderRun 2) rootRuns
   where
     rootRuns =
       filter ((`elem` rootRunIds) . (.parentRunId)) runs
 
-    renderRun indentation SubAgentRunAudit{subagentId, runId, records} =
+    renderRun indentation SubAgentRunAudit{subagentId, runId, runIds, records} =
       let modelUsages =
             [ tokenUsage
             | AgentAudit.AgentAuditRecord
@@ -344,16 +359,25 @@ renderSubAgentStats now rootRunIds runs =
               ]
           toolUses = AgentAudit.toolUsesFromAuditRecords records
           modelDurations = modelTurnDurations now Nothing "complete" records
-          status = subAgentRunStatus records
+          latestRecords = filter ((== runId) . AgentAudit.eventRunId . (.event)) records
+          status = subAgentRunStatus latestRecords
           active = [runId | status == "running"]
-          duration = runDurationMilliseconds now (viaNonEmpty head active) runId records
-          durationText = maybe "time unreported" renderMilliseconds duration
-          children = filter ((== runId) . (.parentRunId)) runs
+          durations = mapMaybe (\childRunId -> runDurationMilliseconds now (viaNonEmpty head active) childRunId records) runIds
+          unreportedDurations = length runIds - length durations
+          durationText
+            | null durations = "time unreported"
+            | unreportedDurations == 0 = renderMilliseconds (sum durations)
+            | otherwise = [i|#{renderMilliseconds (sum durations)}; #{unreportedDurations} unreported|]
+          runCount :: Text
+          runCount
+            | length runIds == 1 = ""
+            | otherwise = [i|, #{length runIds} runs|]
+          children = filter ((`elem` runIds) . (.parentRunId)) runs
           nested =
-            [spaces (indentation + 2) <> [i|- subagents: #{length children} runs|] | not (null children)]
+            [spaces (indentation + 2) <> "- subagents: " <> renderSubAgentCount (length children) | not (null children)]
               <> concatMap (renderRun (indentation + 4)) children
       in
-      [ spaces indentation <> [i|- `#{subagentId}` (`#{runId}`): #{status}, #{length modelUsages} model turns, #{length toolUses} tool calls, #{durationText}|]
+      [ spaces indentation <> [i|- `#{subagentId}` (`#{runId}`#{runCount}): #{status}, #{length modelUsages} model turns, #{length toolUses} tool calls, #{durationText}|]
       , spaces (indentation + 2) <> renderRunUsage "tokens" modelUsages
       , spaces (indentation + 2) <> renderModelTime modelDurations
       , spaces (indentation + 2) <> renderContextStrategyUsage contextStrategy compactionUsages recursiveTranscriptFlushes
@@ -362,6 +386,10 @@ renderSubAgentStats now rootRunIds runs =
 
     spaces count =
       Text.replicate count " "
+
+renderSubAgentCount :: Int -> Text
+renderSubAgentCount count =
+  show count <> if count == 1 then " agent" else " agents"
 
 subAgentRunStatus :: [AgentAudit.AgentAuditRecord] -> Text
 subAgentRunStatus records =

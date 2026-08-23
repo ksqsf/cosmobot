@@ -2830,12 +2830,6 @@ testThreadStatsAccumulateRepliedBranch = do
       , childRunId = "child-run-1"
       , subagentId = "researcher"
       }
-    void $ AgentAuditStorage.persistEvent (addUTCTime 4 staleAuditTime) AgentAudit.AgentThreadLinked
-      { runId = "run-2"
-      , linkedMessageId = answer2.messageId
-      , linkedMessageKey = Just answer2
-      , parentMessageId = Just answer1.messageId
-      }
     persistChildStatsRun "child-run-1" (LLM.TokenUsage 80 10 90 (Just 20))
     void $ AgentAuditStorage.persistEvent (addUTCTime 9 staleAuditTime) AgentAudit.SubAgentRunStarted
       { runId = "child-run-1"
@@ -2843,6 +2837,24 @@ testThreadStatsAccumulateRepliedBranch = do
       , subagentId = "reviewer"
       }
     persistChildStatsRun "child-run-2" (LLM.TokenUsage 60 5 65 (Just 30))
+    void $ AgentAuditStorage.persistEvent (addUTCTime 10 staleAuditTime) AgentAudit.SubAgentRunStarted
+      { runId = "run-2"
+      , childRunId = "child-run-3"
+      , subagentId = "researcher"
+      }
+    persistChildStatsRun "child-run-3" (LLM.TokenUsage 40 4 44 (Just 10))
+    void $ AgentAuditStorage.persistEvent (addUTCTime 11 staleAuditTime) AgentAudit.SubAgentRunStarted
+      { runId = "child-run-3"
+      , childRunId = "child-run-4"
+      , subagentId = "reviewer"
+      }
+    persistChildStatsRun "child-run-4" (LLM.TokenUsage 30 3 33 (Just 5))
+    void $ AgentAuditStorage.persistEvent (addUTCTime 12 staleAuditTime) AgentAudit.AgentThreadLinked
+      { runId = "run-2"
+      , linkedMessageId = answer2.messageId
+      , linkedMessageKey = Just answer2
+      , parentMessageId = Just answer1.messageId
+      }
     let createResource runId resourceId =
           ResourceEffect.createNamedForRun @SubAgentResource.SubAgent runId Nothing resourceId ResourceEffect.Init
             { message = askHandlerMessage
@@ -2878,7 +2890,18 @@ testThreadStatsAccumulateRepliedBranch = do
         ("- recursive transcript flushes: 2" `Text.isInfixOf` rootStats && not ("context compactions" `Text.isInfixOf` rootStats))
       assertBool [i|second answer stats should show enabled tool groups above tool calls; got #{secondStats}|]
         ("- tool enabled: essential (8), work (2)\n- tool calls:" `Text.isInfixOf` secondStats)
-      assertBool [i|second answer stats should report recursive subagents separately; got #{secondStats}|] (all (`Text.isInfixOf` secondStats) ["- subagents: 2 runs", "`researcher` (`child-run-1`)", "    - subagents: 1 runs", "`reviewer` (`child-run-2`)", "- tokens: 90 total (80 prompt, 10 completion;", "- tokens: 65 total (60 prompt, 5 completion;"])
+      assertBool [i|second answer stats should merge each subagent's runs; got #{secondStats}|] $
+        all (`Text.isInfixOf` secondStats)
+          [ "- subagents: 2 agents"
+          , "`researcher` (`child-run-3`, 2 runs): finished:answered, 2 model turns"
+          , "    - subagents: 1 agent"
+          , "`reviewer` (`child-run-4`, 2 runs): finished:answered, 2 model turns"
+          , "- tokens: 134 total (120 prompt, 14 completion;"
+          , "- tokens: 98 total (90 prompt, 8 completion;"
+          ]
+          && all (not . (`Text.isInfixOf` secondStats)) ["child-run-1", "child-run-2"]
+          && Text.count "`researcher` (" secondStats == 1
+          && Text.count "`reviewer` (" secondStats == 1
       assertBool [i|second answer stats should include branch resources; got #{secondStats}|] ("- resources: 2" `Text.isInfixOf` secondStats && all (`Text.isInfixOf` secondStats) ["`first-resource`", "`second-resource`"])
       assertBool [i|thread stats should exclude unrelated resources; got #{secondStats}|] (not ("`unrelated-resource`" `Text.isInfixOf` secondStats))
     other ->
