@@ -1,0 +1,6 @@
+[plugin]
+required = false
+sandboxed = true
+route_timeout_seconds = 10
+tool_timeout_seconds = 300
+restart_limit = 3
