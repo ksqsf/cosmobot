@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Config
   ( -- * Top-level configuration
     BotConfig (..)
+  , PluginsConfig (..)
   , HandlersConfig (..)
   , AdminConfig (..)
   , AskHandlerConfig (..)
@@ -59,6 +60,7 @@ import qualified Data.Text.IO as TextIO
 import qualified Toml.Semantics.Types as TomlValue
 import qualified Toml
 import Toml.Schema
+import System.FilePath (isRelative, normalise, takeDirectory, (</>))
 
 -- | Fully normalized runtime configuration.
 data BotConfig = BotConfig
@@ -74,6 +76,7 @@ data BotConfig = BotConfig
   , skills   :: !Skills.SkillsConfig
   , rpc      :: !RPCConfig.Config
   , acp      :: !ACPConfig.Config
+  , plugins  :: !PluginsConfig
   , handlers :: !HandlersConfig
   , logLevel :: !Severity
   , sqlitePath :: !FilePath
@@ -88,6 +91,18 @@ data HandlersConfig = HandlersConfig
   }
   deriving (Show)
 
+newtype PluginsConfig = PluginsConfig
+  { pluginDir :: FilePath
+  }
+  deriving (Eq, Show)
+
+defaultPluginsConfig :: PluginsConfig
+defaultPluginsConfig = PluginsConfig{pluginDir = "plugins"}
+
+instance FromValue PluginsConfig where
+  fromValue = parseTableFromValue $ PluginsConfig
+    <$> fmap (fromMaybe defaultPluginsConfig.pluginDir) (optKey "plugin_dir")
+
 -- | Read and normalize the TOML configuration used by the executable.
 loadConfig :: (IOE :> es, Fail :> es) => FilePath -> Eff es BotConfig
 loadConfig path = do
@@ -97,7 +112,7 @@ loadConfig path = do
       fail [i|Failed to parse #{path}: #{unlines (map toText errors)}|]
     Toml.Success warnings config_ -> do
       traverse_ (putStrLn . ("TOML warning: " <>)) warnings
-      pure (toBotConfig config_)
+      pure (toBotConfig path config_)
 
 data FileConfig = FileConfig
   { log      :: !LogFileConfig
@@ -111,6 +126,7 @@ data FileConfig = FileConfig
   , skills   :: !SkillsConfig.FileConfig
   , rpc      :: !RPCConfig.FileConfig
   , acp      :: !ACPConfig.FileConfig
+  , plugins  :: !PluginsConfig
   , handler  :: !HandlerFileConfig
   }
   deriving (Show)
@@ -128,6 +144,7 @@ instance FromValue FileConfig where
     <*> fmap (fromMaybe SkillsConfig.defaultFileConfig) (optKey "skills")
     <*> fmap (fromMaybe RPCConfig.defaultFileConfig) (optKey "rpc")
     <*> fmap (fromMaybe ACPConfig.defaultFileConfig) (optKey "acp")
+    <*> fmap (fromMaybe defaultPluginsConfig) (optKey "plugins")
     <*> reqKey "handler"
 
 data DriverFileConfig = DriverFileConfig
@@ -228,8 +245,8 @@ instance FromValue ConfigLogLevel where
     _ ->
       fail "log.level must be a string"
 
-toBotConfig :: FileConfig -> BotConfig
-toBotConfig cfg =
+toBotConfig :: FilePath -> FileConfig -> BotConfig
+toBotConfig configPath cfg =
   let
     qqFileConfig = cfg.driver.qq
     telegramFileConfig = cfg.driver.telegram
@@ -254,10 +271,18 @@ toBotConfig cfg =
     , skills = SkillsConfig.toSkillsConfig cfg.skills
     , rpc = RPCConfig.toRuntimeConfig cfg.rpc
     , acp = ACPConfig.toRuntimeConfig cfg.acp
+    , plugins = cfg.plugins
+        { pluginDir = resolveBesideConfig configPath cfg.plugins.pluginDir
+        }
     , handlers = HandlersConfig cfg.handler.admin askConfig cfg.handler.shutup
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath
     }
+
+resolveBesideConfig :: FilePath -> FilePath -> FilePath
+resolveBesideConfig configPath path
+  | isRelative path = normalise (takeDirectory configPath </> path)
+  | otherwise = normalise path
 
 configuredBotIds :: Maybe QQConfig.FileConfig -> Maybe TelegramConfig.FileConfig -> Maybe MatrixConfig.FileConfig -> Maybe DiscordConfig.FileConfig -> [(ChatPlatform, Text)]
 configuredBotIds qqCfg telegramCfg matrixCfg discordCfg =

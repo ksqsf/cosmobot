@@ -46,11 +46,14 @@ extra-doc-files:    CHANGELOG.md
                   , doc/AgentProgram.md
                   , doc/Continuation.md
                   , doc/RPC.md
+                  , doc/Plugins.md
 
 data-files:         python/cosmobot_worker.py
 
 -- Extra source files to be distributed with the package, such as examples, or a tutorial module.
 extra-source-files: python/test_cosmobot_worker.py
+                    test/plugin_fixture.py
+                    protocol-fixtures/route-invoke.json
                     pyproject.toml
 
 common warnings
@@ -262,6 +265,7 @@ library
         Bot.Effect.Media
         Bot.Effect.Matrix
         Bot.Effect.Memory
+        Bot.Effect.Plugin
         Bot.Effect.Resource
         Bot.Effect.Scheduler
         Bot.Effect.Skills
@@ -276,6 +280,7 @@ library
         Bot.Handler.Audit
         Bot.Handler.Help
         Bot.Handler.Media
+        Bot.Handler.Plugin
         Bot.Handler.Resource
         Bot.Handler.Safebooru
         Bot.Handler.Saucenao
@@ -305,6 +310,12 @@ library
         Bot.Memory
         Bot.Memory.Config
         Bot.Prelude
+        Bot.Plugin.Config
+        Bot.Plugin.Manager
+        Bot.Plugin.Protocol
+        Bot.Plugin.Sandbox
+        Bot.Plugin.Tool
+        Bot.Plugin.Types
         Bot.RPC.Audit
         Bot.RPC.Client
         Bot.RPC.Config
@@ -383,6 +394,27 @@ test-suite filter-spec
     type:             exitcode-stdio-1.0
     main-is:          FilterSpec.hs
     build-depends:    toml-parser
+    hs-source-dirs:   test
+
+test-suite plugin-spec
+    import:           warnings
+                    , threaded
+                    , language
+                    , test-deps
+                    , test-build
+    type:             exitcode-stdio-1.0
+    main-is:          PluginSpec.hs
+    build-depends:    temporary
+    hs-source-dirs:   test
+
+test-suite plugin-domain-spec
+    import:           warnings
+                    , language
+                    , test-deps
+                    , test-build
+    type:             exitcode-stdio-1.0
+    main-is:          PluginDomainSpec.hs
+    build-depends:    temporary
     hs-source-dirs:   test
 
 test-suite scratchpad-spec

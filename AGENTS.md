@@ -14,6 +14,12 @@ Placed under ./cosmobot.
 - Concrete integrations stay behind interpreters or infrastructure modules: chat drivers, storage modules, LLM transport, memory files, and `Bot.System.*`.
 - `app/Main.hs` is the composition root. Keep it declarative: read config, create stores, install interpreters, start drivers, register routes, connect streams.
 
+### Plugin First
+
+- If a feature only needs commands, agent tools, or the public chat/LLM/agent/media capabilities, implement it as an external plugin instead of changing cosmobot's core.
+- Use the [Haskell plugin SDK](cosmobot-plugin-sdk/README.md) or [Python plugin SDK](cosmobot-plugin-python/README.md). The wire contract is documented in [External plugins](cosmobot/doc/Plugins.md).
+- Change the core only when the feature needs a new platform-neutral capability or cannot be expressed safely through the plugin protocol.
+
 ### Module Ownership
 
 - `Bot.Core.*`: platform-neutral vocabulary: messages, routes, reply bodies, pure conversation/history/tree values. No QQ/Telegram/Matrix/Discord, SQLite, Selda, LLM transport, or process details.

@@ -24,6 +24,7 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
+import qualified Bot.Effect.Plugin as Plugin
 import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
@@ -52,6 +53,7 @@ type HandlerEffects es =
   , LLM.LLM :> es
   , Media.Media :> es
   , Memory.Memory :> es
+  , Plugin.Plugin :> es
   , Resource.Resource :> es
   , Concurrent :> es
   , Skills.Skills :> es

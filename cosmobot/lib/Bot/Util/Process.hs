@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Util.Process
   ( processOutputText
   , killProcessGroup
+  , killProcessGroupByPid
   , readProcessGroupWithExitCode
   )
 where
@@ -19,6 +20,7 @@ import qualified Effectful.Process as Process
 import qualified Effectful.Process.Typed as TypedProcess
 import System.Exit (ExitCode)
 import System.Posix.Signals (signalProcess, signalProcessGroup, sigKILL)
+import System.Process (Pid)
 
 processOutputText :: Concurrent :> es => STM.STM LazyByteString.ByteString -> Eff es Text
 processOutputText =
@@ -27,13 +29,14 @@ processOutputText =
 killProcessGroup :: (IOE :> es, Process.Process :> es) => Process.ProcessHandle -> Eff es ()
 killProcessGroup processHandle = do
   mPid <- Process.getPid processHandle
-  traverse_ killPid mPid
-  where
-    killPid pid =
-      ignoreIO $
-        (liftIO $ signalProcessGroup sigKILL (fromIntegral pid))
-          `catchSync` \_ ->
-            liftIO $ signalProcess sigKILL pid
+  traverse_ killProcessGroupByPid mPid
+
+killProcessGroupByPid :: IOE :> es => Pid -> Eff es ()
+killProcessGroupByPid pid =
+  ignoreIO $
+    (liftIO $ signalProcessGroup sigKILL (fromIntegral pid))
+      `catchSync` \_ ->
+        liftIO $ signalProcess sigKILL pid
 
 ignoreIO :: IOE :> es => Eff es () -> Eff es ()
 ignoreIO action =

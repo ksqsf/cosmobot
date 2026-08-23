@@ -36,7 +36,6 @@ adminHandlers cfg =
   , reloadRoute
   , restartRoute
   , titleRoute
-  , echoRoute
   , idRoute
   ] <> maybeToList (upgradeRoute <$> cfg.upgrade)
 
@@ -74,15 +73,6 @@ handleRestart :: (Chat.Chat :> es, LifecycleEffect.Lifecycle :> es) => IncomingM
 handleRestart message _ = do
   void $ Chat.replyTo message "正在重启 cosmobot。"
   LifecycleEffect.requestRestart message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
-
-echoRoute :: Chat.Chat :> es => RouteHandler es
-echoRoute =
-  withHelp (RouteHelp "!echo <text>" "Echo text back to the chat.") $
-    stopOn (command "!echo") handleEcho
-
-handleEcho :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
-handleEcho message rawArgs = do
-  void $ Chat.replyTo message rawArgs
 
 titleRoute :: Chat.Chat :> es => RouteHandler es
 titleRoute =

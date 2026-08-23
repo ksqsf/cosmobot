@@ -48,6 +48,7 @@ import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
+import qualified Bot.Effect.Plugin as Plugin
 import qualified Bot.Effect.Matrix as Matrix
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
@@ -122,6 +123,7 @@ type AgentStack =
    , Chat.Chat
    , AgentAudit.AgentAudit
    , AgentEffect.Agent
+   , Plugin.Plugin
    , ChatLog.ChatLog
    , LLM.LLM
    , Media.Media
@@ -4845,6 +4847,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced r
                       | otherwise -> S.yield content
                   pure answer)
           . ChatLog.runChatLog
+          . runTestPlugin
           . Agent.runAgent
           . AgentAudit.runAgentAudit
           . Chat.runChatWith defaultAgentMockChatDriver
@@ -4892,6 +4895,7 @@ runAgentWithStreamingAnswers answers chatMock action = withMemoryTempDir \memory
                   traverse_ S.yield streamingAnswer.chunks
                   pure streamingAnswer.answer)
           . ChatLog.runChatLog
+          . runTestPlugin
           . Agent.runAgent
           . AgentAudit.runAgentAudit
           . Chat.runChatWith defaultAgentMockChatDriver
@@ -4937,6 +4941,17 @@ runTestACP =
       pure (Left "ACP client terminal test interpreter is not configured.")
     ACP.ReleaseClientTerminal{} ->
       pure (Left "ACP client terminal test interpreter is not configured.")
+
+runTestPlugin :: Eff (Plugin.Plugin : es) a -> Eff es a
+runTestPlugin = interpret \_ -> \case
+  Plugin.Statuses -> pure []
+  Plugin.Load _ -> pure (Left "plugin test interpreter is not configured")
+  Plugin.Unload _ -> pure (Left "plugin test interpreter is not configured")
+  Plugin.Reload _ -> pure (Left "plugin test interpreter is not configured")
+  Plugin.DispatchRoute _ -> pure Nothing
+  Plugin.HelpEntries _ -> pure []
+  Plugin.ToolSnapshot -> pure []
+  Plugin.InvokeTool _ _ _ -> pure (Plugin.ToolInvocationFailure Plugin.TransientInvocation "unavailable" "plugin test interpreter is not configured")
 
 popAnswer :: IORef.IORef [LLM.ChatAnswer] -> IO LLM.ChatAnswer
 popAnswer answers =

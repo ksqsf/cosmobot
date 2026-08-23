@@ -29,6 +29,7 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
+import qualified Bot.Effect.Plugin as Plugin
 import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
@@ -36,6 +37,7 @@ import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import Bot.Handler.Ask.Config
 import qualified Bot.Memory as MemoryStore
+import qualified Bot.Plugin.Tool as PluginTool
 import Bot.Prelude
 import Bot.Storage.Thread
 import qualified Data.Text as Text
@@ -57,6 +59,7 @@ runAskAgentThread
      , LLM.LLM :> es
      , Media.Media :> es
      , Memory.Memory :> es
+     , Plugin.Plugin :> es
      , Resource.Resource :> es
      , Scheduler.Scheduler :> es
      , Skills.Skills :> es
@@ -84,6 +87,7 @@ runAskAgentThread
 runAskAgentThread toolCfg tools cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
   systemPrompt <- askSystemPrompt cfg message
+  dynamicTools <- PluginTool.definitions <$> Plugin.toolSnapshot
   Agent.withAgentMetadata
     (\runId -> Agent.ToolCallMetadata
       { agentRunId = runId
@@ -95,7 +99,7 @@ runAskAgentThread toolCfg tools cfg threads resource parentMessageKey message in
       cfg.contextStrategy
       (compactionThresholdTokens cfg)
       (agentContext toolCfg cfg message input systemPrompt)
-      tools
+      (tools <> dynamicTools)
       \runtime ->
         withActiveReply threads (Agent.runIdOf runtime) resource parentMessageKey message input.text transcript \activeReply -> do
           reply <- streamAgentReply runtime activeReply message transcript

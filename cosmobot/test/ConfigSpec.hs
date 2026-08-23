@@ -9,6 +9,7 @@ import qualified Bot.RPC.Config as RPCConfig
 import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -30,6 +31,7 @@ main =
       , testCase "Python tool converted bounds reject overflow" testPythonOverflow
       , testCase "Python wall timeout is at most one hour" testPythonWallTimeoutBound
       , testCase "Python tool rejects unknown keys" testPythonUnknownKey
+      , testCase "plugin directory resolves beside config" testPluginDirectory
       ]
 
 testDriversTableMayBeOmitted :: IO ()
@@ -178,6 +180,15 @@ testPythonUnknownKey :: IO ()
 testPythonUnknownKey =
   assertConfigFailureContains "unknown tool.python keys: timeout" $
     pythonConfig ["timeout = 30"]
+
+testPluginDirectory :: IO ()
+testPluginDirectory =
+  withSystemTempDirectory "cosmobot-config-spec-" \dir -> do
+    let path = dir </> "config.toml"
+        source = minimalConfig <> "\n[plugins]\nplugin_dir = \"extensions\"\n"
+    TextIO.writeFile path source
+    cfg <- runEff . runFailIO $ Config.loadConfig path
+    cfg.plugins.pluginDir @?= dir </> "extensions"
 
 pythonConfig :: [Text] -> Text
 pythonConfig fields =
