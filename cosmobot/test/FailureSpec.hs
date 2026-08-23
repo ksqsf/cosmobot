@@ -34,6 +34,8 @@ import qualified Data.IORef as IORef
 import qualified Data.List as List
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.ByteString as StrictByteString
 import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.Timeout (Timeout, runTimeout)
@@ -135,7 +137,8 @@ lifecycleCancellationTests =
 transportFailureTests :: TestTree
 transportFailureTests =
   testGroup "streaming transport corruption"
-    [ testCase "malformed chunk shape is rejected" testMalformedStreamChunk
+    [ testCase "UTF-8 split across HTTP chunks is preserved" testUtf8SplitAcrossSseChunks
+    , testCase "malformed chunk shape is rejected" testMalformedStreamChunk
     , testCase "premature EOF drops an incomplete tool call" testPrematureToolCallEOF
     , testCase "duplicate deltas keep stream and terminal answer consistent" testDuplicateStreamDelta
     , testCase "out-of-order tool deltas are assembled by index" testOutOfOrderToolDeltas
@@ -929,6 +932,19 @@ testMalformedStreamChunk =
     Left{} -> pure ()
     Right result ->
       assertFailure [i|malformed chunk unexpectedly parsed as #{show result :: String}|]
+
+testUtf8SplitAcrossSseChunks :: Assertion
+testUtf8SplitAcrossSseChunks = do
+  let json = "{\"content\":\"你\"}"
+      prefix = TextEncoding.encodeUtf8 "data: {\"content\":\""
+      character = TextEncoding.encodeUtf8 "你"
+      suffix = TextEncoding.encodeUtf8 "\"}\n\n"
+      chunks =
+        [ prefix <> StrictByteString.take 1 character
+        , StrictByteString.drop 1 character <> suffix
+        ]
+  payloads <- S.toList_ (LLMTransport.streamSsePayloads (S.each chunks))
+  payloads @?= [TextEncoding.encodeUtf8 json]
 
 testPrematureToolCallEOF :: Assertion
 testPrematureToolCallEOF = do

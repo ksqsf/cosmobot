@@ -18,6 +18,7 @@ module Bot.LLM.OpenAI.Transport
   , imageGenerationStreamingRequestPayload
   , imageGenerationStreamBytesFromPayloads
   , audioSpeechRequestPayload
+  , streamSsePayloads
   )
 where
 
@@ -39,7 +40,6 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Data.Text.Encoding.Error as TextEncoding
 import qualified Data.Text.Lazy as LazyText
 import qualified Data.Text.Lazy.Builder as TextBuilder
 import qualified Network.HTTP.Client as Client
@@ -808,34 +808,41 @@ streamSsePayloads
   => Stream (Of StrictByteString.ByteString) m r
   -> Stream (Of StrictByteString.ByteString) m r
 streamSsePayloads =
-  go ""
+  go mempty
   where
     go pending input = do
       lift (S.next input) >>= \case
         Left result -> do
-          traverse_ S.yield (snd (ssePayloadsFromText True pending ""))
+          traverse_ S.yield (snd (ssePayloadsFromBytes True pending mempty))
           pure result
         Right (chunk, rest) -> do
           let (nextPending, payloads) =
-                ssePayloadsFromText False pending (TextEncoding.decodeUtf8With TextEncoding.lenientDecode chunk)
+                ssePayloadsFromBytes False pending chunk
           traverse_ S.yield payloads
           go nextPending rest
 
-ssePayloadsFromText :: Bool -> Text -> Text -> (Text, [StrictByteString.ByteString])
-ssePayloadsFromText flush pending text =
-  let buffered = pending <> text
-      lines_ = Text.splitOn "\n" buffered
+ssePayloadsFromBytes
+  :: Bool
+  -> StrictByteString.ByteString
+  -> StrictByteString.ByteString
+  -> (StrictByteString.ByteString, [StrictByteString.ByteString])
+ssePayloadsFromBytes flush pending bytes =
+  let buffered = pending <> bytes
+      lines_ = ByteString.split '\n' buffered
       completeLines =
         if flush then lines_ else dropLast lines_
       pendingLine =
-        if flush then "" else lastOrEmpty lines_
+        if flush then mempty else fromMaybe mempty (viaNonEmpty last lines_)
   in (pendingLine, mapMaybe sseDataPayload completeLines)
 
-sseDataPayload :: Text -> Maybe StrictByteString.ByteString
+sseDataPayload :: StrictByteString.ByteString -> Maybe StrictByteString.ByteString
 sseDataPayload rawLine = do
-  payload <- Text.strip <$> Text.stripPrefix "data:" (Text.stripStart rawLine)
-  guard (not (Text.null payload) && payload /= "[DONE]")
-  pure (TextEncoding.encodeUtf8 payload)
+  payload <- stripSseSpace <$> ByteString.stripPrefix "data:" (ByteString.dropWhile isSseSpace rawLine)
+  guard (not (ByteString.null payload) && payload /= "[DONE]")
+  pure payload
+  where
+    stripSseSpace = ByteString.dropWhileEnd isSseSpace . ByteString.dropWhile isSseSpace
+    isSseSpace char = char == ' ' || char == '\t' || char == '\r'
 
 ensureSuccessfulStreamingResponse :: IOE :> es => Client.Request -> Client.Response Client.BodyReader -> Stream (Of a) (Eff es) ()
 ensureSuccessfulStreamingResponse request response = do
@@ -948,10 +955,6 @@ dropLast :: [a] -> [a]
 dropLast [] = []
 dropLast [_] = []
 dropLast (x : xs) = x : dropLast xs
-
-lastOrEmpty :: [Text] -> Text
-lastOrEmpty [] = ""
-lastOrEmpty xs = fromMaybe "" (viaNonEmpty last xs)
 
 data StreamState = StreamState
   { contentAccumulator :: !TextBuilder.Builder
