@@ -49,6 +49,7 @@ main =
   defaultMain $
     testGroup "admin"
       [ testCase "ping replies pong for any sender" testPingRepliesPong
+      , testCase "echo replies with its arguments" testEchoRepliesWithArguments
       , testCase "reload reloads skill list" testReloadReloadsSkillList
       , testCase "restart rejects non-superusers" testRestartRejectsNonSuperuser
       , testCase "restart requests process restart" testRestartRequestsProcessRestart
@@ -68,6 +69,13 @@ testPingRepliesPong = do
   replies <- IORef.newIORef ([] :: [Text])
   actions <- runAdmin defaultAdminConfig replies message
   IORef.readIORef replies >>= (@?= ["pong"])
+  assertBool "no startup actions queued" (null actions)
+
+testEchoRepliesWithArguments :: IO ()
+testEchoRepliesWithArguments = do
+  replies <- IORef.newIORef ([] :: [Text])
+  actions <- runAdmin defaultAdminConfig replies (messageWith "!echo hello, world" emptyMessageDigest)
+  IORef.readIORef replies >>= (@?= ["hello, world"])
   assertBool "no startup actions queued" (null actions)
 
 testReloadReloadsSkillList :: IO ()
