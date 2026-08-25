@@ -455,6 +455,7 @@ data MatrixAuth = MatrixAuth
 data MatrixAuthState = MatrixAuthState
   { authAccessToken :: !(Maybe Text)
   , authRefreshToken :: !(Maybe Text)
+  , authRefreshAtMilliseconds :: !(Maybe Integer)
   }
   deriving (Show, Eq, Generic)
     deriving (Aeson.FromJSON, Aeson.ToJSON) via (PrefixedSnakeJSON "auth" MatrixAuthState)
@@ -741,7 +742,11 @@ instance MatrixAPI MatrixSetTyping where
 initialMatrixAuthState :: Config -> MatrixAuthState
 initialMatrixAuthState _cfg =
   -- It's unnecessary to log in here. /sync should handle it.
-  MatrixAuthState{authAccessToken = Nothing, authRefreshToken = Nothing}
+  MatrixAuthState
+    { authAccessToken = Nothing
+    , authRefreshToken = Nothing
+    , authRefreshAtMilliseconds = Nothing
+    }
 
 matrixAuthAvailable :: Prim :> es => MatrixDriver -> Eff es Bool
 matrixAuthAvailable driver = do
@@ -778,9 +783,13 @@ withMatrixAccessToken
   -> Eff es a
 withMatrixAccessToken auth action = do
   currentAuthState <- IORef.readIORef auth.authState
+  now <- monotonicMilliseconds
   token <- case currentAuthState.authAccessToken of
-    Just accessToken ->
-      pure accessToken
+    Just accessToken
+      | maybe True (now <) currentAuthState.authRefreshAtMilliseconds ->
+          pure accessToken
+      | otherwise ->
+          refreshMatrixAccessToken auth accessToken
     Nothing ->
       refreshMatrixAccessToken auth ""
   action token `catch` \(err :: MatrixApiException) ->
@@ -807,12 +816,14 @@ refreshMatrixAccessToken auth expiredToken =
           Nothing ->
             reloginMatrixAccessToken auth
           Just refreshToken -> do
-            $(logInfo) "Matrix access token expired; refreshing"
+            $(logInfo) "Matrix access token refreshing"
             let refreshWithToken = do
                   response <- refreshMatrixToken auth.authConfig refreshToken
+                  now <- monotonicMilliseconds
                   let refreshedState = MatrixAuthState
                         { authAccessToken = Just response.refreshedAccessToken
                         , authRefreshToken = response.refreshedRefreshToken <|> currentAuthState.authRefreshToken
+                        , authRefreshAtMilliseconds = matrixRefreshAtMilliseconds now response.refreshedExpiresInMs
                         }
                   IORef.writeIORef auth.authState refreshedState
                   pure response.refreshedAccessToken
@@ -857,12 +868,27 @@ retryingMatrixLogin auth user password =
       storeMatrixLoginResponse auth response
       pure response.loginAccessToken
 
-storeMatrixLoginResponse :: Prim :> es => MatrixAuth -> MatrixLoginResponse -> Eff es ()
-storeMatrixLoginResponse auth response =
+storeMatrixLoginResponse :: (IOE :> es, Prim :> es) => MatrixAuth -> MatrixLoginResponse -> Eff es ()
+storeMatrixLoginResponse auth response = do
+  now <- monotonicMilliseconds
   IORef.writeIORef auth.authState MatrixAuthState
     { authAccessToken = Just response.loginAccessToken
     , authRefreshToken = response.loginRefreshToken
+    , authRefreshAtMilliseconds = matrixRefreshAtMilliseconds now response.loginExpiresInMs
     }
+
+matrixRefreshAtMilliseconds :: Integer -> Maybe Integer -> Maybe Integer
+matrixRefreshAtMilliseconds now expiresInMilliseconds =
+  expiresInMilliseconds <&> \expiresIn ->
+    now + max 0 (expiresIn - matrixRefreshMarginMilliseconds)
+
+matrixRefreshMarginMilliseconds :: Integer
+matrixRefreshMarginMilliseconds =
+  60000
+
+monotonicMilliseconds :: IOE :> es => Eff es Integer
+monotonicMilliseconds =
+  fromIntegral . (`div` 1000000) <$> liftIO getMonotonicTimeNSec
 
 matrixAuthTokenRejected :: MatrixApiException -> Bool
 matrixAuthTokenRejected = \case
