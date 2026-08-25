@@ -227,12 +227,12 @@ fileUrl driver fileId = do
 -- ---------------------------------------------------------------------------
 
 updatesStream'
-  :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es)
+  :: (HTTP.HTTP :> es, KatipE :> es, Concurrent :> es, IOE :> es)
   => TelegramDriver
   -> Int
   -> Stream (Of Update) (Eff es) ()
 updatesStream' driver offset = do
-  batches <- S.lift (getUpdates driver offset)
+  batches <- S.lift (getUpdatesRetrying driver offset)
   S.lift $ $(logDebug) [i|Telegram update batch: #{length batches}|]
   S.each batches
   let nextOffset = case batches of
@@ -240,11 +240,11 @@ updatesStream' driver offset = do
         _  -> 1 + maximum (map (fromInteger . (.updateId)) batches)
   updatesStream' driver nextOffset
 
-updatesStream :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es) => TelegramDriver -> Stream (Of Update) (Eff es) ()
+updatesStream :: (HTTP.HTTP :> es, KatipE :> es, Concurrent :> es, IOE :> es) => TelegramDriver -> Stream (Of Update) (Eff es) ()
 updatesStream driver = updatesStream' driver 0
 
 -- | Poll Telegram updates and yield platform-independent messages.
-incomingMessages :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es) => TelegramDriver -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (HTTP.HTTP :> es, KatipE :> es, Concurrent :> es, IOE :> es) => TelegramDriver -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages driver = S.for (updatesStream driver) $ \update -> do
   case updateToIncomingMessageWith driver.config update of
     Nothing -> do
@@ -256,6 +256,22 @@ incomingMessages driver = S.for (updatesStream driver) $ \update -> do
           pure parsedMessage
       S.lift $ $(logDebug) ("incoming Telegram message:\n" <> logJsonText message)
       S.yield message
+
+getUpdatesRetrying
+  :: (HTTP.HTTP :> es, KatipE :> es, Concurrent :> es, IOE :> es)
+  => TelegramDriver
+  -> Int
+  -> Eff es [Update]
+getUpdatesRetrying driver offset =
+  getUpdates driver offset `catchSync` \err -> do
+    let summary = Text.takeWhile (/= '\n') (toText (displayException err))
+    $(logWarning) [i|Telegram polling failed; retrying in 5 seconds: #{summary}|]
+    threadDelay telegramPollingRetryDelayMicroseconds
+    getUpdatesRetrying driver offset
+
+telegramPollingRetryDelayMicroseconds :: Int
+telegramPollingRetryDelayMicroseconds =
+  5 * 1000000
 
 resolveIncomingMessageMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> IncomingMessage -> Eff es IncomingMessage
 resolveIncomingMessageMedia driver message = do
