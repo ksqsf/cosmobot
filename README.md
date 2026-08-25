@@ -109,7 +109,7 @@ Common options:
 
 Special notes:
 
-- Currently, Matrix and Telegram are the best supported platforms. QQ support is mature. You may experience bugs with Discord support.
+- Currently, Matrix and Telegram are the best supported platforms. QQ and Discord are not extensively tested, but should be okay-ish.
 - **Matrix**: 
   + Cosmobot by itself does not support Matrix's E2EE. You need a proxy to do encryption and decryption for it (e.g. [Pantalaimon](https://github.com/matrix-org/pantalaimon)).
 - **QQ**: 
@@ -119,7 +119,7 @@ Special notes:
   + Make sure to enable Intents in Discord Developer Portal. For example, you really need to enable Message Content Intent as the bot needs to read message contents.
 
 
-Cosmobot on Matrix or Telegram is highly recommended. Both platforms have superb Markdown support (including tables!), streaming, typing feedback, and all Cosmobot features. On Matrix, you can even talk to Cosmobot in an E2EE room which gives you superior privacy protection.
+Cosmobot on Matrix or Telegram is highly recommended. Both platforms have great Markdown support (including tables!), streaming, typing feedback, and all Cosmobot features. On Matrix, you can even talk to Cosmobot in an E2EE room which gives you superior privacy protection. QQ has the least features.
 
 
 ### LLM providers
