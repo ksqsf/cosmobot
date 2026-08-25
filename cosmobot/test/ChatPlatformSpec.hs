@@ -89,9 +89,15 @@ main =
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
 testQqUserMessageConvertsToIncomingMessage = do
-  let incoming = QQ.eventToIncomingMessage (qqMessageEvent 10001)
+  let event = (qqMessageEvent 10001)
+        { QQ.sender = Just (Aeson.object
+            [ "nickname" Aeson..= ("Alice" :: Text)
+            ])
+        }
+      incoming = QQ.eventToIncomingMessage event
   ((.platform) <$> incoming) @?= Just PlatformQQ
   ((.text) <$> incoming) @?= Just "hello"
+  ((.senderUsername) <$> incoming) @?= Just (Just "Alice")
   ((.digest.botId) <$> incoming) @?= Just (Just "424242")
 
 testQqLongReplyUsesMergedForwarding :: IO ()

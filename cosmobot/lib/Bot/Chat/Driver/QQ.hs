@@ -1333,7 +1333,7 @@ eventToIncomingMessageWith cfg event
         , chatAliases = []
         , digest = qqMessageDigest cfg event
         , senderId = show <$> event.userId
-        , senderUsername = Nothing
+        , senderUsername = event.sender >>= qqSenderDisplayName
         , messageId = Just recalledMessageId
         , replyToMessageId = Nothing
         , mentions = []
@@ -1353,7 +1353,7 @@ eventToIncomingMessageWith cfg event
       , chatAliases = []
       , digest = qqMessageDigest cfg event
       , senderId  = Text.pack . show <$> event.userId
-      , senderUsername = Nothing
+      , senderUsername = event.sender >>= qqSenderDisplayName
       , messageId = integerMessageId <$> event.messageId
       , replyToMessageId = integerMessageId <$> (event.message >>= replySegmentMessageId)
       , mentions  = eventMentionIds event
