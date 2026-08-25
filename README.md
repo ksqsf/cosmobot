@@ -317,8 +317,9 @@ In an allowed room/chat/group, or directly send messages from superuser/an allow
 
 ### Audit (Superuser-only)
 
-- send `!audit` directly
-- reply to a bot's response with `!audit`
+- send `!audit` directly to list recent tool uses
+- reply to a steerable message with `!audit` for its current turn
+- reply to a steerable message with `!audit all` for its current and preceding turns
 - `!audit <id>` for details
 
 ### Administration (Superuser-only)

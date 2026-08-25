@@ -321,7 +321,7 @@ main =
       , testCase "agent audit migrates legacy records without changing ids" testAgentAuditMigratesLegacyRecords
       , testCase "SQLite storage pool runs actions concurrently" testSQLiteStoragePoolRunsActionsConcurrently
       , testCase "thread stats accumulate the replied branch" testThreadStatsAccumulateRepliedBranch
-      , testCase "thread stats show active running tools from every alias" testThreadStatsShowActiveRunningTools
+      , testCase "thread stats and audit include active steerable replies" testThreadStatsShowActiveRunningTools
       , testCase "thread audit is scoped by platform, chat, and run occurrence" testThreadAuditScope
       , testCase "agent audit recent records exclude synthetic restarted runs" testAgentAuditRecentRecordsExcludeSyntheticRestartedRuns
       , testCase "agent audit storage omits large tool results" testAgentAuditStorageOmitsLargeToolResults
@@ -3001,8 +3001,13 @@ testThreadStatsShowActiveRunningTools = do
       }
     for_ ["user-1", "assistant-1", "tool-message-1", "user-2"] \messageId ->
       runHandlers (auditHandlers threads) (statsMessage (textMessageId ("stats-" <> messageIdText messageId)) messageId)
+    runHandlers (auditHandlers threads)
+      (commandMessage "!audit" "audit-current" original.messageId)
+    runHandlers (auditHandlers threads)
+      (commandMessage "!audit all" "audit-all" original.messageId)
     finishActiveThread threads active transcript
-  statsReplies <- IORef.readIORef replies
+  allReplies <- IORef.readIORef replies
+  let (statsReplies, auditReplies) = splitAt 4 allReplies
   length statsReplies @?= 4
   for_ statsReplies \reply -> do
     assertBool "every active alias should report active status" ("- status: active" `Text.isInfixOf` reply)
@@ -3016,6 +3021,14 @@ testThreadStatsShowActiveRunningTools = do
     assertBool "active stats should separate stale historical tools" ("- tool calls: 2 (0 ok, 0 failed, 0 interrupted, 1 running, 1 stale/unreported)" `Text.isInfixOf` reply)
     assertBool "active stats should name the running tool" ("`run_bash`" `Text.isInfixOf` reply)
     assertBool "active stats should not list a stale tool as running" (not ("`fetch_url` (`id=" `Text.isInfixOf` reply))
+  case auditReplies of
+    [currentAudit, allAudit] -> do
+      assertBool "current audit should include the active turn" ("tool=run_bash" `Text.isInfixOf` currentAudit)
+      assertBool "current audit should exclude preceding turns" (not ("tool=fetch_url" `Text.isInfixOf` currentAudit))
+      assertBool "all audit should include the active turn" ("tool=run_bash" `Text.isInfixOf` allAudit)
+      assertBool "all audit should include preceding turns" ("tool=fetch_url" `Text.isInfixOf` allAudit)
+    other ->
+      assertFailure [i|expected current and all audit replies, got #{length other}|]
 
 persistStatsRun
   :: (StorageEffect.Storage :> es, KatipE :> es, IOE :> es)
@@ -3111,11 +3124,15 @@ persistChildStatsRun runId tokenUsage = do
     }
 
 statsMessage :: MessageId -> MessageId -> IncomingMessage
-statsMessage messageId parentId =
+statsMessage =
+  commandMessage "!stats"
+
+commandMessage :: Text -> MessageId -> MessageId -> IncomingMessage
+commandMessage commandText messageId parentId =
   askHandlerMessage
     { messageId = Just messageId
     , replyToMessageId = Just parentId
-    , text = "!stats"
+    , text = commandText
     }
 
 testThreadAuditScope :: IO ()

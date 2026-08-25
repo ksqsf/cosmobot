@@ -30,7 +30,7 @@ auditHandlers
 auditHandlers threads =
   [ withHelp (RouteHelp "!stats" "Show cumulative agent statistics for a replied thread message (superuser only).") $
     stopOn (command "!stats") (handleStats threads)
-  , withHelp (RouteHelp "!audit [all|log|<id>]" "Inspect agent tool-use audit records (superuser only).") $
+  , withHelp (RouteHelp "!audit [all|<id>]" "Inspect agent tool-use audit records (superuser only).") $
     requireAuth isSuperuser (\message -> void $ Chat.replyTo message "只有 superuser 可以查看 audit。") $
       stopOn (command "!audit") (handleAudit threads)
   ]
@@ -52,11 +52,9 @@ handleStats threads message args
           let parentKey = threadMessageKey message parentId
           messageIds <- lookupThreadMessageIds threads parentKey
           completed <- AgentAudit.queryThreadMessagesAudit (map (threadMessageKey message) messageIds)
-          activeRunId <- lookupActiveThreadRunId threads parentKey
           pendingSteers <- lookupActiveThreadPendingSteers threads parentKey
-          active <- maybe (pure []) AgentAudit.queryRunAudit activeRunId
-          let records = ordNubOn (.id) (linkedMessageAudit messageIds completed <> active)
-              runIds = threadRunIds activeRunId records
+          (activeRunId, records) <- includeActiveThreadAudit threads parentKey (linkedMessageAudit messageIds completed)
+          let runIds = threadRunIds activeRunId records
           subAgentRuns <- querySubAgentRuns runIds records
           resources <- case Resource.accessFromMessage message of
             Left _ -> pure []
@@ -73,34 +71,53 @@ handleAudit
 handleAudit threads message args =
   case parseAuditId args of
     Nothing
-      | Text.toLower (Text.strip args) == "log" ->
+      | normalizedArgs == "all" ->
           case message.replyToMessageId of
             Just parentId -> do
-              records <- AgentAudit.queryThreadAudit (threadMessageKey message parentId)
-              void $ Chat.replyTo message (renderThreadAuditLog parentId records)
-            Nothing ->
-              void $ Chat.replyTo message "用法：回复一条 agent thread 消息并发送 !audit log"
-      | Text.toLower (Text.strip args) == "all" ->
-          case message.replyToMessageId of
-            Just parentId -> do
-              messageIds <- lookupThreadMessageIds threads (threadMessageKey message parentId)
-              records <- AgentAudit.queryThreadMessagesAudit (map (threadMessageKey message) messageIds)
+              let parentKey = threadMessageKey message parentId
+              messageIds <- lookupThreadMessageIds threads parentKey
+              completed <- AgentAudit.queryThreadMessagesAudit (map (threadMessageKey message) messageIds)
+              (_, records) <- includeActiveThreadAudit threads parentKey completed
               void $ Chat.replyTo message (renderThreadToolUses parentId records)
             Nothing ->
               void $ Chat.replyTo message "用法：回复一条 agent thread 消息并发送 !audit all"
-      | Text.null (Text.strip args) ->
+      | Text.null normalizedArgs ->
           case message.replyToMessageId of
             Just parentId -> do
-              records <- AgentAudit.queryThreadAudit (threadMessageKey message parentId)
+              let parentKey = threadMessageKey message parentId
+              records <- queryCurrentThreadAudit threads parentKey
               void $ Chat.replyTo message (renderThreadToolUses parentId records)
             Nothing -> do
               toolUses <- AgentAudit.queryRecentToolUses recentAuditLimit
               void $ Chat.replyTo message (renderAuditList toolUses)
       | otherwise ->
-          void $ Chat.replyTo message "用法：!audit、!audit all、!audit log 或 !audit <id>"
+          void $ Chat.replyTo message "用法：!audit、回复消息并发送 !audit all，或 !audit <id>"
     Just auditId -> do
       detail <- AgentAudit.queryToolUse auditId
       void $ Chat.replyTo message (maybe [i|没有找到 audit id #{auditId}。|] renderAuditDetail detail)
+  where
+    normalizedArgs = Text.toLower (Text.strip args)
+
+includeActiveThreadAudit
+  :: (AgentAudit.AgentAudit :> es, Prim :> es)
+  => ThreadStore
+  -> ThreadMessageKey
+  -> [AgentAudit.AgentAuditRecord]
+  -> Eff es (Maybe Text, [AgentAudit.AgentAuditRecord])
+includeActiveThreadAudit threads messageKey completed = do
+  activeRunId <- lookupActiveThreadRunId threads messageKey
+  active <- maybe (pure []) AgentAudit.queryRunAudit activeRunId
+  pure (activeRunId, ordNubOn (.id) (completed <> active))
+
+queryCurrentThreadAudit
+  :: (AgentAudit.AgentAudit :> es, Prim :> es)
+  => ThreadStore
+  -> ThreadMessageKey
+  -> Eff es [AgentAudit.AgentAuditRecord]
+queryCurrentThreadAudit threads messageKey =
+  lookupActiveThreadRunId threads messageKey >>= \case
+    Just runId -> AgentAudit.queryRunAudit runId
+    Nothing -> AgentAudit.queryThreadAudit messageKey
 
 parseAuditId :: Text -> Maybe Integer
 parseAuditId =
@@ -747,59 +764,6 @@ renderToolUseBlock toolUse =
     , "  - arguments:"
     , indent (fenced "json" arguments)
     ]
-
-renderThreadAuditLog :: MessageId -> [AgentAudit.AgentAuditRecord] -> Text
-renderThreadAuditLog parentId [] =
-  [i|没有找到消息 #{messageIdText parentId} 对应的 agent audit。|]
-renderThreadAuditLog _ records =
-  Text.unlines ("*Thread audit log*" : map renderAuditRecord records)
-
-renderAuditRecord :: AgentAudit.AgentAuditRecord -> Text
-renderAuditRecord record =
-  let eventId :: Text
-      eventId = show record.id
-      occurredAt = timestamp record.occurredAt
-      event = renderAuditEvent record.id record.event
-  in
-  [i|- `#{occurredAt}` `event_id=#{eventId}` #{event}|]
-
-renderAuditEvent :: Integer -> AgentAudit.AgentAuditEvent -> Text
-renderAuditEvent recordId = \case
-  AgentAudit.AgentRunStarted{runId, messageId, maxTurns, exposedTools} ->
-    [i|run_started run=#{runId} message=#{maybe "-" messageIdText messageId} max_turns=#{maxTurns} exposed_tools=#{length exposedTools}|]
-  AgentAudit.ModelTurnStarted{runId, turn, messageCount, exposedTools} ->
-    [i|model_started run=#{runId} turn=#{turn} messages=#{messageCount} exposed_tools=#{length exposedTools}|]
-  AgentAudit.ModelTurnFinished{runId, turn, answerKind, contentLength, toolCalls, tokenUsage} ->
-    let usage = maybe "tokens=unreported" renderTokenUsage tokenUsage
-    in [i|model_finished run=#{runId} turn=#{turn} kind=#{answerKind} content_chars=#{contentLength} tool_calls=#{length toolCalls} #{usage}|]
-  AgentAudit.ContextCompacted{runId, turn, messageCount, tokenUsage} ->
-    let usage = maybe "tokens=unreported" renderTokenUsage tokenUsage
-    in [i|context_compacted run=#{runId} turn=#{turn} messages_before=#{messageCount} #{usage}|]
-  AgentAudit.RecursiveTranscriptFlushed{runId, turn} ->
-    [i|recursive_transcript_flushed run=#{runId} turn=#{turn}|]
-  AgentAudit.SubAgentRunStarted{runId, childRunId, subagentId} ->
-    [i|subagent_started run=#{runId} child_run=#{childRunId} resource=`#{subagentId}`|]
-  AgentAudit.ToolCallStarted{runId, turn, toolCall} ->
-    let toolName = toolCall.name
-        auditId :: Text
-        auditId = show recordId
-    in [i|started audit_id=#{auditId} run=#{runId} turn=#{turn} tool=`#{toolName}`|]
-  AgentAudit.ToolCallFinished{runId, turn, toolName, status, resultLength} ->
-    [i|finished run=#{runId} turn=#{turn} tool=`#{toolName}` status=#{status} result_chars=#{resultLength}|]
-  AgentAudit.AgentRunFinished{runId, status, finalLength, turnsUsed} ->
-    [i|run_finished run=#{runId} status=#{status} final_chars=#{finalLength} turns=#{turnsUsed}|]
-  AgentAudit.AgentRunInterrupted{runId, reason} ->
-    [i|run run=#{runId} reason=`#{reason}`|]
-  AgentAudit.AgentThreadLinked{runId, linkedMessageId, parentMessageId} ->
-    let parent = maybe "-" messageIdText parentMessageId
-    in [i|`thread_linked` run=#{runId} message=#{messageIdText linkedMessageId} parent=#{parent}|]
-
-renderTokenUsage :: LLM.TokenUsage -> Text
-renderTokenUsage usage =
-  let LLM.TokenUsage{promptTokens, completionTokens, totalTokens, cachedPromptTokens} = usage
-      cached :: Text
-      cached = maybe "unreported" show cachedPromptTokens
-  in [i|tokens=#{totalTokens} prompt=#{promptTokens} completion=#{completionTokens} cached_prompt=#{cached}|]
 
 renderMessageIds :: [Maybe MessageId] -> Text
 renderMessageIds messageIds =
