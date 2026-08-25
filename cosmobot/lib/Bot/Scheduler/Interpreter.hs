@@ -6,12 +6,13 @@ Stability   : experimental
 
 module Bot.Scheduler.Interpreter
   ( runScheduler
+  , runSchedulerWith
   )
 where
 
-import qualified Bot.Effect.Storage as Storage
 import Bot.Core.Message
 import qualified Bot.Effect.Concurrency as Concurrency
+import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import Bot.Scheduler.State
 import Bot.Scheduler.Types
@@ -28,7 +29,15 @@ runScheduler
   :: (IOE :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, Concurrent :> es, Timeout :> es)
   => Eff (Scheduler : es) a
   -> Eff es a
-runScheduler inner = do
+runScheduler =
+  runSchedulerWith pure
+
+runSchedulerWith
+  :: (IOE :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, Concurrent :> es, Timeout :> es)
+  => (IncomingMessage -> Eff es IncomingMessage)
+  -> Eff (Scheduler : es) a
+  -> Eff es a
+runSchedulerWith prepareMessage inner = do
   storedMessages <- SchedulerStorage.loadScheduledMessages
   queue <- STM.newTBQueueIO scheduledMessageQueueCapacity
   schedulerStateVar <- MVar.newMVar (schedulerStateFromStoredMessages storedMessages)
@@ -55,7 +64,7 @@ runScheduler inner = do
         ReceiveScheduledMessage -> do
           pending <- STM.atomically (STM.readTBQueue queue)
           SchedulerStorage.deleteScheduledMessage pending.scheduleId
-          pure pending.message)
+          prepareMessage pending.message)
       inner
 
 schedulerWorker

@@ -6,6 +6,7 @@ import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Storage as StorageEffect
+import qualified Bot.Scheduler.Interpreter as SchedulerInterpreter
 import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Prelude
@@ -31,6 +32,7 @@ main =
       , testCase "username scopes schedules when sender id is absent" testUsernameScopedSchedule
       , testCase "schedule ids increase in insertion order" testScheduleIdsIncrease
       , testCase "scheduled stream yields original message" testScheduledStreamYieldsOriginalMessage
+      , testCase "scheduled delivery can prepare messages" testScheduledDeliveryCanPrepareMessages
       , testCase "elapsed schedule leaves pending list" testElapsedScheduleLeavesPendingList
       , testCase "same due time yields messages in schedule id order" testSameDueTimeYieldsInScheduleIdOrder
       , testCase "deleted elapsed schedule is not delivered" testDeletedElapsedScheduleIsNotDelivered
@@ -104,6 +106,13 @@ testScheduledStreamYieldsOriginalMessage = runSchedulerTest do
   _ <- Scheduler.scheduleMessage 0 scheduled
   delivered <- S.head_ Scheduler.scheduledMessages
   liftIO $ ((.text) <$> delivered) @?= Just scheduled.text
+
+testScheduledDeliveryCanPrepareMessages :: IO ()
+testScheduledDeliveryCanPrepareMessages = runSchedulerStorage $
+  SchedulerInterpreter.runSchedulerWith (\message -> pure message{replyToMessageId = Just "prepared"}) do
+    _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "original")
+    delivered <- S.head_ Scheduler.scheduledMessages
+    liftIO $ ((.replyToMessageId) =<< delivered) @?= Just "prepared"
 
 testElapsedScheduleLeavesPendingList :: IO ()
 testElapsedScheduleLeavesPendingList = runSchedulerTest do

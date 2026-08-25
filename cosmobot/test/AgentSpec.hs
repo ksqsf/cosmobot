@@ -64,6 +64,7 @@ import qualified Bot.Effect.Typst as Typst
 import qualified Bot.Memory as MemoryStore
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Resource.SubAgent as SubAgentResource
+import qualified Bot.Scheduler as ApplicationScheduler
 import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
 import qualified Bot.Core.Message as Message
@@ -244,6 +245,7 @@ main =
   defaultMain $
     testGroup "agent"
       [ testCase "schedule tool creates a queryable pending schedule" testScheduleToolCreatesQueryableSchedule
+      , testCase "scheduled action continues its source thread without a fake command" testScheduledActionContinuesSourceThread
       , testCase "tool argument DSL shares schema, decoding, and reader context" testToolArgumentDSL
       , testCase "dynamic tool visibility is frozen for each model turn" testDynamicToolVisibilitySnapshot
       , testCase "Python nested tools reuse frozen registry dispatch without transcript entries" testPythonNestedRegistryDispatch
@@ -919,6 +921,37 @@ testScheduleToolCreatesQueryableSchedule = do
   let output = Text.unlines (toolOutputs transcript)
   assertBool "list output includes scheduled prompt" ("check oven" `Text.isInfixOf` output)
   assertBool "delete output confirms removal" ("Schedule 1 has been removed." `Text.isInfixOf` output)
+
+testScheduledActionContinuesSourceThread :: IO ()
+testScheduledActionContinuesSourceThread = do
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-enable" "tool_enable" (Aeson.object ["tags" Aeson..= ["work" :: Text]])]
+    , chatAnswer "" [toolCall "call-schedule" "schedule" (Aeson.object
+        [ "op" Aeson..= ("create" :: Text)
+        , "delay_seconds" Aeson..= (0 :: Int)
+        , "prompt" Aeson..= ("check oven" :: Text)
+        ])]
+    , chatAnswer "source complete" []
+    , chatAnswer "triggered" []
+    ]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  replies <- IORef.newIORef ([] :: [Text])
+  _ <- runAgentCapturingMessages captured answers (ChatMock (Just replies) (Just "scheduled-reply") Nothing) do
+    threads <- newThreadStore
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads askHandlerMessage
+    scheduled <- ApplicationScheduler.linkToSourceThread threads
+      . fromMaybe (error "expected scheduled message")
+      =<< S.head_ Scheduler.scheduledMessages
+    liftIO $ scheduled.text @?= "check oven"
+    liftIO $ scheduled.replyToMessageId @?= Just "scheduled-reply"
+    runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads scheduled
+  requests <- IORef.readIORef captured
+  case reverse requests of
+    continued : _ -> do
+      assertElem "source complete" (chatMessageTextsByRole "assistant" continued)
+      assertElem "check oven" (chatMessageTextsByRole "user" continued)
+    [] ->
+      assertFailure "expected scheduled LLM request"
 
 testAcpClientFileToolsAreAcpOnly :: IO ()
 testAcpClientFileToolsAreAcpOnly = do

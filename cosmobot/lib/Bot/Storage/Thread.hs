@@ -15,6 +15,7 @@ module Bot.Storage.Thread
   , lookupThreadTranscript
   , lookupThreadMessageIds
   , lookupActiveThreadRunId
+  , awaitActiveThreadByRunId
   , lookupActiveThreadReply
   , lookupActiveThreadPendingSteers
   , rememberThreadTranscript
@@ -195,6 +196,11 @@ lookupActiveThreadReply ThreadStore{activeThreadStore = activeRef} message messa
 lookupActiveThreadRunId :: Prim :> es => ThreadStore -> ThreadMessageKey -> Eff es (Maybe Text)
 lookupActiveThreadRunId ThreadStore{activeThreadStore = activeRef} messageKey =
   fmap (.activeRunId) . Map.lookup (ActiveThreadMessage messageKey) <$> readIORef activeRef
+
+awaitActiveThreadByRunId :: (Prim :> es, Concurrent :> es) => ThreadStore -> Text -> Eff es ()
+awaitActiveThreadByRunId ThreadStore{activeThreadStore = activeRef} runId = do
+  active <- find ((== runId) . (.activeRunId)) . Map.elems <$> readIORef activeRef
+  traverse_ (MVar.readMVar . (.activeDone)) active
 
 lookupActiveThreadPendingSteers :: (Prim :> es, Concurrent :> es) => ThreadStore -> ThreadMessageKey -> Eff es (Maybe Int)
 lookupActiveThreadPendingSteers ThreadStore{activeThreadStore = activeRef} messageKey = do

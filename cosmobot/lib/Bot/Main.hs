@@ -37,7 +37,6 @@ import qualified Bot.Effect.Matrix as MatrixEffect
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Plugin as PluginEffect
 import qualified Bot.Effect.Resource as ResourceEffect
-import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
@@ -47,6 +46,7 @@ import qualified Bot.Resource as Resource
 import qualified Bot.Resource.Python as Python
 import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Resource.Workspace as Workspace
+import qualified Bot.Scheduler as Scheduler
 import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Server as RPCServer
@@ -128,7 +128,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
           . Memory.runMemory cfg.memory
           . Skills.runSkills cfg.skills
           . ACPClient.runACP acpState
-          . Scheduler.runScheduler
+          . Scheduler.runScheduler threads
           . ChatDriver.runChatDrivers cfg.qq cfg.telegram cfg.matrix cfg.discord cfg.rpc rpcState cfg.acp.enabled acpState
           . PluginManager.runPluginManager cfg.plugins.pluginDir cfg.media.cacheDir (pluginHostCallbacks cfg)
           . Lifecycle.runLifecycle cfg.media restartRequested

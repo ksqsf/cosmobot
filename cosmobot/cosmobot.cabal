@@ -338,6 +338,7 @@ library
         Bot.Session
         Bot.Skills
         Bot.Skills.Config
+        Bot.Scheduler
         Bot.Scheduler.Interpreter
         Bot.Scheduler.State
         Bot.Scheduler.Types

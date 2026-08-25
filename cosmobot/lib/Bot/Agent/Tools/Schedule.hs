@@ -37,7 +37,8 @@ scheduleTool =
         context <- askToolContext
         case call of
           ScheduleCreate delaySeconds prompt -> do
-            scheduled <- Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context delaySeconds prompt)
+            metadata <- askToolCallMetadata
+            scheduled <- Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context metadata.agentRunId delaySeconds prompt)
             pure $ if scheduled
               then toolText [i|Scheduled agent action in #{delaySeconds} seconds.|]
               else toolText "Could not schedule agent action: scheduler is at capacity."
@@ -85,10 +86,9 @@ scheduledPrompt message =
     parsePrompt =
       Aeson.withObject "scheduled action" (Aeson..: Key.fromText "prompt")
 
-scheduledAgentMessage :: Context -> Int -> Text -> IncomingMessage
-scheduledAgentMessage context delaySeconds prompt =
+scheduledAgentMessage :: Context -> Text -> Int -> Text -> IncomingMessage
+scheduledAgentMessage context runId delaySeconds prompt =
   let original = context.message
-      commandText = context.askCommand <> " " <> prompt
   in original
       { messageId = original.messageId
       , replyToMessageId = Nothing
@@ -96,11 +96,12 @@ scheduledAgentMessage context delaySeconds prompt =
       , mentionUsernames = original.mentionUsernames
       , imageUrls = []
       , files = []
-      , text = commandText
+      , text = prompt
       , raw = Aeson.object
           [ "type" Aeson..= Aeson.String "scheduled_agent_action"
           , "delay_seconds" Aeson..= delaySeconds
           , "prompt" Aeson..= prompt
+          , "run_id" Aeson..= runId
           , "original_message" Aeson..= original.raw
           ]
       }
