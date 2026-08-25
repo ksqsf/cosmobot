@@ -311,13 +311,6 @@ data AudioSpeechRequest = AudioSpeechRequest
   deriving (Show, Generic)
     deriving Aeson.ToJSON via (SnakeJSONOmitNothing AudioSpeechRequest)
 
-data ImageGenerationStreamEvent = ImageGenerationStreamEvent
-  { type_ :: !Text
-  , b64Json :: !(Maybe Text)
-  }
-  deriving (Show, Generic)
-    deriving Aeson.FromJSON via (SnakeJSON ImageGenerationStreamEvent)
-
 newtype ToolSpec
   = FunctionToolSpec FunctionTool
   deriving (Show)
@@ -716,7 +709,7 @@ streamImageGenerationOpenAIBytes provider@ImageProviderConfig{baseUrl, model, re
     let requestPath = ["images", "generations"]
         request = imageGenerationStreamingRequestPayload provider options model (imagePromptFromMessages messages)
     httpRequest <- liftIO (sseJsonPostRequest baseUrl requestPath apiKey (secondsToMicros requestTimeout) request)
-    imageBytesFromCompletedEvent (streamSsePayloads (streamHttpResponseBody httpRequest))
+    imageBytesFromResponse (streamHttpResponseBody httpRequest)
 
 streamImageEditOpenAIBytes
   :: (HTTP.HTTP :> es, IOE :> es, Timeout.Timeout :> es, FileSystem :> es, Fail :> es)
@@ -735,7 +728,8 @@ streamImageEditOpenAIBytes cfg@ImageProviderConfig{baseUrl, model, requestTimeou
       \(imageUploads, maskUpload) -> do
         let requestPath = imageEditsPath
             parts = imageEditMultipartParts cfg options model prompt imageUploads maskUpload
-        imageBytesFromCompletedEvent (streamSseMultipartPost baseUrl requestPath key (secondsToMicros requestTimeout) parts)
+        httpRequest <- liftIO (sseMultipartPostRequest baseUrl requestPath key (secondsToMicros requestTimeout) parts)
+        imageBytesFromResponse (streamHttpResponseBody httpRequest)
 
 streamRawJsonPost
   :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es)
@@ -749,18 +743,6 @@ streamRawJsonPost
 streamRawJsonPost baseUrl path apiKey timeoutMicros accept request = do
   httpRequest <- liftIO (rawJsonPostRequest baseUrl path apiKey timeoutMicros accept request)
   streamHttpResponseBody httpRequest
-
-streamSseMultipartPost
-  :: (HTTP.HTTP :> es, IOE :> es)
-  => Text
-  -> [Text]
-  -> Text
-  -> Int
-  -> [Multipart.Part]
-  -> Stream (Of StrictByteString.ByteString) (Eff es) ()
-streamSseMultipartPost baseUrl path apiKey timeoutMicros parts = do
-  httpRequest <- liftIO (sseMultipartPostRequest baseUrl path apiKey timeoutMicros parts)
-  streamSsePayloads (streamHttpResponseBody httpRequest)
 
 sseJsonPostRequest :: Aeson.ToJSON body => Text -> [Text] -> Text -> Int -> body -> IO Client.Request
 sseJsonPostRequest baseUrl path apiKey timeoutMicros request = do
@@ -855,13 +837,15 @@ ensureSuccessfulStreamingResponse request response = do
 
 -- Raw Image Byte Streaming
 
-imageBytesFromCompletedEvent
+imageBytesFromResponse
   :: IOE :> es
   => Stream (Of StrictByteString.ByteString) (Eff es) r
   -> Stream (Of StrictByteString.ByteString) (Eff es) ()
-imageBytesFromCompletedEvent payloads = do
-  chunks <- lift (S.toList_ payloads)
-  payloadValues <- traverse decodePayload chunks
+imageBytesFromResponse response = do
+  body <- StrictByteString.concat <$> lift (S.toList_ response)
+  let ssePayloads = snd (ssePayloadsFromBytes True mempty body)
+      payloads = if null ssePayloads then [body] else ssePayloads
+  payloadValues <- traverse decodePayload payloads
   case imageGenerationStreamBytesFromPayloads payloadValues of
     Right bytes ->
       yieldNonEmptyBytes bytes
@@ -871,7 +855,7 @@ imageBytesFromCompletedEvent payloads = do
     decodePayload payload =
       case Aeson.eitherDecodeStrict payload of
         Right value -> pure value
-        Left err -> lift (throwIO (LLMException [i|Invalid image generation event JSON: #{Text.pack err}|]))
+        Left err -> lift (throwIO (LLMException [i|Invalid image response JSON: #{Text.pack err}|]))
 
 isCompletedImageEventType :: Text -> Bool
 isCompletedImageEventType eventType =
@@ -1150,10 +1134,11 @@ chatStreamTextFromPayloads emitContentDeltas payloads = do
 
 imageGenerationStreamBytesFromPayloads :: [Aeson.Value] -> Either Text StrictByteString.ByteString
 imageGenerationStreamBytesFromPayloads payloads = do
-  events <- traverse parseEvent payloads
-  b64 <- case mapMaybe completedEventBase64 events of
+  b64 <- case mapMaybe imageBase64 payloads of
     [] ->
-      Left "Image generation streaming response was empty: no image output."
+      case mapMaybe streamPayloadError payloads of
+        err : _ -> Left ("OpenAI image response error: " <> err)
+        [] -> Left "Image generation response was empty: no image output."
     firstImage : _ ->
       Right firstImage
   case Base64.decode (TextEncoding.encodeUtf8 b64) of
@@ -1162,14 +1147,20 @@ imageGenerationStreamBytesFromPayloads payloads = do
     Right bytes ->
       Right bytes
   where
-    parseEvent :: Aeson.Value -> Either Text ImageGenerationStreamEvent
-    parseEvent value =
-      case AesonTypes.parseEither Aeson.parseJSON value of
-        Left err -> Left (Text.pack err)
-        Right event -> Right event
+    imageBase64 value = completedEventBase64 value <|> responseBase64 value
 
-    completedEventBase64 :: ImageGenerationStreamEvent -> Maybe Text
-    completedEventBase64 event =
-      guard (isCompletedImageEventType event.type_)
-        $> event.b64Json
-      & join
+    completedEventBase64 = \case
+      Aeson.Object obj -> do
+        Aeson.String eventType <- KeyMap.lookup "type" obj
+        guard (isCompletedImageEventType eventType)
+        Aeson.String b64 <- KeyMap.lookup "b64_json" obj
+        pure b64
+      _ -> Nothing
+
+    responseBase64 = \case
+      Aeson.Object obj -> do
+        Aeson.Array images <- KeyMap.lookup "data" obj
+        Aeson.Object image <- viaNonEmpty head (toList images)
+        Aeson.String b64 <- KeyMap.lookup "b64_json" image
+        pure b64
+      _ -> Nothing

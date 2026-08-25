@@ -336,6 +336,7 @@ main =
       , testCase "LLM audio speech request includes provider options" testLLMAudioSpeechRequestIncludesProviderOptions
       , testCase "LLM image stream completed event yields final image bytes" testLLMImageStreamCompletedEventYieldsFinalImage
       , testCase "LLM image edit stream completed event yields final image bytes" testLLMImageEditStreamCompletedEventYieldsFinalImage
+      , testCase "LLM image edit accepts non-streaming response" testLLMImageEditAcceptsNonStreamingResponse
       , testCase "LLM image stream ignores partial event without final image" testLLMImageStreamIgnoresPartialEventWithoutFinalImage
       , testCase "LLM log JSON truncates base64 image payloads" testLLMLogJsonTruncatesBase64ImagePayloads
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
@@ -3556,11 +3557,17 @@ testLLMImageEditStreamCompletedEventYieldsFinalImage =
         , "b64_json" Aeson..= ("ZWRpdGVkLWltYWdl" :: Text)
         ]
 
+testLLMImageEditAcceptsNonStreamingResponse :: IO ()
+testLLMImageEditAcceptsNonStreamingResponse =
+  LLMTransport.imageGenerationStreamBytesFromPayloads
+    [Aeson.object ["data" Aeson..= [Aeson.object ["b64_json" Aeson..= ("ZWRpdGVkLWltYWdl" :: Text)]]]]
+    @?= Right "edited-image"
+
 testLLMImageStreamIgnoresPartialEventWithoutFinalImage :: IO ()
 testLLMImageStreamIgnoresPartialEventWithoutFinalImage =
   case LLMTransport.imageGenerationStreamBytesFromPayloads [partial] of
     Left err ->
-      err @?= "Image generation streaming response was empty: no image output."
+      err @?= "Image generation response was empty: no image output."
     Right bytes ->
       assertFailure [i|expected empty stream error, got #{show bytes :: String}|]
   where
