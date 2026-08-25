@@ -252,15 +252,8 @@ runDiscordConnectionOnce
   -> Chan.Chan GatewayEvent
   -> Eff es (Either String ())
 runDiscordConnectionOnce cfg eventChan =
-  (Right <$> runSecureWebSocketClient cfg.gatewayHost cfg.gatewayPath (runGatewayConnection cfg eventChan))
-    `catch` \(connectionErr :: WS.ConnectionException) ->
-      pure (Left (exceptionSummary connectionErr))
-    `catch` \(handshakeErr :: WS.HandshakeException) ->
-      pure (Left (exceptionSummary handshakeErr))
-    `catch` \(ioErr :: IOException) ->
-      pure (Left (exceptionSummary ioErr))
-    `catchSync` \err ->
-      pure (Left (exceptionSummary err))
+  first exceptionSummary
+    <$> trySync (runSecureWebSocketClient cfg.gatewayHost cfg.gatewayPath (runGatewayConnection cfg eventChan))
 
 exceptionSummary :: Exception e => e -> String
 exceptionSummary =
