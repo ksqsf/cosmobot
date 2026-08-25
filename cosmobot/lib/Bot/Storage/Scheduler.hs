@@ -10,6 +10,7 @@ module Bot.Storage.Scheduler
   , loadScheduledMessages
   , createScheduledMessage
   , deleteScheduledMessage
+  , rescheduleScheduledMessages
   )
 where
 
@@ -31,6 +32,7 @@ data StoredScheduledMessage = StoredScheduledMessage
   -- This is deliberately not a local timestamp string, so persisted schedules
   -- survive timezone and daylight-saving changes without reinterpretation.
   , dueAtUnixSeconds :: !Integer
+  , recurringIntervalSeconds :: !(Maybe Int)
   , message :: !IncomingMessage
   }
   deriving (Show)
@@ -38,6 +40,7 @@ data StoredScheduledMessage = StoredScheduledMessage
 data ScheduledMessageRow = ScheduledMessageRow
   { id :: RowID
   , due_at_unix_seconds :: Int.Int64
+  , recurring_interval_seconds :: Maybe Int.Int64
   , platform_key :: Text
   , chat_id :: Maybe Int.Int64
   , sender_id :: Maybe Text
@@ -70,8 +73,8 @@ loadScheduledMessages = do
       pure row
   pure (mapMaybe storedScheduledMessageFromRow rows)
 
-createScheduledMessage :: Storage.Storage :> es => Integer -> IncomingMessage -> Eff es StoredScheduledMessage
-createScheduledMessage dueAtUnixSeconds message = do
+createScheduledMessage :: Storage.Storage :> es => Integer -> Maybe Int -> IncomingMessage -> Eff es StoredScheduledMessage
+createScheduledMessage dueAtUnixSeconds recurringIntervalSeconds message = do
   ensureScheduledMessagesTable
   scheduleId <- fromIntegral . fromId <$> runSelda
     ( insertWithPK
@@ -79,6 +82,7 @@ createScheduledMessage dueAtUnixSeconds message = do
       [ ScheduledMessageRow
           { id = def
           , due_at_unix_seconds = fromIntegral dueAtUnixSeconds
+          , recurring_interval_seconds = fromIntegral <$> recurringIntervalSeconds
           , platform_key = chatPlatformKey message.platform
           , chat_id = fromIntegral <$> message.chatId
           , sender_id = message.senderId
@@ -87,7 +91,16 @@ createScheduledMessage dueAtUnixSeconds message = do
           }
       ]
     )
-  pure StoredScheduledMessage{scheduleId, dueAtUnixSeconds, message}
+  pure StoredScheduledMessage{scheduleId, dueAtUnixSeconds, recurringIntervalSeconds, message}
+
+rescheduleScheduledMessages :: Storage.Storage :> es => [(Integer, Integer)] -> Eff es ()
+rescheduleScheduledMessages schedules = do
+  ensureScheduledMessagesTable
+  runSelda . transaction $
+    for_ schedules \(scheduleId, dueAtUnixSeconds) ->
+      update_ scheduledMessages
+        (\row -> row ! #id .== literal (toRowId (fromIntegral scheduleId :: Int.Int64)))
+        (\row -> row `with` [#due_at_unix_seconds := literal (fromIntegral dueAtUnixSeconds)])
 
 deleteScheduledMessage :: Storage.Storage :> es => Integer -> Eff es ()
 deleteScheduledMessage scheduleId = do
@@ -112,6 +125,8 @@ migrateScheduledMessagesTable =
       runStatement backend "INSERT INTO scheduled_messages_new (id, due_at_unix_seconds, platform_key, chat_id, sender_id, sender_username, message_json) SELECT schedule_id, due_at_unix_seconds, platform_key, chat_id, sender_id, sender_username, message_json FROM scheduled_messages"
       runStatement backend "DROP TABLE scheduled_messages"
       runStatement backend "ALTER TABLE scheduled_messages_new RENAME TO scheduled_messages"
+    when ("schedule_id" `notElem` columns && "recurring_interval_seconds" `notElem` columns) $
+      runStatement backend "ALTER TABLE scheduled_messages ADD COLUMN recurring_interval_seconds BIGINT NULL"
     traverse_ (runStatement backend)
       [ "CREATE INDEX IF NOT EXISTS scheduled_messages_due_at_idx ON scheduled_messages(due_at_unix_seconds)"
       , "CREATE INDEX IF NOT EXISTS scheduled_messages_platform_idx ON scheduled_messages(platform_key)"
@@ -125,7 +140,7 @@ migrateScheduledMessagesTable =
 
 scheduledMessageColumns :: Text
 scheduledMessageColumns =
-  "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, due_at_unix_seconds BIGINT NOT NULL, platform_key TEXT NOT NULL, chat_id BIGINT NULL, sender_id TEXT NULL, sender_username TEXT NULL, message_json TEXT NOT NULL"
+  "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, due_at_unix_seconds BIGINT NOT NULL, recurring_interval_seconds BIGINT NULL, platform_key TEXT NOT NULL, chat_id BIGINT NULL, sender_id TEXT NULL, sender_username TEXT NULL, message_json TEXT NOT NULL"
 
 storedScheduledMessageFromRow :: ScheduledMessageRow -> Maybe StoredScheduledMessage
 storedScheduledMessageFromRow row = do
@@ -133,6 +148,7 @@ storedScheduledMessageFromRow row = do
   pure StoredScheduledMessage
     { scheduleId = fromIntegral (fromRowId row.id)
     , dueAtUnixSeconds = fromIntegral row.due_at_unix_seconds
+    , recurringIntervalSeconds = fromIntegral <$> row.recurring_interval_seconds
     , message
     }
 

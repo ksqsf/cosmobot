@@ -907,7 +907,7 @@ testToolTagsEnabledFromTranscript = do
 testScheduleToolCreatesQueryableSchedule :: IO ()
 testScheduleToolCreatesQueryableSchedule = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "schedule" (Aeson.object ["op" Aeson..= ("create" :: Text), "delay_seconds" Aeson..= (60 :: Int), "prompt" Aeson..= ("check oven" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "schedule" (Aeson.object ["op" Aeson..= ("create" :: Text), "delay_seconds" Aeson..= (60 :: Int), "prompt" Aeson..= ("check oven" :: Text), "recurring" Aeson..= True])]
     , chatAnswer "" [toolCall "call-2" "schedule" (Aeson.object ["op" Aeson..= ("list" :: Text)])]
     , chatAnswer "" [toolCall "call-3" "schedule" (Aeson.object ["op" Aeson..= ("delete" :: Text), "schedule_id" Aeson..= (1 :: Integer)])]
     , chatAnswer "scheduled" []
@@ -920,6 +920,7 @@ testScheduleToolCreatesQueryableSchedule = do
   assertBool "delete removes the schedule" (null schedules)
   let output = Text.unlines (toolOutputs transcript)
   assertBool "list output includes scheduled prompt" ("check oven" `Text.isInfixOf` output)
+  assertBool "list output identifies recurring schedules" ("\"recurring\":true" `Text.isInfixOf` output)
   assertBool "delete output confirms removal" ("Schedule 1 has been removed." `Text.isInfixOf` output)
 
 testScheduledActionContinuesSourceThread :: IO ()
@@ -930,6 +931,7 @@ testScheduledActionContinuesSourceThread = do
         [ "op" Aeson..= ("create" :: Text)
         , "delay_seconds" Aeson..= (0 :: Int)
         , "prompt" Aeson..= ("check oven" :: Text)
+        , "recurring" Aeson..= False
         ])]
     , chatAnswer "source complete" []
     , chatAnswer "triggered" []

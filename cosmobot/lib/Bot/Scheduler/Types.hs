@@ -10,7 +10,8 @@ module Bot.Scheduler.Types
   , PendingMessage (..)
   , SchedulerState (..)
   , PendingDue (..)
-  , scheduleMessage
+  , scheduleOneShotMessage
+  , scheduleRecurringMessage
   , deleteScheduledMessage
   , listScheduledMessages
   , scheduledMessages
@@ -27,6 +28,7 @@ import qualified Streaming.Prelude as S
 data ScheduledMessage = ScheduledMessage
   { scheduleId :: !Integer
   , remainingSeconds :: !Int
+  , recurring :: !Bool
   , message :: !IncomingMessage
   }
   deriving (Show, Generic, Aeson.ToJSON)
@@ -34,6 +36,7 @@ data ScheduledMessage = ScheduledMessage
 data PendingMessage = PendingMessage
   { scheduleId :: !Integer
   , dueAtUnixSeconds :: !Integer
+  , recurringIntervalSeconds :: !(Maybe Int)
   , message :: !IncomingMessage
   }
 
@@ -53,6 +56,7 @@ data PendingDue = PendingDue
 data Scheduler :: Effect where
   ScheduleMessage
     :: Int
+    -> Maybe Int
     -> IncomingMessage
     -> Scheduler m Bool
   ListScheduledMessages
@@ -67,10 +71,15 @@ data Scheduler :: Effect where
 
 type instance DispatchOf Scheduler = Dynamic
 
--- | Re-inject a message into the incoming stream after a delay in seconds.
-scheduleMessage :: Scheduler :> es => Int -> IncomingMessage -> Eff es Bool
-scheduleMessage delaySeconds message =
-  send (ScheduleMessage delaySeconds message)
+-- | Re-inject a message once after a delay in seconds.
+scheduleOneShotMessage :: Scheduler :> es => Int -> IncomingMessage -> Eff es Bool
+scheduleOneShotMessage delaySeconds message =
+  send (ScheduleMessage delaySeconds Nothing message)
+
+-- | Re-inject a message after every positive delay interval until deleted.
+scheduleRecurringMessage :: Scheduler :> es => Int -> IncomingMessage -> Eff es Bool
+scheduleRecurringMessage delaySeconds message =
+  send (ScheduleMessage delaySeconds (Just (max 1 delaySeconds)) message)
 
 -- | Return pending scheduled messages owned by the same platform chat sender.
 listScheduledMessages :: Scheduler :> es => IncomingMessage -> Eff es [ScheduledMessage]

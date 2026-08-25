@@ -7,7 +7,8 @@ Stability   : experimental
 module Bot.Effect.Scheduler
   ( Scheduler
   , ScheduledMessage (..)
-  , scheduleMessage
+  , scheduleOneShotMessage
+  , scheduleRecurringMessage
   , deleteScheduledMessage
   , listScheduledMessages
   , scheduledMessages

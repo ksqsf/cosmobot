@@ -32,6 +32,7 @@ schedulerStateFromStoredMessages storedMessages =
       [ PendingMessage
           { scheduleId = stored.scheduleId
           , dueAtUnixSeconds = stored.dueAtUnixSeconds
+          , recurringIntervalSeconds = stored.recurringIntervalSeconds
           , message = stored.message
           }
       | stored <- storedMessages
@@ -54,9 +55,20 @@ popDueMessagesFromState now schedulerState =
                       Nothing ->
                         (Nothing, current.pendingById)
                       Just pending ->
-                        (Just pending, Map.delete due.scheduleId current.pendingById)
-                  nextState = current{pendingById = nextById, pendingByDue = rest}
+                        (Just pending, nextPendingById pending current.pendingById)
+                  nextDue = maybe rest (\pending -> insertNextDue pending rest) pendingMessage
+                  nextState = current{pendingById = nextById, pendingByDue = nextDue}
               in go nextState (maybe acc (: acc) pendingMessage)
+
+    nextPendingById pending pendingById =
+      case nextOccurrence now pending of
+        Nothing -> Map.delete pending.scheduleId pendingById
+        Just next -> Map.insert pending.scheduleId next pendingById
+
+    insertNextDue pending dues =
+      case nextOccurrence now pending of
+        Nothing -> dues
+        Just next -> Set.insert PendingDue{dueAtUnixSeconds = next.dueAtUnixSeconds, scheduleId = next.scheduleId} dues
 
 rememberStoredMessage :: SchedulerStorage.StoredScheduledMessage -> SchedulerState -> (SchedulerState, PendingMessage)
 rememberStoredMessage stored schedulerState =
@@ -65,6 +77,7 @@ rememberStoredMessage stored schedulerState =
     pendingMessage = PendingMessage
       { scheduleId = stored.scheduleId
       , dueAtUnixSeconds = stored.dueAtUnixSeconds
+      , recurringIntervalSeconds = stored.recurringIntervalSeconds
       , message = stored.message
       }
     due = PendingDue
@@ -100,8 +113,19 @@ scheduledMessage now pending =
   ScheduledMessage
     { scheduleId = pending.scheduleId
     , remainingSeconds = remainingSecondsUntil now pending.dueAtUnixSeconds
+    , recurring = isJust pending.recurringIntervalSeconds
     , message = pending.message
     }
+
+nextOccurrence :: Integer -> PendingMessage -> Maybe PendingMessage
+nextOccurrence now pending =
+  pending.recurringIntervalSeconds <&> \intervalSeconds ->
+    PendingMessage
+      { scheduleId = pending.scheduleId
+      , dueAtUnixSeconds = now + fromIntegral (max 1 intervalSeconds)
+      , recurringIntervalSeconds = pending.recurringIntervalSeconds
+      , message = pending.message
+      }
 
 remainingSecondsUntil :: Integer -> Integer -> Int
 remainingSecondsUntil now dueAt

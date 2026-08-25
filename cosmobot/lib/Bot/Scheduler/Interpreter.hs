@@ -45,8 +45,8 @@ runSchedulerWith prepareMessage inner = do
   Concurrency.withWorker "scheduler.worker" (schedulerWorker schedulerStateVar schedulerWake queue) $
     interpret
       (\_ -> \case
-        ScheduleMessage delaySeconds message -> do
-          _ <- persistPendingMessage schedulerStateVar delaySeconds message
+        ScheduleMessage delaySeconds recurringIntervalSeconds message -> do
+          _ <- persistPendingMessage schedulerStateVar delaySeconds recurringIntervalSeconds message
           signalSchedulerWake schedulerWake
           pure True
         DeleteScheduledMessage message scheduleId -> do
@@ -62,13 +62,27 @@ runSchedulerWith prepareMessage inner = do
             , sameMessageOwner message pendingMessage.message
             ]
         ReceiveScheduledMessage -> do
-          pending <- STM.atomically (STM.readTBQueue queue)
-          SchedulerStorage.deleteScheduledMessage pending.scheduleId
+          pending <- receivePendingMessage schedulerStateVar queue
+          when (isNothing pending.recurringIntervalSeconds) $
+            SchedulerStorage.deleteScheduledMessage pending.scheduleId
           prepareMessage pending.message)
       inner
 
+receivePendingMessage
+  :: Concurrent :> es
+  => MVar.MVar SchedulerState
+  -> STM.TBQueue PendingMessage
+  -> Eff es PendingMessage
+receivePendingMessage schedulerStateVar queue = do
+  pending <- STM.atomically (STM.readTBQueue queue)
+  case pending.recurringIntervalSeconds of
+    Nothing -> pure pending
+    Just _ -> do
+      active <- MVar.withMVar schedulerStateVar (pure . Map.member pending.scheduleId . (.pendingById))
+      if active then pure pending else receivePendingMessage schedulerStateVar queue
+
 schedulerWorker
-  :: (Concurrent :> es, IOE :> es, Timeout :> es)
+  :: (Concurrent :> es, IOE :> es, Storage.Storage :> es, Timeout :> es)
   => MVar.MVar SchedulerState
   -> MVar.MVar ()
   -> STM.TBQueue PendingMessage
@@ -86,10 +100,18 @@ schedulerWorker schedulerStateVar schedulerWake queue =
         void $ timeout (waitMicrosecondsUntil now dueAt) (MVar.takeMVar schedulerWake)
     drainSchedulerWake schedulerWake
 
-popDueMessages :: Concurrent :> es => MVar.MVar SchedulerState -> Integer -> Eff es [PendingMessage]
+popDueMessages :: (Concurrent :> es, Storage.Storage :> es) => MVar.MVar SchedulerState -> Integer -> Eff es [PendingMessage]
 popDueMessages schedulerStateVar now =
-  MVar.modifyMVar schedulerStateVar \schedulerState -> do
+  MVar.modifyMVarMasked schedulerStateVar \schedulerState -> do
     let (nextState, dueMessages) = popDueMessagesFromState now schedulerState
+    let recurringSchedules =
+          [ (pending.scheduleId, next.dueAtUnixSeconds)
+          | pending <- dueMessages
+          , isJust pending.recurringIntervalSeconds
+          , Just next <- [Map.lookup pending.scheduleId nextState.pendingById]
+          ]
+    unless (null recurringSchedules) $
+      SchedulerStorage.rescheduleScheduledMessages recurringSchedules
     pure (nextState, dueMessages)
 
 nextDueAt :: (Concurrent :> es) => MVar.MVar SchedulerState -> Eff es (Maybe Integer)
@@ -116,12 +138,12 @@ drainSchedulerWake schedulerWake = do
 
 persistPendingMessage ::
   (Concurrent :> es, IOE :> es, Storage.Storage :> es)
-  => MVar.MVar SchedulerState -> Int -> IncomingMessage -> Eff es PendingMessage
-persistPendingMessage schedulerStateVar delaySeconds message = do
+  => MVar.MVar SchedulerState -> Int -> Maybe Int -> IncomingMessage -> Eff es PendingMessage
+persistPendingMessage schedulerStateVar delaySeconds recurringIntervalSeconds message = do
   now <- currentUnixSeconds
   let dueAt = now + fromIntegral (max 0 delaySeconds)
   MVar.modifyMVarMasked schedulerStateVar \schedulerState -> do
-    stored <- SchedulerStorage.createScheduledMessage dueAt message
+    stored <- SchedulerStorage.createScheduledMessage dueAt recurringIntervalSeconds message
     pure (rememberStoredMessage stored schedulerState)
 
 deletePersistedPendingMessage

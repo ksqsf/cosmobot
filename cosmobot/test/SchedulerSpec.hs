@@ -33,12 +33,15 @@ main =
       , testCase "schedule ids increase in insertion order" testScheduleIdsIncrease
       , testCase "scheduled stream yields original message" testScheduledStreamYieldsOriginalMessage
       , testCase "scheduled delivery can prepare messages" testScheduledDeliveryCanPrepareMessages
+      , testCase "recurring schedules repeat until deleted" testRecurringSchedulesRepeatUntilDeleted
       , testCase "elapsed schedule leaves pending list" testElapsedScheduleLeavesPendingList
       , testCase "same due time yields messages in schedule id order" testSameDueTimeYieldsInScheduleIdOrder
       , testCase "deleted elapsed schedule is not delivered" testDeletedElapsedScheduleIsNotDelivered
       , testCase "pending schedules persist across scheduler restart" testPendingSchedulesPersistAcrossSchedulerRestart
+      , testCase "recurring schedules persist across scheduler restart" testRecurringSchedulesPersistAcrossSchedulerRestart
       , testCase "elapsed schedules persist across scheduler restart" testElapsedSchedulesPersistAcrossSchedulerRestart
       , testCase "scheduler migrates old ids to database primary keys" testSchedulerMigratesLegacyIds
+      , testCase "scheduler migrates one-shot tables for recurrence" testSchedulerMigratesOneShotTable
       , testCase "storage failures do not commit scheduler memory state" testStorageFailuresDoNotCommitSchedulerState
       ]
 
@@ -71,7 +74,7 @@ legacyScheduledMessages =
 
 testScheduledMessagesAreScopedByCurrentUser :: IO ()
 testScheduledMessagesAreScopedByCurrentUser = runSchedulerTest do
-  _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask remind me")
+  _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask remind me")
   ownSchedules <- Scheduler.listScheduledMessages (messageFrom "200" "what schedules?")
   otherSchedules <- Scheduler.listScheduledMessages (messageFrom "201" "what schedules?")
   liftIO $ length ownSchedules @?= 1
@@ -81,13 +84,13 @@ testScheduledMessagesAreScopedByCurrentUser = runSchedulerTest do
 
 testScheduledMessagesAreScopedByCurrentChat :: IO ()
 testScheduledMessagesAreScopedByCurrentChat = runSchedulerTest do
-  _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask private")
+  _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask private")
   schedules <- Scheduler.listScheduledMessages (messageFromChat "200" 101 "what schedules?")
   liftIO $ length schedules @?= 0
 
 testUsernameScopedSchedule :: IO ()
 testUsernameScopedSchedule = runSchedulerTest do
-  _ <- Scheduler.scheduleMessage 60 (messageFromUsername "alice" "!ask by username")
+  _ <- Scheduler.scheduleOneShotMessage 60 (messageFromUsername "alice" "!ask by username")
   ownSchedules <- Scheduler.listScheduledMessages (messageFromUsername "alice" "what schedules?")
   otherSchedules <- Scheduler.listScheduledMessages (messageFromUsername "bob" "what schedules?")
   liftIO $ length ownSchedules @?= 1
@@ -95,37 +98,56 @@ testUsernameScopedSchedule = runSchedulerTest do
 
 testScheduleIdsIncrease :: IO ()
 testScheduleIdsIncrease = runSchedulerTest do
-  _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask first")
-  _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask second")
+  _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask first")
+  _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask second")
   schedules <- Scheduler.listScheduledMessages (messageFrom "200" "what schedules?")
   liftIO $ map (.scheduleId) schedules @?= [1, 2]
 
 testScheduledStreamYieldsOriginalMessage :: IO ()
 testScheduledStreamYieldsOriginalMessage = runSchedulerTest do
   let scheduled = messageFrom "200" "!ask now"
-  _ <- Scheduler.scheduleMessage 0 scheduled
+  _ <- Scheduler.scheduleOneShotMessage 0 scheduled
   delivered <- S.head_ Scheduler.scheduledMessages
   liftIO $ ((.text) <$> delivered) @?= Just scheduled.text
 
 testScheduledDeliveryCanPrepareMessages :: IO ()
 testScheduledDeliveryCanPrepareMessages = runSchedulerStorage $
   SchedulerInterpreter.runSchedulerWith (\message -> pure message{replyToMessageId = Just "prepared"}) do
-    _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "original")
+    _ <- Scheduler.scheduleOneShotMessage 0 (messageFrom "200" "original")
     delivered <- S.head_ Scheduler.scheduledMessages
     liftIO $ ((.replyToMessageId) =<< delivered) @?= Just "prepared"
 
+testRecurringSchedulesRepeatUntilDeleted :: IO ()
+testRecurringSchedulesRepeatUntilDeleted = runSchedulerTest do
+  let scheduled = messageFrom "200" "repeat"
+  _ <- Scheduler.scheduleRecurringMessage 1 scheduled
+  firstDelivery <- S.head_ Scheduler.scheduledMessages
+  afterFirst <- Scheduler.listScheduledMessages scheduled
+  secondDelivery <- S.head_ Scheduler.scheduledMessages
+  threadDelay 1100000
+  deleted <- Scheduler.deleteScheduledMessage scheduled 1
+  afterDelete <- timeout 100000 (S.head_ Scheduler.scheduledMessages)
+  remaining <- Scheduler.listScheduledMessages scheduled
+  liftIO do
+    map (fmap (.text)) [firstDelivery, secondDelivery] @?= [Just "repeat", Just "repeat"]
+    map (.scheduleId) afterFirst @?= [1]
+    map (.recurring) afterFirst @?= [True]
+    deleted @?= True
+    assertBool "deleted recurring schedule is not delivered" (isNothing afterDelete)
+    assertBool "deleted recurring schedule leaves no pending task" (null remaining)
+
 testElapsedScheduleLeavesPendingList :: IO ()
 testElapsedScheduleLeavesPendingList = runSchedulerTest do
-  _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "!ask now")
+  _ <- Scheduler.scheduleOneShotMessage 0 (messageFrom "200" "!ask now")
   _ <- S.head_ Scheduler.scheduledMessages
   schedules <- Scheduler.listScheduledMessages (messageFrom "200" "what schedules?")
   liftIO $ length schedules @?= 0
 
 testSameDueTimeYieldsInScheduleIdOrder :: IO ()
 testSameDueTimeYieldsInScheduleIdOrder = runSchedulerTest do
-  _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "!ask first")
-  _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "!ask second")
-  _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "!ask third")
+  _ <- Scheduler.scheduleOneShotMessage 0 (messageFrom "200" "!ask first")
+  _ <- Scheduler.scheduleOneShotMessage 0 (messageFrom "200" "!ask second")
+  _ <- Scheduler.scheduleOneShotMessage 0 (messageFrom "200" "!ask third")
   firstMessage <- S.head_ Scheduler.scheduledMessages
   secondMessage <- S.head_ Scheduler.scheduledMessages
   thirdMessage <- S.head_ Scheduler.scheduledMessages
@@ -133,8 +155,8 @@ testSameDueTimeYieldsInScheduleIdOrder = runSchedulerTest do
 
 testDeletedElapsedScheduleIsNotDelivered :: IO ()
 testDeletedElapsedScheduleIsNotDelivered = runSchedulerTest do
-  _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask deleted")
-  _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "!ask delivered")
+  _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask deleted")
+  _ <- Scheduler.scheduleOneShotMessage 0 (messageFrom "200" "!ask delivered")
   deleted <- Scheduler.deleteScheduledMessage (messageFrom "200" "delete") 1
   delivered <- S.head_ Scheduler.scheduledMessages
   schedules <- Scheduler.listScheduledMessages (messageFrom "200" "what schedules?")
@@ -146,7 +168,7 @@ testDeletedElapsedScheduleIsNotDelivered = runSchedulerTest do
 testPendingSchedulesPersistAcrossSchedulerRestart :: IO ()
 testPendingSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
   Scheduler.runScheduler do
-    _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask persisted")
+    _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask persisted")
     pure ()
   Scheduler.runScheduler do
     schedules <- Scheduler.listScheduledMessages (messageFrom "200" "what schedules?")
@@ -154,10 +176,21 @@ testPendingSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
       map (.scheduleId) schedules @?= [1]
       map ((.text) . (.message)) schedules @?= ["!ask persisted"]
 
+testRecurringSchedulesPersistAcrossSchedulerRestart :: IO ()
+testRecurringSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
+  Scheduler.runScheduler do
+    _ <- Scheduler.scheduleRecurringMessage 60 (messageFrom "200" "recurring")
+    pure ()
+  Scheduler.runScheduler do
+    schedules <- Scheduler.listScheduledMessages (messageFrom "200" "list")
+    liftIO do
+      map (.scheduleId) schedules @?= [1]
+      map (.recurring) schedules @?= [True]
+
 testElapsedSchedulesPersistAcrossSchedulerRestart :: IO ()
 testElapsedSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
   Scheduler.runScheduler do
-    _ <- Scheduler.scheduleMessage 0 (messageFrom "200" "!ask after restart")
+    _ <- Scheduler.scheduleOneShotMessage 0 (messageFrom "200" "!ask after restart")
     pure ()
   Scheduler.runScheduler do
     delivered <- S.head_ Scheduler.scheduledMessages
@@ -197,11 +230,31 @@ testSchedulerMigratesLegacyIds = runEff $
             StorageSQLite.runStorageSQLite connection $
               Scheduler.runScheduler do
                 before <- Scheduler.listScheduledMessages legacyMessage
-                _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask new")
+                _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask new")
                 migrated <- Scheduler.listScheduledMessages legacyMessage
                 liftIO do
                   map (.scheduleId) before @?= [7]
                   map (.scheduleId) migrated @?= [7, 8]
+
+testSchedulerMigratesOneShotTable :: IO ()
+testSchedulerMigratesOneShotTable = runEff $
+  withSQLiteConnection \connection -> do
+    liftIO $ SeldaBackend.runSeldaT
+      (SeldaBackend.withBackend \backend -> liftIO $ void $
+        SeldaBackend.runStmt backend
+          "CREATE TABLE scheduled_messages (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, due_at_unix_seconds BIGINT NOT NULL, platform_key TEXT NOT NULL, chat_id BIGINT NULL, sender_id TEXT NULL, sender_username TEXT NULL, message_json TEXT NOT NULL)"
+          [])
+      connection
+    runTimeout $
+      runConcurrent $
+        runPrim $
+          startKatipE "scheduler-spec" "test" $
+          ConcurrencyManager.runConcurrencyManager $
+            StorageSQLite.runStorageSQLite connection $
+              Scheduler.runScheduler do
+                _ <- Scheduler.scheduleRecurringMessage 60 (messageFrom "200" "recurring")
+                schedules <- Scheduler.listScheduledMessages (messageFrom "200" "list")
+                liftIO $ map (.recurring) schedules @?= [True]
 
 testStorageFailuresDoNotCommitSchedulerState :: IO ()
 testStorageFailuresDoNotCommitSchedulerState = runEff $
@@ -213,10 +266,10 @@ testStorageFailuresDoNotCommitSchedulerState = runEff $
           ConcurrencyManager.runConcurrencyManager $
             StorageSQLite.runStorageSQLite connection $
               Scheduler.runScheduler do
-                _ <- Scheduler.scheduleMessage 60 (messageFrom "200" "!ask persisted")
+                _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask persisted")
                 liftIO (SeldaBackend.seldaClose connection)
                 failedCreate <- trySync $
-                  Scheduler.scheduleMessage 60 (messageFrom "200" "!ask phantom")
+                  Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask phantom")
                 failedDelete <- trySync $
                   Scheduler.deleteScheduledMessage (messageFrom "200" "delete") 1
                 schedules <- Scheduler.listScheduledMessages (messageFrom "200" "list")

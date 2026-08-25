@@ -29,6 +29,7 @@ scheduleTool =
           [ fieldText "op" "One of: create, list, delete."
           , fieldInteger "delay_seconds" "Delay in seconds; required for create."
           , fieldText "prompt" "Future agent prompt; required for create."
+          , fieldBoolean "recurring" "Whether to repeat after every delay interval; required for create."
           , fieldInteger "schedule_id" "Schedule id; required for delete."
           ]
           ["op"])
@@ -36,9 +37,10 @@ scheduleTool =
       \call -> do
         context <- askToolContext
         case call of
-          ScheduleCreate delaySeconds prompt -> do
+          ScheduleCreate delaySeconds prompt recurring -> do
             metadata <- askToolCallMetadata
-            scheduled <- Scheduler.scheduleMessage delaySeconds (scheduledAgentMessage context metadata.agentRunId delaySeconds prompt)
+            let schedule = if recurring then Scheduler.scheduleRecurringMessage else Scheduler.scheduleOneShotMessage
+            scheduled <- schedule delaySeconds (scheduledAgentMessage context metadata.agentRunId delaySeconds prompt recurring)
             pure $ if scheduled
               then toolText [i|Scheduled agent action in #{delaySeconds} seconds.|]
               else toolText "Could not schedule agent action: scheduler is at capacity."
@@ -51,7 +53,7 @@ scheduleTool =
             toolText . jsonText . map scheduleSummary <$> Scheduler.listScheduledMessages context.message
 
 data ScheduleCall
-  = ScheduleCreate !Int !Text
+  = ScheduleCreate !Int !Text !Bool
   | ScheduleDelete !Integer
   | ScheduleList
 
@@ -59,7 +61,13 @@ scheduleArgs :: Aeson.Value -> AesonTypes.Parser ScheduleCall
 scheduleArgs = Aeson.withObject "schedule arguments" \o -> do
   op <- o Aeson..: Key.fromText "op"
   case op :: Text of
-    "create" -> ScheduleCreate <$> o Aeson..: Key.fromText "delay_seconds" <*> o Aeson..: Key.fromText "prompt"
+    "create" -> do
+      delaySeconds <- o Aeson..: Key.fromText "delay_seconds"
+      prompt <- o Aeson..: Key.fromText "prompt"
+      recurring <- o Aeson..: Key.fromText "recurring"
+      when (recurring && delaySeconds <= 0) $
+        fail "delay_seconds must be positive for recurring schedules."
+      pure (ScheduleCreate delaySeconds prompt recurring)
     "delete" -> ScheduleDelete <$> o Aeson..: Key.fromText "schedule_id"
     "list" -> pure ScheduleList
     _ -> fail "op must be one of: create, list, delete."
@@ -67,6 +75,7 @@ scheduleArgs = Aeson.withObject "schedule arguments" \o -> do
 data ScheduleSummary = ScheduleSummary
   { scheduleId :: !Integer
   , remainingSeconds :: !Int
+  , recurring :: !Bool
   , prompt :: !Text
   }
   deriving (Show, Generic, Aeson.ToJSON)
@@ -76,6 +85,7 @@ scheduleSummary schedule =
   ScheduleSummary
     { scheduleId = schedule.scheduleId
     , remainingSeconds = schedule.remainingSeconds
+    , recurring = schedule.recurring
     , prompt = scheduledPrompt schedule.message
     }
 
@@ -86,8 +96,8 @@ scheduledPrompt message =
     parsePrompt =
       Aeson.withObject "scheduled action" (Aeson..: Key.fromText "prompt")
 
-scheduledAgentMessage :: Context -> Text -> Int -> Text -> IncomingMessage
-scheduledAgentMessage context runId delaySeconds prompt =
+scheduledAgentMessage :: Context -> Text -> Int -> Text -> Bool -> IncomingMessage
+scheduledAgentMessage context runId delaySeconds prompt recurring =
   let original = context.message
   in original
       { messageId = original.messageId
@@ -101,6 +111,7 @@ scheduledAgentMessage context runId delaySeconds prompt =
           [ "type" Aeson..= Aeson.String "scheduled_agent_action"
           , "delay_seconds" Aeson..= delaySeconds
           , "prompt" Aeson..= prompt
+          , "recurring" Aeson..= recurring
           , "run_id" Aeson..= runId
           , "original_message" Aeson..= original.raw
           ]

@@ -231,7 +231,7 @@ schedulerDueMessages messages =
           ConcurrencyManager.runConcurrencyManager $
             StorageSQLite.runStorageSQLitePath ":memory:" $
               Scheduler.runScheduler do
-                traverse_ (Scheduler.scheduleMessage 0) messages
+                traverse_ (Scheduler.scheduleOneShotMessage 0) messages
                 ref <- liftIO (IORef.newIORef 0)
                 S.mapM_
                   (\_ -> liftIO $ IORef.modifyIORef' ref (+ 1))
