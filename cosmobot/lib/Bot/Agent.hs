@@ -51,6 +51,9 @@ import Bot.Agent.Control (finishToolTurn)
 import Bot.Agent.Middleware.ContextCompaction
   ( withContextCompactionNotice
   )
+import Bot.Agent.Middleware.LogContext
+  ( withLogContext
+  )
 import Bot.Agent.Middleware.RecursiveTranscript
   ( withRecursiveTranscript
   )
@@ -253,7 +256,8 @@ defaultRuntimeWithStrategy
   -> Runtime '[ObservationContext, EventObservation es, ToolResultObservation es] (Eff es)
   -> Runtime '[] (Eff es)
 defaultRuntimeWithStrategy observer contextStrategy contextTokenThreshold =
-  ( withContinuations
+  ( withLogContext
+  . withContinuations
   . withToolLimit isResumeTransfer
   . withTypingNotification
   . withToolResultCompaction

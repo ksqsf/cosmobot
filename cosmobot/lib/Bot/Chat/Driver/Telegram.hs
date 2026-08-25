@@ -504,7 +504,7 @@ apiCall
   -> Text
   -> body
   -> Eff es result
-apiCall cfg method body = do
+apiCall cfg method body = katipAddContext (sl "telegram_method" method) do
   logTelegramApiRequest method
   resp :: TelegramResult <-
     ( HTTP.runReq $
@@ -521,7 +521,7 @@ apiMultipartCall
   -> Text
   -> [Multipart.Part]
   -> Eff es result
-apiMultipartCall cfg method parts = do
+apiMultipartCall cfg method parts = katipAddContext (sl "telegram_method" method) do
   logTelegramApiRequest method
   resp :: TelegramResult <-
     ( HTTP.runReq do

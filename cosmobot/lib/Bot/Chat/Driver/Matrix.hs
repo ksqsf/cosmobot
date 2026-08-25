@@ -716,7 +716,7 @@ instance MatrixAPI MatrixDownloadMedia where
     case parseMxcUri downloadMediaRef of
       Nothing ->
         liftIO (ioError (userError [i|Invalid Matrix media URI: #{downloadMediaRef}|]))
-      Just (serverName, mediaId) -> do
+      Just (serverName, mediaId) -> katipAddContext (sl "matrix_method" ("authenticated media download" :: Text)) do
         $(logDebug) [i|Matrix API request: authenticated media download #{downloadMediaRef}|]
         withMatrixAccessToken driver.auth \token -> do
           manager <- HTTP.manager
@@ -941,7 +941,7 @@ matrixUnauthenticatedCall
   -> (forall scheme. Option scheme -> Option scheme)
   -> (forall scheme. Url scheme -> Option scheme -> Req response)
   -> Eff es response
-matrixUnauthenticatedCall cfg method logMessage addOptions buildRequest = do
+matrixUnauthenticatedCall cfg method logMessage addOptions buildRequest = katipAddContext (sl "matrix_method" method) do
   $(logDebug) [i|Matrix API request: #{logMessage}|]
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions ->
     matrixReq method $

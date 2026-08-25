@@ -180,15 +180,15 @@ receiveEvent driver =
 
 createMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> CreateMessageRequest -> Eff es Message
 createMessage driver channelId request =
-  discordJsonRequest driver.config POST ["channels", channelId, "messages"] request
+  discordJsonRequest driver.config "POST" POST ["channels", channelId, "messages"] request
 
 editDiscordMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> CreateMessageRequest -> Eff es Message
 editDiscordMessage driver channelId messageId request =
-  discordJsonRequest driver.config PATCH ["channels", channelId, "messages", messageId] request
+  discordJsonRequest driver.config "PATCH" PATCH ["channels", channelId, "messages", messageId] request
 
 deleteDiscordMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Eff es ()
 deleteDiscordMessage driver channelId messageId =
-  discordNoResponseRequest driver.config DELETE ["channels", channelId, "messages", messageId]
+  discordNoResponseRequest driver.config "DELETE" DELETE ["channels", channelId, "messages", messageId]
 
 fetchMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Eff es Message
 fetchMessage driver channelId messageId =
@@ -212,7 +212,7 @@ uploadDiscordFile driver channelId content path fileName =
 
 triggerTyping :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Eff es ()
 triggerTyping driver channelId =
-  discordNoResponseRequest driver.config POST ["channels", channelId, "typing"]
+  discordNoResponseRequest driver.config "POST" POST ["channels", channelId, "typing"]
 
 runDiscordDriver
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
@@ -981,11 +981,12 @@ stableTextId =
 discordJsonRequest
   :: (HTTP.HTTP :> es, KatipE :> es, Aeson.ToJSON body, Aeson.FromJSON result, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'CanHaveBody)
   => Config
+  -> Text
   -> method
   -> [Text]
   -> body
   -> Eff es result
-discordJsonRequest cfg method path body = do
+discordJsonRequest cfg methodName method path body = discordRequestContext methodName path do
   $(logDebug) [i|Discord REST request: #{Text.intercalate "/" path}|]
   HTTP.runReq do
     req method (discordApiUrl path) (ReqBodyJson body) jsonResponse (discordRequestOptions cfg)
@@ -994,10 +995,11 @@ discordJsonRequest cfg method path body = do
 discordNoResponseRequest
   :: (HTTP.HTTP :> es, KatipE :> es, HttpMethod method, HttpBodyAllowed (AllowsBody method) 'NoBody)
   => Config
+  -> Text
   -> method
   -> [Text]
   -> Eff es ()
-discordNoResponseRequest cfg method path = do
+discordNoResponseRequest cfg methodName method path = discordRequestContext methodName path do
   $(logDebug) [i|Discord REST request: #{Text.intercalate "/" path}|]
   void $ HTTP.runReq do
     req method (discordApiUrl path) NoReqBody ignoreResponse (discordRequestOptions cfg)
@@ -1007,21 +1009,21 @@ discordGetRequest
   => Config
   -> [Text]
   -> Eff es result
-discordGetRequest cfg path = do
+discordGetRequest cfg path = discordRequestContext "GET" path do
   $(logDebug) [i|Discord REST request: #{Text.intercalate "/" path}|]
   HTTP.runReq do
     req GET (discordApiUrl path) NoReqBody jsonResponse (discordRequestOptions cfg)
       <&> responseBody
 
 discordUploadFile
-  :: (HTTP.HTTP :> es, IOE :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
   => Config
   -> Text
   -> Maybe Text
   -> FilePath
   -> Maybe Text
   -> Eff es Message
-discordUploadFile cfg channelId content path fileName = do
+discordUploadFile cfg channelId content path fileName = discordRequestContext "POST" ["channels", channelId, "messages"] do
   manager <- HTTP.manager
   base <- liftIO $ Client.parseRequest [i|https://discord.com/api/v10/channels/#{channelId}/messages|]
   let payload = Aeson.object
@@ -1046,6 +1048,13 @@ discordUploadFile cfg channelId content path fileName = do
       pure message
     Left err ->
       throwIO (userError [i|Discord upload response decode failed: #{err}|])
+
+discordRequestContext :: KatipE :> es => Text -> [Text] -> Eff es a -> Eff es a
+discordRequestContext method path =
+  katipAddContext
+    ( sl "discord_method" method
+        <> sl "discord_path" ("/" <> Text.intercalate "/" path)
+    )
 
 discordApiUrl :: [Text] -> Url 'Https
 discordApiUrl path =

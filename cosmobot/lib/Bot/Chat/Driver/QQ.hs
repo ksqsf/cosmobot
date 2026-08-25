@@ -175,7 +175,8 @@ sendAction driver value = do
     Just response ->
       pure response
     Nothing -> do
-      $(logInfo) "QQ action timed out"
+      katipAddContext (qqActionRequestContext value) $
+        $(logInfo) "Action timed out"
       pure failedActionResponse
 
 data ActionRequest = ActionRequest !Aeson.Value !(MVar ActionResponse)
@@ -266,6 +267,8 @@ sendActions actionChan pendingResponses actionCounter conn =
     ActionRequest value responseVar <- liftIO (Chan.readChan actionChan)
     echo <- nextActionEcho actionCounter
     let echoedValue = addActionEcho echo value
+    katipAddContext (qqActionRequestContext value <> sl "qq_echo" echo) $
+      $(logDebug) "Action request sent"
     MVar.modifyMVar_ pendingResponses \pending ->
       pure (Map.insert echo responseVar pending)
     (liftIO (WS.sendTextData conn (Aeson.encode echoedValue)) `catchSync` \err -> do
@@ -481,15 +484,42 @@ dispatchActionResponse
 dispatchActionResponse pendingResponses response =
   case response.echo of
     Nothing ->
-      $(logInfo) "Ignoring QQ action response without echo"
+      $(logInfo) "Ignoring action response without echo"
     Just echo -> do
+      katipAddContext (qqActionResponseContext echo response) $
+        $(logDebug) "Action response received"
       waiter <- MVar.withMVar pendingResponses \pending ->
         pure (Map.lookup echo pending)
       case waiter of
         Nothing ->
-          $(logInfo) [i|Ignoring QQ action response with unknown echo: #{echo}|]
+          katipAddContext (qqActionResponseContext echo response) $
+            $(logInfo) "Ignoring action response with unknown echo"
         Just responseVar ->
           void $ MVar.tryPutMVar responseVar response
+
+qqActionRequestContext :: Aeson.Value -> SimpleLogPayload
+qqActionRequestContext request =
+  foldMap (sl "qq_action") (qqActionName request)
+    <> foldMap (sl "qq_forward_nodes") (qqForwardNodeCount request)
+
+qqActionResponseContext :: Text -> ActionResponse -> SimpleLogPayload
+qqActionResponseContext echo response =
+  sl "qq_echo" echo
+    <> foldMap (sl "qq_status") response.status
+    <> foldMap (sl "qq_retcode") response.retcode
+    <> foldMap (sl "qq_response_message") response.message
+    <> foldMap (sl "qq_message_id") (responseMessageId response)
+
+qqActionName :: Aeson.Value -> Maybe Text
+qqActionName =
+  Aeson.parseMaybe (Aeson.withObject "QQ action request" (Aeson..: "action"))
+
+qqForwardNodeCount :: Aeson.Value -> Maybe Int
+qqForwardNodeCount = Aeson.parseMaybe $ Aeson.withObject "QQ action request" \request -> do
+  params <- request Aeson..: "params"
+  Aeson.withObject "QQ action params" (\object -> do
+    messages <- object Aeson..: "messages" :: Aeson.Parser [Aeson.Value]
+    pure (length messages)) params
 
 -- | Reply to a QQ private or group message.
 replyToQQ

@@ -109,6 +109,8 @@ common lib-deps
                     , amazonka-s3
                     , string-interpolate
                     , template-haskell
+                    , libsystemd-journal
+                    , unordered-containers
                     , unix
                     , modern-uri
                     , mime-types
@@ -189,6 +191,7 @@ library
         Bot.Agent.Core
         Bot.Agent.Failure
         Bot.Agent.Middleware.ContextCompaction
+        Bot.Agent.Middleware.LogContext
         Bot.Agent.Middleware.RecursiveTranscript
         Bot.Agent.Middleware.Continuation
         Bot.Agent.Middleware.Observation

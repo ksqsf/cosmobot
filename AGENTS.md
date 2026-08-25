@@ -196,6 +196,34 @@ cleanup, and tool-call transcript completeness together.
 - Always use `-j` for `cabal` build and test, and pass
   `--test-options=--hide-successes` to `cabal test`.
 
+### Journald Debugging
+
+- Query structured fields directly instead of grepping rendered messages, for example:
+  `journalctl -u cosmobot.service PLATFORM=qq CHAT_ID=123`,
+  `journalctl -u cosmobot.service AGENT_RUN_ID=run-id`, or
+  `journalctl -u cosmobot.service HASKELL_MODULE=Bot.LLM.OpenAI.Transport`.
+- Combine fields to intersect matches, add `-f` to follow, and use `-o json-pretty`
+  or `-o verbose` to discover all fields attached to a log entry.
+- Filter by severity with `-p`, for example `journalctl -u cosmobot.service -p info`.
+  Because `-p debug` includes debug and every higher priority, use `PRIORITY=7`
+  when only debug entries are wanted.
+- The native journald scribe is selected when `JOURNAL_STREAM` is present. Outside
+  systemd, logging falls back to timestamped stderr output, so structured-field
+  queries are unavailable there.
+- Cosmobot's structured field catalog is:
+  - source: `HASKELL_MODULE`, `CODE_FILE`, `CODE_LINE`, `PRIORITY`;
+  - chat: `PLATFORM`, `CHAT_KIND`, `CHAT_ID`, `SENDER_ID`, `CHAT_MESSAGE_ID`;
+  - agent: `AGENT_RUN_ID`, `AGENT_TURN`;
+  - tool: `TOOL_CALL_ID`, `TOOL_NAME`;
+  - QQ actions: `QQ_ACTION`, `QQ_FORWARD_NODES`, `QQ_ECHO`, `QQ_STATUS`,
+    `QQ_RETCODE`, `QQ_RESPONSE_MESSAGE`, `QQ_MESSAGE_ID`;
+  - Telegram API: `TELEGRAM_METHOD`;
+  - Matrix API: `MATRIX_METHOD`;
+  - Discord REST: `DISCORD_METHOD`, `DISCORD_PATH`.
+- Use `journalctl -N` to list field names and `journalctl -F FIELD` to list the
+  values currently present for one field. The separate systemd message catalog
+  can be inspected with `journalctl --list-catalog` or `journalctl --dump-catalog`.
+
 ## Cosmocode
 
 A TUI interface to interact with Cosmobot RPC server, and specifically, designed for coding tasks.

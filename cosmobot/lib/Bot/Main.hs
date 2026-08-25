@@ -18,7 +18,7 @@ import qualified Bot.ACP.Server as ACPServer
 import qualified Bot.ACP.State as ACP
 import Bot.Config
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
-import Bot.Core.Message (IncomingMessage (..), MessageDigest (..), inputWithAttachments, incomingMessageLogLine)
+import Bot.Core.Message (IncomingMessage (..), MessageDigest (..), chatPlatformKey, inputWithAttachments, incomingMessageLogLine, messageIdText)
 import Bot.Core.Transcript (startWithUserInput)
 import Bot.Core.Route
 import qualified Bot.Lifecycle as Lifecycle
@@ -54,7 +54,9 @@ import qualified Bot.RPC.State as RPC
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import Data.Text.Lazy.Builder (Builder, fromText)
+import Data.Time.Format (defaultTimeLocale, formatTime)
 import Language.Haskell.TH (Loc (loc_module))
+import qualified System.Environment as Environment
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Ask.AgentRun (askSystemPrompt)
@@ -142,7 +144,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
             , Scheduler.scheduledMessages
             ]
           messageConsumer =
-            consumeWith
+            consumeWithLogContext
               (zipWith withRouteDebugLogging [1 :: Int ..] (routes cfg threads))
               (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
@@ -309,6 +311,23 @@ routeLabel :: Route es -> Text
 routeLabel route =
   maybe "-" (.label) route.help
 
+consumeWithLogContext
+  :: KatipE :> es
+  => [RouteHandler es]
+  -> Stream (Of IncomingMessage) (Eff es) ()
+  -> Eff es ()
+consumeWithLogContext handlers =
+  S.mapM_ \message ->
+    katipAddContext (incomingMessageContext message) (runHandlers handlers message)
+
+incomingMessageContext :: IncomingMessage -> SimpleLogPayload
+incomingMessageContext message =
+  sl "platform" (chatPlatformKey message.platform)
+    <> sl "chat_kind" (show message.kind :: Text)
+    <> foldMap (sl "chat_id") message.chatId
+    <> foldMap (sl "sender_id") message.senderId
+    <> foldMap (sl "chat_message_id" . messageIdText) message.messageId
+
 runConfiguredServers
   :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
@@ -376,14 +395,20 @@ raceTaskPair (leftLabel, left) (rightLabel, right) =
 runBotLog :: IOE :> es => Severity -> Eff (KatipE : es) a -> Eff es a
 runBotLog level inner =
   startKatipE "cosmobot" "production" do
-    stdoutScribe <- mkHandleScribeWithFormatter journalFormat (ColorLog False) stdout (permitItem level) V2
-    registerScribe "stdout" stdoutScribe defaultScribeSettings
+    journalStream <- liftIO (Environment.lookupEnv "JOURNAL_STREAM")
+    case journalStream of
+      Just _ ->
+        registerScribe "journal" (journalScribe (permitItem level)) defaultScribeSettings
+      Nothing -> do
+        stderrScribe <- mkHandleScribeWithFormatter terminalFormat (ColorLog False) stderr (permitItem level) V2
+        registerScribe "stderr" stderrScribe defaultScribeSettings
     $(logInfo) [i|Log level: #{show level :: String}|]
     logExceptionAt ErrorS inner
 
-journalFormat :: LogItem a => ItemFormatter a
-journalFormat _ _ item =
-  "[" <> fromText (renderSeverity item._itemSeverity) <> "]"
+terminalFormat :: LogItem a => ItemFormatter a
+terminalFormat _ _ item =
+  fromText (Text.pack (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S%QZ" item._itemTime))
+    <> " [" <> fromText (renderSeverity item._itemSeverity) <> "]"
     <> moduleField item._itemLoc
     <> "[ThreadId " <> fromText (getThreadIdText item._itemThread) <> "] "
     <> unLogStr item._itemMessage
