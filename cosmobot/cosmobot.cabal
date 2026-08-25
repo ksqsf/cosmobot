@@ -76,6 +76,7 @@ common language
         OverloadedRecordDot
         OverloadedStrings
         QuasiQuotes
+        TemplateHaskell
         TypeFamilies
         BlockArguments
 
@@ -107,6 +108,7 @@ common lib-deps
                     , amazonka
                     , amazonka-s3
                     , string-interpolate
+                    , template-haskell
                     , unix
                     , modern-uri
                     , mime-types

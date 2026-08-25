@@ -54,6 +54,7 @@ import qualified Bot.RPC.State as RPC
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import Data.Text.Lazy.Builder (Builder, fromText)
+import Language.Haskell.TH (Loc (loc_module))
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Ask.AgentRun (askSystemPrompt)
@@ -135,7 +136,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
   runRuntime . runInfrastructure $ do
     pythonArguments <- preparePython cfg.tool.python
     runApplication pythonArguments do
-      logInfo "Cosmobot stand by!"
+      $(logInfo) "Cosmobot stand by!"
       let allStreams =
             [ Chat.incomingMessages
             , Scheduler.scheduledMessages
@@ -301,7 +302,7 @@ withRouteDebugLogging index route =
     }
   where
     logMatch decision message =
-      logDebug
+      $(logDebug)
         [i|Route matched: index=#{index} label=#{routeLabel route} decision=#{decision} #{incomingMessageLogLine message}|]
 
 routeLabel :: Route es -> Text
@@ -377,18 +378,16 @@ runBotLog level inner =
   startKatipE "cosmobot" "production" do
     stdoutScribe <- mkHandleScribeWithFormatter journalFormat (ColorLog False) stdout (permitItem level) V2
     registerScribe "stdout" stdoutScribe defaultScribeSettings
-    logInfo [i|Log level: #{show level :: String}|]
+    $(logInfo) [i|Log level: #{show level :: String}|]
     logExceptionAt ErrorS inner
 
 journalFormat :: LogItem a => ItemFormatter a
 journalFormat _ _ item =
   "[" <> fromText (renderSeverity item._itemSeverity) <> "]"
-    <> namespaceField item._itemNamespace
+    <> moduleField item._itemLoc
     <> "[ThreadId " <> fromText (getThreadIdText item._itemThread) <> "] "
     <> unLogStr item._itemMessage
 
-namespaceField :: Namespace -> Builder
-namespaceField (Namespace (_application : scopes@(_ : _))) =
-  "[" <> fromText (Text.intercalate "." scopes) <> "]"
-namespaceField _ =
-  mempty
+moduleField :: Maybe Loc -> Builder
+moduleField =
+  maybe mempty (\loc -> "[" <> fromText (Text.pack (loc_module loc)) <> "]")

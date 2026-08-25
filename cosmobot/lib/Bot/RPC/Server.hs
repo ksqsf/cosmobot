@@ -110,7 +110,7 @@ runRpcServer' cfg rpcState callbacks = do
       settings =
         Warp.setHost (fromString host) $
           Warp.setPort port Warp.defaultSettings
-  logInfo [i|RPC server listening on #{host}:#{port}; websocket endpoint /rpc|]
+  $(logInfo) [i|RPC server listening on #{host}:#{port}; websocket endpoint /rpc|]
   withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
     liftIO $
       Warp.runSettings settings (rpcServerApplication runInIO cfg rpcState callbacks)
@@ -165,17 +165,17 @@ serveAcceptedClient
   -> Eff es ()
 serveAcceptedClient cfg rpcState callbacks conn = do
   (clientId, queue) <- State.registerClient rpcState
-  logDebug [i|RPC client #{clientId} connected|]
+  $(logDebug) [i|RPC client #{clientId} connected|]
   (Concurrency.raceTasks_
       [i|rpc.client.#{clientId}.writer|]
       (writeQueuedFrames queue conn)
       [i|rpc.client.#{clientId}.reader|]
       (readRequestFrames cfg rpcState callbacks queue conn)
     `catchSync` \err ->
-      logDebug [i|RPC client #{clientId} disconnected: #{displayException err}|])
+      $(logDebug) [i|RPC client #{clientId} disconnected: #{displayException err}|])
     `finally` do
       State.unregisterClient rpcState clientId
-      logDebug [i|RPC client #{clientId} unregistered|]
+      $(logDebug) [i|RPC client #{clientId} unregistered|]
 
 writeQueuedFrames
   :: (IOE :> es, Concurrent :> es)

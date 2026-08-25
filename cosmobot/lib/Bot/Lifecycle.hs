@@ -108,9 +108,9 @@ runStartupActions = do
     result <- trySync $ Chat.replyTo message body `finally` LifecycleStorage.deleteStartupAction action
     case result of
       Right response -> do
-        logInfo [i|Ran startup reply lifecycle action #{actionId}; response=#{show response :: Text}|]
+        $(logInfo) [i|Ran startup reply lifecycle action #{actionId}; response=#{show response :: Text}|]
       Left err -> do
-        logWarning [i|Startup reply lifecycle action #{actionId} failed and was deleted: #{show err :: String}|]
+        $(logWarning) [i|Startup reply lifecycle action #{actionId} failed and was deleted: #{show err :: String}|]
 
 withMediaGc
   :: (Concurrency.Concurrency :> es, Media.Media :> es, Storage.Storage :> es, FileSystem :> es, Concurrent :> es, IOE :> es, KatipE :> es)
@@ -144,9 +144,9 @@ runMediaGc mediaConfig = do
   case result of
     Right deleted ->
       when (deleted > 0) $
-        logInfo [i|Media cache GC deleted #{deleted} file(s)|]
+        $(logInfo) [i|Media cache GC deleted #{deleted} file(s)|]
     Left err ->
-      logWarning [i|Media cache GC failed: #{show err :: String}|]
+      $(logWarning) [i|Media cache GC failed: #{show err :: String}|]
 
 daysToSeconds :: Int -> Int
 daysToSeconds days =

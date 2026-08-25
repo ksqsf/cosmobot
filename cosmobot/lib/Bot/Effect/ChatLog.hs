@@ -75,7 +75,7 @@ recordIncomingMessages =
         Just () ->
           pure ()
         Nothing ->
-          logWarning [i|chat log record timed out; continuing route dispatch: #{incomingMessageLogLine message}|]
+          $(logWarning) [i|chat log record timed out; continuing route dispatch: #{incomingMessageLogLine message}|]
     pure message
 
 -- | Record a logical self reply in the same chat as its triggering message.

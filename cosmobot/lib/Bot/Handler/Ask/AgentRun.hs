@@ -200,7 +200,7 @@ streamAgentReply runtime activeReply message transcript =
       Just ThreadKilled ->
         throwIO err
       _ -> do
-        logWarning [i|LLM request failed: #{show err :: String}|]
+        $(logWarning) [i|LLM request failed: #{show err :: String}|]
         let failureMessage = llmFailureMessage err
         responseId <- listToMaybe . rights <$> Chat.replyTo message failureMessage
         pure AgentReply

@@ -6,7 +6,6 @@ module Bot.Log
   , logWarning
   , logError
   , logCritical
-  , logAt
   , logExceptionAt
   , logJsonText
   )
@@ -19,35 +18,26 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Effectful
 import Effectful.Katip
+import Language.Haskell.TH (ExpQ)
 import Relude
 
-logDebug :: KatipE :> es => Text -> Eff es ()
-logDebug =
-  logAt DebugS
+logDebug :: ExpQ
+logDebug = [| \message -> $(logTM) DebugS (logStr (message :: Text)) |]
 
-logInfo :: KatipE :> es => Text -> Eff es ()
-logInfo =
-  logAt InfoS
+logInfo :: ExpQ
+logInfo = [| \message -> $(logTM) InfoS (logStr (message :: Text)) |]
 
-logNotice :: KatipE :> es => Text -> Eff es ()
-logNotice =
-  logAt NoticeS
+logNotice :: ExpQ
+logNotice = [| \message -> $(logTM) NoticeS (logStr (message :: Text)) |]
 
-logWarning :: KatipE :> es => Text -> Eff es ()
-logWarning =
-  logAt WarningS
+logWarning :: ExpQ
+logWarning = [| \message -> $(logTM) WarningS (logStr (message :: Text)) |]
 
-logError :: KatipE :> es => Text -> Eff es ()
-logError =
-  logAt ErrorS
+logError :: ExpQ
+logError = [| \message -> $(logTM) ErrorS (logStr (message :: Text)) |]
 
-logCritical :: KatipE :> es => Text -> Eff es ()
-logCritical =
-  logAt CriticalS
-
-logAt :: KatipE :> es => Severity -> Text -> Eff es ()
-logAt severity message =
-  logFM severity (logStr message)
+logCritical :: ExpQ
+logCritical = [| \message -> $(logTM) CriticalS (logStr (message :: Text)) |]
 
 logExceptionAt :: KatipE :> es => Severity -> Eff es a -> Eff es a
 logExceptionAt severity action =

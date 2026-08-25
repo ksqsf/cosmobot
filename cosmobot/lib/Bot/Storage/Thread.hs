@@ -461,7 +461,7 @@ rememberThreadTranscriptFrom store@ThreadStore{unThreadStore = ref} parentMessag
   persistedThreadStorageId <-
     (Just <$> saveThreadMessages messageKey requestedThreadStorageId storageParentMessageKey (messagesJson storedMessages))
       `catchSync` \err ->
-        logError [i|Failed to persist thread: #{show err :: String}|] $> Nothing
+        $(logError) [i|Failed to persist thread: #{show err :: String}|] $> Nothing
   for_ persistedThreadStorageId \threadStorageId ->
     atomicModifyIORef' ref \threadState ->
       let node =

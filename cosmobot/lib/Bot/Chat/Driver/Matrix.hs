@@ -399,7 +399,7 @@ typing driver roomId timeoutMs =
     Just userId ->
       void $ maybeCall driver (MatrixSetTyping roomId userId timeoutMs)
     Nothing ->
-      logWarning [i|Matrix typing notification skipped: bot_id is not configured.|]
+      $(logWarning) [i|Matrix typing notification skipped: bot_id is not configured.|]
 
 rememberMatrixEvent :: Prim :> es => IORef.IORef (Map MessageId MatrixEventId) -> SendMessageResponse -> Eff es ()
 rememberMatrixEvent eventIds response =
@@ -717,7 +717,7 @@ instance MatrixAPI MatrixDownloadMedia where
       Nothing ->
         liftIO (ioError (userError [i|Invalid Matrix media URI: #{downloadMediaRef}|]))
       Just (serverName, mediaId) -> do
-        logDebug [i|Matrix API request: authenticated media download #{downloadMediaRef}|]
+        $(logDebug) [i|Matrix API request: authenticated media download #{downloadMediaRef}|]
         withMatrixAccessToken driver.auth \token -> do
           manager <- HTTP.manager
           request <- liftIO (matrixMediaDownloadRequest driver.config token serverName mediaId)
@@ -807,7 +807,7 @@ refreshMatrixAccessToken auth expiredToken =
           Nothing ->
             reloginMatrixAccessToken auth
           Just refreshToken -> do
-            logInfo "Matrix access token expired; refreshing"
+            $(logInfo) "Matrix access token expired; refreshing"
             let refreshWithToken = do
                   response <- refreshMatrixToken auth.authConfig refreshToken
                   let refreshedState = MatrixAuthState
@@ -817,7 +817,7 @@ refreshMatrixAccessToken auth expiredToken =
                   IORef.writeIORef auth.authState refreshedState
                   pure response.refreshedAccessToken
             refreshWithToken `catchSync` \err -> do
-              logWarning [i|Matrix refresh token failed; logging in again: #{displayException err}|]
+              $(logWarning) [i|Matrix refresh token failed; logging in again: #{displayException err}|]
               reloginMatrixAccessToken auth
 
 reloginMatrixAccessToken
@@ -827,7 +827,7 @@ reloginMatrixAccessToken
 reloginMatrixAccessToken auth =
   case (auth.authConfig.loginUser, auth.authConfig.loginPassword) of
     (Just user, Just password) -> do
-      logInfo [i|Matrix logging in again; attempts=#{matrixReloginAttempts}|]
+      $(logInfo) [i|Matrix logging in again; attempts=#{matrixReloginAttempts}|]
       retryingMatrixLogin auth user password
     _ ->
       throwIO (userError "Matrix access token expired and no refresh token or login credentials are configured.")
@@ -845,11 +845,11 @@ retryingMatrixLogin auth user password =
       loginOnce `catchSync` \err ->
         if attempt < matrixReloginAttempts
           then do
-            logWarning [i|Matrix relogin attempt #{attempt}/#{matrixReloginAttempts} failed: #{displayException err}; retrying in #{matrixReloginDelaySeconds} seconds|]
+            $(logWarning) [i|Matrix relogin attempt #{attempt}/#{matrixReloginAttempts} failed: #{displayException err}; retrying in #{matrixReloginDelaySeconds} seconds|]
             threadDelay matrixReloginDelayMicroseconds
             attemptLogin (attempt + 1)
           else do
-            logError [i|Matrix relogin attempt #{attempt}/#{matrixReloginAttempts} failed: #{displayException err}|]
+            $(logError) [i|Matrix relogin attempt #{attempt}/#{matrixReloginAttempts} failed: #{displayException err}|]
             throwIO err
 
     loginOnce = do
@@ -942,7 +942,7 @@ matrixUnauthenticatedCall
   -> (forall scheme. Url scheme -> Option scheme -> Req response)
   -> Eff es response
 matrixUnauthenticatedCall cfg method logMessage addOptions buildRequest = do
-  logDebug [i|Matrix API request: #{logMessage}|]
+  $(logDebug) [i|Matrix API request: #{logMessage}|]
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions ->
     matrixReq method $
       HTTP.runReqWithConfig matrixHttpConfig $
@@ -1151,21 +1151,21 @@ incomingMessages
 incomingMessages driver =
   if matrixAuthConfigured cfg
     then do
-      S.lift $ logInfo [i|Matrix sync starting: auth=#{matrixAuthMode cfg}|]
+      S.lift $ $(logInfo) [i|Matrix sync starting: auth=#{matrixAuthMode cfg}|]
       storedSince <- S.lift loadSyncToken
       case storedSince of
         Just since ->
           syncLoop (Just since)
         Nothing -> do
-          S.lift $ logInfo "Matrix sync state is empty; initializing from current homeserver state"
+          S.lift $ $(logInfo) "Matrix sync state is empty; initializing from current homeserver state"
           initializeSyncState
-    else S.lift $ logInfo "Matrix driver disabled: no access token, refresh token, or login credentials configured"
+    else S.lift $ $(logInfo) "Matrix driver disabled: no access token, refresh token, or login credentials configured"
   where
     cfg = driver.config
 
     initializeSyncState = do
       result <- S.lift $ sync driver Nothing `catchSync` \err -> do
-        logError [i|Matrix sync initialization failed, retrying: #{show err :: String}|]
+        $(logError) [i|Matrix sync initialization failed, retrying: #{show err :: String}|]
         threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
@@ -1173,12 +1173,12 @@ incomingMessages driver =
           initializeSyncState
         Just response -> do
           S.lift $ storeSyncToken response.nextBatch
-          S.lift $ logInfo "Matrix sync state initialized; skipped initial timeline batch"
+          S.lift $ $(logInfo) "Matrix sync state initialized; skipped initial timeline batch"
           syncLoop (Just response.nextBatch)
 
     syncLoop since = do
       result <- S.lift $ sync driver since `catchSync` \err -> do
-        logError [i|Matrix sync failed, retrying: #{show err :: String}|]
+        $(logError) [i|Matrix sync failed, retrying: #{show err :: String}|]
         threadDelay matrixRetryDelayMicroseconds
         pure Nothing
       case result of
@@ -1192,17 +1192,16 @@ incomingMessages driver =
           let effectiveDirectRoomIds = refreshedDirectRoomIds <> probedDirectRoomIds
               events = syncEvents effectiveDirectRoomIds response
               directCount = Set.size effectiveDirectRoomIds
-          S.lift $ logDebug [i|Matrix sync batch: #{length events}; direct_rooms=#{directCount}|]
+          S.lift $ $(logDebug) [i|Matrix sync batch: #{length events}; direct_rooms=#{directCount}|]
           for_ events \event ->
             case eventToIncomingMessageWith cfg event of
               Nothing -> do
                 let reason = matrixEventIgnoreReason cfg event
-                S.lift $ logDebug ("Ignoring Matrix event: " <> reason)
-                S.lift $ logInfo ("Ignoring Matrix event: " <> reason)
+                S.lift $ $(logDebug) ("Ignoring Matrix event: " <> reason)
               Just message -> do
                 normalized <- S.lift (normalizeMatrixIncomingMessage driver message)
-                S.lift $ logDebug [i|incoming Matrix message: #{show normalized :: String}|]
-                S.lift $ logInfo [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine normalized}|]
+                S.lift $ $(logDebug) [i|incoming Matrix message: #{show normalized :: String}|]
+                S.lift $ $(logInfo) [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine normalized}|]
                 S.yield normalized
           S.lift $ storeSyncToken response.nextBatch
           syncLoop (Just response.nextBatch)
@@ -1236,9 +1235,9 @@ acceptInvitations driver response =
   for_ (syncInvitedRoomIds response) \roomId -> do
     result <- eitherCall "accept room invitation" driver (MatrixJoinRoom (matrixRoomId roomId))
     case result of
-      Right _ -> logInfo [i|Accepted Matrix room invitation: #{roomId}|]
+      Right _ -> $(logInfo) [i|Accepted Matrix room invitation: #{roomId}|]
       Left reason -> do
-        logError [i|Failed to accept Matrix room invitation #{roomId}: #{reason}|]
+        $(logError) [i|Failed to accept Matrix room invitation #{roomId}: #{reason}|]
         throwIO (userError (Text.unpack reason))
 
 syncJoinedMemberCounts :: SyncResponse -> [(MatrixRoomId, Int)]
@@ -1565,7 +1564,7 @@ normalizeMatrixMediaRefWithMetadata driver mediaRef
 cacheMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixMediaRef -> Text -> Text -> Eff es Text
 cacheMatrixMediaRef driver mediaRef mxcRef fallbackRef = do
   cached <- cacheMatrixMediaRefObject driver mediaRef mxcRef `catchSync` \err -> do
-    logInfo [i|Matrix media normalization skipped for #{mxcRef}: #{displayException err}|]
+    $(logInfo) [i|Matrix media normalization skipped for #{mxcRef}: #{displayException err}|]
     pure Nothing
   case cached of
     Nothing ->
@@ -1947,7 +1946,7 @@ matrixUserFacingEither
   -> Eff es (Either Text a)
 matrixUserFacingEither label action =
   action `catch` \(err :: MatrixApiException) -> do
-    logWarning [i|#{matrixApiExceptionMessage err}|]
+    $(logWarning) [i|#{matrixApiExceptionMessage err}|]
     pure (Left (matrixUserFacingApiError label err))
 
 matrixMessageIdResult :: Either Text SendMessageResponse -> Either Text MessageId
@@ -1979,7 +1978,7 @@ matrixReplyFailureText sentIds err =
 
 logMatrixSendErrors :: KatipE :> es => [Either Text SendMessageResponse] -> Eff es ()
 logMatrixSendErrors responses =
-  traverse_ logWarning [err | Left err <- responses]
+  traverse_ $(logWarning) [err | Left err <- responses]
 
 matrixAudioMessage :: Maybe Text -> Text -> Text -> Text -> Integer -> MatrixFileMessage
 matrixAudioMessage caption fileName contentUri mime size =
@@ -2470,7 +2469,7 @@ fetchMatrixMentionNames driver roomId mentionUserIds = do
   result <- trySync (maybeCall driver (MatrixJoinedMembers roomId))
   case result of
     Left err -> do
-      logInfo [i|Matrix mention display names unavailable: #{displayException err}|]
+      $(logInfo) [i|Matrix mention display names unavailable: #{displayException err}|]
       pure Map.empty
     Right Nothing ->
       pure Map.empty

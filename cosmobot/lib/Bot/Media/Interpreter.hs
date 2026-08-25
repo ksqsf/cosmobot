@@ -82,7 +82,7 @@ normalizeRef runtime ref
   | "data:image/" `Text.isPrefixOf` Text.strip ref =
       case MediaObject.decodeDataMediaObject ref of
         Nothing -> do
-          logError "Skipping invalid data:image media reference"
+          $(logError) "Skipping invalid data:image media reference"
           pure ref
         Just mediaObject ->
           cacheObject runtime Nothing mediaObject
@@ -91,7 +91,7 @@ normalizeRef runtime ref
       normalizeRemoteRef runtime ref
   | "file://" `Text.isPrefixOf` Text.strip ref = do
       mediaObject <- (Just <$> MediaObject.fileObject ref) `catchSync` \err -> do
-        logError [i|Local media read failed: #{show err :: String}|]
+        $(logError) [i|Local media read failed: #{show err :: String}|]
         pure Nothing
       maybe (pure ref) (cacheObject runtime (Just (Text.strip ref))) mediaObject
   | otherwise =
@@ -111,7 +111,7 @@ normalizeRemoteRef runtime ref = do
     Just Nothing ->
       pure ref
     Nothing -> do
-      logWarning [i|Remote media normalization timed out; keeping original ref: #{Text.take 160 ref}|]
+      $(logWarning) [i|Remote media normalization timed out; keeping original ref: #{Text.take 160 ref}|]
       pure ref
 
 normalizeRemoteRefUnsafe
@@ -124,7 +124,7 @@ normalizeRemoteRefUnsafe runtime ref =
       downloaded <- MediaObject.downloadObject runtime.manager ref
       Just <$> cacheObject runtime (Just (Text.strip ref)) downloaded
   ) `catchSync` \err -> do
-    logError [i|Remote media download failed: #{show err :: String}|]
+    $(logError) [i|Remote media download failed: #{show err :: String}|]
     pure Nothing
 
 publicRef :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es) => Runtime -> Text -> Eff es Text

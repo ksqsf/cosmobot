@@ -68,7 +68,7 @@ safeSetTyping message timeoutMillis =
       let platform = message.platform
           chatId = message.chatId
           chatAliases = message.chatAliases
-      logWarning [i|Typing notification failed: platform=#{platform} chat_id=#{chatId} chat_aliases=#{chatAliases} error=#{displayException err}|]
+      $(logWarning) [i|Typing notification failed: platform=#{platform} chat_id=#{chatId} chat_aliases=#{chatAliases} error=#{displayException err}|]
 
 typingNotificationTimeoutMillis :: Int
 typingNotificationTimeoutMillis =

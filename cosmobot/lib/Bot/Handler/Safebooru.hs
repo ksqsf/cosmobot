@@ -101,7 +101,7 @@ safebooruRoute search =
       Left err ->
         void $ Chat.replyTo message err
       Right request -> do
-        logInfo [i|matched safebooru route: #{incomingMessageLogLine message}|]
+        $(logInfo) [i|matched safebooru route: #{incomingMessageLogLine message}|]
         Concurrency.fire "safebooru.search" (sendSafebooruImages search message request)
 
 ballCommandArgs :: MessageFilter Text
@@ -164,7 +164,7 @@ sendSafebooruImages search message request =
   where
     handleError action =
       action `catchSync` \err -> do
-        logError [i|Safebooru search failed: #{show err :: String}|]
+        $(logError) [i|Safebooru search failed: #{show err :: String}|]
         void $ Chat.replyTo message "Safebooru 搜索失败。"
 
 drawSafebooruLinks

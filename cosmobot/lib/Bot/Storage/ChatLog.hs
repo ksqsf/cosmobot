@@ -63,7 +63,7 @@ persistRecord record = do
   recordedAt <- liftIO getCurrentTime
   runSelda (insert_ chatLogRows [chatLogRow (sanitizeChatLogEntry (chatLogEntry recordedAt record))])
     `catchSync` \err ->
-      logError [i|Failed to persist chat log entry: #{show err :: String}|]
+      $(logError) [i|Failed to persist chat log entry: #{show err :: String}|]
 
 queryStored :: Storage.Storage :> es => IncomingMessage -> Maybe Text -> Int -> Bool -> ChatLogTimeRange -> Eff es [ChatLogEntry]
 queryStored message sender limitCount includeBotMessages timeRange = do

@@ -81,7 +81,7 @@ runAcpServer cfg@Config.Config{enabled} threads acpState =
         settings =
           Warp.setHost (fromString host) $
             Warp.setPort port Warp.defaultSettings
-    logInfo [i|ACP server listening on #{host}:#{port}; websocket endpoint /acp|]
+    $(logInfo) [i|ACP server listening on #{host}:#{port}; websocket endpoint /acp|]
     withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
       liftIO $
         Warp.runSettings settings (acpServerApplication runInIO cfg threads acpState)
@@ -135,17 +135,17 @@ serveAcceptedClient
   -> Eff es ()
 serveAcceptedClient threads acpState conn = do
   (clientId, queue) <- State.registerClient acpState
-  logDebug [i|ACP client #{clientId} connected|]
+  $(logDebug) [i|ACP client #{clientId} connected|]
   (Concurrency.raceTasks_
       [i|acp.client.#{clientId}.writer|]
       (writeQueuedFrames queue conn)
       [i|acp.client.#{clientId}.reader|]
       (readRequestFrames threads acpState queue conn)
     `catchSync` \err ->
-      logDebug [i|ACP client #{clientId} disconnected: #{displayException err}|])
+      $(logDebug) [i|ACP client #{clientId} disconnected: #{displayException err}|])
     `finally` do
       State.unregisterClient acpState clientId
-      logDebug [i|ACP client #{clientId} unregistered|]
+      $(logDebug) [i|ACP client #{clientId} unregistered|]
 
 writeQueuedFrames
   :: (IOE :> es, Concurrent :> es)

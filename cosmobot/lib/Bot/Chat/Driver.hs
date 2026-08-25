@@ -137,7 +137,7 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
   setTyping (NormalizingChatDriver driver) message timeoutMillis =
     setTyping driver message timeoutMillis
       `catchSync` \err ->
-        logError [i|Failed to set typing: #{show err :: String}|]
+        $(logError) [i|Failed to set typing: #{show err :: String}|]
 
 instance ChatDriver ChatDrivers where
   type ChatDriverEffects ChatDrivers es =
@@ -258,7 +258,7 @@ withChatDriverMaybe
 withChatDriverMaybe message label action =
   action `catchSync` \err -> do
     let platformText = show message.platform :: String
-    logInfo [i|#{label} failed on #{platformText}: #{displayException err}|]
+    $(logInfo) [i|#{label} failed on #{platformText}: #{displayException err}|]
     pure Nothing
 
 withChatDriverEither
@@ -271,7 +271,7 @@ withChatDriverEither message label action =
   action `catchSync` \err -> do
     let platformText = show message.platform :: String
         messageText = [i|#{label} failed on #{platformText}: #{displayException err}|]
-    logInfo messageText
+    $(logInfo) messageText
     pure (Left messageText)
 
 withChatDriverResults
@@ -284,7 +284,7 @@ withChatDriverResults message label action =
   action `catchSync` \err -> do
     let platformText = show message.platform :: String
         messageText = [i|#{label} failed on #{platformText}: #{displayException err}|]
-    logInfo messageText
+    $(logInfo) messageText
     pure [Left messageText]
 
 defaultMessageOutPolicy :: Chat.MessageOutPolicy
@@ -353,7 +353,7 @@ runChatDrivers qqConfig telegramConfig matrixConfig discordConfig rpcConfig rpcS
         }
   if hasConfiguredChatDriver drivers
     then runChatDriversWith drivers action
-    else logInfo "No chat drivers or RPC server are configured; exiting."
+    else $(logInfo) "No chat drivers or RPC server are configured; exiting."
 
 hasConfiguredChatDriver :: ChatDrivers -> Bool
 hasConfiguredChatDriver drivers =

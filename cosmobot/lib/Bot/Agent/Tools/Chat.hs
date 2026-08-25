@@ -324,7 +324,7 @@ userAvatarResult context value =
     Just url -> do
       let body = ReplyBody.imageDirective url
       sent <- Chat.replyTo context.message body
-      logInfo [i|user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
+      $(logInfo) [i|user_avatar sent avatar image: url=#{url} message_id=#{show sent :: Text}|]
       pure (toolTextWithImages (jsonText value) [url])
 
 validFilePath :: Text -> Either Text FilePath

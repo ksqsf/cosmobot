@@ -201,7 +201,7 @@ initializeInstalled manager =
               fail [i|Required plugin #{pluginId} failed to start: #{failure}|]
           | otherwise -> do
               let pluginId = pluginIdText bundle
-              logError [i|Optional plugin #{pluginId} failed to start: #{failure}|]
+              $(logError) [i|Optional plugin #{pluginId} failed to start: #{failure}|]
 
 loadById
   :: (Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Process.Process :> es, Timeout :> es, Prim :> es, KatipE :> es, IOE :> es)
@@ -293,7 +293,7 @@ startAndPublish manager bundle = do
                 then do
                   let pluginId = pluginIdText bundle
                       pluginVersion = running.manifest.pluginVersion
-                  logInfo [i|Loaded plugin #{pluginId} generation=#{generation} version=#{pluginVersion}|]
+                  $(logInfo) [i|Loaded plugin #{pluginId} generation=#{generation} version=#{pluginVersion}|]
                   pure (Right running)
                 else do
                   stopRunning running
@@ -306,7 +306,7 @@ startAndPublish manager bundle = do
                   let delaySeconds = min 4 (2 ^ retryNumber)
                       pluginId = pluginIdText bundle
                       failureMessage = failure.message
-                  logWarning [i|Transient plugin startup failure: plugin=#{pluginId} retry_in=#{delaySeconds}s failure=#{failureMessage}|]
+                  $(logWarning) [i|Transient plugin startup failure: plugin=#{pluginId} retry_in=#{delaySeconds}s failure=#{failureMessage}|]
                   threadDelay (seconds delaySeconds)
                   attempt (retryNumber + 1)
                 else pure . Left $
@@ -685,7 +685,7 @@ dispatchRoutes manager message = do
           let pluginId = pluginIdText running.bundle
               routeId = route.routeId
               renderedFailure = renderRpcError failure
-          logWarning [i|Plugin route failed: plugin=#{pluginId} route=#{routeId} failure=#{renderedFailure}|]
+          $(logWarning) [i|Plugin route failed: plugin=#{pluginId} route=#{routeId} failure=#{renderedFailure}|]
           go rest
 
 invokeRoute
@@ -844,7 +844,7 @@ transportFailed manager transport err = do
         generation = transport.generation
         exceptionText = Text.pack (displayException err)
         failure = [i|Plugin #{pluginId} generation #{generation} failed permanently: #{exceptionText}|]
-    logError failure
+    $(logError) failure
     failPending transport (rpcError (-32002) failure)
     wasActive <- MVar.withMVar manager.lifecycleLock \_ ->
       Map.lookup transport.bundle.pluginId <$> readIORef manager.active >>= \case

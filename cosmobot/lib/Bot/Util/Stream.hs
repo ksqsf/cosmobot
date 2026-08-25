@@ -89,7 +89,7 @@ readMerged streamCount queue =
     finishMerged mergeState
       | mergeState.failures == streamCount
       , Just err <- mergeState.lastFailure = do
-          S.lift (logWarning [i|All merged stream inputs failed: #{show err :: String}|])
+          S.lift ($(logWarning) [i|All merged stream inputs failed: #{show err :: String}|])
           S.lift (throwIO err)
       | otherwise =
           pure ()
@@ -128,7 +128,7 @@ pump
 pump queue stream =
   (S.mapM_ (writeMergeEvent queue . MergeItem) stream *> writeMergeEvent queue MergeDone)
     `catchSync` \err -> do
-      logError [i|Merged stream input stopped: #{show err :: String}|]
+      $(logError) [i|Merged stream input stopped: #{show err :: String}|]
       writeMergeEvent queue (MergeFailed err)
 
 writeMergeEvent :: Concurrent :> es => STM.TBQueue (MergeEvent a) -> MergeEvent a -> Eff es ()

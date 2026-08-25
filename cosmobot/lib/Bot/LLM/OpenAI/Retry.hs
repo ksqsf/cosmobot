@@ -59,7 +59,7 @@ retryLLMStreamRequestWith sleep label source =
                   delaySeconds = retryDelaySeconds nextRetry err
               lift do
                 finishedAt <- monotonicMilliseconds
-                logWarning [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{nextRetry + 1}/#{maxLLMRetries + 1} after #{delaySeconds}s elapsed_ms=#{finishedAt - startedAt}|]
+                $(logWarning) [i|#{label} failed with #{LLM.llmExceptionSummary err}; retrying attempt #{nextRetry + 1}/#{maxLLMRetries + 1} after #{delaySeconds}s elapsed_ms=#{finishedAt - startedAt}|]
                 sleep delaySeconds
               go nextRetry
           | otherwise ->

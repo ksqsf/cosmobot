@@ -133,7 +133,7 @@ finishAtLimit
   -> Stream (Of Output) (Eff es) (Step (Eff es) Result)
 finishAtLimit runtime request = do
   let calls = request.toolCalls
-  lift $ logInfo [i|Agent tool turn limit reached: #{show calls :: String}|]
+  lift $ $(logInfo) [i|Agent tool turn limit reached: #{show calls :: String}|]
   Finished
     <$> handleToolLimit
           runtime.runId

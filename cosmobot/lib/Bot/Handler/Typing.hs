@@ -54,7 +54,7 @@ rankRoute
 rankRoute commandText titleSuffix failureMessage fetchRows =
   withHelp (RouteHelp commandText ("Render the " <> titleSuffix <> " leaderboard.")) $
   stopOn (command commandText) \message _ -> do
-    logInfo [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
+    $(logInfo) [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
     Concurrency.fire "typing.rank" (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage
@@ -66,20 +66,20 @@ sendRankImage
   -> Eff es ()
 sendRankImage titleSuffix failureMessage fetchRows message =
   handleError do
-    logInfo [i|Fetching typing rank rows: #{titleSuffix}|]
+    $(logInfo) [i|Fetching typing rank rows: #{titleSuffix}|]
     title <- liftIO (rankTitle titleSuffix)
     rows <- fetchRows
-    logInfo [i|Fetched typing rank rows: #{title}, #{length rows} rows|]
+    $(logInfo) [i|Fetched typing rank rows: #{title}, #{length rows} rows|]
     Typst.withTypstPng (typstDocument title rows) \imagePath -> do
-      logInfo [i|Rendered typing rank image: #{imagePath}|]
+      $(logInfo) [i|Rendered typing rank image: #{imagePath}|]
       sent <- Chat.replyTo message (ReplyBody.imageDirective ("file://" <> Text.pack imagePath))
-      logInfo [i|Sent typing rank image: #{show sent :: Text}|]
+      $(logInfo) [i|Sent typing rank image: #{show sent :: Text}|]
       when (null (rights sent)) do
         void $ Chat.replyTo message [i|#{title}已生成，但图片发送失败。|]
   where
     handleError action =
       action `catchSync` \err -> do
-        logWarning [i|Failed to render typing rank: #{show err :: String}|]
+        $(logWarning) [i|Failed to render typing rank: #{show err :: String}|]
         void $ Chat.replyTo message failureMessage
 
 rankTitle :: Text -> IO Text

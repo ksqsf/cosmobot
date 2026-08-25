@@ -327,7 +327,7 @@ interpretAgentEvent runtime = \case
 
 logAgentState :: KatipE :> es => Text -> Text -> Eff es ()
 logAgentState runId message =
-  logDebug [i|Agent state: run=#{runId} #{message}|]
+  $(logDebug) [i|Agent state: run=#{runId} #{message}|]
 
 answerKind :: LLM.ChatAnswer -> Text
 answerKind = \case
@@ -467,14 +467,14 @@ replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
 executeToolCall :: (Concurrent :> es, KatipE :> es) => Runtime '[] (Eff es) -> TurnState -> LLM.ToolCall -> Eff es ToolResult
 executeToolCall runtime@Runtime{runId} agentState call@LLM.ToolCall{id = callId, name, arguments} = do
   let turn = agentState.turn
-  logDebug
+  $(logDebug)
     [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=started argument_chars=#{Text.length arguments}|]
   result <-
     runtime.aroundToolCall turn call HList.HNil
       (runtime.dispatchToolCall runtime.toolCallMetadata turn agentState.transcript call)
-      `onException` logDebug
+      `onException` $(logDebug)
         [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=interrupted|]
-  logDebug
+  $(logDebug)
     [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=finished status=#{toolResultStatus result} result_chars=#{Text.length (toolResultContent result)} images=#{length (toolResultImageUrls result)}|]
   pure result
 

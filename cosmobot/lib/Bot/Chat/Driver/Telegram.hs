@@ -233,7 +233,7 @@ updatesStream'
   -> Stream (Of Update) (Eff es) ()
 updatesStream' driver offset = do
   batches <- S.lift (getUpdates driver offset)
-  S.lift $ logDebug [i|Telegram update batch: #{length batches}|]
+  S.lift $ $(logDebug) [i|Telegram update batch: #{length batches}|]
   S.each batches
   let nextOffset = case batches of
         [] -> offset
@@ -248,15 +248,14 @@ incomingMessages :: (HTTP.HTTP :> es, KatipE :> es, IOE :> es) => TelegramDriver
 incomingMessages driver = S.for (updatesStream driver) $ \update -> do
   case updateToIncomingMessageWith driver.config update of
     Nothing -> do
-      S.lift $ logDebug [i|Ignoring Telegram event|]
-      S.lift $ logInfo "Ignoring Telegram event"
+      S.lift $ $(logDebug) [i|Ignoring Telegram event|]
     Just parsedMessage -> do
       message <- S.lift $
         resolveIncomingMessageMedia driver parsedMessage `catchSync` \err -> do
-          logError [i|Telegram media resolution failed: #{show err :: String}|]
+          $(logError) [i|Telegram media resolution failed: #{show err :: String}|]
           pure parsedMessage
-      S.lift $ logDebug [i|incoming Telegram message: #{show message :: String}|]
-      S.lift $ logInfo [i|incoming Telegram message: #{incomingMessageLogLine message}|]
+      S.lift $ $(logDebug) [i|incoming Telegram message: #{show message :: String}|]
+      S.lift $ $(logInfo) [i|incoming Telegram message: #{incomingMessageLogLine message}|]
       S.yield message
 
 resolveIncomingMessageMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> IncomingMessage -> Eff es IncomingMessage
@@ -551,12 +550,12 @@ sanitizeTelegramException cfg err =
 logTelegramApiRequest :: KatipE :> es => Text -> Eff es ()
 logTelegramApiRequest method =
   unless (method == "getUpdates") $
-    logInfo [i|Telegram API request: #{method}|]
+    $(logInfo) [i|Telegram API request: #{method}|]
 
 logTelegramApiResponse :: KatipE :> es => Text -> Eff es ()
 logTelegramApiResponse method =
   unless (method == "getUpdates") $
-    logInfo [i|Telegram API response: #{method}|]
+    $(logInfo) [i|Telegram API response: #{method}|]
 
 parseTelegramResult
   :: (IOE :> es, Aeson.FromJSON result)

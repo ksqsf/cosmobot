@@ -97,7 +97,7 @@ deletedMessageRoute threads =
       runId <- lookupActiveThreadRunId threads messageKey
       halted <- haltThread threads Concurrency.cancel messageKey
       when halted $
-        logInfo [i|Halted agent run after active thread message deletion: run_id=#{fromMaybe "-" runId} message_id=#{messageIdText messageId} #{incomingMessageLogLine message}|]
+        $(logInfo) [i|Halted agent run after active thread message deletion: run_id=#{fromMaybe "-" runId} message_id=#{messageIdText messageId} #{incomingMessageLogLine message}|]
 
 data Policy = Policy
   { msg :: !IncomingMessage
@@ -309,18 +309,18 @@ handleHalt threads message args
   | input == "all", isNothing message.replyToMessageId = do
       active <- listActiveThreadsForMessage threads message
       halted <- haltActiveThreadsForMessage threads Concurrency.cancel message (map (.id) active)
-      logInfo [i|halted #{length halted} active threads|]
+      $(logInfo) [i|halted #{length halted} active threads|]
   | otherwise =
       case traverse parseThreadId (Text.words input) of
         Nothing ->
           void $ Chat.replyTo message "Usage: !halt, !halt all, or !halt <id>..."
         Just threadIds -> do
           halted <- haltActiveThreadsForMessage threads Concurrency.cancel message (ordNub threadIds)
-          logInfo [i|halted #{length halted} requested active threads|]
+          $(logInfo) [i|halted #{length halted} requested active threads|]
   where
     input = Text.strip args
-    logHalted True = logInfo "halted"
-    logHalted False = logInfo "couldn't halt active thread"
+    logHalted True = $(logInfo) "halted"
+    logHalted False = $(logInfo) "couldn't halt active thread"
 
 parseThreadId :: Text -> Maybe Concurrency.Id
 parseThreadId value = do
@@ -349,8 +349,8 @@ startAskThread
   -> Text
   -> Eff es ()
 startAskThread label toolCfg tools cfg threads resource message prompt = do
-  logDebug [i|#{label}: #{show message :: String}|]
-  logInfo [i|#{label}: #{incomingMessageLogLine message}|]
+  $(logDebug) [i|#{label}: #{show message :: String}|]
+  $(logInfo) [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextFiles = referencedFiles referenced <> message.files
@@ -369,8 +369,8 @@ startDrawThread
   -> Text
   -> Eff es ()
 startDrawThread label cfg threads message prompt = do
-  logDebug [i|#{label}: #{show message :: String}|]
-  logInfo [i|#{label}: #{incomingMessageLogLine message}|]
+  $(logDebug) [i|#{label}: #{show message :: String}|]
+  $(logInfo) [i|#{label}: #{incomingMessageLogLine message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextFiles = referencedFiles referenced <> message.files
@@ -401,8 +401,8 @@ startThreadFromReply
   -> MessageId
   -> Eff es ()
 startThreadFromReply toolCfg tools cfg threads resource message parentId = do
-  logDebug [i|starting thread from mentioned reply: #{show message :: String}|]
-  logInfo [i|starting thread from mentioned reply: #{incomingMessageLogLine message}|]
+  $(logDebug) [i|starting thread from mentioned reply: #{show message :: String}|]
+  $(logInfo) [i|starting thread from mentioned reply: #{incomingMessageLogLine message}|]
   referenced <- Chat.getMessageContent message parentId
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextFiles = referencedFiles referenced <> message.files
@@ -424,8 +424,8 @@ continueThread
   -> Transcript
   -> Eff es ()
 continueThread toolCfg tools cfg threads resource message parentKey transcript = do
-  logDebug [i|continuing thread: #{show message :: String}|]
-  logInfo [i|continuing thread: #{incomingMessageLogLine message}|]
+  $(logDebug) [i|continuing thread: #{show message :: String}|]
+  $(logInfo) [i|continuing thread: #{incomingMessageLogLine message}|]
   let prompt = promptWithCurrentFiles (promptOrImageDefault message.text message.imageUrls) message.files
   let input = inputWithAttachments prompt message.imageUrls message.files
   let nextTranscript =
@@ -457,7 +457,7 @@ drawTranscript
   -> Eff es Text
 drawTranscript systemPrompt transcript =
   LLM.askImageWithHistory (LLM.systemText systemPrompt : Foldable.toList transcript.messages) `catchSync` \err -> do
-    logError [i|LLM image request failed: #{show err :: String}|]
+    $(logError) [i|LLM image request failed: #{show err :: String}|]
     pure ("Image generation failed: " <> (Failure.failureFromException err).userMessage)
 
 

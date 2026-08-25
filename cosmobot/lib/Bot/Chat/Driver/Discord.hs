@@ -241,9 +241,9 @@ discordConnectionLoop cfg eventChan =
     result <- runDiscordConnectionOnce cfg eventChan
     case result of
       Right () ->
-        logInfo "Discord gateway disconnected; reconnecting"
+        $(logInfo) "Discord gateway disconnected; reconnecting"
       Left err ->
-        logInfo [i|Discord gateway failed; reconnecting: #{err}|]
+        $(logInfo) [i|Discord gateway failed; reconnecting: #{err}|]
     threadDelay discordReconnectDelayMicroseconds
 
 runDiscordConnectionOnce
@@ -303,13 +303,13 @@ runGatewayConnection cfg eventChan conn = do
   case firstEnvelope.op of
     10 -> do
       hello :: GatewayHello <- parseGatewayData "Discord hello" firstEnvelope.d
-      logInfo "Discord gateway connected"
+      $(logInfo) "Discord gateway connected"
       lastSequence <- MVar.newMVar firstEnvelope.s
       heartbeatAck <- MVar.newMVar True
       identifyGateway cfg conn
       runDiscordGatewaySession eventChan lastSequence heartbeatAck hello.heartbeatInterval conn
     op ->
-      logInfo [i|Discord gateway expected HELLO, got op=#{op}|]
+      $(logInfo) [i|Discord gateway expected HELLO, got op=#{op}|]
 
 runDiscordGatewaySession
   :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
@@ -324,7 +324,7 @@ runDiscordGatewaySession eventChan lastSequence heartbeatAck heartbeatInterval c
   heartbeat <- forkGatewayThread "heartbeat" done (heartbeatLoop conn lastSequence heartbeatAck heartbeatInterval)
   eventReader <- forkGatewayThread "reader" done (readGatewayEvents eventChan lastSequence heartbeatAck conn)
   reason <- MVar.takeMVar done
-  logInfo [i|Discord gateway connection ending: #{displayException reason}|]
+  $(logInfo) [i|Discord gateway connection ending: #{displayException reason}|]
   closeDiscordGatewayForReconnect conn
   void $ Concurrency.cancel heartbeat.handleId
   void $ Concurrency.cancel eventReader.handleId
@@ -348,7 +348,7 @@ closeDiscordGatewayForReconnect :: (IOE :> es, KatipE :> es) => WS.Connection ->
 closeDiscordGatewayForReconnect conn =
   trySync (liftIO $ WS.sendClose conn ("reconnect" :: Text)) >>= \case
     Left err ->
-      logDebug [i|Discord gateway close during reconnect failed: #{show err :: String}|]
+      $(logDebug) [i|Discord gateway close during reconnect failed: #{show err :: String}|]
     Right () ->
       pure ()
 
@@ -367,7 +367,7 @@ heartbeatLoop conn lastSequence heartbeatAck intervalMs = forever do
       sequenceNumber <- MVar.readMVar lastSequence
       liftIO $ WS.sendTextData conn (Aeson.encode (heartbeatPayload sequenceNumber))
     else do
-      logInfo "Discord gateway heartbeat ACK timed out; closing connection"
+      $(logInfo) "Discord gateway heartbeat ACK timed out; closing connection"
       liftIO $ WS.sendClose conn ("heartbeat ACK timeout" :: Text)
       throwIO (userError "Discord gateway heartbeat ACK timed out")
 
@@ -412,7 +412,7 @@ readGatewayEnvelope conn = do
     Right envelope ->
       pure envelope
     Left err -> do
-      logInfo [i|Ignoring malformed Discord gateway frame: #{Text.pack err}|]
+      $(logInfo) [i|Ignoring malformed Discord gateway frame: #{Text.pack err}|]
       readGatewayEnvelope conn
 
 identifyGateway :: IOE :> es => Config -> WS.Connection -> Eff es ()
@@ -453,7 +453,7 @@ incomingMessages :: (IOE :> es, KatipE :> es) => DiscordDriver -> Stream (Of Inc
 incomingMessages driver = do
   if discordEnabled driver.config
     then incomingMessagesLoop driver
-    else S.lift $ logInfo "Discord driver disabled: no bot token configured"
+    else S.lift $ $(logInfo) "Discord driver disabled: no bot token configured"
 
 incomingMessagesLoop :: (IOE :> es, KatipE :> es) => DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessagesLoop driver = do
@@ -463,11 +463,10 @@ incomingMessagesLoop driver = do
         GatewayMessageDeleted deleted -> Just (deletedEventToIncomingMessageWith driver.config deleted)
   case incoming of
     Nothing -> do
-      S.lift $ logDebug "Ignoring Discord event"
-      S.lift $ logInfo "Ignoring Discord event"
+      S.lift $ $(logDebug) "Ignoring Discord event"
     Just message -> do
-      S.lift $ logDebug [i|incoming Discord message: #{show message :: String}|]
-      S.lift $ logInfo [i|incoming Discord message: #{incomingMessageLogLine message}|]
+      S.lift $ $(logDebug) [i|incoming Discord message: #{show message :: String}|]
+      S.lift $ $(logInfo) [i|incoming Discord message: #{incomingMessageLogLine message}|]
       S.yield message
   incomingMessagesLoop driver
 
@@ -1003,7 +1002,7 @@ discordJsonRequest
   -> body
   -> Eff es result
 discordJsonRequest cfg method path body = do
-  logDebug [i|Discord REST request: #{Text.intercalate "/" path}|]
+  $(logDebug) [i|Discord REST request: #{Text.intercalate "/" path}|]
   HTTP.runReq do
     req method (discordApiUrl path) (ReqBodyJson body) jsonResponse (discordRequestOptions cfg)
       <&> responseBody
@@ -1015,7 +1014,7 @@ discordNoResponseRequest
   -> [Text]
   -> Eff es ()
 discordNoResponseRequest cfg method path = do
-  logDebug [i|Discord REST request: #{Text.intercalate "/" path}|]
+  $(logDebug) [i|Discord REST request: #{Text.intercalate "/" path}|]
   void $ HTTP.runReq do
     req method (discordApiUrl path) NoReqBody ignoreResponse (discordRequestOptions cfg)
 
@@ -1025,7 +1024,7 @@ discordGetRequest
   -> [Text]
   -> Eff es result
 discordGetRequest cfg path = do
-  logDebug [i|Discord REST request: #{Text.intercalate "/" path}|]
+  $(logDebug) [i|Discord REST request: #{Text.intercalate "/" path}|]
   HTTP.runReq do
     req GET (discordApiUrl path) NoReqBody jsonResponse (discordRequestOptions cfg)
       <&> responseBody

@@ -98,14 +98,14 @@ ensurePublicObject runtime cached =
       case cachedUrl of
         Just cachedPublicUrl -> do
           finishedAt <- monotonicMilliseconds
-          logDebug [i|S3 publicize outcome=cache_hit file_id=#{cachedFileId} duration_ms=#{finishedAt - startedAt}|]
+          $(logDebug) [i|S3 publicize outcome=cache_hit file_id=#{cachedFileId} duration_ms=#{finishedAt - startedAt}|]
           pure cachedPublicUrl
         Nothing -> do
           uploaded <- storeObject False runtime cached
           for_ uploaded (rememberPublicObject runtime cachedFileId)
           finishedAt <- monotonicMilliseconds
           let outcome = if isJust uploaded then "cache_miss_published" else "failed" :: Text
-          logDebug [i|S3 publicize outcome=#{outcome} file_id=#{cachedFileId} duration_ms=#{finishedAt - startedAt}|]
+          $(logDebug) [i|S3 publicize outcome=#{outcome} file_id=#{cachedFileId} duration_ms=#{finishedAt - startedAt}|]
           pure url
 
 uploadPublicObject :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es ()
@@ -125,7 +125,7 @@ uploadPublicObject True runtime cached =
     let outcome
           | isJust uploaded = "forced_upload" :: Text
           | otherwise = "failed"
-    logDebug [i|S3 publicize outcome=#{outcome} file_id=#{cachedFileId} duration_ms=#{finishedAt - startedAt}|]
+    $(logDebug) [i|S3 publicize outcome=#{outcome} file_id=#{cachedFileId} duration_ms=#{finishedAt - startedAt}|]
 
 rememberPublicObject :: Concurrent :> es => Runtime -> Text -> Text -> Eff es ()
 rememberPublicObject runtime fileId url =
@@ -138,7 +138,7 @@ monotonicMilliseconds =
 storeObject :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
 storeObject forceUpload runtime cached =
   storeObjectUnsafe forceUpload runtime cached `catchSync` \err -> do
-    logError [i|S3 media upload skipped: #{show err :: String}|]
+    $(logError) [i|S3 media upload skipped: #{show err :: String}|]
     pure Nothing
 
 storeObjectUnsafe :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es) => Bool -> Runtime -> Cache.CachedMedia -> Eff es (Maybe Text)
@@ -159,7 +159,7 @@ storeObjectUnsafe forceUpload Runtime{cfg, env = Just env} cached
         else
           objectExists env cfg.s3 key >>= \case
             True -> do
-              logDebug [i|S3 media upload skipped; object already exists: key=#{key}|]
+              $(logDebug) [i|S3 media upload skipped; object already exists: key=#{key}|]
               pure (publicObjectUrl cfg cached)
             False -> do
               uploadObject env cfg.s3 key cached
@@ -193,7 +193,7 @@ uploadObject env cfg key cached = do
             { PutObject.contentType = Just mime
             }
           )
-  logInfo [i|S3 media upload: key=#{key} mime=#{mime}|]
+  $(logInfo) [i|S3 media upload: key=#{key} mime=#{mime}|]
   void $ liftIO $ AWS.runResourceT (AWS.send env request)
 
 setPublicAcl :: Config -> S3.PutObject -> S3.PutObject

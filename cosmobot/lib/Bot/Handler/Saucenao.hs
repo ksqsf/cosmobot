@@ -46,7 +46,7 @@ saucenaoRoute
 saucenaoRoute saucenaoCfg =
   withHelp (RouteHelp "!saucenao" "Reverse-search images in the replied-to message.") $
   stopOn (command saucenaoCommand) \message _ -> do
-    logInfo [i|matched saucenao route: #{incomingMessageLogLine message}|]
+    $(logInfo) [i|matched saucenao route: #{incomingMessageLogLine message}|]
     Concurrency.fire "saucenao.search" (sendSaucenaoResults saucenaoCfg message)
 
 sendSaucenaoResults
@@ -73,7 +73,7 @@ sendSaucenaoResults cfg message =
   where
     handleError action =
       action `catchSync` \err -> do
-        logError [i|SauceNAO search failed: #{show err :: String}|]
+        $(logError) [i|SauceNAO search failed: #{show err :: String}|]
         void $ Chat.replyTo message [i|SauceNAO 搜索失败：#{displayException err}|]
 
 fetchReferencedMessage

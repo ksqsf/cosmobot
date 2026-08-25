@@ -55,11 +55,11 @@ renderTypst format dir source = do
   let typstPath = dir </> "document" <.> "typ"
       outputPath = dir </> Text.unpack (typstOutputFileName format source)
   liftIO $ TextIO.writeFile typstPath source
-  logInfo [i|Rendering Typst document: #{typstPath}|]
+  $(logInfo) [i|Rendering Typst document: #{typstPath}|]
   (code, _out, err) <- ProcessUtil.readProcessGroupWithExitCode "typst" ["compile", "--root", dir, typstPath, outputPath]
   case code of
     ExitSuccess -> do
-      logInfo [i|Rendered Typst document: #{outputPath}|]
+      $(logInfo) [i|Rendered Typst document: #{outputPath}|]
       pure outputPath
     ExitFailure _ -> do
       Image.removeFilesIfExists [typstPath, outputPath]
