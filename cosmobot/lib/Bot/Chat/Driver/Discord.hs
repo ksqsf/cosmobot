@@ -241,9 +241,9 @@ discordConnectionLoop cfg eventChan =
     result <- runDiscordConnectionOnce cfg eventChan
     case result of
       Right () ->
-        $(logInfo) "Discord gateway disconnected; reconnecting"
+        $(logDebug) "Discord gateway disconnected; reconnecting"
       Left err ->
-        $(logInfo) [i|Discord gateway failed; reconnecting: #{err}|]
+        $(logWarning) [i|Discord gateway failed; reconnecting: #{err}|]
     threadDelay discordReconnectDelayMicroseconds
 
 runDiscordConnectionOnce
@@ -306,13 +306,13 @@ runGatewayConnection cfg eventChan conn = do
   case firstEnvelope.op of
     10 -> do
       hello :: GatewayHello <- parseGatewayData "Discord hello" firstEnvelope.d
-      $(logInfo) "Discord gateway connected"
+      $(logDebug) "Discord gateway connected"
       lastSequence <- MVar.newMVar firstEnvelope.s
       heartbeatAck <- MVar.newMVar True
       identifyGateway cfg conn
       runDiscordGatewaySession eventChan lastSequence heartbeatAck hello.heartbeatInterval conn
     op ->
-      $(logInfo) [i|Discord gateway expected HELLO, got op=#{op}|]
+      $(logError) [i|Discord gateway expected HELLO, got op=#{op}|]
 
 runDiscordGatewaySession
   :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
@@ -344,7 +344,7 @@ heartbeatLoop conn lastSequence heartbeatAck intervalMs = forever do
       sequenceNumber <- MVar.readMVar lastSequence
       liftIO $ WS.sendTextData conn (Aeson.encode (heartbeatPayload sequenceNumber))
     else do
-      $(logInfo) "Discord gateway heartbeat ACK timed out; closing connection"
+      $(logError) "Discord gateway heartbeat ACK timed out; closing connection"
       liftIO $ WS.sendClose conn ("heartbeat ACK timeout" :: Text)
       throwIO (userError "Discord gateway heartbeat ACK timed out")
 
@@ -389,7 +389,7 @@ readGatewayEnvelope conn = do
     Right envelope ->
       pure envelope
     Left err -> do
-      $(logInfo) [i|Ignoring malformed Discord gateway frame: #{Text.pack err}|]
+      $(logWarning) [i|Ignoring malformed Discord gateway frame: #{Text.pack err}|]
       readGatewayEnvelope conn
 
 identifyGateway :: IOE :> es => Config -> WS.Connection -> Eff es ()

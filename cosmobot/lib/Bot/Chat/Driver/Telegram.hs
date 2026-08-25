@@ -565,12 +565,12 @@ sanitizeTelegramException cfg err =
 logTelegramApiRequest :: KatipE :> es => Text -> Eff es ()
 logTelegramApiRequest method =
   unless (method == "getUpdates") $
-    $(logInfo) [i|Telegram API request: #{method}|]
+    $(logDebug) [i|Telegram API request: #{method}|]
 
 logTelegramApiResponse :: KatipE :> es => Text -> Eff es ()
 logTelegramApiResponse method =
   unless (method == "getUpdates") $
-    $(logInfo) [i|Telegram API response: #{method}|]
+    $(logDebug) [i|Telegram API response: #{method}|]
 
 parseTelegramResult
   :: (IOE :> es, Aeson.FromJSON result)

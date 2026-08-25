@@ -176,7 +176,7 @@ sendAction driver value = do
       pure response
     Nothing -> do
       katipAddContext (qqActionRequestContext value) $
-        $(logInfo) "Action timed out"
+        $(logDebug) "Action timed out"
       pure failedActionResponse
 
 data ActionRequest = ActionRequest !Aeson.Value !(MVar ActionResponse)
@@ -192,9 +192,9 @@ qqConnectionLoop cfg eventChan actionChan =
     result <- runQQConnectionOnce cfg eventChan actionChan
     case result of
       Right () ->
-        $(logInfo) "QQ websocket disconnected; reconnecting"
+        $(logDebug) "QQ websocket disconnected; reconnecting"
       Left err ->
-        $(logInfo) [i|QQ websocket failed; reconnecting: #{err}|]
+        $(logDebug) [i|QQ websocket failed; reconnecting: #{err}|]
     threadDelay qqReconnectDelayMicroseconds
 
 runQQConnectionOnce
@@ -233,13 +233,13 @@ runConnection eventChan actionChan conn = do
   sender <- forkConnectionThread "sender" done (sendActions actionChan pendingResponses actionCounter conn)
   monitor <- forkConnectionThread "heartbeat-monitor" done (monitorConnectionHeartbeat lastFrameAt)
   reason <- liftIO (takeMVar done)
-  $(logInfo) [i|QQ websocket connection ending: #{show reason :: String}|]
+  $(logDebug) [i|QQ websocket connection ending: #{show reason :: String}|]
   closeWebSocketForReconnect conn
   stopConnectionThread "reader" frameReader
   stopConnectionThread "sender" sender
   stopConnectionThread "heartbeat monitor" monitor
   failPendingResponses pendingResponses
-  $(logInfo) "QQ websocket connection ended"
+  $(logDebug) "QQ websocket connection ended"
 
 forkConnectionThread
   :: (Concurrency.Concurrency :> es, Concurrent :> es)
@@ -289,7 +289,7 @@ closeWebSocketForReconnect conn = do
     trySync (liftIO $ WS.sendClose conn ("reconnect" :: Text))
   case result of
     Nothing ->
-      $(logInfo) "QQ websocket close timed out during reconnect"
+      $(logDebug) "QQ websocket close timed out during reconnect"
     Just (Left err) ->
       $(logDebug) [i|QQ websocket close during reconnect failed: #{show err :: String}|]
     Just (Right ()) ->
@@ -299,7 +299,7 @@ stopConnectionThread :: (Timeout :> es, KatipE :> es, Concurrency.Concurrency :>
 stopConnectionThread label resourceHandle = do
   result <- timeout qqConnectionThreadStopTimeoutMicroseconds (Concurrency.cancel resourceHandle.handleId)
   when (isNothing result) $
-    $(logInfo) [i|QQ websocket #{label} thread did not stop before reconnect; continuing|]
+    $(logDebug) [i|QQ websocket #{label} thread did not stop before reconnect; continuing|]
 
 websocketPath :: Config -> String
 websocketPath Config{path, token = Nothing} = path
@@ -360,7 +360,7 @@ readFrames eventChan pendingResponses lastFrameAt conn = forever do
         Aeson.Success response ->
           dispatchActionResponse pendingResponses response
         Aeson.Error err ->
-          $(logInfo) [i|Ignoring malformed QQ frame: #{Text.pack err}|]
+          $(logDebug) [i|Ignoring malformed QQ frame: #{Text.pack err}|]
 
 -- | Read frames until an action response is found.
 readActionResponse :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es ActionResponse
@@ -373,7 +373,7 @@ readActionResponse conn = do
         Aeson.Success (_event :: Event) ->
           readActionResponse conn
         Aeson.Error err -> do
-          $(logInfo) [i|Ignoring malformed QQ action response: #{Text.pack err}|]
+          $(logDebug) [i|Ignoring malformed QQ action response: #{Text.pack err}|]
           readActionResponse conn
 
 readValue :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es Aeson.Value
@@ -382,7 +382,7 @@ readValue conn = do
   case Aeson.eitherDecodeStrict bytes of
     Right value -> pure value
     Left err -> do
-      $(logInfo) [i|Ignoring malformed QQ frame: #{Text.pack err}|]
+      $(logDebug) [i|Ignoring malformed QQ frame: #{Text.pack err}|]
       readValue conn
 
 monitorConnectionHeartbeat :: (IOE :> es, KatipE :> es, Concurrent :> es) => IORef.IORef UTCTime -> Eff es ()
@@ -392,7 +392,7 @@ monitorConnectionHeartbeat lastFrameAt = forever do
   lastSeen <- liftIO (IORef.readIORef lastFrameAt)
   let silence = diffUTCTime now lastSeen
   when (silence > qqHeartbeatTimeout) do
-    $(logInfo) [i|QQ websocket heartbeat timed out after #{show silence :: String}; reconnecting|]
+    $(logDebug) [i|QQ websocket heartbeat timed out after #{show silence :: String}; reconnecting|]
     throwIO (QQHeartbeatTimeout silence)
 
 failedActionResponse :: ActionResponse
@@ -483,7 +483,7 @@ dispatchActionResponse
 dispatchActionResponse pendingResponses response =
   case response.echo of
     Nothing ->
-      $(logInfo) "Ignoring action response without echo"
+      $(logDebug) "Ignoring action response without echo"
     Just echo -> do
       katipAddContext (qqActionResponseContext echo response) $
         $(logDebug) "Action response received"
@@ -492,7 +492,7 @@ dispatchActionResponse pendingResponses response =
       case waiter of
         Nothing ->
           katipAddContext (qqActionResponseContext echo response) $
-            $(logInfo) "Ignoring action response with unknown echo"
+            $(logDebug) "Ignoring action response with unknown echo"
         Just responseVar ->
           void $ MVar.tryPutMVar responseVar response
 
@@ -1308,7 +1308,7 @@ cacheGroupUpload driver upload = do
   case response.data_ >>= groupFileUrl of
     Nothing ->
       let name = upload.fileName
-      in $(logInfo) [i|QQ group file URL unavailable: #{name}|]
+      in $(logDebug) [i|QQ group file URL unavailable: #{name}|]
     Just url -> do
       cachedRef <- Media.normalizeMediaRef url
       when ("media:" `Text.isPrefixOf` Text.strip cachedRef) $
