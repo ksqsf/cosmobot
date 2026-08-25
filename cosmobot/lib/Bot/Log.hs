@@ -59,16 +59,15 @@ journalScribe permit =
 writeJournalItem :: LogItem a => Item a -> IO ()
 writeJournalItem item =
   Journal.sendJournalFields $
-    Journal.message (maybe message (\loc -> "[" <> Text.pack loc.loc_module <> "] " <> message) item._itemLoc)
+    Journal.message (LazyText.toStrict (TextBuilder.toLazyText (unLogStr item._itemMessage)))
       <> Journal.priority (journalPriority item._itemSeverity)
       <> maybe mempty locationFields item._itemLoc
       <> contextFields item._itemPayload
-  where
-    message = LazyText.toStrict (TextBuilder.toLazyText (unLogStr item._itemMessage))
 
 locationFields :: Loc -> Journal.JournalFields
 locationFields loc =
-  Journal.codeFile loc.loc_filename
+  Journal.syslogIdentifier (Text.pack loc.loc_module)
+    <> Journal.codeFile loc.loc_filename
     <> Journal.codeLine (fst loc.loc_start)
     <> journalField "HASKELL_MODULE" (TextEncoding.encodeUtf8 (Text.pack loc.loc_module))
 
