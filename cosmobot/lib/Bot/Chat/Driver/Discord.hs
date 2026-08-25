@@ -252,33 +252,43 @@ runDiscordConnectionOnce
   -> Chan.Chan GatewayEvent
   -> Eff es (Either String ())
 runDiscordConnectionOnce cfg eventChan =
-  (Right <$> withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-    liftIO $ runSecureWebSocketClient cfg.gatewayHost cfg.gatewayPath \conn ->
-      runInIO (runGatewayConnection cfg eventChan conn))
+  (Right <$> runSecureWebSocketClient cfg.gatewayHost cfg.gatewayPath (runGatewayConnection cfg eventChan))
     `catch` \(connectionErr :: WS.ConnectionException) ->
-      pure (Left (show connectionErr))
+      pure (Left (exceptionSummary connectionErr))
     `catch` \(handshakeErr :: WS.HandshakeException) ->
-      pure (Left (show handshakeErr))
+      pure (Left (exceptionSummary handshakeErr))
     `catch` \(ioErr :: IOException) ->
-      pure (Left (show ioErr))
+      pure (Left (exceptionSummary ioErr))
     `catchSync` \err ->
-      pure (Left (displayException err))
+      pure (Left (exceptionSummary err))
 
-runSecureWebSocketClient :: String -> String -> WS.ClientApp a -> IO a
+exceptionSummary :: Exception e => e -> String
+exceptionSummary =
+  Text.unpack . Text.takeWhile (/= '\n') . Text.pack . displayException
+
+runSecureWebSocketClient
+  :: IOE :> es
+  => String
+  -> String
+  -> (WS.Connection -> Eff es a)
+  -> Eff es a
 runSecureWebSocketClient host path app = do
-  context <- Connection.initConnectionContext
-  conn <- Connection.connectTo context Connection.ConnectionParams
-    { Connection.connectionHostname = host
-    , Connection.connectionPort = 443
-    , Connection.connectionUseSecure = Just discordTlsSettings
-    , Connection.connectionUseSocks = Nothing
-    }
-  stream <- WSStream.makeStream
-    (Just <$> Connection.connectionGetChunk conn)
-    (maybe (Connection.connectionClose conn) (Connection.connectionPut conn . LazyByteString.toStrict))
-  result <- WS.runClientWithStream stream host path WS.defaultConnectionOptions [] app
-  Connection.connectionClose conn
-  pure result
+  context <- liftIO Connection.initConnectionContext
+  bracket
+    ( liftIO $ Connection.connectTo context Connection.ConnectionParams
+        { Connection.connectionHostname = host
+        , Connection.connectionPort = 443
+        , Connection.connectionUseSecure = Just discordTlsSettings
+        , Connection.connectionUseSocks = Nothing
+        }
+    )
+    (liftIO . Connection.connectionClose)
+    \conn -> do
+      stream <- liftIO $ WSStream.makeStream
+        (Just <$> Connection.connectionGetChunk conn)
+        (maybe (Connection.connectionClose conn) (Connection.connectionPut conn . LazyByteString.toStrict))
+      websocket <- liftIO $ WS.newClientConnection stream host path WS.defaultConnectionOptions []
+      app websocket
 
 discordTlsSettings :: Connection.TLSSettings
 discordTlsSettings =
@@ -320,37 +330,11 @@ runDiscordGatewaySession
   -> WS.Connection
   -> Eff es ()
 runDiscordGatewaySession eventChan lastSequence heartbeatAck heartbeatInterval conn = do
-  done <- MVar.newEmptyMVar
-  heartbeat <- forkGatewayThread "heartbeat" done (heartbeatLoop conn lastSequence heartbeatAck heartbeatInterval)
-  eventReader <- forkGatewayThread "reader" done (readGatewayEvents eventChan lastSequence heartbeatAck conn)
-  reason <- MVar.takeMVar done
-  $(logInfo) [i|Discord gateway connection ending: #{displayException reason}|]
-  closeDiscordGatewayForReconnect conn
-  void $ Concurrency.cancel heartbeat.handleId
-  void $ Concurrency.cancel eventReader.handleId
-  throwIO reason
-
-forkGatewayThread
-  :: (Concurrency.Concurrency :> es, Concurrent :> es)
-  => Text
-  -> MVar.MVar SomeException
-  -> Eff es ()
-  -> Eff es Concurrency.Handle
-forkGatewayThread label done action = Concurrency.fork [i|discord.gateway.#{label}|] do
-  result <- try action
-  case result of
-    Left err ->
-      void (MVar.tryPutMVar done err)
-    Right () ->
-      void (MVar.tryPutMVar done (toException ThreadKilled))
-
-closeDiscordGatewayForReconnect :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es ()
-closeDiscordGatewayForReconnect conn =
-  trySync (liftIO $ WS.sendClose conn ("reconnect" :: Text)) >>= \case
-    Left err ->
-      $(logDebug) [i|Discord gateway close during reconnect failed: #{show err :: String}|]
-    Right () ->
-      pure ()
+  Concurrency.raceTasks_
+    "discord.gateway.heartbeat"
+    (heartbeatLoop conn lastSequence heartbeatAck heartbeatInterval)
+    "discord.gateway.reader"
+    (readGatewayEvents eventChan lastSequence heartbeatAck conn)
 
 heartbeatLoop
   :: (IOE :> es, KatipE :> es, Concurrent :> es)
