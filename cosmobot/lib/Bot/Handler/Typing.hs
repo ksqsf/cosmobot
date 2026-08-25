@@ -54,7 +54,7 @@ rankRoute
 rankRoute commandText titleSuffix failureMessage fetchRows =
   withHelp (RouteHelp commandText ("Render the " <> titleSuffix <> " leaderboard.")) $
   stopOn (command commandText) \message _ -> do
-    $(logInfo) [i|matched typing rank route: #{commandText} #{incomingMessageLogLine message}|]
+    $(logInfo) [i|matched typing rank route: #{commandText} #{incomingMessageLog message}|]
     Concurrency.fire "typing.rank" (sendRankImage titleSuffix failureMessage fetchRows message)
 
 sendRankImage

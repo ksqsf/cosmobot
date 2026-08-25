@@ -13,6 +13,7 @@ module Bot.Log
 where
 
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Encode.Pretty as AesonPretty
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.ByteString as ByteString
@@ -58,10 +59,12 @@ journalScribe permit =
 writeJournalItem :: LogItem a => Item a -> IO ()
 writeJournalItem item =
   Journal.sendJournalFields $
-    Journal.message (LazyText.toStrict (TextBuilder.toLazyText (unLogStr item._itemMessage)))
+    Journal.message (maybe message (\loc -> "[" <> Text.pack loc.loc_module <> "] " <> message) item._itemLoc)
       <> Journal.priority (journalPriority item._itemSeverity)
       <> maybe mempty locationFields item._itemLoc
       <> contextFields item._itemPayload
+  where
+    message = LazyText.toStrict (TextBuilder.toLazyText (unLogStr item._itemMessage))
 
 locationFields :: Loc -> Journal.JournalFields
 locationFields loc =
@@ -135,7 +138,7 @@ journalPriority = \case
 
 logJsonText :: Aeson.ToJSON a => a -> Text
 logJsonText =
-  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode . sanitizeLogValue . Aeson.toJSON
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . AesonPretty.encodePretty . sanitizeLogValue . Aeson.toJSON
 
 sanitizeLogValue :: Aeson.Value -> Aeson.Value
 sanitizeLogValue = \case

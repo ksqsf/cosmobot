@@ -101,7 +101,7 @@ safebooruRoute search =
       Left err ->
         void $ Chat.replyTo message err
       Right request -> do
-        $(logInfo) [i|matched safebooru route: #{incomingMessageLogLine message}|]
+        $(logInfo) [i|matched safebooru route: #{incomingMessageLog message}|]
         Concurrency.fire "safebooru.search" (sendSafebooruImages search message request)
 
 ballCommandArgs :: MessageFilter Text

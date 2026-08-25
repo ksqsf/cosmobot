@@ -22,7 +22,7 @@ module Bot.Core.Message
     -- * Incoming messages
   , IncomingMessage (..)
   , IncomingMessageEventKind (..)
-  , incomingMessageLogLine
+  , incomingMessageLog
   , MessageFile (..)
   , MessageInput (..)
   , MessageInputAttachment (..)
@@ -228,26 +228,36 @@ messageInputFiles MessageInput{attachments} =
   | MessageInputFile file <- attachments
   ]
 
--- | Compact one-line representation for info-level logs.
-incomingMessageLogLine :: IncomingMessage -> Text
-incomingMessageLogLine message =
-  Text.unwords
-    [ "platform=" <> show message.platform
-    , "event=" <> show message.eventKind
-    , "kind=" <> show message.kind
-    , "chat=" <> showMaybe message.chatId
-    , "chat_allowed=" <> show message.digest.chatIsAllowed
-    , "sender_allowed=" <> show message.digest.senderIsAllowed
-    , "sender=" <> showMaybe message.senderId
-    , "username=" <> fromMaybe "-" message.senderUsername
-    , "superuser=" <> show message.digest.senderIsSuperuser
-    , "bot=" <> showMaybe message.digest.botId
-    , "message=" <> showMaybeMessageId message.messageId
-    , "reply_to=" <> showMaybeMessageId message.replyToMessageId
-    , "mentions=" <> show (length message.mentions + length message.mentionUsernames)
-    , "mentions_bot=" <> show message.digest.mentionsBot
-    , "images=" <> show (length message.imageUrls)
-    , "files=" <> show (length message.files)
+-- | Compact multiline representation for logs.
+incomingMessageLog :: IncomingMessage -> Text
+incomingMessageLog message =
+  Text.intercalate "\n  "
+    [ Text.unwords
+        [ "platform=" <> show message.platform
+        , "event=" <> show message.eventKind
+        , "kind=" <> show message.kind
+        ]
+    , Text.unwords
+        [ "chat=" <> showMaybe message.chatId
+        , "allowed=" <> show message.digest.chatIsAllowed
+        ]
+    , Text.unwords
+        [ "sender=" <> showMaybe message.senderId
+        , "username=" <> fromMaybe "-" message.senderUsername
+        , "allowed=" <> show message.digest.senderIsAllowed
+        , "superuser=" <> show message.digest.senderIsSuperuser
+        ]
+    , Text.unwords
+        [ "bot=" <> showMaybe message.digest.botId
+        , "message=" <> showMaybeMessageId message.messageId
+        , "reply_to=" <> showMaybeMessageId message.replyToMessageId
+        ]
+    , Text.unwords
+        [ "mentions=" <> show (length message.mentions + length message.mentionUsernames)
+        , "mentions_bot=" <> show message.digest.mentionsBot
+        , "images=" <> show (length message.imageUrls)
+        , "files=" <> show (length message.files)
+        ]
     , "text=" <> previewText 80 message.text
     ]
 

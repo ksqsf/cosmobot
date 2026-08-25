@@ -1200,8 +1200,7 @@ incomingMessages driver =
                 S.lift $ $(logDebug) ("Ignoring Matrix event: " <> reason)
               Just message -> do
                 normalized <- S.lift (normalizeMatrixIncomingMessage driver message)
-                S.lift $ $(logDebug) [i|incoming Matrix message: #{show normalized :: String}|]
-                S.lift $ $(logInfo) [i|incoming Matrix message: #{matrixIncomingLogLine event} #{incomingMessageLogLine normalized}|]
+                S.lift $ $(logDebug) ("incoming Matrix message:\n" <> logJsonText normalized)
                 S.yield normalized
           S.lift $ storeSyncToken response.nextBatch
           syncLoop (Just response.nextBatch)
@@ -1273,10 +1272,6 @@ probeDirectRoomIds driver knownDirectRoomIds joinedCounts response =
 roomLooksDirect :: JoinedRoom -> Bool
 roomLooksDirect room =
   room.summary.joinedMemberCount == Just 2
-
-matrixIncomingLogLine :: RoomEvent -> Text
-matrixIncomingLogLine RoomEvent{roomId, roomIsDirect} =
-  [i|room_id=#{roomId} direct=#{roomIsDirect}|]
 
 matrixAuthConfigured :: Config -> Bool
 matrixAuthConfigured cfg =

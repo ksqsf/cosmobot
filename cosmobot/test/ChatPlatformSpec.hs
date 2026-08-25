@@ -29,6 +29,7 @@ main =
   defaultMain $
     testGroup "chat platforms"
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      , testCase "incoming message log is compact and multiline" testIncomingMessageLog
       , testCase "QQ replies over 1000 characters use merged forwarding" testQqLongReplyUsesMergedForwarding
       , testCase "QQ invitation actions accept friend and group invites" testQqInvitationActions
       , testCase "QQ recall converts to a deleted incoming message" testQqRecallConvertsToDeletedMessage
@@ -99,6 +100,13 @@ testQqUserMessageConvertsToIncomingMessage = do
   ((.text) <$> incoming) @?= Just "hello"
   ((.senderUsername) <$> incoming) @?= Just (Just "Alice")
   ((.digest.botId) <$> incoming) @?= Just (Just "424242")
+
+testIncomingMessageLog :: IO ()
+testIncomingMessageLog = do
+  let message = fromMaybe (error "expected QQ message") (QQ.eventToIncomingMessage (qqMessageEvent 10001))
+      rendered = incomingMessageLog message
+  length (Text.lines rendered) @?= 6
+  assertBool "raw event must not be logged" (not ("raw=" `Text.isInfixOf` rendered))
 
 testQqLongReplyUsesMergedForwarding :: IO ()
 testQqLongReplyUsesMergedForwarding = do

@@ -95,7 +95,7 @@ microGroup count =
       [ bench "route-filters" $
           nf routeFilterScore messages
       , bench "incoming-message-log-line" $
-          nf (map incomingMessageLogLine) messages
+          nf (map incomingMessageLog) messages
       , bench "incoming-message-json-encode" $
           nf encodeMessages messages
       , bench "incoming-message-json-decode-value" $

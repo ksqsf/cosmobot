@@ -18,7 +18,7 @@ import qualified Bot.ACP.Server as ACPServer
 import qualified Bot.ACP.State as ACP
 import Bot.Config
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
-import Bot.Core.Message (IncomingMessage (..), MessageDigest (..), chatPlatformKey, inputWithAttachments, incomingMessageLogLine, messageIdText)
+import Bot.Core.Message (IncomingMessage (..), MessageDigest (..), chatPlatformKey, inputWithAttachments, messageIdText)
 import Bot.Core.Transcript (startWithUserInput)
 import Bot.Core.Route
 import qualified Bot.Lifecycle as Lifecycle
@@ -297,15 +297,15 @@ withRouteDebugLogging index route =
           Skip ->
             pure ()
           ContinueWith{} ->
-            logMatch ("continue" :: Text) message
+            logMatch ("continue" :: Text)
           StopWith{} ->
-            logMatch ("stop" :: Text) message
+            logMatch ("stop" :: Text)
         pure decision
     }
   where
-    logMatch decision message =
+    logMatch decision =
       $(logDebug)
-        [i|Route matched: index=#{index} label=#{routeLabel route} decision=#{decision} #{incomingMessageLogLine message}|]
+        [i|Route matched: index=#{index} label=#{routeLabel route} decision=#{decision}|]
 
 routeLabel :: Route es -> Text
 routeLabel route =

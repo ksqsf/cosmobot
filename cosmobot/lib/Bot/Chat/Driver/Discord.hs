@@ -449,8 +449,7 @@ incomingMessagesLoop driver = do
     Nothing -> do
       S.lift $ $(logDebug) "Ignoring Discord event"
     Just message -> do
-      S.lift $ $(logDebug) [i|incoming Discord message: #{show message :: String}|]
-      S.lift $ $(logInfo) [i|incoming Discord message: #{incomingMessageLogLine message}|]
+      S.lift $ $(logDebug) ("incoming Discord message:\n" <> logJsonText message)
       S.yield message
   incomingMessagesLoop driver
 

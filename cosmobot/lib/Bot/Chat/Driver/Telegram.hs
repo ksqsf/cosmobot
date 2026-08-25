@@ -254,8 +254,7 @@ incomingMessages driver = S.for (updatesStream driver) $ \update -> do
         resolveIncomingMessageMedia driver parsedMessage `catchSync` \err -> do
           $(logError) [i|Telegram media resolution failed: #{show err :: String}|]
           pure parsedMessage
-      S.lift $ $(logDebug) [i|incoming Telegram message: #{show message :: String}|]
-      S.lift $ $(logInfo) [i|incoming Telegram message: #{incomingMessageLogLine message}|]
+      S.lift $ $(logDebug) ("incoming Telegram message:\n" <> logJsonText message)
       S.yield message
 
 resolveIncomingMessageMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> IncomingMessage -> Eff es IncomingMessage

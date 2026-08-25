@@ -334,8 +334,7 @@ incomingMessages driver = do
           S.lift $ $(logDebug) [i|Ignoring QQ event: #{postType}|]
     Just parsedMessage -> do
       message <- S.lift (normalizeQQMessageFiles parsedMessage)
-      S.lift $ $(logDebug) [i|incoming qq message: #{show message :: String}|]
-      S.lift $ $(logInfo) [i|incoming qq message: #{incomingMessageLogLine message}|]
+      S.lift $ $(logDebug) ("incoming qq message:\n" <> logJsonText message)
       S.yield message
   incomingMessages driver
 

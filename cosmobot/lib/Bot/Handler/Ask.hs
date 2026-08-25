@@ -97,7 +97,7 @@ deletedMessageRoute threads =
       runId <- lookupActiveThreadRunId threads messageKey
       halted <- haltThread threads Concurrency.cancel messageKey
       when halted $
-        $(logInfo) [i|Halted agent run after active thread message deletion: run_id=#{fromMaybe "-" runId} message_id=#{messageIdText messageId} #{incomingMessageLogLine message}|]
+        $(logInfo) [i|Halted agent run after active thread message deletion: run_id=#{fromMaybe "-" runId} message_id=#{messageIdText messageId} #{incomingMessageLog message}|]
 
 data Policy = Policy
   { msg :: !IncomingMessage
@@ -349,8 +349,7 @@ startAskThread
   -> Text
   -> Eff es ()
 startAskThread label toolCfg tools cfg threads resource message prompt = do
-  $(logDebug) [i|#{label}: #{show message :: String}|]
-  $(logInfo) [i|#{label}: #{incomingMessageLogLine message}|]
+  $(logInfo) [i|#{label}: #{incomingMessageLog message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextFiles = referencedFiles referenced <> message.files
@@ -369,8 +368,7 @@ startDrawThread
   -> Text
   -> Eff es ()
 startDrawThread label cfg threads message prompt = do
-  $(logDebug) [i|#{label}: #{show message :: String}|]
-  $(logInfo) [i|#{label}: #{incomingMessageLogLine message}|]
+  $(logInfo) [i|#{label}: #{incomingMessageLog message}|]
   referenced <- fetchReferencedMessage message
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextFiles = referencedFiles referenced <> message.files
@@ -401,8 +399,7 @@ startThreadFromReply
   -> MessageId
   -> Eff es ()
 startThreadFromReply toolCfg tools cfg threads resource message parentId = do
-  $(logDebug) [i|starting thread from mentioned reply: #{show message :: String}|]
-  $(logInfo) [i|starting thread from mentioned reply: #{incomingMessageLogLine message}|]
+  $(logInfo) [i|starting thread from mentioned reply: #{incomingMessageLog message}|]
   referenced <- Chat.getMessageContent message parentId
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextFiles = referencedFiles referenced <> message.files
@@ -424,8 +421,7 @@ continueThread
   -> Transcript
   -> Eff es ()
 continueThread toolCfg tools cfg threads resource message parentKey transcript = do
-  $(logDebug) [i|continuing thread: #{show message :: String}|]
-  $(logInfo) [i|continuing thread: #{incomingMessageLogLine message}|]
+  $(logInfo) [i|continuing thread: #{incomingMessageLog message}|]
   let prompt = promptWithCurrentFiles (promptOrImageDefault message.text message.imageUrls) message.files
   let input = inputWithAttachments prompt message.imageUrls message.files
   let nextTranscript =

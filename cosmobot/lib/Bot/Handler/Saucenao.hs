@@ -46,7 +46,7 @@ saucenaoRoute
 saucenaoRoute saucenaoCfg =
   withHelp (RouteHelp "!saucenao" "Reverse-search images in the replied-to message.") $
   stopOn (command saucenaoCommand) \message _ -> do
-    $(logInfo) [i|matched saucenao route: #{incomingMessageLogLine message}|]
+    $(logInfo) [i|matched saucenao route: #{incomingMessageLog message}|]
     Concurrency.fire "saucenao.search" (sendSaucenaoResults saucenaoCfg message)
 
 sendSaucenaoResults
