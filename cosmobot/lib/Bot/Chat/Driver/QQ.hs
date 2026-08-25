@@ -17,6 +17,7 @@ module Bot.Chat.Driver.QQ
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , invitationAction
+  , replyAction
   , forwardedMessagesText
   , readActionResponse
   , getUserAvatar
@@ -99,7 +100,7 @@ instance Driver.ChatDriver QQDriver where
     deleteMessageQQ
 
   messageOutPolicy _ _ =
-    pure (Chat.ChunkedMessage qqStreamingMessageLimit)
+    pure (Chat.ChunkedMessage maxBound)
 
   getMessageContent driver message messageId =
     getMessageContentQQ driver message.chatId messageId
@@ -139,8 +140,8 @@ instance Driver.ChatDriver QQDriver where
   setMemberTitle =
     setGroupMemberTitleQQ
 
-qqStreamingMessageLimit :: Int
-qqStreamingMessageLimit = 4000
+qqForwardMessageThreshold :: Int
+qqForwardMessageThreshold = 1000
 
 runQQDriver
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
@@ -497,30 +498,78 @@ replyToQQ
   -> IncomingMessage
   -> Text
   -> Eff es (Either Text MessageId)
-replyToQQ driver message body =
-  case (message.kind, message.chatId, message.senderId) of
-    (ChatGroup, Just groupId, _) -> do
-      qqMessage <- replyMessage message body
-      response <- sendAction driver (Aeson.object
-        [ "action" Aeson..= Aeson.String "send_group_msg"
-        , "params" Aeson..= Aeson.object
-            [ "group_id" Aeson..= groupId
-            , "message" Aeson..= qqMessage
+replyToQQ driver message body = do
+  content <- replyContent text (Chat.replyImageUrls body)
+  case replyAction botId message text content of
+    Left err -> pure (Left err)
+    Right (action, request) ->
+      qqMessageIdResult action =<< sendAction driver request
+  where
+    text = Chat.renderReplyBody body
+    botId = driver.config.botQQ <|> (message.digest.botId >>= parseIntegerUserId)
+
+replyAction
+  :: Maybe Integer
+  -> IncomingMessage
+  -> Text
+  -> [Aeson.Value]
+  -> Either Text (Text, Aeson.Value)
+replyAction botId message text content
+  | Text.length text > qqForwardMessageThreshold = do
+      qq <- maybe (Left "QQ merged-forward replies require the bot QQ id.") Right botId
+      case (message.kind, message.chatId, message.senderId) of
+        (ChatGroup, Just groupId, _) ->
+          Right ("send_group_forward_msg", forwardRequest "send_group_forward_msg" "group_id" groupId qq content)
+        (ChatPrivate, _, Just rawUserId)
+          | Just userId <- parseIntegerUserId rawUserId ->
+            Right ("send_private_forward_msg", forwardRequest "send_private_forward_msg" "user_id" userId qq content)
+        _ -> Left "QQ reply requires a QQ group id or private sender id."
+  | otherwise =
+      case (message.kind, message.chatId, message.senderId) of
+        (ChatGroup, Just groupId, _) ->
+          Right ("send_group_msg", messageRequest "send_group_msg" "group_id" groupId (withReply content))
+        (ChatPrivate, _, Just rawUserId)
+          | Just userId <- parseIntegerUserId rawUserId ->
+            Right ("send_private_msg", messageRequest "send_private_msg" "user_id" userId (withReply content))
+        _ -> Left "QQ reply requires a QQ group id or private sender id."
+  where
+    withReply segments = maybe segments (\messageId -> replySegment messageId : segments) message.messageId
+
+messageRequest :: Aeson.ToJSON target => Text -> Aeson.Key -> target -> [Aeson.Value] -> Aeson.Value
+messageRequest action targetName target message =
+  Aeson.object
+    [ "action" Aeson..= action
+    , "params" Aeson..= Aeson.object
+        [ targetName Aeson..= target
+        , "message" Aeson..= message
+        ]
+    ]
+
+forwardRequest :: Aeson.ToJSON target => Text -> Aeson.Key -> target -> Integer -> [Aeson.Value] -> Aeson.Value
+forwardRequest action targetName target botId content =
+  Aeson.object
+    [ "action" Aeson..= action
+    , "params" Aeson..= Aeson.object
+        [ targetName Aeson..= target
+        , "messages" Aeson..=
+            [ Aeson.object
+                [ "type" Aeson..= Aeson.String "node"
+                , "data" Aeson..= Aeson.object
+                    [ "user_id" Aeson..= botId
+                    , "nickname" Aeson..= Aeson.String "Cosmobot"
+                    , "content" Aeson..= content
+                    ]
+                ]
             ]
-        ])
-      qqMessageIdResult "send_group_msg" response
-    (ChatPrivate, _, Just rawUserId)
-      | Just userId <- parseIntegerUserId rawUserId -> do
-      qqMessage <- replyMessage message body
-      response <- sendAction driver (Aeson.object
-        [ "action" Aeson..= Aeson.String "send_private_msg"
-        , "params" Aeson..= Aeson.object
-            [ "user_id" Aeson..= userId
-            , "message" Aeson..= qqMessage
-            ]
-        ])
-      qqMessageIdResult "send_private_msg" response
-    _ -> pure (Left "QQ reply requires a QQ group id or private sender id.")
+        ]
+    ]
+
+replySegment :: MessageId -> Aeson.Value
+replySegment messageId =
+  Aeson.object
+    [ "type" Aeson..= Aeson.String "reply"
+    , "data" Aeson..= Aeson.object ["id" Aeson..= messageIdText messageId]
+    ]
 
 -- | Send a reply that mentions a QQ user where the platform supports it.
 mentionUserQQ

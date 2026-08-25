@@ -29,6 +29,7 @@ main =
   defaultMain $
     testGroup "chat platforms"
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      , testCase "QQ replies over 1000 characters use merged forwarding" testQqLongReplyUsesMergedForwarding
       , testCase "QQ invitation actions accept friend and group invites" testQqInvitationActions
       , testCase "QQ recall converts to a deleted incoming message" testQqRecallConvertsToDeletedMessage
       , testCase "incoming message JSON defaults missing files" testIncomingMessageJsonDefaultsMissingFiles
@@ -92,6 +93,34 @@ testQqUserMessageConvertsToIncomingMessage = do
   ((.platform) <$> incoming) @?= Just PlatformQQ
   ((.text) <$> incoming) @?= Just "hello"
   ((.digest.botId) <$> incoming) @?= Just (Just "424242")
+
+testQqLongReplyUsesMergedForwarding :: IO ()
+testQqLongReplyUsesMergedForwarding = do
+  let message = fromMaybe (error "expected QQ message") (QQ.eventToIncomingMessage (qqMessageEvent 10001))
+      content = [textSegment "answer", imageSegment "https://example.test/image.png"]
+      actionFor text = fst <$> QQ.replyAction (Just qqBotUserId) message text content
+  actionFor (Text.replicate 1000 "x") @?= Right "send_group_msg"
+  actionFor (Text.replicate 1001 "x") @?= Right "send_group_forward_msg"
+  QQ.replyAction (Just qqBotUserId) message (Text.replicate 1001 "x") content
+    @?= Right
+      ( "send_group_forward_msg"
+      , Aeson.object
+          [ "action" Aeson..= ("send_group_forward_msg" :: Text)
+          , "params" Aeson..= Aeson.object
+              [ "group_id" Aeson..= (90001 :: Integer)
+              , "messages" Aeson..=
+                  [ Aeson.object
+                      [ "type" Aeson..= ("node" :: Text)
+                      , "data" Aeson..= Aeson.object
+                          [ "user_id" Aeson..= qqBotUserId
+                          , "nickname" Aeson..= ("Cosmobot" :: Text)
+                          , "content" Aeson..= content
+                          ]
+                      ]
+                  ]
+              ]
+          ]
+      )
 
 testQqInvitationActions :: IO ()
 testQqInvitationActions = do
