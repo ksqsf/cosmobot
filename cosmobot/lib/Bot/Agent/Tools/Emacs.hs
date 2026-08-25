@@ -51,15 +51,18 @@ runEmacsEval timeoutSeconds expression = do
 
 tryEval :: (Timeout :> es, Process :> es) => Int -> Text -> Eff es (Either SomeException Text)
 tryEval timeoutSeconds expression =
-  try do
+  trySync do
     let effectiveTimeout = max 1 timeoutSeconds
         process = proc "emacsclient" ["--socket-name", emacsSocketName, "--eval", Text.unpack expression]
     outcome <- timeout (effectiveTimeout * 1_000_000) (readCreateProcessWithExitCode process "")
     case outcome of
       Nothing ->
         throwIO (userError [i|emacs_eval timed out after #{effectiveTimeout} seconds.|])
-      Just (exitCode, stdoutText, stderrText) ->
-        pure (formatProcessResult "emacsclient" exitCode (Text.pack stdoutText) (Text.pack stderrText))
+      Just (exitCode, stdoutText, stderrText) -> do
+        let result = formatProcessResult "emacsclient" exitCode (Text.pack stdoutText) (Text.pack stderrText)
+        case exitCode of
+          ExitSuccess -> pure result
+          ExitFailure{} -> throwIO (userError (Text.unpack result))
 
 startEmacsDaemon :: (Process :> es, Timeout :> es, FileSystem :> es) => Int -> Eff es ()
 startEmacsDaemon timeoutSeconds = do
