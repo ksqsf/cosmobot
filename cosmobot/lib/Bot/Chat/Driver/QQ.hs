@@ -143,6 +143,9 @@ instance Driver.ChatDriver QQDriver where
 qqForwardMessageThreshold :: Int
 qqForwardMessageThreshold = 1000
 
+qqForwardNodeLimit :: Int
+qqForwardNodeLimit = 2000
+
 runQQDriver
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => QQDriver
@@ -551,18 +554,38 @@ forwardRequest action targetName target botId content =
     [ "action" Aeson..= action
     , "params" Aeson..= Aeson.object
         [ targetName Aeson..= target
-        , "messages" Aeson..=
+        , "messages" Aeson..= map (forwardNode botId) (forwardNodeContents content)
+        , "news" Aeson..=
             [ Aeson.object
-                [ "type" Aeson..= Aeson.String "node"
-                , "data" Aeson..= Aeson.object
-                    [ "user_id" Aeson..= botId
-                    , "nickname" Aeson..= Aeson.String "Cosmobot"
-                    , "content" Aeson..= content
-                    ]
+                [ "text" Aeson..= ("Cosmobot: " <> Text.take 100 (foldMap (fromMaybe "" . textSegmentBody) content))
                 ]
             ]
         ]
     ]
+
+forwardNode :: Integer -> [Aeson.Value] -> Aeson.Value
+forwardNode botId content =
+  Aeson.object
+    [ "type" Aeson..= Aeson.String "node"
+    , "data" Aeson..= Aeson.object
+        [ "user_id" Aeson..= botId
+        , "nickname" Aeson..= Aeson.String "Cosmobot"
+        , "content" Aeson..= content
+        ]
+    ]
+
+forwardNodeContents :: [Aeson.Value] -> [[Aeson.Value]]
+forwardNodeContents = concatMap \segment ->
+  case textSegmentBody segment of
+    Just body -> map (pure . textSegment) (Text.chunksOf qqForwardNodeLimit body)
+    Nothing -> [[segment]]
+
+textSegmentBody :: Aeson.Value -> Maybe Text
+textSegmentBody = Aeson.parseMaybe $ Aeson.withObject "QQ text segment" \segment -> do
+  type_ <- segment Aeson..: "type"
+  guard (type_ == ("text" :: Text))
+  data_ <- segment Aeson..: "data"
+  Aeson.withObject "QQ text segment data" (Aeson..: "text") data_
 
 replySegment :: MessageId -> Aeson.Value
 replySegment messageId =

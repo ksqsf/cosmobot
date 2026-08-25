@@ -103,11 +103,20 @@ testQqUserMessageConvertsToIncomingMessage = do
 testQqLongReplyUsesMergedForwarding :: IO ()
 testQqLongReplyUsesMergedForwarding = do
   let message = fromMaybe (error "expected QQ message") (QQ.eventToIncomingMessage (qqMessageEvent 10001))
-      content = [textSegment "answer", imageSegment "https://example.test/image.png"]
-      actionFor text = fst <$> QQ.replyAction (Just qqBotUserId) message text content
+      actionFor text = fst <$> QQ.replyAction (Just qqBotUserId) message text [textSegment text]
+      longText = Text.replicate 2001 "x"
+      image = imageSegment "https://example.test/image.png"
+      node content = Aeson.object
+        [ "type" Aeson..= ("node" :: Text)
+        , "data" Aeson..= Aeson.object
+            [ "user_id" Aeson..= qqBotUserId
+            , "nickname" Aeson..= ("Cosmobot" :: Text)
+            , "content" Aeson..= content
+            ]
+        ]
   actionFor (Text.replicate 1000 "x") @?= Right "send_group_msg"
   actionFor (Text.replicate 1001 "x") @?= Right "send_group_forward_msg"
-  QQ.replyAction (Just qqBotUserId) message (Text.replicate 1001 "x") content
+  QQ.replyAction (Just qqBotUserId) message longText [textSegment longText, image]
     @?= Right
       ( "send_group_forward_msg"
       , Aeson.object
@@ -115,13 +124,13 @@ testQqLongReplyUsesMergedForwarding = do
           , "params" Aeson..= Aeson.object
               [ "group_id" Aeson..= (90001 :: Integer)
               , "messages" Aeson..=
+                  [ node [textSegment (Text.replicate 2000 "x")]
+                  , node [textSegment "x"]
+                  , node [image]
+                  ]
+              , "news" Aeson..=
                   [ Aeson.object
-                      [ "type" Aeson..= ("node" :: Text)
-                      , "data" Aeson..= Aeson.object
-                          [ "user_id" Aeson..= qqBotUserId
-                          , "nickname" Aeson..= ("Cosmobot" :: Text)
-                          , "content" Aeson..= content
-                          ]
+                      [ "text" Aeson..= ("Cosmobot: " <> Text.replicate 100 "x")
                       ]
                   ]
               ]
