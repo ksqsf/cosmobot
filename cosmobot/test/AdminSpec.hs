@@ -210,8 +210,8 @@ testLifecycleStartupRepliesAreDeletedAfterDrain = do
     runPrim $
     runConcurrent $
     runFileSystem $
-    ConcurrencyManager.runConcurrencyManager $
     runTestLog $
+    ConcurrencyManager.runConcurrencyManager $
       StorageSQLite.runStorageSQLitePath ":memory:" $
         Media.runMediaPassthrough $
           Chat.runChatWith (testChatDriver replies Nothing False) do
@@ -229,8 +229,8 @@ testLifecycleRestartRequestRestartsRuntime = do
   replies <- IORef.newIORef []
   runEff $ runPrim $ runConcurrent $ runFileSystem do
     started <- MVar.newEmptyMVar
-    ConcurrencyManager.runConcurrencyManager $
-      runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $
+    runTestLog $ ConcurrencyManager.runConcurrencyManager $
+      StorageSQLite.runStorageSQLitePath ":memory:" $
         Media.runMediaPassthrough $ Chat.runChatWith (testChatDriver replies Nothing False) $
           Lifecycle.runLifecycle MediaConfig.defaultConfig restarted do
             Concurrency.fire "restart-test.worker" $

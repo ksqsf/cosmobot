@@ -1033,16 +1033,16 @@ acpEventContentField field = \case
     Nothing
 
 runAcpStorage
-  :: Eff '[Media.Media, Storage.Storage, KatipE, FileSystem.FileSystem, Concurrency.Concurrency, Prim, Concurrent, IOE] a
+  :: Eff '[Media.Media, Storage.Storage, FileSystem.FileSystem, Concurrency.Concurrency, KatipE, Prim, Concurrent, IOE] a
   -> IO a
 runAcpStorage action =
   runEff $
     runConcurrent $
       runPrim $
+        runTestLog $
         ConcurrencyManager.runConcurrencyManager $
           FileSystem.runFileSystem $
-            runTestLog $
-              StorageSQLite.runStorageSQLitePath ":memory:" $
+            StorageSQLite.runStorageSQLitePath ":memory:" $
                 Media.runMediaPassthrough action
 
 runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a

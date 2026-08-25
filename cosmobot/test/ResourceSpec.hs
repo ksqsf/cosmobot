@@ -985,7 +985,7 @@ ownerMessage = IncomingMessage
   , raw = Aeson.Null
   }
 
-type ManagedStack = '[Resource.Resource, Concurrency.Concurrency, Storage.Storage, Prim, Concurrent, IOE]
+type ManagedStack = '[Resource.Resource, Concurrency.Concurrency, Storage.Storage, KatipE, Prim, Concurrent, IOE]
 
 type ManagedPythonStack =
   '[ Resource.Resource
@@ -1002,7 +1002,7 @@ type ManagedPythonStack =
 
 runManaged :: Eff ManagedStack a -> IO a
 runManaged action =
-  runEff $ runConcurrent $ runPrim $ StorageSQLite.runStorageSQLitePath ":memory:" $
+  runEff $ runConcurrent $ runPrim $ startKatipE "resource-spec" "test" $ StorageSQLite.runStorageSQLitePath ":memory:" $
     ConcurrencyManager.runConcurrencyManager $ ResourceManager.runResourceManager action
 
 runManagedPython :: Eff ManagedPythonStack a -> IO a
@@ -1013,7 +1013,7 @@ runManagedPython action =
 
 runPersistent :: FilePath -> Eff ManagedStack a -> IO a
 runPersistent database action =
-  runEff $ runConcurrent $ runPrim $ StorageSQLite.runStorageSQLitePath database $
+  runEff $ runConcurrent $ runPrim $ startKatipE "resource-spec" "test" $ StorageSQLite.runStorageSQLitePath database $
     ConcurrencyManager.runConcurrencyManager $
       ResourceManager.runResourceManagerWith [ResourceManager.resourceLoader @PersistentObject] action
 

@@ -20,7 +20,7 @@ main =
 
 testFailedInputDoesNotStopMergedStream :: IO ()
 testFailedInputDoesNotStopMergedStream = do
-  result <- timeout 1_000_000 $ runEff $ runConcurrent $ runPrim $ ConcurrencyManager.runConcurrencyManager $ runTestLog do
+  result <- timeout 1_000_000 $ runEff $ runConcurrent $ runPrim $ runTestLog $ ConcurrencyManager.runConcurrencyManager do
     S.toList_ $
       StreamUtil.mergeStreams
         [ Streaming.lift (throwIO (userError "stopped"))
@@ -30,7 +30,7 @@ testFailedInputDoesNotStopMergedStream = do
 
 testFinishedInputsDoNotEndMergeEarly :: IO ()
 testFinishedInputsDoNotEndMergeEarly = do
-  result <- timeout 1_000_000 $ runEff $ runConcurrent $ runPrim $ ConcurrencyManager.runConcurrencyManager $ runTestLog do
+  result <- timeout 1_000_000 $ runEff $ runConcurrent $ runPrim $ runTestLog $ ConcurrencyManager.runConcurrencyManager do
     S.toList_ $
       StreamUtil.mergeStreams
         [ pure ()

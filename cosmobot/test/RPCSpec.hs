@@ -838,15 +838,15 @@ finishRace done action =
   try action >>= void . MVar.tryPutMVar done
 
 runRpcServerTest
-  :: Eff '[Media.Media, Storage.Storage, KatipE, FileSystem.FileSystem, Concurrency.Concurrency, Prim, Concurrent, IOE] a
+  :: Eff '[Media.Media, Storage.Storage, FileSystem.FileSystem, Concurrency.Concurrency, KatipE, Prim, Concurrent, IOE] a
   -> IO a
 runRpcServerTest action =
   runEff $
     ( runConcurrent
     . runPrim
+    . runTestLog
     . ConcurrencyManager.runConcurrencyManager
     . runFileSystem
-    . runTestLog
     . StorageSQLite.runStorageSQLitePath ":memory:"
     . Media.runMediaPassthrough
     ) action
@@ -865,15 +865,15 @@ runRpcStorage path action =
   MediaInterpreter.runMedia (testMediaConfig path) $ action
 
 runRpcManager
-  :: Eff '[Resource.Resource, Media.Media, Storage.Storage, KatipE, FileSystem.FileSystem, Concurrency.Concurrency, Prim, Concurrent, IOE] a
+  :: Eff '[Resource.Resource, Media.Media, Storage.Storage, FileSystem.FileSystem, Concurrency.Concurrency, KatipE, Prim, Concurrent, IOE] a
   -> IO a
 runRpcManager action =
   runEff $
   runConcurrent $
   runPrim $
+  runTestLog $
   ConcurrencyManager.runConcurrencyManager $
   runFileSystem $
-  runTestLog $
   StorageSQLite.runStorageSQLitePath ":memory:" $
   Media.runMediaPassthrough $
   ResourceManager.runResourceManager action

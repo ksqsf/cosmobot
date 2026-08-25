@@ -24,6 +24,7 @@ main =
       , testCase "top exception is thrown into running tasks" testTopExceptionPropagates
       , testCase "cancel then await returns after task cleanup" testCancelThenAwait
       , testCase "awaitAny returns the first completion without cancelling others" testAwaitAny
+      , testCase "failed tasks record their error" testFailureStatus
       ]
 
 testNormalExitCancelsAndAwaits :: Assertion
@@ -86,9 +87,21 @@ testAwaitAny = do
       pure (winner, (.status) <$> firstStatus)
   result @?= Just (Concurrency.Handle (Concurrency.Id 2), Just Concurrency.Running)
 
-runManaged :: Eff '[Prim, Concurrent, IOE] a -> IO a
+testFailureStatus :: Assertion
+testFailureStatus = do
+  result <- timeout 1_000_000 $ runManaged do
+    runConcurrencyManager do
+      worker <- Concurrency.fork "broken" (throwIO ManagerAbort)
+      Concurrency.await worker
+      fmap (.status) <$> Concurrency.lookup worker.handleId
+  result @?= Just (Just (Concurrency.Failed "ManagerAbort"))
+
+runManaged :: Eff '[KatipE, Prim, Concurrent, IOE] a -> IO a
 runManaged =
-  runEff . runConcurrent . runPrim
+  runEff . runConcurrent . runPrim . runTestLog
+
+runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
+runTestLog action = startKatipE "concurrency-spec" "test" action
 
 never :: Concurrent :> es => Eff es ()
 never =

@@ -29,14 +29,23 @@ data EntryRuntime = EntryRuntime
   }
 
 runConcurrencyManager
-  :: (IOE :> es, Prim :> es, Concurrent :> es)
+  :: (KatipE :> es, IOE :> es, Prim :> es, Concurrent :> es)
   => Eff (Concurrency : es) a
   -> Eff es a
-runConcurrencyManager inner = do
+runConcurrencyManager =
+  runConcurrencyManagerWithFailureObserver \label err ->
+    $(logError) [i|Concurrency worker failed: label=#{label} error=#{displayException err}|]
+
+runConcurrencyManagerWithFailureObserver
+  :: (IOE :> es, Prim :> es, Concurrent :> es)
+  => (Text -> SomeException -> Eff es ())
+  -> Eff (Concurrency : es) a
+  -> Eff es a
+runConcurrencyManagerWithFailureObserver observeFailure inner = do
   nextIdRef <- newIORef (Id 1)
   runtimes <- newIORef Map.empty
   let managerState = ManagerState{nextIdRef, runtimes}
-      runInner = interpret (runConcurrencyOperation managerState) inner
+      runInner = interpret (runConcurrencyOperation managerState observeFailure) inner
   try runInner >>= \case
     Right result -> do
       cancelAndAwaitAll managerState
@@ -48,15 +57,16 @@ runConcurrencyManager inner = do
 runConcurrencyOperation
   :: (IOE :> es, Prim :> es, Concurrent :> es)
   => ManagerState
+  -> (Text -> SomeException -> Eff es ())
   -> EffectHandler Concurrency es
-runConcurrencyOperation managerState localEnv operation =
+runConcurrencyOperation managerState observeFailure localEnv operation =
   case operation of
     Concurrency.Fork label action ->
       localUnlift localEnv managedActionUnlift \unlift ->
-        forkIn managerState label (unlift action)
+        forkIn managerState observeFailure label (unlift action)
     Concurrency.ForkWithHandle label action ->
       localUnlift localEnv managedActionUnlift \unlift ->
-        forkWithHandleIn managerState label (unlift . action)
+        forkWithHandleIn managerState observeFailure label (unlift . action)
     Concurrency.Cancel handleId ->
       cancelIn managerState handleId
     Concurrency.Await workerHandle ->
@@ -77,26 +87,28 @@ managedActionUnlift =
 forkIn
   :: (IOE :> es, Prim :> es, Concurrent :> es)
   => ManagerState
+  -> (Text -> SomeException -> Eff es ())
   -> Text
   -> Eff es ()
   -> Eff es Handle
-forkIn managerState label action =
-  forkWithHandleIn managerState label (const action)
+forkIn managerState observeFailure label action =
+  forkWithHandleIn managerState observeFailure label (const action)
 
 forkWithHandleIn
   :: (IOE :> es, Prim :> es, Concurrent :> es)
   => ManagerState
+  -> (Text -> SomeException -> Eff es ())
   -> Text
   -> (Handle -> Eff es ())
   -> Eff es Handle
-forkWithHandleIn managerState label action = mask \restore -> do
+forkWithHandleIn managerState observeFailure label action = mask \restore -> do
   entryInfo <- newInfo managerState label
   let workerHandle = Handle{handleId = entryInfo.id}
   startGate <- MVar.newEmptyMVar
   thread <- Async.async $
     restore $
       MVar.takeMVar startGate
-        *> runAction managerState entryInfo.id (action workerHandle)
+        *> runAction managerState observeFailure entryInfo (action workerHandle)
   let runtime = EntryRuntime
         { info = entryInfo
         , thread
@@ -108,15 +120,17 @@ forkWithHandleIn managerState label action = mask \restore -> do
 runAction
   :: (IOE :> es, Prim :> es)
   => ManagerState
-  -> Id
+  -> (Text -> SomeException -> Eff es ())
+  -> Info
   -> Eff es ()
   -> Eff es ()
-runAction managerState handleId action =
+runAction managerState observeFailure entryInfo action =
   trySync action >>= \case
     Right () ->
-      finishEntry managerState handleId Completed
-    Left err ->
-      finishEntry managerState handleId (Failed (Text.pack (show err)))
+      finishEntry managerState entryInfo.id Completed
+    Left err -> do
+      finishEntry managerState entryInfo.id (Failed (Text.pack (show err)))
+      observeFailure entryInfo.label err
 
 cancelIn
   :: (IOE :> es, Prim :> es, Concurrent :> es)

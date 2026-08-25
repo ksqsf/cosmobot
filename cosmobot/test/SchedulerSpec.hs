@@ -183,6 +183,7 @@ testSchedulerMigratesLegacyIds = runEff $
     runTimeout $
       runConcurrent $
         runPrim $
+          startKatipE "scheduler-spec" "test" $
           ConcurrencyManager.runConcurrencyManager $
             StorageSQLite.runStorageSQLite connection $
               Scheduler.runScheduler do
@@ -199,6 +200,7 @@ testStorageFailuresDoNotCommitSchedulerState = runEff $
     runTimeout $
       runConcurrent $
         runPrim $
+          startKatipE "scheduler-spec" "test" $
           ConcurrencyManager.runConcurrencyManager $
             StorageSQLite.runStorageSQLite connection $
               Scheduler.runScheduler do
@@ -215,19 +217,20 @@ testStorageFailuresDoNotCommitSchedulerState = runEff $
                   map (.scheduleId) schedules @?= [1]
 
 runSchedulerTest
-  :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, Concurrency.Concurrency, Prim, Concurrent, Timeout, IOE] a
+  :: Eff '[Scheduler.Scheduler, StorageEffect.Storage, Concurrency.Concurrency, KatipE, Prim, Concurrent, Timeout, IOE] a
   -> IO a
 runSchedulerTest action =
   runSchedulerStorage (Scheduler.runScheduler action)
 
 runSchedulerStorage
-  :: Eff '[StorageEffect.Storage, Concurrency.Concurrency, Prim, Concurrent, Timeout, IOE] a
+  :: Eff '[StorageEffect.Storage, Concurrency.Concurrency, KatipE, Prim, Concurrent, Timeout, IOE] a
   -> IO a
 runSchedulerStorage action =
   runEff $
     ( runTimeout
     . runConcurrent
     . runPrim
+    . startKatipE "scheduler-spec" "test"
     . ConcurrencyManager.runConcurrencyManager
     . StorageSQLite.runStorageSQLitePath ":memory:"
     ) action

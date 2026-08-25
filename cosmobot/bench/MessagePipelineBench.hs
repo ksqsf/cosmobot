@@ -150,8 +150,8 @@ mergedChatLogRouteDispatch messages = do
     runConcurrent $
       runTimeout $
       runPrim $
+        runBenchmarkLog $
         ConcurrencyManager.runConcurrencyManager $
-          runBenchmarkLog $
             StorageSQLite.runStorageSQLitePath ":memory:" $
             ChatLog.runChatLog do
               consumeWith
@@ -214,8 +214,8 @@ mergeOnly messages = do
   runEff $
     runConcurrent $
       runPrim $
+        runBenchmarkLog $
         ConcurrencyManager.runConcurrencyManager $
-          runBenchmarkLog $
             S.mapM_
               (\_ -> liftIO $ IORef.modifyIORef' seen (+ 1))
               (StreamUtil.mergeStreams (map S.each (chunks 4 messages)))
@@ -227,6 +227,7 @@ schedulerDueMessages messages =
     runTimeout $
       runConcurrent $
         runPrim $
+          runBenchmarkLog $
           ConcurrencyManager.runConcurrencyManager $
             StorageSQLite.runStorageSQLitePath ":memory:" $
               Scheduler.runScheduler do
