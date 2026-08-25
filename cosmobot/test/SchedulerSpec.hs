@@ -18,7 +18,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Database.Selda as Selda
 import qualified Database.Selda.Backend as SeldaBackend
 import qualified Database.Selda.SQLite as SeldaSQLite
-import Effectful.Timeout (Timeout, runTimeout)
+import Effectful.Timeout (Timeout, runTimeout, timeout)
 import qualified Streaming.Prelude as S
 import Test.Tasty hiding (Timeout)
 import Test.Tasty.HUnit

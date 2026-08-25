@@ -1829,8 +1829,9 @@ matrixJoinedMembersValue response =
     ]
 
 matrixReplyTo :: IncomingMessage -> Maybe MatrixReplyTo
-matrixReplyTo message =
-  MatrixReplyTo <$> (matrixRawEventId message.raw <|> (matrixEventId . messageIdText <$> message.messageId))
+matrixReplyTo message = do
+  messageId <- message.messageId
+  pure (MatrixReplyTo (fromMaybe (matrixEventId (messageIdText messageId)) (matrixRawEventId message.raw)))
 
 uploadFileMatrix
   :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)

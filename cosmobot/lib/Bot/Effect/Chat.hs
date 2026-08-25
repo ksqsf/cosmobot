@@ -8,6 +8,7 @@ module Bot.Effect.Chat
   ( Chat
   , ChatHandler
   , replyTo
+  , sendMessage
   , streamReplyTo
   , streamMultipleRepliesTo
   , runChatWithHandler
@@ -34,6 +35,10 @@ type ChatHandler es = ChatDriver.ChatDriverHandler es
 replyTo :: Chat :> es => IncomingMessage -> Text -> Eff es [Either Text MessageId]
 replyTo =
   ChatAdapter.replyTo
+
+sendMessage :: Chat :> es => IncomingMessage -> Text -> Eff es [Either Text MessageId]
+sendMessage =
+  ChatAdapter.sendMessage
 
 streamReplyTo
   :: Chat :> es

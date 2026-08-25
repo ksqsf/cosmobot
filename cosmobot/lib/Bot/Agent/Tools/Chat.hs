@@ -8,6 +8,7 @@ module Bot.Agent.Tools.Chat
   ( queryChatLogTool
   , queryCurrentSenderChatLogTool
   , sendReplyTool
+  , sendMessageTool
   , sendFileTool
   , mentionUserTool
   , senderMemberInfoTool
@@ -89,11 +90,30 @@ queryCurrentSenderChatLogTool =
 
 sendReplyTool :: Chat.Chat :> es => Tool (Eff es)
 sendReplyTool =
+  sendChatMessageTool
+    "send_reply"
+    "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
+    Chat.replyTo
+
+sendMessageTool :: Chat.Chat :> es => Tool (Eff es)
+sendMessageTool =
+  sendChatMessageTool
+    "send_message"
+    "Send a message to the same chat without replying to or quoting any message. Supports text and image URLs. Use only when the user asks you to send an additional message before the final answer."
+    Chat.sendMessage
+
+sendChatMessageTool
+  :: Chat.Chat :> es
+  => Text
+  -> Text
+  -> (forall xs. Chat.Chat :> xs => IncomingMessage -> Text -> Eff xs [Either Text MessageId])
+  -> Tool (Eff es)
+sendChatMessageTool name description sendToChat =
   tagged [chatTag]
-  . withDescription "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
-  $ tool "send_reply"
+  . withDescription description
+  $ tool name
       ( optionalText "text" "Message text to send. May be omitted when image_urls is non-empty."
-      , optionalTextArray "image_urls" "Image URLs to send as images in the same reply. The platform must be able to fetch these URLs."
+      , optionalTextArray "image_urls" "Image URLs to send in the same message. The platform must be able to fetch these URLs."
       )
       \maybeText maybeImageUrls -> do
         context <- askToolContext
@@ -103,7 +123,7 @@ sendReplyTool =
         if Text.null body
           then pure (argumentFailure "Either text or image_urls must be provided.")
           else do
-            sent <- Chat.replyTo context.message body
+            sent <- sendToChat context.message body
             case rights sent of
               messageIds@(_:_) -> do
                 let sentText = show messageIds :: String

@@ -6,6 +6,7 @@ Stability   : experimental
 
 module Bot.Chat.Adapter
   ( replyTo
+  , sendMessage
   , streamReplyTo
   , streamMultipleRepliesTo
   )
@@ -29,6 +30,14 @@ replyTo message body = do
       state = appendAnswer (nonEmptyMessageBody body) emptyMessageOutState
   (_, sent) <- sendTextChunks messageLimit message state (answerText state)
   pure sent
+
+-- | Send to the same chat without creating a platform reply relation.
+sendMessage :: ChatDriver.ChatDriver :> es => IncomingMessage -> Text -> Eff es [Either Text MessageId]
+sendMessage message body = do
+  policy <- ChatDriver.messageOutPolicy message
+  let target = message{messageId = Nothing, replyToMessageId = Nothing}
+      chunks = Text.chunksOf (max 1 (messageOutPolicyLimit policy)) (nonEmptyMessageBody body)
+  concat <$> traverse (ChatDriver.sendReplyMessage target) chunks
 
 streamReplyTo
   :: ChatDriver.ChatDriver :> es

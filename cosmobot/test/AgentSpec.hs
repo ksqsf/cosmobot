@@ -264,6 +264,7 @@ main =
       , testCase "subagent lifecycle is shared within a chat" testSubAgentLifecycle
       , testCase "subagent wait operations avoid polling without cancelling work" testSubAgentWaitOperations
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
+      , testCase "send message tool omits the reply target" testSendMessageToolOmitsReplyTarget
       , testCase "tool reply middleware normalizes reply images" testToolReplyMiddlewareNormalizesReplyImages
       , testCase "tool reply middleware rejects uncached remote images" testToolReplyMiddlewareRejectsUncachedRemoteImages
       , testCase "send file tool uploads via chat effect" testSendFileToolUploadsViaChatEffect
@@ -1196,6 +1197,25 @@ testSendReplyToolUsesChatEffect = do
   IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef recorded >>= (@?= ["hello\n[image] https://example.test/image.png"])
   IORef.readIORef remembered >>= (@?= [Just "42"])
+
+testSendMessageToolOmitsReplyTarget :: IO ()
+testSendMessageToolOmitsReplyTarget = do
+  sent <- IORef.newIORef ([] :: [(Maybe MessageId, Text)])
+  remembered <- IORef.newIORef ([] :: [Maybe MessageId])
+  result <- runEff $
+    runConcurrent $
+      Chat.runChatWith defaultAgentMockChatDriver
+        { agentReply = \message body -> do
+            liftIO $ IORef.modifyIORef' sent (<> [(message.messageId, body)])
+            pure (Right "43")
+        } $
+        Chat.runChatRecordingExtraMessages
+          (\messageId -> liftIO $ IORef.modifyIORef' remembered (<> [messageId])) do
+          run <- AgentTool.startTool ChatTools.sendMessageTool agentContext
+          run testToolCallMetadata (Aeson.object ["text" Aeson..= ("hello" :: Text)])
+  AgentTypes.toolResultContent result @?= "Sent message ids: [MessageId \"43\"]"
+  IORef.readIORef sent >>= (@?= [(Nothing, "hello")])
+  IORef.readIORef remembered >>= (@?= [Just "43"])
 
 testToolReplyMiddlewareNormalizesReplyImages :: IO ()
 testToolReplyMiddlewareNormalizesReplyImages = do
