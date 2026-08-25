@@ -34,7 +34,7 @@ jobs:
 
       - name: Install sandbox dependencies
         run: |
-          sudo apt-get install --yes bubblewrap
+          sudo apt-get install --yes bubblewrap libsystemd-dev
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Build
