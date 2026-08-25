@@ -25,6 +25,7 @@ main =
       , testCase "cancel then await returns after task cleanup" testCancelThenAwait
       , testCase "awaitAny returns the first completion without cancelling others" testAwaitAny
       , testCase "failed tasks record their error" testFailureStatus
+      , testCase "finished tasks leave active management" testFinishedTaskRetires
       ]
 
 testNormalExitCancelsAndAwaits :: Assertion
@@ -95,6 +96,18 @@ testFailureStatus = do
       Concurrency.await worker
       fmap (.status) <$> Concurrency.lookup worker.handleId
   result @?= Just (Just (Concurrency.Failed "ManagerAbort"))
+
+testFinishedTaskRetires :: Assertion
+testFinishedTaskRetires = do
+  result <- timeout 1_000_000 $ runManaged do
+    runConcurrencyManager do
+      running <- Concurrency.fork "running" never
+      worker <- Concurrency.fork "finished" (pure ())
+      Concurrency.await worker
+      snapshot <- Concurrency.list
+      let statusOf workerHandle = (.status) <$> find ((== workerHandle.handleId) . (.id)) snapshot.entries
+      pure (statusOf running, statusOf worker)
+  result @?= Just (Just Concurrency.Running, Just Concurrency.Completed)
 
 runManaged :: Eff '[KatipE, Prim, Concurrent, IOE] a -> IO a
 runManaged =

@@ -134,7 +134,8 @@ platform.
 
 Task entries contain `id`, `label`, `status`, `error`, `startedAt`, and
 `finishedAt`. `status` is one of `running`, `completed`, `failed`, or
-`cancelled`; `error` is populated only for failed tasks.
+`cancelled`; `error` is populated only for failed tasks. Running tasks are
+always listed; finished task history is retained for 12 hours.
 
 ```json
 {"jsonrpc":"2.0","id":"1","method":"concurrency.lookup","params":{"id":42}}

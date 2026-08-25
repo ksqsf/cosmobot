@@ -15,18 +15,27 @@ import Bot.Prelude hiding (Handle)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.Async as Async
-import Data.Time (getCurrentTime)
+import Data.Time (NominalDiffTime, UTCTime, addUTCTime, getCurrentTime)
 import qualified Effectful.Concurrent.MVar as MVar
 
 data ManagerState = ManagerState
   { nextIdRef :: !(IORef Id)
-  , runtimes :: !(IORef (Map Id EntryRuntime))
+  , entriesRef :: !(IORef Entries)
+  }
+
+data Entries = Entries
+  { runtimes :: !(Map Id EntryRuntime)
+  , history :: !(Map Id Info)
+  , historyOrder :: !(Map (UTCTime, Id) ())
   }
 
 data EntryRuntime = EntryRuntime
   { info :: !Info
   , thread :: !(Async.Async ())
   }
+
+finishedTaskRetention :: NominalDiffTime
+finishedTaskRetention = 12 * 60 * 60
 
 runConcurrencyManager
   :: (KatipE :> es, IOE :> es, Prim :> es, Concurrent :> es)
@@ -43,8 +52,8 @@ runConcurrencyManagerWithFailureObserver
   -> Eff es a
 runConcurrencyManagerWithFailureObserver observeFailure inner = do
   nextIdRef <- newIORef (Id 1)
-  runtimes <- newIORef Map.empty
-  let managerState = ManagerState{nextIdRef, runtimes}
+  entriesRef <- newIORef Entries{runtimes = Map.empty, history = Map.empty, historyOrder = Map.empty}
+  let managerState = ManagerState{nextIdRef, entriesRef}
       runInner = interpret (runConcurrencyOperation managerState observeFailure) inner
   try runInner >>= \case
     Right result -> do
@@ -108,7 +117,8 @@ forkWithHandleIn managerState observeFailure label action = mask \restore -> do
   thread <- Async.async $
     restore $
       MVar.takeMVar startGate
-        *> runAction managerState observeFailure entryInfo (action workerHandle)
+        *> (runAction managerState observeFailure entryInfo (action workerHandle)
+              `finally` retireEntry managerState entryInfo.id)
   let runtime = EntryRuntime
         { info = entryInfo
         , thread
@@ -168,7 +178,7 @@ awaitAnyIn
   -> NonEmpty Handle
   -> Eff es Handle
 awaitAnyIn managerState workerHandles = do
-  runtimes <- readIORef managerState.runtimes
+  runtimes <- (.runtimes) <$> readIORef managerState.entriesRef
   case find (\worker -> Map.notMember worker.handleId runtimes) workerHandles of
     Just worker ->
       pure worker
@@ -184,13 +194,17 @@ awaitAnyIn managerState workerHandles = do
     firstCompleted [] =
       error "awaitAny returned without a completed task"
 
-listIn :: Prim :> es => ManagerState -> Eff es Snapshot
-listIn managerState =
-  Snapshot . map (.info) . Map.elems <$> readIORef managerState.runtimes
+listIn :: (IOE :> es, Prim :> es) => ManagerState -> Eff es Snapshot
+listIn managerState = do
+  pruneHistory managerState
+  entries <- readIORef managerState.entriesRef
+  pure $ Snapshot $ Map.elems (Map.map (.info) entries.runtimes <> entries.history)
 
-lookupIn :: Prim :> es => ManagerState -> Id -> Eff es (Maybe Info)
-lookupIn managerState handleId =
-  fmap (.info) . Map.lookup handleId <$> readIORef managerState.runtimes
+lookupIn :: (IOE :> es, Prim :> es) => ManagerState -> Id -> Eff es (Maybe Info)
+lookupIn managerState handleId = do
+  pruneHistory managerState
+  entries <- readIORef managerState.entriesRef
+  pure $ ((.info) <$> Map.lookup handleId entries.runtimes) <|> Map.lookup handleId entries.history
 
 newInfo
   :: (IOE :> es, Prim :> es)
@@ -215,12 +229,12 @@ allocateId managerState =
 
 insertRuntime :: Prim :> es => ManagerState -> EntryRuntime -> Eff es ()
 insertRuntime managerState runtime =
-  atomicModifyIORef' managerState.runtimes \runtimes ->
-    (Map.insert runtime.info.id runtime runtimes, ())
+  atomicModifyIORef' managerState.entriesRef \entries ->
+    (entries{runtimes = Map.insert runtime.info.id runtime entries.runtimes}, ())
 
 lookupRuntime :: Prim :> es => ManagerState -> Id -> Eff es (Maybe EntryRuntime)
 lookupRuntime managerState handleId =
-  Map.lookup handleId <$> readIORef managerState.runtimes
+  Map.lookup handleId . (.runtimes) <$> readIORef managerState.entriesRef
 
 liftMaybeThread :: Prim :> es => ManagerState -> Id -> Eff es (Maybe (Async.Async ()))
 liftMaybeThread managerState handleId = do
@@ -235,7 +249,7 @@ finishEntry
   -> Eff es ()
 finishEntry managerState handleId status = do
   finishedAt <- liftIO getCurrentTime
-  atomicModifyIORef' managerState.runtimes \runtimes ->
+  atomicModifyIORef' managerState.entriesRef \entries ->
     let update runtime =
           if finished runtime.info
             then runtime
@@ -246,7 +260,42 @@ finishEntry managerState handleId status = do
                     , finishedAt = Just finishedAt
                     }
                 }
-    in (Map.adjust update handleId runtimes, ())
+    in (entries{runtimes = Map.adjust update handleId entries.runtimes}, ())
+
+retireEntry
+  :: (IOE :> es, Prim :> es)
+  => ManagerState
+  -> Id
+  -> Eff es ()
+retireEntry managerState handleId = do
+  retiredAt <- liftIO getCurrentTime
+  atomicModifyIORef' managerState.entriesRef \entries ->
+    case Map.lookup handleId entries.runtimes of
+      Nothing -> (entries, ())
+      Just runtime ->
+        let entryInfo
+              | finished runtime.info = runtime.info
+              | otherwise = runtime.info{status = Cancelled, finishedAt = Just retiredAt}
+            updated = entries
+              { runtimes = Map.delete handleId entries.runtimes
+              , history = Map.insert handleId entryInfo entries.history
+              , historyOrder = Map.insert (fromMaybe retiredAt entryInfo.finishedAt, handleId) () entries.historyOrder
+              }
+        in (pruneEntriesBefore (addUTCTime (negate finishedTaskRetention) retiredAt) updated, ())
+
+pruneHistory :: (IOE :> es, Prim :> es) => ManagerState -> Eff es ()
+pruneHistory managerState = do
+  now <- liftIO getCurrentTime
+  atomicModifyIORef' managerState.entriesRef \entries ->
+    (pruneEntriesBefore (addUTCTime (negate finishedTaskRetention) now) entries, ())
+
+pruneEntriesBefore :: UTCTime -> Entries -> Entries
+pruneEntriesBefore cutoff entries =
+  let (expired, retained) = Map.spanAntitone ((< cutoff) . fst) entries.historyOrder
+  in entries
+      { history = foldl' (flip Map.delete) entries.history (map (snd . fst) (Map.toList expired))
+      , historyOrder = retained
+      }
 
 cancelAndAwaitAll :: (IOE :> es, Prim :> es, Concurrent :> es) => ManagerState -> Eff es ()
 cancelAndAwaitAll managerState = do
@@ -276,4 +325,4 @@ cancelAndAwaitAllWith managerState err = do
 
 managedThreads :: Prim :> es => ManagerState -> Eff es [(Info, Async.Async ())]
 managedThreads managerState =
-  map (\runtime -> (runtime.info, runtime.thread)) . Map.elems <$> readIORef managerState.runtimes
+  map (\runtime -> (runtime.info, runtime.thread)) . Map.elems . (.runtimes) <$> readIORef managerState.entriesRef
