@@ -325,11 +325,10 @@ incomingMessages driver = do
       | Just action <- invitationAction event ->
           S.lift $ Concurrency.fire "qq.invitation" (acceptInvitation driver action)
       | isHeartbeatEvent event ->
-          S.lift $ logDebug "Ignoring QQ heartbeat event"
+          pure ()
       | otherwise -> do
           let Event{postType} = event
           S.lift $ logDebug [i|Ignoring QQ event: #{postType}|]
-          S.lift $ logInfo [i|Ignoring QQ event: #{postType}|]
     Just parsedMessage -> do
       message <- S.lift (normalizeQQMessageFiles parsedMessage)
       S.lift $ logDebug [i|incoming qq message: #{show message :: String}|]
@@ -353,8 +352,6 @@ readFrames eventChan pendingResponses lastFrameAt conn = forever do
   liftIO (getCurrentTime >>= IORef.writeIORef lastFrameAt)
   case Aeson.fromJSON value of
     Aeson.Success event -> do
-      when (isHeartbeatEvent event) do
-        logDebug "QQ websocket heartbeat received"
       liftIO $ Chan.writeChan eventChan event
     Aeson.Error _ ->
       case Aeson.fromJSON value of

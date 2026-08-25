@@ -233,8 +233,7 @@ updatesStream'
   -> Stream (Of Update) (Eff es) ()
 updatesStream' driver offset = do
   batches <- S.lift (getUpdates driver offset)
-  S.lift $ logDebug [i|Got a batch of #{length batches} messages|]
-  S.lift $ logInfo [i|Telegram update batch: #{length batches}|]
+  S.lift $ logDebug [i|Telegram update batch: #{length batches}|]
   S.each batches
   let nextOffset = case batches of
         [] -> offset

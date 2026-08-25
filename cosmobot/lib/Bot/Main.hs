@@ -52,6 +52,8 @@ import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
 import qualified Data.Aeson as Aeson
+import qualified Data.Text as Text
+import Data.Text.Lazy.Builder (Builder, fromText)
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Ask.AgentRun (askSystemPrompt)
@@ -373,7 +375,20 @@ raceTaskPair (leftLabel, left) (rightLabel, right) =
 runBotLog :: IOE :> es => Severity -> Eff (KatipE : es) a -> Eff es a
 runBotLog level inner =
   startKatipE "cosmobot" "production" do
-    stdoutScribe <- mkHandleScribe (ColorLog True) stdout (permitItem level) V2
+    stdoutScribe <- mkHandleScribeWithFormatter journalFormat (ColorLog False) stdout (permitItem level) V2
     registerScribe "stdout" stdoutScribe defaultScribeSettings
     logInfo [i|Log level: #{show level :: String}|]
     logExceptionAt ErrorS inner
+
+journalFormat :: LogItem a => ItemFormatter a
+journalFormat _ _ item =
+  "[" <> fromText (renderSeverity item._itemSeverity) <> "]"
+    <> namespaceField item._itemNamespace
+    <> "[ThreadId " <> fromText (getThreadIdText item._itemThread) <> "] "
+    <> unLogStr item._itemMessage
+
+namespaceField :: Namespace -> Builder
+namespaceField (Namespace (_application : scopes@(_ : _))) =
+  "[" <> fromText (Text.intercalate "." scopes) <> "]"
+namespaceField _ =
+  mempty

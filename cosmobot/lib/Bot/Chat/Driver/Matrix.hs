@@ -717,7 +717,7 @@ instance MatrixAPI MatrixDownloadMedia where
       Nothing ->
         liftIO (ioError (userError [i|Invalid Matrix media URI: #{downloadMediaRef}|]))
       Just (serverName, mediaId) -> do
-        logInfo [i|Matrix API request: authenticated media download #{downloadMediaRef}|]
+        logDebug [i|Matrix API request: authenticated media download #{downloadMediaRef}|]
         withMatrixAccessToken driver.auth \token -> do
           manager <- HTTP.manager
           request <- liftIO (matrixMediaDownloadRequest driver.config token serverName mediaId)
@@ -942,7 +942,7 @@ matrixUnauthenticatedCall
   -> (forall scheme. Url scheme -> Option scheme -> Req response)
   -> Eff es response
 matrixUnauthenticatedCall cfg method logMessage addOptions buildRequest = do
-  logInfo [i|Matrix API request: #{logMessage}|]
+  logDebug [i|Matrix API request: #{logMessage}|]
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions ->
     matrixReq method $
       HTTP.runReqWithConfig matrixHttpConfig $
@@ -1192,7 +1192,7 @@ incomingMessages driver =
           let effectiveDirectRoomIds = refreshedDirectRoomIds <> probedDirectRoomIds
               events = syncEvents effectiveDirectRoomIds response
               directCount = Set.size effectiveDirectRoomIds
-          S.lift $ logInfo [i|Matrix sync batch: #{length events}; direct_rooms=#{directCount}|]
+          S.lift $ logDebug [i|Matrix sync batch: #{length events}; direct_rooms=#{directCount}|]
           for_ events \event ->
             case eventToIncomingMessageWith cfg event of
               Nothing -> do

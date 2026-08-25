@@ -170,13 +170,13 @@ askAudioOpenAIStreaming Config{audioProvider = Just cfg@AudioProviderConfig{apiK
       requestPath = audioSpeechPath
       requestEndpoint = endpointText requestBaseUrl requestPath
       request = audioSpeechRequest cfg options model (audioPromptFromMessages messages)
-  lift $ logInfo ("LLM audio request: " <> audioRequestLogLine requestEndpoint requestTimeout request)
+  lift $ logInfo ("audio request: " <> audioRequestLogLine requestEndpoint requestTimeout request)
   ref <- lift $
     runTimedEff "LLM audio streaming request" requestTimeout $
       writeGeneratedAudioStream request.responseFormat $
         Q.fromChunks $
           streamRawJsonPost requestBaseUrl requestPath key (secondsToMicros requestTimeout) "application/octet-stream" request
-  lift $ logInfo ("LLM audio response: " <> audioResponseLogLine requestEndpoint request.model request.responseFormat ref)
+  lift $ logInfo ("audio response: " <> audioResponseLogLine requestEndpoint request.model request.responseFormat ref)
   S.yield ref
   pure ref
 
@@ -206,10 +206,10 @@ askImageChatCompletionsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, re
             , stream = Just True
             }
       do
-        lift $ logInfo ("LLM image chat streaming request: " <> llmRequestLogLine requestEndpoint request)
+        lift $ logInfo ("image chat streaming request: " <> llmRequestLogLine requestEndpoint request)
         lift $ logLLMRequestMessages request
         answer <- streamChatCompletion False requestBaseUrl requestPath key (secondsToMicros requestTimeout) request
-        lift $ logInfo ("LLM image chat streaming response: " <> llmStreamResponseLogLine requestEndpoint requestModel answer)
+        lift $ logInfo ("image chat streaming response: " <> llmStreamResponseLogLine requestEndpoint requestModel answer)
         let text = chatAnswerContent answer
         if Text.null (Text.strip text)
           then lift (throwIO (LLMException "OpenAI image chat streaming response was empty: no text or image output."))
@@ -239,10 +239,10 @@ askOpenAIStreaming Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Ju
         , imageConfig = Nothing
         , stream = Just True
         }
-  lift $ logInfo ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
+  lift $ logInfo ("streaming request: " <> llmRequestLogLine requestEndpoint request)
   lift $ logLLMRequestMessages request
   answer <- streamChatCompletion True cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
-  lift $ logInfo ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
+  lift $ logInfo ("streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
   pure (chatAnswerContent answer)
 
 askOpenAIWithToolsStreaming
@@ -268,10 +268,10 @@ askOpenAIWithToolsStreaming Config{chatProvider = Just cfg@ChatProviderConfig{ap
         , imageConfig = Nothing
         , stream = Just True
         }
-  lift $ logInfo ("LLM streaming request: " <> llmRequestLogLine requestEndpoint request)
+  lift $ logInfo ("streaming request: " <> llmRequestLogLine requestEndpoint request)
   lift $ logLLMRequestMessages request
   answer <- streamChatCompletion True cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
-  lift $ logInfo ("LLM streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
+  lift $ logInfo ("streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
   pure answer
 
 data ChatCompletionRequest = ChatCompletionRequest
@@ -648,8 +648,8 @@ llmRequestLogLine endpoint request =
 
 logLLMRequestMessages :: KatipE :> es => ChatCompletionRequest -> Eff es ()
 logLLMRequestMessages request = do
-  logDebug ("LLM request first message: " <> firstMessagePreview request.messages)
-  logDebug ("LLM request messages: " <> logJsonText request.messages)
+  logDebug ("request first message: " <> firstMessagePreview request.messages)
+  logDebug ("request messages: " <> logJsonText request.messages)
 
 firstMessagePreview :: [ChatMessage] -> Text
 firstMessagePreview [] =
@@ -896,7 +896,7 @@ streamChatCompletion emitContentDeltas baseUrl path apiKey timeoutMicros request
           let finalOutputs = finishStreamOutputs emitContentDeltas streamState
               completedFirstOutputAt =
                 firstOutputAt <|> if any (not . Text.null) finalOutputs then Just finishedAt else Nothing
-          lift $ logDebug [i|LLM stream timing first_event_ms=#{renderElapsed startedAt firstEventAt} first_output_ms=#{renderElapsed startedAt completedFirstOutputAt} total_ms=#{finishedAt - startedAt}|]
+          lift $ logDebug [i|stream timing first_event_ms=#{renderElapsed startedAt firstEventAt} first_output_ms=#{renderElapsed startedAt completedFirstOutputAt} total_ms=#{finishedAt - startedAt}|]
           traverse_ S.yield finalOutputs
           pure (streamStateAnswer streamState)
         Right (payload, rest) -> do
@@ -917,7 +917,7 @@ streamChatCompletion emitContentDeltas baseUrl path apiKey timeoutMicros request
     processPayload payload streamState =
       case Aeson.eitherDecodeStrict' payload of
         Left err -> do
-          logWarning [i|Ignoring malformed LLM stream chunk: #{Text.pack err}|]
+          logWarning [i|Ignoring malformed stream chunk: #{Text.pack err}|]
           pure (streamState, [])
         Right value ->
           case streamPayloadError value of
@@ -926,7 +926,7 @@ streamChatCompletion emitContentDeltas baseUrl path apiKey timeoutMicros request
             Nothing ->
               case AesonTypes.parseEither Aeson.parseJSON value of
                 Left err -> do
-                  logWarning [i|Ignoring malformed LLM stream chunk: #{Text.pack err}|]
+                  logWarning [i|Ignoring malformed stream chunk: #{Text.pack err}|]
                   pure (streamState, [])
                 Right chunk ->
                   pure (applyStreamChunk emitContentDeltas streamState chunk)
