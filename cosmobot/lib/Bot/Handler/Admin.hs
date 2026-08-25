@@ -33,6 +33,7 @@ import qualified System.Exit as Exit
 adminHandlers :: (Chat.Chat :> es, Skills.Skills :> es, LifecycleEffect.Lifecycle :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
 adminHandlers cfg =
   [ pingRoute
+  , echoRoute
   , reloadRoute
   , restartRoute
   , titleRoute
@@ -47,6 +48,15 @@ pingRoute =
 handlePing :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 handlePing message _ =
   void $ Chat.replyTo message "pong"
+
+echoRoute :: Chat.Chat :> es => RouteHandler es
+echoRoute =
+  withHelp (RouteHelp "!echo <text>" "Echo text back to the chat.") $
+    stopOn (command "!echo") handleEcho
+
+handleEcho :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
+handleEcho message arguments =
+  void $ Chat.replyTo message arguments
 
 reloadRoute :: (Chat.Chat :> es, Skills.Skills :> es) => RouteHandler es
 reloadRoute =
