@@ -62,8 +62,8 @@ runLLM cfg = interpret $ \localEnv operation ->
       LLM.AskImageEditStream options prompt imageRefs maskRef ->
         pure $
           LLM.liftLocalStream liftLocal $ do
-            resolvedImageRefs <- lift (traverse Media.publicMediaRef imageRefs)
-            resolvedMaskRef <- lift (traverse Media.publicMediaRef maskRef)
+            resolvedImageRefs <- lift (traverse resolveImageEditRef imageRefs)
+            resolvedMaskRef <- lift (traverse resolveImageEditRef maskRef)
             Retry.retryLLMStreamRequest "image edit streaming request" $
               askImageEditStreamingWithMedia cfg options prompt resolvedImageRefs resolvedMaskRef
       LLM.AskAudioStream options messages ->
@@ -78,6 +78,16 @@ runLLM cfg = interpret $ \localEnv operation ->
             resolved <- lift (resolveChatMessagesTimed messages)
             Retry.retryLLMStreamRequest "streaming request" $
               Transport.askOpenAIWithToolsStreaming cfg tools resolved
+
+resolveImageEditRef :: (Fail :> es, Media.Media :> es) => Text -> Eff es Text
+resolveImageEditRef ref = do
+  Media.localMediaPath ref >>= \case
+    Just path -> pure ("file://" <> Text.pack path)
+    Nothing -> do
+      resolved <- Media.publicMediaRef ref
+      if "media:" `Text.isPrefixOf` resolved
+        then fail [i|Image edit media reference has expired: #{ref}|]
+        else pure resolved
 
 resolveChatMessages :: Media.Media :> es => [ChatMessage] -> Eff es [ChatMessage]
 resolveChatMessages =

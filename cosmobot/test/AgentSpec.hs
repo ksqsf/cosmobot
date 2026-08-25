@@ -53,6 +53,7 @@ import qualified Bot.Effect.Matrix as Matrix
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.LLM.OpenAI.Config as LLMConfig
+import qualified Bot.LLM.OpenAI as LLMOpenAI
 import qualified Bot.LLM.OpenAI.Transport as LLMTransport
 import qualified Bot.LLM.Test as LLMTest
 import qualified Bot.Effect.Memory as Memory
@@ -340,6 +341,7 @@ main =
       , testCase "LLM image stream completed event yields final image bytes" testLLMImageStreamCompletedEventYieldsFinalImage
       , testCase "LLM image edit stream completed event yields final image bytes" testLLMImageEditStreamCompletedEventYieldsFinalImage
       , testCase "LLM image edit accepts non-streaming response" testLLMImageEditAcceptsNonStreamingResponse
+      , testCase "LLM image edit rejects expired media references" testLLMImageEditRejectsExpiredMediaRef
       , testCase "LLM image stream ignores partial event without final image" testLLMImageStreamIgnoresPartialEventWithoutFinalImage
       , testCase "LLM log JSON truncates base64 image payloads" testLLMLogJsonTruncatesBase64ImagePayloads
       , testCase "LLM streaming effect preserves yielded chunks" testLLMStreamingEffectPreservesYieldedChunks
@@ -3634,6 +3636,25 @@ testLLMImageEditAcceptsNonStreamingResponse =
   LLMTransport.imageGenerationStreamBytesFromPayloads
     [Aeson.object ["data" Aeson..= [Aeson.object ["b64_json" Aeson..= ("ZWRpdGVkLWltYWdl" :: Text)]]]]
     @?= Right "edited-image"
+
+testLLMImageEditRejectsExpiredMediaRef :: IO ()
+testLLMImageEditRejectsExpiredMediaRef = do
+  result <- runEff $
+    runFileSystem
+      . runProcess
+      . runFail
+      . runConcurrent
+      . runTestLog
+      . HTTP.runHTTP
+      . runTimeout
+      . runMediaLeavingRefs
+      . LLMOpenAI.runLLM LLMConfig.defaultConfig
+      $ S.toList_ (LLM.askImageEditStreaming "edit it" ["media:mf_expired"] Nothing)
+  case result of
+    Left err ->
+      err @?= "Image edit media reference has expired: media:mf_expired"
+    Right output ->
+      assertFailure [i|expected expired media reference failure, got #{show output :: String}|]
 
 testLLMImageStreamIgnoresPartialEventWithoutFinalImage :: IO ()
 testLLMImageStreamIgnoresPartialEventWithoutFinalImage =
