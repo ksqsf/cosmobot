@@ -20,8 +20,8 @@ module Bot.Core.Transcript
 where
 
 import Bot.Core.Message
-import qualified Bot.Effect.Chat as Chat
-import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Core.ReplyBody as ReplyBody
+import qualified Bot.LLM.Types as LLM
 import Bot.Prelude
 import Bot.Util.Aeson
 import qualified Data.Aeson as Aeson
@@ -115,9 +115,9 @@ assistantContext :: Text -> [LLM.ChatMessage]
 assistantContext answer =
   assistantTextContext <> imageContext
   where
-    answerText = Chat.renderReplyBody answer
-    imageUrls = Chat.replyImageUrls answer
-    contextImageUrls = filter (not . Chat.isBase64ImageRef) imageUrls
+    answerText = ReplyBody.renderReplyBody answer
+    imageUrls = ReplyBody.replyImageUrls answer
+    contextImageUrls = filter (not . ReplyBody.isBase64ImageRef) imageUrls
     assistantTextContext =
       [ LLM.assistantText answerText | not (Text.null answerText) ] <>
       [ LLM.assistantText "Generated image." | Text.null answerText && not (null imageUrls) ]
