@@ -17,9 +17,10 @@ import qualified Bot.Effect.Concurrency as Concurrency
 import Bot.Prelude
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Streaming as S
+import qualified Effectful.Resource as Resource
 
 withTypingNotification
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es, Resource.Resource :> es)
   => Runtime context (Eff es)
   -> Runtime context (Eff es)
 withTypingNotification program =
@@ -32,7 +33,7 @@ withTypingNotification program =
       program.context.message
 
 withTypingScope
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es, Resource.Resource :> es)
   => IncomingMessage
   -> Stream (Of Output) (Eff es) Result
   -> Stream (Of Output) (Eff es) Result

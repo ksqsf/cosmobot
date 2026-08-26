@@ -39,6 +39,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.ByteString as StrictByteString
 import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Concurrent.MVar as MVar
+import qualified Effectful.Resource as Resource
 import Effectful.Timeout (Timeout, runTimeout)
 import qualified Effectful.Timeout as Timeout
 import qualified Network.HTTP.Client as HTTP
@@ -49,6 +50,7 @@ import Test.Tasty.HUnit
 type TestEffects =
   '[ LLM.LLM
    , Media.Media
+   , Resource.Resource
    , Timeout
    , KatipE
    , Concurrent
@@ -56,7 +58,8 @@ type TestEffects =
    ]
 
 type BaseEffects =
-  '[ Timeout
+  '[ Resource.Resource
+   , Timeout
    , KatipE
    , Concurrent
    , IOE
@@ -1736,6 +1739,7 @@ runFailureModelWithMedia runMedia model =
     . runConcurrent
     . startKatipE "failure-spec" "test"
     . runTimeout
+    . Resource.runResource
     . runMedia
     . LLMTest.runLLMWith
         (\_ -> pure "unused")

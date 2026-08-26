@@ -8,6 +8,7 @@ module Bot.Util.Process
   ( processOutputText
   , killProcessGroup
   , killProcessGroupByPid
+  , withProcessGroup
   , readProcessGroupWithExitCode
   )
 where
@@ -54,10 +55,20 @@ readProcessGroupWithExitCode executable args = do
         TypedProcess.setStdout TypedProcess.byteStringOutput .
         TypedProcess.setStderr TypedProcess.byteStringOutput $
         TypedProcess.proc executable args
-  process <- TypedProcess.startProcess processConfig
-  let killProcess =
-        killProcessGroup (TypedProcess.unsafeProcessHandle process)
-  code <- TypedProcess.waitExitCode process `onException` killProcess
-  stdoutText <- processOutputText (TypedProcess.getStdout process)
-  stderrText <- processOutputText (TypedProcess.getStderr process)
-  pure (code, stdoutText, stderrText)
+  withProcessGroup processConfig \process -> do
+    code <- TypedProcess.waitExitCode process
+    stdoutText <- processOutputText (TypedProcess.getStdout process)
+    stderrText <- processOutputText (TypedProcess.getStderr process)
+    pure (code, stdoutText, stderrText)
+
+withProcessGroup
+  :: (IOE :> es, TypedProcess.TypedProcess :> es)
+  => TypedProcess.ProcessConfig stdin stdout stderr
+  -> (TypedProcess.Process stdin stdout stderr -> Eff es a)
+  -> Eff es a
+withProcessGroup processConfig =
+  bracket (TypedProcess.startProcess processConfig) stop
+  where
+    stop process = do
+      killProcessGroup (TypedProcess.unsafeProcessHandle process)
+      TypedProcess.stopProcess process

@@ -133,63 +133,62 @@ clientFailure :: Text -> ToolResult
 clientFailure err = toolFailure (permanentArgumentFailure err err)
 
 runBashSafe :: (IOE :> es, Fail :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Int -> String -> Eff es Text
-runBashSafe timeoutSeconds script = do
-  let effectiveTimeout = max 1 timeoutSeconds
-      processConfig =
-        TypedProcess.setCreateGroup True .
-        TypedProcess.setStdin TypedProcess.closed .
-        TypedProcess.setStdout TypedProcess.byteStringOutput .
-        TypedProcess.setStderr TypedProcess.byteStringOutput $
-        TypedProcess.shell script
-  process <- TypedProcess.startProcess processConfig
-  let killProcess =
-        ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
-  outcome <- timeout (effectiveTimeout * 1_000_000) (TypedProcess.waitExitCode process)
-    `onException` killProcess
-  case outcome of
-    Nothing -> do
-      killProcess
-      _ <- timeout processExitGraceMicroseconds (TypedProcess.waitExitCode process)
-      stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
-      stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
-      pure $ Text.strip $ Text.unlines $ filter (not . Text.null)
-        [ "Script timed out after " <> Text.pack (show effectiveTimeout) <> " seconds and was killed."
-        , if Text.null stdoutText then "" else "stdout:\n" <> stdoutText
-        , if Text.null stderrText then "" else "stderr:\n" <> stderrText
-        ]
-    Just exitCode -> do
-      stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
-      stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
-      pure (formatBashResult exitCode stdoutText stderrText)
+runBashSafe timeoutSeconds script =
+  ProcessUtil.withProcessGroup processConfig \process -> do
+    let killProcess =
+          ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
+    outcome <- timeout (effectiveTimeout * 1_000_000) (TypedProcess.waitExitCode process)
+    case outcome of
+      Nothing -> do
+        killProcess
+        _ <- timeout processExitGraceMicroseconds (TypedProcess.waitExitCode process)
+        stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
+        stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
+        pure $ Text.strip $ Text.unlines $ filter (not . Text.null)
+          [ "Script timed out after " <> Text.pack (show effectiveTimeout) <> " seconds and was killed."
+          , if Text.null stdoutText then "" else "stdout:\n" <> stdoutText
+          , if Text.null stderrText then "" else "stderr:\n" <> stderrText
+          ]
+      Just exitCode -> do
+        stdoutText <- ProcessUtil.processOutputText (TypedProcess.getStdout process)
+        stderrText <- ProcessUtil.processOutputText (TypedProcess.getStderr process)
+        pure (formatBashResult exitCode stdoutText stderrText)
+  where
+    effectiveTimeout = max 1 timeoutSeconds
+    processConfig =
+      TypedProcess.setCreateGroup True .
+      TypedProcess.setStdin TypedProcess.closed .
+      TypedProcess.setStdout TypedProcess.byteStringOutput .
+      TypedProcess.setStderr TypedProcess.byteStringOutput $
+      TypedProcess.shell script
 
 runBashStreaming
   :: (FileSystem :> es, IOE :> es, Timeout :> es, Concurrency.Concurrency :> es, Concurrent :> es, TypedProcess.TypedProcess :> es)
   => Int -> String -> Command.Command -> Eff es Text
-runBashStreaming timeoutSeconds script command = do
-  let effectiveTimeout = max 1 timeoutSeconds
-      processConfig =
-        TypedProcess.setCreateGroup True .
-        TypedProcess.setStdin TypedProcess.closed .
-        TypedProcess.setStdout TypedProcess.createPipe .
-        TypedProcess.setStderr TypedProcess.createPipe $
-        TypedProcess.shell script
-  process <- TypedProcess.startProcess processConfig
-  let killProcess = ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
-  stdoutWorker <- Concurrency.fork "command stdout" (drainOutput (TypedProcess.getStdout process) (Command.appendStdout command))
-  stderrWorker <- Concurrency.fork "command stderr" (drainOutput (TypedProcess.getStderr process) (Command.appendStderr command))
-  outcome <- timeout (effectiveTimeout * 1_000_000) (TypedProcess.waitExitCode process) `onException` killProcess
-  case outcome of
-    Nothing -> killProcess
-    Just _ -> pure ()
-  traverse_ Concurrency.await [stdoutWorker, stderrWorker]
-  status <- Command.queryCommand command
-  let (stdoutText, stderrText) = case status of
-        Command.Running out err -> (out, err)
-        Command.Finished _ out err -> (out, err)
-  pure $ case outcome of
-    Nothing -> Text.strip $ Text.unlines $ filter (not . Text.null)
-      ["Script timed out after " <> show effectiveTimeout <> " seconds and was killed.", if Text.null stdoutText then "" else "stdout:\n" <> stdoutText, if Text.null stderrText then "" else "stderr:\n" <> stderrText]
-    Just exitCode -> formatBashResult exitCode stdoutText stderrText
+runBashStreaming timeoutSeconds script command =
+  ProcessUtil.withProcessGroup processConfig \process ->
+  Concurrency.withWorkerHandle "command stdout" (drainOutput (TypedProcess.getStdout process) (Command.appendStdout command)) \stdoutWorker ->
+  Concurrency.withWorkerHandle "command stderr" (drainOutput (TypedProcess.getStderr process) (Command.appendStderr command)) \stderrWorker -> do
+    let killProcess = ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
+    outcome <- timeout (effectiveTimeout * 1_000_000) (TypedProcess.waitExitCode process)
+    when (isNothing outcome) killProcess
+    traverse_ Concurrency.await [stdoutWorker, stderrWorker]
+    status <- Command.queryCommand command
+    let (stdoutText, stderrText) = case status of
+          Command.Running out err -> (out, err)
+          Command.Finished _ out err -> (out, err)
+    pure $ case outcome of
+      Nothing -> Text.strip $ Text.unlines $ filter (not . Text.null)
+        ["Script timed out after " <> show effectiveTimeout <> " seconds and was killed.", if Text.null stdoutText then "" else "stdout:\n" <> stdoutText, if Text.null stderrText then "" else "stderr:\n" <> stderrText]
+      Just exitCode -> formatBashResult exitCode stdoutText stderrText
+  where
+    effectiveTimeout = max 1 timeoutSeconds
+    processConfig =
+      TypedProcess.setCreateGroup True .
+      TypedProcess.setStdin TypedProcess.closed .
+      TypedProcess.setStdout TypedProcess.createPipe .
+      TypedProcess.setStderr TypedProcess.createPipe $
+      TypedProcess.shell script
 
 drainOutput :: FileSystem :> es => Handle -> (Text -> Eff es ()) -> Eff es ()
 drainOutput outputHandle append = do
@@ -226,33 +225,32 @@ runSandboxBashSafe timeoutSeconds sandbox script outputByteLimit =
 runSandboxBashStreaming
   :: (FileSystem :> es, IOE :> es, Timeout :> es, Concurrency.Concurrency :> es, Concurrent :> es, TypedProcess.TypedProcess :> es)
   => Int -> Sandbox.Sandbox -> Text -> Maybe Int -> Command.Command -> Eff es (Either Text Text)
-runSandboxBashStreaming timeoutSeconds sandbox script outputByteLimit command = do
-  let effectiveTimeout = max 1 timeoutSeconds
-      limit = fromMaybe (1024 * 1024) outputByteLimit
-      processConfig =
-        TypedProcess.setCreateGroup True .
-        TypedProcess.setStdin TypedProcess.closed .
-        TypedProcess.setStdout TypedProcess.createPipe .
-        TypedProcess.setStderr TypedProcess.createPipe $
-        TypedProcess.proc "podman" (Sandbox.podmanExecArgs sandbox.containerId effectiveTimeout limit script)
-  process <- TypedProcess.startProcess processConfig
-  let killProcess = ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
-  stdoutWorker <- Concurrency.fork "sandbox command stdout" (drainOutput (TypedProcess.getStdout process) (Command.appendStdout command))
-  stderrWorker <- Concurrency.fork "sandbox command stderr" (drainOutput (TypedProcess.getStderr process) (Command.appendStderr command))
-  outcome <- timeout ((effectiveTimeout + 10) * 1_000_000) (TypedProcess.waitExitCode process) `onException` killProcess
-  case outcome of
-    Nothing -> killProcess
-    Just _ -> pure ()
-  traverse_ Concurrency.await [stdoutWorker, stderrWorker]
-  status <- Command.queryCommand command
-  let (stdoutText, stderrText) = case status of
-        Command.Running out err -> (out, err)
-        Command.Finished _ out err -> (out, err)
-      render exitCode = Text.strip $ Text.unlines $ filter (not . Text.null)
-        [if Text.null stdoutText then "" else "stdout:\n" <> stdoutText, if Text.null stderrText then "" else "stderr:\n" <> stderrText, "exit code: " <> show exitCode]
-  pure $ case outcome of
-    Nothing -> Left "Podman command did not exit after its timeout."
-    Just exitCode -> Right (render exitCode)
+runSandboxBashStreaming timeoutSeconds sandbox script outputByteLimit command =
+  ProcessUtil.withProcessGroup processConfig \process ->
+  Concurrency.withWorkerHandle "sandbox command stdout" (drainOutput (TypedProcess.getStdout process) (Command.appendStdout command)) \stdoutWorker ->
+  Concurrency.withWorkerHandle "sandbox command stderr" (drainOutput (TypedProcess.getStderr process) (Command.appendStderr command)) \stderrWorker -> do
+    let killProcess = ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
+    outcome <- timeout ((effectiveTimeout + 10) * 1_000_000) (TypedProcess.waitExitCode process)
+    when (isNothing outcome) killProcess
+    traverse_ Concurrency.await [stdoutWorker, stderrWorker]
+    status <- Command.queryCommand command
+    let (stdoutText, stderrText) = case status of
+          Command.Running out err -> (out, err)
+          Command.Finished _ out err -> (out, err)
+        render exitCode = Text.strip $ Text.unlines $ filter (not . Text.null)
+          [if Text.null stdoutText then "" else "stdout:\n" <> stdoutText, if Text.null stderrText then "" else "stderr:\n" <> stderrText, "exit code: " <> show exitCode]
+    pure $ case outcome of
+      Nothing -> Left "Podman command did not exit after its timeout."
+      Just exitCode -> Right (render exitCode)
+  where
+    effectiveTimeout = max 1 timeoutSeconds
+    limit = fromMaybe (1024 * 1024) outputByteLimit
+    processConfig =
+      TypedProcess.setCreateGroup True .
+      TypedProcess.setStdin TypedProcess.closed .
+      TypedProcess.setStdout TypedProcess.createPipe .
+      TypedProcess.setStderr TypedProcess.createPipe $
+      TypedProcess.proc "podman" (Sandbox.podmanExecArgs sandbox.containerId effectiveTimeout limit script)
 
 formatSandboxTimeout :: Int -> Sandbox.SandboxOutput -> Text
 formatSandboxTimeout timeoutSeconds output =

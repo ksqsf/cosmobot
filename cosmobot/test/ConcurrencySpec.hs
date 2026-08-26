@@ -23,6 +23,7 @@ main =
       [ testCase "normal manager exit cancels and awaits running tasks" testNormalExitCancelsAndAwaits
       , testCase "top exception is thrown into running tasks" testTopExceptionPropagates
       , testCase "cancel then await returns after task cleanup" testCancelThenAwait
+      , testCase "withWorker cancels and awaits after inner failure" testWithWorkerFailureCleanup
       , testCase "awaitAny returns the first completion without cancelling others" testAwaitAny
       , testCase "failed tasks record their error" testFailureStatus
       , testCase "finished tasks leave active management" testFinishedTaskRetires
@@ -71,6 +72,20 @@ testCancelThenAwait = do
       Concurrency.await worker
       MVar.takeMVar cleaned
       pure cancelled
+  result @?= Just True
+
+testWithWorkerFailureCleanup :: Assertion
+testWithWorkerFailureCleanup = do
+  result <- timeout 1_000_000 $ runManaged do
+    started <- MVar.newEmptyMVar
+    cleaned <- MVar.newEmptyMVar
+    outcome <- try $ runConcurrencyManager $
+      Concurrency.withWorker "worker"
+        ((MVar.putMVar started () >> never) `finally` MVar.putMVar cleaned ()) do
+          MVar.takeMVar started
+          throwIO ManagerAbort
+    MVar.takeMVar cleaned
+    pure (isLeft (outcome :: Either SomeException ()))
   result @?= Just True
 
 testAwaitAny :: Assertion

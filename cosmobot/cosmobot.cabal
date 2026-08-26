@@ -98,6 +98,7 @@ common lib-deps
                     , streaming-utils
                     , transformers
                     , resourcet
+                    , resourcet-effectful
                     , vector
                     , stm
                     , async
@@ -486,6 +487,7 @@ test-suite stream-spec
     type:             exitcode-stdio-1.0
     main-is:          StreamSpec.hs
     build-depends:    toml-parser
+                    , resourcet-effectful
     hs-source-dirs:   test
 
 test-suite concurrency-spec
@@ -521,6 +523,7 @@ test-suite agent-spec
     build-depends:    http-client
                     , process
                     , req
+                    , resourcet-effectful
                     , toml-parser
     hs-source-dirs:   test
 
@@ -543,6 +546,7 @@ test-suite failure-spec
                     , test-build
     type:             exitcode-stdio-1.0
     main-is:          FailureSpec.hs
+    build-depends:    resourcet-effectful
     hs-source-dirs:   test
 
 test-suite llm-retry-spec

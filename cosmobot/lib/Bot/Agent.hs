@@ -114,6 +114,7 @@ import qualified Data.Foldable as Foldable
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.Async as Async
+import qualified Effectful.Resource as EffectfulResource
 import qualified Streaming.Prelude as S
 
 -----------------------------------------------------------------------------------------
@@ -166,6 +167,7 @@ withRun
      , Prim :> es
      , Concurrent :> es
      , IOE :> es
+     , EffectfulResource.Resource :> es
      )
   => Int
   -> ContextStrategy
@@ -240,7 +242,7 @@ initialState transcript =
     }
 
 defaultRuntime
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es, EffectfulResource.Resource :> es)
   => Observer ObservationContext (Eff es)
   -> Int
   -> Runtime '[ObservationContext, EventObservation es, ToolResultObservation es] (Eff es)
@@ -249,7 +251,7 @@ defaultRuntime observer compactionTokenThreshold =
   defaultRuntimeWithStrategy observer ContextCompaction compactionTokenThreshold
 
 defaultRuntimeWithStrategy
-  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es)
+  :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es, EffectfulResource.Resource :> es)
   => Observer ObservationContext (Eff es)
   -> ContextStrategy
   -> Int

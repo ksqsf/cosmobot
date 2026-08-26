@@ -14,17 +14,19 @@ where
 import Bot.Prelude
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Effectful.Concurrent.STM as STM
+import qualified Effectful.Resource as Resource
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 
 bracketStream
-  :: Eff es resource
+  :: Resource.Resource :> es
+  => Eff es resource
   -> (resource -> Eff es ())
   -> (resource -> Stream (Of item) (Eff es) result)
   -> Stream (Of item) (Eff es) result
 bracketStream acquire release use = do
-  resource <- S.lift acquire
-  use resource `streamFinally` release resource
+  (releaseKey, resource) <- S.lift (Resource.allocateEff acquire release)
+  use resource `streamFinally` Resource.releaseEff releaseKey
 
 -- | Merge several streams into one stream through a bounded FIFO queue.
 --
@@ -34,16 +36,17 @@ bracketStream acquire release use = do
 -- with this project's GHC 9.10 toolchain. Keep this small local version until
 -- that dependency chain is usable here.
 mergeStreams
-  :: (KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es)
+  :: (KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Resource.Resource :> es)
   => [Stream (Of a) (Eff es) ()]
   -> Stream (Of a) (Eff es) ()
 mergeStreams streams = do
   queue <- S.lift (STM.newTBQueueIO streamQueueCapacity)
-  pumps <- S.lift $
-    traverse
+  bracketStream
+    (traverse
       (\(index, stream) -> Concurrency.fork [i|stream.merge.#{index}|] (pump queue stream))
-      (zip [(1 :: Int)..] streams)
-  readMerged (length streams) queue `streamFinally` cleanupPumps pumps
+      (zip [(1 :: Int)..] streams))
+    cleanupPumps
+    (\_ -> readMerged (length streams) queue)
 
 streamQueueCapacity :: Natural
 streamQueueCapacity =

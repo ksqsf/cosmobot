@@ -24,6 +24,7 @@ module Bot.Agent.Tool
   , askToolTranscript
   , allowWhen
   , hideUnlessM
+  , hoistTool
   , mapSchemaM
   , noisy
   , resolveToolSchema
@@ -370,6 +371,21 @@ data Tool m = Tool
   , allowedPredicate :: Context -> Bool
   , runnerFactory :: Context -> m (ContextualToolRunner m)
   }
+
+hoistTool :: Monad n => (forall x. m x -> n x) -> Tool m -> Tool n
+hoistTool liftTool definition =
+  Tool
+    { name = definition.name
+    , tags = definition.tags
+    , schemaResolver = \context transcript turn ->
+        liftTool (definition.schemaResolver context transcript turn)
+    , noisyFlag = definition.noisyFlag
+    , allowedPredicate = definition.allowedPredicate
+    , runnerFactory = \context -> do
+        run <- liftTool (definition.runnerFactory context)
+        pure \metadata turn transcript arguments ->
+          liftTool (run metadata turn transcript arguments)
+    }
 
 tool
   :: ToolArguments arguments

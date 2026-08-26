@@ -81,6 +81,7 @@ import Effectful.Timeout
 import Effectful.Process
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.FileSystem
+import qualified Effectful.Resource as EffectfulResource
 import qualified Paths_cosmobot as Paths
 
 -- | Start the bot using @config.toml@ from the current working directory.
@@ -114,6 +115,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
           . HTTP.runHTTP
           . Media.runMedia cfg.media
           . TypstCLI.runTypst
+          . EffectfulResource.runResource
           . OpenAI.runLLM cfg.llm
       runApplication pythonArguments =
         ConcurrencyManager.runConcurrencyManager
@@ -162,7 +164,7 @@ preparePython config
       Python.preparePythonArgs workerPath config >>= either (fail . toString) (pure . Just)
 
 routes
-  :: ( ACPEffect.ACP :> es, AgentEffect.Agent :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, MatrixEffect.Matrix :> es, Memory.Memory :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, AgentEffect.Agent :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, MatrixEffect.Matrix :> es, Memory.Memory :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es, EffectfulResource.Resource :> es)
   => BotConfig
   -> ThreadStore
   -> [RouteHandler es]
@@ -265,13 +267,14 @@ runPluginAgent cfg message prompt = do
         , toolConfig = cfg.tool
         }
       tools = AgentTools.defaultTools
-  Agent.withRun
-    cfg.handlers.ask.agentMaxTurns
-    cfg.handlers.ask.contextStrategy
-    (cfg.handlers.ask.contextCompactionThresholdKTokens * 1000)
-    context
-    tools
-    \runtime -> (.finalText) <$> S.effects (Agent.agentStream runtime (startWithUserInput input))
+  EffectfulResource.runResource $
+    Agent.withRun
+      cfg.handlers.ask.agentMaxTurns
+      cfg.handlers.ask.contextStrategy
+      (cfg.handlers.ask.contextCompactionThresholdKTokens * 1000)
+      context
+      tools
+      \runtime -> (.finalText) <$> S.effects (Agent.agentStream runtime (startWithUserInput input))
 
 resolvePluginMedia :: (MediaEffect.Media :> es, Fail :> es) => Text -> Eff es Aeson.Value
 resolvePluginMedia canonicalReference = do

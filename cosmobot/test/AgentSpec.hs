@@ -98,6 +98,7 @@ import Data.Unique
 import qualified Database.Selda as Selda
 import qualified Database.Selda.Backend as SeldaBackend
 import qualified Effectful.Concurrent.MVar as MVar
+import qualified Effectful.Resource as EffectfulResource
 import Effectful.FileSystem (FileSystem, runFileSystem)
 import qualified Effectful.FileSystem as FS
 import qualified Effectful.FileSystem.IO.ByteString as FSByteString
@@ -135,6 +136,7 @@ type AgentStack =
    , Typst.Typst
    , HTTP.HTTP
    , ResourceEffect.Resource
+   , EffectfulResource.Resource
    , Concurrency.Concurrency
    , StorageEffect.Storage
    , KatipE
@@ -3290,6 +3292,7 @@ testAgentAuditStorageOmitsLargeToolResults =
               . runTestLog
               . StorageSQLite.runStorageSQLitePath dbPath
               . ConcurrencyManager.runConcurrencyManager
+              . EffectfulResource.runResource
               . ResourceManager.runResourceManager
               . HTTP.runHTTP
               . runTimeout
@@ -3648,6 +3651,7 @@ testLLMImageEditRejectsExpiredMediaRef = do
       . HTTP.runHTTP
       . runTimeout
       . runMediaLeavingRefs
+      . EffectfulResource.runResource
       . LLMOpenAI.runLLM LLMConfig.defaultConfig
       $ S.toList_ (LLM.askImageEditStreaming "edit it" ["media:mf_expired"] Nothing)
   case result of
@@ -4195,6 +4199,7 @@ testThreadStorageOmitsLargeToolResults =
               . runTestLog
               . StorageSQLite.runStorageSQLitePath dbPath
               . ConcurrencyManager.runConcurrencyManager
+              . EffectfulResource.runResource
               . ResourceManager.runResourceManager
               . HTTP.runHTTP
               . runTimeout
@@ -5009,6 +5014,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced r
           . runTestLog
           . StorageSQLite.runStorageSQLitePath ":memory:"
           . ConcurrencyManager.runConcurrencyManager
+          . EffectfulResource.runResource
           . ResourceManager.runResourceManager
           . HTTP.runHTTP
           . TypstTest.runTypstWith (mockTypstRender rendered)
@@ -5076,6 +5082,7 @@ runAgentWithStreamingAnswers answers chatMock action = withMemoryTempDir \memory
           . runTestLog
           . StorageSQLite.runStorageSQLitePath ":memory:"
           . ConcurrencyManager.runConcurrencyManager
+          . EffectfulResource.runResource
           . ResourceManager.runResourceManager
           . HTTP.runHTTP
           . TypstTest.runTypstWith (mockTypstRender rendered)

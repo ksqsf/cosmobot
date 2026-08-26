@@ -52,6 +52,7 @@ import Bot.Prelude
 import Effectful.Timeout
 import Effectful.Process
 import Effectful.FileSystem
+import qualified Effectful.Resource as EffectfulResource
 
 -- | Built-in tools exposed to the model after per-message permission checks.
 defaultTools
@@ -77,6 +78,7 @@ defaultTools
   => Process :> es
   => FileSystem :> es
   => IOE :> es
+  => EffectfulResource.Resource :> es
   => [Tool (Eff es)]
 defaultTools = tools
   where
@@ -105,6 +107,7 @@ defaultToolsWith
   => Process :> es
   => FileSystem :> es
   => IOE :> es
+  => EffectfulResource.Resource :> es
   => [Tool (Eff es)]
   -> [Tool (Eff es)]
 defaultToolsWith extraTools = tools

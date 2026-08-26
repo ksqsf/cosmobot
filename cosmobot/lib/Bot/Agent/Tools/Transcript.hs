@@ -30,6 +30,7 @@ import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import qualified Data.Sequence as Seq
 import qualified Streaming.Prelude as S
+import qualified Effectful.Resource as EffectfulResource
 import Text.Regex.TDFA (Regex, makeRegexM, matchTest)
 
 data TranscriptCall = TranscriptCall
@@ -53,6 +54,7 @@ transcriptTool
      , Concurrent :> es
      , Prim :> es
      , IOE :> es
+     , EffectfulResource.Resource :> es
      )
   => Tool (Eff es)
 transcriptTool =
@@ -69,6 +71,7 @@ transcriptToolWith
      , Concurrent :> es
      , Prim :> es
      , IOE :> es
+     , EffectfulResource.Resource :> es
      )
   => Int
   -> Maybe Transcript
@@ -135,6 +138,7 @@ runCall
      , Concurrent :> es
      , Prim :> es
      , IOE :> es
+     , EffectfulResource.Resource :> es
      )
   => Int
   -> Eff es UseLimit
@@ -168,6 +172,7 @@ recursiveQuery
      , Concurrent :> es
      , Prim :> es
      , IOE :> es
+     , EffectfulResource.Resource :> es
      )
   => Int
   -> Eff es UseLimit

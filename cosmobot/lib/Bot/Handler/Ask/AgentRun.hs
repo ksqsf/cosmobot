@@ -44,6 +44,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Lazy as LazyText
 import qualified Data.Text.Lazy.Builder as TextBuilder
 import qualified Effectful.Prim.IORef as IORef
+import qualified Effectful.Resource as EffectfulResource
 import qualified Streaming.Prelude as S
 import Effectful.FileSystem
 import Effectful.Process
@@ -87,23 +88,24 @@ runAskAgentThread
 runAskAgentThread toolCfg tools cfg threads resource parentMessageKey message input transcript = do
   let observer = AgentAudit.agentAuditObserver
   systemPrompt <- askSystemPrompt cfg message
-  dynamicTools <- PluginTool.definitions <$> Plugin.toolSnapshot
-  Agent.withAgentMetadata
-    (\runId -> Agent.ToolCallMetadata
-      { agentRunId = runId
-      , originRunId = runId
-      , resourceOwner = Just resource
-      }) $
-    Agent.withRun
-      cfg.agentMaxTurns
-      cfg.contextStrategy
-      (compactionThresholdTokens cfg)
-      (agentContext toolCfg cfg message input systemPrompt)
-      (tools <> dynamicTools)
-      \runtime ->
-        withActiveReply threads (Agent.runIdOf runtime) resource parentMessageKey message input.text transcript \activeReply -> do
-          reply <- streamAgentReply runtime activeReply message transcript
-          commitAgentReply observer activeReply message reply
+  EffectfulResource.runResource do
+    dynamicTools <- PluginTool.definitions <$> Plugin.toolSnapshot
+    Agent.withAgentMetadata
+      (\runId -> Agent.ToolCallMetadata
+        { agentRunId = runId
+        , originRunId = runId
+        , resourceOwner = Just resource
+        }) $
+      Agent.withRun
+        cfg.agentMaxTurns
+        cfg.contextStrategy
+        (compactionThresholdTokens cfg)
+        (agentContext toolCfg cfg message input systemPrompt)
+        (map (AgentTool.hoistTool raise) tools <> dynamicTools)
+        \runtime ->
+          withActiveReply threads (Agent.runIdOf runtime) resource parentMessageKey message input.text transcript \activeReply -> do
+            reply <- streamAgentReply runtime activeReply message transcript
+            commitAgentReply observer activeReply message reply
 
 data AgentReply = AgentReply
   { responseId :: !(Maybe MessageId)

@@ -17,6 +17,7 @@ module Bot.Effect.Concurrency
   , fork
   , forkWithHandle
   , withWorker
+  , withWorkerHandle
   , raceTasks_
   , cancel
   , await
@@ -104,9 +105,17 @@ withWorker
   -> Eff es ()
   -> Eff es a
   -> Eff es a
-withWorker label worker inner = do
-  workerHandle <- fork label worker
-  inner `finally` cancelAndAwait workerHandle
+withWorker label worker inner =
+  withWorkerHandle label worker (const inner)
+
+withWorkerHandle
+  :: Concurrency :> es
+  => Text
+  -> Eff es ()
+  -> (Handle -> Eff es a)
+  -> Eff es a
+withWorkerHandle label worker =
+  bracket (fork label worker) cancelAndAwait
 
 raceTasks_
   :: (Concurrency :> es, Concurrent :> es, IOE :> es)

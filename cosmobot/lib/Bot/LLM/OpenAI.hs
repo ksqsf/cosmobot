@@ -28,6 +28,7 @@ import qualified Streaming.Prelude as S
 import Effectful.FileSystem
 import Effectful.Process
 import Effectful.Timeout
+import qualified Effectful.Resource as Resource
 import GHC.Clock (getMonotonicTimeNSec)
 
 -- | Interpret LLM requests through an OpenAI-compatible HTTP endpoint.
@@ -41,6 +42,7 @@ runLLM
      , Media.Media :> es
      , IOE :> es)
   => KatipE :> es
+  => Resource.Resource :> es
   => Config
   -> Eff (LLM.LLM : es) a
   -> Eff es a
@@ -144,7 +146,7 @@ resolveContentPart = \case
 -- Image Generation Media Streaming
 
 askImageStreamingWithMedia
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout :> es, Media.Media :> es, FileSystem :> es, Process :> es, Fail :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout :> es, Media.Media :> es, FileSystem :> es, Process :> es, Fail :> es, Resource.Resource :> es)
   => Config
   -> LLM.ImageRequestOptions
   -> [ChatMessage]
@@ -153,7 +155,7 @@ askImageStreamingWithMedia cfg options messages =
   normalizeReplyResult (Transport.askImageOpenAIStreaming cfg options messages (storeImageFromTransport "LLM image streaming request"))
 
 askImageEditStreamingWithMedia
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout :> es, Media.Media :> es, FileSystem :> es, Fail :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout :> es, Media.Media :> es, FileSystem :> es, Fail :> es, Resource.Resource :> es)
   => Config
   -> LLM.ImageRequestOptions
   -> Text

@@ -33,6 +33,7 @@ import qualified Data.Foldable as Foldable
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
+import qualified Effectful.Resource as EffectfulResource
 import qualified Streaming.Prelude as S
 
 data SubAgentArgs = SubAgentArgs
@@ -147,21 +148,22 @@ sendPrompt metadata subagentId availableTools context subagent prompt =
             childContext = context {Agent.systemContext = subagent.arguments.systemContext}
         worker <- Concurrency.forkWithHandle "subagent" \worker -> do
           result <- trySync do
-            Agent.withAgentMetadata
-              (\runId -> ToolCallMetadata
-                { agentRunId = runId
-                , originRunId = metadata.originRunId
-                , resourceOwner = Just worker
-                }) $
-              Agent.withRun 8 ContextCompaction 1000000 childContext selectedTools \runtime -> do
-                void $ AgentAudit.agentAuditObserver SubAgentRunStarted
-                  { runId = metadata.agentRunId
-                  , childRunId = Agent.runIdOf runtime
-                  , subagentId
-                  }
-                _ S.:> agentResult <- S.toList
-                  (Agent.agentStream (Agent.withSteering (steeringControl steering) runtime) transcript)
-                pure (agentResult.finalText, agentResult.transcript)
+            EffectfulResource.runResource do
+              Agent.withAgentMetadata
+                (\runId -> ToolCallMetadata
+                  { agentRunId = runId
+                  , originRunId = metadata.originRunId
+                  , resourceOwner = Just worker
+                  }) $
+                Agent.withRun 8 ContextCompaction 1000000 childContext (map (hoistTool raise) selectedTools) \runtime -> do
+                  void $ AgentAudit.agentAuditObserver SubAgentRunStarted
+                    { runId = metadata.agentRunId
+                    , childRunId = Agent.runIdOf runtime
+                    , subagentId
+                    }
+                  _ S.:> agentResult <- S.toList
+                    (Agent.agentStream (Agent.withSteering (steeringControl steering) runtime) transcript)
+                  pure (agentResult.finalText, agentResult.transcript)
           MVar.modifyMVar_ steering (const (pure Nothing))
           MVar.modifyMVar_ subagent.state (pure . finishRun worker result)
         pure (snapshot {active = Just ActiveRun{worker, steering}, runs = worker : snapshot.runs}, Right ())

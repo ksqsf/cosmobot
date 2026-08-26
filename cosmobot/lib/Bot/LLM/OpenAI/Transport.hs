@@ -57,6 +57,7 @@ import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO as FileSystemIO
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.Process (Process)
+import qualified Effectful.Resource as Resource
 import GHC.Clock (getMonotonicTimeNSec)
 import System.FilePath ((</>), (<.>), takeExtension, takeFileName)
 
@@ -124,7 +125,7 @@ runTimedEff label timeoutSeconds action = do
       throwIO (LLMException [i|#{label} timed out after #{timeoutSeconds} seconds.|])
 
 askImageOpenAIStreaming
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Resource.Resource :> es)
   => Config
   -> LLM.ImageRequestOptions
   -> [ChatMessage]
@@ -141,7 +142,7 @@ askImageOpenAIStreaming Config{imageProvider = Just provider@ImageProviderConfig
       askImageChatCompletionsOpenAIStreaming provider options messages
 
 askImageEditOpenAIStreaming
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Resource.Resource :> es)
   => Config
   -> LLM.ImageRequestOptions
   -> Text
@@ -160,7 +161,7 @@ askImageEditOpenAIStreaming Config{imageProvider = Just ImageProviderConfig{apiK
 askImageEditOpenAIStreaming Config{imageProvider = Just provider@ImageProviderConfig{apiKey = Just key}} options prompt imageRefs maskRef storeImage =
   storeImage provider key (streamImageEditOpenAIBytes provider key options prompt imageRefs maskRef)
 
-askAudioOpenAIStreaming :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es) => Config -> LLM.AudioRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askAudioOpenAIStreaming :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Resource.Resource :> es) => Config -> LLM.AudioRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askAudioOpenAIStreaming Config{audioProvider = Nothing} _ _ =
   yieldTextResult (pure audioNotConfiguredMessage)
 askAudioOpenAIStreaming Config{audioProvider = Just AudioProviderConfig{apiKey = Nothing}} _ _ =
@@ -186,7 +187,7 @@ yieldTextResult action = do
   unless (Text.null (Text.strip answer)) (S.yield answer)
   pure answer
 
-askImageChatCompletionsOpenAIStreaming :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
+askImageChatCompletionsOpenAIStreaming :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, FileSystem :> es, Process :> es, Fail :> es, Resource.Resource :> es) => ImageProviderConfig -> LLM.ImageRequestOptions -> [ChatMessage] -> Stream (Of Text) (Eff es) Text
 askImageChatCompletionsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, requestTimeout} options messages =
   case apiKey of
     Nothing ->
@@ -218,7 +219,7 @@ askImageChatCompletionsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, re
             pure text
 
 askOpenAIStreaming
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, Resource.Resource :> es)
   => Config
   -> [ChatMessage]
   -> Stream (Of Text) (Eff es) Text
@@ -246,7 +247,7 @@ askOpenAIStreaming Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Ju
   pure (chatAnswerContent answer)
 
 askOpenAIWithToolsStreaming
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Timeout.Timeout :> es, Fail :> es, Resource.Resource :> es)
   => Config
   -> [FunctionTool]
   -> [ChatMessage]
@@ -419,7 +420,7 @@ data ImageUpload = ImageUpload
   }
 
 acquireImageEditUploads
-  :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, FileSystem :> es, Fail :> es)
+  :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, FileSystem :> es, Fail :> es, Resource.Resource :> es)
   => Int
   -> [Text]
   -> Maybe Text
@@ -438,12 +439,12 @@ removeTemporaryImageUpload upload =
   when upload.cleanup $
     FileSystem.removeFile upload.path `catchSync` \_ -> pure ()
 
-imageUploadFromReference :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, FileSystem :> es, Fail :> es) => Int -> Int -> Text -> Eff es ImageUpload
+imageUploadFromReference :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, FileSystem :> es, Fail :> es, Resource.Resource :> es) => Int -> Int -> Text -> Eff es ImageUpload
 imageUploadFromReference timeoutSeconds index imageRef = do
   let stripped = Text.strip imageRef
   imageUploadFromStrippedReference timeoutSeconds index stripped
 
-imageUploadFromStrippedReference :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, FileSystem :> es, Fail :> es) => Int -> Int -> Text -> Eff es ImageUpload
+imageUploadFromStrippedReference :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, FileSystem :> es, Fail :> es, Resource.Resource :> es) => Int -> Int -> Text -> Eff es ImageUpload
 imageUploadFromStrippedReference timeoutSeconds index stripped
   | Just (mime, encoded) <- dataImageUpload stripped =
       writeTemporaryImageUpload index (extensionForMime mime) (base64DecodedTextByteStream encoded)
@@ -460,7 +461,7 @@ localImageUpload path =
     , cleanup = False
     }
 
-downloadImageReference :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, FileSystem :> es, Fail :> es) => Int -> Int -> Text -> Eff es ImageUpload
+downloadImageReference :: (Timeout.Timeout :> es, HTTP.HTTP :> es, IOE :> es, FileSystem :> es, Fail :> es, Resource.Resource :> es) => Int -> Int -> Text -> Eff es ImageUpload
 downloadImageReference timeoutSeconds index imageRef = do
   uri <- URI.mkURI imageRef
   case useHttpsURI uri of
@@ -686,7 +687,7 @@ llmStreamResponseLogLine endpoint model answer =
     ]
 
 streamSseJsonPost
-  :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es)
+  :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es, Resource.Resource :> es)
   => Text
   -> [Text]
   -> Text
@@ -698,7 +699,7 @@ streamSseJsonPost baseUrl path apiKey timeoutMicros request = do
   streamSsePayloads (streamHttpResponseBody httpRequest)
 
 streamImageGenerationOpenAIBytes
-  :: (HTTP.HTTP :> es, IOE :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, Resource.Resource :> es)
   => ImageProviderConfig
   -> Text
   -> LLM.ImageRequestOptions
@@ -712,7 +713,7 @@ streamImageGenerationOpenAIBytes provider@ImageProviderConfig{baseUrl, model, re
     imageBytesFromResponse (streamHttpResponseBody httpRequest)
 
 streamImageEditOpenAIBytes
-  :: (HTTP.HTTP :> es, IOE :> es, Timeout.Timeout :> es, FileSystem :> es, Fail :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, Timeout.Timeout :> es, FileSystem :> es, Fail :> es, Resource.Resource :> es)
   => ImageProviderConfig
   -> Text
   -> LLM.ImageRequestOptions
@@ -732,7 +733,7 @@ streamImageEditOpenAIBytes cfg@ImageProviderConfig{baseUrl, model, requestTimeou
         imageBytesFromResponse (streamHttpResponseBody httpRequest)
 
 streamRawJsonPost
-  :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es)
+  :: (Aeson.ToJSON body, HTTP.HTTP :> es, IOE :> es, Resource.Resource :> es)
   => Text
   -> [Text]
   -> Text
@@ -770,7 +771,7 @@ sseMultipartPostRequest baseUrl path apiKey timeoutMicros parts = do
     , Client.responseTimeout = Client.responseTimeoutMicro timeoutMicros
     }
 
-streamHttpResponseBody :: (HTTP.HTTP :> es, IOE :> es) => Client.Request -> Stream (Of StrictByteString.ByteString) (Eff es) ()
+streamHttpResponseBody :: (HTTP.HTTP :> es, IOE :> es, Resource.Resource :> es) => Client.Request -> Stream (Of StrictByteString.ByteString) (Eff es) ()
 streamHttpResponseBody httpRequest = do
   StreamUtil.bracketStream
     (HTTP.openResponse httpRequest)
@@ -877,7 +878,7 @@ yieldNonEmptyBytes bytes =
   unless (StrictByteString.null bytes) (S.yield bytes)
 
 streamChatCompletion
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Resource.Resource :> es)
   => Bool
   -> Text
   -> [Text]

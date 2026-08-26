@@ -39,6 +39,7 @@ import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Vector as Vector
 import Effectful.FileSystem (FileSystem)
 import Effectful.Timeout
+import qualified Effectful.Resource as EffectfulResource
 import qualified Streaming as S
 import System.IO.Error (userError)
 
@@ -325,7 +326,7 @@ normalizeOutgoingReplyBody driver body =
   Media.normalizeReplyBody body >>= ReplyBody.traverseReplyImageUrls (normalizeMediaRef driver)
 
 runChatDrivers
-  :: (KatipE :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
+  :: (KatipE :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es, EffectfulResource.Resource :> es)
   => Maybe QQ.Config
   -> Maybe Telegram.Config
   -> Maybe Matrix.Config
@@ -367,7 +368,7 @@ hasConfiguredChatDriver drivers =
     ]
 
 runChatDriversWith
-  :: (KatipE :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es)
+  :: (KatipE :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Timeout :> es, Fail :> es, Concurrent :> es, Media.Media :> es, FileSystem :> es, Prim :> es, Storage.Storage :> es, IOE :> es, EffectfulResource.Resource :> es)
   => ChatDrivers
   -> Eff (MatrixEffect.Matrix : Chat.Chat : es) ()
   -> Eff es ()
@@ -405,6 +406,7 @@ chatDriversHandler
      , Prim :> es
      , Fail :> es
      , IOE :> es
+     , EffectfulResource.Resource :> es
      )
   => ChatDrivers
   -> Chat.ChatHandler es
@@ -432,6 +434,7 @@ incomingMessages
   => Prim :> es
   => Fail :> es
   => IOE :> es
+  => EffectfulResource.Resource :> es
   => ChatDrivers
   -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages drivers =
