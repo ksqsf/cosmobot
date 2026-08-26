@@ -7,7 +7,7 @@ on:
 jobs:
   cabal:
     name: Cabal
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -42,18 +42,3 @@ jobs:
 
       - name: Test
         run: cabal test -j all --test-options=--hide-successes
-
-      - name: Package executable
-        run: |
-          mkdir -p output
-          install -m 0755 "$(cabal list-bin exe:cosmobot)" output/cosmobot
-          cd output
-          strip cosmobot
-          tar -czf cosmobot-linux-x86_64.tar.gz cosmobot
-
-      - name: Upload executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: cosmobot-linux-x86_64
-          path: cosmobot-linux-x86_64.tar.gz
-          if-no-files-found: error
