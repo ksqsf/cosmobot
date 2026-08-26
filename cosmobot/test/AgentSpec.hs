@@ -164,6 +164,7 @@ data AgentMockChatDriver es = AgentMockChatDriver
   , agentMessageOutPolicy :: IncomingMessage -> Eff es Chat.MessageOutPolicy
   , agentFetchMessage :: IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
   , agentUserAvatar :: IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)
+  , agentSetTyping :: IncomingMessage -> Int -> Eff es ()
   }
 
 instance Driver.ChatDriver (AgentMockChatDriver es0) where
@@ -177,6 +178,7 @@ instance Driver.ChatDriver (AgentMockChatDriver es0) where
   messageOutPolicy driver = driver.agentMessageOutPolicy
   getMessageContent driver = driver.agentFetchMessage
   getUserAvatar driver = driver.agentUserAvatar
+  setTyping driver = driver.agentSetTyping
 
 defaultAgentMockChatDriver :: AgentMockChatDriver es
 defaultAgentMockChatDriver =
@@ -188,6 +190,7 @@ defaultAgentMockChatDriver =
     , agentMessageOutPolicy = \_ -> pure (Chat.ChunkedMessage 1800)
     , agentFetchMessage = \_ _ -> pure Nothing
     , agentUserAvatar = \_ _ -> pure Nothing
+    , agentSetTyping = \_ _ -> pure ()
     }
 
 data ChatMock = ChatMock
@@ -313,6 +316,7 @@ main =
       , testCase "agent steering preserves surrounding model middleware" testAgentSteeringPreservesModelMiddleware
       , testCase "agent steering waits for complete tool results" testAgentSteeringWaitsForToolResults
       , testCase "agent steering clears saved continuations" testAgentSteeringClearsContinuations
+      , testCase "typing notification runs concurrently with the agent" testTypingNotificationRunsConcurrently
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
@@ -2617,6 +2621,39 @@ testAgentSteeringClearsContinuations = do
         (any ("Continuation not found" `Text.isInfixOf`) (chatMessageTextsByRole "tool" rejectedResume))
     other ->
       assertFailure [i|expected four steering model requests, got #{length other}|]
+
+testTypingNotificationRunsConcurrently :: IO ()
+testTypingNotificationRunsConcurrently = do
+  completed <-
+    runEff
+      . runTimeout
+      . runConcurrent
+      . runPrim
+      . runTestLog
+      . EffectfulResource.runResource
+      . ConcurrencyManager.runConcurrencyManager
+      $ do
+          blocked <- MVar.newEmptyMVar
+          Chat.runChatWith
+            defaultAgentMockChatDriver
+              { agentSetTyping = \_ _ -> MVar.takeMVar blocked
+              }
+            do
+              runtime <- startTestRuntime maxBound agentContext []
+              let result = Agent.Result
+                    { runId = "typing-test"
+                    , transcript = startWithUser "done"
+                    , status = "done"
+                    , finalText = "done"
+                    , turnsUsed = 0
+                    , tokenUsage = Nothing
+                    }
+              timeout 1_000_000 $
+                S.next $
+                  (Agent.withTypingNotification runtime).aroundAgentRun
+                    HList.HNil
+                    (pure result)
+  assertBool "agent action should not wait for typing HTTP" (isJust completed)
 
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds :: IO ()
 testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do

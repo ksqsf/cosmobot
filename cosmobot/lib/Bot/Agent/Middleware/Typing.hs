@@ -16,7 +16,6 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
 import Bot.Prelude
 import qualified Bot.Util.Stream as StreamUtil
-import qualified Streaming as S
 import qualified Effectful.Resource as Resource
 
 withTypingNotification
@@ -38,7 +37,6 @@ withTypingScope
   -> Stream (Of Output) (Eff es) Result
   -> Stream (Of Output) (Eff es) Result
 withTypingScope message stream = do
-  S.lift (safeSetTyping message typingNotificationTimeoutMillis)
   StreamUtil.bracketStream
     (Concurrency.fork "agent.typing" (typingNotificationLoop message))
     cancelAndAwaitTyping
@@ -54,8 +52,8 @@ typingNotificationLoop
   => IncomingMessage
   -> Eff es ()
 typingNotificationLoop message = do
-  Concurrency.sleepMicroseconds typingNotificationRefreshMicroseconds
   safeSetTyping message typingNotificationTimeoutMillis
+  Concurrency.sleepMicroseconds typingNotificationRefreshMicroseconds
   typingNotificationLoop message
 
 safeSetTyping
@@ -77,4 +75,4 @@ typingNotificationTimeoutMillis =
 
 typingNotificationRefreshMicroseconds :: Int
 typingNotificationRefreshMicroseconds =
-  20 * 1000000
+  4 * 1000000

@@ -42,7 +42,7 @@ This document records constants that are not configurable through `config.toml` 
 - `Bot.Handler.Safebooru.safebooruOptions` : Allows 15 seconds for a Safebooru request so a slow external site does not block the handler.
 - `Bot.Agent.Tools.Web.webRequestOptions` : Allows 15 seconds for a web-tool HTTP request, bounding external fetch latency.
 - `Bot.Agent.Middleware.Typing.typingNotificationTimeoutMillis` : Gives typing notifications a 30-second lifetime, covering long model turns while still expiring automatically.
-- `Bot.Agent.Middleware.Typing.typingNotificationRefreshMicroseconds` : Refreshes typing notifications every 20 seconds, before their 30-second expiry without making excessive API calls.
+- `Bot.Agent.Middleware.Typing.typingNotificationRefreshMicroseconds` : Refreshes typing notifications every 4 seconds, before Telegram's 5-second expiry and with enough margin for slow Matrix requests.
 
 ## Chat Drivers
 
