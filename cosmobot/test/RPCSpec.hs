@@ -2,6 +2,7 @@ module Main (main) where
 
 import Bot.Prelude
 import Bot.Chat.Driver.Types
+import qualified Bot.Chat.Types as Chat
 import qualified Bot.Chat.Driver.RPC as RPCDriver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Message
@@ -462,7 +463,7 @@ testChatSessionsPersistAcrossRestart =
 testRpcDriverPersistsAssistantRepliesAndEdits :: IO ()
 testRpcDriverPersistsAssistantRepliesAndEdits =
   withSQLiteTempPath "rpc-assistant" \path -> do
-    (replyId, edited) <- runRpcStorage path do
+    (replyId, edited, notifications) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
@@ -473,13 +474,39 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
             , "text" Aeson..= ("question" :: Text)
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
+      (_clientId, queue) <- RPC.registerClient rpcState
       let driver = RPCDriver.rpcChatDriver testRpcConfig rpcState
       replyId <- fromMaybe (error "expected rpc reply id") . rightToMaybe <$> sendReplyMessage driver incoming "draft answer"
       edited <- editMessage driver incoming replyId "final answer"
-      pure (replyId, edited)
+      _ <- completeMessageEdit driver incoming replyId
+      publishActivity driver incoming (Chat.ReasoningStarted "run-1" 1)
+      publishActivity driver incoming (Chat.ReasoningFinished "run-1" 1 "tool_request")
+      publishActivity driver incoming (Chat.ToolCallStarted "run-1" 1 "call-1" "run_bash")
+      publishActivity driver incoming (Chat.ToolCallFinished "run-1" 1 "call-1" "run_bash" "ok")
+      notifications <- replicateM 7 do
+        RPC.readClient queue >>= \case
+          RPC.RpcClientSend value -> pure value
+          RPC.RpcClientDisconnect reason -> liftIO (assertFailure [i|unexpected RPC client disconnect: #{reason}|])
+      pure (replyId, edited, notifications)
 
     replyId @?= "session-2"
     edited @?= True
+    parsed <- mapM parseJson notifications :: IO [JSONRPC.RpcNotification]
+    map (.method) parsed @?=
+      [ "chat.message"
+      , "chat.message_update"
+      , "chat.message_done"
+      , "chat.reasoning_start"
+      , "chat.reasoning_end"
+      , "chat.tool_call_start"
+      , "chat.tool_call_end"
+      ]
+    case parsed of
+      _ : _ : done : _ -> done.params @?= Aeson.object
+        [ "sessionId" Aeson..= ("local-1" :: Text)
+        , "messageId" Aeson..= ("session-2" :: Text)
+        ]
+      _ -> assertFailure "expected lifecycle notifications"
 
     historyResponse <- runRpcStorage path do
       rpcState <- RPC.newRpcState

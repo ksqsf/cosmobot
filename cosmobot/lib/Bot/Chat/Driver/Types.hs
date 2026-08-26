@@ -54,6 +54,10 @@ class ChatDriver driver where
   completeMessageEdit _ _ _ =
     pure True
 
+  publishActivity :: ChatDriverEffects driver es => driver -> IncomingMessage -> Chat.Activity -> Eff es ()
+  publishActivity _ _ _ =
+    pure ()
+
   deleteMessage :: ChatDriverEffects driver es => driver -> IncomingMessage -> MessageId -> Eff es Bool
   deleteMessage _ _ _ =
     pure False

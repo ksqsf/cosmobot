@@ -95,6 +95,9 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
     fromMaybe False <$> withChatDriverMaybe message "chat completion edit" do
       Just <$> completeMessageEdit driver message messageId
 
+  publishActivity (NormalizingChatDriver driver) message activity =
+    publishActivity driver message activity
+
   deleteMessage (NormalizingChatDriver driver) message messageId =
     fromMaybe False <$> withChatDriverMaybe message "chat delete" do
       Just <$> deleteMessage driver message messageId
@@ -180,6 +183,10 @@ instance ChatDriver ChatDrivers where
   completeMessageEdit drivers message messageId =
     withMessageDriver drivers message \driver ->
       completeMessageEdit driver message messageId
+
+  publishActivity drivers message activity =
+    withMessageDriver drivers message \driver ->
+      publishActivity driver message activity
 
   deleteMessage drivers message messageId =
     withMessageDriver drivers message \driver ->

@@ -21,8 +21,10 @@ module Bot.Storage.Thread
   , rememberThreadTranscript
   , rememberThreadTranscriptFrom
   , rememberActiveThread
+  , rememberActiveSessionThread
   , addActiveThreadMessage
   , enqueueActiveThreadSteer
+  , enqueueActiveSessionThreadSteer
   , drainActiveThreadSteers
   , completeActiveThreadSteering
   , updateActiveThread
@@ -33,9 +35,11 @@ module Bot.Storage.Thread
   , listActiveThreadsForMessage
   , haltActiveThreadsForMessage
   , loadThreadRows
+  , lookupCommittedThreadTranscript
   )
 where
 
+import Bot.Agent.Types (AgentRunId)
 import Bot.Core.Message
 import Bot.Core.Thread
 import Bot.Core.Transcript
@@ -43,6 +47,7 @@ import Bot.Effect.Concurrency (Handle (..), Id)
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude hiding (Handle, newIORef, readIORef, atomicModifyIORef, writeIORef, atomicModifyIORef')
+import qualified Bot.Session as Session
 import Bot.Storage.Prelude
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Data.Aeson as Aeson
@@ -62,6 +67,7 @@ data ThreadStore = ThreadStore
 data ActiveThreadKey
   = ActiveThreadId !Id
   | ActiveThreadMessage !ThreadMessageKey
+  | ActiveThreadSession !Session.SessionId
   deriving (Eq, Ord)
 
 data ThreadState = ThreadState
@@ -78,7 +84,7 @@ data StoredThreadNode = StoredThreadNode
 data ActiveThread = ActiveThread
   { activeChatScope :: !(Maybe ActiveChatScope)
   , activeSenderId :: !(Maybe Text)
-  , activeRunId :: !Text
+  , activeRunId :: !AgentRunId
   , activePrompt :: !Text
   , activeParentMessageKey :: !(Maybe ThreadMessageKey)
   , activeReplyMessageKeys :: !(IORef [ThreadMessageKey])
@@ -193,11 +199,11 @@ lookupActiveThreadReply ThreadStore{activeThreadStore = activeRef} message messa
       let isOwner = maybe False ((== thread.activeSenderId) . Just) reply.senderId
       pure (isOwner, transcript)
 
-lookupActiveThreadRunId :: Prim :> es => ThreadStore -> ThreadMessageKey -> Eff es (Maybe Text)
+lookupActiveThreadRunId :: Prim :> es => ThreadStore -> ThreadMessageKey -> Eff es (Maybe AgentRunId)
 lookupActiveThreadRunId ThreadStore{activeThreadStore = activeRef} messageKey =
   fmap (.activeRunId) . Map.lookup (ActiveThreadMessage messageKey) <$> readIORef activeRef
 
-awaitActiveThreadByRunId :: (Prim :> es, Concurrent :> es) => ThreadStore -> Text -> Eff es ()
+awaitActiveThreadByRunId :: (Prim :> es, Concurrent :> es) => ThreadStore -> AgentRunId -> Eff es ()
 awaitActiveThreadByRunId ThreadStore{activeThreadStore = activeRef} runId = do
   active <- find ((== runId) . (.activeRunId)) . Map.elems <$> readIORef activeRef
   traverse_ (MVar.readMVar . (.activeDone)) active
@@ -216,7 +222,7 @@ lookupActiveThreadPendingSteers ThreadStore{activeThreadStore = activeRef} messa
 rememberActiveThread
   :: (Prim :> es, Concurrent :> es)
   => ThreadStore
-  -> Text
+  -> AgentRunId
   -> Maybe ThreadMessageKey
   -> Maybe ThreadMessageKey
   -> IncomingMessage
@@ -224,7 +230,22 @@ rememberActiveThread
   -> Handle
   -> Transcript
   -> Eff es (Maybe ActiveThreadHandle)
-rememberActiveThread ThreadStore{activeThreadStore = activeRef} activeRunId parentMessageKey messageKey message prompt activeHandle transcript = do
+rememberActiveThread store activeRunId parentMessageKey messageKey message prompt activeHandle transcript =
+  rememberActiveThreadWithKeys [] store activeRunId parentMessageKey messageKey message prompt activeHandle transcript
+
+rememberActiveThreadWithKeys
+  :: (Prim :> es, Concurrent :> es)
+  => [ActiveThreadKey]
+  -> ThreadStore
+  -> AgentRunId
+  -> Maybe ThreadMessageKey
+  -> Maybe ThreadMessageKey
+  -> IncomingMessage
+  -> Text
+  -> Handle
+  -> Transcript
+  -> Eff es (Maybe ActiveThreadHandle)
+rememberActiveThreadWithKeys extraKeys ThreadStore{activeThreadStore = activeRef} activeRunId parentMessageKey messageKey message prompt activeHandle transcript = do
   replyMessageKeys <- newIORef []
   steering <- MVar.newMVar (SteeringOpen Seq.empty)
   current <- newIORef transcript
@@ -241,10 +262,27 @@ rememberActiveThread ThreadStore{activeThreadStore = activeRef} activeRunId pare
         , activeDone = done
         , activeHandle
         }
-  atomicModifyIORef' activeRef \activeMap ->
-    let keys = ActiveThreadId activeHandle.handleId : map ActiveThreadMessage (maybeToList messageKey)
-    in (foldl' (\next key -> Map.insert key active next) activeMap keys, ())
-  pure (Just (ActiveThreadHandle active))
+  registered <- atomicModifyIORef' activeRef \activeMap ->
+    let keys = ActiveThreadId activeHandle.handleId : map ActiveThreadMessage (maybeToList messageKey) <> extraKeys
+    in if any (`Map.member` activeMap) extraKeys
+      then (activeMap, False)
+      else (foldl' (\next key -> Map.insert key active next) activeMap keys, True)
+  pure (ActiveThreadHandle active <$ guard registered)
+
+rememberActiveSessionThread
+  :: (Prim :> es, Concurrent :> es)
+  => ThreadStore
+  -> Session.SessionId
+  -> AgentRunId
+  -> Maybe ThreadMessageKey
+  -> Maybe ThreadMessageKey
+  -> IncomingMessage
+  -> Text
+  -> Handle
+  -> Transcript
+  -> Eff es (Maybe ActiveThreadHandle)
+rememberActiveSessionThread store sessionId =
+  rememberActiveThreadWithKeys [ActiveThreadSession sessionId] store
 
 addActiveThreadMessage :: (Prim :> es, Concurrent :> es) => ThreadStore -> ActiveThreadHandle -> ThreadMessageKey -> Eff es ()
 addActiveThreadMessage ThreadStore{activeThreadStore = activeRef} (ActiveThreadHandle active) messageKey =
@@ -279,6 +317,27 @@ enqueueActiveThreadSteer ThreadStore{activeThreadStore = activeRef} message stee
                   pure (steeringState, False)
         _ ->
           pure False
+
+enqueueActiveSessionThreadSteer
+  :: (Prim :> es, Concurrent :> es)
+  => ThreadStore
+  -> Session.SessionId
+  -> IncomingMessage
+  -> MessageInput
+  -> Eff es Bool
+enqueueActiveSessionThreadSteer ThreadStore{activeThreadStore = activeRef} sessionId message steer = do
+  active <- Map.lookup (ActiveThreadSession sessionId) <$> readIORef activeRef
+  case active of
+    Just activeThread
+      | mayManageActiveThread message activeThread ->
+          MVar.modifyMVar activeThread.activeSteering \case
+            SteeringOpen queued -> do
+              traverse_ (addMessageAlias activeRef activeThread . threadMessageKey message) message.messageId
+              pure (SteeringOpen (queued Seq.|> steer), True)
+            steeringState ->
+              pure (steeringState, False)
+    _ ->
+      pure False
 
 drainActiveThreadSteers :: Concurrent :> es => ActiveThreadHandle -> Eff es [MessageInput]
 drainActiveThreadSteers (ActiveThreadHandle active) =
@@ -480,6 +539,10 @@ rememberThreadTranscriptFrom store@ThreadStore{unThreadStore = ref} parentMessag
 lookupStoredThreadNode :: (Prim :> es, Storage.Storage :> es) => ThreadStore -> ThreadMessageKey -> Eff es (Maybe StoredThreadNode)
 lookupStoredThreadNode store messageKey =
   lookupStoredThreadNodeMaybe store (Just messageKey)
+
+lookupCommittedThreadTranscript :: (Prim :> es, Storage.Storage :> es) => ThreadStore -> ThreadMessageKey -> Eff es (Maybe Transcript)
+lookupCommittedThreadTranscript store messageKey =
+  fmap (.treeNode.transcript) <$> lookupStoredThreadNode store messageKey
 
 lookupStoredThreadNodeMaybe :: (Prim :> es, Storage.Storage :> es) => ThreadStore -> Maybe ThreadMessageKey -> Eff es (Maybe StoredThreadNode)
 lookupStoredThreadNodeMaybe _ Nothing =

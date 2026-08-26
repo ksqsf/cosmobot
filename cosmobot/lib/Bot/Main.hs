@@ -60,6 +60,7 @@ import qualified System.Environment as Environment
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Ask.AgentRun (askSystemPrompt)
+import Bot.Handler.Console
 import Bot.Handler.Audit
 import Bot.Handler.Help
 import Bot.Handler.Media
@@ -175,7 +176,9 @@ routes cfg threads =
       builtInRoutes
         <> pluginHandlers
         <> [pluginRouteGateway]
-        <> askHandlers cfg.tool (AgentTools.defaultToolsWith AgentTools.acpTools) cfg.handlers.ask threads
+        <> consoleHandlers cfg.tool agentTools cfg.handlers.console threads
+        <> askHandlers cfg.tool agentTools cfg.handlers.ask threads
+    agentTools = AgentTools.defaultToolsWith AgentTools.acpTools
     builtInRoutes =
       shutUpHandlers cfg.handlers.shutup
         <> auditHandlers threads

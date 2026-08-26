@@ -4,7 +4,8 @@ Description : Agent context, events, and tool results
 Stability   : experimental
 -}
 module Bot.Agent.Types
-  ( ContextStrategy (..)
+  ( AgentRunId
+  , ContextStrategy (..)
   , ToolCallMetadata (..)
   , Context (..)
   , Event (..)
@@ -38,6 +39,8 @@ import Bot.Core.Thread (ThreadMessageKey)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+
+type AgentRunId = Text
 
 data ContextStrategy
   = ContextCompaction
@@ -106,8 +109,8 @@ maxPythonWallTimeoutSeconds :: Int
 maxPythonWallTimeoutSeconds = 60 * 60
 
 data ToolCallMetadata = ToolCallMetadata
-  { agentRunId :: !Text
-  , originRunId :: !Text
+  { agentRunId :: !AgentRunId
+  , originRunId :: !AgentRunId
   , resourceOwner :: !(Maybe Concurrency.Handle)
   }
 

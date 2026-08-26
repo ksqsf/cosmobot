@@ -259,6 +259,7 @@ library
         Bot.Chat.Driver.Telegram.Protocol
         Bot.Chat.Driver.Telegram.Types
         Bot.Chat.Driver.Types
+        Bot.Chat.AgentReply
         Bot.Chat.Types
         Bot.ChatLog.Record
         Bot.ChatLog.Types
@@ -295,6 +296,8 @@ library
         Bot.Handler.Ask.AgentRun
         Bot.Handler.Ask.Config
         Bot.Handler.Audit
+        Bot.Handler.Console
+        Bot.Handler.Console.Config
         Bot.Handler.Help
         Bot.Handler.Media
         Bot.Handler.Plugin

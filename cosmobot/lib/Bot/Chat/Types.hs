@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Chat.Types
   ( MessageOutPolicy (..)
   , MessageOutResult (..)
+  , Activity (..)
   )
 where
 
@@ -23,3 +24,10 @@ data MessageOutResult = MessageOutResult
   , answer :: !Text
   }
   deriving (Show)
+
+data Activity
+  = ReasoningStarted !Text !Int
+  | ReasoningFinished !Text !Int !Text
+  | ToolCallStarted !Text !Int !Text !Text
+  | ToolCallFinished !Text !Int !Text !Text !Text
+  deriving (Eq, Show)

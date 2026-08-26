@@ -117,6 +117,23 @@ Persisted audit records are broadcast as `audit.event` notifications:
 Live audit events report newly persisted records. Query methods keep the normal
 audit storage behavior, including stale running-tool marking.
 
+## Console lifecycle notifications
+
+RPC console sessions emit lightweight, session-scoped notifications for an
+interactive client. `chat.reasoning_start` and `chat.reasoning_end` delimit a model turn;
+they do not contain private reasoning text. Tool results are likewise omitted.
+
+```json
+{"jsonrpc":"2.0","method":"chat.message_done","params":{"sessionId":"work-1","messageId":"session-2"}}
+{"jsonrpc":"2.0","method":"chat.reasoning_start","params":{"sessionId":"work-1","runId":"run-1","turn":1}}
+{"jsonrpc":"2.0","method":"chat.reasoning_end","params":{"sessionId":"work-1","runId":"run-1","turn":1,"answerKind":"tool_request"}}
+{"jsonrpc":"2.0","method":"chat.tool_call_start","params":{"sessionId":"work-1","runId":"run-1","turn":1,"toolCallId":"call-1","toolName":"run_bash"}}
+{"jsonrpc":"2.0","method":"chat.tool_call_end","params":{"sessionId":"work-1","runId":"run-1","turn":1,"toolCallId":"call-1","toolName":"run_bash","status":"ok"}}
+```
+
+`chat.message_done` commits the final streamed assistant text previously sent
+by `chat.message` and `chat.message_update`.
+
 ## Manager Methods
 
 Possession of the RPC bearer token grants superuser resource access. Resource

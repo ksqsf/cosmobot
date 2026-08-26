@@ -22,6 +22,7 @@ module Bot.Agent
   , WebSearchApi (..)
   , defaultToolConfig
   , withRun
+  , withRunObserved
   , runAgent
   , withAgentMetadata
   , startRuntime
@@ -177,9 +178,34 @@ withRun
   -> (Runtime '[] (Eff es) -> Eff es a)
   -> Eff es a
 withRun maxTurns contextStrategy contextTokenThreshold context tools use = do
+  withRunObserved (const (pure ())) maxTurns contextStrategy contextTokenThreshold context tools use
+
+withRunObserved
+  :: ( AgentEffect.Agent :> es
+     , Chat.Chat :> es
+     , AgentAudit.AgentAudit :> es
+     , Concurrency.Concurrency :> es
+     , LLM.LLM :> es
+     , Media.Media :> es
+     , KatipE :> es
+     , Prim :> es
+     , Concurrent :> es
+     , IOE :> es
+     , EffectfulResource.Resource :> es
+     )
+  => (Event -> Eff es ())
+  -> Int
+  -> ContextStrategy
+  -> Int
+  -> Context
+  -> [Tool (Eff es)]
+  -> (Runtime '[] (Eff es) -> Eff es a)
+  -> Eff es a
+withRunObserved observe maxTurns contextStrategy contextTokenThreshold context tools use = do
   baseRuntime <- startRuntime maxTurns context tools
+  let observer event = AgentAudit.agentAuditObserver event <* observe event
   AgentEffect.withRun
-    (defaultRuntimeWithStrategy AgentAudit.agentAuditObserver contextStrategy contextTokenThreshold baseRuntime)
+    (defaultRuntimeWithStrategy observer contextStrategy contextTokenThreshold baseRuntime)
     use
 
 agentStream
@@ -227,7 +253,7 @@ startRuntime maxTurns context tools = do
     , aroundToolCall = \_ _ _ action -> action
     }
 
-newAgentRunId :: IOE :> es => Eff es Text
+newAgentRunId :: IOE :> es => Eff es AgentRunId
 newAgentRunId = do
   bytes <- liftIO (CryptoRandom.getRandomBytes 16 :: IO StrictByteString.ByteString)
   pure ("agent-" <> TextEncoding.decodeUtf8 (Base64URL.encodeUnpadded bytes))

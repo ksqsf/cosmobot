@@ -17,7 +17,55 @@ common warnings
 executable cosmocode
     import:           warnings
     main-is:          Main.hs
-    other-modules:
+    other-modules:    Cosmocode
+                    , Cosmocode.RPC
+                    , Cosmocode.RPC.Internal
+                    , Cosmocode.RPC.WebSocket
+                    , Cosmocode.Terminal
+                    , Cosmocode.Terminal.Inline
+                    , Cosmocode.Terminal.Internal
+                    , Cosmocode.Types
     build-depends:    base ^>=4.20.2.0
-    hs-source-dirs:   app
+                    , aeson
+                    , ansi-terminal
+                    , bytestring
+                    , containers
+                    , effectful
+                    , optparse-applicative
+                    , text
+                    , vty
+                    , vty-unix
+                    , websockets
+    hs-source-dirs:   app, src
+    ghc-options:      -threaded
+    default-language: GHC2024
+
+test-suite cosmocode-test
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    other-modules:    Cosmocode
+                    , Cosmocode.RPC
+                    , Cosmocode.RPC.Internal
+                    , Cosmocode.RPC.WebSocket
+                    , Cosmocode.Terminal
+                    , Cosmocode.Terminal.Inline
+                    , Cosmocode.Terminal.Internal
+                    , Cosmocode.Types
+    build-depends:    base ^>=4.20.2.0
+                    , aeson
+                    , ansi-terminal
+                    , bytestring
+                    , containers
+                    , effectful
+                    , network
+                    , optparse-applicative
+                    , tasty
+                    , tasty-hunit
+                    , text
+                    , vty
+                    , vty-unix
+                    , websockets
+    hs-source-dirs:   test, src
+    ghc-options:      -threaded
     default-language: GHC2024

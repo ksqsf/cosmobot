@@ -16,6 +16,7 @@ module Bot.Effect.ChatDriver
   , uploadFile
   , editMessage
   , completeMessageEdit
+  , publishActivity
   , deleteMessage
   , messageOutPolicy
   , getMessageContent
@@ -72,6 +73,10 @@ data ChatDriver :: Effect where
     :: IncomingMessage
     -> MessageId
     -> ChatDriver m Bool
+  PublishActivity
+    :: IncomingMessage
+    -> Activity
+    -> ChatDriver m ()
   DeleteMessage
     :: IncomingMessage
     -> MessageId
@@ -150,6 +155,10 @@ editMessage message messageId body =
 completeMessageEdit :: ChatDriver :> es => IncomingMessage -> MessageId -> Eff es Bool
 completeMessageEdit message messageId =
   send (CompleteMessageEdit message messageId)
+
+publishActivity :: ChatDriver :> es => IncomingMessage -> Activity -> Eff es ()
+publishActivity message activity =
+  send (PublishActivity message activity)
 
 -- | Delete or recall a previously sent message when the platform supports it.
 deleteMessage :: ChatDriver :> es => IncomingMessage -> MessageId -> Eff es Bool
@@ -233,6 +242,8 @@ chatDriverEffectHandler driver _ = \case
     Driver.editMessage driver message messageId body
   CompleteMessageEdit message messageId ->
     Driver.completeMessageEdit driver message messageId
+  PublishActivity message activity ->
+    Driver.publishActivity driver message activity
   DeleteMessage message messageId ->
     Driver.deleteMessage driver message messageId
   MessageOutPolicy message ->

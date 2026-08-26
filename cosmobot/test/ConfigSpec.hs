@@ -210,6 +210,9 @@ minimalConfig =
   Text.unlines
     [ "[llm]"
     , ""
+    , "[handler.console]"
+    , "system_prompt = \"You are a coding agent.\""
+    , ""
     , "[handler.ask]"
     , "command = \"!ask\""
     , "system_prompt = \"You are cosmobot.\""

@@ -69,6 +69,7 @@ import qualified Bot.Scheduler as ApplicationScheduler
 import qualified Bot.Skills as SkillsStore
 import Bot.Core.Message
 import qualified Bot.Core.Message as Message
+import qualified Bot.Session as Session
 import Bot.Handler.Ask (askHandlers)
 import Bot.Handler.Ask.Config (AskHandlerConfig (..))
 import Bot.Handler.Audit (auditHandlers)
@@ -361,6 +362,7 @@ main =
       , testCase "active thread is listed before a platform reply exists" testActiveThreadWithoutPlatformReply
       , testCase "active thread ids are stable and chat scoped" testActiveThreadIdsAreStableAndChatScoped
       , testCase "active thread steering is FIFO, aliased, and closed atomically" testActiveThreadSteeringLifecycle
+      , testCase "console session steering does not require replies" testConsoleSessionSteering
       , testCase "fetch_url max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "thread replies keep parent and child snapshots" testThreadRepliesKeepSnapshots
       , testCase "thread branches do not overwrite siblings" testThreadBranchesDoNotOverwriteSiblings
@@ -4035,6 +4037,39 @@ testActiveThreadSteeringLifecycle = runEff $ runConcurrent $ runPrim $ runTestLo
     assertBool "enqueue wins with its value, or completion closes before enqueue" $
       raceResult == (True, Just [inputWithImages "race" []])
         || raceResult == (False, Nothing)
+
+testConsoleSessionSteering :: IO ()
+testConsoleSessionSteering = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  store <- newThreadStore
+  let initialMessage = testMessage
+        { platform = PlatformRPC
+        , chatId = Nothing
+        , chatAliases = ["work-1"]
+        , senderId = Just "rpc-user"
+        , messageId = Just "session-1"
+        , replyToMessageId = Nothing
+        , text = "first"
+        }
+      steerMessage :: IncomingMessage
+      steerMessage = initialMessage
+        { chatAliases = initialMessage.chatAliases
+        , messageId = Just "session-2"
+        , text = "second"
+        }
+      other :: IncomingMessage
+      other = steerMessage{chatAliases = ["work-2"], messageId = Just "session-3"}
+      transcript = startWithUser initialMessage.text
+  active <- fromMaybe (error "expected active console thread") <$>
+    rememberActiveSessionThread store (Session.SessionId "work-1") "run-1" Nothing (threadMessageKey initialMessage <$> initialMessage.messageId) initialMessage initialMessage.text (Concurrency.Handle (Concurrency.Id 1)) transcript
+  duplicate <- rememberActiveSessionThread store (Session.SessionId "work-1") "run-2" Nothing Nothing steerMessage steerMessage.text (Concurrency.Handle (Concurrency.Id 2)) transcript
+  accepted <- enqueueActiveSessionThreadSteer store (Session.SessionId "work-1") steerMessage (inputWithImages steerMessage.text [])
+  rejectedOtherSession <- enqueueActiveSessionThreadSteer store (Session.SessionId "work-2") other (inputWithImages other.text [])
+  queued <- drainActiveThreadSteers active
+  liftIO do
+    accepted @?= True
+    assertBool "one console session should own one active run" (isNothing duplicate)
+    rejectedOtherSession @?= False
+    map (.text) queued @?= ["second"]
 
 testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do

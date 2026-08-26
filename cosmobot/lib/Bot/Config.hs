@@ -11,6 +11,7 @@ module Bot.Config
   , HandlersConfig (..)
   , AdminConfig (..)
   , AskHandlerConfig (..)
+  , ConsoleHandlerConfig (..)
   , SaucenaoConfig (..)
   , Memory.MemoryConfig (..)
   , Skills.SkillsConfig (..)
@@ -41,6 +42,9 @@ import qualified Bot.Handler.Admin.Config as AdminConfig
 import Bot.Handler.Ask.Config
   ( AskHandlerConfig (..)
   )
+import Bot.Handler.Console.Config
+  ( ConsoleHandlerConfig (..)
+  )
 import qualified Bot.Handler.Saucenao.Config as SaucenaoConfig
 import Bot.Handler.Saucenao.Config
   ( SaucenaoConfig (..)
@@ -67,7 +71,7 @@ data BotConfig = BotConfig
   { qq       :: !(Maybe QQ.Config)
   , telegram :: !(Maybe Telegram.Config)
   , matrix   :: !(Maybe Matrix.Config)
-  , discord :: !(Maybe Discord.Config)
+  , discord  :: !(Maybe Discord.Config)
   , llm      :: !LLMConfig.Config
   , media    :: !MediaConfig.Config
   , tool     :: !Agent.ToolConfig
@@ -87,6 +91,7 @@ data BotConfig = BotConfig
 data HandlersConfig = HandlersConfig
   { admin :: !AdminConfig
   , ask :: !AskHandlerConfig
+  , console :: !ConsoleHandlerConfig
   , shutup :: !ShutUpConfig
   }
   deriving (Show)
@@ -188,6 +193,7 @@ data HandlerFileConfig = HandlerFileConfig
   { admin   :: !AdminConfig
   , saucenao :: !SaucenaoConfig
   , ask      :: !AskHandlerConfig
+  , console  :: !ConsoleHandlerConfig
   , shutup   :: !ShutUpConfig
   }
   deriving (Show)
@@ -197,6 +203,7 @@ instance FromValue HandlerFileConfig where
     <$> fmap (fromMaybe AdminConfig.defaultAdminConfig) (optKey "admin")
     <*> fmap (fromMaybe SaucenaoConfig.defaultSaucenaoConfig) (optKey "saucenao")
     <*> reqKey "ask"
+    <*> reqKey "console"
     <*> fmap (fromMaybe ShutUpConfig.defaultShutUpConfig) (optKey "shutup")
 
 newtype LogFileConfig = LogFileConfig
@@ -274,7 +281,12 @@ toBotConfig configPath cfg =
     , plugins = cfg.plugins
         { pluginDir = resolveBesideConfig configPath cfg.plugins.pluginDir
         }
-    , handlers = HandlersConfig cfg.handler.admin askConfig cfg.handler.shutup
+    , handlers = HandlersConfig
+        { admin = cfg.handler.admin
+        , ask = askConfig
+        , console = cfg.handler.console
+        , shutup = cfg.handler.shutup
+        }
     , logLevel = cfg.log.level
     , sqlitePath = cfg.storage.sqlitePath
     }

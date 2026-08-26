@@ -82,8 +82,42 @@ instance ChatDriver RpcChatDriver where
     RPC.broadcast driver.rpcState (Aeson.toJSON (JSONRPC.notification "chat.message_update" payload))
     pure updated
 
+  completeMessageEdit driver message messageId = do
+    let payload = Aeson.object
+          [ "sessionId" Aeson..= RPC.sessionIdFromMessage message
+          , "messageId" Aeson..= messageId
+          ]
+    RPC.broadcast driver.rpcState (Aeson.toJSON (JSONRPC.notification "chat.message_done" payload))
+    pure True
+
+  publishActivity driver message activity =
+    RPC.broadcast driver.rpcState (activityNotification (RPC.sessionIdFromMessage message) activity)
+
   messageOutPolicy _ _ =
     pure (Chat.EditableMessage 1200 4000)
+
+activityNotification :: RPC.RpcSessionId -> Chat.Activity -> Aeson.Value
+activityNotification sessionId = \case
+  Chat.ReasoningStarted runId turn ->
+    notification "chat.reasoning_start" runId turn []
+  Chat.ReasoningFinished runId turn answerKind ->
+    notification "chat.reasoning_end" runId turn ["answerKind" Aeson..= answerKind]
+  Chat.ToolCallStarted runId turn toolCallId toolName ->
+    notification "chat.tool_call_start" runId turn
+      ["toolCallId" Aeson..= toolCallId, "toolName" Aeson..= toolName]
+  Chat.ToolCallFinished runId turn toolCallId toolName status ->
+    notification "chat.tool_call_end" runId turn
+      [ "toolCallId" Aeson..= toolCallId
+      , "toolName" Aeson..= toolName
+      , "status" Aeson..= status
+      ]
+  where
+    notification method runId turn fields =
+      Aeson.toJSON $ JSONRPC.notification method $ Aeson.object $
+        [ "sessionId" Aeson..= sessionId
+        , "runId" Aeson..= runId
+        , "turn" Aeson..= turn
+        ] <> fields
 
 data RpcReplyContent = RpcReplyContent
   { text :: !Text
