@@ -925,6 +925,7 @@ testDiscordCommonMarkExtensionsRenderDiscordMarkdown = do
   Discord.formatDiscordMarkdown "**hi** and `code`" @?= "**hi** and `code`"
   Discord.formatDiscordMarkdown "~~old~~ and [site](https://example.test/a)" @?= "~~old~~ and [site](https://example.test/a)"
   Discord.formatDiscordMarkdown "- [ ] todo\n- [x] **done**" @?= "- [ ] todo\n- [x] **done**"
+  Discord.formatDiscordMarkdown "#### details" @?= "-# details"
   Discord.formatDiscordMarkdown "Use $x^2$ and $$y$$" @?= "Use `x^2` and ```\ny\n```"
   Discord.formatDiscordMarkdown "| a | b |\n| - | - |\n| 1 | 2 |" @?= "```\na | b\n1 | 2\n```"
 

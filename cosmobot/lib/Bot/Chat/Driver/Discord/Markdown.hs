@@ -66,7 +66,7 @@ instance IsBlock DiscordMarkdown DiscordMarkdown where
   codeBlock info text =
     discordMarkdownTextOnly ("```" <> Text.takeWhile (not . Char.isSpace) info <> "\n" <> escapeDiscordCodeBlock text <> "\n```\n\n")
   heading level body =
-    discordMarkdownTextOnly (Text.replicate (max 1 (min 3 level)) "#" <> " ")
+    discordMarkdownTextOnly ((if level <= 3 then Text.replicate level "#" else "-#") <> " ")
       <> body
       <> discordMarkdownTextOnly "\n\n"
   rawBlock _ text = discordMarkdownTextOnly text
