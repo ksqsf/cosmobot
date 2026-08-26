@@ -32,7 +32,12 @@ import Effectful.FileSystem (FileSystem)
 import GHC.Clock (getMonotonicTimeNSec)
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.HTTP.Types.Status as HTTPStatus
-import System.IO.Error (ioError, userError)
+
+newtype S3ConfigurationException = S3ConfigurationException Text
+  deriving (Eq, Show)
+
+instance Exception S3ConfigurationException where
+  displayException (S3ConfigurationException message) = Text.unpack message
 
 data Runtime = Runtime
   { cfg :: !MediaConfig.Config
@@ -146,7 +151,7 @@ storeObjectUnsafe _ Runtime{cfg, env = Nothing} _
   | not cfg.s3.enabled =
       pure Nothing
   | otherwise =
-      liftIO (ioError (userError (Text.unpack (missingS3ConfigMessage cfg.s3))))
+      throwIO (S3ConfigurationException (missingS3ConfigMessage cfg.s3))
 storeObjectUnsafe forceUpload Runtime{cfg, env = Just env} cached
   | not cfg.s3.enabled =
       pure Nothing
@@ -206,7 +211,7 @@ setPublicAcl cfg request
 ensureS3Config :: IOE :> es => Config -> Eff es ()
 ensureS3Config cfg
   | missingS3ConfigMessage cfg == "" = pure ()
-  | otherwise = liftIO (ioError (userError (Text.unpack (missingS3ConfigMessage cfg))))
+  | otherwise = throwIO (S3ConfigurationException (missingS3ConfigMessage cfg))
 
 missingS3ConfigMessage :: Config -> Text
 missingS3ConfigMessage cfg =

@@ -26,7 +26,12 @@ import qualified Effectful.Process.Typed as TypedProcess
 import qualified Effectful.Temporary as Temporary
 import System.Exit
 import System.FilePath
-import System.IO.Error (userError)
+
+newtype TypstException = TypstCompileFailed Text
+  deriving (Eq, Show)
+
+instance Exception TypstException where
+  displayException (TypstCompileFailed err) = Text.unpack ("typst failed: " <> err)
 
 runTypst
   :: (IOE :> es, KatipE :> es, Fail :> es, FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es)
@@ -63,7 +68,7 @@ renderTypst format dir source = do
       pure outputPath
     ExitFailure _ -> do
       Image.removeFilesIfExists [typstPath, outputPath]
-      throwIO (userError ("typst failed: " <> Text.unpack err))
+      throwIO (TypstCompileFailed err)
 
 typstOutputFileName :: TypstOutputFormat -> Text -> Text
 typstOutputFileName format source =

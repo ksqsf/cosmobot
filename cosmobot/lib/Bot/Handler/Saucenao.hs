@@ -24,7 +24,18 @@ import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Network.HTTP.Req
-import System.IO.Error (userError)
+
+data SaucenaoException
+  = SaucenaoApiFailed !Text
+  | SaucenaoMediaHasNoPublicUrl !Text
+  | UnsupportedSaucenaoImageUrl !Text
+  deriving (Eq, Show)
+
+instance Exception SaucenaoException where
+  displayException = Text.unpack . \case
+    SaucenaoApiFailed err -> err
+    SaucenaoMediaHasNoPublicUrl imageUrl -> [i|SauceNAO media id has no public URL: #{imageUrl}|]
+    UnsupportedSaucenaoImageUrl imageUrl -> [i|Unsupported SauceNAO image URL: #{imageUrl}|]
 
 saucenaoCommand :: Text
 saucenaoCommand =
@@ -111,7 +122,7 @@ searchImage cfg imageUrl = do
   value <- HTTP.runReq $
     responseBody <$> req GET saucenaoUrl NoReqBody jsonResponse (saucenaoSearchOptions cfg resolvedUrl)
   case join (AesonTypes.parseMaybe saucenaoApiError value) of
-    Just err -> throwIO (userError (Text.unpack err))
+    Just err -> throwIO (SaucenaoApiFailed err)
     Nothing  -> pure ()
   pure (join (AesonTypes.parseMaybe firstResult value))
 
@@ -134,11 +145,11 @@ resolveSearchImageUrl imageUrl
       publicUrl <- Media.publicMediaRef stripped
       if isPublicImageUrl publicUrl
         then pure publicUrl
-        else throwIO (userError [i|SauceNAO media id has no public URL: #{imageUrl}|])
+        else throwIO (SaucenaoMediaHasNoPublicUrl imageUrl)
   | isPublicImageUrl stripped =
       pure stripped
   | otherwise =
-      throwIO (userError [i|Unsupported SauceNAO image URL: #{imageUrl}|])
+      throwIO (UnsupportedSaucenaoImageUrl imageUrl)
   where
     stripped = Text.strip imageUrl
 

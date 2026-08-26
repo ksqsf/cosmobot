@@ -24,8 +24,23 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextEncoding
 import Network.HTTP.Req
-import System.IO.Error (userError)
 import qualified Text.URI as URI
+
+data WebToolException
+  = WebSearchNotConfigured !WebSearchApi
+  | InvalidWebSearchResponse !WebSearchApi !Text
+  | UnsupportedWebUrl !Text
+  deriving (Eq, Show)
+
+instance Exception WebToolException where
+  displayException = Text.unpack . \case
+    WebSearchNotConfigured source ->
+      case source of
+        WebSearchTavily -> "Tavily search is not configured: set tool.web_search.tavily_api_key."
+        WebSearchBrave -> "Brave search is not configured: set tool.web_search.brave_api_key."
+        WebSearchExa -> "Exa search is not configured: set tool.web_search.exa_api_key."
+    InvalidWebSearchResponse source err -> [i|Invalid #{webSearchSource source} search response: #{err}|]
+    UnsupportedWebUrl url -> [i|Unsupported URL: #{url}. Use an http or https URL.|]
 
 webSearchTool :: HTTP.HTTP :> es => Tool (Eff es)
 webSearchTool =
@@ -80,15 +95,15 @@ webSearch cfg query maxResults =
   case cfg.webSearchApi of
     WebSearchTavily ->
       case cfg.tavilyApiKey of
-        Nothing -> throwIO (userError "Tavily search is not configured: set tool.web_search.tavily_api_key.")
+        Nothing -> throwIO (WebSearchNotConfigured WebSearchTavily)
         Just key -> tavilySearch key query maxResults
     WebSearchBrave ->
       case cfg.braveApiKey of
-        Nothing -> throwIO (userError "Brave search is not configured: set tool.web_search.brave_api_key.")
+        Nothing -> throwIO (WebSearchNotConfigured WebSearchBrave)
         Just key -> braveSearch key query maxResults
     WebSearchExa ->
       case cfg.exaApiKey of
-        Nothing -> throwIO (userError "Exa search is not configured: set tool.web_search.exa_api_key.")
+        Nothing -> throwIO (WebSearchNotConfigured WebSearchExa)
         Just key -> exaSearch key query maxResults
 
 webSearchSource :: WebSearchApi -> Text
@@ -113,7 +128,7 @@ tavilySearch apiKey query maxResults = do
       ( header "Authorization" (ByteString.pack [i|Bearer #{apiKey}|])
           <> webRequestOptions
       )
-  either (throwIO . userError) pure $
+  either (throwIO . InvalidWebSearchResponse WebSearchTavily . Text.pack) pure $
     AesonTypes.parseEither parseTavilyResults (responseBody response)
 
 braveSearch :: HTTP.HTTP :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
@@ -128,7 +143,7 @@ braveSearch apiKey query maxResults = do
           <> header "X-Subscription-Token" (TextEncoding.encodeUtf8 apiKey)
           <> webRequestOptions
       )
-  either (throwIO . userError) pure $
+  either (throwIO . InvalidWebSearchResponse WebSearchBrave . Text.pack) pure $
     AesonTypes.parseEither parseBraveResults (responseBody response)
 
 exaSearch :: HTTP.HTTP :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
@@ -147,7 +162,7 @@ exaSearch apiKey query maxResults = do
       ( header "x-api-key" (TextEncoding.encodeUtf8 apiKey)
           <> webRequestOptions
       )
-  either (throwIO . userError) pure $
+  either (throwIO . InvalidWebSearchResponse WebSearchExa . Text.pack) pure $
     AesonTypes.parseEither parseExaResults (responseBody response)
 
 parseTavilyResults :: Aeson.Value -> AesonTypes.Parser [Aeson.Value]
@@ -210,7 +225,7 @@ fetchWebPage rawUrl maxContentTokens = do
   uri <- URI.mkURI rawUrl
   case useURI uri of
     Nothing ->
-      throwIO (userError [i|Unsupported URL: #{rawUrl}. Use an http or https URL.|])
+      throwIO (UnsupportedWebUrl rawUrl)
     Just (Left (url, options)) ->
       fetch url options
     Just (Right (url, options)) ->

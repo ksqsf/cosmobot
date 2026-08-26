@@ -16,14 +16,21 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Text as Text
+import qualified Control.Exception as Exception
 import Network.Connection (TLSSettings (..))
 import qualified Network.HTTP.Client as Client
 import qualified Network.HTTP.Client.TLS as ClientTLS
 import Network.HTTP.Req (HttpConfig (..), Option, Req, Url, useHttpsURI, (/:))
 import qualified Network.HTTP.Req as Req
 import qualified Network.TLS as TLS
-import System.IO.Error (ioError, userError)
 import qualified Text.URI as URI
+
+newtype UnsupportedHttpsEndpoint = UnsupportedHttpsEndpoint Text
+  deriving (Eq, Show)
+
+instance Exception UnsupportedHttpsEndpoint where
+  displayException (UnsupportedHttpsEndpoint endpoint) =
+    Text.unpack [i|Unsupported HTTPS endpoint URL: #{endpoint}. Use a full HTTPS base URL.|]
 
 runHTTP :: IOE :> es => Eff (HTTP.HTTP : es) a -> Eff es a
 runHTTP inner = do
@@ -52,7 +59,7 @@ httpsEndpointUrl endpoint path = do
   uri <- URI.mkURI endpoint
   case useHttpsURI uri of
     Nothing ->
-      ioError (userError [i|Unsupported HTTPS endpoint URL: #{endpoint}. Use a full HTTPS base URL.|])
+      Exception.throwIO (UnsupportedHttpsEndpoint endpoint)
     Just (url, options) ->
       pure (foldl' (/:) url path, options)
 

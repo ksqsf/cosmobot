@@ -52,6 +52,7 @@ import qualified Crypto.Cipher.AES as CryptoAES
 import qualified Crypto.Cipher.Types as CryptoCipher
 import qualified Crypto.Error as CryptoError
 import qualified Crypto.Hash as CryptoHash
+import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as Aeson
@@ -71,7 +72,6 @@ import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as SP
 import qualified Streaming.Prelude as S
 import System.FilePath ((</>), (<.>), takeFileName)
-import System.IO.Error (ioError, userError)
 
 newtype MatrixDriver = MatrixDriver Protocol.MatrixDriver
 
@@ -455,7 +455,7 @@ acceptInvitations driver response =
       Right _ -> $(logInfo) [i|Accepted Matrix room invitation: #{roomId}|]
       Left reason -> do
         $(logError) [i|Failed to accept Matrix room invitation #{roomId}: #{reason}|]
-        throwIO (userError (Text.unpack reason))
+        throwIO (MatrixRoomInvitationFailed (matrixRoomId roomId) reason)
 
 syncJoinedMemberCounts :: SyncResponse -> [(MatrixRoomId, Int)]
 syncJoinedMemberCounts response =
@@ -812,7 +812,7 @@ matrixMediaObject preferredMime media =
 
 decryptMatrixMediaObject :: IOE :> es => Maybe Text -> MatrixEncryptedFile -> MatrixDownloadedMedia -> Eff es Media.MediaObject
 decryptMatrixMediaObject preferredMime encrypted media = do
-  plan <- either (liftIO . ioError . userError . Text.unpack) pure (matrixDecryptionPlan encrypted)
+  plan <- either (throwIO . MatrixDecryptionPlanFailed) pure (matrixDecryptionPlan encrypted)
   pure Media.MediaObject
     { bytes = decryptMatrixEncryptedByteStream plan media.downloadedBytes
     , mimeType = fromMaybe media.downloadedMimeType preferredMime
@@ -860,7 +860,7 @@ decryptMatrixEncryptedByteStream plan encryptedBytes =
           unless (StrictByteString.null plainText) do
             SP.yield plainText
           unless (digest == plan.decryptionExpectedHash) do
-            liftIO (ioError (userError "Matrix encrypted file sha256 verification failed."))
+            liftIO (Exception.throwIO MatrixEncryptedFileHashMismatch)
         Right (chunk, rest) -> do
           let bytes = pending <> chunk
               readyLength = (StrictByteString.length bytes `div` matrixAesBlockSize) * matrixAesBlockSize
@@ -880,7 +880,7 @@ decryptMatrixEncryptedBytesForTest :: Text -> Text -> Text -> [StrictByteString.
 decryptMatrixEncryptedBytesForTest key iv sha256 chunks =
   case matrixDecryptionPlan encrypted of
     Left err ->
-      ioError (userError (Text.unpack err))
+      Exception.throwIO (MatrixDecryptionPlanFailed err)
     Right plan ->
       runResourceT (SP.toList_ (Q.toChunks (decryptMatrixEncryptedByteStream plan (Q.fromChunks (SP.each chunks)))))
   where
@@ -1248,7 +1248,7 @@ withMatrixImageFile imageRef action =
               withTemporaryMatrixImage mime bytes \path ->
                 action path (matrixUploadFileName path) mime
             Nothing ->
-              throwIO (userError "Matrix image reply requires a media:, file://, data:image/*, or mxc:// image reference.")
+              throwIO (InvalidMatrixImageReference imageRef)
 
 withMatrixAudioFile
   :: (FileSystem :> es, IOE :> es)

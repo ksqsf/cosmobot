@@ -32,7 +32,6 @@ import Network.HTTP.Req
 import qualified Network.TLS as TLS
 import qualified Network.WebSockets as WS
 import qualified Network.WebSockets.Stream as WSStream
-import System.IO.Error (userError)
 
 data DiscordDriver = DiscordDriver
   { config :: !Config
@@ -42,6 +41,28 @@ data DiscordDriver = DiscordDriver
 data GatewayEvent
   = GatewayMessageCreated !Message
   | GatewayMessageDeleted !DeletedMessage
+
+data DiscordException
+  = DiscordReconnectRequest
+  | DiscordInvalidSession
+  | DiscordHeartbeatAckTimeout
+  | DiscordUploadResponseDecodeFailed !Text
+  | DiscordGatewayDataParseFailed !Text !Text
+  deriving (Eq, Show)
+
+instance Exception DiscordException where
+  displayException = Text.unpack . \case
+    DiscordReconnectRequest -> "Discord gateway requested reconnect"
+    DiscordInvalidSession -> "Discord gateway invalid session"
+    DiscordHeartbeatAckTimeout -> "Discord gateway heartbeat ACK timed out"
+    DiscordUploadResponseDecodeFailed err -> [i|Discord upload response decode failed: #{err}|]
+    DiscordGatewayDataParseFailed label err -> [i|#{label} parse failed: #{err}|]
+
+data ConnectionOutcome
+  = Disconnected
+  | ReconnectRequested
+  | ConnectionFailed !Text
+  deriving (Eq, Show)
 
 newDiscordDriver :: IOE :> es => Config -> Eff es DiscordDriver
 newDiscordDriver config = do
@@ -112,26 +133,35 @@ discordConnectionLoop
   -> Eff es ()
 discordConnectionLoop cfg eventChan =
   forever do
-    result <- runDiscordConnectionOnce cfg eventChan
-    case result of
-      Right () ->
+    runDiscordConnectionOnce cfg eventChan >>= \case
+      Disconnected -> do
         $(logDebug) "Discord gateway disconnected; reconnecting"
-      Left err ->
+        threadDelay discordReconnectDelayMicroseconds
+      ReconnectRequested ->
+        pure ()
+      ConnectionFailed err -> do
         $(logWarning) [i|Discord gateway failed; reconnecting: #{err}|]
-    threadDelay discordReconnectDelayMicroseconds
+        threadDelay discordReconnectDelayMicroseconds
 
 runDiscordConnectionOnce
   :: (IOE :> es, KatipE :> es, Concurrent :> es, Concurrency.Concurrency :> es)
   => Config
   -> Chan.Chan GatewayEvent
-  -> Eff es (Either String ())
-runDiscordConnectionOnce cfg eventChan =
-  first exceptionSummary
-    <$> trySync (runSecureWebSocketClient cfg.gatewayHost cfg.gatewayPath (runGatewayConnection cfg eventChan))
+  -> Eff es ConnectionOutcome
+runDiscordConnectionOnce cfg eventChan = do
+  trySync (runSecureWebSocketClient cfg.gatewayHost cfg.gatewayPath (runGatewayConnection cfg eventChan)) >>= \case
+    Right () -> pure Disconnected
+    Left err -> pure (classifyConnectionException err)
 
-exceptionSummary :: Exception e => e -> String
+classifyConnectionException :: SomeException -> ConnectionOutcome
+classifyConnectionException err =
+  case fromException err of
+    Just DiscordReconnectRequest -> ReconnectRequested
+    _ -> ConnectionFailed (exceptionSummary err)
+
+exceptionSummary :: Exception e => e -> Text
 exceptionSummary =
-  Text.unpack . Text.takeWhile (/= '\n') . Text.pack . displayException
+  Text.takeWhile (/= '\n') . Text.pack . displayException
 
 runSecureWebSocketClient
   :: IOE :> es
@@ -220,7 +250,7 @@ heartbeatLoop conn lastSequence heartbeatAck intervalMs = forever do
     else do
       $(logError) "Discord gateway heartbeat ACK timed out; closing connection"
       liftIO $ WS.sendClose conn ("heartbeat ACK timeout" :: Text)
-      throwIO (userError "Discord gateway heartbeat ACK timed out")
+      throwIO DiscordHeartbeatAckTimeout
 
 readGatewayEvents
   :: (IOE :> es, KatipE :> es, Concurrent :> es)
@@ -243,9 +273,9 @@ readGatewayEvents eventChan lastSequence heartbeatAck conn = forever do
       sequenceNumber <- MVar.readMVar lastSequence
       liftIO $ WS.sendTextData conn (Aeson.encode (heartbeatPayload sequenceNumber))
     (7, _) ->
-      throwIO (userError "Discord gateway requested reconnect")
+      throwIO DiscordReconnectRequest
     (9, _) ->
-      throwIO (userError "Discord gateway invalid session")
+      throwIO DiscordInvalidSession
     (11, _) ->
       void $ MVar.swapMVar heartbeatAck True
     _ ->
@@ -369,7 +399,7 @@ discordUploadFile cfg channelId content path fileName = discordRequestContext "P
     Right message ->
       pure message
     Left err ->
-      throwIO (userError [i|Discord upload response decode failed: #{err}|])
+      throwIO (DiscordUploadResponseDecodeFailed (Text.pack err))
 
 discordRequestContext :: KatipE :> es => Text -> [Text] -> Eff es a -> Eff es a
 discordRequestContext method path =
@@ -402,13 +432,13 @@ data GatewayHello = GatewayHello
   deriving (Show, Generic)
     deriving Aeson.FromJSON via (SnakeJSON GatewayHello)
 
-parseGatewayData :: (IOE :> es, Aeson.FromJSON a) => String -> Aeson.Value -> Eff es a
+parseGatewayData :: (IOE :> es, Aeson.FromJSON a) => Text -> Aeson.Value -> Eff es a
 parseGatewayData label value =
   case Aeson.parseEither Aeson.parseJSON value of
     Right parsed ->
       pure parsed
     Left err ->
-      throwIO (userError [i|#{label} parse failed: #{err}|])
+      throwIO (DiscordGatewayDataParseFailed label (Text.pack err))
 
 data Message = Message
   { id :: !Text

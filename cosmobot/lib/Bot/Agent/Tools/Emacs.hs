@@ -15,10 +15,23 @@ import Bot.Agent.Types
 import Bot.Prelude
 import qualified Data.Text as Text
 import System.Exit (ExitCode (..))
-import System.IO.Error (userError)
 import Effectful.Process (Process, StdStream (..), proc, readCreateProcessWithExitCode, waitForProcess, createProcess, std_err, std_out)
 import Effectful.Timeout
 import Effectful.FileSystem.IO (FileSystem, hClose)
+
+data EmacsToolException
+  = EmacsEvalTimedOut !Int
+  | EmacsEvalFailed !Text
+  | EmacsDaemonStartupTimedOut !Int
+  | EmacsDaemonStartupFailed !ExitCode
+  deriving (Eq, Show)
+
+instance Exception EmacsToolException where
+  displayException = Text.unpack . \case
+    EmacsEvalTimedOut seconds -> [i|emacs_eval timed out after #{seconds} seconds.|]
+    EmacsEvalFailed result -> result
+    EmacsDaemonStartupTimedOut seconds -> [i|emacs daemon startup timed out after #{seconds} seconds.|]
+    EmacsDaemonStartupFailed exitCode -> [i|emacs daemon startup failed: #{show exitCode :: String}|]
 
 emacsSocketName :: String
 emacsSocketName =
@@ -57,12 +70,12 @@ tryEval timeoutSeconds expression =
     outcome <- timeout (effectiveTimeout * 1_000_000) (readCreateProcessWithExitCode process "")
     case outcome of
       Nothing ->
-        throwIO (userError [i|emacs_eval timed out after #{effectiveTimeout} seconds.|])
+        throwIO (EmacsEvalTimedOut effectiveTimeout)
       Just (exitCode, stdoutText, stderrText) -> do
         let result = formatProcessResult "emacsclient" exitCode (Text.pack stdoutText) (Text.pack stderrText)
         case exitCode of
           ExitSuccess -> pure result
-          ExitFailure{} -> throwIO (userError (Text.unpack result))
+          ExitFailure{} -> throwIO (EmacsEvalFailed result)
 
 startEmacsDaemon :: (Process :> es, Timeout :> es, FileSystem :> es) => Int -> Eff es ()
 startEmacsDaemon timeoutSeconds = do
@@ -77,11 +90,11 @@ startEmacsDaemon timeoutSeconds = do
   traverse_ hClose errHandle
   case outcome of
     Nothing ->
-      throwIO (userError [i|emacs daemon startup timed out after #{effectiveTimeout} seconds.|])
+      throwIO (EmacsDaemonStartupTimedOut effectiveTimeout)
     Just ExitSuccess ->
       pure ()
     Just exitCode ->
-      throwIO (userError [i|emacs daemon startup failed: #{show exitCode :: String}|])
+      throwIO (EmacsDaemonStartupFailed exitCode)
 
 formatProcessResult :: Text -> ExitCode -> Text -> Text -> Text
 formatProcessResult commandName exitCode stdoutText stderrText =

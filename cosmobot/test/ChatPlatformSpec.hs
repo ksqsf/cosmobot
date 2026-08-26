@@ -4,6 +4,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Bot.Chat.Driver.Discord as Discord
+import qualified Bot.Chat.Driver.Discord.Protocol as DiscordProtocol
 import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
@@ -86,7 +87,13 @@ main =
       , testCase "Discord image context includes embeds and image links" testDiscordImageContextIncludesEmbedsAndImageLinks
       , testCase "Discord document attachment becomes a message file" testDiscordDocumentAttachmentBecomesMessageFile
       , testCase "Discord audio attachment becomes a message file" testDiscordAudioAttachmentBecomesMessageFile
+      , testCase "Discord requested reconnect is not a connection failure" testDiscordRequestedReconnect
       ]
+
+testDiscordRequestedReconnect :: Assertion
+testDiscordRequestedReconnect =
+  DiscordProtocol.classifyConnectionException (toException DiscordProtocol.DiscordReconnectRequest)
+    @?= DiscordProtocol.ReconnectRequested
 
 testQqUserMessageConvertsToIncomingMessage :: IO ()
 testQqUserMessageConvertsToIncomingMessage = do

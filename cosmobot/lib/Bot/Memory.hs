@@ -20,7 +20,6 @@ where
 
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Data.List as List
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Effectful.FileSystem (FileSystem)
@@ -30,7 +29,13 @@ import qualified Effectful.FileSystem.IO.File as FileSystemFile
 import Effectful.Process (Process, proc, readCreateProcessWithExitCode)
 import System.Exit (ExitCode (..))
 import System.FilePath
-import System.IO.Error (userError)
+
+data MemoryException = MemoryGitFailed ![Text] !Text
+  deriving (Eq, Show)
+
+instance Exception MemoryException where
+  displayException (MemoryGitFailed args stderrText) =
+    Text.unpack [i|git #{Text.unwords args} failed: #{stderrText}|]
 
 -- | Filesystem-backed memory settings.
 newtype MemoryConfig = MemoryConfig
@@ -155,7 +160,7 @@ runGit :: (IOE :> es, Process :> es) => MemoryConfig -> [String] -> Eff es ()
 runGit cfg args = do
   (exitCode, _, stderrText) <- git cfg args
   unless (exitCode == ExitSuccess) $
-    throwIO $ userError $ "git " <> List.intercalate " " args <> " failed: " <> stderrText
+    throwIO (MemoryGitFailed (map Text.pack args) (Text.pack stderrText))
 
 gitSucceeds :: Process :> es => MemoryConfig -> [String] -> Eff es Bool
 gitSucceeds cfg args = do

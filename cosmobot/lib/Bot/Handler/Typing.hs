@@ -26,8 +26,19 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time
 import Network.HTTP.Req
-import System.IO.Error (userError)
 import Text.Printf
+
+data TypingException
+  = ChampionshipRankTableNotFound
+  | ChampionshipRankTableEmpty
+  | InvalidTigerLeaderboardResponse
+  deriving (Eq, Show)
+
+instance Exception TypingException where
+  displayException = \case
+    ChampionshipRankTableNotFound -> "championship rank table not found"
+    ChampionshipRankTableEmpty -> "championship rank table is empty"
+    InvalidTigerLeaderboardResponse -> "tiger leaderboard response had unexpected shape"
 
 championshipRankCommand :: Text
 championshipRankCommand = "!jbscj"
@@ -97,10 +108,10 @@ currentDateText = do
 fetchChampionshipRows :: (HTTP.HTTP :> es, IOE :> es) => Eff es [[Text]]
 fetchChampionshipRows = do
   html <- fetchChampionshipPage
-  table <- maybe (throwIO (userError "championship rank table not found")) pure (extractRankTable html)
+  table <- maybe (throwIO ChampionshipRankTableNotFound) pure (extractRankTable html)
   let rows = rankRows table
   case rows of
-    [] -> throwIO (userError "championship rank table is empty")
+    [] -> throwIO ChampionshipRankTableEmpty
     _  -> pure rows
 
 fetchChampionshipPage :: HTTP.HTTP :> es => Eff es Text
@@ -118,7 +129,7 @@ fetchTigerRows = do
   date <- liftIO currentDateText
   value <- HTTP.runReq $
     responseBody <$> req GET (tigerLeaderboardUrl date) NoReqBody jsonResponse ("limit" =: (50 :: Int))
-  maybe (throwIO (userError "tiger leaderboard response had unexpected shape")) pure
+  maybe (throwIO InvalidTigerLeaderboardResponse) pure
     (AesonTypes.parseMaybe tigerRows value)
 
 tigerLeaderboardUrl :: Text -> Url 'Https

@@ -19,6 +19,7 @@ import qualified Data.ByteString.Base64 as Base64
 import qualified Data.List as List
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Control.Exception as Exception
 import Control.Monad.Trans.Resource (ResourceT)
 import Effectful.FileSystem (FileSystem)
 import qualified Data.ByteString.Streaming.HTTP as StreamingHTTP
@@ -28,7 +29,22 @@ import qualified Network.HTTP.Types.Status as HTTPStatus
 import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
 import System.FilePath (takeFileName)
-import System.IO.Error (ioError, userError)
+
+data MediaObjectException
+  = InvalidDataImageBase64 !Text
+  | RemoteMediaProbeFailed !Int
+  | RemoteMediaDownloadFailed !Text !Int
+  | RemoteMediaNotMedia !Text !Text
+  | InvalidFileMediaReference !Text
+  deriving (Eq, Show)
+
+instance Exception MediaObjectException where
+  displayException = Text.unpack . \case
+    InvalidDataImageBase64 err -> [i|Invalid data:image base64 data: #{err}|]
+    RemoteMediaProbeFailed status -> [i|Remote media probe failed with HTTP #{status}|]
+    RemoteMediaDownloadFailed ref status -> [i|Remote media download failed: #{ref} returned HTTP #{status}|]
+    RemoteMediaNotMedia ref mime -> [i|Remote media download returned non-media content-type #{mime}: #{ref}|]
+    InvalidFileMediaReference ref -> [i|Invalid file media reference: #{ref}|]
 
 decodeDataMediaObject :: Text -> Maybe MediaObject
 decodeDataMediaObject ref = do
@@ -75,7 +91,7 @@ decodeAndYield bytes
   | otherwise =
       case Base64.decode bytes of
         Left err ->
-          liftIO (ioError (userError [i|Invalid data:image base64 data: #{Text.pack err}|]))
+          liftIO (Exception.throwIO (InvalidDataImageBase64 (Text.pack err)))
         Right decoded ->
           unless (StrictByteString.null decoded) (S.yield decoded)
 
@@ -110,7 +126,7 @@ probeRemoteMimeWithRangeGet manager request nameMime =
     \response -> do
       let status = HTTP.responseStatus response
       unless (HTTPStatus.statusIsSuccessful status) $
-        liftIO (ioError (userError [i|Remote media probe failed with HTTP #{HTTPStatus.statusCode status}|]))
+        throwIO (RemoteMediaProbeFailed (HTTPStatus.statusCode status))
       chunk <- liftIO (HTTP.brRead (HTTP.responseBody response))
       pure (resolvedRemoteMime (responseMime response) nameMime chunk)
 
@@ -120,9 +136,9 @@ downloadByteStream manager ref request expectedMime = do
   let status = HTTP.responseStatus response
       headerMime = responseMime response
   unless (HTTPStatus.statusIsSuccessful status) $
-    liftIO (ioError (userError [i|Remote media download failed: #{ref} returned HTTP #{HTTPStatus.statusCode status}|]))
+    liftIO (Exception.throwIO (RemoteMediaDownloadFailed ref (HTTPStatus.statusCode status)))
   unless (Mime.isProbablyMediaMime headerMime || Mime.isProbablyMediaMime expectedMime) $
-    liftIO (ioError (userError [i|Remote media download returned non-media content-type #{headerMime}: #{ref}|]))
+    liftIO (Exception.throwIO (RemoteMediaNotMedia ref headerMime))
   HTTP.responseBody response
 
 mediaDownloadRequest :: HTTP.Request -> HTTP.Request
@@ -167,7 +183,7 @@ fileObject :: (IOE :> es, FileSystem :> es) => Text -> Eff es MediaObject
 fileObject ref = do
   path <- case Text.stripPrefix "file://" ref of
     Just path -> pure (Text.unpack path)
-    Nothing -> liftIO (ioError (userError [i|Invalid file media reference: #{ref}|]))
+    Nothing -> throwIO (InvalidFileMediaReference ref)
   pure MediaObject
     { bytes = Q.readFile path
     , mimeType = Mime.mimeFromName (Text.pack path)

@@ -32,7 +32,12 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.HTTP.Req
-import System.IO.Error (userError)
+
+newtype SafebooruException = InvalidSafebooruResponse Text
+  deriving (Eq, Show)
+
+instance Exception SafebooruException where
+  displayException (InvalidSafebooruResponse err) = Text.unpack err
 
 ballCommand :: Text
 ballCommand =
@@ -296,7 +301,7 @@ searchSafebooruImageLinks :: (Fail :> es, HTTP.HTTP :> es) => Text -> Eff es [Te
 searchSafebooruImageLinks keyword = do
   value <- HTTP.runReq $
     responseBody <$> req GET safebooruUrl NoReqBody jsonResponse (safebooruOptions keyword)
-  either (throwIO . userError) pure $
+  either (throwIO . InvalidSafebooruResponse . Text.pack) pure $
     AesonTypes.parseEither parseSafebooruImageLinks value
 
 safebooruUrl :: Url 'Https

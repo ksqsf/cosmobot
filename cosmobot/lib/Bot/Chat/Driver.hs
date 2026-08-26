@@ -41,7 +41,13 @@ import Effectful.FileSystem (FileSystem)
 import Effectful.Timeout
 import qualified Effectful.Resource as EffectfulResource
 import qualified Streaming as S
-import System.IO.Error (userError)
+
+newtype ChatDriverException = ChatDriverNotConfigured ChatPlatform
+  deriving (Eq, Show)
+
+instance Exception ChatDriverException where
+  displayException (ChatDriverNotConfigured platform) =
+    show platform <> " driver is not configured."
 
 data ChatDrivers = ChatDrivers
   { qq :: !(Maybe QQ.QQDriver)
@@ -253,9 +259,8 @@ withMessageDriver drivers message action =
     PlatformACP ->
       maybe missingDriver (action . NormalizingChatDriver) drivers.acp
   where
-    platformText = show message.platform :: String
     missingDriver =
-      throwIO (userError [i|#{platformText} driver is not configured.|])
+      throwIO (ChatDriverNotConfigured message.platform)
 
 withChatDriverMaybe
   :: (KatipE :> es)

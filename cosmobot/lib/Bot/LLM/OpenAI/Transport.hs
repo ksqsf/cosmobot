@@ -49,7 +49,6 @@ import Network.HTTP.Req
 import Optics ((%~))
 import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
-import System.IO.Error (ioError, userError)
 import qualified Effectful.Timeout as Timeout
 import qualified Text.URI as URI
 import Effectful.FileSystem (FileSystem)
@@ -466,7 +465,7 @@ downloadImageReference timeoutSeconds index imageRef = do
   uri <- URI.mkURI imageRef
   case useHttpsURI uri of
     Nothing ->
-      liftIO $ ioError (userError [i|Unsupported image reference URL for image edit: #{imageRef}. Use HTTPS, file://, or data:image/...;base64.|])
+      throwIO (LLMException [i|Unsupported image reference URL for image edit: #{imageRef}. Use HTTPS, file://, or data:image/...;base64.|])
     Just _ -> do
       request <- liftIO (Client.parseRequest (Text.unpack imageRef))
       let requestWithTimeout = request{Client.responseTimeout = Client.responseTimeoutMicro (secondsToMicros timeoutSeconds)}

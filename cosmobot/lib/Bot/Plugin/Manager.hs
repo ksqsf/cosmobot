@@ -44,7 +44,6 @@ import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout (Timeout, timeout)
 import qualified System.Environment as Environment
 import System.FilePath ((</>))
-import System.IO.Error (userError)
 import System.Process (Pid)
 import System.Exit (ExitCode (..))
 
@@ -112,6 +111,34 @@ newtype PluginProcessExit = PluginProcessExit ExitCode
   deriving stock (Show)
   deriving anyclass (Exception)
 
+data PluginManagerException
+  = RequiredPluginFailed !Text
+  | InvalidPluginInitialization !Text
+  | InvalidPluginToolNamespace !Text
+  | PluginFrameDecodeFailed !Text
+  | InvalidPluginMessage !Text
+  | PluginProtocolLineTooLong
+  | PluginProtocolStreamClosed
+  | PluginCallbackMethodNotFound !Text
+  | InvalidPluginCallbackParameter !Text !Text
+  | PluginFrameEncodeFailed !Text
+  | PluginTransportWriteTimedOut
+  deriving stock (Eq, Show)
+
+instance Exception PluginManagerException where
+  displayException = Text.unpack . \case
+    RequiredPluginFailed failure -> failure
+    InvalidPluginInitialization err -> err
+    InvalidPluginToolNamespace err -> err
+    PluginFrameDecodeFailed err -> err
+    InvalidPluginMessage err -> "invalid plugin JSON-RPC message: " <> err
+    PluginProtocolLineTooLong -> "plugin protocol line exceeds 1 MiB"
+    PluginProtocolStreamClosed -> "plugin protocol stream closed"
+    PluginCallbackMethodNotFound method -> "plugin callback method not found: " <> method
+    InvalidPluginCallbackParameter name err -> [i|invalid plugin callback parameter #{name}: #{err}|]
+    PluginFrameEncodeFailed err -> err
+    PluginTransportWriteTimedOut -> "plugin transport write timed out"
+
 data ExitWatcherState = WatcherPending | WatcherOwnsFailure | WatcherCancelled
   deriving stock (Eq)
 
@@ -159,7 +186,7 @@ runPluginManager pluginDirectory mediaDirectory callbacks action = do
   outcome <- Async.race runAction waitForRequiredFailure `finally` shutdownAll manager
   case outcome of
     Left result -> pure result
-    Right failure -> throwIO (userError (toString failure))
+    Right failure -> throwIO (RequiredPluginFailed failure)
 
 runOperation
   :: ( Concurrent :> es
@@ -349,8 +376,8 @@ startBundle manager bundle generation = do
       Left failure -> stop >> throwIO (PluginStartException (startFailureFromRpc failure))
       Right value -> pure value
     (do
-      manifest <- either (throwIO . userError . show) pure (Protocol.parseInitializationResult manifestValue)
-      either (throwIO . userError . toString) pure (validateToolNamespace bundle.pluginId manifest)
+      manifest <- either (throwIO . InvalidPluginInitialization . show) pure (Protocol.parseInitializationResult manifestValue)
+      either (throwIO . InvalidPluginToolNamespace) pure (validateToolNamespace bundle.pluginId manifest)
       writeIORef transport.capabilities manifest.requestedCapabilities
       pure RunningPlugin{bundle, generation, manifest, transport, readerThread}
       ) `onException` finalizeThenStop
@@ -435,9 +462,9 @@ readerLoop
   -> Eff es ()
 readerLoop manager transport = forever do
   frame <- readFrame transport
-  value <- either (throwIO . userError . show) pure (Protocol.decodeFrame @Aeson.Value frame)
+  value <- either (throwIO . PluginFrameDecodeFailed . show) pure (Protocol.decodeFrame @Aeson.Value frame)
   case AesonTypes.parseEither parseIncoming value of
-    Left err -> throwIO (userError ("invalid plugin JSON-RPC message: " <> err))
+    Left err -> throwIO (InvalidPluginMessage (Text.pack err))
     Right (IncomingResponse response) -> deliverResponse transport response
     Right (IncomingRequest request) -> dispatchCallback manager transport request
 
@@ -474,18 +501,18 @@ readFrame transport = do
   case ByteString.elemIndex 10 buffered of
     Just index
       | index + 1 > Protocol.maxFrameBytes ->
-          throwIO (userError "plugin protocol line exceeds 1 MiB")
+          throwIO PluginProtocolLineTooLong
       | otherwise -> do
           let lineLength = index + 1
           writeIORef transport.readBuffer (ByteString.drop lineLength buffered)
           pure (ByteString.take lineLength buffered)
     Nothing
       | ByteString.length buffered > Protocol.maxFrameBytes ->
-          throwIO (userError "plugin protocol line exceeds 1 MiB")
+          throwIO PluginProtocolLineTooLong
       | otherwise -> do
           chunk <- FileSystemByteString.hGetSome transport.output 4096
           if ByteString.null chunk
-            then throwIO (userError "plugin protocol stream closed")
+            then throwIO PluginProtocolStreamClosed
             else writeIORef transport.readBuffer (buffered <> chunk) >> readFrame transport
 
 deliverResponse
@@ -572,7 +599,7 @@ runHostCallback manager transport method message params = case method of
   "media.resolve" -> do
     result <- manager.callbacks.mediaResolve =<< parseTextParam "ref" params
     pure (translateMediaResult manager transport result)
-  _ -> throwIO (userError "method not found")
+  _ -> throwIO (PluginCallbackMethodNotFound method)
 
 callbackCapability :: Text -> Maybe Capability
 callbackCapability = \case
@@ -589,7 +616,7 @@ parseInvocationId = first toText . AesonTypes.parseEither
 
 parseTextParam :: IOE :> es => Text -> Aeson.Value -> Eff es Text
 parseTextParam name value =
-  either (throwIO . userError) pure . first toString $
+  either (throwIO . InvalidPluginCallbackParameter name . Text.pack) pure $
     AesonTypes.parseEither (Aeson.withObject "callback parameters" (Aeson..: Key.fromText name)) value
 
 translateMediaResult :: Manager es -> Transport es -> Aeson.Value -> Aeson.Value
@@ -649,7 +676,7 @@ writeFrame
   -> value
   -> Eff es ()
 writeFrame transport value = do
-  frame <- either (throwIO . userError . show) pure (Protocol.encodeFrame value)
+  frame <- either (throwIO . PluginFrameEncodeFailed . show) pure (Protocol.encodeFrame value)
   writeEncodedFrame transport frame
 
 writeEncodedFrame
@@ -705,7 +732,7 @@ invokeRoute manager running route message = withInvocation running message \invo
       , timeoutSeconds = running.bundle.lifecycle.routeTimeoutSeconds
       }
   when (isTransportFailure result) $
-    transportFailed manager running.transport (toException (userError "plugin transport write timed out"))
+    transportFailed manager running.transport (toException PluginTransportWriteTimedOut)
   pure result
 
 routeArguments :: PluginManifest -> RouteDeclaration -> IncomingMessage -> Text
@@ -770,7 +797,7 @@ invokeSnapshottedTool manager snapshot message arguments = do
             , timeoutSeconds = running.bundle.lifecycle.toolTimeoutSeconds
             }
         when (isTransportFailure result) $
-          transportFailed manager running.transport (toException (userError "plugin transport write timed out"))
+          transportFailed manager running.transport (toException PluginTransportWriteTimedOut)
         pure result)
         <&> either rpcToolFailure parseToolResult
     _ -> pure $ ToolInvocationFailure TransientInvocation

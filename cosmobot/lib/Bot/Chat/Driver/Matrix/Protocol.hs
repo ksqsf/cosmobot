@@ -35,7 +35,6 @@ import qualified Network.HTTP.Types.Header as HTTPHeader
 import qualified Network.HTTP.Types.Status as HTTPStatus
 import qualified Data.ByteString.Streaming.HTTP as StreamingHTTP
 import qualified Streaming.ByteString as Q
-import System.IO.Error (ioError, userError)
 import qualified Text.URI as URI
 
 newtype MatrixRoomId = MatrixRoomId Text
@@ -111,7 +110,7 @@ runMatrixClient driver =
   interpret \_ -> \case
     Matrix.MatrixClientCall request ->
       maybe
-        (liftIO (ioError (userError "Matrix driver is not configured.")))
+        (throwIO MatrixDriverNotConfigured)
         (`matrixClientRequest` request)
         driver
 
@@ -126,7 +125,7 @@ matrixClientRequest driver Matrix.MatrixClientRequest{method, path, query, body}
     (Matrix.MatrixDelete, Nothing) -> matrixClientJsonCall driver "client request" "client request" requestOptions DELETE requestUrl NoReqBody
     (Matrix.MatrixPost, Just value) -> matrixClientJsonCall driver "client request" "client request" requestOptions POST requestUrl (ReqBodyJson value)
     (Matrix.MatrixPut, Just value) -> matrixClientJsonCall driver "client request" "client request" requestOptions PUT requestUrl (ReqBodyJson value)
-    _ -> liftIO (ioError (userError "Invalid Matrix client request body."))
+    _ -> throwIO InvalidMatrixClientRequestBody
   where
     requestUrl :: forall scheme. Url scheme -> Url scheme
     requestUrl baseUrl = List.foldl' (/:) baseUrl path
@@ -371,7 +370,7 @@ instance MatrixAPI MatrixDownloadMedia where
   call driver MatrixDownloadMedia{downloadMediaRef} =
     case parseMxcUri downloadMediaRef of
       Nothing ->
-        liftIO (ioError (userError [i|Invalid Matrix media URI: #{downloadMediaRef}|]))
+        throwIO (InvalidMatrixMediaUri downloadMediaRef)
       Just (serverName, mediaId) -> katipAddContext (sl "matrix_method" ("authenticated media download" :: Text)) do
         $(logDebug) [i|Matrix API request: authenticated media download #{downloadMediaRef}|]
         withMatrixAccessToken driver.auth \token -> do
@@ -496,7 +495,7 @@ reloginMatrixAccessToken auth =
       $(logInfo) [i|Matrix logging in again; attempts=#{matrixReloginAttempts}|]
       retryingMatrixLogin auth user password
     _ ->
-      throwIO (userError "Matrix access token expired and no refresh token or login credentials are configured.")
+      throwIO MatrixCredentialsUnavailable
 
 retryingMatrixLogin
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
@@ -551,10 +550,21 @@ matrixAuthTokenRejected = \case
     HTTPStatus.statusCode status == 401 && err.errcode `elem` ["M_UNKNOWN_TOKEN", "M_FORBIDDEN"]
   MatrixTransportException{} ->
     False
+  _ ->
+    False
 
 data MatrixApiException
   = MatrixApiException !Text !HTTPStatus.Status !MatrixErrorResponse
   | MatrixTransportException !Text !Text
+  | MatrixDriverNotConfigured
+  | InvalidMatrixClientRequestBody
+  | InvalidMatrixMediaUri !Text
+  | MatrixCredentialsUnavailable
+  | MatrixRoomInvitationFailed !MatrixRoomId !Text
+  | MatrixDecryptionPlanFailed !Text
+  | MatrixEncryptedFileHashMismatch
+  | InvalidMatrixImageReference !Text
+  | UnsupportedMatrixHomeserver !Text
   deriving (Show, Eq)
 
 instance Exception MatrixApiException where
@@ -567,6 +577,15 @@ matrixApiExceptionMessage = \case
     [i|Matrix API request failed (#{method}): HTTP #{HTTPStatus.statusCode status} #{matrixErrorResponseText err}|]
   MatrixTransportException method message ->
     [i|Matrix API request failed (#{method}): #{message}|]
+  MatrixDriverNotConfigured -> "Matrix driver is not configured."
+  InvalidMatrixClientRequestBody -> "Invalid Matrix client request body."
+  InvalidMatrixMediaUri ref -> [i|Invalid Matrix media URI: #{ref}|]
+  MatrixCredentialsUnavailable -> "Matrix access token expired and no refresh token or login credentials are configured."
+  MatrixRoomInvitationFailed roomId reason -> [i|Failed to accept Matrix room invitation #{matrixRoomIdText roomId}: #{reason}|]
+  MatrixDecryptionPlanFailed err -> err
+  MatrixEncryptedFileHashMismatch -> "Matrix encrypted file sha256 verification failed."
+  InvalidMatrixImageReference ref -> [i|Matrix image reply requires a media:, file://, data:image/*, or mxc:// image reference: #{ref}|]
+  UnsupportedMatrixHomeserver homeserver -> [i|Unsupported Matrix homeserver URL: #{homeserver}. Use a full HTTP or HTTPS base URL.|]
 
 matrixUserFacingExceptionText :: Text -> SomeException -> Text
 matrixUserFacingExceptionText label err =
@@ -585,6 +604,8 @@ matrixUserFacingApiError label = \case
         [i|Matrix #{label} failed: HTTP #{HTTPStatus.statusCode status}.|]
   MatrixTransportException{} ->
     [i|Matrix #{label} failed: Matrix transport error.|]
+  matrixErr ->
+    [i|Matrix #{label} failed: #{matrixApiExceptionMessage matrixErr}|]
 
 matrixErrorResponseText :: MatrixErrorResponse -> Text
 matrixErrorResponseText err =
@@ -865,7 +886,7 @@ withMatrixBaseUrl homeserver action = do
   uri <- URI.mkURI homeserver
   case useURI uri of
     Nothing ->
-      liftIO (ioError (userError [i|Unsupported Matrix homeserver URL: #{homeserver}. Use a full HTTP or HTTPS base URL.|]))
+      throwIO (UnsupportedMatrixHomeserver homeserver)
     Just (Left (baseUrl, baseOptions)) ->
       action baseUrl baseOptions
     Just (Right (baseUrl, baseOptions)) ->

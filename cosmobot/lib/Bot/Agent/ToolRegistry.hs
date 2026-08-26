@@ -26,7 +26,13 @@ import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.MVar as MVar
-import System.IO.Error (userError)
+
+newtype ToolRegistryException = DuplicateResolvedToolNames [Text]
+  deriving (Eq, Show)
+
+instance Exception ToolRegistryException where
+  displayException (DuplicateResolvedToolNames names) =
+    Text.unpack [i|Duplicate resolved tool names: #{Text.intercalate ", " names}|]
 
 -- | A tool runner bound to one agent run.
 data RunningTool m = RunningTool
@@ -62,7 +68,7 @@ resolveToolSchemas transcript turn runningTools = do
     [] ->
       pure schemas
     duplicates ->
-      throwIO (userError [i|Duplicate resolved tool names: #{Text.intercalate ", " duplicates}|])
+      throwIO (DuplicateResolvedToolNames duplicates)
   where
     enabledTags =
       enabledTagNames transcript runningTools

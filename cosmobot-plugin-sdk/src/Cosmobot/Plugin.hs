@@ -294,6 +294,13 @@ data StartupFailure = TransientStartup Text
 
 instance Exception StartupFailure
 
+newtype PluginValidationFailure = PluginValidationFailure [Text]
+  deriving stock (Show)
+
+instance Exception PluginValidationFailure where
+  displayException (PluginValidationFailure errors) =
+    Text.unpack (Text.intercalate "; " errors)
+
 newtype ProcessFailure = ProcessFailure Text
   deriving stock (Show)
 
@@ -375,7 +382,7 @@ exitAfterProcessFailure finalizePlugin (ProcessFailure messageText) = do
 validatePlugin :: Plugin () -> IO [Entry]
 validatePlugin plugin = do
   let errors = validationErrors plugin
-  unless (null errors) (throwIO (userError (Text.unpack (Text.intercalate "; " errors))))
+  unless (null errors) (throwIO (PluginValidationFailure errors))
   pure (buildEntries (unPlugin plugin))
 
 runServer :: Text -> [Capability] -> IO [Entry] -> IO () -> IO ()
