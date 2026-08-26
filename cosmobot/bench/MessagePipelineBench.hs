@@ -13,6 +13,7 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
 import qualified Data.List as List
 import qualified Data.Text as Text
+import qualified Effectful.Resource as Resource
 import Effectful.Timeout (runTimeout)
 import qualified Streaming.Prelude as S
 import Test.Tasty.Bench
@@ -147,17 +148,19 @@ mergedChatLogRouteDispatch :: [IncomingMessage] -> IO Int
 mergedChatLogRouteDispatch messages = do
   handled <- IORef.newIORef 0
   runEff $
-    runConcurrent $
-      runTimeout $
-      runPrim $
-        runBenchmarkLog $
-        ConcurrencyManager.runConcurrencyManager $
-            StorageSQLite.runStorageSQLitePath ":memory:" $
-            ChatLog.runChatLog do
-              consumeWith
-                (benchmarkHandlers handled)
-                (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams (map S.each (chunks 4 messages))))
-              liftIO (IORef.readIORef handled)
+    runConcurrent
+    . runTimeout
+    . runPrim
+    . runBenchmarkLog
+    . Resource.runResource
+    . ConcurrencyManager.runConcurrencyManager
+    . StorageSQLite.runStorageSQLitePath ":memory:"
+    . ChatLog.runChatLog
+    $ do
+      consumeWith
+        (benchmarkHandlers handled)
+        (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams (map S.each (chunks 4 messages))))
+      liftIO (IORef.readIORef handled)
 
 routeFilterScore :: [IncomingMessage] -> Int
 routeFilterScore =
@@ -212,13 +215,14 @@ mergeOnly :: [IncomingMessage] -> IO Int
 mergeOnly messages = do
   seen <- IORef.newIORef 0
   runEff $
-    runConcurrent $
-      runPrim $
-        runBenchmarkLog $
-        ConcurrencyManager.runConcurrencyManager $
-            S.mapM_
-              (\_ -> liftIO $ IORef.modifyIORef' seen (+ 1))
-              (StreamUtil.mergeStreams (map S.each (chunks 4 messages)))
+    runConcurrent
+    . runPrim
+    . runBenchmarkLog
+    . Resource.runResource
+    . ConcurrencyManager.runConcurrencyManager
+    $ S.mapM_
+      (\_ -> liftIO $ IORef.modifyIORef' seen (+ 1))
+      (StreamUtil.mergeStreams (map S.each (chunks 4 messages)))
   IORef.readIORef seen
 
 schedulerDueMessages :: [IncomingMessage] -> IO Int

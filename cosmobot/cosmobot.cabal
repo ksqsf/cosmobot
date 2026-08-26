@@ -654,5 +654,6 @@ benchmark message-pipeline-bench
     type:             exitcode-stdio-1.0
     main-is:          MessagePipelineBench.hs
     build-depends:    deepseq
+                    , resourcet-effectful
                     , tasty-bench
     hs-source-dirs:   bench
