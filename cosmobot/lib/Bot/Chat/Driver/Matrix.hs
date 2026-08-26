@@ -1,20 +1,21 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE OverloadedLabels #-}
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
+
 {-|
 Module      : Bot.Chat.Driver.Matrix
-Description : Matrix Client-Server chat driver
+Description : Matrix ChatDriver implementation
 Stability   : experimental
 -}
 
 module Bot.Chat.Driver.Matrix
   ( MatrixDriver
-  , newMatrixDriver
-  , runMatrixClient
-  , matrixClientJsonCall
-  , chatHandler
   , Config (..)
+  , newMatrixDriver
+  , chatHandler
+  , runMatrixClient
+  , incomingMessages
   , SyncResponse (..)
   , JoinedRoom (..)
   , Timeline (..)
@@ -22,7 +23,6 @@ module Bot.Chat.Driver.Matrix
   , EventContent (..)
   , SendMessageResponse (..)
   , RoomEvent (..)
-  , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
   , syncInvitedRoomIds
@@ -33,19 +33,20 @@ module Bot.Chat.Driver.Matrix
   )
 where
 
+import Bot.Core.Message
+import Bot.Chat.Driver.Matrix.Markdown
+import qualified Bot.Chat.Driver.Matrix.Protocol as Protocol
+import Bot.Chat.Driver.Matrix.Protocol hiding (MatrixDriver, newMatrixDriver, runMatrixClient)
+import Bot.Chat.Driver.Matrix.Types (Config (..))
 import qualified Bot.Chat.Driver.Types as Driver
-import qualified Bot.Effect.Media as Media
+import qualified Bot.Effect.Chat as Chat
+import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Matrix as Matrix
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Mime as Mime
 import qualified Bot.Storage.Matrix as MatrixStorage
-import Bot.Util.Aeson
-import qualified Bot.Effect.Chat as Chat
-import Bot.Core.Message
 import Bot.Prelude
-import qualified Bot.Effect.HTTP as HTTP
-import Commonmark
-import Commonmark.Extensions
 import Control.Monad.Trans.Resource (ResourceT, runResourceT)
 import qualified Crypto.Cipher.AES as CryptoAES
 import qualified Crypto.Cipher.Types as CryptoCipher
@@ -54,115 +55,32 @@ import qualified Crypto.Hash as CryptoHash
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Base64.URL as Base64URL
-import qualified Data.ByteString.Char8 as ByteString
-import qualified Data.ByteString as StrictByteString
-import qualified Data.Char as Char
-import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Data.Text.Lazy as LazyText
-import qualified Effectful.Concurrent.MVar as MVar
+import Effectful.FileSystem (FileSystem)
+import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.Prim.IORef as IORef
-import GHC.Clock (getMonotonicTimeNSec)
-import qualified Network.HTTP.Client as Client
-import Network.HTTP.Req
-import qualified Network.HTTP.Types.Header as HTTPHeader
-import qualified Network.HTTP.Types.Status as HTTPStatus
+import qualified Effectful.Temporary as Temporary
 import qualified Streaming as S
-import qualified Data.ByteString.Streaming.HTTP as StreamingHTTP
 import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as SP
 import qualified Streaming.Prelude as S
-import Effectful.FileSystem (FileSystem)
-import qualified Effectful.FileSystem as FileSystem
-import qualified Effectful.Temporary as Temporary
 import System.FilePath ((</>), (<.>), takeFileName)
 import System.IO.Error (ioError, userError)
-import qualified Text.URI as URI
 
-data Config = Config
-  { homeserver :: !Text
-  , loginUser :: !(Maybe Text)
-  , loginPassword :: !(Maybe Text)
-  , deviceId :: !(Maybe Text)
-  , directRooms :: ![Text]
-  , userId :: !(Maybe Text)
-  , allowedRooms :: ![Text]
-  , superusers :: ![Text]
-  }
-  deriving (Show)
-
-newtype MatrixRoomId = MatrixRoomId Text
-  deriving (Show, Eq, Ord)
-
-newtype MatrixEventId = MatrixEventId Text
-  deriving (Show, Eq, Ord)
-    deriving (Aeson.ToJSON, Aeson.FromJSON) via Text
-
-newtype MatrixReplyTo = MatrixReplyTo MatrixEventId
-  deriving (Show, Eq)
-
-matrixRoomIdText :: MatrixRoomId -> Text
-matrixRoomIdText (MatrixRoomId roomId) =
-  roomId
-
-matrixEventIdText :: MatrixEventId -> Text
-matrixEventIdText (MatrixEventId eventId) =
-  eventId
-
-matrixRoomId :: Text -> MatrixRoomId
-matrixRoomId =
-  MatrixRoomId
-
-matrixEventId :: Text -> MatrixEventId
-matrixEventId =
-  MatrixEventId
-
-matrixEventMessageId :: MatrixEventId -> MessageId
-matrixEventMessageId =
-  textMessageId . matrixEventIdText
-
-instance IsString MatrixRoomId where
-  fromString =
-    matrixRoomId . Text.pack
-
-instance IsString MatrixEventId where
-  fromString =
-    matrixEventId . Text.pack
-
-data MatrixDriver = MatrixDriver
-  { config :: !Config
-  , auth :: !MatrixAuth
-  , eventIds :: !(IORef.IORef (Map MessageId MatrixEventId))
-  , streamTextMessages :: !(IORef.IORef (Map MatrixEventId MatrixEditMessageRequest))
-  , directRoomIds :: !(IORef.IORef (Set MatrixRoomId))
-  , joinedMemberCounts :: !(IORef.IORef (Map MatrixRoomId Int))
-  }
+newtype MatrixDriver = MatrixDriver Protocol.MatrixDriver
 
 newMatrixDriver
   :: (Concurrent :> es, Prim :> es)
   => Config
   -> Eff es MatrixDriver
-newMatrixDriver cfg = do
-  eventIds <- IORef.newIORef Map.empty
-  streamTextMessages <- IORef.newIORef Map.empty
-  directRoomIdsRef <- IORef.newIORef (Set.fromList (matrixRoomId <$> cfg.directRooms))
-  joinedMemberCountsRef <- IORef.newIORef Map.empty
-  authState <- IORef.newIORef (initialMatrixAuthState cfg)
-  refreshLock <- MVar.newMVar ()
-  let auth = MatrixAuth cfg authState refreshLock
-  pure MatrixDriver
-    { config = cfg
-    , auth
-    , eventIds
-    , streamTextMessages
-    , directRoomIds = directRoomIdsRef
-    , joinedMemberCounts = joinedMemberCountsRef
-    }
+newMatrixDriver =
+  fmap MatrixDriver . Protocol.newMatrixDriver
 
 instance Driver.ChatDriver MatrixDriver where
   type ChatDriverEffects MatrixDriver es =
@@ -171,55 +89,55 @@ instance Driver.ChatDriver MatrixDriver where
   driverPlatform _ =
     PlatformMatrix
 
-  sendReplyMessage =
-    replyToMatrix
+  sendReplyMessage (MatrixDriver driver) =
+    replyToMatrix driver
 
-  sendReplyMessages =
-    replyToMatrixMessages
+  sendReplyMessages (MatrixDriver driver) =
+    replyToMatrixMessages driver
 
-  sendStreamingReplyMessage =
-    streamingReplyToMatrix
+  sendStreamingReplyMessage (MatrixDriver driver) =
+    streamingReplyToMatrix driver
 
-  replyAudio =
-    replyAudioMatrix
+  replyAudio (MatrixDriver driver) =
+    replyAudioMatrix driver
 
-  uploadFile =
-    uploadFileMatrix
+  uploadFile (MatrixDriver driver) =
+    uploadFileMatrix driver
 
-  editMessage =
-    editMessageMatrix
+  editMessage (MatrixDriver driver) =
+    editMessageMatrix driver
 
-  completeMessageEdit =
-    completeMessageEditMatrix
+  completeMessageEdit (MatrixDriver driver) =
+    completeMessageEditMatrix driver
 
-  deleteMessage =
-    deleteMessageMatrix
+  deleteMessage (MatrixDriver driver) =
+    deleteMessageMatrix driver
 
   messageOutPolicy _ _ =
     pure (Chat.EditableMessage matrixEditChunkChars matrixStreamingMessageLimit)
 
-  getMessageContent =
-    getMessageContentMatrix
+  getMessageContent (MatrixDriver driver) =
+    getMessageContentMatrix driver
 
-  getSenderMemberInfo =
-    getSenderMemberInfoMatrix
+  getSenderMemberInfo (MatrixDriver driver) =
+    getSenderMemberInfoMatrix driver
 
-  getMemberInfo =
-    getMemberInfoMatrix
+  getMemberInfo (MatrixDriver driver) =
+    getMemberInfoMatrix driver
 
-  getUserAvatar =
-    getUserAvatarMatrix
+  getUserAvatar (MatrixDriver driver) =
+    getUserAvatarMatrix driver
 
-  listGroupMembers =
-    listGroupMembersMatrix
+  listGroupMembers (MatrixDriver driver) =
+    listGroupMembersMatrix driver
 
-  normalizeMediaRef driver ref =
-    normalizeMatrixMediaRef driver Nothing ref
+  normalizeMediaRef (MatrixDriver driver) =
+    normalizeMatrixMediaRef driver Nothing
 
-  mentionUser =
-    mentionUserMatrix
+  mentionUser (MatrixDriver driver) =
+    mentionUserMatrix driver
 
-  setTyping driver message timeoutMs =
+  setTyping (MatrixDriver driver) message timeoutMs =
     case viaNonEmpty head message.chatAliases of
       Just roomId -> typing driver (matrixRoomId roomId) timeoutMs
       Nothing -> pure ()
@@ -237,36 +155,25 @@ runMatrixClient
   -> Eff (Matrix.Matrix : es) a
   -> Eff es a
 runMatrixClient driver =
-  interpret \_ -> \case
-    Matrix.MatrixClientCall request ->
-      maybe
-        (liftIO (ioError (userError "Matrix driver is not configured.")))
-        (`matrixClientRequest` request)
-        driver
-
-matrixClientRequest
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
-  -> Matrix.MatrixClientRequest
-  -> Eff es Aeson.Value
-matrixClientRequest driver Matrix.MatrixClientRequest{method, path, query, body} =
-  case (method, body) of
-    (Matrix.MatrixGet, Nothing) -> matrixClientJsonCall driver "client request" "client request" requestOptions GET requestUrl NoReqBody
-    (Matrix.MatrixDelete, Nothing) -> matrixClientJsonCall driver "client request" "client request" requestOptions DELETE requestUrl NoReqBody
-    (Matrix.MatrixPost, Just value) -> matrixClientJsonCall driver "client request" "client request" requestOptions POST requestUrl (ReqBodyJson value)
-    (Matrix.MatrixPut, Just value) -> matrixClientJsonCall driver "client request" "client request" requestOptions PUT requestUrl (ReqBodyJson value)
-    _ -> liftIO (ioError (userError "Invalid Matrix client request body."))
+  Protocol.runMatrixClient (unwrap <$> driver)
   where
-    requestUrl :: forall scheme. Url scheme -> Url scheme
-    requestUrl baseUrl = List.foldl' (/:) baseUrl path
-    requestOptions :: forall scheme. Option scheme -> Option scheme
-    requestOptions options = List.foldl' (\current (key, value) -> current <> (key =: value)) options query
+    unwrap (MatrixDriver protocolDriver) = protocolDriver
 
+incomingMessages
+  :: (HTTP.HTTP :> es, Media.Media :> es, KatipE :> es, IOE :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
+  => MatrixDriver
+  -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages (MatrixDriver driver) =
+  incomingMessagesProtocol driver
 matrixStreamingMessageLimit :: Int
 matrixStreamingMessageLimit = 4000
 
 matrixEditChunkChars :: Int
 matrixEditChunkChars = 128
+
+matrixEventMessageId :: MatrixEventId -> MessageId
+matrixEventMessageId =
+  textMessageId . matrixEventIdText
 
 loadSyncToken :: Storage.Storage :> es => Eff es (Maybe Text)
 loadSyncToken =
@@ -276,7 +183,7 @@ storeSyncToken :: Storage.Storage :> es => Text -> Eff es ()
 storeSyncToken =
   MatrixStorage.saveSyncToken
 
-sync :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Maybe Text -> Eff es (Maybe SyncResponse)
+sync :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> Maybe Text -> Eff es (Maybe SyncResponse)
 sync driver since = do
   response <- call driver MatrixSync
     { syncSince = since
@@ -293,15 +200,15 @@ matrixSyncMode = \case
   Just{} ->
     MatrixLongPollSync
 
-directRooms :: Prim :> es => MatrixDriver -> Eff es (Set MatrixRoomId)
+directRooms :: Prim :> es => Protocol.MatrixDriver -> Eff es (Set MatrixRoomId)
 directRooms driver =
   IORef.readIORef driver.directRoomIds
 
-joinedMemberCounts :: Prim :> es => MatrixDriver -> Eff es (Map MatrixRoomId Int)
+joinedMemberCounts :: Prim :> es => Protocol.MatrixDriver -> Eff es (Map MatrixRoomId Int)
 joinedMemberCounts driver =
   IORef.readIORef driver.joinedMemberCounts
 
-joinedMemberCount :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Eff es (Maybe Int)
+joinedMemberCount :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> Eff es (Maybe Int)
 joinedMemberCount driver roomId = do
   maybeCall driver (MatrixJoinedMembers roomId) >>= \case
     Nothing ->
@@ -311,34 +218,43 @@ joinedMemberCount driver roomId = do
       rememberJoinedMemberCount driver.directRoomIds driver.joinedMemberCounts roomId count
       pure (Just count)
 
-sendText :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Either Text SendMessageResponse)
+sendText :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> Eff es (Either Text SendMessageResponse)
 sendText driver roomId replyToEventId body =
   sendTextWithMentionsStreamComplete driver roomId replyToEventId body [] True
 
-sendTextWithMentions :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es (Either Text SendMessageResponse)
+sendTextWithMentions :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Eff es (Either Text SendMessageResponse)
 sendTextWithMentions driver roomId replyToEventId body mentionUserIds =
   sendTextWithMentionsStreamComplete driver roomId replyToEventId body mentionUserIds True
 
-sendTextWithMentionsStreamComplete :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Bool -> Eff es (Either Text SendMessageResponse)
+sendTextWithMentionsStreamComplete :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> Maybe MatrixReplyTo -> Text -> [Text] -> Bool -> Eff es (Either Text SendMessageResponse)
 sendTextWithMentionsStreamComplete driver roomId replyToEventId body mentionUserIds complete = do
   let mentions = matrixOutgoingMentionUserIds body mentionUserIds
   mentionNames <- fetchMatrixMentionNames driver roomId mentions
-  response <- eitherCall "send m.room.message" driver (MatrixSendMessage roomId replyToEventId body mentions mentionNames complete)
+  let displayBody = matrixMentionDisplayBody mentionNames body
+      request = SendMessageRequest
+        { msgtype = "m.text"
+        , body = nonEmptyMatrixBody displayBody
+        , formattedBody = formatMatrixMarkdownWithMentionNames mentionNames body
+        , replyRelation = replyToEventId
+        , mentions = MatrixMentions mentions
+        , streamMetadata = MatrixStreamMetadata complete
+        }
+  response <- eitherCall "send m.room.message" driver (MatrixSendMessage roomId request)
   traverse_ (rememberMatrixEvent driver.eventIds) response
   traverse_ (\sent -> rememberInitialStreamTextMessage driver.streamTextMessages sent.eventId body mentions mentionNames complete) response
   pure response
 
-uploadMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> FilePath -> Text -> Text -> Eff es MatrixUploadResponse
+uploadMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> FilePath -> Text -> Text -> Eff es MatrixUploadResponse
 uploadMedia driver path fileName mime =
   call driver (MatrixUploadMedia path fileName mime)
 
-sendFileMessage :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es (Either Text SendMessageResponse)
+sendFileMessage :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> Text -> Maybe MatrixReplyTo -> MatrixFileMessage -> Eff es (Either Text SendMessageResponse)
 sendFileMessage driver roomId replyRelation message@MatrixFileMessage{msgtype = mediaMsgtype} = do
   response <- eitherCall [i|send #{mediaMsgtype}|] driver (MatrixSendFile roomId replyRelation message)
   traverse_ (rememberMatrixEvent driver.eventIds) response
   pure response
 
-editText :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> MatrixEventId -> Text -> Eff es (Either Text SendMessageResponse)
+editText :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> MatrixEventId -> Text -> Eff es (Either Text SendMessageResponse)
 editText driver roomId eventId body = do
   let mentions = matrixOutgoingMentionUserIds body []
   mentionNames <- fetchMatrixMentionNames driver roomId mentions
@@ -360,40 +276,40 @@ matrixEditMessageRequest eventId body mentions mentionNames complete =
   where
     displayBody = matrixMentionDisplayBody mentionNames body
 
-sendMatrixTextEdit :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> MatrixEditMessageRequest -> Eff es (Either Text SendMessageResponse)
+sendMatrixTextEdit :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> MatrixEditMessageRequest -> Eff es (Either Text SendMessageResponse)
 sendMatrixTextEdit driver roomId request =
   eitherCall "edit m.room.message" driver (MatrixEditMessage roomId request)
 
-deleteEvent :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> MessageId -> Maybe MatrixEventId -> Eff es Bool
+deleteEvent :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> Text -> MessageId -> Maybe MatrixEventId -> Eff es Bool
 deleteEvent driver roomId messageId knownEventId = do
   stored <- IORef.readIORef driver.eventIds
-  case knownEventId <|> Map.lookup messageId stored of
+  case knownEventId <|> Map.lookup (messageIdText messageId) stored of
     Nothing ->
       pure False
     Just eventId ->
       isJust <$> maybeCall driver (MatrixRedactEvent roomId eventId)
 
-fetchEvent :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> MatrixEventId -> Eff es (Maybe Event)
+fetchEvent :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> MatrixEventId -> Eff es (Maybe Event)
 fetchEvent driver roomId eventId =
   maybeCall driver (MatrixFetchEvent roomId eventId)
 
-fetchMember :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Text -> Eff es (Maybe MatrixMember)
+fetchMember :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> Text -> Eff es (Maybe MatrixMember)
 fetchMember driver roomId userId =
   maybeCall driver (MatrixFetchMember roomId userId)
 
-fetchProfile :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Eff es (Maybe MatrixProfile)
+fetchProfile :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> Text -> Eff es (Maybe MatrixProfile)
 fetchProfile driver userId =
   maybeCall driver (MatrixFetchProfile userId)
 
-fetchJoinedMembers :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Eff es (Maybe JoinedMembersResponse)
+fetchJoinedMembers :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> Eff es (Maybe JoinedMembersResponse)
 fetchJoinedMembers driver roomId =
   maybeCall driver (MatrixJoinedMembers roomId)
 
-downloadMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Text -> Eff es (Maybe MatrixDownloadedMedia)
+downloadMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> Text -> Eff es (Maybe MatrixDownloadedMedia)
 downloadMedia driver mxcRef =
   maybeCall driver (MatrixDownloadMedia mxcRef)
 
-typing :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixRoomId -> Int -> Eff es ()
+typing :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixRoomId -> Int -> Eff es ()
 typing driver roomId timeoutMs =
   case driver.config.userId of
     Just userId ->
@@ -401,9 +317,9 @@ typing driver roomId timeoutMs =
     Nothing ->
       $(logWarning) [i|Matrix typing notification skipped: bot_id is not configured.|]
 
-rememberMatrixEvent :: Prim :> es => IORef.IORef (Map MessageId MatrixEventId) -> SendMessageResponse -> Eff es ()
+rememberMatrixEvent :: Prim :> es => IORef.IORef (Map Text MatrixEventId) -> SendMessageResponse -> Eff es ()
 rememberMatrixEvent eventIds response =
-  IORef.modifyIORef' eventIds (Map.insert (matrixEventMessageId response.eventId) response.eventId)
+  IORef.modifyIORef' eventIds (Map.insert (matrixEventIdText response.eventId) response.eventId)
 
 rememberStreamTextMessage :: Prim :> es => IORef.IORef (Map MatrixEventId MatrixEditMessageRequest) -> MatrixEventId -> MatrixEditMessageRequest -> Eff es ()
 rememberStreamTextMessage streamTextMessages eventId request =
@@ -446,735 +362,11 @@ rememberJoinedMemberCount directRoomIdsRef joinedMemberCountsRef roomId count = 
       then Set.insert roomId directRoomIds
       else Set.delete roomId directRoomIds
 
-data MatrixAuth = MatrixAuth
-  { authConfig :: !Config
-  , authState :: !(IORef.IORef MatrixAuthState)
-  , authRefreshLock :: !(MVar.MVar ())
-  }
-
-data MatrixAuthState = MatrixAuthState
-  { authAccessToken :: !(Maybe Text)
-  , authRefreshToken :: !(Maybe Text)
-  , authRefreshAtMilliseconds :: !(Maybe Integer)
-  }
-  deriving (Show, Eq, Generic)
-    deriving (Aeson.FromJSON, Aeson.ToJSON) via (PrefixedSnakeJSON "auth" MatrixAuthState)
-
-data MatrixDownloadedMedia = MatrixDownloadedMedia
-  { downloadedBytes :: !(Q.ByteStream (ResourceT IO) ())
-  , downloadedMimeType :: !Text
-  , downloadedName :: !(Maybe Text)
-  }
-
-data MatrixMediaRef = MatrixMediaRef
-  { matrixMediaRefUrl :: !Text
-  , matrixMediaRefMimeType :: !(Maybe Text)
-  , matrixMediaRefEncrypted :: !(Maybe MatrixEncryptedFile)
-  }
-
-data MatrixEncryptedFile = MatrixEncryptedFile
-  { encryptedFileUrl :: !Text
-  , encryptedFileKey :: !Text
-  , encryptedFileIv :: !Text
-  , encryptedFileSha256 :: !Text
-  }
-
-data MatrixDecryptionPlan = MatrixDecryptionPlan
-  { decryptionCipher :: !CryptoAES.AES256
-  , decryptionIv :: !(CryptoCipher.IV CryptoAES.AES256)
-  , decryptionExpectedHash :: !(CryptoHash.Digest CryptoHash.SHA256)
-  }
-
-data MatrixSync = MatrixSync
-  { syncSince :: Maybe Text
-  , syncMode :: !MatrixSyncMode
-  }
-
-data MatrixSyncMode
-  = MatrixInitialSync
-  | MatrixLongPollSync
-
-newtype MatrixJoinedMembers = MatrixJoinedMembers
-  { joinedMembersRoomId :: MatrixRoomId
-  }
-
-data MatrixSendMessage = MatrixSendMessage
-  { sendMessageRoomId :: !MatrixRoomId
-  , sendMessageReplyTo :: !(Maybe MatrixReplyTo)
-  , sendMessageBody :: !Text
-  , sendMessageMentions :: ![Text]
-  , sendMessageMentionNames :: !(Map Text Text)
-  , sendMessageStreamComplete :: !Bool
-  }
-
-data MatrixUploadMedia = MatrixUploadMedia
-  { uploadMediaPath :: !FilePath
-  , uploadMediaFileName :: !Text
-  , uploadMediaMime :: !Text
-  }
-
-data MatrixSendFile = MatrixSendFile
-  { sendFileRoomId :: !Text
-  , sendFileReplyTo :: !(Maybe MatrixReplyTo)
-  , sendFileMessage :: !MatrixFileMessage
-  }
-
-data MatrixEditMessage = MatrixEditMessage
-  { editMessageRoomId :: !MatrixRoomId
-  , editMessageRequest :: !MatrixEditMessageRequest
-  }
-
-data MatrixCompleteStreamMessage = MatrixCompleteStreamMessage
-  { completeStreamMessageRoomId :: !MatrixRoomId
-  , completeStreamMessageRequest :: !MatrixEditMessageRequest
-  }
-
-data MatrixRedactEvent = MatrixRedactEvent
-  { redactRoomId :: !Text
-  , redactEventId :: !MatrixEventId
-  }
-
-data MatrixFetchEvent = MatrixFetchEvent
-  { fetchEventRoomId :: !MatrixRoomId
-  , fetchEventId :: !MatrixEventId
-  }
-
-data MatrixFetchMember = MatrixFetchMember
-  { fetchMemberRoomId :: !MatrixRoomId
-  , fetchMemberUserId :: !Text
-  }
-
-newtype MatrixFetchProfile = MatrixFetchProfile
-  { fetchProfileUserId :: Text
-  }
-
-newtype MatrixDownloadMedia = MatrixDownloadMedia
-  { downloadMediaRef :: Text
-  }
-
-data MatrixSetTyping = MatrixSetTyping
-  { typingRoomId :: !MatrixRoomId
-  , typingUserId :: !Text
-  , typingTimeoutMs :: !Int
-  }
-
-newtype MatrixJoinRoom = MatrixJoinRoom
-  { joinRoomId :: MatrixRoomId
-  }
-
-class MatrixAPI request where
-  type MatrixResponse request
-
-  call
-    :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-    => MatrixDriver
-    -> request
-    -> Eff es (MatrixResponse request)
-
-instance MatrixAPI MatrixSync where
-  type MatrixResponse MatrixSync = SyncResponse
-
-  call driver request@MatrixSync{syncSince} = do
-    let sinceLabel :: Text
-        sinceLabel = maybe "<initial>" (const "<next_batch>") syncSince
-    matrixClientJsonCall driver "sync" [i|sync since=#{sinceLabel}|] (matrixSyncOptions request)
-      GET
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "sync")
-      NoReqBody
-
-instance MatrixAPI MatrixJoinedMembers where
-  type MatrixResponse MatrixJoinedMembers = JoinedMembersResponse
-
-  call driver MatrixJoinedMembers{joinedMembersRoomId} =
-    matrixClientJsonCall driver "joined_members" [i|joined_members room=#{joinedMembersRoomId}|] matrixApiOptions
-      GET
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText joinedMembersRoomId /: "joined_members")
-      NoReqBody
-
-instance MatrixAPI MatrixJoinRoom where
-  type MatrixResponse MatrixJoinRoom = Aeson.Value
-
-  call driver MatrixJoinRoom{joinRoomId} =
-    matrixClientJsonCall driver "join room" [i|join room=#{joinRoomId}|] matrixApiOptions
-      POST
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText joinRoomId /: "join")
-      (ReqBodyJson (Aeson.object []))
-
-instance MatrixAPI MatrixSendMessage where
-  type MatrixResponse MatrixSendMessage = SendMessageResponse
-
-  call driver MatrixSendMessage{sendMessageRoomId, sendMessageReplyTo, sendMessageBody, sendMessageMentions, sendMessageMentionNames, sendMessageStreamComplete} = do
-    txnId <- liftIO (show <$> getMonotonicTimeNSec)
-    let displayBody = matrixMentionDisplayBody sendMessageMentionNames sendMessageBody
-        request = SendMessageRequest
-          { msgtype = "m.text"
-          , body = nonEmptyMatrixBody displayBody
-          , formattedBody = formatMatrixMarkdownWithMentionNames sendMessageMentionNames sendMessageBody
-          , replyRelation = sendMessageReplyTo
-          , mentions = MatrixMentions sendMessageMentions
-          , streamMetadata = MatrixStreamMetadata sendMessageStreamComplete
-          }
-    matrixClientJsonCall driver "send m.room.message" "send m.room.message" matrixApiOptions
-      PUT
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText sendMessageRoomId /: "send" /: "m.room.message" /: txnId)
-      (ReqBodyJson request)
-
-instance MatrixAPI MatrixUploadMedia where
-  type MatrixResponse MatrixUploadMedia = MatrixUploadResponse
-
-  call driver MatrixUploadMedia{uploadMediaPath, uploadMediaFileName, uploadMediaMime} =
-    matrixClientJsonCall driver "upload media" "upload media" (matrixUploadOptions uploadMediaFileName uploadMediaMime)
-      POST
-      (\baseUrl -> baseUrl /: "_matrix" /: "media" /: "v3" /: "upload")
-      (ReqBodyFile uploadMediaPath)
-
-instance MatrixAPI MatrixSendFile where
-  type MatrixResponse MatrixSendFile = SendMessageResponse
-
-  call driver MatrixSendFile{sendFileRoomId, sendFileReplyTo, sendFileMessage = fileMessage} = do
-    txnId <- liftIO (show <$> getMonotonicTimeNSec)
-    let mediaMsgtype = fileMessage.msgtype
-        request = MatrixFileMessageRequest
-          { message = fileMessage
-          , replyRelation = sendFileReplyTo
-          , streamMetadata = MatrixStreamMetadata True
-          }
-    matrixClientJsonCall driver [i|send #{mediaMsgtype}|] [i|send #{mediaMsgtype}|] matrixApiOptions
-      PUT
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: sendFileRoomId /: "send" /: "m.room.message" /: txnId)
-      (ReqBodyJson request)
-
-instance MatrixAPI MatrixEditMessage where
-  type MatrixResponse MatrixEditMessage = SendMessageResponse
-
-  call driver MatrixEditMessage{editMessageRoomId, editMessageRequest} = do
-    txnId <- liftIO (show <$> getMonotonicTimeNSec)
-    matrixClientJsonCall driver "edit m.room.message" "edit m.room.message" matrixApiOptions
-      PUT
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText editMessageRoomId /: "send" /: "m.room.message" /: txnId)
-      (ReqBodyJson editMessageRequest)
-
-instance MatrixAPI MatrixCompleteStreamMessage where
-  type MatrixResponse MatrixCompleteStreamMessage = SendMessageResponse
-
-  call driver MatrixCompleteStreamMessage{completeStreamMessageRoomId, completeStreamMessageRequest} = do
-    txnId <- liftIO (show <$> getMonotonicTimeNSec)
-    matrixClientJsonCall driver "complete stream m.room.message" "complete stream m.room.message" matrixApiOptions
-      PUT
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText completeStreamMessageRoomId /: "send" /: "m.room.message" /: txnId)
-      (ReqBodyJson completeStreamMessageRequest)
-
-instance MatrixAPI MatrixRedactEvent where
-  type MatrixResponse MatrixRedactEvent = Aeson.Value
-
-  call driver MatrixRedactEvent{redactRoomId, redactEventId} = do
-    txnId <- liftIO (show <$> getMonotonicTimeNSec)
-    let request = RedactEventRequest{reason = Nothing}
-    matrixClientJsonCall driver "redact event" "redact event" matrixApiOptions
-      PUT
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: redactRoomId /: "redact" /: matrixEventIdText redactEventId /: txnId)
-      (ReqBodyJson request)
-
-instance MatrixAPI MatrixFetchEvent where
-  type MatrixResponse MatrixFetchEvent = Event
-
-  call driver MatrixFetchEvent{fetchEventRoomId, fetchEventId} =
-    matrixClientJsonCall driver "room event" [i|room event room=#{fetchEventRoomId}|] matrixApiOptions
-      GET
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText fetchEventRoomId /: "event" /: matrixEventIdText fetchEventId)
-      NoReqBody
-
-instance MatrixAPI MatrixFetchMember where
-  type MatrixResponse MatrixFetchMember = MatrixMember
-
-  call driver MatrixFetchMember{fetchMemberRoomId, fetchMemberUserId} = do
-    content :: MatrixMemberContent <-
-      matrixClientJsonCall driver "room member" [i|room member room=#{fetchMemberRoomId}|] matrixApiOptions
-        GET
-        (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText fetchMemberRoomId /: "state" /: "m.room.member" /: fetchMemberUserId)
-        NoReqBody
-    pure (matrixMemberFromContent fetchMemberUserId content)
-
-instance MatrixAPI MatrixFetchProfile where
-  type MatrixResponse MatrixFetchProfile = MatrixProfile
-
-  call driver MatrixFetchProfile{fetchProfileUserId} = do
-    profile :: MatrixProfileContent <-
-      matrixClientJsonCall driver "profile" "profile" matrixApiOptions
-        GET
-        (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "profile" /: fetchProfileUserId)
-        NoReqBody
-    pure MatrixProfile
-      { profileUserId = fetchProfileUserId
-      , profileDisplayName = profile.profileContentDisplayName
-      , profileAvatarUrl = profile.profileContentAvatarUrl
-      }
-
-instance MatrixAPI MatrixDownloadMedia where
-  type MatrixResponse MatrixDownloadMedia = MatrixDownloadedMedia
-
-  call driver MatrixDownloadMedia{downloadMediaRef} =
-    case parseMxcUri downloadMediaRef of
-      Nothing ->
-        liftIO (ioError (userError [i|Invalid Matrix media URI: #{downloadMediaRef}|]))
-      Just (serverName, mediaId) -> katipAddContext (sl "matrix_method" ("authenticated media download" :: Text)) do
-        $(logDebug) [i|Matrix API request: authenticated media download #{downloadMediaRef}|]
-        withMatrixAccessToken driver.auth \token -> do
-          manager <- HTTP.manager
-          request <- liftIO (matrixMediaDownloadRequest driver.config token serverName mediaId)
-          downloadedMimeType <- matrixReq "authenticated media download" (probeMatrixMediaDownload request manager)
-          pure MatrixDownloadedMedia
-            { downloadedBytes = matrixResponseByteStream request manager
-            , downloadedMimeType
-            , downloadedName = Just mediaId
-            }
-
-instance MatrixAPI MatrixSetTyping where
-  type MatrixResponse MatrixSetTyping = Aeson.Value
-
-  call driver MatrixSetTyping{typingRoomId, typingUserId, typingTimeoutMs} = do
-    let request = SetTypingRequest typingTimeoutMs
-    matrixClientJsonCall driver "set typing" [i|set typing room=#{matrixRoomIdText typingRoomId} user=#{typingUserId}|] matrixApiOptions
-      PUT
-      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText typingRoomId /: "typing" /: typingUserId)
-      (ReqBodyJson request)
-
-initialMatrixAuthState :: Config -> MatrixAuthState
-initialMatrixAuthState _cfg =
-  -- It's unnecessary to log in here. /sync should handle it.
-  MatrixAuthState
-    { authAccessToken = Nothing
-    , authRefreshToken = Nothing
-    , authRefreshAtMilliseconds = Nothing
-    }
-
-matrixAuthAvailable :: Prim :> es => MatrixDriver -> Eff es Bool
-matrixAuthAvailable driver = do
-  currentAuthState <- IORef.readIORef driver.auth.authState
-  pure (isJust currentAuthState.authAccessToken || isJust currentAuthState.authRefreshToken)
-
-maybeCall
-  :: (MatrixAPI request, HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
-  -> request
-  -> Eff es (Maybe (MatrixResponse request))
-maybeCall driver request = do
-  available <- matrixAuthAvailable driver
-  if available
-    then Just <$> call driver request
-    else pure Nothing
-
-eitherCall
-  :: (MatrixAPI request, HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => Text
-  -> MatrixDriver
-  -> request
-  -> Eff es (Either Text (MatrixResponse request))
-eitherCall label driver request = do
-  available <- matrixAuthAvailable driver
-  if available
-    then first (matrixUserFacingExceptionText label) <$> trySync (call driver request)
-    else pure (Left [i|Matrix #{label} requires a configured access token, refresh token, or login credentials.|])
-
-withMatrixAccessToken
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixAuth
-  -> (Text -> Eff es a)
-  -> Eff es a
-withMatrixAccessToken auth action = do
-  currentAuthState <- IORef.readIORef auth.authState
-  now <- monotonicMilliseconds
-  token <- case currentAuthState.authAccessToken of
-    Just accessToken
-      | maybe True (now <) currentAuthState.authRefreshAtMilliseconds ->
-          pure accessToken
-      | otherwise ->
-          refreshMatrixAccessToken auth accessToken
-    Nothing ->
-      refreshMatrixAccessToken auth ""
-  action token `catch` \(err :: MatrixApiException) ->
-    if matrixAuthTokenRejected err
-      then do
-        refreshed <- refreshMatrixAccessToken auth token
-        action refreshed
-      else
-        throwIO err
-
-refreshMatrixAccessToken
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixAuth
-  -> Text
-  -> Eff es Text
-refreshMatrixAccessToken auth expiredToken =
-  MVar.withMVar auth.authRefreshLock \_ -> do
-    currentAuthState <- IORef.readIORef auth.authState
-    case currentAuthState.authAccessToken of
-      Just token | token /= expiredToken ->
-        pure token
-      _ ->
-        case currentAuthState.authRefreshToken of
-          Nothing ->
-            reloginMatrixAccessToken auth
-          Just refreshToken -> do
-            $(logInfo) "Matrix access token refreshing"
-            let refreshWithToken = do
-                  response <- refreshMatrixToken auth.authConfig refreshToken
-                  now <- monotonicMilliseconds
-                  let refreshedState = MatrixAuthState
-                        { authAccessToken = Just response.refreshedAccessToken
-                        , authRefreshToken = response.refreshedRefreshToken <|> currentAuthState.authRefreshToken
-                        , authRefreshAtMilliseconds = matrixRefreshAtMilliseconds now response.refreshedExpiresInMs
-                        }
-                  IORef.writeIORef auth.authState refreshedState
-                  pure response.refreshedAccessToken
-            refreshWithToken `catchSync` \err -> do
-              $(logWarning) [i|Matrix refresh token failed; logging in again: #{displayException err}|]
-              reloginMatrixAccessToken auth
-
-reloginMatrixAccessToken
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixAuth
-  -> Eff es Text
-reloginMatrixAccessToken auth =
-  case (auth.authConfig.loginUser, auth.authConfig.loginPassword) of
-    (Just user, Just password) -> do
-      $(logInfo) [i|Matrix logging in again; attempts=#{matrixReloginAttempts}|]
-      retryingMatrixLogin auth user password
-    _ ->
-      throwIO (userError "Matrix access token expired and no refresh token or login credentials are configured.")
-
-retryingMatrixLogin
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixAuth
-  -> Text
-  -> Text
-  -> Eff es Text
-retryingMatrixLogin auth user password =
-  attemptLogin 1
-  where
-    attemptLogin attempt =
-      loginOnce `catchSync` \err ->
-        if attempt < matrixReloginAttempts
-          then do
-            $(logWarning) [i|Matrix relogin attempt #{attempt}/#{matrixReloginAttempts} failed: #{displayException err}; retrying in #{matrixReloginDelaySeconds} seconds|]
-            threadDelay matrixReloginDelayMicroseconds
-            attemptLogin (attempt + 1)
-          else do
-            $(logError) [i|Matrix relogin attempt #{attempt}/#{matrixReloginAttempts} failed: #{displayException err}|]
-            throwIO err
-
-    loginOnce = do
-      response <- matrixLogin auth.authConfig user password
-      storeMatrixLoginResponse auth response
-      pure response.loginAccessToken
-
-storeMatrixLoginResponse :: (IOE :> es, Prim :> es) => MatrixAuth -> MatrixLoginResponse -> Eff es ()
-storeMatrixLoginResponse auth response = do
-  now <- monotonicMilliseconds
-  IORef.writeIORef auth.authState MatrixAuthState
-    { authAccessToken = Just response.loginAccessToken
-    , authRefreshToken = response.loginRefreshToken
-    , authRefreshAtMilliseconds = matrixRefreshAtMilliseconds now response.loginExpiresInMs
-    }
-
-matrixRefreshAtMilliseconds :: Integer -> Maybe Integer -> Maybe Integer
-matrixRefreshAtMilliseconds now expiresInMilliseconds =
-  expiresInMilliseconds <&> \expiresIn ->
-    now + max 0 (expiresIn - matrixRefreshMarginMilliseconds)
-
-matrixRefreshMarginMilliseconds :: Integer
-matrixRefreshMarginMilliseconds =
-  60000
-
-monotonicMilliseconds :: IOE :> es => Eff es Integer
-monotonicMilliseconds =
-  fromIntegral . (`div` 1000000) <$> liftIO getMonotonicTimeNSec
-
-matrixAuthTokenRejected :: MatrixApiException -> Bool
-matrixAuthTokenRejected = \case
-  MatrixApiException _ status err ->
-    HTTPStatus.statusCode status == 401 && err.errcode `elem` ["M_UNKNOWN_TOKEN", "M_FORBIDDEN"]
-  MatrixTransportException{} ->
-    False
-
-data MatrixApiException
-  = MatrixApiException !Text !HTTPStatus.Status !MatrixErrorResponse
-  | MatrixTransportException !Text !Text
-  deriving (Show, Eq)
-
-instance Exception MatrixApiException where
-  displayException =
-    Text.unpack . matrixApiExceptionMessage
-
-matrixApiExceptionMessage :: MatrixApiException -> Text
-matrixApiExceptionMessage = \case
-  MatrixApiException method status err ->
-    [i|Matrix API request failed (#{method}): HTTP #{HTTPStatus.statusCode status} #{matrixErrorResponseText err}|]
-  MatrixTransportException method message ->
-    [i|Matrix API request failed (#{method}): #{message}|]
-
-matrixUserFacingExceptionText :: Text -> SomeException -> Text
-matrixUserFacingExceptionText label err =
-  case fromException err of
-    Just matrixErr ->
-      matrixUserFacingApiError label matrixErr
-    Nothing ->
-      [i|Matrix #{label} failed: #{displayException err}|]
-
-matrixUserFacingApiError :: Text -> MatrixApiException -> Text
-matrixUserFacingApiError label = \case
-  MatrixApiException _ status err
-    | matrixAuthTokenRejected (MatrixApiException label status err) ->
-        [i|Matrix #{label} failed: Matrix authentication failed after retrying login.|]
-    | otherwise ->
-        [i|Matrix #{label} failed: HTTP #{HTTPStatus.statusCode status}.|]
-  MatrixTransportException{} ->
-    [i|Matrix #{label} failed: Matrix transport error.|]
-
-matrixErrorResponseText :: MatrixErrorResponse -> Text
-matrixErrorResponseText err =
-  Text.intercalate "; " $
-    [ err.errcode <> maybe "" (": " <>) err.matrixError
-    ]
-      <> maybe [] (\retry -> [[i|retry_after_ms=#{retry}|]]) err.retryAfterMs
-      <> if err.softLogout then ["soft_logout=true"] else []
-
-matrixApiException :: Text -> HttpException -> MatrixApiException
-matrixApiException method = \case
-  VanillaHttpException (Client.HttpExceptionRequest _ (Client.StatusCodeException response body)) ->
-    case Aeson.eitherDecodeStrict body of
-      Right err ->
-        MatrixApiException method (Client.responseStatus response) err
-      Left parseErr ->
-        MatrixTransportException method [i|HTTP #{HTTPStatus.statusCode (Client.responseStatus response)} with non-Matrix error body: #{parseErr}|]
-  VanillaHttpException (Client.HttpExceptionRequest _ content) ->
-    MatrixTransportException method [i|HTTP transport error: #{show content :: String}|]
-  VanillaHttpException err ->
-    MatrixTransportException method [i|HTTP error: #{show err :: String}|]
-  JsonHttpException message ->
-    MatrixTransportException method [i|JSON error: #{message}|]
-
-matrixReq :: IOE :> es => Text -> Eff es a -> Eff es a
-matrixReq method action =
-  action `catch` \(err :: HttpException) ->
-    throwIO (matrixApiException method err)
-
-matrixUnauthenticatedCall
-  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
-  => Config
-  -> Text
-  -> Text
-  -> (forall scheme. Option scheme -> Option scheme)
-  -> (forall scheme. Url scheme -> Option scheme -> Req response)
-  -> Eff es response
-matrixUnauthenticatedCall cfg method logMessage addOptions buildRequest = katipAddContext (sl "matrix_method" method) do
-  $(logDebug) [i|Matrix API request: #{logMessage}|]
-  withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions ->
-    matrixReq method $
-      HTTP.runReqWithConfig matrixHttpConfig $
-        buildRequest baseUrl (addOptions baseOptions)
-
-matrixUnauthenticatedJsonCall
-  :: ( HTTP.HTTP :> es
-     , IOE :> es
-     , KatipE :> es
-     , Aeson.FromJSON response
-     , HttpMethod method
-     , HttpBody body
-     , HttpBodyAllowed (AllowsBody method) (ProvidesBody body)
-     )
-  => Config
-  -> Text
-  -> Text
-  -> (forall scheme. Option scheme -> Option scheme)
-  -> method
-  -> (forall scheme. Url scheme -> Url scheme)
-  -> body
-  -> Eff es response
-matrixUnauthenticatedJsonCall cfg method logMessage addOptions httpMethod buildUrl body =
-  responseBody <$> matrixUnauthenticatedCall cfg method logMessage addOptions \baseUrl options ->
-    req httpMethod (buildUrl baseUrl) body jsonResponse options
-
-matrixClientJsonCall
-  :: ( HTTP.HTTP :> es
-     , IOE :> es
-     , KatipE :> es
-     , Concurrent :> es
-     , Prim :> es
-     , Aeson.FromJSON response
-     , HttpMethod method
-     , HttpBody body
-     , HttpBodyAllowed (AllowsBody method) (ProvidesBody body)
-     )
-  => MatrixDriver
-  -> Text
-  -> Text
-  -> (forall scheme. Option scheme -> Option scheme)
-  -> method
-  -> (forall scheme. Url scheme -> Url scheme)
-  -> body
-  -> Eff es response
-matrixClientJsonCall driver method logMessage addOptions httpMethod buildUrl body =
-  withMatrixAccessToken driver.auth \token ->
-    matrixUnauthenticatedJsonCall driver.config method logMessage
-      (\baseOptions -> matrixApiOptions (addOptions (baseOptions <> matrixAuth token)))
-      httpMethod buildUrl body
-
-matrixApiOptions :: Option scheme -> Option scheme
-matrixApiOptions baseOptions =
-  baseOptions
-    <> responseTimeout matrixApiResponseTimeoutMicroseconds
-
-matrixUploadOptions :: Text -> Text -> Option scheme -> Option scheme
-matrixUploadOptions fileName mime baseOptions =
-  baseOptions
-    <> header "Content-Type" (TextEncoding.encodeUtf8 mime)
-    <> "filename" =: fileName
-
-matrixApiOptionsNoAuth :: Option scheme -> Option scheme
-matrixApiOptionsNoAuth baseOptions =
-  baseOptions
-    <> responseTimeout matrixApiResponseTimeoutMicroseconds
-
-matrixMediaDownloadRequest :: Config -> Text -> Text -> Text -> IO Client.Request
-matrixMediaDownloadRequest cfg token serverName mediaId = do
-  request <- Client.parseRequest (Text.unpack (matrixEndpointText cfg.homeserver ["_matrix", "client", "v1", "media", "download", serverName, mediaId]))
-  pure request
-    { Client.requestHeaders =
-        ( "Authorization"
-        , ByteString.pack [i|Bearer #{token}|]
-        ) : Client.requestHeaders request
-    , Client.responseTimeout = Client.responseTimeoutMicro matrixMediaDownloadResponseTimeoutMicroseconds
-    }
-
-matrixResponseByteStream :: Client.Request -> Client.Manager -> Q.ByteStream (ResourceT IO) ()
-matrixResponseByteStream request manager = do
-  response <- lift (StreamingHTTP.http request manager)
-  Client.responseBody response
-
-probeMatrixMediaDownload :: IOE :> es => Client.Request -> Client.Manager -> Eff es Text
-probeMatrixMediaDownload request manager =
-  bracket
-    (liftIO $ Client.responseOpen (matrixMediaProbeRequest request) manager)
-    (liftIO . Client.responseClose)
-    \response -> do
-      let status = Client.responseStatus response
-      if HTTPStatus.statusIsSuccessful status
-        then do
-          void $ liftIO $ Client.brRead (Client.responseBody response)
-          pure (matrixResponseMime response)
-        else do
-          body <- liftIO $ Client.brRead (Client.responseBody response)
-          throwIO (matrixDownloadStatusException status body)
-
-matrixResponseMime :: Client.Response body -> Text
-matrixResponseMime response =
-  fromMaybe "application/octet-stream" do
-    raw <- List.lookup HTTPHeader.hContentType (Client.responseHeaders response)
-    nonEmptyText (Text.takeWhile (/= ';') (TextEncoding.decodeUtf8 raw))
-
-matrixMediaProbeRequest :: Client.Request -> Client.Request
-matrixMediaProbeRequest request =
-  request
-    { Client.requestHeaders =
-        ("Range", "bytes=0-0") : filter ((/= "Range") . fst) request.requestHeaders
-    }
-
-matrixDownloadStatusException :: HTTPStatus.Status -> StrictByteString.ByteString -> MatrixApiException
-matrixDownloadStatusException status body =
-  case Aeson.eitherDecodeStrict body of
-    Right err ->
-      MatrixApiException "authenticated media download" status err
-    Left parseErr ->
-      MatrixTransportException "authenticated media download" [i|HTTP #{HTTPStatus.statusCode status} with non-Matrix error body: #{parseErr}|]
-
-matrixEndpointText :: Text -> [Text] -> Text
-matrixEndpointText homeserver path =
-  Text.dropWhileEnd (== '/') homeserver <> "/" <> Text.intercalate "/" path
-
-matrixSyncOptions :: MatrixSync -> Option scheme -> Option scheme
-matrixSyncOptions MatrixSync{syncSince, syncMode} baseOptions =
-  baseOptions
-    <> responseTimeout matrixSyncResponseTimeoutMicroseconds
-    <> "timeout" =: matrixSyncTimeoutMilliseconds syncMode
-    <> maybe mempty ("since" =:) syncSince
-
-newtype MatrixRefreshRequest = MatrixRefreshRequest
-  { requestRefreshToken :: Text
-  }
-  deriving (Generic)
-    deriving Aeson.ToJSON via (PrefixedSnakeJSON "request" MatrixRefreshRequest)
-
-data MatrixRefreshResponse = MatrixRefreshResponse
-  { refreshedAccessToken :: !Text
-  , refreshedRefreshToken :: !(Maybe Text)
-  , refreshedExpiresInMs :: !(Maybe Integer)
-  }
-  deriving (Show, Eq, Generic)
-    deriving Aeson.FromJSON via (PrefixedSnakeJSON "refreshed" MatrixRefreshResponse)
-
-data MatrixErrorResponse = MatrixErrorResponse
-  { errcode :: !Text
-  , matrixError :: !(Maybe Text)
-  , retryAfterMs :: !(Maybe Integer)
-  , softLogout :: !Bool
-  }
-  deriving (Show, Eq)
-
-instance Aeson.FromJSON MatrixErrorResponse where
-  parseJSON = Aeson.withObject "MatrixErrorResponse" \o ->
-    MatrixErrorResponse
-      <$> o Aeson..: "errcode"
-      <*> o Aeson..:? "error"
-      <*> o Aeson..:? "retry_after_ms"
-      <*> o Aeson..:? "soft_logout" Aeson..!= False
-
-data MatrixLoginIdentifier = MatrixLoginIdentifier
-  { loginIdentifierType :: !Text
-  , loginIdentifierUser :: !Text
-  }
-
-instance Aeson.ToJSON MatrixLoginIdentifier where
-  toJSON MatrixLoginIdentifier{loginIdentifierType, loginIdentifierUser} =
-    Aeson.object
-      [ "type" Aeson..= loginIdentifierType
-      , "user" Aeson..= loginIdentifierUser
-      ]
-
-data MatrixLoginRequest = MatrixLoginRequest
-  { loginIdentifier :: !MatrixLoginIdentifier
-  , loginPassword :: !Text
-  , loginDeviceId :: !(Maybe Text)
-  , loginInitialDeviceDisplayName :: !(Maybe Text)
-  , loginRefreshToken :: !Bool
-  }
-
-instance Aeson.ToJSON MatrixLoginRequest where
-  toJSON MatrixLoginRequest{loginIdentifier, loginPassword, loginDeviceId, loginInitialDeviceDisplayName, loginRefreshToken} =
-    Aeson.object
-      [ "type" Aeson..= ("m.login.password" :: Text)
-      , "identifier" Aeson..= loginIdentifier
-      , "password" Aeson..= loginPassword
-      , "device_id" Aeson..= loginDeviceId
-      , "initial_device_display_name" Aeson..= loginInitialDeviceDisplayName
-      , "refresh_token" Aeson..= loginRefreshToken
-      ]
-
-data MatrixLoginResponse = MatrixLoginResponse
-  { loginUserId :: !Text
-  , loginDeviceId :: !(Maybe Text)
-  , loginAccessToken :: !Text
-  , loginRefreshToken :: !(Maybe Text)
-  , loginExpiresInMs :: !(Maybe Integer)
-  }
-  deriving (Show, Eq, Generic)
-    deriving Aeson.FromJSON via (PrefixedSnakeJSON "login" MatrixLoginResponse)
-
-incomingMessages
+incomingMessagesProtocol
   :: (HTTP.HTTP :> es, Media.Media :> es, KatipE :> es, IOE :> es, Concurrent :> es, Prim :> es, Storage.Storage :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages driver =
+incomingMessagesProtocol driver =
   if matrixAuthConfigured cfg
     then do
       S.lift $ $(logInfo) [i|Matrix sync starting: auth=#{matrixAuthMode cfg}|]
@@ -1253,7 +445,7 @@ syncInvitedRoomIds =
 
 acceptInvitations
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> SyncResponse
   -> Eff es ()
 acceptInvitations driver response =
@@ -1275,7 +467,7 @@ syncJoinedMemberCounts response =
 
 probeDirectRoomIds
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> Set MatrixRoomId
   -> Map MatrixRoomId Int
   -> SyncResponse
@@ -1310,7 +502,7 @@ matrixAuthMode cfg
 
 replyToMatrix
   :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> Text
   -> Eff es (Either Text MessageId)
@@ -1319,7 +511,7 @@ replyToMatrix driver message body =
 
 replyToMatrixMessages
   :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> Text
   -> Eff es [Either Text MessageId]
@@ -1328,7 +520,7 @@ replyToMatrixMessages driver message body =
 
 streamingReplyToMatrix
   :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> Text
   -> Eff es (Either Text MessageId)
@@ -1337,7 +529,7 @@ streamingReplyToMatrix driver message body =
 
 replyToMatrixResponses
   :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> Bool
   -> IncomingMessage
   -> Text
@@ -1359,7 +551,7 @@ replyToMatrixResponses driver complete message body =
 
 sendMatrixReplyText
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> Bool
   -> MatrixRoomId
   -> Maybe MatrixReplyTo
@@ -1373,7 +565,7 @@ sendMatrixReplyText driver complete roomId replyRelation text
 
 getMessageContentMatrix
   :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> MessageId
   -> Eff es (Maybe ReferencedMessage)
@@ -1387,7 +579,7 @@ getMessageContentMatrix driver message messageId =
 
 getSenderMemberInfoMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> Eff es (Maybe Aeson.Value)
 getSenderMemberInfoMatrix driver message =
@@ -1399,7 +591,7 @@ getSenderMemberInfoMatrix driver message =
 
 getMemberInfoMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> Text
   -> Eff es (Maybe Aeson.Value)
@@ -1412,7 +604,7 @@ getMemberInfoMatrix driver message userId =
 
 getUserAvatarMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> Text
   -> Eff es (Maybe Aeson.Value)
@@ -1421,7 +613,7 @@ getUserAvatarMatrix driver _ userId =
 
 listGroupMembersMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> Eff es (Maybe Aeson.Value)
 listGroupMembersMatrix driver message =
@@ -1433,7 +625,7 @@ listGroupMembersMatrix driver message =
 
 mentionUserMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> Text
   -> Text
@@ -1498,7 +690,7 @@ applyLatestMatrixReplacement event =
 
 normalizeMatrixReferencedEvent
   :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> Event
   -> Eff es (Maybe ReferencedMessage)
 normalizeMatrixReferencedEvent driver originalEvent =
@@ -1523,7 +715,7 @@ normalizeMatrixReferencedEvent driver originalEvent =
         , files
         }
 
-normalizeMatrixIncomingMessage :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> IncomingMessage -> Eff es IncomingMessage
+normalizeMatrixIncomingMessage :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> IncomingMessage -> Eff es IncomingMessage
 normalizeMatrixIncomingMessage driver message = do
   imageUrls <-
     case matrixEventImageMediaRefs message.raw of
@@ -1551,16 +743,16 @@ normalizeMatrixIncomingMessage driver message = do
     , raw = message.raw
     }
 
-normalizeMatrixMediaRefs :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> [Text] -> Eff es [Text]
+normalizeMatrixMediaRefs :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> [Text] -> Eff es [Text]
 normalizeMatrixMediaRefs driver =
   traverse (normalizeMatrixMediaRef driver Nothing)
 
-normalizeMatrixMediaRefsWithMetadata :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> [MatrixMediaRef] -> Eff es [Text]
+normalizeMatrixMediaRefsWithMetadata :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> [MatrixMediaRef] -> Eff es [Text]
 normalizeMatrixMediaRefsWithMetadata driver =
   traverse \mediaRef ->
     normalizeMatrixMediaRefWithMetadata driver mediaRef
 
-normalizeMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> Maybe Text -> Text -> Eff es Text
+normalizeMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> Maybe Text -> Text -> Eff es Text
 normalizeMatrixMediaRef driver preferredMime ref
   = normalizeMatrixMediaRefWithMetadata driver MatrixMediaRef
       { matrixMediaRefUrl = ref
@@ -1568,7 +760,7 @@ normalizeMatrixMediaRef driver preferredMime ref
       , matrixMediaRefEncrypted = Nothing
       }
 
-normalizeMatrixMediaRefWithMetadata :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixMediaRef -> Eff es Text
+normalizeMatrixMediaRefWithMetadata :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixMediaRef -> Eff es Text
 normalizeMatrixMediaRefWithMetadata driver mediaRef
   | "mxc://" `Text.isPrefixOf` Text.strip ref = do
       let mxcRef = Text.strip ref
@@ -1582,7 +774,7 @@ normalizeMatrixMediaRefWithMetadata driver mediaRef
   where
     ref = mediaRef.matrixMediaRefUrl
 
-cacheMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixMediaRef -> Text -> Text -> Eff es Text
+cacheMatrixMediaRef :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixMediaRef -> Text -> Text -> Eff es Text
 cacheMatrixMediaRef driver mediaRef mxcRef fallbackRef = do
   cached <- cacheMatrixMediaRefObject driver mediaRef mxcRef `catchSync` \err -> do
     $(logInfo) [i|Matrix media normalization skipped for #{mxcRef}: #{displayException err}|]
@@ -1593,7 +785,7 @@ cacheMatrixMediaRef driver mediaRef mxcRef fallbackRef = do
     Just cachedMediaRef ->
       pure cachedMediaRef
 
-cacheMatrixMediaRefObject :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixMediaRef -> Text -> Eff es (Maybe Text)
+cacheMatrixMediaRefObject :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixMediaRef -> Text -> Eff es (Maybe Text)
 cacheMatrixMediaRefObject driver mediaRef mxcRef =
   fetchMatrixMediaObject driver mediaRef mxcRef >>= \case
     Nothing ->
@@ -1601,7 +793,7 @@ cacheMatrixMediaRefObject driver mediaRef mxcRef =
     Just mediaObject ->
       Media.storeMediaObjectFromSource mxcRef mediaObject
 
-fetchMatrixMediaObject :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => MatrixDriver -> MatrixMediaRef -> Text -> Eff es (Maybe Media.MediaObject)
+fetchMatrixMediaObject :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> MatrixMediaRef -> Text -> Eff es (Maybe Media.MediaObject)
 fetchMatrixMediaObject driver mediaRef mxcRef = do
   downloadMedia driver mxcRef >>= traverse \media ->
     case mediaRef.matrixMediaRefEncrypted of
@@ -1785,7 +977,7 @@ matrixEventFileMediaRefs =
 
 normalizeMatrixFiles
   :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> [(MessageFile, MatrixMediaRef)]
   -> Eff es [MessageFile]
 normalizeMatrixFiles driver =
@@ -1835,7 +1027,7 @@ matrixReplyTo message = do
 
 uploadFileMatrix
   :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> FilePath
   -> Maybe Text
@@ -1864,7 +1056,7 @@ uploadFileMatrix driver message path requestedFileName =
 
 sendMatrixImage
   :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> Text
   -> Maybe MatrixReplyTo
   -> Text
@@ -1887,7 +1079,7 @@ sendMatrixImage driver roomId replyRelation imageRef =
 
 tryMatrixSendImage
   :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> Text
   -> Maybe MatrixReplyTo
   -> Text
@@ -1900,13 +1092,13 @@ tryMatrixSendImage driver roomId replyRelation imageRef = do
     Right response ->
       response
 
-matrixMediaScope :: MatrixDriver -> Text
+matrixMediaScope :: Protocol.MatrixDriver -> Text
 matrixMediaScope driver =
   fromMaybe driver.config.homeserver driver.config.userId
 
 sendMatrixImageMessage
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> Text
   -> Maybe MatrixReplyTo
   -> Text
@@ -1928,7 +1120,7 @@ sendMatrixImageMessage driver roomId replyRelation fileName contentUri mime size
 
 replyAudioMatrix
   :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> Text
   -> Maybe Text
@@ -1942,7 +1134,7 @@ replyAudioMatrix driver message audioRef caption =
 
 sendMatrixAudio
   :: (HTTP.HTTP :> es, FileSystem :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> Text
   -> Text
   -> Maybe Text
@@ -2156,7 +1348,7 @@ nonEmptyText text =
 
 editMessageMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> MessageId
   -> Text
@@ -2176,7 +1368,7 @@ editMessageMatrix driver message messageId body =
 
 completeMessageEditMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> MessageId
   -> Eff es Bool
@@ -2207,7 +1399,7 @@ matrixEditableEditText body
 
 deleteMessageMatrix
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> IncomingMessage
   -> MessageId
   -> Eff es Bool
@@ -2405,62 +1597,6 @@ defaultConfig = Config
   , superusers = []
   }
 
-matrixLogin :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Config -> Text -> Text -> Eff es MatrixLoginResponse
-matrixLogin cfg user password = do
-  let request = MatrixLoginRequest
-        { loginIdentifier = MatrixLoginIdentifier
-            { loginIdentifierType = "m.id.user"
-            , loginIdentifierUser = user
-            }
-        , loginPassword = password
-        , loginDeviceId = cfg.deviceId
-        , loginInitialDeviceDisplayName = Just "cosmobot"
-        , loginRefreshToken = True
-        }
-  matrixUnauthenticatedJsonCall cfg "login" "login" matrixApiOptionsNoAuth
-    POST
-    (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "login")
-    (ReqBodyJson request)
-
-refreshMatrixToken :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Config -> Text -> Eff es MatrixRefreshResponse
-refreshMatrixToken cfg refreshToken = do
-  let request = MatrixRefreshRequest refreshToken
-  matrixUnauthenticatedJsonCall cfg "refresh" "refresh access token" matrixApiOptionsNoAuth
-    POST
-    (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "refresh")
-    (ReqBodyJson request)
-
-parseMxcUri :: Text -> Maybe (Text, Text)
-parseMxcUri ref = do
-  rest <- Text.stripPrefix "mxc://" (Text.strip ref)
-  let (serverName, mediaWithSlash) = Text.breakOn "/" rest
-  mediaId <- Text.stripPrefix "/" mediaWithSlash
-  guard (not (Text.null serverName))
-  guard (not (Text.null mediaId))
-  pure (serverName, mediaId)
-
-withMatrixBaseUrl :: IOE :> es => Text -> (forall scheme. Url scheme -> Option scheme -> Eff es a) -> Eff es a
-withMatrixBaseUrl homeserver action = do
-  uri <- URI.mkURI homeserver
-  case useURI uri of
-    Nothing ->
-      liftIO (ioError (userError [i|Unsupported Matrix homeserver URL: #{homeserver}. Use a full HTTP or HTTPS base URL.|]))
-    Just (Left (baseUrl, baseOptions)) ->
-      action baseUrl baseOptions
-    Just (Right (baseUrl, baseOptions)) ->
-      action baseUrl baseOptions
-
-matrixAuth :: Text -> Option scheme
-matrixAuth token =
-  header "Authorization" (ByteString.pack [i|Bearer #{token}|])
-
-matrixHttpConfig :: HttpConfig
-matrixHttpConfig =
-  defaultHttpConfig
-    { httpConfigRetryJudge = \_ _ -> False
-    , httpConfigRetryJudgeException = \_ _ -> False
-    }
-
 stableTextId :: Text -> Integer
 stableTextId =
   Text.foldl' step 14695981039346656037
@@ -2470,18 +1606,13 @@ stableTextId =
     fnvPrime :: Word64
     fnvPrime = 1099511628211
 
-nonEmptyMatrixBody :: Text -> Text
-nonEmptyMatrixBody body
-  | Text.null (Text.strip body) = " "
-  | otherwise = body
-
 matrixOutgoingMentionUserIds :: Text -> [Text] -> [Text]
 matrixOutgoingMentionUserIds body explicitUserIds =
   Set.toList (Set.fromList (filter isMatrixUserId (explicitUserIds <> matrixUserIdsInText body)))
 
 fetchMatrixMentionNames
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
-  => MatrixDriver
+  => Protocol.MatrixDriver
   -> MatrixRoomId
   -> [Text]
   -> Eff es (Map Text Text)
@@ -2506,537 +1637,21 @@ matrixMentionNames mentionUserIds members =
     , Just member <- [Map.lookup userId members.joinedMembers]
     , Just name <- [matrixMentionDisplayName =<< member.memberDisplayName]
     ]
-
-matrixMentionDisplayName :: Text -> Maybe Text
-matrixMentionDisplayName name = do
-  displayName <- nonEmptyText name
-  pure if "@" `Text.isPrefixOf` displayName
-    then displayName
-    else "@" <> displayName
-
-matrixUserIdsInText :: Text -> [Text]
-matrixUserIdsInText =
-  mapMaybe matrixUserIdToken . Text.words
-
-matrixUserIdToken :: Text -> Maybe Text
-matrixUserIdToken raw =
-  let token = Text.dropWhileEnd (`elem` matrixUserIdTrailingPunctuation) raw
-  in token <$ guard (isMatrixUserId token)
-
-matrixUserIdTrailingPunctuation :: [Char]
-matrixUserIdTrailingPunctuation =
-  ".,;:!?)]}>\"'"
-
-isMatrixUserId :: Text -> Bool
-isMatrixUserId token =
-  "@" `Text.isPrefixOf` token && ":" `Text.isInfixOf` token
-
-data RoomEvent = RoomEvent
-  { roomId :: !MatrixRoomId
-  , roomIsDirect :: !Bool
-  , event :: !Event
+data MatrixMediaRef = MatrixMediaRef
+  { matrixMediaRefUrl :: !Text
+  , matrixMediaRefMimeType :: !(Maybe Text)
+  , matrixMediaRefEncrypted :: !(Maybe MatrixEncryptedFile)
   }
-  deriving (Show)
 
-data SyncResponse = SyncResponse
-  { nextBatch :: !Text
-  , rooms :: !Rooms
-  , accountData :: !AccountData
+data MatrixEncryptedFile = MatrixEncryptedFile
+  { encryptedFileUrl :: !Text
+  , encryptedFileKey :: !Text
+  , encryptedFileIv :: !Text
+  , encryptedFileSha256 :: !Text
   }
-  deriving (Show, Generic)
 
-instance Aeson.FromJSON SyncResponse where
-  parseJSON = Aeson.withObject "SyncResponse" \o ->
-    SyncResponse
-      <$> o Aeson..: "next_batch"
-      <*> o Aeson..:? "rooms" Aeson..!= Rooms Map.empty Map.empty
-      <*> o Aeson..:? "account_data" Aeson..!= AccountData []
-
-newtype AccountData = AccountData
-  { directRooms :: [Text]
+data MatrixDecryptionPlan = MatrixDecryptionPlan
+  { decryptionCipher :: !CryptoAES.AES256
+  , decryptionIv :: !(CryptoCipher.IV CryptoAES.AES256)
+  , decryptionExpectedHash :: !(CryptoHash.Digest CryptoHash.SHA256)
   }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON AccountData where
-  parseJSON = Aeson.withObject "AccountData" \o -> do
-    events <- o Aeson..:? "events" Aeson..!= []
-    pure AccountData
-      { directRooms = concatMap accountDataEventDirectRooms events
-      }
-
-data AccountDataEvent = AccountDataEvent
-  { accountDataEventType :: !Text
-  , accountDataEventContent :: !Aeson.Value
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON AccountDataEvent where
-  parseJSON = Aeson.withObject "AccountDataEvent" \o ->
-    AccountDataEvent
-      <$> o Aeson..: "type"
-      <*> o Aeson..:? "content" Aeson..!= Aeson.Object mempty
-
-accountDataEventDirectRooms :: AccountDataEvent -> [Text]
-accountDataEventDirectRooms event
-  | event.accountDataEventType == "m.direct" =
-      concat (fromMaybe [] (Aeson.parseMaybe parseDirectRooms event.accountDataEventContent))
-  | otherwise =
-      []
-  where
-    parseDirectRooms :: Aeson.Value -> Aeson.Parser [[Text]]
-    parseDirectRooms =
-      Aeson.withObject "m.direct content" \o ->
-        traverse Aeson.parseJSON (AesonKeyMap.elems o)
-
-data Rooms = Rooms
-  { join :: Map Text JoinedRoom
-  , invite :: Map Text Aeson.Value
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON Rooms where
-  parseJSON = Aeson.withObject "Rooms" \o ->
-    Rooms
-      <$> o Aeson..:? "join" Aeson..!= Map.empty
-      <*> o Aeson..:? "invite" Aeson..!= Map.empty
-
-data JoinedRoom = JoinedRoom
-  { timeline :: Timeline
-  , summary :: RoomSummary
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON JoinedRoom where
-  parseJSON = Aeson.withObject "JoinedRoom" \o ->
-    JoinedRoom
-      <$> o Aeson..:? "timeline" Aeson..!= Timeline []
-      <*> o Aeson..:? "summary" Aeson..!= RoomSummary Nothing
-
-newtype RoomSummary = RoomSummary
-  { joinedMemberCount :: Maybe Int
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON RoomSummary where
-  parseJSON = Aeson.withObject "RoomSummary" \o ->
-    RoomSummary <$> o Aeson..:? "m.joined_member_count"
-
-newtype JoinedMembersResponse = JoinedMembersResponse
-  { joinedMembers :: Map Text MatrixMember
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON JoinedMembersResponse where
-  parseJSON = Aeson.withObject "JoinedMembersResponse" \o -> do
-    joined <- o Aeson..:? "joined" Aeson..!= Map.empty
-    pure (JoinedMembersResponse (Map.mapWithKey matrixMemberFromJoined joined))
-
-data MatrixMember = MatrixMember
-  { memberUserId :: !Text
-  , memberDisplayName :: !(Maybe Text)
-  , memberAvatarUrl :: !(Maybe Text)
-  , memberMembership :: !(Maybe Text)
-  }
-  deriving (Show, Eq, Generic)
-
-instance Aeson.ToJSON MatrixMember where
-  toJSON MatrixMember{memberUserId, memberDisplayName, memberAvatarUrl, memberMembership} =
-    Aeson.object
-      [ "user_id" Aeson..= memberUserId
-      , "displayname" Aeson..= memberDisplayName
-      , "avatar_url" Aeson..= memberAvatarUrl
-      , "membership" Aeson..= memberMembership
-      ]
-
-data MatrixMemberContent = MatrixMemberContent
-  { memberContentDisplayName :: !(Maybe Text)
-  , memberContentAvatarUrl :: !(Maybe Text)
-  , memberContentMembership :: !(Maybe Text)
-  }
-  deriving (Show, Eq, Generic)
-
-instance Aeson.FromJSON MatrixMemberContent where
-  parseJSON = Aeson.withObject "MatrixMemberContent" \o -> do
-    displayName <- o Aeson..:? "displayname"
-    joinedDisplayName <- o Aeson..:? "display_name"
-    MatrixMemberContent
-      <$> pure (displayName <|> joinedDisplayName)
-      <*> o Aeson..:? "avatar_url"
-      <*> o Aeson..:? "membership"
-
-matrixMemberFromContent :: Text -> MatrixMemberContent -> MatrixMember
-matrixMemberFromContent userId content =
-  MatrixMember
-    { memberUserId = userId
-    , memberDisplayName = content.memberContentDisplayName
-    , memberAvatarUrl = content.memberContentAvatarUrl
-    , memberMembership = content.memberContentMembership
-    }
-
-matrixMemberFromJoined :: Text -> MatrixMemberContent -> MatrixMember
-matrixMemberFromJoined =
-  matrixMemberFromContent
-
-data MatrixProfile = MatrixProfile
-  { profileUserId :: !Text
-  , profileDisplayName :: !(Maybe Text)
-  , profileAvatarUrl :: !(Maybe Text)
-  }
-  deriving (Show, Eq, Generic)
-
-data MatrixProfileContent = MatrixProfileContent
-  { profileContentDisplayName :: !(Maybe Text)
-  , profileContentAvatarUrl :: !(Maybe Text)
-  }
-  deriving (Show, Eq, Generic)
-
-instance Aeson.FromJSON MatrixProfileContent where
-  parseJSON = Aeson.withObject "MatrixProfileContent" \o ->
-    MatrixProfileContent
-      <$> o Aeson..:? "displayname"
-      <*> o Aeson..:? "avatar_url"
-
-newtype Timeline = Timeline
-  { events :: [Event]
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON Timeline where
-  parseJSON = Aeson.withObject "Timeline" \o ->
-    Timeline <$> o Aeson..:? "events" Aeson..!= []
-
-data Event = Event
-  { type_ :: !Text
-  , sender :: !Text
-  , eventId :: !(Maybe MatrixEventId)
-  , content :: !EventContent
-  , raw :: !Aeson.Value
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON Event where
-  parseJSON value = Aeson.withObject "Event" parse value
-    where
-      parse o = do
-        type_ <- o Aeson..: "type"
-        sender <- o Aeson..: "sender"
-        eventId <- fmap matrixEventId <$> o Aeson..:? "event_id"
-        content <- o Aeson..:? "content" Aeson..!= EventContent Nothing Nothing [] Nothing
-        pure Event{type_, sender, eventId, content, raw = value}
-
-data EventContent = EventContent
-  { msgtype :: !(Maybe Text)
-  , body :: !(Maybe Text)
-  , mentions :: ![Text]
-  , replyToEventId :: !(Maybe MatrixEventId)
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON EventContent where
-  parseJSON = Aeson.withObject "EventContent" \o -> do
-    msgtype <- o Aeson..:? "msgtype"
-    body <- o Aeson..:? "body"
-    mentions <- o Aeson..:? "m.mentions" Aeson..!= MatrixMentions []
-    replyToEventId <- o Aeson..:? "m.relates_to" Aeson..!= MatrixRelatesTo Nothing
-    pure EventContent
-      { msgtype
-      , body
-      , mentions = mentions.userIds
-      , replyToEventId = replyToEventId.inReplyToEventId
-      }
-
-newtype MatrixMentions = MatrixMentions
-  { userIds :: [Text]
-  }
-  deriving (Show, Generic)
-    deriving Aeson.ToJSON via (SnakeJSON MatrixMentions)
-
-instance Aeson.FromJSON MatrixMentions where
-  parseJSON = Aeson.withObject "MatrixMentions" \o ->
-    MatrixMentions <$> o Aeson..:? "user_ids" Aeson..!= []
-
-newtype MatrixRelatesTo = MatrixRelatesTo
-  { inReplyToEventId :: Maybe MatrixEventId
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON MatrixRelatesTo where
-  parseJSON = Aeson.withObject "MatrixRelatesTo" \o -> do
-    inReplyTo <- o Aeson..:? "m.in_reply_to" Aeson..!= MatrixInReplyTo Nothing
-    pure (MatrixRelatesTo inReplyTo.replyEventId)
-
-instance Aeson.ToJSON MatrixRelatesTo where
-  toJSON MatrixRelatesTo{inReplyToEventId} =
-    Aeson.object
-      [ "m.in_reply_to" Aeson..= MatrixInReplyTo inReplyToEventId
-      ]
-
-newtype MatrixInReplyTo = MatrixInReplyTo
-  { replyEventId :: Maybe MatrixEventId
-  }
-  deriving (Show, Generic)
-    deriving (Aeson.FromJSON, Aeson.ToJSON) via (PrefixedSnakeJSON "reply" MatrixInReplyTo)
-
-data SendMessageRequest = SendMessageRequest
-  { msgtype :: !Text
-  , body :: !Text
-  , formattedBody :: !(Maybe Text)
-  , replyRelation :: !(Maybe MatrixReplyTo)
-  , mentions :: !MatrixMentions
-  , streamMetadata :: !MatrixStreamMetadata
-  }
-  deriving (Show, Generic)
-
-instance Aeson.ToJSON SendMessageRequest where
-  toJSON SendMessageRequest{msgtype, body, formattedBody, replyRelation, mentions, streamMetadata} =
-    Aeson.object $
-      [ "msgtype" Aeson..= msgtype
-      , "body" Aeson..= body
-      , "m.mentions" Aeson..= mentions
-      , matrixStreamMetadataPair streamMetadata
-      ]
-        <> matrixFormattedBodyFields formattedBody
-        <> maybe [] (\(MatrixReplyTo eventId) -> ["m.relates_to" Aeson..= MatrixRelatesTo (Just eventId)]) replyRelation
-
-newtype MatrixStreamMetadata = MatrixStreamMetadata
-  { streamComplete :: Bool
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON MatrixStreamMetadata where
-  parseJSON = Aeson.withObject "MatrixStreamMetadata" \o ->
-    MatrixStreamMetadata <$> o Aeson..: "complete"
-
-instance Aeson.ToJSON MatrixStreamMetadata where
-  toJSON MatrixStreamMetadata{streamComplete} =
-    Aeson.object ["complete" Aeson..= streamComplete]
-
-matrixStreamMetadataPair :: MatrixStreamMetadata -> Aeson.Pair
-matrixStreamMetadataPair metadata =
-  "com.pfeiwu.ai.stream" Aeson..= metadata
-
-newtype MatrixUploadResponse = MatrixUploadResponse
-  { contentUri :: Text
-  }
-  deriving (Show, Generic)
-    deriving Aeson.FromJSON via (SnakeJSON MatrixUploadResponse)
-
-data MatrixFileInfo = MatrixFileInfo
-  { mimetype :: !Text
-  , size :: !Integer
-  }
-  deriving (Show, Generic, Aeson.ToJSON)
-
-data MatrixFileMessage = MatrixFileMessage
-  { msgtype :: !Text
-  , body :: !Text
-  , filename :: !Text
-  , url :: !Text
-  , info :: !MatrixFileInfo
-  }
-  deriving (Show, Generic)
-    deriving Aeson.ToJSON via (SnakeJSON MatrixFileMessage)
-
-data MatrixFileMessageRequest = MatrixFileMessageRequest
-  { message :: !MatrixFileMessage
-  , replyRelation :: !(Maybe MatrixReplyTo)
-  , streamMetadata :: !MatrixStreamMetadata
-  }
-  deriving (Show, Generic)
-
-instance Aeson.ToJSON MatrixFileMessageRequest where
-  toJSON MatrixFileMessageRequest{message, replyRelation, streamMetadata} =
-    case Aeson.toJSON message of
-      Aeson.Object fields ->
-        Aeson.Object (fields <> AesonKeyMap.fromList relationFields)
-      value ->
-        value
-    where
-      relationFields =
-        [("com.pfeiwu.ai.stream", Aeson.toJSON streamMetadata)]
-          <> maybe [] (\(MatrixReplyTo eventId) -> [("m.relates_to", Aeson.toJSON (MatrixRelatesTo (Just eventId)))]) replyRelation
-
-data MatrixEditMessageRequest = MatrixEditMessageRequest
-  { body :: !Text
-  , formattedBody :: !(Maybe Text)
-  , mentions :: !MatrixMentions
-  , replacesEventId :: !MatrixEventId
-  , streamMetadata :: !MatrixStreamMetadata
-  }
-  deriving (Show, Generic)
-
-completeMatrixEditMessageRequest :: MatrixEditMessageRequest -> MatrixEditMessageRequest
-completeMatrixEditMessageRequest request =
-  MatrixEditMessageRequest
-    { body = request.body
-    , formattedBody = request.formattedBody
-    , mentions = request.mentions
-    , replacesEventId = request.replacesEventId
-    , streamMetadata = MatrixStreamMetadata True
-    }
-
-instance Aeson.ToJSON MatrixEditMessageRequest where
-  toJSON MatrixEditMessageRequest{body, formattedBody, mentions, replacesEventId, streamMetadata} =
-    Aeson.object $
-      [ "msgtype" Aeson..= ("m.text" :: Text)
-      , "body" Aeson..= ("* " <> body)
-      , "m.new_content" Aeson..= Aeson.object
-          ( [ "msgtype" Aeson..= ("m.text" :: Text)
-            , "body" Aeson..= body
-            , "m.mentions" Aeson..= mentions
-            , matrixStreamMetadataPair streamMetadata
-            ]
-              <> matrixFormattedBodyFields formattedBody
-          )
-      , "m.mentions" Aeson..= mentions
-      , matrixStreamMetadataPair streamMetadata
-      , "m.relates_to" Aeson..= Aeson.object
-          [ "rel_type" Aeson..= ("m.replace" :: Text)
-          , "event_id" Aeson..= matrixEventIdText replacesEventId
-          ]
-      ]
-        <> matrixFormattedBodyFields (("* " <>) <$> formattedBody)
-
-matrixFormattedBodyFields :: Maybe Text -> [Aeson.Pair]
-matrixFormattedBodyFields = \case
-  Nothing ->
-    []
-  Just html ->
-    [ "format" Aeson..= ("org.matrix.custom.html" :: Text)
-    , "formatted_body" Aeson..= html
-    ]
-
-formatMatrixMarkdown :: Text -> Maybe Text
-formatMatrixMarkdown input =
-  formatMatrixMarkdownWithMentionNames Map.empty input
-
-formatMatrixMarkdownWithMentionNames :: Map Text Text -> Text -> Maybe Text
-formatMatrixMarkdownWithMentionNames mentionNames input =
-  case runIdentity (commonmarkWith matrixMarkdownSyntax "matrix-message" (linkifyMatrixMentions mentionNames input)) :: Either ParseError (Html ()) of
-    Left _ ->
-      Nothing
-    Right html ->
-      nonEmptyText (Text.strip (LazyText.toStrict (renderHtml html)))
-
-linkifyMatrixMentions :: Map Text Text -> Text -> Text
-linkifyMatrixMentions mentionNames =
-  Text.concat . map (linkifyToken mentionNames) . Text.groupBy sameWhitespace
-  where
-    sameWhitespace left right =
-      Char.isSpace left == Char.isSpace right
-
-linkifyToken :: Map Text Text -> Text -> Text
-linkifyToken mentionNames token
-  | Text.all Char.isSpace token =
-      token
-  | isMatrixUserId userId =
-      "[" <> escapeMarkdownLinkLabel displayName <> "](" <> matrixToUserUrl userId <> ")" <> suffix
-  | otherwise =
-      token
-  where
-    userId = Text.dropWhileEnd (`elem` matrixUserIdTrailingPunctuation) token
-    suffix = Text.drop (Text.length userId) token
-    displayName = matrixMentionDisplayText mentionNames userId
-
-matrixMentionDisplayBody :: Map Text Text -> Text -> Text
-matrixMentionDisplayBody mentionNames =
-  Text.concat . map replaceToken . Text.groupBy sameWhitespace
-  where
-    sameWhitespace left right =
-      Char.isSpace left == Char.isSpace right
-
-    replaceToken token
-      | Text.all Char.isSpace token =
-          token
-      | isMatrixUserId userId =
-          matrixMentionDisplayText mentionNames userId <> suffix
-      | otherwise =
-          token
-      where
-        userId = Text.dropWhileEnd (`elem` matrixUserIdTrailingPunctuation) token
-        suffix = Text.drop (Text.length userId) token
-
-matrixMentionDisplayText :: Map Text Text -> Text -> Text
-matrixMentionDisplayText mentionNames userId =
-  fromMaybe userId (Map.lookup userId mentionNames >>= matrixMentionDisplayName)
-
-escapeMarkdownLinkLabel :: Text -> Text
-escapeMarkdownLinkLabel =
-  Text.concatMap \case
-    '\\' -> "\\\\"
-    '[' -> "\\["
-    ']' -> "\\]"
-    '\n' -> " "
-    '\r' -> " "
-    char -> Text.singleton char
-
-matrixToUserUrl :: Text -> Text
-matrixToUserUrl userId =
-  "https://matrix.to/#/" <> userId
-
-matrixMarkdownSyntax :: SyntaxSpec Identity (Html ()) (Html ())
-matrixMarkdownSyntax =
-  gfmExtensions
-    <> mathSpec
-    <> footnoteSpec
-    <> defaultSyntaxSpec
-
-data RedactEventRequest = RedactEventRequest
-  { reason :: Maybe Text
-  }
-  deriving (Show, Generic, Aeson.ToJSON)
-
-data SetTypingRequest = SetTypingRequest
-  { timeout :: Int
-  }
-  deriving (Show, Generic)
-
-instance Aeson.ToJSON SetTypingRequest where
-  toJSON SetTypingRequest{timeout} =
-    Aeson.object
-      [ "typing" Aeson..= True
-      , "timeout" Aeson..= timeout
-      ]
-
-newtype SendMessageResponse = SendMessageResponse
-  { eventId :: MatrixEventId
-  }
-  deriving (Show, Generic)
-    deriving Aeson.FromJSON via (SnakeJSON SendMessageResponse)
-
-newtype RedactEventResponse = RedactEventResponse
-  { redactionEventId :: Text
-  }
-  deriving (Show, Generic)
-    deriving Aeson.FromJSON via (PrefixedSnakeJSON "redaction" RedactEventResponse)
-
-matrixSyncTimeoutMilliseconds :: MatrixSyncMode -> Int
-matrixSyncTimeoutMilliseconds = \case
-  MatrixInitialSync ->
-    0
-  MatrixLongPollSync ->
-    matrixLongPollSyncTimeoutMilliseconds
-
-matrixLongPollSyncTimeoutMilliseconds :: Int
-matrixLongPollSyncTimeoutMilliseconds = 30000
-
-matrixSyncResponseTimeoutMicroseconds :: Int
-matrixSyncResponseTimeoutMicroseconds = 40000000
-
-matrixApiResponseTimeoutMicroseconds :: Int
-matrixApiResponseTimeoutMicroseconds = 10000000
-
-matrixMediaDownloadResponseTimeoutMicroseconds :: Int
-matrixMediaDownloadResponseTimeoutMicroseconds = 60000000
-
-matrixReloginAttempts :: Int
-matrixReloginAttempts = 12
-
-matrixReloginDelaySeconds :: Int
-matrixReloginDelaySeconds = 180
-
-matrixReloginDelayMicroseconds :: Int
-matrixReloginDelayMicroseconds = matrixReloginDelaySeconds * 1000000
-
-matrixRetryDelayMicroseconds :: Int
-matrixRetryDelayMicroseconds = 5000000

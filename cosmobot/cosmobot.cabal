@@ -240,13 +240,24 @@ library
         Bot.Chat.Driver.ACP
         Bot.Chat.Driver.Discord
         Bot.Chat.Driver.Discord.Config
+        Bot.Chat.Driver.Discord.Markdown
+        Bot.Chat.Driver.Discord.Protocol
+        Bot.Chat.Driver.Discord.Types
         Bot.Chat.Driver.Matrix
         Bot.Chat.Driver.Matrix.Config
+        Bot.Chat.Driver.Matrix.Markdown
+        Bot.Chat.Driver.Matrix.Protocol
+        Bot.Chat.Driver.Matrix.Types
         Bot.Chat.Driver.QQ
         Bot.Chat.Driver.QQ.Config
+        Bot.Chat.Driver.QQ.Protocol
+        Bot.Chat.Driver.QQ.Types
         Bot.Chat.Driver.RPC
         Bot.Chat.Driver.Telegram
         Bot.Chat.Driver.Telegram.Config
+        Bot.Chat.Driver.Telegram.Markdown
+        Bot.Chat.Driver.Telegram.Protocol
+        Bot.Chat.Driver.Telegram.Types
         Bot.Chat.Driver.Types
         Bot.Chat.Types
         Bot.ChatLog.Record

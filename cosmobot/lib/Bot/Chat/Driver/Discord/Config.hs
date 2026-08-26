@@ -11,7 +11,7 @@ module Bot.Chat.Driver.Discord.Config
   )
 where
 
-import qualified Bot.Chat.Driver.Discord as Discord
+import qualified Bot.Chat.Driver.Discord.Types as Discord
 import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Toml.Semantics.Types as TomlValue

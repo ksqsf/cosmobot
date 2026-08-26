@@ -10,7 +10,7 @@ module Bot.Chat.Driver.QQ.Config
   )
 where
 
-import qualified Bot.Chat.Driver.QQ as QQ
+import qualified Bot.Chat.Driver.QQ.Types as QQ
 import Bot.Util.Toml
 import Bot.Prelude
 import Toml.Schema

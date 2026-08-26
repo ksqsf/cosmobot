@@ -26,28 +26,23 @@ module Bot.Chat.Driver.QQ
 where
 
 import qualified Bot.Chat.Driver.Types as Driver
+import Bot.Chat.Driver.QQ.Protocol hiding (QQDriver, newQQDriver, runQQDriver)
+import qualified Bot.Chat.Driver.QQ.Protocol as Protocol
+import Bot.Chat.Driver.QQ.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
 import Bot.Core.Message
 import Bot.Prelude
-import qualified Control.Concurrent.Chan as Chan
-import qualified Data.IORef as IORef
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString.Base64 as Base64
-import qualified Data.ByteString.Lazy as LazyByteString
-import Data.List (isInfixOf)
-import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
-import Data.Time.Clock (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
-import qualified Network.WebSockets as WS
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
-import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.Timeout
@@ -57,29 +52,19 @@ import Effectful.Timeout
 -- ---------------------------------------------------------------------------
 
 -- | Connection settings for a OneBot v11 websocket endpoint.
-data Config = Config
-  { host  :: !String
-  , port  :: !Int
-  , path  :: !String
-  , token :: !(Maybe Text)
-  , botQQ :: !(Maybe Integer)
-  , allowedGroups :: ![Integer]
-  , allowedUsers :: ![Integer]
-  , superusers :: ![Integer]
-  }
-  deriving (Show)
-
-data QQDriver = QQDriver
-  { config :: !Config
-  , eventChan :: !(Chan.Chan Event)
-  , actionChan :: !(Chan.Chan ActionRequest)
-  }
+newtype QQDriver = QQDriver Protocol.QQDriver
 
 newQQDriver :: IOE :> es => Config -> Eff es QQDriver
-newQQDriver config = do
-  eventChan <- liftIO Chan.newChan
-  actionChan <- liftIO Chan.newChan
-  pure QQDriver{config, eventChan, actionChan}
+newQQDriver =
+  fmap QQDriver . Protocol.newQQDriver
+
+runQQDriver
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
+  => QQDriver
+  -> Eff es a
+  -> Eff es a
+runQQDriver (QQDriver driver) =
+  Protocol.runQQDriver driver
 
 instance Driver.ChatDriver QQDriver where
   type ChatDriverEffects QQDriver es = (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es, FileSystem.FileSystem :> es, Media.Media :> es)
@@ -87,25 +72,25 @@ instance Driver.ChatDriver QQDriver where
   driverPlatform _ =
     PlatformQQ
 
-  sendReplyMessage =
-    replyToQQ
+  sendReplyMessage (QQDriver driver) =
+    replyToQQ driver
 
-  replyAudio =
-    replyAudioQQ
+  replyAudio (QQDriver driver) =
+    replyAudioQQ driver
 
-  uploadFile =
-    uploadFileQQ
+  uploadFile (QQDriver driver) =
+    uploadFileQQ driver
 
-  deleteMessage =
-    deleteMessageQQ
+  deleteMessage (QQDriver driver) =
+    deleteMessageQQ driver
 
   messageOutPolicy _ _ =
     pure (Chat.ChunkedMessage maxBound)
 
-  getMessageContent driver message messageId =
+  getMessageContent (QQDriver driver) message messageId =
     getMessageContentQQ driver message.chatId messageId
 
-  getSenderMemberInfo driver message =
+  getSenderMemberInfo (QQDriver driver) message =
     case (message.kind, message.chatId, message.senderId) of
       (ChatGroup, Just groupId, Just rawUserId)
         | Just userId <- parseIntegerUserId rawUserId ->
@@ -113,7 +98,7 @@ instance Driver.ChatDriver QQDriver where
       _ ->
         pure Nothing
 
-  getMemberInfo driver message userId =
+  getMemberInfo (QQDriver driver) message userId =
     case (message.kind, message.chatId) of
       (ChatGroup, Just groupId)
         | Just numericUserId <- parseIntegerUserId userId ->
@@ -127,18 +112,18 @@ instance Driver.ChatDriver QQDriver where
   normalizeMediaRef _ =
     qqPublicImageRef
 
-  listGroupMembers driver message =
+  listGroupMembers (QQDriver driver) message =
     case (message.kind, message.chatId) of
       (ChatGroup, Just groupId) ->
         getGroupMemberList driver groupId
       _ ->
         pure Nothing
 
-  mentionUser =
-    mentionUserQQ
+  mentionUser (QQDriver driver) =
+    mentionUserQQ driver
 
-  setMemberTitle =
-    setGroupMemberTitleQQ
+  setMemberTitle (QQDriver driver) =
+    setGroupMemberTitleQQ driver
 
 qqForwardMessageThreshold :: Int
 qqForwardMessageThreshold = 1000
@@ -146,180 +131,18 @@ qqForwardMessageThreshold = 1000
 qqForwardNodeLimit :: Int
 qqForwardNodeLimit = 2000
 
-runQQDriver
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
-  => QQDriver
-  -> Eff es a
-  -> Eff es a
-runQQDriver driver inner = do
-  Concurrency.withWorker "qq.connection" (qqConnectionLoop cfg eventChan actionChan) inner
-  where
-    cfg = driver.config
-    eventChan = driver.eventChan
-    actionChan = driver.actionChan
-
-receiveEvent :: IOE :> es => QQDriver -> Eff es Event
-receiveEvent driver =
-  liftIO (Chan.readChan driver.eventChan)
-
-sendAction
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
-  -> Aeson.Value
-  -> Eff es ActionResponse
-sendAction driver value = do
-  responseVar <- liftIO newEmptyMVar
-  liftIO $ Chan.writeChan driver.actionChan (ActionRequest value responseVar)
-  result <- timeout qqActionTimeoutMicroseconds (takeMVar responseVar)
-  case result of
-    Just response ->
-      pure response
-    Nothing -> do
-      katipAddContext (qqActionRequestContext value) $
-        $(logDebug) "Action timed out"
-      pure failedActionResponse
-
-data ActionRequest = ActionRequest !Aeson.Value !(MVar ActionResponse)
-
-qqConnectionLoop
-  :: (IOE :> es, KatipE :> es, Concurrent :> es, Timeout :> es, Concurrency.Concurrency :> es)
-  => Config
-  -> Chan.Chan Event
-  -> Chan.Chan ActionRequest
-  -> Eff es ()
-qqConnectionLoop cfg eventChan actionChan =
-  forever do
-    result <- runQQConnectionOnce cfg eventChan actionChan
-    case result of
-      Right () ->
-        $(logDebug) "QQ websocket disconnected; reconnecting"
-      Left err ->
-        $(logDebug) [i|QQ websocket failed; reconnecting: #{err}|]
-    threadDelay qqReconnectDelayMicroseconds
-
-runQQConnectionOnce
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
-  => Config
-  -> Chan.Chan Event
-  -> Chan.Chan ActionRequest
-  -> Eff es (Either String ())
-runQQConnectionOnce cfg eventChan actionChan =
-  (Right <$> do
-    withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-      liftIO $ WS.runClient cfg.host cfg.port (websocketPath cfg) \conn ->
-        runInIO (runConnection eventChan actionChan conn)
-  )
-    `catch` \(connectionErr :: WS.ConnectionException) ->
-      pure (Left (show connectionErr))
-    `catch` \(handshakeErr :: WS.HandshakeException) ->
-      pure (Left (show handshakeErr))
-    `catch` \(ioErr :: IOException) ->
-      pure (Left (show ioErr))
-    `catchSync` \err ->
-      pure (Left (displayException err))
-
-runConnection
-  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
-  => Chan.Chan Event
-  -> Chan.Chan ActionRequest
-  -> WS.Connection
-  -> Eff es ()
-runConnection eventChan actionChan conn = do
-  pendingResponses <- liftIO (newMVar Map.empty)
-  actionCounter <- liftIO (newMVar (1 :: Integer))
-  done <- liftIO newEmptyMVar
-  lastFrameAt <- liftIO (getCurrentTime >>= IORef.newIORef)
-  frameReader <- forkConnectionThread "reader" done (readFrames eventChan pendingResponses lastFrameAt conn)
-  sender <- forkConnectionThread "sender" done (sendActions actionChan pendingResponses actionCounter conn)
-  monitor <- forkConnectionThread "heartbeat-monitor" done (monitorConnectionHeartbeat lastFrameAt)
-  reason <- liftIO (takeMVar done)
-  $(logDebug) [i|QQ websocket connection ending: #{show reason :: String}|]
-  closeWebSocketForReconnect conn
-  stopConnectionThread "reader" frameReader
-  stopConnectionThread "sender" sender
-  stopConnectionThread "heartbeat monitor" monitor
-  failPendingResponses pendingResponses
-  $(logDebug) "QQ websocket connection ended"
-
-forkConnectionThread
-  :: (Concurrency.Concurrency :> es, Concurrent :> es)
-  => Text
-  -> MVar SomeException
-  -> Eff es ()
-  -> Eff es Concurrency.Handle
-forkConnectionThread label done action = Concurrency.fork [i|qq.websocket.#{label}|] do
-  result <- try action
-  case result of
-    Left err ->
-      void (MVar.tryPutMVar done err)
-    Right () ->
-      void (MVar.tryPutMVar done (toException ThreadKilled))
-
-sendActions
-  :: (IOE :> es, KatipE :> es, Concurrent :> es)
-  => Chan.Chan ActionRequest
-  -> PendingResponses
-  -> MVar Integer
-  -> WS.Connection
-  -> Eff es ()
-sendActions actionChan pendingResponses actionCounter conn =
-  forever do
-    ActionRequest value responseVar <- liftIO (Chan.readChan actionChan)
-    echo <- nextActionEcho actionCounter
-    let echoedValue = addActionEcho echo value
-    katipAddContext (qqActionRequestContext value <> sl "qq_echo" echo) $
-      $(logDebug) "Action request sent"
-    MVar.modifyMVar_ pendingResponses \pending ->
-      pure (Map.insert echo responseVar pending)
-    (liftIO (WS.sendTextData conn (Aeson.encode echoedValue)) `catchSync` \err -> do
-      MVar.modifyMVar_ pendingResponses \pending ->
-        pure (Map.delete echo pending)
-      void $ MVar.tryPutMVar responseVar failedActionResponse
-      throwIO err)
-
-failPendingResponses :: (Concurrent :> es) => PendingResponses -> Eff es ()
-failPendingResponses pendingResponses = do
-  pending <- MVar.modifyMVar pendingResponses \pending ->
-    pure (Map.empty, pending)
-  traverse_ (flip MVar.tryPutMVar failedActionResponse) pending
-
-closeWebSocketForReconnect :: (IOE :> es, KatipE :> es, Timeout :> es) => WS.Connection -> Eff es ()
-closeWebSocketForReconnect conn = do
-  result <- timeout qqConnectionCloseTimeoutMicroseconds $
-    trySync (liftIO $ WS.sendClose conn ("reconnect" :: Text))
-  case result of
-    Nothing ->
-      $(logDebug) "QQ websocket close timed out during reconnect"
-    Just (Left err) ->
-      $(logDebug) [i|QQ websocket close during reconnect failed: #{show err :: String}|]
-    Just (Right ()) ->
-      pure ()
-
-stopConnectionThread :: (Timeout :> es, KatipE :> es, Concurrency.Concurrency :> es) => Text -> Concurrency.Handle -> Eff es ()
-stopConnectionThread label resourceHandle = do
-  result <- timeout qqConnectionThreadStopTimeoutMicroseconds (Concurrency.cancel resourceHandle.handleId)
-  when (isNothing result) $
-    $(logDebug) [i|QQ websocket #{label} thread did not stop before reconnect; continuing|]
-
-websocketPath :: Config -> String
-websocketPath Config{path, token = Nothing} = path
-websocketPath Config{path, token = Just t} =
-  path <> separator <> "access_token=" <> Text.unpack t
-  where
-    separator
-      | "?" `isInfixOf` path = "&"
-      | otherwise            = "?"
-
--- ---------------------------------------------------------------------------
--- Streaming
--- ---------------------------------------------------------------------------
-
--- | Stream OneBot message events as platform-independent messages.
 incomingMessages
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es, Media.Media :> es)
   => QQDriver
   -> Stream (Of IncomingMessage) (Eff es) ()
-incomingMessages driver = do
+incomingMessages (QQDriver driver) =
+  incomingMessagesProtocol driver
+
+incomingMessagesProtocol
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es, Media.Media :> es)
+  => Protocol.QQDriver
+  -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessagesProtocol driver = do
   event <- S.lift (receiveEvent driver)
   case eventToIncomingMessageWith driver.config event of
     Nothing
@@ -336,194 +159,15 @@ incomingMessages driver = do
       message <- S.lift (normalizeQQMessageFiles parsedMessage)
       S.lift $ $(logDebug) ("incoming qq message:\n" <> logJsonText message)
       S.yield message
-  incomingMessages driver
+  incomingMessagesProtocol driver
 
 -- ---------------------------------------------------------------------------
 -- OneBot v11 events
 -- ---------------------------------------------------------------------------
 
-readFrames
-  :: (IOE :> es, KatipE :> es, Concurrent :> es)
-  => Chan.Chan Event
-  -> PendingResponses
-  -> IORef.IORef UTCTime
-  -> WS.Connection
-  -> Eff es ()
-readFrames eventChan pendingResponses lastFrameAt conn = forever do
-  value <- readValue conn
-  liftIO (getCurrentTime >>= IORef.writeIORef lastFrameAt)
-  case Aeson.fromJSON value of
-    Aeson.Success event -> do
-      liftIO $ Chan.writeChan eventChan event
-    Aeson.Error _ ->
-      case Aeson.fromJSON value of
-        Aeson.Success response ->
-          dispatchActionResponse pendingResponses response
-        Aeson.Error err ->
-          $(logDebug) [i|Ignoring malformed QQ frame: #{Text.pack err}|]
-
--- | Read frames until an action response is found.
-readActionResponse :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es ActionResponse
-readActionResponse conn = do
-  value <- readValue conn
-  case Aeson.fromJSON value of
-    Aeson.Success response -> pure response
-    Aeson.Error _ ->
-      case Aeson.fromJSON value of
-        Aeson.Success (_event :: Event) ->
-          readActionResponse conn
-        Aeson.Error err -> do
-          $(logDebug) [i|Ignoring malformed QQ action response: #{Text.pack err}|]
-          readActionResponse conn
-
-readValue :: (IOE :> es, KatipE :> es) => WS.Connection -> Eff es Aeson.Value
-readValue conn = do
-  bytes <- liftIO (WS.receiveData conn :: IO ByteString)
-  case Aeson.eitherDecodeStrict bytes of
-    Right value -> pure value
-    Left err -> do
-      $(logDebug) [i|Ignoring malformed QQ frame: #{Text.pack err}|]
-      readValue conn
-
-monitorConnectionHeartbeat :: (IOE :> es, KatipE :> es, Concurrent :> es) => IORef.IORef UTCTime -> Eff es ()
-monitorConnectionHeartbeat lastFrameAt = forever do
-  threadDelay qqHeartbeatCheckMicroseconds
-  now <- liftIO getCurrentTime
-  lastSeen <- liftIO (IORef.readIORef lastFrameAt)
-  let silence = diffUTCTime now lastSeen
-  when (silence > qqHeartbeatTimeout) do
-    $(logDebug) [i|QQ websocket heartbeat timed out after #{show silence :: String}; reconnecting|]
-    throwIO (QQHeartbeatTimeout silence)
-
-failedActionResponse :: ActionResponse
-failedActionResponse =
-  ActionResponse
-    { status = Just "failed"
-    , retcode = Nothing
-    , data_ = Nothing
-    , message = Just "action failed"
-    , echo = Nothing
-    }
-
-qqActionTimeoutMicroseconds :: Int
-qqActionTimeoutMicroseconds =
-  40 * 1000000
-
-qqReconnectDelayMicroseconds :: Int
-qqReconnectDelayMicroseconds =
-  5 * 1000000
-
-qqConnectionCloseTimeoutMicroseconds :: Int
-qqConnectionCloseTimeoutMicroseconds =
-  2 * 1000000
-
-qqConnectionThreadStopTimeoutMicroseconds :: Int
-qqConnectionThreadStopTimeoutMicroseconds =
-  2 * 1000000
-
-qqHeartbeatCheckMicroseconds :: Int
-qqHeartbeatCheckMicroseconds =
-  15 * 1000000
-
-qqHeartbeatTimeout :: NominalDiffTime
-qqHeartbeatTimeout =
-  90
-
-newtype QQHeartbeatTimeout = QQHeartbeatTimeout NominalDiffTime
-  deriving (Show)
-
-instance Exception QQHeartbeatTimeout
-
--- | Raw OneBot action response.
-data ActionResponse = ActionResponse
-  { status  :: !(Maybe Text)
-  , retcode :: !(Maybe Integer)
-  , data_   :: !(Maybe Aeson.Value)
-  , message :: !(Maybe Text)
-  , echo    :: !(Maybe Text)
-  }
-  deriving (Show, Generic)
-
-instance Aeson.FromJSON ActionResponse where
-  parseJSON = Aeson.withObject "ActionResponse" $ \o -> do
-    status <- o Aeson..:? "status"
-    retcode <- o Aeson..:? "retcode"
-    data_ <- o Aeson..:? "data"
-    message <- o Aeson..:? "message"
-    echo <- parseEcho o
-    pure ActionResponse{..}
-    where
-      parseEcho o =
-        (o Aeson..:? "echo" :: Aeson.Parser (Maybe Text)) >>= \case
-          Just value -> pure (Just value)
-          Nothing -> do
-            raw <- o Aeson..:? "echo"
-            pure (TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode <$> (raw :: Maybe Aeson.Value))
-
-type PendingResponses = MVar (Map Text (MVar ActionResponse))
-
-nextActionEcho :: Concurrent :> es => MVar Integer -> Eff es Text
-nextActionEcho counter =
-  MVar.modifyMVar counter \value ->
-    pure (value + 1, [i|cosmobot-#{value}|])
-
-addActionEcho :: Text -> Aeson.Value -> Aeson.Value
-addActionEcho echo value =
-  case value of
-    Aeson.Object obj ->
-      Aeson.Object (KeyMap.insert "echo" (Aeson.String echo) obj)
-    _ ->
-      value
-
-dispatchActionResponse
-  :: (IOE :> es, KatipE :> es, Concurrent :> es)
-  => PendingResponses
-  -> ActionResponse
-  -> Eff es ()
-dispatchActionResponse pendingResponses response =
-  case response.echo of
-    Nothing ->
-      $(logDebug) "Ignoring action response without echo"
-    Just echo -> do
-      katipAddContext (qqActionResponseContext echo response) $
-        $(logDebug) "Action response received"
-      waiter <- MVar.withMVar pendingResponses \pending ->
-        pure (Map.lookup echo pending)
-      case waiter of
-        Nothing ->
-          katipAddContext (qqActionResponseContext echo response) $
-            $(logDebug) "Ignoring action response with unknown echo"
-        Just responseVar ->
-          void $ MVar.tryPutMVar responseVar response
-
-qqActionRequestContext :: Aeson.Value -> SimpleLogPayload
-qqActionRequestContext request =
-  foldMap (sl "qq_action") (qqActionName request)
-    <> foldMap (sl "qq_forward_nodes") (qqForwardNodeCount request)
-
-qqActionResponseContext :: Text -> ActionResponse -> SimpleLogPayload
-qqActionResponseContext echo response =
-  sl "qq_echo" echo
-    <> foldMap (sl "qq_status") response.status
-    <> foldMap (sl "qq_retcode") response.retcode
-    <> foldMap (sl "qq_response_message") response.message
-    <> foldMap (sl "qq_message_id") (responseMessageId response)
-
-qqActionName :: Aeson.Value -> Maybe Text
-qqActionName =
-  Aeson.parseMaybe (Aeson.withObject "QQ action request" (Aeson..: "action"))
-
-qqForwardNodeCount :: Aeson.Value -> Maybe Int
-qqForwardNodeCount = Aeson.parseMaybe $ Aeson.withObject "QQ action request" \request -> do
-  params <- request Aeson..: "params"
-  Aeson.withObject "QQ action params" (\object -> do
-    messages <- object Aeson..: "messages" :: Aeson.Parser [Aeson.Value]
-    pure (length messages)) params
-
--- | Reply to a QQ private or group message.
 replyToQQ
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, FileSystem.FileSystem :> es, Media.Media :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> IncomingMessage
   -> Text
   -> Eff es (Either Text MessageId)
@@ -623,7 +267,7 @@ replySegment messageId =
 -- | Send a reply that mentions a QQ user where the platform supports it.
 mentionUserQQ
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, FileSystem.FileSystem :> es, Media.Media :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> IncomingMessage
   -> Text
   -> Text
@@ -655,7 +299,7 @@ mentionUserQQ driver message userId body =
 -- | Send a file segment through OneBot without requiring a shared filesystem.
 uploadFileQQ
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, FileSystem.FileSystem :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> IncomingMessage
   -> FilePath
   -> Maybe Text
@@ -684,7 +328,7 @@ uploadFileQQ driver message path fileName =
 -- upload for local files if the adapter rejects record sending.
 replyAudioQQ
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, FileSystem.FileSystem :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> IncomingMessage
   -> Text
   -> Maybe Text
@@ -719,7 +363,7 @@ replyAudioQQ driver message audioRef caption =
 
 sendFileMessage
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> Text
   -> [Aeson.Pair]
   -> Eff es ActionResponse
@@ -731,7 +375,7 @@ sendFileMessage driver action params =
 
 sendAudioMessage
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> Text
   -> [Aeson.Pair]
   -> Eff es ActionResponse
@@ -771,18 +415,10 @@ qqMalformedMessageResponseText :: Text -> Text
 qqMalformedMessageResponseText action =
   [i|QQ #{action} returned a successful response without data.message_id.|]
 
-responseMessageId :: ActionResponse -> Maybe Integer
-responseMessageId response =
-  response.data_ >>= \case
-    Aeson.Object obj -> case KeyMap.lookup "message_id" obj of
-      Just value -> Aeson.parseMaybe Aeson.parseJSON value
-      Nothing    -> Nothing
-    _ -> Nothing
-
 -- | Delete a QQ message by OneBot message id.
 deleteMessageQQ
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> IncomingMessage
   -> MessageId
   -> Eff es Bool
@@ -806,7 +442,7 @@ actionSucceeded response =
 -- | Fetch message text and image references by QQ message id.
 getMessageContentQQ
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> Maybe Integer
   -> MessageId
   -> Eff es (Maybe ReferencedMessage)
@@ -905,7 +541,7 @@ normalizeQQFile chatId file =
 
 appendForwardedMessages
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> [ForwardedSource]
   -> ReferencedMessage
   -> Eff es ReferencedMessage
@@ -923,7 +559,7 @@ appendForwardedMessages driver sources referenced = do
 
 expandForwardedSource
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> Set.Set Text
   -> ForwardedSource
   -> Eff es ForwardedContent
@@ -948,7 +584,7 @@ expandForwardedSource driver seen source =
 
 expandForwardedValue
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> Set.Set Text
   -> Aeson.Value
   -> Eff es ForwardedContent
@@ -962,7 +598,7 @@ expandForwardedValue driver seen value =
 -- | Fetch platform-provided QQ group member information.
 getGroupMemberInfo
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> Integer
   -> Integer
   -> Eff es (Maybe Aeson.Value)
@@ -979,7 +615,7 @@ getGroupMemberInfo driver groupId userId =
 -- | Fetch platform-provided QQ group member list.
 getGroupMemberList
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> Integer
   -> Eff es (Maybe Aeson.Value)
 getGroupMemberList driver groupId =
@@ -994,7 +630,7 @@ getGroupMemberList driver groupId =
 -- | Set a QQ group member's special title through OneBot.
 setGroupMemberTitleQQ
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> IncomingMessage
   -> Text
   -> Text
@@ -1231,21 +867,9 @@ base64FileRef =
   ("base64://" <>) . TextEncoding.decodeUtf8 . Base64.encode
 
 -- | Raw OneBot event fields needed by the message parser.
-data Event = Event
-  { time        :: !(Maybe Integer)
-  , selfId      :: !(Maybe Integer)
-  , postType    :: !Text
-  , messageType :: !(Maybe Text)
-  , subType     :: !(Maybe Text)
-  , messageId   :: !(Maybe Integer)
-  , userId      :: !(Maybe Integer)
-  , groupId     :: !(Maybe Integer)
-  , message     :: !(Maybe Aeson.Value)
-  , rawMessage  :: !(Maybe Text)
-  , sender      :: !(Maybe Aeson.Value)
-  , rawEvent    :: !Aeson.Value
-  }
-  deriving (Show)
+eventToIncomingMessage :: Event -> Maybe IncomingMessage
+eventToIncomingMessage =
+  eventToIncomingMessageWith defaultMessageConfig
 
 data GroupUpload = GroupUpload
   { groupId :: !Integer
@@ -1253,27 +877,6 @@ data GroupUpload = GroupUpload
   , fileName :: !Text
   , busId :: !Integer
   }
-
-instance Aeson.FromJSON Event where
-  parseJSON rawEvent = Aeson.withObject "OneBotEvent" parse rawEvent
-    where
-      parse o = do
-        time <- o Aeson..:? "time"
-        selfId <- o Aeson..:? "self_id"
-        postType <- o Aeson..: "post_type"
-        messageType <- o Aeson..:? "message_type"
-        subType <- o Aeson..:? "sub_type"
-        messageId <- o Aeson..:? "message_id"
-        userId <- o Aeson..:? "user_id"
-        groupId <- o Aeson..:? "group_id"
-        message <- o Aeson..:? "message"
-        rawMessage <- o Aeson..:? "raw_message"
-        sender <- o Aeson..:? "sender"
-        pure Event{..}
-
-eventToIncomingMessage :: Event -> Maybe IncomingMessage
-eventToIncomingMessage =
-  eventToIncomingMessageWith defaultMessageConfig
 
 groupUpload :: Event -> Maybe GroupUpload
 groupUpload event =
@@ -1293,7 +896,7 @@ groupUpload event =
 
 cacheGroupUpload
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Media.Media :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> GroupUpload
   -> Eff es ()
 cacheGroupUpload driver upload = do
@@ -1350,7 +953,7 @@ invitationAction event
 
 acceptInvitation
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
-  => QQDriver
+  => Protocol.QQDriver
   -> Aeson.Value
   -> Eff es ()
 acceptInvitation driver action = do
