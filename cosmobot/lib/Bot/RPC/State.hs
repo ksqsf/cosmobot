@@ -37,7 +37,6 @@ module Bot.RPC.State
   , enqueueChatMessage
   , incomingMessages
   , sessionIdFromMessage
-  , rememberMessageNumber
   , storedMessageToRpc
   , storedMediaRef
   , parseMediaId
@@ -87,8 +86,6 @@ unRpcSessionId =
 data RpcState = RpcState
   { clients :: !(STM.TVar (Map RpcClientId RpcClient))
   , nextClientId :: !(STM.TVar RpcClientId)
-  , nextSessionNumber :: !(STM.TVar Integer)
-  , nextMessageNumber :: !(STM.TVar Integer)
   , inbound :: !(STM.TChan IncomingMessage)
   }
 
@@ -139,10 +136,8 @@ newRpcState :: Concurrent :> es => Eff es RpcState
 newRpcState = STM.atomically do
   clients <- STM.newTVar Map.empty
   nextClientId <- STM.newTVar 1
-  nextSessionNumber <- STM.newTVar 1
-  nextMessageNumber <- STM.newTVar 1
   inbound <- STM.newTChan
-  pure RpcState{clients, nextClientId, nextSessionNumber, nextMessageNumber, inbound}
+  pure RpcState{clients, nextClientId, inbound}
 
 registerClient :: Concurrent :> es => RpcState -> Eff es (RpcClientId, RpcClient)
 registerClient rpcState =
@@ -187,11 +182,9 @@ broadcastAuditRecord :: Concurrent :> es => RpcState -> Aeson.Value -> Eff es ()
 broadcastAuditRecord rpcState recordValue =
   publish rpcState AuditEvents (Aeson.toJSON (RPC.notification "audit.event" recordValue))
 
-openChatSession :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> Maybe Text -> Eff es RpcChatSession
-openChatSession rpcState label = do
-  session <- Session.openSession label
-  rememberSessionNumber rpcState (Session.sessionIdText session.sessionId)
-  pure session
+openChatSession :: StorageEffect.Storage :> es => Maybe Text -> Eff es RpcChatSession
+openChatSession =
+  Session.openSession
 
 listChatSessions :: StorageEffect.Storage :> es => Eff es [RpcChatSession]
 listChatSessions =
@@ -205,11 +198,9 @@ chatHistory :: StorageEffect.Storage :> es => RpcSessionId -> Eff es [RpcChatMes
 chatHistory sessionId =
   Session.sessionHistory sessionId
 
-forkChatSession :: (Concurrent :> es, StorageEffect.Storage :> es) => RpcState -> RpcSessionId -> MessageId -> Maybe Text -> Eff es (Maybe RpcChatSession)
-forkChatSession rpcState sourceSessionId messageId label = do
-  session <- Session.forkSession sourceSessionId messageId label
-  traverse_ (rememberSessionNumber rpcState . Session.sessionIdText . (.sessionId)) session
-  pure session
+forkChatSession :: StorageEffect.Storage :> es => RpcSessionId -> MessageId -> Maybe Text -> Eff es (Maybe RpcChatSession)
+forkChatSession =
+  Session.forkSession
 
 renameChatSession :: StorageEffect.Storage :> es => RpcSessionId -> Text -> Eff es (Maybe RpcChatSession)
 renameChatSession sessionId label =
@@ -232,7 +223,6 @@ enqueueChatMessage rpcState chatSend = do
     Right Nothing ->
       pure (Right Nothing)
     Right (Just sessionMessage) -> do
-      rememberMessageNumber rpcState sessionMessage.messageId
       message <- rpcIncomingMessage chatSend sessionMessage
       STM.atomically (STM.writeTChan rpcState.inbound message)
       publish rpcState (ChatEvents chatSend.sessionId) (Aeson.toJSON (RPC.notification "chat.message" sessionMessage))
@@ -280,24 +270,6 @@ rpcIncomingMessage chatSend messageRow = do
     , text = Session.sessionSendContextText canonicalSend
     , raw = Aeson.toJSON canonicalSend
     }
-
-rememberMessageNumber :: Concurrent :> es => RpcState -> MessageId -> Eff es ()
-rememberMessageNumber rpcState messageId =
-  case Text.stripPrefix "session-" (messageIdText messageId) >>= readMaybe . Text.unpack of
-    Nothing ->
-      pure ()
-    Just number ->
-      STM.atomically $
-        STM.modifyTVar' rpcState.nextMessageNumber (max (number + 1))
-
-rememberSessionNumber :: Concurrent :> es => RpcState -> Text -> Eff es ()
-rememberSessionNumber rpcState sessionId =
-  case readMaybe . Text.unpack =<< viaNonEmpty last (Text.splitOn "-" sessionId) of
-    Nothing ->
-      pure ()
-    Just number ->
-      STM.atomically $
-        STM.modifyTVar' rpcState.nextSessionNumber (max (number + 1))
 
 sessionIdFromMessage :: IncomingMessage -> RpcSessionId
 sessionIdFromMessage message =

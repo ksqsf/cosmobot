@@ -310,7 +310,7 @@ dispatchRpcRequestUnsafe
 dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
   case RPC.requestMethod request of
     "chat.open_session" ->
-      dispatchOpenSession rpcState request
+      dispatchOpenSession request
     "chat.list_sessions" ->
       dispatchListSessions request
     "chat.get_session" ->
@@ -318,7 +318,7 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
     "chat.history" ->
       dispatchHistory request
     "chat.fork" ->
-      dispatchFork rpcState request
+      dispatchFork request
     "chat.rename_session" ->
       dispatchRenameSession request
     "chat.delete_session" ->
@@ -402,16 +402,15 @@ subscriptionResultField = \case
   Unsubscribe -> "unsubscribed"
 
 dispatchOpenSession
-  :: (Concurrent :> es, Storage.Storage :> es)
-  => State.RpcState
-  -> RPC.RpcRequest
+  :: Storage.Storage :> es
+  => RPC.RpcRequest
   -> Eff es RPC.RpcResponse
-dispatchOpenSession rpcState request =
+dispatchOpenSession request =
   case AesonTypes.parseEither parseOpenSessionParams (RPC.requestParams request) of
     Left err ->
       pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right label -> do
-      session <- State.openChatSession rpcState label
+      session <- State.openChatSession label
       pure $
         RPC.successResponse (RPC.requestId request) $
           Aeson.object
@@ -465,16 +464,15 @@ dispatchHistory request =
             ]
 
 dispatchFork
-  :: (Concurrent :> es, Storage.Storage :> es)
-  => State.RpcState
-  -> RPC.RpcRequest
+  :: Storage.Storage :> es
+  => RPC.RpcRequest
   -> Eff es RPC.RpcResponse
-dispatchFork rpcState request =
+dispatchFork request =
   case AesonTypes.parseEither parseForkParams (RPC.requestParams request) of
     Left err ->
       pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right (sessionId, messageId, label) -> do
-      forked <- State.forkChatSession rpcState sessionId messageId label
+      forked <- State.forkChatSession sessionId messageId label
       case forked of
         Nothing ->
           pure (RPC.errorResponse (RPC.requestId request) "not_found" "Session or message not found")

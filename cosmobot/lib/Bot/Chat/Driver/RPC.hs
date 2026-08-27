@@ -63,7 +63,6 @@ instance ChatDriver RpcChatDriver where
       Right Nothing ->
         pure (Left "RPC reply did not produce a message id.")
       Right (Just storedReply) -> do
-        RPC.rememberMessageNumber driver.rpcState storedReply.messageId
         RPC.publish driver.rpcState (RPC.ChatEvents sessionId) (Aeson.toJSON (JSONRPC.notification "chat.message" (RPC.storedMessageToRpc storedReply)))
         pure (Right storedReply.messageId)
 
