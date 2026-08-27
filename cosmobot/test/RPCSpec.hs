@@ -277,7 +277,7 @@ testSyncRequestExceptionReturnsJsonRpcError = do
     WireJSONRPC.ErrorMessage err -> do
       err.id @?= WireJSONRPC.RequestId (Aeson.String "test-1")
       WireJSONRPC.code err.error @?= WireJSONRPC.iNTERNAL_ERROR
-      WireJSONRPC.message err.error @?= "RPC request failed: TestRpcException \"audit exploded\""
+      WireJSONRPC.message err.error @?= "RPC request failed"
     _ ->
       assertFailure [i|expected JSON-RPC error response, got #{Aeson.encode response}|]
 

@@ -40,7 +40,9 @@ import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Streaming.ByteString as Q
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Typeable (typeOf)
 import qualified Effectful.FileSystem as FileSystem
+import GHC.Clock (getMonotonicTimeNSec)
 import qualified JSONRPC
 import qualified Network.HTTP.Types as Http
 import qualified Network.Wai as Wai
@@ -172,7 +174,7 @@ serveAcceptedClient cfg rpcState callbacks conn = do
       [i|rpc.client.#{clientId}.writer|]
       (writeQueuedFrames client conn)
       [i|rpc.client.#{clientId}.reader|]
-      (readRequestFrames cfg rpcState callbacks client conn)
+      (readRequestFrames cfg rpcState callbacks clientId client conn)
     `catchSync` \err ->
       $(logDebug) [i|RPC client #{clientId} disconnected: #{displayException err}|])
     `finally` do
@@ -194,14 +196,15 @@ writeQueuedFrames client conn =
         throwIO (RpcClientDisconnected reason)
 
 readRequestFrames
-  :: (IOE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
+  -> State.RpcClientId
   -> State.RpcClient
   -> WS.Connection
   -> Eff es ()
-readRequestFrames cfg rpcState callbacks client conn =
+readRequestFrames cfg rpcState callbacks clientId client conn =
   forever do
     bytes <- liftIO (WS.receiveData conn :: IO ByteString)
     response <- case Aeson.eitherDecodeStrict bytes of
@@ -210,9 +213,9 @@ readRequestFrames cfg rpcState callbacks client conn =
       Right value ->
         case Aeson.fromJSON value of
           Aeson.Success (JSONRPC.RequestMessage request) ->
-            Just <$> dispatchClientRpcRequestWithConfig rpcState client cfg callbacks request
+            Just <$> dispatchClientRpcRequestWithConfig rpcState clientId client cfg callbacks request
           Aeson.Success (JSONRPC.NotificationMessage notification_) -> do
-            _ <- dispatchClientRpcRequestWithConfig rpcState client cfg callbacks (notificationToRequest notification_)
+            _ <- dispatchClientRpcRequestWithConfig rpcState clientId client cfg callbacks (notificationToRequest notification_)
             pure Nothing
           Aeson.Error err ->
             pure (Just (RPC.invalidRequestResponse (Text.pack err)))
@@ -240,15 +243,29 @@ dispatchRpcRequestWithConfig rpcState cfg callbacks request =
   dispatchRpcRequestWithClient rpcState Nothing cfg callbacks request
 
 dispatchClientRpcRequestWithConfig
-  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, KatipE :> es, Media.Media :> es)
   => State.RpcState
+  -> State.RpcClientId
   -> State.RpcClient
   -> Config.Config
   -> RpcServerCallbacks es
   -> RPC.RpcRequest
   -> Eff es RPC.RpcResponse
-dispatchClientRpcRequestWithConfig rpcState client cfg callbacks request =
-  dispatchRpcRequestWithClient rpcState (Just client) cfg callbacks request
+dispatchClientRpcRequestWithConfig rpcState clientId client cfg callbacks request = do
+  startedAt <- monotonicMilliseconds
+  dispatchRpcRequestUnsafe rpcState (Just client) cfg callbacks request
+    `catchSync` \(err :: SomeException) -> do
+      finishedAt <- monotonicMilliseconds
+      let duration = finishedAt - startedAt
+      katipAddContext
+        ( sl "rpc_method" (RPC.requestMethod request)
+            <> sl "rpc_request_id" (RPC.requestId request)
+            <> sl "rpc_client_id" clientId
+            <> sl "rpc_duration_ms" duration
+            <> sl "rpc_error_class" (exceptionClass err)
+        ) $
+        $(logError) [i|RPC request failed: #{exceptionFirstLine err}|]
+      pure (internalErrorResponse request)
 
 dispatchRpcRequestWithClient
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
@@ -260,12 +277,23 @@ dispatchRpcRequestWithClient
   -> Eff es RPC.RpcResponse
 dispatchRpcRequestWithClient rpcState client cfg callbacks request =
   dispatchRpcRequestUnsafe rpcState client cfg callbacks request
-    `catchSync` \err ->
-      pure $
-        RPC.errorResponse
-          (RPC.requestId request)
-          "internal_error"
-          [i|RPC request failed: #{exceptionFirstLine err}|]
+    `catchSync` \(_ :: SomeException) ->
+      pure (internalErrorResponse request)
+
+internalErrorResponse :: RPC.RpcRequest -> RPC.RpcResponse
+internalErrorResponse request =
+  RPC.errorResponse
+    (RPC.requestId request)
+    "internal_error"
+    "RPC request failed"
+
+monotonicMilliseconds :: IOE :> es => Eff es Integer
+monotonicMilliseconds =
+  fromIntegral . (`div` 1_000_000) <$> liftIO getMonotonicTimeNSec
+
+exceptionClass :: SomeException -> Text
+exceptionClass (SomeException err) =
+  toText (show (typeOf err) :: String)
 
 exceptionFirstLine :: Exception err => err -> Text
 exceptionFirstLine =

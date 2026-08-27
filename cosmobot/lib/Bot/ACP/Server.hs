@@ -31,7 +31,9 @@ import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Typeable (typeOf)
 import qualified Effectful.FileSystem as FileSystem
+import GHC.Clock (getMonotonicTimeNSec)
 import qualified JSONRPC
 import qualified Network.HTTP.Types as Http
 import qualified Network.Wai as Wai
@@ -140,7 +142,7 @@ serveAcceptedClient threads acpState conn = do
       [i|acp.client.#{clientId}.writer|]
       (writeQueuedFrames queue conn)
       [i|acp.client.#{clientId}.reader|]
-      (readRequestFrames threads acpState queue conn)
+      (readRequestFrames threads acpState clientId queue conn)
     `catchSync` \err ->
       $(logDebug) [i|ACP client #{clientId} disconnected: #{displayException err}|])
     `finally` do
@@ -165,10 +167,11 @@ readRequestFrames
   :: (IOE :> es, KatipE :> es, Prim :> es, Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => ThreadStore
   -> State.AcpState
+  -> State.AcpClientId
   -> State.AcpClientQueue
   -> WS.Connection
   -> Eff es ()
-readRequestFrames threads acpState queue conn =
+readRequestFrames threads acpState clientId queue conn =
   forever do
     bytes <- liftIO (WS.receiveData conn :: IO ByteString)
     response <- case Aeson.eitherDecodeStrict bytes of
@@ -177,9 +180,11 @@ readRequestFrames threads acpState queue conn =
       Right value ->
         case Aeson.fromJSON value of
           Aeson.Success (JSONRPC.RequestMessage request) ->
-            dispatchAcpRequestFrame threads acpState queue request
+            dispatchAcpRequestFrame threads acpState clientId queue request
           Aeson.Success (JSONRPC.NotificationMessage notification_) -> do
-            _ <- dispatchAcpRequestWithThreadStore threads acpState queue (notificationToRequest notification_)
+            let request = notificationToRequest notification_
+            _ <- dispatchObservedAcpRequest clientId request $
+              dispatchAcpRequestWithThreadStore threads acpState queue request
             pure Nothing
           Aeson.Success message@(JSONRPC.ResponseMessage{}) ->
             resolveClientMessage message
@@ -200,17 +205,52 @@ dispatchAcpRequestFrame
   :: (KatipE :> es, Prim :> es, Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => ThreadStore
   -> State.AcpState
+  -> State.AcpClientId
   -> State.AcpClientQueue
   -> RPC.JsonRpcRequest
   -> Eff es (Maybe RPC.JsonRpcResponse)
-dispatchAcpRequestFrame threads acpState queue request
+dispatchAcpRequestFrame threads acpState clientId queue request
   | RPC.requestMethod request == "session/prompt" = do
       Concurrency.fire "acp.session.prompt" do
-        response <- dispatchPrompt acpState queue request
+        response <- dispatchObservedAcpRequest clientId request (dispatchPrompt acpState queue request)
         State.writeClient queue (Aeson.toJSON response)
       pure Nothing
   | otherwise =
-      Just <$> dispatchAcpRequestWithThreadStore threads acpState queue request
+      Just <$> dispatchObservedAcpRequest clientId request
+        (dispatchAcpRequestWithThreadStore threads acpState queue request)
+
+dispatchObservedAcpRequest
+  :: (IOE :> es, KatipE :> es)
+  => State.AcpClientId
+  -> RPC.JsonRpcRequest
+  -> Eff es RPC.JsonRpcResponse
+  -> Eff es RPC.JsonRpcResponse
+dispatchObservedAcpRequest clientId request action = do
+  startedAt <- monotonicMilliseconds
+  action `catchSync` \(err :: SomeException) -> do
+    finishedAt <- monotonicMilliseconds
+    let duration = finishedAt - startedAt
+    katipAddContext
+      ( sl "acp_method" (RPC.requestMethod request)
+          <> sl "acp_request_id" (RPC.requestId request)
+          <> sl "acp_client_id" clientId
+          <> sl "acp_duration_ms" duration
+          <> sl "acp_error_class" (exceptionClass err)
+      ) $
+      $(logError) [i|ACP request failed: #{Text.takeWhile (/= '\n') (toText (displayException err))}|]
+    pure $
+      RPC.errorResponse
+        (RPC.requestId request)
+        "internal_error"
+        "ACP request failed"
+
+monotonicMilliseconds :: IOE :> es => Eff es Integer
+monotonicMilliseconds =
+  fromIntegral . (`div` 1_000_000) <$> liftIO getMonotonicTimeNSec
+
+exceptionClass :: SomeException -> Text
+exceptionClass (SomeException err) =
+  toText (show (typeOf err) :: String)
 
 dispatchAcpRequest
   :: (Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
