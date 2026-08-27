@@ -22,5 +22,5 @@ getSession = send . GetSession
 receiveServerEvent :: Rpc :> es => Eff es (Either Text (Maybe ServerEvent))
 receiveServerEvent = send ReceiveServerEvent
 
-sendChat :: Rpc :> es => Text -> Text -> Eff es ()
+sendChat :: Rpc :> es => Text -> Text -> Eff es (Either Text ())
 sendChat sessionId body = send (SendChat sessionId body)

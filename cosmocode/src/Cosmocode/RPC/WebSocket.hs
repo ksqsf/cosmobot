@@ -10,20 +10,35 @@ module Cosmocode.RPC.WebSocket
   , chatSendRequest
   ) where
 
+import Control.Monad (forever, void)
 import Cosmocode.RPC.Internal (Rpc (..))
 import Cosmocode.Types
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString as ByteString
+import qualified Data.Map.Strict as Map
+import Data.Foldable (for_, traverse_)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Effectful
 import Effectful.Concurrent (Concurrent)
+import qualified Effectful.Concurrent.Async as Async
+import qualified Effectful.Concurrent.MVar as MVar
+import qualified Effectful.Concurrent.STM as STM
 import Effectful.Dispatch.Dynamic
+import Effectful.Exception (bracket, catchSync, displayException)
 import Effectful.Prim (Prim)
 import qualified Effectful.Prim.IORef as IORef
 import qualified Network.WebSockets as WS
+
+data RpcConnection = RpcConnection
+  { connection :: !WS.Connection
+  , nextRequestId :: !(IORef.IORef Int)
+  , pending :: !(STM.TVar (Map.Map Int (STM.TMVar (Either Text Aeson.Value))))
+  , events :: !(STM.TChan (Either Text (Maybe ServerEvent)))
+  , writeLock :: !(MVar.MVar ())
+  }
 
 runRpcWebSocket
   :: (Concurrent :> es, Prim :> es, IOE :> es)
@@ -34,38 +49,50 @@ runRpcWebSocket
   -> Eff es a
 runRpcWebSocket host port token inner = do
   let headers = [("Authorization", TextEncoding.encodeUtf8 ("Bearer " <> token))]
-  nextRequestId <- IORef.newIORef 2
   withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
     liftIO $
       WS.runClientWith host port "/rpc" WS.defaultConnectionOptions headers \connection ->
-        runInIO (interpret (runRpcOperation connection nextRequestId) inner)
+        runInIO do
+          rpcConnection <- newRpcConnection connection
+          Async.withAsync (receiveFrames rpcConnection) \_ ->
+            interpret (runRpcOperation rpcConnection) inner
+
+newRpcConnection :: (Concurrent :> es, Prim :> es) => WS.Connection -> Eff es RpcConnection
+newRpcConnection connection = do
+  nextRequestId <- IORef.newIORef 1
+  pending <- STM.atomically (STM.newTVar Map.empty)
+  events <- STM.atomically STM.newTChan
+  writeLock <- MVar.newMVar ()
+  pure RpcConnection{connection, nextRequestId, pending, events, writeLock}
 
 runRpcOperation
-  :: (Prim :> es, IOE :> es)
-  => WS.Connection
-  -> IORef.IORef Int
+  :: (Concurrent :> es, Prim :> es, IOE :> es)
+  => RpcConnection
   -> LocalEnv localEs es
   -> Rpc (Eff localEs) a
   -> Eff es a
-runRpcOperation connection nextRequestId _ = \case
-  OpenSession -> liftIO (openSessionIO connection)
-  GetSession sessionId -> liftIO (getSessionIO connection sessionId)
-  ReceiveServerEvent -> decodeServerEvent <$> liftIO (WS.receiveData connection)
-  SendChat sessionId body -> do
-    requestId <- IORef.atomicModifyIORef' nextRequestId \current -> (current + 1, current)
-    liftIO $ WS.sendTextData connection (Aeson.encode (chatSendRequest requestId sessionId body))
+runRpcOperation rpcConnection _ = \case
+  OpenSession -> openSessionRpc rpcConnection
+  GetSession sessionId -> getSessionRpc rpcConnection sessionId
+  ReceiveServerEvent -> STM.atomically (STM.readTChan rpcConnection.events)
+  SendChat sessionId body ->
+    rpcCall rpcConnection "chat.send" (chatSendParams sessionId body) (const (pure ()))
 
-openSessionIO :: WS.Connection -> IO (Either Text Text)
-openSessionIO connection = do
-  WS.sendTextData connection (Aeson.encode (requestValue 1 "chat.open_session" (Aeson.object [])))
-  bytes <- WS.receiveData connection
-  pure (decodeResponse (Aeson.withObject "open session result" (Aeson..: "sessionId")) bytes)
+openSessionRpc :: (Concurrent :> es, Prim :> es, IOE :> es) => RpcConnection -> Eff es (Either Text Text)
+openSessionRpc rpcConnection = do
+  opened <- rpcCall rpcConnection "chat.open_session" (Aeson.object []) $
+    Aeson.withObject "open session result" (Aeson..: "sessionId")
+  case opened of
+    Left err -> pure (Left err)
+    Right sessionId -> subscribeSession rpcConnection sessionId
 
-getSessionIO :: WS.Connection -> Text -> IO (Either Text (Maybe [SessionMessage]))
-getSessionIO connection sessionId = do
-  WS.sendTextData connection (Aeson.encode (requestValue 1 "chat.get_session" (Aeson.object ["sessionId" Aeson..= sessionId])))
-  bytes <- WS.receiveData connection
-  pure (decodeResponse parseResult bytes)
+getSessionRpc :: (Concurrent :> es, Prim :> es, IOE :> es) => RpcConnection -> Text -> Eff es (Either Text (Maybe [SessionMessage]))
+getSessionRpc rpcConnection sessionId = do
+  loaded <- rpcCall rpcConnection "chat.get_session" (sessionParams sessionId) parseResult
+  case loaded of
+    Right history@Just{} ->
+      fmap (fmap (const history)) (subscribeSession rpcConnection sessionId)
+    _ -> pure loaded
   where
     parseResult = Aeson.withObject "get session result" \o -> do
       session <- o Aeson..:? "session"
@@ -74,9 +101,36 @@ getSessionIO connection sessionId = do
         Just Aeson.Null -> pure Nothing
         Just _ -> Just <$> o Aeson..:? "messages" Aeson..!= []
 
-decodeResponse :: (Aeson.Value -> AesonTypes.Parser a) -> ByteString.ByteString -> Either Text a
-decodeResponse parseResult bytes = do
-  value <- either (Left . Text.pack) Right (Aeson.eitherDecodeStrict' bytes)
+subscribeSession :: (Concurrent :> es, Prim :> es, IOE :> es) => RpcConnection -> Text -> Eff es (Either Text Text)
+subscribeSession rpcConnection sessionId =
+  rpcCall rpcConnection "chat.subscribe" (sessionParams sessionId) (const (pure sessionId))
+
+rpcCall
+  :: (Concurrent :> es, Prim :> es, IOE :> es)
+  => RpcConnection
+  -> Text
+  -> Aeson.Value
+  -> (Aeson.Value -> AesonTypes.Parser a)
+  -> Eff es (Either Text a)
+rpcCall rpcConnection method params parseResult =
+  bracket acquire release \(requestId, waiter) -> do
+    MVar.withMVar rpcConnection.writeLock \_ ->
+      liftIO $ WS.sendTextData rpcConnection.connection (Aeson.encode (requestValue requestId method params))
+    response <- STM.atomically (STM.readTMVar waiter)
+    pure (response >>= decodeResponseValue parseResult)
+  where
+    acquire = do
+      requestId <- IORef.atomicModifyIORef' rpcConnection.nextRequestId \current -> (current + 1, current)
+      waiter <- STM.atomically do
+        waiter <- STM.newEmptyTMVar
+        STM.modifyTVar' rpcConnection.pending (Map.insert requestId waiter)
+        pure waiter
+      pure (requestId, waiter)
+    release (requestId, _) =
+      STM.atomically (STM.modifyTVar' rpcConnection.pending (Map.delete requestId))
+
+decodeResponseValue :: (Aeson.Value -> AesonTypes.Parser a) -> Aeson.Value -> Either Text a
+decodeResponseValue parseResult value =
   either (Left . Text.pack) id (AesonTypes.parseEither parser value)
   where
     parser = Aeson.withObject "JSON-RPC response" \o -> do
@@ -85,9 +139,52 @@ decodeResponse parseResult bytes = do
         Just errorValue -> Left <$> parseErrorValue errorValue
         Nothing -> Right <$> (o Aeson..: "result" >>= parseResult)
 
+receiveFrames :: (Concurrent :> es, IOE :> es) => RpcConnection -> Eff es ()
+receiveFrames rpcConnection =
+  forever receiveOne `catchSync` \err ->
+    failConnection rpcConnection (Text.pack (displayException err))
+  where
+    receiveOne = do
+      bytes <- liftIO (WS.receiveData rpcConnection.connection :: IO ByteString.ByteString)
+      case Aeson.eitherDecodeStrict' bytes of
+        Left err -> publishEvent rpcConnection (Left (Text.pack err))
+        Right value -> routeFrame rpcConnection value
+
+routeFrame :: Concurrent :> es => RpcConnection -> Aeson.Value -> Eff es ()
+routeFrame rpcConnection value =
+  case AesonTypes.parseEither responseId value of
+    Right (Just requestId) -> resolveResponse rpcConnection requestId value
+    _ -> publishEvent rpcConnection (decodeServerEventValue value)
+  where
+    responseId = Aeson.withObject "JSON-RPC message" (Aeson..:? "id")
+
+resolveResponse :: Concurrent :> es => RpcConnection -> Int -> Aeson.Value -> Eff es ()
+resolveResponse rpcConnection requestId value =
+  STM.atomically do
+    pending <- STM.readTVar rpcConnection.pending
+    for_ (Map.lookup requestId pending) \waiter -> do
+      STM.modifyTVar' rpcConnection.pending (Map.delete requestId)
+      void (STM.tryPutTMVar waiter (Right value))
+
+publishEvent :: Concurrent :> es => RpcConnection -> Either Text (Maybe ServerEvent) -> Eff es ()
+publishEvent rpcConnection =
+  STM.atomically . STM.writeTChan rpcConnection.events
+
+failConnection :: Concurrent :> es => RpcConnection -> Text -> Eff es ()
+failConnection rpcConnection reason =
+  STM.atomically do
+    pending <- STM.readTVar rpcConnection.pending
+    STM.writeTVar rpcConnection.pending Map.empty
+    traverse_ (\waiter -> STM.tryPutTMVar waiter (Left reason)) pending
+    STM.writeTChan rpcConnection.events (Left reason)
+
 decodeServerEvent :: ByteString.ByteString -> Either Text (Maybe ServerEvent)
 decodeServerEvent bytes = do
   value <- either (Left . Text.pack) Right (Aeson.eitherDecodeStrict' bytes)
+  decodeServerEventValue value
+
+decodeServerEventValue :: Aeson.Value -> Either Text (Maybe ServerEvent)
+decodeServerEventValue value =
   either (Left . Text.pack) Right (AesonTypes.parseEither parseValue value)
   where
     parseValue = Aeson.withObject "JSON-RPC message" \o -> do
@@ -125,8 +222,16 @@ requestValue requestId method params = Aeson.object
 
 chatSendRequest :: Int -> Text -> Text -> Aeson.Value
 chatSendRequest requestId sessionId body =
-  requestValue requestId "chat.send" $ Aeson.object
+  requestValue requestId "chat.send" (chatSendParams sessionId body)
+
+chatSendParams :: Text -> Text -> Aeson.Value
+chatSendParams sessionId body =
+  Aeson.object
     [ "sessionId" Aeson..= sessionId
     , "text" Aeson..= body
     , "replyToMessageId" Aeson..= Aeson.Null
     ]
+
+sessionParams :: Text -> Aeson.Value
+sessionParams sessionId =
+  Aeson.object ["sessionId" Aeson..= sessionId]

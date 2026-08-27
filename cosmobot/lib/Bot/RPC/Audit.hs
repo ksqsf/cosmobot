@@ -40,8 +40,6 @@ dispatchAuditMethod request =
     "audit.thread_messages" ->
       parseParams request parseMessageKeys \messageKeys ->
         Aeson.toJSON <$> AgentAudit.queryThreadMessagesAudit messageKeys
-    "audit.subscribe" ->
-      pure (Right (Aeson.object ["subscribed" Aeson..= True]))
     _ ->
       let method = RPC.requestMethod request
       in pure (Left (RPC.rpcError "method_not_found" [i|Unknown RPC method: #{method}|]))

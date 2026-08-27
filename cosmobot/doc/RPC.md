@@ -55,8 +55,31 @@ Notifications have no `id`:
 {"jsonrpc":"2.0","method":"audit.event","params":{}}
 ```
 
+Responses and notifications may be interleaved on one WebSocket connection.
+Clients must route responses by `id` instead of assuming that the next frame is
+the response to the most recent request.
+
 Standard JSON-RPC numeric error codes are used. Cosmobot's stable textual error
 code is preserved in `error.data.code` where applicable.
+
+## Event subscriptions
+
+New connections receive no broadcast notifications until they subscribe. Three
+topic kinds are available internally: one chat session, the global non-audit
+event stream, and global audit events. Direct JSON-RPC responses are always sent
+only to the requesting connection.
+
+`events.subscribe` subscribes the connection to the global non-audit stream,
+including chat and agent-lifecycle notifications for every RPC session:
+
+```json
+{"jsonrpc":"2.0","id":"1","method":"events.subscribe","params":{}}
+```
+
+`events.unsubscribe` removes that subscription. Both methods return
+`{"subscribed":true}` or `{"unsubscribed":true}`, respectively. Audit events
+remain independently selectable through `audit.subscribe`; subscribing to both
+streams provides global observation without duplicate audit notifications.
 
 ## Audit Methods
 
@@ -95,8 +118,9 @@ Returns audit records associated with multiple message ids in one platform/chat.
 
 ### `audit.subscribe`
 
-Acknowledges audit live updates. Current broadcasts are global to connected RPC
-clients; this method does not create per-client subscription state yet.
+Subscribes this connection to live updates for all persisted agent audit
+records. Other connected clients do not receive those updates unless they also
+subscribe.
 
 ```json
 {"jsonrpc":"2.0","id":"1","method":"audit.subscribe","params":{}}
@@ -116,6 +140,20 @@ Persisted audit records are broadcast as `audit.event` notifications:
 
 Live audit events report newly persisted records. Query methods keep the normal
 audit storage behavior, including stale running-tool marking.
+
+### `audit.unsubscribe`
+
+Removes the connection's audit subscription:
+
+```json
+{"jsonrpc":"2.0","id":"2","method":"audit.unsubscribe","params":{}}
+```
+
+Result:
+
+```json
+{"unsubscribed":true}
+```
 
 ## Console lifecycle notifications
 
@@ -207,6 +245,25 @@ Result:
 
 Blank labels are ignored and use the base name `session`.
 
+### `chat.subscribe`
+
+Subscribes this connection to notifications for one existing chat session:
+
+```json
+{"jsonrpc":"2.0","id":"2","method":"chat.subscribe","params":{"sessionId":"local-1"}}
+```
+
+Result:
+
+```json
+{"subscribed":true}
+```
+
+`session_id` is accepted as an alias. A missing session returns `not_found`.
+`chat.unsubscribe` accepts the same parameters and returns
+`{"unsubscribed":true}`. Cosmocode subscribes automatically after opening or
+resuming its active session.
+
 ### `chat.send`
 
 Injects a user message into the virtual RPC chat session.
@@ -243,8 +300,8 @@ Result:
 {"sessionId":"local-1","messageId":"rpc-1"}
 ```
 
-The sent user message is also broadcast as a `chat.message` notification with
-`sender: "user"`.
+The sent user message is also published as a `chat.message` notification with
+`sender: "user"` to subscribers of that session and the global event stream.
 
 Sending to a session id that does not exist fails with textual error code
 `not_found`; no message is persisted or broadcast.
@@ -410,8 +467,8 @@ need dereferenceable public URLs.
 
 ## Limitations
 
-All connected RPC clients currently receive broadcast notifications. Clients
-that only need one chat should filter messages by session id.
+Audit subscriptions deliver new records only. Clients that need durable catch-up
+must query the audit methods after connecting.
 
 The virtual RPC chat driver supports replies, streamed reply edits, audio/file
 fallback text, and mentions. It does not support deleting messages, fetching old

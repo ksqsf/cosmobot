@@ -74,6 +74,8 @@ newtype RpcClientDisconnected = RpcClientDisconnected Text
 
 instance Exception RpcClientDisconnected
 
+data SubscriptionChange = Subscribe | Unsubscribe
+
 noRpcServerCallbacks :: RpcServerCallbacks es
 noRpcServerCallbacks = RpcServerCallbacks
   { auditMethod = \_ -> pure Nothing
@@ -164,13 +166,13 @@ serveAcceptedClient
   -> WS.Connection
   -> Eff es ()
 serveAcceptedClient cfg rpcState callbacks conn = do
-  (clientId, queue) <- State.registerClient rpcState
+  (clientId, client) <- State.registerClient rpcState
   $(logDebug) [i|RPC client #{clientId} connected|]
   (Concurrency.raceTasks_
       [i|rpc.client.#{clientId}.writer|]
-      (writeQueuedFrames queue conn)
+      (writeQueuedFrames client conn)
       [i|rpc.client.#{clientId}.reader|]
-      (readRequestFrames cfg rpcState callbacks queue conn)
+      (readRequestFrames cfg rpcState callbacks client conn)
     `catchSync` \err ->
       $(logDebug) [i|RPC client #{clientId} disconnected: #{displayException err}|])
     `finally` do
@@ -179,12 +181,12 @@ serveAcceptedClient cfg rpcState callbacks conn = do
 
 writeQueuedFrames
   :: (IOE :> es, Concurrent :> es)
-  => State.RpcClientQueue
+  => State.RpcClient
   -> WS.Connection
   -> Eff es ()
-writeQueuedFrames queue conn =
+writeQueuedFrames client conn =
   forever do
-    State.readClient queue >>= \case
+    State.readClient client >>= \case
       State.RpcClientSend value ->
         liftIO (WS.sendTextData conn (Aeson.encode value))
       State.RpcClientDisconnect reason -> do
@@ -196,10 +198,10 @@ readRequestFrames
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
-  -> State.RpcClientQueue
+  -> State.RpcClient
   -> WS.Connection
   -> Eff es ()
-readRequestFrames cfg rpcState callbacks queue conn =
+readRequestFrames cfg rpcState callbacks client conn =
   forever do
     bytes <- liftIO (WS.receiveData conn :: IO ByteString)
     response <- case Aeson.eitherDecodeStrict bytes of
@@ -208,15 +210,15 @@ readRequestFrames cfg rpcState callbacks queue conn =
       Right value ->
         case Aeson.fromJSON value of
           Aeson.Success (JSONRPC.RequestMessage request) ->
-            Just <$> dispatchRpcRequestWithConfig rpcState cfg callbacks request
+            Just <$> dispatchClientRpcRequestWithConfig rpcState client cfg callbacks request
           Aeson.Success (JSONRPC.NotificationMessage notification_) -> do
-            _ <- dispatchRpcRequestWithConfig rpcState cfg callbacks (notificationToRequest notification_)
+            _ <- dispatchClientRpcRequestWithConfig rpcState client cfg callbacks (notificationToRequest notification_)
             pure Nothing
           Aeson.Error err ->
             pure (Just (RPC.invalidRequestResponse (Text.pack err)))
           Aeson.Success _ ->
             pure (Just (RPC.invalidRequestResponse "Expected request or notification"))
-    traverse_ (State.writeClient queue . Aeson.toJSON) response
+    traverse_ (State.writeClient client . Aeson.toJSON) response
 
 dispatchRpcRequest
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
@@ -235,7 +237,29 @@ dispatchRpcRequestWithConfig
   -> RPC.RpcRequest
   -> Eff es RPC.RpcResponse
 dispatchRpcRequestWithConfig rpcState cfg callbacks request =
-  dispatchRpcRequestUnsafe rpcState cfg callbacks request
+  dispatchRpcRequestWithClient rpcState Nothing cfg callbacks request
+
+dispatchClientRpcRequestWithConfig
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  => State.RpcState
+  -> State.RpcClient
+  -> Config.Config
+  -> RpcServerCallbacks es
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchClientRpcRequestWithConfig rpcState client cfg callbacks request =
+  dispatchRpcRequestWithClient rpcState (Just client) cfg callbacks request
+
+dispatchRpcRequestWithClient
+  :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
+  => State.RpcState
+  -> Maybe State.RpcClient
+  -> Config.Config
+  -> RpcServerCallbacks es
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchRpcRequestWithClient rpcState client cfg callbacks request =
+  dispatchRpcRequestUnsafe rpcState client cfg callbacks request
     `catchSync` \err ->
       pure $
         RPC.errorResponse
@@ -250,11 +274,12 @@ exceptionFirstLine =
 dispatchRpcRequestUnsafe
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
   => State.RpcState
+  -> Maybe State.RpcClient
   -> Config.Config
   -> RpcServerCallbacks es
   -> RPC.RpcRequest
   -> Eff es RPC.RpcResponse
-dispatchRpcRequestUnsafe rpcState _cfg callbacks request =
+dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
   case RPC.requestMethod request of
     "chat.open_session" ->
       dispatchOpenSession rpcState request
@@ -274,6 +299,18 @@ dispatchRpcRequestUnsafe rpcState _cfg callbacks request =
       dispatchUploadAttachment request
     "chat.send" ->
       dispatchChatSend rpcState request
+    "chat.subscribe" ->
+      dispatchChatSubscription client Subscribe request
+    "chat.unsubscribe" ->
+      dispatchChatSubscription client Unsubscribe request
+    "audit.subscribe" ->
+      dispatchSubscription client Subscribe State.AuditEvents request
+    "audit.unsubscribe" ->
+      dispatchSubscription client Unsubscribe State.AuditEvents request
+    "events.subscribe" ->
+      dispatchSubscription client Subscribe State.SystemEvents request
+    "events.unsubscribe" ->
+      dispatchSubscription client Unsubscribe State.SystemEvents request
     "media.resolve_source" ->
       dispatchMediaResolveSource request
     "media.get" ->
@@ -291,6 +328,50 @@ dispatchRpcRequestUnsafe rpcState _cfg callbacks request =
           dispatchManager callbacks request
       | otherwise ->
           pure (methodNotFound (RPC.requestId request) method)
+
+dispatchChatSubscription
+  :: (Concurrent :> es, Storage.Storage :> es)
+  => Maybe State.RpcClient
+  -> SubscriptionChange
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchChatSubscription client change request =
+  case AesonTypes.parseEither parseSessionIdParams (RPC.requestParams request) of
+    Left err ->
+      pure (invalidParams request err)
+    Right sessionId ->
+      State.getChatSession sessionId >>= \case
+        Nothing ->
+          pure (RPC.errorResponse (RPC.requestId request) "not_found" "Session not found")
+        Just _ ->
+          dispatchSubscription client change (State.ChatEvents sessionId) request
+
+dispatchSubscription
+  :: Concurrent :> es
+  => Maybe State.RpcClient
+  -> SubscriptionChange
+  -> State.RpcTopic
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchSubscription client change topic request =
+  case client of
+    Nothing ->
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_request" "Subscriptions require a connected RPC client")
+    Just connected -> do
+      applySubscriptionChange change connected topic
+      pure $ RPC.successResponse (RPC.requestId request) $ Aeson.object
+        [ subscriptionResultField change Aeson..= True
+        ]
+
+applySubscriptionChange :: Concurrent :> es => SubscriptionChange -> State.RpcClient -> State.RpcTopic -> Eff es ()
+applySubscriptionChange = \case
+  Subscribe -> State.subscribe
+  Unsubscribe -> State.unsubscribe
+
+subscriptionResultField :: SubscriptionChange -> AesonKey.Key
+subscriptionResultField = \case
+  Subscribe -> "subscribed"
+  Unsubscribe -> "unsubscribed"
 
 dispatchOpenSession
   :: (Concurrent :> es, Storage.Storage :> es)

@@ -64,7 +64,7 @@ instance ChatDriver RpcChatDriver where
         pure (Left "RPC reply did not produce a message id.")
       Right (Just storedReply) -> do
         RPC.rememberMessageNumber driver.rpcState storedReply.messageId
-        RPC.broadcast driver.rpcState (Aeson.toJSON (JSONRPC.notification "chat.message" (RPC.storedMessageToRpc storedReply)))
+        RPC.publish driver.rpcState (RPC.ChatEvents sessionId) (Aeson.toJSON (JSONRPC.notification "chat.message" (RPC.storedMessageToRpc storedReply)))
         pure (Right storedReply.messageId)
 
   replyAudio driver message audioRef caption = do
@@ -79,7 +79,7 @@ instance ChatDriver RpcChatDriver where
         text = ReplyBody.renderReplyBody body
         payload = RPC.RpcOutbound sessionId (Just messageId) text
     updated <- SessionStorage.updateMessageText (RPC.unRpcSessionId sessionId) messageId text
-    RPC.broadcast driver.rpcState (Aeson.toJSON (JSONRPC.notification "chat.message_update" payload))
+    RPC.publish driver.rpcState (RPC.ChatEvents sessionId) (Aeson.toJSON (JSONRPC.notification "chat.message_update" payload))
     pure updated
 
   completeMessageEdit driver message messageId = do
@@ -87,11 +87,12 @@ instance ChatDriver RpcChatDriver where
           [ "sessionId" Aeson..= RPC.sessionIdFromMessage message
           , "messageId" Aeson..= messageId
           ]
-    RPC.broadcast driver.rpcState (Aeson.toJSON (JSONRPC.notification "chat.message_done" payload))
+    RPC.publish driver.rpcState (RPC.ChatEvents (RPC.sessionIdFromMessage message)) (Aeson.toJSON (JSONRPC.notification "chat.message_done" payload))
     pure True
 
-  publishActivity driver message activity =
-    RPC.broadcast driver.rpcState (activityNotification (RPC.sessionIdFromMessage message) activity)
+  publishActivity driver message activity = do
+    let sessionId = RPC.sessionIdFromMessage message
+    RPC.publish driver.rpcState (RPC.ChatEvents sessionId) (activityNotification sessionId activity)
 
   messageOutPolicy _ _ =
     pure (Chat.EditableMessage 1200 4000)

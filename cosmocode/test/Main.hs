@@ -84,14 +84,15 @@ testWebSocketSmoke = do
       options = Options "127.0.0.1" port "secret" NewSession
       client = runRpcWebSocket options.host options.port options.token do
         startup <- openSession
-        sendChat "session-1" "hello"
+        sent <- sendChat "session-1" "hello"
         first <- receiveServerEvent
         second <- receiveServerEvent
-        pure (startup, first, second)
-  (_, (startup, first, second)) <- runEff . runPrim . runConcurrent $ Async.concurrently server client
+        pure (startup, sent, first, second)
+  (_, (startup, sent, first, second)) <- runEff . runPrim . runConcurrent $ Async.concurrently server client
   startup @?= Right "session-1"
-  first @?= Right (Just (MessageReceived (SessionMessage "session-1" "message-1" "user" "hello")))
-  second @?= Right (Just (MessageUpdated "session-1" "message-2" "streamed"))
+  sent @?= Right ()
+  first @?= Right (Just (MessageUpdated "session-1" "message-2" "streamed"))
+  second @?= Right (Just (MessageReceived (SessionMessage "session-1" "message-1" "user" "hello")))
 
 serveOne :: Socket.Socket -> IO ()
 serveOne listenSocket = do
@@ -101,28 +102,39 @@ serveOne listenSocket = do
   connection <- WS.acceptRequest pending
   openRequest <- WS.receiveData connection :: IO ByteString.ByteString
   requestMethod openRequest @?= Right "chat.open_session"
+  requestId openRequest @?= Right 1
   WS.sendTextData connection (Aeson.encode (rpcResult 1 (Aeson.object ["sessionId" Aeson..= ("session-1" :: String)])))
+  subscribeRequest <- WS.receiveData connection :: IO ByteString.ByteString
+  requestMethod subscribeRequest @?= Right "chat.subscribe"
+  requestId subscribeRequest @?= Right 2
+  WS.sendTextData connection (Aeson.encode (notification "chat.message_update" (Aeson.object
+    [ "sessionId" Aeson..= ("session-1" :: String), "messageId" Aeson..= ("message-2" :: String)
+    , "text" Aeson..= ("streamed" :: String) ])))
+  WS.sendTextData connection (Aeson.encode (rpcResult 2 (Aeson.object ["subscribed" Aeson..= True])))
   sendRequest <- WS.receiveData connection :: IO ByteString.ByteString
   requestMethod sendRequest @?= Right "chat.send"
+  requestId sendRequest @?= Right 3
   replyTarget sendRequest @?= Right Nothing
   WS.sendTextData connection (Aeson.encode (notification "chat.message" (Aeson.object
     [ "sessionId" Aeson..= ("session-1" :: String), "messageId" Aeson..= ("message-1" :: String)
     , "sender" Aeson..= ("user" :: String), "text" Aeson..= ("hello" :: String) ])))
-  WS.sendTextData connection (Aeson.encode (notification "chat.message_update" (Aeson.object
-    [ "sessionId" Aeson..= ("session-1" :: String), "messageId" Aeson..= ("message-2" :: String)
-    , "text" Aeson..= ("streamed" :: String) ])))
+  WS.sendTextData connection (Aeson.encode (rpcResult 3 (Aeson.object [])))
 
 requestMethod :: ByteString.ByteString -> Either String String
 requestMethod bytes = Aeson.eitherDecodeStrict' bytes >>= AesonTypes.parseEither
   (Aeson.withObject "request" (Aeson..: "method"))
+
+requestId :: ByteString.ByteString -> Either String Int
+requestId bytes = Aeson.eitherDecodeStrict' bytes >>= AesonTypes.parseEither
+  (Aeson.withObject "request" (Aeson..: "id"))
 
 replyTarget :: ByteString.ByteString -> Either String (Maybe String)
 replyTarget bytes = Aeson.eitherDecodeStrict' bytes >>= AesonTypes.parseEither
   (Aeson.withObject "request" \o -> o Aeson..: "params" >>= Aeson.withObject "params" (Aeson..:? "replyToMessageId"))
 
 rpcResult :: Int -> Aeson.Value -> Aeson.Value
-rpcResult requestId result = Aeson.object
-  [ "jsonrpc" Aeson..= ("2.0" :: String), "id" Aeson..= requestId, "result" Aeson..= result ]
+rpcResult responseId result = Aeson.object
+  [ "jsonrpc" Aeson..= ("2.0" :: String), "id" Aeson..= responseId, "result" Aeson..= result ]
 
 notification :: String -> Aeson.Value -> Aeson.Value
 notification method params = Aeson.object

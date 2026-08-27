@@ -8,7 +8,6 @@ module Cosmocode
   , runCosmocode
   ) where
 
-import Control.Monad (forever)
 import Cosmocode.RPC (Rpc, getSession, openSession, receiveServerEvent, sendChat)
 import Cosmocode.RPC.WebSocket (runRpcWebSocket)
 import Cosmocode.Terminal (Terminal, publishServerEvent, runSessionUi)
@@ -46,8 +45,10 @@ runCosmocode :: IO ()
 runCosmocode = do
   options <- execParser optionsInfo
   let sendMessage sessionId body =
-        fmap (either (Left . Text.pack . displayException) Right) $
-          trySync (sendChat sessionId body)
+        fmap (\case
+          Left err -> Left (Text.pack (displayException err))
+          Right result -> result)
+          (trySync (sendChat sessionId body))
   result <- runEff . runPrim . runConcurrent $ trySync $
     runRpcWebSocket options.host options.port options.token $
       runTerminalIO sendMessage (runErrorNoCallStack (runApplication options))
@@ -75,8 +76,12 @@ startSession = \case
 
 receiveEvents :: (Rpc :> es, Terminal :> es) => Eff es ()
 receiveEvents = do
-  outcome <- trySync $ forever do
-    receiveServerEvent >>= either (publishServerEvent . RequestFailed) (mapM_ publishServerEvent)
+  outcome <- trySync receiveLoop
   publishServerEvent case outcome of
     Left err -> ConnectionClosed (Text.pack (displayException err))
-    Right () -> ConnectionClosed "Connection closed"
+    Right reason -> ConnectionClosed reason
+  where
+    receiveLoop =
+      receiveServerEvent >>= \case
+        Left err -> pure err
+        Right event -> mapM_ publishServerEvent event >> receiveLoop

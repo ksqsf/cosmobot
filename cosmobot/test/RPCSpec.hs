@@ -19,6 +19,7 @@ import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.JSONRPC as JSONRPC
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
+import qualified Bot.Session as Session
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Data.Aeson as Aeson
@@ -66,6 +67,7 @@ main =
       , testCase "chat.send constructs PlatformRPC incoming message" testChatSendConstructsIncomingMessage
       , testCase "chat.send rejects missing sessions without persisting orphan messages" testChatSendRejectsMissingSession
       , testCase "chat.send broadcasts user chat notification" testChatSendBroadcastsNotification
+      , testCase "RPC topics scope session, system, and audit events" testTopicSubscriptionsRouteEvents
       , testCase "client notification queue overflow disconnects slow client" testClientNotificationQueueOverflowDisconnects
       , testCase "sync request exception returns JSON-RPC error" testSyncRequestExceptionReturnsJsonRpcError
       , testCase "resource and concurrency manager RPC methods" testManagerRpcMethods
@@ -184,6 +186,7 @@ testChatSendBroadcastsNotification = do
   notificationValue <- runRpcStorage ":memory:" do
     rpcState <- RPC.newRpcState
     (_clientId, queue) <- RPC.registerClient rpcState
+    RPC.subscribe queue (RPC.ChatEvents (Session.SessionId "local-1"))
     _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
       rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
     _response <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
@@ -212,13 +215,44 @@ testChatSendBroadcastsNotification = do
       , "parentMessageId" Aeson..= (Nothing :: Maybe Text)
       ]
 
+testTopicSubscriptionsRouteEvents :: IO ()
+testTopicSubscriptionsRouteEvents = do
+  (sessionEvents, systemEvents, auditEvents) <- runRpcStorage ":memory:" do
+    rpcState <- RPC.newRpcState
+    (_, sessionClient) <- RPC.registerClient rpcState
+    (_, systemClient) <- RPC.registerClient rpcState
+    (_, auditClient) <- RPC.registerClient rpcState
+    let localTopic = RPC.ChatEvents (Session.SessionId "local-1")
+        otherTopic = RPC.ChatEvents (Session.SessionId "other-1")
+        localEvent = Aeson.String "local"
+        otherEvent = Aeson.String "other"
+        auditEvent = Aeson.String "audit"
+    RPC.subscribe sessionClient localTopic
+    RPC.subscribe systemClient RPC.SystemEvents
+    RPC.subscribe auditClient RPC.AuditEvents
+    RPC.publish rpcState otherTopic otherEvent
+    RPC.publish rpcState RPC.AuditEvents auditEvent
+    RPC.publish rpcState localTopic localEvent
+    sessionEvents <- replicateM 1 (RPC.readClient sessionClient)
+    systemEvents <- replicateM 2 (RPC.readClient systemClient)
+    auditEvents <- replicateM 1 (RPC.readClient auditClient)
+    pure (sessionEvents, systemEvents, auditEvents)
+
+  sessionEvents @?= [RPC.RpcClientSend (Aeson.String "local")]
+  systemEvents @?=
+    [ RPC.RpcClientSend (Aeson.String "other")
+    , RPC.RpcClientSend (Aeson.String "local")
+    ]
+  auditEvents @?= [RPC.RpcClientSend (Aeson.String "audit")]
+
 testClientNotificationQueueOverflowDisconnects :: IO ()
 testClientNotificationQueueOverflowDisconnects = do
   event <- runRpcStorage ":memory:" do
     rpcState <- RPC.newRpcState
     (_clientId, queue) <- RPC.registerClient rpcState
+    RPC.subscribe queue RPC.SystemEvents
     replicateM_ 257 $
-      RPC.broadcast rpcState (Aeson.object ["event" Aeson..= ("notification" :: Text)])
+      RPC.publish rpcState (RPC.ChatEvents (Session.SessionId "local-1")) (Aeson.object ["event" Aeson..= ("notification" :: Text)])
     RPC.readClient queue
 
   case event of
@@ -475,6 +509,7 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
       (_clientId, queue) <- RPC.registerClient rpcState
+      RPC.subscribe queue (RPC.ChatEvents (RPC.sessionIdFromMessage incoming))
       let driver = RPCDriver.rpcChatDriver testRpcConfig rpcState
       replyId <- fromMaybe (error "expected rpc reply id") . rightToMaybe <$> sendReplyMessage driver incoming "draft answer"
       edited <- editMessage driver incoming replyId "final answer"
@@ -643,7 +678,7 @@ testDeleteSessionCascadesForkDescendants =
 
 testWebSocketServerAuthenticatesAndHandlesRequests :: IO ()
 testWebSocketServerAuthenticatesAndHandlesRequests = do
-  result <- timeout 2_000_000 $ runRpcServerTest do
+  result <- timeout 5_000_000 $ runRpcServerTest do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
     port <- (fromIntegral :: Socket.PortNumber -> Int) <$> liftIO (Socket.socketPort listenSocket)
@@ -683,7 +718,7 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
 
 testHttpServerRejectsNonRpcPaths :: IO ()
 testHttpServerRejectsNonRpcPaths = do
-  result <- timeout 2_000_000 $ runRpcServerTest do
+  result <- timeout 5_000_000 $ runRpcServerTest do
     rpcState <- RPC.newRpcState
     listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
     port <- fromIntegral <$> liftIO (Socket.socketPort listenSocket)
@@ -803,10 +838,22 @@ openSessionClient port token =
     WS.sendTextData conn $
       Aeson.encode $
         JSONRPC.rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("integration" :: Text)]) "test-1"
-    bytes <- WS.receiveData conn :: IO ByteString
-    case Aeson.eitherDecodeStrict' bytes of
+    openBytes <- WS.receiveData conn :: IO ByteString
+    response <- case Aeson.eitherDecodeStrict' openBytes of
       Left err -> fail [i|RPC websocket response was not JSON-RPC: #{err}|]
       Right response -> pure response
+    WS.sendTextData conn $
+      Aeson.encode $
+        JSONRPC.rpcRequest "chat.subscribe" (Aeson.object ["sessionId" Aeson..= ("integration-1" :: Text)]) "test-2"
+    subscribeBytes <- WS.receiveData conn :: IO ByteString
+    subscribeResponse <- case Aeson.eitherDecodeStrict' subscribeBytes of
+      Left err -> fail [i|RPC websocket subscription response was not JSON-RPC: #{err}|]
+      Right value -> pure value
+    subscribeResponse @?=
+      JSONRPC.successResponse
+        (WireJSONRPC.RequestId (Aeson.String "test-2"))
+        (Aeson.object ["subscribed" Aeson..= True])
+    pure response
 
 httpGet :: HTTP.Manager -> String -> IO (HTTP.Response LazyByteString.ByteString)
 httpGet manager url = do

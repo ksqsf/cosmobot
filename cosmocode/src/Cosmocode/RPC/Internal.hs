@@ -13,6 +13,6 @@ data Rpc :: Effect where
   OpenSession :: Rpc m (Either Text Text)
   GetSession :: Text -> Rpc m (Either Text (Maybe [SessionMessage]))
   ReceiveServerEvent :: Rpc m (Either Text (Maybe ServerEvent))
-  SendChat :: Text -> Text -> Rpc m ()
+  SendChat :: Text -> Text -> Rpc m (Either Text ())
 
 type instance DispatchOf Rpc = Dynamic
