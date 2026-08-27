@@ -1,0 +1,22 @@
+{
+  "extends": "@tsconfig/node24/tsconfig.json",
+  "include": ["vite.config.ts", "vitest.config.ts", "playwright.config.ts", "eslint.config.ts", "e2e/**/*.ts"],
+  "compilerOptions": {
+    "composite": true,
+    "noEmit": true,
+    "types": ["node"],
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUncheckedIndexedAccess": true,
+    "noUncheckedSideEffectImports": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "erasableSyntaxOnly": true
+  }
+}
