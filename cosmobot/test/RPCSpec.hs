@@ -83,6 +83,7 @@ main =
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
       , testCase "chat.delete_session cascades fork descendants" testDeleteSessionCascadesForkDescendants
       , testCase "websocket server authenticates and handles JSON-RPC requests" testWebSocketServerAuthenticatesAndHandlesRequests
+      , testCase "websocket frames and messages have bounded sizes" testWebSocketFramesAndMessagesHaveBoundedSizes
       , testCase "HTTP server rejects non-RPC paths" testHttpServerRejectsNonRpcPaths
       ]
 
@@ -715,6 +716,19 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
               , "session" Aeson..= sessionValue "integration-1" (Just "integration") Nothing Nothing
               ]
           )
+
+testWebSocketFramesAndMessagesHaveBoundedSizes :: IO ()
+testWebSocketFramesAndMessagesHaveBoundedSizes =
+  case
+      ( WS.connectionFramePayloadSizeLimit RPCServer.rpcConnectionOptions
+      , WS.connectionMessageDataSizeLimit RPCServer.rpcConnectionOptions
+      )
+    of
+      (WS.SizeLimit frameBytes, WS.SizeLimit messageBytes) -> do
+        frameBytes @?= messageBytes
+        frameBytes @?= 35_018_072
+      _ ->
+        assertFailure "expected finite RPC websocket frame and message limits"
 
 testHttpServerRejectsNonRpcPaths :: IO ()
 testHttpServerRejectsNonRpcPaths = do

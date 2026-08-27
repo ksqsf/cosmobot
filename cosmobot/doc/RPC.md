@@ -59,6 +59,9 @@ Responses and notifications may be interleaved on one WebSocket connection.
 Clients must route responses by `id` instead of assuming that the next frame is
 the response to the most recent request.
 
+Inbound WebSocket frames and assembled messages are limited to 35,018,072
+bytes. Connections that exceed either limit are closed before JSON decoding.
+
 Standard JSON-RPC numeric error codes are used. Cosmobot's stable textual error
 code is preserved in `error.data.code` where applicable.
 
@@ -338,8 +341,9 @@ Stores an RPC attachment before sending it in chat:
 ```
 
 `data` is base64 without a data-URL prefix. The decoded byte length must match
-`size` when `size` is provided. Uploaded bytes are stored in the shared media
-cache and the returned `attachmentId` is a `media:<file_id>` reference.
+`size` when `size` is provided and must not exceed 25 MiB. Uploaded bytes are
+stored in the shared media cache and the returned `attachmentId` is a
+`media:<file_id>` reference.
 
 Result:
 

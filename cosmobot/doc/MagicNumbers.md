@@ -70,6 +70,7 @@ This document records constants that are not configurable through `config.toml` 
 
 - `Bot.Memory.memoryLimitChars` : Limits persistent memory for non-superusers to 1,000 characters, bounding prompt and disk growth.
 - `Bot.RPC.Server.defaultUploadMaxBytes` : Sets the default RPC upload limit to 25 MiB, accommodating ordinary media without accepting huge requests.
+- `Bot.RPC.Server.rpcConnectionOptions` : Limits RPC WebSocket frames and assembled messages to the maximum 25 MiB upload encoded as base64 plus a 64 KiB JSON-RPC envelope, rejecting larger input before JSON decoding.
 - `Bot.Plugin.Protocol.maxFrameBytes` : Limits host-side plugin JSON lines to 1 MiB, bounding the framing buffer.
 - `Cosmobot.Plugin.maxLineBytes` : Limits Haskell plugin SDK JSON lines to 1 MiB, matching the host wire contract.
 - `cosmobot_plugin.plugin.MAX_LINE_BYTES` : Limits Python plugin SDK JSON lines to 1 MiB, matching the host wire contract.

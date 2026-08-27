@@ -11,6 +11,7 @@ module Bot.RPC.Server
   , noRpcServerCallbacks
   , withManagerRpcCallbacks
   , runRpcServer
+  , rpcConnectionOptions
   , rpcServerApplication
   , rpcServerApp
   , dispatchRpcRequest
@@ -127,10 +128,23 @@ rpcServerApplication
   -> RpcServerCallbacks es
   -> Wai.Application
 rpcServerApplication runInIO cfg rpcState callbacks =
-  WaiWS.websocketsOr WS.defaultConnectionOptions websocketApp (httpApp runInIO cfg)
+  WaiWS.websocketsOr rpcConnectionOptions websocketApp (httpApp runInIO cfg)
   where
     websocketApp pending =
       runInIO (rpcServerApp cfg rpcState callbacks pending)
+
+rpcConnectionOptions :: WS.ConnectionOptions
+rpcConnectionOptions =
+  WS.defaultConnectionOptions
+    { WS.connectionFramePayloadSizeLimit = messageSizeLimit
+    , WS.connectionMessageDataSizeLimit = messageSizeLimit
+    }
+  where
+    messageSizeLimit =
+      WS.SizeLimit . fromIntegral $
+        maxBase64Length defaultUploadMaxBytes + rpcEnvelopeMaxBytes
+
+    rpcEnvelopeMaxBytes = 64 * 1024
 
 rpcServerApp
   :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
