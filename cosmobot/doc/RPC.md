@@ -247,6 +247,29 @@ Resource failures use textual error codes such as `not_found`,
 `invalid_params`, `already_exists`, `unavailable`, and `resource_error` in
 `error.data.code`.
 
+## Plugin Methods
+
+Plugin lifecycle methods use the same manager as the chat commands. The list
+contains loaded plugins only; installed but stopped bundles are not discoverable
+through this RPC surface.
+
+| Method | Parameters | Result |
+|---|---|---|
+| `plugin.list` | none | `plugins`: loaded plugin statuses |
+| `plugin.load` | `pluginId` | the loaded plugin status |
+| `plugin.reload` | `pluginId` | the new plugin status and generation |
+| `plugin.unload` | `pluginId` | `pluginId` and `unloaded` |
+
+A plugin status contains `pluginId`, `version`, `generation`, `required`,
+`sandboxed`, `routeCount`, and `toolCount`. Plugin IDs use the same validated
+identifier syntax as chat lifecycle commands. Required plugins cannot be
+unloaded. Lifecycle failures use `plugin_operation_failed` and do not expose
+server filesystem paths.
+
+```json
+{"jsonrpc":"2.0","id":"3","method":"plugin.reload","params":{"pluginId":"echo"}}
+```
+
 ## Chat Methods
 
 RPC chat is exposed to the bot as the virtual `PlatformRPC` platform. Incoming

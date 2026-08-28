@@ -120,13 +120,12 @@ export type AuditEvent =
 
 export interface Plugin {
   id: string
-  name: string
-  description: string
   version: string
+  generation: number
+  required: boolean
+  sandboxed: boolean
   tools: number
   routes: number
-  status: 'Loaded' | 'Stopped'
-  error?: string
 }
 
 export interface LogEntry {

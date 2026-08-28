@@ -29,6 +29,7 @@ main :: IO ()
 main = defaultMain . localOption (NumThreads 1) $ testGroup "plugins"
   [ testCase "initializes routes, callbacks, tools, and shutdown" testRoundTrip
   , testCase "reload isolates generations and unload invalidates snapshots" testGenerationIsolation
+  , testCase "concurrent lifecycle operations are serialized" testConcurrentLifecycle
   , testCase "tool invocations may overlap" testConcurrentTools
   , testCase "invalid tool arguments are permanent" testInvalidToolArguments
   , testCase "late callbacks lose their invocation context" testInvocationExpiry
@@ -62,11 +63,11 @@ testGenerationIsolation :: Assertion
 testGenerationIsolation = withFixture "normal" False \root _ _ -> do
   (oldGeneration, newGeneration, oldFailure, newContent, unloadedFailure) <- runManager root emptyCallbacks do
     [old] <- Plugin.toolSnapshot
-    reloaded <- Plugin.reload "fixture" >>= either error pure
+    reloaded <- Plugin.reload fixtureId >>= either error pure
     oldResult <- Plugin.invokeTool old (message "hello") (Aeson.object ["text" Aeson..= ("old" :: Text)])
     [new] <- Plugin.toolSnapshot
     newResult <- Plugin.invokeTool new (message "hello") (Aeson.object ["text" Aeson..= ("new" :: Text)])
-    Plugin.unload "fixture" >>= either error pure
+    Plugin.unload fixtureId >>= either error pure
     unloaded <- Plugin.invokeTool new (message "hello") (Aeson.object ["text" Aeson..= ("gone" :: Text)])
     pure
       ( old.generation
@@ -88,6 +89,14 @@ testConcurrentTools = withFixture "normal" False \root _ _ -> do
     (left, right) <- Async.concurrently (invoke "left") (invoke "right")
     pure [pluginContent left, pluginContent right]
   contents @?= ["left", "right"]
+
+testConcurrentLifecycle :: Assertion
+testConcurrentLifecycle = withFixture "normal" False \root _ _ -> do
+  results <- runManager root emptyCallbacks do
+    Plugin.unload fixtureId >>= either error pure
+    Async.concurrently (Plugin.load fixtureId) (Plugin.load fixtureId)
+  length (filter isRight [fst results, snd results]) @?= 1
+  [failure | Left failure <- [fst results, snd results]] @?= ["plugin is already loaded"]
 
 testInvalidToolArguments :: Assertion
 testInvalidToolArguments = withFixture "normal" False \root _ _ -> do
@@ -127,7 +136,7 @@ testTransientRetry = do
     active <- runManager root emptyCallbacks Plugin.statuses
     length active @?= 1
   withFixture "transient-always" False \root _ _ -> do
-    failure <- runManager root emptyCallbacks (Plugin.load "fixture")
+    failure <- runManager root emptyCallbacks (Plugin.load fixtureId)
     assertBool "crash-loop breaker did not open" $
       either (Text.isInfixOf "crash-loop breaker") (const False) failure
 
@@ -307,3 +316,6 @@ message text = IncomingMessage
   , text
   , raw = Aeson.Null
   }
+
+fixtureId :: PluginId
+fixtureId = PluginId "fixture"

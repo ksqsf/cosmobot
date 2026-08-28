@@ -43,7 +43,12 @@ export interface AdminBackend {
     readonly keepAlive: (id: string) => BackendEffect<void>
     readonly makePermanent: (id: string) => BackendEffect<void>
   }
-  readonly plugins: { readonly list: () => BackendEffect<readonly Plugin[]> }
+  readonly plugins: {
+    readonly list: () => BackendEffect<readonly Plugin[]>
+    readonly load: (id: string) => BackendEffect<Plugin>
+    readonly reload: (id: string) => BackendEffect<Plugin>
+    readonly unload: (id: string) => BackendEffect<void>
+  }
   readonly logs: { readonly list: () => BackendEffect<readonly LogEntry[]> }
 }
 
@@ -106,5 +111,11 @@ export const makeResourcePermanent = (id: string): Effect.Effect<void, BackendEr
   AdminBackendService.use((backend) => backend.resources.makePermanent(id))
 export const listPlugins: Effect.Effect<readonly Plugin[], BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.plugins.list())
+export const loadPlugin = (id: string): Effect.Effect<Plugin, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.plugins.load(id))
+export const reloadPlugin = (id: string): Effect.Effect<Plugin, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.plugins.reload(id))
+export const unloadPlugin = (id: string): Effect.Effect<void, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.plugins.unload(id))
 export const listLogs: Effect.Effect<readonly LogEntry[], BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.logs.list())

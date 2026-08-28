@@ -2,7 +2,7 @@ import { Effect } from 'effect'
 import { ZodError } from 'zod'
 import { RpcBackendError, type AdminBackend } from './AdminBackend'
 import { mockBackend } from './mockBackend'
-import { auditDetailSchema, auditRecordSchema, auditThreadSchema, chatDeleteSchema, chatHistorySchema, chatMessageDoneSchema, chatMessageSchema, chatOpenSchema, chatRenameSchema, chatSendSchema, chatSessionsSchema, chatUploadSchema, concurrencyAwaitSchema, concurrencyCancelSchema, concurrencyListSchema, concurrencyLookupSchema, mediaDeleteSchema, recentAuditSchema, resourceDestroyAssociatedSchema, resourceDestroySchema, resourceDetailSchema, resourceKeepAliveSchema, resourceListAssociatedSchema, resourceListSchema, resourceMakePermanentSchema, resourceRenameSchema } from '@/rpc/schemas'
+import { auditDetailSchema, auditRecordSchema, auditThreadSchema, chatDeleteSchema, chatHistorySchema, chatMessageDoneSchema, chatMessageSchema, chatOpenSchema, chatRenameSchema, chatSendSchema, chatSessionsSchema, chatUploadSchema, concurrencyAwaitSchema, concurrencyCancelSchema, concurrencyListSchema, concurrencyLookupSchema, mediaDeleteSchema, pluginLifecycleSchema, pluginListSchema, pluginUnloadSchema, recentAuditSchema, resourceDestroyAssociatedSchema, resourceDestroySchema, resourceDetailSchema, resourceKeepAliveSchema, resourceListAssociatedSchema, resourceListSchema, resourceMakePermanentSchema, resourceRenameSchema } from '@/rpc/schemas'
 import type { RpcClient } from '@/rpc/client'
 import type { LiveAdminMethod } from '@/rpc/protocol'
 import type { BackendEffect } from './AdminBackend'
@@ -88,7 +88,12 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       keepAlive: (id) => rpcEffect('Could not refresh the resource lifetime.', async () => { resourceKeepAliveSchema.parse(await client.request('resource.keep_alive', { id })) }),
       makePermanent: (id) => rpcEffect('Could not make the resource permanent.', async () => { resourceMakePermanentSchema.parse(await client.request('resource.make_permanent', { id })) }),
     },
-    plugins: mockBackend.plugins,
+    plugins: {
+      list: () => rpcEffect('Could not load plugins.', async () => pluginListSchema.parse(await client.request('plugin.list')).plugins),
+      load: (id) => rpcEffect('Could not load the plugin.', async () => pluginLifecycleSchema.parse(await client.request('plugin.load', { pluginId: id }))),
+      reload: (id) => rpcEffect('Could not reload the plugin.', async () => pluginLifecycleSchema.parse(await client.request('plugin.reload', { pluginId: id }))),
+      unload: (id) => rpcEffect('Could not unload the plugin.', async () => { pluginUnloadSchema.parse(await client.request('plugin.unload', { pluginId: id })) }),
+    },
     logs: mockBackend.logs,
   }
 }

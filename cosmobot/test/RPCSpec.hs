@@ -18,10 +18,12 @@ import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.Media.Object as MediaObject
 import qualified Bot.RPC.Config as RPCConfig
+import qualified Bot.RPC.Plugin as RPCPlugin
 import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.JSONRPC as JSONRPC
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
+import Bot.Plugin.Types (PluginId (..), PluginStatus (..))
 import qualified Bot.Session as Session
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Storage.SQLite as StorageSQLite
@@ -69,6 +71,7 @@ main =
       , testCase "thread message key JSON preserves large chat ids" testThreadMessageKeyJsonPreservesLargeChatIds
       , testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "admin.capabilities describes the supported RPC surface" testAdminCapabilities
+      , testCase "plugin lifecycle RPC validates ids and serializes safe status" testPluginLifecycleRpc
       , testCase "chat.open_session returns generated session id" testOpenSessionReturnsGeneratedSessionId
       , testCase "chat.send constructs PlatformRPC incoming message" testChatSendConstructsIncomingMessage
       , testCase "chat.send rejects missing sessions without persisting orphan messages" testChatSendRejectsMissingSession
@@ -151,6 +154,51 @@ testEnabledConfigRequiresToken =
     Toml.Success _warnings (config_ :: RpcClientConfig) ->
       assertFailure [i|expected parse failure, got #{show config_ :: String}|]
 
+testPluginLifecycleRpc :: IO ()
+testPluginLifecycleRpc = do
+  (listResponse, loadResponse, invalidResponse, requiredResponse) <- runRpcStorage ":memory:" do
+    rpcState <- RPC.newRpcState
+    let status pluginId = PluginStatus
+          { pluginId
+          , generation = 7
+          , pluginVersion = "1.2.3"
+          , required = pluginId == PluginId "required"
+          , sandboxed = True
+          , routeCount = 2
+          , toolCount = 3
+          }
+        pluginCallbacks = RPCPlugin.PluginRpc
+          { list = pure [status (PluginId "echo")]
+          , load = pure . Right . status
+          , reload = pure . Right . status
+          , unload = \pluginId -> pure $ if pluginId == PluginId "required"
+              then Left "required plugins cannot be unloaded"
+              else Right ()
+          }
+        callbacks = RPCServer.noRpcServerCallbacks
+          { RPCServer.pluginMethod = RPCPlugin.dispatchPluginRequest pluginCallbacks
+          , RPCServer.supportedMethods = RPCPlugin.pluginMethods
+          }
+        dispatch method params = RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest method params)
+    (,,,)
+      <$> dispatch "plugin.list" Aeson.Null
+      <*> dispatch "plugin.load" (Aeson.object ["pluginId" Aeson..= ("new-plugin" :: Text)])
+      <*> dispatch "plugin.load" (Aeson.object ["pluginId" Aeson..= ("../bad" :: Text)])
+      <*> dispatch "plugin.unload" (Aeson.object ["pluginId" Aeson..= ("required" :: Text)])
+  listResponse @?= responseResult (Aeson.object ["plugins" Aeson..= [pluginStatusValue "echo"]])
+  loadResponse @?= responseResult (pluginStatusValue "new-plugin")
+  responseErrorCode invalidResponse @?= Just "invalid_params"
+  responseErrorCode requiredResponse @?= Just "plugin_operation_failed"
+  where
+    pluginStatusValue pluginId = Aeson.object
+      [ "pluginId" Aeson..= (pluginId :: Text)
+      , "version" Aeson..= ("1.2.3" :: Text)
+      , "generation" Aeson..= (7 :: Int)
+      , "required" Aeson..= (pluginId == "required")
+      , "sandboxed" Aeson..= True
+      , "routeCount" Aeson..= (2 :: Int)
+      , "toolCount" Aeson..= (3 :: Int)
+      ]
 testAdminCapabilities :: IO ()
 testAdminCapabilities = do
   response <- runRpcStorage ":memory:" do

@@ -1,5 +1,5 @@
 import { Effect, Layer } from 'effect'
-import { logs, plugins } from '@/fixtures/data'
+import { logs } from '@/fixtures/data'
 import { AdminBackendService, OfflineError, type AdminBackend, type BackendEffect } from './AdminBackend'
 
 const copy = <T>(value: T): T => structuredClone(value)
@@ -23,7 +23,7 @@ const mockBackend: AdminBackend = {
     count: unavailable, list: unavailable, detail: unavailable, destroy: unavailable,
     rename: unavailable, keepAlive: unavailable, makePermanent: unavailable,
   },
-  plugins: { list: () => Effect.succeed(copy(plugins)) },
+  plugins: { list: unavailable, load: unavailable, reload: unavailable, unload: unavailable },
   logs: { list: () => Effect.succeed(copy(logs)) },
 }
 

@@ -22,7 +22,7 @@ where
 
 import Bot.Core.Message (IncomingMessage)
 import Bot.Core.Route (RouteHelp)
-import Bot.Plugin.Types (PluginStatus, RouteDisposition, ToolInvocationResult (..), ToolFailureKind (..))
+import Bot.Plugin.Types (PluginId, PluginStatus, RouteDisposition, ToolInvocationResult (..), ToolFailureKind (..))
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 
@@ -39,9 +39,9 @@ data PluginTool = PluginTool
 
 data Plugin :: Effect where
   Statuses :: Plugin m [PluginStatus]
-  Load :: Text -> Plugin m (Either Text PluginStatus)
-  Unload :: Text -> Plugin m (Either Text ())
-  Reload :: Text -> Plugin m (Either Text PluginStatus)
+  Load :: PluginId -> Plugin m (Either Text PluginStatus)
+  Unload :: PluginId -> Plugin m (Either Text ())
+  Reload :: PluginId -> Plugin m (Either Text PluginStatus)
   DispatchRoute :: IncomingMessage -> Plugin m (Maybe RouteDisposition)
   HelpEntries :: IncomingMessage -> Plugin m [RouteHelp]
   ToolSnapshot :: Plugin m [PluginTool]
@@ -52,13 +52,13 @@ type instance DispatchOf Plugin = Dynamic
 statuses :: Plugin :> es => Eff es [PluginStatus]
 statuses = send Statuses
 
-load :: Plugin :> es => Text -> Eff es (Either Text PluginStatus)
+load :: Plugin :> es => PluginId -> Eff es (Either Text PluginStatus)
 load = send . Load
 
-unload :: Plugin :> es => Text -> Eff es (Either Text ())
+unload :: Plugin :> es => PluginId -> Eff es (Either Text ())
 unload = send . Unload
 
-reload :: Plugin :> es => Text -> Eff es (Either Text PluginStatus)
+reload :: Plugin :> es => PluginId -> Eff es (Either Text PluginStatus)
 reload = send . Reload
 
 dispatchRoute :: Plugin :> es => IncomingMessage -> Eff es (Maybe RouteDisposition)

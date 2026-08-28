@@ -67,6 +67,7 @@ data Manager es = Manager
   , requiredFailure :: !(MVar.MVar Text)
   , recentExits :: !(IORef (Map.Map PluginId [UTCTime]))
   , lifecycleLock :: !(MVar.MVar ())
+  , operationLock :: !(MVar.MVar ())
   , shuttingDown :: !(IORef Bool)
   }
 
@@ -167,6 +168,7 @@ runPluginManager pluginDirectory mediaDirectory callbacks action = do
   requiredFailure <- MVar.newEmptyMVar
   recentExits <- newIORef Map.empty
   lifecycleLock <- MVar.newMVar ()
+  operationLock <- MVar.newMVar ()
   shuttingDown <- newIORef False
   let manager = Manager
         { pluginDirectory = absolutePluginDirectory
@@ -178,6 +180,7 @@ runPluginManager pluginDirectory mediaDirectory callbacks action = do
         , requiredFailure
         , recentExits
         , lifecycleLock
+        , operationLock
         , shuttingDown
         }
   initializeInstalled manager
@@ -202,9 +205,9 @@ runOperation
   -> EffectHandler Plugin.Plugin es
 runOperation manager _ = \case
   Plugin.Statuses -> map statusOf . Map.elems <$> readIORef manager.active
-  Plugin.Load rawId -> loadById manager rawId
-  Plugin.Unload rawId -> unloadById manager rawId
-  Plugin.Reload rawId -> reloadById manager rawId
+  Plugin.Load pluginId -> withLifecycleOperation manager (loadById manager pluginId)
+  Plugin.Unload pluginId -> withLifecycleOperation manager (unloadById manager pluginId)
+  Plugin.Reload pluginId -> withLifecycleOperation manager (reloadById manager pluginId)
   Plugin.DispatchRoute message -> dispatchRoutes manager message
   Plugin.HelpEntries message -> dynamicHelp manager message
   Plugin.ToolSnapshot -> snapshotTools manager
@@ -233,14 +236,13 @@ initializeInstalled manager =
 loadById
   :: (Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Process.Process :> es, Timeout :> es, Prim :> es, KatipE :> es, IOE :> es)
   => Manager es
-  -> Text
+  -> PluginId
   -> Eff es (Either Text PluginStatus)
-loadById manager rawId = do
-  let pluginId = PluginId rawId
+loadById manager pluginId = do
   alreadyLoaded <- Map.member pluginId <$> readIORef manager.active
   if alreadyLoaded
     then pure (Left "plugin is already loaded")
-    else Config.loadPluginBundle (manager.pluginDirectory </> toString rawId) pluginId >>= \case
+    else Config.loadPluginBundle (manager.pluginDirectory </> toString pluginId.unPluginId) pluginId >>= \case
       Left err -> pure (Left (configErrorText err))
       Right bundle -> startAndPublish manager bundle >>= \case
         Right running -> pure (Right (statusOf running))
@@ -252,10 +254,9 @@ loadById manager rawId = do
 unloadById
   :: (Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Process.Process :> es, Timeout :> es, Prim :> es, KatipE :> es, IOE :> es)
   => Manager es
-  -> Text
+  -> PluginId
   -> Eff es (Either Text ())
-unloadById manager rawId = do
-  let pluginId = PluginId rawId
+unloadById manager pluginId = do
   Map.lookup pluginId <$> readIORef manager.active >>= \case
     Nothing -> pure (Left "plugin is not loaded")
     Just running
@@ -269,17 +270,16 @@ unloadById manager rawId = do
 reloadById
   :: (Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Process.Process :> es, Timeout :> es, Prim :> es, KatipE :> es, IOE :> es)
   => Manager es
-  -> Text
+  -> PluginId
   -> Eff es (Either Text PluginStatus)
-reloadById manager rawId = do
-  let pluginId = PluginId rawId
+reloadById manager pluginId = do
   Map.lookup pluginId <$> readIORef manager.active >>= \case
     Nothing -> pure (Left "plugin is not loaded")
     Just previous -> do
       unpublish manager previous
       stopRunning previous
       forgetLaunched manager previous.transport
-      Config.loadPluginBundle (manager.pluginDirectory </> toString rawId) pluginId >>= \case
+      Config.loadPluginBundle (manager.pluginDirectory </> toString pluginId.unPluginId) pluginId >>= \case
         Left err -> reloadFailed previous.bundle.lifecycle.required (configErrorText err)
         Right bundle -> startAndPublish manager bundle >>= \case
           Right running -> pure (Right (statusOf running))
@@ -899,13 +899,17 @@ restartTransientProcess manager bundle failure = do
   exitCount <- recordRecentExit manager bundle.pluginId
   if exitCount >= 3 || exitCount > bundle.lifecycle.restartLimit
     then requiredRuntimeFailure manager bundle (failure <> " (transient retries exhausted or crash-loop breaker opened)")
-    else do
+    else withLifecycleOperation manager do
       threadDelay (seconds (min 4 (2 ^ (exitCount - 1))))
       startAndPublish manager bundle >>= \case
         Right _ -> pure ()
         Left restartFailure -> do
           recoveredElsewhere <- Map.member bundle.pluginId <$> readIORef manager.active
           unless recoveredElsewhere (requiredRuntimeFailure manager bundle restartFailure)
+
+withLifecycleOperation :: Concurrent :> es => Manager es -> Eff es a -> Eff es a
+withLifecycleOperation manager action =
+  MVar.withMVar manager.operationLock \_ -> action
 
 requiredRuntimeFailure :: Concurrent :> es => Manager es -> PluginBundle -> Text -> Eff es ()
 requiredRuntimeFailure manager bundle failure =

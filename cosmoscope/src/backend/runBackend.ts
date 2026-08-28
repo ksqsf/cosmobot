@@ -45,7 +45,12 @@ const backendProxy: AdminBackend = {
     keepAlive: (id) => activeBackend.resources.keepAlive(id),
     makePermanent: (id) => activeBackend.resources.makePermanent(id),
   },
-  plugins: { list: () => activeBackend.plugins.list() },
+  plugins: {
+    list: () => activeBackend.plugins.list(),
+    load: (id) => activeBackend.plugins.load(id),
+    reload: (id) => activeBackend.plugins.reload(id),
+    unload: (id) => activeBackend.plugins.unload(id),
+  },
   logs: { list: () => activeBackend.logs.list() },
 }
 const backendRuntime = ManagedRuntime.make(Layer.succeed(AdminBackendService, backendProxy))

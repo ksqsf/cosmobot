@@ -42,7 +42,7 @@ lifecycleRoute
   :: (Chat.Chat :> es, Plugin.Plugin :> es)
   => Text
   -> Text
-  -> (Text -> Eff es (Either Text PluginTypes.PluginStatus))
+  -> (PluginTypes.PluginId -> Eff es (Either Text PluginTypes.PluginStatus))
   -> (PluginTypes.PluginStatus -> Text)
   -> RouteHandler es
 lifecycleRoute commandName description operation renderSuccess =
@@ -73,22 +73,16 @@ withPluginId
   :: Chat.Chat :> es
   => IncomingMessage
   -> Text
-  -> (Text -> Eff es (Either Text a))
+  -> (PluginTypes.PluginId -> Eff es (Either Text a))
   -> (a -> Text)
   -> Eff es ()
 withPluginId message rawId operation renderSuccess =
-  case validPluginId rawId of
-    Nothing ->
+  case PluginTypes.validatePluginId (Text.strip rawId) of
+    Left _ ->
       void $ Chat.replyTo message "Plugin id must contain only ASCII letters, digits, '_' or '-'."
-    Just pluginId -> do
+    Right pluginId -> do
       result <- operation pluginId
       void $ Chat.replyTo message (either ("Plugin operation failed: " <>) renderSuccess result)
-
-validPluginId :: Text -> Maybe Text
-validPluginId raw = do
-  let pluginId = Text.strip raw
-  PluginTypes.PluginId value <- either (const Nothing) Just (PluginTypes.validatePluginId pluginId)
-  pure value
 
 denied :: Chat.Chat :> es => IncomingMessage -> Eff es ()
 denied message =

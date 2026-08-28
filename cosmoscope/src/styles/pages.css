@@ -934,41 +934,6 @@
   align-items: center;
   gap: 6px;
 }
-.summary-strip {
-  display: flex;
-  padding: var(--space-3);
-}
-.summary-strip div {
-  display: flex;
-  min-width: 110px;
-  flex-direction: column;
-  padding: 3px 17px;
-  border-right: 1px solid var(--line-soft);
-}
-.summary-strip strong {
-  font-size: 18px;
-}
-.summary-strip span {
-  color: var(--muted);
-  font-size: 10px;
-}
-.plugin-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: var(--space-4);
-}
-.plugin-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.plugin-stats {
-  display: flex;
-  gap: var(--space-4);
-  padding: 10px;
-  border-radius: 7px;
-  background: var(--surface-2);
-}
 .config-layout {
   display: grid;
   grid-template-columns: 230px minmax(400px, 1fr) 250px;
@@ -1085,8 +1050,7 @@
   .audit-option > span {
     grid-column: 1 / -1;
   }
-  .platform-grid,
-  .plugin-grid {
+  .platform-grid {
     grid-template-columns: 1fr;
   }
   .platform-card {
@@ -1110,9 +1074,6 @@
   }
   .config-nav {
     display: none;
-  }
-  .summary-strip {
-    overflow-x: auto;
   }
   .manager-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));

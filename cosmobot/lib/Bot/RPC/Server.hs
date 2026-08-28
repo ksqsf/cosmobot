@@ -56,6 +56,7 @@ import qualified Paths_cosmobot as Paths
 
 data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
+  , pluginMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , managerMethod :: RPC.RpcRequest -> Eff es (Maybe RPC.RpcResponse)
   , supportedMethods :: ![Text]
   }
@@ -86,6 +87,7 @@ data SubscriptionChange = Subscribe | Unsubscribe
 noRpcServerCallbacks :: RpcServerCallbacks es
 noRpcServerCallbacks = RpcServerCallbacks
   { auditMethod = \_ -> pure Nothing
+  , pluginMethod = \_ -> pure Nothing
   , managerMethod = \_ -> pure Nothing
   , supportedMethods = []
   }
@@ -412,6 +414,8 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
     method
       | "audit." `Text.isPrefixOf` method ->
           dispatchAudit callbacks request
+      | "plugin." `Text.isPrefixOf` method ->
+          dispatchPlugin callbacks request
       | "concurrency." `Text.isPrefixOf` method || "resource." `Text.isPrefixOf` method ->
           dispatchManager callbacks request
       | otherwise ->
@@ -1047,6 +1051,19 @@ dispatchAudit
   -> Eff es RPC.RpcResponse
 dispatchAudit callbacks request =
   callbacks.auditMethod request >>= \case
+    Nothing ->
+      pure (methodNotFound (RPC.requestId request) (RPC.requestMethod request))
+    Just (Left err) ->
+      pure (JSONRPC.ErrorMessage (JSONRPC.JSONRPCError JSONRPC.rPC_VERSION (RPC.requestId request) err))
+    Just (Right value) ->
+      pure (RPC.successResponse (RPC.requestId request) value)
+
+dispatchPlugin
+  :: RpcServerCallbacks es
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchPlugin callbacks request =
+  callbacks.pluginMethod request >>= \case
     Nothing ->
       pure (methodNotFound (RPC.requestId request) (RPC.requestMethod request))
     Just (Left err) ->

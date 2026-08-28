@@ -1,11 +1,4 @@
-import type { LogEntry, Plugin } from '@/types/domain'
-
-export const plugins: Plugin[] = [
-  { id: 'echo', name: 'Echo tools', description: 'Echo and transformation tools.', version: '1.3.0', tools: 2, routes: 1, status: 'Loaded' },
-  { id: 'github', name: 'GitHub', description: 'Repository lookup, issues, pull requests, and workflow status.', version: '0.8.2', tools: 7, routes: 2, status: 'Loaded' },
-  { id: 'weather', name: 'Weather', description: 'Current conditions and forecasts.', version: '0.4.0', tools: 2, routes: 1, status: 'Stopped', error: 'Missing WEATHER_API_KEY' },
-  { id: 'codesearch', name: 'Code search', description: 'Indexed symbol and text search over registered workspaces.', version: '2.1.1', tools: 4, routes: 1, status: 'Loaded' },
-]
+import type { LogEntry } from '@/types/domain'
 
 export const logs: LogEntry[] = [
   { id: 'l1', time: '14:32:31.108', level: 'INFO', source: 'Bot.Agent', message: 'Agent run completed', fields: 'run_id=run_8f2c turns=2 tools=5' },

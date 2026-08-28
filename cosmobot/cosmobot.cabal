@@ -340,6 +340,7 @@ library
         Bot.RPC.Audit
         Bot.RPC.Client
         Bot.RPC.Config
+        Bot.RPC.Plugin
         Bot.RPC.Server
         Bot.RPC.State
         Bot.Resource

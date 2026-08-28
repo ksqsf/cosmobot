@@ -32,6 +32,10 @@ export const liveAdminMethods = [
   'resource.make_permanent',
   'resource.list_associated',
   'resource.destroy_associated',
+  'plugin.list',
+  'plugin.load',
+  'plugin.reload',
+  'plugin.unload',
   ...chatMethods,
 ] as const
 export type LiveAdminMethod = typeof liveAdminMethods[number]

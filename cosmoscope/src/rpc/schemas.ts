@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AuditRecord, ChatAttachment, ChatMessage, ChatSession, Resource, Task, ThreadMessageKey, TokenUsage, ToolCallTrace } from '@/types/domain'
+import type { AuditRecord, ChatAttachment, ChatMessage, ChatSession, Plugin, Resource, Task, ThreadMessageKey, TokenUsage, ToolCallTrace } from '@/types/domain'
 
 export const taskSchema = z.object({
   id: z.number().int().positive(),
@@ -113,3 +113,15 @@ export const resourceDestroyAssociatedSchema = z.object({
   id: z.number().int().positive(),
   results: z.array(z.object({ ok: z.boolean(), code: z.string().optional(), error: z.string().optional() })),
 })
+export const pluginSchema = z.object({
+  pluginId: z.string().min(1),
+  version: z.string(),
+  generation: z.number().int().positive(),
+  required: z.boolean(),
+  sandboxed: z.boolean(),
+  routeCount: z.number().int().nonnegative(),
+  toolCount: z.number().int().nonnegative(),
+}).transform(({ pluginId: id, routeCount: routes, toolCount: tools, ...plugin }): Plugin => ({ id, routes, tools, ...plugin }))
+export const pluginListSchema = z.object({ plugins: z.array(pluginSchema) })
+export const pluginLifecycleSchema = pluginSchema
+export const pluginUnloadSchema = z.object({ pluginId: z.string(), unloaded: z.literal(true) })

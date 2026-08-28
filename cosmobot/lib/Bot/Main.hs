@@ -49,6 +49,7 @@ import qualified Bot.Resource.Workspace as Workspace
 import qualified Bot.Scheduler as Scheduler
 import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.RPC.Config as RPCConfig
+import qualified Bot.RPC.Plugin as RPCPlugin
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
 import qualified Data.Aeson as Aeson
@@ -335,7 +336,7 @@ incomingMessageContext message =
     <> foldMap (sl "chat_message_id" . messageIdText) message.messageId
 
 runConfiguredServers
-  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> RPC.RpcState
@@ -346,15 +347,27 @@ runConfiguredServers cfg threads rpcState acpState messageConsumer =
   runWithTaskGroup "servers" (serverTasks cfg threads rpcState acpState) "message.consumer" messageConsumer
 
 serverTasks
-  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
+  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> RPC.RpcState
   -> ACP.AcpState
   -> [(Text, Eff es ())]
 serverTasks cfg threads rpcState acpState =
-  enabledTask cfg.rpc.enabled "rpc.server" (RPCServer.runRpcServer cfg.rpc rpcState (RPCServer.withManagerRpcCallbacks RPCAudit.auditRpcCallbacks))
+  enabledTask cfg.rpc.enabled "rpc.server" (RPCServer.runRpcServer cfg.rpc rpcState callbacks)
     <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp threads acpState)
+  where
+    baseCallbacks = RPCServer.withManagerRpcCallbacks RPCAudit.auditRpcCallbacks
+    callbacks = baseCallbacks
+      { RPCServer.pluginMethod = RPCPlugin.dispatchPluginRequest pluginCallbacks
+      , RPCServer.supportedMethods = baseCallbacks.supportedMethods <> RPCPlugin.pluginMethods
+      }
+    pluginCallbacks = RPCPlugin.PluginRpc
+      { list = PluginEffect.statuses
+      , load = PluginEffect.load
+      , reload = PluginEffect.reload
+      , unload = PluginEffect.unload
+      }
 
 enabledTask :: Bool -> Text -> Eff es () -> [(Text, Eff es ())]
 enabledTask enabled label action =
