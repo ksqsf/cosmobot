@@ -597,7 +597,7 @@ replyTextAndImages :: (HTTP.HTTP :> es, Media.Media :> es, FileSystem :> es, IOE
 replyTextAndImages driver chatId replyToMessageId body = do
   let text = ChatEffect.renderReplyBody body
       images = ChatEffect.replyImageUrls body
-  withRichMessageFallback text
+  sent <- withRichMessageFallback text
     (do
       (richMessage, mediaParts) <- prepareRichMessage driver text images
       sendPreparedRichMessage driver SendRichMessageRequest
@@ -608,6 +608,8 @@ replyTextAndImages driver chatId replyToMessageId body = do
         , replyParameters = ReplyParameters <$> replyToMessageId
         } mediaParts)
     (legacyReply text images)
+  traverse_ (Media.recordMediaPlatform PlatformTelegram) images
+  pure sent
   where
     legacyReply text = \case
       [] ->
