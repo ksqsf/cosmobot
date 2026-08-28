@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AuditRecord } from '@/types/domain'
+import type { AuditRecord, ChatAttachment, ChatMessage, ChatSession } from '@/types/domain'
 
 export const concurrencyListSchema = z.object({
   entries: z.array(z.object({
@@ -31,5 +31,37 @@ export const auditRecordSchema = z.object({
 }) satisfies z.ZodType<AuditRecord>
 
 export const recentAuditSchema = z.array(auditRecordSchema)
-export const chatSessionsSchema = z.object({ sessions: z.array(z.object({ sessionId: z.string() }).loose()) })
+export const chatSessionSchema = z.object({
+  sessionId: z.string().min(1),
+  label: z.string().nullable(),
+  parentSessionId: z.string().nullable(),
+  parentMessageId: z.string().nullable(),
+}) satisfies z.ZodType<ChatSession>
+export const chatAttachmentSchema = z.object({
+  attachmentId: z.string().min(1),
+  name: z.string().min(1),
+  mediaType: z.string().min(1),
+  kind: z.enum(['image', 'audio', 'file']),
+  size: z.number().int().nonnegative(),
+  url: z.string().min(1),
+}) satisfies z.ZodType<ChatAttachment>
+export const chatMessageSchema = z.object({
+  sessionId: z.string().min(1),
+  messageId: z.string().min(1),
+  sender: z.enum(['user', 'assistant']),
+  text: z.string(),
+  imageUrls: z.array(z.string()),
+  attachments: z.array(chatAttachmentSchema),
+  replyToMessageId: z.string().nullable(),
+  parentMessageId: z.string().nullable(),
+}) satisfies z.ZodType<ChatMessage>
+export const chatSessionsSchema = z.object({ sessions: z.array(chatSessionSchema) })
+export const chatHistorySchema = z.object({ sessionId: z.string(), messages: z.array(chatMessageSchema) })
+export const chatOpenSchema = z.object({ sessionId: z.string(), session: chatSessionSchema })
+export const chatRenameSchema = z.object({ session: chatSessionSchema })
+export const chatDeleteSchema = z.object({ sessionId: z.string(), deleted: z.boolean() })
+export const chatSendSchema = z.object({ sessionId: z.string(), messageId: z.string() })
+export const chatMessageDoneSchema = z.object({ sessionId: z.string(), messageId: z.string() })
+export const chatUploadSchema = chatAttachmentSchema.extend({ mediaRef: z.string(), fileId: z.string() })
+export const mediaDeleteSchema = z.object({ fileId: z.string(), mediaId: z.string(), deleted: z.boolean() })
 export const resourceListSchema = z.object({ resources: z.array(z.object({ id: z.string() }).loose()) })

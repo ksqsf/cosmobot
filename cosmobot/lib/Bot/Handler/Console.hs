@@ -163,14 +163,14 @@ runConsoleAgent toolCfg tools cfg threads resource sessionId canonical message i
             sessionId
             (Agent.runIdOf runtime)
             parentMessageKey
-            (consoleThreadMessageKey <$> canonical.messageId)
+            (consoleThreadMessageKey sessionId <$> canonical.messageId)
             canonical
             input.text
             resource
             transcript
             \activeHandle -> do
-              traverse_ (addActiveThreadMessage threads activeHandle . consoleThreadMessageKey) canonical.messageId
-              runActiveConsoleAgent threads activeHandle parentMessageKey message runtime transcript
+              traverse_ (addActiveThreadMessage threads activeHandle . consoleThreadMessageKey sessionId) canonical.messageId
+              runActiveConsoleAgent threads activeHandle parentMessageKey sessionId message runtime transcript
           when (isNothing used) $
             void (enqueueActiveSessionThreadSteer threads sessionId canonical input)
 
@@ -221,15 +221,16 @@ runActiveConsoleAgent
   => ThreadStore
   -> ActiveThreadHandle
   -> Maybe ThreadMessageKey
+  -> Session.SessionId
   -> IncomingMessage
   -> Agent.Runtime '[] (Eff es)
   -> Transcript
   -> Eff es ()
-runActiveConsoleAgent threads active parentMessageKey message runtime transcript = do
+runActiveConsoleAgent threads active parentMessageKey sessionId message runtime transcript = do
   let rememberMessage messageId =
-        traverse_ (addActiveThreadMessage threads active . consoleThreadMessageKey) messageId
+        traverse_ (addActiveThreadMessage threads active . consoleThreadMessageKey sessionId) messageId
       recordUpdate update = do
-        traverse_ (addActiveThreadMessage threads active . consoleThreadMessageKey) $
+        traverse_ (addActiveThreadMessage threads active . consoleThreadMessageKey sessionId) $
           ordNub (maybeToList update.responseId <> rights update.sentMessageResults)
         updateActiveThread active (appendAssistant update.answer transcript)
       steering = Agent.SteeringControl
@@ -243,19 +244,20 @@ runActiveConsoleAgent threads active parentMessageKey message runtime transcript
     recordUpdate
     message
     transcript
-  commitConsoleReply threads active parentMessageKey message reply
+  commitConsoleReply threads active parentMessageKey sessionId message reply
 
 commitConsoleReply
   :: (ChatLog.ChatLog :> es, AgentAudit.AgentAudit :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => ThreadStore
   -> ActiveThreadHandle
   -> Maybe ThreadMessageKey
+  -> Session.SessionId
   -> IncomingMessage
   -> AgentReply
   -> Eff es ()
-commitConsoleReply threads active parentMessageKey message reply = do
+commitConsoleReply threads active parentMessageKey sessionId message reply = do
   for_ reply.responseId \messageId -> do
-    let linkedKey = consoleThreadMessageKey messageId
+    let linkedKey = consoleThreadMessageKey sessionId messageId
     addActiveThreadMessage threads active linkedKey
     AgentObservation.observeThreadLinked AgentAudit.agentAuditObserver $
       AgentObservation.ObservedThreadLink
@@ -278,7 +280,7 @@ latestConsoleTranscript threads sessionId = do
     firstStored [] =
       pure (Nothing, Nothing)
     firstStored (message : rest) = do
-      let key = consoleThreadMessageKey message.messageId
+      let key = consoleThreadMessageKey message.sessionId message.messageId
       lookupCommittedThreadTranscript threads key >>= \case
         Just transcript -> pure (Just key, Just transcript)
         Nothing -> firstStored rest
@@ -308,5 +310,7 @@ canonicalConsoleMessage sessionId message =
     , senderId = Just sessionId
     }
 
-consoleThreadMessageKey :: MessageId -> ThreadMessageKey
-consoleThreadMessageKey = ThreadMessageKey PlatformRPC Nothing
+consoleThreadMessageKey :: Session.SessionId -> MessageId -> ThreadMessageKey
+consoleThreadMessageKey sessionId messageId =
+  ThreadMessageKey PlatformRPC Nothing $
+    textMessageId (Session.sessionIdText sessionId <> ":" <> messageIdText messageId)

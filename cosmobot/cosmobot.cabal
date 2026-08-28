@@ -270,6 +270,7 @@ library
         Bot.Core.Message
         Bot.Core.ReplyBody
         Bot.Core.Route
+        Bot.Core.Session
         Bot.Effect.Agent
         Bot.Effect.AgentAudit
         Bot.Effect.ACP

@@ -31,20 +31,18 @@ module Bot.Session
 where
 
 import Bot.Core.Message
+import Bot.Core.Session (SessionId (..), sessionIdText)
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as StorageEffect
 import Bot.Prelude
 import qualified Bot.Storage.Session as Storage
+import qualified Bot.Storage.Thread as ThreadStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
-
-newtype SessionId = SessionId { unSessionId :: Text }
-  deriving (Eq, Ord, Show)
-    deriving (Aeson.ToJSON, Aeson.FromJSON) via Text
 
 data SessionMessage = SessionMessage
   { sessionId :: !SessionId
@@ -98,10 +96,6 @@ data SessionSend = SessionSend
   }
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
-sessionIdText :: SessionId -> Text
-sessionIdText (SessionId value) =
-  value
-
 openSession :: StorageEffect.Storage :> es => Maybe Text -> Eff es Session
 openSession label =
   storedSessionToSession <$> Storage.createSession label
@@ -127,8 +121,10 @@ renameSession sessionId label =
   fmap storedSessionToSession <$> Storage.renameSession (sessionIdText sessionId) label
 
 deleteSession :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es) => SessionId -> Eff es Bool
-deleteSession sessionId =
-  Storage.deleteSession (sessionIdText sessionId)
+deleteSession sessionId = do
+  deletedMessages <- Storage.deleteSession (sessionIdText sessionId)
+  traverse_ ThreadStorage.deleteSessionThreadTranscripts deletedMessages
+  pure (isJust deletedMessages)
 
 appendUserMessage
   :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)

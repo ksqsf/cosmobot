@@ -178,7 +178,7 @@ interactive client. `chat.reasoning_start` and `chat.reasoning_end` delimit a mo
 they do not contain private reasoning text. Tool results are likewise omitted.
 
 ```json
-{"jsonrpc":"2.0","method":"chat.message_done","params":{"sessionId":"work-1","messageId":"session-2"}}
+{"jsonrpc":"2.0","method":"chat.message_done","params":{"sessionId":"work-1","messageId":"message-2"}}
 {"jsonrpc":"2.0","method":"chat.reasoning_start","params":{"sessionId":"work-1","runId":"run-1","turn":1}}
 {"jsonrpc":"2.0","method":"chat.reasoning_end","params":{"sessionId":"work-1","runId":"run-1","turn":1,"answerKind":"tool_request"}}
 {"jsonrpc":"2.0","method":"chat.tool_call_start","params":{"sessionId":"work-1","runId":"run-1","turn":1,"toolCallId":"call-1","toolName":"run_bash"}}
@@ -293,8 +293,7 @@ Injects a user message into the virtual RPC chat session.
     "sessionId": "local-1",
     "text": "!ask hello",
     "imageUrls": [],
-    "attachments": [],
-    "replyToMessageId": null
+    "attachments": []
   }
 }
 ```
@@ -303,7 +302,9 @@ Accepted aliases:
 
 - `sessionId` or `session_id`
 - `imageUrls` or `image_urls`
-- `replyToMessageId` or `reply_to_message_id`
+
+The server resumes the durable transcript identified by `sessionId`. Ordinary
+clients do not select a parent message; use `chat.fork` to branch a session.
 
 Uploaded image attachments are also exposed to handlers as
 `IncomingMessage.imageUrls`. Audio and file attachments remain in message
@@ -426,8 +427,13 @@ Bot replies are sent as `chat.message` notifications:
   "jsonrpc": "2.0",
   "params": {
     "sessionId": "local-1",
-    "messageId": "rpc-2",
-    "text": "reply text"
+    "messageId": "message-2",
+    "sender": "assistant",
+    "text": "reply text",
+    "imageUrls": [],
+    "attachments": [],
+    "replyToMessageId": "message-1",
+    "parentMessageId": "message-1"
   }
 }
 ```
@@ -440,15 +446,21 @@ Editable reply stream updates are sent as `chat.message_update`:
   "jsonrpc": "2.0",
   "params": {
     "sessionId": "local-1",
-    "messageId": "rpc-2",
-    "text": "updated reply text"
+    "messageId": "message-2",
+    "sender": "assistant",
+    "text": "updated reply text",
+    "imageUrls": [],
+    "attachments": [],
+    "replyToMessageId": "message-1",
+    "parentMessageId": "message-1"
   }
 }
 ```
 
-User-originated chat notifications include `sender`, `imageUrls`, and
-`replyToMessageId` fields. Bot-originated reply notifications currently include
-`sessionId`, `messageId`, and `text`.
+Both notifications carry the complete stored chat-message shape. Cached
+`media:...` image refs and files sent through the chat driver's upload operation
+are published as attachment objects with dereferenceable public URLs; clients
+must not treat a `media:...` identifier as a browser URL.
 
 ## CLI
 

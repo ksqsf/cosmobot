@@ -16,11 +16,10 @@ module Bot.Storage.Session
   , loadSessionHistory
   , loadMessage
   , appendMessage
-  , updateMessageText
+  , replaceMessageContent
   , renameSession
   , deleteSession
   , forkSession
-  , nextMessageId
   , messageAttachmentIds
   )
 where
@@ -106,6 +105,14 @@ data SessionMessageAttachmentRow = SessionMessageAttachmentRow
 
 instance SqlRow SessionMessageAttachmentRow
 
+data SessionMessageSequenceRow = SessionMessageSequenceRow
+  { id :: ID SessionMessageSequenceRow
+  , reserved :: Bool
+  }
+  deriving (Generic)
+
+instance SqlRow SessionMessageSequenceRow
+
 sessionRows :: Table SessionRow
 sessionRows =
   table "sessions"
@@ -132,12 +139,19 @@ sessionMessageAttachmentRows =
     , #attachment_id :- index
     ]
 
+sessionMessageSequenceRows :: Table SessionMessageSequenceRow
+sessionMessageSequenceRows =
+  table "session_message_sequence"
+    [ #id :- autoPrimary
+    ]
+
 ensureSessionTables :: Storage.Storage :> es => Eff es ()
 ensureSessionTables = do
   runSelda do
     tryCreateTable sessionRows
     tryCreateTable sessionMessageRows
     tryCreateTable sessionMessageAttachmentRows
+    tryCreateTable sessionMessageSequenceRows
 
 createSession :: Storage.Storage :> es => Maybe Text -> Eff es StoredChatSession
 createSession label = do
@@ -210,13 +224,10 @@ appendMessage sessionId sender body imageUrls attachments replyToMessageId paren
     canonicalAttachments = ordNubOn (.attachmentId) attachments
 
     insertMessageWithAttachments mediaRefs = do
-      rows <- query do
-            row <- select sessionMessageRows
-            pure (row ! #message_id)
-      let nextNumber = Foldable.maximum (0 : map messageNumber rows) + 1
-          message = StoredChatMessage
+      sequenceId <- insertWithPK sessionMessageSequenceRows [SessionMessageSequenceRow{ id = def, reserved = True }]
+      let message = StoredChatMessage
             { sessionId
-            , messageId = textMessageId ("session-" <> show nextNumber)
+            , messageId = textMessageId ("message-" <> show (fromId sequenceId))
             , sender
             , text = body
             , imageUrls
@@ -228,18 +239,40 @@ appendMessage sessionId sender body imageUrls attachments replyToMessageId paren
       insert_ sessionMessageAttachmentRows (map (messageAttachmentRow message.messageId) mediaRefs)
       pure message
 
-updateMessageText :: Storage.Storage :> es => Text -> MessageId -> Text -> Eff es Bool
-updateMessageText targetSessionId targetMessageId body = do
-  existing <- loadMessage targetSessionId targetMessageId
-  case existing of
-    Nothing ->
-      pure False
-    Just _ -> do
-      runSelda $
-        update_ sessionMessageRows
-          (\row -> row ! #session_id .== literal targetSessionId .&& row ! #message_id .== literal (messageIdText targetMessageId))
-          (\row -> row `with` [#body := literal body])
-      pure True
+replaceMessageContent
+  :: Storage.Storage :> es
+  => Text
+  -> MessageId
+  -> Text
+  -> [Text]
+  -> [StoredMediaRef]
+  -> Eff es (Maybe StoredChatMessage)
+replaceMessageContent targetSessionId targetMessageId body imageUrls attachments =
+  retryingStorageWrite do
+    ensureSessionTables
+    runSelda $
+      transaction do
+        rows <- query $
+          queryLimit 0 1 do
+            row <- select sessionMessageRows
+            restrict (row ! #session_id .== literal targetSessionId .&& row ! #message_id .== literal messageId)
+            pure row
+        case viaNonEmpty head rows of
+          Nothing ->
+            pure Nothing
+          Just row -> do
+            update_ sessionMessageRows
+              (\candidate -> candidate ! #session_id .== literal targetSessionId .&& candidate ! #message_id .== literal messageId)
+              (\candidate -> candidate `with` [#body := literal body, #image_urls_json := literal (encodeImageUrls imageUrls)])
+            deleteFrom_ sessionMessageAttachmentRows \attachment ->
+              attachment ! #message_id .== literal messageId
+            insert_ sessionMessageAttachmentRows (map (messageAttachmentRow targetMessageId) canonicalAttachments)
+            pure $ Just $ messageFromRow
+              (row { body = body, image_urls_json = encodeImageUrls imageUrls })
+              canonicalAttachments
+  where
+    messageId = messageIdText targetMessageId
+    canonicalAttachments = ordNubOn (.attachmentId) attachments
 
 renameSession :: Storage.Storage :> es => Text -> Text -> Eff es (Maybe StoredChatSession)
 renameSession targetSessionId newLabel = do
@@ -250,12 +283,12 @@ renameSession targetSessionId newLabel = do
       (\row -> row `with` [#label := literal (nonEmptyText newLabel)])
   loadSession targetSessionId
 
-deleteSession :: Storage.Storage :> es => Text -> Eff es Bool
+deleteSession :: Storage.Storage :> es => Text -> Eff es (Maybe [(Text, MessageId)])
 deleteSession targetSessionId = do
   ensureSessionTables
   runSelda (transaction (retireSessionTree targetSessionId))
 
-retireSessionTree :: Text -> SeldaT SeldaSQLite.SQLite IO Bool
+retireSessionTree :: Text -> SeldaT SeldaSQLite.SQLite IO (Maybe [(Text, MessageId)])
 retireSessionTree targetSessionId = do
   existingSessions <- query do
     row <- select sessionRows
@@ -263,11 +296,14 @@ retireSessionTree targetSessionId = do
   let deleteIds = descendantSessionIds targetSessionId existingSessions
   case deleteIds of
     [] ->
-      pure False
+      pure Nothing
     _ -> do
       messageRows <- messagesInSessions deleteIds
       deleteMessagesAndSessions deleteIds messageRows
-      pure True
+      pure $ Just
+        [ (row.session_id, textMessageId row.message_id)
+        | row <- messageRows
+        ]
 
 messagesInSessions :: [Text] -> SeldaT SeldaSQLite.SQLite IO [SessionMessageRow]
 messagesInSessions sessionIds =
@@ -306,16 +342,6 @@ forkSession sourceSessionId sourceMessageId requestedLabel = do
           }
     _ ->
       pure Nothing
-
-nextMessageId :: Storage.Storage :> es => Eff es MessageId
-nextMessageId = do
-  ensureSessionTables
-  rows <- runSelda $
-    query do
-      row <- select sessionMessageRows
-      pure (row ! #message_id)
-  let nextNumber = Foldable.maximum (0 : map messageNumber rows) + 1
-  pure (textMessageId ("session-" <> show nextNumber))
 
 loadOwnMessages :: Storage.Storage :> es => Text -> Eff es [StoredChatMessage]
 loadOwnMessages targetSessionId = do
@@ -529,12 +555,6 @@ nextSessionId base existing =
 sourceLabelBase :: StoredChatSession -> Text
 sourceLabelBase session =
   fromMaybe session.sessionId session.label
-
-messageNumber :: Text -> Integer
-messageNumber value =
-  fromMaybe 0 do
-    (_, suffix) <- Just (Text.breakOnEnd "-" value)
-    readMaybe (Text.unpack suffix)
 
 nonEmptyText :: Text -> Maybe Text
 nonEmptyText value =

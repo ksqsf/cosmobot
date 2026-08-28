@@ -1,11 +1,26 @@
 import { z } from 'zod'
 
+export const chatMethods = [
+  'chat.open_session',
+  'chat.list_sessions',
+  'chat.get_session',
+  'chat.history',
+  'chat.fork',
+  'chat.rename_session',
+  'chat.delete_session',
+  'chat.upload_attachment',
+  'chat.send',
+  'chat.subscribe',
+  'chat.unsubscribe',
+  'media.delete',
+] as const
+
 export const liveAdminMethods = [
   'concurrency.list',
   'audit.recent',
   'audit.subscribe',
-  'chat.list_sessions',
   'resource.list',
+  ...chatMethods,
 ] as const
 export type LiveAdminMethod = typeof liveAdminMethods[number]
 

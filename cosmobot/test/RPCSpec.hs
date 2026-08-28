@@ -79,7 +79,7 @@ main =
       , testCase "remote media MIME is probed with range GET" testRemoteMediaMimeUsesRangeGetProbe
       , testCase "chat sessions and messages persist across RPC state restart" testChatSessionsPersistAcrossRestart
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
-      , testCase "rpc driver stores local image replies as attachments" testRpcDriverStoresLocalImageRepliesAsAttachments
+      , testCase "rpc driver stores cached images and uploaded files as attachments" testRpcDriverStoresMediaRepliesAsAttachments
       , testCase "chat.fork stores immutable parent link and inherited history" testChatForkStoresParentLink
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
       , testCase "chat.delete_session cascades fork descendants" testDeleteSessionCascadesForkDescendants
@@ -147,19 +147,18 @@ testChatSendConstructsIncomingMessage = do
           [ "session_id" Aeson..= ("local-1" :: Text)
           , "text" Aeson..= ("hello" :: Text)
           , "image_urls" Aeson..= ["https://example.test/image.png" :: Text]
-          , "reply_to_message_id" Aeson..= ("session-0" :: Text)
           ]
     incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
     pure (response, incoming)
 
-  response @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= ("session-1" :: Text)])
+  response @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= ("message-1" :: Text)])
   incoming.platform @?= PlatformRPC
   incoming.kind @?= ChatPrivate
   incoming.chatAliases @?= ["local-1"]
-  incoming.senderId @?= Just "rpc-user"
+  incoming.senderId @?= Just "local-1"
   incoming.text @?= "hello"
   incoming.imageUrls @?= ["https://example.test/image.png"]
-  incoming.replyToMessageId @?= Just "session-0"
+  incoming.replyToMessageId @?= Nothing
   incoming.digest.senderIsAllowed @?= True
   incoming.digest.senderIsSuperuser @?= True
   incoming.digest.mentionsBot @?= True
@@ -222,7 +221,7 @@ testChatSendBroadcastsNotification = do
   notification.params @?=
     Aeson.object
       [ "sessionId" Aeson..= ("local-1" :: Text)
-      , "messageId" Aeson..= ("session-1" :: Text)
+      , "messageId" Aeson..= ("message-1" :: Text)
       , "sender" Aeson..= ("user" :: Text)
       , "text" Aeson..= ("hello" :: Text)
       , "imageUrls" Aeson..= ([] :: [Text])
@@ -406,7 +405,7 @@ testAttachmentLifecycle =
     imageAttachment.kind @?= "image"
     unsafeMediaAttachment.mediaType @?= "application/octet-stream"
     oversizedResponse @?= responseError "invalid_params" "Error in $: attachment size exceeds configured limit"
-    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("session-1" :: Text)])
+    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("message-1" :: Text)])
     assertBool "non-image attachment should be visible in incoming context" ("Attachments:" `Text.isInfixOf` incoming.text)
     incoming.imageUrls @?= [imageAttachment.url, "https://example.test/context.png", "data:image/png;base64,AA=="]
     assertEqual [i|history response: #{show historyResponse :: String}|] [[attachment.attachmentId, imageAttachment.attachmentId]] (responseMessageAttachments historyResponse)
@@ -488,7 +487,7 @@ testChatSessionsPersistAcrossRestart =
             , "text" Aeson..= ("persisted" :: Text)
             ]
 
-    firstResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("session-1" :: Text)])
+    firstResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("message-1" :: Text)])
 
     (listResponse, historyResponse, sendResponse) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
@@ -511,15 +510,17 @@ testChatSessionsPersistAcrossRestart =
       responseResult
         ( Aeson.object
             [ "sessionId" Aeson..= ("local-1" :: Text)
-            , "messages" Aeson..= [messageValue "local-1" "session-1" "persisted" Nothing]
+            , "messages" Aeson..= [messageValue "local-1" "message-1" "persisted" Nothing]
             ]
         )
-    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("session-2" :: Text)])
+    sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("message-2" :: Text)])
 
 testRpcDriverPersistsAssistantRepliesAndEdits :: IO ()
 testRpcDriverPersistsAssistantRepliesAndEdits =
   withSQLiteTempPath "rpc-assistant" \path -> do
     (replyId, edited, notifications) <- runRpcStorage path do
+      let imagePath = takeDirectory path </> "streamed.png"
+      FileSystemByteString.writeFile imagePath "fake-png"
       rpcState <- RPC.newRpcState
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("local" :: Text)])
@@ -532,9 +533,9 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
       (_clientId, queue) <- RPC.registerClient rpcState
       RPC.subscribe queue (RPC.ChatEvents (RPC.sessionIdFromMessage incoming))
-      let driver = RPCDriver.rpcChatDriver testRpcConfig rpcState
+      let driver = RPCDriver.rpcChatDriver rpcState
       replyId <- fromMaybe (error "expected rpc reply id") . rightToMaybe <$> sendReplyMessage driver incoming "draft answer"
-      edited <- editMessage driver incoming replyId "final answer"
+      edited <- editMessage driver incoming replyId ("final answer\n[image] file://" <> Text.pack imagePath)
       _ <- completeMessageEdit driver incoming replyId
       publishActivity driver incoming (Chat.ReasoningStarted "run-1" 1)
       publishActivity driver incoming (Chat.ReasoningFinished "run-1" 1 "tool_request")
@@ -546,7 +547,7 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
           RPC.RpcClientDisconnect reason -> liftIO (assertFailure [i|unexpected RPC client disconnect: #{reason}|])
       pure (replyId, edited, notifications)
 
-    replyId @?= "session-2"
+    replyId @?= "message-2"
     edited @?= True
     parsed <- mapM parseJson notifications :: IO [JSONRPC.RpcNotification]
     map (.method) parsed @?=
@@ -558,10 +559,15 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
       , "chat.tool_call_start"
       , "chat.tool_call_end"
       ]
+    updatedAttachmentIds <- case parsed of
+      _ : updated : _ ->
+        maybe (assertFailure "expected attachments on chat.message_update") pure (messageAttachmentIds updated.params)
+      _ ->
+        assertFailure "expected chat.message_update notification"
     case parsed of
       _ : _ : done : _ -> done.params @?= Aeson.object
         [ "sessionId" Aeson..= ("local-1" :: Text)
-        , "messageId" Aeson..= ("session-2" :: Text)
+        , "messageId" Aeson..= ("message-2" :: Text)
         ]
       _ -> assertFailure "expected lifecycle notifications"
 
@@ -571,24 +577,22 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
         rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
 
     responseMessageSummaries historyResponse @?=
-      [ ("user", "session-1", "question")
-      , ("assistant", "session-2", "final answer")
+      [ ("user", "message-1", "question")
+      , ("assistant", "message-2", "final answer")
       ]
+    case responseMessageAttachments historyResponse of
+      [[], persistedAttachmentIds@[attachmentId]] -> do
+        updatedAttachmentIds @?= persistedAttachmentIds
+        assertBool "expected persisted streamed image media ref" ("media:mf_" `Text.isPrefixOf` attachmentId)
+      other ->
+        assertFailure [i|expected streamed image in durable history, got #{show other :: String}|]
 
-testRpcDriverStoresLocalImageRepliesAsAttachments :: IO ()
-testRpcDriverStoresLocalImageRepliesAsAttachments =
+testRpcDriverStoresMediaRepliesAsAttachments :: IO ()
+testRpcDriverStoresMediaRepliesAsAttachments =
   withSQLiteTempPath "rpc-assistant-image" \path -> do
     historyResponse <- runRpcStorage path do
       let dir = takeDirectory path
           imagePath = dir </> "generated.webp"
-          cfg :: RPCConfig.Config
-          cfg = RPCConfig.Config
-            { enabled = True
-            , host = "127.0.0.1"
-            , port = 38765
-            , token = "secret"
-            , allowedBrowserOrigins = []
-            }
       FileSystemByteString.writeFile imagePath "fake-webp"
       rpcState <- RPC.newRpcState
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
@@ -600,20 +604,28 @@ testRpcDriverStoresLocalImageRepliesAsAttachments =
             , "text" Aeson..= ("make an image" :: Text)
             ]
       incoming <- fromMaybe (error "expected one incoming RPC message") <$> S.head_ (RPC.incomingMessages rpcState)
-      let driver = RPCDriver.rpcChatDriver cfg rpcState
-      _reply <- sendReplyMessage driver incoming ("done\n[image] file://" <> Text.pack imagePath)
+      let driver = RPCDriver.rpcChatDriver rpcState
+      mediaRef <- fromMaybe (error "expected cached generated image") <$> Media.storeMediaObject Media.MediaObject
+        { bytes = Q.fromStrict "generated-image"
+        , mimeType = "image/webp"
+        , sourceName = Just "generated.webp"
+        }
+      _reply <- sendReplyMessage driver incoming ("done\n[image] " <> mediaRef)
+      _upload <- uploadFile driver incoming imagePath (Just "rickroll-poster.png")
       RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
 
     responseMessageSummaries historyResponse @?=
-      [ ("user", "session-1", "make an image")
-      , ("assistant", "session-2", "done")
+      [ ("user", "message-1", "make an image")
+      , ("assistant", "message-2", "done")
+      , ("assistant", "message-3", "")
       ]
     case responseMessageAttachments historyResponse of
-      [[], [attachmentId]] ->
-        assertBool "expected stored image media ref" ("media:mf_" `Text.isPrefixOf` attachmentId)
+      [[], [generatedAttachmentId], [uploadedAttachmentId]] -> do
+        assertBool "expected cached image media ref" ("media:mf_" `Text.isPrefixOf` generatedAttachmentId)
+        assertBool "expected uploaded file media ref" ("media:mf_" `Text.isPrefixOf` uploadedAttachmentId)
       other ->
-        assertFailure [i|expected one image attachment on assistant reply, got #{show other :: String}|]
+        assertFailure [i|expected generated and uploaded media attachments, got #{show other :: String}|]
 
 testChatForkStoresParentLink :: IO ()
 testChatForkStoresParentLink =
@@ -630,7 +642,7 @@ testChatForkStoresParentLink =
         rpcRequest "chat.fork" $
           Aeson.object
             [ "sessionId" Aeson..= ("root-1" :: Text)
-            , "messageId" Aeson..= ("session-1" :: Text)
+            , "messageId" Aeson..= ("message-1" :: Text)
             , "label" Aeson..= ("branch" :: Text)
             ]
       _branch <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
@@ -643,7 +655,7 @@ testChatForkStoresParentLink =
       responseResult
         ( Aeson.object
             [ "sessionId" Aeson..= ("branch-1" :: Text)
-            , "session" Aeson..= sessionValue "branch-1" (Just "branch") (Just "root-1") (Just "session-1")
+            , "session" Aeson..= sessionValue "branch-1" (Just "branch") (Just "root-1") (Just "message-1")
             ]
         )
     responseMessageTexts forkHistory @?= ["first", "branch only"]
@@ -651,7 +663,7 @@ testChatForkStoresParentLink =
 testRenameAndDeleteSession :: IO ()
 testRenameAndDeleteSession =
   withSQLiteTempPath "rpc-delete" \path -> do
-    (renameResponse, deleteResponse, listResponse) <- runRpcStorage path do
+    (renameResponse, deleteResponse, listResponse, nextSendResponse) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       _open <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("old" :: Text)])
@@ -663,11 +675,16 @@ testRenameAndDeleteSession =
         rpcRequest "chat.delete_session" (Aeson.object ["sessionId" Aeson..= ("old-1" :: Text)])
       listResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.list_sessions" Aeson.Null
-      pure (renameResponse, deleteResponse, listResponse)
+      _next <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.open_session" (Aeson.object ["label" Aeson..= ("next" :: Text)])
+      nextSendResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.send" (Aeson.object ["sessionId" Aeson..= ("next-1" :: Text), "text" Aeson..= ("new" :: Text)])
+      pure (renameResponse, deleteResponse, listResponse, nextSendResponse)
 
     responseSessionLabel renameResponse @?= Just "new"
     deleteResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("old-1" :: Text), "deleted" Aeson..= True])
     listResponse @?= responseResult (Aeson.object ["sessions" Aeson..= ([] :: [Aeson.Value])])
+    nextSendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("next-1" :: Text), "messageId" Aeson..= Just ("message-2" :: Text)])
 
 testDeleteSessionCascadesForkDescendants :: IO ()
 testDeleteSessionCascadesForkDescendants =
@@ -682,7 +699,7 @@ testDeleteSessionCascadesForkDescendants =
         rpcRequest "chat.fork" $
           Aeson.object
             [ "sessionId" Aeson..= ("root-1" :: Text)
-            , "messageId" Aeson..= ("session-1" :: Text)
+            , "messageId" Aeson..= ("message-1" :: Text)
             , "label" Aeson..= ("branch" :: Text)
             ]
       _branch <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
@@ -1091,30 +1108,23 @@ responseMessageSummaries response =
           body <- o Aeson..: "text"
           pure (sender, messageId, body)
 
-testRpcConfig :: RPCConfig.Config
-testRpcConfig = RPCConfig.Config
-  { enabled = True
-  , host = "127.0.0.1"
-  , port = 38765
-  , token = "secret"
-  , allowedBrowserOrigins = []
-  }
-
 responseMessageAttachments :: JSONRPC.RpcResponse -> [[Text]]
 responseMessageAttachments response =
   case response of
     WireJSONRPC.ResponseMessage result ->
       fromMaybe [] do
         messages <- AesonTypes.parseMaybe (Aeson.withObject "history" (Aeson..: "messages")) result.result
-        traverse messageAttachments messages
+        traverse messageAttachmentIds messages
     _ ->
       []
   where
-    messageAttachments =
-      AesonTypes.parseMaybe $
-        Aeson.withObject "message" \o -> do
-          attachments <- o Aeson..: "attachments"
-          traverse (Aeson.withObject "attachment" \attachment -> attachment Aeson..: "attachmentId" <|> attachment Aeson..: "id") attachments
+
+messageAttachmentIds :: Aeson.Value -> Maybe [Text]
+messageAttachmentIds =
+  AesonTypes.parseMaybe $
+    Aeson.withObject "message" \o -> do
+      attachments <- o Aeson..: "attachments"
+      traverse (Aeson.withObject "attachment" \attachment -> attachment Aeson..: "attachmentId" <|> attachment Aeson..: "id") attachments
 
 responseMediaStatsFiles :: JSONRPC.RpcResponse -> Int
 responseMediaStatsFiles response =

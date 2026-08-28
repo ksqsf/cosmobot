@@ -10,7 +10,7 @@ import { useConnectionStore } from '@/stores/connection'
 
 const router = useRouter()
 const connection = useConnectionStore()
-const endpoint = ref('ws://127.0.0.1:38765/rpc')
+const endpoint = ref(connection.endpoint || 'ws://127.0.0.1:38765/rpc')
 const credential = ref('')
 const passwordVisible = ref(false)
 const failed = ref('')
@@ -48,7 +48,7 @@ async function login(): Promise<void> {
             severity="warn"
             :closable="false"
           >
-            The RPC token is kept in memory only and cleared on disconnect.
+            The RPC endpoint and token are saved in this browser for automatic login. Disconnect clears them.
           </Message>
           <Message
             v-if="failed !== ''"

@@ -73,8 +73,11 @@ import qualified Bot.Session as Session
 import Bot.Handler.Ask (askHandlers)
 import Bot.Handler.Ask.Config (AskHandlerConfig (..))
 import Bot.Handler.Audit (auditHandlers)
+import Bot.Handler.Console (consoleHandlers)
+import Bot.Handler.Console.Config (ConsoleHandlerConfig (..))
 import qualified Bot.HTTP as HTTP
 import qualified Bot.Log as Log
+import qualified Bot.Storage.Session as SessionStorage
 import Bot.Storage.Thread
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.Test as TypstTest
@@ -367,6 +370,7 @@ main =
       , testCase "active thread ids are stable and chat scoped" testActiveThreadIdsAreStableAndChatScoped
       , testCase "active thread steering is FIFO, aliased, and closed atomically" testActiveThreadSteeringLifecycle
       , testCase "console session steering does not require replies" testConsoleSessionSteering
+      , testCase "console restores only the requested durable session" testConsoleRestoresRequestedSession
       , testCase "fetch_url max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "thread replies keep parent and child snapshots" testThreadRepliesKeepSnapshots
       , testCase "thread branches do not overwrite siblings" testThreadBranchesDoNotOverwriteSiblings
@@ -4108,6 +4112,69 @@ testConsoleSessionSteering = runEff $ runConcurrent $ runPrim $ runTestLog $ Sto
     rejectedOtherSession @?= False
     map (.text) queued @?= ["second"]
 
+testConsoleRestoresRequestedSession :: IO ()
+testConsoleRestoresRequestedSession = do
+  answers <- IORef.newIORef [chatAnswer "continued" []]
+  captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+  _ <- runAgentCapturingMessages captured answers (ChatMock Nothing (Just "reply") Nothing) do
+    firstSession <- Session.openSession (Just "first")
+    secondSession <- Session.openSession (Just "second")
+    Right (Just firstUser) <- Session.appendUserMessage (sessionSend firstSession.sessionId "first question")
+    Right (Just firstAssistant) <- SessionStorage.appendMessage
+      (Session.sessionIdText firstSession.sessionId) "assistant" "first answer" [] []
+      (Just firstUser.messageId) (Just firstUser.messageId)
+    Right (Just secondUser) <- Session.appendUserMessage (sessionSend secondSession.sessionId "second question")
+    Right (Just secondAssistant) <- SessionStorage.appendMessage
+      (Session.sessionIdText secondSession.sessionId) "assistant" "second answer" [] []
+      (Just secondUser.messageId) (Just secondUser.messageId)
+    persisted <- newThreadStore
+    rememberThreadTranscript persisted (Just (consoleKey firstSession.sessionId firstAssistant.messageId))
+      (appendAssistant "first answer" (startWithUser "first question"))
+    rememberThreadTranscript persisted (Just (consoleKey secondSession.sessionId secondAssistant.messageId))
+      (appendAssistant "second answer" (startWithUser "second question"))
+    reconnected <- newThreadStore
+    Right (Just followUp) <- Session.appendUserMessage (sessionSend firstSession.sessionId "first follow-up")
+    let message = testMessage
+          { platform = PlatformRPC
+          , kind = ChatPrivate
+          , chatId = Nothing
+          , chatAliases = [Session.sessionIdText firstSession.sessionId]
+          , senderId = Just (Session.sessionIdText firstSession.sessionId)
+          , messageId = Just followUp.messageId
+          , replyToMessageId = Nothing
+          , text = followUp.text
+          }
+    before <- Concurrency.list
+    runHandlers (consoleHandlers Agent.defaultToolConfig AgentTools.defaultTools consoleHandlerConfig reconnected) message
+    afterSnapshot <- Concurrency.list
+    let existing = map (.id) before.entries
+    traverse_ (Concurrency.await . Concurrency.Handle . (.id))
+      (filter ((`notElem` existing) . (.id)) afterSnapshot.entries)
+    deleted <- Session.deleteSession secondSession.sessionId
+    afterDelete <- newThreadStore
+    removed <- lookupCommittedThreadTranscript afterDelete (consoleKey secondSession.sessionId secondAssistant.messageId)
+    liftIO do
+      deleted @?= True
+      assertBool "deleting a session should remove its durable console transcript" (isNothing removed)
+  requests <- IORef.readIORef captured
+  case viaNonEmpty head requests of
+    Nothing -> assertFailure "expected a console LLM request"
+    Just request -> do
+      chatMessageTextsByRole "user" request @?= ["first question", "first follow-up"]
+      chatMessageTextsByRole "assistant" request @?= ["first answer"]
+  where
+    sessionSend sessionId text =
+      Session.SessionSend
+        { sessionId
+        , text
+        , imageUrls = []
+        , attachments = []
+        , replyToMessageId = Nothing
+        }
+    consoleKey sessionId messageId =
+      ThreadMessageKey PlatformRPC Nothing $
+        textMessageId (Session.sessionIdText sessionId <> ":" <> messageIdText messageId)
+
 testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do
   answers <- IORef.newIORef
@@ -5503,6 +5570,15 @@ askHandlerConfig =
     , contextStrategy = AgentTypes.ContextCompaction
     , contextCompactionThresholdKTokens = 1000
     , botIds = [(PlatformQQ, "2044933066")]
+    }
+
+consoleHandlerConfig :: ConsoleHandlerConfig
+consoleHandlerConfig =
+  ConsoleHandlerConfig
+    { systemPrompt = "console system prompt"
+    , agentMaxTurns = 4
+    , contextStrategy = AgentTypes.ContextCompaction
+    , contextCompactionThresholdKTokens = 1000
     }
 
 askHandlerMessage :: IncomingMessage

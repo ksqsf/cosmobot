@@ -22,11 +22,16 @@ interface Subscription {
   readonly subscribeMethod: string
   readonly unsubscribeMethod: string
   readonly params: unknown
-  readonly notificationMethod: string
+  readonly notificationMethods: ReadonlySet<string>
   readonly refresh: () => Promise<void>
-  readonly handler: (params: unknown) => void
+  readonly handler: (method: string, params: unknown) => void
   restoring: boolean
-  readonly buffered: unknown[]
+  readonly buffered: BufferedNotification[]
+}
+
+interface BufferedNotification {
+  readonly method: string
+  readonly params: unknown
 }
 
 const notificationBufferLimit = 1_000
@@ -114,11 +119,11 @@ export class RpcClient {
     subscribeMethod: string,
     unsubscribeMethod: string,
     params: unknown,
-    notificationMethod: string,
+    notificationMethods: readonly string[],
     refresh: () => Promise<void>,
-    handler: (params: unknown) => void,
+    handler: (method: string, params: unknown) => void,
   ): () => void {
-    const subscription: Subscription = { subscribeMethod, unsubscribeMethod, params, notificationMethod, refresh, handler, restoring: false, buffered: [] }
+    const subscription: Subscription = { subscribeMethod, unsubscribeMethod, params, notificationMethods: new Set(notificationMethods), refresh, handler, restoring: false, buffered: [] }
     this.subscriptions.set(key, subscription)
     if (this.state === 'authenticated') void this.restoreSubscription(key, subscription).catch(() => this.socket?.close(1011, 'subscription restore failed'))
     return () => {
@@ -234,10 +239,11 @@ export class RpcClient {
       }
       const notification = rpcNotificationSchema.parse(value)
       for (const subscription of this.subscriptions.values()) {
-        if (subscription.notificationMethod !== notification.method) continue
-        if (subscription.restoring && subscription.buffered.length < notificationBufferLimit) subscription.buffered.push(notification.params)
+        if (!subscription.notificationMethods.has(notification.method)) continue
+        const item = { method: notification.method, params: notification.params }
+        if (subscription.restoring && subscription.buffered.length < notificationBufferLimit) subscription.buffered.push(item)
         else if (subscription.restoring) this.socket?.close(1011, 'notification buffer overflow')
-        else subscription.handler(notification.params)
+        else subscription.handler(item.method, item.params)
       }
     } catch {
       const error = new RpcProtocolError('RPC returned a malformed message')
@@ -273,7 +279,9 @@ export class RpcClient {
       if (this.subscriptions.get(key) !== subscription) return
       await subscription.refresh()
       if (this.subscriptions.get(key) !== subscription) return
-      for (const value of subscription.buffered.splice(0)) subscription.handler(value)
+      for (const notification of subscription.buffered.splice(0)) {
+        subscription.handler(notification.method, notification.params)
+      }
     } finally {
       subscription.restoring = false
     }

@@ -359,7 +359,7 @@ runChatDrivers qqConfig telegramConfig matrixConfig discordConfig rpcConfig rpcS
         , telegram
         , matrix
         , discord
-        , rpc = RPCDriver.rpcChatDriver rpcConfig rpcState <$ guard rpcConfig.enabled
+        , rpc = RPCDriver.rpcChatDriver rpcState <$ guard rpcConfig.enabled
         , acp = ACPDriver.acpChatDriver acpState <$ guard acpEnabled
         , rpcState
         , acpState

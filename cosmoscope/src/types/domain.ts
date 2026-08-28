@@ -28,6 +28,40 @@ export interface AuditRecord {
   event: AuditEvent
 }
 
+export interface ChatSession {
+  readonly sessionId: string
+  readonly label: string | null
+  readonly parentSessionId: string | null
+  readonly parentMessageId: string | null
+}
+
+export interface ChatAttachment {
+  readonly attachmentId: string
+  readonly name: string
+  readonly mediaType: string
+  readonly kind: 'image' | 'audio' | 'file'
+  readonly size: number
+  readonly url: string
+}
+
+export interface ChatMessage {
+  readonly sessionId: string
+  readonly messageId: string
+  readonly sender: 'user' | 'assistant'
+  readonly text: string
+  readonly imageUrls: readonly string[]
+  readonly attachments: readonly ChatAttachment[]
+  readonly replyToMessageId: string | null
+  readonly parentMessageId: string | null
+}
+
+export interface ChatSend {
+  readonly sessionId: string
+  readonly text: string
+  readonly imageUrls?: readonly string[]
+  readonly attachments?: readonly ChatAttachment[]
+}
+
 export type AuditEvent =
   | { tag: 'AgentRunStarted'; runId: string }
   | { tag: 'ModelTurnStarted'; runId: string; turn: number }

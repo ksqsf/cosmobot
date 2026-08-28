@@ -56,10 +56,17 @@ instance ChatDriver AcpChatDriver where
   editMessage driver message messageId body = do
     let sessionId = ACP.sessionIdFromMessage message
         text = ReplyBody.renderReplyBody body
-    previous <- fmap (.text) <$> SessionStorage.loadMessage (ACP.acpSessionIdText sessionId) messageId
-    updated <- SessionStorage.updateMessageText (ACP.acpSessionIdText sessionId) messageId text
+    previous <- SessionStorage.loadMessage (ACP.acpSessionIdText sessionId) messageId
+    updated <- case previous of
+      Nothing -> pure False
+      Just stored -> isJust <$> SessionStorage.replaceMessageContent
+        (ACP.acpSessionIdText sessionId)
+        messageId
+        text
+        stored.imageUrls
+        stored.attachments
     when updated $
-      for_ (editedTextChunk previous text) \chunk ->
+      for_ (editedTextChunk ((.text) <$> previous) text) \chunk ->
         ACP.broadcast driver.acpState $
           Aeson.toJSON $
             sessionUpdateNotification sessionId $

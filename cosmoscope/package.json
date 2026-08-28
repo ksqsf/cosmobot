@@ -12,9 +12,12 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@mdit/plugin-katex": "^1.1.0",
     "@primeuix/themes": "^3.0.0",
     "@vueuse/core": "^14.4.0",
     "effect": "4.0.0-beta.107",
+    "katex": "^0.18.4",
+    "markdown-it": "^15.0.0",
     "pinia": "^4.0.3",
     "primeicons": "^8.0.0",
     "primevue": "4.5.5",

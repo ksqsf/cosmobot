@@ -916,7 +916,7 @@ acpToolMessage sessionId =
         , mentionsBot = True
         , botId = Just "acp"
         }
-    , senderId = Just "acp-user"
+    , senderId = Just "session-1"
     , senderUsername = Just "ACP"
     , messageId = Just "message-1"
     , replyToMessageId = Nothing

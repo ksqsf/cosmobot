@@ -36,18 +36,19 @@ module Bot.Storage.Thread
   , haltActiveThreadsForMessage
   , loadThreadRows
   , lookupCommittedThreadTranscript
+  , deleteSessionThreadTranscripts
   )
 where
 
 import Bot.Agent.Types (AgentRunId)
 import Bot.Core.Message
+import qualified Bot.Core.Session as Session
 import Bot.Core.Thread
 import Bot.Core.Transcript
 import Bot.Effect.Concurrency (Handle (..), Id)
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude hiding (Handle, newIORef, readIORef, atomicModifyIORef, writeIORef, atomicModifyIORef')
-import qualified Bot.Session as Session
 import Bot.Storage.Prelude
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Data.Aeson as Aeson
@@ -626,6 +627,22 @@ loadThreadRows = do
       pure row
   pure (map threadRowFromStorage rows)
 
+deleteSessionThreadTranscripts :: Storage.Storage :> es => [(Text, MessageId)] -> Eff es ()
+deleteSessionThreadTranscripts messages = do
+  ensureThreadTable
+  unless (null keys) $
+    runSelda $
+      deleteFrom_ threadRows \row ->
+        row ! #platform_key .== literal "rpc"
+          .&& isNull (row ! #chat_id)
+          .&& row ! #message_id `isIn` map literal keys
+  where
+    keys = ordNub $
+      [ sessionId <> ":" <> messageIdText messageId
+      | (sessionId, messageId) <- messages
+      ]
+      <> [messageIdText messageId | (_, messageId) <- messages]
+
 loadThreadRow :: Storage.Storage :> es => ThreadMessageKey -> Eff es (Maybe ThreadRow)
 loadThreadRow targetMessageKey = do
   ensureThreadTable
@@ -725,6 +742,10 @@ platformFromKey = \case
     PlatformMatrix
   "discord" ->
     PlatformDiscord
+  "rpc" ->
+    PlatformRPC
+  "acp" ->
+    PlatformACP
   _ ->
     PlatformQQ
 

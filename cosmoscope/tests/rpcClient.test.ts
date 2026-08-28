@@ -74,7 +74,7 @@ describe('RPC client', () => {
     const order: string[] = []
     let finishRefresh = (): void => undefined
     const refresh = (): Promise<void> => new Promise((resolve) => { finishRefresh = () => { order.push('snapshot'); resolve() } })
-    client.subscribe('audit', 'audit.subscribe', 'audit.unsubscribe', {}, 'audit.event', refresh, () => order.push('event'))
+    client.subscribe('audit', 'audit.subscribe', 'audit.unsubscribe', {}, ['audit.event'], refresh, () => order.push('event'))
     await Promise.resolve()
     first.succeed(2, { subscribed: true })
     await Promise.resolve()
@@ -101,6 +101,30 @@ describe('RPC client', () => {
     expect(order.slice(-2)).toEqual(['snapshot', 'event'])
     client.disconnect()
     vi.useRealTimers()
+  })
+
+  it('buffers every selected streaming notification method behind the refreshed history', async () => {
+    const socket = new FakeSocket()
+    const client = new RpcClient({ createSocket: () => socket })
+    const connection = client.connect('ws://127.0.0.1:38765/rpc', 'secret')
+    await authenticate(socket, connection)
+    const order: string[] = []
+    let finishRefresh = (): void => undefined
+    client.subscribe(
+      'chat:session-1', 'chat.subscribe', 'chat.unsubscribe', { sessionId: 'session-1' },
+      ['chat.message', 'chat.message_update', 'chat.message_done'],
+      () => new Promise((resolve) => { finishRefresh = () => { order.push('history'); resolve() } }),
+      (method) => order.push(method),
+    )
+    await Promise.resolve()
+    socket.succeed(2, { subscribed: true })
+    await Promise.resolve()
+    socket.receive({ jsonrpc: '2.0', method: 'chat.message', params: { messageId: 'message-1' } })
+    socket.receive({ jsonrpc: '2.0', method: 'chat.message_update', params: { messageId: 'message-1', text: 'draft' } })
+    finishRefresh()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(order).toEqual(['history', 'chat.message', 'chat.message_update'])
+    client.disconnect()
   })
 })
 
@@ -131,9 +155,9 @@ describe('RPC endpoint validation', () => {
     const client = new RpcClient({ createSocket: () => socket })
     const connection = client.connect('ws://127.0.0.1:38765/rpc', 'secret')
     await authenticate(socket, connection)
-    const firstCleanup = client.subscribe('audit', 'audit.subscribe', 'audit.unsubscribe', {}, 'audit.event', () => Promise.resolve(), () => undefined)
+    const firstCleanup = client.subscribe('audit', 'audit.subscribe', 'audit.unsubscribe', {}, ['audit.event'], () => Promise.resolve(), () => undefined)
     const received: unknown[] = []
-    client.subscribe('audit', 'audit.subscribe', 'audit.unsubscribe', {}, 'audit.event', () => Promise.resolve(), (event) => received.push(event))
+    client.subscribe('audit', 'audit.subscribe', 'audit.unsubscribe', {}, ['audit.event'], () => Promise.resolve(), (_method, event) => received.push(event))
     firstCleanup()
     await Promise.resolve()
     socket.succeed(2, { subscribed: true })

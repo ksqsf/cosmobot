@@ -404,13 +404,14 @@ acpIncomingMessage
   -> Session.SessionMessage
   -> Eff es IncomingMessage
 acpIncomingMessage sessionSend messageRow = do
+  let sessionText = Session.sessionIdText sessionSend.sessionId
   llmImageUrls <- Session.sessionSendLlmImageUrls sessionSend
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
     , platform = PlatformACP
     , kind = ChatPrivate
     , chatId = Nothing
-    , chatAliases = [Session.sessionIdText sessionSend.sessionId]
+    , chatAliases = [sessionText]
     , digest = MessageDigest
         { chatIsAllowed = True
         , senderIsAllowed = True
@@ -418,7 +419,7 @@ acpIncomingMessage sessionSend messageRow = do
         , mentionsBot = True
         , botId = Just "acp"
         }
-    , senderId = Just "acp-user"
+    , senderId = Just sessionText
     , senderUsername = Just "ACP"
     , messageId = Just messageRow.messageId
     , replyToMessageId = sessionSend.replyToMessageId

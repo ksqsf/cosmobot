@@ -1058,17 +1058,12 @@ parseChatSendParams =
       o Aeson..:? "imageUrls" >>= \case
         Just value -> pure value
         Nothing -> fromMaybe [] <$> o Aeson..:? "image_urls"
-    replyToMessageId <-
-      o Aeson..:? "replyToMessageId" >>= \case
-        Just value -> pure (Just value)
-        Nothing -> o Aeson..:? "reply_to_message_id"
     attachments <- fromMaybe [] <$> o Aeson..:? "attachments"
     pure State.RpcChatSend
       { sessionId = Session.SessionId sessionText
       , text
       , imageUrls
       , attachments
-      , replyToMessageId
       }
 
 parseAttachmentUploadParams :: Int -> Aeson.Value -> AesonTypes.Parser RpcAttachmentUpload

@@ -4,6 +4,7 @@ import PrimeVue from 'primevue/config'
 import ToastService from 'primevue/toastservice'
 import ConfirmationService from 'primevue/confirmationservice'
 import 'primeicons/primeicons.css'
+import 'katex/dist/katex.min.css'
 import App from './App.vue'
 import router from './app/router'
 import { CosmoscopePreset } from './app/primevue'
@@ -25,7 +26,11 @@ createApp(App)
   .use(ConfirmationService)
   .mount('#app')
 
+void useConnectionStore(pinia).restore().then((restored) => {
+  if (restored && router.currentRoute.value.name === 'login') void router.replace('/overview')
+})
+
 window.addEventListener('pagehide', () => {
-  useConnectionStore(pinia).disconnect()
+  useConnectionStore(pinia).dispose()
   void disposeBackendRuntime()
 }, { once: true })

@@ -1,88 +1,285 @@
 <script setup lang="ts">
-import { computed, ref, useTemplateRef } from 'vue'
-import type { ButtonDesignTokens } from '@primeuix/themes/types/button'
-import type { SelectDesignTokens } from '@primeuix/themes/types/select'
-import type { TextareaDesignTokens } from '@primeuix/themes/types/textarea'
+import { computed, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
+import ContextMenu, { type ContextMenuMethods } from 'primevue/contextmenu'
+import Dialog from 'primevue/dialog'
 import IconField from 'primevue/iconfield'
-import InputText from 'primevue/inputtext'
 import InputIcon from 'primevue/inputicon'
+import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
-import Select from 'primevue/select'
+import ProgressSpinner from 'primevue/progressspinner'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
+import type { MenuItem } from 'primevue/menuitem'
 import PageHeading from '@/components/PageHeading.vue'
+import { deleteChatSession, discardChatAttachment, forkChatSession, listChatSessions, loadChatHistory, openChatSession, renameChatSession, sendChatMessage, subscribeChat, uploadChatAttachment } from '@/backend/AdminBackend'
+import { runBackend } from '@/backend/runBackend'
+import { mergeChatMessage, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
+import { useConnectionStore } from '@/stores/connection'
+import { chatMethods } from '@/rpc/protocol'
+import { renderMarkdown } from '@/markdown'
+import type { ChatAttachment, ChatMessage, ChatSession } from '@/types/domain'
 
-interface Conversation {
-  readonly id: string
-  readonly title: string
-  readonly preview: string
-  readonly platform: string
-  readonly time: string
-  readonly group: 'Today' | 'Yesterday'
-}
-
-const conversations: readonly Conversation[] = [
-  { id: 'storage', title: 'Review storage refactor', preview: 'Can you inspect the latest diff…', platform: 'R', time: '14:28', group: 'Today' },
-  { id: 'release', title: 'Release announcement', preview: 'I drafted a short message for…', platform: 'T', time: '13:05', group: 'Today' },
-  { id: 'timeout', title: 'Timeout investigation', preview: 'The HTTP call failed after…', platform: 'D', time: '11:42', group: 'Today' },
-  { id: 'haskell', title: 'Haskell API lookup', preview: 'Here are the relevant types…', platform: 'M', time: 'Thu', group: 'Yesterday' },
-  { id: 'image', title: 'Image identification', preview: 'This appears to be from…', platform: 'Q', time: 'Thu', group: 'Yesterday' },
-]
+const maxAttachmentBytes = 25 * 1024 * 1024
+const route = useRoute()
+const router = useRouter()
+const connection = useConnectionStore()
+const confirm = useConfirm()
 const toast = useToast()
-const draft = ref('')
-const search = ref('')
-const selectedId = ref('storage')
-const selectedModel = ref('Auto')
 const attachmentInput = useTemplateRef<HTMLInputElement>('attachmentInput')
-const modelOptions = ['Auto', 'GPT-5.6', 'Claude Sonnet']
-const groups = ['Today', 'Yesterday'] as const
-const composerTextareaTokens = {
-  root: {
-    background: 'transparent',
-    borderColor: 'transparent',
-    hoverBorderColor: 'transparent',
-    focusBorderColor: 'transparent',
-    shadow: 'none',
-    paddingX: '0.85rem',
-    paddingY: '0.75rem',
-    borderRadius: '10px',
-    focusRing: { width: '0' },
-  },
-} satisfies TextareaDesignTokens
-const composerSelectTokens = {
-  root: {
-    background: 'transparent',
-    borderColor: 'transparent',
-    hoverBorderColor: 'transparent',
-    focusBorderColor: 'transparent',
-    shadow: 'none',
-    sm: { fontSize: '0.72rem', paddingX: '0.35rem', paddingY: '0.35rem' },
-    focusRing: { width: '0' },
-  },
-  dropdown: { width: '1.6rem' },
-} satisfies SelectDesignTokens
-const composerButtonTokens = {
-  root: { sm: { iconOnlyWidth: '2.15rem', paddingX: '0', paddingY: '0.5rem' } },
-} satisfies ButtonDesignTokens
-const filteredConversations = computed(() => conversations.filter((item) =>
-  `${item.title} ${item.preview}`.toLowerCase().includes(search.value.toLowerCase()),
-))
-const selectedConversation = computed(() => conversations.find(({ id }) => id === selectedId.value) ?? conversations[0])
+const messageMenu = useTemplateRef<ContextMenuMethods>('messageMenu')
+const sessions = ref<readonly ChatSession[]>([])
+const messages = ref<readonly ChatMessage[]>([])
+const selectedId = ref<string>()
+const query = ref('')
+const error = ref('')
+const loading = ref(false)
+const sending = ref(false)
+const uploading = ref(false)
+const pendingAttachments = ref<readonly ChatAttachment[]>([])
+const previewImage = ref<string>()
+const contextMessage = ref<ChatMessage>()
+const drafts = reactive(new Map<string, string>())
+const streamingMessageIds = ref<ReadonlySet<string>>(new Set())
+let stopSubscription: (() => void) | undefined
+let selectionGeneration = 0
 
-function send(): void {
-  if (!draft.value.trim()) return
-  draft.value = ''
-  toast.add({ severity: 'success', summary: 'Message queued in demo', detail: 'The fixture transcript was not persisted.', life: 2500 })
+const live = computed(() => connection.state === 'authenticated' && chatMethods.every((method) => connection.methods.has(method)))
+const selectedSession = computed(() => sessions.value.find(({ sessionId }) => sessionId === selectedId.value))
+const filteredSessions = computed(() => sessions.value.filter((session) => sessionName(session).toLowerCase().includes(query.value.toLowerCase())))
+const draft = computed({
+  get: () => selectedId.value === undefined ? '' : drafts.get(selectedId.value) ?? '',
+  set: (value: string) => { if (selectedId.value !== undefined) drafts.set(selectedId.value, value) },
+})
+const messageMenuItems: MenuItem[] = [
+  { label: 'Copy text', icon: 'pi pi-copy', command: () => { void copyContextText() } },
+  { separator: true },
+  { label: 'Fork conversation here', icon: 'pi pi-code-branch', command: () => { if (contextMessage.value !== undefined) void forkAt(contextMessage.value) } },
+]
+
+function sessionName(session: ChatSession): string {
+  const label = session.label?.trim()
+  return label === undefined || label === '' ? session.sessionId : label
 }
-function attached(event: Event): void {
+
+function mergeMessage(message: ChatMessage): void {
+  messages.value = mergeChatMessage(messages.value, message)
+}
+
+function finishMessage(messageId: string): void {
+  const next = new Set(streamingMessageIds.value)
+  next.delete(messageId)
+  streamingMessageIds.value = next
+}
+
+async function refreshHistory(sessionId: string, generation: number): Promise<void> {
+  const result = await runBackend(loadChatHistory(sessionId))
+  if (generation !== selectionGeneration || selectedId.value !== sessionId) return
+  loading.value = false
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  error.value = ''
+  streamingMessageIds.value = new Set()
+  messages.value = [...result.value]
+}
+
+async function selectSession(sessionId: string): Promise<void> {
+  if (selectedId.value === sessionId && stopSubscription !== undefined) return
+  if (!await discardPendingAttachments()) return
+  stopSubscription?.()
+  stopSubscription = undefined
+  selectedId.value = sessionId
+  messages.value = []
+  streamingMessageIds.value = new Set()
+  loading.value = true
+  const generation = ++selectionGeneration
+  await router.replace({ name: 'chat', params: { sessionId } })
+  const result = await runBackend(subscribeChat(
+    sessionId,
+    () => refreshHistory(sessionId, generation),
+    (message) => {
+      if (selectedId.value !== sessionId) return
+      mergeMessage(message)
+      if (message.sender === 'assistant') streamingMessageIds.value = new Set(streamingMessageIds.value).add(message.messageId)
+    },
+    (messageId) => { if (selectedId.value === sessionId) finishMessage(messageId) },
+  ))
+  if (generation !== selectionGeneration) {
+    if (result._tag === 'Success') result.value()
+    return
+  }
+  if (result._tag === 'Success') stopSubscription = result.value
+  else { loading.value = false; error.value = result.error.message }
+}
+
+async function loadSessions(preferredId?: string): Promise<void> {
+  if (!live.value) { sessions.value = []; messages.value = []; return }
+  const result = await runBackend(listChatSessions)
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  sessions.value = [...result.value]
+  const routeId = typeof route.params['sessionId'] === 'string' ? route.params['sessionId'] : undefined
+  const requestedId = preferredId ?? routeId
+  const nextId = requestedId !== undefined && result.value.some(({ sessionId }) => sessionId === requestedId)
+    ? requestedId
+    : result.value[0]?.sessionId
+  if (nextId !== undefined) await selectSession(nextId)
+  else {
+    await discardPendingAttachments()
+    stopSubscription?.()
+    stopSubscription = undefined
+    selectedId.value = undefined
+    messages.value = []
+    await router.replace({ name: 'chat' })
+  }
+}
+
+async function createSession(): Promise<void> {
+  const result = await runBackend(openChatSession('New session'))
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  await loadSessions(result.value.sessionId)
+}
+
+async function renameSelected(): Promise<void> {
+  const session = selectedSession.value
+  if (session === undefined) return
+  const label = window.prompt('Session name', sessionName(session))?.trim()
+  if (!label || label === session.label) return
+  const result = await runBackend(renameChatSession(session.sessionId, label))
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  sessions.value = sessions.value.map((item) => item.sessionId === result.value.sessionId ? result.value : item)
+}
+
+async function forkAt(message: ChatMessage): Promise<void> {
+  const parentName = selectedSession.value === undefined ? message.sessionId : sessionName(selectedSession.value)
+  const label = window.prompt('Fork name', `Fork of ${parentName}`)?.trim()
+  if (label === undefined) return
+  const result = await runBackend(forkChatSession(message.sessionId, message.messageId, label || undefined))
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  await loadSessions(result.value.sessionId)
+}
+
+function showMessageMenu(event: Event, message: ChatMessage): void {
+  contextMessage.value = message
+  messageMenu.value?.show(event)
+}
+
+async function copyContextText(): Promise<void> {
+  const text = contextMessage.value?.text
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.add({ severity: 'success', summary: 'Copied', detail: 'Message text copied.', life: 1800 })
+  } catch {
+    error.value = 'Could not copy the message text.'
+  }
+}
+
+function requestDelete(): void {
+  const session = selectedSession.value
+  if (session === undefined) return
+  confirm.require({
+    header: `Delete “${sessionName(session)}”?`,
+    message: 'This permanently deletes the session, its transcript, and stored attachment references.',
+    rejectLabel: 'Keep session',
+    acceptLabel: 'Delete session',
+    acceptClass: 'p-button-danger',
+    accept: () => { void removeSession(session.sessionId) },
+  })
+}
+
+async function removeSession(sessionId: string): Promise<void> {
+  const result = await runBackend(deleteChatSession(sessionId))
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  if (!result.value) { error.value = 'The session no longer exists.'; return }
+  drafts.delete(sessionId)
+  await loadSessions()
+}
+
+async function attachFiles(event: Event): Promise<void> {
   const input = event.currentTarget
-  if (!(input instanceof HTMLInputElement) || !input.files?.[0]) return
-  const summary = input.files.length === 1 ? input.files[0].name : `${String(input.files.length)} files selected`
-  toast.add({ severity: 'info', summary, detail: 'Fixture attachments selected; no upload was performed.', life: 2200 })
+  if (!(input instanceof HTMLInputElement) || input.files === null) return
+  const files = [...input.files]
   input.value = ''
+  const oversized = files.find(({ size }) => size > maxAttachmentBytes)
+  if (oversized !== undefined) {
+    toast.add({ severity: 'error', summary: `${oversized.name} exceeds the 25 MiB limit`, life: 3500 })
+    return
+  }
+  uploading.value = true
+  for (const file of files) {
+    const result = await runBackend(uploadChatAttachment(file))
+    if (result._tag === 'Failure') { error.value = result.error.message; break }
+    pendingAttachments.value = [...pendingAttachments.value, result.value]
+  }
+  uploading.value = false
 }
+
+async function discardAttachment(attachment: ChatAttachment): Promise<void> {
+  const result = await runBackend(discardChatAttachment(attachment.attachmentId))
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  pendingAttachments.value = pendingAttachments.value.filter(({ attachmentId }) => attachmentId !== attachment.attachmentId)
+}
+
+async function discardPendingAttachments(): Promise<boolean> {
+  const attachments = pendingAttachments.value
+  const results = await Promise.all(attachments.map(({ attachmentId }) => runBackend(discardChatAttachment(attachmentId))))
+  const retained = attachments.filter((_attachment, index) => results[index]?._tag === 'Failure')
+  pendingAttachments.value = retained
+  if (retained.length > 0) error.value = 'Could not discard every pending attachment.'
+  return retained.length === 0
+}
+
+async function send(): Promise<void> {
+  const sessionId = selectedId.value
+  const text = draft.value.trim()
+  const attachments = pendingAttachments.value
+  if (sessionId === undefined || sending.value || (text === '' && attachments.length === 0)) return
+  sending.value = true
+  const result = await runBackend(sendChatMessage({ sessionId, text, attachments }))
+  sending.value = false
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  if (!messages.value.some(({ messageId }) => messageId === result.value)) {
+    mergeMessage({ sessionId, messageId: result.value, sender: 'user', text, imageUrls: [], attachments, replyToMessageId: null, parentMessageId: null })
+  }
+  draft.value = ''
+  pendingAttachments.value = []
+}
+
+function imageUrls(message: ChatMessage): readonly string[] {
+  return [...new Set([...message.imageUrls, ...message.attachments.filter(({ kind }) => kind === 'image').map(({ url }) => url)])]
+    .flatMap((url) => safeImageUrl(url, window.location.href) ?? [])
+}
+
+function documentAttachments(message: ChatMessage): readonly ChatAttachment[] {
+  return message.attachments.filter(({ kind }) => kind !== 'image')
+}
+
+function downloadUrl(value: string): string | undefined {
+  return safeDownloadUrl(value, window.location.href)
+}
+
+function previewMarkdownImage(event: MouseEvent): void {
+  if (!(event.target instanceof HTMLImageElement)) return
+  previewImage.value = safeImageUrl(event.target.currentSrc || event.target.src, window.location.href)
+}
+
+watch(() => connection.state, (state) => {
+  if (state === 'authenticated') void loadSessions()
+  else if (state === 'offline' || state === 'failed') {
+    stopSubscription?.()
+    stopSubscription = undefined
+    selectedId.value = undefined
+    sessions.value = []
+    messages.value = []
+  }
+})
+watch(() => route.params['sessionId'], (sessionId) => {
+  if (typeof sessionId === 'string' && sessionId !== selectedId.value && sessions.value.some((session) => session.sessionId === sessionId)) void selectSession(sessionId)
+})
+onMounted(() => { void loadSessions() })
+onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discardPendingAttachments() })
 </script>
 
 <template>
@@ -90,42 +287,65 @@ function attached(event: Event): void {
     <PageHeading
       eyebrow="RPC workspace"
       title="Chat"
-      description="Talk to cosmobot and inspect the resulting run."
-    />
-    <div class="chat-layout panel">
+      description="Use durable cosmobot RPC sessions and their live transcripts."
+    >
+      <Button
+        label="New session"
+        icon="pi pi-plus"
+        :disabled="!live"
+        @click="createSession"
+      />
+    </PageHeading>
+    <Message
+      v-if="!live"
+      severity="secondary"
+      :closable="false"
+    >
+      Connect to cosmobot to load real chat sessions. This page does not substitute fixture conversations.
+    </Message>
+    <Message
+      v-else-if="error"
+      severity="error"
+      :closable="false"
+    >
+      {{ error }}
+    </Message>
+    <div
+      v-if="live"
+      class="chat-layout panel"
+    >
       <aside
         class="conversation-list"
-        aria-label="Conversations"
+        aria-label="Chat sessions"
       >
         <IconField class="conversation-search">
           <InputIcon class="pi pi-search" />
           <InputText
-            v-model="search"
-            placeholder="Find a conversation"
+            v-model="query"
+            placeholder="Find a session"
+            aria-label="Find a session"
             size="small"
-            variant="filled"
             fluid
           />
         </IconField>
-        <section
-          v-for="group in groups"
-          :key="group"
-          class="conversation-group"
+        <Button
+          v-for="session in filteredSessions"
+          :key="session.sessionId"
+          class="conversation"
+          :class="{ active: selectedId === session.sessionId }"
+          unstyled
+          @click="selectSession(session.sessionId)"
         >
-          <h2>{{ group }}</h2>
-          <Button
-            v-for="conversation in filteredConversations.filter((item) => item.group === group)"
-            :key="conversation.id"
-            class="conversation"
-            :class="{ active: selectedId === conversation.id }"
-            unstyled
-            @click="selectedId = conversation.id"
-          >
-            <span class="platform-icon">{{ conversation.platform }}</span>
-            <span><strong>{{ conversation.title }}</strong><small>{{ conversation.preview }}</small></span>
-            <time>{{ conversation.time }}</time>
-          </Button>
-        </section>
+          <span class="platform-icon">R</span>
+          <span><strong>{{ sessionName(session) }}</strong><small><code>{{ session.sessionId }}</code></small></span>
+        </Button>
+        <Message
+          v-if="sessions.length === 0"
+          severity="secondary"
+          :closable="false"
+        >
+          No RPC sessions yet.
+        </Message>
       </aside>
 
       <section
@@ -133,156 +353,196 @@ function attached(event: Event): void {
         aria-label="Chat transcript"
       >
         <header class="transcript-header">
-          <div><strong>{{ selectedConversation?.title }}</strong><small><i class="status-dot online" />Demo session</small></div>
-        </header>
-        <div
-          v-if="selectedId === 'storage'"
-          class="messages"
-        >
-          <article class="message user">
-            <header class="message-meta">
-              <span class="avatar">KA</span><strong>You</strong><time datetime="2026-08-28T14:28:00">14:28</time>
-            </header>
-            <div class="message-body">
-              Can you inspect the latest storage refactor and focus on resource cleanup?
-            </div>
-          </article>
-          <div class="run-divider">
-            <span>Agent run <code>run_8f2c91</code> started</span>
+          <div><strong>{{ selectedSession ? sessionName(selectedSession) : 'Select a session' }}</strong><small v-if="selectedSession"><code>{{ selectedSession.sessionId }}</code></small></div>
+          <div v-if="selectedSession">
+            <Button
+              icon="pi pi-pencil"
+              text
+              rounded
+              aria-label="Rename session"
+              @click="renameSelected"
+            /><Button
+              icon="pi pi-trash"
+              severity="danger"
+              text
+              rounded
+              aria-label="Delete session"
+              @click="requestDelete"
+            />
           </div>
-          <article class="message bot">
-            <header class="message-meta">
-              <span class="brand-mark small">C</span><strong>Cosmobot</strong><time datetime="2026-08-28T14:28:00">14:28</time>
-            </header>
-            <div class="message-body">
-              <p>I’ll trace the lifecycle from acquisition through cleanup, then check the focused tests.</p>
-              <details
-                open
-                class="tool-notification"
-              >
-                <summary><i class="pi pi-bolt tool-indicator" /><strong>Read 4 files</strong><span>1.2s</span></summary>
-                <div class="tool-detail">
-                  <code>Bot.Resource</code><code>Bot.Storage.Resource</code><code>ResourceSpec.hs</code><code>Bot.Main</code>
-                </div>
-              </details>
-              <details class="tool-notification">
-                <summary><i class="pi pi-check tool-indicator success" /><strong>Tests passed</strong><span>6.4s</span></summary>
-                <p>Focused resource lifecycle checks passed.</p>
-              </details>
-              <p>The main lifecycle is structured correctly. One medium-risk path remains: explicit removal is restored after cleanup failure, but the error loses the resource identity before reaching the audit observer.</p>
-            </div>
-          </article>
-        </div>
-        <div
-          v-else
-          class="messages"
-        >
+        </header>
+        <ContextMenu
+          ref="messageMenu"
+          :model="messageMenuItems"
+          @hide="contextMessage = undefined"
+        />
+        <div class="messages">
           <Message
+            v-if="loading"
             severity="secondary"
             :closable="false"
           >
-            This demo session has no transcript fixture yet.
+            Loading transcript…
           </Message>
+          <Message
+            v-else-if="selectedSession && messages.length === 0"
+            severity="secondary"
+            :closable="false"
+          >
+            This session has no messages yet.
+          </Message>
+          <article
+            v-for="message in messages"
+            :key="message.messageId"
+            class="message"
+            :class="[message.sender === 'user' ? 'user' : 'bot', { 'context-selected': contextMessage?.messageId === message.messageId }]"
+            tabindex="0"
+            @contextmenu.prevent="showMessageMenu($event, message)"
+          >
+            <header class="message-meta">
+              <span class="avatar">{{ message.sender === 'user' ? 'Y' : 'C' }}</span><strong>{{ message.sender === 'user' ? 'You' : 'Cosmobot' }}</strong><ProgressSpinner
+                v-if="streamingMessageIds.has(message.messageId)"
+                aria-label="Streaming response"
+                class="chat-streaming"
+              />
+            </header>
+            <div
+              class="message-body"
+              @click="previewMarkdownImage"
+            >
+              <div
+                v-if="message.text"
+                class="markdown-body"
+                :innerHTML="renderMarkdown(message.text)"
+              />
+              <div
+                v-if="imageUrls(message).length > 0"
+                class="chat-images"
+              >
+                <button
+                  v-for="url in imageUrls(message)"
+                  :key="url"
+                  type="button"
+                  class="chat-image-button"
+                  aria-label="Zoom image"
+                  @click="previewImage = url"
+                >
+                  <img
+                    :src="url"
+                    alt="Chat attachment"
+                    loading="lazy"
+                  />
+                </button>
+              </div>
+              <div
+                v-if="documentAttachments(message).length > 0"
+                class="chat-files"
+              >
+                <template
+                  v-for="attachment in documentAttachments(message)"
+                  :key="attachment.attachmentId"
+                >
+                  <a
+                    v-if="downloadUrl(attachment.url)"
+                    class="chat-file-card"
+                    :href="downloadUrl(attachment.url)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    download
+                  >
+                    <i class="pi pi-file" /><span><strong>{{ attachment.name }}</strong><small>{{ attachment.mediaType }} · {{ Math.ceil(attachment.size / 1024) }} KiB</small></span><i class="pi pi-download" />
+                  </a>
+                  <div
+                    v-else
+                    class="chat-file-card"
+                  >
+                    <i class="pi pi-file" /><span><strong>{{ attachment.name }}</strong><small>Unsafe download URL rejected</small></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </article>
         </div>
         <form
           class="composer"
           @submit.prevent="send"
         >
+          <div
+            v-if="pendingAttachments.length > 0"
+            class="tag-list"
+          >
+            <span
+              v-for="attachment in pendingAttachments"
+              :key="attachment.attachmentId"
+              class="pending-attachment"
+            ><Tag
+              :value="attachment.name"
+              severity="secondary"
+            /><Button
+              type="button"
+              icon="pi pi-times"
+              text
+              rounded
+              size="small"
+              :aria-label="`Remove ${attachment.name}`"
+              @click="discardAttachment(attachment)"
+            /></span>
+          </div>
           <Textarea
             v-model="draft"
             rows="3"
             placeholder="Message cosmobot…"
             aria-label="Message cosmobot"
             class="composer-input"
-            :dt="composerTextareaTokens"
+            :disabled="selectedSession === undefined"
             fluid
+            @keydown.ctrl.enter.prevent="send"
           />
           <div class="composer-actions">
             <div>
               <Button
                 type="button"
                 label="Attach"
-                icon="pi pi-plus"
+                icon="pi pi-paperclip"
                 size="small"
                 severity="secondary"
                 text
+                :loading="uploading"
+                :disabled="selectedSession === undefined || uploading"
                 @click="attachmentInput?.click()"
               /><input
                 ref="attachmentInput"
                 type="file"
                 multiple
                 hidden
-                @change="attached"
+                @change="attachFiles"
               />
-              <Select
-                v-model="selectedModel"
-                :options="modelOptions"
-                aria-label="Model selection"
-                class="model-select"
-                size="small"
-                :dt="composerSelectTokens"
-              >
-                <template #value="slotProps">
-                  Model · {{ slotProps.value.toLowerCase() }}
-                </template>
-              </Select>
             </div>
             <Button
               type="submit"
               icon="pi pi-arrow-up"
               aria-label="Send message"
-              size="small"
-              :dt="composerButtonTokens"
+              :loading="sending"
+              :disabled="selectedSession === undefined || uploading || sending || (draft.trim() === '' && pendingAttachments.length === 0)"
             />
           </div>
         </form>
       </section>
-
-      <aside
-        class="context-panel"
-        aria-label="Run context"
-      >
-        <div class="context-heading">
-          <h2>Run context</h2>
-        </div>
-        <template v-if="selectedId === 'storage'">
-          <dl class="detail-list">
-            <div>
-              <dt>Status</dt><dd>
-                <Tag
-                  value="Completed"
-                  severity="success"
-                />
-              </dd>
-            </div>
-            <div><dt>Run ID</dt><dd><code>run_8f2c91</code></dd></div>
-            <div><dt>Started</dt><dd>14:28:16</dd></div>
-            <div><dt>Duration</dt><dd>8.1 seconds</dd></div>
-            <div><dt>Model turns</dt><dd>2</dd></div>
-            <div><dt>Tool calls</dt><dd>5</dd></div>
-          </dl>
-          <h3>Tools used</h3><div class="tag-list">
-            <Tag
-              value="read_file × 4"
-              severity="secondary"
-            /><Tag
-              value="run_test × 1"
-              severity="secondary"
-            />
-          </div>
-          <h3>Related audit</h3>
-          <ol class="mini-timeline">
-            <li><strong>Run started</strong><small>14:28:16.108</small></li><li><strong>Model response</strong><small>14:28:17.442</small></li><li><strong>Run completed</strong><small>14:28:24.201</small></li>
-          </ol>
-        </template>
-        <Message
-          v-else
-          severity="secondary"
-          :closable="false"
-        >
-          No run context fixture for this session.
-        </Message>
-      </aside>
     </div>
+    <Dialog
+      :visible="previewImage !== undefined"
+      modal
+      dismissable-mask
+      header="Image preview"
+      class="image-preview-dialog"
+      @update:visible="previewImage = undefined"
+    >
+      <img
+        v-if="previewImage"
+        :src="previewImage"
+        alt="Full-size chat attachment"
+        class="chat-image-preview"
+      />
+    </Dialog>
   </section>
 </template>

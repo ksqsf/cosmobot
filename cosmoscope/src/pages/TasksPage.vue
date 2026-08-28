@@ -114,6 +114,7 @@ function cancelTask(): void {
       </div>
       <DataTable
         :value="filtered"
+        :pt="{ tableContainer: { tabindex: 0 } }"
         data-key="id"
         paginator
         :rows="5"

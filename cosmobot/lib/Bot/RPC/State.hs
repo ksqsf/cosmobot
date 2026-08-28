@@ -128,7 +128,6 @@ data RpcChatSend = RpcChatSend
   , text :: !Text
   , imageUrls :: ![Text]
   , attachments :: ![RpcChatAttachmentRef]
-  , replyToMessageId :: !(Maybe MessageId)
   }
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
@@ -243,7 +242,7 @@ rpcIncomingMessage chatSend messageRow = do
           , text = chatSend.text
           , imageUrls = messageRow.imageUrls
           , attachments = messageRow.attachments
-          , replyToMessageId = chatSend.replyToMessageId
+          , replyToMessageId = Nothing
           }
   llmImageUrls <- Session.sessionSendLlmImageUrls canonicalSend
   pure IncomingMessage
@@ -259,10 +258,10 @@ rpcIncomingMessage chatSend messageRow = do
         , mentionsBot = True
         , botId = Just "rpc"
         }
-    , senderId = Just "rpc-user"
+    , senderId = Just sessionText
     , senderUsername = Just "RPC"
     , messageId = Just messageRow.messageId
-    , replyToMessageId = chatSend.replyToMessageId
+    , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []
     , imageUrls = llmImageUrls
@@ -329,7 +328,7 @@ rpcChatSendToSession chatSend =
     , text = chatSend.text
     , imageUrls = chatSend.imageUrls
     , attachments = map rpcAttachmentToSession chatSend.attachments
-    , replyToMessageId = chatSend.replyToMessageId
+    , replyToMessageId = Nothing
     }
 
 rpcAttachmentToSession :: RpcChatAttachmentRef -> Session.SessionAttachmentRef
