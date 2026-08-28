@@ -174,6 +174,56 @@ export interface ChatSend {
   readonly attachments?: readonly ChatAttachment[]
 }
 
+export type ChatKind = 'ChatPrivate' | 'ChatGroup' | 'ChatChannel' | `ChatUnknown:${string}`
+
+export interface ChatLogScope {
+  readonly platform: AuditPlatform
+  readonly kind: ChatKind
+  readonly chatId: string | null
+}
+
+export interface ChatLogSummary {
+  readonly scope: ChatLogScope
+  readonly messageCount: number
+  readonly latestAt: string | null
+}
+
+export interface ChatLogEntry extends ChatLogScope {
+  readonly recordedAt: string | null
+  readonly senderId: string | null
+  readonly senderUsername: string | null
+  readonly messageId: string | null
+  readonly replyToMessageId: string | null
+  readonly isBot: boolean
+  readonly mentions: readonly string[]
+  readonly mentionUsernames: readonly string[]
+  readonly imageUrls: readonly string[]
+  readonly files: readonly { readonly name: string; readonly ref: string }[]
+  readonly text: string
+}
+
+export interface ChatLogItem {
+  readonly rowId: number
+  readonly entry: ChatLogEntry
+  readonly threadId: number | null
+}
+
+export interface ChatLogWindow {
+  readonly scope: ChatLogScope
+  readonly entries: readonly ChatLogItem[]
+  readonly hasOlder: boolean
+  readonly hasNewer: boolean
+  readonly anchorFound: boolean
+  readonly anchorMessageId: string | null
+}
+
+export interface ChatLogWindowQuery extends ChatLogScope {
+  readonly messageId?: string | undefined
+  readonly beforeRow?: number | undefined
+  readonly afterRow?: number | undefined
+  readonly limit?: number | undefined
+}
+
 export type AuditEvent =
   | { tag: 'AgentRunStarted'; runId: string; messageId: string | null; maxTurns: number; exposedTools: readonly string[]; contextStrategy: string | null }
   | { tag: 'ModelTurnStarted'; runId: string; turn: number; messageCount: number; exposedTools: readonly string[]; toolGroups: readonly (readonly [string, number])[] | null }
@@ -295,13 +345,4 @@ export interface MediaGcResult {
   readonly deleted: number
   readonly retainedReferencedFiles: number
   readonly maxAgeSeconds: number
-}
-
-export interface LogEntry {
-  id: string
-  time: string
-  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
-  source: string
-  message: string
-  fields: string
 }

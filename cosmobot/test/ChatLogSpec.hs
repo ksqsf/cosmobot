@@ -21,6 +21,7 @@ main =
       , testCase "queries a bounded chat-log time window" testQueryTimeWindow
       , testCase "bot messages are hidden unless requested" testBotMessageVisibility
       , testCase "base64 image references are sanitized" testImageSanitization
+      , testCase "lists chats and queries a message window" testInspectionWindow
       ]
 
 testQueryCurrentChat :: IO ()
@@ -77,21 +78,38 @@ testBotMessageVisibility :: IO ()
 testBotMessageVisibility = runChatLogTest do
   let context = messageFromChat 100 200 "user"
   ChatLog.recordMessage context
-  ChatLog.recordSelfMessage context "bot reply"
+  ChatLog.recordSelfMessage context (Just "bot-1") "bot reply"
   userOnly <- ChatLog.queryChat context Nothing 10 False ChatLog.unboundedChatLogTimeRange
   withBot <- ChatLog.queryChat context Nothing 10 True ChatLog.unboundedChatLogTimeRange
   liftIO $ map (.text) userOnly @?= ["user"]
   liftIO $ map (.text) withBot @?= ["user", "bot reply"]
   liftIO $ map (.isBot) withBot @?= [False, True]
-  liftIO $ map (.messageId) withBot @?= [Just "100", Nothing]
+  liftIO $ map (.messageId) withBot @?= [Just "100", Just "bot-1"]
 
 testImageSanitization :: IO ()
 testImageSanitization = runChatLogTest do
-  ChatLog.recordMessage (messageFromChatWithImages 100 200 "look" [base64Image])
-  ChatLog.recordSelfMessage (messageFromChat 100 200 "user") ("[image] " <> base64Image)
+  ChatLog.recordMessage (messageFromChatWithFiles 100 200 "look" [base64Image] [MessageFile "notes.txt" "https://example.com/notes.txt"])
+  ChatLog.recordSelfMessageWithFiles (messageFromChat 100 200 "user") Nothing ("[image] " <> base64Image) [MessageFile "image.png" base64Image]
   entries <- ChatLog.queryChat (messageFromChat 999 200 "query") Nothing 10 True ChatLog.unboundedChatLogTimeRange
   liftIO $ map (.imageUrls) entries @?= [["[Picture]"], ["[Picture]"]]
+  liftIO $ map (.files) entries @?= [[MessageFile "notes.txt" "https://example.com/notes.txt"], [MessageFile "image.png" "[Picture]"]]
   liftIO $ map (.text) entries @?= ["look", ""]
+
+testInspectionWindow :: IO ()
+testInspectionWindow = runChatLogTest do
+  traverse_ (\messageId -> ChatLog.recordMessage (messageFromChat messageId 200 [i|message #{messageId}|])) [100 .. 104]
+  ChatLog.recordMessage ((messageFromChat 200 201 "other chat"){platform = PlatformQQ})
+  summaries <- ChatLog.listChats
+  let scope = ChatLog.ChatLogScope PlatformTelegram ChatPrivate (Just 200)
+  window <- ChatLog.queryWindow scope (ChatLog.AroundChatLogMessage "102") 3
+  missing <- ChatLog.queryWindow scope (ChatLog.AroundChatLogMessage "missing") 3
+  liftIO $ do
+    map (.messageCount) summaries @?= [1, 5]
+    map ((.text) . (.entry)) window.entries @?= ["message 101", "message 102", "message 103"]
+    window.hasOlder @? "message window has an older page"
+    window.hasNewer @? "message window has a newer page"
+    window.anchorFound @? "message anchor is present"
+    assertBool "missing anchor is reported" (not missing.anchorFound)
 
 runChatLogTest :: Eff '[ChatLog.ChatLog, Storage.Storage, KatipE, Concurrent, IOE] a -> IO a
 runChatLogTest action =
@@ -106,6 +124,10 @@ messageFromChat messageId chatId text =
 
 messageFromChatWithImages :: Integer -> Integer -> Text -> [Text] -> IncomingMessage
 messageFromChatWithImages messageId chatId text imageUrls =
+  messageFromChatWithFiles messageId chatId text imageUrls []
+
+messageFromChatWithFiles :: Integer -> Integer -> Text -> [Text] -> [MessageFile] -> IncomingMessage
+messageFromChatWithFiles messageId chatId text imageUrls files =
   IncomingMessage
     { eventKind = IncomingMessageCreated
     , platform = PlatformTelegram
@@ -120,7 +142,7 @@ messageFromChatWithImages messageId chatId text imageUrls =
     , mentions = []
     , mentionUsernames = []
     , imageUrls = imageUrls
-    , files = []
+    , files
     , text = text
     , raw = Aeson.Null
     }

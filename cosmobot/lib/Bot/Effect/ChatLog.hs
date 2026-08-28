@@ -7,14 +7,23 @@ Stability   : experimental
 module Bot.Effect.ChatLog
   ( ChatLog
   , ChatLogEntry (..)
+  , ChatLogScope (..)
+  , ChatLogSummary (..)
+  , ChatLogItem (..)
+  , ChatLogWindow (..)
+  , ChatLogWindowAnchor (..)
   , SenderChatLogScope (..)
   , ChatLogTimeRange (..)
   , unboundedChatLogTimeRange
   , recordMessage
   , recordSelfMessage
+  , recordSelfMessageWithFiles
   , recordIncomingMessages
   , queryChat
   , queryCurrentSenderChatLog
+  , listChats
+  , queryWindow
+  , findLegacyReplyAnchor
   , runChatLog
   )
 where
@@ -39,7 +48,9 @@ data ChatLog :: Effect where
     -> ChatLog m ()
   RecordSelfMessage
     :: IncomingMessage
+    -> Maybe MessageId
     -> Text
+    -> [MessageFile]
     -> ChatLog m ()
   QueryChat
     :: IncomingMessage
@@ -55,6 +66,9 @@ data ChatLog :: Effect where
     -> Int
     -> ChatLogTimeRange
     -> ChatLog m [ChatLogEntry]
+  ListChats :: ChatLog m [ChatLogSummary]
+  QueryWindow :: ChatLogScope -> ChatLogWindowAnchor -> Int -> ChatLog m ChatLogWindow
+  FindLegacyReplyAnchor :: ChatLogScope -> Text -> ChatLog m (Maybe MessageId)
 
 type instance DispatchOf ChatLog = Dynamic
 
@@ -79,9 +93,13 @@ recordIncomingMessages =
     pure message
 
 -- | Record a logical self reply in the same chat as its triggering message.
-recordSelfMessage :: ChatLog :> es => IncomingMessage -> Text -> Eff es ()
-recordSelfMessage context body =
-  send (RecordSelfMessage context body)
+recordSelfMessage :: ChatLog :> es => IncomingMessage -> Maybe MessageId -> Text -> Eff es ()
+recordSelfMessage context messageId body =
+  recordSelfMessageWithFiles context messageId body []
+
+recordSelfMessageWithFiles :: ChatLog :> es => IncomingMessage -> Maybe MessageId -> Text -> [MessageFile] -> Eff es ()
+recordSelfMessageWithFiles context messageId body files =
+  send (RecordSelfMessage context messageId body files)
 
 -- | Query recent messages from the current chat in chronological order.
 queryChat :: ChatLog :> es => IncomingMessage -> Maybe Text -> Int -> Bool -> ChatLogTimeRange -> Eff es [ChatLogEntry]
@@ -93,6 +111,18 @@ queryCurrentSenderChatLog :: ChatLog :> es => IncomingMessage -> SenderChatLogSc
 queryCurrentSenderChatLog message scope keywords limit timeRange =
   send (QueryCurrentSenderChatLog message scope keywords limit timeRange)
 
+listChats :: ChatLog :> es => Eff es [ChatLogSummary]
+listChats =
+  send ListChats
+
+queryWindow :: ChatLog :> es => ChatLogScope -> ChatLogWindowAnchor -> Int -> Eff es ChatLogWindow
+queryWindow scope anchor limit =
+  send (QueryWindow scope anchor limit)
+
+findLegacyReplyAnchor :: ChatLog :> es => ChatLogScope -> Text -> Eff es (Maybe MessageId)
+findLegacyReplyAnchor scope body =
+  send (FindLegacyReplyAnchor scope body)
+
 -- | Interpret chat logging through the storage capability.
 runChatLog
   :: (IOE :> es, KatipE :> es, Storage.Storage :> es)
@@ -103,11 +133,17 @@ runChatLog inner =
     (\_ -> \case
       RecordMessage message ->
         ChatLogStorage.persistRecord (userRecord message)
-      RecordSelfMessage context body ->
-        ChatLogStorage.persistRecord (selfRecord context body)
+      RecordSelfMessage context messageId body files ->
+        ChatLogStorage.persistRecord (selfRecordWithFiles context messageId body files)
       QueryChat message sender limit includeBotMessages timeRange ->
         ChatLogStorage.queryStored message sender limit includeBotMessages timeRange
       QueryCurrentSenderChatLog message scope keywords limit timeRange ->
         ChatLogStorage.queryCurrentSenderStored message scope keywords limit timeRange
+      ListChats ->
+        ChatLogStorage.listStoredChats
+      QueryWindow scope anchor limit ->
+        ChatLogStorage.queryStoredWindow scope anchor limit
+      FindLegacyReplyAnchor scope body ->
+        ChatLogStorage.findLegacyReplyAnchor scope body
     )
     inner

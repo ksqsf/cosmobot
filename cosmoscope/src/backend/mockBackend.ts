@@ -1,8 +1,5 @@
 import { Effect, Layer } from 'effect'
-import { logs } from '@/fixtures/data'
 import { AdminBackendService, OfflineError, type AdminBackend, type BackendEffect } from './AdminBackend'
-
-const copy = <T>(value: T): T => structuredClone(value)
 
 const unavailable = <A>(): BackendEffect<A> => Effect.fail(new OfflineError({ message: 'Connect to cosmobot to load this data.' }))
 
@@ -28,7 +25,7 @@ const mockBackend: AdminBackend = {
   },
   media: { list: unavailable, search: unavailable, get: unavailable, delete: unavailable, gc: unavailable },
   plugins: { list: unavailable, load: unavailable, reload: unavailable, unload: unavailable },
-  logs: { list: () => Effect.succeed(copy(logs)) },
+  chatLogs: { list: unavailable, window: unavailable },
 }
 
 export const mockBackendLayer = Layer.succeed(AdminBackendService, mockBackend)

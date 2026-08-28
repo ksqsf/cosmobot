@@ -57,6 +57,7 @@ import qualified Paths_cosmobot as Paths
 
 data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
+  , chatLogMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , threadMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , memoryMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , skillsMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
@@ -98,6 +99,7 @@ data SubscriptionChange = Subscribe | Unsubscribe
 noRpcServerCallbacks :: RpcServerCallbacks es
 noRpcServerCallbacks = RpcServerCallbacks
   { auditMethod = \_ -> pure Nothing
+  , chatLogMethod = \_ -> pure Nothing
   , threadMethod = \_ -> pure Nothing
   , memoryMethod = \_ -> pure Nothing
   , skillsMethod = \_ -> pure Nothing
@@ -431,6 +433,8 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
     method
       | "audit." `Text.isPrefixOf` method ->
           dispatchAudit callbacks request
+      | "chat_log." `Text.isPrefixOf` method ->
+          dispatchChatLog callbacks request
       | "thread." `Text.isPrefixOf` method ->
           dispatchThread callbacks request
       | "memory." `Text.isPrefixOf` method ->
@@ -1089,6 +1093,13 @@ dispatchAudit
   -> Eff es RPC.RpcResponse
 dispatchAudit callbacks request =
   callbacks.auditMethod request >>= rpcCallbackResponse request
+
+dispatchChatLog
+  :: RpcServerCallbacks es
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchChatLog callbacks request =
+  callbacks.chatLogMethod request >>= rpcCallbackResponse request
 
 dispatchThread
   :: RpcServerCallbacks es

@@ -185,7 +185,7 @@ streamAgentReply runtime activeReply message transcript =
     let sink = Agent.ToolEmittedMessageSink (rememberToolEmittedMessage activeReply)
         program =
             ( Agent.withSteering (activeSteeringControl activeReply)
-          . Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessage message)
+          . Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessageWithFiles message)
           . Agent.withLinkingToolEmittedMessagesToThread sink
           . Agent.withNormalizingToolReplies
           )
@@ -266,7 +266,7 @@ commitAgentReply
   -> Eff es (Text, Transcript)
 commitAgentReply observer activeReply message AgentReply{responseId, answer, result} = do
   traverse_ (AgentObservation.observeThreadLinked observer . threadLink message result (activeReply.parentMessageKey <&> (.messageId))) responseId
-  ChatLog.recordSelfMessage message answer
+  ChatLog.recordSelfMessage message responseId answer
   active <- IORef.readIORef activeReply.activeRef
   case active of
     Just activeHandle -> do

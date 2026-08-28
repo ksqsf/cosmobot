@@ -16,6 +16,8 @@ module Bot.Storage.Thread
   , newThreadStore
   , lookupThreadTranscript
   , lookupThreadMessageIds
+  , lookupThreadParentMessageKey
+  , lookupThreadFinalAssistantText
   , lookupActiveThreadRunId
   , awaitActiveThreadByRunId
   , lookupActiveThreadReply
@@ -43,6 +45,7 @@ module Bot.Storage.Thread
   , loadThreadRowsByThreadId
   , loadThreadRowsByIds
   , loadThreadIdByMessageKey
+  , loadThreadIdsByMessageKeys
   , lookupCommittedThreadTranscript
   , deleteSessionThreadTranscripts
   )
@@ -66,7 +69,9 @@ import qualified Data.Int as Int
 import Effectful.Prim.IORef
 import qualified Data.Map.Strict as Map
 import qualified Data.Sequence as Seq
+import qualified Data.Set as Set
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text as Text
 
 data ThreadStore = ThreadStore
   { unThreadStore :: IORef ThreadState
@@ -618,6 +623,22 @@ lookupCommittedThreadTranscript :: (Prim :> es, Storage.Storage :> es) => Thread
 lookupCommittedThreadTranscript store messageKey =
   fmap (.treeNode.transcript) <$> lookupStoredThreadNode store messageKey
 
+lookupThreadParentMessageKey :: (Prim :> es, Storage.Storage :> es) => ThreadStore -> ThreadMessageKey -> Eff es (Maybe ThreadMessageKey)
+lookupThreadParentMessageKey store messageKey =
+  (>>= (.treeNode.parentMessageKey)) <$> lookupStoredThreadNode store messageKey
+
+lookupThreadFinalAssistantText :: (Prim :> es, Storage.Storage :> es) => ThreadStore -> ThreadMessageKey -> Eff es (Maybe Text)
+lookupThreadFinalAssistantText store messageKey = do
+  node <- lookupStoredThreadNode store messageKey
+  pure $ node >>= \stored -> do
+    message <- find ((== "assistant") . (.role)) (reverse (toList stored.treeNode.transcript.messages))
+    case message.content of
+      Just (LLM.TextContent text) -> Just text
+      Just (LLM.PartsContent parts) ->
+        let text = Text.unlines [part | LLM.TextPart part <- parts]
+        in text <$ guard (not (Text.null text))
+      Nothing -> Nothing
+
 lookupStoredThreadNodeMaybe :: (Prim :> es, Storage.Storage :> es) => ThreadStore -> Maybe ThreadMessageKey -> Eff es (Maybe StoredThreadNode)
 lookupStoredThreadNodeMaybe _ Nothing =
   pure Nothing
@@ -737,6 +758,21 @@ loadThreadRowsByIds rowIds = do
 loadThreadIdByMessageKey :: Storage.Storage :> es => ThreadMessageKey -> Eff es (Maybe Integer)
 loadThreadIdByMessageKey messageKey =
   loadThreadRow messageKey <&> fmap (\row -> fromMaybe row.rowId row.threadStorageId)
+
+loadThreadIdsByMessageKeys :: Storage.Storage :> es => [ThreadMessageKey] -> Eff es [(ThreadMessageKey, Integer)]
+loadThreadIdsByMessageKeys [] = pure []
+loadThreadIdsByMessageKeys messageKeys = do
+  ensureThreadTable
+  rows <- runSelda $ query do
+    row <- select threadRows
+    restrict (row ! #message_id `isIn` map (literal . messageIdText . (.messageId)) messageKeys)
+    pure row
+  let wanted = Set.fromList messageKeys
+  pure
+    [ (row.messageKey, fromMaybe row.rowId row.threadStorageId)
+    | row <- map threadRowFromStorage rows
+    , row.messageKey `Set.member` wanted
+    ]
 
 deleteSessionThreadTranscripts :: Storage.Storage :> es => [(Text, MessageId)] -> Eff es ()
 deleteSessionThreadTranscripts messages = do

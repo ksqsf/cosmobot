@@ -1,7 +1,6 @@
 import { Effect } from 'effect'
 import { ZodError } from 'zod'
 import { RpcBackendError, type AdminBackend } from './AdminBackend'
-import { mockBackend } from './mockBackend'
 import {
   activeThreadListSchema,
   auditDetailSchema,
@@ -9,6 +8,8 @@ import {
   auditThreadSchema,
   chatDeleteSchema,
   chatHistorySchema,
+  chatLogListSchema,
+  chatLogWindowSchema,
   chatMessageDoneSchema,
   chatMessageSchema,
   chatOpenSchema,
@@ -169,6 +170,10 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
         },
       )),
     },
+    chatLogs: {
+      list: () => rpcEffect('Could not load chat logs.', async () => chatLogListSchema.parse(await client.request('chat_log.list')).chats),
+      window: (query) => rpcEffect('Could not load chat messages.', async () => chatLogWindowSchema.parse(await client.request('chat_log.window', query))),
+    },
     resources: {
       count: supports('resource.list') ? () => Effect.tryPromise({
         try: async () => resourceListSchema.parse(await client.request('resource.list')).resources.length,
@@ -194,7 +199,6 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       reload: (id) => rpcEffect('Could not reload the plugin.', async () => pluginLifecycleSchema.parse(await client.request('plugin.reload', { pluginId: id }))),
       unload: (id) => rpcEffect('Could not unload the plugin.', async () => { pluginUnloadSchema.parse(await client.request('plugin.unload', { pluginId: id })) }),
     },
-    logs: mockBackend.logs,
   }
 }
 

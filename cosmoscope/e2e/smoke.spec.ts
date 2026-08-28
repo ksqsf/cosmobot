@@ -28,6 +28,12 @@ test('navigation, theme, sidebar, and command palette work', async ({ page, isMo
   const search = page.getByRole('combobox', { name: 'Search pages' })
   await expect(commandDialog).toBeVisible()
   await expect(search).toBeFocused()
+  const firstResult = await commandDialog.locator('.command-result').first().boundingBox()
+  const firstIcon = await commandDialog.locator('.command-result-icon').first().boundingBox()
+  expect(firstResult).not.toBeNull()
+  expect(firstIcon).not.toBeNull()
+  expect(firstIcon?.y).toBeGreaterThanOrEqual(firstResult?.y ?? 0)
+  expect((firstIcon?.y ?? 0) + (firstIcon?.height ?? 0)).toBeLessThanOrEqual((firstResult?.y ?? 0) + (firstResult?.height ?? 0))
   await page.keyboard.type('a')
   await expect(search).toHaveValue('a')
   const initialTop = (await commandDialog.boundingBox())?.y

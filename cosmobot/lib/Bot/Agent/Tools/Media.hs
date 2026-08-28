@@ -14,6 +14,7 @@ where
 import Bot.Agent.Tools.Common
 import Bot.Agent.Tool
 import Bot.Agent.Types
+import Bot.Core.Message (MessageFile (..))
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
@@ -24,6 +25,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextEncoding
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import Effectful.FileSystem (FileSystem)
+import System.FilePath (takeFileName)
 
 defaultReadSize :: Int
 defaultReadSize =
@@ -76,17 +78,31 @@ sendMedia context mediaId fileName
   | otherwise = Media.localMediaPath (mediaRef mediaId) >>= \case
       Nothing ->
         pure (mediaFailure [i|Media object not found: #{mediaId}|])
-      Just path -> Chat.uploadFile context.message path fileName >>= \case
-        Right sent ->
-          pure (toolText [i|Sent media #{mediaId}; message id: #{show sent :: Text}|])
-        Left err -> do
-          let failureText = "发送媒体失败：" <> err
-          void $ Chat.replyTo context.message failureText
-          pure (toolFailure Failure
-            { category = ExternalServiceUnavailable
-            , userMessage = failureText
-            , detail = err
-            })
+      Just path -> do
+        outgoingFile <- Media.mediaFileInfoByRef (mediaRef mediaId) >>= traverse (mediaOutgoingFile path fileName)
+        Chat.uploadFileWithMetadata context.message path fileName outgoingFile >>= \case
+          Right sent ->
+            pure (toolText [i|Sent media #{mediaId}; message id: #{show sent :: Text}|])
+          Left err -> do
+            let failureText = "发送媒体失败：" <> err
+            void $ Chat.replyTo context.message failureText
+            pure (toolFailure Failure
+              { category = ExternalServiceUnavailable
+              , userMessage = failureText
+              , detail = err
+              })
+
+mediaOutgoingFile :: Media.Media :> es => FilePath -> Maybe Text -> Media.MediaFileInfo -> Eff es Chat.OutgoingFile
+mediaOutgoingFile path requestedName info = do
+  publicRef <- Media.publicMediaRef info.ref
+  let displayPath = maybe path Text.unpack (requestedName >>= \name -> name <$ guard (not (Text.null name)))
+  pure Chat.OutgoingFile
+    { file = MessageFile
+        { name = toText (takeFileName displayPath)
+        , ref = publicRef
+        }
+    , kind = if "image/" `Text.isPrefixOf` info.mimeType then Chat.OutgoingImage else Chat.OutgoingAttachment
+    }
 
 mediaFailure :: Text -> ToolResult
 mediaFailure message =

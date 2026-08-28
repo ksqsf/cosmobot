@@ -1,5 +1,5 @@
 import { Context, Data, type Effect } from 'effect'
-import type { ActiveThread, AssociatedResource, AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, LogEntry, MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot, MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary, Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task, ThreadDetail, ThreadListQuery, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot } from '@/types/domain'
+import type { ActiveThread, AssociatedResource, AuditRecord, ChatAttachment, ChatLogSummary, ChatLogWindow, ChatLogWindowQuery, ChatMessage, ChatSend, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot, MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary, Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task, ThreadDetail, ThreadListQuery, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot } from '@/types/domain'
 
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
 export class RpcBackendError extends Data.TaggedError('RpcBackendError')<{ readonly message: string }> {}
@@ -78,7 +78,10 @@ export interface AdminBackend {
     readonly reload: (id: string) => BackendEffect<Plugin>
     readonly unload: (id: string) => BackendEffect<void>
   }
-  readonly logs: { readonly list: () => BackendEffect<readonly LogEntry[]> }
+  readonly chatLogs: {
+    readonly list: () => BackendEffect<readonly ChatLogSummary[]>
+    readonly window: (query: ChatLogWindowQuery) => BackendEffect<ChatLogWindow>
+  }
 }
 
 export const AdminBackendService = Context.Service<AdminBackend>('Cosmoscope/AdminBackend')
@@ -188,5 +191,7 @@ export const reloadPlugin = (id: string): Effect.Effect<Plugin, BackendError, Ad
   AdminBackendService.use((backend) => backend.plugins.reload(id))
 export const unloadPlugin = (id: string): Effect.Effect<void, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.plugins.unload(id))
-export const listLogs: Effect.Effect<readonly LogEntry[], BackendError, AdminBackend> =
-  AdminBackendService.use((backend) => backend.logs.list())
+export const listChatLogs: Effect.Effect<readonly ChatLogSummary[], BackendError, AdminBackend> =
+  AdminBackendService.use((backend) => backend.chatLogs.list())
+export const loadChatLogWindow = (query: ChatLogWindowQuery): Effect.Effect<ChatLogWindow, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.chatLogs.window(query))

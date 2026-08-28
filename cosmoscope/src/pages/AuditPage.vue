@@ -9,6 +9,7 @@ import Select from 'primevue/select'
 import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
+import ChatLogMessageLink from '@/components/ChatLogMessageLink.vue'
 import RunIdLink from '@/components/RunIdLink.vue'
 import SearchQualifierInput from '@/components/SearchQualifierInput.vue'
 import { getAudit, getAuditThread, getAuditThreadMessages, getRunAudit, getThread, recentAudit, RpcBackendError, searchAudit, subscribeAudit } from '@/backend/AdminBackend'
@@ -18,7 +19,7 @@ import { runBackend } from '@/backend/runBackend'
 import type { BackendResult } from '@/backend/runBackend'
 import { mediaRefFromClick, renderMarkdown } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
-import type { AuditEvent, AuditPlatform, AuditRecord } from '@/types/domain'
+import type { AuditEvent, AuditPlatform, AuditRecord, ThreadMessageKey } from '@/types/domain'
 
 type EventFilter = 'all' | 'tool' | 'model' | 'failure'
 type PlatformFilter = 'all' | AuditPlatform | 'unlinked'
@@ -102,6 +103,15 @@ const selectedResult = computed(() => {
 const selectedFields = computed(() => selected.value === undefined ? [] : auditDetailFields(selected.value.event))
 const requiredMethods = ['audit.recent', 'audit.search', 'audit.get', 'audit.thread', 'audit.subscribe'] as const
 const supportsAudit = computed(() => requiredMethods.every((method) => connection.methods.has(method)))
+
+function messageFieldKey(label: string): ThreadMessageKey | undefined {
+  const event = selected.value?.event
+  if (event?.tag !== 'AgentThreadLinked' || event.linkedMessageKey === null) return undefined
+  if (label === 'Message') return event.linkedMessageKey
+  return label === 'Parent message' && event.parentMessageId !== null
+    ? { ...event.linkedMessageKey, messageId: event.parentMessageId }
+    : undefined
+}
 
 function eventTime(record: AuditRecord): string {
   return new Date(record.occurredAt).toLocaleTimeString(undefined, { hour12: false })
@@ -488,6 +498,9 @@ onUnmounted(() => { subscriptionGeneration += 1; stopSubscription?.(); detailGen
                   <RunIdLink
                     v-if="field.kind === 'run'"
                     :run-id="field.value"
+                  /><ChatLogMessageLink
+                    v-else-if="messageFieldKey(field.label)"
+                    :message-key="messageFieldKey(field.label)!"
                   /><template v-else>
                     {{ field.value }}
                   </template>

@@ -40,6 +40,8 @@ export const liveAdminMethods = [
   'skills.list',
   'skills.get',
   'skills.remove',
+  'chat_log.list',
+  'chat_log.window',
   'media.stats',
   'media.search',
   'media.get',

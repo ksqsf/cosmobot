@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ActiveThread, AuditRecord, ChatAttachment, ChatMessage, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSnapshot, Plugin, Resource, StoredThreadMessage, Task, ThreadDetail, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot, ThreadSummary, TokenUsage, ToolCallTrace } from '@/types/domain'
+import type { ActiveThread, AuditRecord, ChatAttachment, ChatLogSummary, ChatLogWindow, ChatMessage, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSnapshot, Plugin, Resource, StoredThreadMessage, Task, ThreadDetail, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot, ThreadSummary, TokenUsage, ToolCallTrace } from '@/types/domain'
 
 export const taskSchema = z.object({
   id: z.number().int().positive(),
@@ -139,6 +139,29 @@ export const chatDeleteSchema = z.object({ sessionId: z.string(), deleted: z.boo
 export const chatSendSchema = z.object({ sessionId: z.string(), messageId: z.string() })
 export const chatMessageDoneSchema = z.object({ sessionId: z.string(), messageId: z.string() })
 export const chatUploadSchema = chatAttachmentSchema.extend({ mediaRef: z.string(), fileId: z.string() })
+const chatLogScopeSchema = z.object({
+  platform: z.enum(['PlatformQQ', 'PlatformTelegram', 'PlatformMatrix', 'PlatformDiscord', 'PlatformRPC', 'PlatformACP']),
+  kind: z.union([z.enum(['ChatPrivate', 'ChatGroup', 'ChatChannel']), z.templateLiteral(['ChatUnknown:', z.string()])]),
+  chatId: z.string().regex(/^-?\d+$/).nullable(),
+})
+const chatLogEntrySchema = chatLogScopeSchema.extend({
+  recordedAt: z.string().nullable(), senderId: z.string().nullable(), senderUsername: z.string().nullable(),
+  messageId: z.string().nullable(), replyToMessageId: z.string().nullable(), isBot: z.boolean(),
+  mentions: z.array(z.string()), mentionUsernames: z.array(z.string()), imageUrls: z.array(z.string()),
+  files: z.array(z.object({ name: z.string(), ref: z.string() })), text: z.string(),
+})
+export const chatLogListSchema = z.object({
+  chats: z.array(z.object({
+    scope: chatLogScopeSchema,
+    messageCount: z.number().int().nonnegative(),
+    latestAt: z.string().nullable(),
+  }) satisfies z.ZodType<ChatLogSummary>),
+})
+export const chatLogWindowSchema = z.object({
+  scope: chatLogScopeSchema,
+  entries: z.array(z.object({ rowId: z.number().int().positive(), entry: chatLogEntrySchema, threadId: z.number().int().positive().nullable() })),
+  hasOlder: z.boolean(), hasNewer: z.boolean(), anchorFound: z.boolean(), anchorMessageId: z.string().nullable(),
+}) satisfies z.ZodType<ChatLogWindow>
 export const mediaDeleteSchema = z.object({ fileId: z.string(), mediaId: z.string(), deleted: z.boolean() })
 const mediaPlatformRefSchema = z.object({ platform: z.string(), scope: z.string(), platformRef: z.string() })
 const mediaSourceKindSchema = z.enum(['chat', 'generated-image', 'tool-result', 'sandbox'])

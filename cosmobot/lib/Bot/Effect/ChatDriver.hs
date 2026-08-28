@@ -9,11 +9,14 @@ Stability   : experimental
 module Bot.Effect.ChatDriver
   ( -- * Effect
     ChatDriver (..)
+  , OutgoingFile (..)
+  , OutgoingFileKind (..)
   , ChatDriverHandler
   , sendReplyMessage
   , sendStreamingReplyMessage
   , replyAudio
   , uploadFile
+  , uploadFileWithMetadata
   , editMessage
   , completeMessageEdit
   , publishActivity
@@ -39,6 +42,7 @@ module Bot.Effect.ChatDriver
 where
 
 import Bot.Core.Message
+import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Prelude
 import qualified Bot.Chat.Driver.Types as Driver
 import Bot.Chat.Types
@@ -63,6 +67,7 @@ data ChatDriver :: Effect where
     :: IncomingMessage
     -> FilePath
     -> Maybe Text
+    -> Maybe OutgoingFile
     -> ChatDriver m (Either Text MessageId)
   EditMessage
     :: IncomingMessage
@@ -125,6 +130,14 @@ data ChatDriver :: Effect where
 
 type instance DispatchOf ChatDriver = Dynamic
 
+data OutgoingFile = OutgoingFile
+  { file :: !MessageFile
+  , kind :: !OutgoingFileKind
+  }
+
+data OutgoingFileKind = OutgoingImage | OutgoingAttachment
+  deriving (Eq, Show)
+
 type ChatDriverHandler es =
   EffectHandler ChatDriver es
 
@@ -144,7 +157,11 @@ replyAudio message audioRef caption =
 -- | Upload a local file to the chat containing the incoming message.
 uploadFile :: ChatDriver :> es => IncomingMessage -> FilePath -> Maybe Text -> Eff es (Either Text MessageId)
 uploadFile message path fileName =
-  send (UploadFile message path fileName)
+  uploadFileWithMetadata message path fileName Nothing
+
+uploadFileWithMetadata :: ChatDriver :> es => IncomingMessage -> FilePath -> Maybe Text -> Maybe OutgoingFile -> Eff es (Either Text MessageId)
+uploadFileWithMetadata message path fileName outgoingFile =
+  send (UploadFile message path fileName outgoingFile)
 
 -- | Edit a previously sent message when the platform supports it.
 editMessage :: ChatDriver :> es => IncomingMessage -> MessageId -> Text -> Eff es Bool
@@ -236,7 +253,7 @@ chatDriverEffectHandler driver _ = \case
     Driver.sendStreamingReplyMessage driver message body
   ReplyAudio message audioRef caption ->
     Driver.replyAudio driver message audioRef caption
-  UploadFile message path fileName ->
+  UploadFile message path fileName _ ->
     Driver.uploadFile driver message path fileName
   EditMessage message messageId body ->
     Driver.editMessage driver message messageId body
@@ -297,22 +314,27 @@ runChatMappingReplies rewrite =
 -- platform operations still delegate to the outer 'Chat' interpreter.
 runChatRecordingSelfMessages
   :: ChatDriver :> es
-  => (Text -> Eff es ())
+  => (Maybe MessageId -> Text -> [MessageFile] -> Eff es ())
   -> Eff es a
   -> Eff es a
 runChatRecordingSelfMessages recordSelf =
   interpose $ \localEnv -> \case
     operation@(SendReplyMessage _ body) -> do
       sent <- passthrough localEnv operation
-      recordSelf body
+      recordSelf (listToMaybe (rights sent)) body []
       pure sent
     operation@(SendStreamingReplyMessage _ body) -> do
       sent <- passthrough localEnv operation
-      recordSelf body
+      recordSelf (rightToMaybe sent) body []
       pure sent
     operation@(MentionUser _ _ body) -> do
       sent <- passthrough localEnv operation
-      recordSelf body
+      recordSelf (rightToMaybe sent) body []
+      pure sent
+    operation@(UploadFile _ _ _ (Just outgoingFile)) -> do
+      sent <- passthrough localEnv operation
+      let body = ReplyBody.imageDirective outgoingFile.file.ref <$ guard (outgoingFile.kind == OutgoingImage)
+      recordSelf (rightToMaybe sent) (fromMaybe "" body) [outgoingFile.file]
       pure sent
     operation ->
       passthrough localEnv operation

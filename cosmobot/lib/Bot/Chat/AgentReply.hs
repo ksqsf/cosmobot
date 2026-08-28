@@ -46,7 +46,7 @@ streamAgentReplyWith
 streamAgentReplyWith runtime steering sink recordUpdate message transcript = do
   let program =
         ( Agent.withSteering steering
-        . Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessage message)
+        . Agent.withRecordingToolSelfMessages (ChatLog.recordSelfMessageWithFiles message)
         . Agent.withLinkingToolEmittedMessagesToThread sink
         . Agent.withNormalizingToolReplies
         ) runtime

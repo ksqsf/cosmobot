@@ -49,6 +49,7 @@ import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Resource.Workspace as Workspace
 import qualified Bot.Scheduler as Scheduler
 import qualified Bot.RPC.Audit as RPCAudit
+import qualified Bot.RPC.ChatLog as RPCChatLog
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Plugin as RPCPlugin
 import qualified Bot.RPC.Memory as RPCMemory
@@ -351,7 +352,7 @@ runConfiguredServers cfg threads rpcState acpState messageConsumer =
   runWithTaskGroup "servers" (serverTasks cfg threads rpcState acpState) "message.consumer" messageConsumer
 
 serverTasks
-  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, Memory.Memory :> es, Skills.Skills :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
+  :: ( AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, Memory.Memory :> es, Skills.Skills :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> RPC.RpcState
@@ -362,6 +363,11 @@ serverTasks cfg threads rpcState acpState =
     <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp threads acpState)
   where
     auditCallbacks = RPCAudit.auditRpcCallbacks
+    chatLogCallbacks = RPCChatLog.chatLogRpcCallbacks
+      (lookupThreadParentMessageKey threads)
+      (lookupThreadFinalAssistantText threads)
+      loadThreadIdsByMessageKeys
+      MediaEffect.publicMediaRef
     threadCallbacks = RPCThread.threadRpcCallbacks
       (listActiveThreadInspections threads)
       (haltThreadById threads Concurrency.cancel)
@@ -369,10 +375,11 @@ serverTasks cfg threads rpcState acpState =
     skillsCallbacks = RPCSkills.skillsRpcCallbacks
     baseCallbacks = RPCServer.withManagerRpcCallbacks $
       auditCallbacks
-        { RPCServer.threadMethod = threadCallbacks.threadMethod
+        { RPCServer.chatLogMethod = chatLogCallbacks.chatLogMethod
+        , RPCServer.threadMethod = threadCallbacks.threadMethod
         , RPCServer.memoryMethod = memoryCallbacks.memoryMethod
         , RPCServer.skillsMethod = skillsCallbacks.skillsMethod
-        , RPCServer.supportedMethods = auditCallbacks.supportedMethods <> threadCallbacks.supportedMethods <> memoryCallbacks.supportedMethods <> skillsCallbacks.supportedMethods
+        , RPCServer.supportedMethods = auditCallbacks.supportedMethods <> chatLogCallbacks.supportedMethods <> threadCallbacks.supportedMethods <> memoryCallbacks.supportedMethods <> skillsCallbacks.supportedMethods
         }
     MediaConfig.GcConfig{enabled = mediaGcEnabled, olderThanDays, intervalHours} = cfg.media.gc
     callbacks = baseCallbacks

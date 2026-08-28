@@ -753,7 +753,7 @@ testPythonControlAndNestedScopes = do
         sink = Agent.ToolEmittedMessageSink \messageId ->
           liftIO $ IORef.modifyIORef' remembered (<> [messageId])
         program =
-          (Agent.withRecordingToolSelfMessages \body ->
+          (Agent.withRecordingToolSelfMessages \_ body _ ->
             liftIO $ IORef.modifyIORef' recorded (<> [body]))
           . Agent.withLinkingToolEmittedMessagesToThread sink
           $ observed
@@ -1329,6 +1329,7 @@ testSendMediaToolUploadsCachedMedia =
   withSQLiteTempPath "send-media" \dbPath ->
     withTempDir "send-media-cache" \dir -> do
       uploads <- IORef.newIORef ([] :: [(FilePath, Maybe Text)])
+      recorded <- IORef.newIORef ([] :: [(Maybe MessageId, Text, [MessageFile])])
       let cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = dir </> "cache"}
           driver = defaultAgentMockChatDriver
             { agentUploadFile = \_ path fileName -> do
@@ -1349,22 +1350,30 @@ testSendMediaToolUploadsCachedMedia =
       runResult <- runEff $ runStack do
         mediaRef <- fromMaybe (error "expected media ref") <$> Media.storeMediaObject Media.MediaObject
           { bytes = Q.fromStrict "generated file"
-          , mimeType = "application/octet-stream"
-          , sourceName = Just "generated.bin"
+          , mimeType = "image/png"
+          , sourceName = Just "generated.png"
           }
         expectedPath <- fromMaybe (error "expected local media path") <$> Media.localMediaPath mediaRef
-        runner <- AgentTool.startTool MediaTools.sendMediaTool agentContext
-        defaultResult <- runner testToolCallMetadata (Aeson.object ["media_id" Aeson..= mediaRef])
-        namedResult <- runner testToolCallMetadata (Aeson.object
-          [ "media_id" Aeson..= mediaRef
-          , "filename" Aeson..= ("../report.bin" :: Text)
-          ])
+        (defaultResult, namedResult) <- Chat.runChatRecordingSelfMessages
+          (\messageId body files -> liftIO $ IORef.modifyIORef' recorded (<> [(messageId, body, files)])) do
+            runner <- AgentTool.startTool MediaTools.sendMediaTool agentContext
+            (,) <$> runner testToolCallMetadata (Aeson.object ["media_id" Aeson..= mediaRef])
+                <*> runner testToolCallMetadata (Aeson.object
+                  [ "media_id" Aeson..= mediaRef
+                  , "filename" Aeson..= ("../report.png" :: Text)
+                  ])
         pure (expectedPath, defaultResult, namedResult)
       (expectedPath, defaultResult, namedResult) <- either assertFailure pure runResult
       let tool = MediaTools.sendMediaTool :: AgentTool.Tool (Eff AgentStack)
       AgentTool.toolIsNoisy tool @?= True
       assertBool "send_media should be available to normal users" (AgentTool.toolAllowed tool agentContext)
-      IORef.readIORef uploads >>= (@?= [(expectedPath, Nothing), (expectedPath, Just "../report.bin")])
+      IORef.readIORef uploads >>= (@?= [(expectedPath, Nothing), (expectedPath, Just "../report.png")])
+      recordedMessages <- IORef.readIORef recorded
+      map (\(messageId, _, _) -> messageId) recordedMessages @?= [Just "902", Just "902"]
+      assertBool "image uploads should retain a preview ref in chat logs"
+        (all ("[image] media:mf_" `Text.isPrefixOf`) [body | (_, body, _) <- recordedMessages])
+      assertBool "uploads should retain downloadable file metadata in chat logs"
+        (all (not . null) [files | (_, _, files) <- recordedMessages])
       traverse_ assertSendMediaSucceeded [defaultResult, namedResult]
   where
     assertSendMediaSucceeded = \case
@@ -5472,7 +5481,7 @@ runAgentWithToolMessageCapture maxTurns context tools transcript recorded rememb
   let sink = Agent.ToolEmittedMessageSink \messageId ->
         liftIO $ IORef.modifyIORef' remembered (<> [messageId])
       program =
-        ( Agent.withRecordingToolSelfMessages \body ->
+        ( Agent.withRecordingToolSelfMessages \_ body _ ->
             liftIO $ IORef.modifyIORef' recorded (<> [body])
         )
           . Agent.withLinkingToolEmittedMessagesToThread sink

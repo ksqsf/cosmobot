@@ -16,6 +16,7 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import type { MenuItem } from 'primevue/menuitem'
 import PageHeading from '@/components/PageHeading.vue'
+import ChatLogsPanel from '@/components/ChatLogsPanel.vue'
 import { deleteChatSession, discardChatAttachment, forkChatSession, listChatSessions, loadChatHistory, openChatSession, renameChatSession, sendChatMessage, subscribeChat, uploadChatAttachment } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
 import { mergeChatMessage, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
@@ -51,6 +52,7 @@ let stopSubscription: (() => void) | undefined
 let selectionGeneration = 0
 
 const live = computed(() => connection.state === 'authenticated' && chatMethods.every((method) => connection.methods.has(method)))
+const showingPlatformLogs = computed(() => route.query['view'] === 'logs')
 const selectedSession = computed(() => sessions.value.find(({ sessionId }) => sessionId === selectedId.value))
 const filteredSessions = computed(() => sessions.value.filter((session) => sessionName(session).toLowerCase().includes(query.value.toLowerCase())))
 const draft = computed({
@@ -66,6 +68,14 @@ const messageMenuItems: MenuItem[] = [
 function sessionName(session: ChatSession): string {
   const label = session.label?.trim()
   return label === undefined || label === '' ? session.sessionId : label
+}
+
+async function showChatView(view: 'sessions' | 'logs'): Promise<void> {
+  if (view === 'logs') await router.push({ name: 'chat', query: { view: 'logs' } })
+  else {
+    await router.push({ name: 'chat', params: selectedId.value === undefined ? {} : { sessionId: selectedId.value } })
+    await loadSessions(selectedId.value)
+  }
 }
 
 function mergeMessage(message: ChatMessage): void {
@@ -118,6 +128,7 @@ async function selectSession(sessionId: string): Promise<void> {
 }
 
 async function loadSessions(preferredId?: string): Promise<void> {
+  if (showingPlatformLogs.value) { sessionsLoading.value = false; return }
   if (connection.state === 'opening' || connection.state === 'reconnecting') { sessionsLoading.value = true; return }
   if (!live.value) {
     sessionsLoading.value = false
@@ -300,271 +311,288 @@ onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discard
 <template>
   <section class="page chat-page">
     <PageHeading
-      eyebrow="RPC workspace"
+      eyebrow="Conversations"
       title="Chat"
-      description="Use durable cosmobot RPC sessions and their live transcripts."
+      :description="showingPlatformLogs ? 'Inspect read-only conversations from connected platforms.' : 'Use durable RPC sessions and their live transcripts.'"
     >
       <Button
+        label="Platform logs"
+        icon="pi pi-history"
+        :outlined="!showingPlatformLogs"
+        @click="showChatView('logs')"
+      /><Button
+        label="RPC sessions"
+        icon="pi pi-desktop"
+        severity="secondary"
+        :outlined="showingPlatformLogs"
+        @click="showChatView('sessions')"
+      /><Button
+        v-if="!showingPlatformLogs"
         label="New session"
         icon="pi pi-plus"
         :disabled="!live"
         @click="createSession"
       />
     </PageHeading>
-    <article
-      v-if="sessionsLoading && !sessionsLoaded"
-      class="panel manager-loading"
-      aria-label="Loading chat sessions"
-    >
-      <Skeleton height="3rem" /><Skeleton height="22rem" />
-    </article>
-    <Message
-      v-if="!live"
-      severity="error"
-      :closable="false"
-    >
-      {{ error }}
-    </Message>
-    <Message
-      v-else-if="error"
-      severity="error"
-      :closable="false"
-    >
-      {{ error }}
-    </Message>
-    <div
-      v-if="sessionsLoaded"
-      class="chat-layout panel"
-    >
-      <aside
-        class="conversation-list"
-        aria-label="Chat sessions"
+    <ChatLogsPanel
+      v-if="showingPlatformLogs"
+    />
+    <template v-else>
+      <article
+        v-if="sessionsLoading && !sessionsLoaded"
+        class="panel manager-loading"
+        aria-label="Loading chat sessions"
       >
-        <IconField class="conversation-search">
-          <InputIcon class="pi pi-search" />
-          <InputText
-            v-model="query"
-            placeholder="Find a session"
-            aria-label="Find a session"
-            size="small"
-            fluid
-          />
-        </IconField>
-        <Button
-          v-for="session in filteredSessions"
-          :key="session.sessionId"
-          class="conversation"
-          :class="{ active: selectedId === session.sessionId }"
-          unstyled
-          @click="selectSession(session.sessionId)"
-        >
-          <span class="platform-icon">R</span>
-          <span><strong>{{ sessionName(session) }}</strong><small><code>{{ session.sessionId }}</code></small></span>
-        </Button>
-        <Message
-          v-if="sessions.length === 0"
-          severity="secondary"
-          :closable="false"
-        >
-          No RPC sessions yet.
-        </Message>
-      </aside>
-
-      <section
-        class="transcript"
-        aria-label="Chat transcript"
+        <Skeleton height="3rem" /><Skeleton height="22rem" />
+      </article>
+      <Message
+        v-if="!live"
+        severity="error"
+        :closable="false"
       >
-        <header class="transcript-header">
-          <div><strong>{{ selectedSession ? sessionName(selectedSession) : 'Select a session' }}</strong><small v-if="selectedSession"><code>{{ selectedSession.sessionId }}</code></small></div>
-          <div v-if="selectedSession">
-            <Button
-              icon="pi pi-pencil"
-              text
-              rounded
-              aria-label="Rename session"
-              @click="renameSelected"
-            /><Button
-              icon="pi pi-trash"
-              severity="danger"
-              text
-              rounded
-              aria-label="Delete session"
-              @click="requestDelete"
-            />
-          </div>
-        </header>
-        <ContextMenu
-          ref="messageMenu"
-          :model="messageMenuItems"
-          @hide="contextMessage = undefined"
-        />
-        <div class="messages">
-          <Message
-            v-if="loading"
-            severity="secondary"
-            :closable="false"
-          >
-            Loading transcript…
-          </Message>
-          <Message
-            v-else-if="selectedSession && messages.length === 0"
-            severity="secondary"
-            :closable="false"
-          >
-            This session has no messages yet.
-          </Message>
-          <article
-            v-for="message in messages"
-            :key="message.messageId"
-            class="message"
-            :class="[message.sender === 'user' ? 'user' : 'bot', { 'context-selected': contextMessage?.messageId === message.messageId }]"
-            tabindex="0"
-            @contextmenu.prevent="showMessageMenu($event, message)"
-          >
-            <header class="message-meta">
-              <span class="avatar">{{ message.sender === 'user' ? 'Y' : 'C' }}</span><strong>{{ message.sender === 'user' ? 'You' : 'Cosmobot' }}</strong><ProgressSpinner
-                v-if="streamingMessageIds.has(message.messageId)"
-                aria-label="Streaming response"
-                class="chat-streaming"
-              />
-            </header>
-            <div
-              class="message-body"
-              @click="previewMarkdownImage"
-            >
-              <div
-                v-if="message.text"
-                class="markdown-body"
-                :innerHTML="renderMarkdown(message.text)"
-              />
-              <div
-                v-if="imageUrls(message).length > 0"
-                class="chat-images"
-              >
-                <button
-                  v-for="url in imageUrls(message)"
-                  :key="url"
-                  type="button"
-                  class="chat-image-button"
-                  aria-label="Zoom image"
-                  @click="previewImage = url"
-                >
-                  <img
-                    :src="url"
-                    alt="Chat attachment"
-                    loading="lazy"
-                  />
-                </button>
-              </div>
-              <div
-                v-if="documentAttachments(message).length > 0"
-                class="chat-files"
-              >
-                <template
-                  v-for="attachment in documentAttachments(message)"
-                  :key="attachment.attachmentId"
-                >
-                  <a
-                    v-if="downloadUrl(attachment.url)"
-                    class="chat-file-card"
-                    :href="downloadUrl(attachment.url)"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    download
-                  >
-                    <i class="pi pi-file" /><span><strong>{{ attachment.name }}</strong><small>{{ attachment.mediaType }} · {{ Math.ceil(attachment.size / 1024) }} KiB</small></span><i class="pi pi-download" />
-                  </a>
-                  <div
-                    v-else
-                    class="chat-file-card"
-                  >
-                    <i class="pi pi-file" /><span><strong>{{ attachment.name }}</strong><small>Unsafe download URL rejected</small></span>
-                  </div>
-                </template>
-              </div>
-            </div>
-          </article>
-        </div>
-        <form
-          class="composer"
-          @submit.prevent="send"
+        {{ error }}
+      </Message>
+      <Message
+        v-else-if="error"
+        severity="error"
+        :closable="false"
+      >
+        {{ error }}
+      </Message>
+      <div
+        v-if="sessionsLoaded"
+        class="chat-layout panel"
+      >
+        <aside
+          class="conversation-list"
+          aria-label="Chat sessions"
         >
-          <div
-            v-if="pendingAttachments.length > 0"
-            class="tag-list"
-          >
-            <span
-              v-for="attachment in pendingAttachments"
-              :key="attachment.attachmentId"
-              class="pending-attachment"
-            ><Tag
-              :value="attachment.name"
-              severity="secondary"
-            /><Button
-              type="button"
-              icon="pi pi-times"
-              text
-              rounded
+          <IconField class="conversation-search">
+            <InputIcon class="pi pi-search" />
+            <InputText
+              v-model="query"
+              placeholder="Find a session"
+              aria-label="Find a session"
               size="small"
-              :aria-label="`Remove ${attachment.name}`"
-              @click="discardAttachment(attachment)"
-            /></span>
-          </div>
-          <Textarea
-            v-model="draft"
-            rows="3"
-            placeholder="Message cosmobot…"
-            aria-label="Message cosmobot"
-            class="composer-input"
-            :disabled="selectedSession === undefined"
-            fluid
-            @keydown.ctrl.enter.prevent="send"
-          />
-          <div class="composer-actions">
-            <div>
+              fluid
+            />
+          </IconField>
+          <Button
+            v-for="session in filteredSessions"
+            :key="session.sessionId"
+            class="conversation"
+            :class="{ active: selectedId === session.sessionId }"
+            unstyled
+            @click="selectSession(session.sessionId)"
+          >
+            <span class="platform-icon">R</span>
+            <span><strong>{{ sessionName(session) }}</strong><small><code>{{ session.sessionId }}</code></small></span>
+          </Button>
+          <Message
+            v-if="sessions.length === 0"
+            severity="secondary"
+            :closable="false"
+          >
+            No RPC sessions yet.
+          </Message>
+        </aside>
+
+        <section
+          class="transcript"
+          aria-label="Chat transcript"
+        >
+          <header class="transcript-header">
+            <div><strong>{{ selectedSession ? sessionName(selectedSession) : 'Select a session' }}</strong><small v-if="selectedSession"><code>{{ selectedSession.sessionId }}</code></small></div>
+            <div v-if="selectedSession">
               <Button
-                type="button"
-                label="Attach"
-                icon="pi pi-paperclip"
-                size="small"
-                severity="secondary"
+                icon="pi pi-pencil"
                 text
-                :loading="uploading"
-                :disabled="selectedSession === undefined || uploading"
-                @click="attachmentInput?.click()"
-              /><input
-                ref="attachmentInput"
-                type="file"
-                multiple
-                hidden
-                @change="attachFiles"
+                rounded
+                aria-label="Rename session"
+                @click="renameSelected"
+              /><Button
+                icon="pi pi-trash"
+                severity="danger"
+                text
+                rounded
+                aria-label="Delete session"
+                @click="requestDelete"
               />
             </div>
-            <Button
-              type="submit"
-              icon="pi pi-arrow-up"
-              aria-label="Send message"
-              :loading="sending"
-              :disabled="selectedSession === undefined || uploading || sending || (draft.trim() === '' && pendingAttachments.length === 0)"
-            />
+          </header>
+          <ContextMenu
+            ref="messageMenu"
+            :model="messageMenuItems"
+            @hide="contextMessage = undefined"
+          />
+          <div class="messages">
+            <Message
+              v-if="loading"
+              severity="secondary"
+              :closable="false"
+            >
+              Loading transcript…
+            </Message>
+            <Message
+              v-else-if="selectedSession && messages.length === 0"
+              severity="secondary"
+              :closable="false"
+            >
+              This session has no messages yet.
+            </Message>
+            <article
+              v-for="message in messages"
+              :key="message.messageId"
+              class="message"
+              :class="[message.sender === 'user' ? 'user' : 'bot', { 'context-selected': contextMessage?.messageId === message.messageId }]"
+              tabindex="0"
+              @contextmenu.prevent="showMessageMenu($event, message)"
+            >
+              <header class="message-meta">
+                <span class="avatar">{{ message.sender === 'user' ? 'Y' : 'C' }}</span><strong>{{ message.sender === 'user' ? 'You' : 'Cosmobot' }}</strong><ProgressSpinner
+                  v-if="streamingMessageIds.has(message.messageId)"
+                  aria-label="Streaming response"
+                  class="chat-streaming"
+                />
+              </header>
+              <div
+                class="message-body"
+                @click="previewMarkdownImage"
+              >
+                <div
+                  v-if="message.text"
+                  class="markdown-body"
+                  :innerHTML="renderMarkdown(message.text)"
+                />
+                <div
+                  v-if="imageUrls(message).length > 0"
+                  class="chat-images"
+                >
+                  <button
+                    v-for="url in imageUrls(message)"
+                    :key="url"
+                    type="button"
+                    class="chat-image-button"
+                    aria-label="Zoom image"
+                    @click="previewImage = url"
+                  >
+                    <img
+                      :src="url"
+                      alt="Chat attachment"
+                      loading="lazy"
+                    />
+                  </button>
+                </div>
+                <div
+                  v-if="documentAttachments(message).length > 0"
+                  class="chat-files"
+                >
+                  <template
+                    v-for="attachment in documentAttachments(message)"
+                    :key="attachment.attachmentId"
+                  >
+                    <a
+                      v-if="downloadUrl(attachment.url)"
+                      class="chat-file-card"
+                      :href="downloadUrl(attachment.url)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      download
+                    >
+                      <i class="pi pi-file" /><span><strong>{{ attachment.name }}</strong><small>{{ attachment.mediaType }} · {{ Math.ceil(attachment.size / 1024) }} KiB</small></span><i class="pi pi-download" />
+                    </a>
+                    <div
+                      v-else
+                      class="chat-file-card"
+                    >
+                      <i class="pi pi-file" /><span><strong>{{ attachment.name }}</strong><small>Unsafe download URL rejected</small></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </article>
           </div>
-        </form>
-      </section>
-    </div>
-    <Dialog
-      :visible="previewImage !== undefined"
-      modal
-      dismissable-mask
-      header="Image preview"
-      class="image-preview-dialog"
-      @update:visible="previewImage = undefined"
-    >
-      <img
-        v-if="previewImage"
-        :src="previewImage"
-        alt="Full-size chat attachment"
-        class="object-preview"
-      />
-    </Dialog>
+          <form
+            class="composer"
+            @submit.prevent="send"
+          >
+            <div
+              v-if="pendingAttachments.length > 0"
+              class="tag-list"
+            >
+              <span
+                v-for="attachment in pendingAttachments"
+                :key="attachment.attachmentId"
+                class="pending-attachment"
+              ><Tag
+                :value="attachment.name"
+                severity="secondary"
+              /><Button
+                type="button"
+                icon="pi pi-times"
+                text
+                rounded
+                size="small"
+                :aria-label="`Remove ${attachment.name}`"
+                @click="discardAttachment(attachment)"
+              /></span>
+            </div>
+            <Textarea
+              v-model="draft"
+              rows="3"
+              placeholder="Message cosmobot…"
+              aria-label="Message cosmobot"
+              class="composer-input"
+              :disabled="selectedSession === undefined"
+              fluid
+              @keydown.ctrl.enter.prevent="send"
+            />
+            <div class="composer-actions">
+              <div>
+                <Button
+                  type="button"
+                  label="Attach"
+                  icon="pi pi-paperclip"
+                  size="small"
+                  severity="secondary"
+                  text
+                  :loading="uploading"
+                  :disabled="selectedSession === undefined || uploading"
+                  @click="attachmentInput?.click()"
+                /><input
+                  ref="attachmentInput"
+                  type="file"
+                  multiple
+                  hidden
+                  @change="attachFiles"
+                />
+              </div>
+              <Button
+                type="submit"
+                icon="pi pi-arrow-up"
+                aria-label="Send message"
+                :loading="sending"
+                :disabled="selectedSession === undefined || uploading || sending || (draft.trim() === '' && pendingAttachments.length === 0)"
+              />
+            </div>
+          </form>
+        </section>
+      </div>
+      <Dialog
+        :visible="previewImage !== undefined"
+        modal
+        dismissable-mask
+        header="Image preview"
+        class="image-preview-dialog"
+        @update:visible="previewImage = undefined"
+      >
+        <img
+          v-if="previewImage"
+          :src="previewImage"
+          alt="Full-size chat attachment"
+          class="object-preview"
+        />
+      </Dialog>
+    </template>
   </section>
 </template>

@@ -338,6 +338,7 @@ library
         Bot.Plugin.Tool
         Bot.Plugin.Types
         Bot.RPC.Audit
+        Bot.RPC.ChatLog
         Bot.RPC.Client
         Bot.RPC.Config
         Bot.RPC.Memory

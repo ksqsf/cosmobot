@@ -6,6 +6,11 @@ Stability   : experimental
 
 module Bot.ChatLog.Types
   ( ChatLogEntry (..)
+  , ChatLogScope (..)
+  , ChatLogSummary (..)
+  , ChatLogItem (..)
+  , ChatLogWindow (..)
+  , ChatLogWindowAnchor (..)
   , SenderChatLogScope (..)
   , ChatLogTimeRange (..)
   , unboundedChatLogTimeRange
@@ -46,6 +51,44 @@ data ChatLogEntry = ChatLogEntry
   , mentions :: ![Text]
   , mentionUsernames :: ![Text]
   , imageUrls :: ![Text]
+  , files :: ![MessageFile]
   , text :: !Text
   }
   deriving (Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+data ChatLogScope = ChatLogScope
+  { platform :: !ChatPlatform
+  , kind :: !ChatKind
+  , chatId :: !(Maybe Integer)
+  }
+  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+data ChatLogSummary = ChatLogSummary
+  { scope :: !ChatLogScope
+  , messageCount :: !Int
+  , latestAt :: !(Maybe UTCTime)
+  }
+  deriving (Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+data ChatLogItem = ChatLogItem
+  { rowId :: !Integer
+  , entry :: !ChatLogEntry
+  }
+  deriving (Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+data ChatLogWindow = ChatLogWindow
+  { scope :: !ChatLogScope
+  , entries :: ![ChatLogItem]
+  , hasOlder :: !Bool
+  , hasNewer :: !Bool
+  , anchorFound :: !Bool
+  , anchorMessageId :: !(Maybe MessageId)
+  }
+  deriving (Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+data ChatLogWindowAnchor
+  = LatestChatLogWindow
+  | BeforeChatLogRow !Integer
+  | AfterChatLogRow !Integer
+  | AroundChatLogMessage !MessageId
+  deriving (Eq, Show)

@@ -10,6 +10,9 @@ module Bot.Storage.ChatLog
   ( persistRecord
   , queryStored
   , queryCurrentSenderStored
+  , listStoredChats
+  , queryStoredWindow
+  , findLegacyReplyAnchor
   )
 where
 
@@ -19,9 +22,14 @@ import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
 import Bot.Storage.Prelude
+import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Int as Int
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Time (getCurrentTime)
+import qualified Database.Selda.Backend as SeldaBackend
+import qualified Database.Selda.SQLite as SeldaSQLite
 
 data ChatLogRow = ChatLogRow
   { id :: ID ChatLogRow
@@ -36,6 +44,7 @@ data ChatLogRow = ChatLogRow
   , mentions :: Text
   , mention_usernames :: Text
   , image_urls :: Text
+  , files_json :: Text
   , body_text :: Text
   , recorded_at :: Maybe UTCTime
   }
@@ -55,7 +64,17 @@ chatLogRows =
 
 ensureChatLogTable :: Storage.Storage :> es => Eff es ()
 ensureChatLogTable =
-  runSelda (tryCreateTable chatLogRows)
+  runSelda $ transaction do
+    tryCreateTable chatLogRows
+    migrateChatLogFiles
+
+migrateChatLogFiles :: SeldaT SeldaSQLite.SQLite IO ()
+migrateChatLogFiles =
+  SeldaBackend.withBackend \backend -> liftIO do
+    (_, rows) <- SeldaBackend.runStmt backend "PRAGMA table_info(chat_log)" []
+    let columns = [name | _ : SeldaBackend.SqlString name : _ <- rows]
+    unless ("files_json" `elem` columns) $
+      void (SeldaBackend.runStmt backend "ALTER TABLE chat_log ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'" [])
 
 persistRecord :: (IOE :> es, KatipE :> es, Storage.Storage :> es) => ChatLogRecord -> Eff es ()
 persistRecord record = do
@@ -94,6 +113,134 @@ queryCurrentSenderStored message scope keywords limitCount timeRange = do
     _ ->
       pure []
 
+listStoredChats :: Storage.Storage :> es => Eff es [ChatLogSummary]
+listStoredChats = do
+  ensureChatLogTable
+  rows <- runSelda $ query $ aggregate do
+    row <- select chatLogRows
+    platformKey' <- groupBy (row ! #platform_key)
+    kindKey' <- groupBy (row ! #kind_key)
+    chatId' <- groupBy (row ! #chat_id)
+    pure (platformKey' :*: kindKey' :*: chatId' :*: count (row ! #id) :*: max_ (row ! #recorded_at))
+  pure $ sortOn (Down . (.latestAt)) $ mapMaybe summaryFromRow rows
+
+queryStoredWindow
+  :: Storage.Storage :> es
+  => ChatLogScope
+  -> ChatLogWindowAnchor
+  -> Int
+  -> Eff es ChatLogWindow
+queryStoredWindow scope anchor requestedLimit = do
+  ensureChatLogTable
+  anchorRow <- case anchor of
+    AroundChatLogMessage messageId -> findMessageRow scope messageId
+    _ -> pure Nothing
+  let limitCount = min 200 (max 1 requestedLimit)
+      resolvedAnchor = case anchor of
+        AroundChatLogMessage _ -> maybe ResolvedLatestChatLogWindow (AroundChatLogRow . rowIdInteger . (.id)) anchorRow
+        LatestChatLogWindow -> ResolvedLatestChatLogWindow
+        BeforeChatLogRow rowId -> ResolvedBeforeChatLogRow rowId
+        AfterChatLogRow rowId -> ResolvedAfterChatLogRow rowId
+  rows <- queryWindowRows scope resolvedAnchor limitCount
+  let items = map (chatLogItemFromRow scope) rows
+  (hasOlder, hasNewer) <- case items of
+    [] -> pure (False, False)
+    firstItem : rest ->
+      (,) <$> hasRowsBefore scope firstItem.rowId <*> hasRowsAfter scope (foldl' (\_ item -> item) firstItem rest).rowId
+  pure ChatLogWindow
+    { scope
+    , entries = items
+    , hasOlder
+    , hasNewer
+    , anchorFound = case anchor of AroundChatLogMessage _ -> isJust anchorRow; _ -> True
+    , anchorMessageId = case anchor of AroundChatLogMessage messageId | isJust anchorRow -> Just messageId; _ -> Nothing
+    }
+
+data ResolvedChatLogWindowAnchor
+  = ResolvedLatestChatLogWindow
+  | ResolvedBeforeChatLogRow !Integer
+  | ResolvedAfterChatLogRow !Integer
+  | AroundChatLogRow !Integer
+
+queryWindowRows :: Storage.Storage :> es => ChatLogScope -> ResolvedChatLogWindowAnchor -> Int -> Eff es [ChatLogRow]
+queryWindowRows scope anchor limitCount = case anchor of
+  ResolvedLatestChatLogWindow -> reverse <$> queryDescending scope Nothing limitCount
+  ResolvedBeforeChatLogRow rowId -> reverse <$> queryDescending scope (Just rowId) limitCount
+  ResolvedAfterChatLogRow rowId -> queryAscending scope rowId limitCount
+  AroundChatLogRow rowId -> do
+    let olderLimit = limitCount `div` 2 + 1
+    older <- reverse <$> queryDescending scope (Just (rowId + 1)) olderLimit
+    newer <- queryAscending scope rowId (limitCount - length older)
+    pure (older <> newer)
+
+queryDescending :: Storage.Storage :> es => ChatLogScope -> Maybe Integer -> Int -> Eff es [ChatLogRow]
+queryDescending scope beforeRow limitCount = runSelda $ query $ queryLimit 0 limitCount do
+  row <- select chatLogRows
+  restrict (scopeMatches scope row .&& maybe true (\rowId -> row ! #id .< literal (chatLogRowId rowId)) beforeRow)
+  order (row ! #id) descending
+  pure row
+
+queryAscending :: Storage.Storage :> es => ChatLogScope -> Integer -> Int -> Eff es [ChatLogRow]
+queryAscending scope afterRow limitCount = runSelda $ query $ queryLimit 0 limitCount do
+  row <- select chatLogRows
+  restrict (scopeMatches scope row .&& row ! #id .> literal (chatLogRowId afterRow))
+  order (row ! #id) ascending
+  pure row
+
+findMessageRow :: Storage.Storage :> es => ChatLogScope -> MessageId -> Eff es (Maybe ChatLogRow)
+findMessageRow scope messageId = do
+  rows <- runSelda $ query $ queryLimit 0 1 do
+    row <- select chatLogRows
+    restrict (scopeMatches scope row .&& row ! #message_id .== literal (Just (messageIdText messageId)))
+    order (row ! #id) descending
+    pure row
+  pure (viaNonEmpty head rows)
+
+-- | Compatibility for bot rows written before sent message ids were persisted.
+-- Exact reply-body matching is intentionally only a fallback for those legacy rows.
+findLegacyReplyAnchor :: Storage.Storage :> es => ChatLogScope -> Text -> Eff es (Maybe MessageId)
+findLegacyReplyAnchor scope body = do
+  ensureChatLogTable
+  rows <- runSelda $ query $ queryLimit 0 1 do
+    row <- select chatLogRows
+    restrict (scopeMatches scope row .&& row ! #is_bot .== literal True .&& row ! #body_text .== literal body)
+    order (row ! #id) descending
+    pure (row ! #reply_to_message_id)
+  pure (textMessageId <$> (join (viaNonEmpty head rows)))
+
+hasRowsBefore :: Storage.Storage :> es => ChatLogScope -> Integer -> Eff es Bool
+hasRowsBefore scope rowId = not . null <$> queryDescending scope (Just rowId) 1
+
+hasRowsAfter :: Storage.Storage :> es => ChatLogScope -> Integer -> Eff es Bool
+hasRowsAfter scope rowId = not . null <$> queryAscending scope rowId 1
+
+scopeMatches :: forall (backend :: Type). ChatLogScope -> Row backend ChatLogRow -> Col backend Bool
+scopeMatches scope row =
+  row ! #platform_key .== literal (platformKey scope.platform)
+    .&& row ! #kind_key .== literal (kindKey scope.kind)
+    .&& maybe (isNull (row ! #chat_id)) (\chatId -> row ! #chat_id .== literal (Just (fromIntegral chatId))) scope.chatId
+
+summaryFromRow :: Text :*: Text :*: Maybe Int.Int64 :*: Int :*: Maybe (Maybe UTCTime) -> Maybe ChatLogSummary
+summaryFromRow (platformKey' :*: kindKey' :*: chatId' :*: messageCount :*: latestAt) = do
+  platform <- platformFromKey platformKey'
+  pure ChatLogSummary
+    { scope = ChatLogScope{platform, kind = kindFromKey kindKey', chatId = fromIntegral <$> chatId'}
+    , messageCount
+    , latestAt = join latestAt
+    }
+
+chatLogItemFromRow :: ChatLogScope -> ChatLogRow -> ChatLogItem
+chatLogItemFromRow scope row = ChatLogItem
+  { rowId = rowIdInteger row.id
+  , entry = chatLogEntryFromScope scope row
+  }
+
+rowIdInteger :: ID ChatLogRow -> Integer
+rowIdInteger = fromIntegral . fromId
+
+chatLogRowId :: Integer -> ID ChatLogRow
+chatLogRowId = toId . fromIntegral
+
 boundedChatLogLimit :: Int -> Int
 boundedChatLogLimit =
   min 100 . max 0
@@ -113,16 +260,21 @@ chatLogRow entry =
     , mentions = encodeTextList entry.mentions
     , mention_usernames = encodeTextList entry.mentionUsernames
     , image_urls = encodeTextList entry.imageUrls
+    , files_json = encodeFiles entry.files
     , body_text = entry.text
     , recorded_at = entry.recordedAt
     }
 
 chatLogEntryFromRow :: IncomingMessage -> ChatLogRow -> ChatLogEntry
 chatLogEntryFromRow context row =
+  chatLogEntryFromScope ChatLogScope{platform = context.platform, kind = context.kind, chatId = context.chatId} row
+
+chatLogEntryFromScope :: ChatLogScope -> ChatLogRow -> ChatLogEntry
+chatLogEntryFromScope scope row =
   ChatLogEntry
     { recordedAt = row.recorded_at
-    , platform = context.platform
-    , kind = context.kind
+    , platform = scope.platform
+    , kind = scope.kind
     , chatId = fromIntegral <$> row.chat_id
     , senderId = row.sender_id
     , senderUsername = row.sender_username
@@ -132,6 +284,7 @@ chatLogEntryFromRow context row =
     , mentions = decodeTextList row.mentions
     , mentionUsernames = decodeTextList row.mention_usernames
     , imageUrls = decodeTextList row.image_urls
+    , files = decodeFiles row.files_json
     , text = row.body_text
     }
 
@@ -201,9 +354,26 @@ platformKey :: ChatPlatform -> Text
 platformKey =
   show
 
+platformFromKey :: Text -> Maybe ChatPlatform
+platformFromKey = \case
+  "PlatformQQ" -> Just PlatformQQ
+  "PlatformTelegram" -> Just PlatformTelegram
+  "PlatformMatrix" -> Just PlatformMatrix
+  "PlatformDiscord" -> Just PlatformDiscord
+  "PlatformRPC" -> Just PlatformRPC
+  "PlatformACP" -> Just PlatformACP
+  _ -> Nothing
+
 kindKey :: ChatKind -> Text
-kindKey =
-  show
+kindKey (ChatUnknown value) = value
+kindKey value = show value
+
+kindFromKey :: Text -> ChatKind
+kindFromKey = \case
+  "ChatPrivate" -> ChatPrivate
+  "ChatGroup" -> ChatGroup
+  "ChatChannel" -> ChatChannel
+  value -> ChatUnknown value
 
 encodeTextList :: [Text] -> Text
 encodeTextList =
@@ -213,3 +383,11 @@ decodeTextList :: Text -> [Text]
 decodeTextList value
   | Text.null value = []
   | otherwise = Text.splitOn "\n" value
+
+encodeFiles :: [MessageFile] -> Text
+encodeFiles =
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+
+decodeFiles :: Text -> [MessageFile]
+decodeFiles =
+  fromMaybe [] . Aeson.decodeStrict' . TextEncoding.encodeUtf8

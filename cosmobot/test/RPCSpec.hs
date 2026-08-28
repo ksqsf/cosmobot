@@ -9,6 +9,7 @@ import Bot.Core.Message
 import Bot.Core.Thread (ThreadMessageKey (..))
 import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as EffectHTTP
 import qualified Bot.Effect.Media as Media
@@ -23,6 +24,7 @@ import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.Media.Object as MediaObject
 import qualified Bot.Memory as MemoryStore
 import qualified Bot.RPC.Config as RPCConfig
+import qualified Bot.RPC.ChatLog as RPCChatLog
 import qualified Bot.RPC.Plugin as RPCPlugin
 import qualified Bot.RPC.Memory as RPCMemory
 import qualified Bot.RPC.Skills as RPCSkills
@@ -82,6 +84,7 @@ main =
       , testCase "audit.run validates and queries an agent run id" testAuditRun
       , testCase "thread message key JSON preserves large chat ids" testThreadMessageKeyJsonPreservesLargeChatIds
       , testCase "thread inspection RPC exposes an empty snapshot and validates ids" testThreadInspectionRpc
+      , testCase "chat log RPC preserves ids and resolves sent replies through their parent" testChatLogRpc
       , testCase "memory and skills RPC inspect history and loaded skills" testMemoryAndSkillsRpc
       , testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "admin.capabilities describes the supported RPC surface" testAdminCapabilities
@@ -236,6 +239,43 @@ testThreadInspectionRpc = do
   resolveResponse @?= responseResult (Aeson.object ["threadId" Aeson..= (Just 1 :: Maybe Int), "taskId" Aeson..= (Nothing :: Maybe Int)])
   activeResponse @?= responseResult (Aeson.object ["threads" Aeson..= ([] :: [Aeson.Value])])
   haltResponse @?= responseResult (Aeson.object ["taskId" Aeson..= (7 :: Int), "halted" Aeson..= True])
+
+testChatLogRpc :: IO ()
+testChatLogRpc = do
+  let largeChatId = 1152921504606846976
+      incoming = (mediaMessage PlatformMatrix "")
+        { platform = PlatformMatrix
+        , kind = ChatGroup
+        , chatId = Just largeChatId
+        , messageId = Just "incoming"
+        , text = "hello"
+        }
+      parent key = pure if key.messageId == "sent" then Just (ThreadMessageKey key.platform key.chatId "incoming") else Nothing
+      params messageId = Aeson.object
+        [ "platform" Aeson..= ("PlatformMatrix" :: Text)
+        , "kind" Aeson..= ("ChatGroup" :: Text)
+        , "chatId" Aeson..= (show largeChatId :: String)
+        , "messageId" Aeson..= (messageId :: Text)
+        ]
+      assistant key = pure $ "answer" <$ guard (key.messageId == "legacy-sent")
+  (listResponse, windowResponse, legacyResponse) <- runRpcStorage ":memory:" $ ChatLog.runChatLog do
+    ChatLog.recordMessage incoming
+    ChatLog.recordSelfMessage incoming Nothing "answer"
+    rpcState <- RPC.newRpcState
+    let callbacks = RPCChatLog.chatLogRpcCallbacks parent assistant (pure . map (, 42)) pure
+    (,,) <$> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.list" Aeson.Null)
+         <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.window" (params "sent"))
+         <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.window" (params "legacy-sent"))
+  chats <- maybe (assertFailure "chat_log.list did not return chats") pure (responseField listResponse "chats" :: Maybe [Aeson.Value])
+  chatScope <- maybe (assertFailure "chat_log.list returned no chat") (parseJsonField "scope") (viaNonEmpty head chats)
+  chatId <- parseJsonField "chatId" chatScope
+  chatId @?= (show largeChatId :: Text)
+  responseField windowResponse "anchorFound" @?= Just True
+  responseField windowResponse "anchorMessageId" @?= Just ("incoming" :: Text)
+  entries <- maybe (assertFailure "chat_log.window returned no entries") pure (responseField windowResponse "entries")
+  traverse (parseJsonField "threadId") entries >>= (@?= ([Just 42, Just 42] :: [Maybe Int]))
+  responseField legacyResponse "anchorFound" @?= Just True
+  responseField legacyResponse "anchorMessageId" @?= Just ("incoming" :: Text)
 
 testMemoryAndSkillsRpc :: IO ()
 testMemoryAndSkillsRpc = withSQLiteTempPath "rpc-memory-skills" \path -> do

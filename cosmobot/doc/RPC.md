@@ -252,6 +252,42 @@ longer active.
 {"jsonrpc":"2.0","id":"5","method":"thread.halt","params":{"taskId":17}}
 ```
 
+## Chat Log Methods
+
+Chat log methods expose read-only platform conversations independently of RPC
+console sessions. Chat ids are decimal strings so large platform identifiers
+remain exact in JavaScript clients.
+
+### `chat_log.list`
+
+Returns every recorded `(platform, kind, chatId)` scope with its complete
+message count and latest recording time.
+
+```json
+{"jsonrpc":"2.0","id":"6","method":"chat_log.list","params":{}}
+```
+
+### `chat_log.window`
+
+Returns up to `limit` chronological messages in one scope. Omit an anchor for
+the latest window, or provide exactly one of `messageId`, `beforeRow`, or
+`afterRow`. The latter two support a bidirectional sliding window. The maximum
+limit is `200`.
+
+```json
+{"jsonrpc":"2.0","id":"7","method":"chat_log.window","params":{"platform":"PlatformMatrix","kind":"ChatGroup","chatId":"3563614927702013593","messageId":"$event","limit":50}}
+```
+
+`anchorMessageId` identifies the message actually centered in the result.
+Each item includes a nullable `threadId`; clients can link it directly to
+`thread.get`. Message `imageUrls` and file attachment refs are resolved to
+public media URLs when available. Attachments are returned as `files` entries
+with `name` and `ref` fields.
+For bot replies recorded before sent platform ids were persisted, the server
+resolves the stored thread parent or exact legacy reply body to recover the
+surrounding conversation. New bot chat-log rows store their platform message
+id directly.
+
 ## Memory Methods
 
 Memory methods inspect persistent sender/chat memory. `platform` is one of

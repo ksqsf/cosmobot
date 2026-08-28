@@ -18,6 +18,7 @@ import Tag from 'primevue/tag'
 import Tree from 'primevue/tree'
 import type { TreeNode as PrimeTreeNode } from 'primevue/treenode'
 import PageHeading from '@/components/PageHeading.vue'
+import ChatLogMessageLink from '@/components/ChatLogMessageLink.vue'
 import RunIdLink from '@/components/RunIdLink.vue'
 import { getAuditThreadMessages, getMedia, getThread, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
@@ -56,6 +57,8 @@ const activeVisible = ref(false)
 const activeTaskId = ref<number>()
 const haltingTaskId = ref<number>()
 const visible = ref(false)
+const treeFocused = ref(false)
+const treeZoom = ref(100)
 const mediaByRef = ref<ReadonlyMap<string, MediaDetail>>(new Map())
 const previewImage = ref<string>()
 const route = useRoute()
@@ -233,6 +236,8 @@ async function inspectThread(threadId: number): Promise<void> {
   detail.value = undefined
   auditRecords.value = []
   selectedNode.value = undefined
+  treeFocused.value = false
+  treeZoom.value = 100
   mediaByRef.value = new Map()
   const result = await runBackend(getThread(threadId))
   if (generation !== detailGeneration) return
@@ -270,6 +275,7 @@ function closeDrawer(): void {
   visible.value = false
   detail.value = undefined
   selectedNode.value = undefined
+  treeFocused.value = false
   if (route.params['threadId'] !== undefined) void router.replace({ name: 'threads' })
 }
 
@@ -566,7 +572,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
       v-model:visible="visible"
       header="Thread inspector"
       position="right"
-      :style="{ width: 'min(820px, 100vw)' }"
+      :style="{ width: 'min(1100px, 100vw)' }"
       @hide="closeDrawer"
     >
       <div
@@ -607,8 +613,8 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
         </header>
         <dl class="detail-list">
           <div><dt>Chat</dt><dd><code>{{ detail.summary.rootKey.chatId ?? 'Direct / unscoped' }}</code></dd></div>
-          <div><dt>Root message</dt><dd><code>{{ detail.summary.rootKey.messageId }}</code></dd></div>
-          <div><dt>Latest message</dt><dd><code>{{ detail.summary.latestKey.messageId }}</code></dd></div>
+          <div><dt>Root message</dt><dd><ChatLogMessageLink :message-key="detail.summary.rootKey" /></dd></div>
+          <div><dt>Latest message</dt><dd><ChatLogMessageLink :message-key="detail.summary.latestKey" /></dd></div>
         </dl>
         <Message
           v-if="statsError"
@@ -642,19 +648,64 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
             />
           </footer>
         </section>
-        <div class="thread-detail-grid">
+        <div
+          class="thread-detail-grid"
+          :class="{ 'tree-focused': treeFocused }"
+        >
           <section class="thread-tree-panel">
-            <header><span>Reply tree</span><small>Select a node</small></header>
-            <Tree
-              v-model:selection-keys="selectedKeys"
-              v-model:expanded-keys="expandedKeys"
-              :value="treeNodes"
-              selection-mode="single"
-              @node-select="selectTreeNode"
-            />
+            <header>
+              <span>Reply tree</span>
+              <span class="thread-tree-tools">
+                <Button
+                  icon="pi pi-search-minus"
+                  text
+                  rounded
+                  size="small"
+                  aria-label="Zoom reply tree out"
+                  title="Zoom out"
+                  :disabled="treeZoom <= 60"
+                  @click="treeZoom -= 10"
+                />
+                <small>{{ treeZoom }}%</small>
+                <Button
+                  icon="pi pi-search-plus"
+                  text
+                  rounded
+                  size="small"
+                  aria-label="Zoom reply tree in"
+                  title="Zoom in"
+                  :disabled="treeZoom >= 150"
+                  @click="treeZoom += 10"
+                />
+                <Button
+                  :icon="treeFocused ? 'pi pi-window-minimize' : 'pi pi-window-maximize'"
+                  text
+                  rounded
+                  size="small"
+                  :aria-label="treeFocused ? 'Exit focused reply tree' : 'Focus reply tree'"
+                  :title="treeFocused ? 'Show context' : 'Focus tree'"
+                  @click="treeFocused = !treeFocused"
+                />
+              </span>
+            </header>
+            <div class="thread-tree-viewport">
+              <Tree
+                v-model:selection-keys="selectedKeys"
+                v-model:expanded-keys="expandedKeys"
+                :value="treeNodes"
+                :style="{ zoom: treeZoom / 100 }"
+                selection-mode="single"
+                @node-select="selectTreeNode"
+              />
+            </div>
           </section>
           <section class="thread-transcript-panel">
-            <header><span>Context at node</span><small>{{ selectedNode?.messageKey.messageId ?? 'No node selected' }}</small></header>
+            <header>
+              <span>Context at node</span><small><ChatLogMessageLink
+                v-if="selectedNode"
+                :message-key="selectedNode.messageKey"
+              /><template v-else>No node selected</template></small>
+            </header>
             <div
               v-if="transcript.length === 0"
               class="thread-empty"

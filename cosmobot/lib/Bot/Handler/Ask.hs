@@ -378,7 +378,7 @@ startDrawThread label cfg threads message prompt = do
   systemPrompt <- askSystemPrompt cfg message
   answer <- drawTranscript systemPrompt transcript
   responseId <- listToMaybe . rights <$> Chat.replyTo message answer
-  ChatLog.recordSelfMessage message answer
+  ChatLog.recordSelfMessage message responseId answer
   rememberThreadTranscript threads (threadMessageKey message <$> responseId) (appendAssistant answer transcript)
 
 fetchReferencedMessage

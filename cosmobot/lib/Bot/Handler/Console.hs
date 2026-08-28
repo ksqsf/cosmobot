@@ -265,7 +265,7 @@ commitConsoleReply threads active parentMessageKey sessionId message reply = do
         , parentMessageId = (.messageId) <$> parentMessageKey
         , linkedMessageKey = linkedKey
         }
-  ChatLog.recordSelfMessage message reply.answer
+  ChatLog.recordSelfMessage message reply.responseId reply.answer
   finishActiveThread threads active reply.result.transcript
 
 latestConsoleTranscript

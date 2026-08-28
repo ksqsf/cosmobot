@@ -9,6 +9,7 @@ module Bot.ChatLog.Record
   ( ChatLogRecord
   , userRecord
   , selfRecord
+  , selfRecordWithFiles
   , chatLogEntry
   , sanitizeChatLogEntry
   )
@@ -31,14 +32,18 @@ userRecord :: IncomingMessage -> ChatLogRecord
 userRecord message =
   ChatLogRecord message False
 
-selfRecord :: IncomingMessage -> Text -> ChatLogRecord
-selfRecord context body =
+selfRecord :: IncomingMessage -> Maybe MessageId -> Text -> ChatLogRecord
+selfRecord context messageId body =
+  selfRecordWithFiles context messageId body []
+
+selfRecordWithFiles :: IncomingMessage -> Maybe MessageId -> Text -> [MessageFile] -> ChatLogRecord
+selfRecordWithFiles context messageId body files =
   ChatLogRecord
-    (selfMessage context body)
+    (selfMessage context messageId body files)
     True
 
-selfMessage :: IncomingMessage -> Text -> IncomingMessage
-selfMessage context body =
+selfMessage :: IncomingMessage -> Maybe MessageId -> Text -> [MessageFile] -> IncomingMessage
+selfMessage context messageId body files =
   IncomingMessage
     { eventKind = IncomingMessageCreated
     , platform = context.platform
@@ -48,12 +53,12 @@ selfMessage context body =
     , digest = emptyMessageDigest
     , senderId = Nothing
     , senderUsername = Nothing
-    , messageId = Nothing
+    , messageId
     , replyToMessageId = context.messageId
     , mentions = []
     , mentionUsernames = []
     , imageUrls = Chat.replyImageUrls body
-    , files = []
+    , files
     , text = Chat.renderReplyBody body
     , raw = Aeson.object
         [ "type" Aeson..= Aeson.String "bot_message"
@@ -76,6 +81,7 @@ chatLogEntry recordedAt record =
     , mentions = record.message.mentions
     , mentionUsernames = record.message.mentionUsernames
     , imageUrls = record.message.imageUrls
+    , files = record.message.files
     , text = record.message.text
     }
 
@@ -83,6 +89,7 @@ sanitizeChatLogEntry :: ChatLogEntry -> ChatLogEntry
 sanitizeChatLogEntry ChatLogEntry{..} =
   ChatLogEntry
     { imageUrls = map sanitizeImageRef imageUrls
+    , files = map (\file -> file{ref = sanitizeImageRef file.ref}) files
     , text = sanitizeImageText text
     , ..
     }

@@ -246,6 +246,9 @@ main {
 .command-dialog .p-dialog-content {
   padding-top: 0.25rem;
 }
+.command-results {
+  grid-auto-rows: max-content;
+}
 .mobile-links a {
   display: flex;
   align-items: center;

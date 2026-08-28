@@ -34,7 +34,7 @@ withLinkingToolEmittedMessagesToThread sink program =
 
 withRecordingToolSelfMessages
   :: Chat.Chat :> es
-  => (Text -> Eff es ())
+  => (Maybe MessageId -> Text -> [MessageFile] -> Eff es ())
   -> Runtime context (Eff es)
   -> Runtime context (Eff es)
 withRecordingToolSelfMessages recordSelfMessage program =

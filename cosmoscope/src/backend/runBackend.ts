@@ -80,7 +80,10 @@ const backendProxy: AdminBackend = {
     reload: (id) => activeBackend.plugins.reload(id),
     unload: (id) => activeBackend.plugins.unload(id),
   },
-  logs: { list: () => activeBackend.logs.list() },
+  chatLogs: {
+    list: () => activeBackend.chatLogs.list(),
+    window: (query) => activeBackend.chatLogs.window(query),
+  },
 }
 const backendRuntime = ManagedRuntime.make(Layer.succeed(AdminBackendService, backendProxy))
 
