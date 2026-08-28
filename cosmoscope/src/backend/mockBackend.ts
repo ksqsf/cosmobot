@@ -24,7 +24,12 @@ function overview(scenario: FixtureScenario = 'ready'): BackendEffect<OverviewSn
 const mockBackend: AdminBackend = {
   system: { overview },
   tasks: { list: () => Effect.succeed(copy(tasks)) },
-  audit: { recent: () => Effect.succeed([]), subscribe: () => Effect.succeed(() => undefined) },
+  audit: {
+    recent: () => Effect.succeed([]),
+    get: () => Effect.succeed(null),
+    thread: () => Effect.succeed([]),
+    subscribe: () => Effect.succeed(() => undefined),
+  },
   chat: {
     sessionCount: () => Effect.succeed(overviewCounts.sessions),
     list: () => Effect.succeed([]),

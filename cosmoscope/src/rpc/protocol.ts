@@ -18,6 +18,8 @@ export const chatMethods = [
 export const liveAdminMethods = [
   'concurrency.list',
   'audit.recent',
+  'audit.get',
+  'audit.thread',
   'audit.subscribe',
   'resource.list',
   ...chatMethods,

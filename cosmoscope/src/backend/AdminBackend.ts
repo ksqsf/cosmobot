@@ -1,5 +1,5 @@
 import { Context, Data, type Effect } from 'effect'
-import type { AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, FixtureScenario, LogEntry, OverviewSnapshot, Plugin, Task } from '@/types/domain'
+import type { AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, FixtureScenario, LogEntry, OverviewSnapshot, Plugin, Task, ThreadMessageKey } from '@/types/domain'
 
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
 export class ForbiddenError extends Data.TaggedError('ForbiddenError')<{ readonly message: string }> {}
@@ -12,7 +12,9 @@ export interface AdminBackend {
   readonly system: { readonly overview: (scenario?: FixtureScenario) => BackendEffect<OverviewSnapshot> }
   readonly tasks: { readonly list: () => BackendEffect<readonly Task[]> }
   readonly audit: {
-    readonly recent: () => BackendEffect<readonly AuditRecord[]>
+    readonly recent: (limit?: number) => BackendEffect<readonly AuditRecord[]>
+    readonly get: (id: number) => BackendEffect<AuditRecord | null>
+    readonly thread: (key: ThreadMessageKey) => BackendEffect<readonly AuditRecord[]>
     readonly subscribe: (refresh: () => Promise<void>, handler: (record: AuditRecord) => void) => BackendEffect<() => void>
   }
   readonly chat: {
@@ -38,8 +40,12 @@ export const getOverview = (scenario?: FixtureScenario): Effect.Effect<OverviewS
   AdminBackendService.use((backend) => backend.system.overview(scenario))
 export const listTasks: Effect.Effect<readonly Task[], BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.tasks.list())
-export const recentAudit: Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =
-  AdminBackendService.use((backend) => backend.audit.recent())
+export const recentAudit = (limit = 20): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.audit.recent(limit))
+export const getAudit = (id: number): Effect.Effect<AuditRecord | null, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.audit.get(id))
+export const getAuditThread = (key: ThreadMessageKey): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.audit.thread(key))
 export const subscribeAudit = (refresh: () => Promise<void>, handler: (record: AuditRecord) => void): Effect.Effect<() => void, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.audit.subscribe(refresh, handler))
 export const countSessions: Effect.Effect<number, BackendError, AdminBackend> =

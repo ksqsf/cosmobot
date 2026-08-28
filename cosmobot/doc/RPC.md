@@ -101,7 +101,8 @@ streams provides global observation without duplicate audit notifications.
 
 ### `audit.recent`
 
-Returns recent audit records. `limit` is optional and defaults to `20`.
+Returns recent audit records. `limit` is optional, defaults to `20`, and must
+be between `1` and `500`.
 
 ```json
 {"jsonrpc":"2.0","id":"1","method":"audit.recent","params":{"limit":50}}
@@ -121,7 +122,7 @@ Returns one audit record by audit id. The preferred parameter is `audit_id`;
 Returns audit records associated with one platform/chat-scoped message id.
 
 ```json
-{"jsonrpc":"2.0","id":"1","method":"audit.thread","params":{"platform":"telegram","chat_id":42,"message_id":"7"}}
+{"jsonrpc":"2.0","id":"1","method":"audit.thread","params":{"platform":"discord","chat_id":"1152921504606846976","message_id":"7"}}
 ```
 
 ### `audit.thread_messages`
@@ -129,8 +130,12 @@ Returns audit records associated with one platform/chat-scoped message id.
 Returns audit records associated with multiple message ids in one platform/chat.
 
 ```json
-{"jsonrpc":"2.0","id":"1","method":"audit.thread_messages","params":{"platform":"telegram","chat_id":42,"message_ids":["m1","m2"]}}
+{"jsonrpc":"2.0","id":"1","method":"audit.thread_messages","params":{"platform":"discord","chat_id":"1152921504606846976","message_ids":["m1","m2"]}}
 ```
+
+Use a decimal string for `chat_id`; legacy numeric input remains accepted.
+`AgentThreadLinked.linkedMessageKey.chatId` is likewise returned as a decimal
+string so identifiers larger than JavaScript's safe integer range remain exact.
 
 ### `audit.subscribe`
 

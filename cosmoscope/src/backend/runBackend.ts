@@ -12,7 +12,9 @@ const backendProxy: AdminBackend = {
   system: { overview: (scenario) => activeBackend.system.overview(scenario) },
   tasks: { list: () => activeBackend.tasks.list() },
   audit: {
-    recent: () => activeBackend.audit.recent(),
+    recent: (limit) => activeBackend.audit.recent(limit),
+    get: (id) => activeBackend.audit.get(id),
+    thread: (key) => activeBackend.audit.thread(key),
     subscribe: (refresh, handler) => activeBackend.audit.subscribe(refresh, handler),
   },
   chat: {

@@ -60,9 +60,16 @@ parseParams request parser action =
       Right <$> action value
 
 parseLimit :: Aeson.Value -> AesonTypes.Parser Int
-parseLimit =
-  Aeson.withObject "audit.recent params" \o ->
-    fromMaybe 20 <$> o Aeson..:? "limit"
+parseLimit Aeson.Null =
+  pure 20
+parseLimit value =
+  Aeson.withObject "audit.recent params" parse value
+  where
+    parse o = do
+      limit <- fromMaybe 20 <$> o Aeson..:? "limit"
+      if limit >= 1 && limit <= 500
+        then pure limit
+        else fail "limit must be between 1 and 500"
 
 parseAuditId :: Aeson.Value -> AesonTypes.Parser Integer
 parseAuditId =
@@ -74,16 +81,21 @@ parseMessageKey =
   Aeson.withObject "audit.thread params" \o ->
     ThreadMessageKey
       <$> (o Aeson..: "platform" >>= parsePlatform)
-      <*> o Aeson..:? "chat_id"
+      <*> (o Aeson..:? "chat_id" >>= traverse parseChatId)
       <*> (textMessageId <$> o Aeson..: "message_id")
 
 parseMessageKeys :: Aeson.Value -> AesonTypes.Parser [ThreadMessageKey]
 parseMessageKeys =
   Aeson.withObject "audit.thread_messages params" \o -> do
     platform <- o Aeson..: "platform" >>= parsePlatform
-    chatId <- o Aeson..:? "chat_id"
+    chatId <- o Aeson..:? "chat_id" >>= traverse parseChatId
     messageIds <- o Aeson..: "message_ids"
     pure [ThreadMessageKey{platform, chatId, messageId = textMessageId messageId} | messageId <- messageIds]
+
+parseChatId :: Aeson.Value -> AesonTypes.Parser Integer
+parseChatId value =
+  Aeson.withText "chat id" (maybe (fail "chat_id must be an integer") pure . readMaybe . toString) value
+    <|> Aeson.parseJSON value
 
 parsePlatform :: Text -> AesonTypes.Parser ChatPlatform
 parsePlatform = \case

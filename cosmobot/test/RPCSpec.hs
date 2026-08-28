@@ -6,6 +6,8 @@ import qualified Bot.Chat.Types as Chat
 import qualified Bot.Chat.Driver.RPC as RPCDriver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Message
+import Bot.Core.Thread (ThreadMessageKey (..))
+import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as EffectHTTP
 import qualified Bot.Effect.Media as Media
@@ -16,6 +18,7 @@ import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.Media.Object as MediaObject
 import qualified Bot.RPC.Config as RPCConfig
+import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.JSONRPC as JSONRPC
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
@@ -62,6 +65,8 @@ main =
   defaultMain $
     testGroup "rpc"
       [ testCase "request params default to empty object" testRequestParamsDefaultToEmptyObject
+      , testCase "audit.recent bounds its snapshot limit" testAuditRecentBoundsLimit
+      , testCase "thread message key JSON preserves large chat ids" testThreadMessageKeyJsonPreservesLargeChatIds
       , testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "admin.capabilities describes the supported RPC surface" testAdminCapabilities
       , testCase "chat.open_session returns generated session id" testOpenSessionReturnsGeneratedSessionId
@@ -96,6 +101,45 @@ testRequestParamsDefaultToEmptyObject = do
   request.id @?= WireJSONRPC.RequestId (Aeson.String "1")
   request.method @?= "audit.recent"
   request.params @?= Aeson.Null
+
+testAuditRecentBoundsLimit :: IO ()
+testAuditRecentBoundsLimit = do
+  (defaultResponse, zeroResponse, oversizedResponse) <- runRpcStorage ":memory:" $
+    AgentAudit.runAgentAudit do
+      rpcState <- RPC.newRpcState
+      let dispatch params =
+            RPCServer.dispatchRpcRequest rpcState RPCAudit.auditRpcCallbacks $
+              rpcRequest "audit.recent" params
+      (,,)
+        <$> dispatch Aeson.Null
+        <*> dispatch (Aeson.object ["limit" Aeson..= (0 :: Int)])
+        <*> dispatch (Aeson.object ["limit" Aeson..= (501 :: Int)])
+  defaultResponse @?= responseResult (Aeson.toJSON ([] :: [Aeson.Value]))
+  responseErrorCode zeroResponse @?= Just "invalid_params"
+  responseErrorCode oversizedResponse @?= Just "invalid_params"
+
+testThreadMessageKeyJsonPreservesLargeChatIds :: IO ()
+testThreadMessageKeyJsonPreservesLargeChatIds = do
+  let chatId = 1152921504606846976
+      key = ThreadMessageKey PlatformDiscord (Just chatId) "message-1"
+  Aeson.toJSON key @?=
+    Aeson.object
+      [ "platform" Aeson..= ("PlatformDiscord" :: Text)
+      , "chatId" Aeson..= (Just (show chatId) :: Maybe String)
+      , "messageId" Aeson..= ("message-1" :: Text)
+      ]
+  Aeson.fromJSON (Aeson.object ["platform" Aeson..= ("PlatformDiscord" :: Text), "chatId" Aeson..= chatId, "messageId" Aeson..= ("message-1" :: Text)]) @?= Aeson.Success key
+  response <- runRpcStorage ":memory:" $
+    AgentAudit.runAgentAudit do
+      rpcState <- RPC.newRpcState
+      RPCServer.dispatchRpcRequest rpcState RPCAudit.auditRpcCallbacks $
+        rpcRequest "audit.thread" $
+          Aeson.object
+            [ "platform" Aeson..= ("discord" :: Text)
+            , "chat_id" Aeson..= (toText (show chatId :: String))
+            , "message_id" Aeson..= ("message-1" :: Text)
+            ]
+  response @?= responseResult (Aeson.toJSON ([] :: [Aeson.Value]))
 
 testEnabledConfigRequiresToken :: IO ()
 testEnabledConfigRequiresToken =

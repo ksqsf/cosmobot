@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AuditRecord, ChatAttachment, ChatMessage, ChatSession } from '@/types/domain'
+import type { AuditRecord, ChatAttachment, ChatMessage, ChatSession, ThreadMessageKey, TokenUsage, ToolCallTrace } from '@/types/domain'
 
 export const concurrencyListSchema = z.object({
   entries: z.array(z.object({
@@ -12,25 +12,44 @@ export const concurrencyListSchema = z.object({
   })),
 })
 
+const toolCallTraceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  arguments: z.string(),
+}) satisfies z.ZodType<ToolCallTrace>
+const tokenUsageSchema = z.object({
+  prompt_tokens: z.number().int().nonnegative(),
+  completion_tokens: z.number().int().nonnegative(),
+  total_tokens: z.number().int().nonnegative(),
+  prompt_tokens_details: z.object({ cached_tokens: z.number().int().nonnegative() }).optional(),
+}) satisfies z.ZodType<TokenUsage>
+export const threadMessageKeySchema = z.object({
+  platform: z.enum(['PlatformQQ', 'PlatformTelegram', 'PlatformMatrix', 'PlatformDiscord', 'PlatformRPC', 'PlatformACP']),
+  chatId: z.string().regex(/^-?\d+$/).nullable(),
+  messageId: z.string(),
+}) satisfies z.ZodType<ThreadMessageKey>
+
 export const auditRecordSchema = z.object({
   id: z.number().int(),
   occurredAt: z.string(),
   event: z.discriminatedUnion('tag', [
-    z.object({ tag: z.literal('AgentRunStarted'), runId: z.string() }),
-    z.object({ tag: z.literal('ModelTurnStarted'), runId: z.string(), turn: z.number().int() }),
-    z.object({ tag: z.literal('ModelTurnFinished'), runId: z.string(), turn: z.number().int(), answerKind: z.string() }),
-    z.object({ tag: z.literal('ContextCompacted'), runId: z.string(), turn: z.number().int() }),
+    z.object({ tag: z.literal('AgentRunStarted'), runId: z.string(), messageId: z.string().nullable(), maxTurns: z.number().int(), exposedTools: z.array(z.string()), contextStrategy: z.string().nullable() }),
+    z.object({ tag: z.literal('ModelTurnStarted'), runId: z.string(), turn: z.number().int(), messageCount: z.number().int(), exposedTools: z.array(z.string()), toolGroups: z.array(z.tuple([z.string(), z.number().int()])).nullable() }),
+    z.object({ tag: z.literal('ModelTurnFinished'), runId: z.string(), turn: z.number().int(), answerKind: z.string(), contentLength: z.number().int(), toolCalls: z.array(toolCallTraceSchema), tokenUsage: tokenUsageSchema.nullable() }),
+    z.object({ tag: z.literal('ContextCompacted'), runId: z.string(), turn: z.number().int(), messageCount: z.number().int(), tokenUsage: tokenUsageSchema.nullable() }),
     z.object({ tag: z.literal('RecursiveTranscriptFlushed'), runId: z.string(), turn: z.number().int() }),
     z.object({ tag: z.literal('SubAgentRunStarted'), runId: z.string(), childRunId: z.string(), subagentId: z.string() }),
-    z.object({ tag: z.literal('ToolCallStarted'), runId: z.string(), toolCall: z.object({ name: z.string() }) }),
-    z.object({ tag: z.literal('ToolCallFinished'), runId: z.string(), toolName: z.string(), status: z.string() }),
-    z.object({ tag: z.literal('AgentRunFinished'), runId: z.string(), status: z.string() }),
+    z.object({ tag: z.literal('ToolCallStarted'), runId: z.string(), turn: z.number().int(), toolCall: toolCallTraceSchema }),
+    z.object({ tag: z.literal('ToolCallFinished'), runId: z.string(), turn: z.number().int(), toolCallId: z.string(), toolName: z.string(), status: z.string(), result: z.string(), resultLength: z.number().int(), messageIds: z.array(z.string().nullable()) }),
+    z.object({ tag: z.literal('AgentRunFinished'), runId: z.string(), status: z.string(), finalLength: z.number().int(), turnsUsed: z.number().int() }),
     z.object({ tag: z.literal('AgentRunInterrupted'), runId: z.string(), reason: z.string() }),
-    z.object({ tag: z.literal('AgentThreadLinked'), runId: z.string() }),
+    z.object({ tag: z.literal('AgentThreadLinked'), runId: z.string(), linkedMessageId: z.string(), linkedMessageKey: threadMessageKeySchema.nullable(), parentMessageId: z.string().nullable() }),
   ]),
 }) satisfies z.ZodType<AuditRecord>
 
 export const recentAuditSchema = z.array(auditRecordSchema)
+export const auditDetailSchema = auditRecordSchema.nullable()
+export const auditThreadSchema = z.array(auditRecordSchema)
 export const chatSessionSchema = z.object({
   sessionId: z.string().min(1),
   label: z.string().nullable(),

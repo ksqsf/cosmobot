@@ -32,7 +32,27 @@ data ThreadMessageKey = ThreadMessageKey
   , chatId :: !(Maybe Integer)
   , messageId :: !MessageId
   }
-  deriving (Eq, Ord, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+  deriving (Eq, Ord, Show, Generic)
+
+instance Aeson.ToJSON ThreadMessageKey where
+  toJSON ThreadMessageKey{platform, chatId, messageId} =
+    Aeson.object
+      [ "platform" Aeson..= platform
+      , "chatId" Aeson..= (toText . (show :: Integer -> String) <$> chatId)
+      , "messageId" Aeson..= messageId
+      ]
+
+instance Aeson.FromJSON ThreadMessageKey where
+  parseJSON =
+    Aeson.withObject "ThreadMessageKey" \o ->
+      ThreadMessageKey
+        <$> o Aeson..: "platform"
+        <*> (o Aeson..:? "chatId" >>= traverse parseChatId)
+        <*> o Aeson..: "messageId"
+    where
+      parseChatId value =
+        Aeson.withText "chatId" (maybe (fail "chatId must be an integer") pure . readMaybe . toString) value
+          <|> Aeson.parseJSON value
 
 threadMessageKey :: IncomingMessage -> MessageId -> ThreadMessageKey
 threadMessageKey message messageId =

@@ -82,7 +82,7 @@ async function loadTasks(): Promise<void> {
 }
 
 async function loadAudit(): Promise<void> {
-  const result = await runBackend(recentAudit)
+  const result = await runBackend(recentAudit())
   if (result._tag === 'Failure') { auditError.value = result.error.message; return }
   auditError.value = ''; auditRecords.value = [...result.value]; activities.value = auditActivity(result.value)
 }

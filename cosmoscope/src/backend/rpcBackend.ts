@@ -1,11 +1,12 @@
 import { Effect } from 'effect'
+import { ZodError } from 'zod'
 import { RpcBackendError, type AdminBackend } from './AdminBackend'
 import { mockBackend } from './mockBackend'
-import { auditRecordSchema, chatDeleteSchema, chatHistorySchema, chatMessageDoneSchema, chatMessageSchema, chatOpenSchema, chatRenameSchema, chatSendSchema, chatSessionsSchema, chatUploadSchema, concurrencyListSchema, mediaDeleteSchema, recentAuditSchema, resourceListSchema } from '@/rpc/schemas'
+import { auditDetailSchema, auditRecordSchema, auditThreadSchema, chatDeleteSchema, chatHistorySchema, chatMessageDoneSchema, chatMessageSchema, chatOpenSchema, chatRenameSchema, chatSendSchema, chatSessionsSchema, chatUploadSchema, concurrencyListSchema, mediaDeleteSchema, recentAuditSchema, resourceListSchema } from '@/rpc/schemas'
 import type { RpcClient } from '@/rpc/client'
 import type { LiveAdminMethod } from '@/rpc/protocol'
 import type { BackendEffect } from './AdminBackend'
-import type { Task } from '@/types/domain'
+import type { AuditPlatform, Task } from '@/types/domain'
 
 export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>): AdminBackend {
   const supports = (method: LiveAdminMethod): boolean => methods.has(method)
@@ -18,10 +19,22 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       }) : mockBackend.tasks.list,
     },
     audit: {
-      recent: supports('audit.recent') ? () => Effect.tryPromise({
-        try: async () => recentAuditSchema.parse(await client.request('audit.recent', { limit: 20 })),
-        catch: () => new RpcBackendError({ message: 'Could not load recent audit activity.' }),
+      recent: supports('audit.recent') ? (limit = 20) => Effect.tryPromise({
+        try: async () => recentAuditSchema.parse(await client.request('audit.recent', { limit })),
+        catch: (cause) => new RpcBackendError({ message: schemaError(cause, 'Could not load recent audit activity.') }),
       }) : mockBackend.audit.recent,
+      get: supports('audit.get') ? (id) => rpcEffect(
+        'Could not load the audit event.',
+        async () => auditDetailSchema.parse(await client.request('audit.get', { id })),
+      ) : mockBackend.audit.get,
+      thread: supports('audit.thread') ? (key) => rpcEffect(
+        'Could not load the related audit thread.',
+        async () => auditThreadSchema.parse(await client.request('audit.thread', {
+          platform: auditPlatformKey(key.platform),
+          chat_id: key.chatId,
+          message_id: key.messageId,
+        })),
+      ) : mockBackend.audit.thread,
       subscribe: supports('audit.subscribe') ? (refresh, handler) => Effect.sync(() => client.subscribe(
         'overview.audit', 'audit.subscribe', 'audit.unsubscribe', {}, ['audit.event'], refresh,
         (_method, params) => handler(auditRecordSchema.parse(params)),
@@ -70,11 +83,29 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
   }
 }
 
+type RpcAuditPlatform = 'qq' | 'telegram' | 'matrix' | 'discord' | 'rpc' | 'acp'
+
+function auditPlatformKey(platform: AuditPlatform): RpcAuditPlatform {
+  return ({
+    PlatformQQ: 'qq',
+    PlatformTelegram: 'telegram',
+    PlatformMatrix: 'matrix',
+    PlatformDiscord: 'discord',
+    PlatformRPC: 'rpc',
+    PlatformACP: 'acp',
+  } satisfies Record<AuditPlatform, RpcAuditPlatform>)[platform]
+}
+
 function rpcEffect<A>(fallback: string, action: () => Promise<A>): BackendEffect<A> {
   return Effect.tryPromise({
     try: action,
     catch: (cause) => new RpcBackendError({ message: cause instanceof Error ? cause.message : fallback }),
   })
+}
+
+function schemaError(cause: unknown, fallback: string): string {
+  const issue = cause instanceof ZodError ? cause.issues[0] : undefined
+  return issue === undefined ? fallback : `Invalid RPC payload at ${issue.path.join('.') || 'result'} (${issue.code}).`
 }
 
 function fileBase64(file: File): Promise<string> {

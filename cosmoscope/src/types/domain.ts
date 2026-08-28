@@ -28,6 +28,27 @@ export interface AuditRecord {
   event: AuditEvent
 }
 
+export type AuditPlatform = 'PlatformQQ' | 'PlatformTelegram' | 'PlatformMatrix' | 'PlatformDiscord' | 'PlatformRPC' | 'PlatformACP'
+
+export interface ThreadMessageKey {
+  readonly platform: AuditPlatform
+  readonly chatId: string | null
+  readonly messageId: string
+}
+
+export interface ToolCallTrace {
+  readonly id: string
+  readonly name: string
+  readonly arguments: string
+}
+
+export interface TokenUsage {
+  readonly prompt_tokens: number
+  readonly completion_tokens: number
+  readonly total_tokens: number
+  readonly prompt_tokens_details?: { readonly cached_tokens: number } | undefined
+}
+
 export interface ChatSession {
   readonly sessionId: string
   readonly label: string | null
@@ -63,17 +84,17 @@ export interface ChatSend {
 }
 
 export type AuditEvent =
-  | { tag: 'AgentRunStarted'; runId: string }
-  | { tag: 'ModelTurnStarted'; runId: string; turn: number }
-  | { tag: 'ModelTurnFinished'; runId: string; turn: number; answerKind: string }
-  | { tag: 'ContextCompacted'; runId: string; turn: number }
+  | { tag: 'AgentRunStarted'; runId: string; messageId: string | null; maxTurns: number; exposedTools: readonly string[]; contextStrategy: string | null }
+  | { tag: 'ModelTurnStarted'; runId: string; turn: number; messageCount: number; exposedTools: readonly string[]; toolGroups: readonly (readonly [string, number])[] | null }
+  | { tag: 'ModelTurnFinished'; runId: string; turn: number; answerKind: string; contentLength: number; toolCalls: readonly ToolCallTrace[]; tokenUsage: TokenUsage | null }
+  | { tag: 'ContextCompacted'; runId: string; turn: number; messageCount: number; tokenUsage: TokenUsage | null }
   | { tag: 'RecursiveTranscriptFlushed'; runId: string; turn: number }
   | { tag: 'SubAgentRunStarted'; runId: string; childRunId: string; subagentId: string }
-  | { tag: 'ToolCallStarted'; runId: string; toolCall: { name: string } }
-  | { tag: 'ToolCallFinished'; runId: string; toolName: string; status: string }
-  | { tag: 'AgentRunFinished'; runId: string; status: string }
+  | { tag: 'ToolCallStarted'; runId: string; turn: number; toolCall: ToolCallTrace }
+  | { tag: 'ToolCallFinished'; runId: string; turn: number; toolCallId: string; toolName: string; status: string; result: string; resultLength: number; messageIds: readonly (string | null)[] }
+  | { tag: 'AgentRunFinished'; runId: string; status: string; finalLength: number; turnsUsed: number }
   | { tag: 'AgentRunInterrupted'; runId: string; reason: string }
-  | { tag: 'AgentThreadLinked'; runId: string }
+  | { tag: 'AgentThreadLinked'; runId: string; linkedMessageId: string; linkedMessageKey: ThreadMessageKey | null; parentMessageId: string | null }
 
 export interface PlatformSummary {
   id: string

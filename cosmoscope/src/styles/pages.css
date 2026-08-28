@@ -602,10 +602,43 @@
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.65fr);
   gap: var(--space-4);
+  align-items: start;
+}
+.audit-stream {
+  min-width: 0;
+  overflow: hidden;
+}
+.stream-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line-soft);
+}
+.stream-heading > span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.stream-heading small {
+  color: var(--muted);
+}
+.audit-stream .p-listbox {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.audit-stream .p-listbox-list-container {
+  max-height: min(68vh, 720px);
+}
+.audit-stream .p-listbox-option {
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--line-soft);
 }
 .audit-option {
   display: grid;
-  grid-template-columns: 70px 88px minmax(0, 1fr);
+  grid-template-columns: 76px minmax(110px, auto) minmax(0, 1fr);
   align-items: center;
   gap: var(--space-3);
   width: 100%;
@@ -626,10 +659,39 @@
 .audit-option small {
   color: var(--muted);
 }
+.audit-option strong,
+.audit-option small,
+.audit-inspector dd {
+  overflow-wrap: anywhere;
+}
 .inspector pre {
+  max-height: 320px;
   overflow-x: auto;
+  overflow-y: auto;
   padding: var(--space-3);
   background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.audit-inspector {
+  min-width: 0;
+}
+.audit-inspector h3 {
+  margin: var(--space-4) 0 var(--space-2);
+}
+.bounded-note {
+  color: var(--muted);
+}
+.audit-related {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 0;
+  list-style: none;
+}
+.audit-related li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 .drawer-hero {
   display: flex;
@@ -850,6 +912,12 @@
   .overview-grid,
   .audit-layout {
     grid-template-columns: 1fr;
+  }
+  .audit-option {
+    grid-template-columns: 66px minmax(0, 1fr);
+  }
+  .audit-option > span {
+    grid-column: 1 / -1;
   }
   .platform-grid,
   .plugin-grid {
