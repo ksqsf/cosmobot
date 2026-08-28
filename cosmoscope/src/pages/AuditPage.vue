@@ -7,6 +7,7 @@ import InputText from 'primevue/inputtext'
 import Listbox from 'primevue/listbox'
 import Message from 'primevue/message'
 import Select from 'primevue/select'
+import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
 import { getAudit, getAuditThread, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
@@ -125,7 +126,14 @@ async function installSubscription(): Promise<void> {
   const generation = ++subscriptionGeneration
   stopSubscription?.()
   stopSubscription = undefined
+  if (connection.state === 'opening' || connection.state === 'reconnecting') {
+    state.value = events.value.length === 0 ? 'loading' : 'ready'
+    return
+  }
   if (connection.state !== 'authenticated' || !supportsAudit.value) {
+    error.value = connection.state === 'authenticated'
+      ? 'The server does not provide every Audit RPC method required by this page.'
+      : connection.error || 'Connect to cosmobot to load audit events.'
     state.value = events.value.length === 0 ? 'unavailable' : 'ready'
     return
   }
@@ -235,10 +243,10 @@ onUnmounted(() => { subscriptionGeneration += 1; stopSubscription?.(); detailGen
 
     <Message
       v-if="state === 'unavailable'"
-      severity="secondary"
+      severity="error"
       :closable="false"
     >
-      Connect to a cosmobot server with Audit RPC support to inspect live events.
+      {{ error }}
     </Message>
     <Message
       v-else-if="state === 'error'"
@@ -253,13 +261,13 @@ onUnmounted(() => { subscriptionGeneration += 1; stopSubscription?.(); detailGen
         @click="installSubscription"
       />
     </Message>
-    <Message
+    <article
       v-else-if="state === 'loading'"
-      severity="secondary"
-      :closable="false"
+      class="panel manager-loading"
+      aria-label="Loading audit events"
     >
-      Subscribing before loading the audit snapshot…
-    </Message>
+      <Skeleton height="3rem" /><Skeleton height="22rem" />
+    </article>
     <template v-else>
       <p
         class="sr-only"

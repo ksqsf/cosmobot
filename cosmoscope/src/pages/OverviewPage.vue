@@ -1,38 +1,33 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Drawer from 'primevue/drawer'
 import Message from 'primevue/message'
+import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
-import FixtureState from '@/components/FixtureState.vue'
 import PageHeading from '@/components/PageHeading.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { countResources, countSessions, getOverview, listPlugins, listTasks, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
+import { countResources, countSessions, listTasks, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
 import { auditActivity, auditFailureCount, mergeAuditRecords, taskCounts } from '@/backend/overview'
 import { runBackend } from '@/backend/runBackend'
 import { useConnectionStore } from '@/stores/connection'
-import { fixtureScenarios, type Activity, type AuditRecord, type FixtureScenario, type OverviewSnapshot, type Task } from '@/types/domain'
+import type { Activity, AuditRecord, Task } from '@/types/domain'
 import type { LiveAdminMethod } from '@/rpc/protocol'
 
-const route = useRoute()
 const router = useRouter()
 const connection = useConnectionStore()
 const today = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date())
-const requestedScenario = route.query['scenario']
-const scenario = ref<FixtureScenario>(isFixtureScenario(requestedScenario) ? requestedScenario : 'ready')
-const state = ref<FixtureScenario>('loading')
+type PageState = 'loading' | 'ready' | 'error'
+const state = ref<PageState>('loading')
 const error = ref('')
-const snapshot = ref<OverviewSnapshot>({ tasks: [], activity: [], platforms: [], sessionCount: 0, resourceCount: 0 })
 const tasks = ref<Task[]>([])
 const auditRecords = ref<AuditRecord[]>([])
 const activities = ref<Activity[]>([])
 const sessionCount = ref(0)
 const resourceCount = ref(0)
-const loadedPlugins = ref(0)
-const pluginCount = ref(0)
 const taskError = ref('')
 const auditError = ref('')
 const sessionError = ref('')
@@ -47,32 +42,6 @@ const counts = computed(() => taskCounts(tasks.value))
 const recentFailures = computed(() => supports('audit.recent')
   ? auditFailureCount(auditRecords.value)
   : activities.value.filter(({ tone }) => tone === 'danger').length)
-
-function isFixtureScenario(value: unknown): value is FixtureScenario {
-  return typeof value === 'string' && fixtureScenarios.some((scenario) => scenario === value)
-}
-
-async function loadFixture(): Promise<void> {
-  state.value = 'loading'; error.value = ''
-  const [overviewResult, pluginResult] = await Promise.all([
-    runBackend(getOverview(connection.state === 'authenticated' ? 'ready' : scenario.value)), runBackend(listPlugins),
-  ])
-  if (overviewResult._tag === 'Failure') {
-    error.value = overviewResult.error.message
-    state.value = overviewResult.error._tag === 'OfflineError' ? 'offline' : overviewResult.error._tag === 'ForbiddenError' ? 'forbidden' : 'error'
-    return
-  }
-  snapshot.value = overviewResult.value
-  tasks.value = [...overviewResult.value.tasks]
-  activities.value = [...overviewResult.value.activity]
-  sessionCount.value = overviewResult.value.sessionCount
-  resourceCount.value = overviewResult.value.resourceCount
-  if (pluginResult._tag === 'Success') {
-    pluginCount.value = pluginResult.value.length
-    loadedPlugins.value = pluginResult.value.filter(({ status }) => status === 'Loaded').length
-  }
-  state.value = connection.state !== 'authenticated' && scenario.value === 'empty' ? 'empty' : 'ready'
-}
 
 async function loadTasks(): Promise<void> {
   const result = await runBackend(listTasks)
@@ -128,7 +97,15 @@ async function loadSlowSnapshots(): Promise<void> {
 }
 
 async function refreshLive(): Promise<void> {
-  if (connection.state !== 'authenticated') return
+  if (connection.state === 'opening' || connection.state === 'reconnecting') { state.value = 'loading'; return }
+  if (connection.state !== 'authenticated') {
+    state.value = 'error'
+    error.value = connection.error || 'Connect to cosmobot to load the overview.'
+    return
+  }
+  state.value = 'loading'
+  error.value = ''
+  auditError.value = supports('audit.recent') ? '' : 'The server does not support audit.recent.'
   if (supports('audit.subscribe') && supports('audit.recent')) {
     if (stopAuditSubscription === undefined) await installAuditSubscription()
   }
@@ -137,10 +114,12 @@ async function refreshLive(): Promise<void> {
     stopAuditSubscription = undefined
   }
   await Promise.all([
-    supports('concurrency.list') ? loadTasks() : Promise.resolve(),
-    supports('chat.list_sessions') ? loadSessions() : Promise.resolve(),
-    supports('resource.list') ? loadResources() : Promise.resolve(),
+    supports('concurrency.list') ? loadTasks() : Promise.resolve().then(() => { taskError.value = 'The server does not support concurrency.list.' }),
+    supports('chat.list_sessions') ? loadSessions() : Promise.resolve().then(() => { sessionError.value = 'The server does not support chat.list_sessions.' }),
+    supports('resource.list') ? loadResources() : Promise.resolve().then(() => { resourceError.value = 'The server does not support resource.list.' }),
+    supports('audit.recent') && !supports('audit.subscribe') ? loadAudit() : Promise.resolve(),
   ])
+  state.value = 'ready'
   startPolling()
 }
 
@@ -158,11 +137,12 @@ function onVisibilityChange(): void {
   }
 }
 function inspect(task: Task): void { selectedTask.value = task; drawerOpen.value = true }
+function formatTaskTime(value: string): string { return new Date(value).toLocaleTimeString() }
+function taskElapsed(task: Task): string {
+  const end = task.finishedAt === null ? Date.now() : Date.parse(task.finishedAt)
+  return `${String(Math.max(0, Math.round((end - Date.parse(task.startedAt)) / 60_000)))}m`
+}
 
-watch(scenario, (value) => {
-  void router.replace({ query: value === 'ready' ? {} : { scenario: value } })
-  void loadFixture().then(refreshLive)
-})
 watch(() => connection.methods, () => {
   if (connection.state === 'authenticated') void refreshLive()
 })
@@ -171,7 +151,6 @@ watch(() => connection.state, (next) => {
   else if (next === 'offline' || next === 'failed') stopLive()
 })
 onMounted(async () => {
-  await loadFixture()
   await refreshLive()
   document.addEventListener('visibilitychange', onVisibilityChange)
 })
@@ -197,11 +176,39 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
         @click="router.push('/chat')"
       />
     </PageHeading>
-    <FixtureState
-      :state="state"
-      :message="error"
-      @retry="scenario = 'ready'"
+    <div
+      v-if="state === 'loading'"
+      class="metric-grid"
+      aria-label="Loading overview"
     >
+      <article
+        v-for="index in 4"
+        :key="index"
+        class="metric"
+      >
+        <Skeleton
+          width="2rem"
+          height="2rem"
+        /><Skeleton
+          width="4rem"
+          height="2.2rem"
+        /><Skeleton width="8rem" />
+      </article>
+    </div>
+    <Message
+      v-else-if="state === 'error'"
+      severity="error"
+      :closable="false"
+    >
+      {{ error }}
+      <Button
+        label="Retry"
+        size="small"
+        text
+        @click="refreshLive"
+      />
+    </Message>
+    <template v-else>
       <div class="metric-grid">
         <RouterLink
           class="metric"
@@ -209,8 +216,8 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
         >
           <div class="metric-top">
             <span class="pi pi-bolt metric-icon violet" /><Tag
-              :value="supports('concurrency.list') ? 'Live' : 'Demo'"
-              :severity="supports('concurrency.list') ? 'success' : 'secondary'"
+              :value="supports('concurrency.list') ? 'Live' : 'Unavailable'"
+              :severity="supports('concurrency.list') ? 'success' : 'warn'"
             />
           </div>
           <strong>{{ counts.active }}</strong><p>Active tasks</p>
@@ -225,8 +232,8 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
         >
           <div class="metric-top">
             <span class="pi pi-comments metric-icon green" /><Tag
-              :value="supports('chat.list_sessions') ? 'Live' : 'Demo'"
-              :severity="supports('chat.list_sessions') ? 'success' : 'secondary'"
+              :value="supports('chat.list_sessions') ? 'Live' : 'Unavailable'"
+              :severity="supports('chat.list_sessions') ? 'success' : 'warn'"
             />
           </div>
           <strong>{{ sessionCount }}</strong><p>Chat sessions</p>
@@ -241,8 +248,8 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
         >
           <div class="metric-top">
             <span class="pi pi-box metric-icon blue" /><Tag
-              :value="supports('resource.list') ? 'Live' : 'Demo'"
-              :severity="supports('resource.list') ? 'success' : 'secondary'"
+              :value="supports('resource.list') ? 'Live' : 'Unavailable'"
+              :severity="supports('resource.list') ? 'success' : 'warn'"
             />
           </div>
           <strong>{{ resourceCount }}</strong><p>Managed resources</p>
@@ -253,24 +260,12 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
         </RouterLink>
         <RouterLink
           class="metric"
-          to="/plugins"
-        >
-          <div class="metric-top">
-            <span class="pi pi-objects-column metric-icon blue" /><Tag
-              value="Demo"
-              severity="secondary"
-            />
-          </div>
-          <strong>{{ loadedPlugins }} / {{ pluginCount }}</strong><p>Plugins loaded</p><small>Fixture until Phase 7</small>
-        </RouterLink>
-        <RouterLink
-          class="metric"
           to="/audit"
         >
           <div class="metric-top">
             <span class="pi pi-exclamation-triangle metric-icon red" /><Tag
-              :value="supports('audit.recent') ? 'Live' : 'Demo'"
-              :severity="supports('audit.recent') ? 'success' : 'secondary'"
+              :value="supports('audit.recent') ? 'Live' : 'Unavailable'"
+              :severity="supports('audit.recent') ? 'success' : 'warn'"
             />
           </div>
           <strong>{{ recentFailures }}</strong><p>Recent failures</p>
@@ -298,7 +293,7 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
           </Message>
           <DataTable
             v-else
-            :value="tasks.filter(({ status }) => status === 'running' || status === 'waiting').slice(0, 4)"
+            :value="tasks.filter(({ status }) => status === 'running').slice(0, 4)"
             data-key="id"
             selection-mode="single"
             @row-select="inspect($event.data)"
@@ -308,7 +303,7 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
               header="Task"
             >
               <template #body="{ data }">
-                <span class="task-name"><span class="platform-icon">{{ data.platform[0] }}</span><span><strong>{{ data.label }}</strong><small>#{{ data.id }} · {{ data.platform }}</small></span></span>
+                <span class="task-name"><span class="platform-icon"><i class="pi pi-bolt" /></span><span><strong>{{ data.label }}</strong><small>Task #{{ data.id }}</small></span></span>
               </template>
             </Column>
             <Column
@@ -320,18 +315,24 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
               </template>
             </Column>
             <Column
-              field="started"
               header="Started"
-            /><Column
-              field="elapsed"
+            >
+              <template #body="{ data }">
+                {{ formatTaskTime(data.startedAt) }}
+              </template>
+            </Column><Column
               header="Elapsed"
-            />
+            >
+              <template #body="{ data }">
+                {{ taskElapsed(data) }}
+              </template>
+            </Column>
           </DataTable>
         </article>
         <article class="panel activity-panel">
           <div class="panel-heading">
             <div><h2>Recent activity</h2><p>Agent audit events</p></div><Tag
-              :value="supports('audit.subscribe') ? 'Live' : 'Demo'"
+              :value="supports('audit.subscribe') ? 'Live' : 'Snapshot'"
               :severity="supports('audit.subscribe') ? 'success' : 'secondary'"
             />
           </div>
@@ -360,27 +361,7 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
           </ol>
         </article>
       </div>
-      <article class="panel platform-panel">
-        <div class="panel-heading">
-          <div><h2>Platforms</h2><p>Connection and message activity</p></div><Tag
-            value="Demo"
-            severity="secondary"
-          />
-        </div>
-        <div class="platform-grid">
-          <div
-            v-for="platform in snapshot.platforms"
-            :key="platform.id"
-            class="platform-card"
-          >
-            <span class="platform-icon">{{ platform.name[0] }}</span><div><strong>{{ platform.name }}</strong><small><StatusBadge :status="platform.state" /> · {{ platform.messages }} messages</small></div><span
-              class="sparkline"
-              aria-label="Demo historical trend"
-            >▂▄▃▆▅▇</span>
-          </div>
-        </div>
-      </article>
-    </FixtureState>
+    </template>
     <Drawer
       v-model:visible="drawerOpen"
       position="right"
@@ -392,21 +373,15 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
       <template v-if="selectedTask">
         <div class="stack stack-loose">
           <div class="drawer-hero">
-            <span class="platform-icon">{{ selectedTask.platform[0] }}</span><div><h2>{{ selectedTask.label }}</h2><StatusBadge :status="selectedTask.status" /></div>
+            <span class="platform-icon"><i class="pi pi-bolt" /></span><div><h2>{{ selectedTask.label }}</h2><StatusBadge :status="selectedTask.status" /></div>
           </div>
           <dl class="detail-list">
-            <div><dt>ID</dt><dd>#{{ selectedTask.id }}</dd></div><div><dt>Owner</dt><dd><code>{{ selectedTask.owner }}</code></dd></div><div><dt>Started</dt><dd>{{ selectedTask.started }}</dd></div><div><dt>Elapsed</dt><dd>{{ selectedTask.elapsed }}</dd></div>
+            <div><dt>ID</dt><dd>#{{ selectedTask.id }}</dd></div><div><dt>Started</dt><dd>{{ formatTaskTime(selectedTask.startedAt) }}</dd></div><div><dt>Elapsed</dt><dd>{{ taskElapsed(selectedTask) }}</dd></div>
           </dl>
           <Button
             label="Open task page"
             @click="router.push(`/tasks/${selectedTask?.id}`)"
           />
-          <Message
-            severity="secondary"
-            :closable="false"
-          >
-            Read-only in Phase 3.
-          </Message>
         </div>
       </template>
     </Drawer>

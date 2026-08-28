@@ -3,6 +3,9 @@
   display: grid;
   grid-template-columns: 238px minmax(0, 1fr);
 }
+.shell.sidebar-collapsed {
+  grid-template-columns: 68px minmax(0, 1fr);
+}
 .sidebar {
   position: sticky;
   z-index: 30;
@@ -14,11 +17,40 @@
   border-right: 1px solid var(--line-soft);
   background: var(--sidebar);
 }
+.sidebar-toggle {
+  position: absolute !important;
+  z-index: 1;
+  top: 18px;
+  right: -14px;
+  width: 28px !important;
+  height: 28px !important;
+  border-color: var(--line) !important;
+  background: var(--sidebar) !important;
+}
 .brand {
   display: flex;
   gap: 11px;
   align-items: center;
   padding: 0 10px 22px;
+}
+.sidebar.collapsed .brand,
+.sidebar.collapsed .environment,
+.sidebar.collapsed .user-button,
+.sidebar.collapsed .navigation-menu-item {
+  justify-content: center;
+}
+.sidebar.collapsed .brand {
+  padding-inline: 0;
+}
+.sidebar.collapsed .environment,
+.sidebar.collapsed .user-button {
+  padding-inline: 0;
+}
+.sidebar.collapsed .brand > span:last-child,
+.sidebar.collapsed .environment > span:last-child,
+.sidebar.collapsed .user-button > span:last-child,
+.sidebar.collapsed .navigation-menu-item > span:nth-child(2) {
+  display: none;
 }
 .brand-mark {
   display: grid;
@@ -137,10 +169,51 @@
   align-items: center;
   gap: 9px;
 }
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.1;
+  text-decoration: none;
+}
+.connection-status > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.connection-status small {
+  color: var(--faint);
+  font-size: 0.62rem;
+  font-weight: 500;
+}
+.connection-status-icon { font-size: 0.92rem; }
+.connection-status.connection-success .connection-status-icon { color: var(--green); }
+.connection-status.connection-warning .connection-status-icon { color: var(--amber); }
+.connection-status.connection-danger .connection-status-icon { color: var(--red); }
+.connection-status.connection-muted .connection-status-icon { color: var(--faint); }
 .command-button {
   display: flex;
   justify-content: space-between;
   width: 220px;
+}
+.sidebar-command {
+  width: 100%;
+  margin-bottom: 12px;
+  font-size: 0.78rem;
+}
+.sidebar-command > span {
+  flex: 1;
+  text-align: left;
+}
+.sidebar.collapsed .sidebar-command {
+  width: 42px;
+  align-self: center;
+  justify-content: center;
+  padding-inline: 0;
 }
 kbd {
   padding: 2px 5px;
@@ -157,8 +230,21 @@ main {
 .mobile-links,
 .command-results {
   display: grid;
+  align-content: start;
   gap: 4px;
+  height: min(400px, 55vh);
   margin-top: 12px;
+  overflow-y: auto;
+}
+.command-dialog {
+  position: absolute;
+  top: clamp(64px, 12vh, 120px);
+  width: min(620px, calc(100vw - 32px));
+  margin: 0;
+  transform: none !important;
+}
+.command-dialog .p-dialog-content {
+  padding-top: 0.25rem;
 }
 .mobile-links a {
   display: flex;
@@ -168,7 +254,68 @@ main {
   border-radius: 8px;
 }
 .command-result {
-  justify-content: flex-start;
+  display: grid !important;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 10px !important;
+  text-align: left;
+}
+.command-result.selected {
+  color: var(--text) !important;
+  background: var(--accent-soft) !important;
+}
+.command-result-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.command-result-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.command-result-copy small {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 36px 16px;
+  color: var(--muted);
+  text-align: center;
+}
+.command-empty i {
+  margin-bottom: 4px;
+  font-size: 1.35rem;
+}
+.command-empty small {
+  color: var(--faint);
+}
+.command-help {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--faint);
+  font-size: 0.7rem;
+}
+.command-help span {
+  display: flex;
+  gap: 4px;
+  align-items: center;
 }
 @media (max-width: 820px) {
   .shell {

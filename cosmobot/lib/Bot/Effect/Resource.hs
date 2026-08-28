@@ -20,6 +20,7 @@ module Bot.Effect.Resource
   , ResourceLoader (..)
   , resourceLoader
   , SomeResourceObject (..)
+  , AssociatedResource (..)
   , ResourceError (..)
   , ttlFromMinutes
   , ownerFromMessage
@@ -33,6 +34,7 @@ module Bot.Effect.Resource
   , withResource
   , list
   , listCreatedByRuns
+  , listAssociated
   , detail
   , destroy
   , rename
@@ -51,6 +53,7 @@ data Resource :: Effect where
   With :: ResourceObject m a => ResourceAccess -> ResourceId -> Maybe Handle -> (a -> m b) -> Resource m (Either ResourceError b)
   List :: ResourceAccess -> Resource m [SomeResourceObject]
   ListCreatedByRuns :: ResourceAccess -> [Text] -> Resource m [SomeResourceObject]
+  ListAssociated :: ResourceAccess -> Handle -> Resource m [AssociatedResource]
   Detail :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError Text)
   Destroy :: ResourceAccess -> ResourceId -> Resource m (Either ResourceError ())
   Rename :: ResourceAccess -> ResourceId -> ResourceId -> Resource m (Either ResourceError ResourceId)
@@ -93,6 +96,9 @@ list = send . List
 
 listCreatedByRuns :: Resource :> es => ResourceAccess -> [Text] -> Eff es [SomeResourceObject]
 listCreatedByRuns access = send . ListCreatedByRuns access
+
+listAssociated :: Resource :> es => ResourceAccess -> Handle -> Eff es [AssociatedResource]
+listAssociated access = send . ListAssociated access
 
 detail :: Resource :> es => ResourceAccess -> ResourceId -> Eff es (Either ResourceError Text)
 detail access = send . Detail access

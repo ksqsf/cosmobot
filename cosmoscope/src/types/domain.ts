@@ -1,16 +1,38 @@
-export const fixtureScenarios = ['ready', 'loading', 'empty', 'error', 'offline', 'forbidden'] as const
-export type FixtureScenario = typeof fixtureScenarios[number]
 export type Status = 'running' | 'waiting' | 'completed' | 'failed' | 'stopped' | 'degraded'
 
+export type TaskStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+
 export interface Task {
-  id: string
+  id: number
   label: string
-  detail: string
-  owner: string
-  platform: string
-  status: Status
-  started: string
-  elapsed: string
+  status: TaskStatus
+  error: string | null
+  startedAt: string
+  finishedAt: string | null
+}
+
+export type ResourceProbe =
+  | { readonly ok: true; readonly result: string }
+  | { readonly ok: false; readonly error: string }
+
+export interface Resource {
+  readonly id: string
+  readonly type: string
+  readonly sessionId: string | null
+  readonly description: string
+  readonly probe: ResourceProbe
+  readonly remainingLifeMinutes: number | null
+}
+
+export interface ResourceOperationResult {
+  readonly ok: boolean
+  readonly code?: string | undefined
+  readonly error?: string | undefined
+}
+
+export interface AssociatedResource {
+  readonly id: string
+  readonly type: string
 }
 
 export interface Activity {
@@ -96,13 +118,6 @@ export type AuditEvent =
   | { tag: 'AgentRunInterrupted'; runId: string; reason: string }
   | { tag: 'AgentThreadLinked'; runId: string; linkedMessageId: string; linkedMessageKey: ThreadMessageKey | null; parentMessageId: string | null }
 
-export interface PlatformSummary {
-  id: string
-  name: string
-  state: 'Connected' | 'Degraded'
-  messages: number
-}
-
 export interface Plugin {
   id: string
   name: string
@@ -121,12 +136,4 @@ export interface LogEntry {
   source: string
   message: string
   fields: string
-}
-
-export interface OverviewSnapshot {
-  tasks: Task[]
-  activity: Activity[]
-  platforms: PlatformSummary[]
-  sessionCount: number
-  resourceCount: number
 }

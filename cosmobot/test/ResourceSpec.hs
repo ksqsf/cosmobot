@@ -745,8 +745,11 @@ testAssociatedCleanup :: Assertion
 testAssociatedCleanup = runManaged do
   parent <- Concurrency.fork "parent" (pure ())
   (testInit, destroyed) <- newTestInit "child" False
-  _ <- Resource.createAssociated @TestObject (Just parent) Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
+  resourceId <- Resource.createAssociated @TestObject (Just parent) Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
+  access <- expectRight (Resource.accessFromMessage ownerMessage)
+  Resource.listAssociated access parent >>= liftIO . (@?= [Resource.AssociatedResource resourceId "Test"])
   Resource.destroyAssociated parent >>= liftIO . (@?= [Right ()])
+  Resource.listAssociated access parent >>= liftIO . (@?= [])
   liftIO $ runEff $ runConcurrent $ void (MVar.takeMVar destroyed)
 
 testPersistentRestart :: Assertion

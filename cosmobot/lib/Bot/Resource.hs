@@ -175,6 +175,7 @@ runResourceOperation stateRef localEnv operation =
       Resource.With access resourceId user callback -> withIn stateRef unlift access resourceId user callback
       Resource.List access -> listIn stateRef access
       Resource.ListCreatedByRuns access runIds -> listCreatedByRunsIn stateRef access runIds
+      Resource.ListAssociated access parent -> listAssociatedIn stateRef access parent
       Resource.Detail access resourceId -> detailIn stateRef access resourceId
       Resource.Destroy access resourceId -> destroyIn stateRef access resourceId
       Resource.Rename access resourceId newId -> renameIn stateRef access resourceId newId
@@ -350,6 +351,17 @@ listCreatedByRunsIn
 listCreatedByRunsIn stateRef access runIds =
   listMatchingIn stateRef access \resource ->
     maybe False (`elem` runIds) resource.creatorRunId
+
+listAssociatedIn
+  :: Prim :> es
+  => IORef (ManagerState es)
+  -> ResourceAccess
+  -> Concurrency.Handle
+  -> Eff es [AssociatedResource]
+listAssociatedIn stateRef access parent =
+  map toAssociated . Map.toAscList . Map.filter (\resource -> resource.createdBy == Just parent && mayAccess access resource) . (.resources) <$> readIORef stateRef
+  where
+    toAssociated (resourceId, resource) = AssociatedResource resourceId resource.resourceType
 
 listMatchingIn
   :: (Prim :> es, IOE :> es)

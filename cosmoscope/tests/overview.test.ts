@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { auditActivity, auditFailureCount, mergeAuditRecords, taskCounts } from '@/backend/overview'
 import type { AuditEvent, AuditRecord, Task } from '@/types/domain'
 
-const task = (status: Task['status']): Task => ({ id: status, label: status, detail: '', owner: '', platform: 'runtime', status, started: '', elapsed: '' })
+const task = (status: Task['status'], id: number): Task => ({ id, label: status, status, error: null, startedAt: '2026-08-28T12:00:00Z', finishedAt: status === 'running' ? null : '2026-08-28T12:01:00Z' })
 const audit = (id: number, event: AuditEvent): AuditRecord => ({
   id,
   occurredAt: '2026-08-28T12:00:00Z',
@@ -14,8 +14,8 @@ const toolFinished = (status: string): Extract<AuditEvent, { tag: 'ToolCallFinis
 })
 
 describe('overview derivations', () => {
-  it('counts task states without treating stopped work as active', () => {
-    expect(taskCounts((['running', 'waiting', 'completed', 'failed', 'stopped'] satisfies Task['status'][]).map(task))).toEqual({ active: 2, completed: 1, failed: 1 })
+  it('counts only running manager tasks as active', () => {
+    expect(taskCounts((['running', 'completed', 'failed', 'cancelled'] satisfies Task['status'][]).map(task))).toEqual({ active: 1, completed: 1, failed: 1 })
   })
 
   it('counts audit failures from failed tools and interrupted runs', () => {

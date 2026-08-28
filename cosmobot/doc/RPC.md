@@ -227,12 +227,17 @@ always listed; finished task history is retained for 12 hours.
 | `resource.rename` | `id`, `newId` | the renamed `id` |
 | `resource.keep_alive` | `id` | `id` and `refreshed` |
 | `resource.make_permanent` | `id` | `id` and `permanent` |
+| `resource.list_associated` | concurrency `id` | associated resource `id` and `type` entries |
 | `resource.destroy_associated` | concurrency `id` | per-resource cleanup `results` |
 
 `resource.rename` also accepts `new_id`. Resource list entries contain `id`,
 `type`, `sessionId`, `description`, `probe`, and `remainingLifeMinutes`.
 `remainingLifeMinutes` is `null` for permanent resources. `probe` contains an
 `ok` boolean and either `result` or `error`.
+
+`resource.list_associated` returns the IDs and types of every resource that a
+subsequent `resource.destroy_associated` call would target, including resources
+hidden from the ordinary user-facing resource list.
 
 ```json
 {"jsonrpc":"2.0","id":"2","method":"resource.keep_alive","params":{"id":"sandbox-1"}}

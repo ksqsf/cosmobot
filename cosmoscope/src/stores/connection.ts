@@ -31,7 +31,7 @@ function saveConnection(connection: SavedConnection | undefined): void {
 export const useConnectionStore = defineStore('connection', () => {
   const client = new RpcClient()
   const savedConnection = loadSavedConnection()
-  const state = ref<ConnectionState>('offline')
+  const state = ref<ConnectionState>(savedConnection === undefined ? 'offline' : 'opening')
   const endpoint = ref(savedConnection?.endpoint ?? '')
   const error = ref('')
   const serverVersion = ref('')

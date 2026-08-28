@@ -11,6 +11,7 @@ import InputIcon from 'primevue/inputicon'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
+import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import type { MenuItem } from 'primevue/menuitem'
@@ -36,6 +37,7 @@ const messages = ref<readonly ChatMessage[]>([])
 const selectedId = ref<string>()
 const query = ref('')
 const error = ref('')
+const sessionsLoading = ref(true)
 const loading = ref(false)
 const sending = ref(false)
 const uploading = ref(false)
@@ -115,9 +117,20 @@ async function selectSession(sessionId: string): Promise<void> {
 }
 
 async function loadSessions(preferredId?: string): Promise<void> {
-  if (!live.value) { sessions.value = []; messages.value = []; return }
+  if (connection.state === 'opening' || connection.state === 'reconnecting') { sessionsLoading.value = true; return }
+  if (!live.value) {
+    sessionsLoading.value = false
+    sessions.value = []; messages.value = []
+    error.value = connection.state === 'authenticated'
+      ? 'The server does not provide every Chat RPC method required by this page.'
+      : connection.error || 'Connect to cosmobot to load chat sessions.'
+    return
+  }
+  sessionsLoading.value = true
   const result = await runBackend(listChatSessions)
-  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  sessionsLoading.value = false
+  if (result._tag === 'Failure') { sessions.value = []; error.value = result.error.message; return }
+  error.value = ''
   sessions.value = [...result.value]
   const routeId = typeof route.params['sessionId'] === 'string' ? route.params['sessionId'] : undefined
   const requestedId = preferredId ?? routeId
@@ -265,9 +278,9 @@ function previewMarkdownImage(event: MouseEvent): void {
   previewImage.value = safeImageUrl(event.target.currentSrc || event.target.src, window.location.href)
 }
 
-watch(() => connection.state, (state) => {
-  if (state === 'authenticated') void loadSessions()
-  else if (state === 'offline' || state === 'failed') {
+watch([() => connection.state, () => connection.methods], ([state]) => {
+  void loadSessions()
+  if (state === 'offline' || state === 'failed') {
     stopSubscription?.()
     stopSubscription = undefined
     selectedId.value = undefined
@@ -296,12 +309,19 @@ onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discard
         @click="createSession"
       />
     </PageHeading>
+    <article
+      v-if="sessionsLoading"
+      class="panel manager-loading"
+      aria-label="Loading chat sessions"
+    >
+      <Skeleton height="3rem" /><Skeleton height="22rem" />
+    </article>
     <Message
-      v-if="!live"
-      severity="secondary"
+      v-else-if="!live"
+      severity="error"
       :closable="false"
     >
-      Connect to cosmobot to load real chat sessions. This page does not substitute fixture conversations.
+      {{ error }}
     </Message>
     <Message
       v-else-if="error"

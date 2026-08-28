@@ -1,16 +1,20 @@
 import { Context, Data, type Effect } from 'effect'
-import type { AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, FixtureScenario, LogEntry, OverviewSnapshot, Plugin, Task, ThreadMessageKey } from '@/types/domain'
+import type { AssociatedResource, AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, LogEntry, Plugin, Resource, ResourceOperationResult, Task, ThreadMessageKey } from '@/types/domain'
 
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
-export class ForbiddenError extends Data.TaggedError('ForbiddenError')<{ readonly message: string }> {}
-export class FixtureError extends Data.TaggedError('FixtureError')<{ readonly message: string }> {}
 export class RpcBackendError extends Data.TaggedError('RpcBackendError')<{ readonly message: string }> {}
-export type BackendError = OfflineError | ForbiddenError | FixtureError | RpcBackendError
+export type BackendError = OfflineError | RpcBackendError
 export type BackendEffect<A> = Effect.Effect<A, BackendError>
 
 export interface AdminBackend {
-  readonly system: { readonly overview: (scenario?: FixtureScenario) => BackendEffect<OverviewSnapshot> }
-  readonly tasks: { readonly list: () => BackendEffect<readonly Task[]> }
+  readonly tasks: {
+    readonly list: () => BackendEffect<readonly Task[]>
+    readonly lookup: (id: number) => BackendEffect<Task | null>
+    readonly cancel: (id: number) => BackendEffect<boolean>
+    readonly await: (id: number) => BackendEffect<void>
+    readonly associated: (id: number) => BackendEffect<readonly AssociatedResource[]>
+    readonly destroyAssociated: (id: number) => BackendEffect<readonly ResourceOperationResult[]>
+  }
   readonly audit: {
     readonly recent: (limit?: number) => BackendEffect<readonly AuditRecord[]>
     readonly get: (id: number) => BackendEffect<AuditRecord | null>
@@ -30,16 +34,32 @@ export interface AdminBackend {
     readonly send: (message: ChatSend) => BackendEffect<string>
     readonly subscribe: (sessionId: string, refresh: () => Promise<void>, handler: (message: ChatMessage) => void, done: (messageId: string) => void) => BackendEffect<() => void>
   }
-  readonly resources: { readonly count: () => BackendEffect<number> }
+  readonly resources: {
+    readonly count: () => BackendEffect<number>
+    readonly list: () => BackendEffect<readonly Resource[]>
+    readonly detail: (id: string) => BackendEffect<string>
+    readonly destroy: (id: string) => BackendEffect<void>
+    readonly rename: (id: string, newId: string) => BackendEffect<string>
+    readonly keepAlive: (id: string) => BackendEffect<void>
+    readonly makePermanent: (id: string) => BackendEffect<void>
+  }
   readonly plugins: { readonly list: () => BackendEffect<readonly Plugin[]> }
   readonly logs: { readonly list: () => BackendEffect<readonly LogEntry[]> }
 }
 
 export const AdminBackendService = Context.Service<AdminBackend>('Cosmoscope/AdminBackend')
-export const getOverview = (scenario?: FixtureScenario): Effect.Effect<OverviewSnapshot, BackendError, AdminBackend> =>
-  AdminBackendService.use((backend) => backend.system.overview(scenario))
 export const listTasks: Effect.Effect<readonly Task[], BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.tasks.list())
+export const lookupTask = (id: number): Effect.Effect<Task | null, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.tasks.lookup(id))
+export const cancelTask = (id: number): Effect.Effect<boolean, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.tasks.cancel(id))
+export const awaitTask = (id: number): Effect.Effect<void, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.tasks.await(id))
+export const listTaskResources = (id: number): Effect.Effect<readonly AssociatedResource[], BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.tasks.associated(id))
+export const destroyTaskResources = (id: number): Effect.Effect<readonly ResourceOperationResult[], BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.tasks.destroyAssociated(id))
 export const recentAudit = (limit = 20): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.audit.recent(limit))
 export const getAudit = (id: number): Effect.Effect<AuditRecord | null, BackendError, AdminBackend> =>
@@ -72,6 +92,18 @@ export const subscribeChat = (sessionId: string, refresh: () => Promise<void>, h
   AdminBackendService.use((backend) => backend.chat.subscribe(sessionId, refresh, handler, done))
 export const countResources: Effect.Effect<number, BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.resources.count())
+export const listResources: Effect.Effect<readonly Resource[], BackendError, AdminBackend> =
+  AdminBackendService.use((backend) => backend.resources.list())
+export const getResourceDetail = (id: string): Effect.Effect<string, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.resources.detail(id))
+export const destroyResource = (id: string): Effect.Effect<void, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.resources.destroy(id))
+export const renameResource = (id: string, newId: string): Effect.Effect<string, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.resources.rename(id, newId))
+export const keepResourceAlive = (id: string): Effect.Effect<void, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.resources.keepAlive(id))
+export const makeResourcePermanent = (id: string): Effect.Effect<void, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.resources.makePermanent(id))
 export const listPlugins: Effect.Effect<readonly Plugin[], BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.plugins.list())
 export const listLogs: Effect.Effect<readonly LogEntry[], BackendError, AdminBackend> =

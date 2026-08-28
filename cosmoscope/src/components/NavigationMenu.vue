@@ -27,7 +27,9 @@ defineProps<{
         :to="item.route"
         class="navigation-menu-item"
         :class="{ active: activeLabel === item.label }"
+        :aria-label="item.label"
         :aria-current="activeLabel === item.label ? 'page' : undefined"
+        :title="item.label"
       >
         <span :class="item.icon" /><span>{{ item.label }}</span>
       </RouterLink>

@@ -185,6 +185,172 @@
 .table-toolbar {
   justify-content: space-between;
 }
+.manager-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.manager-loading {
+  display: grid;
+  gap: var(--space-3);
+}
+.manager-summary > div {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: 15px 17px;
+  border-right: 1px solid var(--line-soft);
+}
+.manager-summary > div:last-child {
+  border-right: 0;
+}
+.manager-summary > div > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.manager-summary strong {
+  font-size: 18px;
+  line-height: 1.1;
+}
+.manager-summary small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.summary-mark {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  border-radius: 8px;
+}
+.summary-mark.neutral {
+  color: var(--muted);
+  background: var(--surface-3);
+}
+.manager-table {
+  overflow: hidden;
+}
+.manager-table .p-datatable-tbody > tr {
+  cursor: pointer;
+}
+.manager-table .p-datatable-tbody > tr:hover {
+  background: var(--surface-2);
+}
+.manager-table code {
+  color: var(--accent-strong);
+}
+.resource-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.resource-identity > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.resource-identity small {
+  color: var(--muted);
+}
+.resource-type-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+.task-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.task-identity > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.task-identity small {
+  color: var(--muted);
+}
+.task-identity small.danger-text {
+  color: var(--red);
+}
+.task-type-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+.task-time {
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-duration {
+  padding: 3px 7px;
+  border-radius: 99px;
+  background: var(--surface-3);
+  font-family: monospace;
+  font-size: 10px;
+}
+.resource-toolbar > div,
+.resource-rename {
+  display: flex;
+  gap: var(--space-2);
+}
+.resource-detail {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.associated-resource-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.associated-resource-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+.associated-resource-list small {
+  color: var(--muted);
+}
+.resource-rename .p-inputtext {
+  min-width: 0;
+  flex: 1;
+}
+.danger-text {
+  color: var(--red);
+}
 .chat-page {
   height: calc(100dvh - 108px);
   display: grid;
@@ -948,6 +1114,23 @@
   .summary-strip {
     overflow-x: auto;
   }
+  .manager-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .manager-summary > div:nth-child(2) {
+    border-right: 0;
+  }
+  .manager-summary > div:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .table-toolbar,
+  .resource-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .table-toolbar > .p-inputtext {
+    width: 100%;
+  }
 }
 @media (max-width: 560px) {
   .metric-grid,
@@ -959,6 +1142,11 @@
     flex-wrap: wrap;
   }
   .filter-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .resource-toolbar > div,
+  .resource-rename {
     align-items: stretch;
     flex-direction: column;
   }

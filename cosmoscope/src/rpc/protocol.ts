@@ -17,11 +17,21 @@ export const chatMethods = [
 
 export const liveAdminMethods = [
   'concurrency.list',
+  'concurrency.lookup',
+  'concurrency.cancel',
+  'concurrency.await',
   'audit.recent',
   'audit.get',
   'audit.thread',
   'audit.subscribe',
   'resource.list',
+  'resource.detail',
+  'resource.destroy',
+  'resource.rename',
+  'resource.keep_alive',
+  'resource.make_permanent',
+  'resource.list_associated',
+  'resource.destroy_associated',
   ...chatMethods,
 ] as const
 export type LiveAdminMethod = typeof liveAdminMethods[number]

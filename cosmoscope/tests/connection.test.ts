@@ -48,6 +48,7 @@ describe('saved RPC connection', () => {
 
     setActivePinia(createPinia())
     const restored = useConnectionStore()
+    expect(restored.state).toBe('opening')
     const restoring = restored.restore()
     const secondSocket = FakeSocket.instances[1]
     if (secondSocket === undefined) throw new Error('second socket missing')

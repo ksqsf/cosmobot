@@ -3,7 +3,7 @@ import { auditPresentation, isAuditFailure, mergeAuditRecords as mergeAuditRecor
 
 export function taskCounts(tasks: readonly Task[]): { active: number; completed: number; failed: number } {
   return tasks.reduce((counts, task) => {
-    if (task.status === 'running' || task.status === 'waiting') counts.active += 1
+    if (task.status === 'running') counts.active += 1
     else if (task.status === 'completed') counts.completed += 1
     else if (task.status === 'failed') counts.failed += 1
     return counts

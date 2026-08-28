@@ -347,6 +347,7 @@ testManagerRpcMethods = runRpcManager do
   lookupResponse <- dispatch rpcState "concurrency.lookup" (Aeson.object ["id" Aeson..= worker.handleId.unId])
   cancelResponse <- dispatch rpcState "concurrency.cancel" (Aeson.object ["id" Aeson..= worker.handleId.unId])
   awaitResponse <- dispatch rpcState "concurrency.await" (Aeson.object ["id" Aeson..= worker.handleId.unId])
+  associatedListResponse <- dispatch rpcState "resource.list_associated" (Aeson.object ["id" Aeson..= worker.handleId.unId])
   associatedResponse <- dispatch rpcState "resource.destroy_associated" (Aeson.object ["id" Aeson..= worker.handleId.unId])
   resourceListResponse <- dispatch rpcState "resource.list" Aeson.Null
   missingResourceResponse <- dispatch rpcState "resource.detail" (Aeson.object ["id" Aeson..= ("missing" :: Text)])
@@ -355,6 +356,7 @@ testManagerRpcMethods = runRpcManager do
     (responseField lookupResponse "entry" >>= responseObjectText "label") @?= Just "rpc-test-worker"
     cancelResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "cancelled" Aeson..= True])
     awaitResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "awaited" Aeson..= True])
+    associatedListResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "resources" Aeson..= ([] :: [Aeson.Value])])
     associatedResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "results" Aeson..= ([] :: [Aeson.Value])])
     resourceListResponse @?= responseResult (Aeson.object ["resources" Aeson..= ([] :: [Aeson.Value])])
     responseErrorCode missingResourceResponse @?= Just "not_found"
@@ -362,6 +364,7 @@ testManagerRpcMethods = runRpcManager do
       WireJSONRPC.ResponseMessage result -> parseJson =<< parseJsonField "methods" result.result
       other -> assertFailure [i|expected capabilities response, got #{show other :: String}|]
     assertBool "expected installed manager capability" ("concurrency.list" `elem` (methods :: [Text]))
+    assertBool "expected associated resource preview capability" ("resource.list_associated" `elem` methods)
   where
     dispatch rpcState method params =
       RPCServer.dispatchRpcRequest rpcState (RPCServer.withManagerRpcCallbacks RPCServer.noRpcServerCallbacks) (rpcRequest method params)

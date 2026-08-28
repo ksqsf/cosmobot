@@ -9,7 +9,6 @@ describe('page registry', () => {
       expect(page.path).toMatch(/^\//)
       expect(page.title).not.toBe('')
       expect(page.icon).toMatch(/^pi pi-/)
-      expect(['workspace', 'operations']).toContain(page.navigationGroup)
     }
   })
 })

@@ -11,6 +11,7 @@ module Bot.Resource.Types
   , ResourceLoader (..)
   , resourceLoader
   , SomeResourceObject (..)
+  , AssociatedResource (..)
   , ResourceError (..)
   , ttlFromMinutes
   , ownerFromMessage
@@ -84,6 +85,12 @@ data SomeResourceObject = SomeResourceObject
   , description :: !Text
   , probeResult :: !(Either Text Text)
   , remainingLifeMinutes :: !(Maybe Int)
+  }
+  deriving stock (Eq, Show)
+
+data AssociatedResource = AssociatedResource
+  { resourceId :: !ResourceId
+  , resourceType :: !Text
   }
   deriving stock (Eq, Show)
 

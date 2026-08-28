@@ -9,8 +9,14 @@ export type BackendResult<A, E> =
 
 let activeBackend = mockBackend
 const backendProxy: AdminBackend = {
-  system: { overview: (scenario) => activeBackend.system.overview(scenario) },
-  tasks: { list: () => activeBackend.tasks.list() },
+  tasks: {
+    list: () => activeBackend.tasks.list(),
+    lookup: (id) => activeBackend.tasks.lookup(id),
+    cancel: (id) => activeBackend.tasks.cancel(id),
+    await: (id) => activeBackend.tasks.await(id),
+    associated: (id) => activeBackend.tasks.associated(id),
+    destroyAssociated: (id) => activeBackend.tasks.destroyAssociated(id),
+  },
   audit: {
     recent: (limit) => activeBackend.audit.recent(limit),
     get: (id) => activeBackend.audit.get(id),
@@ -30,7 +36,15 @@ const backendProxy: AdminBackend = {
     send: (message) => activeBackend.chat.send(message),
     subscribe: (sessionId, refresh, handler, done) => activeBackend.chat.subscribe(sessionId, refresh, handler, done),
   },
-  resources: { count: () => activeBackend.resources.count() },
+  resources: {
+    count: () => activeBackend.resources.count(),
+    list: () => activeBackend.resources.list(),
+    detail: (id) => activeBackend.resources.detail(id),
+    destroy: (id) => activeBackend.resources.destroy(id),
+    rename: (id, newId) => activeBackend.resources.rename(id, newId),
+    keepAlive: (id) => activeBackend.resources.keepAlive(id),
+    makePermanent: (id) => activeBackend.resources.makePermanent(id),
+  },
   plugins: { list: () => activeBackend.plugins.list() },
   logs: { list: () => activeBackend.logs.list() },
 }

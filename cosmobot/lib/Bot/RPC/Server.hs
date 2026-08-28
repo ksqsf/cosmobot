@@ -453,7 +453,7 @@ managerMethods :: [Text]
 managerMethods =
   [ "concurrency.list", "concurrency.lookup", "concurrency.cancel", "concurrency.await"
   , "resource.list", "resource.detail", "resource.destroy", "resource.rename"
-  , "resource.keep_alive", "resource.make_permanent", "resource.destroy_associated"
+  , "resource.keep_alive", "resource.make_permanent", "resource.list_associated", "resource.destroy_associated"
   ]
 
 dispatchChatSubscription
@@ -783,6 +783,7 @@ dispatchManagerRequest request =
     "resource.rename" -> dispatchResourceRename request
     "resource.keep_alive" -> dispatchResourceLifetime "refreshed" Resource.keepAlive request
     "resource.make_permanent" -> dispatchResourceLifetime "permanent" Resource.makePermanent request
+    "resource.list_associated" -> dispatchResourceListAssociated request
     "resource.destroy_associated" -> dispatchResourceDestroyAssociated request
     method -> pure (methodNotFound (RPC.requestId request) method)
 
@@ -930,6 +931,24 @@ dispatchResourceDestroyAssociated request =
       [ "id" Aeson..= workerId.unId
       , "results" Aeson..= map resourceOperationValue results
       ]
+
+dispatchResourceListAssociated
+  :: Resource.Resource :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchResourceListAssociated request =
+  withConcurrencyId request \workerId -> do
+    resources <- Resource.listAssociated rpcResourceAccess (Concurrency.Handle workerId)
+    pure $ RPC.successResponse (RPC.requestId request) $ Aeson.object
+      [ "id" Aeson..= workerId.unId
+      , "resources" Aeson..= map associatedResourceValue resources
+      ]
+
+associatedResourceValue :: Resource.AssociatedResource -> Aeson.Value
+associatedResourceValue resource = Aeson.object
+  [ "id" Aeson..= resource.resourceId
+  , "type" Aeson..= resource.resourceType
+  ]
 
 withResourceId
   :: RPC.RpcRequest

@@ -46,6 +46,9 @@ a {
   color: var(--blue);
   text-decoration: none;
 }
+.p-message-error {
+  color: var(--red) !important;
+}
 h1,
 h2,
 h3,
