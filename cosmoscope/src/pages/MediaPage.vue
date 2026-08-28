@@ -48,6 +48,7 @@ const mimeTypes = ref<string[]>([])
 const sourceKinds = ref<MediaSourceKind[]>([])
 const error = ref('')
 const loading = ref(true)
+const loaded = ref(false)
 const pending = ref<PendingAction>()
 const searchResults = ref<readonly MediaItem[]>()
 const searching = ref(false)
@@ -95,18 +96,19 @@ function platformLabel(platform: string): string { return platformLabels[platfor
 async function refresh(): Promise<void> {
   if (connection.state === 'opening' || connection.state === 'reconnecting') { loading.value = true; return }
   if (connection.state !== 'authenticated') {
-    loading.value = false; media.value = []; stats.value = emptyStats
+    loading.value = false
     error.value = connection.error || 'Connect to cosmobot to load media.'
     return
   }
   loading.value = true
   const result = await runBackend(listMedia())
   loading.value = false
-  if (result._tag === 'Failure') { media.value = []; stats.value = emptyStats; error.value = result.error.message; return }
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
   media.value = result.value.files
   stats.value = result.value.stats
   gcSettings.value = result.value.gcSettings
+  loaded.value = true
   selection.value = selection.value.filter(({ mediaId }) => media.value.some((item) => item.mediaId === mediaId))
   await selectFromRoute()
   void refreshSearch()
@@ -135,7 +137,6 @@ async function refreshSearch(): Promise<void> {
   if (generation !== searchGeneration) return
   searching.value = false
   if (result._tag === 'Failure') {
-    searchResults.value = []
     searchError.value = result.error.message
     return
   }
@@ -258,7 +259,7 @@ watch([debouncedQuery, platforms, mimeTypes, sourceKinds], () => { void refreshS
       {{ error }}
     </Message>
     <article
-      v-if="loading"
+      v-if="loading && !loaded"
       class="panel manager-loading"
       aria-label="Loading media"
     >
@@ -268,7 +269,7 @@ watch([debouncedQuery, platforms, mimeTypes, sourceKinds], () => { void refreshS
         height="3rem"
       />
     </article>
-    <template v-else-if="!error">
+    <template v-else-if="loaded">
       <div
         class="manager-summary"
         aria-label="Media summary"

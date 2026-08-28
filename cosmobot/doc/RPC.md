@@ -117,6 +117,23 @@ Returns one audit record by audit id. The preferred parameter is `audit_id`;
 {"jsonrpc":"2.0","id":"1","method":"audit.get","params":{"audit_id":123}}
 ```
 
+### `audit.search`
+
+Searches all stored audit event JSON and run ids. `query` is required; `limit`
+defaults to `500` and must be between `1` and `500`.
+
+```json
+{"jsonrpc":"2.0","id":"1","method":"audit.search","params":{"query":"tool_enable"}}
+```
+
+### `audit.run`
+
+Returns all audit records for one agent run id in occurrence order.
+
+```json
+{"jsonrpc":"2.0","id":"1","method":"audit.run","params":{"runId":"agent-erLXSXc2kSYHwsbi4SeA7A"}}
+```
+
 ### `audit.thread`
 
 Returns audit records associated with one platform/chat-scoped message id.
@@ -206,6 +223,15 @@ parent path.
 {"jsonrpc":"2.0","id":"2","method":"thread.get","params":{"threadId":42}}
 ```
 
+### `thread.resolve_run`
+
+Resolves an agent run id to its persisted thread id and/or active task id.
+Either field is `null` when that form of the thread is unavailable.
+
+```json
+{"jsonrpc":"2.0","id":"3","method":"thread.resolve_run","params":{"runId":"agent-erLXSXc2kSYHwsbi4SeA7A"}}
+```
+
 ### `thread.active`
 
 Returns in-memory agent threads that are currently running, including task and
@@ -213,7 +239,7 @@ run ids, prompt, linked message keys, pending steer count, and the current model
 transcript. This is a snapshot method; clients may poll it for monitoring.
 
 ```json
-{"jsonrpc":"2.0","id":"3","method":"thread.active","params":{}}
+{"jsonrpc":"2.0","id":"4","method":"thread.active","params":{}}
 ```
 
 ### `thread.halt`
@@ -223,7 +249,7 @@ the transcript produced so far. It returns `halted: false` when that task is no
 longer active.
 
 ```json
-{"jsonrpc":"2.0","id":"4","method":"thread.halt","params":{"taskId":17}}
+{"jsonrpc":"2.0","id":"5","method":"thread.halt","params":{"taskId":17}}
 ```
 
 ## Memory Methods

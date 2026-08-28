@@ -32,6 +32,7 @@ const drawerOpen = ref(false)
 const pending = ref<PendingAction>()
 const error = ref('')
 const loading = ref(true)
+const loaded = ref(false)
 const confirm = useConfirm()
 const toast = useToast()
 const connection = useConnectionStore()
@@ -86,16 +87,16 @@ async function refresh(): Promise<void> {
   if (connection.state === 'opening' || connection.state === 'reconnecting') { loading.value = true; return }
   if (connection.state !== 'authenticated') {
     loading.value = false
-    tasks.value = []
     error.value = connection.error || 'Connect to cosmobot to load tasks.'
     return
   }
   loading.value = true
   const result = await runBackend(listTasks)
   loading.value = false
-  if (result._tag === 'Failure') { tasks.value = []; error.value = result.error.message; return }
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
   tasks.value = [...result.value]
+  loaded.value = true
   await selectTaskFromRoute()
 }
 async function selectTaskFromRoute(): Promise<void> {
@@ -186,7 +187,7 @@ watch(() => route.params['taskId'], () => { void selectTaskFromRoute() })
       {{ error }}
     </Message>
     <article
-      v-if="loading"
+      v-if="loading && !loaded"
       class="panel manager-loading"
       aria-label="Loading tasks"
     >
@@ -196,7 +197,7 @@ watch(() => route.params['taskId'], () => { void selectTaskFromRoute() })
         height="3rem"
       />
     </article>
-    <template v-else-if="!error">
+    <template v-else-if="loaded">
       <div
         class="manager-summary"
         aria-label="Task summary"

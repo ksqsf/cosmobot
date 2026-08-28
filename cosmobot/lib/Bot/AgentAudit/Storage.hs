@@ -9,6 +9,7 @@ module Bot.AgentAudit.Storage
   ( ensureAgentAuditTable
   , persistEvent
   , queryStoredRecent
+  , queryStoredSearch
   , queryStoredRecord
   , queryStoredRecentToolUses
   , queryStoredToolUse
@@ -89,6 +90,18 @@ queryStoredRecent limit = do
     query $
       queryLimit 0 (max 0 limit) do
         row <- select agentAuditRows
+        order (row ! #id) descending
+        pure row
+  pure (mapMaybe storedAuditRecord (reverse rows))
+
+queryStoredSearch :: Storage.Storage :> es => Text -> Int -> Eff es [AgentAuditRecord]
+queryStoredSearch searchText limit = do
+  rows <- runSelda $
+    query $
+      queryLimit 0 (max 0 limit) do
+        row <- select agentAuditRows
+        let pattern = literal ("%" <> searchText <> "%")
+        restrict ((row ! #run_id `like` pattern) .|| (row ! #event_json `like` pattern))
         order (row ! #id) descending
         pure row
   pure (mapMaybe storedAuditRecord (reverse rows))

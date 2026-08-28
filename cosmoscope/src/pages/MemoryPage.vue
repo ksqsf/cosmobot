@@ -25,6 +25,7 @@ const historicContent = ref<string | null>()
 const historicEntry = ref<MemoryHistoryEntry>()
 const query = ref('')
 const loading = ref(true)
+const loaded = ref(false)
 const detailLoading = ref(false)
 const reverting = ref('')
 const historyLoading = ref(false)
@@ -64,12 +65,13 @@ async function refresh(): Promise<void> {
     error.value = connection.error || 'Connect to cosmobot to load memory.'
     return
   }
-  if (memories.value.length === 0) loading.value = true
+  loading.value = true
   const result = await runBackend(listMemories)
   loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
   memories.value = result.value
+  loaded.value = true
   const inspected = selected.value
   if (inspected !== null) {
     const current = result.value.find((memory) => sameMemory(memory, inspected))
@@ -168,7 +170,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       {{ error }}
     </Message>
     <article
-      v-if="loading"
+      v-if="loading && !loaded"
       class="panel manager-loading"
       aria-label="Loading memories"
     >
@@ -179,7 +181,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       />
     </article>
     <article
-      v-else
+      v-else-if="loaded"
       class="panel manager-table"
     >
       <div class="table-toolbar">

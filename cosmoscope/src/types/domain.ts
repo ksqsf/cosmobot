@@ -122,6 +122,11 @@ export interface ActiveThread {
   readonly messages: readonly StoredThreadMessage[]
 }
 
+export interface ThreadRunTarget {
+  readonly threadId: number | null
+  readonly taskId: number | null
+}
+
 export interface ToolCallTrace {
   readonly id: string
   readonly name: string

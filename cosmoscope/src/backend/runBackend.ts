@@ -19,7 +19,9 @@ const backendProxy: AdminBackend = {
   },
   audit: {
     recent: (limit) => activeBackend.audit.recent(limit),
+    search: (query, limit) => activeBackend.audit.search(query, limit),
     get: (id) => activeBackend.audit.get(id),
+    run: (runId) => activeBackend.audit.run(runId),
     thread: (key) => activeBackend.audit.thread(key),
     threadMessages: (keys) => activeBackend.audit.threadMessages(keys),
     subscribe: (refresh, handler) => activeBackend.audit.subscribe(refresh, handler),
@@ -27,6 +29,7 @@ const backendProxy: AdminBackend = {
   threads: {
     list: (query) => activeBackend.threads.list(query),
     get: (id) => activeBackend.threads.get(id),
+    resolveRun: (runId) => activeBackend.threads.resolveRun(runId),
     active: () => activeBackend.threads.active(),
     halt: (taskId) => activeBackend.threads.halt(taskId),
   },

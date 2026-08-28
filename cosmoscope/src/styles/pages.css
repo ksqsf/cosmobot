@@ -103,11 +103,13 @@
   padding: 0 18px 12px;
   list-style: none;
 }
-.activity-list li > a {
+.activity-list li {
   display: flex;
   gap: 10px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line-soft);
+}
+.activity-list p > a {
   color: var(--text);
   text-decoration: none;
 }
@@ -1189,6 +1191,14 @@
 .audit-inspector h3 {
   margin: var(--space-4) 0 var(--space-2);
 }
+.audit-result {
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--space-3);
+  background: var(--bg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .bounded-note {
   color: var(--muted);
 }
@@ -1462,4 +1472,15 @@
     align-items: stretch;
     flex-direction: column;
   }
+}
+.inspector-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.inspector-section-heading h3 {
+  margin: 0;
 }

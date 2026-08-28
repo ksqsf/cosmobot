@@ -31,6 +31,7 @@ const probeFilter = ref<ProbeFilter>('all')
 const newId = ref('')
 const error = ref('')
 const loading = ref(true)
+const loaded = ref(false)
 const pending = ref<PendingAction>()
 const route = useRoute()
 const router = useRouter()
@@ -70,16 +71,16 @@ async function refresh(): Promise<void> {
   if (connection.state === 'opening' || connection.state === 'reconnecting') { loading.value = true; return }
   if (connection.state !== 'authenticated') {
     loading.value = false
-    resources.value = []
     error.value = connection.error || 'Connect to cosmobot to load resources.'
     return
   }
   loading.value = true
   const result = await runBackend(listResources)
   loading.value = false
-  if (result._tag === 'Failure') { resources.value = []; error.value = result.error.message; return }
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
   resources.value = [...result.value]
+  loaded.value = true
   await selectFromRoute()
 }
 async function selectFromRoute(): Promise<void> {
@@ -184,7 +185,7 @@ watch(() => route.params['resourceId'], () => { void selectFromRoute() })
       {{ error }}
     </Message>
     <article
-      v-if="loading"
+      v-if="loading && !loaded"
       class="panel manager-loading"
       aria-label="Loading resources"
     >
@@ -194,7 +195,7 @@ watch(() => route.params['resourceId'], () => { void selectFromRoute() })
         height="3rem"
       />
     </article>
-    <template v-else-if="!error">
+    <template v-else-if="loaded">
       <div
         class="manager-summary"
         aria-label="Resource summary"

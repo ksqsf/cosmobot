@@ -18,12 +18,13 @@ import Tag from 'primevue/tag'
 import Tree from 'primevue/tree'
 import type { TreeNode as PrimeTreeNode } from 'primevue/treenode'
 import PageHeading from '@/components/PageHeading.vue'
-import { getAuditThreadMessages, getMedia, getThread, haltActiveThread, listActiveThreads, listThreads } from '@/backend/AdminBackend'
+import RunIdLink from '@/components/RunIdLink.vue'
+import { getAuditThreadMessages, getMedia, getThread, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
 import { safeImageUrl } from '@/backend/chat'
 import { threadStats } from '@/backend/threadStats'
 import { formatBytes } from '@/format'
-import { highlightCode, renderMarkdown } from '@/markdown'
+import { highlightCode, mediaRefFromClick, renderMarkdown } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
 import type { ActiveThread, AuditPlatform, AuditRecord, MediaDetail, StoredThreadMessage, ThreadDetail, ThreadMessageKey, ThreadNode, ThreadSummary } from '@/types/domain'
 
@@ -109,8 +110,6 @@ async function refresh(): Promise<void> {
   if (connection.state !== 'authenticated') {
     loading.value = false
     tableLoading.value = false
-    loaded.value = false
-    threads.value = []
     error.value = connection.error || 'Connect to cosmobot to load threads.'
     return
   }
@@ -185,14 +184,44 @@ async function halt(active: ActiveThread): Promise<void> {
 
 async function selectFromRoute(): Promise<void> {
   const raw = route.params['threadId']
-  if (typeof raw !== 'string') return
-  const threadId = Number(raw)
-  if (!Number.isSafeInteger(threadId) || threadId < 1) { error.value = 'The thread ID is invalid.'; return }
-  await inspectThread(threadId)
+  if (typeof raw === 'string') {
+    const threadId = Number(raw)
+    if (!Number.isSafeInteger(threadId) || threadId < 1) { error.value = 'The thread ID is invalid.'; return }
+    await inspectThread(threadId)
+    return
+  }
+  const runId = route.query['run']
+  if (typeof runId === 'string' && runId !== '') await inspectRun(runId)
+}
+
+async function inspectRun(runId: string): Promise<void> {
+  const result = await runBackend(resolveThreadRun(runId))
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  if (result.value.taskId !== null) {
+    await refreshActive()
+    const active = activeThreads.value.find(({ taskId }) => taskId === result.value.taskId)
+    if (active === undefined) { error.value = `Agent run ${runId} is no longer active.`; return }
+    error.value = ''
+    monitor(active)
+    return
+  }
+  if (result.value.threadId !== null) {
+    await router.replace({ name: 'threads', params: { threadId: String(result.value.threadId) } })
+    return
+  }
+  error.value = `No agent thread is linked to run ${runId}.`
 }
 
 function inspect(thread: ThreadSummary): void {
   void router.replace({ name: 'threads', params: { threadId: String(thread.threadId) } })
+}
+
+function viewThreadAudit(threadId: number): void {
+  void router.push({ name: 'audit', query: { thread: String(threadId) } })
+}
+
+function viewRunAudit(runId: string): void {
+  void router.push({ name: 'audit', query: { run: runId } })
 }
 
 async function inspectThread(threadId: number): Promise<void> {
@@ -242,6 +271,11 @@ function closeDrawer(): void {
   detail.value = undefined
   selectedNode.value = undefined
   if (route.params['threadId'] !== undefined) void router.replace({ name: 'threads' })
+}
+
+function closeActiveDrawer(): void {
+  activeTaskId.value = undefined
+  if (route.query['run'] !== undefined) void router.replace({ name: 'threads' })
 }
 
 function selectTreeNode(node: PrimeTreeNode): void {
@@ -344,8 +378,7 @@ function imageUrls(message: StoredThreadMessage): string[] {
 }
 
 function openMediaRef(event: MouseEvent): void {
-  const target = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[data-media-ref]') : null
-  const mediaRef = target?.dataset['mediaRef']
+  const mediaRef = mediaRefFromClick(event)
   if (mediaRef === undefined) return
   event.preventDefault()
   void router.push({ name: 'media', params: { mediaId: mediaRef } })
@@ -375,7 +408,7 @@ onMounted(() => {
 })
 onUnmounted(() => { if (monitorTimer !== undefined) window.clearInterval(monitorTimer); activeGeneration += 1; detailGeneration += 1; listGeneration += 1 })
 watch([() => connection.state, () => connection.methods], () => { void refresh(); void refreshActive() })
-watch(() => route.params['threadId'], () => { void selectFromRoute() })
+watch([() => route.params['threadId'], () => route.query['run']], () => { void selectFromRoute() })
 watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
 </script>
 
@@ -448,7 +481,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
             :key="active.taskId"
           >
             <span class="manager-type-icon"><i class="pi pi-sparkles" /></span>
-            <span><strong>{{ active.prompt || 'Untitled prompt' }}</strong><small>Task #{{ active.taskId }} · Run {{ active.runId }} · {{ active.messages.length }} messages<span v-if="active.pendingSteers"> · {{ active.pendingSteers }} pending steer</span></small></span>
+            <span><strong>{{ active.prompt || 'Untitled prompt' }}</strong><small>Task #{{ active.taskId }} · Run <RunIdLink :run-id="active.runId" /> · {{ active.messages.length }} messages<span v-if="active.pendingSteers"> · {{ active.pendingSteers }} pending steer</span></small></span>
             <Button
               label="Monitor"
               icon="pi pi-eye"
@@ -565,7 +598,12 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
                 severity="info"
               />
             </div>
-          </div>
+          </div><Button
+            label="View audit"
+            icon="pi pi-wave-pulse"
+            severity="secondary"
+            @click="viewThreadAudit(detail.summary.threadId)"
+          />
         </header>
         <dl class="detail-list">
           <div><dt>Chat</dt><dd><code>{{ detail.summary.rootKey.chatId ?? 'Direct / unscoped' }}</code></dd></div>
@@ -723,7 +761,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
       header="Active thread monitor"
       position="right"
       :style="{ width: 'min(720px, 100vw)' }"
-      @hide="activeTaskId = undefined"
+      @hide="closeActiveDrawer"
     >
       <div
         v-if="activeSelected"
@@ -735,10 +773,15 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
               value="Running"
               severity="success"
             />
-          </div>
+          </div><Button
+            label="View audit"
+            icon="pi pi-wave-pulse"
+            severity="secondary"
+            @click="viewRunAudit(activeSelected.runId)"
+          />
         </header>
         <dl class="detail-list">
-          <div><dt>Agent run</dt><dd><code>{{ activeSelected.runId }}</code></dd></div><div><dt>Linked messages</dt><dd>{{ activeSelected.messageKeys.length }}</dd></div><div><dt>Pending steers</dt><dd>{{ activeSelected.pendingSteers }}</dd></div>
+          <div><dt>Agent run</dt><dd><RunIdLink :run-id="activeSelected.runId" /></dd></div><div><dt>Linked messages</dt><dd>{{ activeSelected.messageKeys.length }}</dd></div><div><dt>Pending steers</dt><dd>{{ activeSelected.pendingSteers }}</dd></div>
         </dl>
         <section class="thread-transcript-panel active-transcript">
           <header><span>Current model context</span><small>{{ activeSelected.messages.length }} messages</small></header>

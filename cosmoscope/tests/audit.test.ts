@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { auditPresentation, boundedStructuredText, linkedThread, mergeAuditRecords } from '@/backend/audit'
-import { auditRecordSchema } from '@/rpc/schemas'
+import { auditDetailFields, auditPresentation, boundedStructuredText, linkedThread, mergeAuditRecords, parseAuditSearch } from '@/backend/audit'
+import { auditRecordSchema, threadRunTargetSchema } from '@/rpc/schemas'
 import type { AuditRecord } from '@/types/domain'
 
 const record = (id: number): AuditRecord => ({
@@ -40,5 +40,16 @@ describe('audit timeline', () => {
     }
     expect(linkedThread([record(7), linked], 'run-1')).toEqual(linkedMessageKey)
     expect(boundedStructuredText('x'.repeat(20), 8)).toEqual({ text: 'xxxxxxxx\n…', truncated: true })
+  })
+
+  it('marks run identifiers as links and validates run-to-thread targets', () => {
+    expect(auditDetailFields(record(1).event)[0]).toEqual({ label: 'Run', value: 'run-1', kind: 'run' })
+    expect(threadRunTargetSchema.parse({ threadId: 42, taskId: null })).toEqual({ threadId: 42, taskId: null })
+  })
+
+  it('parses typed thread and run qualifiers without consuming text search terms', () => {
+    expect(parseAuditSearch('thread:42 failed tool')).toEqual({ text: 'failed tool', scope: { kind: 'thread', value: 42 } })
+    expect(parseAuditSearch('model run:agent-abc')).toEqual({ text: 'model', scope: { kind: 'run', value: 'agent-abc' } })
+    expect(parseAuditSearch('thread:not-a-number')).toEqual({ text: 'thread:not-a-number' })
   })
 })

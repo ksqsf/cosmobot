@@ -10,6 +10,36 @@ export interface AuditPresentation {
   readonly tone: AuditTone
 }
 
+export interface AuditDetailField {
+  readonly label: string
+  readonly value: string
+  readonly kind?: 'run'
+}
+
+export type AuditSearchScope =
+  | { readonly kind: 'thread'; readonly value: number }
+  | { readonly kind: 'run'; readonly value: string }
+
+export function parseAuditSearch(value: string): { readonly text: string; readonly scope?: AuditSearchScope } {
+  let scope: AuditSearchScope | undefined
+  const text = value.split(/\s+/).filter((token) => {
+    if (scope !== undefined) return true
+    const threadId = /^thread:(\d+)$/.exec(token)?.[1]
+    if (threadId !== undefined) {
+      const value = Number(threadId)
+      if (Number.isSafeInteger(value) && value > 0) scope = { kind: 'thread', value }
+      return false
+    }
+    const runId = /^run:(.+)$/.exec(token)?.[1]
+    if (runId !== undefined) {
+      scope = { kind: 'run', value: runId }
+      return false
+    }
+    return true
+  }).join(' ')
+  return scope === undefined ? { text } : { text, scope }
+}
+
 export function mergeAuditRecords(records: readonly AuditRecord[], incoming: readonly AuditRecord[], limit: number): AuditRecord[] {
   const byId = new Map(records.map((record) => [record.id, record]))
   for (const record of incoming) byId.set(record.id, record)
@@ -36,15 +66,15 @@ export function auditPresentation(event: AuditEvent): AuditPresentation {
   }
 }
 
-export function auditDetailFields(event: AuditEvent): readonly { readonly label: string; readonly value: string }[] {
-  const common = [{ label: 'Run', value: event.runId }]
+export function auditDetailFields(event: AuditEvent): readonly AuditDetailField[] {
+  const common = [{ label: 'Run', value: event.runId, kind: 'run' as const }]
   switch (event.tag) {
     case 'AgentRunStarted': return [...common, { label: 'Maximum turns', value: String(event.maxTurns) }, { label: 'Tools exposed', value: String(event.exposedTools.length) }, { label: 'Context strategy', value: event.contextStrategy ?? 'Default' }]
     case 'ModelTurnStarted': return [...common, { label: 'Turn', value: String(event.turn) }, { label: 'Messages', value: String(event.messageCount) }, { label: 'Tools exposed', value: String(event.exposedTools.length) }]
     case 'ModelTurnFinished': return [...common, { label: 'Turn', value: String(event.turn) }, { label: 'Answer kind', value: event.answerKind }, { label: 'Content length', value: formatSize(event.contentLength) }, { label: 'Tool calls', value: String(event.toolCalls.length) }]
     case 'ContextCompacted': return [...common, { label: 'Turn', value: String(event.turn) }, { label: 'Messages', value: String(event.messageCount) }]
     case 'RecursiveTranscriptFlushed': return [...common, { label: 'Turn', value: String(event.turn) }]
-    case 'SubAgentRunStarted': return [...common, { label: 'Child run', value: event.childRunId }, { label: 'Sub-agent', value: event.subagentId }]
+    case 'SubAgentRunStarted': return [...common, { label: 'Child run', value: event.childRunId, kind: 'run' }, { label: 'Sub-agent', value: event.subagentId }]
     case 'ToolCallStarted': return [...common, { label: 'Turn', value: String(event.turn) }, { label: 'Tool', value: event.toolCall.name }, { label: 'Call ID', value: event.toolCall.id }]
     case 'ToolCallFinished': return [...common, { label: 'Turn', value: String(event.turn) }, { label: 'Tool', value: event.toolName }, { label: 'Call ID', value: event.toolCallId }, { label: 'Status', value: event.status }, { label: 'Result size', value: formatSize(event.resultLength) }]
     case 'AgentRunFinished': return [...common, { label: 'Status', value: event.status }, { label: 'Turns used', value: String(event.turnsUsed) }, { label: 'Final length', value: formatSize(event.finalLength) }]

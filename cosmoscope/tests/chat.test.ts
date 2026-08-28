@@ -49,4 +49,11 @@ describe('chat projection', () => {
     expect(rendered).toContain('<td>1</td>')
     expect(rendered).not.toContain('description: Test')
   })
+
+  it('links media references embedded in tool result text', () => {
+    const ref = 'media:mf_5StthYV0IIB0-yoo1w5DRw'
+    const rendered = renderMarkdown(`Generated image. Media ids: ${ref}`)
+    expect(rendered).toContain(`href="/media/${encodeURIComponent(ref)}"`)
+    expect(rendered).toContain(`data-media-ref="${ref}"`)
+  })
 })

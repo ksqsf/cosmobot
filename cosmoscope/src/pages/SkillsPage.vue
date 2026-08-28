@@ -20,6 +20,7 @@ const skills = ref<readonly SkillSummary[]>([])
 const selected = ref<SkillDetail | null>(null)
 const query = ref('')
 const loading = ref(true)
+const loaded = ref(false)
 const detailLoading = ref(false)
 const removing = ref('')
 const error = ref('')
@@ -48,12 +49,13 @@ async function refresh(): Promise<void> {
     error.value = connection.error || 'Connect to cosmobot to load skills.'
     return
   }
-  if (skills.value.length === 0) loading.value = true
+  loading.value = true
   const result = await runBackend(listSkills)
   loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
   skills.value = result.value
+  loaded.value = true
 }
 
 async function inspect(skill: SkillSummary): Promise<void> {
@@ -118,7 +120,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       {{ error }}
     </Message>
     <article
-      v-if="loading"
+      v-if="loading && !loaded"
       class="panel manager-loading"
       aria-label="Loading skills"
     >
@@ -129,7 +131,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       />
     </article>
     <article
-      v-else
+      v-else-if="loaded"
       class="panel manager-table"
     >
       <div class="table-toolbar">

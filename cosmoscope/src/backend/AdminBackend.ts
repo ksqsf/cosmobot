@@ -1,5 +1,5 @@
 import { Context, Data, type Effect } from 'effect'
-import type { ActiveThread, AssociatedResource, AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, LogEntry, MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot, MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary, Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task, ThreadDetail, ThreadListQuery, ThreadMessageKey, ThreadSnapshot } from '@/types/domain'
+import type { ActiveThread, AssociatedResource, AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, LogEntry, MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot, MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary, Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task, ThreadDetail, ThreadListQuery, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot } from '@/types/domain'
 
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
 export class RpcBackendError extends Data.TaggedError('RpcBackendError')<{ readonly message: string }> {}
@@ -17,7 +17,9 @@ export interface AdminBackend {
   }
   readonly audit: {
     readonly recent: (limit?: number) => BackendEffect<readonly AuditRecord[]>
+    readonly search: (query: string, limit?: number) => BackendEffect<readonly AuditRecord[]>
     readonly get: (id: number) => BackendEffect<AuditRecord | null>
+    readonly run: (runId: string) => BackendEffect<readonly AuditRecord[]>
     readonly thread: (key: ThreadMessageKey) => BackendEffect<readonly AuditRecord[]>
     readonly threadMessages: (keys: readonly ThreadMessageKey[]) => BackendEffect<readonly AuditRecord[]>
     readonly subscribe: (refresh: () => Promise<void>, handler: (record: AuditRecord) => void) => BackendEffect<() => void>
@@ -25,6 +27,7 @@ export interface AdminBackend {
   readonly threads: {
     readonly list: (query: ThreadListQuery) => BackendEffect<ThreadSnapshot>
     readonly get: (id: number) => BackendEffect<ThreadDetail | null>
+    readonly resolveRun: (runId: string) => BackendEffect<ThreadRunTarget>
     readonly active: () => BackendEffect<readonly ActiveThread[]>
     readonly halt: (taskId: number) => BackendEffect<boolean>
   }
@@ -93,8 +96,12 @@ export const destroyTaskResources = (id: number): Effect.Effect<readonly Resourc
   AdminBackendService.use((backend) => backend.tasks.destroyAssociated(id))
 export const recentAudit = (limit = 20): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.audit.recent(limit))
+export const searchAudit = (query: string, limit = 500): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.audit.search(query, limit))
 export const getAudit = (id: number): Effect.Effect<AuditRecord | null, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.audit.get(id))
+export const getRunAudit = (runId: string): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.audit.run(runId))
 export const getAuditThread = (key: ThreadMessageKey): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.audit.thread(key))
 export const getAuditThreadMessages = (keys: readonly ThreadMessageKey[]): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
@@ -105,6 +112,8 @@ export const listThreads = (query: ThreadListQuery): Effect.Effect<ThreadSnapsho
   AdminBackendService.use((backend) => backend.threads.list(query))
 export const getThread = (id: number): Effect.Effect<ThreadDetail | null, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.threads.get(id))
+export const resolveThreadRun = (runId: string): Effect.Effect<ThreadRunTarget, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.threads.resolveRun(runId))
 export const listActiveThreads: Effect.Effect<readonly ActiveThread[], BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.threads.active())
 export const haltActiveThread = (taskId: number): Effect.Effect<boolean, BackendError, AdminBackend> =>

@@ -47,6 +47,7 @@ import {
   skillRemoveSchema,
   threadDetailSchema,
   threadListSchema,
+  threadRunTargetSchema,
 } from '@/rpc/schemas'
 import type { RpcClient } from '@/rpc/client'
 import type { LiveAdminMethod } from '@/rpc/protocol'
@@ -72,10 +73,18 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
         try: async () => recentAuditSchema.parse(await client.request('audit.recent', { limit })),
         catch: (cause) => new RpcBackendError({ message: schemaError(cause, 'Could not load recent audit activity.') }),
       }) : unsupported('audit.recent'),
+      search: (query, limit = 500) => rpcEffect(
+        'Could not search audit activity.',
+        async () => recentAuditSchema.parse(await client.request('audit.search', { query, limit })),
+      ),
       get: supports('audit.get') ? (id) => rpcEffect(
         'Could not load the audit event.',
         async () => auditDetailSchema.parse(await client.request('audit.get', { id })),
       ) : unsupported('audit.get'),
+      run: (runId) => rpcEffect(
+        'Could not load the agent run audit.',
+        async () => auditThreadSchema.parse(await client.request('audit.run', { runId })),
+      ),
       thread: supports('audit.thread') ? (key) => rpcEffect(
         'Could not load the related audit thread.',
         async () => auditThreadSchema.parse(await client.request('audit.thread', {
@@ -112,6 +121,7 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
         ...(query.platform === undefined ? {} : { platform: auditPlatformKey(query.platform) }),
       }))),
       get: (id) => rpcEffect('Could not load the thread.', async () => threadDetailSchema.nullable().parse(await client.request('thread.get', { threadId: id }))),
+      resolveRun: (runId) => rpcEffect('Could not find the agent thread.', async () => threadRunTargetSchema.parse(await client.request('thread.resolve_run', { runId }))),
       active: () => rpcEffect('Could not load active threads.', async () => activeThreadListSchema.parse(await client.request('thread.active')).threads),
       halt: (taskId) => rpcEffect('Could not halt the active thread.', async () => haltThreadSchema.parse(await client.request('thread.halt', { taskId })).halted),
     },

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { ActiveThread, AuditRecord, ChatAttachment, ChatMessage, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSnapshot, Plugin, Resource, StoredThreadMessage, Task, ThreadDetail, ThreadMessageKey, ThreadSnapshot, ThreadSummary, TokenUsage, ToolCallTrace } from '@/types/domain'
+import type { ActiveThread, AuditRecord, ChatAttachment, ChatMessage, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSnapshot, Plugin, Resource, StoredThreadMessage, Task, ThreadDetail, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot, ThreadSummary, TokenUsage, ToolCallTrace } from '@/types/domain'
 
 export const taskSchema = z.object({
   id: z.number().int().positive(),
@@ -80,6 +80,10 @@ const activeThreadSchema = z.object({
   messages: z.array(storedThreadMessageSchema),
 }) satisfies z.ZodType<ActiveThread>
 export const activeThreadListSchema = z.object({ threads: z.array(activeThreadSchema) })
+export const threadRunTargetSchema = z.object({
+  threadId: z.number().int().positive().nullable(),
+  taskId: z.number().int().positive().nullable(),
+}) satisfies z.ZodType<ThreadRunTarget>
 export const haltThreadSchema = z.object({ taskId: z.number().int().positive(), halted: z.boolean() })
 
 export const auditRecordSchema = z.object({

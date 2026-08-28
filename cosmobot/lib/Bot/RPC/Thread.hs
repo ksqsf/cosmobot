@@ -12,6 +12,7 @@ where
 import Bot.Core.Thread (ThreadMessageKey (..))
 import Bot.Core.Message (ChatPlatform (..))
 import Bot.Core.Transcript (Transcript (..))
+import qualified Bot.Effect.AgentAudit as AgentAudit
 import Bot.Effect.Concurrency (Id (..))
 import qualified Bot.LLM.Types as LLM
 import qualified Bot.Effect.Storage as Storage
@@ -29,18 +30,18 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 
 threadRpcCallbacks
-  :: Storage.Storage :> es
+  :: (AgentAudit.AgentAudit :> es, Storage.Storage :> es)
   => Eff es [Thread.ActiveThreadInspection]
   -> (Id -> Eff es Bool)
   -> RpcServerCallbacks es
 threadRpcCallbacks inspectActive haltActive =
   noRpcServerCallbacks
     { threadMethod = dispatchThreadMethod inspectActive haltActive
-    , supportedMethods = ["thread.list", "thread.get", "thread.active", "thread.halt"]
+    , supportedMethods = ["thread.list", "thread.get", "thread.resolve_run", "thread.active", "thread.halt"]
     }
 
 dispatchThreadMethod
-  :: Storage.Storage :> es
+  :: (AgentAudit.AgentAudit :> es, Storage.Storage :> es)
   => Eff es [Thread.ActiveThreadInspection]
   -> (Id -> Eff es Bool)
   -> RPC.RpcRequest
@@ -71,6 +72,15 @@ dispatchThreadMethod inspectActive haltActive request =
         pure $ case nonEmpty rows of
           Nothing -> Aeson.Null
           Just selectedRows -> threadValue threadId selectedRows
+    "thread.resolve_run" ->
+      parseParams request parseRunId \runId -> do
+        active <- find ((== runId) . (.runId)) <$> inspectActive
+        records <- AgentAudit.queryRunAudit runId
+        threadId <- maybe (pure Nothing) Thread.loadThreadIdByMessageKey (latestLinkedMessageKey records)
+        pure $ Aeson.object
+          [ "threadId" Aeson..= threadId
+          , "taskId" Aeson..= ((.taskId.unId) <$> active)
+          ]
     "thread.active" ->
       parseParams request parseNoParams \() -> do
         active <- inspectActive
@@ -243,6 +253,14 @@ parseThreadId =
     threadId <- o Aeson..: "threadId"
     if threadId > 0 then pure threadId else fail "threadId must be positive"
 
+parseRunId :: Aeson.Value -> AesonTypes.Parser Text
+parseRunId =
+  Aeson.withObject "thread.resolve_run params" \o -> do
+    runId <- Text.strip <$> o Aeson..: "runId"
+    if Text.null runId || Text.length runId > 256
+      then fail "runId must contain between 1 and 256 characters"
+      else pure runId
+
 parseTaskId :: Aeson.Value -> AesonTypes.Parser Integer
 parseTaskId =
   Aeson.withObject "thread.halt params" \o -> do
@@ -262,3 +280,10 @@ indexRow row = Thread.ThreadIndexRow
   , threadStorageId = row.threadStorageId
   , parentMessageKey = row.parentMessageKey
   }
+
+latestLinkedMessageKey :: [AgentAudit.AgentAuditRecord] -> Maybe ThreadMessageKey
+latestLinkedMessageKey =
+  listToMaybe . mapMaybe linkedKey . reverse
+  where
+    linkedKey AgentAudit.AgentAuditRecord{event = AgentAudit.AgentThreadLinked{linkedMessageKey}} = linkedMessageKey
+    linkedKey _ = Nothing

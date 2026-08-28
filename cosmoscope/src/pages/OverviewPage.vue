@@ -9,6 +9,7 @@ import Message from 'primevue/message'
 import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
+import RunIdLink from '@/components/RunIdLink.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { countResources, countSessions, listMedia, listTasks, listThreads, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
 import { auditActivity, mergeAuditRecords } from '@/backend/overview'
@@ -112,13 +113,16 @@ async function loadSlowSnapshots(): Promise<void> {
 }
 
 async function refreshLive(): Promise<void> {
-  if (connection.state === 'opening' || connection.state === 'reconnecting') { state.value = 'loading'; return }
+  if (connection.state === 'opening' || connection.state === 'reconnecting') {
+    if (state.value !== 'ready') state.value = 'loading'
+    return
+  }
   if (connection.state !== 'authenticated') {
-    state.value = 'error'
+    if (state.value !== 'ready') state.value = 'error'
     error.value = connection.error || 'Connect to cosmobot to load the overview.'
     return
   }
-  state.value = 'loading'
+  if (state.value !== 'ready') state.value = 'loading'
   error.value = ''
   auditError.value = supports('audit.recent') ? '' : 'The server does not support audit.recent.'
   if (supports('audit.subscribe') && supports('audit.recent')) {
@@ -226,6 +230,13 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
       />
     </Message>
     <template v-else>
+      <Message
+        v-if="error"
+        severity="error"
+        :closable="false"
+      >
+        {{ error }}
+      </Message>
       <div class="metric-grid overview-summary-grid">
         <RouterLink
           class="metric"
@@ -368,12 +379,16 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
               v-for="item in activities.slice(0, 8)"
               :key="item.id"
             >
-              <RouterLink :to="`/audit/${item.id}`">
-                <i
-                  class="pi pi-circle-fill"
-                  :class="item.tone"
-                /><div><p><strong>{{ item.kind }}</strong> {{ item.summary }}</p><small>{{ item.source }} · {{ item.time }}</small></div>
-              </RouterLink>
+              <i
+                class="pi pi-circle-fill"
+                :class="item.tone"
+              /><div>
+                <p>
+                  <RouterLink :to="`/audit/${item.id}`">
+                    <strong>{{ item.kind }}</strong> {{ item.summary }}
+                  </RouterLink>
+                </p><small><RunIdLink :run-id="item.source" /> · {{ item.time }}</small>
+              </div>
             </li>
           </ol>
         </article>

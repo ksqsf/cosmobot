@@ -42,6 +42,7 @@ module Bot.Storage.Thread
   , loadThreadIndexRows
   , loadThreadRowsByThreadId
   , loadThreadRowsByIds
+  , loadThreadIdByMessageKey
   , lookupCommittedThreadTranscript
   , deleteSessionThreadTranscripts
   )
@@ -732,6 +733,10 @@ loadThreadRowsByIds rowIds = do
       restrict $ row ! #id `isIn` map (literal . toId . (fromIntegral :: Integer -> Int.Int64)) rowIds
       pure row
   pure (map threadRowFromStorage rows)
+
+loadThreadIdByMessageKey :: Storage.Storage :> es => ThreadMessageKey -> Eff es (Maybe Integer)
+loadThreadIdByMessageKey messageKey =
+  loadThreadRow messageKey <&> fmap (\row -> fromMaybe row.rowId row.threadStorageId)
 
 deleteSessionThreadTranscripts :: Storage.Storage :> es => [(Text, MessageId)] -> Eff es ()
 deleteSessionThreadTranscripts messages = do

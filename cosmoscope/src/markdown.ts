@@ -12,21 +12,42 @@ const markdown = new MarkdownIt('commonmark', {
   strict: 'ignore',
 }).enable('table')
 
-markdown.inline.ruler.before('text', 'media_ref', (state, silent) => {
-  if (state.pos > 0 && /[A-Za-z0-9_]/.test(state.src[state.pos - 1] ?? '')) return false
-  const match = /^media:mf_[A-Za-z0-9_-]{7,}/.exec(state.src.slice(state.pos))
-  if (match === null) return false
-  const ref = match[0]
-  if (!silent) {
-    const link = state.push('link_open', 'a', 1)
-    link.attrSet('href', `/media/${encodeURIComponent(ref)}`)
-    link.attrSet('data-media-ref', ref)
-    const label = state.push('code_inline', 'code', 0)
-    label.content = ref
-    state.push('link_close', 'a', -1)
+markdown.core.ruler.after('inline', 'media_refs', (state) => {
+  for (const block of state.tokens) {
+    if (block.type !== 'inline' || block.children === null) continue
+    let linkDepth = 0
+    block.children = block.children.flatMap((token) => {
+      if (token.type === 'link_open') { linkDepth += 1; return [token] }
+      if (token.type === 'link_close') { linkDepth -= 1; return [token] }
+      if (token.type !== 'text' || linkDepth > 0) return [token]
+      const replacement = []
+      let offset = 0
+      for (const match of token.content.matchAll(/media:mf_[A-Za-z0-9_-]{7,}/g)) {
+        const index = match.index
+        if (index > 0 && /[A-Za-z0-9_]/.test(token.content[index - 1] ?? '')) continue
+        if (index > offset) {
+          const text = new state.Token('text', '', 0)
+          text.content = token.content.slice(offset, index)
+          replacement.push(text)
+        }
+        const ref = match[0]
+        const link = new state.Token('link_open', 'a', 1)
+        link.attrSet('href', `/media/${encodeURIComponent(ref)}`)
+        link.attrSet('data-media-ref', ref)
+        const label = new state.Token('code_inline', 'code', 0)
+        label.content = ref
+        replacement.push(link, label, new state.Token('link_close', 'a', -1))
+        offset = index + ref.length
+      }
+      if (offset === 0) return [token]
+      if (offset < token.content.length) {
+        const text = new state.Token('text', '', 0)
+        text.content = token.content.slice(offset)
+        replacement.push(text)
+      }
+      return replacement
+    })
   }
-  state.pos += ref.length
-  return true
 })
 
 const defaultLinkOpen = markdown.renderer.rules['link_open']
@@ -42,6 +63,11 @@ markdown.renderer.rules['link_open'] = (tokens, index, options, env, self) => {
 
 export function renderMarkdown(source: string): string {
   return markdown.render(withoutFrontMatter(source))
+}
+
+export function mediaRefFromClick(event: MouseEvent): string | undefined {
+  const target = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[data-media-ref]') : null
+  return target?.dataset['mediaRef']
 }
 
 export function withoutFrontMatter(source: string): string {

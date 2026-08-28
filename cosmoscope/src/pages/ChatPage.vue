@@ -38,6 +38,7 @@ const selectedId = ref<string>()
 const query = ref('')
 const error = ref('')
 const sessionsLoading = ref(true)
+const sessionsLoaded = ref(false)
 const loading = ref(false)
 const sending = ref(false)
 const uploading = ref(false)
@@ -120,7 +121,6 @@ async function loadSessions(preferredId?: string): Promise<void> {
   if (connection.state === 'opening' || connection.state === 'reconnecting') { sessionsLoading.value = true; return }
   if (!live.value) {
     sessionsLoading.value = false
-    sessions.value = []; messages.value = []
     error.value = connection.state === 'authenticated'
       ? 'The server does not provide every Chat RPC method required by this page.'
       : connection.error || 'Connect to cosmobot to load chat sessions.'
@@ -129,9 +129,10 @@ async function loadSessions(preferredId?: string): Promise<void> {
   sessionsLoading.value = true
   const result = await runBackend(listChatSessions)
   sessionsLoading.value = false
-  if (result._tag === 'Failure') { sessions.value = []; error.value = result.error.message; return }
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
   sessions.value = [...result.value]
+  sessionsLoaded.value = true
   const routeId = typeof route.params['sessionId'] === 'string' ? route.params['sessionId'] : undefined
   const requestedId = preferredId ?? routeId
   const nextId = requestedId !== undefined && result.value.some(({ sessionId }) => sessionId === requestedId)
@@ -286,6 +287,7 @@ watch([() => connection.state, () => connection.methods], ([state]) => {
     selectedId.value = undefined
     sessions.value = []
     messages.value = []
+    sessionsLoaded.value = false
   }
 })
 watch(() => route.params['sessionId'], (sessionId) => {
@@ -310,14 +312,14 @@ onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discard
       />
     </PageHeading>
     <article
-      v-if="sessionsLoading"
+      v-if="sessionsLoading && !sessionsLoaded"
       class="panel manager-loading"
       aria-label="Loading chat sessions"
     >
       <Skeleton height="3rem" /><Skeleton height="22rem" />
     </article>
     <Message
-      v-else-if="!live"
+      v-if="!live"
       severity="error"
       :closable="false"
     >
@@ -331,7 +333,7 @@ onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discard
       {{ error }}
     </Message>
     <div
-      v-if="live"
+      v-if="sessionsLoaded"
       class="chat-layout panel"
     >
       <aside

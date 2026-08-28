@@ -19,6 +19,7 @@ import type { Plugin } from '@/types/domain'
 type PendingAction = 'load' | `reload:${string}` | `unload:${string}`
 const plugins = ref<Plugin[]>([])
 const loading = ref(true)
+const loaded = ref(false)
 const error = ref('')
 const loadVisible = ref(false)
 const loadId = ref('')
@@ -42,16 +43,16 @@ async function refresh(): Promise<void> {
   if (connection.state === 'opening' || connection.state === 'reconnecting') { loading.value = true; return }
   if (connection.state !== 'authenticated') {
     loading.value = false
-    plugins.value = []
     error.value = connection.error || 'Connect to cosmobot to load plugins.'
     return
   }
   loading.value = true
   const result = await runBackend(listPlugins)
   loading.value = false
-  if (result._tag === 'Failure') { plugins.value = []; error.value = result.error.message; return }
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
   plugins.value = [...result.value]
+  loaded.value = true
 }
 
 async function doLoad(): Promise<void> {
@@ -131,7 +132,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       {{ error }}
     </Message>
     <article
-      v-if="loading"
+      v-if="loading && !loaded"
       class="panel manager-loading"
       aria-label="Loading plugins"
     >
@@ -141,7 +142,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
         height="3rem"
       />
     </article>
-    <template v-else>
+    <template v-else-if="loaded">
       <div
         class="manager-summary"
         aria-label="Loaded plugin summary"

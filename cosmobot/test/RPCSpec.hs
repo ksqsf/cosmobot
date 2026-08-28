@@ -7,6 +7,7 @@ import qualified Bot.Chat.Driver.RPC as RPCDriver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Message
 import Bot.Core.Thread (ThreadMessageKey (..))
+import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as EffectHTTP
@@ -35,6 +36,7 @@ import Bot.Plugin.Types (PluginId (..), PluginStatus (..))
 import qualified Bot.Session as Session
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Storage.SQLite as StorageSQLite
+import qualified Bot.Storage.Thread as ThreadStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as AesonKeyMap
@@ -76,6 +78,8 @@ main =
     testGroup "rpc"
       [ testCase "request params default to empty object" testRequestParamsDefaultToEmptyObject
       , testCase "audit.recent bounds its snapshot limit" testAuditRecentBoundsLimit
+      , testCase "audit.search queries all stored events" testAuditSearch
+      , testCase "audit.run validates and queries an agent run id" testAuditRun
       , testCase "thread message key JSON preserves large chat ids" testThreadMessageKeyJsonPreservesLargeChatIds
       , testCase "thread inspection RPC exposes an empty snapshot and validates ids" testThreadInspectionRpc
       , testCase "memory and skills RPC inspect history and loaded skills" testMemoryAndSkillsRpc
@@ -135,6 +139,43 @@ testAuditRecentBoundsLimit = do
   responseErrorCode zeroResponse @?= Just "invalid_params"
   responseErrorCode oversizedResponse @?= Just "invalid_params"
 
+testAuditSearch :: IO ()
+testAuditSearch = do
+  (response, invalidResponse) <- runRpcStorage ":memory:" $ AgentAudit.runAgentAudit do
+    _ <- AgentAudit.recordEvent AgentAudit.AgentRunStarted
+      { runId = "agent-search-match"
+      , messageId = Nothing
+      , maxTurns = 8
+      , exposedTools = ["distinctive-tool"]
+      , contextStrategy = Nothing
+      }
+    _ <- AgentAudit.recordEvent AgentAudit.AgentRunStarted
+      { runId = "agent-other"
+      , messageId = Nothing
+      , maxTurns = 8
+      , exposedTools = []
+      , contextStrategy = Nothing
+      }
+    rpcState <- RPC.newRpcState
+    let dispatch queryText = RPCServer.dispatchRpcRequest rpcState RPCAudit.auditRpcCallbacks $
+          rpcRequest "audit.search" (Aeson.object ["query" Aeson..= (queryText :: Text)])
+    (,) <$> dispatch "distinctive-tool" <*> dispatch ""
+  records <- case response of
+    WireJSONRPC.ResponseMessage result -> parseJson result.result
+    other -> assertFailure [i|expected audit search response, got #{show other :: String}|]
+  map (AgentAudit.eventRunId . (.event)) (records :: [AgentAudit.AgentAuditRecord]) @?= ["agent-search-match"]
+  responseErrorCode invalidResponse @?= Just "invalid_params"
+
+testAuditRun :: IO ()
+testAuditRun = do
+  (response, invalidResponse) <- runRpcStorage ":memory:" $ AgentAudit.runAgentAudit do
+    rpcState <- RPC.newRpcState
+    let dispatch runId = RPCServer.dispatchRpcRequest rpcState RPCAudit.auditRpcCallbacks $
+          rpcRequest "audit.run" (Aeson.object ["runId" Aeson..= (runId :: Text)])
+    (,) <$> dispatch "agent-missing" <*> dispatch ""
+  response @?= responseResult (Aeson.toJSON ([] :: [Aeson.Value]))
+  responseErrorCode invalidResponse @?= Just "invalid_params"
+
 testThreadMessageKeyJsonPreservesLargeChatIds :: IO ()
 testThreadMessageKeyJsonPreservesLargeChatIds = do
   let chatId = 1152921504606846976
@@ -160,17 +201,28 @@ testThreadMessageKeyJsonPreservesLargeChatIds = do
 
 testThreadInspectionRpc :: IO ()
 testThreadInspectionRpc = do
-  (listResponse, invalidListResponse, missingResponse, invalidResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" do
+  (listResponse, invalidListResponse, missingResponse, invalidResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
     rpcState <- RPC.newRpcState
     let dispatch method params =
           RPCServer.dispatchRpcRequest rpcState (RPCThread.threadRpcCallbacks (pure []) (pure . (== Concurrency.Id 7))) (rpcRequest method params)
-    (,,,,,)
-      <$> dispatch "thread.list" Aeson.Null
-      <*> dispatch "thread.list" (Aeson.object ["limit" Aeson..= (0 :: Int)])
-      <*> dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
-      <*> dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (0 :: Int)])
-      <*> dispatch "thread.active" Aeson.Null
-      <*> dispatch "thread.halt" (Aeson.object ["taskId" Aeson..= (7 :: Int)])
+    listResponse <- dispatch "thread.list" Aeson.Null
+    invalidListResponse <- dispatch "thread.list" (Aeson.object ["limit" Aeson..= (0 :: Int)])
+    missingResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
+    invalidResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (0 :: Int)])
+    let runId = "agent-linked"
+        linkedKey = ThreadMessageKey PlatformRPC Nothing "message-1"
+    threads <- ThreadStorage.newThreadStore
+    ThreadStorage.rememberThreadTranscript threads (Just linkedKey) (Transcript mempty)
+    void $ AgentAudit.recordEvent AgentAudit.AgentThreadLinked
+      { runId
+      , linkedMessageId = linkedKey.messageId
+      , linkedMessageKey = Just linkedKey
+      , parentMessageId = Nothing
+      }
+    resolveResponse <- dispatch "thread.resolve_run" (Aeson.object ["runId" Aeson..= runId])
+    activeResponse <- dispatch "thread.active" Aeson.Null
+    haltResponse <- dispatch "thread.halt" (Aeson.object ["taskId" Aeson..= (7 :: Int)])
+    pure (listResponse, invalidListResponse, missingResponse, invalidResponse, resolveResponse, activeResponse, haltResponse)
   listResponse @?= responseResult (Aeson.object
     [ "threads" Aeson..= ([] :: [Aeson.Value])
     , "total" Aeson..= (0 :: Int)
@@ -181,6 +233,7 @@ testThreadInspectionRpc = do
   responseErrorCode invalidListResponse @?= Just "invalid_params"
   missingResponse @?= responseResult Aeson.Null
   responseErrorCode invalidResponse @?= Just "invalid_params"
+  resolveResponse @?= responseResult (Aeson.object ["threadId" Aeson..= (Just 1 :: Maybe Int), "taskId" Aeson..= (Nothing :: Maybe Int)])
   activeResponse @?= responseResult (Aeson.object ["threads" Aeson..= ([] :: [Aeson.Value])])
   haltResponse @?= responseResult (Aeson.object ["taskId" Aeson..= (7 :: Int), "halted" Aeson..= True])
 
