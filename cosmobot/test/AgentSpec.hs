@@ -385,6 +385,7 @@ main =
       , testCase "memory tool manages current sender memory" testMemoryToolManagesCurrentSenderMemory
       , testCase "memory tool manages current chat memory" testMemoryToolManagesCurrentChatMemory
       , testCase "memory tool enforces non-superuser length limit" testMemoryToolEnforcesLengthLimit
+      , testCase "memory commit messages are short single-line subjects" testMemoryCommitMessageValidation
       , testCase "memory update rolls back when git commit fails" testMemoryUpdateRollsBackOnCommitFailure
       , testCase "run_bash captures stdout and stderr" testRunBashCapturesStdoutAndStderr
       , testCase "run_bash kills timed out process" testRunBashKillsTimedOutProcess
@@ -4446,9 +4447,9 @@ testTranscriptJsonRemainsListCompatible = do
 testMemoryToolManagesCurrentSenderMemory :: IO ()
 testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text)])]
-    , chatAnswer "" [toolCall "call-2" "sender_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
-    , chatAnswer "" [toolCall "call-3" "sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("Prefers concise Chinese answers." :: Text), "message" Aeson..= ("Record response preference" :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "sender_memory" (Aeson.object ["action" Aeson..= ("view" :: Text), "message" Aeson..= ("Inspect sender memory" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "sender_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text), "message" Aeson..= ("Remove response preference" :: Text)])]
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
@@ -4458,14 +4459,14 @@ testMemoryToolManagesCurrentSenderMemory = withMemoryTempDir \dir -> do
   exists @?= False
   doesDirectoryExist (dir </> ".git") >>= (@?= True)
   commitSubjects <- Process.readProcess "git" ["-C", dir, "log", "--format=%s"] ""
-  Text.lines (Text.pack commitSubjects) @?= ["Update memory", "Update memory", "Initialize memory"]
+  Text.lines (Text.pack commitSubjects) @?= ["Remove response preference", "Record response preference", "Initialize memory"]
 
 testMemoryToolManagesCurrentChatMemory :: IO ()
 testMemoryToolManagesCurrentChatMemory = withMemoryTempDir \dir -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "chat_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text)])]
-    , chatAnswer "" [toolCall "call-2" "chat_memory" (Aeson.object ["action" Aeson..= ("view" :: Text)])]
-    , chatAnswer "" [toolCall "call-3" "chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "chat_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= ("This chat prefers terse status updates." :: Text), "message" Aeson..= ("Record chat response style" :: Text)])]
+    , chatAnswer "" [toolCall "call-2" "chat_memory" (Aeson.object ["action" Aeson..= ("view" :: Text), "message" Aeson..= ("Inspect chat memory" :: Text)])]
+    , chatAnswer "" [toolCall "call-3" "chat_memory" (Aeson.object ["action" Aeson..= ("clear" :: Text), "message" Aeson..= ("Remove chat response style" :: Text)])]
     , chatAnswer "done" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
@@ -4478,7 +4479,7 @@ testMemoryToolEnforcesLengthLimit :: IO ()
 testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
   let longMemory = Text.replicate 1001 "x"
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory])]
+    [ chatAnswer "" [toolCall "call-1" "sender_memory" (Aeson.object ["action" Aeson..= ("replace" :: Text), "memory" Aeson..= longMemory, "message" Aeson..= ("Record oversized memory" :: Text)])]
     , chatAnswer "rejected" []
     ]
   (answer, _) <- runAgentWithMemory (MemoryStore.MemoryConfig dir) answers (ChatMock Nothing Nothing Nothing) do
@@ -4487,6 +4488,13 @@ testMemoryToolEnforcesLengthLimit = withMemoryTempDir \dir -> do
   exists <- doesFileExist (dir </> "telegram" </> "sender" </> "200.md")
   exists @?= False
 
+testMemoryCommitMessageValidation :: IO ()
+testMemoryCommitMessageValidation = do
+  assertBool "empty messages are rejected" (isLeft (MemoryStore.memoryCommitMessage "  "))
+  assertBool "multiline messages are rejected" (isLeft (MemoryStore.memoryCommitMessage "first\nsecond"))
+  assertBool "messages over 72 characters are rejected" (isLeft (MemoryStore.memoryCommitMessage (Text.replicate 73 "x")))
+  assertBool "short messages are accepted" (isRight (MemoryStore.memoryCommitMessage "Record preference"))
+
 testMemoryUpdateRollsBackOnCommitFailure :: IO ()
 testMemoryUpdateRollsBackOnCommitFailure = withMemoryTempDir \dir -> do
   let cfg = MemoryStore.MemoryConfig dir
@@ -4494,7 +4502,7 @@ testMemoryUpdateRollsBackOnCommitFailure = withMemoryTempDir \dir -> do
       runStore = runEff . runFileSystem . runProcess
   runStore do
     MemoryStore.initializeMemoryRepo cfg
-    MemoryStore.replaceMemory cfg scope "old memory"
+    MemoryStore.replaceMemory cfg scope (testMemoryCommitMessage "Record old memory") "old memory"
 
   let hook = dir </> ".git" </> "hooks" </> "pre-commit"
   TextIO.writeFile hook "#!/bin/sh\nexit 1\n"
@@ -4502,7 +4510,7 @@ testMemoryUpdateRollsBackOnCommitFailure = withMemoryTempDir \dir -> do
   setPermissions hook permissions{executable = True}
 
   (result, current) <- runStore do
-    result <- trySync (MemoryStore.replaceMemory cfg scope "new memory")
+    result <- trySync (MemoryStore.replaceMemory cfg scope (testMemoryCommitMessage "Record new memory") "new memory")
     current <- MemoryStore.loadMemory cfg scope
     pure (result, current)
   case result of
@@ -5256,6 +5264,9 @@ runAgentWithStreamingAnswers answers chatMock action = withMemoryTempDir \memory
 defaultTestSkillsConfig :: SkillsStore.SkillsConfig
 defaultTestSkillsConfig =
   SkillsStore.SkillsConfig "/tmp/cosmobot-agent-spec-unused-skills"
+
+testMemoryCommitMessage :: Text -> MemoryStore.MemoryCommitMessage
+testMemoryCommitMessage = either error id . MemoryStore.memoryCommitMessage
 
 captureMessages :: IOE :> es => Maybe (IORef.IORef [[LLM.ChatMessage]]) -> [LLM.ChatMessage] -> Eff es ()
 captureMessages captured messages =

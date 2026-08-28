@@ -192,6 +192,39 @@ export interface Plugin {
   routes: number
 }
 
+export type MemoryPlatform = 'qq' | 'telegram' | 'matrix' | 'discord' | 'rpc' | 'acp'
+export type MemoryScope = 'sender' | 'chat'
+
+export interface MemoryKey {
+  readonly platform: MemoryPlatform
+  readonly scope: MemoryScope
+  readonly scopeId: string
+}
+
+export interface MemorySummary extends MemoryKey {
+  readonly characters: number
+}
+
+export interface MemoryDetail extends MemorySummary {
+  readonly content: string
+}
+
+export interface MemoryHistoryEntry {
+  readonly revision: string
+  readonly committedAt: string
+  readonly subject: string
+}
+
+export interface SkillSummary {
+  readonly name: string
+  readonly description: string | null
+}
+
+export interface SkillDetail {
+  readonly name: string
+  readonly content: string
+}
+
 export interface MediaPlatformRef {
   readonly platform: string
   readonly scope: string

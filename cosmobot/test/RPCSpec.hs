@@ -11,20 +11,26 @@ import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.HTTP as EffectHTTP
 import qualified Bot.Effect.Media as Media
+import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.HTTP as BotHTTP
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Cache as MediaCache
 import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.Media.Object as MediaObject
+import qualified Bot.Memory as MemoryStore
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Plugin as RPCPlugin
+import qualified Bot.RPC.Memory as RPCMemory
+import qualified Bot.RPC.Skills as RPCSkills
 import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.JSONRPC as JSONRPC
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
 import qualified Bot.RPC.Thread as RPCThread
+import qualified Bot.Skills as SkillsStore
 import Bot.Plugin.Types (PluginId (..), PluginStatus (..))
 import qualified Bot.Session as Session
 import qualified Bot.Resource as ResourceManager
@@ -72,6 +78,7 @@ main =
       , testCase "audit.recent bounds its snapshot limit" testAuditRecentBoundsLimit
       , testCase "thread message key JSON preserves large chat ids" testThreadMessageKeyJsonPreservesLargeChatIds
       , testCase "thread inspection RPC exposes an empty snapshot and validates ids" testThreadInspectionRpc
+      , testCase "memory and skills RPC inspect history and loaded skills" testMemoryAndSkillsRpc
       , testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "admin.capabilities describes the supported RPC surface" testAdminCapabilities
       , testCase "plugin lifecycle RPC validates ids and serializes safe status" testPluginLifecycleRpc
@@ -176,6 +183,66 @@ testThreadInspectionRpc = do
   responseErrorCode invalidResponse @?= Just "invalid_params"
   activeResponse @?= responseResult (Aeson.object ["threads" Aeson..= ([] :: [Aeson.Value])])
   haltResponse @?= responseResult (Aeson.object ["taskId" Aeson..= (7 :: Int), "halted" Aeson..= True])
+
+testMemoryAndSkillsRpc :: IO ()
+testMemoryAndSkillsRpc = withSQLiteTempPath "rpc-memory-skills" \path -> do
+  let root = takeDirectory path
+      memoryCfg = MemoryStore.MemoryConfig (root </> "memory")
+      skillsCfg = SkillsStore.SkillsConfig (root </> "skills")
+      scope = MemoryStore.SenderMemory PlatformRPC "user-1"
+  (revisionValue, current, skillList, skillDetail, removeSkillResponse, skillsAfterRemoval, invalidScope) <- runEff $ runConcurrent $ runPrim $ runFileSystem $ runProcess do
+    let skillPath = root </> "skills" </> "haskell" </> "SKILL.md"
+    FileSystem.createDirectoryIfMissing True (takeDirectory skillPath)
+    FileSystemByteString.writeFile skillPath "---\nname: haskell\ndescription: Haskell help\n---\n# Haskell"
+    Memory.runMemory memoryCfg $ Skills.runSkills skillsCfg do
+      Memory.replaceMemory scope (testMemoryMessage "Record first version") "first"
+      firstRevision <- Memory.memoryHistory scope >>= maybe
+        (throwIO (TestRpcException "memory history is empty"))
+        (pure . (.revision))
+        . viaNonEmpty head
+      Memory.replaceMemory scope (testMemoryMessage "Record second version") "second"
+      let memoryCallbacks = RPCMemory.memoryRpcCallbacks
+          skillsCallbacks = RPCSkills.skillsRpcCallbacks
+          call callbacks method params = callbacks (rpcRequest method params)
+      revisionValue <- call memoryCallbacks.memoryMethod "memory.get_revision" $
+        Aeson.object
+          [ "platform" Aeson..= ("rpc" :: Text)
+          , "scope" Aeson..= ("sender" :: Text)
+          , "scopeId" Aeson..= ("user-1" :: Text)
+          , "revision" Aeson..= firstRevision.value
+          ]
+      Memory.revertMemory scope firstRevision
+      current <- Memory.loadMemory scope
+      skillList <- call skillsCallbacks.skillsMethod "skills.list" Aeson.Null
+      skillDetail <- call skillsCallbacks.skillsMethod "skills.get" (Aeson.object ["name" Aeson..= ("haskell" :: Text)])
+      removeSkillResponse <- call skillsCallbacks.skillsMethod "skills.remove" (Aeson.object ["name" Aeson..= ("haskell" :: Text)])
+      skillsAfterRemoval <- call skillsCallbacks.skillsMethod "skills.list" Aeson.Null
+      invalidScope <- call memoryCallbacks.memoryMethod "memory.get" $
+        Aeson.object
+          [ "platform" Aeson..= ("rpc" :: Text)
+          , "scope" Aeson..= ("sender" :: Text)
+          , "scopeId" Aeson..= ("../bad" :: Text)
+          ]
+      pure (revisionValue, current, skillList, skillDetail, removeSkillResponse, skillsAfterRemoval, invalidScope)
+  revisionValue @?= Just (Right (Aeson.object
+    [ "platform" Aeson..= ("rpc" :: Text)
+    , "scope" Aeson..= ("sender" :: Text)
+    , "scopeId" Aeson..= ("user-1" :: Text)
+    , "characters" Aeson..= (5 :: Int)
+    , "content" Aeson..= ("first" :: Text)
+    ]))
+  current @?= Just "first"
+  assertBool "skills.list returns loaded metadata" (isRightRpcValue skillList)
+  assertBool "skills.get returns SKILL.md" (isRightRpcValue skillDetail)
+  removeSkillResponse @?= Just (Right (Aeson.object ["name" Aeson..= ("haskell" :: Text), "removed" Aeson..= True]))
+  skillsAfterRemoval @?= Just (Right (Aeson.object ["skills" Aeson..= ([] :: [Aeson.Value])]))
+  assertBool "path traversal is rejected" (isLeftRpcValue invalidScope)
+  where
+    isRightRpcValue = maybe False isRight
+    isLeftRpcValue = maybe False isLeft
+
+testMemoryMessage :: Text -> MemoryStore.MemoryCommitMessage
+testMemoryMessage = either error id . MemoryStore.memoryCommitMessage
 
 testEnabledConfigRequiresToken :: IO ()
 testEnabledConfigRequiresToken =

@@ -58,6 +58,8 @@ import qualified Paths_cosmobot as Paths
 data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , threadMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
+  , memoryMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
+  , skillsMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , pluginMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , managerMethod :: RPC.RpcRequest -> Eff es (Maybe RPC.RpcResponse)
   , mediaGcSettings :: !MediaGcSettings
@@ -97,6 +99,8 @@ noRpcServerCallbacks :: RpcServerCallbacks es
 noRpcServerCallbacks = RpcServerCallbacks
   { auditMethod = \_ -> pure Nothing
   , threadMethod = \_ -> pure Nothing
+  , memoryMethod = \_ -> pure Nothing
+  , skillsMethod = \_ -> pure Nothing
   , pluginMethod = \_ -> pure Nothing
   , managerMethod = \_ -> pure Nothing
   , mediaGcSettings = MediaGcSettings False 0 0
@@ -429,6 +433,10 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
           dispatchAudit callbacks request
       | "thread." `Text.isPrefixOf` method ->
           dispatchThread callbacks request
+      | "memory." `Text.isPrefixOf` method ->
+          dispatchMemory callbacks request
+      | "skills." `Text.isPrefixOf` method ->
+          dispatchSkills callbacks request
       | "plugin." `Text.isPrefixOf` method ->
           dispatchPlugin callbacks request
       | "concurrency." `Text.isPrefixOf` method || "resource." `Text.isPrefixOf` method ->
@@ -1080,39 +1088,45 @@ dispatchAudit
   -> RPC.RpcRequest
   -> Eff es RPC.RpcResponse
 dispatchAudit callbacks request =
-  callbacks.auditMethod request >>= \case
-    Nothing ->
-      pure (methodNotFound (RPC.requestId request) (RPC.requestMethod request))
-    Just (Left err) ->
-      pure (JSONRPC.ErrorMessage (JSONRPC.JSONRPCError JSONRPC.rPC_VERSION (RPC.requestId request) err))
-    Just (Right value) ->
-      pure (RPC.successResponse (RPC.requestId request) value)
+  callbacks.auditMethod request >>= rpcCallbackResponse request
 
 dispatchThread
   :: RpcServerCallbacks es
   -> RPC.RpcRequest
   -> Eff es RPC.RpcResponse
 dispatchThread callbacks request =
-  callbacks.threadMethod request >>= \case
-    Nothing ->
-      pure (methodNotFound (RPC.requestId request) (RPC.requestMethod request))
-    Just (Left err) ->
-      pure (JSONRPC.ErrorMessage (JSONRPC.JSONRPCError JSONRPC.rPC_VERSION (RPC.requestId request) err))
-    Just (Right value) ->
-      pure (RPC.successResponse (RPC.requestId request) value)
+  callbacks.threadMethod request >>= rpcCallbackResponse request
+
+dispatchMemory
+  :: RpcServerCallbacks es
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchMemory callbacks request =
+  callbacks.memoryMethod request >>= rpcCallbackResponse request
+
+dispatchSkills
+  :: RpcServerCallbacks es
+  -> RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchSkills callbacks request =
+  callbacks.skillsMethod request >>= rpcCallbackResponse request
+
+rpcCallbackResponse
+  :: Applicative f
+  => RPC.RpcRequest
+  -> Maybe (Either RPC.RpcError Aeson.Value)
+  -> f RPC.RpcResponse
+rpcCallbackResponse request = \case
+  Nothing -> pure (methodNotFound (RPC.requestId request) (RPC.requestMethod request))
+  Just (Left err) -> pure (JSONRPC.ErrorMessage (JSONRPC.JSONRPCError JSONRPC.rPC_VERSION (RPC.requestId request) err))
+  Just (Right value) -> pure (RPC.successResponse (RPC.requestId request) value)
 
 dispatchPlugin
   :: RpcServerCallbacks es
   -> RPC.RpcRequest
   -> Eff es RPC.RpcResponse
 dispatchPlugin callbacks request =
-  callbacks.pluginMethod request >>= \case
-    Nothing ->
-      pure (methodNotFound (RPC.requestId request) (RPC.requestMethod request))
-    Just (Left err) ->
-      pure (JSONRPC.ErrorMessage (JSONRPC.JSONRPCError JSONRPC.rPC_VERSION (RPC.requestId request) err))
-    Just (Right value) ->
-      pure (RPC.successResponse (RPC.requestId request) value)
+  callbacks.pluginMethod request >>= rpcCallbackResponse request
 
 dispatchManager
   :: RpcServerCallbacks es

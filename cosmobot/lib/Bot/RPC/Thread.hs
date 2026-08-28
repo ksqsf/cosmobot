@@ -51,6 +51,7 @@ dispatchThreadMethod inspectActive haltActive request =
       parseParams request parseThreadListParams \params -> do
         rows <- Thread.loadThreadIndexRows
         let summaries = filter (\summary -> maybe True (== summary.rootKey.platform) params.platform) (threadSummaries rows)
+        -- ponytail: text search scans root blobs; add an indexed preview column if this becomes a sustained hot path.
         searchRoots <- if Text.null params.query then pure [] else Thread.loadThreadRowsByIds (map (.rootRowId) summaries)
         let searchPreviews = Map.fromList [(row.rowId, threadRowPreview row) | row <- searchRoots]
             filtered = filter (summaryMatches params.query searchPreviews) summaries
@@ -219,10 +220,11 @@ parseThreadListParams value = Aeson.withObject "thread.list params" parse value
     parse o = do
       offset <- fromMaybe 0 <$> o Aeson..:? "offset"
       limit <- fromMaybe 25 <$> o Aeson..:? "limit"
-      query <- fromMaybe "" <$> o Aeson..:? "query"
+      query <- Text.strip . fromMaybe "" <$> o Aeson..:? "query"
       platform <- o Aeson..:? "platform" >>= traverse parsePlatform
       unless (offset >= 0) (fail "offset must be non-negative")
       unless (limit >= 1 && limit <= 200) (fail "limit must be between 1 and 200")
+      unless (Text.length query <= 256) (fail "query must be at most 256 characters")
       pure ThreadListParams{offset, limit, query, platform}
 
 parsePlatform :: Text -> AesonTypes.Parser ChatPlatform

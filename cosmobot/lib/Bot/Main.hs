@@ -51,7 +51,9 @@ import qualified Bot.Scheduler as Scheduler
 import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Plugin as RPCPlugin
+import qualified Bot.RPC.Memory as RPCMemory
 import qualified Bot.RPC.Server as RPCServer
+import qualified Bot.RPC.Skills as RPCSkills
 import qualified Bot.RPC.State as RPC
 import qualified Bot.RPC.Thread as RPCThread
 import qualified Data.Aeson as Aeson
@@ -349,7 +351,7 @@ runConfiguredServers cfg threads rpcState acpState messageConsumer =
   runWithTaskGroup "servers" (serverTasks cfg threads rpcState acpState) "message.consumer" messageConsumer
 
 serverTasks
-  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
+  :: ( AgentAudit.AgentAudit :> es, Concurrency.Concurrency :> es, Memory.Memory :> es, Skills.Skills :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
   => BotConfig
   -> ThreadStore
   -> RPC.RpcState
@@ -363,10 +365,14 @@ serverTasks cfg threads rpcState acpState =
     threadCallbacks = RPCThread.threadRpcCallbacks
       (listActiveThreadInspections threads)
       (haltThreadById threads Concurrency.cancel)
+    memoryCallbacks = RPCMemory.memoryRpcCallbacks
+    skillsCallbacks = RPCSkills.skillsRpcCallbacks
     baseCallbacks = RPCServer.withManagerRpcCallbacks $
       auditCallbacks
         { RPCServer.threadMethod = threadCallbacks.threadMethod
-        , RPCServer.supportedMethods = auditCallbacks.supportedMethods <> threadCallbacks.supportedMethods
+        , RPCServer.memoryMethod = memoryCallbacks.memoryMethod
+        , RPCServer.skillsMethod = skillsCallbacks.skillsMethod
+        , RPCServer.supportedMethods = auditCallbacks.supportedMethods <> threadCallbacks.supportedMethods <> memoryCallbacks.supportedMethods <> skillsCallbacks.supportedMethods
         }
     MediaConfig.GcConfig{enabled = mediaGcEnabled, olderThanDays, intervalHours} = cfg.media.gc
     callbacks = baseCallbacks

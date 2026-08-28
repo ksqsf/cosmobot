@@ -236,3 +236,19 @@ export const pluginSchema = z.object({
 export const pluginListSchema = z.object({ plugins: z.array(pluginSchema) })
 export const pluginLifecycleSchema = pluginSchema
 export const pluginUnloadSchema = z.object({ pluginId: z.string(), unloaded: z.literal(true) })
+
+const memoryKeySchema = z.object({
+  platform: z.enum(['qq', 'telegram', 'matrix', 'discord', 'rpc', 'acp']),
+  scope: z.enum(['sender', 'chat']),
+  scopeId: z.string(),
+})
+export const memorySummarySchema = memoryKeySchema.extend({ characters: z.number().int().nonnegative() })
+export const memoryDetailSchema = memorySummarySchema.extend({ content: z.string() })
+export const memoryListSchema = z.object({ memories: z.array(memorySummarySchema) })
+export const memoryHistoryEntrySchema = z.object({ revision: z.string(), committedAt: z.string(), subject: z.string() })
+export const memoryHistorySchema = z.object({ history: z.array(memoryHistoryEntrySchema) })
+export const memoryRevertSchema = z.object({ reverted: z.literal(true), memory: memoryDetailSchema.nullable() })
+export const skillSummarySchema = z.object({ name: z.string(), description: z.string().nullable() })
+export const skillListSchema = z.object({ skills: z.array(skillSummarySchema) })
+export const skillDetailSchema = z.object({ name: z.string(), content: z.string() })
+export const skillRemoveSchema = z.object({ name: z.string(), removed: z.boolean() })

@@ -1,5 +1,5 @@
 import { Context, Data, type Effect } from 'effect'
-import type { ActiveThread, AssociatedResource, AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, LogEntry, MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot, Plugin, Resource, ResourceOperationResult, Task, ThreadDetail, ThreadListQuery, ThreadMessageKey, ThreadSnapshot } from '@/types/domain'
+import type { ActiveThread, AssociatedResource, AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, LogEntry, MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot, MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary, Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task, ThreadDetail, ThreadListQuery, ThreadMessageKey, ThreadSnapshot } from '@/types/domain'
 
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
 export class RpcBackendError extends Data.TaggedError('RpcBackendError')<{ readonly message: string }> {}
@@ -27,6 +27,18 @@ export interface AdminBackend {
     readonly get: (id: number) => BackendEffect<ThreadDetail | null>
     readonly active: () => BackendEffect<readonly ActiveThread[]>
     readonly halt: (taskId: number) => BackendEffect<boolean>
+  }
+  readonly memory: {
+    readonly list: () => BackendEffect<readonly MemorySummary[]>
+    readonly get: (key: MemoryKey) => BackendEffect<MemoryDetail | null>
+    readonly history: (key: MemoryKey) => BackendEffect<readonly MemoryHistoryEntry[]>
+    readonly getRevision: (key: MemoryKey, revision: string) => BackendEffect<MemoryDetail | null>
+    readonly revert: (key: MemoryKey, revision: string) => BackendEffect<MemoryDetail | null>
+  }
+  readonly skills: {
+    readonly list: () => BackendEffect<readonly SkillSummary[]>
+    readonly get: (name: string) => BackendEffect<SkillDetail | null>
+    readonly remove: (name: string) => BackendEffect<boolean>
   }
   readonly chat: {
     readonly sessionCount: () => BackendEffect<number>
@@ -97,6 +109,22 @@ export const listActiveThreads: Effect.Effect<readonly ActiveThread[], BackendEr
   AdminBackendService.use((backend) => backend.threads.active())
 export const haltActiveThread = (taskId: number): Effect.Effect<boolean, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.threads.halt(taskId))
+export const listMemories: Effect.Effect<readonly MemorySummary[], BackendError, AdminBackend> =
+  AdminBackendService.use((backend) => backend.memory.list())
+export const getMemory = (key: MemoryKey): Effect.Effect<MemoryDetail | null, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.memory.get(key))
+export const getMemoryHistory = (key: MemoryKey): Effect.Effect<readonly MemoryHistoryEntry[], BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.memory.history(key))
+export const getMemoryRevision = (key: MemoryKey, revision: string): Effect.Effect<MemoryDetail | null, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.memory.getRevision(key, revision))
+export const revertMemory = (key: MemoryKey, revision: string): Effect.Effect<MemoryDetail | null, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.memory.revert(key, revision))
+export const listSkills: Effect.Effect<readonly SkillSummary[], BackendError, AdminBackend> =
+  AdminBackendService.use((backend) => backend.skills.list())
+export const getSkill = (name: string): Effect.Effect<SkillDetail | null, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.skills.get(name))
+export const removeSkill = (name: string): Effect.Effect<boolean, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.skills.remove(name))
 export const countSessions: Effect.Effect<number, BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.chat.sessionCount())
 export const listChatSessions: Effect.Effect<readonly ChatSession[], BackendError, AdminBackend> =

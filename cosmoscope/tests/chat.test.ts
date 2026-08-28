@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { mergeChatMessage, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
-import { renderMarkdown } from '@/markdown'
+import { highlightCode, renderMarkdown } from '@/markdown'
 import type { ChatMessage } from '@/types/domain'
 
 const message: ChatMessage = {
@@ -29,10 +29,24 @@ describe('chat projection', () => {
   })
 
   it('renders CommonMark and KaTeX without enabling raw HTML', () => {
-    const rendered = renderMarkdown('## Result\n\n$E = mc^2$\n\n<script>alert(1)</script>')
+    const rendered = renderMarkdown('## Result\n\n$E = mc^2$\n\n\\[a^2+b^2=c^2\\]\n\n<script>alert(1)</script>')
     expect(rendered).toContain('<h2>Result</h2>')
     expect(rendered).toContain('class="katex"')
+    expect(rendered).toContain('class="katex-display"')
+    expect(rendered).not.toContain('[a^2+b^2=c^2]')
     expect(rendered).toContain('&lt;script&gt;')
     expect(rendered).not.toContain('<script>')
+  })
+
+  it('syntax-highlights code without allowing HTML through', () => {
+    expect(renderMarkdown('```ts\nconst answer: number = 42\n```')).toContain('hljs-keyword')
+    expect(highlightCode('{"value":"<script>"}', 'json')).toContain('&lt;script&gt;')
+  })
+
+  it('renders tables and treats frontmatter as metadata', () => {
+    const rendered = renderMarkdown('---\nname: example\ndescription: Test\n---\n\n| A | B |\n| - | - |\n| 1 | 2 |')
+    expect(rendered).toContain('<table>')
+    expect(rendered).toContain('<td>1</td>')
+    expect(rendered).not.toContain('description: Test')
   })
 })

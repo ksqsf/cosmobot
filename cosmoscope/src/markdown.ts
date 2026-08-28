@@ -1,13 +1,16 @@
 import MarkdownIt from 'markdown-it'
 import { katex } from '@mdit/plugin-katex'
+import hljs from 'highlight.js/lib/common'
 
 const markdown = new MarkdownIt('commonmark', {
   html: false,
   linkify: true,
+  highlight: highlightCode,
 }).use(katex, {
+  delimiters: 'all',
   throwOnError: false,
   strict: 'ignore',
-})
+}).enable('table')
 
 markdown.inline.ruler.before('text', 'media_ref', (state, silent) => {
   if (state.pos > 0 && /[A-Za-z0-9_]/.test(state.src[state.pos - 1] ?? '')) return false
@@ -38,5 +41,19 @@ markdown.renderer.rules['link_open'] = (tokens, index, options, env, self) => {
 }
 
 export function renderMarkdown(source: string): string {
-  return markdown.render(source)
+  return markdown.render(withoutFrontMatter(source))
+}
+
+export function withoutFrontMatter(source: string): string {
+  if (!source.startsWith('---\n') && !source.startsWith('---\r\n')) return source
+  const lines = source.split(/\r?\n/)
+  const end = lines.indexOf('---', 1)
+  if (end < 2 || !lines.slice(1, end).some((line) => /^[A-Za-z][\w-]*\s*:/.test(line))) return source
+  return lines.slice(end + 1).join('\n').replace(/^\n/, '')
+}
+
+export function highlightCode(source: string, language = ''): string {
+  return language !== '' && hljs.getLanguage(language) !== undefined
+    ? hljs.highlight(source, { language, ignoreIllegals: true }).value
+    : hljs.highlightAuto(source).value
 }

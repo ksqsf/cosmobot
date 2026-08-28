@@ -2,7 +2,52 @@ import { Effect } from 'effect'
 import { ZodError } from 'zod'
 import { RpcBackendError, type AdminBackend } from './AdminBackend'
 import { mockBackend } from './mockBackend'
-import { activeThreadListSchema, auditDetailSchema, auditRecordSchema, auditThreadSchema, chatDeleteSchema, chatHistorySchema, chatMessageDoneSchema, chatMessageSchema, chatOpenSchema, chatRenameSchema, chatSendSchema, chatSessionsSchema, chatUploadSchema, concurrencyAwaitSchema, concurrencyCancelSchema, concurrencyListSchema, concurrencyLookupSchema, haltThreadSchema, mediaDeleteSchema, mediaDetailSchema, mediaGcSchema, mediaSearchSchema, mediaSnapshotSchema, pluginLifecycleSchema, pluginListSchema, pluginUnloadSchema, recentAuditSchema, resourceDestroyAssociatedSchema, resourceDestroySchema, resourceDetailSchema, resourceKeepAliveSchema, resourceListAssociatedSchema, resourceListSchema, resourceMakePermanentSchema, resourceRenameSchema, threadDetailSchema, threadListSchema } from '@/rpc/schemas'
+import {
+  activeThreadListSchema,
+  auditDetailSchema,
+  auditRecordSchema,
+  auditThreadSchema,
+  chatDeleteSchema,
+  chatHistorySchema,
+  chatMessageDoneSchema,
+  chatMessageSchema,
+  chatOpenSchema,
+  chatRenameSchema,
+  chatSendSchema,
+  chatSessionsSchema,
+  chatUploadSchema,
+  concurrencyAwaitSchema,
+  concurrencyCancelSchema,
+  concurrencyListSchema,
+  concurrencyLookupSchema,
+  haltThreadSchema,
+  mediaDeleteSchema,
+  mediaDetailSchema,
+  mediaGcSchema,
+  mediaSearchSchema,
+  mediaSnapshotSchema,
+  memoryDetailSchema,
+  memoryHistorySchema,
+  memoryListSchema,
+  memoryRevertSchema,
+  pluginLifecycleSchema,
+  pluginListSchema,
+  pluginUnloadSchema,
+  recentAuditSchema,
+  resourceDestroyAssociatedSchema,
+  resourceDestroySchema,
+  resourceDetailSchema,
+  resourceKeepAliveSchema,
+  resourceListAssociatedSchema,
+  resourceListSchema,
+  resourceMakePermanentSchema,
+  resourceRenameSchema,
+  skillDetailSchema,
+  skillListSchema,
+  skillRemoveSchema,
+  threadDetailSchema,
+  threadListSchema,
+} from '@/rpc/schemas'
 import type { RpcClient } from '@/rpc/client'
 import type { LiveAdminMethod } from '@/rpc/protocol'
 import type { BackendEffect } from './AdminBackend'
@@ -69,6 +114,18 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       get: (id) => rpcEffect('Could not load the thread.', async () => threadDetailSchema.nullable().parse(await client.request('thread.get', { threadId: id }))),
       active: () => rpcEffect('Could not load active threads.', async () => activeThreadListSchema.parse(await client.request('thread.active')).threads),
       halt: (taskId) => rpcEffect('Could not halt the active thread.', async () => haltThreadSchema.parse(await client.request('thread.halt', { taskId })).halted),
+    },
+    memory: {
+      list: () => rpcEffect('Could not load memories.', async () => memoryListSchema.parse(await client.request('memory.list')).memories),
+      get: (key) => rpcEffect('Could not load memory.', async () => memoryDetailSchema.nullable().parse(await client.request('memory.get', key))),
+      history: (key) => rpcEffect('Could not load memory history.', async () => memoryHistorySchema.parse(await client.request('memory.history', key)).history),
+      getRevision: (key, revision) => rpcEffect('Could not load memory revision.', async () => memoryDetailSchema.nullable().parse(await client.request('memory.get_revision', { ...key, revision }))),
+      revert: (key, revision) => rpcEffect('Could not revert memory.', async () => memoryRevertSchema.parse(await client.request('memory.revert', { ...key, revision })).memory),
+    },
+    skills: {
+      list: () => rpcEffect('Could not load skills.', async () => skillListSchema.parse(await client.request('skills.list')).skills),
+      get: (name) => rpcEffect('Could not load skill.', async () => skillDetailSchema.nullable().parse(await client.request('skills.get', { name }))),
+      remove: (name) => rpcEffect('Could not remove skill.', async () => skillRemoveSchema.parse(await client.request('skills.remove', { name })).removed),
     },
     chat: {
       sessionCount: supports('chat.list_sessions') ? () => Effect.tryPromise({

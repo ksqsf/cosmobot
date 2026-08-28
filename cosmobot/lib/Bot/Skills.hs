@@ -9,6 +9,8 @@ module Bot.Skills
   , SkillMetadata (..)
   , SkillsPrompt (..)
   , loadSkillsPrompt
+  , loadSkills
+  , removeSkill
   , skillContent
   , skillsSystemPrompt
   )
@@ -18,8 +20,10 @@ import Bot.Prelude
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
-import qualified Data.Text.IO as TextIO
-import System.Directory
+import qualified Data.Text.Encoding as TextEncoding
+import Effectful.FileSystem (FileSystem)
+import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
 import System.FilePath
 
 -- | Filesystem-backed skill settings.
@@ -37,35 +41,48 @@ data SkillMetadata = SkillMetadata
 
 data SkillsPrompt = SkillsPrompt
   { systemPrompt :: Text
+  , metadata :: ![SkillMetadata]
   , contents :: !(Map.Map Text Text)
   }
   deriving (Eq, Show)
 
-loadSkillsPrompt :: IOE :> es => SkillsConfig -> Eff es SkillsPrompt
+loadSkillsPrompt :: FileSystem :> es => SkillsConfig -> Eff es SkillsPrompt
 loadSkillsPrompt cfg = do
   skills <- loadSkills cfg
   pure SkillsPrompt
     { systemPrompt = skillsSystemPrompt (fst <$> skills)
+    , metadata = fst <$> skills
     , contents = Map.fromList [(metadata.name, content) | (metadata, content) <- skills]
     }
 
-loadSkills :: IOE :> es => SkillsConfig -> Eff es [(SkillMetadata, Text)]
-loadSkills cfg = liftIO do
-  exists <- doesDirectoryExist cfg.dir
+loadSkills :: FileSystem :> es => SkillsConfig -> Eff es [(SkillMetadata, Text)]
+loadSkills cfg = do
+  exists <- FileSystem.doesDirectoryExist cfg.dir
   if not exists
     then pure []
     else do
-      entries <- List.sort <$> listDirectory cfg.dir
+      entries <- List.sort <$> FileSystem.listDirectory cfg.dir
       fmap catMaybes $ forM entries \entry -> do
         let skillDir = cfg.dir </> entry
             skillPath = skillDir </> "SKILL.md"
-        isDir <- doesDirectoryExist skillDir
-        hasSkill <- doesFileExist skillPath
+        isDir <- FileSystem.doesDirectoryExist skillDir
+        hasSkill <- FileSystem.doesFileExist skillPath
         if isDir && hasSkill
           then do
-            content <- TextIO.readFile skillPath
+            content <- TextEncoding.decodeUtf8 <$> FileSystemByteString.readFile skillPath
             pure (Just (parseSkillMetadata entry skillPath content, content))
           else pure Nothing
+
+removeSkill :: FileSystem :> es => SkillsConfig -> SkillMetadata -> Eff es Bool
+removeSkill cfg skill = do
+  let skillDir = takeDirectory skill.path
+      configuredDir = normalise cfg.dir
+  if takeDirectory (normalise skillDir) /= configuredDir
+    then pure False
+    else do
+      exists <- FileSystem.doesDirectoryExist skillDir
+      when exists (FileSystem.removePathForcibly skillDir)
+      pure exists
 
 skillContent :: Text -> SkillsPrompt -> Maybe Text
 skillContent name prompt =

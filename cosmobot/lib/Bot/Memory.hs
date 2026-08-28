@@ -7,10 +7,19 @@ Stability   : experimental
 module Bot.Memory
   ( MemoryConfig (..)
   , MemoryScope (..)
+  , MemoryCommitMessage
+  , memoryCommitMessage
+  , MemoryEntry (..)
+  , MemoryRevision (..)
+  , MemoryHistoryEntry (..)
   , memoryLimitChars
   , senderMemoryScope
   , chatMemoryScope
   , loadMemory
+  , listMemories
+  , memoryHistory
+  , loadMemoryRevision
+  , revertMemory
   , replaceMemory
   , clearMemory
   , initializeMemoryRepo
@@ -20,8 +29,10 @@ where
 
 import Bot.Core.Message
 import Bot.Prelude
+import Data.Char (isControl)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.List as List
 import Effectful.FileSystem (FileSystem)
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
@@ -46,6 +57,37 @@ newtype MemoryConfig = MemoryConfig
 data MemoryScope
   = SenderMemory !ChatPlatform !Text
   | ChatMemory !ChatPlatform !Integer
+  deriving (Eq, Show)
+
+newtype MemoryCommitMessage = MemoryCommitMessage Text
+  deriving (Eq, Show)
+
+memoryCommitMessage :: Text -> Either Text MemoryCommitMessage
+memoryCommitMessage raw
+  | Text.null message = Left "message must not be empty"
+  | Text.length message > 72 = Left "message must not exceed 72 characters"
+  | Text.any (`elem` ['\r', '\n']) message = Left "message must be a single line"
+  | Text.any isControl message = Left "message must not contain control characters"
+  | otherwise = Right (MemoryCommitMessage message)
+  where
+    message = Text.strip raw
+
+data MemoryEntry = MemoryEntry
+  { scope :: !MemoryScope
+  , content :: !Text
+  }
+  deriving (Eq, Show)
+
+newtype MemoryRevision = MemoryRevision
+  { value :: Text
+  }
+  deriving (Eq, Show)
+
+data MemoryHistoryEntry = MemoryHistoryEntry
+  { revision :: !MemoryRevision
+  , committedAt :: !Text
+  , subject :: !Text
+  }
   deriving (Eq, Show)
 
 memoryLimitChars :: Int
@@ -76,15 +118,87 @@ loadMemory cfg scope = do
   where
     path = memoryPath cfg scope
 
-replaceMemory :: (FileSystem :> es, IOE :> es, Process :> es) => MemoryConfig -> MemoryScope -> Text -> Eff es ()
-replaceMemory cfg scope memory =
-  updateMemory cfg scope $ \path -> do
+listMemories :: FileSystem :> es => MemoryConfig -> Eff es [MemoryEntry]
+listMemories cfg =
+  concat <$> traverse listPlatformMemories platforms
+  where
+    platforms = [PlatformQQ, PlatformTelegram, PlatformMatrix, PlatformDiscord, PlatformRPC, PlatformACP]
+    listPlatformMemories platform =
+      (<>) <$> listScope platform "sender" senderScope <*> listScope platform "chat" chatScope
+    listScope platform kind scopeFromId = do
+      let dir = cfg.dir </> platformPathPart platform </> kind
+      exists <- FileSystem.doesDirectoryExist dir
+      if not exists
+        then pure []
+        else do
+          names <- List.sort <$> FileSystem.listDirectory dir
+          fmap catMaybes $ forM names \name -> do
+            let path = dir </> name
+            isFile <- FileSystem.doesFileExist path
+            case scopeFromId platform (Text.pack (dropExtension name)) of
+              Nothing -> pure Nothing
+              Just scope | isFile && takeExtension name == ".md" ->
+                fmap (MemoryEntry scope) <$> loadMemory cfg scope
+              Just _ -> pure Nothing
+    senderScope platform = Just . SenderMemory platform
+    chatScope platform = fmap (ChatMemory platform) . readMaybe . Text.unpack
+
+memoryHistory :: Process :> es => MemoryConfig -> MemoryScope -> Eff es [MemoryHistoryEntry]
+memoryHistory cfg scope = do
+  let args = ["log", "--format=%H%x09%cI%x09%s", "--", makeRelative cfg.dir (memoryPath cfg scope)]
+  (exitCode, stdoutText, stderrText) <- git cfg args
+  unless (exitCode == ExitSuccess) $
+    throwIO (MemoryGitFailed (map Text.pack args) (Text.pack stderrText))
+  pure (mapMaybe parseHistoryLine (Text.lines (Text.pack stdoutText)))
+
+loadMemoryRevision :: Process :> es => MemoryConfig -> MemoryScope -> MemoryRevision -> Eff es (Maybe Text)
+loadMemoryRevision cfg scope revision = do
+  validRevision <- gitSucceeds cfg ["cat-file", "-e", Text.unpack revision.value <> "^{commit}"]
+  unless validRevision $
+    throwIO (MemoryGitFailed ["cat-file", "-e", revision.value <> "^{commit}"] "unknown memory revision")
+  let object = Text.unpack revision.value <> ":" <> makeRelative cfg.dir (memoryPath cfg scope)
+  exists <- gitSucceeds cfg ["cat-file", "-e", object]
+  if not exists
+    then pure Nothing
+    else do
+      (exitCode, stdoutText, stderrText) <- git cfg ["show", "--no-ext-diff", object]
+      unless (exitCode == ExitSuccess) $
+        throwIO (MemoryGitFailed ["show", Text.pack object] (Text.pack stderrText))
+      pure (nonEmptyMemory (Text.pack stdoutText))
+
+revertMemory
+  :: (FileSystem :> es, IOE :> es, Process :> es)
+  => MemoryConfig
+  -> MemoryScope
+  -> MemoryRevision
+  -> Eff es ()
+revertMemory cfg scope revision =
+  loadMemoryRevision cfg scope revision >>= \case
+    Nothing -> clearMemory cfg scope revertMessage
+    Just content -> replaceMemory cfg scope revertMessage content
+  where
+    revertMessage = MemoryCommitMessage ("Revert memory to " <> Text.take 8 revision.value)
+
+parseHistoryLine :: Text -> Maybe MemoryHistoryEntry
+parseHistoryLine line =
+  case Text.splitOn "\t" line of
+    revision : committedAt : subjectParts ->
+      Just MemoryHistoryEntry
+        { revision = MemoryRevision revision
+        , committedAt
+        , subject = Text.intercalate "\t" subjectParts
+        }
+    _ -> Nothing
+
+replaceMemory :: (FileSystem :> es, IOE :> es, Process :> es) => MemoryConfig -> MemoryScope -> MemoryCommitMessage -> Text -> Eff es ()
+replaceMemory cfg scope message memory =
+  updateMemory cfg scope message $ \path -> do
     FileSystem.createDirectoryIfMissing True (takeDirectory path)
     FileSystemFile.writeBinaryFileAtomic path (TextEncoding.encodeUtf8 (Text.strip memory))
 
-clearMemory :: (FileSystem :> es, IOE :> es, Process :> es) => MemoryConfig -> MemoryScope -> Eff es ()
-clearMemory cfg scope =
-  updateMemory cfg scope removeMemoryFile
+clearMemory :: (FileSystem :> es, IOE :> es, Process :> es) => MemoryConfig -> MemoryScope -> MemoryCommitMessage -> Eff es ()
+clearMemory cfg scope message =
+  updateMemory cfg scope message removeMemoryFile
 
 initializeMemoryRepo :: (FileSystem :> es, IOE :> es, Process :> es) => MemoryConfig -> Eff es ()
 initializeMemoryRepo cfg = do
@@ -97,11 +211,12 @@ updateMemory
   :: (FileSystem :> es, IOE :> es, Process :> es)
   => MemoryConfig
   -> MemoryScope
+  -> MemoryCommitMessage
   -> (FilePath -> Eff es ())
   -> Eff es ()
-updateMemory cfg scope update = mask \restore -> do
+updateMemory cfg scope message update = mask \restore -> do
   previous <- readMemoryFile path
-  restore (update path >> commitMemoryPath cfg path)
+  restore (update path >> commitMemoryPath cfg path message)
     `onException` rollbackMemoryFile cfg path previous
   where
     path = memoryPath cfg scope
@@ -130,15 +245,15 @@ removeMemoryFile path = do
   exists <- FileSystem.doesFileExist path
   when exists (FileSystem.removeFile path)
 
-commitMemoryPath :: (IOE :> es, Process :> es) => MemoryConfig -> FilePath -> Eff es ()
-commitMemoryPath cfg path = do
+commitMemoryPath :: (IOE :> es, Process :> es) => MemoryConfig -> FilePath -> MemoryCommitMessage -> Eff es ()
+commitMemoryPath cfg path (MemoryCommitMessage message) = do
   stageMemoryPath cfg path
   changed <- not <$> gitSucceeds cfg ["diff", "--cached", "--quiet", "--", makeRelative cfg.dir path]
   when changed $
     runGit cfg
       [ "-c", "user.name=Cosmobot"
       , "-c", "user.email=cosmobot@localhost"
-      , "commit", "--quiet", "-m", "Update memory"
+      , "commit", "--quiet", "-m", Text.unpack message
       ]
 
 stageMemoryPath :: (IOE :> es, Process :> es) => MemoryConfig -> FilePath -> Eff es ()

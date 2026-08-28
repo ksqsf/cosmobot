@@ -43,12 +43,13 @@ memoryTool name description scope =
         (objectSchema
           [ fieldText "action" "One of: view, replace, clear."
           , fieldText "memory" "Complete replacement MEMORY.md content. Required only when action is replace."
+          , fieldText "message" "Short, single-line reason for this operation (72 characters maximum). Used as the Git commit subject when memory changes."
           ]
-          ["action"])
+          ["action", "message"])
         memoryArgs)
-      \(action, memory) -> do
+      \(action, memory, message) -> do
         context <- askToolContext
-        runMemoryAction scope context action memory
+        runMemoryAction scope context action memory message
 
 data MemoryAction
   = MemoryView
@@ -78,11 +79,13 @@ chatMemoryScope = MemoryScope
   , scopeOf = MemoryStore.chatMemoryScope
   }
 
-memoryArgs :: Aeson.Value -> AesonTypes.Parser (MemoryAction, Maybe Text)
+memoryArgs :: Aeson.Value -> AesonTypes.Parser (MemoryAction, Maybe Text, MemoryStore.MemoryCommitMessage)
 memoryArgs =
   Aeson.withObject "memory arguments" $ \o -> do
     actionText <- Text.toLower . Text.strip <$> o Aeson..: Key.fromText "action"
     memory <- fmap Text.strip <$> o Aeson..:? Key.fromText "memory"
+    rawMessage <- o Aeson..: Key.fromText "message"
+    message <- either (fail . Text.unpack) pure (MemoryStore.memoryCommitMessage rawMessage)
     action <- case actionText of
       "view" ->
         pure MemoryView
@@ -94,10 +97,10 @@ memoryArgs =
         fail "action must be one of: view, replace, clear"
     when (actionText == "replace" && maybe True Text.null memory) do
       fail "memory is required when action is replace"
-    pure (action, memory)
+    pure (action, memory, message)
 
-runMemoryAction :: Memory.Memory :> es => MemoryScope -> Context -> MemoryAction -> Maybe Text -> Eff es ToolResult
-runMemoryAction scope context action memory =
+runMemoryAction :: Memory.Memory :> es => MemoryScope -> Context -> MemoryAction -> Maybe Text -> MemoryStore.MemoryCommitMessage -> Eff es ToolResult
+runMemoryAction scope context action memory message =
   case scope.scopeOf context.message of
     Left err ->
       pure (toolText err)
@@ -114,8 +117,8 @@ runMemoryAction scope context action memory =
               | not context.superuser && Text.length content > MemoryStore.memoryLimitChars ->
                   pure (toolText [i|Memory update rejected: memory is #{Text.length content} characters, over the #{MemoryStore.memoryLimitChars} character limit. Please summarize it more concisely and try again.|])
               | otherwise -> do
-                  Memory.replaceMemory memoryScope content
+                  Memory.replaceMemory memoryScope message content
                   pure (toolText scope.updatedMessage)
         MemoryClear -> do
-          Memory.clearMemory memoryScope
+          Memory.clearMemory memoryScope message
           pure (toolText scope.clearedMessage)

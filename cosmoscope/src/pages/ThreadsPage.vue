@@ -23,7 +23,7 @@ import { runBackend } from '@/backend/runBackend'
 import { safeImageUrl } from '@/backend/chat'
 import { threadStats } from '@/backend/threadStats'
 import { formatBytes } from '@/format'
-import { renderMarkdown } from '@/markdown'
+import { highlightCode, renderMarkdown } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
 import type { ActiveThread, AuditPlatform, AuditRecord, MediaDetail, StoredThreadMessage, ThreadDetail, ThreadMessageKey, ThreadNode, ThreadSummary } from '@/types/domain'
 
@@ -330,11 +330,14 @@ function mediaDetails(message: StoredThreadMessage): MediaDetail[] {
 }
 
 function imageUrls(message: StoredThreadMessage): string[] {
-  if (!Array.isArray(message.content)) return []
-  return [...new Set(message.content.flatMap((part) => {
+  const contentUrls = Array.isArray(message.content) ? message.content.flatMap((part) => {
     const ref = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url
-    if (ref === undefined) return []
-    const resolved = mediaByRef.value.get(ref)?.publicUrl ?? ref
+    return ref === undefined ? [] : [mediaByRef.value.get(ref)?.publicUrl ?? ref]
+  }) : []
+  const mediaUrls = mediaDetails(message)
+    .filter(({ exists, mimeType }) => exists && mimeType.startsWith('image/'))
+    .map(({ publicUrl }) => publicUrl)
+  return [...new Set([...contentUrls, ...mediaUrls].flatMap((resolved) => {
     const safe = safeImageUrl(resolved, window.location.href)
     return safe === undefined ? [] : [safe]
   }))]
@@ -690,14 +693,24 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
                 />
                 <div
                   v-if="message.tool_calls?.length"
-                  class="tag-list"
+                  class="thread-tool-calls"
                 >
-                  <Tag
+                  <details
                     v-for="call in message.tool_calls"
                     :key="call.id"
-                    :value="call.function.name"
-                    severity="secondary"
-                  />
+                    class="thread-tool-call"
+                  >
+                    <summary>
+                      <Tag
+                        :value="call.function.name"
+                        severity="secondary"
+                      /><span>Arguments</span>
+                    </summary>
+                    <pre><code
+                      class="hljs language-json"
+                      :innerHTML="highlightCode(call.function.arguments || '{}', 'json')"
+                    /></pre>
+                  </details>
                 </div>
               </li>
             </ol>
@@ -756,10 +769,65 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
                 </button>
               </div>
               <div
+                v-if="mediaDetails(message).some(({ mimeType }) => mimeType.startsWith('video/') || mimeType.startsWith('audio/') || !mimeType.startsWith('image/'))"
+                class="thread-attachments"
+              >
+                <template
+                  v-for="media in mediaDetails(message)"
+                  :key="media.mediaId"
+                >
+                  <video
+                    v-if="media.exists && media.mimeType.startsWith('video/')"
+                    class="object-preview"
+                    controls
+                    preload="metadata"
+                  ><source
+                    :src="media.publicUrl"
+                    :type="media.mimeType"
+                  /></video>
+                  <audio
+                    v-else-if="media.exists && media.mimeType.startsWith('audio/')"
+                    controls
+                    preload="metadata"
+                  ><source
+                    :src="media.publicUrl"
+                    :type="media.mimeType"
+                  /></audio>
+                  <RouterLink
+                    v-else-if="!media.mimeType.startsWith('image/')"
+                    class="chat-file-card"
+                    :to="{ name: 'media', params: { mediaId: media.mediaId } }"
+                  >
+                    <i class="pi pi-file" /><span><strong>{{ media.sourceName || media.mediaId }}</strong><small>{{ media.mimeType }} · {{ formatBytes(media.size) }}</small></span><i class="pi pi-arrow-right" />
+                  </RouterLink>
+                </template>
+              </div>
+              <div
                 class="markdown-body"
                 :innerHTML="renderMarkdown(messageText(message))"
                 @click="openMediaRef"
               />
+              <div
+                v-if="message.tool_calls?.length"
+                class="thread-tool-calls"
+              >
+                <details
+                  v-for="call in message.tool_calls"
+                  :key="call.id"
+                  class="thread-tool-call"
+                >
+                  <summary>
+                    <Tag
+                      :value="call.function.name"
+                      severity="secondary"
+                    /><span>Arguments</span>
+                  </summary>
+                  <pre><code
+                    class="hljs language-json"
+                    :innerHTML="highlightCode(call.function.arguments || '{}', 'json')"
+                  /></pre>
+                </details>
+              </div>
             </li>
           </ol>
         </section>

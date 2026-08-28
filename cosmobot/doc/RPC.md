@@ -226,6 +226,37 @@ longer active.
 {"jsonrpc":"2.0","id":"4","method":"thread.halt","params":{"taskId":17}}
 ```
 
+## Memory Methods
+
+Memory methods inspect persistent sender/chat memory. `platform` is one of
+`qq`, `telegram`, `matrix`, `discord`, `rpc`, or `acp`; `scope` is `sender` or
+`chat`; and `scopeId` is the corresponding identity.
+They are administrator methods: the bearer token can inspect and revert every
+sender's and chat's memory, not only memory associated with the RPC caller.
+
+| Method | Params | Result |
+|---|---|---|
+| `memory.list` | none | `memories`: all non-empty memory summaries |
+| `memory.get` | memory key | current memory detail, or `null` |
+| `memory.history` | memory key | `history`: Git revisions newest first |
+| `memory.get_revision` | memory key plus `revision` | memory at that revision, or `null` if absent |
+| `memory.revert` | memory key plus `revision` | restored current memory |
+
+`revision` must be a full 40-character commit id returned by
+`memory.history`. Reverting records a new commit; it does not rewrite later
+history.
+
+## Skills Methods
+
+| Method | Params | Result |
+|---|---|---|
+| `skills.list` | none | `skills`: loaded names and descriptions |
+| `skills.get` | `name` | loaded `SKILL.md` content, or `null` |
+| `skills.remove` | `name` | whether the loaded skill directory was removed |
+
+Removing a skill accepts only a name in the current loaded snapshot, deletes
+its directory, and reloads the snapshot before returning.
+
 ## Console lifecycle notifications
 
 RPC console sessions emit lightweight, session-scoped notifications for an

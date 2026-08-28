@@ -30,6 +30,18 @@ const backendProxy: AdminBackend = {
     active: () => activeBackend.threads.active(),
     halt: (taskId) => activeBackend.threads.halt(taskId),
   },
+  memory: {
+    list: () => activeBackend.memory.list(),
+    get: (key) => activeBackend.memory.get(key),
+    history: (key) => activeBackend.memory.history(key),
+    getRevision: (key, revision) => activeBackend.memory.getRevision(key, revision),
+    revert: (key, revision) => activeBackend.memory.revert(key, revision),
+  },
+  skills: {
+    list: () => activeBackend.skills.list(),
+    get: (name) => activeBackend.skills.get(name),
+    remove: (name) => activeBackend.skills.remove(name),
+  },
   chat: {
     sessionCount: () => activeBackend.chat.sessionCount(),
     list: () => activeBackend.chat.list(),
