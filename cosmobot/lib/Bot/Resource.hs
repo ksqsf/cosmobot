@@ -86,7 +86,7 @@ runResourceManagerWith loaders inner = do
   let resources = Map.fromList [(resource.resourceId, value) | (resource, value) <- zip stored loaded]
       nextId = List.maximum (1 : map ((+ 1) . resourceIdNumber . (.resourceId)) stored)
   stateRef <- newIORef ManagerState{nextId, nextCreate = 1, accepting = True, creating = Map.empty, resources}
-  let runInner = Concurrency.withWorker "resource expiry" (reclaimExpired stateRef) $
+  let runInner = Concurrency.withWorker "resource.monitor" (reclaimExpired stateRef) $
         interpret (runResourceOperation stateRef) inner
   runInner `finally` shutdown stateRef
 

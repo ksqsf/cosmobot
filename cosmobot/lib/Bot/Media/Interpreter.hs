@@ -10,6 +10,7 @@ module Bot.Media.Interpreter
 where
 
 import Bot.Effect.Media
+import Bot.Core.Message (chatPlatformKey)
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Cache as Cache
@@ -35,6 +36,7 @@ runMedia
   -> Eff (Media : es) a
   -> Eff es a
 runMedia cfg inner = do
+  Cache.initializeMediaCache
   manager <- HTTP.manager
   s3 <- S3.newRuntime manager cfg
   let runtime = Runtime{cfg, manager, s3}
@@ -54,6 +56,10 @@ runMedia cfg inner = do
           Cache.loadMediaFileInfo (cacheConfig runtime) fileId
         ListMediaFiles ->
           Cache.listMediaFiles (cacheConfig runtime)
+        ListMediaEntries limit ->
+          Cache.listMediaEntries (cacheConfig runtime) limit
+        SearchMediaEntries searchQuery ->
+          Cache.searchMediaEntries (cacheConfig runtime) searchQuery
         GetMediaCacheStats ->
           Cache.mediaCacheStats (cacheConfig runtime)
         GcMediaCache maxAgeSeconds retainedFileIds ->
@@ -68,6 +74,10 @@ runMedia cfg inner = do
           Cache.loadPlatformRef (cacheConfig runtime) platform scope ref
         StorePlatformMediaRef platform scope ref platformRef ->
           Cache.storePlatformRef platform scope ref platformRef
+        RecordMediaPlatform platform ref ->
+          Cache.recordPlatform (chatPlatformKey platform) ref
+        RecordMediaSourceKind sourceKind ref ->
+          Cache.recordSourceKind sourceKind ref
     )
     inner
 

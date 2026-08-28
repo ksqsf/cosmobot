@@ -15,6 +15,7 @@ import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.HTTP as BotHTTP
 import qualified Bot.Media.Config as MediaConfig
+import qualified Bot.Media.Cache as MediaCache
 import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.Media.Object as MediaObject
 import qualified Bot.RPC.Config as RPCConfig
@@ -82,6 +83,10 @@ main =
       , testCase "resource and concurrency manager RPC methods" testManagerRpcMethods
       , testCase "media upload, send, history, and stats" testAttachmentLifecycle
       , testCase "media cache can resolve, inspect, and delete cached media" testMediaCacheResolveInspectDelete
+      , testCase "media search applies all filters across the full cache" testMediaSearchAppliesAllFilters
+      , testCase "media stats totals are independent of the list limit" testMediaStatsTotalsIgnoreListLimit
+      , testCase "media GC defaults to the configured policy" testMediaGcUsesConfiguredPolicy
+      , testCase "legacy media provenance only recognizes known platform sources" testLegacyMediaPlatformHeuristic
       , testCase "media cache sniffs streamed image content" testMediaCacheSniffsStreamedImageContent
       , testCase "media cache uses the JPEG extension" testMediaCacheUsesJpegExtension
       , testCase "remote media MIME is probed with range GET" testRemoteMediaMimeUsesRangeGetProbe
@@ -509,7 +514,7 @@ testAttachmentLifecycle =
 testMediaCacheResolveInspectDelete :: IO ()
 testMediaCacheResolveInspectDelete =
   withSQLiteTempPath "rpc-media-cache" \path -> do
-    (mediaRef, resolveResponse, getResponse, deleteResponse, getAfterDeleteResponse, fileExistsAfterDelete) <- runRpcStorage path do
+    (mediaRef, resolveResponse, statsResponse, getResponse, deleteResponse, getAfterDeleteResponse, fileExistsAfterDelete) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       let sourceRef = "telegram:file-123"
       mediaRef <- fromMaybe (error "expected stored media ref") <$> Media.storeMediaObjectFromSource sourceRef Media.MediaObject
@@ -518,17 +523,22 @@ testMediaCacheResolveInspectDelete =
         , Media.sourceName = Just "hello.txt"
         }
       Media.storePlatformMediaRef "telegram" "chat-42" mediaRef "file-123"
+      Media.recordMediaSourceKind Media.ToolResultSource mediaRef
+      Media.recordMediaSourceKind Media.SandboxSource mediaRef
+      void (Media.normalizeIncomingMessage (mediaMessage PlatformQQ mediaRef))
       resolveResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "media.resolve_source" (Aeson.object ["sourceRef" Aeson..= sourceRef])
       getResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "media.get" (Aeson.object ["mediaId" Aeson..= mediaRef])
+      statsResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "media.stats" (Aeson.object ["limit" Aeson..= (10 :: Int)])
       let localPath = responseMediaLocalPath getResponse
       deleteResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "media.delete" (Aeson.object ["mediaId" Aeson..= mediaRef])
       getAfterDeleteResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "media.get" (Aeson.object ["mediaId" Aeson..= mediaRef])
       fileExistsAfterDelete <- maybe (pure False) FileSystem.doesFileExist localPath
-      pure (mediaRef, resolveResponse, getResponse, deleteResponse, getAfterDeleteResponse, fileExistsAfterDelete)
+      pure (mediaRef, resolveResponse, statsResponse, getResponse, deleteResponse, getAfterDeleteResponse, fileExistsAfterDelete)
 
     responseField resolveResponse "mediaId" @?= Just mediaRef
     responseField getResponse "mediaId" @?= Just mediaRef
@@ -536,12 +546,125 @@ testMediaCacheResolveInspectDelete =
     assertBool "public url should keep source extension" (maybe False (".txt" `Text.isSuffixOf`) (responseField getResponse "publicUrl"))
     responseTextList getResponse "sourceRefs" @?= ["telegram:file-123"]
     responsePlatformRefs getResponse @?= [("telegram", "chat-42", "file-123")]
+    responseTextList getResponse "platforms" @?= ["qq", "telegram"]
+    responseTextList getResponse "sourceKinds" @?= ["chat", "sandbox", "tool-result"]
+    responseMediaListPlatforms statsResponse @?= ["qq", "telegram"]
     assertBool "media get response should not duplicate source refs in snake_case" (not (responseHasField getResponse "source_refs"))
     assertBool "media get response should not duplicate public url in snake_case" (not (responseHasField getResponse "public_url"))
     assertBool "media get response should not duplicate local path in snake_case" (not (responseHasField getResponse "local_path"))
     responseBool deleteResponse "deleted" @?= Just True
     responseErrorCode getAfterDeleteResponse @?= Just "not_found"
     fileExistsAfterDelete @?= False
+
+testMediaSearchAppliesAllFilters :: IO ()
+testMediaSearchAppliesAllFilters =
+  withSQLiteTempPath "rpc-media-search" \path -> do
+    (response, unlinkedResponse) <- runRpcStorage path do
+      matching <- fromMaybe (error "expected matching media") <$> Media.storeMediaObject Media.MediaObject
+        { Media.bytes = Q.fromStrict "matching"
+        , Media.mimeType = "text/plain"
+        , Media.sourceName = Just "needle-report.txt"
+        }
+      other <- fromMaybe (error "expected other media") <$> Media.storeMediaObject Media.MediaObject
+        { Media.bytes = Q.fromStrict "other"
+        , Media.mimeType = "image/png"
+        , Media.sourceName = Just "other.png"
+        }
+      void (Media.normalizeIncomingMessage (mediaMessage PlatformQQ matching))
+      Media.recordMediaSourceKind Media.GeneratedImageSource other
+      rpcState <- RPC.newRpcState
+      response <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "media.search" (Aeson.object
+          [ "query" Aeson..= ("needle" :: Text)
+          , "platforms" Aeson..= ["qq" :: Text]
+          , "withoutPlatform" Aeson..= False
+          , "mimeTypes" Aeson..= ["text/plain" :: Text]
+          , "sourceKinds" Aeson..= ["chat" :: Text]
+          , "limit" Aeson..= (10 :: Int)
+          ])
+      unlinkedResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "media.search" (Aeson.object
+          [ "withoutPlatform" Aeson..= True
+          , "mimeTypes" Aeson..= ["image/png" :: Text]
+          , "sourceKinds" Aeson..= ["generated-image" :: Text]
+          ])
+      pure (response, unlinkedResponse)
+    let files = fromMaybe [] (responseField response "files" :: Maybe [Aeson.Value])
+    length files @?= 1
+    (viaNonEmpty head files >>= AesonTypes.parseMaybe (Aeson.withObject "media" (Aeson..: "sourceName"))) @?= Just ("needle-report.txt" :: Text)
+    let unlinkedFiles = fromMaybe [] (responseField unlinkedResponse "files" :: Maybe [Aeson.Value])
+    (viaNonEmpty head unlinkedFiles >>= AesonTypes.parseMaybe (Aeson.withObject "media" (Aeson..: "sourceName"))) @?= Just ("other.png" :: Text)
+
+testMediaStatsTotalsIgnoreListLimit :: IO ()
+testMediaStatsTotalsIgnoreListLimit =
+  withSQLiteTempPath "rpc-media-stats-total" \path -> do
+    response <- runRpcStorage path do
+      for_ ["first", "second"] \content ->
+        void $ Media.storeMediaObject Media.MediaObject
+          { Media.bytes = Q.fromStrict content
+          , Media.mimeType = "text/plain"
+          , Media.sourceName = Just (TextEncoding.decodeUtf8 content <> ".txt")
+          }
+      rpcState <- RPC.newRpcState
+      RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "media.stats" (Aeson.object ["limit" Aeson..= (1 :: Int)])
+    responseMediaStatsFiles response @?= 2
+    length (fromMaybe [] (responseField response "files" :: Maybe [Aeson.Value])) @?= 1
+
+mediaMessage :: ChatPlatform -> Text -> IncomingMessage
+mediaMessage platform mediaRef = IncomingMessage
+  { eventKind = IncomingMessageCreated
+  , platform
+  , kind = ChatPrivate
+  , chatId = Just 42
+  , chatAliases = []
+  , digest = emptyMessageDigest
+  , senderId = Just "sender"
+  , senderUsername = Nothing
+  , messageId = Just "message-1"
+  , replyToMessageId = Nothing
+  , mentions = []
+  , mentionUsernames = []
+  , imageUrls = [mediaRef]
+  , files = []
+  , text = ""
+  , raw = Aeson.Null
+  }
+
+testMediaGcUsesConfiguredPolicy :: IO ()
+testMediaGcUsesConfiguredPolicy =
+  withSQLiteTempPath "rpc-media-gc-policy" \path -> do
+    (statsResponse, gcResponse, forceGcResponse) <- runRpcStorage path do
+      rpcState <- RPC.newRpcState
+      let callbacks = RPCServer.noRpcServerCallbacks
+            { RPCServer.mediaGcSettings = RPCServer.MediaGcSettings
+                { RPCServer.gcEnabled = True
+                , RPCServer.maxAgeSeconds = 7 * 24 * 60 * 60
+                , RPCServer.intervalHours = 24
+                }
+            }
+      (,,)
+        <$> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "media.stats" (Aeson.object ["limit" Aeson..= (0 :: Int)]))
+        <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "media.gc" Aeson.Null)
+        <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "media.gc" (Aeson.object ["maxAgeSeconds" Aeson..= (0 :: Int)]))
+    responseField statsResponse "gcSettings" @?= Just (Aeson.object
+      [ "enabled" Aeson..= True
+      , "maxAgeSeconds" Aeson..= (7 * 24 * 60 * 60 :: Int)
+      , "intervalHours" Aeson..= (24 :: Int)
+      ])
+    responseField gcResponse "maxAgeSeconds" @?= Just (7 * 24 * 60 * 60 :: Int)
+    responseField forceGcResponse "maxAgeSeconds" @?= Just (0 :: Int)
+
+testLegacyMediaPlatformHeuristic :: IO ()
+testLegacyMediaPlatformHeuristic = do
+  MediaCache.legacySourcePlatform "https://multimedia.nt.qq.com.cn/file" @?= Just "qq"
+  MediaCache.legacySourcePlatform "mxc://matrix.example/media" @?= Just "matrix"
+  MediaCache.legacySourcePlatform "https://api.telegram.org/file/bot123/photo.jpg" @?= Just "telegram"
+  MediaCache.legacySourcePlatform "https://cdn.discordapp.com/attachments/1/2/image.png" @?= Just "discord"
+  MediaCache.legacySourcePlatform "https://example.test/telegram-not-a-host.png" @?= Nothing
+  MediaCache.legacySourceKind "tool-result.json" @?= Just Media.ToolResultSource
+  MediaCache.legacySourceKind "llm-image.webp" @?= Just Media.GeneratedImageSource
+  MediaCache.legacySourceKind "report.json" @?= Nothing
 
 testMediaCacheSniffsStreamedImageContent :: IO ()
 testMediaCacheSniffsStreamedImageContent =
@@ -1230,6 +1353,13 @@ responseMediaStatsFiles response =
         AesonTypes.parseMaybe (Aeson.withObject "stats" (Aeson..: "files")) stats
     _ ->
       0
+
+responseMediaListPlatforms :: JSONRPC.RpcResponse -> [Text]
+responseMediaListPlatforms response =
+  fromMaybe [] do
+    entries <- responseField response "files" :: Maybe [Aeson.Value]
+    entry <- viaNonEmpty head entries
+    AesonTypes.parseMaybe (Aeson.withObject "media list entry" (Aeson..: "platforms")) entry
 
 responseField :: Aeson.FromJSON a => JSONRPC.RpcResponse -> Text -> Maybe a
 responseField response field =

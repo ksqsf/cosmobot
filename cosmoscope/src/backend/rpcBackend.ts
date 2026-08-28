@@ -2,7 +2,7 @@ import { Effect } from 'effect'
 import { ZodError } from 'zod'
 import { RpcBackendError, type AdminBackend } from './AdminBackend'
 import { mockBackend } from './mockBackend'
-import { auditDetailSchema, auditRecordSchema, auditThreadSchema, chatDeleteSchema, chatHistorySchema, chatMessageDoneSchema, chatMessageSchema, chatOpenSchema, chatRenameSchema, chatSendSchema, chatSessionsSchema, chatUploadSchema, concurrencyAwaitSchema, concurrencyCancelSchema, concurrencyListSchema, concurrencyLookupSchema, mediaDeleteSchema, pluginLifecycleSchema, pluginListSchema, pluginUnloadSchema, recentAuditSchema, resourceDestroyAssociatedSchema, resourceDestroySchema, resourceDetailSchema, resourceKeepAliveSchema, resourceListAssociatedSchema, resourceListSchema, resourceMakePermanentSchema, resourceRenameSchema } from '@/rpc/schemas'
+import { auditDetailSchema, auditRecordSchema, auditThreadSchema, chatDeleteSchema, chatHistorySchema, chatMessageDoneSchema, chatMessageSchema, chatOpenSchema, chatRenameSchema, chatSendSchema, chatSessionsSchema, chatUploadSchema, concurrencyAwaitSchema, concurrencyCancelSchema, concurrencyListSchema, concurrencyLookupSchema, mediaDeleteSchema, mediaDetailSchema, mediaGcSchema, mediaSearchSchema, mediaSnapshotSchema, pluginLifecycleSchema, pluginListSchema, pluginUnloadSchema, recentAuditSchema, resourceDestroyAssociatedSchema, resourceDestroySchema, resourceDetailSchema, resourceKeepAliveSchema, resourceListAssociatedSchema, resourceListSchema, resourceMakePermanentSchema, resourceRenameSchema } from '@/rpc/schemas'
 import type { RpcClient } from '@/rpc/client'
 import type { LiveAdminMethod } from '@/rpc/protocol'
 import type { BackendEffect } from './AdminBackend'
@@ -87,6 +87,13 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       rename: (id, newId) => rpcEffect('Could not rename the resource.', async () => resourceRenameSchema.parse(await client.request('resource.rename', { id, newId })).id),
       keepAlive: (id) => rpcEffect('Could not refresh the resource lifetime.', async () => { resourceKeepAliveSchema.parse(await client.request('resource.keep_alive', { id })) }),
       makePermanent: (id) => rpcEffect('Could not make the resource permanent.', async () => { resourceMakePermanentSchema.parse(await client.request('resource.make_permanent', { id })) }),
+    },
+    media: {
+      list: (limit = 200) => rpcEffect('Could not load media.', async () => mediaSnapshotSchema.parse(await client.request('media.stats', { limit }))),
+      search: (search) => rpcEffect('Could not search media.', async () => mediaSearchSchema.parse(await client.request('media.search', search)).files),
+      get: (id) => rpcEffect('Could not load media details.', async () => mediaDetailSchema.parse(await client.request('media.get', { mediaId: id }))),
+      delete: (id) => rpcEffect('Could not delete media.', async () => mediaDeleteSchema.parse(await client.request('media.delete', { mediaId: id })).deleted),
+      gc: (maxAgeSeconds) => rpcEffect('Could not garbage collect media.', async () => mediaGcSchema.parse(await client.request('media.gc', maxAgeSeconds === undefined ? {} : { maxAgeSeconds }))),
     },
     plugins: {
       list: () => rpcEffect('Could not load plugins.', async () => pluginListSchema.parse(await client.request('plugin.list')).plugins),

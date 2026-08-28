@@ -1503,6 +1503,10 @@ runMediaStoreWith store =
       pure Nothing
     Media.ListMediaFiles ->
       pure []
+    Media.ListMediaEntries _ ->
+      pure []
+    Media.SearchMediaEntries _ ->
+      pure []
     Media.GetMediaCacheStats ->
       pure Media.MediaCacheStats
         { files = 0
@@ -1511,6 +1515,9 @@ runMediaStoreWith store =
         , totalBytes = 0
         , sources = 0
         , platformRefs = 0
+        , platformAssociations = 0
+        , mimeTypes = []
+        , platforms = []
         }
     Media.GcMediaCache _ _ ->
       pure 0
@@ -1523,6 +1530,10 @@ runMediaStoreWith store =
     Media.PlatformMediaRef _ _ _ ->
       pure Nothing
     Media.StorePlatformMediaRef _ _ _ _ ->
+      pure ()
+    Media.RecordMediaPlatform _ _ ->
+      pure ()
+    Media.RecordMediaSourceKind _ _ ->
       pure ()
 
 testFaultPlan :: FaultPlan -> Assertion

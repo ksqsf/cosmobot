@@ -18,6 +18,8 @@ module Bot.Media.Cache
   , loadCachedMediaByRef
   , loadCachedMediaBySource
   , listMediaFiles
+  , listMediaEntries
+  , searchMediaEntries
   , mediaCacheStats
   , mediaIdForFileId
   , parseMediaId
@@ -26,11 +28,17 @@ module Bot.Media.Cache
   , gcMediaCacheRetaining
   , loadPlatformRef
   , storePlatformRef
+  , recordPlatform
+  , recordSourceKind
+  , initializeMediaCache
+  , legacySourcePlatform
+  , legacySourceKind
   , extensionFor
   )
 where
 
-import Bot.Effect.Media (MediaCacheEntry (..), MediaCacheStats (..), MediaFileInfo (..), MediaObject (..), MediaPlatformRefInfo (..))
+import Bot.Effect.Media (MediaCacheEntry (..), MediaCacheStats (..), MediaFileInfo (..), MediaObject (..), MediaPlatformRefInfo (..), MediaSearchQuery, MediaSourceKind (..))
+import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Mime as Mime
 import Bot.Prelude
@@ -39,6 +47,7 @@ import Crypto.Hash (Context, Digest, SHA256, hashFinalize, hashInit, hashUpdate)
 import qualified Crypto.Random as CryptoRandom
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64.URL as Base64URL
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -107,6 +116,35 @@ data MediaPlatformRefRow = MediaPlatformRefRow
 
 instance SqlRow MediaPlatformRefRow
 
+data MediaPlatformRow = MediaPlatformRow
+  { platform_key :: Text
+  , file_id :: Text
+  }
+  deriving (Generic)
+
+instance SqlRow MediaPlatformRow
+
+data MediaSourceKindRow = MediaSourceKindRow
+  { source_kind :: Text
+  , file_id :: Text
+  }
+  deriving (Eq, Ord, Generic)
+
+instance SqlRow MediaSourceKindRow
+
+data MediaSearchIndex = MediaSearchIndex
+  { sourceRefs :: !(Map.Map Text [Text])
+  , platforms :: !(Map.Map Text (Set.Set Text))
+  , sourceKinds :: !(Map.Map Text (Set.Set MediaSourceKind))
+  }
+
+newtype MediaMigrationRow = MediaMigrationRow
+  { name :: Text
+  }
+  deriving (Generic)
+
+instance SqlRow MediaMigrationRow
+
 mediaObjectRows :: Table MediaObjectRow
 mediaObjectRows =
   table "media_files"
@@ -127,6 +165,119 @@ mediaPlatformRefRows =
     , #scope_key :- index
     , #file_id :- index
     ]
+
+mediaPlatformRows :: Table MediaPlatformRow
+mediaPlatformRows =
+  table "media_platforms"
+    [ #platform_key :- index
+    , #file_id :- index
+    ]
+
+mediaSourceKindRows :: Table MediaSourceKindRow
+mediaSourceKindRows =
+  table "media_source_kinds"
+    [ #source_kind :- index
+    , #file_id :- index
+    ]
+
+mediaMigrationRows :: Table MediaMigrationRow
+mediaMigrationRows =
+  table "media_migrations" [#name :- primary]
+
+initializeMediaCache :: Storage.Storage :> es => Eff es ()
+initializeMediaCache = do
+  ensureMediaCacheTables
+  migrateLegacyMediaPlatforms
+  migrateLegacyMediaSourceKinds
+
+-- ponytail: temporary one-shot backfill for databases created before media
+-- provenance; remove this migration after every deployment has recorded v1.
+migrateLegacyMediaPlatforms :: Storage.Storage :> es => Eff es ()
+migrateLegacyMediaPlatforms = do
+  alreadyMigrated <- runSelda do
+    rows <- query do
+      row <- select mediaMigrationRows
+      restrict (row ! #name .== literal platformBackfillMigration)
+      pure (row ! #name)
+    pure (not (null rows))
+  unless alreadyMigrated do
+    sources <- runSelda (query (select mediaSourceRows))
+    cachedRefs <- runSelda (query (select mediaPlatformRefRows))
+    let inferred =
+          Set.toAscList $ Set.fromList $
+            [ (platform, source.file_id)
+            | source <- sources
+            , platform <- maybeToList (legacySourcePlatform source.source_ref)
+            ]
+              <> [(ref.platform_key, ref.file_id) | ref <- cachedRefs]
+    runSelda $ transaction do
+      for_ inferred \(platform, fileId) -> do
+        deleteFrom_ mediaPlatformRows \row ->
+          row ! #platform_key .== literal platform
+            .&& row ! #file_id .== literal fileId
+        insert_ mediaPlatformRows [MediaPlatformRow{platform_key = platform, file_id = fileId}]
+      insert_ mediaMigrationRows [MediaMigrationRow{name = platformBackfillMigration}]
+
+platformBackfillMigration :: Text
+platformBackfillMigration = "media-platform-provenance-v1"
+
+-- ponytail: temporary one-shot filename backfill for media created before
+-- explicit source tagging; remove after every deployment has recorded v2.
+migrateLegacyMediaSourceKinds :: Storage.Storage :> es => Eff es ()
+migrateLegacyMediaSourceKinds = do
+  alreadyMigrated <- migrationApplied sourceKindBackfillMigration
+  unless alreadyMigrated do
+    objects <- runSelda (query (select mediaObjectRows))
+    platforms <- runSelda (query (select mediaPlatformRows))
+    let inferred =
+          Set.toAscList $ Set.fromList $
+            [ MediaSourceKindRow
+                { source_kind = Media.mediaSourceKindKey sourceKind
+                , file_id = object.file_id
+                }
+            | object <- objects
+            , sourceKind <- maybeToList (legacySourceKind =<< object.source_name)
+            ]
+              <> [ MediaSourceKindRow
+                    { source_kind = Media.mediaSourceKindKey ChatSource
+                    , file_id = platform.file_id
+                    }
+                 | platform <- platforms
+                 ]
+    runSelda $ transaction do
+      for_ inferred \source -> do
+        deleteFrom_ mediaSourceKindRows \row ->
+          row ! #source_kind .== literal source.source_kind
+            .&& row ! #file_id .== literal source.file_id
+        insert_ mediaSourceKindRows [source]
+      insert_ mediaMigrationRows [MediaMigrationRow{name = sourceKindBackfillMigration}]
+
+migrationApplied :: Storage.Storage :> es => Text -> Eff es Bool
+migrationApplied migration = runSelda do
+  rows <- query do
+    row <- select mediaMigrationRows
+    restrict (row ! #name .== literal migration)
+    pure (row ! #name)
+  pure (not (null rows))
+
+sourceKindBackfillMigration :: Text
+sourceKindBackfillMigration = "media-source-kind-v2"
+
+legacySourceKind :: Text -> Maybe MediaSourceKind
+legacySourceKind sourceName
+  | "tool-result." `Text.isPrefixOf` Text.toLower (Text.strip sourceName) = Just ToolResultSource
+  | "llm-image." `Text.isPrefixOf` Text.toLower (Text.strip sourceName) = Just GeneratedImageSource
+  | otherwise = Nothing
+
+legacySourcePlatform :: Text -> Maybe Text
+legacySourcePlatform source
+  | "qq.com" `Text.isInfixOf` normalized || "qq:" `Text.isPrefixOf` normalized || "qqfile:" `Text.isPrefixOf` normalized = Just "qq"
+  | "mxc://" `Text.isPrefixOf` normalized || "matrix:" `Text.isPrefixOf` normalized || "matrix.to" `Text.isInfixOf` normalized = Just "matrix"
+  | "telegram:" `Text.isPrefixOf` normalized || "telegram.org" `Text.isInfixOf` normalized || "t.me/" `Text.isInfixOf` normalized = Just "telegram"
+  | "discord:" `Text.isPrefixOf` normalized || any (`Text.isInfixOf` normalized) ["discord.com", "discordapp.com", "discordapp.net"] = Just "discord"
+  | otherwise = Nothing
+  where
+    normalized = Text.toLower (Text.strip source)
 
 cacheMediaObject
   :: (Storage.Storage :> es, FileSystem :> es, IOE :> es)
@@ -190,10 +341,14 @@ loadMediaCacheEntry cfg targetFileId = do
     ( \mediaFile -> do
         sourceRefs <- loadSourceRefs targetFileId
         platformRefs <- loadPlatformRefs targetFileId
+        platforms <- loadPlatforms targetFileId
+        sourceKinds <- loadSourceKinds targetFileId
         pure MediaCacheEntry
           { file = mediaFile
           , sourceRefs
           , platformRefs
+          , platforms
+          , sourceKinds
           }
     )
     file
@@ -208,6 +363,80 @@ listMediaFiles _ = do
       pure object
   traverse mediaObjectRowToInfo rows
 
+listMediaEntries :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Int -> Eff es [MediaCacheEntry]
+listMediaEntries _ limit = do
+  rows <- runSelda $
+    query $
+      queryLimit 0 (max 0 limit) do
+        object <- select mediaObjectRows
+        order (object ! #created_at_unix) descending
+        pure object
+  files <- traverse mediaObjectRowToInfo rows
+  traverse (\file -> do
+    sourceRefs <- loadSourceRefs file.fileId
+    platformRefs <- loadPlatformRefs file.fileId
+    platforms <- loadPlatforms file.fileId
+    sourceKinds <- loadSourceKinds file.fileId
+    pure MediaCacheEntry{file, sourceRefs, platformRefs, platforms, sourceKinds}) files
+
+searchMediaEntries :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> MediaSearchQuery -> Eff es [MediaCacheEntry]
+searchMediaEntries _ search = do
+  ensureMediaCacheTables
+  rows <- runSelda $ query do
+    object <- select mediaObjectRows
+    order (object ! #last_used_at_unix) descending
+    pure object
+  sourceRefs <- runSelda (query (select mediaSourceRows))
+  platformRows <- runSelda (query (select mediaPlatformRows))
+  sourceKindRows <- runSelda (query (select mediaSourceKindRows))
+  let searchIndex = MediaSearchIndex
+        { sourceRefs = Map.fromListWith (<>) [(row.file_id, [row.source_ref]) | row <- sourceRefs]
+        , platforms = Map.fromListWith Set.union [(row.file_id, Set.singleton row.platform_key) | row <- platformRows]
+        , sourceKinds = Map.fromListWith Set.union
+            [ (row.file_id, Set.singleton sourceKind)
+            | row <- sourceKindRows
+            , sourceKind <- maybeToList (Media.mediaSourceKindFromKey row.source_kind)
+            ]
+        }
+      matched = take search.limit (filter (matchesMediaSearch search searchIndex) rows)
+  files <- traverse mediaObjectRowToInfo matched
+  traverse (\file -> do
+    refs <- loadSourceRefs file.fileId
+    platformRefs <- loadPlatformRefs file.fileId
+    platforms <- loadPlatforms file.fileId
+    sourceKinds <- loadSourceKinds file.fileId
+    pure MediaCacheEntry{file, sourceRefs = refs, platformRefs, platforms, sourceKinds}) files
+
+-- ponytail: full in-memory index scan is simplest at the current cache size;
+-- add paged indexed search when media counts make this measurably slow.
+matchesMediaSearch
+  :: MediaSearchQuery
+  -> MediaSearchIndex
+  -> MediaObjectRow
+  -> Bool
+matchesMediaSearch search searchIndex object =
+  textMatches && platformMatches && mimeMatches && sourceKindMatches
+  where
+    fileId = object.file_id
+    objectPlatforms = Map.findWithDefault Set.empty fileId searchIndex.platforms
+    recordedSourceKinds = Map.findWithDefault Set.empty fileId searchIndex.sourceKinds
+    effectiveSourceKinds = if Set.null recordedSourceKinds then Set.singleton ChatSource else recordedSourceKinds
+    textMatches = case search.text of
+      Nothing -> True
+      Just needle -> any (normalizedNeedle `Text.isInfixOf`) $
+        map Text.toCaseFold $
+          [object.file_id, object.digest, object.mime_type]
+            <> maybeToList object.source_name
+            <> Map.findWithDefault [] fileId searchIndex.sourceRefs
+        where
+          normalizedNeedle = Text.toCaseFold (fromMaybe needle (Text.stripPrefix "media:" needle))
+    platformMatches =
+      (Set.null search.platforms && not search.withoutPlatform)
+        || not (Set.disjoint search.platforms objectPlatforms)
+        || (search.withoutPlatform && Set.null objectPlatforms)
+    mimeMatches = Set.null search.mimeTypes || Set.member object.mime_type search.mimeTypes
+    sourceKindMatches = Set.null search.sourceKinds || not (Set.disjoint search.sourceKinds effectiveSourceKinds)
+
 mediaCacheStats :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Eff es MediaCacheStats
 mediaCacheStats cfg = do
   files <- listMediaFiles cfg
@@ -217,6 +446,7 @@ mediaCacheStats cfg = do
   platformRefCount <- runSelda do
     rows <- query (select mediaPlatformRefRows)
     pure (length rows)
+  platformRows <- runSelda (query (select mediaPlatformRows))
   let existingFiles = length (filter (.exists) files)
       missingFiles = length files - existingFiles
       totalBytes = sum [file.size | file <- files, file.exists]
@@ -227,6 +457,9 @@ mediaCacheStats cfg = do
     , totalBytes
     , sources = sourceCount
     , platformRefs = platformRefCount
+    , platformAssociations = length platformRows
+    , mimeTypes = Set.toAscList (Set.fromList (map (.mimeType) files))
+    , platforms = Set.toAscList (Set.fromList (map (.platform_key) platformRows))
     }
 
 lookupCachedDigest :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
@@ -281,7 +514,7 @@ storePlatformRef platform scope ref platformRef =
     Just fileId -> do
       ensureMediaCacheTables
       now <- liftIO (round <$> POSIX.getPOSIXTime)
-      runSelda do
+      runSelda $ transaction do
         deleteFrom_ mediaPlatformRefRows \row ->
           row ! #platform_key .== literal platform
             .&& row ! #scope_key .== literal scope
@@ -296,6 +529,36 @@ storePlatformRef platform scope ref platformRef =
               , last_used_at_unix = now
               }
           ]
+        deleteFrom_ mediaPlatformRows \row ->
+          row ! #platform_key .== literal platform
+            .&& row ! #file_id .== literal fileId
+        insert_ mediaPlatformRows [MediaPlatformRow{platform_key = platform, file_id = fileId}]
+
+recordPlatform :: Storage.Storage :> es => Text -> Text -> Eff es ()
+recordPlatform platform ref =
+  case parseMediaId ref of
+    Nothing -> pure ()
+    Just fileId -> do
+      ensureMediaCacheTables
+      runSelda do
+        deleteFrom_ mediaPlatformRows \row ->
+          row ! #platform_key .== literal platform
+            .&& row ! #file_id .== literal fileId
+        insert_ mediaPlatformRows [MediaPlatformRow{platform_key = platform, file_id = fileId}]
+
+recordSourceKind :: Storage.Storage :> es => MediaSourceKind -> Text -> Eff es ()
+recordSourceKind sourceKind ref =
+  case parseMediaId ref of
+    Nothing -> pure ()
+    Just fileId -> do
+      ensureMediaCacheTables
+      runSelda do
+        deleteFrom_ mediaSourceKindRows \row ->
+          row ! #source_kind .== literal key
+            .&& row ! #file_id .== literal fileId
+        insert_ mediaSourceKindRows [MediaSourceKindRow{source_kind = key, file_id = fileId}]
+  where
+    key = Media.mediaSourceKindKey sourceKind
 
 loadSourceRefs :: Storage.Storage :> es => Text -> Eff es [Text]
 loadSourceRefs targetFileId = do
@@ -325,6 +588,27 @@ loadPlatformRefs targetFileId = do
         }
     | row <- rows
     ]
+
+loadPlatforms :: Storage.Storage :> es => Text -> Eff es [Text]
+loadPlatforms targetFileId = do
+  ensureMediaCacheTables
+  recorded <- runSelda $
+    query do
+      row <- select mediaPlatformRows
+      restrict (row ! #file_id .== literal targetFileId)
+      pure (row ! #platform_key)
+  pure (Set.toAscList (Set.fromList recorded))
+
+loadSourceKinds :: Storage.Storage :> es => Text -> Eff es [MediaSourceKind]
+loadSourceKinds targetFileId = do
+  ensureMediaCacheTables
+  recorded <- runSelda $
+    query do
+      row <- select mediaSourceKindRows
+      restrict (row ! #file_id .== literal targetFileId)
+      order (row ! #source_kind) ascending
+      pure (row ! #source_kind)
+  pure (mapMaybe Media.mediaSourceKindFromKey recorded)
 
 lookupCachedSource :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
 lookupCachedSource _ ref = do
@@ -459,6 +743,10 @@ gcMediaCacheRetaining _ maxAgeSeconds retainedFileIds = do
     for_ expiredFileIds \fileId -> do
       deleteFrom_ mediaPlatformRefRows \row ->
         row ! #file_id .== literal fileId
+      deleteFrom_ mediaPlatformRows \row ->
+        row ! #file_id .== literal fileId
+      deleteFrom_ mediaSourceKindRows \row ->
+        row ! #file_id .== literal fileId
       deleteFrom_ mediaSourceRows \row ->
         row ! #file_id .== literal fileId
       deleteFrom_ mediaObjectRows \row ->
@@ -486,6 +774,10 @@ deleteCachedMedia _ targetFileId = do
       unless pathShared (removeCachedFile object)
       runSelda $ transaction do
         deleteFrom_ mediaPlatformRefRows \row ->
+          row ! #file_id .== literal targetFileId
+        deleteFrom_ mediaPlatformRows \row ->
+          row ! #file_id .== literal targetFileId
+        deleteFrom_ mediaSourceKindRows \row ->
           row ! #file_id .== literal targetFileId
         deleteFrom_ mediaSourceRows \row ->
           row ! #file_id .== literal targetFileId
@@ -517,6 +809,9 @@ ensureMediaCacheTables =
     tryCreateTable mediaObjectRows
     tryCreateTable mediaSourceRows
     tryCreateTable mediaPlatformRefRows
+    tryCreateTable mediaPlatformRows
+    tryCreateTable mediaSourceKindRows
+    tryCreateTable mediaMigrationRows
 
 touchMediaFile :: (Storage.Storage :> es, IOE :> es) => Text -> Eff es ()
 touchMediaFile fileId = do

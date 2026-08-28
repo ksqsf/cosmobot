@@ -186,15 +186,16 @@ storeImageByteStream
   -> Q.ByteStream (Eff es) ()
   -> Stream (Of Text) (Eff es) Text
 storeImageByteStream label requestTimeout mime sourceName bytes = do
-  ref <- lift $
-    runTimedImageMediaStore label requestTimeout $
-      withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-        runInIO $
-          Media.storeMediaObject Media.MediaObject
-          { bytes = effByteStreamToResourceTIO runInIO bytes
-          , mimeType = mime
-          , sourceName
-          }
+  ref <- lift $ runTimedImageMediaStore label requestTimeout do
+    stored <- withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+      runInIO $
+        Media.storeMediaObject Media.MediaObject
+        { bytes = effByteStreamToResourceTIO runInIO bytes
+        , mimeType = mime
+        , sourceName
+        }
+    traverse_ (Media.recordMediaSourceKind Media.GeneratedImageSource) stored
+    pure stored
   case ref of
     Nothing ->
       lift (throwIO (LLMException "Image generation response could not be stored in media cache."))

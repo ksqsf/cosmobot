@@ -239,7 +239,7 @@ watch(() => route.params['resourceId'], () => { void selectFromRoute() })
             header="ID"
           >
             <template #body="{ data }">
-              <span class="resource-identity"><span class="resource-type-icon"><i :class="resourceIcon(data.type)" /></span><span><strong>{{ data.id }}</strong><small>{{ data.type }}</small></span></span>
+              <span class="manager-identity"><span class="manager-type-icon"><i :class="resourceIcon(data.type)" /></span><span><strong>{{ data.id }}</strong><small>{{ data.type }}</small></span></span>
             </template>
           </Column>
           <Column

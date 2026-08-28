@@ -561,7 +561,7 @@ onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discard
         v-if="previewImage"
         :src="previewImage"
         alt="Full-size chat attachment"
-        class="chat-image-preview"
+        class="object-preview"
       />
     </Dialog>
   </section>

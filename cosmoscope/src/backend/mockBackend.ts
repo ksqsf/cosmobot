@@ -23,6 +23,7 @@ const mockBackend: AdminBackend = {
     count: unavailable, list: unavailable, detail: unavailable, destroy: unavailable,
     rename: unavailable, keepAlive: unavailable, makePermanent: unavailable,
   },
+  media: { list: unavailable, search: unavailable, get: unavailable, delete: unavailable, gc: unavailable },
   plugins: { list: unavailable, load: unavailable, reload: unavailable, unload: unavailable },
   logs: { list: () => Effect.succeed(copy(logs)) },
 }

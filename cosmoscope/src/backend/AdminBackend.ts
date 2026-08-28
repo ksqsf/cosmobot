@@ -1,5 +1,5 @@
 import { Context, Data, type Effect } from 'effect'
-import type { AssociatedResource, AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, LogEntry, Plugin, Resource, ResourceOperationResult, Task, ThreadMessageKey } from '@/types/domain'
+import type { AssociatedResource, AuditRecord, ChatAttachment, ChatMessage, ChatSend, ChatSession, LogEntry, MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot, Plugin, Resource, ResourceOperationResult, Task, ThreadMessageKey } from '@/types/domain'
 
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
 export class RpcBackendError extends Data.TaggedError('RpcBackendError')<{ readonly message: string }> {}
@@ -42,6 +42,13 @@ export interface AdminBackend {
     readonly rename: (id: string, newId: string) => BackendEffect<string>
     readonly keepAlive: (id: string) => BackendEffect<void>
     readonly makePermanent: (id: string) => BackendEffect<void>
+  }
+  readonly media: {
+    readonly list: (limit?: number) => BackendEffect<MediaSnapshot>
+    readonly search: (search: MediaSearch) => BackendEffect<readonly MediaItem[]>
+    readonly get: (id: string) => BackendEffect<MediaDetail>
+    readonly delete: (id: string) => BackendEffect<boolean>
+    readonly gc: (maxAgeSeconds?: number) => BackendEffect<MediaGcResult>
   }
   readonly plugins: {
     readonly list: () => BackendEffect<readonly Plugin[]>
@@ -109,6 +116,16 @@ export const keepResourceAlive = (id: string): Effect.Effect<void, BackendError,
   AdminBackendService.use((backend) => backend.resources.keepAlive(id))
 export const makeResourcePermanent = (id: string): Effect.Effect<void, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.resources.makePermanent(id))
+export const listMedia = (limit = 200): Effect.Effect<MediaSnapshot, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.media.list(limit))
+export const searchMedia = (search: MediaSearch): Effect.Effect<readonly MediaItem[], BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.media.search(search))
+export const getMedia = (id: string): Effect.Effect<MediaDetail, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.media.get(id))
+export const deleteMedia = (id: string): Effect.Effect<boolean, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.media.delete(id))
+export const collectMediaGarbage = (maxAgeSeconds?: number): Effect.Effect<MediaGcResult, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.media.gc(maxAgeSeconds))
 export const listPlugins: Effect.Effect<readonly Plugin[], BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.plugins.list())
 export const loadPlugin = (id: string): Effect.Effect<Plugin, BackendError, AdminBackend> =>

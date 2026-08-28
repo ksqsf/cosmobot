@@ -113,6 +113,7 @@ compactToolResultText maxChars text
         , mimeType = mime
         , sourceName = Just (sourceNameForMime mime)
         }
+      traverse_ (Media.recordMediaSourceKind Media.ToolResultSource) mediaRef
       pure (maybe (omittedWithoutMedia mime bytes text) (\ref -> omittedWithMedia ref mime bytes text) mediaRef)
 
 compactLargeToolResultMessage :: Media.Media :> es => LLM.ChatMessage -> Eff es LLM.ChatMessage

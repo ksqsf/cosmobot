@@ -185,6 +185,12 @@
 .table-toolbar {
   justify-content: space-between;
 }
+.p-multiselect-header:has(> .p-checkbox)::after {
+  content: 'All';
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
 .manager-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -246,21 +252,21 @@
 .manager-table code {
   color: var(--accent-strong);
 }
-.resource-identity {
+.manager-identity {
   display: flex;
   align-items: center;
   gap: 10px;
 }
-.resource-identity > span:last-child {
+.manager-identity > span:last-child {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 2px;
 }
-.resource-identity small {
+.manager-identity small {
   color: var(--muted);
 }
-.resource-type-icon {
+.manager-type-icon {
   display: grid;
   flex: 0 0 auto;
   place-items: center;
@@ -612,7 +618,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-image-preview {
+.object-preview {
   display: block;
   max-width: min(86vw, 1200px);
   max-height: 78vh;

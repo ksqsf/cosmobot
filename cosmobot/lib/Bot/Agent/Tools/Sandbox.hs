@@ -151,8 +151,11 @@ copyFileToMedia sandbox path =
         Left err -> pure (Left err)
         Right () -> do
           mediaObject <- MediaObject.fileObject ("file://" <> Text.pack temporaryPath)
-          Media.storeMediaObject mediaObject
-            <&> maybe (Left "Media cache rejected the sandbox file.") Right
+          Media.storeMediaObject mediaObject >>= \case
+            Nothing -> pure (Left "Media cache rejected the sandbox file.")
+            Just ref -> do
+              Media.recordMediaSourceKind Media.SandboxSource ref
+              pure (Right ref)
 
 mediaRef :: Text -> Text
 mediaRef value

@@ -255,11 +255,11 @@ main {
 }
 .command-result {
   display: grid !important;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-  gap: 11px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 9px;
   align-items: center;
   width: 100%;
-  padding: 9px 10px !important;
+  padding: 5px 8px !important;
   text-align: left;
 }
 .command-result.selected {
@@ -269,8 +269,8 @@ main {
 .command-result-icon {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   border: 1px solid var(--line-soft);
   border-radius: 8px;
   background: var(--surface-2);
@@ -279,12 +279,16 @@ main {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
+}
+.command-result-copy strong {
+  line-height: 1rem;
 }
 .command-result-copy small {
   overflow: hidden;
   color: var(--faint);
   font-size: 0.72rem;
+  line-height: 0.75rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

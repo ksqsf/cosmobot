@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AuditRecord, ChatAttachment, ChatMessage, ChatSession, Plugin, Resource, Task, ThreadMessageKey, TokenUsage, ToolCallTrace } from '@/types/domain'
+import type { AuditRecord, ChatAttachment, ChatMessage, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSnapshot, Plugin, Resource, Task, ThreadMessageKey, TokenUsage, ToolCallTrace } from '@/types/domain'
 
 export const taskSchema = z.object({
   id: z.number().int().positive(),
@@ -87,6 +87,68 @@ export const chatSendSchema = z.object({ sessionId: z.string(), messageId: z.str
 export const chatMessageDoneSchema = z.object({ sessionId: z.string(), messageId: z.string() })
 export const chatUploadSchema = chatAttachmentSchema.extend({ mediaRef: z.string(), fileId: z.string() })
 export const mediaDeleteSchema = z.object({ fileId: z.string(), mediaId: z.string(), deleted: z.boolean() })
+const mediaPlatformRefSchema = z.object({ platform: z.string(), scope: z.string(), platformRef: z.string() })
+const mediaSourceKindSchema = z.enum(['chat', 'generated-image', 'tool-result', 'sandbox'])
+export const mediaItemSchema = z.object({
+  mediaId: z.string(),
+  fileId: z.string(),
+  digest: z.string(),
+  mimeType: z.string(),
+  sourceName: z.string().nullable(),
+  size: z.number().int().nonnegative(),
+  createdAtUnix: z.number().int(),
+  lastUsedAtUnix: z.number().int(),
+  exists: z.boolean(),
+  sourceRefs: z.array(z.string()),
+  platformRefs: z.array(mediaPlatformRefSchema),
+  platforms: z.array(z.string()),
+  sourceKinds: z.array(mediaSourceKindSchema),
+}) satisfies z.ZodType<MediaItem>
+const mediaStatsSchema = z.object({
+  files: z.number().int().nonnegative(),
+  existingFiles: z.number().int().nonnegative(),
+  missingFiles: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  sources: z.number().int().nonnegative(),
+  platformRefs: z.number().int().nonnegative(),
+  platformAssociations: z.number().int().nonnegative(),
+  mimeTypes: z.array(z.string()),
+  platforms: z.array(z.string()),
+})
+const mediaGcSettingsSchema = z.object({
+  enabled: z.boolean(),
+  maxAgeSeconds: z.number().int().nonnegative(),
+  intervalHours: z.number().int().nonnegative(),
+})
+export const mediaSnapshotSchema = z.object({
+  stats: mediaStatsSchema,
+  files: z.array(mediaItemSchema),
+  gcSettings: mediaGcSettingsSchema,
+}) satisfies z.ZodType<MediaSnapshot>
+export const mediaSearchSchema = z.object({ files: z.array(mediaItemSchema) })
+const mediaFileDetailSchema = z.object({
+  fileId: z.string(), ref: z.string(), digest: z.string(), mimeType: z.string(), sourceName: z.string().nullable(),
+  size: z.number().int().nonnegative(), createdAtUnix: z.number().int(), lastUsedAtUnix: z.number().int(), exists: z.boolean(),
+})
+export const mediaDetailSchema = z.object({
+  mediaId: z.string(),
+  fileId: z.string(),
+  file: mediaFileDetailSchema,
+  sourceRefs: z.array(z.string()),
+  platformRefs: z.array(mediaPlatformRefSchema),
+  platforms: z.array(z.string()),
+  sourceKinds: z.array(mediaSourceKindSchema),
+  publicUrl: z.string(),
+}).transform(({ mediaId, fileId, file, sourceRefs, platformRefs, platforms, sourceKinds, publicUrl }): MediaDetail => ({
+  mediaId, fileId, digest: file.digest, mimeType: file.mimeType, sourceName: file.sourceName,
+  size: file.size, createdAtUnix: file.createdAtUnix, lastUsedAtUnix: file.lastUsedAtUnix,
+  exists: file.exists, sourceRefs, platformRefs, platforms, sourceKinds, publicUrl,
+}))
+export const mediaGcSchema = z.object({
+  deleted: z.number().int().nonnegative(),
+  retainedReferencedFiles: z.number().int().nonnegative(),
+  maxAgeSeconds: z.number().int().nonnegative(),
+}) satisfies z.ZodType<MediaGcResult>
 const resourceProbeSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), result: z.string() }),
   z.object({ ok: z.literal(false), error: z.string() }),

@@ -400,11 +400,28 @@ Result:
 
 ### `media.stats`
 
-Returns media cache counts and a bounded list of media files. `limit` defaults
-to `50`.
+Returns media cache counts, configured GC policy, and a bounded newest-first
+list. Each list entry includes a `platforms` provenance array, `sourceKinds`
+tags (`chat`, `generated-image`, `tool-result`, or `sandbox`), source references, and separately cached
+platform-native references. `platforms` may be empty and may contain more than
+one platform. `limit` defaults to `50` and is capped at `500`.
+The `stats.files` and `stats.totalBytes` values aggregate the complete cache;
+they are not affected by the list `limit`. Stats also include the complete
+distinct `platforms` and `mimeTypes` values used to populate filters.
 
 ```json
 {"jsonrpc":"2.0","id":"3","method":"media.stats","params":{"limit":20}}
+```
+
+### `media.search`
+
+Searches the complete media cache, applies every supplied condition, then
+returns at most `limit` entries (default `200`, maximum `500`). Conditions are
+combined with AND; values within `platforms`, `mimeTypes`, or `sourceKinds` are
+combined with OR. `withoutPlatform` includes chat media with no platform.
+
+```json
+{"jsonrpc":"2.0","id":"4","method":"media.search","params":{"query":"report","platforms":["matrix","qq"],"withoutPlatform":false,"mimeTypes":["application/pdf"],"sourceKinds":["chat"],"limit":200}}
 ```
 
 ### `media.resolve_source`
@@ -413,7 +430,7 @@ Looks up a media cache entry by source id and returns its `media:<file_id>`
 reference when known.
 
 ```json
-{"jsonrpc":"2.0","id":"4","method":"media.resolve_source","params":{"sourceRef":"telegram:file-123"}}
+{"jsonrpc":"2.0","id":"5","method":"media.resolve_source","params":{"sourceRef":"telegram:file-123"}}
 ```
 
 Result:
@@ -425,7 +442,7 @@ Result:
 ### `media.get`
 
 Returns one cached media entry by `mediaId` or `fileId`, including source refs,
-platform refs, public URL, and local cache path.
+source-kind tags, platform refs, public URL, and local cache path.
 
 ```json
 {"jsonrpc":"2.0","id":"5","method":"media.get","params":{"mediaId":"media:mf_abc"}}
@@ -433,8 +450,8 @@ platform refs, public URL, and local cache path.
 
 ### `media.delete`
 
-Deletes one media id, its source/platform refs, and its local cached file when
-the file is not shared by another media row.
+Deletes one media id, its source-kind/platform/source-reference associations,
+and its local cached file when the file is not shared by another media row.
 
 ```json
 {"jsonrpc":"2.0","id":"6","method":"media.delete","params":{"mediaId":"media:mf_abc"}}
@@ -442,9 +459,10 @@ the file is not shared by another media row.
 
 ### `media.gc`
 
-Runs media cache GC manually. `maxAgeSeconds` defaults to `0`. Media file ids
-referenced by RPC chat history are retained even if they are older than the GC
-cutoff.
+Runs media cache GC manually. Omitting `maxAgeSeconds` uses the server's
+configured retention period; explicitly passing `0` forces collection of all
+unreferenced objects regardless of age. Media file ids referenced by RPC chat
+history are retained in either mode.
 
 ```json
 {"jsonrpc":"2.0","id":"4","method":"media.gc","params":{"maxAgeSeconds":604800}}

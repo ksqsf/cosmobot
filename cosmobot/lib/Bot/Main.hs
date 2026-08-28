@@ -41,6 +41,7 @@ import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
 import qualified Bot.LLM.OpenAI as OpenAI
+import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as Media
 import qualified Bot.Resource as Resource
 import qualified Bot.Resource.Python as Python
@@ -358,8 +359,14 @@ serverTasks cfg threads rpcState acpState =
     <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp threads acpState)
   where
     baseCallbacks = RPCServer.withManagerRpcCallbacks RPCAudit.auditRpcCallbacks
+    MediaConfig.GcConfig{enabled = mediaGcEnabled, olderThanDays, intervalHours} = cfg.media.gc
     callbacks = baseCallbacks
       { RPCServer.pluginMethod = RPCPlugin.dispatchPluginRequest pluginCallbacks
+      , RPCServer.mediaGcSettings = RPCServer.MediaGcSettings
+          { RPCServer.gcEnabled = mediaGcEnabled
+          , RPCServer.maxAgeSeconds = max 0 olderThanDays * 24 * 60 * 60
+          , RPCServer.intervalHours = intervalHours
+          }
       , RPCServer.supportedMethods = baseCallbacks.supportedMethods <> RPCPlugin.pluginMethods
       }
     pluginCallbacks = RPCPlugin.PluginRpc

@@ -8,6 +8,7 @@ Stability   : experimental
 
 module Bot.RPC.Server
   ( RpcServerCallbacks (..)
+  , MediaGcSettings (..)
   , noRpcServerCallbacks
   , withManagerRpcCallbacks
   , runRpcServer
@@ -58,7 +59,14 @@ data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , pluginMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , managerMethod :: RPC.RpcRequest -> Eff es (Maybe RPC.RpcResponse)
+  , mediaGcSettings :: !MediaGcSettings
   , supportedMethods :: ![Text]
+  }
+
+data MediaGcSettings = MediaGcSettings
+  { gcEnabled :: !Bool
+  , maxAgeSeconds :: !Int
+  , intervalHours :: !Int
   }
 
 data RpcAttachmentUpload = RpcAttachmentUpload
@@ -74,7 +82,7 @@ newtype MediaStatsParams = MediaStatsParams
   }
 
 newtype MediaGcParams = MediaGcParams
-  { maxAgeSeconds :: Int
+  { requestedMaxAgeSeconds :: Maybe Int
   }
 
 newtype RpcClientDisconnected = RpcClientDisconnected Text
@@ -89,6 +97,7 @@ noRpcServerCallbacks = RpcServerCallbacks
   { auditMethod = \_ -> pure Nothing
   , pluginMethod = \_ -> pure Nothing
   , managerMethod = \_ -> pure Nothing
+  , mediaGcSettings = MediaGcSettings False 0 0
   , supportedMethods = []
   }
 
@@ -408,9 +417,11 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
     "media.delete" ->
       dispatchMediaDelete request
     "media.stats" ->
-      dispatchMediaStats request
+      dispatchMediaStats callbacks request
+    "media.search" ->
+      dispatchMediaSearch request
     "media.gc" ->
-      dispatchMediaGc request
+      dispatchMediaGc callbacks request
     method
       | "audit." `Text.isPrefixOf` method ->
           dispatchAudit callbacks request
@@ -449,7 +460,7 @@ rpcMethods callbacks =
   , "chat.fork", "chat.rename_session", "chat.delete_session", "chat.upload_attachment"
   , "chat.send", "chat.subscribe", "chat.unsubscribe"
   , "audit.subscribe", "audit.unsubscribe", "events.subscribe", "events.unsubscribe"
-  , "media.resolve_source", "media.get", "media.delete", "media.stats", "media.gc"
+  , "media.resolve_source", "media.get", "media.delete", "media.stats", "media.search", "media.gc"
   ]
     <> callbacks.supportedMethods
 
@@ -680,22 +691,34 @@ dispatchChatSend rpcState request =
 
 dispatchMediaStats
   :: Media.Media :> es
-  => RPC.RpcRequest
+  => RpcServerCallbacks es
+  -> RPC.RpcRequest
   -> Eff es RPC.RpcResponse
-dispatchMediaStats request = do
+dispatchMediaStats callbacks request = do
   case AesonTypes.parseEither parseMediaStatsParams (RPC.requestParams request) of
     Left err ->
       pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right params ->
       do
         stats <- Media.mediaCacheStats
-        files <- Media.listMediaFiles
+        entries <- Media.listMediaEntries params.limit
         pure $
           RPC.successResponse (RPC.requestId request) $
             Aeson.object
               [ "stats" Aeson..= stats
-              , "files" Aeson..= take params.limit files
+              , "files" Aeson..= map mediaListEntryResponse entries
+              , "gcSettings" Aeson..= mediaGcSettingsValue callbacks.mediaGcSettings
               ]
+
+dispatchMediaSearch :: Media.Media :> es => RPC.RpcRequest -> Eff es RPC.RpcResponse
+dispatchMediaSearch request =
+  case AesonTypes.parseEither parseMediaSearchParams (RPC.requestParams request) of
+    Left err ->
+      pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
+    Right searchQuery -> do
+      entries <- Media.searchMediaEntries searchQuery
+      pure $ RPC.successResponse (RPC.requestId request) $
+        Aeson.object ["files" Aeson..= map mediaListEntryResponse entries]
 
 dispatchMediaResolveSource
   :: Media.Media :> es
@@ -755,20 +778,23 @@ dispatchMediaDelete request =
 
 dispatchMediaGc
   :: (Storage.Storage :> es, Media.Media :> es)
-  => RPC.RpcRequest
+  => RpcServerCallbacks es
+  -> RPC.RpcRequest
   -> Eff es RPC.RpcResponse
-dispatchMediaGc request =
+dispatchMediaGc callbacks request =
   case AesonTypes.parseEither parseMediaGcParams (RPC.requestParams request) of
     Left err ->
       pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right params -> do
+      let maxAgeSeconds = fromMaybe callbacks.mediaGcSettings.maxAgeSeconds params.requestedMaxAgeSeconds
       retained <- Set.fromList <$> RpcStorage.referencedMediaFileIds
-      deleted <- Media.gcMediaCache params.maxAgeSeconds retained
+      deleted <- Media.gcMediaCache maxAgeSeconds retained
       pure $
         RPC.successResponse (RPC.requestId request) $
           Aeson.object
             [ "deleted" Aeson..= deleted
             , "retainedReferencedFiles" Aeson..= Set.size retained
+            , "maxAgeSeconds" Aeson..= maxAgeSeconds
             ]
 
 dispatchManagerRequest
@@ -1161,7 +1187,31 @@ parseMediaStatsParams = \case
       limit <- fromMaybe 50 <$> o Aeson..:? "limit"
       when (limit < 0) $
         fail "limit must be non-negative"
+      when (limit > 500) $
+        fail "limit must be at most 500"
       pure MediaStatsParams{limit}
+
+parseMediaSearchParams :: Aeson.Value -> AesonTypes.Parser Media.MediaSearchQuery
+parseMediaSearchParams =
+  Aeson.withObject "media.search params" \o -> do
+    text <- (>>= nonEmptyText) <$> o Aeson..:? "query"
+    platforms <- Set.fromList . map (Text.toLower . Text.strip) . fromMaybe [] <$> o Aeson..:? "platforms"
+    withoutPlatform <- fromMaybe False <$> o Aeson..:? "withoutPlatform"
+    mimeTypes <- Set.fromList . map Text.strip . fromMaybe [] <$> o Aeson..:? "mimeTypes"
+    sourceKindKeys <- fromMaybe [] <$> o Aeson..:? "sourceKinds"
+    sourceKinds <- Set.fromList <$> traverse parseSourceKind sourceKindKeys
+    limit <- fromMaybe 200 <$> o Aeson..:? "limit"
+    when (limit < 1 || limit > 500) $ fail "limit must be between 1 and 500"
+    when (Set.null platforms && Set.null mimeTypes && Set.null sourceKinds && not withoutPlatform && isNothing text) $
+      fail "at least one search condition is required"
+    pure Media.MediaSearchQuery{text, platforms, withoutPlatform, mimeTypes, sourceKinds, limit}
+  where
+    nonEmptyText value = case Text.strip value of
+      "" -> Nothing
+      stripped -> Just stripped
+    parseSourceKind key =
+      maybe (fail ("unknown media source kind: " <> Text.unpack key)) pure $
+        Media.mediaSourceKindFromKey key
 
 parseMediaSourceParams :: Aeson.Value -> AesonTypes.Parser Text
 parseMediaSourceParams =
@@ -1200,18 +1250,18 @@ parseMediaIdParams =
 parseMediaGcParams :: Aeson.Value -> AesonTypes.Parser MediaGcParams
 parseMediaGcParams = \case
   Aeson.Null ->
-    pure MediaGcParams{maxAgeSeconds = 0}
+    pure MediaGcParams{requestedMaxAgeSeconds = Nothing}
   value ->
     Aeson.withObject "media.gc params" parse value
   where
     parse o = do
-      maxAgeSeconds <-
+      requestedMaxAgeSeconds <-
         o Aeson..:? "maxAgeSeconds" >>= \case
-          Just value -> pure value
-          Nothing -> fromMaybe 0 <$> o Aeson..:? "max_age_seconds"
-      when (maxAgeSeconds < 0) $
+          Just value -> pure (Just value)
+          Nothing -> o Aeson..:? "max_age_seconds"
+      when (maybe False (< 0) requestedMaxAgeSeconds) $
         fail "maxAgeSeconds must be non-negative"
-      pure MediaGcParams{maxAgeSeconds}
+      pure MediaGcParams{requestedMaxAgeSeconds}
 
 methodNotFound :: RPC.RequestId -> Text -> RPC.RpcResponse
 methodNotFound requestId method =
@@ -1361,6 +1411,34 @@ mediaEntryResponse entry publicUrl localPath =
     , "file" Aeson..= entry.file
     , "sourceRefs" Aeson..= entry.sourceRefs
     , "platformRefs" Aeson..= entry.platformRefs
+    , "platforms" Aeson..= entry.platforms
+    , "sourceKinds" Aeson..= map Media.mediaSourceKindKey entry.sourceKinds
     , "publicUrl" Aeson..= publicUrl
     , "localPath" Aeson..= localPath
+    ]
+
+mediaListEntryResponse :: Media.MediaCacheEntry -> Aeson.Value
+mediaListEntryResponse entry =
+  Aeson.object
+    [ "mediaId" Aeson..= entry.file.ref
+    , "fileId" Aeson..= entry.file.fileId
+    , "digest" Aeson..= entry.file.digest
+    , "mimeType" Aeson..= entry.file.mimeType
+    , "sourceName" Aeson..= entry.file.sourceName
+    , "size" Aeson..= entry.file.size
+    , "createdAtUnix" Aeson..= entry.file.createdAtUnix
+    , "lastUsedAtUnix" Aeson..= entry.file.lastUsedAtUnix
+    , "exists" Aeson..= entry.file.exists
+    , "sourceRefs" Aeson..= entry.sourceRefs
+    , "platformRefs" Aeson..= entry.platformRefs
+    , "platforms" Aeson..= entry.platforms
+    , "sourceKinds" Aeson..= map Media.mediaSourceKindKey entry.sourceKinds
+    ]
+
+mediaGcSettingsValue :: MediaGcSettings -> Aeson.Value
+mediaGcSettingsValue settings =
+  Aeson.object
+    [ "enabled" Aeson..= settings.gcEnabled
+    , "maxAgeSeconds" Aeson..= settings.maxAgeSeconds
+    , "intervalHours" Aeson..= settings.intervalHours
     ]

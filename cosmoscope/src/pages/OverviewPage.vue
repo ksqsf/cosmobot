@@ -10,11 +10,12 @@ import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { countResources, countSessions, listTasks, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
-import { auditActivity, auditFailureCount, mergeAuditRecords, taskCounts } from '@/backend/overview'
+import { countResources, countSessions, listMedia, listTasks, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
+import { auditActivity, mergeAuditRecords, taskCounts } from '@/backend/overview'
 import { runBackend } from '@/backend/runBackend'
+import { formatBytes } from '@/format'
 import { useConnectionStore } from '@/stores/connection'
-import type { Activity, AuditRecord, Task } from '@/types/domain'
+import type { Activity, AuditRecord, MediaStats, Task } from '@/types/domain'
 import type { LiveAdminMethod } from '@/rpc/protocol'
 
 const router = useRouter()
@@ -28,10 +29,12 @@ const auditRecords = ref<AuditRecord[]>([])
 const activities = ref<Activity[]>([])
 const sessionCount = ref(0)
 const resourceCount = ref(0)
+const mediaStats = ref<MediaStats>({ files: 0, existingFiles: 0, missingFiles: 0, totalBytes: 0, sources: 0, platformRefs: 0, platformAssociations: 0, mimeTypes: [], platforms: [] })
 const taskError = ref('')
 const auditError = ref('')
 const sessionError = ref('')
 const resourceError = ref('')
+const mediaError = ref('')
 const selectedTask = ref<Task>()
 const drawerOpen = ref(false)
 let stopAuditSubscription: (() => void) | undefined
@@ -39,10 +42,6 @@ let pollTimer: ReturnType<typeof setInterval> | undefined
 
 const supports = (method: LiveAdminMethod): boolean => connection.state === 'authenticated' && connection.methods.has(method)
 const counts = computed(() => taskCounts(tasks.value))
-const recentFailures = computed(() => supports('audit.recent')
-  ? auditFailureCount(auditRecords.value)
-  : activities.value.filter(({ tone }) => tone === 'danger').length)
-
 async function loadTasks(): Promise<void> {
   const result = await runBackend(listTasks)
   if (result._tag === 'Failure') { taskError.value = result.error.message; return }
@@ -66,6 +65,12 @@ async function loadResources(): Promise<void> {
   const result = await runBackend(countResources)
   if (result._tag === 'Failure') { resourceError.value = result.error.message; return }
   resourceError.value = ''; resourceCount.value = result.value
+}
+
+async function loadMedia(): Promise<void> {
+  const result = await runBackend(listMedia(4))
+  if (result._tag === 'Failure') { mediaError.value = result.error.message; return }
+  mediaError.value = ''; mediaStats.value = result.value.stats
 }
 
 async function installAuditSubscription(): Promise<void> {
@@ -93,6 +98,7 @@ async function loadSlowSnapshots(): Promise<void> {
   await Promise.all([
     supports('concurrency.list') ? loadTasks() : Promise.resolve(),
     supports('resource.list') ? loadResources() : Promise.resolve(),
+    supports('media.stats') ? loadMedia() : Promise.resolve(),
   ])
 }
 
@@ -117,6 +123,7 @@ async function refreshLive(): Promise<void> {
     supports('concurrency.list') ? loadTasks() : Promise.resolve().then(() => { taskError.value = 'The server does not support concurrency.list.' }),
     supports('chat.list_sessions') ? loadSessions() : Promise.resolve().then(() => { sessionError.value = 'The server does not support chat.list_sessions.' }),
     supports('resource.list') ? loadResources() : Promise.resolve().then(() => { resourceError.value = 'The server does not support resource.list.' }),
+    supports('media.stats') ? loadMedia() : Promise.resolve().then(() => { mediaError.value = 'The server does not support media.stats.' }),
     supports('audit.recent') && !supports('audit.subscribe') ? loadAudit() : Promise.resolve(),
   ])
   state.value = 'ready'
@@ -260,19 +267,19 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
         </RouterLink>
         <RouterLink
           class="metric"
-          to="/audit"
+          to="/media"
         >
           <div class="metric-top">
-            <span class="pi pi-exclamation-triangle metric-icon red" /><Tag
-              :value="supports('audit.recent') ? 'Live' : 'Unavailable'"
-              :severity="supports('audit.recent') ? 'success' : 'warn'"
+            <span class="pi pi-images metric-icon violet" /><Tag
+              :value="supports('media.stats') ? 'Live' : 'Unavailable'"
+              :severity="supports('media.stats') ? 'success' : 'warn'"
             />
           </div>
-          <strong>{{ recentFailures }}</strong><p>Recent failures</p>
+          <strong>{{ formatBytes(mediaStats.totalBytes) }}</strong><p>Media storage</p>
           <small
-            v-if="auditError"
+            v-if="mediaError"
             class="metric-error"
-          >{{ auditError }}</small><small v-else>From the latest 20 audit events</small>
+          >{{ mediaError }}</small><small v-else>{{ mediaStats.files }} objects · {{ mediaStats.missingFiles }} missing</small>
         </RouterLink>
       </div>
       <div class="overview-grid">

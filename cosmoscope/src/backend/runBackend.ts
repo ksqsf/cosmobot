@@ -45,6 +45,13 @@ const backendProxy: AdminBackend = {
     keepAlive: (id) => activeBackend.resources.keepAlive(id),
     makePermanent: (id) => activeBackend.resources.makePermanent(id),
   },
+  media: {
+    list: (limit) => activeBackend.media.list(limit),
+    search: (search) => activeBackend.media.search(search),
+    get: (id) => activeBackend.media.get(id),
+    delete: (id) => activeBackend.media.delete(id),
+    gc: (maxAgeSeconds) => activeBackend.media.gc(maxAgeSeconds),
+  },
   plugins: {
     list: () => activeBackend.plugins.list(),
     load: (id) => activeBackend.plugins.load(id),

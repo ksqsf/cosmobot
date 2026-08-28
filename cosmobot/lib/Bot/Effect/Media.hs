@@ -10,6 +10,10 @@ module Bot.Effect.Media
   , MediaCacheEntry (..)
   , MediaFileInfo (..)
   , MediaPlatformRefInfo (..)
+  , MediaSourceKind (..)
+  , MediaSearchQuery (..)
+  , mediaSourceKindKey
+  , mediaSourceKindFromKey
   , MediaCacheStats (..)
   , storeMediaObject
   , storeMediaObjectFromSource
@@ -19,6 +23,8 @@ module Bot.Effect.Media
   , mediaFileInfo
   , mediaFileInfoByRef
   , listMediaFiles
+  , listMediaEntries
+  , searchMediaEntries
   , mediaCacheStats
   , gcMediaCache
   , normalizeMediaRef
@@ -27,6 +33,8 @@ module Bot.Effect.Media
   , localMediaPath
   , platformMediaRef
   , storePlatformMediaRef
+  , recordMediaPlatform
+  , recordMediaSourceKind
   , normalizeIncomingMessage
   , normalizeIncomingMessages
   , normalizeReferencedMessage
@@ -72,10 +80,37 @@ data MediaPlatformRefInfo = MediaPlatformRefInfo
   }
   deriving (Show, Eq, Generic, Aeson.ToJSON)
 
+data MediaSourceKind
+  = ChatSource
+  | GeneratedImageSource
+  | ToolResultSource
+  | SandboxSource
+  deriving (Show, Eq, Ord)
+
+mediaSourceKindKey :: MediaSourceKind -> Text
+mediaSourceKindKey = \case
+  ChatSource -> "chat"
+  GeneratedImageSource -> "generated-image"
+  ToolResultSource -> "tool-result"
+  SandboxSource -> "sandbox"
+
+mediaSourceKindFromKey :: Text -> Maybe MediaSourceKind
+mediaSourceKindFromKey = \case
+  "chat" -> Just ChatSource
+  "generated-image" -> Just GeneratedImageSource
+  "tool-result" -> Just ToolResultSource
+  "sandbox" -> Just SandboxSource
+  _ -> Nothing
+
+instance Aeson.ToJSON MediaSourceKind where
+  toJSON = Aeson.String . mediaSourceKindKey
+
 data MediaCacheEntry = MediaCacheEntry
   { file :: !MediaFileInfo
   , sourceRefs :: ![Text]
   , platformRefs :: ![MediaPlatformRefInfo]
+  , platforms :: ![Text]
+  , sourceKinds :: ![MediaSourceKind]
   }
   deriving (Show, Eq, Generic, Aeson.ToJSON)
 
@@ -86,8 +121,21 @@ data MediaCacheStats = MediaCacheStats
   , totalBytes :: !Int
   , sources :: !Int
   , platformRefs :: !Int
+  , platformAssociations :: !Int
+  , mimeTypes :: ![Text]
+  , platforms :: ![Text]
   }
   deriving (Show, Eq, Generic, Aeson.ToJSON)
+
+data MediaSearchQuery = MediaSearchQuery
+  { text :: !(Maybe Text)
+  , platforms :: !(Set.Set Text)
+  , withoutPlatform :: !Bool
+  , mimeTypes :: !(Set.Set Text)
+  , sourceKinds :: !(Set.Set MediaSourceKind)
+  , limit :: !Int
+  }
+  deriving (Show, Eq)
 
 data Media :: Effect where
   StoreMediaObject :: MediaObject -> Media m (Maybe Text)
@@ -97,6 +145,8 @@ data Media :: Effect where
   DeleteMediaFile :: Text -> Media m Bool
   GetMediaFileInfo :: Text -> Media m (Maybe MediaFileInfo)
   ListMediaFiles :: Media m [MediaFileInfo]
+  ListMediaEntries :: Int -> Media m [MediaCacheEntry]
+  SearchMediaEntries :: MediaSearchQuery -> Media m [MediaCacheEntry]
   GetMediaCacheStats :: Media m MediaCacheStats
   GcMediaCache :: Int -> Set.Set Text -> Media m Int
   NormalizeMediaRef :: Text -> Media m Text
@@ -104,6 +154,8 @@ data Media :: Effect where
   LocalMediaPath :: Text -> Media m (Maybe FilePath)
   PlatformMediaRef :: Text -> Text -> Text -> Media m (Maybe Text)
   StorePlatformMediaRef :: Text -> Text -> Text -> Text -> Media m ()
+  RecordMediaPlatform :: ChatPlatform -> Text -> Media m ()
+  RecordMediaSourceKind :: MediaSourceKind -> Text -> Media m ()
 
 type instance DispatchOf Media = Dynamic
 
@@ -141,6 +193,14 @@ listMediaFiles :: Media :> es => Eff es [MediaFileInfo]
 listMediaFiles =
   send ListMediaFiles
 
+listMediaEntries :: Media :> es => Int -> Eff es [MediaCacheEntry]
+listMediaEntries =
+  send . ListMediaEntries
+
+searchMediaEntries :: Media :> es => MediaSearchQuery -> Eff es [MediaCacheEntry]
+searchMediaEntries =
+  send . SearchMediaEntries
+
 mediaCacheStats :: Media :> es => Eff es MediaCacheStats
 mediaCacheStats =
   send GetMediaCacheStats
@@ -169,14 +229,22 @@ storePlatformMediaRef :: Media :> es => Text -> Text -> Text -> Text -> Eff es (
 storePlatformMediaRef platform scope ref platformRef =
   send (StorePlatformMediaRef platform scope ref platformRef)
 
+recordMediaPlatform :: Media :> es => ChatPlatform -> Text -> Eff es ()
+recordMediaPlatform platform ref =
+  send (RecordMediaPlatform platform ref)
+
+recordMediaSourceKind :: Media :> es => MediaSourceKind -> Text -> Eff es ()
+recordMediaSourceKind sourceKind ref =
+  send (RecordMediaSourceKind sourceKind ref)
+
 normalizeMediaRefs :: Media :> es => [Text] -> Eff es [Text]
 normalizeMediaRefs =
   traverse normalizeMediaRef
 
 normalizeIncomingMessage :: Media :> es => IncomingMessage -> Eff es IncomingMessage
 normalizeIncomingMessage message = do
-  imageUrls <- normalizeMediaRefs message.imageUrls
-  files <- traverse normalizeMessageFile message.files
+  imageUrls <- traverse (normalizePlatformMediaRef message.platform) message.imageUrls
+  files <- traverse (normalizePlatformMessageFile message.platform) message.files
   pure IncomingMessage
     { eventKind = message.eventKind
     , platform = message.platform
@@ -195,6 +263,18 @@ normalizeIncomingMessage message = do
     , text = message.text
     , raw = message.raw
     }
+  where
+    normalizePlatformMediaRef platform ref = do
+      normalized <- normalizeMediaRef ref
+      recordMediaPlatform platform normalized
+      recordMediaSourceKind ChatSource normalized
+      pure normalized
+
+    normalizePlatformMessageFile platform file = do
+      normalized <- normalizeMessageFile file
+      recordMediaPlatform platform normalized.ref
+      recordMediaSourceKind ChatSource normalized.ref
+      pure normalized
 
 normalizeIncomingMessages
   :: Media :> es
@@ -243,8 +323,12 @@ runMediaPassthrough =
       pure Nothing
     ListMediaFiles ->
       pure []
+    ListMediaEntries _ ->
+      pure []
+    SearchMediaEntries _ ->
+      pure []
     GetMediaCacheStats ->
-      pure MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0}
+      pure MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0, platformAssociations = 0, mimeTypes = [], platforms = []}
     GcMediaCache _ _ ->
       pure 0
     NormalizeMediaRef ref ->
@@ -256,6 +340,10 @@ runMediaPassthrough =
     PlatformMediaRef _ _ _ ->
       pure Nothing
     StorePlatformMediaRef _ _ _ _ ->
+      pure ()
+    RecordMediaPlatform _ _ ->
+      pure ()
+    RecordMediaSourceKind _ _ ->
       pure ()
 
 parseMediaId :: Text -> Maybe Text

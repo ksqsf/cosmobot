@@ -3360,9 +3360,9 @@ testAgentAuditStorageOmitsLargeToolResults =
         agentRun <- startTestRuntime 4 agentContext [largeAuditResultTool toolResultText]
         void $ S.toList (Agent.agentStream (Agent.defaultRuntime AgentAudit.agentAuditObserver 1000000 agentRun) (startWithUser "audit large result"))
         uses <- AgentAudit.queryRecentToolUses 10
-        mediaFiles <- Media.listMediaFiles
-        pure (uses, mediaFiles)
-      (toolUses, files) <- either assertFailure pure runResult
+        mediaEntries <- Media.listMediaEntries 10
+        pure (uses, mediaEntries)
+      (toolUses, entries) <- either assertFailure pure runResult
       case toolUses of
         [toolUse] -> do
           case toolUse.result of
@@ -3381,10 +3381,11 @@ testAgentAuditStorageOmitsLargeToolResults =
               assertFailure ("expected finished tool use, got " <> show other)
         _ ->
           assertFailure [i|expected one tool use, got #{length toolUses}|]
-      case files of
-        [file] -> do
+      case entries of
+        [Media.MediaCacheEntry{file, sourceKinds}] -> do
           file.mimeType @?= "application/json"
           file.size @?= StrictByteString.length resultBytes
+          sourceKinds @?= [Media.ToolResultSource]
         other ->
           assertFailure [i|expected one cached result file, got #{length other}|]
 
@@ -5487,8 +5488,12 @@ runMediaNormalizingRefs =
       pure Nothing
     Media.ListMediaFiles ->
       pure []
+    Media.ListMediaEntries _ ->
+      pure []
+    Media.SearchMediaEntries _ ->
+      pure []
     Media.GetMediaCacheStats ->
-      pure Media.MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0}
+      pure Media.MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0, platformAssociations = 0, mimeTypes = [], platforms = []}
     Media.GcMediaCache _ _ ->
       pure 0
     Media.NormalizeMediaRef ref ->
@@ -5500,6 +5505,10 @@ runMediaNormalizingRefs =
     Media.PlatformMediaRef _ _ _ ->
       pure Nothing
     Media.StorePlatformMediaRef _ _ _ _ ->
+      pure ()
+    Media.RecordMediaPlatform _ _ ->
+      pure ()
+    Media.RecordMediaSourceKind _ _ ->
       pure ()
 
 runMediaLeavingRefs :: Eff (Media.Media : es) a -> Eff es a
@@ -5519,8 +5528,12 @@ runMediaLeavingRefs =
       pure Nothing
     Media.ListMediaFiles ->
       pure []
+    Media.ListMediaEntries _ ->
+      pure []
+    Media.SearchMediaEntries _ ->
+      pure []
     Media.GetMediaCacheStats ->
-      pure Media.MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0}
+      pure Media.MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0, platformAssociations = 0, mimeTypes = [], platforms = []}
     Media.GcMediaCache _ _ ->
       pure 0
     Media.NormalizeMediaRef ref ->
@@ -5532,6 +5545,10 @@ runMediaLeavingRefs =
     Media.PlatformMediaRef _ _ _ ->
       pure Nothing
     Media.StorePlatformMediaRef _ _ _ _ ->
+      pure ()
+    Media.RecordMediaPlatform _ _ ->
+      pure ()
+    Media.RecordMediaSourceKind _ _ ->
       pure ()
 
 mockUserAvatar :: ChatMock -> IncomingMessage -> Text -> Eff es (Maybe Aeson.Value)

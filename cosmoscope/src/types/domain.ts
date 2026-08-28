@@ -128,6 +128,73 @@ export interface Plugin {
   routes: number
 }
 
+export interface MediaPlatformRef {
+  readonly platform: string
+  readonly scope: string
+  readonly platformRef: string
+}
+
+export interface MediaItem {
+  readonly mediaId: string
+  readonly fileId: string
+  readonly digest: string
+  readonly mimeType: string
+  readonly sourceName: string | null
+  readonly size: number
+  readonly createdAtUnix: number
+  readonly lastUsedAtUnix: number
+  readonly exists: boolean
+  readonly sourceRefs: readonly string[]
+  readonly platformRefs: readonly MediaPlatformRef[]
+  readonly platforms: readonly string[]
+  readonly sourceKinds: readonly MediaSourceKind[]
+}
+
+export type MediaSourceKind = 'chat' | 'generated-image' | 'tool-result' | 'sandbox'
+
+export interface MediaDetail extends MediaItem {
+  readonly publicUrl: string
+}
+
+export interface MediaStats {
+  readonly files: number
+  readonly existingFiles: number
+  readonly missingFiles: number
+  readonly totalBytes: number
+  readonly sources: number
+  readonly platformRefs: number
+  readonly platformAssociations: number
+  readonly mimeTypes: readonly string[]
+  readonly platforms: readonly string[]
+}
+
+export interface MediaGcSettings {
+  readonly enabled: boolean
+  readonly maxAgeSeconds: number
+  readonly intervalHours: number
+}
+
+export interface MediaSnapshot {
+  readonly stats: MediaStats
+  readonly files: readonly MediaItem[]
+  readonly gcSettings: MediaGcSettings
+}
+
+export interface MediaSearch {
+  readonly query?: string
+  readonly platforms: readonly string[]
+  readonly withoutPlatform: boolean
+  readonly mimeTypes: readonly string[]
+  readonly sourceKinds: readonly MediaSourceKind[]
+  readonly limit?: number
+}
+
+export interface MediaGcResult {
+  readonly deleted: number
+  readonly retainedReferencedFiles: number
+  readonly maxAgeSeconds: number
+}
+
 export interface LogEntry {
   id: string
   time: string
