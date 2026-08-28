@@ -9,9 +9,14 @@ export type BackendResult<A, E> =
 
 let activeBackend = mockBackend
 const backendProxy: AdminBackend = {
-  get source() { return activeBackend.source },
   system: { overview: (scenario) => activeBackend.system.overview(scenario) },
   tasks: { list: () => activeBackend.tasks.list() },
+  audit: {
+    recent: () => activeBackend.audit.recent(),
+    subscribe: (refresh, handler) => activeBackend.audit.subscribe(refresh, handler),
+  },
+  chat: { sessionCount: () => activeBackend.chat.sessionCount() },
+  resources: { count: () => activeBackend.resources.count() },
   plugins: { list: () => activeBackend.plugins.list() },
   logs: { list: () => activeBackend.logs.list() },
 }

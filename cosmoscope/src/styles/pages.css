@@ -4,10 +4,19 @@
   gap: var(--space-3);
 }
 .metric {
+  display: block;
   padding: 17px 18px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
   background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.metric:hover,
+.metric:focus-visible {
+  border-color: var(--accent);
+  transform: translateY(-1px);
 }
 .metric-top {
   display: flex;
@@ -60,6 +69,9 @@
   color: var(--muted);
   font-size: 10px;
 }
+.metric .metric-error {
+  color: var(--red);
+}
 .overview-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(300px, 0.85fr);
@@ -88,11 +100,13 @@
   padding: 0 18px 12px;
   list-style: none;
 }
-.activity-list li {
+.activity-list li > a {
   display: flex;
   gap: 10px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line-soft);
+  color: var(--text);
+  text-decoration: none;
 }
 .activity-list i {
   width: 12px;

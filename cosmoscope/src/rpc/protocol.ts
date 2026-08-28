@@ -1,20 +1,28 @@
 import { z } from 'zod'
 
-export const rpcIdSchema = z.union([z.number(), z.string(), z.null()])
+export const liveAdminMethods = [
+  'concurrency.list',
+  'audit.recent',
+  'audit.subscribe',
+  'chat.list_sessions',
+  'resource.list',
+] as const
+export type LiveAdminMethod = typeof liveAdminMethods[number]
+
 export const rpcErrorSchema = z.object({
   code: z.number(),
   message: z.string(),
   data: z.object({ code: z.string() }).loose().optional(),
 })
 export const rpcResponseSchema = z.union([
-  z.object({ jsonrpc: z.literal('2.0'), id: rpcIdSchema, result: z.unknown() }),
-  z.object({ jsonrpc: z.literal('2.0'), id: rpcIdSchema, error: rpcErrorSchema }),
+  z.object({ jsonrpc: z.literal('2.0'), id: z.number(), result: z.unknown() }).strict(),
+  z.object({ jsonrpc: z.literal('2.0'), id: z.number(), error: rpcErrorSchema }).strict(),
 ])
 export const rpcNotificationSchema = z.object({
   jsonrpc: z.literal('2.0'),
   method: z.string(),
   params: z.unknown().optional(),
-})
+}).strict()
 
 export const capabilitiesSchema = z.object({
   serverVersion: z.string(),

@@ -20,7 +20,10 @@ import qualified Data.Aeson.Types as AesonTypes
 
 auditRpcCallbacks :: AgentAudit.AgentAudit :> es => RpcServerCallbacks es
 auditRpcCallbacks =
-  noRpcServerCallbacks{auditMethod = dispatchAuditMethod, hasAuditMethods = True}
+  noRpcServerCallbacks
+    { auditMethod = dispatchAuditMethod
+    , supportedMethods = ["audit.recent", "audit.get", "audit.thread", "audit.thread_messages"]
+    }
 
 dispatchAuditMethod
   :: AgentAudit.AgentAudit :> es

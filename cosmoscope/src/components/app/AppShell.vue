@@ -29,7 +29,12 @@ const currentTitle = computed(() => {
   return typeof title === 'string' ? title : 'Cosmoscope'
 })
 const currentPage = computed(() => pages.find((page) => page.name === route.name))
-const pageIsReal = computed(() => connectionStore.state === 'authenticated' && currentPage.value?.requiredCapabilities.every((method) => connectionStore.methods.has(method)) === true)
+const pageIsMixed = computed(() => connectionStore.state === 'authenticated'
+  && currentPage.value?.name === 'overview'
+  && currentPage.value.requiredCapabilities.some((method) => connectionStore.methods.has(method)))
+const pageIsReal = computed(() => !pageIsMixed.value && connectionStore.state === 'authenticated' && currentPage.value?.requiredCapabilities.every((method) => connectionStore.methods.has(method)) === true)
+const dataLabel = computed(() => pageIsMixed.value ? 'Mixed data' : pageIsReal.value ? 'Live data' : 'Demo data')
+const dataDetail = computed(() => pageIsMixed.value ? 'Live RPC + labelled fixtures' : pageIsReal.value ? `cosmobot ${connectionStore.serverVersion}` : 'Deterministic fixtures')
 const connectionLabel = computed(() => ({
   offline: 'Offline', opening: 'Connecting', authenticated: 'Connected', reconnecting: 'Reconnecting', failed: 'Failed',
 })[connectionStore.state])
@@ -37,17 +42,11 @@ const filteredPages = computed(() => pages.filter((page) => page.title.toLowerCa
 function navigationItems(group: NavigationGroup): NavigationItem[] {
   return pages
     .filter((page) => page.navigationGroup === group)
-    .map((page) => {
-      const item = { label: page.title, icon: page.icon, route: page.path.replace(/:\w+\??/, '') }
-      if (page.name === 'audit') return { ...item, badge: '12' }
-      if (page.name === 'tasks') return { ...item, indicator: 'danger' as const }
-      if (page.name === 'configuration') return { ...item, indicator: 'warning' as const }
-      return item
-    })
+    .map((page) => ({ label: page.title, icon: page.icon, route: router.resolve({ name: page.name }).path }))
 }
 
 function openPalette(): void { query.value = ''; paletteOpen.value = true; void nextTick(() => commandInput.value?.$el.focus()) }
-function choose(path: string): void { paletteOpen.value = false; void router.push(path) }
+function choose(name: string): void { paletteOpen.value = false; void router.push({ name }) }
 function onKeydown(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); openPalette() }
 }
@@ -88,10 +87,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           <span
             class="status-dot"
             :class="pageIsReal ? 'online' : 'warning'"
-          /><span><strong>{{ pageIsReal ? 'Live data' : 'Demo data' }}</strong><small>{{ pageIsReal ? `cosmobot ${connectionStore.serverVersion}` : 'Deterministic fixtures' }}</small></span>
+          /><span><strong>{{ dataLabel }}</strong><small>{{ dataDetail }}</small></span>
         </div>
         <div class="user-button">
-          <span class="avatar">KA</span><span><strong>kosmos</strong><small>Administrator</small></span>
+          <span class="avatar">A</span><span><strong>RPC access</strong><small>Administrator token</small></span>
         </div>
       </div>
     </aside>
@@ -168,7 +167,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       <RouterLink
         v-for="page in pages"
         :key="page.name"
-        :to="page.path.replace(/:\w+\??/, '')"
+        :to="{ name: page.name }"
         @click="mobileNavigation = false"
       >
         <i :class="page.icon" />{{ page.title }}
@@ -200,7 +199,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
         :icon="page.icon"
         severity="secondary"
         text
-        @click="choose(page.path.replace(/:\w+\??/, ''))"
+        @click="choose(page.name)"
       />
     </div>
   </Dialog>
@@ -208,6 +207,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     class="sr-live"
     aria-live="polite"
   >
-    {{ connectionLabel }}. {{ pageIsReal ? 'Live data' : 'Demo data' }} environment.
+    {{ connectionLabel }}. {{ dataLabel }} environment.
   </div>
 </template>

@@ -119,6 +119,7 @@ testAdminCapabilities = do
     other ->
       assertFailure [i|expected capabilities response, got #{show other :: String}|]
   assertBool "expected chat.list_sessions capability" ("chat.list_sessions" `elem` (methods :: [Text]))
+  assertBool "manager capability must not be advertised without its callback" ("concurrency.list" `notElem` methods)
 
 testOpenSessionReturnsGeneratedSessionId :: IO ()
 testOpenSessionReturnsGeneratedSessionId = do
@@ -766,8 +767,8 @@ testHttpServerRejectsNonRpcPaths = do
           { enabled = True
           , host = "127.0.0.1"
           , port
-        , token = "secret"
-        , allowedBrowserOrigins = []
+          , token = "secret"
+          , allowedBrowserOrigins = []
           }
         server =
           withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->

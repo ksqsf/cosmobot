@@ -25,7 +25,7 @@ export const useConnectionStore = defineStore('connection', () => {
     endpoint.value = url
     serverVersion.value = capabilities.serverVersion
     methods.value = new Set(capabilities.methods)
-    setAdminBackend(makeRpcBackend(client))
+    setAdminBackend(makeRpcBackend(client, methods.value))
   }
 
   function disconnect(): void {
@@ -41,7 +41,10 @@ export const useConnectionStore = defineStore('connection', () => {
       const capabilities = await client.retry()
       serverVersion.value = capabilities.serverVersion
       methods.value = new Set(capabilities.methods)
-    } catch { return }
+      setAdminBackend(makeRpcBackend(client, methods.value))
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : 'Could not reconnect to cosmobot.'
+    }
   }
 
   return { state, endpoint, error, serverVersion, methods, stale, connect, disconnect, retry }

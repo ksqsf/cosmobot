@@ -14,6 +14,7 @@ class FakeSocket {
   open(): void { this.readyState = 1; this.onopen?.(new Event('open')) }
   receive(value: unknown): void { this.onmessage?.(new MessageEvent('message', { data: typeof value === 'string' ? value : JSON.stringify(value) })) }
   remoteClose(): void { this.readyState = 3; this.onclose?.(new CloseEvent('close')) }
+  fail(): void { this.onerror?.(new Event('error')) }
   request(index: number): { readonly id: number; readonly method: string } { return JSON.parse(this.sent[index] ?? '') as { id: number; method: string } }
   succeed(index: number, result: unknown): void { this.receive({ jsonrpc: '2.0', id: this.request(index).id, result }) }
 }
@@ -114,5 +115,32 @@ describe('RPC endpoint validation', () => {
     const client = new RpcClient({ createSocket: () => { throw new Error('blocked') } })
     await expect(client.connect('ws://127.0.0.1:38765/rpc', 'secret')).rejects.toMatchObject({ code: 'connection_failed' })
     expect(client.state).toBe('failed')
+  })
+
+  it('fails an initial connection error without retaining retry credentials', async () => {
+    const socket = new FakeSocket()
+    const client = new RpcClient({ createSocket: () => socket })
+    const connection = client.connect('ws://127.0.0.1:38765/rpc', 'secret')
+    socket.fail()
+    await expect(connection).rejects.toMatchObject({ code: 'connection_failed' })
+    await expect(client.retry()).rejects.toMatchObject({ code: 'offline' })
+  })
+
+  it('does not let stale cleanup remove a replacement subscription', async () => {
+    const socket = new FakeSocket()
+    const client = new RpcClient({ createSocket: () => socket })
+    const connection = client.connect('ws://127.0.0.1:38765/rpc', 'secret')
+    await authenticate(socket, connection)
+    const firstCleanup = client.subscribe('audit', 'audit.subscribe', 'audit.unsubscribe', {}, 'audit.event', () => Promise.resolve(), () => undefined)
+    const received: unknown[] = []
+    client.subscribe('audit', 'audit.subscribe', 'audit.unsubscribe', {}, 'audit.event', () => Promise.resolve(), (event) => received.push(event))
+    firstCleanup()
+    await Promise.resolve()
+    socket.succeed(2, { subscribed: true })
+    socket.succeed(3, { subscribed: true })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    socket.receive({ jsonrpc: '2.0', method: 'audit.event', params: { id: 1 } })
+    expect(received).toEqual([{ id: 1 }])
+    client.disconnect()
   })
 })

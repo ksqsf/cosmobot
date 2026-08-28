@@ -24,6 +24,8 @@ export const platforms: PlatformSummary[] = [
   { id: 'discord', name: 'Discord', state: 'Degraded', messages: 137 },
 ]
 
+export const overviewCounts = { sessions: 6, resources: 3 } as const
+
 export const plugins: Plugin[] = [
   { id: 'echo', name: 'Echo tools', description: 'Echo and transformation tools.', version: '1.3.0', tools: 2, routes: 1, status: 'Loaded' },
   { id: 'github', name: 'GitHub', description: 'Repository lookup, issues, pull requests, and workflow status.', version: '0.8.2', tools: 7, routes: 2, status: 'Loaded' },

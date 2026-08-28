@@ -57,8 +57,7 @@ import qualified Paths_cosmobot as Paths
 data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , managerMethod :: RPC.RpcRequest -> Eff es (Maybe RPC.RpcResponse)
-  , hasAuditMethods :: !Bool
-  , hasManagerMethods :: !Bool
+  , supportedMethods :: ![Text]
   }
 
 data RpcAttachmentUpload = RpcAttachmentUpload
@@ -88,8 +87,7 @@ noRpcServerCallbacks :: RpcServerCallbacks es
 noRpcServerCallbacks = RpcServerCallbacks
   { auditMethod = \_ -> pure Nothing
   , managerMethod = \_ -> pure Nothing
-  , hasAuditMethods = False
-  , hasManagerMethods = False
+  , supportedMethods = []
   }
 
 withManagerRpcCallbacks
@@ -98,7 +96,7 @@ withManagerRpcCallbacks
   -> RpcServerCallbacks es
 withManagerRpcCallbacks callbacks = callbacks
   { managerMethod = fmap Just . dispatchManagerRequest
-  , hasManagerMethods = True
+  , supportedMethods = callbacks.supportedMethods <> managerMethods
   }
 
 runRpcServer
@@ -427,7 +425,7 @@ dispatchAdminCapabilities callbacks request =
       [ "serverVersion" Aeson..= (toText (showVersion Paths.version) :: Text)
       , "methods" Aeson..= rpcMethods callbacks
       , "topics" Aeson..= (["audit.event", "chat.message"] :: [Text])
-      , "permissions" Aeson..= if callbacks.hasManagerMethods
+      , "permissions" Aeson..= if "concurrency.cancel" `elem` callbacks.supportedMethods
           then (["tasks.cancel", "resources.manage"] :: [Text])
           else []
       , "features" Aeson..= Aeson.object
@@ -449,16 +447,14 @@ rpcMethods callbacks =
   , "audit.subscribe", "audit.unsubscribe", "events.subscribe", "events.unsubscribe"
   , "media.resolve_source", "media.get", "media.delete", "media.stats", "media.gc"
   ]
-    <> (if callbacks.hasAuditMethods
-      then ["audit.recent", "audit.get", "audit.thread", "audit.thread_messages"]
-      else [])
-    <> (if callbacks.hasManagerMethods
-      then
-        [ "concurrency.list", "concurrency.lookup", "concurrency.cancel", "concurrency.await"
-        , "resource.list", "resource.detail", "resource.destroy", "resource.rename"
-        , "resource.keep_alive", "resource.make_permanent", "resource.destroy_associated"
-        ]
-      else [])
+    <> callbacks.supportedMethods
+
+managerMethods :: [Text]
+managerMethods =
+  [ "concurrency.list", "concurrency.lookup", "concurrency.cancel", "concurrency.await"
+  , "resource.list", "resource.detail", "resource.destroy", "resource.rename"
+  , "resource.keep_alive", "resource.make_permanent", "resource.destroy_associated"
+  ]
 
 dispatchChatSubscription
   :: (Concurrent :> es, Storage.Storage :> es)

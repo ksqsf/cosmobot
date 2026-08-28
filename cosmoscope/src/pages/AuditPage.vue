@@ -1,18 +1,20 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import Button from 'primevue/button'
+import { computed, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Card from 'primevue/card'
 import InputText from 'primevue/inputtext'
 import Listbox from 'primevue/listbox'
+import Message from 'primevue/message'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
 
-const paused = ref(false)
+const route = useRoute()
 const query = ref('')
-const platform = ref('All platforms')
-const eventType = ref('All events')
-const timeRange = ref('1 hour')
+type PlatformFilter = 'all' | 'Telegram' | 'Discord'
+type EventFilter = 'all' | 'tool' | 'model' | 'failure'
+const platform = ref<PlatformFilter>('all')
+const eventType = ref<EventFilter>('all')
 interface AuditEvent {
   readonly id: string
   readonly time: string
@@ -20,18 +22,44 @@ interface AuditEvent {
   readonly text: string
   readonly meta: string
   readonly tone: 'info' | 'success' | 'secondary' | 'danger'
+  readonly platform: Exclude<PlatformFilter, 'all'>
+  readonly category: Exclude<EventFilter, 'all' | 'failure'>
 }
-const initialEvent: AuditEvent = { id: '84291', time: '14:32:08', type: 'tool.call', text: 'Agent called query_chat_log', meta: 'run_b41d · turn 3 · Telegram', tone: 'info' }
+const platformOptions = [
+  { label: 'All platforms', value: 'all' },
+  { label: 'Telegram', value: 'Telegram' },
+  { label: 'Discord', value: 'Discord' },
+] satisfies readonly { label: string; value: PlatformFilter }[]
+const eventTypeOptions = [
+  { label: 'All events', value: 'all' },
+  { label: 'Tool calls', value: 'tool' },
+  { label: 'Model turns', value: 'model' },
+  { label: 'Failures', value: 'failure' },
+] satisfies readonly { label: string; value: EventFilter }[]
+const initialEvent: AuditEvent = { id: '84291', time: '14:32:08', type: 'tool.call', text: 'Agent called query_chat_log', meta: 'run_b41d · turn 3 · Telegram', tone: 'info', platform: 'Telegram', category: 'tool' }
 const events: readonly AuditEvent[] = [
   initialEvent,
-  { id: '84292', time: '14:32:08', type: 'tool.result', text: 'Returned 18 chat messages', meta: 'run_b41d · call_7a2 · 6.4 KB', tone: 'success' },
-  { id: '84293', time: '14:31:54', type: 'model.request', text: 'Sent 24 transcript messages', meta: 'run_b41d · turn 3 · gpt-5.4', tone: 'secondary' },
-  { id: '84294', time: '14:30:11', type: 'tool.failure', text: 'web_fetch exceeded its timeout', meta: 'run_2e09 · call_d88 · Discord', tone: 'danger' },
+  { id: '84292', time: '14:32:08', type: 'tool.result', text: 'Returned 18 chat messages', meta: 'run_b41d · call_7a2 · 6.4 KB', tone: 'success', platform: 'Telegram', category: 'tool' },
+  { id: '84293', time: '14:31:54', type: 'model.request', text: 'Sent 24 transcript messages', meta: 'run_b41d · turn 3 · gpt-5.4', tone: 'secondary', platform: 'Telegram', category: 'model' },
+  { id: '84294', time: '14:30:11', type: 'tool.failure', text: 'web_fetch exceeded its timeout', meta: 'run_2e09 · call_d88 · Discord', tone: 'danger', platform: 'Discord', category: 'tool' },
 ]
-const selected = ref<AuditEvent>(initialEvent)
+const eventFilters = {
+  all: () => true,
+  tool: (event: AuditEvent) => event.category === 'tool',
+  model: (event: AuditEvent) => event.category === 'model',
+  failure: (event: AuditEvent) => event.tone === 'danger',
+} satisfies Record<EventFilter, (event: AuditEvent) => boolean>
+const requestedAuditId = computed(() => typeof route.params['auditId'] === 'string' ? route.params['auditId'] : undefined)
+const selected = ref<AuditEvent>(events.find(({ id }) => id === requestedAuditId.value) ?? initialEvent)
+const missingAuditDetail = computed(() => requestedAuditId.value !== undefined && !events.some(({ id }) => id === requestedAuditId.value))
 const filteredEvents = computed(() => events.filter((item) =>
-  `${item.type} ${item.text}`.toLowerCase().includes(query.value.toLowerCase()),
+  `${item.type} ${item.text}`.toLowerCase().includes(query.value.toLowerCase())
+  && (platform.value === 'all' || item.platform === platform.value)
+  && eventFilters[eventType.value](item),
 ))
+watch(requestedAuditId, (id) => {
+  if (id !== undefined) selected.value = events.find((event) => event.id === id) ?? selected.value
+})
 </script>
 <template>
   <section class="page">
@@ -39,32 +67,24 @@ const filteredEvents = computed(() => events.filter((item) =>
       eyebrow="Observability"
       title="Audit timeline"
       description="Follow agent decisions and tool activity as they happen."
-    >
-      <Button
-        :label="paused ? 'Resume' : 'Pause'"
-        :icon="paused ? 'pi pi-play' : 'pi pi-pause'"
-        severity="secondary"
-        @click="paused = !paused"
-      /><Button label="Export view" />
-    </PageHeading><div class="filter-bar panel">
+    /><div class="filter-bar panel">
       <InputText
         v-model="query"
         placeholder="Search events, runs, tools, or messages"
         fluid
       /><Select
         v-model="platform"
-        :options="['All platforms', 'RPC', 'Telegram', 'Discord']"
+        :options="platformOptions"
+        option-label="label"
+        option-value="value"
         aria-label="Platform"
         size="small"
       /><Select
         v-model="eventType"
-        :options="['All events', 'Tool calls', 'Model turns', 'Failures']"
+        :options="eventTypeOptions"
+        option-label="label"
+        option-value="value"
         aria-label="Event type"
-        size="small"
-      /><Select
-        v-model="timeRange"
-        :options="['15 minutes', '1 hour', '24 hours']"
-        aria-label="Time range"
         size="small"
       />
     </div><div class="audit-layout">
@@ -85,17 +105,30 @@ const filteredEvents = computed(() => events.filter((item) =>
             /><span><strong>{{ option.text }}</strong><small>{{ option.meta }}</small></span>
           </div>
         </template>
-      </Listbox><Card class="inspector">
+      </Listbox><Message
+        v-if="missingAuditDetail"
+        severity="secondary"
+        :closable="false"
+      >
+        Live audit detail is not available until Phase 5.
+      </Message><Card
+        v-else
+        class="inspector"
+      >
         <template #title>
           Audit event #{{ selected.id }}
         </template><template #content>
           <div class="stack stack-tight">
             <dl class="detail-list">
-              <div><dt>Recorded</dt><dd>{{ selected.time }}</dd></div><div><dt>Type</dt><dd><code>{{ selected.type }}</code></dd></div><div><dt>Run</dt><dd><code>run_b41d</code></dd></div>
-            </dl><h3>Arguments</h3><pre>{ "scope": "current_chat", "limit": 20 }</pre><h3>Result</h3><Tag
-              value="Success"
-              severity="success"
-            />
+              <div><dt>Recorded</dt><dd>{{ selected.time }}</dd></div><div><dt>Type</dt><dd><code>{{ selected.type }}</code></dd></div><div><dt>Platform</dt><dd>{{ selected.platform }}</dd></div><div><dt>Context</dt><dd>{{ selected.meta }}</dd></div><div><dt>Summary</dt><dd>{{ selected.text }}</dd></div><div>
+                <dt>Tone</dt><dd>
+                  <Tag
+                    :value="selected.tone"
+                    :severity="selected.tone"
+                  />
+                </dd>
+              </div>
+            </dl>
           </div>
         </template>
       </Card>

@@ -1,19 +1,42 @@
 import { Effect } from 'effect'
 import { RpcBackendError, type AdminBackend } from './AdminBackend'
 import { mockBackend } from './mockBackend'
-import { concurrencyListSchema } from '@/rpc/schemas'
+import { auditRecordSchema, chatSessionsSchema, concurrencyListSchema, recentAuditSchema, resourceListSchema } from '@/rpc/schemas'
 import type { RpcClient } from '@/rpc/client'
+import type { LiveAdminMethod } from '@/rpc/protocol'
 import type { Task } from '@/types/domain'
 
-export function makeRpcBackend(client: RpcClient): AdminBackend {
+export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>): AdminBackend {
+  const supports = (method: LiveAdminMethod): boolean => methods.has(method)
   return {
-    source: { ...mockBackend.source, tasks: 'rpc' },
     system: mockBackend.system,
     tasks: {
-      list: () => Effect.tryPromise({
+      list: supports('concurrency.list') ? () => Effect.tryPromise({
         try: async () => concurrencyListSchema.parse(await client.request('concurrency.list')).entries.map(toTask),
         catch: () => new RpcBackendError({ message: 'Could not load the task snapshot.' }),
-      }),
+      }) : mockBackend.tasks.list,
+    },
+    audit: {
+      recent: supports('audit.recent') ? () => Effect.tryPromise({
+        try: async () => recentAuditSchema.parse(await client.request('audit.recent', { limit: 20 })),
+        catch: () => new RpcBackendError({ message: 'Could not load recent audit activity.' }),
+      }) : mockBackend.audit.recent,
+      subscribe: supports('audit.subscribe') ? (refresh, handler) => Effect.sync(() => client.subscribe(
+        'overview.audit', 'audit.subscribe', 'audit.unsubscribe', {}, 'audit.event', refresh,
+        (params) => handler(auditRecordSchema.parse(params)),
+      )) : mockBackend.audit.subscribe,
+    },
+    chat: {
+      sessionCount: supports('chat.list_sessions') ? () => Effect.tryPromise({
+        try: async () => chatSessionsSchema.parse(await client.request('chat.list_sessions')).sessions.length,
+        catch: () => new RpcBackendError({ message: 'Could not load the session count.' }),
+      }) : mockBackend.chat.sessionCount,
+    },
+    resources: {
+      count: supports('resource.list') ? () => Effect.tryPromise({
+        try: async () => resourceListSchema.parse(await client.request('resource.list')).resources.length,
+        catch: () => new RpcBackendError({ message: 'Could not load the resource count.' }),
+      }) : mockBackend.resources.count,
     },
     plugins: mockBackend.plugins,
     logs: mockBackend.logs,

@@ -8,6 +8,7 @@ import Button from 'primevue/button'
 import IconField from 'primevue/iconfield'
 import InputText from 'primevue/inputtext'
 import InputIcon from 'primevue/inputicon'
+import Message from 'primevue/message'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
@@ -35,7 +36,7 @@ const search = ref('')
 const selectedId = ref('storage')
 const selectedModel = ref('Auto')
 const attachmentInput = useTemplateRef<HTMLInputElement>('attachmentInput')
-const modelOptions: string[] = ['Auto', 'GPT-5.6', 'Claude Sonnet']
+const modelOptions = ['Auto', 'GPT-5.6', 'Claude Sonnet']
 const groups = ['Today', 'Yesterday'] as const
 const composerTextareaTokens = {
   root: {
@@ -68,6 +69,7 @@ const composerButtonTokens = {
 const filteredConversations = computed(() => conversations.filter((item) =>
   `${item.title} ${item.preview}`.toLowerCase().includes(search.value.toLowerCase()),
 ))
+const selectedConversation = computed(() => conversations.find(({ id }) => id === selectedId.value) ?? conversations[0])
 
 function send(): void {
   if (!draft.value.trim()) return
@@ -89,13 +91,7 @@ function attached(event: Event): void {
       eyebrow="RPC workspace"
       title="Chat"
       description="Talk to cosmobot and inspect the resulting run."
-    >
-      <Button
-        label="New session"
-        icon="pi pi-plus"
-        @click="toast.add({ severity: 'info', summary: 'New fixture session', life: 2000 })"
-      />
-    </PageHeading>
+    />
     <div class="chat-layout panel">
       <aside
         class="conversation-list"
@@ -137,22 +133,12 @@ function attached(event: Event): void {
         aria-label="Chat transcript"
       >
         <header class="transcript-header">
-          <div><strong>Review storage refactor</strong><small><i class="status-dot online" />RPC session · 8 messages</small></div>
-          <div>
-            <Button
-              icon="pi pi-info-circle"
-              text
-              rounded
-              aria-label="Session information"
-            /><Button
-              icon="pi pi-ellipsis-h"
-              text
-              rounded
-              aria-label="Session actions"
-            />
-          </div>
+          <div><strong>{{ selectedConversation?.title }}</strong><small><i class="status-dot online" />Demo session</small></div>
         </header>
-        <div class="messages">
+        <div
+          v-if="selectedId === 'storage'"
+          class="messages"
+        >
           <article class="message user">
             <header class="message-meta">
               <span class="avatar">KA</span><strong>You</strong><time datetime="2026-08-28T14:28:00">14:28</time>
@@ -187,6 +173,17 @@ function attached(event: Event): void {
             </div>
           </article>
         </div>
+        <div
+          v-else
+          class="messages"
+        >
+          <Message
+            severity="secondary"
+            :closable="false"
+          >
+            This demo session has no transcript fixture yet.
+          </Message>
+        </div>
         <form
           class="composer"
           @submit.prevent="send"
@@ -203,6 +200,7 @@ function attached(event: Event): void {
           <div class="composer-actions">
             <div>
               <Button
+                type="button"
                 label="Attach"
                 icon="pi pi-plus"
                 size="small"
@@ -245,41 +243,45 @@ function attached(event: Event): void {
         aria-label="Run context"
       >
         <div class="context-heading">
-          <h2>Run context</h2><Button
-            icon="pi pi-times"
-            text
-            rounded
-            aria-label="Close run context"
-          />
+          <h2>Run context</h2>
         </div>
-        <dl class="detail-list">
-          <div>
-            <dt>Status</dt><dd>
-              <Tag
-                value="Completed"
-                severity="success"
-              />
-            </dd>
+        <template v-if="selectedId === 'storage'">
+          <dl class="detail-list">
+            <div>
+              <dt>Status</dt><dd>
+                <Tag
+                  value="Completed"
+                  severity="success"
+                />
+              </dd>
+            </div>
+            <div><dt>Run ID</dt><dd><code>run_8f2c91</code></dd></div>
+            <div><dt>Started</dt><dd>14:28:16</dd></div>
+            <div><dt>Duration</dt><dd>8.1 seconds</dd></div>
+            <div><dt>Model turns</dt><dd>2</dd></div>
+            <div><dt>Tool calls</dt><dd>5</dd></div>
+          </dl>
+          <h3>Tools used</h3><div class="tag-list">
+            <Tag
+              value="read_file × 4"
+              severity="secondary"
+            /><Tag
+              value="run_test × 1"
+              severity="secondary"
+            />
           </div>
-          <div><dt>Run ID</dt><dd><code>run_8f2c91</code></dd></div>
-          <div><dt>Started</dt><dd>14:28:16</dd></div>
-          <div><dt>Duration</dt><dd>8.1 seconds</dd></div>
-          <div><dt>Model turns</dt><dd>2</dd></div>
-          <div><dt>Tool calls</dt><dd>5</dd></div>
-        </dl>
-        <h3>Tools used</h3><div class="tag-list">
-          <Tag
-            value="read_file × 4"
-            severity="secondary"
-          /><Tag
-            value="run_test × 1"
-            severity="secondary"
-          />
-        </div>
-        <h3>Related audit</h3>
-        <ol class="mini-timeline">
-          <li><strong>Run started</strong><small>14:28:16.108</small></li><li><strong>Model response</strong><small>14:28:17.442</small></li><li><strong>Run completed</strong><small>14:28:24.201</small></li>
-        </ol>
+          <h3>Related audit</h3>
+          <ol class="mini-timeline">
+            <li><strong>Run started</strong><small>14:28:16.108</small></li><li><strong>Model response</strong><small>14:28:17.442</small></li><li><strong>Run completed</strong><small>14:28:24.201</small></li>
+          </ol>
+        </template>
+        <Message
+          v-else
+          severity="secondary"
+          :closable="false"
+        >
+          No run context fixture for this session.
+        </Message>
       </aside>
     </div>
   </section>

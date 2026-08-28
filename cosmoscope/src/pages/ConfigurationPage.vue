@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
@@ -9,11 +9,7 @@ import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import ToggleSwitch from 'primevue/toggleswitch'
 import PageHeading from '@/components/PageHeading.vue'
-import NavigationMenu from '@/components/NavigationMenu.vue'
-import type { NavigationItem } from '@/components/NavigationMenu.vue'
 const toast = useToast()
-const section = ref('Drivers')
-const settingsQuery = ref('')
 const enabled = ref(true)
 const token = ref('configured-secret')
 const tokenVisible = ref(false)
@@ -21,16 +17,6 @@ const timeout = ref(30)
 const polling = ref(25)
 const replyTopics = ref(true)
 const edited = ref(false)
-const dirty = ref(true)
-const sectionDefinitions = [
-  ['General', 'pi pi-cog'], ['Drivers', 'pi pi-send'], ['LLM', 'pi pi-sparkles'],
-  ['Agent tools', 'pi pi-wrench'], ['Handlers', 'pi pi-directions'], ['Plugins', 'pi pi-objects-column'],
-  ['Storage & media', 'pi pi-database'], ['RPC & ACP', 'pi pi-code'], ['Logging', 'pi pi-align-left'],
-] as const
-const sectionItems = computed<NavigationItem[]>(() => sectionDefinitions
-  .filter(([label]) => label.toLowerCase().includes(settingsQuery.value.toLowerCase()))
-  .map(([label, icon]) => ({ label, icon, command: () => { section.value = label } })))
-function discard(): void { polling.value = 20; dirty.value = false; toast.add({ severity: 'success', summary: 'Fixture changes discarded', life: 2000 }) }
 </script>
 <template>
   <section class="page">
@@ -39,30 +25,15 @@ function discard(): void { polling.value = 20; dirty.value = false; toast.add({ 
       title="Configuration"
       description="Edit typed options and preview their activation impact."
     >
-      <span
-        v-if="dirty"
-        class="unsaved-badge"
-      >2 unsaved changes</span><Button
-        label="Discard"
-        severity="secondary"
-        @click="discard"
-      /><Button
-        label="Review & save"
+      <Button
+        label="Validate fixture"
         @click="toast.add({ severity: 'success', summary: 'Fixture configuration validated', life: 2500 })"
       />
     </PageHeading><div class="config-layout panel">
       <aside class="config-nav">
-        <InputText
-          v-model="settingsQuery"
-          placeholder="Find a setting"
-          aria-label="Find a setting"
-          size="small"
-          fluid
-        /><NavigationMenu
-          :items="sectionItems"
-          :active-label="section"
-          navigation-label="Configuration sections"
-        />
+        <p class="nav-label">
+          Available fixture
+        </p><strong>Drivers</strong><small class="block">Telegram</small>
       </aside><section class="config-form stack">
         <div class="config-section-heading">
           <div><h2>Telegram driver</h2><p>Connection and access policy for the Telegram bot.</p></div><label class="switch-row"><ToggleSwitch v-model="enabled" /> Enabled</label>
@@ -80,6 +51,7 @@ function discard(): void { polling.value = 20; dirty.value = false; toast.add({ 
                 fluid
                 autocomplete="off"
               /><Button
+                type="button"
                 :icon="tokenVisible ? 'pi pi-eye-slash' : 'pi pi-eye'"
                 severity="secondary"
                 :aria-label="tokenVisible ? 'Hide bot token' : 'Show bot token'"

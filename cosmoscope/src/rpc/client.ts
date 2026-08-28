@@ -90,6 +90,7 @@ export class RpcClient {
     this.socket?.close(1000, 'client disconnect')
     this.socket = undefined
     this.credential = ''
+    this.subscriptions.clear()
     this.setState('offline')
   }
 
@@ -119,8 +120,9 @@ export class RpcClient {
   ): () => void {
     const subscription: Subscription = { subscribeMethod, unsubscribeMethod, params, notificationMethod, refresh, handler, restoring: false, buffered: [] }
     this.subscriptions.set(key, subscription)
-    if (this.state === 'authenticated') void this.restoreSubscription(subscription).catch(() => this.socket?.close(1011, 'subscription restore failed'))
+    if (this.state === 'authenticated') void this.restoreSubscription(key, subscription).catch(() => this.socket?.close(1011, 'subscription restore failed'))
     return () => {
+      if (this.subscriptions.get(key) !== subscription) return
       this.subscriptions.delete(key)
       if (this.state === 'authenticated') void this.request(unsubscribeMethod, params).catch(() => undefined)
     }
@@ -134,9 +136,14 @@ export class RpcClient {
       try {
         socket = this.createSocket(this.endpoint)
       } catch {
-        this.credential = ''
-        this.setState('failed', 'Could not open the RPC connection')
-        reject(new RpcCallError('connection_failed', 'Could not open the RPC connection'))
+        const error = new RpcCallError('connection_failed', 'Could not open the RPC connection')
+        if (initial) {
+          this.credential = ''
+          this.setState('failed', error.message)
+        } else if (!this.intentionalClose) {
+          this.scheduleReconnect()
+        }
+        reject(error)
         return
       }
       this.socket = socket
@@ -162,11 +169,26 @@ export class RpcClient {
       }
       socket.onmessage = (event) => { this.handleMessage(event.data) }
       socket.onerror = () => {
-        if (!authenticated && initial) reject(new RpcCallError('connection_failed', 'Could not connect to RPC'))
+        if (!authenticated && initial) {
+          this.intentionalClose = true
+          this.credential = ''
+          this.setState('failed', 'Could not connect to RPC')
+          reject(new RpcCallError('connection_failed', 'Could not connect to RPC'))
+          socket.close(1001, 'connection failed')
+        }
       }
       socket.onclose = () => {
         if (generation !== this.generation) return
-        this.rejectPending(new RpcCallError('disconnected', 'RPC connection closed'))
+        const error = new RpcCallError('disconnected', 'RPC connection closed')
+        this.rejectPending(error)
+        if (!authenticated) {
+          reject(error)
+          if (initial) {
+            this.intentionalClose = true
+            this.credential = ''
+            this.setState('failed', 'Could not connect to RPC')
+          }
+        }
         if (!this.intentionalClose) this.scheduleReconnect()
       }
     })
@@ -240,15 +262,17 @@ export class RpcClient {
   }
 
   private async restoreSubscriptions(): Promise<void> {
-    for (const subscription of this.subscriptions.values()) await this.restoreSubscription(subscription)
+    for (const [key, subscription] of this.subscriptions) await this.restoreSubscription(key, subscription)
   }
 
-  private async restoreSubscription(subscription: Subscription): Promise<void> {
+  private async restoreSubscription(key: string, subscription: Subscription): Promise<void> {
     subscription.restoring = true
     subscription.buffered.length = 0
     try {
       await this.request(subscription.subscribeMethod, subscription.params)
+      if (this.subscriptions.get(key) !== subscription) return
       await subscription.refresh()
+      if (this.subscriptions.get(key) !== subscription) return
       for (const value of subscription.buffered.splice(0)) subscription.handler(value)
     } finally {
       subscription.restoring = false

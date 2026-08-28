@@ -1,18 +1,21 @@
 import type { RouteComponent } from 'vue-router'
+import type { LiveAdminMethod } from '@/rpc/protocol'
 
 export type NavigationGroup = 'workspace' | 'operations'
+type DemoCapability = 'chat.demo' | 'audit.demo' | 'resources.demo' | 'plugins.demo' | 'logs.demo' | 'config.demo'
+export type PageCapability = LiveAdminMethod | DemoCapability
 export interface AdminPage {
   name: string
   path: string
   title: string
   icon: string
   navigationGroup: NavigationGroup
-  requiredCapabilities: readonly string[]
+  requiredCapabilities: readonly PageCapability[]
   component: RouteComponent
 }
 
-export const pages: readonly AdminPage[] = [
-  { name: 'overview', path: '/overview', title: 'Overview', icon: 'pi pi-home', navigationGroup: 'workspace', requiredCapabilities: ['overview.demo'], component: () => import('@/pages/OverviewPage.vue') },
+export const pages = [
+  { name: 'overview', path: '/overview', title: 'Overview', icon: 'pi pi-home', navigationGroup: 'workspace', requiredCapabilities: ['concurrency.list', 'audit.recent', 'chat.list_sessions', 'resource.list'], component: () => import('@/pages/OverviewPage.vue') },
   { name: 'chat', path: '/chat/:sessionId?', title: 'Chat', icon: 'pi pi-comments', navigationGroup: 'workspace', requiredCapabilities: ['chat.demo'], component: () => import('@/pages/ChatPage.vue') },
   { name: 'audit', path: '/audit/:auditId?', title: 'Audit', icon: 'pi pi-wave-pulse', navigationGroup: 'workspace', requiredCapabilities: ['audit.demo'], component: () => import('@/pages/AuditPage.vue') },
   { name: 'tasks', path: '/tasks/:taskId?', title: 'Tasks', icon: 'pi pi-bolt', navigationGroup: 'operations', requiredCapabilities: ['concurrency.list'], component: () => import('@/pages/TasksPage.vue') },
@@ -20,4 +23,4 @@ export const pages: readonly AdminPage[] = [
   { name: 'plugins', path: '/plugins', title: 'Plugins', icon: 'pi pi-objects-column', navigationGroup: 'operations', requiredCapabilities: ['plugins.demo'], component: () => import('@/pages/PluginsPage.vue') },
   { name: 'logs', path: '/logs', title: 'Logs', icon: 'pi pi-align-left', navigationGroup: 'operations', requiredCapabilities: ['logs.demo'], component: () => import('@/pages/LogsPage.vue') },
   { name: 'configuration', path: '/configuration/:section?', title: 'Configuration', icon: 'pi pi-cog', navigationGroup: 'operations', requiredCapabilities: ['config.demo'], component: () => import('@/pages/ConfigurationPage.vue') },
-] as const
+] satisfies readonly AdminPage[]

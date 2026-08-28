@@ -15,7 +15,7 @@ for (const path of axeRoutes) {
 test('navigation, theme, drawer focus, and command palette work', async ({ page, isMobile }) => {
   test.skip(isMobile, 'desktop project only')
   await page.goto('/overview')
-  await page.getByRole('link', { name: 'Tasks' }).click()
+  await page.locator('.desktop-nav').getByRole('link', { name: 'Tasks' }).click()
   await expect(page).toHaveURL(/\/tasks/)
   const initialTheme = await page.locator('html').getAttribute('data-theme')
   await page.getByLabel('Toggle color theme').click()

@@ -1,7 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { useToast } from 'primevue/usetoast'
-import Button from 'primevue/button'
+import { computed, onMounted, ref } from 'vue'
 import Card from 'primevue/card'
 import Message from 'primevue/message'
 import PageHeading from '@/components/PageHeading.vue'
@@ -10,8 +8,13 @@ import { listPlugins } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
 import type { Plugin } from '@/types/domain'
 const plugins = ref<Plugin[]>([])
-const toast = useToast()
-onMounted(async (): Promise<void> => {
+const totals = computed(() => plugins.value.reduce((summary, plugin) => ({
+  installed: summary.installed + 1,
+  loaded: summary.loaded + Number(plugin.status === 'Loaded'),
+  tools: summary.tools + plugin.tools,
+  routes: summary.routes + plugin.routes,
+}), { installed: 0, loaded: 0, tools: 0, routes: 0 }))
+onMounted(async () => {
   const result = await runBackend(listPlugins)
   if (result._tag === 'Success') plugins.value = [...result.value]
 })
@@ -22,14 +25,8 @@ onMounted(async (): Promise<void> => {
       eyebrow="Extensions"
       title="Plugins"
       description="Inspect installed capabilities and their current lifecycle."
-    >
-      <Button
-        label="Load plugin"
-        icon="pi pi-plus"
-        @click="toast.add({ severity: 'info', summary: 'Fixture plugin picker opened', life: 2000 })"
-      />
-    </PageHeading><div class="summary-strip panel">
-      <div><strong>7</strong><span>Installed</span></div><div><strong>6</strong><span>Loaded</span></div><div><strong>18</strong><span>Tools</span></div><div><strong>9</strong><span>Routes</span></div>
+    /><div class="summary-strip panel">
+      <div><strong>{{ totals.installed }}</strong><span>Installed</span></div><div><strong>{{ totals.loaded }}</strong><span>Loaded</span></div><div><strong>{{ totals.tools }}</strong><span>Tools</span></div><div><strong>{{ totals.routes }}</strong><span>Routes</span></div>
     </div><div class="plugin-grid">
       <Card
         v-for="plugin in plugins"

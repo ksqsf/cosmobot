@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -13,32 +14,65 @@ import PageHeading from '@/components/PageHeading.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { listTasks } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
-import type { Task } from '@/types/domain'
+import type { Status, Task } from '@/types/domain'
 import { useConnectionStore } from '@/stores/connection'
 
 const tasks = ref<Task[]>([])
+const route = useRoute()
+const router = useRouter()
 const query = ref('')
-const statusFilter = ref('Active')
+type TaskFilter = 'active' | 'all' | Status
+const statusFilter = ref<TaskFilter>('active')
 const ownerFilter = ref('Any')
-const checkedTasks = ref<Task[]>([])
 const selected = ref<Task>()
 const drawerOpen = ref(false)
 const confirm = useConfirm()
 const toast = useToast()
 const connection = useConnectionStore()
 const live = computed(() => connection.state === 'authenticated' && connection.methods.has('concurrency.list'))
+const ownerOptions = computed(() => ['Any', ...new Set(tasks.value.map(({ owner }) => owner))])
 const filtered = computed(() => tasks.value.filter((task) =>
   `${task.id} ${task.label} ${task.owner}`.toLowerCase().includes(query.value.toLowerCase())
-  && (statusFilter.value === 'All' || statusFilter.value === 'Active' && task.status !== 'failed' && task.status !== 'stopped' || task.status === statusFilter.value.toLowerCase())
+  && matchesStatus(task, statusFilter.value)
   && (ownerFilter.value === 'Any' || task.owner === ownerFilter.value),
 ))
+const statusOptions = [
+  { label: 'Active', value: 'active' },
+  { label: 'All', value: 'all' },
+  { label: 'Running', value: 'running' },
+  { label: 'Waiting', value: 'waiting' },
+  { label: 'Failed', value: 'failed' },
+] satisfies readonly { label: string; value: TaskFilter }[]
+function matchesStatus(task: Task, filter: TaskFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'active') return task.status === 'running' || task.status === 'waiting'
+  return task.status === filter
+}
 async function refresh(): Promise<void> {
   const result = await runBackend(listTasks)
-  if (result._tag === 'Success') tasks.value = [...result.value]
+  if (result._tag === 'Success') {
+    tasks.value = [...result.value]
+    selectTaskFromRoute()
+  }
 }
 onMounted(refresh)
 watch(() => connection.state, (state) => { if (state === 'authenticated') void refresh() })
-function inspect(task: Task): void { selected.value = task; drawerOpen.value = true }
+function selectTaskFromRoute(): void {
+  const taskId = route.params['taskId']
+  if (typeof taskId !== 'string') return
+  const task = tasks.value.find(({ id }) => id === taskId)
+  if (task !== undefined) { selected.value = task; drawerOpen.value = true }
+}
+function inspect(task: Task): void {
+  selected.value = task
+  drawerOpen.value = true
+  void router.replace(`/tasks/${task.id}`)
+}
+function closeDrawer(): void {
+  selected.value = undefined
+  if (route.params['taskId'] !== undefined) void router.replace('/tasks')
+}
+watch(() => route.params['taskId'], selectTaskFromRoute)
 function cancelTask(): void {
   if (!selected.value) return
   confirm.require({ header: `Cancel task #${selected.value.id}?`, message: 'This changes fixture state only.', rejectLabel: 'Keep running', acceptLabel: 'Cancel task', acceptClass: 'p-button-danger', accept: () => { if (selected.value) selected.value.status = 'stopped'; drawerOpen.value = false; toast.add({ severity: 'success', summary: 'Fixture task cancelled', life: 2500 }) } })
@@ -67,28 +101,25 @@ function cancelTask(): void {
         /><div>
           <Select
             v-model="statusFilter"
-            :options="['Active', 'All', 'Running', 'Waiting', 'Failed']"
+            :options="statusOptions"
+            option-label="label"
+            option-value="value"
             aria-label="Filter by status"
           /><Select
             v-model="ownerFilter"
-            :options="['Any', 'system', 'run_8f2c', 'run_2e09']"
+            :options="ownerOptions"
             aria-label="Filter by owner"
           />
         </div>
       </div>
       <DataTable
-        v-model:selection="checkedTasks"
         :value="filtered"
         data-key="id"
         paginator
         :rows="5"
-        selection-mode="single"
         @row-select="inspect($event.data)"
       >
         <Column
-          selection-mode="multiple"
-          header-style="width: 3rem"
-        /><Column
           field="id"
           header="ID"
         >
@@ -132,6 +163,7 @@ function cancelTask(): void {
       header="Task detail"
       aria-label="Task detail"
       :style="{ width: 'min(420px, 100vw)' }"
+      @hide="closeDrawer"
     >
       <template v-if="selected">
         <div class="stack stack-loose">
@@ -158,32 +190,6 @@ function cancelTask(): void {
               <div><dt>Started</dt><dd>{{ selected.started }}</dd></div>
               <div><dt>Elapsed</dt><dd>{{ selected.elapsed }}</dd></div>
             </dl>
-          </section>
-          <section
-            class="drawer-section stack stack-tight"
-            aria-labelledby="task-activity"
-          >
-            <h3 id="task-activity">
-              Activity
-            </h3>
-            <ol class="mini-timeline">
-              <li><strong>Task registered</strong><small>14:28:16.101</small></li>
-              <li><strong>Model turn 2</strong><small>14:28:21.927</small></li>
-              <li><strong>Running tool</strong><small><code>run_test</code> · 2.3s</small></li>
-            </ol>
-          </section>
-          <section
-            class="drawer-section stack stack-tight"
-            aria-labelledby="related-resources"
-          >
-            <h3 id="related-resources">
-              Related resources
-            </h3>
-            <div class="resource-row">
-              <span class="platform-icon">W</span>
-              <span><strong>Workspace</strong><small>cosmobot</small></span>
-              <StatusBadge status="running" />
-            </div>
           </section>
           <footer class="drawer-actions stack stack-tight">
             <Message

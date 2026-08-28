@@ -1,20 +1,42 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import Button from 'primevue/button'
+import { onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Drawer from 'primevue/drawer'
 import Message from 'primevue/message'
 import PageHeading from '@/components/PageHeading.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
+import type { Status } from '@/types/domain'
 
+interface ResourceFixture { id: string; kind: string; name: string; owner: string; status: Status; users: number }
 const resources = [
-  { id: 'workspace-8f2c', kind: 'Workspace', name: 'cosmobot review', owner: 'run_8f2c', status: 'running' as const, users: 1 },
-  { id: 'browser-b41d', kind: 'Browser', name: 'Research session', owner: 'run_b41d', status: 'waiting' as const, users: 0 },
-  { id: 'process-2e09', kind: 'Process', name: 'test runner', owner: 'run_2e09', status: 'failed' as const, users: 0 },
-]
+  { id: 'workspace-8f2c', kind: 'Workspace', name: 'cosmobot review', owner: 'run_8f2c', status: 'running', users: 1 },
+  { id: 'browser-b41d', kind: 'Browser', name: 'Research session', owner: 'run_b41d', status: 'waiting', users: 0 },
+  { id: 'process-2e09', kind: 'Process', name: 'test runner', owner: 'run_2e09', status: 'failed', users: 0 },
+] satisfies readonly ResourceFixture[]
 const selected = ref<(typeof resources)[number]>()
 const visible = ref(false)
+const route = useRoute()
+const router = useRouter()
+
+function selectFromRoute(): void {
+  const resourceId = route.params['resourceId']
+  if (typeof resourceId !== 'string') return
+  const resource = resources.find(({ id }) => id === resourceId)
+  if (resource !== undefined) { selected.value = resource; visible.value = true }
+}
+function inspect(resource: (typeof resources)[number]): void {
+  selected.value = resource
+  visible.value = true
+  void router.replace(`/resources/${resource.id}`)
+}
+function closeDrawer(): void {
+  selected.value = undefined
+  if (route.params['resourceId'] !== undefined) void router.replace('/resources')
+}
+watch(() => route.params['resourceId'], selectFromRoute)
+onMounted(selectFromRoute)
 </script>
 <template>
   <section class="page">
@@ -22,17 +44,12 @@ const visible = ref(false)
       eyebrow="Runtime"
       title="Resources"
       description="Inspect long-running objects and their active owners."
-    >
-      <Button
-        label="Refresh snapshot"
-        severity="secondary"
-      />
-    </PageHeading>
+    />
     <article class="panel">
       <DataTable
         :value="resources"
         selection-mode="single"
-        @row-select="selected = $event.data; visible = true"
+        @row-select="inspect($event.data)"
       >
         <Column
           field="id"
@@ -64,6 +81,7 @@ const visible = ref(false)
       aria-label="Resource detail"
       position="right"
       :style="{ width: 'min(420px, 100vw)' }"
+      @hide="closeDrawer"
     >
       <template v-if="selected">
         <div class="stack stack-tight">
