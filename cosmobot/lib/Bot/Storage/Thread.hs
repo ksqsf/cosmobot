@@ -10,7 +10,9 @@ module Bot.Storage.Thread
   ( ThreadStore
   , ActiveThreadHandle
   , ThreadRow (..)
+  , ThreadIndexRow (..)
   , ActiveThreadInfo (..)
+  , ActiveThreadInspection (..)
   , newThreadStore
   , lookupThreadTranscript
   , lookupThreadMessageIds
@@ -33,8 +35,13 @@ module Bot.Storage.Thread
   , haltThread
   , haltThreadForMessage
   , listActiveThreadsForMessage
+  , listActiveThreadInspections
+  , haltThreadById
   , haltActiveThreadsForMessage
   , loadThreadRows
+  , loadThreadIndexRows
+  , loadThreadRowsByThreadId
+  , loadThreadRowsByIds
   , lookupCommittedThreadTranscript
   , deleteSessionThreadTranscripts
   )
@@ -112,11 +119,31 @@ data ActiveThreadInfo = ActiveThreadInfo
   }
   deriving (Eq, Show)
 
+data ActiveThreadInspection = ActiveThreadInspection
+  { taskId :: !Id
+  , runId :: !AgentRunId
+  , prompt :: !Text
+  , parentMessageKey :: !(Maybe ThreadMessageKey)
+  , messageKeys :: ![ThreadMessageKey]
+  , pendingSteers :: !Int
+  , transcript :: !Transcript
+  }
+  deriving (Show)
+
 data ThreadRow = ThreadRow
-  { messageKey :: !ThreadMessageKey
+  { rowId :: !Integer
+  , messageKey :: !ThreadMessageKey
   , threadStorageId :: !(Maybe Integer)
   , parentMessageKey :: !(Maybe ThreadMessageKey)
   , messagesJson :: !Text
+  }
+  deriving (Eq, Show)
+
+data ThreadIndexRow = ThreadIndexRow
+  { rowId :: !Integer
+  , messageKey :: !ThreadMessageKey
+  , threadStorageId :: !(Maybe Integer)
+  , parentMessageKey :: !(Maybe ThreadMessageKey)
   }
   deriving (Eq, Show)
 
@@ -134,8 +161,32 @@ data ThreadStorageRow = ThreadStorageRow
 
 instance SqlRow ThreadStorageRow
 
+data ThreadIndexStorageRow = ThreadIndexStorageRow
+  { id :: ID ThreadIndexStorageRow
+  , platform_key :: Text
+  , chat_id :: Maybe Int.Int64
+  , message_id :: Text
+  , thread_id :: Maybe Int.Int64
+  , parent_chat_id :: Maybe Int.Int64
+  , parent_message_id :: Maybe Text
+  }
+  deriving (Generic)
+
+instance SqlRow ThreadIndexStorageRow
+
 threadRows :: Table ThreadStorageRow
 threadRows =
+  table "threads"
+    [ #id :- autoPrimary
+    , #platform_key :- index
+    , #chat_id :- index
+    , #message_id :- index
+    , #thread_id :- index
+    , #parent_message_id :- index
+    ]
+
+threadIndexRows :: Table ThreadIndexStorageRow
+threadIndexRows =
   table "threads"
     [ #id :- autoPrimary
     , #platform_key :- index
@@ -212,13 +263,7 @@ awaitActiveThreadByRunId ThreadStore{activeThreadStore = activeRef} runId = do
 lookupActiveThreadPendingSteers :: (Prim :> es, Concurrent :> es) => ThreadStore -> ThreadMessageKey -> Eff es (Maybe Int)
 lookupActiveThreadPendingSteers ThreadStore{activeThreadStore = activeRef} messageKey = do
   active <- Map.lookup (ActiveThreadMessage messageKey) <$> readIORef activeRef
-  traverse pendingSteers active
-  where
-    pendingSteers activeThread =
-      MVar.readMVar activeThread.activeSteering <&> \case
-        SteeringOpen queued -> Seq.length queued
-        SteeringCompleted -> 0
-        SteeringFinishing -> 0
+  traverse activePendingSteers active
 
 rememberActiveThread
   :: (Prim :> es, Concurrent :> es)
@@ -462,6 +507,33 @@ listActiveThreadsForMessage ThreadStore{activeThreadStore = activeRef} message =
         , mayManageActiveThread message activeThread
         ]
 
+listActiveThreadInspections
+  :: (Prim :> es, Concurrent :> es)
+  => ThreadStore
+  -> Eff es [ActiveThreadInspection]
+listActiveThreadInspections ThreadStore{activeThreadStore = activeRef} = do
+  active <- readIORef activeRef
+  forM [thread | (ActiveThreadId{}, thread) <- Map.toList active] \thread -> do
+    messageKeys <- readIORef thread.activeReplyMessageKeys
+    pendingSteers <- activePendingSteers thread
+    transcript <- readIORef thread.activeCurrent
+    pure ActiveThreadInspection
+      { taskId = thread.activeHandle.handleId
+      , runId = thread.activeRunId
+      , prompt = thread.activePrompt
+      , parentMessageKey = thread.activeParentMessageKey
+      , messageKeys = reverse messageKeys
+      , pendingSteers
+      , transcript
+      }
+
+activePendingSteers :: Concurrent :> es => ActiveThread -> Eff es Int
+activePendingSteers activeThread =
+  MVar.readMVar activeThread.activeSteering <&> \case
+    SteeringOpen queued -> Seq.length queued
+    SteeringCompleted -> 0
+    SteeringFinishing -> 0
+
 mayManageActiveThread :: IncomingMessage -> ActiveThread -> Bool
 mayManageActiveThread message activeThread =
   message.digest.senderIsSuperuser
@@ -627,6 +699,40 @@ loadThreadRows = do
       pure row
   pure (map threadRowFromStorage rows)
 
+loadThreadIndexRows :: Storage.Storage :> es => Eff es [ThreadIndexRow]
+loadThreadIndexRows = do
+  ensureThreadTable
+  rows <- runSelda $
+    query do
+      row <- select threadIndexRows
+      order (row ! #id) ascending
+      pure row
+  pure (map threadIndexRowFromStorage rows)
+
+loadThreadRowsByThreadId :: Storage.Storage :> es => Integer -> Eff es [ThreadRow]
+loadThreadRowsByThreadId targetThreadId = do
+  ensureThreadTable
+  rows <- runSelda $
+    query do
+      row <- select threadRows
+      restrict $
+        row ! #thread_id .== literal (Just (fromIntegral targetThreadId :: Int.Int64))
+          .|| (isNull (row ! #thread_id) .&& row ! #id .== literal (toId (fromIntegral targetThreadId :: Int.Int64)))
+      order (row ! #id) ascending
+      pure row
+  pure (map threadRowFromStorage rows)
+
+loadThreadRowsByIds :: Storage.Storage :> es => [Integer] -> Eff es [ThreadRow]
+loadThreadRowsByIds [] = pure []
+loadThreadRowsByIds rowIds = do
+  ensureThreadTable
+  rows <- runSelda $
+    query do
+      row <- select threadRows
+      restrict $ row ! #id `isIn` map (literal . toId . (fromIntegral :: Integer -> Int.Int64)) rowIds
+      pure row
+  pure (map threadRowFromStorage rows)
+
 deleteSessionThreadTranscripts :: Storage.Storage :> es => [(Text, MessageId)] -> Eff es ()
 deleteSessionThreadTranscripts messages = do
   ensureThreadTable
@@ -710,7 +816,8 @@ threadRowFromStorage :: ThreadStorageRow -> ThreadRow
 threadRowFromStorage row =
   let messageKey = ThreadMessageKey{platform = platformFromKey row.platform_key, chatId = fromIntegral <$> row.chat_id, messageId = textMessageId row.message_id}
   in ThreadRow
-    { messageKey = messageKey
+    { rowId = fromIntegral (fromId row.id)
+    , messageKey = messageKey
     , threadStorageId = fromIntegral <$> row.thread_id
     , parentMessageKey = do
         parentMessageId <- textMessageId <$> row.parent_message_id
@@ -720,6 +827,26 @@ threadRowFromStorage row =
           , messageId = parentMessageId
           }
     , messagesJson = row.messages_json
+    }
+
+threadIndexRowFromStorage :: ThreadIndexStorageRow -> ThreadIndexRow
+threadIndexRowFromStorage row =
+  let messageKey = ThreadMessageKey
+        { platform = platformFromKey row.platform_key
+        , chatId = fromIntegral <$> row.chat_id
+        , messageId = textMessageId row.message_id
+        }
+  in ThreadIndexRow
+    { rowId = fromIntegral (fromId row.id)
+    , messageKey
+    , threadStorageId = fromIntegral <$> row.thread_id
+    , parentMessageKey = do
+        parentId <- textMessageId <$> row.parent_message_id
+        pure ThreadMessageKey
+          { platform = messageKey.platform
+          , chatId = fromIntegral <$> row.parent_chat_id
+          , messageId = parentId
+          }
     }
 
 threadKeyMatches :: forall (backend :: Type). ThreadMessageKey -> Row backend ThreadStorageRow -> Col backend Bool

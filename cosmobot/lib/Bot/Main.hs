@@ -53,6 +53,7 @@ import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.RPC.Plugin as RPCPlugin
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
+import qualified Bot.RPC.Thread as RPCThread
 import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import Data.Text.Lazy.Builder (Builder, fromText)
@@ -358,7 +359,15 @@ serverTasks cfg threads rpcState acpState =
   enabledTask cfg.rpc.enabled "rpc.server" (RPCServer.runRpcServer cfg.rpc rpcState callbacks)
     <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp threads acpState)
   where
-    baseCallbacks = RPCServer.withManagerRpcCallbacks RPCAudit.auditRpcCallbacks
+    auditCallbacks = RPCAudit.auditRpcCallbacks
+    threadCallbacks = RPCThread.threadRpcCallbacks
+      (listActiveThreadInspections threads)
+      (haltThreadById threads Concurrency.cancel)
+    baseCallbacks = RPCServer.withManagerRpcCallbacks $
+      auditCallbacks
+        { RPCServer.threadMethod = threadCallbacks.threadMethod
+        , RPCServer.supportedMethods = auditCallbacks.supportedMethods <> threadCallbacks.supportedMethods
+        }
     MediaConfig.GcConfig{enabled = mediaGcEnabled, olderThanDays, intervalHours} = cfg.media.gc
     callbacks = baseCallbacks
       { RPCServer.pluginMethod = RPCPlugin.dispatchPluginRequest pluginCallbacks

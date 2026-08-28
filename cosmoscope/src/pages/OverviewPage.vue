@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -10,8 +10,8 @@ import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { countResources, countSessions, listMedia, listTasks, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
-import { auditActivity, mergeAuditRecords, taskCounts } from '@/backend/overview'
+import { countResources, countSessions, listMedia, listTasks, listThreads, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
+import { auditActivity, mergeAuditRecords } from '@/backend/overview'
 import { runBackend } from '@/backend/runBackend'
 import { formatBytes } from '@/format'
 import { useConnectionStore } from '@/stores/connection'
@@ -27,11 +27,13 @@ const error = ref('')
 const tasks = ref<Task[]>([])
 const auditRecords = ref<AuditRecord[]>([])
 const activities = ref<Activity[]>([])
+const threadCount = ref(0)
 const sessionCount = ref(0)
 const resourceCount = ref(0)
 const mediaStats = ref<MediaStats>({ files: 0, existingFiles: 0, missingFiles: 0, totalBytes: 0, sources: 0, platformRefs: 0, platformAssociations: 0, mimeTypes: [], platforms: [] })
 const taskError = ref('')
 const auditError = ref('')
+const threadError = ref('')
 const sessionError = ref('')
 const resourceError = ref('')
 const mediaError = ref('')
@@ -41,7 +43,6 @@ let stopAuditSubscription: (() => void) | undefined
 let pollTimer: ReturnType<typeof setInterval> | undefined
 
 const supports = (method: LiveAdminMethod): boolean => connection.state === 'authenticated' && connection.methods.has(method)
-const counts = computed(() => taskCounts(tasks.value))
 async function loadTasks(): Promise<void> {
   const result = await runBackend(listTasks)
   if (result._tag === 'Failure') { taskError.value = result.error.message; return }
@@ -59,6 +60,12 @@ async function loadSessions(): Promise<void> {
   const result = await runBackend(countSessions)
   if (result._tag === 'Failure') { sessionError.value = result.error.message; return }
   sessionError.value = ''; sessionCount.value = result.value
+}
+
+async function loadThreads(): Promise<void> {
+  const result = await runBackend(listThreads({ offset: 0, limit: 1 }))
+  if (result._tag === 'Failure') { threadError.value = result.error.message; return }
+  threadError.value = ''; threadCount.value = result.value.total
 }
 
 async function loadResources(): Promise<void> {
@@ -97,6 +104,8 @@ function stopPolling(): void {
 async function loadSlowSnapshots(): Promise<void> {
   await Promise.all([
     supports('concurrency.list') ? loadTasks() : Promise.resolve(),
+    supports('thread.list') ? loadThreads() : Promise.resolve(),
+    supports('chat.list_sessions') ? loadSessions() : Promise.resolve(),
     supports('resource.list') ? loadResources() : Promise.resolve(),
     supports('media.stats') ? loadMedia() : Promise.resolve(),
   ])
@@ -121,6 +130,7 @@ async function refreshLive(): Promise<void> {
   }
   await Promise.all([
     supports('concurrency.list') ? loadTasks() : Promise.resolve().then(() => { taskError.value = 'The server does not support concurrency.list.' }),
+    supports('thread.list') ? loadThreads() : Promise.resolve().then(() => { threadError.value = 'The server does not support thread.list.' }),
     supports('chat.list_sessions') ? loadSessions() : Promise.resolve().then(() => { sessionError.value = 'The server does not support chat.list_sessions.' }),
     supports('resource.list') ? loadResources() : Promise.resolve().then(() => { resourceError.value = 'The server does not support resource.list.' }),
     supports('media.stats') ? loadMedia() : Promise.resolve().then(() => { mediaError.value = 'The server does not support media.stats.' }),
@@ -185,7 +195,7 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
     </PageHeading>
     <div
       v-if="state === 'loading'"
-      class="metric-grid"
+      class="metric-grid overview-summary-grid"
       aria-label="Loading overview"
     >
       <article
@@ -216,22 +226,22 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
       />
     </Message>
     <template v-else>
-      <div class="metric-grid">
+      <div class="metric-grid overview-summary-grid">
         <RouterLink
           class="metric"
-          to="/tasks"
+          to="/threads"
         >
           <div class="metric-top">
-            <span class="pi pi-bolt metric-icon violet" /><Tag
-              :value="supports('concurrency.list') ? 'Live' : 'Unavailable'"
-              :severity="supports('concurrency.list') ? 'success' : 'warn'"
+            <span class="pi pi-sitemap metric-icon violet" /><Tag
+              :value="supports('thread.list') ? 'Live' : 'Unavailable'"
+              :severity="supports('thread.list') ? 'success' : 'warn'"
             />
           </div>
-          <strong>{{ counts.active }}</strong><p>Active tasks</p>
+          <strong>{{ threadCount }}</strong><p>Conversation threads</p>
           <small
-            v-if="taskError"
+            v-if="threadError"
             class="metric-error"
-          >{{ taskError }}</small><small v-else>{{ counts.completed }} completed · {{ counts.failed }} failed</small>
+          >{{ threadError }}</small><small v-else>Persisted reply trees</small>
         </RouterLink>
         <RouterLink
           class="metric"

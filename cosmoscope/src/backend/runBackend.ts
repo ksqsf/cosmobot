@@ -21,7 +21,14 @@ const backendProxy: AdminBackend = {
     recent: (limit) => activeBackend.audit.recent(limit),
     get: (id) => activeBackend.audit.get(id),
     thread: (key) => activeBackend.audit.thread(key),
+    threadMessages: (keys) => activeBackend.audit.threadMessages(keys),
     subscribe: (refresh, handler) => activeBackend.audit.subscribe(refresh, handler),
+  },
+  threads: {
+    list: (query) => activeBackend.threads.list(query),
+    get: (id) => activeBackend.threads.get(id),
+    active: () => activeBackend.threads.active(),
+    halt: (taskId) => activeBackend.threads.halt(taskId),
   },
   chat: {
     sessionCount: () => activeBackend.chat.sessionCount(),

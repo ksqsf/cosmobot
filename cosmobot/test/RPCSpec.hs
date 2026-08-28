@@ -24,6 +24,7 @@ import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.JSONRPC as JSONRPC
 import qualified Bot.RPC.Server as RPCServer
 import qualified Bot.RPC.State as RPC
+import qualified Bot.RPC.Thread as RPCThread
 import Bot.Plugin.Types (PluginId (..), PluginStatus (..))
 import qualified Bot.Session as Session
 import qualified Bot.Resource as ResourceManager
@@ -70,6 +71,7 @@ main =
       [ testCase "request params default to empty object" testRequestParamsDefaultToEmptyObject
       , testCase "audit.recent bounds its snapshot limit" testAuditRecentBoundsLimit
       , testCase "thread message key JSON preserves large chat ids" testThreadMessageKeyJsonPreservesLargeChatIds
+      , testCase "thread inspection RPC exposes an empty snapshot and validates ids" testThreadInspectionRpc
       , testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "admin.capabilities describes the supported RPC surface" testAdminCapabilities
       , testCase "plugin lifecycle RPC validates ids and serializes safe status" testPluginLifecycleRpc
@@ -148,6 +150,32 @@ testThreadMessageKeyJsonPreservesLargeChatIds = do
             , "message_id" Aeson..= ("message-1" :: Text)
             ]
   response @?= responseResult (Aeson.toJSON ([] :: [Aeson.Value]))
+
+testThreadInspectionRpc :: IO ()
+testThreadInspectionRpc = do
+  (listResponse, invalidListResponse, missingResponse, invalidResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" do
+    rpcState <- RPC.newRpcState
+    let dispatch method params =
+          RPCServer.dispatchRpcRequest rpcState (RPCThread.threadRpcCallbacks (pure []) (pure . (== Concurrency.Id 7))) (rpcRequest method params)
+    (,,,,,)
+      <$> dispatch "thread.list" Aeson.Null
+      <*> dispatch "thread.list" (Aeson.object ["limit" Aeson..= (0 :: Int)])
+      <*> dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
+      <*> dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (0 :: Int)])
+      <*> dispatch "thread.active" Aeson.Null
+      <*> dispatch "thread.halt" (Aeson.object ["taskId" Aeson..= (7 :: Int)])
+  listResponse @?= responseResult (Aeson.object
+    [ "threads" Aeson..= ([] :: [Aeson.Value])
+    , "total" Aeson..= (0 :: Int)
+    , "nodes" Aeson..= (0 :: Int)
+    , "leaves" Aeson..= (0 :: Int)
+    , "platforms" Aeson..= (0 :: Int)
+    ])
+  responseErrorCode invalidListResponse @?= Just "invalid_params"
+  missingResponse @?= responseResult Aeson.Null
+  responseErrorCode invalidResponse @?= Just "invalid_params"
+  activeResponse @?= responseResult (Aeson.object ["threads" Aeson..= ([] :: [Aeson.Value])])
+  haltResponse @?= responseResult (Aeson.object ["taskId" Aeson..= (7 :: Int), "halted" Aeson..= True])
 
 testEnabledConfigRequiresToken :: IO ()
 testEnabledConfigRequiresToken =

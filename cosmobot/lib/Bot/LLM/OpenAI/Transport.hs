@@ -204,6 +204,7 @@ askImageChatCompletionsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, re
             , modalities = Just ["image", "text"]
             , imageConfig = imageGenerationConfig cfg options
             , stream = Just True
+            , streamOptions = Just usageStreamOptions
             }
       do
         lift $ $(logInfo) ("image chat streaming request: " <> llmRequestLogLine requestEndpoint request)
@@ -238,6 +239,7 @@ askOpenAIStreaming Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Ju
         , modalities = Nothing
         , imageConfig = Nothing
         , stream = Just True
+        , streamOptions = Just usageStreamOptions
         }
   lift $ $(logInfo) ("streaming request: " <> llmRequestLogLine requestEndpoint request)
   lift $ logLLMRequestMessages request
@@ -267,6 +269,7 @@ askOpenAIWithToolsStreaming Config{chatProvider = Just cfg@ChatProviderConfig{ap
         , modalities = Nothing
         , imageConfig = Nothing
         , stream = Just True
+        , streamOptions = Just usageStreamOptions
         }
   lift $ $(logInfo) ("streaming request: " <> llmRequestLogLine requestEndpoint request)
   lift $ logLLMRequestMessages request
@@ -282,9 +285,19 @@ data ChatCompletionRequest = ChatCompletionRequest
   , modalities  :: !(Maybe [Text])
   , imageConfig :: !(Maybe Aeson.Value)
   , stream      :: !(Maybe Bool)
+  , streamOptions :: !(Maybe StreamOptions)
   }
   deriving (Show, Generic)
     deriving Aeson.ToJSON via (SnakeJSONOmitNothing ChatCompletionRequest)
+
+newtype StreamOptions = StreamOptions
+  { includeUsage :: Bool
+  }
+  deriving (Show, Generic)
+    deriving Aeson.ToJSON via (SnakeJSONOmitNothing StreamOptions)
+
+usageStreamOptions :: StreamOptions
+usageStreamOptions = StreamOptions True
 
 data ImageGenerationRequest = ImageGenerationRequest
   { model :: !Text

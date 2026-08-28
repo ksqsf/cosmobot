@@ -176,6 +176,56 @@ Result:
 {"unsubscribed":true}
 ```
 
+## Thread Methods
+
+Thread methods inspect the platform conversation graph. They are separate from
+RPC console sessions: a thread is keyed by platform, chat, and platform-native
+message identity.
+
+### `thread.list`
+
+Returns a page of persisted thread summaries plus `total`, `nodes`, `leaves`,
+and `platforms` totals computed over the complete filtered result. Each summary
+includes the stable storage thread id, platform/chat-scoped root and latest keys,
+a root text preview, node count, and branch-tip count. `offset` defaults to `0`
+and `limit` defaults to `25` (maximum `200`). Optional `query` and `platform`
+filters are applied before totals and pagination.
+
+```json
+{"jsonrpc":"2.0","id":"1","method":"thread.list","params":{"offset":0,"limit":25,"query":"hello","platform":"rpc"}}
+```
+
+### `thread.get`
+
+Returns one persisted thread and its ordered nodes. Each node contains its
+message key, optional parent key, and the stored transcript segment for that
+node. Clients reconstruct context at a node by concatenating segments along its
+parent path.
+
+```json
+{"jsonrpc":"2.0","id":"2","method":"thread.get","params":{"threadId":42}}
+```
+
+### `thread.active`
+
+Returns in-memory agent threads that are currently running, including task and
+run ids, prompt, linked message keys, pending steer count, and the current model
+transcript. This is a snapshot method; clients may poll it for monitoring.
+
+```json
+{"jsonrpc":"2.0","id":"3","method":"thread.active","params":{}}
+```
+
+### `thread.halt`
+
+Cancels one active thread through the structured Concurrency handle and persists
+the transcript produced so far. It returns `halted: false` when that task is no
+longer active.
+
+```json
+{"jsonrpc":"2.0","id":"4","method":"thread.halt","params":{"taskId":17}}
+```
+
 ## Console lifecycle notifications
 
 RPC console sessions emit lightweight, session-scoped notifications for an

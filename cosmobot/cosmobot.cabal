@@ -343,6 +343,7 @@ library
         Bot.RPC.Plugin
         Bot.RPC.Server
         Bot.RPC.State
+        Bot.RPC.Thread
         Bot.Resource
         Bot.Resource.Python
         Bot.Resource.Python.Protocol

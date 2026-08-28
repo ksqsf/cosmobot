@@ -58,6 +58,70 @@ export interface ThreadMessageKey {
   readonly messageId: string
 }
 
+export interface ThreadSummary {
+  readonly threadId: number
+  readonly rootPreview: string
+  readonly rootKey: ThreadMessageKey
+  readonly latestKey: ThreadMessageKey
+  readonly nodeCount: number
+  readonly leafCount: number
+}
+
+export interface ThreadListQuery {
+  readonly offset: number
+  readonly limit: number
+  readonly query?: string | undefined
+  readonly platform?: AuditPlatform | undefined
+}
+
+export interface ThreadSnapshot {
+  readonly threads: readonly ThreadSummary[]
+  readonly total: number
+  readonly nodes: number
+  readonly leaves: number
+  readonly platforms: number
+}
+
+export interface StoredThreadContentPart {
+  readonly type: string
+  readonly text?: string | undefined
+  readonly image_url?: string | { readonly url: string } | undefined
+}
+
+export interface StoredThreadToolCall {
+  readonly id: string
+  readonly type: string
+  readonly function: { readonly name: string; readonly arguments: string }
+}
+
+export interface StoredThreadMessage {
+  readonly role: string
+  readonly content?: string | readonly StoredThreadContentPart[] | null | undefined
+  readonly tool_calls?: readonly StoredThreadToolCall[] | undefined
+  readonly tool_call_id?: string | null | undefined
+}
+
+export interface ThreadNode {
+  readonly messageKey: ThreadMessageKey
+  readonly parentMessageKey: ThreadMessageKey | null
+  readonly messages: readonly StoredThreadMessage[]
+}
+
+export interface ThreadDetail {
+  readonly summary: ThreadSummary
+  readonly nodes: readonly ThreadNode[]
+}
+
+export interface ActiveThread {
+  readonly taskId: number
+  readonly runId: string
+  readonly prompt: string
+  readonly parentMessageKey: ThreadMessageKey | null
+  readonly messageKeys: readonly ThreadMessageKey[]
+  readonly pendingSteers: number
+  readonly messages: readonly StoredThreadMessage[]
+}
+
 export interface ToolCallTrace {
   readonly id: string
   readonly name: string

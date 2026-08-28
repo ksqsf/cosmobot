@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { AuditRecord, ChatAttachment, ChatMessage, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSnapshot, Plugin, Resource, Task, ThreadMessageKey, TokenUsage, ToolCallTrace } from '@/types/domain'
+import type { ActiveThread, AuditRecord, ChatAttachment, ChatMessage, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSnapshot, Plugin, Resource, StoredThreadMessage, Task, ThreadDetail, ThreadMessageKey, ThreadSnapshot, ThreadSummary, TokenUsage, ToolCallTrace } from '@/types/domain'
 
 export const taskSchema = z.object({
   id: z.number().int().positive(),
@@ -32,6 +32,55 @@ export const threadMessageKeySchema = z.object({
   chatId: z.string().regex(/^-?\d+$/).nullable(),
   messageId: z.string(),
 }) satisfies z.ZodType<ThreadMessageKey>
+const threadSummarySchema = z.object({
+  threadId: z.number().int().positive(),
+  rootPreview: z.string(),
+  rootKey: threadMessageKeySchema,
+  latestKey: threadMessageKeySchema,
+  nodeCount: z.number().int().positive(),
+  leafCount: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ThreadSummary>
+const storedThreadContentPartSchema = z.object({
+  type: z.string(),
+  text: z.string().optional(),
+  image_url: z.union([z.string(), z.object({ url: z.string() })]).optional(),
+}).loose()
+const storedThreadMessageSchema = z.object({
+  role: z.string(),
+  content: z.union([z.string(), z.array(storedThreadContentPartSchema)]).nullable().optional(),
+  tool_calls: z.array(z.object({
+    id: z.string(),
+    type: z.string(),
+    function: z.object({ name: z.string(), arguments: z.string() }),
+  })).optional(),
+  tool_call_id: z.string().nullable().optional(),
+}) satisfies z.ZodType<StoredThreadMessage>
+export const threadListSchema = z.object({
+  threads: z.array(threadSummarySchema),
+  total: z.number().int().nonnegative(),
+  nodes: z.number().int().nonnegative(),
+  leaves: z.number().int().nonnegative(),
+  platforms: z.number().int().nonnegative(),
+}) satisfies z.ZodType<ThreadSnapshot>
+export const threadDetailSchema = z.object({
+  summary: threadSummarySchema,
+  nodes: z.array(z.object({
+    messageKey: threadMessageKeySchema,
+    parentMessageKey: threadMessageKeySchema.nullable(),
+    messages: z.array(storedThreadMessageSchema),
+  })),
+}) satisfies z.ZodType<ThreadDetail>
+const activeThreadSchema = z.object({
+  taskId: z.number().int().positive(),
+  runId: z.string(),
+  prompt: z.string(),
+  parentMessageKey: threadMessageKeySchema.nullable(),
+  messageKeys: z.array(threadMessageKeySchema),
+  pendingSteers: z.number().int().nonnegative(),
+  messages: z.array(storedThreadMessageSchema),
+}) satisfies z.ZodType<ActiveThread>
+export const activeThreadListSchema = z.object({ threads: z.array(activeThreadSchema) })
+export const haltThreadSchema = z.object({ taskId: z.number().int().positive(), halted: z.boolean() })
 
 export const auditRecordSchema = z.object({
   id: z.number().int(),

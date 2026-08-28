@@ -2,7 +2,7 @@ import { Effect } from 'effect'
 import { ZodError } from 'zod'
 import { RpcBackendError, type AdminBackend } from './AdminBackend'
 import { mockBackend } from './mockBackend'
-import { auditDetailSchema, auditRecordSchema, auditThreadSchema, chatDeleteSchema, chatHistorySchema, chatMessageDoneSchema, chatMessageSchema, chatOpenSchema, chatRenameSchema, chatSendSchema, chatSessionsSchema, chatUploadSchema, concurrencyAwaitSchema, concurrencyCancelSchema, concurrencyListSchema, concurrencyLookupSchema, mediaDeleteSchema, mediaDetailSchema, mediaGcSchema, mediaSearchSchema, mediaSnapshotSchema, pluginLifecycleSchema, pluginListSchema, pluginUnloadSchema, recentAuditSchema, resourceDestroyAssociatedSchema, resourceDestroySchema, resourceDetailSchema, resourceKeepAliveSchema, resourceListAssociatedSchema, resourceListSchema, resourceMakePermanentSchema, resourceRenameSchema } from '@/rpc/schemas'
+import { activeThreadListSchema, auditDetailSchema, auditRecordSchema, auditThreadSchema, chatDeleteSchema, chatHistorySchema, chatMessageDoneSchema, chatMessageSchema, chatOpenSchema, chatRenameSchema, chatSendSchema, chatSessionsSchema, chatUploadSchema, concurrencyAwaitSchema, concurrencyCancelSchema, concurrencyListSchema, concurrencyLookupSchema, haltThreadSchema, mediaDeleteSchema, mediaDetailSchema, mediaGcSchema, mediaSearchSchema, mediaSnapshotSchema, pluginLifecycleSchema, pluginListSchema, pluginUnloadSchema, recentAuditSchema, resourceDestroyAssociatedSchema, resourceDestroySchema, resourceDetailSchema, resourceKeepAliveSchema, resourceListAssociatedSchema, resourceListSchema, resourceMakePermanentSchema, resourceRenameSchema, threadDetailSchema, threadListSchema } from '@/rpc/schemas'
 import type { RpcClient } from '@/rpc/client'
 import type { LiveAdminMethod } from '@/rpc/protocol'
 import type { BackendEffect } from './AdminBackend'
@@ -39,10 +39,36 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
           message_id: key.messageId,
         })),
       ) : unsupported('audit.thread'),
+      threadMessages: (keys) => {
+        const first = keys[0]
+        if (first === undefined) return Effect.succeed([])
+        const messageIds = keys
+          .filter(({ platform, chatId }) => platform === first.platform && chatId === first.chatId)
+          .map(({ messageId }) => messageId)
+        return rpcEffect(
+          'Could not load thread statistics.',
+          async () => auditThreadSchema.parse(await client.request('audit.thread_messages', {
+            platform: auditPlatformKey(first.platform),
+            chat_id: first.chatId,
+            message_ids: messageIds,
+          })),
+        )
+      },
       subscribe: supports('audit.subscribe') ? (refresh, handler) => Effect.sync(() => client.subscribe(
         'overview.audit', 'audit.subscribe', 'audit.unsubscribe', {}, ['audit.event'], refresh,
         (_method, params) => handler(auditRecordSchema.parse(params)),
       )) : unsupported('audit.subscribe'),
+    },
+    threads: {
+      list: (query) => rpcEffect('Could not load threads.', async () => threadListSchema.parse(await client.request('thread.list', {
+        offset: query.offset,
+        limit: query.limit,
+        ...(query.query === undefined ? {} : { query: query.query }),
+        ...(query.platform === undefined ? {} : { platform: auditPlatformKey(query.platform) }),
+      }))),
+      get: (id) => rpcEffect('Could not load the thread.', async () => threadDetailSchema.nullable().parse(await client.request('thread.get', { threadId: id }))),
+      active: () => rpcEffect('Could not load active threads.', async () => activeThreadListSchema.parse(await client.request('thread.active')).threads),
+      halt: (taskId) => rpcEffect('Could not halt the active thread.', async () => haltThreadSchema.parse(await client.request('thread.halt', { taskId })).halted),
     },
     chat: {
       sessionCount: supports('chat.list_sessions') ? () => Effect.tryPromise({
