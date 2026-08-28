@@ -23,6 +23,7 @@ import qualified Bot.Agent.Tools.Matrix as MatrixTools
 import qualified Bot.Agent.Tools.Meta as MetaTools
 import qualified Bot.Agent.Tools.Python as PythonTools
 import qualified Bot.Agent.Tools.Sandbox as SandboxTools
+import qualified Bot.Agent.Tools.Skills as SkillsTools
 import qualified Bot.Agent.Tools.SubAgent as SubAgentTools
 import qualified Bot.Agent.Tools.Terminal as TerminalTools
 import qualified Bot.Agent.Tools.Transcript as TranscriptTools
@@ -327,6 +328,7 @@ main =
       , testCase "group reply from another sender does not continue a finished user alias" testGroupReplyDoesNotContinueFinishedUserAlias
       , testCase "ask handler continues a finished bot reply" testAskHandlerContinuesFinishedBotReply
       , testCase "load_skill loads only advertised skill instructions" testLoadSkillLoadsAdvertisedSkillInstructions
+      , testCase "load_skill adds relative skill files to context" testLoadSkillAddsRelativeFileToContext
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
       , testCase "ask handler flushes streamed content before tool calls" testAskHandlerFlushesStreamedContentBeforeToolCalls
       , testCase "agent streams tool request content before tool notification" testAgentStreamsToolRequestContentBeforeToolNotification
@@ -2766,6 +2768,38 @@ testLoadSkillLoadsAdvertisedSkillInstructions = withTempDir "skills-test" \skill
         ]
     other ->
       assertFailure [i|expected three model requests, got #{length other}|]
+
+testLoadSkillAddsRelativeFileToContext :: IO ()
+testLoadSkillAddsRelativeFileToContext =
+  withTempDir "skill-file-context" \dir -> do
+    let skillsDir = dir </> "skills"
+        skillDir = skillsDir </> "reports"
+        sourcePath = skillDir </> "assets" </> "report.txt"
+        outsidePath = skillsDir </> "outside.txt"
+    createDirectoryIfMissing True (takeDirectory sourcePath)
+    TextIO.writeFile (skillDir </> "SKILL.md") "---\nname: reports\n---\n"
+    TextIO.writeFile sourcePath "retained skill asset"
+    TextIO.writeFile outsidePath "must not be imported"
+    runResult <- runEff
+      . runFileSystem
+      . runConcurrent
+      . runPrim
+      . Skills.runSkills (SkillsStore.SkillsConfig skillsDir)
+      $ do
+        runner <- AgentTool.startTool SkillsTools.loadSkillTool agentContext
+        loaded <- runner testToolCallMetadata (Aeson.object
+          [ "name" Aeson..= ("reports" :: Text)
+          , "path" Aeson..= ("assets/report.txt" :: Text)
+          ])
+        escaped <- runner testToolCallMetadata (Aeson.object
+          [ "name" Aeson..= ("reports" :: Text)
+          , "path" Aeson..= ("../outside.txt" :: Text)
+          ])
+        pure (AgentTypes.toolResultContent loaded, AgentTypes.toolResultContent escaped)
+    let (loaded, escaped) = runResult
+    loaded @?= "retained skill asset"
+    assertBool "parent traversal is rejected" ("outside" `Text.isInfixOf` Text.toLower escaped)
+    assertBool "skill source file is retained" =<< doesFileExist sourcePath
 
 testAgentAuditRecordsToolEvents :: IO ()
 testAgentAuditRecordsToolEvents = do

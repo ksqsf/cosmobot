@@ -11,6 +11,7 @@ module Bot.Skills
   , loadSkillsPrompt
   , loadSkills
   , removeSkill
+  , loadSkillFile
   , skillContent
   , skillsSystemPrompt
   )
@@ -83,6 +84,34 @@ removeSkill cfg skill = do
       exists <- FileSystem.doesDirectoryExist skillDir
       when exists (FileSystem.removePathForcibly skillDir)
       pure exists
+
+loadSkillFile :: FileSystem :> es => SkillMetadata -> FilePath -> Eff es (Maybe Text)
+loadSkillFile skill relativePath
+  | not (validRelativePath relativePath) =
+      pure Nothing
+  | otherwise = do
+      let skillDir = takeDirectory skill.path
+      loaded <- trySync do
+        canonicalSkillDir <- FileSystem.canonicalizePath skillDir
+        canonicalPath <- FileSystem.canonicalizePath (skillDir </> relativePath)
+        isFile <- FileSystem.doesFileExist canonicalPath
+        if isFile && isPathInside canonicalSkillDir canonicalPath
+          then either (const Nothing) Just . TextEncoding.decodeUtf8' <$> FileSystemByteString.readFile canonicalPath
+          else pure Nothing
+      pure (either (const Nothing) id loaded)
+
+validRelativePath :: FilePath -> Bool
+validRelativePath path =
+  isRelative path
+    && normalise path /= "."
+    && ".." `notElem` splitDirectories (normalise path)
+
+isPathInside :: FilePath -> FilePath -> Bool
+isPathInside parent child =
+  let relative = makeRelative parent child
+  in isRelative relative
+      && relative /= "."
+      && ".." `notElem` splitDirectories relative
 
 skillContent :: Text -> SkillsPrompt -> Maybe Text
 skillContent name prompt =

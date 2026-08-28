@@ -8,6 +8,7 @@ module Bot.Effect.Skills
   ( Skills
   , skillsSystemPrompt
   , loadSkill
+  , loadSkillFile
   , listSkills
   , removeSkill
   , reloadSkills
@@ -24,6 +25,7 @@ import Effectful.FileSystem (FileSystem)
 data Skills :: Effect where
   SkillsSystemPrompt :: Skills m Text
   LoadSkill :: Text -> Skills m (Maybe Text)
+  LoadSkillFile :: Text -> FilePath -> Skills m (Maybe Text)
   ListSkills :: Skills m [SkillsStore.SkillMetadata]
   RemoveSkill :: Text -> Skills m Bool
   ReloadSkills :: Skills m ()
@@ -37,6 +39,10 @@ skillsSystemPrompt =
 loadSkill :: Skills :> es => Text -> Eff es (Maybe Text)
 loadSkill =
   send . LoadSkill
+
+loadSkillFile :: Skills :> es => Text -> FilePath -> Eff es (Maybe Text)
+loadSkillFile name path =
+  send (LoadSkillFile name path)
 
 listSkills :: Skills :> es => Eff es [SkillsStore.SkillMetadata]
 listSkills =
@@ -61,6 +67,11 @@ runSkills cfg action = do
   interpret (\_ -> \case
     SkillsSystemPrompt -> withSkillsLock lock ((.systemPrompt) <$> IORef.readIORef promptRef)
     LoadSkill name -> withSkillsLock lock (SkillsStore.skillContent name <$> IORef.readIORef promptRef)
+    LoadSkillFile name path -> withSkillsLock lock do
+      prompt <- IORef.readIORef promptRef
+      case find ((== name) . (.name)) prompt.metadata of
+        Nothing -> pure Nothing
+        Just skill -> SkillsStore.loadSkillFile skill path
     ListSkills -> withSkillsLock lock ((.metadata) <$> IORef.readIORef promptRef)
     RemoveSkill name -> withSkillsLock lock do
       prompt <- IORef.readIORef promptRef
