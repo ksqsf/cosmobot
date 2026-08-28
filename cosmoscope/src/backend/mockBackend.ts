@@ -16,7 +16,7 @@ function overview(scenario: FixtureScenario = 'ready'): BackendEffect<OverviewSn
 }
 
 const mockBackend: AdminBackend = {
-  source: 'demo',
+  source: { system: 'demo', tasks: 'demo', plugins: 'demo', logs: 'demo' },
   system: { overview },
   tasks: { list: () => Effect.succeed(copy(tasks)) },
   plugins: { list: () => Effect.succeed(copy(plugins)) },
@@ -24,3 +24,4 @@ const mockBackend: AdminBackend = {
 }
 
 export const mockBackendLayer = Layer.succeed(AdminBackendService, mockBackend)
+export { mockBackend }

@@ -4,11 +4,12 @@ import type { FixtureScenario, LogEntry, OverviewSnapshot, Plugin, Task } from '
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
 export class ForbiddenError extends Data.TaggedError('ForbiddenError')<{ readonly message: string }> {}
 export class FixtureError extends Data.TaggedError('FixtureError')<{ readonly message: string }> {}
-export type BackendError = OfflineError | ForbiddenError | FixtureError
+export class RpcBackendError extends Data.TaggedError('RpcBackendError')<{ readonly message: string }> {}
+export type BackendError = OfflineError | ForbiddenError | FixtureError | RpcBackendError
 export type BackendEffect<A> = Effect.Effect<A, BackendError>
 
 export interface AdminBackend {
-  readonly source: 'demo'
+  readonly source: { readonly system: 'demo' | 'rpc'; readonly tasks: 'demo' | 'rpc'; readonly plugins: 'demo' | 'rpc'; readonly logs: 'demo' | 'rpc' }
   readonly system: { readonly overview: (scenario?: FixtureScenario) => BackendEffect<OverviewSnapshot> }
   readonly tasks: { readonly list: () => BackendEffect<readonly Task[]> }
   readonly plugins: { readonly list: () => BackendEffect<readonly Plugin[]> }

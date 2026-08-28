@@ -1,12 +1,25 @@
-import { Effect, ManagedRuntime } from 'effect'
+import { Effect, Layer, ManagedRuntime } from 'effect'
 import type { AdminBackend } from './AdminBackend'
-import { mockBackendLayer } from './mockBackend'
+import { AdminBackendService } from './AdminBackend'
+import { mockBackend } from './mockBackend'
 
 export type BackendResult<A, E> =
   | { readonly _tag: 'Success'; readonly value: A }
   | { readonly _tag: 'Failure'; readonly error: E }
 
-const backendRuntime = ManagedRuntime.make(mockBackendLayer)
+let activeBackend = mockBackend
+const backendProxy: AdminBackend = {
+  get source() { return activeBackend.source },
+  system: { overview: (scenario) => activeBackend.system.overview(scenario) },
+  tasks: { list: () => activeBackend.tasks.list() },
+  plugins: { list: () => activeBackend.plugins.list() },
+  logs: { list: () => activeBackend.logs.list() },
+}
+const backendRuntime = ManagedRuntime.make(Layer.succeed(AdminBackendService, backendProxy))
+
+export function setAdminBackend(backend: AdminBackend): void {
+  activeBackend = backend
+}
 
 export function runBackend<A, E>(program: Effect.Effect<A, E, AdminBackend>): Promise<BackendResult<A, E>> {
   return backendRuntime.runPromise(Effect.match(program, {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -14,6 +14,7 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import { listTasks } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
 import type { Task } from '@/types/domain'
+import { useConnectionStore } from '@/stores/connection'
 
 const tasks = ref<Task[]>([])
 const query = ref('')
@@ -24,6 +25,8 @@ const selected = ref<Task>()
 const drawerOpen = ref(false)
 const confirm = useConfirm()
 const toast = useToast()
+const connection = useConnectionStore()
+const live = computed(() => connection.state === 'authenticated' && connection.methods.has('concurrency.list'))
 const filtered = computed(() => tasks.value.filter((task) =>
   `${task.id} ${task.label} ${task.owner}`.toLowerCase().includes(query.value.toLowerCase())
   && (statusFilter.value === 'All' || statusFilter.value === 'Active' && task.status !== 'failed' && task.status !== 'stopped' || task.status === statusFilter.value.toLowerCase())
@@ -34,6 +37,7 @@ async function refresh(): Promise<void> {
   if (result._tag === 'Success') tasks.value = [...result.value]
 }
 onMounted(refresh)
+watch(() => connection.state, (state) => { if (state === 'authenticated') void refresh() })
 function inspect(task: Task): void { selected.value = task; drawerOpen.value = true }
 function cancelTask(): void {
   if (!selected.value) return
@@ -187,12 +191,13 @@ function cancelTask(): void {
               :closable="false"
               size="small"
             >
-              Demo action — no task will be affected.
+              {{ live ? 'Task control is not enabled in this phase.' : 'Demo action — no task will be affected.' }}
             </Message>
             <Button
               label="Cancel task"
               severity="danger"
               fluid
+              :disabled="live"
               @click="cancelTask"
             />
           </footer>

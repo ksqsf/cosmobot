@@ -10,9 +10,11 @@ import { pages } from '@/app/pages'
 import NavigationMenu from '@/components/NavigationMenu.vue'
 import type { NavigationItem } from '@/components/NavigationMenu.vue'
 import type { NavigationGroup } from '@/app/pages'
+import { useConnectionStore } from '@/stores/connection'
 
 const route = useRoute()
 const router = useRouter()
+const connectionStore = useConnectionStore()
 const mobileNavigation = ref(false)
 const paletteOpen = ref(false)
 const query = ref('')
@@ -26,6 +28,11 @@ const currentTitle = computed(() => {
   const title = route.meta['title']
   return typeof title === 'string' ? title : 'Cosmoscope'
 })
+const currentPage = computed(() => pages.find((page) => page.name === route.name))
+const pageIsReal = computed(() => connectionStore.state === 'authenticated' && currentPage.value?.requiredCapabilities.every((method) => connectionStore.methods.has(method)) === true)
+const connectionLabel = computed(() => ({
+  offline: 'Offline', opening: 'Connecting', authenticated: 'Connected', reconnecting: 'Reconnecting', failed: 'Failed',
+})[connectionStore.state])
 const filteredPages = computed(() => pages.filter((page) => page.title.toLowerCase().includes(query.value.toLowerCase())))
 function navigationItems(group: NavigationGroup): NavigationItem[] {
   return pages
@@ -78,7 +85,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
       </nav>
       <div class="sidebar-footer">
         <div class="environment">
-          <span class="status-dot warning" /><span><strong>Demo data</strong><small>Deterministic fixtures</small></span>
+          <span
+            class="status-dot"
+            :class="pageIsReal ? 'online' : 'warning'"
+          /><span><strong>{{ pageIsReal ? 'Live data' : 'Demo data' }}</strong><small>{{ pageIsReal ? `cosmobot ${connectionStore.serverVersion}` : 'Deterministic fixtures' }}</small></span>
         </div>
         <div class="user-button">
           <span class="avatar">KA</span><span><strong>kosmos</strong><small>Administrator</small></span>
@@ -101,7 +111,24 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           <span>cosmobot</span><b>/</b><strong>{{ currentTitle }}</strong>
         </div>
         <div class="topbar-actions">
-          <span class="connection"><i class="status-dot online" />Connected</span>
+          <RouterLink
+            class="connection"
+            to="/login"
+            :aria-label="`${connectionLabel}. Open connection setup`"
+          >
+            <i
+              class="status-dot"
+              :class="connectionStore.state === 'authenticated' ? 'online' : connectionStore.state === 'failed' ? 'danger' : 'warning'"
+            />{{ connectionLabel }}<span v-if="connectionStore.stale"> · stale</span>
+          </RouterLink>
+          <Button
+            v-if="connectionStore.stale"
+            icon="pi pi-refresh"
+            text
+            rounded
+            aria-label="Retry RPC connection"
+            @click="connectionStore.retry"
+          />
           <Button
             ref="commandButton"
             class="command-button"
@@ -181,6 +208,6 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     class="sr-live"
     aria-live="polite"
   >
-    Demo data environment
+    {{ connectionLabel }}. {{ pageIsReal ? 'Live data' : 'Demo data' }} environment.
   </div>
 </template>
