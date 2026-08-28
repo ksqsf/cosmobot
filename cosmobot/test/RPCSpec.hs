@@ -80,6 +80,7 @@ main =
     testGroup "rpc"
       [ testCase "request params default to empty object" testRequestParamsDefaultToEmptyObject
       , testCase "audit.recent bounds its snapshot limit" testAuditRecentBoundsLimit
+      , testCase "audit.count returns the complete event count" testAuditCount
       , testCase "audit.search queries all stored events" testAuditSearch
       , testCase "audit.run validates and queries an agent run id" testAuditRun
       , testCase "thread message key JSON preserves large chat ids" testThreadMessageKeyJsonPreservesLargeChatIds
@@ -141,6 +142,18 @@ testAuditRecentBoundsLimit = do
   defaultResponse @?= responseResult (Aeson.toJSON ([] :: [Aeson.Value]))
   responseErrorCode zeroResponse @?= Just "invalid_params"
   responseErrorCode oversizedResponse @?= Just "invalid_params"
+
+testAuditCount :: IO ()
+testAuditCount = do
+  response <- runRpcStorage ":memory:" $ AgentAudit.runAgentAudit do
+    traverse_ AgentAudit.recordEvent
+      [ AgentAudit.AgentRunStarted "agent-count-1" Nothing 8 [] Nothing
+      , AgentAudit.AgentRunStarted "agent-count-2" Nothing 8 [] Nothing
+      ]
+    rpcState <- RPC.newRpcState
+    RPCServer.dispatchRpcRequest rpcState RPCAudit.auditRpcCallbacks $
+      rpcRequest "audit.count" Aeson.Null
+  response @?= responseResult (Aeson.toJSON (2 :: Int))
 
 testAuditSearch :: IO ()
 testAuditSearch = do

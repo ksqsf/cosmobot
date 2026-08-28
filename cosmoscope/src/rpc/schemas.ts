@@ -105,6 +105,7 @@ export const auditRecordSchema = z.object({
 }) satisfies z.ZodType<AuditRecord>
 
 export const recentAuditSchema = z.array(auditRecordSchema)
+export const auditCountSchema = z.number().int().nonnegative()
 export const auditDetailSchema = auditRecordSchema.nullable()
 export const auditThreadSchema = z.array(auditRecordSchema)
 export const chatSessionSchema = z.object({

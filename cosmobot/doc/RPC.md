@@ -108,6 +108,14 @@ be between `1` and `500`.
 {"jsonrpc":"2.0","id":"1","method":"audit.recent","params":{"limit":50}}
 ```
 
+### `audit.count`
+
+Returns the total number of stored audit events.
+
+```json
+{"jsonrpc":"2.0","id":"1","method":"audit.count","params":{}}
+```
+
 ### `audit.get`
 
 Returns one audit record by audit id. The preferred parameter is `audit_id`;

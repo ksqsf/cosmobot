@@ -17,6 +17,7 @@ export interface AdminBackend {
   }
   readonly audit: {
     readonly recent: (limit?: number) => BackendEffect<readonly AuditRecord[]>
+    readonly count: () => BackendEffect<number>
     readonly search: (query: string, limit?: number) => BackendEffect<readonly AuditRecord[]>
     readonly get: (id: number) => BackendEffect<AuditRecord | null>
     readonly run: (runId: string) => BackendEffect<readonly AuditRecord[]>
@@ -99,6 +100,8 @@ export const destroyTaskResources = (id: number): Effect.Effect<readonly Resourc
   AdminBackendService.use((backend) => backend.tasks.destroyAssociated(id))
 export const recentAudit = (limit = 20): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.audit.recent(limit))
+export const countAudit: Effect.Effect<number, BackendError, AdminBackend> =
+  AdminBackendService.use((backend) => backend.audit.count())
 export const searchAudit = (query: string, limit = 500): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.audit.search(query, limit))
 export const getAudit = (id: number): Effect.Effect<AuditRecord | null, BackendError, AdminBackend> =>

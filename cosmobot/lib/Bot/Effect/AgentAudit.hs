@@ -16,6 +16,7 @@ module Bot.Effect.AgentAudit
   , recordEvent
   , toolUsesFromAuditRecords
   , queryRecentAuditRecords
+  , countAuditRecords
   , searchAuditRecords
   , queryAuditRecord
   , queryRecentToolUses
@@ -41,6 +42,7 @@ import Data.Time (getCurrentTime)
 data AgentAudit :: Effect where
   RecordEvent :: AgentAuditEvent -> AgentAudit m (Maybe Integer)
   QueryRecentAuditRecords :: Int -> AgentAudit m [AgentAuditRecord]
+  CountAuditRecords :: AgentAudit m Int
   SearchAuditRecords :: Text -> Int -> AgentAudit m [AgentAuditRecord]
   QueryAuditRecord :: Integer -> AgentAudit m (Maybe AgentAuditRecord)
   QueryRecentToolUses :: Int -> AgentAudit m [ToolUseDetail]
@@ -62,6 +64,10 @@ agentAuditObserver =
 queryRecentAuditRecords :: AgentAudit :> es => Int -> Eff es [AgentAuditRecord]
 queryRecentAuditRecords limit =
   send (QueryRecentAuditRecords limit)
+
+countAuditRecords :: AgentAudit :> es => Eff es Int
+countAuditRecords =
+  send CountAuditRecords
 
 searchAuditRecords :: AgentAudit :> es => Text -> Int -> Eff es [AgentAuditRecord]
 searchAuditRecords searchText limit =
@@ -120,6 +126,8 @@ runAgentAuditWithObserver observer inner = do
         pure persistedId
       QueryRecentAuditRecords limit -> do
         AgentAuditStorage.queryStoredRecent limit
+      CountAuditRecords ->
+        AgentAuditStorage.countStoredAuditRecords
       SearchAuditRecords searchText limit ->
         AgentAuditStorage.queryStoredSearch searchText limit
       QueryAuditRecord auditId ->

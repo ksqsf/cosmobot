@@ -4,6 +4,7 @@ import { RpcBackendError, type AdminBackend } from './AdminBackend'
 import {
   activeThreadListSchema,
   auditDetailSchema,
+  auditCountSchema,
   auditRecordSchema,
   auditThreadSchema,
   chatDeleteSchema,
@@ -74,6 +75,10 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
         try: async () => recentAuditSchema.parse(await client.request('audit.recent', { limit })),
         catch: (cause) => new RpcBackendError({ message: schemaError(cause, 'Could not load recent audit activity.') }),
       }) : unsupported('audit.recent'),
+      count: supports('audit.count') ? () => rpcEffect(
+        'Could not count audit activity.',
+        async () => auditCountSchema.parse(await client.request('audit.count')),
+      ) : unsupported('audit.count'),
       search: (query, limit = 500) => rpcEffect(
         'Could not search audit activity.',
         async () => recentAuditSchema.parse(await client.request('audit.search', { query, limit })),

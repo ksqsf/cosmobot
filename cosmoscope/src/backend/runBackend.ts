@@ -19,6 +19,7 @@ const backendProxy: AdminBackend = {
   },
   audit: {
     recent: (limit) => activeBackend.audit.recent(limit),
+    count: () => activeBackend.audit.count(),
     search: (query, limit) => activeBackend.audit.search(query, limit),
     get: (id) => activeBackend.audit.get(id),
     run: (runId) => activeBackend.audit.run(runId),

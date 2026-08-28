@@ -11,7 +11,7 @@ import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
 import RunIdLink from '@/components/RunIdLink.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import { countResources, countSessions, listMedia, listTasks, listThreads, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
+import { countAudit, countResources, countSessions, listChatLogs, listMedia, listTasks, listThreads, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
 import { auditActivity, mergeAuditRecords } from '@/backend/overview'
 import { runBackend } from '@/backend/runBackend'
 import { formatBytes } from '@/format'
@@ -30,12 +30,17 @@ const auditRecords = ref<AuditRecord[]>([])
 const activities = ref<Activity[]>([])
 const threadCount = ref(0)
 const sessionCount = ref(0)
+const chatMessageCount = ref(0)
+const chatPlatformCount = ref(0)
+const auditCount = ref(0)
 const resourceCount = ref(0)
 const mediaStats = ref<MediaStats>({ files: 0, existingFiles: 0, missingFiles: 0, totalBytes: 0, sources: 0, platformRefs: 0, platformAssociations: 0, mimeTypes: [], platforms: [] })
 const taskError = ref('')
 const auditError = ref('')
+const auditCountError = ref('')
 const threadError = ref('')
 const sessionError = ref('')
+const chatLogError = ref('')
 const resourceError = ref('')
 const mediaError = ref('')
 const selectedTask = ref<Task>()
@@ -57,10 +62,24 @@ async function loadAudit(): Promise<void> {
   auditError.value = ''; auditRecords.value = [...result.value]; activities.value = auditActivity(result.value)
 }
 
+async function loadAuditCount(): Promise<void> {
+  const result = await runBackend(countAudit)
+  if (result._tag === 'Failure') { auditCountError.value = result.error.message; return }
+  auditCountError.value = ''; auditCount.value = result.value
+}
+
 async function loadSessions(): Promise<void> {
   const result = await runBackend(countSessions)
   if (result._tag === 'Failure') { sessionError.value = result.error.message; return }
   sessionError.value = ''; sessionCount.value = result.value
+}
+
+async function loadChatLogs(): Promise<void> {
+  const result = await runBackend(listChatLogs)
+  if (result._tag === 'Failure') { chatLogError.value = result.error.message; return }
+  chatLogError.value = ''
+  chatMessageCount.value = result.value.reduce((total, chat) => total + chat.messageCount, 0)
+  chatPlatformCount.value = new Set(result.value.map(({ scope }) => scope.platform)).size
 }
 
 async function loadThreads(): Promise<void> {
@@ -83,9 +102,10 @@ async function loadMedia(): Promise<void> {
 
 async function installAuditSubscription(): Promise<void> {
   if (!supports('audit.subscribe') || !supports('audit.recent')) return
-  const result = await runBackend(subscribeAudit(loadAudit, (record) => {
+  const result = await runBackend(subscribeAudit(async () => { await Promise.all([loadAudit(), loadAuditCount()]) }, (record) => {
     auditRecords.value = mergeAuditRecords(auditRecords.value, record)
     activities.value = auditActivity(auditRecords.value)
+    auditCount.value += 1
   }))
   if (result._tag === 'Success') stopAuditSubscription = result.value
   else auditError.value = result.error.message
@@ -107,8 +127,10 @@ async function loadSlowSnapshots(): Promise<void> {
     supports('concurrency.list') ? loadTasks() : Promise.resolve(),
     supports('thread.list') ? loadThreads() : Promise.resolve(),
     supports('chat.list_sessions') ? loadSessions() : Promise.resolve(),
+    supports('chat_log.list') ? loadChatLogs() : Promise.resolve(),
     supports('resource.list') ? loadResources() : Promise.resolve(),
     supports('media.stats') ? loadMedia() : Promise.resolve(),
+    supports('audit.count') ? loadAuditCount() : Promise.resolve(),
   ])
 }
 
@@ -125,6 +147,7 @@ async function refreshLive(): Promise<void> {
   if (state.value !== 'ready') state.value = 'loading'
   error.value = ''
   auditError.value = supports('audit.recent') ? '' : 'The server does not support audit.recent.'
+  auditCountError.value = supports('audit.count') ? '' : 'The server does not support audit.count.'
   if (supports('audit.subscribe') && supports('audit.recent')) {
     if (stopAuditSubscription === undefined) await installAuditSubscription()
   }
@@ -136,8 +159,10 @@ async function refreshLive(): Promise<void> {
     supports('concurrency.list') ? loadTasks() : Promise.resolve().then(() => { taskError.value = 'The server does not support concurrency.list.' }),
     supports('thread.list') ? loadThreads() : Promise.resolve().then(() => { threadError.value = 'The server does not support thread.list.' }),
     supports('chat.list_sessions') ? loadSessions() : Promise.resolve().then(() => { sessionError.value = 'The server does not support chat.list_sessions.' }),
+    supports('chat_log.list') ? loadChatLogs() : Promise.resolve().then(() => { chatLogError.value = 'The server does not support chat_log.list.' }),
     supports('resource.list') ? loadResources() : Promise.resolve().then(() => { resourceError.value = 'The server does not support resource.list.' }),
     supports('media.stats') ? loadMedia() : Promise.resolve().then(() => { mediaError.value = 'The server does not support media.stats.' }),
+    supports('audit.count') ? loadAuditCount() : Promise.resolve(),
     supports('audit.recent') && !supports('audit.subscribe') ? loadAudit() : Promise.resolve(),
   ])
   state.value = 'ready'
@@ -203,7 +228,7 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
       aria-label="Loading overview"
     >
       <article
-        v-for="index in 4"
+        v-for="index in 6"
         :key="index"
         class="metric"
       >
@@ -264,11 +289,43 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
               :severity="supports('chat.list_sessions') ? 'success' : 'warn'"
             />
           </div>
-          <strong>{{ sessionCount }}</strong><p>Chat sessions</p>
+          <strong>{{ chatMessageCount }}</strong><p>Chat messages</p>
           <small
-            v-if="sessionError"
+            v-if="chatLogError || sessionError"
             class="metric-error"
-          >{{ sessionError }}</small><small v-else>Stored RPC conversations</small>
+          >{{ chatLogError || sessionError }}</small><small v-else>{{ chatPlatformCount }} platforms · {{ sessionCount }} RPC sessions</small>
+        </RouterLink>
+        <RouterLink
+          class="metric"
+          to="/audit"
+        >
+          <div class="metric-top">
+            <span class="pi pi-wave-pulse metric-icon blue" /><Tag
+              :value="supports('audit.count') ? 'Live' : 'Unavailable'"
+              :severity="supports('audit.count') ? 'success' : 'warn'"
+            />
+          </div>
+          <strong>{{ auditCount }}</strong><p>Audit events</p>
+          <small
+            v-if="auditCountError"
+            class="metric-error"
+          >{{ auditCountError }}</small><small v-else>Complete event history</small>
+        </RouterLink>
+        <RouterLink
+          class="metric"
+          to="/media"
+        >
+          <div class="metric-top">
+            <span class="pi pi-images metric-icon violet" /><Tag
+              :value="supports('media.stats') ? 'Live' : 'Unavailable'"
+              :severity="supports('media.stats') ? 'success' : 'warn'"
+            />
+          </div>
+          <strong>{{ formatBytes(mediaStats.totalBytes) }}</strong><p>Media storage</p>
+          <small
+            v-if="mediaError"
+            class="metric-error"
+          >{{ mediaError }}</small><small v-else>{{ mediaStats.files }} objects · {{ mediaStats.missingFiles }} missing</small>
         </RouterLink>
         <RouterLink
           class="metric"
@@ -288,19 +345,19 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
         </RouterLink>
         <RouterLink
           class="metric"
-          to="/media"
+          to="/tasks"
         >
           <div class="metric-top">
-            <span class="pi pi-images metric-icon violet" /><Tag
-              :value="supports('media.stats') ? 'Live' : 'Unavailable'"
-              :severity="supports('media.stats') ? 'success' : 'warn'"
+            <span class="pi pi-bolt metric-icon green" /><Tag
+              :value="supports('concurrency.list') ? 'Live' : 'Unavailable'"
+              :severity="supports('concurrency.list') ? 'success' : 'warn'"
             />
           </div>
-          <strong>{{ formatBytes(mediaStats.totalBytes) }}</strong><p>Media storage</p>
+          <strong>{{ tasks.length }}</strong><p>Tasks</p>
           <small
-            v-if="mediaError"
+            v-if="taskError"
             class="metric-error"
-          >{{ mediaError }}</small><small v-else>{{ mediaStats.files }} objects · {{ mediaStats.missingFiles }} missing</small>
+          >{{ taskError }}</small><small v-else>{{ tasks.filter(({ status }) => status === 'running').length }} active</small>
         </RouterLink>
       </div>
       <div class="overview-grid">
@@ -321,7 +378,7 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
           </Message>
           <DataTable
             v-else
-            :value="tasks.filter(({ status }) => status === 'running').slice(0, 4)"
+            :value="tasks.filter(({ status }) => status === 'running').slice(0, 8)"
             data-key="id"
             selection-mode="single"
             @row-select="inspect($event.data)"

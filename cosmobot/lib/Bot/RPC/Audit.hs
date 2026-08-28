@@ -23,7 +23,7 @@ auditRpcCallbacks :: AgentAudit.AgentAudit :> es => RpcServerCallbacks es
 auditRpcCallbacks =
   noRpcServerCallbacks
     { auditMethod = dispatchAuditMethod
-    , supportedMethods = ["audit.recent", "audit.search", "audit.get", "audit.run", "audit.thread", "audit.thread_messages"]
+    , supportedMethods = ["audit.recent", "audit.count", "audit.search", "audit.get", "audit.run", "audit.thread", "audit.thread_messages"]
     }
 
 dispatchAuditMethod
@@ -35,6 +35,9 @@ dispatchAuditMethod request =
     "audit.recent" ->
       parseParams request parseLimit \limit ->
         Aeson.toJSON <$> AgentAudit.queryRecentAuditRecords limit
+    "audit.count" ->
+      parseParams request parseNoParams \() ->
+        Aeson.toJSON <$> AgentAudit.countAuditRecords
     "audit.search" ->
       parseParams request parseSearch \(searchText, limit) ->
         Aeson.toJSON <$> AgentAudit.searchAuditRecords searchText limit
@@ -65,6 +68,10 @@ parseParams request parser action =
       pure (Left (RPC.rpcError "invalid_params" (toText err)))
     Right value ->
       Right <$> action value
+
+parseNoParams :: Aeson.Value -> AesonTypes.Parser ()
+parseNoParams Aeson.Null = pure ()
+parseNoParams value = Aeson.withObject "audit.count params" (const (pure ())) value
 
 parseLimit :: Aeson.Value -> AesonTypes.Parser Int
 parseLimit Aeson.Null =
