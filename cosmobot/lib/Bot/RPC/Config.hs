@@ -21,6 +21,7 @@ data Config = Config
   , host :: !String
   , port :: !Int
   , token :: !Text
+  , allowedBrowserOrigins :: ![Text]
   }
   deriving (Eq, Show)
 
@@ -29,6 +30,7 @@ data FileConfig = FileConfig
   , host :: !String
   , port :: !Int
   , token :: !Text
+  , allowedBrowserOrigins :: ![Text]
   }
   deriving (Eq, Show)
 
@@ -38,6 +40,7 @@ defaultFileConfig = FileConfig
   , host = "127.0.0.1"
   , port = 38765
   , token = ""
+  , allowedBrowserOrigins = []
   }
 
 instance FromValue FileConfig where
@@ -46,10 +49,11 @@ instance FromValue FileConfig where
     host <- fromMaybe defaultFileConfig.host <$> optKey "host"
     port <- fromMaybe defaultFileConfig.port <$> optKey "port"
     token <- fromMaybe defaultFileConfig.token <$> optKey "token"
+    allowedBrowserOrigins <- fromMaybe defaultFileConfig.allowedBrowserOrigins <$> optKey "allowed_browser_origins"
     when (enabled && Text.null token) $
       fail "rpc.token must be non-empty when rpc.enabled is true"
-    pure FileConfig{enabled, host, port, token}
+    pure FileConfig{enabled, host, port, token, allowedBrowserOrigins}
 
 toRuntimeConfig :: FileConfig -> Config
-toRuntimeConfig FileConfig{enabled, host, port, token} =
-  Config{enabled, host, port, token}
+toRuntimeConfig FileConfig{enabled, host, port, token, allowedBrowserOrigins} =
+  Config{enabled, host, port, token, allowedBrowserOrigins}

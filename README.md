@@ -295,6 +295,7 @@ enabled = true
 host = "127.0.0.1"         # listen to host
 port = 38765               # listen to port
 token = "a random string"  # keep it secure!
+allowed_browser_origins = [] # add exact Cosmoscope origins when used
 ```
 
 Keep `token` really secure, as it gives unrestricted access to Cosmobot. We strongly advise you against setting `host` to `0.0.0.0`. Instead, use solutions like [SSH port forwarding](https://www.digitalocean.com/community/tutorials/ssh-port-forwarding) or [ZeroTier](https://www.zerotier.com/) to access your server's specific port.

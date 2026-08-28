@@ -15,6 +15,7 @@ enabled = false
 host = "127.0.0.1"
 port = 38765
 token = ""
+allowed_browser_origins = []
 ```
 
 `enabled` defaults to `false`. When `enabled = true`, `token` must be non-empty.
@@ -27,6 +28,18 @@ the public URL produced by the media interpreter.
 Clients authenticate with `Authorization: Bearer TOKEN` during the WebSocket
 handshake. Query-string tokens are not accepted for WebSocket authentication.
 Unauthorized WebSocket connections are rejected with HTTP 401.
+
+Browser clients cannot set the `Authorization` header. An origin listed exactly
+in `rpc.allowed_browser_origins` may connect and must send
+`admin.authenticate` with `{"token":"…"}` as its first request within ten
+seconds. The connection is not registered and no other method is dispatched
+until authentication succeeds. Authentication gets one attempt per connection;
+the token remains valid until the RPC configuration changes or the server
+restarts.
+
+`admin.capabilities` returns the server version, supported methods and topics,
+permissions, and feature availability. Cosmoscope uses it to select live or
+explicitly labelled demo data per page.
 
 ## Envelopes
 

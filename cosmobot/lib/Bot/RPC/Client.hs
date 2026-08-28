@@ -81,12 +81,13 @@ loadRpcClientConfig path = do
       pure (RPCConfig.toRuntimeConfig (config_ :: RpcClientFileConfig).rpc)
 
 applyRpcClientOptions :: RpcClientOptions -> RPCConfig.Config -> RPCConfig.Config
-applyRpcClientOptions options RPCConfig.Config{enabled, host, port, token} =
+applyRpcClientOptions options RPCConfig.Config{enabled, host, port, token, allowedBrowserOrigins} =
   RPCConfig.Config
     { enabled
     , host = fromMaybe host options.host
     , port = fromMaybe port options.port
     , token = fromMaybe token options.token
+    , allowedBrowserOrigins
     }
 
 requestForCommand :: RpcClientCommand -> RPC.RpcRequest

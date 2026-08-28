@@ -12,6 +12,7 @@ enabled = false
 host = "127.0.0.1"
 port = 38765
 token = ""
+allowed_browser_origins = []
 
 [acp]
 enabled = false

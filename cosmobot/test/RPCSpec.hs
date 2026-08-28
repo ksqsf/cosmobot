@@ -63,6 +63,7 @@ main =
     testGroup "rpc"
       [ testCase "request params default to empty object" testRequestParamsDefaultToEmptyObject
       , testCase "enabled config requires token" testEnabledConfigRequiresToken
+      , testCase "admin.capabilities describes the supported RPC surface" testAdminCapabilities
       , testCase "chat.open_session returns generated session id" testOpenSessionReturnsGeneratedSessionId
       , testCase "chat.send constructs PlatformRPC incoming message" testChatSendConstructsIncomingMessage
       , testCase "chat.send rejects missing sessions without persisting orphan messages" testChatSendRejectsMissingSession
@@ -105,6 +106,19 @@ testEnabledConfigRequiresToken =
         ("rpc.token must be non-empty" `Text.isInfixOf` Text.unlines (map toText errors))
     Toml.Success _warnings (config_ :: RpcClientConfig) ->
       assertFailure [i|expected parse failure, got #{show config_ :: String}|]
+
+testAdminCapabilities :: IO ()
+testAdminCapabilities = do
+  response <- runRpcStorage ":memory:" do
+    rpcState <- RPC.newRpcState
+    RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+      rpcRequest "admin.capabilities" Aeson.Null
+  methods <- case response of
+    WireJSONRPC.ResponseMessage result ->
+      parseJson =<< parseJsonField "methods" result.result
+    other ->
+      assertFailure [i|expected capabilities response, got #{show other :: String}|]
+  assertBool "expected chat.list_sessions capability" ("chat.list_sessions" `elem` (methods :: [Text]))
 
 testOpenSessionReturnsGeneratedSessionId :: IO ()
 testOpenSessionReturnsGeneratedSessionId = do
@@ -292,6 +306,7 @@ testManagerRpcMethods = runRpcManager do
   associatedResponse <- dispatch rpcState "resource.destroy_associated" (Aeson.object ["id" Aeson..= worker.handleId.unId])
   resourceListResponse <- dispatch rpcState "resource.list" Aeson.Null
   missingResourceResponse <- dispatch rpcState "resource.detail" (Aeson.object ["id" Aeson..= ("missing" :: Text)])
+  capabilitiesResponse <- dispatch rpcState "admin.capabilities" Aeson.Null
   liftIO do
     (responseField lookupResponse "entry" >>= responseObjectText "label") @?= Just "rpc-test-worker"
     cancelResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "cancelled" Aeson..= True])
@@ -299,6 +314,10 @@ testManagerRpcMethods = runRpcManager do
     associatedResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "results" Aeson..= ([] :: [Aeson.Value])])
     resourceListResponse @?= responseResult (Aeson.object ["resources" Aeson..= ([] :: [Aeson.Value])])
     responseErrorCode missingResourceResponse @?= Just "not_found"
+    methods <- case capabilitiesResponse of
+      WireJSONRPC.ResponseMessage result -> parseJson =<< parseJsonField "methods" result.result
+      other -> assertFailure [i|expected capabilities response, got #{show other :: String}|]
+    assertBool "expected installed manager capability" ("concurrency.list" `elem` (methods :: [Text]))
   where
     dispatch rpcState method params =
       RPCServer.dispatchRpcRequest rpcState (RPCServer.withManagerRpcCallbacks RPCServer.noRpcServerCallbacks) (rpcRequest method params)
@@ -318,6 +337,7 @@ testAttachmentLifecycle =
           , host = "127.0.0.1"
           , port = 38765
           , token = ""
+          , allowedBrowserOrigins = []
           }
     (uploadResponse, imageUploadResponse, unsafeMediaResponse, oversizedResponse, sendResponse, historyResponse, incoming, mediaStatsResponse) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
@@ -566,6 +586,7 @@ testRpcDriverStoresLocalImageRepliesAsAttachments =
             , host = "127.0.0.1"
             , port = 38765
             , token = "secret"
+            , allowedBrowserOrigins = []
             }
       FileSystemByteString.writeFile imagePath "fake-webp"
       rpcState <- RPC.newRpcState
@@ -688,6 +709,7 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
         , host = "127.0.0.1"
         , port
         , token = "secret"
+        , allowedBrowserOrigins = ["http://localhost:4173"]
         }
         server =
           finally
@@ -698,8 +720,10 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
             (liftIO (Socket.close listenSocket))
         client = do
           unauthorized <- trySync (liftIO (WS.runClient "127.0.0.1" port "/rpc" \_ -> pure ()))
+          untrustedOrigin <- trySync (liftIO (browserCapabilitiesClient port "http://evil.example" "secret") $> ())
+          browserResponse <- liftIO (browserCapabilitiesClient port "http://localhost:4173" "secret")
           response <- liftIO (openSessionClient port "secret")
-          pure (unauthorized, response)
+          pure (unauthorized, untrustedOrigin, browserResponse, response)
     raceEff server client
 
   case result of
@@ -707,8 +731,10 @@ testWebSocketServerAuthenticatesAndHandlesRequests = do
       assertFailure "RPC websocket integration test timed out"
     Just (Left ()) ->
       assertFailure "RPC server exited before client completed"
-    Just (Right (unauthorized, response)) -> do
+    Just (Right (unauthorized, untrustedOrigin, browserResponse, response)) -> do
       assertUnauthorizedRejected unauthorized
+      assertUnauthorizedRejected untrustedOrigin
+      assertBool "browser client should receive capabilities" ("admin.capabilities" `elem` browserResponse)
       response @?=
         responseResult
           ( Aeson.object
@@ -740,7 +766,8 @@ testHttpServerRejectsNonRpcPaths = do
           { enabled = True
           , host = "127.0.0.1"
           , port
-          , token = "secret"
+        , token = "secret"
+        , allowedBrowserOrigins = []
           }
         server =
           withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
@@ -832,6 +859,12 @@ parseJson value =
     Left err -> assertFailure err
     Right parsed -> pure parsed
 
+parseJsonField :: Aeson.FromJSON a => AesonKey.Key -> Aeson.Value -> IO a
+parseJsonField field value =
+  case AesonTypes.parseEither (Aeson.withObject "object" (Aeson..: field)) value of
+    Left err -> assertFailure err
+    Right parsed -> pure parsed
+
 responseAttachment :: JSONRPC.RpcResponse -> IO RPC.RpcChatAttachmentRef
 responseAttachment = \case
   WireJSONRPC.ResponseMessage result ->
@@ -868,6 +901,27 @@ openSessionClient port token =
         (WireJSONRPC.RequestId (Aeson.String "test-2"))
         (Aeson.object ["subscribed" Aeson..= True])
     pure response
+
+browserCapabilitiesClient :: Int -> ByteString -> Text -> IO [Text]
+browserCapabilitiesClient port origin token =
+  WS.runClientWith "127.0.0.1" port "/rpc" WS.defaultConnectionOptions [("Origin", origin)] \conn -> do
+    WS.sendTextData conn $ Aeson.encode $
+      JSONRPC.rpcRequest "admin.authenticate" (Aeson.object ["token" Aeson..= token]) "auth"
+    authBytes <- WS.receiveData conn :: IO ByteString
+    authResponse <- either fail pure (Aeson.eitherDecodeStrict' authBytes :: Either String JSONRPC.RpcResponse)
+    authResponse @?=
+      JSONRPC.successResponse
+        (WireJSONRPC.RequestId (Aeson.String "auth"))
+        (Aeson.object ["authenticated" Aeson..= True])
+    WS.sendTextData conn $ Aeson.encode $
+      JSONRPC.rpcRequest "admin.capabilities" Aeson.Null "capabilities"
+    capabilityBytes <- WS.receiveData conn :: IO ByteString
+    capabilityResponse <- either fail pure (Aeson.eitherDecodeStrict' capabilityBytes :: Either String JSONRPC.RpcResponse)
+    case capabilityResponse of
+      WireJSONRPC.ResponseMessage result ->
+        parseJson =<< parseJsonField "methods" result.result
+      other ->
+        assertFailure [i|expected capabilities response, got #{show other :: String}|]
 
 httpGet :: HTTP.Manager -> String -> IO (HTTP.Response LazyByteString.ByteString)
 httpGet manager url = do
@@ -926,11 +980,12 @@ finishRace done action =
   try action >>= void . MVar.tryPutMVar done
 
 runRpcServerTest
-  :: Eff '[Media.Media, Storage.Storage, FileSystem.FileSystem, Concurrency.Concurrency, KatipE, Prim, Concurrent, IOE] a
+  :: Eff '[Media.Media, Storage.Storage, FileSystem.FileSystem, Concurrency.Concurrency, KatipE, Prim, EffectfulTimeout.Timeout, Concurrent, IOE] a
   -> IO a
 runRpcServerTest action =
   runEff $
     ( runConcurrent
+    . EffectfulTimeout.runTimeout
     . runPrim
     . runTestLog
     . ConcurrencyManager.runConcurrencyManager
@@ -1041,6 +1096,7 @@ testRpcConfig = RPCConfig.Config
   , host = "127.0.0.1"
   , port = 38765
   , token = "secret"
+  , allowedBrowserOrigins = []
   }
 
 responseMessageAttachments :: JSONRPC.RpcResponse -> [[Text]]

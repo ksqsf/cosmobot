@@ -41,8 +41,10 @@ import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Streaming.ByteString as Q
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Version (showVersion)
 import Data.Typeable (typeOf)
 import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.Timeout as Timeout
 import GHC.Clock (getMonotonicTimeNSec)
 import qualified JSONRPC
 import qualified Network.HTTP.Types as Http
@@ -50,10 +52,13 @@ import qualified Network.Wai as Wai
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Network.Wai.Handler.WebSockets as WaiWS
 import qualified Network.WebSockets as WS
+import qualified Paths_cosmobot as Paths
 
 data RpcServerCallbacks es = RpcServerCallbacks
   { auditMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , managerMethod :: RPC.RpcRequest -> Eff es (Maybe RPC.RpcResponse)
+  , hasAuditMethods :: !Bool
+  , hasManagerMethods :: !Bool
   }
 
 data RpcAttachmentUpload = RpcAttachmentUpload
@@ -83,6 +88,8 @@ noRpcServerCallbacks :: RpcServerCallbacks es
 noRpcServerCallbacks = RpcServerCallbacks
   { auditMethod = \_ -> pure Nothing
   , managerMethod = \_ -> pure Nothing
+  , hasAuditMethods = False
+  , hasManagerMethods = False
   }
 
 withManagerRpcCallbacks
@@ -91,10 +98,11 @@ withManagerRpcCallbacks
   -> RpcServerCallbacks es
 withManagerRpcCallbacks callbacks = callbacks
   { managerMethod = fmap Just . dispatchManagerRequest
+  , hasManagerMethods = True
   }
 
 runRpcServer
-  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Timeout.Timeout :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -105,7 +113,7 @@ runRpcServer cfg@Config.Config{enabled} rpcState callbacks = do
     else pure ()
 
 runRpcServer'
-  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Timeout.Timeout :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -121,7 +129,7 @@ runRpcServer' cfg rpcState callbacks = do
       Warp.runSettings settings (rpcServerApplication runInIO cfg rpcState callbacks)
 
 rpcServerApplication
-  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Timeout.Timeout :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => (forall a. Eff es a -> IO a)
   -> Config.Config
   -> State.RpcState
@@ -147,7 +155,7 @@ rpcConnectionOptions =
     rpcEnvelopeMaxBytes = 64 * 1024
 
 rpcServerApp
-  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Timeout.Timeout :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -165,6 +173,11 @@ rpcServerApp cfg rpcState callbacks pending
   | requestIsAuthorized cfg (WS.pendingRequest pending) = do
       conn <- liftIO (WS.acceptRequest pending)
       serveAcceptedClient cfg rpcState callbacks conn
+  | browserOriginAllowed cfg (WS.pendingRequest pending) = do
+      conn <- liftIO (WS.acceptRequest pending)
+      (authenticateBrowserClient cfg conn `catchSync` \(_ :: SomeException) -> pure False) >>= \case
+        True -> serveAcceptedClient cfg rpcState callbacks conn
+        False -> pure ()
   | otherwise =
       liftIO $
         WS.rejectRequestWith pending $
@@ -173,6 +186,39 @@ rpcServerApp cfg rpcState callbacks pending
             , WS.rejectMessage = "Unauthorized"
             , WS.rejectBody = "unauthorized"
             }
+
+authenticateBrowserClient
+  :: (IOE :> es, Timeout.Timeout :> es)
+  => Config.Config
+  -> WS.Connection
+  -> Eff es Bool
+authenticateBrowserClient cfg conn =
+  Timeout.timeout browserAuthenticationTimeoutMicroseconds (liftIO (WS.receiveData conn :: IO ByteString)) >>= \case
+    Nothing -> close "authentication timeout"
+    Just bytes ->
+      case Aeson.eitherDecodeStrict' bytes of
+        Right (JSONRPC.RequestMessage request)
+          | RPC.requestMethod request == "admin.authenticate" ->
+              case AesonTypes.parseEither parseBrowserAuthentication (RPC.requestParams request) of
+                Right suppliedToken | suppliedToken == cfg.token -> do
+                  liftIO $ WS.sendTextData conn $ Aeson.encode $
+                    RPC.successResponse (RPC.requestId request) (Aeson.object ["authenticated" Aeson..= True])
+                  pure True
+                _ -> reject request
+        _ -> close "authentication required"
+  where
+    reject request = do
+      liftIO $ WS.sendTextData conn $ Aeson.encode $
+        RPC.errorResponse (RPC.requestId request) "unauthorized" "Authentication failed"
+      close "authentication failed"
+    close reason = liftIO (WS.sendClose conn (reason :: Text)) $> False
+
+parseBrowserAuthentication :: Aeson.Value -> AesonTypes.Parser Text
+parseBrowserAuthentication =
+  Aeson.withObject "admin.authenticate params" (Aeson..: "token")
+
+browserAuthenticationTimeoutMicroseconds :: Int
+browserAuthenticationTimeoutMicroseconds = 10 * 1_000_000
 
 serveAcceptedClient
   :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
@@ -323,6 +369,8 @@ dispatchRpcRequestUnsafe
   -> Eff es RPC.RpcResponse
 dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
   case RPC.requestMethod request of
+    "admin.capabilities" ->
+      dispatchAdminCapabilities callbacks request
     "chat.open_session" ->
       dispatchOpenSession request
     "chat.list_sessions" ->
@@ -370,6 +418,47 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
           dispatchManager callbacks request
       | otherwise ->
           pure (methodNotFound (RPC.requestId request) method)
+
+dispatchAdminCapabilities :: Applicative f => RpcServerCallbacks es -> RPC.RpcRequest -> f RPC.RpcResponse
+dispatchAdminCapabilities callbacks request =
+  pure $ case AesonTypes.parseEither parseNoParams (RPC.requestParams request) of
+    Left err -> invalidParams request err
+    Right () -> RPC.successResponse (RPC.requestId request) $ Aeson.object
+      [ "serverVersion" Aeson..= (toText (showVersion Paths.version) :: Text)
+      , "methods" Aeson..= rpcMethods callbacks
+      , "topics" Aeson..= (["audit.event", "chat.message"] :: [Text])
+      , "permissions" Aeson..= if callbacks.hasManagerMethods
+          then (["tasks.cancel", "resources.manage"] :: [Text])
+          else []
+      , "features" Aeson..= Aeson.object
+          [ "serviceLogs" Aeson..= ("demo" :: Text)
+          , "configWrite" Aeson..= ("unsupported" :: Text)
+          ]
+      ]
+
+parseNoParams :: Aeson.Value -> AesonTypes.Parser ()
+parseNoParams Aeson.Null = pure ()
+parseNoParams value = Aeson.withObject "empty params" (\o -> unless (null o) (fail "params must be empty")) value
+
+rpcMethods :: RpcServerCallbacks es -> [Text]
+rpcMethods callbacks =
+  [ "admin.capabilities"
+  , "chat.open_session", "chat.list_sessions", "chat.get_session", "chat.history"
+  , "chat.fork", "chat.rename_session", "chat.delete_session", "chat.upload_attachment"
+  , "chat.send", "chat.subscribe", "chat.unsubscribe"
+  , "audit.subscribe", "audit.unsubscribe", "events.subscribe", "events.unsubscribe"
+  , "media.resolve_source", "media.get", "media.delete", "media.stats", "media.gc"
+  ]
+    <> (if callbacks.hasAuditMethods
+      then ["audit.recent", "audit.get", "audit.thread", "audit.thread_messages"]
+      else [])
+    <> (if callbacks.hasManagerMethods
+      then
+        [ "concurrency.list", "concurrency.lookup", "concurrency.cancel", "concurrency.await"
+        , "resource.list", "resource.detail", "resource.destroy", "resource.rename"
+        , "resource.keep_alive", "resource.make_permanent", "resource.destroy_associated"
+        ]
+      else [])
 
 dispatchChatSubscription
   :: (Concurrent :> es, Storage.Storage :> es)
@@ -1115,6 +1204,12 @@ requestIsAuthorized cfg request =
   where
     Config.Config{token} = cfg
     expectedToken = TextEncoding.encodeUtf8 token
+
+browserOriginAllowed :: Config.Config -> WS.RequestHead -> Bool
+browserOriginAllowed cfg request =
+  maybe False (`elem` cfg.allowedBrowserOrigins) $ do
+    encoded <- snd <$> find ((== "Origin") . fst) request.requestHeaders
+    rightToMaybe (TextEncoding.decodeUtf8' encoded)
 
 requestIsRpcPath :: WS.RequestHead -> Bool
 requestIsRpcPath request =
