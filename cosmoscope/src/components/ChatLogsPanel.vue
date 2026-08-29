@@ -3,24 +3,24 @@ import { computed, nextTick, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import ContextMenu, { type ContextMenuMethods } from 'primevue/contextmenu'
+import Dialog from 'primevue/dialog'
 import Message from 'primevue/message'
 import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import DisplayIdentity from '@/components/DisplayIdentity.vue'
+import MessageContent from '@/components/MessageContent.vue'
+import type { MessageContentAttachment } from '@/components/messageContent'
+import PlatformIcon from '@/components/PlatformIcon.vue'
 import type { MenuItem } from 'primevue/menuitem'
 import { listChatLogs, loadChatLogWindow } from '@/backend/AdminBackend'
 import { mergeChatLogItems, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
 import { runBackend } from '@/backend/runBackend'
-import { renderMarkdown } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
 import type { AuditPlatform, ChatKind, ChatLogScope, ChatLogSummary, ChatLogWindow, ChatLogWindowQuery } from '@/types/domain'
 
 
 const platformLabels: Readonly<Record<AuditPlatform, string>> = {
   PlatformQQ: 'QQ', PlatformTelegram: 'Telegram', PlatformMatrix: 'Matrix', PlatformDiscord: 'Discord', PlatformRPC: 'RPC', PlatformACP: 'ACP',
-}
-const platformIcons: Readonly<Record<AuditPlatform, string>> = {
-  PlatformQQ: 'pi pi-comments', PlatformTelegram: 'pi pi-send', PlatformMatrix: 'pi pi-th-large', PlatformDiscord: 'pi pi-comments', PlatformRPC: 'pi pi-desktop', PlatformACP: 'pi pi-code',
 }
 const route = useRoute()
 const router = useRouter()
@@ -34,6 +34,7 @@ const retainedMessages = 150
 const messagePane = ref<HTMLElement>()
 const messageMenu = useTemplateRef<ContextMenuMethods>('messageMenu')
 const contextItem = ref<ChatLogWindow['entries'][number]>()
+const previewImage = ref<string>()
 const error = ref('')
 let requestGeneration = 0
 let listRequest = 0
@@ -79,6 +80,14 @@ function fileKind(name: string): 'image' | 'audio' | 'video' | 'file' {
 function entryImages(entry: ChatLogWindow['entries'][number]['entry']): readonly string[] {
   return [...new Set([...entry.imageUrls, ...entry.files.filter(({ name }) => fileKind(name) === 'image').map(({ ref }) => ref)])]
     .flatMap((ref) => imageUrl(ref) ?? [])
+}
+function entryAttachments(entry: ChatLogWindow['entries'][number]['entry']): MessageContentAttachment[] {
+  return entry.files.flatMap((file) => {
+    const kind = fileKind(file.name)
+    const url = downloadUrl(file.ref)
+    if (kind === 'image' || url === undefined) return []
+    return [{ key: `${file.name}:${file.ref}`, name: file.name, detail: 'Attachment', mimeType: `${kind}/*`, url }]
+  })
 }
 function showMessageMenu(event: Event, item: ChatLogWindow['entries'][number]): void {
   contextItem.value = item
@@ -190,7 +199,6 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
 onMounted(refresh)
 </script>
 
-<!-- eslint-disable vue/no-v-html -- renderMarkdown disables raw HTML. -->
 <template>
   <section class="chat-logs-embedded">
     <ContextMenu
@@ -241,7 +249,7 @@ onMounted(refresh)
           v-for="group in groupedChats"
           :key="group.platform"
         >
-          <h2><i :class="platformIcons[group.platform]" />{{ platformLabels[group.platform] }}</h2>
+          <h2><PlatformIcon :platform="group.platform" />{{ platformLabels[group.platform] }}</h2>
           <button
             v-for="chat in group.entries"
             :key="scopeKey(chat.scope)"
@@ -339,57 +347,12 @@ onMounted(refresh)
                 @click="router.push({ name: 'threads', params: { threadId: String(item.threadId) } })"
               />
             </header>
-            <div
-              v-if="item.entry.text"
-              class="markdown-body"
-              v-html="renderMarkdown(item.entry.text)"
+            <MessageContent
+              :text="item.entry.text"
+              :images="entryImages(item.entry)"
+              :attachments="entryAttachments(item.entry)"
+              @preview-image="previewImage = $event"
             />
-            <div
-              v-if="entryImages(item.entry).length > 0"
-              class="chat-log-media"
-            >
-              <a
-                v-for="url in entryImages(item.entry)"
-                :key="url"
-                :href="url"
-                target="_blank"
-                rel="noopener noreferrer"
-              ><img
-                :src="url"
-                alt="Chat attachment"
-                loading="lazy"
-              /></a>
-            </div>
-            <div
-              v-if="item.entry.files.some(({ name }) => fileKind(name) !== 'image')"
-              class="chat-files"
-            >
-              <template
-                v-for="file in item.entry.files.filter(({ name }) => fileKind(name) !== 'image')"
-                :key="`${file.name}:${file.ref}`"
-              >
-                <audio
-                  v-if="fileKind(file.name) === 'audio' && downloadUrl(file.ref)"
-                  controls
-                  preload="metadata"
-                  :src="downloadUrl(file.ref)"
-                />
-                <video
-                  v-else-if="fileKind(file.name) === 'video' && downloadUrl(file.ref)"
-                  controls
-                  preload="metadata"
-                  :src="downloadUrl(file.ref)"
-                />
-                <a
-                  v-else-if="downloadUrl(file.ref)"
-                  class="chat-file-card"
-                  :href="downloadUrl(file.ref)"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  download
-                ><i class="pi pi-file" /><span><strong>{{ file.name }}</strong><small>Attachment</small></span><i class="pi pi-download" /></a>
-              </template>
-            </div>
           </article>
           <Button
             v-if="window.hasNewer"
@@ -411,5 +374,20 @@ onMounted(refresh)
         </div>
       </main>
     </div>
+    <Dialog
+      :visible="previewImage !== undefined"
+      modal
+      dismissable-mask
+      header="Image preview"
+      class="image-preview-dialog"
+      @update:visible="previewImage = undefined"
+    >
+      <img
+        v-if="previewImage"
+        :src="previewImage"
+        alt="Full-size chat image"
+        class="object-preview"
+      />
+    </Dialog>
   </section>
 </template>

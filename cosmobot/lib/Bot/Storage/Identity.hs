@@ -22,7 +22,6 @@ import Bot.Storage.Prelude
 import qualified Data.Map.Strict as Map
 import qualified Data.Int as Int
 import qualified Data.Text as Text
-import qualified Database.Selda.Backend as SeldaBackend
 import qualified Database.Selda.SQLite as SeldaSQLite
 
 data SenderInfo = SenderInfo
@@ -46,6 +45,7 @@ instance SqlRow SenderInfoRow
 data ChatInfoRow = ChatInfoRow
   { identity_key :: !Text
   , platform_key :: !Text
+  , kind_key :: !Text
   , chat_id :: !Int.Int64
   , display_name :: !(Maybe Text)
   , updated_at :: !UTCTime
@@ -72,19 +72,6 @@ ensureIdentityTables :: Storage.Storage :> es => Eff es ()
 ensureIdentityTables = runSelda $ transaction do
   tryCreateTable senderInfoRows
   tryCreateTable chatInfoRows
-  migrateScopedChatKeys
-
--- Temporary migration: infer the kind of legacy platform/chat keys from their
--- latest log entry. New rows include the kind and do not need this heuristic.
-migrateScopedChatKeys :: SeldaT SeldaSQLite.SQLite IO ()
-migrateScopedChatKeys =
-  SeldaBackend.withBackend \backend -> liftIO do
-    (_, tables) <- SeldaBackend.runStmt backend
-      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_log'"
-      []
-    unless (null tables) $ void $ SeldaBackend.runStmt backend
-      "UPDATE chat_info SET identity_key = platform_key || ':' || (SELECT kind_key FROM chat_log WHERE lower(substr(chat_log.platform_key, 9)) = chat_info.platform_key AND chat_log.chat_id = chat_info.chat_id ORDER BY chat_log.id DESC LIMIT 1) || ':' || chat_id WHERE identity_key = platform_key || ':' || chat_id AND EXISTS (SELECT 1 FROM chat_log WHERE lower(substr(chat_log.platform_key, 9)) = chat_info.platform_key AND chat_log.chat_id = chat_info.chat_id)"
-      []
 
 rememberIncomingIdentityRows :: UTCTime -> IncomingMessage -> SeldaT SeldaSQLite.SQLite IO ()
 rememberIncomingIdentityRows updatedAt message = do
@@ -116,6 +103,7 @@ rememberIncomingIdentityRows updatedAt message = do
       [ ChatInfoRow
           { identity_key = key
           , platform_key = chatPlatformKey message.platform
+          , kind_key = chatKindKey message.kind
           , chat_id = fromIntegral chatId
           , display_name = nonEmptyText message.chatDisplayName <|> (existing >>= (.display_name))
           , updated_at = updatedAt
@@ -183,10 +171,10 @@ scopedChatKey platform kind chatId =
 
 chatKindKey :: ChatKind -> Text
 chatKindKey = \case
-  ChatPrivate -> "ChatPrivate"
-  ChatGroup -> "ChatGroup"
-  ChatChannel -> "ChatChannel"
-  ChatUnknown value -> "ChatUnknown:" <> value
+  ChatPrivate -> "private"
+  ChatGroup -> "group"
+  ChatChannel -> "channel"
+  ChatUnknown value -> "unknown:" <> value
 
 nonEmptyText :: Maybe Text -> Maybe Text
 nonEmptyText value = do

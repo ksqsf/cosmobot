@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { refDebounced } from '@vueuse/core'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -20,6 +20,9 @@ import type { TreeNode as PrimeTreeNode } from 'primevue/treenode'
 import PageHeading from '@/components/PageHeading.vue'
 import ChatLogMessageLink from '@/components/ChatLogMessageLink.vue'
 import DisplayIdentity from '@/components/DisplayIdentity.vue'
+import MessageContent from '@/components/MessageContent.vue'
+import type { MessageContentAttachment } from '@/components/messageContent'
+import PlatformIcon from '@/components/PlatformIcon.vue'
 import RunIdLink from '@/components/RunIdLink.vue'
 import { getMedia, getThread, getThreadAudit, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
@@ -27,7 +30,7 @@ import { safeDownloadUrl, safeImageUrl } from '@/backend/chat'
 import { threadMessageKeyId, threadPathTo } from '@/backend/thread'
 import { auditRecordsLinkedTo, threadStats } from '@/backend/threadStats'
 import { formatBytes } from '@/format'
-import { highlightCode, mediaRefFromClick, mediaRefsInText, renderMarkdown } from '@/markdown'
+import { highlightCode, mediaRefsInText } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
 import type { ActiveThread, AuditPlatform, AuditRecord, MediaDetail, StoredThreadMessage, ThreadDetail, ThreadNode, ThreadSummary } from '@/types/domain'
 
@@ -81,14 +84,6 @@ const platformNames = {
   PlatformDiscord: 'Discord',
   PlatformRPC: 'RPC',
   PlatformACP: 'ACP',
-} satisfies Record<AuditPlatform, string>
-const platformIcons = {
-  PlatformQQ: 'pi pi-comment',
-  PlatformTelegram: 'pi pi-send',
-  PlatformMatrix: 'pi pi-th-large',
-  PlatformDiscord: 'pi pi-discord',
-  PlatformRPC: 'pi pi-desktop',
-  PlatformACP: 'pi pi-code',
 } satisfies Record<AuditPlatform, string>
 const allPlatforms: readonly AuditPlatform[] = ['PlatformQQ', 'PlatformTelegram', 'PlatformMatrix', 'PlatformDiscord', 'PlatformRPC', 'PlatformACP']
 const platformOptions = computed(() => [
@@ -397,11 +392,20 @@ function imageUrls(message: StoredThreadMessage): string[] {
   }))]
 }
 
-function openMediaRef(event: MouseEvent): void {
-  const mediaRef = mediaRefFromClick(event)
-  if (mediaRef === undefined) return
-  event.preventDefault()
-  void router.push({ name: 'media', params: { mediaId: mediaRef } })
+function messageAttachments(message: StoredThreadMessage): MessageContentAttachment[] {
+  return mediaDetails(message)
+    .filter(({ mimeType }) => !mimeType.startsWith('image/'))
+    .map((media) => {
+      const url = media.exists ? mediaUrl(media) : undefined
+      return {
+        key: media.mediaId,
+        name: media.sourceName ?? media.mediaId,
+        detail: `${media.mimeType} · ${formatBytes(media.size)}`,
+        mimeType: media.mimeType,
+        mediaId: media.mediaId,
+        ...(url === undefined ? {} : { url }),
+      }
+    })
 }
 
 function roleLabel(role: string): string {
@@ -415,10 +419,6 @@ function formatDuration(milliseconds: number, unreported = 0): string {
 
 function threadPlatformName(thread: ThreadSummary): string {
   return platformNames[thread.rootKey.platform]
-}
-
-function threadPlatformIcon(thread: ThreadSummary): string {
-  return platformIcons[thread.rootKey.platform]
 }
 
 onMounted(() => {
@@ -555,7 +555,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
             header="Thread"
           >
             <template #body="{ data }">
-              <span class="manager-identity"><span class="manager-type-icon"><i :class="threadPlatformIcon(data)" /></span><span><strong>#{{ data.threadId }}</strong><small>{{ threadPlatformName(data) }}</small></span></span>
+              <span class="manager-identity"><span class="manager-type-icon"><PlatformIcon :platform="data.rootKey.platform" /></span><span><strong>#{{ data.threadId }}</strong><small>{{ threadPlatformName(data) }}</small></span></span>
             </template>
           </Column>
           <Column header="Chat">
@@ -612,7 +612,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
         class="thread-inspector"
       >
         <header class="drawer-hero">
-          <span class="platform-icon"><i :class="platformIcons[detail.summary.rootKey.platform]" /></span><div>
+          <span class="platform-icon"><PlatformIcon :platform="detail.summary.rootKey.platform" /></span><div>
             <small>{{ platformNames[detail.summary.rootKey.platform] }} thread</small><h2>Thread #{{ detail.summary.threadId }}</h2>
             <div class="tag-list">
               <Tag
@@ -750,63 +750,11 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
                 :class="`role-${message.role}`"
               >
                 <div><strong>{{ roleLabel(message.role) }}</strong><code v-if="message.tool_call_id">{{ message.tool_call_id }}</code></div>
-                <div
-                  v-if="imageUrls(message).length > 0"
-                  class="chat-images thread-media"
-                >
-                  <button
-                    v-for="url in imageUrls(message)"
-                    :key="url"
-                    type="button"
-                    class="chat-image-button"
-                    aria-label="Zoom image"
-                    @click="previewImage = url"
-                  >
-                    <img
-                      :src="url"
-                      alt="Thread image"
-                      loading="lazy"
-                    />
-                  </button>
-                </div>
-                <div
-                  v-if="mediaDetails(message).some(({ mimeType }) => mimeType.startsWith('video/') || mimeType.startsWith('audio/') || !mimeType.startsWith('image/'))"
-                  class="thread-attachments"
-                >
-                  <template
-                    v-for="media in mediaDetails(message)"
-                    :key="media.mediaId"
-                  >
-                    <video
-                      v-if="media.exists && mediaUrl(media) && media.mimeType.startsWith('video/')"
-                      class="object-preview"
-                      controls
-                      preload="metadata"
-                    ><source
-                      :src="mediaUrl(media)"
-                      :type="media.mimeType"
-                    /></video>
-                    <audio
-                      v-else-if="media.exists && mediaUrl(media) && media.mimeType.startsWith('audio/')"
-                      controls
-                      preload="metadata"
-                    ><source
-                      :src="mediaUrl(media)"
-                      :type="media.mimeType"
-                    /></audio>
-                    <RouterLink
-                      v-else-if="!media.mimeType.startsWith('image/')"
-                      class="chat-file-card"
-                      :to="{ name: 'media', params: { mediaId: media.mediaId } }"
-                    >
-                      <i class="pi pi-file" /><span><strong>{{ media.sourceName || media.mediaId }}</strong><small>{{ media.mimeType }} · {{ formatBytes(media.size) }}</small></span><i class="pi pi-arrow-right" />
-                    </RouterLink>
-                  </template>
-                </div>
-                <div
-                  class="markdown-body"
-                  :innerHTML="renderMarkdown(messageText(message))"
-                  @click="openMediaRef"
+                <MessageContent
+                  :text="messageText(message)"
+                  :images="imageUrls(message)"
+                  :attachments="messageAttachments(message)"
+                  @preview-image="previewImage = $event"
                 />
                 <div
                   v-if="message.tool_calls?.length"
@@ -871,63 +819,11 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
               :class="`role-${message.role}`"
             >
               <div><strong>{{ roleLabel(message.role) }}</strong><code v-if="message.tool_call_id">{{ message.tool_call_id }}</code></div>
-              <div
-                v-if="imageUrls(message).length"
-                class="chat-images thread-media"
-              >
-                <button
-                  v-for="url in imageUrls(message)"
-                  :key="url"
-                  type="button"
-                  class="chat-image-button"
-                  aria-label="Zoom image"
-                  @click="previewImage = url"
-                >
-                  <img
-                    :src="url"
-                    alt="Thread image"
-                    loading="lazy"
-                  />
-                </button>
-              </div>
-              <div
-                v-if="mediaDetails(message).some(({ mimeType }) => mimeType.startsWith('video/') || mimeType.startsWith('audio/') || !mimeType.startsWith('image/'))"
-                class="thread-attachments"
-              >
-                <template
-                  v-for="media in mediaDetails(message)"
-                  :key="media.mediaId"
-                >
-                  <video
-                    v-if="media.exists && mediaUrl(media) && media.mimeType.startsWith('video/')"
-                    class="object-preview"
-                    controls
-                    preload="metadata"
-                  ><source
-                    :src="mediaUrl(media)"
-                    :type="media.mimeType"
-                  /></video>
-                  <audio
-                    v-else-if="media.exists && mediaUrl(media) && media.mimeType.startsWith('audio/')"
-                    controls
-                    preload="metadata"
-                  ><source
-                    :src="mediaUrl(media)"
-                    :type="media.mimeType"
-                  /></audio>
-                  <RouterLink
-                    v-else-if="!media.mimeType.startsWith('image/')"
-                    class="chat-file-card"
-                    :to="{ name: 'media', params: { mediaId: media.mediaId } }"
-                  >
-                    <i class="pi pi-file" /><span><strong>{{ media.sourceName || media.mediaId }}</strong><small>{{ media.mimeType }} · {{ formatBytes(media.size) }}</small></span><i class="pi pi-arrow-right" />
-                  </RouterLink>
-                </template>
-              </div>
-              <div
-                class="markdown-body"
-                :innerHTML="renderMarkdown(messageText(message))"
-                @click="openMediaRef"
+              <MessageContent
+                :text="messageText(message)"
+                :images="imageUrls(message)"
+                :attachments="messageAttachments(message)"
+                @preview-image="previewImage = $event"
               />
               <div
                 v-if="message.tool_calls?.length"
