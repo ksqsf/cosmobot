@@ -2,7 +2,6 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { refDebounced } from '@vueuse/core'
 import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -34,6 +33,7 @@ import { auditRecordsLinkedTo, threadStats } from '@/backend/threadStats'
 import { formatBytes } from '@/format'
 import { highlightCode, mediaRefsInText } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
+import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 import type { ActiveThread, AuditPlatform, AuditRecord, MediaDetail, StoredThreadMessage, ThreadDetail, ThreadMessageKey, ThreadNode, ThreadSummary } from '@/types/domain'
 
 interface ThreadTranscriptEntry {
@@ -79,7 +79,7 @@ const transcriptMessageMenu = useTemplateRef<ContextMenuMethods>('transcriptMess
 const contextTranscriptEntry = ref<ThreadTranscriptEntry>()
 const route = useRoute()
 const router = useRouter()
-const confirm = useConfirm()
+const confirm = useLayeredConfirm()
 const toast = useToast()
 const connection = useConnectionStore()
 let detailGeneration = 0
@@ -87,6 +87,10 @@ let activeGeneration = 0
 let listGeneration = 0
 let monitorTimer: number | undefined
 let activePolling = false
+const { isTop: detailIsTop } = useOverlayLayer(visible)
+const { isTop: activeIsTop } = useOverlayLayer(activeVisible)
+const { isTop: previewIsTop } = useOverlayLayer(computed(() => previewImage.value !== undefined))
+const transcriptMenuLayer = useOverlayLayer()
 
 const platformNames = {
   PlatformQQ: 'QQ',
@@ -512,7 +516,8 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
     <ContextMenu
       ref="transcriptMessageMenu"
       :model="transcriptMenuItems"
-      @hide="contextTranscriptEntry = undefined"
+      @show="transcriptMenuLayer.show"
+      @hide="transcriptMenuLayer.hide(); contextTranscriptEntry = undefined"
     />
     <PageHeading
       eyebrow="Conversations"
@@ -671,6 +676,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
       header="Thread inspector"
       position="right"
       :style="{ width: 'min(1100px, 100vw)' }"
+      :close-on-escape="detailIsTop"
       @hide="closeDrawer"
     >
       <div
@@ -881,6 +887,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
       header="Active thread monitor"
       position="right"
       :style="{ width: 'min(720px, 100vw)' }"
+      :close-on-escape="activeIsTop"
       @hide="closeActiveDrawer"
     >
       <div
@@ -957,6 +964,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
       dismissable-mask
       header="Image preview"
       class="image-preview-dialog"
+      :close-on-escape="previewIsTop"
       @update:visible="previewImage = undefined"
     >
       <img

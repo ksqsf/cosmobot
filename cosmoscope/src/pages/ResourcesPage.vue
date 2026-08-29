@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -17,6 +16,7 @@ import { destroyResource, getResourceDetail, keepResourceAlive, listResources, m
 import { runBackend } from '@/backend/runBackend'
 import type { Resource } from '@/types/domain'
 import { useConnectionStore } from '@/stores/connection'
+import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 
 const resourceMethods = ['resource.list', 'resource.detail', 'resource.destroy', 'resource.rename', 'resource.keep_alive', 'resource.make_permanent'] as const
 type ProbeFilter = 'all' | 'healthy' | 'failed'
@@ -35,10 +35,11 @@ const loaded = ref(false)
 const pending = ref<PendingAction>()
 const route = useRoute()
 const router = useRouter()
-const confirm = useConfirm()
+const confirm = useLayeredConfirm()
 const toast = useToast()
 const connection = useConnectionStore()
 let detailGeneration = 0
+const { isTop: drawerIsTop } = useOverlayLayer(visible)
 const live = computed(() => connection.state === 'authenticated' && resourceMethods.every((method) => connection.methods.has(method)))
 const summary = computed(() => ({
   total: resources.value.length,
@@ -280,6 +281,7 @@ watch(() => route.params['resourceId'], () => { void selectFromRoute() })
       aria-label="Resource detail"
       position="right"
       :style="{ width: 'min(460px, 100vw)' }"
+      :close-on-escape="drawerIsTop"
       @hide="closeDrawer"
     >
       <template v-if="selected">

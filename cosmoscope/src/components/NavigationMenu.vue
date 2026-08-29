@@ -39,7 +39,8 @@ defineProps<{
 
 <style scoped>
 .navigation-menu { display: grid; gap: 0.15rem; width: 100%; margin: 0; padding: 0; list-style: none; }
-.navigation-menu-item { display: flex; gap: 0.7rem; align-items: center; padding: 0.7rem 0.8rem; border-radius: 8px; color: inherit; font-size: 0.86rem; text-decoration: none; }
+.navigation-menu-item { display: flex; gap: 0.7rem; align-items: center; padding: 0.7rem 0.8rem; border-radius: 8px; color: var(--muted); font-size: 0.86rem; text-decoration: none; }
+.navigation-menu-item:hover { color: var(--text); background: var(--surface-2); }
 .navigation-menu-item.active { color: var(--text); background: var(--accent-soft); }
 .navigation-menu-item > span:nth-child(2) { min-width: 0; }
 </style>

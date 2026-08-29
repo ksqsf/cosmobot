@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -14,6 +13,7 @@ import { getSkill, listSkills, removeSkill } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
 import { renderMarkdown } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
+import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 import type { SkillDetail, SkillSummary } from '@/types/domain'
 
 const skills = ref<readonly SkillSummary[]>([])
@@ -25,7 +25,7 @@ const detailLoading = ref(false)
 const removing = ref('')
 const error = ref('')
 const connection = useConnectionStore()
-const confirm = useConfirm()
+const confirm = useLayeredConfirm()
 const toast = useToast()
 let detailRequest = 0
 const drawerVisible = computed({
@@ -37,6 +37,7 @@ const drawerVisible = computed({
     }
   },
 })
+const { isTop: drawerIsTop } = useOverlayLayer(drawerVisible)
 const filtered = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
   return needle === '' ? skills.value : skills.value.filter((skill) =>
@@ -187,6 +188,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       position="right"
       class="inspector-drawer"
       :header="selected?.name ?? 'Skill'"
+      :close-on-escape="drawerIsTop"
     >
       <Skeleton
         v-if="detailLoading"

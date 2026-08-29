@@ -11,6 +11,7 @@ import NavigationMenu from '@/components/NavigationMenu.vue'
 import type { NavigationItem } from '@/components/NavigationMenu.vue'
 import { useConnectionStore } from '@/stores/connection'
 import type { ConnectionState } from '@/rpc/client'
+import { useOverlayLayer } from '@/overlay'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,6 +19,8 @@ const connectionStore = useConnectionStore()
 const mobileNavigation = ref(false)
 const sidebarCollapsed = ref(false)
 const paletteOpen = ref(false)
+const { isTop: mobileNavigationIsTop } = useOverlayLayer(mobileNavigation)
+const { isTop: paletteIsTop } = useOverlayLayer(paletteOpen)
 const query = ref('')
 const selectedCommand = ref(0)
 interface ButtonRef { readonly $el: HTMLButtonElement }
@@ -207,6 +210,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     aria-label="Navigate"
     position="left"
     class="mobile-drawer"
+    :close-on-escape="mobileNavigationIsTop"
   >
     <nav class="mobile-links">
       <RouterLink
@@ -226,6 +230,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     dismissable-mask
     header="Go to"
     class="command-dialog"
+    :close-on-escape="paletteIsTop"
     @after-hide="commandButton?.$el.focus()"
     @after-show="focusCommandInput"
   >

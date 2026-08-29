@@ -17,6 +17,7 @@ import { mergeChatLogItems, safeDownloadUrl, safeImageUrl } from '@/backend/chat
 import { runBackend } from '@/backend/runBackend'
 import { useConnectionStore } from '@/stores/connection'
 import type { AuditPlatform, ChatKind, ChatLogScope, ChatLogSummary, ChatLogWindow, ChatLogWindowQuery } from '@/types/domain'
+import { useOverlayLayer } from '@/overlay'
 
 
 const platformLabels: Readonly<Record<AuditPlatform, string>> = {
@@ -38,6 +39,8 @@ const previewImage = ref<string>()
 const error = ref('')
 let requestGeneration = 0
 let listRequest = 0
+const { isTop: previewIsTop } = useOverlayLayer(computed(() => previewImage.value !== undefined))
+const messageMenuLayer = useOverlayLayer()
 
 const groupedChats = computed(() => [...chats.value.reduce((groups, chat) => {
   const entries = groups.get(chat.scope.platform) ?? []
@@ -204,7 +207,8 @@ onMounted(refresh)
     <ContextMenu
       ref="messageMenu"
       :model="messageMenuItems"
-      @hide="contextItem = undefined"
+      @show="messageMenuLayer.show"
+      @hide="messageMenuLayer.hide(); contextItem = undefined"
     />
     <div class="cluster chat-log-actions">
       <span>Read-only platform history</span><Button
@@ -380,6 +384,7 @@ onMounted(refresh)
       dismissable-mask
       header="Image preview"
       class="image-preview-dialog"
+      :close-on-escape="previewIsTop"
       @update:visible="previewImage = undefined"
     >
       <img

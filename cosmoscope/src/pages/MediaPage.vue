@@ -2,7 +2,6 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { refDebounced } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -21,6 +20,7 @@ import { safeDownloadUrl } from '@/backend/chat'
 import { runBackend } from '@/backend/runBackend'
 import { formatBytes } from '@/format'
 import { useConnectionStore } from '@/stores/connection'
+import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 import type { MediaDetail, MediaGcSettings, MediaItem, MediaSourceKind, MediaStats } from '@/types/domain'
 
 type PendingAction = 'detail' | 'delete' | 'batch-delete' | 'gc'
@@ -58,9 +58,11 @@ let searchGeneration = 0
 let detailGeneration = 0
 const route = useRoute()
 const router = useRouter()
-const confirm = useConfirm()
+const confirm = useLayeredConfirm()
 const toast = useToast()
 const connection = useConnectionStore()
+const { isTop: drawerIsTop } = useOverlayLayer(drawerOpen)
+const { isTop: zoomIsTop } = useOverlayLayer(zoomOpen)
 
 const platformOptions = computed(() => [
   ...stats.value.platforms.map((value) => ({ label: platformLabel(value), value })),
@@ -430,6 +432,7 @@ watch([debouncedQuery, platforms, mimeTypes, sourceKinds], () => { void refreshS
       aria-label="Media detail"
       position="right"
       :style="{ width: 'min(520px, 100vw)' }"
+      :close-on-escape="drawerIsTop"
       @hide="closeDrawer"
     >
       <div
@@ -576,6 +579,7 @@ watch([debouncedQuery, platforms, mimeTypes, sourceKinds], () => { void refreshS
       modal
       dismissable-mask
       header="Image preview"
+      :close-on-escape="zoomIsTop"
     >
       <img
         v-if="detail && publicUrl"

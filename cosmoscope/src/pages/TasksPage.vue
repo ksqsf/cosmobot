@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -17,6 +16,7 @@ import { cancelTask, destroyTaskResources, listTaskResources, listTasks, lookupT
 import { runBackend } from '@/backend/runBackend'
 import type { AssociatedResource, Task, TaskStatus } from '@/types/domain'
 import { useConnectionStore } from '@/stores/connection'
+import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 
 const taskMethods = ['concurrency.list', 'concurrency.lookup', 'concurrency.cancel', 'resource.list_associated', 'resource.destroy_associated'] as const
 type TaskFilter = 'all' | TaskStatus
@@ -33,10 +33,11 @@ const pending = ref<PendingAction>()
 const error = ref('')
 const loading = ref(true)
 const loaded = ref(false)
-const confirm = useConfirm()
+const confirm = useLayeredConfirm()
 const toast = useToast()
 const connection = useConnectionStore()
 const live = computed(() => connection.state === 'authenticated' && taskMethods.every((method) => connection.methods.has(method)))
+const { isTop: drawerIsTop } = useOverlayLayer(drawerOpen)
 const summary = computed(() => ({
   running: tasks.value.filter(({ status }) => status === 'running').length,
   completed: tasks.value.filter(({ status }) => status === 'completed').length,
@@ -272,6 +273,7 @@ watch(() => route.params['taskId'], () => { void selectTaskFromRoute() })
       header="Task detail"
       aria-label="Task detail"
       :style="{ width: 'min(440px, 100vw)' }"
+      :close-on-escape="drawerIsTop"
       @hide="closeDrawer"
     >
       <template v-if="selected">

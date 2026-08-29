@@ -18,6 +18,7 @@ import { formatBytes } from '@/format'
 import { useConnectionStore } from '@/stores/connection'
 import type { Activity, AuditRecord, MediaStats, Task } from '@/types/domain'
 import type { LiveAdminMethod } from '@/rpc/protocol'
+import { useOverlayLayer } from '@/overlay'
 
 const router = useRouter()
 const connection = useConnectionStore()
@@ -45,6 +46,7 @@ const resourceError = ref('')
 const mediaError = ref('')
 const selectedTask = ref<Task>()
 const drawerOpen = ref(false)
+const { isTop: drawerIsTop } = useOverlayLayer(drawerOpen)
 let stopAuditSubscription: (() => void) | undefined
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -457,6 +459,7 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
       v-model:visible="drawerOpen"
       position="right"
       header="Task detail"
+      :close-on-escape="drawerIsTop"
       aria-label="Task detail"
       :style="{ width: 'min(420px, 100vw)' }"
       @hide="selectedTask = undefined"

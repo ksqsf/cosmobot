@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import ContextMenu, { type ContextMenuMethods } from 'primevue/contextmenu'
@@ -24,12 +23,13 @@ import { useConnectionStore } from '@/stores/connection'
 import { chatMethods } from '@/rpc/protocol'
 import { renderMarkdown } from '@/markdown'
 import type { ChatAttachment, ChatMessage, ChatSession } from '@/types/domain'
+import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 
 const maxAttachmentBytes = 25 * 1024 * 1024
 const route = useRoute()
 const router = useRouter()
 const connection = useConnectionStore()
-const confirm = useConfirm()
+const confirm = useLayeredConfirm()
 const toast = useToast()
 const attachmentInput = useTemplateRef<HTMLInputElement>('attachmentInput')
 const messagePane = useTemplateRef<HTMLElement>('messagePane')
@@ -53,6 +53,8 @@ const drafts = reactive(new Map<string, string>())
 const streamingMessageIds = ref<ReadonlySet<string>>(new Set())
 let stopSubscription: (() => void) | undefined
 let selectionGeneration = 0
+const { isTop: previewIsTop } = useOverlayLayer(computed(() => previewImage.value !== undefined))
+const messageMenuLayer = useOverlayLayer()
 
 const live = computed(() => connection.state === 'authenticated' && chatMethods.every((method) => connection.methods.has(method)))
 const showingPlatformLogs = computed(() => route.query['view'] === 'logs')
@@ -459,7 +461,8 @@ onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discard
           <ContextMenu
             ref="messageMenu"
             :model="messageMenuItems"
-            @hide="contextMessage = undefined"
+            @show="messageMenuLayer.show"
+            @hide="messageMenuLayer.hide(); contextMessage = undefined"
           />
           <div
             ref="messagePane"
@@ -633,6 +636,7 @@ onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discard
         dismissable-mask
         header="Image preview"
         class="image-preview-dialog"
+        :close-on-escape="previewIsTop"
         @update:visible="previewImage = undefined"
       >
         <img

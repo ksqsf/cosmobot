@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -15,6 +14,7 @@ import { listPlugins, loadPlugin, reloadPlugin, unloadPlugin } from '@/backend/A
 import { runBackend } from '@/backend/runBackend'
 import { useConnectionStore } from '@/stores/connection'
 import type { Plugin } from '@/types/domain'
+import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 
 type PendingAction = 'load' | `reload:${string}` | `unload:${string}`
 const plugins = ref<Plugin[]>([])
@@ -25,8 +25,9 @@ const loadVisible = ref(false)
 const loadId = ref('')
 const pending = ref<PendingAction>()
 const connection = useConnectionStore()
-const confirm = useConfirm()
+const confirm = useLayeredConfirm()
 const toast = useToast()
+const { isTop: loadDialogIsTop } = useOverlayLayer(loadVisible)
 const totals = computed(() => plugins.value.reduce((summary, plugin) => ({
   loaded: summary.loaded + 1,
   tools: summary.tools + plugin.tools,
@@ -242,6 +243,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       modal
       header="Load plugin"
       :style="{ width: '28rem' }"
+      :close-on-escape="loadDialogIsTop"
     >
       <div class="stack">
         <p>Enter the ID of a plugin installed in the server plugin directory.</p>

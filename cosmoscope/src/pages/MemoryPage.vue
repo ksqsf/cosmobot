@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
@@ -17,6 +16,7 @@ import { getMemory, getMemoryHistory, getMemoryRevision, listMemories, revertMem
 import { runBackend } from '@/backend/runBackend'
 import { renderMarkdown } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
+import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 import type { MemoryDetail, MemoryHistoryEntry, MemorySummary } from '@/types/domain'
 
 const memories = ref<readonly MemorySummary[]>([])
@@ -32,7 +32,7 @@ const reverting = ref('')
 const historyLoading = ref(false)
 const error = ref('')
 const connection = useConnectionStore()
-const confirm = useConfirm()
+const confirm = useLayeredConfirm()
 const toast = useToast()
 let detailRequest = 0
 let revisionRequest = 0
@@ -54,6 +54,8 @@ const historyDialogVisible = computed({
     }
   },
 })
+const { isTop: drawerIsTop } = useOverlayLayer(drawerVisible)
+const { isTop: revisionIsTop } = useOverlayLayer(historyDialogVisible)
 const filtered = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
   return needle === '' ? memories.value : memories.value.filter((memory) =>
@@ -246,7 +248,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       position="right"
       class="inspector-drawer"
       header="Memory"
-      :close-on-escape="!historyDialogVisible"
+      :close-on-escape="drawerIsTop"
     >
       <template v-if="selected">
         <Skeleton
@@ -318,6 +320,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       modal
       :header="historicEntry ? `Memory at ${new Date(historicEntry.committedAt).toLocaleString()}` : 'Memory revision'"
       class="revision-dialog"
+      :close-on-escape="revisionIsTop"
     >
       <Skeleton
         v-if="historyLoading"
