@@ -53,12 +53,12 @@ dispatchThreadMethod inspectActive haltActive request =
         rows <- Thread.loadThreadIndexRows
         let summaries = filter (\summary -> maybe True (== summary.rootKey.platform) params.platform) (threadSummaries rows)
         -- ponytail: text search scans root blobs; add an indexed preview column if this becomes a sustained hot path.
-        searchRoots <- if Text.null params.query then pure [] else Thread.loadThreadRowsByIds (map (.rootRowId) summaries)
-        let searchPreviews = Map.fromList [(row.rowId, threadRowPreview row) | row <- searchRoots]
+        searchTails <- if Text.null params.query then pure [] else Thread.loadThreadRowsByIds (map (.latestRowId) summaries)
+        let searchPreviews = Map.fromList [(row.rowId, threadRowPreview row) | row <- searchTails]
             filtered = filter (summaryMatches params.query searchPreviews) summaries
             page = take params.limit (drop params.offset filtered)
-        pageRoots <- if Text.null params.query then Thread.loadThreadRowsByIds (map (.rootRowId) page) else pure []
-        let previews = searchPreviews <> Map.fromList [(row.rowId, threadRowPreview row) | row <- pageRoots]
+        pageTails <- if Text.null params.query then Thread.loadThreadRowsByIds (map (.latestRowId) page) else pure []
+        let previews = searchPreviews <> Map.fromList [(row.rowId, threadRowPreview row) | row <- pageTails]
         pure $ Aeson.object
           [ "threads" Aeson..= map (summaryValue previews) page
           , "total" Aeson..= length filtered
@@ -95,7 +95,7 @@ dispatchThreadMethod inspectActive haltActive request =
 
 data ThreadSummary = ThreadSummary
   { threadId :: !Integer
-  , rootRowId :: !Integer
+  , latestRowId :: !Integer
   , rootKey :: !ThreadMessageKey
   , latestKey :: !ThreadMessageKey
   , nodeCount :: !Int
@@ -121,7 +121,7 @@ summarize threadId rows = do
   let parentKeys = Set.fromList (mapMaybe (.parentMessageKey) rows)
   pure ThreadSummary
     { threadId
-    , rootRowId = root.rowId
+    , latestRowId = latest.rowId
     , rootKey = root.messageKey
     , latestKey = latest.messageKey
     , nodeCount = length rows
@@ -136,7 +136,7 @@ summaryValue :: Map Integer Text -> ThreadSummary -> Aeson.Value
 summaryValue previews summary =
   Aeson.object
     [ "threadId" Aeson..= summary.threadId
-    , "rootPreview" Aeson..= Map.findWithDefault "" summary.rootRowId previews
+    , "latestPreview" Aeson..= Map.findWithDefault "" summary.latestRowId previews
     , "rootKey" Aeson..= summary.rootKey
     , "latestKey" Aeson..= summary.latestKey
     , "nodeCount" Aeson..= summary.nodeCount
@@ -153,7 +153,7 @@ summaryMatches rawQuery previews summary
       [ toText (show summary.threadId :: String)
       , toText (show summary.rootKey.platform :: String)
       , maybe "" (toText . (show :: Integer -> String)) summary.rootKey.chatId
-      , Map.findWithDefault "" summary.rootRowId previews
+      , Map.findWithDefault "" summary.latestRowId previews
       ]
 
 threadValue :: Integer -> NonEmpty Thread.ThreadRow -> Aeson.Value

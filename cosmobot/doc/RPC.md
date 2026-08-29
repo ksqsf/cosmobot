@@ -144,23 +144,11 @@ Returns all audit records for one agent run id in occurrence order.
 
 ### `audit.thread`
 
-Returns audit records associated with one platform/chat-scoped message id.
+Returns audit records associated with a stored thread, or `null` when the thread does not exist.
 
 ```json
-{"jsonrpc":"2.0","id":"1","method":"audit.thread","params":{"platform":"discord","chat_id":"1152921504606846976","message_id":"7"}}
+{"jsonrpc":"2.0","id":"1","method":"audit.thread","params":{"threadId":42}}
 ```
-
-### `audit.thread_messages`
-
-Returns audit records associated with multiple message ids in one platform/chat.
-
-```json
-{"jsonrpc":"2.0","id":"1","method":"audit.thread_messages","params":{"platform":"discord","chat_id":"1152921504606846976","message_ids":["m1","m2"]}}
-```
-
-Use a decimal string for `chat_id`; legacy numeric input remains accepted.
-`AgentThreadLinked.linkedMessageKey.chatId` is likewise returned as a decimal
-string so identifiers larger than JavaScript's safe integer range remain exact.
 
 ### `audit.subscribe`
 

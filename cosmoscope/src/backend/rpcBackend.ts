@@ -89,29 +89,10 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
         'Could not load the agent run audit.',
         async () => auditThreadSchema.parse(await client.request('audit.run', { runId })),
       ),
-      thread: supports('audit.thread') ? (key) => rpcEffect(
-        'Could not load the related audit thread.',
-        async () => auditThreadSchema.parse(await client.request('audit.thread', {
-          platform: auditPlatformKey(key.platform),
-          chat_id: key.chatId,
-          message_id: key.messageId,
-        })),
-      ) : unsupported('audit.thread'),
-      threadMessages: (keys) => {
-        const first = keys[0]
-        if (first === undefined) return Effect.succeed([])
-        const messageIds = keys
-          .filter(({ platform, chatId }) => platform === first.platform && chatId === first.chatId)
-          .map(({ messageId }) => messageId)
-        return rpcEffect(
-          'Could not load thread statistics.',
-          async () => auditThreadSchema.parse(await client.request('audit.thread_messages', {
-            platform: auditPlatformKey(first.platform),
-            chat_id: first.chatId,
-            message_ids: messageIds,
-          })),
-        )
-      },
+      thread: (threadId) => rpcEffect(
+        'Could not load thread audit events.',
+        async () => auditThreadSchema.nullable().parse(await client.request('audit.thread', { threadId })),
+      ),
       subscribe: supports('audit.subscribe') ? (refresh, handler) => Effect.sync(() => client.subscribe(
         'overview.audit', 'audit.subscribe', 'audit.unsubscribe', {}, ['audit.event'], refresh,
         (_method, params) => handler(auditRecordSchema.parse(params)),

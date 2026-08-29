@@ -9,7 +9,7 @@ const mockBackend: AdminBackend = {
     associated: unavailable, destroyAssociated: unavailable,
   },
   audit: {
-    recent: unavailable, count: unavailable, search: unavailable, get: unavailable, run: unavailable, thread: unavailable, threadMessages: unavailable, subscribe: unavailable,
+    recent: unavailable, count: unavailable, search: unavailable, get: unavailable, run: unavailable, thread: unavailable, subscribe: unavailable,
   },
   threads: { list: unavailable, get: unavailable, resolveRun: unavailable, active: unavailable, halt: unavailable },
   memory: { list: unavailable, get: unavailable, history: unavailable, getRevision: unavailable, revert: unavailable },

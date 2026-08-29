@@ -159,11 +159,16 @@
   align-items: center;
   font-size: 12px;
 }
-.breadcrumbs span,
+.breadcrumbs a:first-child,
 .breadcrumbs b {
   color: var(--faint);
   font-weight: 500;
 }
+.breadcrumbs a:last-child {
+  color: var(--text);
+  font-weight: 700;
+}
+.breadcrumbs a:hover { text-decoration: underline; }
 .topbar-actions {
   display: flex;
   align-items: center;

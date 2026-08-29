@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { threadStats } from '@/backend/threadStats'
-import type { AuditRecord } from '@/types/domain'
+import { auditRecordsLinkedTo, threadStats } from '@/backend/threadStats'
+import type { AuditRecord, ThreadMessageKey } from '@/types/domain'
 
 describe('threadStats', () => {
   it('pairs model and tool events and sums reported usage', () => {
@@ -32,5 +32,35 @@ describe('threadStats', () => {
     ]
 
     expect(threadStats(records).tokens).toBeNull()
+  })
+
+  it('keeps cumulative usage on the selected reply branch', () => {
+    const key = (messageId: string): ThreadMessageKey => ({ platform: 'PlatformRPC', chatId: null, messageId })
+    const records: AuditRecord[] = [
+      { id: 1, occurredAt: '2026-01-01T00:00:00Z', event: { tag: 'ModelTurnStarted', runId: 'root', turn: 1, messageCount: 1, exposedTools: [], toolGroups: null } },
+      { id: 2, occurredAt: '2026-01-01T00:00:01Z', event: { tag: 'ModelTurnFinished', runId: 'root', turn: 1, answerKind: 'final', contentLength: 1, toolCalls: [], tokenUsage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 } } },
+      { id: 3, occurredAt: '2026-01-01T00:00:02Z', event: { tag: 'AgentThreadLinked', runId: 'root', linkedMessageId: 'root', linkedMessageKey: key('root'), parentMessageId: null } },
+      { id: 4, occurredAt: '2026-01-01T00:00:03Z', event: { tag: 'ModelTurnStarted', runId: 'left', turn: 1, messageCount: 2, exposedTools: [], toolGroups: null } },
+      { id: 5, occurredAt: '2026-01-01T00:00:04Z', event: { tag: 'ModelTurnFinished', runId: 'left', turn: 1, answerKind: 'final', contentLength: 1, toolCalls: [], tokenUsage: { prompt_tokens: 20, completion_tokens: 2, total_tokens: 22 } } },
+      { id: 6, occurredAt: '2026-01-01T00:00:05Z', event: { tag: 'AgentThreadLinked', runId: 'left', linkedMessageId: 'left', linkedMessageKey: key('left'), parentMessageId: 'root' } },
+      { id: 7, occurredAt: '2026-01-01T00:00:06Z', event: { tag: 'ModelTurnStarted', runId: 'right', turn: 1, messageCount: 2, exposedTools: [], toolGroups: null } },
+      { id: 8, occurredAt: '2026-01-01T00:00:07Z', event: { tag: 'ModelTurnFinished', runId: 'right', turn: 1, answerKind: 'final', contentLength: 1, toolCalls: [], tokenUsage: { prompt_tokens: 30, completion_tokens: 3, total_tokens: 33 } } },
+      { id: 9, occurredAt: '2026-01-01T00:00:08Z', event: { tag: 'AgentThreadLinked', runId: 'right', linkedMessageId: 'right', linkedMessageKey: key('right'), parentMessageId: 'root' } },
+    ]
+
+    expect(threadStats(auditRecordsLinkedTo(records, [key('root'), key('left')])).tokens?.total_tokens).toBe(33)
+  })
+
+  it('keeps backend run occurrences intact when audit ids interleave', () => {
+    const key = (messageId: string): ThreadMessageKey => ({ platform: 'PlatformRPC', chatId: null, messageId })
+    const records: AuditRecord[] = [
+      { id: 1, occurredAt: '2026-01-01T00:00:00Z', event: { tag: 'ModelTurnStarted', runId: 'root', turn: 1, messageCount: 1, exposedTools: [], toolGroups: null } },
+      { id: 4, occurredAt: '2026-01-01T00:00:03Z', event: { tag: 'AgentThreadLinked', runId: 'root', linkedMessageId: 'root', linkedMessageKey: key('root'), parentMessageId: null } },
+      { id: 2, occurredAt: '2026-01-01T00:00:01Z', event: { tag: 'ModelTurnStarted', runId: 'sibling', turn: 1, messageCount: 1, exposedTools: [], toolGroups: null } },
+      { id: 3, occurredAt: '2026-01-01T00:00:02Z', event: { tag: 'ModelTurnFinished', runId: 'sibling', turn: 1, answerKind: 'final', contentLength: 1, toolCalls: [], tokenUsage: { prompt_tokens: 30, completion_tokens: 3, total_tokens: 33 } } },
+      { id: 5, occurredAt: '2026-01-01T00:00:04Z', event: { tag: 'AgentThreadLinked', runId: 'sibling', linkedMessageId: 'sibling', linkedMessageKey: key('sibling'), parentMessageId: null } },
+    ]
+
+    expect(auditRecordsLinkedTo(records, [key('root')]).map(({ event }) => event.runId)).toEqual(['root', 'root'])
   })
 })

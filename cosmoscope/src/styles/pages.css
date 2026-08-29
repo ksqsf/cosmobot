@@ -689,7 +689,7 @@
 .chat-layout {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
-  min-height: 620px;
+  min-height: 0;
   overflow: hidden;
 }
 .conversation-list {
@@ -787,11 +787,13 @@
 .chat-log-layout {
   display: grid;
   grid-template-columns: minmax(240px, 0.32fr) minmax(0, 1fr);
-  min-height: 34rem;
+  min-height: 0;
   gap: var(--space-3);
 }
 .chat-logs-embedded {
   display: grid;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: var(--space-3);
 }
 .chat-log-actions {
@@ -853,6 +855,9 @@
 }
 .chat-log-view {
   min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 .chat-log-header {
@@ -863,9 +868,10 @@
   border-bottom: 1px solid var(--line-soft);
 }
 .chat-log-messages {
+  min-height: 0;
   display: grid;
+  align-content: start;
   gap: var(--space-3);
-  max-height: 70vh;
   overflow-y: auto;
   padding: var(--space-4);
 }
@@ -919,7 +925,10 @@
 .chat-log-message > .chat-files { padding-left: 37px; }
 .chat-log-message video { max-width: min(36rem, 100%); }
 @media (max-width: 800px) {
-  .chat-log-layout { grid-template-columns: 1fr; }
+  .chat-log-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
   .chat-log-nav { max-height: 18rem; }
 }
 .message {

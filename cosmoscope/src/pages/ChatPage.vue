@@ -65,7 +65,7 @@ const draft = computed({
 const messageMenuItems: MenuItem[] = [
   { label: 'Copy text', icon: 'pi pi-copy', command: () => { void copyContextText() } },
   { separator: true },
-  { label: 'Fork conversation here', icon: 'pi pi-code-branch', command: () => { if (contextMessage.value !== undefined) void forkAt(contextMessage.value) } },
+  { label: 'Fork conversation here', icon: 'pi pi-share-alt', command: () => { if (contextMessage.value !== undefined) void forkAt(contextMessage.value) } },
 ]
 
 function sessionName(session: ChatSession): string {

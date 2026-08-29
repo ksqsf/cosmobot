@@ -1,4 +1,5 @@
-import type { AuditRecord, TokenUsage } from '@/types/domain'
+import { threadMessageKeyId } from '@/backend/thread'
+import type { AuditRecord, ThreadMessageKey, TokenUsage } from '@/types/domain'
 
 export interface ThreadStats {
   readonly runs: number
@@ -14,6 +15,19 @@ export interface ThreadStats {
   readonly wallMilliseconds: number
   readonly unreportedModelTurns: number
   readonly unreportedToolCalls: number
+}
+
+export function auditRecordsLinkedTo(records: readonly AuditRecord[], messageKeys: readonly ThreadMessageKey[]): AuditRecord[] {
+  const wanted = new Set(messageKeys.map(threadMessageKeyId))
+  const selected: AuditRecord[] = []
+  let occurrence: AuditRecord[] = []
+  for (const record of records) {
+    occurrence.push(record)
+    if (record.event.tag !== 'AgentThreadLinked') continue
+    if (record.event.linkedMessageKey !== null && wanted.has(threadMessageKeyId(record.event.linkedMessageKey))) selected.push(...occurrence)
+    occurrence = []
+  }
+  return selected
 }
 
 export function threadStats(records: readonly AuditRecord[]): ThreadStats {

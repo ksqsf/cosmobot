@@ -209,12 +209,8 @@ testThreadMessageKeyJsonPreservesLargeChatIds = do
       rpcState <- RPC.newRpcState
       RPCServer.dispatchRpcRequest rpcState RPCAudit.auditRpcCallbacks $
         rpcRequest "audit.thread" $
-          Aeson.object
-            [ "platform" Aeson..= ("discord" :: Text)
-            , "chat_id" Aeson..= (toText (show chatId :: String))
-            , "message_id" Aeson..= ("message-1" :: Text)
-            ]
-  response @?= responseResult (Aeson.toJSON ([] :: [Aeson.Value]))
+          Aeson.object ["threadId" Aeson..= (1 :: Int)]
+  response @?= responseResult Aeson.Null
 
 testThreadInspectionRpc :: IO ()
 testThreadInspectionRpc = do

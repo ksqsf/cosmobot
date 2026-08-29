@@ -155,7 +155,7 @@ exaSearch apiKey query maxResults = do
         [ "query" Aeson..= query
         , "numResults" Aeson..= maxResults
         , "contents" Aeson..= Aeson.object
-            [ "highlights" Aeson..= Aeson.object ["maxCharacters" Aeson..= (1000 :: Int)]
+            [ "highlights" Aeson..= Aeson.object ["maxCharacters" Aeson..= (500 :: Int)]
             ]
         ]))
       jsonResponse

@@ -25,7 +25,6 @@ export const liveAdminMethods = [
   'audit.get',
   'audit.run',
   'audit.thread',
-  'audit.thread_messages',
   'audit.subscribe',
   'thread.list',
   'thread.get',

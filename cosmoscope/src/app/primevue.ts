@@ -20,7 +20,7 @@ export const CosmoscopePreset = definePreset(Aura, {
   },
   components: {
     button: { root: { borderRadius: '8px', paddingX: '0.8rem', paddingY: '0.52rem', gap: '0.42rem', label: { fontWeight: '650' } } },
-    card: { root: { borderRadius: '12px' }, body: { padding: '1rem' }, title: { fontSize: '0.9rem' }, subtitle: { fontSize: '0.72rem' } },
+    card: { root: { borderRadius: '12px' }, body: { padding: '1rem' }, title: { fontSize: '0.9rem' } },
     datatable: { headerCell: { padding: '0.58rem 0.85rem' }, bodyCell: { padding: '0.62rem 0.85rem' } },
     inputtext: { root: { paddingX: '0.7rem', paddingY: '0.52rem', borderRadius: '7px' } },
     select: { root: { borderRadius: '7px' }, option: { padding: '0.52rem 0.7rem' } },

@@ -22,8 +22,7 @@ const backendProxy: AdminBackend = {
     search: (query, limit) => activeBackend.audit.search(query, limit),
     get: (id) => activeBackend.audit.get(id),
     run: (runId) => activeBackend.audit.run(runId),
-    thread: (key) => activeBackend.audit.thread(key),
-    threadMessages: (keys) => activeBackend.audit.threadMessages(keys),
+    thread: (threadId) => activeBackend.audit.thread(threadId),
     subscribe: (refresh, handler) => activeBackend.audit.subscribe(refresh, handler),
   },
   threads: {

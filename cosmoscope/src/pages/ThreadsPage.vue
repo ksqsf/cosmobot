@@ -20,14 +20,15 @@ import type { TreeNode as PrimeTreeNode } from 'primevue/treenode'
 import PageHeading from '@/components/PageHeading.vue'
 import ChatLogMessageLink from '@/components/ChatLogMessageLink.vue'
 import RunIdLink from '@/components/RunIdLink.vue'
-import { getAuditThreadMessages, getMedia, getThread, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun } from '@/backend/AdminBackend'
+import { getMedia, getThread, getThreadAudit, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
 import { safeDownloadUrl, safeImageUrl } from '@/backend/chat'
-import { threadStats } from '@/backend/threadStats'
+import { threadMessageKeyId, threadPathTo } from '@/backend/thread'
+import { auditRecordsLinkedTo, threadStats } from '@/backend/threadStats'
 import { formatBytes } from '@/format'
-import { highlightCode, mediaRefFromClick, renderMarkdown } from '@/markdown'
+import { highlightCode, mediaRefFromClick, mediaRefsInText, renderMarkdown } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
-import type { ActiveThread, AuditPlatform, AuditRecord, MediaDetail, StoredThreadMessage, ThreadDetail, ThreadMessageKey, ThreadNode, ThreadSummary } from '@/types/domain'
+import type { ActiveThread, AuditPlatform, AuditRecord, MediaDetail, StoredThreadMessage, ThreadDetail, ThreadNode, ThreadSummary } from '@/types/domain'
 
 const threads = ref<ThreadSummary[]>([])
 const activeThreads = ref<ActiveThread[]>([])
@@ -99,11 +100,12 @@ const summary = computed(() => ({
   leaves: leafTotal.value,
   platforms: platformTotal.value,
 }))
-const nodeLookup = computed(() => new Map((detail.value?.nodes ?? []).map((node) => [messageKeyId(node.messageKey), node])))
+const nodeLookup = computed(() => new Map((detail.value?.nodes ?? []).map((node) => [threadMessageKeyId(node.messageKey), node])))
 const treeNodes = computed<PrimeTreeNode[]>(() => buildTree(detail.value?.nodes ?? []))
-const transcript = computed(() => selectedNode.value === undefined ? [] : transcriptTo(selectedNode.value, nodeLookup.value))
+const selectedPath = computed(() => selectedNode.value === undefined ? [] : threadPathTo(selectedNode.value, nodeLookup.value))
+const transcript = computed(() => selectedPath.value.flatMap(({ messages }) => messages))
 const activeSelected = computed(() => activeThreads.value.find(({ taskId }) => taskId === activeTaskId.value))
-const stats = computed(() => threadStats(auditRecords.value))
+const stats = computed(() => threadStats(auditRecordsLinkedTo(auditRecords.value, selectedPath.value.map(({ messageKey }) => messageKey))))
 
 async function refresh(): Promise<void> {
   if (connection.state === 'opening' || connection.state === 'reconnecting') {
@@ -267,16 +269,17 @@ async function inspectThread(threadId: number): Promise<void> {
   if (result._tag === 'Failure') { detailError.value = result.error.message; return }
   if (result.value === null) { detailError.value = `Thread #${String(threadId)} was not found.`; return }
   detail.value = result.value
-  expandedKeys.value = Object.fromEntries(result.value.nodes.map((node) => [messageKeyId(node.messageKey), true]))
-  const latest = nodeLookup.value.get(messageKeyId(result.value.summary.latestKey)) ?? result.value.nodes.at(-1)
+  expandedKeys.value = Object.fromEntries(result.value.nodes.map((node) => [threadMessageKeyId(node.messageKey), true]))
+  const latest = nodeLookup.value.get(threadMessageKeyId(result.value.summary.latestKey)) ?? result.value.nodes.at(-1)
   if (latest !== undefined) selectNode(latest)
   await Promise.all([loadThreadMedia(result.value, generation), loadThreadStats(result.value, generation)])
 }
 
 async function loadThreadStats(thread: ThreadDetail, generation: number): Promise<void> {
-  const result = await runBackend(getAuditThreadMessages(thread.nodes.map(({ messageKey }) => messageKey)))
+  const result = await runBackend(getThreadAudit(thread.summary.threadId))
   if (generation !== detailGeneration) return
   if (result._tag === 'Failure') { statsError.value = result.error.message; return }
+  if (result.value === null) { statsError.value = `Thread #${String(thread.summary.threadId)} was not found.`; return }
   auditRecords.value = [...result.value]
 }
 
@@ -313,21 +316,21 @@ function selectTreeNode(node: PrimeTreeNode): void {
 
 function selectNode(node: ThreadNode): void {
   selectedNode.value = node
-  selectedKeys.value = { [messageKeyId(node.messageKey)]: true }
+  selectedKeys.value = { [threadMessageKeyId(node.messageKey)]: true }
 }
 
 function buildTree(nodes: readonly ThreadNode[]): PrimeTreeNode[] {
-  const byKey = new Map(nodes.map((node) => [messageKeyId(node.messageKey), {
-    key: messageKeyId(node.messageKey),
+  const byKey = new Map(nodes.map((node) => [threadMessageKeyId(node.messageKey), {
+    key: threadMessageKeyId(node.messageKey),
     label: nodeLabel(node),
     icon: node.parentMessageKey === null ? 'pi pi-comments' : 'pi pi-reply',
     children: [] as PrimeTreeNode[],
   } satisfies PrimeTreeNode]))
   const roots: PrimeTreeNode[] = []
   for (const node of nodes) {
-    const item = byKey.get(messageKeyId(node.messageKey))
+    const item = byKey.get(threadMessageKeyId(node.messageKey))
     if (item === undefined) continue
-    const parent = node.parentMessageKey === null ? undefined : byKey.get(messageKeyId(node.parentMessageKey))
+    const parent = node.parentMessageKey === null ? undefined : byKey.get(threadMessageKeyId(node.parentMessageKey))
     if (parent === undefined) roots.push(item)
     else parent.children.push(item)
   }
@@ -344,22 +347,6 @@ function nodeLabel(node: ThreadNode): string {
 
 function readableMessageText(message: StoredThreadMessage): string {
   return messageText(message).replace(/\s+/g, ' ').trim()
-}
-
-function transcriptTo(node: ThreadNode, nodes: ReadonlyMap<string, ThreadNode>): StoredThreadMessage[] {
-  const segments: (readonly StoredThreadMessage[])[] = []
-  const visited = new Set<string>()
-  let current: ThreadNode | undefined = node
-  while (current !== undefined && !visited.has(messageKeyId(current.messageKey))) {
-    visited.add(messageKeyId(current.messageKey))
-    segments.unshift(current.messages)
-    current = current.parentMessageKey === null ? undefined : nodes.get(messageKeyId(current.parentMessageKey))
-  }
-  return segments.flat()
-}
-
-function messageKeyId(key: ThreadMessageKey): string {
-  return `${key.platform}\u0000${key.chatId ?? ''}\u0000${key.messageId}`
 }
 
 function messageText(message: StoredThreadMessage): string {
@@ -381,7 +368,7 @@ function mediaRefs(message: StoredThreadMessage): string[] {
         return image?.startsWith('media:mf_') === true ? [image] : []
       })
     : []
-  return [...new Set([...contentRefs, ...[...text.matchAll(/media:mf_[A-Za-z0-9_-]{7,}/g)].map(([ref]) => ref)])]
+  return [...new Set([...contentRefs, ...mediaRefsInText(text)])]
 }
 
 function mediaDetails(message: StoredThreadMessage): MediaDetail[] {
@@ -485,7 +472,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
       >
         <div><span class="summary-mark violet"><i class="pi pi-sitemap" /></span><span><strong>{{ summary.threads }}</strong><small>Threads</small></span></div>
         <div><span class="summary-mark info"><i class="pi pi-comments" /></span><span><strong>{{ summary.nodes }}</strong><small>Reply nodes</small></span></div>
-        <div><span class="summary-mark success"><i class="pi pi-code-branch" /></span><span><strong>{{ summary.leaves }}</strong><small>Branch tips</small></span></div>
+        <div><span class="summary-mark success"><i class="pi pi-share-alt" /></span><span><strong>{{ summary.leaves }}</strong><small>Branch tips</small></span></div>
         <div><span class="summary-mark neutral"><i class="pi pi-globe" /></span><span><strong>{{ summary.platforms }}</strong><small>Platforms</small></span></div>
       </div>
       <article class="panel active-thread-panel">
@@ -575,9 +562,9 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
               <code>{{ data.rootKey.chatId ?? 'Direct / unscoped' }}</code>
             </template>
           </Column>
-          <Column header="Root message">
+          <Column header="Latest message">
             <template #body="{ data }">
-              <span class="thread-message-id">{{ data.rootPreview || 'No text content' }}</span>
+              <span class="thread-message-id">{{ data.latestPreview || 'No text content' }}</span>
             </template>
           </Column>
           <Column

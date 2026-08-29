@@ -33,7 +33,7 @@ export const threadMessageKeySchema = z.object({
 }) satisfies z.ZodType<ThreadMessageKey>
 const threadSummarySchema = z.object({
   threadId: z.number().int().positive(),
-  rootPreview: z.string(),
+  latestPreview: z.string(),
   rootKey: threadMessageKeySchema,
   latestKey: threadMessageKeySchema,
   nodeCount: z.number().int().positive(),

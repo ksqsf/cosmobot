@@ -10,24 +10,24 @@ module Bot.RPC.Audit
 where
 
 import qualified Bot.Effect.AgentAudit as AgentAudit
+import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
-import Bot.Core.Message
-import Bot.Core.Thread
 import qualified Bot.JSONRPC as RPC
 import Bot.RPC.Server (RpcServerCallbacks (..), noRpcServerCallbacks)
+import qualified Bot.Storage.Thread as Thread
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
-auditRpcCallbacks :: AgentAudit.AgentAudit :> es => RpcServerCallbacks es
+auditRpcCallbacks :: (AgentAudit.AgentAudit :> es, Storage.Storage :> es) => RpcServerCallbacks es
 auditRpcCallbacks =
   noRpcServerCallbacks
     { auditMethod = dispatchAuditMethod
-    , supportedMethods = ["audit.recent", "audit.count", "audit.search", "audit.get", "audit.run", "audit.thread", "audit.thread_messages"]
+    , supportedMethods = ["audit.recent", "audit.count", "audit.search", "audit.get", "audit.run", "audit.thread"]
     }
 
 dispatchAuditMethod
-  :: AgentAudit.AgentAudit :> es
+  :: (AgentAudit.AgentAudit :> es, Storage.Storage :> es)
   => RPC.RpcRequest
   -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
 dispatchAuditMethod request =
@@ -48,11 +48,11 @@ dispatchAuditMethod request =
       parseParams request parseRunId \runId ->
         Aeson.toJSON <$> AgentAudit.queryRunAudit runId
     "audit.thread" ->
-      parseParams request parseMessageKey \messageKey ->
-        Aeson.toJSON <$> AgentAudit.queryThreadAudit messageKey
-    "audit.thread_messages" ->
-      parseParams request parseMessageKeys \messageKeys ->
-        Aeson.toJSON <$> AgentAudit.queryThreadMessagesAudit messageKeys
+      parseParams request parseThreadId \threadId -> do
+        rows <- Thread.loadThreadRowsByThreadId threadId
+        if null rows
+          then pure Aeson.Null
+          else Aeson.toJSON <$> AgentAudit.queryThreadMessagesAudit (map (.messageKey) rows)
     _ ->
       let method = RPC.requestMethod request
       in pure (Left (RPC.rpcError "method_not_found" [i|Unknown RPC method: #{method}|]))
@@ -109,33 +109,8 @@ parseRunId =
       then fail "runId must contain between 1 and 256 characters"
       else pure runId
 
-parseMessageKey :: Aeson.Value -> AesonTypes.Parser ThreadMessageKey
-parseMessageKey =
-  Aeson.withObject "audit.thread params" \o ->
-    ThreadMessageKey
-      <$> (o Aeson..: "platform" >>= parsePlatform)
-      <*> (o Aeson..:? "chat_id" >>= traverse parseChatId)
-      <*> (textMessageId <$> o Aeson..: "message_id")
-
-parseMessageKeys :: Aeson.Value -> AesonTypes.Parser [ThreadMessageKey]
-parseMessageKeys =
-  Aeson.withObject "audit.thread_messages params" \o -> do
-    platform <- o Aeson..: "platform" >>= parsePlatform
-    chatId <- o Aeson..:? "chat_id" >>= traverse parseChatId
-    messageIds <- o Aeson..: "message_ids"
-    pure [ThreadMessageKey{platform, chatId, messageId = textMessageId messageId} | messageId <- messageIds]
-
-parseChatId :: Aeson.Value -> AesonTypes.Parser Integer
-parseChatId value =
-  Aeson.withText "chat id" (maybe (fail "chat_id must be an integer") pure . readMaybe . toString) value
-    <|> Aeson.parseJSON value
-
-parsePlatform :: Text -> AesonTypes.Parser ChatPlatform
-parsePlatform = \case
-  "qq" -> pure PlatformQQ
-  "telegram" -> pure PlatformTelegram
-  "matrix" -> pure PlatformMatrix
-  "discord" -> pure PlatformDiscord
-  "rpc" -> pure PlatformRPC
-  "acp" -> pure PlatformACP
-  _ -> fail "platform must be one of: qq, telegram, matrix, discord, rpc, acp"
+parseThreadId :: Aeson.Value -> AesonTypes.Parser Integer
+parseThreadId =
+  Aeson.withObject "audit.thread params" \o -> do
+    threadId <- o Aeson..: "threadId"
+    if threadId > 0 then pure threadId else fail "threadId must be positive"

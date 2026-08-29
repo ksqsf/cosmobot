@@ -5,7 +5,7 @@ import type {
   MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot,
   MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary,
   Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task,
-  ThreadDetail, ThreadListQuery, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot,
+  ThreadDetail, ThreadListQuery, ThreadRunTarget, ThreadSnapshot,
 } from '@/types/domain'
 
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
@@ -27,8 +27,7 @@ export interface AdminBackend {
     readonly search: (query: string, limit?: number) => BackendEffect<readonly AuditRecord[]>
     readonly get: (id: number) => BackendEffect<AuditRecord | null>
     readonly run: (runId: string) => BackendEffect<readonly AuditRecord[]>
-    readonly thread: (key: ThreadMessageKey) => BackendEffect<readonly AuditRecord[]>
-    readonly threadMessages: (keys: readonly ThreadMessageKey[]) => BackendEffect<readonly AuditRecord[]>
+    readonly thread: (threadId: number) => BackendEffect<readonly AuditRecord[] | null>
     readonly subscribe: (refresh: () => Promise<void>, handler: (record: AuditRecord) => void) => BackendEffect<() => void>
   }
   readonly threads: {
@@ -112,10 +111,8 @@ export const getAudit = (id: number): Effect.Effect<AuditRecord | null, BackendE
   AdminBackendService.use((backend) => backend.audit.get(id))
 export const getRunAudit = (runId: string): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.audit.run(runId))
-export const getAuditThread = (key: ThreadMessageKey): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
-  AdminBackendService.use((backend) => backend.audit.thread(key))
-export const getAuditThreadMessages = (keys: readonly ThreadMessageKey[]): Effect.Effect<readonly AuditRecord[], BackendError, AdminBackend> =>
-  AdminBackendService.use((backend) => backend.audit.threadMessages(keys))
+export const getThreadAudit = (threadId: number): Effect.Effect<readonly AuditRecord[] | null, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.audit.thread(threadId))
 export const subscribeAudit = (refresh: () => Promise<void>, handler: (record: AuditRecord) => void): Effect.Effect<() => void, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.audit.subscribe(refresh, handler))
 export const listThreads = (query: ThreadListQuery): Effect.Effect<ThreadSnapshot, BackendError, AdminBackend> =>

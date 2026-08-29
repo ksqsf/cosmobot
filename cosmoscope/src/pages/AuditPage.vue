@@ -12,9 +12,9 @@ import PageHeading from '@/components/PageHeading.vue'
 import ChatLogMessageLink from '@/components/ChatLogMessageLink.vue'
 import RunIdLink from '@/components/RunIdLink.vue'
 import SearchQualifierInput from '@/components/SearchQualifierInput.vue'
-import { getAudit, getAuditThread, getAuditThreadMessages, getRunAudit, getThread, recentAudit, RpcBackendError, searchAudit, subscribeAudit } from '@/backend/AdminBackend'
+import { getAudit, getRunAudit, getThreadAudit, recentAudit, resolveThreadRun, RpcBackendError, searchAudit, subscribeAudit } from '@/backend/AdminBackend'
 import type { BackendError } from '@/backend/AdminBackend'
-import { auditArguments, auditDetailFields, auditPlatform, auditPresentation, auditResult, boundedStructuredText, isAuditFailure, linkedThread, mergeAuditRecords, parseAuditSearch } from '@/backend/audit'
+import { auditArguments, auditDetailFields, auditPlatform, auditPresentation, auditResult, boundedStructuredText, isAuditFailure, mergeAuditRecords, parseAuditSearch } from '@/backend/audit'
 import { runBackend } from '@/backend/runBackend'
 import type { BackendResult } from '@/backend/runBackend'
 import { mediaRefFromClick, renderMarkdown } from '@/markdown'
@@ -153,10 +153,15 @@ async function loadRequestedAudit(): Promise<BackendResult<readonly AuditRecord[
     const searchText = submittedSearch.value.text.trim()
     return runBackend(searchText === '' ? recentAudit(loadedLimit) : searchAudit(searchText))
   }
-  const thread = await runBackend(getThread(threadId))
-  if (thread._tag === 'Failure') return thread
-  if (thread.value === null) return { _tag: 'Failure', error: new RpcBackendError({ message: `Thread #${String(threadId)} was not found.` }) }
-  return runBackend(getAuditThreadMessages(thread.value.nodes.map(({ messageKey }) => messageKey)))
+  return loadThreadAudit(threadId)
+}
+
+async function loadThreadAudit(threadId: number): Promise<BackendResult<readonly AuditRecord[], BackendError>> {
+  const result = await runBackend(getThreadAudit(threadId))
+  if (result._tag === 'Failure') return result
+  return result.value === null
+    ? { _tag: 'Failure', error: new RpcBackendError({ message: `Thread #${String(threadId)} was not found.` }) }
+    : { _tag: 'Success', value: result.value }
 }
 
 function receive(record: AuditRecord): void {
@@ -297,12 +302,13 @@ async function loadSelection(id: number): Promise<void> {
     return
   }
   selectedDetail.value = result.value
-  const key = linkedThread([...events.value, result.value], result.value.event.runId)
-  if (key === undefined) {
+  const target = await runBackend(resolveThreadRun(result.value.event.runId))
+  if (generation !== detailGeneration) return
+  if (target._tag === 'Failure' || target.value.threadId === null) {
     related.value = events.value.filter(({ event }) => event.runId === result.value?.event.runId)
     return
   }
-  const threadResult = await runBackend(getAuditThread(key))
+  const threadResult = await loadThreadAudit(target.value.threadId)
   if (generation !== detailGeneration) return
   if (threadResult._tag === 'Success') related.value = [...threadResult.value]
   else threadError.value = threadResult.error.message

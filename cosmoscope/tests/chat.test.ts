@@ -2,7 +2,7 @@ import { Effect } from 'effect'
 import { describe, expect, it, vi } from 'vitest'
 import { makeRpcBackend } from '@/backend/rpcBackend'
 import { mergeChatLogItems, mergeChatMessage, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
-import { highlightCode, renderMarkdown } from '@/markdown'
+import { highlightCode, mediaRefsInText, renderMarkdown } from '@/markdown'
 import { RpcClient } from '@/rpc/client'
 import { liveAdminMethods } from '@/rpc/protocol'
 import type { ChatMessage } from '@/types/domain'
@@ -74,5 +74,14 @@ describe('chat projection', () => {
     const rendered = renderMarkdown(`Generated image. Media ids: ${ref}`)
     expect(rendered).toContain(`href="/media/${encodeURIComponent(ref)}"`)
     expect(rendered).toContain(`data-media-ref="${ref}"`)
+  })
+
+  it('links compacted tool-result media ids using their canonical reference', () => {
+    const id = 'mf_Q2JHMRvDjVlW_MceWO3S8g'
+    const ref = `media:${id}`
+    const source = `[tool result omitted; media_id=${id}, mime=image/png]`
+
+    expect(renderMarkdown(source)).toContain(`data-media-ref="${ref}"`)
+    expect(mediaRefsInText(source)).toEqual([ref])
   })
 })

@@ -60,7 +60,7 @@ export interface ThreadMessageKey {
 
 export interface ThreadSummary {
   readonly threadId: number
-  readonly rootPreview: string
+  readonly latestPreview: string
   readonly rootKey: ThreadMessageKey
   readonly latestKey: ThreadMessageKey
   readonly nodeCount: number

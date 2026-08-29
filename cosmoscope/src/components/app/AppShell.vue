@@ -154,7 +154,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           @click="mobileNavigation = true"
         />
         <div class="breadcrumbs">
-          <span>cosmobot</span><b>/</b><strong>{{ currentTitle }}</strong>
+          <RouterLink :to="{ name: 'overview' }">
+            cosmobot
+          </RouterLink><b>/</b><RouterLink
+            v-if="currentPage"
+            :to="{ name: currentPage.name }"
+          >
+            {{ currentTitle }}
+          </RouterLink><strong v-else>{{ currentTitle }}</strong>
         </div>
         <div class="topbar-actions">
           <RouterLink
