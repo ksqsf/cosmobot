@@ -167,6 +167,11 @@ export interface ChatMessage {
   readonly parentMessageId: string | null
 }
 
+export interface ChatHistoryPage {
+  readonly messages: readonly ChatMessage[]
+  readonly hasOlder: boolean
+}
+
 export interface ChatSend {
   readonly sessionId: string
   readonly text: string

@@ -5,7 +5,7 @@ const unavailable = <A>(): BackendEffect<A> => Effect.fail(new OfflineError({ me
 
 const mockBackend: AdminBackend = {
   tasks: {
-    list: unavailable, lookup: unavailable, cancel: unavailable, await: unavailable,
+    list: unavailable, lookup: unavailable, cancel: unavailable,
     associated: unavailable, destroyAssociated: unavailable,
   },
   audit: {

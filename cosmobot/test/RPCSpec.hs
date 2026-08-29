@@ -111,6 +111,7 @@ main =
       , testCase "rpc driver persists assistant replies and edited stream text" testRpcDriverPersistsAssistantRepliesAndEdits
       , testCase "rpc driver stores cached images and uploaded files as attachments" testRpcDriverStoresMediaRepliesAsAttachments
       , testCase "chat.fork stores immutable parent link and inherited history" testChatForkStoresParentLink
+      , testCase "chat.history pages backward across fork ancestry" testChatHistoryPagination
       , testCase "chat.rename_session and chat.delete_session update durable storage" testRenameAndDeleteSession
       , testCase "chat.delete_session cascades fork descendants" testDeleteSessionCascadesForkDescendants
       , testCase "websocket server authenticates and handles JSON-RPC requests" testWebSocketServerAuthenticatesAndHandlesRequests
@@ -491,6 +492,7 @@ testChatSendRejectsMissingSession =
         ( Aeson.object
             [ "sessionId" Aeson..= ("missing-1" :: Text)
             , "messages" Aeson..= ([] :: [Aeson.Value])
+            , "hasOlder" Aeson..= False
             ]
         )
 
@@ -930,6 +932,7 @@ testChatSessionsPersistAcrossRestart =
         ( Aeson.object
             [ "sessionId" Aeson..= ("local-1" :: Text)
             , "messages" Aeson..= [messageValue "local-1" "message-1" "persisted" Nothing]
+            , "hasOlder" Aeson..= False
             ]
         )
     sendResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("message-2" :: Text)])
@@ -1078,6 +1081,35 @@ testChatForkStoresParentLink =
             ]
         )
     responseMessageTexts forkHistory @?= ["first", "branch only"]
+
+testChatHistoryPagination :: IO ()
+testChatHistoryPagination =
+  withSQLiteTempPath "rpc-history-page" \path -> do
+    (latest, older) <- runRpcStorage path do
+      rpcState <- RPC.newRpcState
+      let dispatch method params = RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks (rpcRequest method params)
+          sendMessage sessionId text = dispatch "chat.send" (Aeson.object ["sessionId" Aeson..= (sessionId :: Text), "text" Aeson..= (text :: Text)])
+      _ <- dispatch "chat.open_session" (Aeson.object ["label" Aeson..= ("root" :: Text)])
+      _ <- sendMessage "root-1" "first"
+      _ <- sendMessage "root-1" "second"
+      _ <- sendMessage "root-1" "excluded"
+      _ <- dispatch "chat.fork" (Aeson.object
+        [ "sessionId" Aeson..= ("root-1" :: Text)
+        , "messageId" Aeson..= ("message-2" :: Text)
+        , "label" Aeson..= ("branch" :: Text)
+        ])
+      _ <- sendMessage "branch-1" "branch only"
+      latest <- dispatch "chat.history" (Aeson.object ["sessionId" Aeson..= ("branch-1" :: Text), "limit" Aeson..= (2 :: Int)])
+      older <- dispatch "chat.history" (Aeson.object
+        [ "sessionId" Aeson..= ("branch-1" :: Text)
+        , "beforeMessageId" Aeson..= ("message-2" :: Text)
+        , "limit" Aeson..= (2 :: Int)
+        ])
+      pure (latest, older)
+    responseMessageTexts latest @?= ["second", "branch only"]
+    responseBool latest "hasOlder" @?= Just True
+    responseMessageTexts older @?= ["first"]
+    responseBool older "hasOlder" @?= Just False
 
 testRenameAndDeleteSession :: IO ()
 testRenameAndDeleteSession =

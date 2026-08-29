@@ -14,6 +14,7 @@ module Bot.Storage.Session
   , listSessions
   , loadSession
   , loadSessionHistory
+  , loadSessionHistoryPage
   , loadMessage
   , appendMessage
   , replaceMessageContent
@@ -32,6 +33,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Foldable as Foldable
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Database.Selda.SQLite as SeldaSQLite
@@ -194,6 +196,85 @@ loadSessionHistory targetSessionId = do
           pure (takeThrough parentMessage parentHistory <> current)
       | otherwise ->
           pure current
+
+loadSessionHistoryPage
+  :: Storage.Storage :> es
+  => Text
+  -> Maybe MessageId
+  -> Int
+  -> Eff es (Either Text ([StoredChatMessage], Bool))
+loadSessionHistoryPage targetSessionId beforeMessageId limit = do
+  ensureSessionTables
+  beforeRow <- traverse loadMessageRow beforeMessageId
+  case beforeRow of
+    Just Nothing ->
+      pure (Left "History cursor was not found")
+    _ -> do
+      segments <- historySegments targetSessionId
+      rows <- loadHistoryRows segments ((.id) <$> join beforeRow) (max 1 limit + 1)
+      let (pageRows, olderRows) = splitAt (max 1 limit) rows
+      attachments <- loadAttachmentsForMessages (map (textMessageId . (.message_id)) pageRows)
+      pure $ Right
+        ( reverse [messageFromRow row (Map.findWithDefault [] (textMessageId row.message_id) attachments) | row <- pageRows]
+        , not (null olderRows)
+        )
+
+data HistorySegment = HistorySegment
+  { sessionId :: !Text
+  , throughRow :: !(Maybe (ID SessionMessageRow))
+  }
+
+historySegments :: Storage.Storage :> es => Text -> Eff es [HistorySegment]
+historySegments = go Set.empty Nothing
+  where
+    go visited throughRow sessionId
+      | sessionId `Set.member` visited =
+          pure []
+      | otherwise =
+          loadSession sessionId >>= \case
+            Nothing ->
+              pure []
+            Just session -> do
+              inherited <- case (session.parentSessionId, session.parentMessageId) of
+                (Just _, Just parentMessageId) ->
+                  loadMessageRow parentMessageId >>= \case
+                    Nothing -> pure []
+                    Just parentRow -> go (Set.insert sessionId visited) (Just parentRow.id) parentRow.session_id
+                _ ->
+                  pure []
+              pure (HistorySegment{sessionId, throughRow} : inherited)
+
+loadHistoryRows
+  :: Storage.Storage :> es
+  => [HistorySegment]
+  -> Maybe (ID SessionMessageRow)
+  -> Int
+  -> Eff es [SessionMessageRow]
+loadHistoryRows _ _ remaining | remaining <= 0 =
+  pure []
+loadHistoryRows [] _ _ =
+  pure []
+loadHistoryRows (segment : segments) beforeRow remaining = do
+  rows <- runSelda $
+    query $
+      queryLimit 0 remaining do
+        row <- select sessionMessageRows
+        restrict (row ! #session_id .== literal segment.sessionId)
+        restrict (maybe true (\cutoff -> row ! #id .<= literal cutoff) segment.throughRow)
+        restrict (maybe true (\cursor -> row ! #id .< literal cursor) beforeRow)
+        order (row ! #id) descending
+        pure row
+  (rows <>) <$> loadHistoryRows segments beforeRow (remaining - length rows)
+
+loadMessageRow :: Storage.Storage :> es => MessageId -> Eff es (Maybe SessionMessageRow)
+loadMessageRow targetMessageId = do
+  rows <- runSelda $
+    query $
+      queryLimit 0 1 do
+        row <- select sessionMessageRows
+        restrict (row ! #message_id .== literal (messageIdText targetMessageId))
+        pure row
+  pure (viaNonEmpty head rows)
 
 appendMessage
   :: Storage.Storage :> es

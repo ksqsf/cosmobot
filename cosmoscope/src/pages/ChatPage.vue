@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
@@ -32,6 +32,7 @@ const connection = useConnectionStore()
 const confirm = useConfirm()
 const toast = useToast()
 const attachmentInput = useTemplateRef<HTMLInputElement>('attachmentInput')
+const messagePane = useTemplateRef<HTMLElement>('messagePane')
 const messageMenu = useTemplateRef<ContextMenuMethods>('messageMenu')
 const sessions = ref<readonly ChatSession[]>([])
 const messages = ref<readonly ChatMessage[]>([])
@@ -41,6 +42,8 @@ const error = ref('')
 const sessionsLoading = ref(true)
 const sessionsLoaded = ref(false)
 const loading = ref(false)
+const loadingOlder = ref(false)
+const hasOlder = ref(false)
 const sending = ref(false)
 const uploading = ref(false)
 const pendingAttachments = ref<readonly ChatAttachment[]>([])
@@ -95,7 +98,34 @@ async function refreshHistory(sessionId: string, generation: number): Promise<vo
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
   streamingMessageIds.value = new Set()
-  messages.value = [...result.value]
+  messages.value = [...result.value.messages]
+  hasOlder.value = result.value.hasOlder
+  await nextTick()
+  messagePane.value?.querySelector('.message:last-of-type')?.scrollIntoView({ block: 'start' })
+}
+
+async function loadOlder(): Promise<void> {
+  const sessionId = selectedId.value
+  const generation = selectionGeneration
+  const oldest = messages.value[0]
+  const pane = messagePane.value
+  if (sessionId === undefined || oldest === undefined || loadingOlder.value || !hasOlder.value) return
+  const previousHeight = pane?.scrollHeight ?? 0
+  loadingOlder.value = true
+  const result = await runBackend(loadChatHistory(sessionId, oldest.messageId))
+  if (generation !== selectionGeneration || selectedId.value !== sessionId) return
+  loadingOlder.value = false
+  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  const known = new Set(messages.value.map(({ messageId }) => messageId))
+  messages.value = [...result.value.messages.filter(({ messageId }) => !known.has(messageId)), ...messages.value]
+  hasOlder.value = result.value.hasOlder
+  await nextTick()
+  if (pane !== null) pane.scrollTop += pane.scrollHeight - previousHeight
+}
+
+function loadOlderAtTop(event: Event): void {
+  const pane = event.currentTarget
+  if (pane instanceof HTMLElement && pane.scrollTop < 120) void loadOlder()
 }
 
 async function selectSession(sessionId: string): Promise<void> {
@@ -105,6 +135,8 @@ async function selectSession(sessionId: string): Promise<void> {
   stopSubscription = undefined
   selectedId.value = sessionId
   messages.value = []
+  hasOlder.value = false
+  loadingOlder.value = false
   streamingMessageIds.value = new Set()
   loading.value = true
   const generation = ++selectionGeneration
@@ -156,6 +188,8 @@ async function loadSessions(preferredId?: string): Promise<void> {
     stopSubscription = undefined
     selectedId.value = undefined
     messages.value = []
+    hasOlder.value = false
+    loadingOlder.value = false
     await router.replace({ name: 'chat' })
   }
 }
@@ -298,6 +332,8 @@ watch([() => connection.state, () => connection.methods], ([state]) => {
     selectedId.value = undefined
     sessions.value = []
     messages.value = []
+    hasOlder.value = false
+    loadingOlder.value = false
     sessionsLoaded.value = false
   }
 })
@@ -425,7 +461,20 @@ onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discard
             :model="messageMenuItems"
             @hide="contextMessage = undefined"
           />
-          <div class="messages">
+          <div
+            ref="messagePane"
+            class="messages"
+            @scroll="loadOlderAtTop"
+          >
+            <Button
+              v-if="hasOlder"
+              label="Load older messages"
+              severity="secondary"
+              text
+              size="small"
+              :loading="loadingOlder"
+              @click="loadOlder"
+            />
             <Message
               v-if="loading"
               severity="secondary"

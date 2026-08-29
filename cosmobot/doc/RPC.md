@@ -445,6 +445,19 @@ Result:
 
 Blank labels are ignored and use the base name `session`.
 
+### `chat.history`
+
+Returns the newest page of a session transcript in chronological order. `limit`
+defaults to `100` and must be between `1` and `200`. To load the previous page,
+pass the first returned message's `messageId` as `beforeMessageId`.
+
+```json
+{"jsonrpc":"2.0","id":"2","method":"chat.history","params":{"sessionId":"local-1","beforeMessageId":"message-101","limit":100}}
+```
+
+The result contains `messages` and `hasOlder`. The message cursor is stable when
+new messages arrive. `chat.get_session` applies the same 100-message bound.
+
 ### `chat.subscribe`
 
 Subscribes this connection to notifications for one existing chat session:

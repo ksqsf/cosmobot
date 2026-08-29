@@ -22,7 +22,7 @@ import ChatLogMessageLink from '@/components/ChatLogMessageLink.vue'
 import RunIdLink from '@/components/RunIdLink.vue'
 import { getAuditThreadMessages, getMedia, getThread, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
-import { safeImageUrl } from '@/backend/chat'
+import { safeDownloadUrl, safeImageUrl } from '@/backend/chat'
 import { threadStats } from '@/backend/threadStats'
 import { formatBytes } from '@/format'
 import { highlightCode, mediaRefFromClick, renderMarkdown } from '@/markdown'
@@ -70,6 +70,7 @@ let detailGeneration = 0
 let activeGeneration = 0
 let listGeneration = 0
 let monitorTimer: number | undefined
+let activePolling = false
 
 const platformNames = {
   PlatformQQ: 'QQ',
@@ -158,6 +159,27 @@ async function refreshActive(): Promise<void> {
   activeThreads.value = [...result.value]
   if (activeTaskId.value !== undefined && activeSelected.value === undefined) activeVisible.value = false
   await loadMediaForMessages(result.value.flatMap(({ messages }) => messages))
+}
+
+function stopActivePolling(): void {
+  if (monitorTimer !== undefined) window.clearTimeout(monitorTimer)
+  monitorTimer = undefined
+}
+
+function scheduleActivePolling(): void {
+  stopActivePolling()
+  if (!activePolling || document.hidden || connection.state !== 'authenticated') return
+  monitorTimer = window.setTimeout(() => { void pollActiveThreads() }, 2000)
+}
+
+async function pollActiveThreads(): Promise<void> {
+  await refreshActive()
+  scheduleActivePolling()
+}
+
+function activeVisibilityChanged(): void {
+  if (document.hidden) stopActivePolling()
+  else void pollActiveThreads()
 }
 
 function monitor(active: ActiveThread): void {
@@ -369,6 +391,10 @@ function mediaDetails(message: StoredThreadMessage): MediaDetail[] {
   })
 }
 
+function mediaUrl(media: MediaDetail): string | undefined {
+  return safeDownloadUrl(media.publicUrl, window.location.href)
+}
+
 function imageUrls(message: StoredThreadMessage): string[] {
   const contentUrls = Array.isArray(message.content) ? message.content.flatMap((part) => {
     const ref = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url
@@ -408,12 +434,13 @@ function threadPlatformIcon(thread: ThreadSummary): string {
 }
 
 onMounted(() => {
+  activePolling = true
   void refresh()
-  void refreshActive()
-  monitorTimer = window.setInterval(() => { void refreshActive() }, 2000)
+  void pollActiveThreads()
+  document.addEventListener('visibilitychange', activeVisibilityChanged)
 })
-onUnmounted(() => { if (monitorTimer !== undefined) window.clearInterval(monitorTimer); activeGeneration += 1; detailGeneration += 1; listGeneration += 1 })
-watch([() => connection.state, () => connection.methods], () => { void refresh(); void refreshActive() })
+onUnmounted(() => { activePolling = false; stopActivePolling(); document.removeEventListener('visibilitychange', activeVisibilityChanged); activeGeneration += 1; detailGeneration += 1; listGeneration += 1 })
+watch([() => connection.state, () => connection.methods], () => { void refresh(); void pollActiveThreads() })
 watch([() => route.params['threadId'], () => route.query['run']], () => { void selectFromRoute() })
 watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
 </script>
@@ -750,20 +777,20 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
                     :key="media.mediaId"
                   >
                     <video
-                      v-if="media.exists && media.mimeType.startsWith('video/')"
+                      v-if="media.exists && mediaUrl(media) && media.mimeType.startsWith('video/')"
                       class="object-preview"
                       controls
                       preload="metadata"
                     ><source
-                      :src="media.publicUrl"
+                      :src="mediaUrl(media)"
                       :type="media.mimeType"
                     /></video>
                     <audio
-                      v-else-if="media.exists && media.mimeType.startsWith('audio/')"
+                      v-else-if="media.exists && mediaUrl(media) && media.mimeType.startsWith('audio/')"
                       controls
                       preload="metadata"
                     ><source
-                      :src="media.publicUrl"
+                      :src="mediaUrl(media)"
                       :type="media.mimeType"
                     /></audio>
                     <RouterLink
@@ -871,20 +898,20 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
                   :key="media.mediaId"
                 >
                   <video
-                    v-if="media.exists && media.mimeType.startsWith('video/')"
+                    v-if="media.exists && mediaUrl(media) && media.mimeType.startsWith('video/')"
                     class="object-preview"
                     controls
                     preload="metadata"
                   ><source
-                    :src="media.publicUrl"
+                    :src="mediaUrl(media)"
                     :type="media.mimeType"
                   /></video>
                   <audio
-                    v-else-if="media.exists && media.mimeType.startsWith('audio/')"
+                    v-else-if="media.exists && mediaUrl(media) && media.mimeType.startsWith('audio/')"
                     controls
                     preload="metadata"
                   ><source
-                    :src="media.publicUrl"
+                    :src="mediaUrl(media)"
                     :type="media.mimeType"
                   /></audio>
                   <RouterLink

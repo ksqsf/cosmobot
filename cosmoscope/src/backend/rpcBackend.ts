@@ -18,7 +18,6 @@ import {
   chatSendSchema,
   chatSessionsSchema,
   chatUploadSchema,
-  concurrencyAwaitSchema,
   concurrencyCancelSchema,
   concurrencyListSchema,
   concurrencyLookupSchema,
@@ -52,7 +51,7 @@ import {
   threadRunTargetSchema,
 } from '@/rpc/schemas'
 import type { RpcClient } from '@/rpc/client'
-import type { LiveAdminMethod } from '@/rpc/protocol'
+import { RpcCallError, type LiveAdminMethod } from '@/rpc/protocol'
 import type { BackendEffect } from './AdminBackend'
 import type { AuditPlatform } from '@/types/domain'
 
@@ -60,21 +59,20 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
   const supports = (method: LiveAdminMethod): boolean => methods.has(method)
   return {
     tasks: {
-      list: supports('concurrency.list') ? () => Effect.tryPromise({
-        try: async () => concurrencyListSchema.parse(await client.request('concurrency.list')).entries,
-        catch: () => new RpcBackendError({ message: 'Could not load the task snapshot.' }),
-      }) : unsupported('concurrency.list'),
+      list: supports('concurrency.list') ? () => rpcEffect(
+        'Could not load the task snapshot.',
+        async () => concurrencyListSchema.parse(await client.request('concurrency.list')).entries,
+      ) : unsupported('concurrency.list'),
       lookup: (id) => rpcEffect('Could not load the task.', async () => concurrencyLookupSchema.parse(await client.request('concurrency.lookup', { id })).entry),
       cancel: (id) => rpcEffect('Could not cancel the task.', async () => concurrencyCancelSchema.parse(await client.request('concurrency.cancel', { id })).cancelled),
-      await: (id) => rpcEffect('Could not await the task.', async () => { concurrencyAwaitSchema.parse(await client.request('concurrency.await', { id })) }),
       associated: (id) => rpcEffect('Could not load associated resources.', async () => resourceListAssociatedSchema.parse(await client.request('resource.list_associated', { id })).resources),
       destroyAssociated: (id) => rpcEffect('Could not destroy associated resources.', async () => resourceDestroyAssociatedSchema.parse(await client.request('resource.destroy_associated', { id })).results),
     },
     audit: {
-      recent: supports('audit.recent') ? (limit = 20) => Effect.tryPromise({
-        try: async () => recentAuditSchema.parse(await client.request('audit.recent', { limit })),
-        catch: (cause) => new RpcBackendError({ message: schemaError(cause, 'Could not load recent audit activity.') }),
-      }) : unsupported('audit.recent'),
+      recent: supports('audit.recent') ? (limit = 20) => rpcEffect(
+        'Could not load recent audit activity.',
+        async () => recentAuditSchema.parse(await client.request('audit.recent', { limit })),
+      ) : unsupported('audit.recent'),
       count: supports('audit.count') ? () => rpcEffect(
         'Could not count audit activity.',
         async () => auditCountSchema.parse(await client.request('audit.count')),
@@ -150,7 +148,7 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       }) : unsupported('chat.list_sessions'),
       list: () => rpcEffect('Could not load chat sessions.', async () => chatSessionsSchema.parse(await client.request('chat.list_sessions')).sessions),
       open: (label) => rpcEffect('Could not create the chat session.', async () => chatOpenSchema.parse(await client.request('chat.open_session', { label })).session),
-      history: (sessionId) => rpcEffect('Could not load the chat transcript.', async () => chatHistorySchema.parse(await client.request('chat.history', { sessionId })).messages),
+      history: (sessionId, beforeMessageId, limit = 100) => rpcEffect('Could not load the chat transcript.', async () => chatHistorySchema.parse(await client.request('chat.history', { sessionId, beforeMessageId, limit }))),
       fork: (sessionId, messageId, label) => rpcEffect('Could not fork the chat session.', async () => chatOpenSchema.parse(await client.request('chat.fork', { sessionId, messageId, label })).session),
       rename: (sessionId, label) => rpcEffect('Could not rename the chat session.', async () => chatRenameSchema.parse(await client.request('chat.rename_session', { sessionId, label })).session),
       delete: (sessionId) => rpcEffect('Could not delete the chat session.', async () => chatDeleteSchema.parse(await client.request('chat.delete_session', { sessionId })).deleted),
@@ -223,7 +221,7 @@ function auditPlatformKey(platform: AuditPlatform): RpcAuditPlatform {
 function rpcEffect<A>(fallback: string, action: () => Promise<A>): BackendEffect<A> {
   return Effect.tryPromise({
     try: action,
-    catch: (cause) => new RpcBackendError({ message: cause instanceof Error ? cause.message : fallback }),
+    catch: (cause) => new RpcBackendError({ message: rpcErrorMessage(cause, fallback) }),
   })
 }
 
@@ -231,9 +229,10 @@ function unsupported<A>(method: LiveAdminMethod): () => BackendEffect<A> {
   return () => Effect.fail(new RpcBackendError({ message: `The server does not support ${method}.` }))
 }
 
-function schemaError(cause: unknown, fallback: string): string {
+function rpcErrorMessage(cause: unknown, fallback: string): string {
   const issue = cause instanceof ZodError ? cause.issues[0] : undefined
-  return issue === undefined ? fallback : `Invalid RPC payload at ${issue.path.join('.') || 'result'} (${issue.code}).`
+  if (issue !== undefined) return `Invalid RPC payload at ${issue.path.join('.') || 'result'} (${issue.code}).`
+  return cause instanceof RpcCallError ? cause.message : fallback
 }
 
 function fileBase64(file: File): Promise<string> {

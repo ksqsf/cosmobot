@@ -11,6 +11,16 @@ const item = {
 }
 
 describe('media backend', () => {
+  it('reports malformed RPC payloads without exposing the full Zod issue dump', async () => {
+    const client = new RpcClient()
+    vi.spyOn(client, 'request').mockResolvedValue({})
+    const backend = makeRpcBackend(client, new Set(liveAdminMethods))
+
+    await expect(Effect.runPromise(backend.media.list())).rejects.toMatchObject({
+      message: 'Invalid RPC payload at stats (invalid_type).',
+    })
+  })
+
   it('maps snapshots and distinguishes configured from force GC', async () => {
     const client = new RpcClient()
     const request = vi.spyOn(client, 'request').mockImplementation((method) => {

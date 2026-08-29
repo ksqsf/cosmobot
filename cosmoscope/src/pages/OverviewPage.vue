@@ -46,7 +46,7 @@ const mediaError = ref('')
 const selectedTask = ref<Task>()
 const drawerOpen = ref(false)
 let stopAuditSubscription: (() => void) | undefined
-let pollTimer: ReturnType<typeof setInterval> | undefined
+let pollTimer: ReturnType<typeof setTimeout> | undefined
 
 const supports = (method: LiveAdminMethod): boolean => connection.state === 'authenticated' && connection.methods.has(method)
 async function loadTasks(): Promise<void> {
@@ -114,11 +114,14 @@ async function installAuditSubscription(): Promise<void> {
 function startPolling(): void {
   stopPolling()
   if (document.hidden || connection.state !== 'authenticated') return
-  pollTimer = setInterval(() => { void loadSlowSnapshots() }, 30_000)
+  pollTimer = setTimeout(async () => {
+    await loadSlowSnapshots()
+    startPolling()
+  }, 30_000)
 }
 
 function stopPolling(): void {
-  if (pollTimer !== undefined) clearInterval(pollTimer)
+  if (pollTimer !== undefined) clearTimeout(pollTimer)
   pollTimer = undefined
 }
 
@@ -178,8 +181,7 @@ function stopLive(): void {
 function onVisibilityChange(): void {
   if (document.hidden) stopPolling()
   else {
-    void loadSlowSnapshots()
-    startPolling()
+    void loadSlowSnapshots().then(startPolling)
   }
 }
 function inspect(task: Task): void { selectedTask.value = task; drawerOpen.value = true }

@@ -8,7 +8,7 @@ import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import type { MenuItem } from 'primevue/menuitem'
 import { listChatLogs, loadChatLogWindow } from '@/backend/AdminBackend'
-import { safeDownloadUrl, safeImageUrl } from '@/backend/chat'
+import { mergeChatLogItems, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
 import { runBackend } from '@/backend/runBackend'
 import { renderMarkdown } from '@/markdown'
 import type { AuditPlatform, ChatLogScope, ChatLogSummary, ChatLogWindow, ChatLogWindowQuery } from '@/types/domain'
@@ -27,6 +27,7 @@ const window = ref<ChatLogWindow>()
 const loading = ref(true)
 const loadingWindow = ref(false)
 const loadingDirection = ref<'older' | 'newer'>()
+const retainedMessages = 150
 const messagePane = ref<HTMLElement>()
 const messageMenu = useTemplateRef<ContextMenuMethods>('messageMenu')
 const contextItem = ref<ChatLogWindow['entries'][number]>()
@@ -112,7 +113,7 @@ async function selectFromRoute(): Promise<void> {
       error.value = ''
       loadingWindow.value = false
       await nextTick()
-      if (messageId === undefined && messagePane.value !== undefined) messagePane.value.scrollTop = messagePane.value.scrollHeight
+      if (messageId === undefined) messagePane.value?.querySelector('.chat-log-message:last-of-type')?.scrollIntoView({ block: 'start' })
       else messagePane.value?.querySelector('.targeted')?.scrollIntoView({ block: 'center' })
       return
     }
@@ -130,21 +131,24 @@ async function page(direction: 'older' | 'newer'): Promise<void> {
   const edge = direction === 'older' ? current?.entries[0] : current?.entries.at(-1)
   if (current === undefined || edge === undefined || loadingDirection.value !== undefined) return
   loadingDirection.value = direction
-  const previousHeight = messagePane.value?.scrollHeight ?? 0
+  const pane = messagePane.value
+  const anchorTop = pane?.querySelector<HTMLElement>(`[data-row-id="${String(edge.rowId)}"]`)?.getBoundingClientRect().top
   const result = await loadWindow({ ...current.scope, [direction === 'older' ? 'beforeRow' : 'afterRow']: edge.rowId, limit: 50 })
   loadingDirection.value = undefined
   if (result === undefined) return
-  const entries = [...new Map([...current.entries, ...result.entries].map((item) => [item.rowId, item])).values()].sort((left, right) => left.rowId - right.rowId)
+  const merged = mergeChatLogItems(current.entries, result.entries, direction, retainedMessages)
   window.value = {
     ...current,
-    entries,
-    hasOlder: direction === 'older' ? result.hasOlder : current.hasOlder,
-    hasNewer: direction === 'newer' ? result.hasNewer : current.hasNewer,
+    entries: merged.entries,
+    hasOlder: direction === 'older' ? result.hasOlder : current.hasOlder || merged.pruned,
+    hasNewer: direction === 'newer' ? result.hasNewer : current.hasNewer || merged.pruned,
   }
   error.value = ''
-  if (direction === 'older') {
+  if (anchorTop !== undefined) {
     await nextTick()
-    if (messagePane.value !== undefined) messagePane.value.scrollTop += messagePane.value.scrollHeight - previousHeight
+    const nextPane = messagePane.value
+    const nextTop = nextPane?.querySelector<HTMLElement>(`[data-row-id="${String(edge.rowId)}"]`)?.getBoundingClientRect().top
+    if (nextPane !== undefined && nextTop !== undefined) nextPane.scrollTop += nextTop - anchorTop
   }
 }
 
@@ -268,6 +272,7 @@ onMounted(refresh)
             v-for="item in window.entries"
             :id="item.entry.messageId === null ? undefined : `message-${item.entry.messageId}`"
             :key="item.rowId"
+            :data-row-id="item.rowId"
             :class="['chat-log-message', { targeted: item.entry.messageId === window.anchorMessageId, 'context-selected': contextItem?.rowId === item.rowId }]"
             @contextmenu="showMessageMenu($event, item)"
           >

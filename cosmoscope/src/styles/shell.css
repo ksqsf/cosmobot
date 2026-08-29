@@ -232,8 +232,10 @@ main {
   display: grid;
   align-content: start;
   gap: 4px;
-  height: min(400px, 55vh);
   margin-top: 12px;
+}
+.command-results {
+  height: min(400px, 55vh);
   overflow-y: auto;
 }
 .command-dialog {

@@ -38,6 +38,7 @@ const router = useRouter()
 const confirm = useConfirm()
 const toast = useToast()
 const connection = useConnectionStore()
+let detailGeneration = 0
 const live = computed(() => connection.state === 'authenticated' && resourceMethods.every((method) => connection.methods.has(method)))
 const summary = computed(() => ({
   total: resources.value.length,
@@ -84,8 +85,15 @@ async function refresh(): Promise<void> {
   await selectFromRoute()
 }
 async function selectFromRoute(): Promise<void> {
+  const generation = ++detailGeneration
   const resourceId = route.params['resourceId']
-  if (typeof resourceId !== 'string') return
+  if (typeof resourceId !== 'string') {
+    selected.value = undefined
+    detail.value = ''
+    visible.value = false
+    if (pending.value === 'detail') pending.value = undefined
+    return
+  }
   const resource = resources.value.find(({ id }) => id === resourceId)
   if (resource === undefined) { error.value = `Resource “${resourceId}” was not found.`; visible.value = false; return }
   selected.value = resource
@@ -94,6 +102,7 @@ async function selectFromRoute(): Promise<void> {
   if (!live.value) { detail.value = resource.description; return }
   pending.value = 'detail'
   const result = await runBackend(getResourceDetail(resource.id))
+  if (generation !== detailGeneration) return
   pending.value = undefined
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
@@ -103,8 +112,10 @@ function inspect(resource: Resource): void {
   void router.replace(`/resources/${encodeURIComponent(resource.id)}`)
 }
 function closeDrawer(): void {
+  detailGeneration += 1
   selected.value = undefined
   detail.value = ''
+  if (pending.value === 'detail') pending.value = undefined
   if (route.params['resourceId'] !== undefined) void router.replace('/resources')
 }
 async function doRename(): Promise<void> {

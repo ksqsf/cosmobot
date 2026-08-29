@@ -16,6 +16,7 @@ module Bot.Session
   , listSessions
   , getSession
   , sessionHistory
+  , sessionHistoryPage
   , forkSession
   , renameSession
   , deleteSession
@@ -111,6 +112,16 @@ getSession sessionId =
 sessionHistory :: StorageEffect.Storage :> es => SessionId -> Eff es [SessionMessage]
 sessionHistory sessionId =
   map storedMessageToSession <$> Storage.loadSessionHistory (sessionIdText sessionId)
+
+sessionHistoryPage
+  :: StorageEffect.Storage :> es
+  => SessionId
+  -> Maybe MessageId
+  -> Int
+  -> Eff es (Either Text ([SessionMessage], Bool))
+sessionHistoryPage sessionId beforeMessageId limit =
+  Storage.loadSessionHistoryPage (sessionIdText sessionId) beforeMessageId limit <&>
+    fmap (first (map storedMessageToSession))
 
 forkSession :: StorageEffect.Storage :> es => SessionId -> MessageId -> Maybe Text -> Eff es (Maybe Session)
 forkSession sourceSessionId messageId label =

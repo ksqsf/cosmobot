@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest'
-import { mergeChatMessage, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
+import { Effect } from 'effect'
+import { describe, expect, it, vi } from 'vitest'
+import { makeRpcBackend } from '@/backend/rpcBackend'
+import { mergeChatLogItems, mergeChatMessage, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
 import { highlightCode, renderMarkdown } from '@/markdown'
+import { RpcClient } from '@/rpc/client'
+import { liveAdminMethods } from '@/rpc/protocol'
 import type { ChatMessage } from '@/types/domain'
 
 const message: ChatMessage = {
@@ -15,6 +19,21 @@ const message: ChatMessage = {
 }
 
 describe('chat projection', () => {
+  it('requests bounded history pages with a stable cursor', async () => {
+    const client = new RpcClient()
+    const request = vi.spyOn(client, 'request').mockResolvedValue({ sessionId: 'session-1', messages: [message], hasOlder: true })
+    const history = await Effect.runPromise(makeRpcBackend(client, new Set(liveAdminMethods)).chat.history('session-1', 'message-20', 50))
+
+    expect(history).toEqual({ sessionId: 'session-1', messages: [message], hasOlder: true })
+    expect(request).toHaveBeenCalledWith('chat.history', { sessionId: 'session-1', beforeMessageId: 'message-20', limit: 50 })
+  })
+
+  it('keeps platform chat logs as a bounded sliding window', () => {
+    const item = (rowId: number) => ({ rowId, threadId: null, entry: { platform: 'PlatformRPC', kind: 'ChatPrivate', chatId: '1', recordedAt: null, senderId: null, senderUsername: null, messageId: String(rowId), replyToMessageId: null, isBot: false, mentions: [], mentionUsernames: [], imageUrls: [], files: [], text: '' } } as const)
+    expect(mergeChatLogItems([item(3), item(4)], [item(1), item(2), item(3)], 'older', 3)).toEqual({ entries: [item(1), item(2), item(3)], pruned: true })
+    expect(mergeChatLogItems([item(1), item(2)], [item(2), item(3), item(4)], 'newer', 3)).toEqual({ entries: [item(2), item(3), item(4)], pruned: true })
+  })
+
   it('deduplicates complete streaming snapshots in place', () => {
     expect(mergeChatMessage([message], { ...message, text: 'new draft' })).toEqual([{ ...message, text: 'new draft' }])
   })

@@ -17,6 +17,7 @@ import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
 import { collectMediaGarbage, deleteMedia, getMedia, listMedia, searchMedia } from '@/backend/AdminBackend'
+import { safeDownloadUrl } from '@/backend/chat'
 import { runBackend } from '@/backend/runBackend'
 import { formatBytes } from '@/format'
 import { useConnectionStore } from '@/stores/connection'
@@ -54,6 +55,7 @@ const searchResults = ref<readonly MediaItem[]>()
 const searching = ref(false)
 const searchError = ref('')
 let searchGeneration = 0
+let detailGeneration = 0
 const route = useRoute()
 const router = useRouter()
 const confirm = useConfirm()
@@ -67,6 +69,7 @@ const platformOptions = computed(() => [
 const mimeTypeOptions = computed(() => [...stats.value.mimeTypes])
 const sourceKindOptions = (['chat', 'generated-image', 'tool-result', 'sandbox'] as const).map((value) => ({ label: sourceKindLabels[value], value }))
 const filtered = computed(() => searchResults.value ?? media.value)
+const publicUrl = computed(() => detail.value === undefined ? undefined : safeDownloadUrl(detail.value.publicUrl, window.location.href))
 
 function formatTime(seconds: number): string { return new Date(seconds * 1000).toLocaleString() }
 function effectiveSourceKinds(item: Pick<MediaItem, 'sourceKinds'>): readonly MediaSourceKind[] {
@@ -143,10 +146,17 @@ async function refreshSearch(): Promise<void> {
   searchResults.value = result.value
 }
 async function selectFromRoute(): Promise<void> {
+  const generation = ++detailGeneration
   const mediaId = route.params['mediaId']
-  if (typeof mediaId !== 'string') return
+  if (typeof mediaId !== 'string') {
+    detail.value = undefined
+    drawerOpen.value = false
+    if (pending.value === 'detail') pending.value = undefined
+    return
+  }
   pending.value = 'detail'
   const result = await runBackend(getMedia(mediaId))
+  if (generation !== detailGeneration) return
   pending.value = undefined
   if (result._tag === 'Failure') { drawerOpen.value = false; error.value = result.error.message; return }
   detail.value = result.value
@@ -154,8 +164,10 @@ async function selectFromRoute(): Promise<void> {
 }
 function inspect(item: MediaItem): void { void router.replace(`/media/${encodeURIComponent(item.mediaId)}`) }
 function closeDrawer(): void {
+  detailGeneration += 1
   detail.value = undefined
   zoomOpen.value = false
+  if (pending.value === 'detail') pending.value = undefined
   if (route.params['mediaId'] !== undefined) void router.replace('/media')
 }
 async function remove(ids: readonly string[]): Promise<void> {
@@ -435,36 +447,36 @@ watch([debouncedQuery, platforms, mimeTypes, sourceKinds], () => { void refreshS
         class="stack stack-loose"
       >
         <button
-          v-if="detail.exists && detail.mimeType.startsWith('image/')"
+          v-if="detail.exists && publicUrl && detail.mimeType.startsWith('image/')"
           class="chat-image-button"
           type="button"
           aria-label="Zoom image"
           @click="zoomOpen = true"
         >
           <img
-            :src="detail.publicUrl"
+            :src="publicUrl"
             :alt="detail.sourceName || detail.mediaId"
           />
         </button>
         <video
-          v-else-if="detail.exists && detail.mimeType.startsWith('video/')"
+          v-else-if="detail.exists && publicUrl && detail.mimeType.startsWith('video/')"
           class="object-preview"
           controls
           preload="metadata"
         >
           <source
-            :src="detail.publicUrl"
+            :src="publicUrl"
             :type="detail.mimeType"
           />
           Your browser cannot play this video.
         </video>
         <audio
-          v-else-if="detail.exists && detail.mimeType.startsWith('audio/')"
+          v-else-if="detail.exists && publicUrl && detail.mimeType.startsWith('audio/')"
           controls
           preload="metadata"
         >
           <source
-            :src="detail.publicUrl"
+            :src="publicUrl"
             :type="detail.mimeType"
           />
           Your browser cannot play this audio.
@@ -495,7 +507,8 @@ watch([debouncedQuery, platforms, mimeTypes, sourceKinds], () => { void refreshS
               icon="pi pi-external-link"
               aria-label="Open public URL"
               as="a"
-              :href="detail.publicUrl"
+              :href="publicUrl"
+              :disabled="publicUrl === undefined"
               target="_blank"
               rel="noopener"
             />
@@ -565,9 +578,9 @@ watch([debouncedQuery, platforms, mimeTypes, sourceKinds], () => { void refreshS
       header="Image preview"
     >
       <img
-        v-if="detail"
+        v-if="detail && publicUrl"
         class="object-preview"
-        :src="detail.publicUrl"
+        :src="publicUrl"
         :alt="detail.sourceName || detail.mediaId"
       />
     </Dialog>

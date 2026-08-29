@@ -89,6 +89,12 @@ newtype MediaGcParams = MediaGcParams
   { requestedMaxAgeSeconds :: Maybe Int
   }
 
+data ChatHistoryParams = ChatHistoryParams
+  { sessionId :: !State.RpcSessionId
+  , beforeMessageId :: !(Maybe MessageId)
+  , limit :: !Int
+  }
+
 newtype RpcClientDisconnected = RpcClientDisconnected Text
   deriving (Show)
 
@@ -568,30 +574,37 @@ dispatchGetSession request =
       pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right sessionId -> do
       session <- State.getChatSession sessionId
-      history <- maybe (pure []) (const (State.chatHistory sessionId)) session
-      pure $
-        RPC.successResponse (RPC.requestId request) $
-          Aeson.object
-            [ "session" Aeson..= session
-            , "messages" Aeson..= history
-            ]
+      history <- maybe (pure (Right ([], False))) (const (State.chatHistoryPage sessionId Nothing 100)) session
+      pure $ case history of
+        Left err ->
+          RPC.errorResponse (RPC.requestId request) "invalid_cursor" err
+        Right (messages, hasOlder) ->
+          RPC.successResponse (RPC.requestId request) $
+            Aeson.object
+              [ "session" Aeson..= session
+              , "messages" Aeson..= messages
+              , "hasOlder" Aeson..= hasOlder
+              ]
 
 dispatchHistory
   :: Storage.Storage :> es
   => RPC.RpcRequest
   -> Eff es RPC.RpcResponse
 dispatchHistory request =
-  case AesonTypes.parseEither parseSessionIdParams (RPC.requestParams request) of
+  case AesonTypes.parseEither parseChatHistoryParams (RPC.requestParams request) of
     Left err ->
       pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
-    Right sessionId -> do
-      messages <- State.chatHistory sessionId
-      pure $
-        RPC.successResponse (RPC.requestId request) $
-          Aeson.object
-            [ "sessionId" Aeson..= rpcSessionIdText sessionId
-            , "messages" Aeson..= messages
-            ]
+    Right params ->
+      State.chatHistoryPage params.sessionId params.beforeMessageId params.limit <&> \case
+        Left err ->
+          RPC.errorResponse (RPC.requestId request) "invalid_cursor" err
+        Right (messages, hasOlder) ->
+          RPC.successResponse (RPC.requestId request) $
+            Aeson.object
+              [ "sessionId" Aeson..= rpcSessionIdText params.sessionId
+              , "messages" Aeson..= messages
+              , "hasOlder" Aeson..= hasOlder
+              ]
 
 dispatchFork
   :: Storage.Storage :> es
@@ -1203,6 +1216,16 @@ parseSessionIdParams =
   Aeson.withObject "session params" \o ->
     Session.SessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
 
+parseChatHistoryParams :: Aeson.Value -> AesonTypes.Parser ChatHistoryParams
+parseChatHistoryParams =
+  Aeson.withObject "chat.history params" \o -> do
+    sessionId <- Session.SessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
+    beforeMessageId <- o Aeson..:? "beforeMessageId" <|> o Aeson..:? "before_message_id"
+    limit <- fromMaybe 100 <$> o Aeson..:? "limit"
+    when (limit < 1 || limit > 200) $
+      fail "limit must be between 1 and 200"
+    pure ChatHistoryParams{sessionId, beforeMessageId, limit}
+
 parseForkParams :: Aeson.Value -> AesonTypes.Parser (State.RpcSessionId, MessageId, Maybe Text)
 parseForkParams =
   Aeson.withObject "chat.fork params" \o -> do
@@ -1236,7 +1259,7 @@ parseMediaStatsParams = \case
 parseMediaSearchParams :: Aeson.Value -> AesonTypes.Parser Media.MediaSearchQuery
 parseMediaSearchParams =
   Aeson.withObject "media.search params" \o -> do
-    text <- (>>= nonEmptyText) <$> o Aeson..:? "query"
+    text <- (>>= strippedNonEmpty) <$> o Aeson..:? "query"
     platforms <- Set.fromList . map (Text.toLower . Text.strip) . fromMaybe [] <$> o Aeson..:? "platforms"
     withoutPlatform <- fromMaybe False <$> o Aeson..:? "withoutPlatform"
     mimeTypes <- Set.fromList . map Text.strip . fromMaybe [] <$> o Aeson..:? "mimeTypes"
@@ -1248,7 +1271,7 @@ parseMediaSearchParams =
       fail "at least one search condition is required"
     pure Media.MediaSearchQuery{text, platforms, withoutPlatform, mimeTypes, sourceKinds, limit}
   where
-    nonEmptyText value = case Text.strip value of
+    strippedNonEmpty value = case Text.strip value of
       "" -> Nothing
       stripped -> Just stripped
     parseSourceKind key =

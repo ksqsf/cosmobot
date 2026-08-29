@@ -18,7 +18,7 @@ import { runBackend } from '@/backend/runBackend'
 import type { AssociatedResource, Task, TaskStatus } from '@/types/domain'
 import { useConnectionStore } from '@/stores/connection'
 
-const taskMethods = ['concurrency.list', 'concurrency.lookup', 'concurrency.cancel', 'concurrency.await', 'resource.list_associated', 'resource.destroy_associated'] as const
+const taskMethods = ['concurrency.list', 'concurrency.lookup', 'concurrency.cancel', 'resource.list_associated', 'resource.destroy_associated'] as const
 type TaskFilter = 'all' | TaskStatus
 type PendingAction = 'cancel' | 'destroy-associated'
 const tasks = ref<Task[]>([])

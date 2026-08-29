@@ -30,7 +30,7 @@ module Bot.RPC.State
   , openChatSession
   , listChatSessions
   , getChatSession
-  , chatHistory
+  , chatHistoryPage
   , forkChatSession
   , renameChatSession
   , deleteChatSession
@@ -193,9 +193,14 @@ getChatSession :: StorageEffect.Storage :> es => RpcSessionId -> Eff es (Maybe R
 getChatSession sessionId =
   Session.getSession sessionId
 
-chatHistory :: StorageEffect.Storage :> es => RpcSessionId -> Eff es [RpcChatMessage]
-chatHistory sessionId =
-  Session.sessionHistory sessionId
+chatHistoryPage
+  :: StorageEffect.Storage :> es
+  => RpcSessionId
+  -> Maybe MessageId
+  -> Int
+  -> Eff es (Either Text ([RpcChatMessage], Bool))
+chatHistoryPage =
+  Session.sessionHistoryPage
 
 forkChatSession :: StorageEffect.Storage :> es => RpcSessionId -> MessageId -> Maybe Text -> Eff es (Maybe RpcChatSession)
 forkChatSession =

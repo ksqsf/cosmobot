@@ -1,5 +1,12 @@
 import { Context, Data, type Effect } from 'effect'
-import type { ActiveThread, AssociatedResource, AuditRecord, ChatAttachment, ChatLogSummary, ChatLogWindow, ChatLogWindowQuery, ChatMessage, ChatSend, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot, MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary, Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task, ThreadDetail, ThreadListQuery, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot } from '@/types/domain'
+import type {
+  ActiveThread, AssociatedResource, AuditRecord,
+  ChatAttachment, ChatHistoryPage, ChatLogSummary, ChatLogWindow, ChatLogWindowQuery, ChatMessage, ChatSend, ChatSession,
+  MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot,
+  MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary,
+  Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task,
+  ThreadDetail, ThreadListQuery, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot,
+} from '@/types/domain'
 
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
 export class RpcBackendError extends Data.TaggedError('RpcBackendError')<{ readonly message: string }> {}
@@ -11,7 +18,6 @@ export interface AdminBackend {
     readonly list: () => BackendEffect<readonly Task[]>
     readonly lookup: (id: number) => BackendEffect<Task | null>
     readonly cancel: (id: number) => BackendEffect<boolean>
-    readonly await: (id: number) => BackendEffect<void>
     readonly associated: (id: number) => BackendEffect<readonly AssociatedResource[]>
     readonly destroyAssociated: (id: number) => BackendEffect<readonly ResourceOperationResult[]>
   }
@@ -48,7 +54,7 @@ export interface AdminBackend {
     readonly sessionCount: () => BackendEffect<number>
     readonly list: () => BackendEffect<readonly ChatSession[]>
     readonly open: (label?: string) => BackendEffect<ChatSession>
-    readonly history: (sessionId: string) => BackendEffect<readonly ChatMessage[]>
+    readonly history: (sessionId: string, beforeMessageId?: string, limit?: number) => BackendEffect<ChatHistoryPage>
     readonly fork: (sessionId: string, messageId: string, label?: string) => BackendEffect<ChatSession>
     readonly rename: (sessionId: string, label: string) => BackendEffect<ChatSession>
     readonly delete: (sessionId: string) => BackendEffect<boolean>
@@ -92,8 +98,6 @@ export const lookupTask = (id: number): Effect.Effect<Task | null, BackendError,
   AdminBackendService.use((backend) => backend.tasks.lookup(id))
 export const cancelTask = (id: number): Effect.Effect<boolean, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.tasks.cancel(id))
-export const awaitTask = (id: number): Effect.Effect<void, BackendError, AdminBackend> =>
-  AdminBackendService.use((backend) => backend.tasks.await(id))
 export const listTaskResources = (id: number): Effect.Effect<readonly AssociatedResource[], BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.tasks.associated(id))
 export const destroyTaskResources = (id: number): Effect.Effect<readonly ResourceOperationResult[], BackendError, AdminBackend> =>
@@ -146,8 +150,8 @@ export const listChatSessions: Effect.Effect<readonly ChatSession[], BackendErro
   AdminBackendService.use((backend) => backend.chat.list())
 export const openChatSession = (label?: string): Effect.Effect<ChatSession, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.chat.open(label))
-export const loadChatHistory = (sessionId: string): Effect.Effect<readonly ChatMessage[], BackendError, AdminBackend> =>
-  AdminBackendService.use((backend) => backend.chat.history(sessionId))
+export const loadChatHistory = (sessionId: string, beforeMessageId?: string): Effect.Effect<ChatHistoryPage, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.chat.history(sessionId, beforeMessageId))
 export const forkChatSession = (sessionId: string, messageId: string, label?: string): Effect.Effect<ChatSession, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.chat.fork(sessionId, messageId, label))
 export const renameChatSession = (sessionId: string, label: string): Effect.Effect<ChatSession, BackendError, AdminBackend> =>

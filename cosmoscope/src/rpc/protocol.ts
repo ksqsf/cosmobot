@@ -19,7 +19,6 @@ export const liveAdminMethods = [
   'concurrency.list',
   'concurrency.lookup',
   'concurrency.cancel',
-  'concurrency.await',
   'audit.recent',
   'audit.count',
   'audit.search',

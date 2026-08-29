@@ -14,7 +14,6 @@ export const concurrencyListSchema = z.object({
 })
 export const concurrencyLookupSchema = z.object({ entry: taskSchema.nullable() })
 export const concurrencyCancelSchema = z.object({ id: z.number().int().positive(), cancelled: z.boolean() })
-export const concurrencyAwaitSchema = z.object({ id: z.number().int().positive(), awaited: z.literal(true) })
 
 const toolCallTraceSchema = z.object({
   id: z.string(),
@@ -133,7 +132,7 @@ export const chatMessageSchema = z.object({
   parentMessageId: z.string().nullable(),
 }) satisfies z.ZodType<ChatMessage>
 export const chatSessionsSchema = z.object({ sessions: z.array(chatSessionSchema) })
-export const chatHistorySchema = z.object({ sessionId: z.string(), messages: z.array(chatMessageSchema) })
+export const chatHistorySchema = z.object({ sessionId: z.string(), messages: z.array(chatMessageSchema), hasOlder: z.boolean() })
 export const chatOpenSchema = z.object({ sessionId: z.string(), session: chatSessionSchema })
 export const chatRenameSchema = z.object({ session: chatSessionSchema })
 export const chatDeleteSchema = z.object({ sessionId: z.string(), deleted: z.boolean() })

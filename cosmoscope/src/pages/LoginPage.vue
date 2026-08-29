@@ -10,7 +10,9 @@ import { useConnectionStore } from '@/stores/connection'
 
 const router = useRouter()
 const connection = useConnectionStore()
-const endpoint = ref(connection.endpoint || 'ws://127.0.0.1:38765/rpc')
+const productionEndpoint = new URL('/rpc', window.location.href)
+productionEndpoint.protocol = productionEndpoint.protocol === 'https:' ? 'wss:' : 'ws:'
+const endpoint = ref(connection.endpoint || (import.meta.env.DEV ? 'ws://127.0.0.1:38765/rpc' : productionEndpoint.href))
 const credential = ref('')
 const passwordVisible = ref(false)
 const failed = ref('')
