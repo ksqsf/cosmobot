@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, useTemplateRef, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { RouterLink, type RouteLocationRaw, useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import ContextMenu, { type ContextMenuMethods } from 'primevue/contextmenu'
 import Dialog from 'primevue/dialog'
@@ -92,6 +92,9 @@ function entryAttachments(entry: ChatLogWindow['entries'][number]['entry']): Mes
     return [{ key: `${file.name}:${file.ref}`, name: file.name, detail: 'Attachment', mimeType: `${kind}/*`, url }]
   })
 }
+function messageRoute(entry: ChatLogWindow['entries'][number]['entry'], messageId: string): RouteLocationRaw {
+  return { name: 'chat', query: { view: 'logs', platform: entry.platform, kind: entry.kind, ...(entry.chatId === null ? {} : { chat: entry.chatId }), message: messageId } }
+}
 function showMessageMenu(event: Event, item: ChatLogWindow['entries'][number]): void {
   contextItem.value = item
   messageMenu.value?.show(event)
@@ -101,7 +104,7 @@ async function copyText(value: string): Promise<void> {
 }
 async function copyMessageLink(item: ChatLogWindow['entries'][number]): Promise<void> {
   if (item.entry.messageId === null) return
-  const href = router.resolve({ name: 'chat', query: { view: 'logs', platform: item.entry.platform, kind: item.entry.kind, ...(item.entry.chatId === null ? {} : { chat: item.entry.chatId }), message: item.entry.messageId } }).href
+  const href = router.resolve(messageRoute(item.entry, item.entry.messageId)).href
   await copyText(new URL(href, globalThis.location.href).href)
 }
 
@@ -335,7 +338,7 @@ onMounted(refresh)
               <time :datetime="item.entry.recordedAt ?? undefined">{{ formatTime(item.entry.recordedAt) }}</time>
               <RouterLink
                 v-if="item.entry.messageId"
-                :to="{ name: 'chat', query: { view: 'logs', platform: item.entry.platform, kind: item.entry.kind, ...(item.entry.chatId === null ? {} : { chat: item.entry.chatId }), message: item.entry.messageId } }"
+                :to="messageRoute(item.entry, item.entry.messageId)"
               >
                 <code>{{ item.entry.messageId }}</code>
               </RouterLink>
@@ -351,6 +354,18 @@ onMounted(refresh)
                 @click="router.push({ name: 'threads', params: { threadId: String(item.threadId) } })"
               />
             </header>
+            <RouterLink
+              v-if="item.entry.replyToMessageId"
+              class="chat-log-reply"
+              :to="messageRoute(item.entry, item.entry.replyToMessageId)"
+            >
+              <i
+                class="pi pi-reply"
+                aria-hidden="true"
+              />
+              <span>In reply to</span>
+              <code>{{ item.entry.replyToMessageId }}</code>
+            </RouterLink>
             <MessageContent
               :text="item.entry.text"
               :images="entryImages(item.entry)"
