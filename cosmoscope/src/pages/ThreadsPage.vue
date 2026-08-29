@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { refDebounced } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
@@ -66,6 +66,7 @@ const treeFocused = ref(false)
 const treeZoom = ref(100)
 const mediaByRef = ref<ReadonlyMap<string, MediaDetail>>(new Map())
 const previewImage = ref<string>()
+const transcriptList = ref<HTMLOListElement>()
 const route = useRoute()
 const router = useRouter()
 const confirm = useConfirm()
@@ -313,6 +314,10 @@ function selectTreeNode(node: PrimeTreeNode): void {
 function selectNode(node: ThreadNode): void {
   selectedNode.value = node
   selectedKeys.value = { [threadMessageKeyId(node.messageKey)]: true }
+  void nextTick(() => {
+    const list = transcriptList.value
+    if (list !== undefined) list.scrollTop = list.scrollHeight
+  })
 }
 
 function buildTree(nodes: readonly ThreadNode[]): PrimeTreeNode[] {
@@ -743,6 +748,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
             </div>
             <ol
               v-else
+              ref="transcriptList"
               class="thread-transcript"
             >
               <li

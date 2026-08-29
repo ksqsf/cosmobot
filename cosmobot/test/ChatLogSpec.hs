@@ -132,6 +132,13 @@ testIdentityDirectory = runChatLogTest do
     [ (PlatformQQ, ChatGroup, 300)
     , (PlatformQQ, ChatPrivate, 300)
     ]
+  let bulkScopes = [(PlatformQQ, ChatGroup, chatId) | chatId <- [400 .. 439]]
+  traverse_ (\(_, _, chatId) -> ChatLog.recordMessage ((messageFromChat chatId chatId "bulk")
+    { platform = PlatformQQ
+    , kind = ChatGroup
+    , chatDisplayName = Just [i|Group #{chatId}|]
+    })) bulkScopes
+  bulkChats <- Identity.loadScopedChatInfos bulkScopes
   liftIO $ do
     Map.lookup (PlatformTelegram, "200") senders @?= Just Identity.SenderInfo
       { displayName = Just "Alice"
@@ -140,6 +147,7 @@ testIdentityDirectory = runChatLogTest do
     Map.lookup (PlatformTelegram, 200) chats @?= Just (Just "Example chat")
     Map.lookup (PlatformQQ, ChatGroup, 300) qqChats @?= Just (Just "QQ group")
     Map.lookup (PlatformQQ, ChatPrivate, 300) qqChats @?= Just (Just "QQ user")
+    Map.size bulkChats @?= length bulkScopes
 
 runChatLogTest :: Eff '[ChatLog.ChatLog, Storage.Storage, KatipE, Concurrent, IOE] a -> IO a
 runChatLogTest action =

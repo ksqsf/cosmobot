@@ -114,10 +114,10 @@ loadSenderInfos :: Storage.Storage :> es => [(ChatPlatform, Text)] -> Eff es (Ma
 loadSenderInfos requested = do
   ensureIdentityTables
   let keys = ordNub (map (uncurry senderKey) requested)
-  rows <- if null keys then pure [] else runSelda $ query do
+  rows <- runSelda $ concat <$> traverse (\batch -> query do
     row <- select senderInfoRows
-    restrict (foldr (.||) (literal False) [row ! #identity_key .== literal key | key <- keys])
-    pure row
+    restrict (foldr (.||) (literal False) [row ! #identity_key .== literal key | key <- batch])
+    pure row) (identityBatches keys)
   pure $ Map.fromList
     [ ((platform, row.sender_id), SenderInfo row.display_name row.username)
     | row <- rows
@@ -128,15 +128,15 @@ loadChatInfos :: Storage.Storage :> es => [(ChatPlatform, Integer)] -> Eff es (M
 loadChatInfos requested = do
   ensureIdentityTables
   let keys = ordNub requested
-  rows <- if null keys then pure [] else runSelda $ query do
+  rows <- runSelda $ concat <$> traverse (\batch -> query do
     row <- select chatInfoRows
     restrict (foldr (.||) (literal False)
       [ row ! #platform_key .== literal (chatPlatformKey platform)
           .&& row ! #chat_id .== literal (fromIntegral chatId)
-      | (platform, chatId) <- keys
+      | (platform, chatId) <- batch
       ])
     order (row ! #updated_at) ascending
-    pure row
+    pure row) (identityBatches keys)
   pure $ Map.fromList
     [ ((platform, fromIntegral row.chat_id), row.display_name)
     | row <- rows
@@ -151,10 +151,10 @@ loadScopedChatInfos requested = do
   ensureIdentityTables
   let keys = ordNub requested
       identityKeys = map (\(platform, kind, chatId) -> scopedChatKey platform kind chatId) keys
-  rows <- if null identityKeys then pure [] else runSelda $ query do
+  rows <- runSelda $ concat <$> traverse (\batch -> query do
     row <- select chatInfoRows
-    restrict (foldr (.||) (literal False) [row ! #identity_key .== literal key | key <- identityKeys])
-    pure row
+    restrict (foldr (.||) (literal False) [row ! #identity_key .== literal key | key <- batch])
+    pure row) (identityBatches identityKeys)
   pure $ Map.fromList
     [ (key, row.display_name)
     | key@(platform, kind, chatId) <- keys
@@ -180,3 +180,9 @@ nonEmptyText :: Maybe Text -> Maybe Text
 nonEmptyText value = do
   text <- Text.strip <$> value
   text <$ guard (not (Text.null text))
+
+identityBatches :: [a] -> [[a]]
+identityBatches [] = []
+identityBatches values = batch : identityBatches rest
+  where
+    (batch, rest) = splitAt 20 values
