@@ -44,11 +44,18 @@ const sessionError = ref('')
 const chatLogError = ref('')
 const resourceError = ref('')
 const mediaError = ref('')
+const auditLoading = ref(true)
+const threadLoading = ref(true)
+const chatLogLoading = ref(true)
+const mediaLoading = ref(true)
+const resourceLoading = ref(true)
 const selectedTask = ref<Task>()
 const drawerOpen = ref(false)
 const { isTop: drawerIsTop } = useOverlayLayer(drawerOpen)
 let stopAuditSubscription: (() => void) | undefined
 let pollTimer: ReturnType<typeof setTimeout> | undefined
+let mounted = false
+let loadGeneration = 0
 
 const supports = (method: LiveAdminMethod): boolean => connection.state === 'authenticated' && connection.methods.has(method)
 async function loadTasks(): Promise<void> {
@@ -60,6 +67,7 @@ async function loadTasks(): Promise<void> {
 
 async function loadAudit(): Promise<void> {
   const result = await runBackend(recentAudit())
+  auditLoading.value = false
   if (result._tag === 'Failure') { auditError.value = result.error.message; return }
   auditError.value = ''; auditRecords.value = [...result.value]; activities.value = auditActivity(result.value)
 }
@@ -78,6 +86,7 @@ async function loadSessions(): Promise<void> {
 
 async function loadChatLogs(): Promise<void> {
   const result = await runBackend(listChatLogs)
+  chatLogLoading.value = false
   if (result._tag === 'Failure') { chatLogError.value = result.error.message; return }
   chatLogError.value = ''
   chatMessageCount.value = result.value.reduce((total, chat) => total + chat.messageCount, 0)
@@ -86,18 +95,21 @@ async function loadChatLogs(): Promise<void> {
 
 async function loadThreads(): Promise<void> {
   const result = await runBackend(listThreads({ offset: 0, limit: 1 }))
+  threadLoading.value = false
   if (result._tag === 'Failure') { threadError.value = result.error.message; return }
   threadError.value = ''; threadCount.value = result.value.total
 }
 
 async function loadResources(): Promise<void> {
   const result = await runBackend(countResources)
+  resourceLoading.value = false
   if (result._tag === 'Failure') { resourceError.value = result.error.message; return }
   resourceError.value = ''; resourceCount.value = result.value
 }
 
 async function loadMedia(): Promise<void> {
   const result = await runBackend(listMedia(4))
+  mediaLoading.value = false
   if (result._tag === 'Failure') { mediaError.value = result.error.message; return }
   mediaError.value = ''; mediaStats.value = result.value.stats
 }
@@ -110,12 +122,12 @@ async function installAuditSubscription(): Promise<void> {
     auditCount.value += 1
   }))
   if (result._tag === 'Success') stopAuditSubscription = result.value
-  else auditError.value = result.error.message
+  else { auditLoading.value = false; auditError.value = result.error.message }
 }
 
 function startPolling(): void {
   stopPolling()
-  if (document.hidden || connection.state !== 'authenticated') return
+  if (!mounted || document.hidden || connection.state !== 'authenticated') return
   pollTimer = setTimeout(async () => {
     await loadSlowSnapshots()
     startPolling()
@@ -127,16 +139,26 @@ function stopPolling(): void {
   pollTimer = undefined
 }
 
-async function loadSlowSnapshots(): Promise<void> {
+async function loadImmediateSnapshots(): Promise<void> {
   await Promise.all([
     supports('concurrency.list') ? loadTasks() : Promise.resolve(),
-    supports('thread.list') ? loadThreads() : Promise.resolve(),
-    supports('chat.list_sessions') ? loadSessions() : Promise.resolve(),
-    supports('chat_log.list') ? loadChatLogs() : Promise.resolve(),
-    supports('resource.list') ? loadResources() : Promise.resolve(),
-    supports('media.stats') ? loadMedia() : Promise.resolve(),
     supports('audit.count') ? loadAuditCount() : Promise.resolve(),
   ])
+}
+
+async function loadDeferredSnapshots(): Promise<void> {
+  await Promise.all([
+    supports('chat.list_sessions') ? loadSessions() : Promise.resolve(),
+    supports('media.stats') ? loadMedia() : Promise.resolve(),
+    supports('chat_log.list') ? loadChatLogs() : Promise.resolve(),
+    supports('thread.list') ? loadThreads() : Promise.resolve(),
+    supports('resource.list') ? loadResources() : Promise.resolve(),
+  ])
+}
+
+async function loadSlowSnapshots(): Promise<void> {
+  await loadImmediateSnapshots()
+  await loadDeferredSnapshots()
 }
 
 async function refreshLive(): Promise<void> {
@@ -150,9 +172,21 @@ async function refreshLive(): Promise<void> {
     return
   }
   if (state.value !== 'ready') state.value = 'loading'
+  const generation = ++loadGeneration
   error.value = ''
   auditError.value = supports('audit.recent') ? '' : 'The server does not support audit.recent.'
   auditCountError.value = supports('audit.count') ? '' : 'The server does not support audit.count.'
+  taskError.value = supports('concurrency.list') ? '' : 'The server does not support concurrency.list.'
+  sessionError.value = supports('chat.list_sessions') ? '' : 'The server does not support chat.list_sessions.'
+  chatLogError.value = supports('chat_log.list') ? '' : 'The server does not support chat_log.list.'
+  threadError.value = supports('thread.list') ? '' : 'The server does not support thread.list.'
+  resourceError.value = supports('resource.list') ? '' : 'The server does not support resource.list.'
+  mediaError.value = supports('media.stats') ? '' : 'The server does not support media.stats.'
+  if (!supports('audit.recent')) auditLoading.value = false
+  if (!supports('thread.list')) threadLoading.value = false
+  if (!supports('chat_log.list')) chatLogLoading.value = false
+  if (!supports('media.stats')) mediaLoading.value = false
+  if (!supports('resource.list')) resourceLoading.value = false
   if (supports('audit.subscribe') && supports('audit.recent')) {
     if (stopAuditSubscription === undefined) await installAuditSubscription()
   }
@@ -160,21 +194,17 @@ async function refreshLive(): Promise<void> {
     stopAuditSubscription?.()
     stopAuditSubscription = undefined
   }
-  await Promise.all([
-    supports('concurrency.list') ? loadTasks() : Promise.resolve().then(() => { taskError.value = 'The server does not support concurrency.list.' }),
-    supports('thread.list') ? loadThreads() : Promise.resolve().then(() => { threadError.value = 'The server does not support thread.list.' }),
-    supports('chat.list_sessions') ? loadSessions() : Promise.resolve().then(() => { sessionError.value = 'The server does not support chat.list_sessions.' }),
-    supports('chat_log.list') ? loadChatLogs() : Promise.resolve().then(() => { chatLogError.value = 'The server does not support chat_log.list.' }),
-    supports('resource.list') ? loadResources() : Promise.resolve().then(() => { resourceError.value = 'The server does not support resource.list.' }),
-    supports('media.stats') ? loadMedia() : Promise.resolve().then(() => { mediaError.value = 'The server does not support media.stats.' }),
-    supports('audit.count') ? loadAuditCount() : Promise.resolve(),
-    supports('audit.recent') && !supports('audit.subscribe') ? loadAudit() : Promise.resolve(),
-  ])
+  const immediate = loadImmediateSnapshots()
+  if (supports('audit.recent') && !supports('audit.subscribe')) void loadAudit()
+  await immediate
+  if (!mounted || generation !== loadGeneration) return
   state.value = 'ready'
+  await loadDeferredSnapshots()
   startPolling()
 }
 
 function stopLive(): void {
+  loadGeneration += 1
   stopAuditSubscription?.()
   stopAuditSubscription = undefined
   stopPolling()
@@ -193,18 +223,16 @@ function taskElapsed(task: Task): string {
   return `${String(Math.max(0, Math.round((end - Date.parse(task.startedAt)) / 60_000)))}m`
 }
 
-watch(() => connection.methods, () => {
-  if (connection.state === 'authenticated') void refreshLive()
-})
-watch(() => connection.state, (next) => {
+watch([() => connection.state, () => connection.methods], ([next]) => {
   if (next === 'authenticated' && connection.methods.size > 0) void refreshLive()
   else if (next === 'offline' || next === 'failed') stopLive()
 })
-onMounted(async () => {
-  await refreshLive()
+onMounted(() => {
+  mounted = true
   document.addEventListener('visibilitychange', onVisibilityChange)
+  void refreshLive()
 })
-onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange', onVisibilityChange) })
+onUnmounted(() => { mounted = false; stopLive(); document.removeEventListener('visibilitychange', onVisibilityChange) })
 </script>
 
 <template>
@@ -277,7 +305,11 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
               :severity="supports('thread.list') ? 'success' : 'warn'"
             />
           </div>
-          <strong>{{ threadCount }}</strong><p>Conversation threads</p>
+          <Skeleton
+            v-if="threadLoading"
+            width="4rem"
+            height="2.2rem"
+          /><strong v-else>{{ threadCount }}</strong><p>Conversation threads</p>
           <small
             v-if="threadError"
             class="metric-error"
@@ -293,7 +325,11 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
               :severity="supports('chat.list_sessions') ? 'success' : 'warn'"
             />
           </div>
-          <strong>{{ chatMessageCount }}</strong><p>Chat messages</p>
+          <Skeleton
+            v-if="chatLogLoading"
+            width="4rem"
+            height="2.2rem"
+          /><strong v-else>{{ chatMessageCount }}</strong><p>Chat messages</p>
           <small
             v-if="chatLogError || sessionError"
             class="metric-error"
@@ -325,7 +361,11 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
               :severity="supports('media.stats') ? 'success' : 'warn'"
             />
           </div>
-          <strong>{{ formatBytes(mediaStats.totalBytes) }}</strong><p>Media storage</p>
+          <Skeleton
+            v-if="mediaLoading"
+            width="5rem"
+            height="2.2rem"
+          /><strong v-else>{{ formatBytes(mediaStats.totalBytes) }}</strong><p>Media storage</p>
           <small
             v-if="mediaError"
             class="metric-error"
@@ -341,7 +381,11 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
               :severity="supports('resource.list') ? 'success' : 'warn'"
             />
           </div>
-          <strong>{{ resourceCount }}</strong><p>Managed resources</p>
+          <Skeleton
+            v-if="resourceLoading"
+            width="4rem"
+            height="2.2rem"
+          /><strong v-else>{{ resourceCount }}</strong><p>Managed resources</p>
           <small
             v-if="resourceError"
             class="metric-error"
@@ -432,6 +476,16 @@ onUnmounted(() => { stopLive(); document.removeEventListener('visibilitychange',
           >
             {{ auditError }}
           </Message>
+          <div
+            v-else-if="auditLoading"
+            class="manager-loading"
+          >
+            <Skeleton
+              v-for="index in 4"
+              :key="index"
+              height="2.5rem"
+            />
+          </div>
           <ol
             v-else
             class="activity-list"
