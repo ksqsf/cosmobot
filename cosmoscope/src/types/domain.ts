@@ -104,6 +104,7 @@ export interface StoredThreadMessage {
 
 export interface ThreadNode {
   readonly messageKey: ThreadMessageKey
+  readonly inputMessageKey: ThreadMessageKey | null
   readonly parentMessageKey: ThreadMessageKey | null
   readonly messages: readonly StoredThreadMessage[]
 }

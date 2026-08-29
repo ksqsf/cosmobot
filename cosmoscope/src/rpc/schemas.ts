@@ -66,6 +66,7 @@ export const threadDetailSchema = z.object({
   summary: threadSummarySchema,
   nodes: z.array(z.object({
     messageKey: threadMessageKeySchema,
+    inputMessageKey: threadMessageKeySchema.nullable(),
     parentMessageKey: threadMessageKeySchema.nullable(),
     messages: z.array(storedThreadMessageSchema),
   })),

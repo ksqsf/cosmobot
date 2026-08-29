@@ -12,6 +12,7 @@ module Bot.Storage.ChatLog
   , queryCurrentSenderStored
   , listStoredChats
   , queryStoredWindow
+  , loadReplyMessageKeys
   , findLegacyReplyAnchor
   )
 where
@@ -19,6 +20,7 @@ where
 import Bot.ChatLog.Record
 import Bot.ChatLog.Types
 import Bot.Core.Message
+import Bot.Core.Thread (ThreadMessageKey (..))
 import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Storage.Identity as Identity
@@ -26,6 +28,7 @@ import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Int as Int
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time (getCurrentTime)
@@ -169,6 +172,33 @@ queryStoredWindow scope anchor requestedLimit = do
     , anchorFound = case anchor of AroundChatLogMessage _ -> isJust anchorRow; _ -> True
     , anchorMessageId = case anchor of AroundChatLogMessage messageId | isJust anchorRow -> Just messageId; _ -> Nothing
     }
+
+-- | Resolve stored platform replies back to the messages they answered.
+-- Message ids are queried together with their platform/chat scope because
+-- they are not globally unique.
+loadReplyMessageKeys :: Storage.Storage :> es => [ThreadMessageKey] -> Eff es (Map ThreadMessageKey ThreadMessageKey)
+loadReplyMessageKeys requested = do
+  ensureChatLogTable
+  Map.fromList . concat <$> traverse loadScope (Map.toList scopes)
+  where
+    scopes = Map.fromListWith (<>)
+      [ ((key.platform, key.chatId), [key.messageId])
+      | key <- ordNub requested
+      ]
+    loadScope ((platform, chatId), messageIds) = do
+      rows <- runSelda $ query do
+        row <- select chatLogRows
+        restrict $
+          row ! #platform_key .== literal (platformKey platform)
+            .&& chatIdMatches chatId row
+            .&& row ! #message_id `isIn` map (literal . Just . messageIdText) messageIds
+        pure (row ! #message_id :*: row ! #reply_to_message_id)
+      pure
+        [ ( ThreadMessageKey platform chatId (textMessageId messageId)
+          , ThreadMessageKey platform chatId (textMessageId replyToMessageId)
+          )
+        | Just messageId :*: Just replyToMessageId <- rows
+        ]
 
 data ResolvedChatLogWindowAnchor
   = ResolvedLatestChatLogWindow

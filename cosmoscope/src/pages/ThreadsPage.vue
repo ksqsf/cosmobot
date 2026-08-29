@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { refDebounced } from '@vueuse/core'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Column from 'primevue/column'
+import ContextMenu, { type ContextMenuMethods } from 'primevue/contextmenu'
 import DataTable from 'primevue/datatable'
 import type { DataTablePageEvent } from 'primevue/datatable'
 import Dialog from 'primevue/dialog'
@@ -17,6 +18,7 @@ import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import Tree from 'primevue/tree'
 import type { TreeNode as PrimeTreeNode } from 'primevue/treenode'
+import type { MenuItem } from 'primevue/menuitem'
 import PageHeading from '@/components/PageHeading.vue'
 import ChatLogMessageLink from '@/components/ChatLogMessageLink.vue'
 import DisplayIdentity from '@/components/DisplayIdentity.vue'
@@ -27,12 +29,18 @@ import RunIdLink from '@/components/RunIdLink.vue'
 import { getMedia, getThread, getThreadAudit, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
 import { safeDownloadUrl, safeImageUrl } from '@/backend/chat'
-import { threadMessageKeyId, threadPathTo } from '@/backend/thread'
+import { threadMessageChatKey, threadMessageKeyId, threadPathTo } from '@/backend/thread'
 import { auditRecordsLinkedTo, threadStats } from '@/backend/threadStats'
 import { formatBytes } from '@/format'
 import { highlightCode, mediaRefsInText } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
-import type { ActiveThread, AuditPlatform, AuditRecord, MediaDetail, StoredThreadMessage, ThreadDetail, ThreadNode, ThreadSummary } from '@/types/domain'
+import type { ActiveThread, AuditPlatform, AuditRecord, MediaDetail, StoredThreadMessage, ThreadDetail, ThreadMessageKey, ThreadNode, ThreadSummary } from '@/types/domain'
+
+interface ThreadTranscriptEntry {
+  readonly node: ThreadNode
+  readonly message: StoredThreadMessage
+  readonly messageIndex: number
+}
 
 const threads = ref<ThreadSummary[]>([])
 const activeThreads = ref<ActiveThread[]>([])
@@ -67,6 +75,8 @@ const treeZoom = ref(100)
 const mediaByRef = ref<ReadonlyMap<string, MediaDetail>>(new Map())
 const previewImage = ref<string>()
 const transcriptList = ref<HTMLOListElement>()
+const transcriptMessageMenu = useTemplateRef<ContextMenuMethods>('transcriptMessageMenu')
+const contextTranscriptEntry = ref<ThreadTranscriptEntry>()
 const route = useRoute()
 const router = useRouter()
 const confirm = useConfirm()
@@ -100,9 +110,24 @@ const summary = computed(() => ({
 const nodeLookup = computed(() => new Map((detail.value?.nodes ?? []).map((node) => [threadMessageKeyId(node.messageKey), node])))
 const treeNodes = computed<PrimeTreeNode[]>(() => buildTree(detail.value?.nodes ?? []))
 const selectedPath = computed(() => selectedNode.value === undefined ? [] : threadPathTo(selectedNode.value, nodeLookup.value))
-const transcript = computed(() => selectedPath.value.flatMap(({ messages }) => messages))
+const transcript = computed<ThreadTranscriptEntry[]>(() => selectedPath.value.flatMap((node) =>
+  node.messages.map((message, messageIndex) => ({ node, message, messageIndex })),
+))
 const activeSelected = computed(() => activeThreads.value.find(({ taskId }) => taskId === activeTaskId.value))
 const stats = computed(() => threadStats(auditRecordsLinkedTo(auditRecords.value, selectedPath.value.map(({ messageKey }) => messageKey))))
+const transcriptMenuItems = computed<MenuItem[]>(() => {
+  const entry = contextTranscriptEntry.value
+  if (entry === undefined) return []
+  const messageKey = transcriptMessageKey(entry)
+  return [
+    { label: 'Copy text', icon: 'pi pi-copy', disabled: readableMessageText(entry.message) === '', command: () => { void copyTranscriptText(entry.message) } },
+    ...(messageKey === undefined ? [] : [
+      { separator: true },
+      { label: 'Open in chat logs', icon: 'pi pi-comments', command: () => { void openChatLogMessage(messageKey) } },
+      { label: 'Copy message link', icon: 'pi pi-link', command: () => { void copyChatLogLink(messageKey) } },
+    ]),
+  ]
+})
 
 async function refresh(): Promise<void> {
   if (connection.state === 'opening' || connection.state === 'reconnecting') {
@@ -320,6 +345,49 @@ function selectNode(node: ThreadNode): void {
   })
 }
 
+function transcriptMessageKey(entry: ThreadTranscriptEntry): ThreadMessageKey | undefined {
+  return threadMessageChatKey(entry.node, entry.messageIndex)
+}
+
+function chatLogLocation(messageKey: ThreadMessageKey): RouteLocationRaw {
+  return {
+    name: 'chat' as const,
+    query: {
+      view: 'logs',
+      platform: messageKey.platform,
+      ...(messageKey.chatId === null ? {} : { chat: messageKey.chatId }),
+      message: messageKey.messageId,
+    },
+  }
+}
+
+function showTranscriptMenu(event: Event, entry: ThreadTranscriptEntry): void {
+  contextTranscriptEntry.value = entry
+  transcriptMessageMenu.value?.show(event)
+}
+
+async function openChatLogMessage(messageKey: ThreadMessageKey): Promise<void> {
+  await router.push(chatLogLocation(messageKey))
+}
+
+function openTranscriptChat(entry: ThreadTranscriptEntry): void {
+  const messageKey = transcriptMessageKey(entry)
+  if (messageKey !== undefined) void openChatLogMessage(messageKey)
+}
+
+async function copyTranscriptText(message: StoredThreadMessage): Promise<void> {
+  try { await navigator.clipboard.writeText(readableMessageText(message)) } catch {
+    toast.add({ severity: 'error', summary: 'Could not copy the message text.', life: 3000 })
+  }
+}
+
+async function copyChatLogLink(messageKey: ThreadMessageKey): Promise<void> {
+  const href = router.resolve(chatLogLocation(messageKey)).href
+  try { await navigator.clipboard.writeText(new URL(href, globalThis.location.href).href) } catch {
+    toast.add({ severity: 'error', summary: 'Could not copy the message link.', life: 3000 })
+  }
+}
+
 function buildTree(nodes: readonly ThreadNode[]): PrimeTreeNode[] {
   const byKey = new Map(nodes.map((node) => [threadMessageKeyId(node.messageKey), {
     key: threadMessageKeyId(node.messageKey),
@@ -441,6 +509,11 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
 
 <template>
   <section class="page">
+    <ContextMenu
+      ref="transcriptMessageMenu"
+      :model="transcriptMenuItems"
+      @hide="contextTranscriptEntry = undefined"
+    />
     <PageHeading
       eyebrow="Conversations"
       title="Threads"
@@ -752,23 +825,36 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
               class="thread-transcript"
             >
               <li
-                v-for="(message, index) in transcript"
+                v-for="(entry, index) in transcript"
                 :key="index"
-                :class="`role-${message.role}`"
+                :class="[`role-${entry.message.role}`, { 'context-selected': contextTranscriptEntry === entry }]"
+                @contextmenu.prevent="showTranscriptMenu($event, entry)"
               >
-                <div><strong>{{ roleLabel(message.role) }}</strong><code v-if="message.tool_call_id">{{ message.tool_call_id }}</code></div>
+                <div>
+                  <strong>{{ roleLabel(entry.message.role) }}</strong><span class="thread-message-actions"><code v-if="entry.message.tool_call_id">{{ entry.message.tool_call_id }}</code><Button
+                    v-if="transcriptMessageKey(entry)"
+                    icon="pi pi-comments"
+                    severity="secondary"
+                    text
+                    rounded
+                    size="small"
+                    aria-label="Open in chat logs"
+                    title="Open in chat logs"
+                    @click="openTranscriptChat(entry)"
+                  /></span>
+                </div>
                 <MessageContent
-                  :text="messageText(message)"
-                  :images="imageUrls(message)"
-                  :attachments="messageAttachments(message)"
+                  :text="messageText(entry.message)"
+                  :images="imageUrls(entry.message)"
+                  :attachments="messageAttachments(entry.message)"
                   @preview-image="previewImage = $event"
                 />
                 <div
-                  v-if="message.tool_calls?.length"
+                  v-if="entry.message.tool_calls?.length"
                   class="thread-tool-calls"
                 >
                   <details
-                    v-for="call in message.tool_calls"
+                    v-for="call in entry.message.tool_calls"
                     :key="call.id"
                     class="thread-tool-call"
                   >

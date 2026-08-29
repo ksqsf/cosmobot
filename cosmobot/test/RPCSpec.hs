@@ -2,6 +2,7 @@ module Main (main) where
 
 import Bot.Prelude
 import Bot.Chat.Driver.Types
+import qualified Bot.ChatLog.Record as ChatLogRecord
 import qualified Bot.Chat.Types as Chat
 import qualified Bot.Chat.Driver.RPC as RPCDriver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
@@ -38,6 +39,7 @@ import Bot.Plugin.Types (PluginId (..), PluginStatus (..))
 import qualified Bot.Session as Session
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Storage.SQLite as StorageSQLite
+import qualified Bot.Storage.ChatLog as ChatLogStorage
 import qualified Bot.Storage.Thread as ThreadStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
@@ -214,7 +216,8 @@ testThreadMessageKeyJsonPreservesLargeChatIds = do
 
 testThreadInspectionRpc :: IO ()
 testThreadInspectionRpc = do
-  let linkedKey = ThreadMessageKey PlatformRPC (Just 42) "reply-1"
+  let inputKey = ThreadMessageKey PlatformRPC (Just 42) "message-1"
+      linkedKey = ThreadMessageKey PlatformRPC (Just 42) "reply-1"
   (listResponse, invalidListResponse, missingResponse, invalidResponse, detailResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
     rpcState <- RPC.newRpcState
     let dispatch method params =
@@ -225,14 +228,14 @@ testThreadInspectionRpc = do
     invalidResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (0 :: Int)])
     let runId = "agent-linked"
         incoming = mediaMessage PlatformRPC "prompt"
-        incomingKey = Just (ThreadMessageKey PlatformRPC (Just 42) "message-1")
         trailingAliasKey = ThreadMessageKey PlatformRPC (Just 42) "reply-2"
     threads <- ThreadStorage.newThreadStore
-    active <- ThreadStorage.rememberActiveThread threads runId Nothing incomingKey incoming "prompt" (Concurrency.Handle (Concurrency.Id 8)) (Transcript mempty)
+    active <- ThreadStorage.rememberActiveThread threads runId Nothing (Just inputKey) incoming "prompt" (Concurrency.Handle (Concurrency.Id 8)) (Transcript mempty)
       >>= maybe (error "expected active thread") pure
     ThreadStorage.addActiveThreadMessage threads active linkedKey
     ThreadStorage.addActiveThreadMessage threads active trailingAliasKey
     ThreadStorage.finishActiveThread threads active (Transcript mempty)
+    ChatLogStorage.persistRecord (ChatLogRecord.selfRecord incoming (Just linkedKey.messageId) "")
     void $ AgentAudit.recordEvent AgentAudit.AgentThreadLinked
       { runId
       , linkedMessageId = linkedKey.messageId
@@ -266,6 +269,7 @@ testThreadInspectionRpc = do
         ]
     , "nodes" Aeson..= [Aeson.object
         [ "messageKey" Aeson..= linkedKey
+        , "inputMessageKey" Aeson..= inputKey
         , "parentMessageKey" Aeson..= (Nothing :: Maybe ThreadMessageKey)
         , "messages" Aeson..= ([] :: [Aeson.Value])
         ]]

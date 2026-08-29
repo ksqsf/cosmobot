@@ -21,6 +21,7 @@ import Bot.Prelude
 import Bot.RPC.Server (RpcServerCallbacks (..), noRpcServerCallbacks)
 import qualified Bot.Storage.Thread as Thread
 import qualified Bot.Storage.Identity as Identity
+import qualified Bot.Storage.ChatLog as ChatLog
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -72,10 +73,12 @@ dispatchThreadMethod inspectActive haltActive request =
       parseParams request parseThreadId \threadId -> do
         rows <- Thread.loadThreadRowsByThreadId threadId
         auditRecords <- AgentAudit.queryThreadMessagesAudit (map (.messageKey) rows)
+        let logicalRows = collapseAliases (linkedMessageKeys auditRecords) rows
+        inputMessageKeys <- ChatLog.loadReplyMessageKeys (map (.messageKey) logicalRows)
         chatInfos <- Identity.loadChatInfos [(row.messageKey.platform, chatId) | row <- take 1 rows, chatId <- maybeToList row.messageKey.chatId]
-        pure $ case nonEmpty rows of
+        pure $ case nonEmpty logicalRows of
           Nothing -> Aeson.Null
-          Just selectedRows -> threadValue chatInfos (linkedMessageKeys auditRecords) threadId selectedRows
+          Just selectedRows -> threadValue chatInfos inputMessageKeys threadId selectedRows
     "thread.resolve_run" ->
       parseParams request parseRunId \runId -> do
         active <- find ((== runId) . (.runId)) <$> inspectActive
@@ -161,14 +164,14 @@ summaryMatches rawQuery previews summary
       , Map.findWithDefault "" summary.latestRowId previews
       ]
 
-threadValue :: Map (ChatPlatform, Integer) (Maybe Text) -> Set ThreadMessageKey -> Integer -> NonEmpty Thread.ThreadRow -> Aeson.Value
-threadValue chatInfos linkedKeys threadId rows =
+threadValue :: Map (ChatPlatform, Integer) (Maybe Text) -> Map ThreadMessageKey ThreadMessageKey -> Integer -> NonEmpty Thread.ThreadRow -> Aeson.Value
+threadValue chatInfos inputMessageKeys threadId rows =
   Aeson.object
     [ "summary" Aeson..= maybe Aeson.Null (summaryValue chatInfos previews) summary
-    , "nodes" Aeson..= map nodeValue logicalRows
+    , "nodes" Aeson..= map (nodeValue inputMessageKeys) logicalRows
     ]
   where
-    logicalRows = collapseAliases linkedKeys (toList rows)
+    logicalRows = toList rows
     summary = summarize threadId (map indexRow logicalRows)
     previews = Map.fromList [(row.rowId, threadRowPreview row) | row <- logicalRows]
 
@@ -210,10 +213,11 @@ linkedMessageKeys records = Set.fromList
   , AgentAudit.AgentThreadLinked{linkedMessageKey = Just linkedMessageKey} <- [record.event]
   ]
 
-nodeValue :: Thread.ThreadRow -> Aeson.Value
-nodeValue row =
+nodeValue :: Map ThreadMessageKey ThreadMessageKey -> Thread.ThreadRow -> Aeson.Value
+nodeValue inputMessageKeys row =
   Aeson.object
     [ "messageKey" Aeson..= row.messageKey
+    , "inputMessageKey" Aeson..= Map.lookup row.messageKey inputMessageKeys
     , "parentMessageKey" Aeson..= row.parentMessageKey
     , "messages" Aeson..= decodeMessages row.messagesJson
     ]
