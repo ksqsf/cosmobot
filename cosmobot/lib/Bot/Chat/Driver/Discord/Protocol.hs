@@ -449,6 +449,7 @@ data Message = Message
   , content :: !Text
   , attachments :: ![Attachment]
   , embeds :: ![Embed]
+  , stickerItems :: ![StickerItem]
   , mentions :: ![User]
   , referencedMessage :: !(Maybe Message)
   , messageReference :: !(Maybe Reference)
@@ -467,11 +468,20 @@ instance Aeson.FromJSON Message where
       <*> fmap (fromMaybe "") (o Aeson..:? "content")
       <*> fmap (fromMaybe []) (o Aeson..:? "attachments")
       <*> fmap (fromMaybe []) (o Aeson..:? "embeds")
+      <*> fmap (fromMaybe []) (o Aeson..:? "sticker_items")
       <*> fmap (fromMaybe []) (o Aeson..:? "mentions")
       <*> o Aeson..:? "referenced_message"
       <*> o Aeson..:? "message_reference"
       <*> pure value
     ) value
+
+data StickerItem = StickerItem
+  { id :: !Text
+  , name :: !Text
+  , formatType :: !Int
+  }
+  deriving (Show, Generic)
+    deriving Aeson.FromJSON via (SnakeJSON StickerItem)
 
 data DeletedMessage = DeletedMessage
   { id :: !Text

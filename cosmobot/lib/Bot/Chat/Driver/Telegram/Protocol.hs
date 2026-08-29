@@ -380,6 +380,7 @@ data Message = Message
   , document        :: !(Maybe TelegramMedia)
   , audio           :: !(Maybe TelegramMedia)
   , voice           :: !(Maybe TelegramMedia)
+  , sticker         :: !(Maybe Sticker)
   } deriving (Show, Generic)
     deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing Message)
 
@@ -400,6 +401,11 @@ data TelegramMedia = TelegramMedia
   , mimeType     :: !(Maybe Text)
   } deriving (Show, Generic)
     deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing TelegramMedia)
+
+newtype Sticker = Sticker
+  { emoji :: Maybe Text
+  } deriving (Show, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing Sticker)
 
 -- | Telegram message entity metadata used for mention extraction.
 data MessageEntity = MessageEntity

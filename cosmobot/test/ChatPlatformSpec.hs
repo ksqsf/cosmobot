@@ -30,6 +30,7 @@ main =
   defaultMain $
     testGroup "chat platforms"
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      , testCase "QQ market face records its summary" testQqMarketFaceRecordsSummary
       , testCase "incoming message log is compact and multiline" testIncomingMessageLog
       , testCase "QQ replies over 1000 characters use merged forwarding" testQqLongReplyUsesMergedForwarding
       , testCase "QQ invitation actions accept friend and group invites" testQqInvitationActions
@@ -45,6 +46,7 @@ main =
       , testCase "QQ sends local file bytes as a base64 resource" testQqBase64FileRef
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
       , testCase "Telegram audio becomes a message file" testTelegramAudioBecomesMessageFile
+      , testCase "Telegram sticker records its emoji" testTelegramStickerRecordsEmoji
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
@@ -57,6 +59,7 @@ main =
       , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
       , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
+      , testCase "Matrix sticker records its description" testMatrixStickerRecordsDescription
       , testCase "Matrix sync finds room invitations" testMatrixSyncFindsRoomInvitations
       , testCase "Matrix redaction converts to a deleted incoming message" testMatrixRedactionConvertsToDeletedMessage
       , testCase "Matrix direct room converts to private message" testMatrixDirectRoomConvertsToPrivateMessage
@@ -79,6 +82,7 @@ main =
       , testCase "Matrix Markdown renders custom HTML" testMatrixMarkdownRendersCustomHtml
       , testCase "Matrix Markdown renders user ids as mention links" testMatrixMarkdownRendersUserIdsAsMentionLinks
       , testCase "Discord message converts to incoming message" testDiscordMessageConvertsToIncomingMessage
+      , testCase "Discord sticker records its name" testDiscordStickerRecordsName
       , testCase "Discord delete converts to a deleted incoming message" testDiscordDeleteConvertsToDeletedMessage
       , testCase "Discord self message is ignored" testDiscordSelfMessageIsIgnored
       , testCase "Discord superuser and bot mention are marked" testDiscordSuperuserAndBotMentionAreMarked
@@ -108,6 +112,15 @@ testQqUserMessageConvertsToIncomingMessage = do
   ((.senderUsername) <$> incoming) @?= Just (Just "Alice")
   ((.digest.botId) <$> incoming) @?= Just (Just "424242")
 
+testQqMarketFaceRecordsSummary :: IO ()
+testQqMarketFaceRecordsSummary = do
+  let marketFace = Aeson.object
+        [ "type" Aeson..= ("mface" :: Text)
+        , "data" Aeson..= Aeson.object ["summary" Aeson..= ("拍拍" :: Text)]
+        ]
+      event = qqMessageEventWithMessage 10001 (Aeson.toJSON [marketFace])
+      incoming = QQ.eventToIncomingMessage event
+  ((.text) <$> incoming) @?= Just "[sticker: 拍拍]"
 testIncomingMessageLog :: IO ()
 testIncomingMessageLog = do
   let message = fromMaybe (error "expected QQ message") (QQ.eventToIncomingMessage (qqMessageEvent 10001))
@@ -398,6 +411,13 @@ testTelegramAudioBecomesMessageFile = do
       incoming = Telegram.updateToIncomingMessage (telegramUpdateWithMessage (telegramMessage False){Telegram.audio = Just audio})
   ((.files) <$> incoming) @?= Just [MessageFile{name = "song.mp3", ref = "audio-file-id"}]
 
+testTelegramStickerRecordsEmoji :: IO ()
+testTelegramStickerRecordsEmoji = do
+  let sticker = Telegram.Sticker{Telegram.emoji = Just "👍"}
+      incoming = Telegram.updateToIncomingMessage
+        (telegramUpdateWithMessage (telegramMessage False){Telegram.text = Nothing, Telegram.sticker = Just sticker})
+  ((.text) <$> incoming) @?= Just "[sticker: 👍]"
+
 testTelegramSuperuserIsAlsoAllowedPrivateSender :: IO ()
 testTelegramSuperuserIsAlsoAllowedPrivateSender = do
   let cfg = Telegram.Config
@@ -624,6 +644,18 @@ testMatrixMessageConvertsToIncomingMessage = do
   ((.chatAliases) <$> incoming) @?= Just ["!room:example.org"]
   ((.senderUsername) <$> incoming) @?= Just (Just "@alice:example.org")
   ((.text) <$> incoming) @?= Just "hello"
+
+testMatrixStickerRecordsDescription :: IO ()
+testMatrixStickerRecordsDescription = do
+  let sticker = matrixRoomEvent
+        { Matrix.event = matrixRoomEvent.event
+            { Matrix.type_ = "m.sticker"
+            , Matrix.content = matrixRoomEvent.event.content{Matrix.body = Just "👍"}
+            }
+        }
+      incoming = Matrix.eventToIncomingMessage sticker
+  ((.text) <$> incoming) @?= Just "[sticker: 👍]"
+  ((.imageUrls) <$> incoming) @?= Just []
 
 testMatrixSyncFindsRoomInvitations :: IO ()
 testMatrixSyncFindsRoomInvitations = do
@@ -899,6 +931,14 @@ testDiscordMessageConvertsToIncomingMessage = do
   ((.imageUrls) <$> incoming) @?= Just ["https://cdn.discordapp.com/image.png"]
   ((.text) <$> incoming) @?= Just "hello <@424242>"
 
+testDiscordStickerRecordsName :: IO ()
+testDiscordStickerRecordsName = do
+  let message = (discordMessageNoReference "70005")
+        { Discord.stickerItems = [Discord.StickerItem "80001" "Wave" 1]
+        }
+      incoming = Discord.eventToIncomingMessage message
+  ((.text) <$> incoming) @?= Just "[sticker: Wave]"
+
 testDiscordDeleteConvertsToDeletedMessage :: IO ()
 testDiscordDeleteConvertsToDeletedMessage = do
   let deleted = Discord.DeletedMessage
@@ -1011,6 +1051,10 @@ avatarUrl =
 
 qqMessageEvent :: Integer -> QQ.Event
 qqMessageEvent userId =
+  qqMessageEventWithMessage userId (Aeson.String "hello")
+
+qqMessageEventWithMessage :: Integer -> Aeson.Value -> QQ.Event
+qqMessageEventWithMessage userId message =
   QQ.Event
     { time = Just 1
     , selfId = Just qqBotUserId
@@ -1020,7 +1064,7 @@ qqMessageEvent userId =
     , messageId = Just 80001
     , userId = Just userId
     , groupId = Just 90001
-    , message = Just (Aeson.String "hello")
+    , message = Just message
     , rawMessage = Just "hello"
     , sender = Nothing
     , rawEvent = Aeson.Null
@@ -1104,6 +1148,7 @@ telegramMessage fromBot =
     , document = Nothing
     , audio = Nothing
     , voice = Nothing
+    , sticker = Nothing
     }
 
 telegramUser :: Bool -> Telegram.User
@@ -1359,6 +1404,7 @@ discordMessage =
             }
         ]
     , Discord.embeds = []
+    , Discord.stickerItems = []
     , Discord.mentions = [discordUser "424242" "krkr" True]
     , Discord.referencedMessage = Just (discordReferencedMessage "60001")
     , Discord.messageReference = Nothing
@@ -1371,6 +1417,7 @@ discordReferencedMessage messageId =
     { Discord.content = "quoted"
     , Discord.attachments = []
     , Discord.embeds = []
+    , Discord.stickerItems = []
     , Discord.mentions = []
     }
 
@@ -1385,6 +1432,7 @@ discordMessageNoReference messageId =
     , Discord.content = ""
     , Discord.attachments = []
     , Discord.embeds = []
+    , Discord.stickerItems = []
     , Discord.mentions = []
     , Discord.referencedMessage = Nothing
     , Discord.messageReference = Nothing

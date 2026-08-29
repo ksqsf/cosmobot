@@ -1338,6 +1338,13 @@ segmentText = \case
     , Just value <- KeyMap.lookup "qq" data_
     , Just qq <- mentionValueText value ->
         "@" <> qq
+    | Just (Aeson.String "mface") <- KeyMap.lookup "type" obj
+    , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj
+    , Just (Aeson.String summary) <- KeyMap.lookup "summary" data_
+    , not (Text.null (Text.strip summary)) ->
+        "[sticker: " <> Text.strip summary <> "]"
+    | Just (Aeson.String "mface") <- KeyMap.lookup "type" obj ->
+        "[sticker]"
   _ -> ""
 
 rawMessageText :: Text -> Text

@@ -24,6 +24,7 @@ module Bot.Chat.Driver.Telegram
   , MessageEntity (..)
   , PhotoSize (..)
   , TelegramMedia (..)
+  , Sticker (..)
   , ParseMode (..)
   , InputRichMessage (..)
   , InputRichMessageMedia (..)
@@ -257,7 +258,14 @@ messageMentionUsernames message =
 
 messageText :: Message -> Text
 messageText message =
-  Text.strip (fromMaybe "" (message.text <|> message.caption))
+  Text.unwords (filter (not . Text.null) [body, sticker])
+  where
+    body = Text.strip (fromMaybe "" (message.text <|> message.caption))
+    sticker = maybe "" telegramStickerText message.sticker
+
+telegramStickerText :: Sticker -> Text
+telegramStickerText sticker =
+  maybe "[sticker]" (\emoji -> "[sticker: " <> emoji <> "]") (sticker.emoji >>= nonEmptyText)
 
 messageEntities :: Message -> [MessageEntity]
 messageEntities message =

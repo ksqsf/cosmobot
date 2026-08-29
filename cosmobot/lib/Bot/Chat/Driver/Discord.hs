@@ -21,6 +21,7 @@ module Bot.Chat.Driver.Discord
   , Attachment (..)
   , Embed (..)
   , EmbedImage (..)
+  , StickerItem (..)
   , Member (..)
   , Reference (..)
   , CreateMessageRequest (..)
@@ -172,7 +173,7 @@ eventToIncomingMessageWith :: Config -> Message -> Maybe IncomingMessage
 eventToIncomingMessageWith cfg message = do
   guard (not (isOwnMessage cfg message))
   guard (not message.author.bot)
-  guard (not (Text.null (Text.strip message.content)) || not (null message.attachments))
+  guard (not (Text.null content) || not (null message.attachments))
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
     , platform = PlatformDiscord
@@ -188,9 +189,12 @@ eventToIncomingMessageWith cfg message = do
     , mentionUsernames = mapMaybe (.username) message.mentions
     , imageUrls = messageImageUrls message
     , files = messageFiles message
-    , text = Text.strip message.content
+    , text = content
     , raw = message.raw
     }
+  where
+    content = Text.unwords . filter (not . Text.null) $
+      Text.strip message.content : map (\sticker -> "[sticker: " <> sticker.name <> "]") message.stickerItems
 
 deletedEventToIncomingMessageWith :: Config -> DeletedMessage -> IncomingMessage
 deletedEventToIncomingMessageWith cfg deleted =

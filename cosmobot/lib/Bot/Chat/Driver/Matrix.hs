@@ -653,17 +653,17 @@ matrixReferencedMessage =
 
 matrixReferencedMessageFromEvent :: Event -> Maybe ReferencedMessage
 matrixReferencedMessageFromEvent event = do
-  guard (event.type_ == "m.room.message")
-  let body = fromMaybe "" event.content.body
+  guard (event.type_ `elem` ["m.room.message", "m.sticker"])
+  let body = fromMaybe "" (matrixEventText event)
       imageUrls = matrixEventImageUrls event.raw
       files = map fst (matrixEventFileMediaRefs event.raw)
-  guard (not (Text.null (Text.strip body)) || not (null imageUrls) || not (null files))
+  guard (not (Text.null body) || not (null imageUrls) || not (null files))
   pure ReferencedMessage
     { messageId = matrixEventMessageId <$> event.eventId
     , senderDisplayName = Just event.sender
     , senderIdentifier = Just event.sender
     , senderIsBot = False
-    , text = Text.strip body
+    , text = body
     , imageUrls
     , files
     }
@@ -1446,11 +1446,9 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
         , raw = event.raw
         }
   | otherwise = do
-      guard (event.type_ == "m.room.message")
       guard (not (isOwnEvent cfg event))
       guard (not (matrixStreamIncomplete event.raw))
-      body <- event.content.body
-      guard (not (Text.null (Text.strip body)))
+      body <- matrixEventText event
       pure IncomingMessage
         { eventKind = IncomingMessageCreated
         , platform = PlatformMatrix
@@ -1466,9 +1464,16 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
         , mentionUsernames = matrixMentions cfg event.content body
         , imageUrls = matrixEventImageUrls event.raw
         , files = map fst (matrixEventFileMediaRefs event.raw)
-        , text = Text.strip (matrixReplyBody event.content body)
+        , text = if event.type_ == "m.sticker" then body else Text.strip (matrixReplyBody event.content body)
         , raw = event.raw
         }
+
+matrixEventText :: Event -> Maybe Text
+matrixEventText event
+  | event.type_ == "m.room.message" = event.content.body >>= nonEmptyText
+  | event.type_ == "m.sticker" =
+      Just (maybe "[sticker]" (\label -> "[sticker: " <> label <> "]") (event.content.body >>= nonEmptyText))
+  | otherwise = Nothing
 
 matrixReplyBody :: EventContent -> Text -> Text
 matrixReplyBody content body
@@ -1499,7 +1504,7 @@ matrixRedactedEventId =
 
 matrixEventIgnoreReason :: Config -> RoomEvent -> Text
 matrixEventIgnoreReason cfg RoomEvent{roomId, event}
-  | eventType /= "m.room.message" =
+  | eventType `notElem` ["m.room.message", "m.sticker"] =
       [i|unsupported event type #{eventType}; #{context}|]
   | isOwnEvent cfg event =
       [i|own event; #{context}|]
