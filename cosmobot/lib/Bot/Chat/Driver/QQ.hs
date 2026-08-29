@@ -159,7 +159,8 @@ incomingMessagesProtocol driver = do
           let Event{postType} = event
           S.lift $ $(logDebug) [i|Ignoring QQ event: #{postType}|]
     Just parsedMessage -> do
-      message <- S.lift (resolveQQChatDisplayName driver =<< normalizeQQMessageFiles parsedMessage)
+      expandedMessage <- S.lift (appendForwardedIncomingMessage driver (maybe [] messageForwardSources event.message) parsedMessage)
+      message <- S.lift (resolveQQChatDisplayName driver =<< normalizeQQMessageFiles expandedMessage)
       S.lift $ $(logDebug) ("incoming qq message:\n" <> logJsonText message)
       S.yield message
   incomingMessagesProtocol driver
@@ -541,6 +542,20 @@ appendForwardedMessages driver sources referenced = do
     , text = joinMessageTexts [referenced.text, forwarded.text]
     , imageUrls = referenced.imageUrls <> forwarded.imageUrls
     , files = referenced.files <> forwarded.files
+    }
+
+appendForwardedIncomingMessage
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => Protocol.QQDriver
+  -> [ForwardedSource]
+  -> IncomingMessage
+  -> Eff es IncomingMessage
+appendForwardedIncomingMessage driver sources message = do
+  forwarded <- foldMapM (expandForwardedSource driver Set.empty) sources
+  pure (message :: IncomingMessage)
+    { text = joinMessageTexts [message.text, forwarded.text]
+    , imageUrls = message.imageUrls <> forwarded.imageUrls
+    , files = message.files <> forwarded.files
     }
 
 expandForwardedSource
@@ -1165,6 +1180,9 @@ referencedMessageForwardSources =
 messageForwardSources :: Aeson.Value -> [ForwardedSource]
 messageForwardSources = \case
   Aeson.Array segments -> mapMaybe forwardedSegmentSource (toList segments)
+  Aeson.String text -> maybeToList do
+    (fields, _) <- cqSegmentAtStart "forward" (Text.strip text)
+    ForwardedReference <$> rawFieldValue "id" fields
   _ -> []
 
 forwardedSegmentSource :: Aeson.Value -> Maybe ForwardedSource

@@ -35,6 +35,7 @@ import qualified Bot.AgentAudit.Storage as AgentAuditStorage
 import Bot.Agent.Tools.Common (UseLimit (..), chatTag, newUseLimiter, workTag)
 import Bot.Chat.Driver.Types (ChatDriverEffects)
 import qualified Bot.Chat.Driver.Types as Driver
+import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Thread
 import Bot.Core.Transcript
@@ -283,6 +284,7 @@ main =
       , testCase "send file tool is noisy and superuser-only" testSendFileToolIsNoisyAndSuperuserOnly
       , testCase "chat upload filenames are safe basenames" testUploadFileName
       , testCase "send_media uploads cached media for normal users" testSendMediaToolUploadsCachedMedia
+      , testCase "successful media sends record every platform" testSuccessfulMediaSendsRecordEveryPlatform
       , testCase "chatlog tool filters by sender" testChatLogToolFiltersBySender
       , testCase "chatlog tool treats a blank sender as no filter" testChatLogToolIgnoresBlankSender
       , testCase "current sender chatlog tool queries matching sender messages globally" testCurrentSenderChatLogToolQueriesChatLog
@@ -1382,6 +1384,36 @@ testSendMediaToolUploadsCachedMedia =
         assertBool "tool result should report sent media" ("Sent media media:mf_" `Text.isInfixOf` content)
       Agent.ToolFailed{failure} ->
         assertFailure [i|send_media failed: #{show failure :: String}|]
+
+testSuccessfulMediaSendsRecordEveryPlatform :: IO ()
+testSuccessfulMediaSendsRecordEveryPlatform =
+  withSQLiteTempPath "outgoing-media-platforms" \dbPath ->
+    withTempDir "outgoing-media-platforms-cache" \dir -> do
+      let cfg = MediaConfig.defaultConfig{MediaConfig.cacheDir = dir </> "cache"}
+          driver = defaultAgentMockChatDriver{agentReply = \_ _ -> pure (Right "sent")}
+          platforms = [PlatformQQ, PlatformTelegram, PlatformMatrix, PlatformDiscord, PlatformRPC, PlatformACP]
+          runStack =
+            runFileSystem
+              . runProcess
+              . runFail
+              . runConcurrent
+              . runTestLog
+              . StorageSQLite.runStorageSQLitePath dbPath
+              . HTTP.runHTTP
+              . runTimeout
+              . MediaInterpreter.runMedia cfg
+              . Chat.runChatWith driver
+      result <- runEff $ runStack $ ChatDriver.withRecordingOutgoingMediaPlatforms do
+        mediaRef <- fromMaybe (error "expected media ref") <$> Media.storeMediaObject Media.MediaObject
+          { bytes = Q.fromStrict "generated image"
+          , mimeType = "image/png"
+          , sourceName = Just "llm-image.png"
+        }
+        for_ platforms \platform ->
+          void $ Chat.sendReplyMessage (agentContext.message{Message.platform = platform}) (ReplyBody.imageDirective mediaRef)
+        Media.mediaFileInfoByRef mediaRef >>= traverse (Media.mediaCacheEntry . (.fileId))
+      entry <- either assertFailure (maybe (assertFailure "expected media entry") pure . join) result
+      sort entry.platforms @?= sort (map chatPlatformKey platforms)
 
 runSendFileTool
   :: IORef.IORef [Text]

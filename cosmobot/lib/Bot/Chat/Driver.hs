@@ -9,6 +9,7 @@ Stability   : experimental
 
 module Bot.Chat.Driver
   ( runChatDrivers
+  , withRecordingOutgoingMediaPlatforms
   )
 where
 
@@ -36,6 +37,7 @@ import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as AesonKeyMap
+import qualified Data.Text as Text
 import qualified Data.Vector as Vector
 import Effectful.FileSystem (FileSystem)
 import Effectful.Timeout
@@ -385,10 +387,67 @@ runChatDriversWith
   -> Eff (MatrixEffect.Matrix : Chat.Chat : es) ()
   -> Eff es ()
 runChatDriversWith drivers inner = do
-  runMaybeDiscordDriver drivers.discord $
-    runMaybeQQDriver drivers.qq $
-      Chat.runChatWithHandler (chatDriversHandler drivers) $
-        Matrix.runMatrixClient drivers.matrix inner
+  runMaybeDiscordDriver drivers.discord
+    . runMaybeQQDriver drivers.qq
+    . Chat.runChatWithHandler (chatDriversHandler drivers)
+    . withRecordingOutgoingMediaPlatforms
+    . Matrix.runMatrixClient drivers.matrix
+    $ inner
+
+withRecordingOutgoingMediaPlatforms
+  :: (Chat.Chat :> es, Media.Media :> es, KatipE :> es)
+  => Eff es a
+  -> Eff es a
+withRecordingOutgoingMediaPlatforms =
+  interpose \localEnv -> \case
+    operation@(ChatDriverEffect.SendReplyMessage message body) -> do
+      sent <- passthrough localEnv operation
+      when (any isRight sent) (recordReplyMedia message body)
+      pure sent
+    operation@(ChatDriverEffect.SendStreamingReplyMessage message body) -> do
+      sent <- passthrough localEnv operation
+      when (isRight sent) (recordReplyMedia message body)
+      pure sent
+    operation@(ChatDriverEffect.ReplyAudio message mediaRef _) -> do
+      sent <- passthrough localEnv operation
+      when (isRight sent) (recordMediaRefs message [mediaRef])
+      pure sent
+    operation@(ChatDriverEffect.UploadFile message _ _ outgoingFile) -> do
+      sent <- passthrough localEnv operation
+      when (isRight sent) (recordMediaRefs message (maybeToList (outgoingFile <&> (.file.ref))))
+      pure sent
+    operation@(ChatDriverEffect.EditMessage message _ body) -> do
+      edited <- passthrough localEnv operation
+      when edited (recordReplyMedia message body)
+      pure edited
+    operation@(ChatDriverEffect.MentionUser message _ body) -> do
+      sent <- passthrough localEnv operation
+      when (isRight sent) (recordReplyMedia message body)
+      pure sent
+    operation ->
+      passthrough localEnv operation
+
+recordReplyMedia :: (Media.Media :> es, KatipE :> es) => IncomingMessage -> Text -> Eff es ()
+recordReplyMedia message =
+  recordMediaRefs message . ReplyBody.replyImageUrls
+
+recordMediaRefs :: (Media.Media :> es, KatipE :> es) => IncomingMessage -> [Text] -> Eff es ()
+recordMediaRefs message =
+  traverse_ \ref ->
+    trySync (canonicalMediaRef ref >>= traverse_ (Media.recordMediaPlatform message.platform)) >>= \case
+      Left err -> $(logWarning) [i|Failed to record outgoing media platform: #{displayException err}|]
+      Right () -> pure ()
+
+canonicalMediaRef :: Media.Media :> es => Text -> Eff es (Maybe Text)
+canonicalMediaRef rawRef
+  | "media:" `Text.isPrefixOf` ref =
+      pure (Just ref)
+  | "data:image/" `Text.isPrefixOf` Text.toLower ref =
+      Just <$> Media.normalizeMediaRef ref
+  | otherwise =
+      Media.mediaRefForSource ref
+  where
+    ref = Text.strip rawRef
 
 runMaybeQQDriver
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)

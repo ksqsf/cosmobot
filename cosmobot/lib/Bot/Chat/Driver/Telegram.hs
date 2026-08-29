@@ -606,7 +606,6 @@ replyTextAndImages driver chatId replyToMessageId body = do
         , replyParameters = ReplyParameters <$> replyToMessageId
         } mediaParts)
     (legacyReply text images)
-  traverse_ (Media.recordMediaPlatform PlatformTelegram) images
   pure sent
   where
     legacyReply text = \case
