@@ -255,8 +255,13 @@ testToolTurnMessageOrder = do
   map (\message -> (message.role, messageText message)) messages @?=
     [ ("tool", "first-result\n")
     , ("tool", "second-result")
-    , ("user", "Image context returned by tool first:\nfirst-result")
+    , ("synthetic", "")
     ]
+  case reverse messages of
+    LLM.ChatMessage{content = Just (LLM.PartsContent [LLM.ImageUrlPart url])} : _ ->
+      url @?= "https://example.invalid/image"
+    _ ->
+      assertFailure "expected image-only synthetic context"
 
 testPythonToolContract :: Assertion
 testPythonToolContract = do

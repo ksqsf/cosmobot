@@ -11,14 +11,16 @@ module Bot.Agent.Tools.Image
   )
 where
 
-import Bot.Agent.Tools.Common
+import Bot.Agent.Failure (externalServiceFailure)
 import Bot.Agent.Tool
+import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import qualified Streaming.Prelude as S
 
@@ -40,9 +42,9 @@ generateImageTool =
         generated <- LLM.askImageWithHistoryWithOptions options [LLM.userWithImages prompt (contextDefaultImageUrls context)]
         case Chat.replyImageUrls generated of
           [] ->
-            pure (toolText generated)
-          imageRefs ->
-            sendImageToolResult context.message "Generated" imageRefs generated
+            pure (imageToolError generated)
+          imageRef : _ ->
+            sendImageToolResult context.message imageRef generated
 
 editImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool (Eff es)
 editImageTool =
@@ -71,9 +73,9 @@ editImageTool =
             edited <- S.effects (LLM.askImageEditStreamingWithOptions editArgs.options editArgs.prompt imageRefs editArgs.maskImageUrl)
             case Chat.replyImageUrls edited of
               [] ->
-                pure (toolText edited)
-              editedRefs ->
-                sendImageToolResult context.message "Edited" editedRefs edited
+                pure (imageToolError edited)
+              editedRef : _ ->
+                sendImageToolResult context.message editedRef edited
 
 viewImageTool :: Media.Media :> es => Tool (Eff es)
 viewImageTool =
@@ -145,16 +147,36 @@ cachedImageContext mediaRef =
   Media.mediaFileInfoByRef mediaRef >>= \case
     Just info
       | "image/" `Text.isPrefixOf` Text.toLower info.mimeType ->
-          pure (toolTextWithImages [i|Added image to current context: #{mediaRef}|] [mediaRef])
+          pure (toolTextWithImages (jsonText (Aeson.object
+            [ "result" Aeson..= ("ok" :: Text)
+            , "media_id" Aeson..= mediaRef
+            ])) [mediaRef])
     _ ->
       pure (toolFailure (permanentArgumentFailure "image_view URL is not a cached image." "image_view URL is not a cached image."))
 
-sendImageToolResult :: Chat.Chat :> es => IncomingMessage -> Text -> [Text] -> Text -> Eff es ToolResult
-sendImageToolResult message label imageRefs body = do
+sendImageToolResult :: Chat.Chat :> es => IncomingMessage -> Text -> Text -> Eff es ToolResult
+sendImageToolResult message imageRef body = do
   sent <- Chat.replyTo message body
-  let sentText = show sent :: String
-      mediaRefs = filter isMediaRef imageRefs
-      mediaText
-        | null mediaRefs = ""
-        | otherwise = "\nMedia ids: " <> Text.intercalate ", " mediaRefs
-  pure (toolTextWithImages [i|#{label} and sent image message id: #{sentText}#{mediaText}|] mediaRefs)
+  pure $ case listToMaybe (rights sent) of
+    Just messageId ->
+      toolTextWithImages
+        (jsonText (Aeson.object
+          [ "result" Aeson..= ("ok" :: Text)
+          , "message_id" Aeson..= messageIdText messageId
+          , "media_id" Aeson..= imageRef
+          ]))
+        [imageRef]
+    Nothing ->
+      imageToolError (Text.intercalate "; " (lefts sent))
+
+imageToolError :: Text -> ToolResult
+imageToolError message =
+  toolFailure (externalServiceFailure result errorMessage)
+  where
+    result = jsonText $ Aeson.object
+      [ "result" Aeson..= ("error" :: Text)
+      , "error_message" Aeson..= errorMessage
+      ]
+    errorMessage
+      | Text.null (Text.strip message) = "Image operation returned no image."
+      | otherwise = Text.strip message

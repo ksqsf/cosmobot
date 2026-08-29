@@ -43,6 +43,7 @@ module Bot.Effect.LLM
   , withChatAnswerTokenUsage
   , userText
   , userWithImages
+  , syntheticWithImages
   , systemText
   , contextSystemPrompt
   , memorySystemPrompt

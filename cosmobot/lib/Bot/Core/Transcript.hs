@@ -122,6 +122,6 @@ assistantContext answer =
       [ LLM.assistantText answerText | not (Text.null answerText) ] <>
       [ LLM.assistantText "Generated image." | Text.null answerText && not (null imageUrls) ]
     imageContext =
-      [ LLM.userWithImages "The previous assistant response generated this image. Use it as visual context for follow-up questions." contextImageUrls
+      [ LLM.syntheticWithImages "Assistant-generated image." contextImageUrls
       | not (null contextImageUrls)
       ]

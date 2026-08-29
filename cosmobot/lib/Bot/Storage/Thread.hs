@@ -439,7 +439,7 @@ finishActiveThread store@ThreadStore{activeThreadStore = activeRef} (ActiveThrea
       pure (SteeringFinishing, Just keys)
   for_ replyMessageKeys \keys -> do
     updateActiveThread (ActiveThreadHandle active) transcript
-    traverse_ (\messageKey -> rememberThreadTranscriptFrom store active.activeParentMessageKey (Just messageKey) transcript) keys
+    traverse_ (\messageKeys -> rememberThreadTranscriptsFrom store active.activeParentMessageKey messageKeys transcript) (nonEmpty (reverse keys))
     void $ MVar.tryPutMVar active.activeDone transcript
     atomicModifyIORef' activeRef \activeMap ->
       (Map.filter ((/= active.activeHandle.handleId) . (.activeHandle.handleId)) activeMap, ())
@@ -596,24 +596,36 @@ rememberThreadTranscriptFrom
   -> Eff es ()
 rememberThreadTranscriptFrom _ _ Nothing _ =
   pure ()
-rememberThreadTranscriptFrom store@ThreadStore{unThreadStore = ref} parentMessageKey (Just messageKey) transcript = do
+rememberThreadTranscriptFrom store parentMessageKey (Just messageKey) transcript =
+  rememberThreadTranscriptsFrom store parentMessageKey (messageKey :| []) transcript
+
+rememberThreadTranscriptsFrom
+  :: (Prim :> es, KatipE :> es, Storage.Storage :> es)
+  => ThreadStore
+  -> Maybe ThreadMessageKey
+  -> NonEmpty ThreadMessageKey
+  -> Transcript
+  -> Eff es ()
+rememberThreadTranscriptsFrom store@ThreadStore{unThreadStore = ref} parentMessageKey messageKeys transcript = do
   ensureThreadTable
   parentNode <- lookupStoredThreadNodeMaybe store parentMessageKey
-  existingNode <- lookupStoredThreadNodeMaybe store (Just messageKey)
-  let requestedThreadStorageId = (.threadStorageId) <$> (parentNode <|> existingNode)
+  existingNodes <- traverse (lookupStoredThreadNodeMaybe store . Just) messageKeys
+  let requestedThreadStorageId = (.threadStorageId) <$> (parentNode <|> asum existingNodes)
       (storageParentMessageKey, storedMessages) = transcriptMessagesForStorage parentMessageKey parentNode transcript
   persistedThreadStorageId <-
-    (Just <$> saveThreadMessages messageKey requestedThreadStorageId storageParentMessageKey (messagesJson storedMessages))
+    (Just <$> saveThreadMessages messageKeys requestedThreadStorageId storageParentMessageKey (messagesJson storedMessages))
       `catchSync` \err ->
         $(logError) [i|Failed to persist thread: #{show err :: String}|] $> Nothing
   for_ persistedThreadStorageId \threadStorageId ->
     atomicModifyIORef' ref \threadState ->
-      let node =
-            StoredThreadNode
-              { threadStorageId
-              , treeNode = ThreadNode{messageKey, parentMessageKey, transcript}
-              }
-      in (cacheThreadNode messageKey node threadState, ())
+      let cacheNode currentState messageKey =
+            cacheThreadNode messageKey
+              StoredThreadNode
+                { threadStorageId
+                , treeNode = ThreadNode{messageKey, parentMessageKey, transcript}
+                }
+              currentState
+      in (foldl' cacheNode threadState messageKeys, ())
 
 lookupStoredThreadNode :: (Prim :> es, Storage.Storage :> es) => ThreadStore -> ThreadMessageKey -> Eff es (Maybe StoredThreadNode)
 lookupStoredThreadNode store messageKey =
@@ -825,24 +837,27 @@ loadThreadMessageIdsFromStorage messageKey = do
             , row.messagesJson == targetRow.messagesJson
             ]
 
-saveThreadMessages :: Storage.Storage :> es => ThreadMessageKey -> Maybe Integer -> Maybe ThreadMessageKey -> Text -> Eff es Integer
-saveThreadMessages messageKey requestedThreadStorageId parentMessageKey storedMessagesJson = do
+saveThreadMessages :: Storage.Storage :> es => NonEmpty ThreadMessageKey -> Maybe Integer -> Maybe ThreadMessageKey -> Text -> Eff es Integer
+saveThreadMessages messageKeys requestedThreadStorageId parentMessageKey storedMessagesJson = do
   ensureThreadTable
   runSelda $ transaction do
-    deleteFrom_ threadRows \row ->
-      threadKeyMatches messageKey row
+    for_ messageKeys \messageKey ->
+      deleteFrom_ threadRows \row -> threadKeyMatches messageKey row
     case requestedThreadStorageId of
       Just threadStorageId ->
-        insert_ threadRows [threadStorageRow (Just threadStorageId)] $> threadStorageId
+        insert_ threadRows (map (threadStorageRow (Just threadStorageId)) (toList messageKeys)) $> threadStorageId
       Nothing -> do
-        insertedId <- insertWithPK threadRows [threadStorageRow Nothing]
+        let firstKey :| remainingKeys = messageKeys
+        insertedId <- insertWithPK threadRows [threadStorageRow Nothing firstKey]
         let threadStorageId = fromIntegral (fromId insertedId)
         update_ threadRows
           (\row -> row ! #id .== literal insertedId)
           (\row -> row `with` [#thread_id := literal (Just (fromIntegral threadStorageId :: Int.Int64))])
+        unless (null remainingKeys) $
+          insert_ threadRows (map (threadStorageRow (Just threadStorageId)) remainingKeys)
         pure threadStorageId
   where
-    threadStorageRow threadStorageId = ThreadStorageRow
+    threadStorageRow threadStorageId messageKey = ThreadStorageRow
       { id = def
       , platform_key = chatPlatformKey messageKey.platform
       , chat_id = fromIntegral <$> messageKey.chatId

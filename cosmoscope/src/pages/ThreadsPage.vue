@@ -334,8 +334,9 @@ function buildTree(nodes: readonly ThreadNode[]): PrimeTreeNode[] {
 }
 
 function nodeLabel(node: ThreadNode): string {
-  const preferred = [...node.messages].reverse().find((message) => message.role === 'user' && readableMessageText(message) !== '')
-    ?? [...node.messages].reverse().find((message) => readableMessageText(message) !== '')
+  const visibleMessages = node.messages.filter(({ role }) => role !== 'synthetic')
+  const preferred = [...visibleMessages].reverse().find((message) => message.role === 'user' && readableMessageText(message) !== '')
+    ?? [...visibleMessages].reverse().find((message) => readableMessageText(message) !== '')
   if (preferred === undefined) return node.messageKey.messageId
   const text = readableMessageText(preferred)
   return text.length > 64 ? `${text.slice(0, 61)}…` : text
@@ -409,7 +410,7 @@ function messageAttachments(message: StoredThreadMessage): MessageContentAttachm
 }
 
 function roleLabel(role: string): string {
-  return ({ user: 'User', assistant: 'Assistant', system: 'System', tool: 'Tool' } as Readonly<Record<string, string>>)[role] ?? role
+  return ({ user: 'User', assistant: 'Assistant', system: 'System', tool: 'Tool', synthetic: 'Synthetic' } as Readonly<Record<string, string>>)[role] ?? role
 }
 
 function formatDuration(milliseconds: number, unreported = 0): string {

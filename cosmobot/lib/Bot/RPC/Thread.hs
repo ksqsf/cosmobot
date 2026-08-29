@@ -186,7 +186,8 @@ threadRowPreview :: Thread.ThreadRow -> Text
 threadRowPreview row =
   fromMaybe "" $ do
     messages <- Aeson.decodeStrict' (TextEncoding.encodeUtf8 row.messagesJson) :: Maybe [LLM.ChatMessage]
-    message <- find ((== "user") . (.role)) (reverse messages) <|> viaNonEmpty last messages
+    let visibleMessages = filter ((/= "synthetic") . (.role)) messages
+    message <- find ((== "user") . (.role)) (reverse visibleMessages) <|> viaNonEmpty last visibleMessages
     readableMessageContent message.content
 
 readableMessageContent :: Maybe LLM.MessageContent -> Maybe Text

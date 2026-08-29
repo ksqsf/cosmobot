@@ -16,6 +16,7 @@ module Bot.LLM.Types
   , ToolCall (..)
   , userText
   , userWithImages
+  , syntheticWithImages
   , systemText
   , contextSystemPrompt
   , memorySystemPrompt
@@ -393,6 +394,13 @@ userWithImages prompt [] =
   userText prompt
 userWithImages prompt urls =
   ChatMessage "user" (Just (PartsContent (TextPart prompt : map ImageUrlPart urls))) [] Nothing
+
+-- | Internal context projected to a user message at the Chat Completions edge.
+syntheticWithImages :: Text -> [Text] -> ChatMessage
+syntheticWithImages prompt urls =
+  ChatMessage "synthetic" (Just (PartsContent (textParts <> map ImageUrlPart urls))) [] Nothing
+  where
+    textParts = [TextPart prompt | not (Text.null prompt)]
 
 -- | Construct a text-only assistant message.
 assistantText :: Text -> ChatMessage

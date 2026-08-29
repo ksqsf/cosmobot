@@ -128,13 +128,17 @@ resolveChatMessage message =
     Just (PartsContent parts) -> do
       resolvedParts <- traverse resolveContentPart parts
       pure ChatMessage
-        { role = message.role
+        { role = requestRole message.role
         , content = Just (PartsContent resolvedParts)
         , toolCalls = message.toolCalls
         , toolCallId = message.toolCallId
         }
     _ ->
-      pure message
+      pure message{role = requestRole message.role}
+
+requestRole :: Text -> Text
+requestRole "synthetic" = "user"
+requestRole role = role
 
 resolveContentPart :: Media.Media :> es => ContentPart -> Eff es ContentPart
 resolveContentPart = \case

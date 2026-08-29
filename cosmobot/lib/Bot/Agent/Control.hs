@@ -14,7 +14,6 @@ import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Util.HList as HList
 import qualified Data.List.NonEmpty as NonEmpty
-import qualified Data.Text as Text
 
 finishToolTurn
   :: Monad m
@@ -53,15 +52,11 @@ toolResultMessage call =
   LLM.toolResult call . toolResultContent
 
 toolImageMessages :: LLM.ToolCall -> ToolResult -> [LLM.ChatMessage]
-toolImageMessages call result =
+toolImageMessages _ result =
   imageMessages
   where
-    calledToolName = call.name
     imageMessages =
-      [ LLM.userWithImages
-          (Text.strip [i|Image context returned by tool #{calledToolName}:
-#{toolResultContent result}|])
-          imageUrls
+      [ LLM.syntheticWithImages "" imageUrls
       | let imageUrls = toolResultImageUrls result
       , not (null imageUrls)
       ]

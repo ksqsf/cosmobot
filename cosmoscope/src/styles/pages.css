@@ -635,6 +635,9 @@
 .thread-transcript li.role-tool {
   border-left: 3px solid var(--amber);
 }
+.thread-transcript li.role-synthetic {
+  border-left: 3px dashed var(--faint);
+}
 .thread-transcript li > div:first-child {
   display: flex;
   align-items: center;

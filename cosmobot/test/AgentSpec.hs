@@ -375,6 +375,7 @@ main =
       , testCase "console restores only the requested durable session" testConsoleRestoresRequestedSession
       , testCase "fetch_url max_uses limits fetch calls" testWebFetchMaxUsesLimitsCalls
       , testCase "thread replies keep parent and child snapshots" testThreadRepliesKeepSnapshots
+      , testCase "root run outputs share one persisted thread" testRootRunOutputsShareThread
       , testCase "thread branches do not overwrite siblings" testThreadBranchesDoNotOverwriteSiblings
       , testCase "thread lookup is scoped by chat" testThreadLookupIsScopedByChat
       , testCase "thread branches persist through SQLite reload" testThreadBranchesPersistThroughSQLiteReload
@@ -1903,6 +1904,8 @@ testGenerateImageToolPassesImageRequestOptions = do
   IORef.readIORef replies >>= assertElem generatedImage
   IORef.readIORef recorded >>= assertElem generatedImage
   assertBool "tool result should include generated media id" (generatedMediaRef `Text.isInfixOf` Text.unlines (toolOutputs transcript))
+  decodedToolResults (toList transcript.messages) @?=
+    [Aeson.object ["result" Aeson..= ("ok" :: Text), "message_id" Aeson..= ("48" :: Text), "media_id" Aeson..= generatedMediaRef]]
   imageContextUrls transcript @?= [generatedMediaRef]
 
 testViewImageToolCachesImageForContext :: IO ()
@@ -1928,10 +1931,11 @@ testViewImageToolCachesImageForContext =
       toolResult <- either assertFailure pure runResult
       case toolResult of
         Agent.ToolSucceeded{content, imageUrls} -> do
-          assertBool "tool result should mention media ref" ("media:" `Text.isInfixOf` content)
           case imageUrls of
-            [mediaRef] ->
+            [mediaRef] -> do
               assertBool "expected cached media ref" ("media:" `Text.isPrefixOf` mediaRef)
+              Aeson.decodeStrict' (TextEncoding.encodeUtf8 content) @?=
+                Just (Aeson.object ["result" Aeson..= ("ok" :: Text), "media_id" Aeson..= mediaRef])
             other ->
               assertFailure [i|expected one image context ref, got #{show other :: String}|]
         Agent.ToolFailed{failure} ->
@@ -2114,6 +2118,8 @@ testEditImageToolPassesImageRequestOptions = do
   IORef.readIORef replies >>= assertElem editedImage
   IORef.readIORef recorded >>= assertElem editedImage
   assertBool "tool result should include edited media id" (editedMediaRef `Text.isInfixOf` Text.unlines (toolOutputs transcript))
+  decodedToolResults (toList transcript.messages) @?=
+    [Aeson.object ["result" Aeson..= ("ok" :: Text), "message_id" Aeson..= ("49" :: Text), "media_id" Aeson..= editedMediaRef]]
   imageContextUrls transcript @?= [editedMediaRef]
 
 imageOptions :: Text -> Text -> Text -> Text -> LLM.ImageRequestOptions
@@ -4261,6 +4267,18 @@ testThreadRepliesKeepSnapshots = runEff $ runConcurrent $ runPrim $ runTestLog $
     (show firstLookup :: String) @?= show (Just firstTranscript)
     (show secondLookup :: String) @?= show (Just secondTranscript)
 
+testRootRunOutputsShareThread :: IO ()
+testRootRunOutputsShareThread = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
+  store <- newThreadStore
+  let transcript = startWithUser "draw"
+  active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store "image-run" Nothing (Just (messageKey 10)) testMessage "draw" (Concurrency.Handle (Concurrency.Id 1)) transcript
+  traverse_ (addActiveThreadMessage store active . messageKey) [11, 12, 13]
+  finishActiveThread store active transcript
+  rows <- loadThreadRows
+  liftIO do
+    map rowMessageId rows @?= ["11", "12", "13"]
+    assertBool "one run's root outputs must share a thread id" (sameThreadStorageIds rows)
+
 testThreadBranchesDoNotOverwriteSiblings :: IO ()
 testThreadBranchesDoNotOverwriteSiblings = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do
   store <- newThreadStore
@@ -4862,7 +4880,7 @@ imageContextUrls :: Transcript -> [Text]
 imageContextUrls (Transcript messages) =
   [ url
   | message <- Foldable.toList messages
-  , message.role == "user"
+  , message.role == "synthetic"
   , Just (LLM.PartsContent parts) <- [message.content]
   , LLM.ImageUrlPart url <- parts
   ]
