@@ -36,6 +36,7 @@ const threadSummarySchema = z.object({
   latestPreview: z.string(),
   rootKey: threadMessageKeySchema,
   latestKey: threadMessageKeySchema,
+  chatDisplayName: z.string().nullable(),
   nodeCount: z.number().int().positive(),
   leafCount: z.number().int().nonnegative(),
 }) satisfies z.ZodType<ThreadSummary>
@@ -145,7 +146,7 @@ const chatLogScopeSchema = z.object({
   chatId: z.string().regex(/^-?\d+$/).nullable(),
 })
 const chatLogEntrySchema = chatLogScopeSchema.extend({
-  recordedAt: z.string().nullable(), senderId: z.string().nullable(), senderUsername: z.string().nullable(),
+  recordedAt: z.string().nullable(), senderId: z.string().nullable(), senderUsername: z.string().nullable(), senderDisplayName: z.string().nullable(),
   messageId: z.string().nullable(), replyToMessageId: z.string().nullable(), isBot: z.boolean(),
   mentions: z.array(z.string()), mentionUsernames: z.array(z.string()), imageUrls: z.array(z.string()),
   files: z.array(z.object({ name: z.string(), ref: z.string() })), text: z.string(),
@@ -153,12 +154,14 @@ const chatLogEntrySchema = chatLogScopeSchema.extend({
 export const chatLogListSchema = z.object({
   chats: z.array(z.object({
     scope: chatLogScopeSchema,
+    chatDisplayName: z.string().nullable(),
     messageCount: z.number().int().nonnegative(),
     latestAt: z.string().nullable(),
   }) satisfies z.ZodType<ChatLogSummary>),
 })
 export const chatLogWindowSchema = z.object({
   scope: chatLogScopeSchema,
+  chatDisplayName: z.string().nullable(),
   entries: z.array(z.object({ rowId: z.number().int().positive(), entry: chatLogEntrySchema, threadId: z.number().int().positive().nullable() })),
   hasOlder: z.boolean(), hasNewer: z.boolean(), anchorFound: z.boolean(), anchorMessageId: z.string().nullable(),
 }) satisfies z.ZodType<ChatLogWindow>
@@ -269,7 +272,7 @@ const memoryKeySchema = z.object({
   scope: z.enum(['sender', 'chat']),
   scopeId: z.string(),
 })
-export const memorySummarySchema = memoryKeySchema.extend({ characters: z.number().int().nonnegative() })
+export const memorySummarySchema = memoryKeySchema.extend({ displayName: z.string().nullable(), username: z.string().nullable(), characters: z.number().int().nonnegative() })
 export const memoryDetailSchema = memorySummarySchema.extend({ content: z.string() })
 export const memoryListSchema = z.object({ memories: z.array(memorySummarySchema) })
 export const memoryHistoryEntrySchema = z.object({ revision: z.string(), committedAt: z.string(), subject: z.string() })

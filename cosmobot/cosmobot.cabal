@@ -364,6 +364,7 @@ library
         Bot.Scheduler.State
         Bot.Scheduler.Types
         Bot.Storage.ChatLog
+        Bot.Storage.Identity
         Bot.Storage.Thread
         Bot.Storage.Lifecycle
         Bot.Storage.Matrix

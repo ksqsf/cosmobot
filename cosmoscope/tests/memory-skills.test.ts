@@ -5,14 +5,14 @@ import { RpcClient } from '@/rpc/client'
 import { liveAdminMethods } from '@/rpc/protocol'
 
 const key = { platform: 'rpc', scope: 'sender', scopeId: 'user-1' } as const
-const memory = { ...key, characters: 5, content: 'hello' }
+const memory = { ...key, displayName: 'Alice', username: 'alice', characters: 5, content: 'hello' }
 const revision = '0123456789abcdef0123456789abcdef01234567'
 
 describe('memory and skills RPC backends', () => {
   it('maps independent RPC namespaces, including historical content', async () => {
     const client = new RpcClient()
     const request = vi.spyOn(client, 'request').mockImplementation((method) => {
-      if (method === 'memory.list') return Promise.resolve({ memories: [{ ...key, characters: 5 }] })
+      if (method === 'memory.list') return Promise.resolve({ memories: [{ ...key, displayName: 'Alice', username: 'alice', characters: 5 }] })
       if (method === 'memory.history') return Promise.resolve({ history: [{ revision, committedAt: '2026-01-01T00:00:00Z', subject: 'Update memory' }] })
       if (method === 'memory.revert') return Promise.resolve({ reverted: true, memory })
       if (method.startsWith('memory.')) return Promise.resolve(memory)

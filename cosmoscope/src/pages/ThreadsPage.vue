@@ -19,6 +19,7 @@ import Tree from 'primevue/tree'
 import type { TreeNode as PrimeTreeNode } from 'primevue/treenode'
 import PageHeading from '@/components/PageHeading.vue'
 import ChatLogMessageLink from '@/components/ChatLogMessageLink.vue'
+import DisplayIdentity from '@/components/DisplayIdentity.vue'
 import RunIdLink from '@/components/RunIdLink.vue'
 import { getMedia, getThread, getThreadAudit, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
@@ -559,7 +560,11 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
           </Column>
           <Column header="Chat">
             <template #body="{ data }">
-              <code>{{ data.rootKey.chatId ?? 'Direct / unscoped' }}</code>
+              <DisplayIdentity
+                :id="data.rootKey.chatId"
+                :name="data.chatDisplayName"
+                unknown="Direct / unscoped"
+              />
             </template>
           </Column>
           <Column header="Latest message">
@@ -626,7 +631,16 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
           />
         </header>
         <dl class="detail-list">
-          <div><dt>Chat</dt><dd><code>{{ detail.summary.rootKey.chatId ?? 'Direct / unscoped' }}</code></dd></div>
+          <div>
+            <dt>Chat</dt>
+            <dd>
+              <DisplayIdentity
+                :id="detail.summary.rootKey.chatId"
+                :name="detail.summary.chatDisplayName"
+                unknown="Direct / unscoped"
+              />
+            </dd>
+          </div>
           <div><dt>Root message</dt><dd><ChatLogMessageLink :message-key="detail.summary.rootKey" /></dd></div>
           <div><dt>Latest message</dt><dd><ChatLogMessageLink :message-key="detail.summary.latestKey" /></dd></div>
         </dl>

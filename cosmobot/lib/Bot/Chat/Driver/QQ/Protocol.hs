@@ -33,13 +33,15 @@ data QQDriver = QQDriver
   { config :: !Config
   , eventChan :: !(Chan.Chan Event)
   , actionChan :: !(Chan.Chan ActionRequest)
+  , groupDisplayNames :: !(IORef.IORef (Map Integer Text))
   }
 
 newQQDriver :: IOE :> es => Config -> Eff es QQDriver
 newQQDriver config = do
   eventChan <- liftIO Chan.newChan
   actionChan <- liftIO Chan.newChan
-  pure QQDriver{config, eventChan, actionChan}
+  groupDisplayNames <- liftIO (IORef.newIORef Map.empty)
+  pure QQDriver{config, eventChan, actionChan, groupDisplayNames}
 
 runQQDriver
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)

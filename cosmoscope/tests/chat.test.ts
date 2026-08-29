@@ -29,7 +29,7 @@ describe('chat projection', () => {
   })
 
   it('keeps platform chat logs as a bounded sliding window', () => {
-    const item = (rowId: number) => ({ rowId, threadId: null, entry: { platform: 'PlatformRPC', kind: 'ChatPrivate', chatId: '1', recordedAt: null, senderId: null, senderUsername: null, messageId: String(rowId), replyToMessageId: null, isBot: false, mentions: [], mentionUsernames: [], imageUrls: [], files: [], text: '' } } as const)
+    const item = (rowId: number) => ({ rowId, threadId: null, entry: { platform: 'PlatformRPC', kind: 'ChatPrivate', chatId: '1', recordedAt: null, senderId: null, senderUsername: null, senderDisplayName: null, messageId: String(rowId), replyToMessageId: null, isBot: false, mentions: [], mentionUsernames: [], imageUrls: [], files: [], text: '' } } as const)
     expect(mergeChatLogItems([item(3), item(4)], [item(1), item(2), item(3)], 'older', 3)).toEqual({ entries: [item(1), item(2), item(3)], pruned: true })
     expect(mergeChatLogItems([item(1), item(2)], [item(2), item(3), item(4)], 'newer', 3)).toEqual({ entries: [item(2), item(3), item(4)], pruned: true })
   })

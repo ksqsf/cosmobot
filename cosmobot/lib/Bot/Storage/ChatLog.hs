@@ -21,6 +21,7 @@ import Bot.ChatLog.Types
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Storage.Identity as Identity
 import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -38,6 +39,7 @@ data ChatLogRow = ChatLogRow
   , chat_id :: Maybe Int.Int64
   , sender_id :: Maybe Text
   , sender_username :: Maybe Text
+  , sender_display_name :: Maybe Text
   , message_id :: Maybe Text
   , reply_to_message_id :: Maybe Text
   , is_bot :: Bool
@@ -63,10 +65,12 @@ chatLogRows =
     ]
 
 ensureChatLogTable :: Storage.Storage :> es => Eff es ()
-ensureChatLogTable =
+ensureChatLogTable = do
   runSelda $ transaction do
     tryCreateTable chatLogRows
     migrateChatLogFiles
+    migrateChatLogDisplayNames
+  Identity.ensureIdentityTables
 
 migrateChatLogFiles :: SeldaT SeldaSQLite.SQLite IO ()
 migrateChatLogFiles =
@@ -76,11 +80,21 @@ migrateChatLogFiles =
     unless ("files_json" `elem` columns) $
       void (SeldaBackend.runStmt backend "ALTER TABLE chat_log ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'" [])
 
+migrateChatLogDisplayNames :: SeldaT SeldaSQLite.SQLite IO ()
+migrateChatLogDisplayNames =
+  SeldaBackend.withBackend \backend -> liftIO do
+    (_, rows) <- SeldaBackend.runStmt backend "PRAGMA table_info(chat_log)" []
+    let columns = [name | _ : SeldaBackend.SqlString name : _ <- rows]
+    unless ("sender_display_name" `elem` columns) $
+      void (SeldaBackend.runStmt backend "ALTER TABLE chat_log ADD COLUMN sender_display_name TEXT" [])
+
 persistRecord :: (IOE :> es, KatipE :> es, Storage.Storage :> es) => ChatLogRecord -> Eff es ()
 persistRecord record = do
   ensureChatLogTable
   recordedAt <- liftIO getCurrentTime
-  runSelda (insert_ chatLogRows [chatLogRow (sanitizeChatLogEntry (chatLogEntry recordedAt record))])
+  runSelda (transaction do
+      Identity.rememberIncomingIdentityRows recordedAt (chatLogRecordMessage record)
+      insert_ chatLogRows [chatLogRow (sanitizeChatLogEntry (chatLogEntry recordedAt record))])
     `catchSync` \err ->
       $(logError) [i|Failed to persist chat log entry: #{show err :: String}|]
 
@@ -254,6 +268,7 @@ chatLogRow entry =
     , chat_id = fromIntegral <$> entry.chatId
     , sender_id = entry.senderId
     , sender_username = entry.senderUsername
+    , sender_display_name = entry.senderDisplayName
     , message_id = messageIdText <$> entry.messageId
     , reply_to_message_id = messageIdText <$> entry.replyToMessageId
     , is_bot = entry.isBot
@@ -278,6 +293,7 @@ chatLogEntryFromScope scope row =
     , chatId = fromIntegral <$> row.chat_id
     , senderId = row.sender_id
     , senderUsername = row.sender_username
+    , senderDisplayName = row.sender_display_name
     , messageId = textMessageId <$> row.message_id
     , replyToMessageId = textMessageId <$> row.reply_to_message_id
     , isBot = row.is_bot

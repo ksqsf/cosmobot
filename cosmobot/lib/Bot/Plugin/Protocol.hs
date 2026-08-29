@@ -386,9 +386,12 @@ incomingMessageToJson message = Aeson.object
   , "kind" Aeson..= chatKindName message.kind
   , "chatId" Aeson..= message.chatId
   , "chatAliases" Aeson..= message.chatAliases
+  , "chatDisplayName" Aeson..= message.chatDisplayName
   , "digest" Aeson..= message.digest
   , "senderId" Aeson..= message.senderId
   , "senderUsername" Aeson..= message.senderUsername
+  , "senderDisplayName" Aeson..= message.senderDisplayName
+  , "senderGlobalDisplayName" Aeson..= message.senderGlobalDisplayName
   , "messageId" Aeson..= message.messageId
   , "replyToMessageId" Aeson..= message.replyToMessageId
   , "mentions" Aeson..= message.mentions
@@ -406,9 +409,12 @@ parseIncomingMessage = Aeson.withObject "plugin incoming message" \object -> Inc
   <*> (object Aeson..: "kind" >>= parseChatKind)
   <*> object Aeson..:? "chatId"
   <*> object Aeson..:? "chatAliases" Aeson..!= []
+  <*> object Aeson..:? "chatDisplayName"
   <*> object Aeson..: "digest"
   <*> object Aeson..:? "senderId"
   <*> object Aeson..:? "senderUsername"
+  <*> object Aeson..:? "senderDisplayName"
+  <*> object Aeson..:? "senderGlobalDisplayName"
   <*> object Aeson..:? "messageId"
   <*> object Aeson..:? "replyToMessageId"
   <*> object Aeson..:? "mentions" Aeson..!= []

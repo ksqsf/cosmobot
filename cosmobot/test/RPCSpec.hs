@@ -297,7 +297,7 @@ testMemoryAndSkillsRpc = withSQLiteTempPath "rpc-memory-skills" \path -> do
     let skillPath = root </> "skills" </> "haskell" </> "SKILL.md"
     FileSystem.createDirectoryIfMissing True (takeDirectory skillPath)
     FileSystemByteString.writeFile skillPath "---\nname: haskell\ndescription: Haskell help\n---\n# Haskell"
-    Memory.runMemory memoryCfg $ Skills.runSkills skillsCfg do
+    StorageSQLite.runStorageSQLitePath path $ Memory.runMemory memoryCfg $ Skills.runSkills skillsCfg do
       Memory.replaceMemory scope (testMemoryMessage "Record first version") "first"
       firstRevision <- Memory.memoryHistory scope >>= maybe
         (throwIO (TestRpcException "memory history is empty"))
@@ -331,6 +331,8 @@ testMemoryAndSkillsRpc = withSQLiteTempPath "rpc-memory-skills" \path -> do
     [ "platform" Aeson..= ("rpc" :: Text)
     , "scope" Aeson..= ("sender" :: Text)
     , "scopeId" Aeson..= ("user-1" :: Text)
+    , "displayName" Aeson..= Aeson.Null
+    , "username" Aeson..= Aeson.Null
     , "characters" Aeson..= (5 :: Int)
     , "content" Aeson..= ("first" :: Text)
     ]))
@@ -817,9 +819,12 @@ mediaMessage platform mediaRef = IncomingMessage
   , kind = ChatPrivate
   , chatId = Just 42
   , chatAliases = []
+  , chatDisplayName = Nothing
   , digest = emptyMessageDigest
   , senderId = Just "sender"
   , senderUsername = Nothing
+  , senderDisplayName = Nothing
+  , senderGlobalDisplayName = Nothing
   , messageId = Just "message-1"
   , replyToMessageId = Nothing
   , mentions = []

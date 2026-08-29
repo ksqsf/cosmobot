@@ -291,6 +291,9 @@ Memory methods inspect persistent sender/chat memory. `platform` is one of
 `chat`; and `scopeId` is the corresponding identity.
 They are administrator methods: the bearer token can inspect and revert every
 sender's and chat's memory, not only memory associated with the RPC caller.
+Memory summaries and details include nullable `displayName` and `username`
+fields. Clients may search these together with `scopeId`; `scopeId` remains
+the stable identity and is the fallback when no display name is known.
 
 | Method | Params | Result |
 |---|---|---|

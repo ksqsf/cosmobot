@@ -2,10 +2,12 @@ module Main (main) where
 
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Storage.Identity as Identity
 import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.Map.Strict as Map
 import Data.Time (getCurrentTime)
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -22,6 +24,7 @@ main =
       , testCase "bot messages are hidden unless requested" testBotMessageVisibility
       , testCase "base64 image references are sanitized" testImageSanitization
       , testCase "lists chats and queries a message window" testInspectionWindow
+      , testCase "records sender and chat identity with the message" testIdentityDirectory
       ]
 
 testQueryCurrentChat :: IO ()
@@ -111,6 +114,33 @@ testInspectionWindow = runChatLogTest do
     window.anchorFound @? "message anchor is present"
     assertBool "missing anchor is reported" (not missing.anchorFound)
 
+testIdentityDirectory :: IO ()
+testIdentityDirectory = runChatLogTest do
+  ChatLog.recordMessage (messageFromChat 100 200 "hello")
+  ChatLog.recordMessage ((messageFromChat 101 300 "group")
+    { platform = PlatformQQ
+    , kind = ChatGroup
+    , chatDisplayName = Just "QQ group"
+    })
+  ChatLog.recordMessage ((messageFromChat 102 300 "private")
+    { platform = PlatformQQ
+    , chatDisplayName = Just "QQ user"
+    })
+  senders <- Identity.loadSenderInfos [(PlatformTelegram, "200")]
+  chats <- Identity.loadChatInfos [(PlatformTelegram, 200)]
+  qqChats <- Identity.loadScopedChatInfos
+    [ (PlatformQQ, ChatGroup, 300)
+    , (PlatformQQ, ChatPrivate, 300)
+    ]
+  liftIO $ do
+    Map.lookup (PlatformTelegram, "200") senders @?= Just Identity.SenderInfo
+      { displayName = Just "Alice"
+      , username = Just "alice"
+      }
+    Map.lookup (PlatformTelegram, 200) chats @?= Just (Just "Example chat")
+    Map.lookup (PlatformQQ, ChatGroup, 300) qqChats @?= Just (Just "QQ group")
+    Map.lookup (PlatformQQ, ChatPrivate, 300) qqChats @?= Just (Just "QQ user")
+
 runChatLogTest :: Eff '[ChatLog.ChatLog, Storage.Storage, KatipE, Concurrent, IOE] a -> IO a
 runChatLogTest action =
   runEff $ runConcurrent $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ ChatLog.runChatLog action
@@ -134,9 +164,12 @@ messageFromChatWithFiles messageId chatId text imageUrls files =
     , kind = ChatPrivate
     , chatId = Just chatId
     , chatAliases = []
+    , chatDisplayName = Just "Example chat"
     , digest = emptyMessageDigest
     , senderId = Just "200"
     , senderUsername = Just "alice"
+    , senderDisplayName = Just "Room Alice"
+    , senderGlobalDisplayName = Just "Alice"
     , messageId = Just (integerMessageId messageId)
     , replyToMessageId = Nothing
     , mentions = []

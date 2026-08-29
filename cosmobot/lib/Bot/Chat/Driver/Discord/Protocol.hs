@@ -22,6 +22,8 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.IORef as IORef
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.MVar as MVar
@@ -36,6 +38,7 @@ import qualified Network.WebSockets.Stream as WSStream
 data DiscordDriver = DiscordDriver
   { config :: !Config
   , eventChan :: !(Chan.Chan GatewayEvent)
+  , channelDisplayNames :: !(IORef.IORef (Map Text Text))
   }
 
 data GatewayEvent
@@ -67,7 +70,8 @@ data ConnectionOutcome
 newDiscordDriver :: IOE :> es => Config -> Eff es DiscordDriver
 newDiscordDriver config = do
   eventChan <- liftIO Chan.newChan
-  pure DiscordDriver{config, eventChan}
+  channelDisplayNames <- liftIO (IORef.newIORef Map.empty)
+  pure DiscordDriver{config, eventChan, channelDisplayNames}
 
 receiveEvent :: IOE :> es => DiscordDriver -> Eff es GatewayEvent
 receiveEvent driver =
@@ -88,6 +92,24 @@ deleteDiscordMessage driver channelId messageId =
 fetchMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Eff es Message
 fetchMessage driver channelId messageId =
   discordGetRequest driver.config ["channels", channelId, "messages", messageId]
+
+fetchChannel :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Eff es Aeson.Value
+fetchChannel driver channelId =
+  discordGetRequest driver.config ["channels", channelId]
+
+discordChannelDisplayName :: Aeson.Value -> Maybe Text
+discordChannelDisplayName value = do
+  candidate <- join (Aeson.parseMaybe parseChannel value)
+  let displayName = Text.strip candidate
+  displayName <$ guard (not (Text.null displayName))
+  where
+    parseChannel = Aeson.withObject "Discord channel" \o -> do
+      name <- o Aeson..:? "name"
+      recipients <- o Aeson..:? "recipients" Aeson..!= []
+      let recipientName = viaNonEmpty head recipients >>= (join . Aeson.parseMaybe parseRecipient)
+      pure (name <|> recipientName)
+    parseRecipient = Aeson.withObject "Discord recipient" \o ->
+      liftA2 (<|>) (o Aeson..:? "global_name") (o Aeson..:? "username")
 
 getUser :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Eff es Aeson.Value
 getUser driver userId =

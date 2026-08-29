@@ -12,6 +12,7 @@ where
 import Bot.Core.Message
 import Bot.Core.Thread (ThreadMessageKey (..))
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.Storage as Storage
 import qualified Bot.JSONRPC as RPC
 import Bot.Prelude
 import Bot.RPC.Server (RpcServerCallbacks (..), noRpcServerCallbacks)
@@ -19,9 +20,10 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
+import qualified Bot.Storage.Identity as Identity
 
 chatLogRpcCallbacks
-  :: ChatLog.ChatLog :> es
+  :: (ChatLog.ChatLog :> es, Storage.Storage :> es)
   => (ThreadMessageKey -> Eff es (Maybe ThreadMessageKey))
   -> (ThreadMessageKey -> Eff es (Maybe Text))
   -> ([ThreadMessageKey] -> Eff es [(ThreadMessageKey, Integer)])
@@ -34,7 +36,7 @@ chatLogRpcCallbacks parentMessage finalAssistantText threadIds publicMediaRef =
     }
 
 dispatchChatLogMethod
-  :: ChatLog.ChatLog :> es
+  :: (ChatLog.ChatLog :> es, Storage.Storage :> es)
   => (ThreadMessageKey -> Eff es (Maybe ThreadMessageKey))
   -> (ThreadMessageKey -> Eff es (Maybe Text))
   -> ([ThreadMessageKey] -> Eff es [(ThreadMessageKey, Integer)])
@@ -44,7 +46,7 @@ dispatchChatLogMethod
 dispatchChatLogMethod parentMessage finalAssistantText threadIds publicMediaRef request =
   Just <$> case RPC.requestMethod request of
     "chat_log.list" ->
-      parseParams request parseNoParams \() -> chatLogSummariesValue <$> ChatLog.listChats
+      parseParams request parseNoParams \() -> ChatLog.listChats >>= chatLogSummariesValue
     "chat_log.window" ->
       parseParams request parseWindowParams \(scope, anchor, limit) ->
         queryWindowWithThreadFallback parentMessage finalAssistantText scope anchor limit >>= chatLogWindowValue threadIds publicMediaRef
@@ -115,30 +117,36 @@ parseKind = \case
     | Just unknown <- Text.stripPrefix "ChatUnknown:" value -> pure (ChatUnknown unknown)
     | otherwise -> fail "unsupported chat kind"
 
-chatLogSummariesValue :: [ChatLog.ChatLogSummary] -> Aeson.Value
-chatLogSummariesValue summaries =
-  Aeson.object ["chats" Aeson..= map chatLogSummaryValue summaries]
+chatLogSummariesValue :: Storage.Storage :> es => [ChatLog.ChatLogSummary] -> Eff es Aeson.Value
+chatLogSummariesValue summaries = do
+  names <- Identity.loadScopedChatInfos [(scope.platform, scope.kind, chatId) | summary <- summaries, let scope = summary.scope, chatId <- maybeToList scope.chatId]
+  pure $ Aeson.object ["chats" Aeson..= map (chatLogSummaryValue names) summaries]
 
-chatLogSummaryValue :: ChatLog.ChatLogSummary -> Aeson.Value
-chatLogSummaryValue summary =
+chatLogSummaryValue :: Map (ChatPlatform, ChatKind, Integer) (Maybe Text) -> ChatLog.ChatLogSummary -> Aeson.Value
+chatLogSummaryValue names summary =
   Aeson.object
     [ "scope" Aeson..= chatLogScopeValue summary.scope
+    , "chatDisplayName" Aeson..= lookupChatDisplayName names summary.scope
     , "messageCount" Aeson..= summary.messageCount
     , "latestAt" Aeson..= summary.latestAt
     ]
 
 chatLogWindowValue
-  :: ([ThreadMessageKey] -> Eff es [(ThreadMessageKey, Integer)])
+  :: Storage.Storage :> es
+  => ([ThreadMessageKey] -> Eff es [(ThreadMessageKey, Integer)])
   -> (Text -> Eff es Text)
   -> ChatLog.ChatLogWindow
   -> Eff es Aeson.Value
 chatLogWindowValue resolveThreadIds publicMediaRef window = do
   associations <- Map.fromList <$> resolveThreadIds (ordNub (concatMap (itemMessageKeys window.scope) window.entries))
   entries <- traverse (resolveItemMedia publicMediaRef) window.entries
+  senders <- Identity.loadSenderInfos [(entry.platform, senderId) | item <- entries, let entry = item.entry, senderId <- maybeToList entry.senderId]
+  chats <- Identity.loadScopedChatInfos [(window.scope.platform, window.scope.kind, chatId) | chatId <- maybeToList window.scope.chatId]
   pure $
     Aeson.object
       [ "scope" Aeson..= chatLogScopeValue window.scope
-      , "entries" Aeson..= map (chatLogItemValue associations window.scope) entries
+      , "chatDisplayName" Aeson..= lookupChatDisplayName chats window.scope
+      , "entries" Aeson..= map (chatLogItemValue senders associations window.scope) entries
       , "hasOlder" Aeson..= window.hasOlder
       , "hasNewer" Aeson..= window.hasNewer
       , "anchorFound" Aeson..= window.anchorFound
@@ -153,11 +161,11 @@ chatLogScopeValue scope =
     , "chatId" Aeson..= (show <$> scope.chatId :: Maybe Text)
     ]
 
-chatLogItemValue :: Map ThreadMessageKey Integer -> ChatLog.ChatLogScope -> ChatLog.ChatLogItem -> Aeson.Value
-chatLogItemValue associations scope item =
+chatLogItemValue :: Map (ChatPlatform, Text) Identity.SenderInfo -> Map ThreadMessageKey Integer -> ChatLog.ChatLogScope -> ChatLog.ChatLogItem -> Aeson.Value
+chatLogItemValue senders associations scope item =
   Aeson.object
     [ "rowId" Aeson..= item.rowId
-    , "entry" Aeson..= chatLogEntryValue item.entry
+    , "entry" Aeson..= chatLogEntryValue senders item.entry
     , "threadId" Aeson..= viaNonEmpty head (mapMaybe (`Map.lookup` associations) (itemMessageKeys scope item))
     ]
 
@@ -173,8 +181,8 @@ resolveItemMedia resolve item =
     <$> traverse resolve item.entry.imageUrls
     <*> traverse (\file -> (\ref -> file{ref}) <$> resolve file.ref) item.entry.files
 
-chatLogEntryValue :: ChatLog.ChatLogEntry -> Aeson.Value
-chatLogEntryValue entry =
+chatLogEntryValue :: Map (ChatPlatform, Text) Identity.SenderInfo -> ChatLog.ChatLogEntry -> Aeson.Value
+chatLogEntryValue senders entry =
   Aeson.object
     [ "recordedAt" Aeson..= entry.recordedAt
     , "platform" Aeson..= entry.platform
@@ -182,6 +190,7 @@ chatLogEntryValue entry =
     , "chatId" Aeson..= (show <$> entry.chatId :: Maybe Text)
     , "senderId" Aeson..= entry.senderId
     , "senderUsername" Aeson..= entry.senderUsername
+    , "senderDisplayName" Aeson..= lookupSenderDisplayName senders entry
     , "messageId" Aeson..= entry.messageId
     , "replyToMessageId" Aeson..= entry.replyToMessageId
     , "isBot" Aeson..= entry.isBot
@@ -191,6 +200,14 @@ chatLogEntryValue entry =
     , "files" Aeson..= entry.files
     , "text" Aeson..= entry.text
     ]
+
+lookupChatDisplayName :: Map (ChatPlatform, ChatKind, Integer) (Maybe Text) -> ChatLog.ChatLogScope -> Maybe Text
+lookupChatDisplayName names scope =
+  scope.chatId >>= \chatId -> Map.lookup (scope.platform, scope.kind, chatId) names >>= id
+
+lookupSenderDisplayName :: Map (ChatPlatform, Text) Identity.SenderInfo -> ChatLog.ChatLogEntry -> Maybe Text
+lookupSenderDisplayName senders entry =
+  entry.senderDisplayName <|> (entry.senderId >>= \senderId -> Map.lookup (entry.platform, senderId) senders >>= (.displayName))
 
 chatKindValue :: ChatKind -> Text
 chatKindValue = \case

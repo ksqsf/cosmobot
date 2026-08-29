@@ -6,12 +6,14 @@ import ContextMenu, { type ContextMenuMethods } from 'primevue/contextmenu'
 import Message from 'primevue/message'
 import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
+import DisplayIdentity from '@/components/DisplayIdentity.vue'
 import type { MenuItem } from 'primevue/menuitem'
 import { listChatLogs, loadChatLogWindow } from '@/backend/AdminBackend'
 import { mergeChatLogItems, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
 import { runBackend } from '@/backend/runBackend'
 import { renderMarkdown } from '@/markdown'
-import type { AuditPlatform, ChatLogScope, ChatLogSummary, ChatLogWindow, ChatLogWindowQuery } from '@/types/domain'
+import { useConnectionStore } from '@/stores/connection'
+import type { AuditPlatform, ChatKind, ChatLogScope, ChatLogSummary, ChatLogWindow, ChatLogWindowQuery } from '@/types/domain'
 
 
 const platformLabels: Readonly<Record<AuditPlatform, string>> = {
@@ -22,6 +24,7 @@ const platformIcons: Readonly<Record<AuditPlatform, string>> = {
 }
 const route = useRoute()
 const router = useRouter()
+const connection = useConnectionStore()
 const chats = ref<readonly ChatLogSummary[]>([])
 const window = ref<ChatLogWindow>()
 const loading = ref(true)
@@ -33,6 +36,7 @@ const messageMenu = useTemplateRef<ContextMenuMethods>('messageMenu')
 const contextItem = ref<ChatLogWindow['entries'][number]>()
 const error = ref('')
 let requestGeneration = 0
+let listRequest = 0
 
 const groupedChats = computed(() => [...chats.value.reduce((groups, chat) => {
   const entries = groups.get(chat.scope.platform) ?? []
@@ -50,12 +54,13 @@ const messageMenuItems = computed<MenuItem[]>(() => {
 })
 
 function scopeKey(scope: ChatLogScope): string { return `${scope.platform}\u0000${scope.kind}\u0000${scope.chatId ?? ''}` }
-function chatLabel(scope: ChatLogScope): string {
-  const kind = scope.kind === 'ChatPrivate' ? 'Direct message' : scope.kind === 'ChatGroup' ? 'Group' : scope.kind === 'ChatChannel' ? 'Channel' : 'Chat'
-  return `${kind} ${scope.chatId ?? 'without ID'}`
+function chatKindIcon(kind: ChatKind): string {
+  if (kind === 'ChatPrivate') return 'pi pi-user'
+  if (kind === 'ChatGroup') return 'pi pi-users'
+  if (kind === 'ChatChannel') return 'pi pi-hashtag'
+  return 'pi pi-comments'
 }
 function formatTime(value: string | null): string { return value === null ? 'Unknown time' : new Date(value).toLocaleString() }
-function senderLabel(entry: ChatLogWindow['entries'][number]['entry']): string { return entry.senderUsername ?? entry.senderId ?? (entry.isBot ? 'Cosmobot' : 'Unknown sender') }
 function routeValue(value: unknown): string | undefined { return typeof value === 'string' ? value : undefined }
 function scopeMatchesRoute(scope: ChatLogScope): boolean {
   return scope.platform === routeValue(route.query['platform'])
@@ -160,7 +165,19 @@ function loadAtScrollEdge(event: Event): void {
 }
 
 async function refresh(): Promise<void> {
+  const request = ++listRequest
+  if (connection.state === 'opening' || connection.state === 'reconnecting') {
+    loading.value = chats.value.length === 0
+    return
+  }
+  if (connection.state !== 'authenticated') {
+    loading.value = false
+    error.value = connection.error || 'Connect to cosmobot to load platform logs.'
+    return
+  }
+  loading.value = chats.value.length === 0
   const result = await runBackend(listChatLogs)
+  if (request !== listRequest) return
   loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   chats.value = result.value
@@ -169,6 +186,7 @@ async function refresh(): Promise<void> {
 }
 
 watch(() => [route.query['platform'], route.query['kind'], route.query['chat'], route.query['message']], () => { void selectFromRoute() })
+watch([() => connection.state, () => connection.methods], () => { void refresh() })
 onMounted(refresh)
 </script>
 
@@ -231,7 +249,14 @@ onMounted(refresh)
             :class="{ active: window !== undefined && scopeKey(window.scope) === scopeKey(chat.scope) }"
             @click="selectChat(chat.scope)"
           >
-            <span><strong>{{ chatLabel(chat.scope) }}</strong><small>{{ formatTime(chat.latestAt) }}</small></span><Tag
+            <span><strong class="chat-log-identity"><i
+              :class="chatKindIcon(chat.scope.kind)"
+              aria-hidden="true"
+            /><DisplayIdentity
+              :id="chat.scope.chatId"
+              :name="chat.chatDisplayName"
+              unknown="Unscoped chat"
+            /></strong><small>{{ formatTime(chat.latestAt) }}</small></span><Tag
               :value="String(chat.messageCount)"
               severity="secondary"
               rounded
@@ -244,7 +269,16 @@ onMounted(refresh)
           v-if="window"
           class="chat-log-header"
         >
-          <div><strong>{{ chatLabel(window.scope) }}</strong><small>{{ platformLabels[window.scope.platform] }} · {{ window.entries.length }} messages in this window</small></div>
+          <div>
+            <strong class="chat-log-identity"><i
+              :class="chatKindIcon(window.scope.kind)"
+              aria-hidden="true"
+            /><DisplayIdentity
+              :id="window.scope.chatId"
+              :name="window.chatDisplayName"
+              unknown="Unscoped chat"
+            /></strong><small>{{ platformLabels[window.scope.platform] }} · {{ window.entries.length }} messages in this window</small>
+          </div>
           <i
             v-if="loadingWindow"
             class="pi pi-spin pi-spinner"
@@ -278,7 +312,14 @@ onMounted(refresh)
           >
             <header>
               <span class="platform-icon"><i :class="item.entry.isBot ? 'pi pi-sparkles' : 'pi pi-user'" /></span>
-              <div><strong>{{ senderLabel(item.entry) }}</strong><small>{{ item.entry.senderId ?? (item.entry.isBot ? 'bot' : 'unknown sender') }}</small></div>
+              <div>
+                <strong><template v-if="item.entry.isBot">Cosmobot</template><DisplayIdentity
+                  v-else
+                  :id="item.entry.senderId"
+                  :name="item.entry.senderDisplayName"
+                  unknown="Unknown sender"
+                /></strong>
+              </div>
               <time :datetime="item.entry.recordedAt ?? undefined">{{ formatTime(item.entry.recordedAt) }}</time>
               <RouterLink
                 v-if="item.entry.messageId"

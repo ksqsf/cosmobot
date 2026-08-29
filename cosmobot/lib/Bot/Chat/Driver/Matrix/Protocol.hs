@@ -78,6 +78,10 @@ data MatrixDriver = MatrixDriver
   , streamTextMessages :: !(IORef.IORef (Map MatrixEventId MatrixEditMessageRequest))
   , directRoomIds :: !(IORef.IORef (Set MatrixRoomId))
   , joinedMemberCounts :: !(IORef.IORef (Map MatrixRoomId Int))
+  -- ponytail: profile names are cached until restart; add TTL refresh if stale names become observable.
+  , memberDisplayNames :: !(IORef.IORef (Map (MatrixRoomId, Text) (Maybe Text)))
+  , profileDisplayNames :: !(IORef.IORef (Map Text (Maybe Text)))
+  , roomDisplayNames :: !(IORef.IORef (Map MatrixRoomId Text))
   }
 
 newMatrixDriver
@@ -89,6 +93,9 @@ newMatrixDriver cfg = do
   streamTextMessages <- IORef.newIORef Map.empty
   directRoomIdsRef <- IORef.newIORef (Set.fromList (matrixRoomId <$> cfg.directRooms))
   joinedMemberCountsRef <- IORef.newIORef Map.empty
+  memberDisplayNames <- IORef.newIORef Map.empty
+  profileDisplayNames <- IORef.newIORef Map.empty
+  roomDisplayNames <- IORef.newIORef Map.empty
   authState <- IORef.newIORef (initialMatrixAuthState cfg)
   refreshLock <- MVar.newMVar ()
   let auth = MatrixAuth cfg authState refreshLock
@@ -99,6 +106,9 @@ newMatrixDriver cfg = do
     , streamTextMessages
     , directRoomIds = directRoomIdsRef
     , joinedMemberCounts = joinedMemberCountsRef
+    , memberDisplayNames
+    , profileDisplayNames
+    , roomDisplayNames
     }
 
 runMatrixClient
@@ -209,6 +219,10 @@ data MatrixFetchMember = MatrixFetchMember
 
 newtype MatrixFetchProfile = MatrixFetchProfile
   { fetchProfileUserId :: Text
+  }
+
+newtype MatrixFetchRoomName = MatrixFetchRoomName
+  { fetchRoomNameRoomId :: MatrixRoomId
   }
 
 newtype MatrixDownloadMedia = MatrixDownloadMedia
@@ -363,6 +377,15 @@ instance MatrixAPI MatrixFetchProfile where
       , profileDisplayName = profile.profileContentDisplayName
       , profileAvatarUrl = profile.profileContentAvatarUrl
       }
+
+instance MatrixAPI MatrixFetchRoomName where
+  type MatrixResponse MatrixFetchRoomName = MatrixRoomName
+
+  call driver MatrixFetchRoomName{fetchRoomNameRoomId} =
+    matrixClientJsonCall driver "room name" [i|room name room=#{fetchRoomNameRoomId}|] matrixApiOptions
+      GET
+      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText fetchRoomNameRoomId /: "state" /: "m.room.name")
+      NoReqBody
 
 instance MatrixAPI MatrixDownloadMedia where
   type MatrixResponse MatrixDownloadMedia = MatrixDownloadedMedia
@@ -1060,6 +1083,14 @@ data MatrixProfile = MatrixProfile
   , profileAvatarUrl :: !(Maybe Text)
   }
   deriving (Show, Eq, Generic)
+
+newtype MatrixRoomName = MatrixRoomName
+  { roomName :: Text
+  }
+  deriving (Show, Eq, Generic)
+
+instance Aeson.FromJSON MatrixRoomName where
+  parseJSON = Aeson.withObject "MatrixRoomName" (fmap MatrixRoomName . (Aeson..: "name"))
 
 data MatrixProfileContent = MatrixProfileContent
   { profileContentDisplayName :: !(Maybe Text)

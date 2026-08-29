@@ -220,6 +220,7 @@ matchingMessage = IncomingMessage
   , kind = ChatGroup
   , chatId = Just 1
   , chatAliases = []
+  , chatDisplayName = Nothing
   , digest = emptyMessageDigest
       { chatIsAllowed = True
       , senderIsAllowed = True
@@ -227,6 +228,8 @@ matchingMessage = IncomingMessage
       }
   , senderId = Just "person"
   , senderUsername = Nothing
+  , senderDisplayName = Nothing
+  , senderGlobalDisplayName = Nothing
   , messageId = Just "message"
   , replyToMessageId = Just "parent"
   , mentions = []

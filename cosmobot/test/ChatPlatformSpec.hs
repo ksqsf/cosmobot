@@ -6,6 +6,7 @@ import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Bot.Chat.Driver.Discord as Discord
 import qualified Bot.Chat.Driver.Discord.Protocol as DiscordProtocol
 import qualified Bot.Chat.Driver.Matrix as Matrix
+import qualified Bot.Chat.Driver.Matrix.Protocol as MatrixProtocol
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import Bot.Core.Message
@@ -31,6 +32,9 @@ main =
     testGroup "chat platforms"
       [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
       , testCase "QQ market face records its summary" testQqMarketFaceRecordsSummary
+      , testCase "QQ group info exposes its display name" testQqGroupInfoDisplayName
+      , testCase "Matrix room state exposes its display name" testMatrixRoomDisplayName
+      , testCase "Discord channel metadata exposes its display name" testDiscordChannelDisplayName
       , testCase "incoming message log is compact and multiline" testIncomingMessageLog
       , testCase "QQ replies over 1000 characters use merged forwarding" testQqLongReplyUsesMergedForwarding
       , testCase "QQ invitation actions accept friend and group invites" testQqInvitationActions
@@ -109,7 +113,9 @@ testQqUserMessageConvertsToIncomingMessage = do
       incoming = QQ.eventToIncomingMessage event
   ((.platform) <$> incoming) @?= Just PlatformQQ
   ((.text) <$> incoming) @?= Just "hello"
-  ((.senderUsername) <$> incoming) @?= Just (Just "Alice")
+  ((.senderUsername) <$> incoming) @?= Just Nothing
+  ((.senderDisplayName) <$> incoming) @?= Just (Just "Alice")
+  ((.senderGlobalDisplayName) <$> incoming) @?= Just (Just "Alice")
   ((.digest.botId) <$> incoming) @?= Just (Just "424242")
 
 testQqMarketFaceRecordsSummary :: IO ()
@@ -121,6 +127,25 @@ testQqMarketFaceRecordsSummary = do
       event = qqMessageEventWithMessage 10001 (Aeson.toJSON [marketFace])
       incoming = QQ.eventToIncomingMessage event
   ((.text) <$> incoming) @?= Just "[sticker: 拍拍]"
+
+testQqGroupInfoDisplayName :: Assertion
+testQqGroupInfoDisplayName =
+  QQ.groupInfoDisplayName (Aeson.object ["group_name" Aeson..= ("Cosmobot users" :: Text)])
+    @?= Just "Cosmobot users"
+
+testMatrixRoomDisplayName :: Assertion
+testMatrixRoomDisplayName =
+  Aeson.fromJSON (Aeson.object ["name" Aeson..= ("Cosmobot room" :: Text)])
+    @?= Aeson.Success (MatrixProtocol.MatrixRoomName "Cosmobot room")
+
+testDiscordChannelDisplayName :: Assertion
+testDiscordChannelDisplayName = do
+  DiscordProtocol.discordChannelDisplayName (Aeson.object ["name" Aeson..= ("general" :: Text)])
+    @?= Just "general"
+  DiscordProtocol.discordChannelDisplayName (Aeson.object
+    [ "name" Aeson..= Aeson.Null
+    , "recipients" Aeson..= [Aeson.object ["global_name" Aeson..= ("Alice" :: Text), "username" Aeson..= ("alice" :: Text)]]
+    ]) @?= Just "Alice"
 testIncomingMessageLog :: IO ()
 testIncomingMessageLog = do
   let message = fromMaybe (error "expected QQ message") (QQ.eventToIncomingMessage (qqMessageEvent 10001))

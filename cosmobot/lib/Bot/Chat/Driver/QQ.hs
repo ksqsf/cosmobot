@@ -22,6 +22,7 @@ module Bot.Chat.Driver.QQ
   , readActionResponse
   , getUserAvatar
   , base64FileRef
+  , groupInfoDisplayName
   )
 where
 
@@ -38,6 +39,8 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString.Base64 as Base64
+import qualified Data.IORef as IORef
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
@@ -156,7 +159,7 @@ incomingMessagesProtocol driver = do
           let Event{postType} = event
           S.lift $ $(logDebug) [i|Ignoring QQ event: #{postType}|]
     Just parsedMessage -> do
-      message <- S.lift (normalizeQQMessageFiles parsedMessage)
+      message <- S.lift (resolveQQChatDisplayName driver =<< normalizeQQMessageFiles parsedMessage)
       S.lift $ $(logDebug) ("incoming qq message:\n" <> logJsonText message)
       S.yield message
   incomingMessagesProtocol driver
@@ -498,24 +501,7 @@ rawFieldValue name fields =
 normalizeQQMessageFiles :: Media.Media :> es => IncomingMessage -> Eff es IncomingMessage
 normalizeQQMessageFiles message = do
   files <- traverse (normalizeQQFile message.chatId) message.files
-  pure IncomingMessage
-    { eventKind = message.eventKind
-    , platform = message.platform
-    , kind = message.kind
-    , chatId = message.chatId
-    , chatAliases = message.chatAliases
-    , digest = message.digest
-    , senderId = message.senderId
-    , senderUsername = message.senderUsername
-    , messageId = message.messageId
-    , replyToMessageId = message.replyToMessageId
-    , mentions = message.mentions
-    , mentionUsernames = message.mentionUsernames
-    , imageUrls = message.imageUrls
-    , files
-    , text = message.text
-    , raw = message.raw
-    }
+  pure (message :: IncomingMessage){files}
 
 normalizeReferencedFiles :: Media.Media :> es => Maybe Integer -> ReferencedMessage -> Eff es ReferencedMessage
 normalizeReferencedFiles chatId message = do
@@ -612,6 +598,37 @@ getGroupMemberInfo driver groupId userId =
         ]
     ])
 
+resolveQQChatDisplayName
+  :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
+  => Protocol.QQDriver
+  -> IncomingMessage
+  -> Eff es IncomingMessage
+resolveQQChatDisplayName driver message = case (message.kind, message.chatId) of
+  (ChatPrivate, _) ->
+    pure message{chatDisplayName = message.senderGlobalDisplayName}
+  (ChatGroup, Just groupId) -> do
+    cached <- liftIO (Map.lookup groupId <$> IORef.readIORef driver.groupDisplayNames)
+    displayName <- case cached of
+      Just name -> pure (Just name)
+      Nothing -> do
+        response <- sendAction driver (Aeson.object
+          [ "action" Aeson..= Aeson.String "get_group_info"
+          , "params" Aeson..= Aeson.object
+              [ "group_id" Aeson..= groupId
+              , "no_cache" Aeson..= False
+              ]
+          ])
+        let name = response.data_ >>= groupInfoDisplayName
+        for_ name \resolved ->
+          liftIO $ IORef.atomicModifyIORef' driver.groupDisplayNames (\names -> (Map.insert groupId resolved names, ()))
+        pure name
+    pure message{chatDisplayName = displayName}
+  _ -> pure message
+
+groupInfoDisplayName :: Aeson.Value -> Maybe Text
+groupInfoDisplayName =
+  Aeson.parseMaybe (Aeson.withObject "QQ group info" (Aeson..: "group_name"))
+
 -- | Fetch platform-provided QQ group member list.
 getGroupMemberList
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es)
@@ -694,7 +711,12 @@ qqSenderDisplayName = Aeson.parseMaybe $
   Aeson.withObject "QQSender" $ \o -> do
     nickname <- o Aeson..:? "nickname"
     card <- o Aeson..:? "card"
-    maybe (fail "QQ sender has no display name") pure (nonEmptyText nickname <|> nonEmptyText card)
+    maybe (fail "QQ sender has no display name") pure (nonEmptyText card <|> nonEmptyText nickname)
+
+qqSenderGlobalDisplayName :: Aeson.Value -> Maybe Text
+qqSenderGlobalDisplayName = Aeson.parseMaybe $
+  Aeson.withObject "QQSender" $ \o ->
+    o Aeson..:? "nickname" >>= maybe (fail "QQ sender has no nickname") pure . nonEmptyText
 
 qqSenderIdentifier :: Aeson.Value -> Maybe Text
 qqSenderIdentifier = Aeson.parseMaybe $
@@ -983,9 +1005,12 @@ eventToIncomingMessageWith cfg event
         , kind = maybe ChatPrivate (const ChatGroup) event.groupId
         , chatId = event.groupId <|> event.userId
         , chatAliases = []
+        , chatDisplayName = Nothing
         , digest = qqMessageDigest cfg event
         , senderId = show <$> event.userId
-        , senderUsername = event.sender >>= qqSenderDisplayName
+        , senderUsername = Nothing
+        , senderDisplayName = event.sender >>= qqSenderDisplayName
+        , senderGlobalDisplayName = event.sender >>= qqSenderGlobalDisplayName
         , messageId = Just recalledMessageId
         , replyToMessageId = Nothing
         , mentions = []
@@ -1003,9 +1028,12 @@ eventToIncomingMessageWith cfg event
       , kind      = oneBotChatKind event.messageType
       , chatId    = event.groupId <|> event.userId
       , chatAliases = []
+      , chatDisplayName = Nothing
       , digest = qqMessageDigest cfg event
       , senderId  = Text.pack . show <$> event.userId
-      , senderUsername = event.sender >>= qqSenderDisplayName
+      , senderUsername = Nothing
+      , senderDisplayName = event.sender >>= qqSenderDisplayName
+      , senderGlobalDisplayName = event.sender >>= qqSenderGlobalDisplayName
       , messageId = integerMessageId <$> event.messageId
       , replyToMessageId = integerMessageId <$> (event.message >>= replySegmentMessageId)
       , mentions  = eventMentionIds event

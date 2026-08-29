@@ -724,24 +724,70 @@ normalizeMatrixIncomingMessage driver message = do
       mediaRefs ->
         normalizeMatrixMediaRefsWithMetadata driver mediaRefs
   files <- normalizeMatrixFiles driver (matrixEventFileMediaRefs message.raw)
-  pure IncomingMessage
-    { eventKind = message.eventKind
-    , platform = message.platform
-    , kind = message.kind
-    , chatId = message.chatId
-    , chatAliases = message.chatAliases
-    , digest = message.digest
-    , senderId = message.senderId
-    , senderUsername = message.senderUsername
-    , messageId = message.messageId
-    , replyToMessageId = message.replyToMessageId
-    , mentions = message.mentions
-    , mentionUsernames = message.mentionUsernames
-    , imageUrls
-    , files
-    , text = message.text
-    , raw = message.raw
-    }
+  (senderDisplayName, senderGlobalDisplayName) <- matrixSenderNames driver message
+  roomDisplayName <- cachedMatrixRoomDisplayName driver message
+  let chatDisplayName = roomDisplayName <|> if message.kind == ChatPrivate then senderDisplayName else Nothing
+  pure (message :: IncomingMessage){imageUrls, files, chatDisplayName, senderDisplayName, senderGlobalDisplayName}
+
+cachedMatrixRoomDisplayName
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => Protocol.MatrixDriver
+  -> IncomingMessage
+  -> Eff es (Maybe Text)
+cachedMatrixRoomDisplayName driver message = case listToMaybe message.chatAliases of
+  Nothing -> pure Nothing
+  Just roomIdText -> do
+    let roomId = matrixRoomId roomIdText
+    cached <- Map.lookup roomId <$> IORef.readIORef driver.roomDisplayNames
+    case cached of
+      Just displayName -> pure (Just displayName)
+      Nothing -> do
+        displayName <- either (const Nothing) (Just . (.roomName)) <$> eitherCall "room name" driver (MatrixFetchRoomName roomId)
+        for_ displayName \resolved ->
+          IORef.modifyIORef' driver.roomDisplayNames (Map.insert roomId resolved)
+        pure displayName
+
+matrixSenderNames
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => Protocol.MatrixDriver
+  -> IncomingMessage
+  -> Eff es (Maybe Text, Maybe Text)
+matrixSenderNames driver message = case (message.senderId, listToMaybe message.chatAliases) of
+  (Just senderId, Just roomIdText) -> do
+    let roomId = matrixRoomId roomIdText
+    contextual <- cachedMemberDisplayName driver roomId senderId
+    global <- cachedProfileDisplayName driver senderId
+    pure (contextual <|> global, global)
+  _ -> pure (Nothing, Nothing)
+
+cachedMemberDisplayName
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => Protocol.MatrixDriver
+  -> MatrixRoomId
+  -> Text
+  -> Eff es (Maybe Text)
+cachedMemberDisplayName driver roomId senderId = do
+  cached <- Map.lookup (roomId, senderId) <$> IORef.readIORef driver.memberDisplayNames
+  case cached of
+    Just displayName -> pure displayName
+    Nothing -> do
+      displayName <- either (const Nothing) (.memberDisplayName) <$> eitherCall "room member identity" driver (MatrixFetchMember roomId senderId)
+      IORef.modifyIORef' driver.memberDisplayNames (Map.insert (roomId, senderId) displayName)
+      pure displayName
+
+cachedProfileDisplayName
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)
+  => Protocol.MatrixDriver
+  -> Text
+  -> Eff es (Maybe Text)
+cachedProfileDisplayName driver senderId = do
+  cached <- Map.lookup senderId <$> IORef.readIORef driver.profileDisplayNames
+  case cached of
+    Just displayName -> pure displayName
+    Nothing -> do
+      displayName <- either (const Nothing) (.profileDisplayName) <$> eitherCall "profile identity" driver (MatrixFetchProfile senderId)
+      IORef.modifyIORef' driver.profileDisplayNames (Map.insert senderId displayName)
+      pure displayName
 
 normalizeMatrixMediaRefs :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> [Text] -> Eff es [Text]
 normalizeMatrixMediaRefs driver =
@@ -1433,9 +1479,12 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
         , kind = if roomIsDirect then ChatPrivate else ChatGroup
         , chatId = Just (stableTextId (matrixRoomIdText roomId))
         , chatAliases = [matrixRoomIdText roomId]
+        , chatDisplayName = Nothing
         , digest = matrixMessageDigest cfg roomId event ""
         , senderId = Just event.sender
         , senderUsername = Just event.sender
+        , senderDisplayName = Nothing
+        , senderGlobalDisplayName = Nothing
         , messageId = Just (matrixEventMessageId redactedEventId)
         , replyToMessageId = Nothing
         , mentions = []
@@ -1455,9 +1504,12 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
         , kind = if roomIsDirect then ChatPrivate else ChatGroup
         , chatId = Just (stableTextId (matrixRoomIdText roomId))
         , chatAliases = [matrixRoomIdText roomId]
+        , chatDisplayName = Nothing
         , digest = matrixMessageDigest cfg roomId event body
         , senderId = Just event.sender
         , senderUsername = Just event.sender
+        , senderDisplayName = Nothing
+        , senderGlobalDisplayName = Nothing
         , messageId = matrixEventMessageId <$> event.eventId
         , replyToMessageId = matrixEventMessageId <$> event.content.replyToEventId
         , mentions = []

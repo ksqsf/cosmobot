@@ -846,6 +846,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.chat-log-identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+.chat-log-identity > i {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
 .chat-log-nav small,
 .chat-log-header small,
 .chat-log-message small,

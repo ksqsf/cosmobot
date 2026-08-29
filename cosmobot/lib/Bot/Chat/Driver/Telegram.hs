@@ -154,24 +154,7 @@ resolveIncomingMessageMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Pro
 resolveIncomingMessageMedia driver message = do
   imageUrls <- traverse (fileUrl driver) message.imageUrls
   files <- traverse (traverseMessageFileRef (fileUrl driver)) message.files
-  pure IncomingMessage
-    { eventKind = message.eventKind
-    , platform = message.platform
-    , kind = message.kind
-    , chatId = message.chatId
-    , chatAliases = message.chatAliases
-    , digest = message.digest
-    , senderId = message.senderId
-    , senderUsername = message.senderUsername
-    , messageId = message.messageId
-    , replyToMessageId = message.replyToMessageId
-    , mentions = message.mentions
-    , mentionUsernames = message.mentionUsernames
-    , imageUrls = imageUrls
-    , files
-    , text = message.text
-    , raw = message.raw
-    }
+  pure (message :: IncomingMessage){imageUrls, files}
 
 updateToIncomingMessage :: Update -> Maybe IncomingMessage
 updateToIncomingMessage =
@@ -187,9 +170,12 @@ updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
     , kind      = telegramChatKind message.chat.type_
     , chatId    = Just message.chat.id
     , chatAliases = telegramChatAliases message.chat
+    , chatDisplayName = telegramChatDisplayName message.chat
     , digest = telegramMessageDigest cfg message
     , senderId  = Text.pack . show . (.id) <$> message.from
     , senderUsername = message.from >>= (.username)
+    , senderDisplayName = telegramUserFullName <$> message.from
+    , senderGlobalDisplayName = telegramUserFullName <$> message.from
     , messageId = Just (integerMessageId message.messageId)
     , replyToMessageId = integerMessageId . (.messageId) <$> message.replyToMessage
     , mentions  = messageMentionIds message
@@ -232,6 +218,10 @@ telegramMessageDigest cfg message =
 telegramChatAliases :: Chat -> [Text]
 telegramChatAliases chat =
   map normalizeUsername (catMaybes [chat.username, chat.title])
+
+telegramChatDisplayName :: Chat -> Maybe Text
+telegramChatDisplayName chat =
+  nonEmptyText $ Text.unwords $ catMaybes [chat.title, chat.firstName, chat.lastName, chat.username]
 
 isBotMessage :: Message -> Bool
 isBotMessage message =

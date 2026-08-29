@@ -245,24 +245,7 @@ normalizeIncomingMessage :: Media :> es => IncomingMessage -> Eff es IncomingMes
 normalizeIncomingMessage message = do
   imageUrls <- traverse (normalizePlatformMediaRef message.platform) message.imageUrls
   files <- traverse (normalizePlatformMessageFile message.platform) message.files
-  pure IncomingMessage
-    { eventKind = message.eventKind
-    , platform = message.platform
-    , kind = message.kind
-    , chatId = message.chatId
-    , chatAliases = message.chatAliases
-    , digest = message.digest
-    , senderId = message.senderId
-    , senderUsername = message.senderUsername
-    , messageId = message.messageId
-    , replyToMessageId = message.replyToMessageId
-    , mentions = message.mentions
-    , mentionUsernames = message.mentionUsernames
-    , imageUrls
-    , files
-    , text = message.text
-    , raw = message.raw
-    }
+  pure (message :: IncomingMessage){imageUrls, files}
   where
     normalizePlatformMediaRef platform ref = do
       normalized <- normalizeMediaRef ref

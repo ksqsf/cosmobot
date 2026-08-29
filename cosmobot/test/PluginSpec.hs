@@ -304,9 +304,12 @@ message text = IncomingMessage
   , kind = ChatPrivate
   , chatId = Just 100
   , chatAliases = []
+  , chatDisplayName = Nothing
   , digest = emptyMessageDigest{senderIsAllowed = True}
   , senderId = Just "200"
   , senderUsername = Just "alice"
+  , senderDisplayName = Nothing
+  , senderGlobalDisplayName = Nothing
   , messageId = Just "300"
   , replyToMessageId = Nothing
   , mentions = []

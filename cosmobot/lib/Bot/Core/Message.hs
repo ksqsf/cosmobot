@@ -15,6 +15,7 @@ module Bot.Core.Message
     -- * Chat identity
   , ChatPlatform (..)
   , chatPlatformKey
+  , chatPlatformFromKey
   , ChatKind (..)
   , MessageDigest (..)
   , emptyMessageDigest
@@ -106,13 +107,23 @@ chatPlatformKey = \case
   PlatformACP ->
     "acp"
 
+chatPlatformFromKey :: Text -> Maybe ChatPlatform
+chatPlatformFromKey = \case
+  "qq" -> Just PlatformQQ
+  "telegram" -> Just PlatformTelegram
+  "matrix" -> Just PlatformMatrix
+  "discord" -> Just PlatformDiscord
+  "rpc" -> Just PlatformRPC
+  "acp" -> Just PlatformACP
+  _ -> Nothing
+
 -- | Coarse chat shape shared across platforms.
 data ChatKind
   = ChatPrivate
   | ChatGroup
   | ChatChannel
   | ChatUnknown Text
-  deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
+  deriving (Eq, Ord, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 
 -- | Driver-provided facts that are not inherent in the raw message payload.
 data MessageDigest = MessageDigest
@@ -147,9 +158,12 @@ data IncomingMessage = IncomingMessage
   , kind      :: !ChatKind
   , chatId    :: !(Maybe Integer)
   , chatAliases :: ![Text]
+  , chatDisplayName :: !(Maybe Text)
   , digest    :: !MessageDigest
   , senderId  :: !(Maybe Text)
   , senderUsername :: !(Maybe Text)
+  , senderDisplayName :: !(Maybe Text)
+  , senderGlobalDisplayName :: !(Maybe Text)
   , messageId :: !(Maybe MessageId)
   , replyToMessageId :: !(Maybe MessageId)
   , mentions  :: ![Text]
@@ -169,9 +183,12 @@ instance Aeson.FromJSON IncomingMessage where
       <*> o Aeson..: "kind"
       <*> o Aeson..:? "chatId"
       <*> o Aeson..:? "chatAliases" Aeson..!= []
+      <*> o Aeson..:? "chatDisplayName"
       <*> o Aeson..: "digest"
       <*> o Aeson..:? "senderId"
       <*> o Aeson..:? "senderUsername"
+      <*> o Aeson..:? "senderDisplayName"
+      <*> o Aeson..:? "senderGlobalDisplayName"
       <*> o Aeson..:? "messageId"
       <*> o Aeson..:? "replyToMessageId"
       <*> o Aeson..:? "mentions" Aeson..!= []

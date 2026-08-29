@@ -180,8 +180,10 @@ knownEntry =
         , lastUsedAtUnix = 2
         , exists = True
         }
-    , sourceRefs = ["https://source.example/known.png"]
-    , platformRefs = []
+  , sourceRefs = ["https://source.example/known.png"]
+  , platformRefs = []
+  , platforms = []
+  , sourceKinds = []
     }
 
 referencedMessage :: ReferencedMessage
@@ -204,9 +206,12 @@ message body =
     , kind = ChatPrivate
     , chatId = Just 100
     , chatAliases = []
+    , chatDisplayName = Nothing
     , digest = emptyMessageDigest
     , senderId = Just "200"
     , senderUsername = Nothing
+    , senderDisplayName = Nothing
+    , senderGlobalDisplayName = Nothing
     , messageId = Just "300"
     , replyToMessageId = Nothing
     , mentions = []

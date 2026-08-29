@@ -909,6 +909,7 @@ acpToolMessage sessionId =
     , kind = ChatPrivate
     , chatId = Nothing
     , chatAliases = [Session.sessionIdText sessionId]
+    , chatDisplayName = Nothing
     , digest = MessageDigest
         { chatIsAllowed = True
         , senderIsAllowed = True
@@ -918,6 +919,8 @@ acpToolMessage sessionId =
         }
     , senderId = Just "session-1"
     , senderUsername = Just "ACP"
+    , senderDisplayName = Just "ACP"
+    , senderGlobalDisplayName = Just "ACP"
     , messageId = Just "message-1"
     , replyToMessageId = Nothing
     , mentions = []

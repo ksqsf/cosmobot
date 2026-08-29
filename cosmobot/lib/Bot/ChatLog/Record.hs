@@ -7,6 +7,7 @@ Stability   : experimental
 
 module Bot.ChatLog.Record
   ( ChatLogRecord
+  , chatLogRecordMessage
   , userRecord
   , selfRecord
   , selfRecordWithFiles
@@ -32,6 +33,9 @@ userRecord :: IncomingMessage -> ChatLogRecord
 userRecord message =
   ChatLogRecord message False
 
+chatLogRecordMessage :: ChatLogRecord -> IncomingMessage
+chatLogRecordMessage = (.message)
+
 selfRecord :: IncomingMessage -> Maybe MessageId -> Text -> ChatLogRecord
 selfRecord context messageId body =
   selfRecordWithFiles context messageId body []
@@ -50,9 +54,12 @@ selfMessage context messageId body files =
     , kind = context.kind
     , chatId = context.chatId
     , chatAliases = context.chatAliases
+    , chatDisplayName = context.chatDisplayName
     , digest = emptyMessageDigest
     , senderId = Nothing
     , senderUsername = Nothing
+    , senderDisplayName = Nothing
+    , senderGlobalDisplayName = Nothing
     , messageId
     , replyToMessageId = context.messageId
     , mentions = []
@@ -75,6 +82,7 @@ chatLogEntry recordedAt record =
     , chatId = record.message.chatId
     , senderId = record.message.senderId
     , senderUsername = record.message.senderUsername
+    , senderDisplayName = record.message.senderDisplayName
     , messageId = record.message.messageId
     , replyToMessageId = record.message.replyToMessageId
     , isBot = record.isBot

@@ -256,6 +256,7 @@ rpcIncomingMessage chatSend messageRow = do
     , kind = ChatPrivate
     , chatId = Nothing
     , chatAliases = [sessionText]
+    , chatDisplayName = Nothing
     , digest = MessageDigest
         { chatIsAllowed = True
         , senderIsAllowed = True
@@ -265,6 +266,8 @@ rpcIncomingMessage chatSend messageRow = do
         }
     , senderId = Just sessionText
     , senderUsername = Just "RPC"
+    , senderDisplayName = Just "RPC"
+    , senderGlobalDisplayName = Just "RPC"
     , messageId = Just messageRow.messageId
     , replyToMessageId = Nothing
     , mentions = []

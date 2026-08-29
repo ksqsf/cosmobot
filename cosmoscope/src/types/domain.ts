@@ -63,6 +63,7 @@ export interface ThreadSummary {
   readonly latestPreview: string
   readonly rootKey: ThreadMessageKey
   readonly latestKey: ThreadMessageKey
+  readonly chatDisplayName: string | null
   readonly nodeCount: number
   readonly leafCount: number
 }
@@ -189,6 +190,7 @@ export interface ChatLogScope {
 
 export interface ChatLogSummary {
   readonly scope: ChatLogScope
+  readonly chatDisplayName: string | null
   readonly messageCount: number
   readonly latestAt: string | null
 }
@@ -197,6 +199,7 @@ export interface ChatLogEntry extends ChatLogScope {
   readonly recordedAt: string | null
   readonly senderId: string | null
   readonly senderUsername: string | null
+  readonly senderDisplayName: string | null
   readonly messageId: string | null
   readonly replyToMessageId: string | null
   readonly isBot: boolean
@@ -215,6 +218,7 @@ export interface ChatLogItem {
 
 export interface ChatLogWindow {
   readonly scope: ChatLogScope
+  readonly chatDisplayName: string | null
   readonly entries: readonly ChatLogItem[]
   readonly hasOlder: boolean
   readonly hasNewer: boolean
@@ -262,6 +266,8 @@ export interface MemoryKey {
 }
 
 export interface MemorySummary extends MemoryKey {
+  readonly displayName: string | null
+  readonly username: string | null
   readonly characters: number
 }
 

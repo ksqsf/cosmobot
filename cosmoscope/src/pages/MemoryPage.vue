@@ -12,6 +12,7 @@ import Message from 'primevue/message'
 import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
+import DisplayIdentity from '@/components/DisplayIdentity.vue'
 import { getMemory, getMemoryHistory, getMemoryRevision, listMemories, revertMemory } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
 import { renderMarkdown } from '@/markdown'
@@ -56,7 +57,7 @@ const historyDialogVisible = computed({
 const filtered = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
   return needle === '' ? memories.value : memories.value.filter((memory) =>
-    `${memory.platform} ${memory.scope} ${memory.scopeId}`.toLocaleLowerCase().includes(needle))
+    `${memory.platform} ${memory.scope} ${memory.scopeId} ${memory.username ?? ''} ${memory.displayName ?? ''}`.toLocaleLowerCase().includes(needle))
 })
 
 async function refresh(): Promise<void> {
@@ -224,7 +225,10 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
           header="Identity"
         >
           <template #body="{ data }">
-            <code>{{ data.scopeId }}</code>
+            <DisplayIdentity
+              :id="data.scopeId"
+              :name="data.displayName"
+            />
           </template>
         </Column>
         <Column
@@ -257,7 +261,10 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
             /><Tag
               :value="selected.scope"
               severity="info"
-            /><code>{{ selected.scopeId }}</code>
+            /><DisplayIdentity
+              :id="selected.scopeId"
+              :name="selected.displayName"
+            />
           </div>
           <div
             class="markdown-body"

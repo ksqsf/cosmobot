@@ -48,6 +48,8 @@ import qualified Bot.Effect.Media as Media
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson
 import Data.Bits (shiftR)
+import qualified Data.IORef as IORef
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Effectful.FileSystem (FileSystem)
 import qualified Streaming as S
@@ -141,17 +143,17 @@ discordEditChunkChars = 512
 discordMessageTextLimit :: Int
 discordMessageTextLimit = 2000
 
-incomingMessages :: (IOE :> es, KatipE :> es) => DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessages :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessages (DiscordDriver driver) =
   incomingMessagesProtocol driver
 
-incomingMessagesProtocol :: (IOE :> es, KatipE :> es) => Protocol.DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessagesProtocol :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Protocol.DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessagesProtocol driver = do
   if discordEnabled driver.config
     then incomingMessagesLoop driver
     else S.lift $ $(logInfo) "Discord driver disabled: no bot token configured"
 
-incomingMessagesLoop :: (IOE :> es, KatipE :> es) => Protocol.DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
+incomingMessagesLoop :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Protocol.DiscordDriver -> Stream (Of IncomingMessage) (Eff es) ()
 incomingMessagesLoop driver = do
   event <- S.lift (receiveEvent driver)
   let incoming = case event of
@@ -160,10 +162,29 @@ incomingMessagesLoop driver = do
   case incoming of
     Nothing -> do
       S.lift $ $(logDebug) "Ignoring Discord event"
-    Just message -> do
+    Just parsedMessage -> do
+      message <- S.lift (resolveDiscordChatDisplayName driver parsedMessage)
       S.lift $ $(logDebug) ("incoming Discord message:\n" <> logJsonText message)
       S.yield message
   incomingMessagesLoop driver
+
+resolveDiscordChatDisplayName
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  => Protocol.DiscordDriver
+  -> IncomingMessage
+  -> Eff es IncomingMessage
+resolveDiscordChatDisplayName driver message = case listToMaybe message.chatAliases of
+  Nothing -> pure message
+  Just channelId -> do
+    cached <- liftIO (Map.lookup channelId <$> IORef.readIORef driver.channelDisplayNames)
+    displayName <- case cached of
+      Just name -> pure (Just name)
+      Nothing -> do
+        name <- Protocol.discordChannelDisplayName <$> fetchChannel driver channelId
+        for_ name \resolved ->
+          liftIO $ IORef.atomicModifyIORef' driver.channelDisplayNames (\names -> (Map.insert channelId resolved names, ()))
+        pure name
+    pure message{chatDisplayName = displayName}
 
 eventToIncomingMessage :: Message -> Maybe IncomingMessage
 eventToIncomingMessage =
@@ -180,9 +201,12 @@ eventToIncomingMessageWith cfg message = do
     , kind = if isJust message.guildId then ChatGroup else ChatPrivate
     , chatId = Just (discordSnowflakeNumber message.channelId)
     , chatAliases = catMaybes [Just message.channelId, message.guildId]
+    , chatDisplayName = Nothing
     , digest = discordMessageDigest cfg message
     , senderId = Just message.author.id
-    , senderUsername = message.author.globalName <|> message.author.username
+    , senderUsername = message.author.username
+    , senderDisplayName = (message.member >>= (.nick)) <|> message.author.globalName
+    , senderGlobalDisplayName = message.author.globalName
     , messageId = Just (textMessageId message.id)
     , replyToMessageId = message.referencedMessage <&> (.id) <&> textMessageId
     , mentions = map (.id) message.mentions
@@ -204,6 +228,7 @@ deletedEventToIncomingMessageWith cfg deleted =
     , kind = if isJust deleted.guildId then ChatGroup else ChatPrivate
     , chatId = Just (discordSnowflakeNumber deleted.channelId)
     , chatAliases = catMaybes [Just deleted.channelId, deleted.guildId]
+    , chatDisplayName = Nothing
     , digest = emptyMessageDigest
         { chatIsAllowed =
             discordSnowflakeNumber deleted.channelId `elem` cfg.allowedChannels
@@ -212,6 +237,8 @@ deletedEventToIncomingMessageWith cfg deleted =
         }
     , senderId = Nothing
     , senderUsername = Nothing
+    , senderDisplayName = Nothing
+    , senderGlobalDisplayName = Nothing
     , messageId = Just (textMessageId deleted.id)
     , replyToMessageId = Nothing
     , mentions = []

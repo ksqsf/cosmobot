@@ -45,6 +45,7 @@ data ChatLogEntry = ChatLogEntry
   , chatId :: !(Maybe Integer)
   , senderId :: !(Maybe Text)
   , senderUsername :: !(Maybe Text)
+  , senderDisplayName :: !(Maybe Text)
   , messageId :: !(Maybe MessageId)
   , replyToMessageId :: !(Maybe MessageId)
   , isBot :: !Bool

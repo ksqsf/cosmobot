@@ -412,6 +412,7 @@ acpIncomingMessage sessionSend messageRow = do
     , kind = ChatPrivate
     , chatId = Nothing
     , chatAliases = [sessionText]
+    , chatDisplayName = Nothing
     , digest = MessageDigest
         { chatIsAllowed = True
         , senderIsAllowed = True
@@ -421,6 +422,8 @@ acpIncomingMessage sessionSend messageRow = do
         }
     , senderId = Just sessionText
     , senderUsername = Just "ACP"
+    , senderDisplayName = Just "ACP"
+    , senderGlobalDisplayName = Just "ACP"
     , messageId = Just messageRow.messageId
     , replyToMessageId = sessionSend.replyToMessageId
     , mentions = []

@@ -20,6 +20,7 @@ import qualified Bot.JSONRPC as RPC
 import Bot.Prelude
 import Bot.RPC.Server (RpcServerCallbacks (..), noRpcServerCallbacks)
 import qualified Bot.Storage.Thread as Thread
+import qualified Bot.Storage.Identity as Identity
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -59,8 +60,9 @@ dispatchThreadMethod inspectActive haltActive request =
             page = take params.limit (drop params.offset filtered)
         pageTails <- if Text.null params.query then Thread.loadThreadRowsByIds (map (.latestRowId) page) else pure []
         let previews = searchPreviews <> Map.fromList [(row.rowId, threadRowPreview row) | row <- pageTails]
+        chatInfos <- Identity.loadChatInfos [(summary.rootKey.platform, chatId) | summary <- page, chatId <- maybeToList summary.rootKey.chatId]
         pure $ Aeson.object
-          [ "threads" Aeson..= map (summaryValue previews) page
+          [ "threads" Aeson..= map (summaryValue chatInfos previews) page
           , "total" Aeson..= length filtered
           , "nodes" Aeson..= sum (map (.nodeCount) filtered)
           , "leaves" Aeson..= sum (map (.leafCount) filtered)
@@ -69,9 +71,10 @@ dispatchThreadMethod inspectActive haltActive request =
     "thread.get" ->
       parseParams request parseThreadId \threadId -> do
         rows <- Thread.loadThreadRowsByThreadId threadId
+        chatInfos <- Identity.loadChatInfos [(row.messageKey.platform, chatId) | row <- take 1 rows, chatId <- maybeToList row.messageKey.chatId]
         pure $ case nonEmpty rows of
           Nothing -> Aeson.Null
-          Just selectedRows -> threadValue threadId selectedRows
+          Just selectedRows -> threadValue chatInfos threadId selectedRows
     "thread.resolve_run" ->
       parseParams request parseRunId \runId -> do
         active <- find ((== runId) . (.runId)) <$> inspectActive
@@ -132,13 +135,14 @@ resolvedThreadId :: Thread.ThreadIndexRow -> Integer
 resolvedThreadId row =
   fromMaybe row.rowId row.threadStorageId
 
-summaryValue :: Map Integer Text -> ThreadSummary -> Aeson.Value
-summaryValue previews summary =
+summaryValue :: Map (ChatPlatform, Integer) (Maybe Text) -> Map Integer Text -> ThreadSummary -> Aeson.Value
+summaryValue chatInfos previews summary =
   Aeson.object
     [ "threadId" Aeson..= summary.threadId
     , "latestPreview" Aeson..= Map.findWithDefault "" summary.latestRowId previews
     , "rootKey" Aeson..= summary.rootKey
     , "latestKey" Aeson..= summary.latestKey
+    , "chatDisplayName" Aeson..= (summary.rootKey.chatId >>= \chatId -> Map.lookup (summary.rootKey.platform, chatId) chatInfos >>= id)
     , "nodeCount" Aeson..= summary.nodeCount
     , "leafCount" Aeson..= summary.leafCount
     ]
@@ -156,10 +160,10 @@ summaryMatches rawQuery previews summary
       , Map.findWithDefault "" summary.latestRowId previews
       ]
 
-threadValue :: Integer -> NonEmpty Thread.ThreadRow -> Aeson.Value
-threadValue threadId rows =
+threadValue :: Map (ChatPlatform, Integer) (Maybe Text) -> Integer -> NonEmpty Thread.ThreadRow -> Aeson.Value
+threadValue chatInfos threadId rows =
   Aeson.object
-    [ "summary" Aeson..= maybe Aeson.Null (summaryValue previews) summary
+    [ "summary" Aeson..= maybe Aeson.Null (summaryValue chatInfos previews) summary
     , "nodes" Aeson..= map nodeValue (sortOn (.rowId) (toList rows))
     ]
   where
