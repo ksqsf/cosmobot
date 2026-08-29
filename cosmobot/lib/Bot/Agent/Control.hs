@@ -26,7 +26,8 @@ finishToolTurn aroundToolTurn request action =
     results <- action
     let executions = NonEmpty.zip request.toolCalls results
         resultMessages = map (uncurry toolResultMessage) (toList executions)
-        imageMessages = concatMap (uncurry toolImageMessages) executions
+        imageUrls = concatMap (toolResultImageUrls . snd) executions
+        imageMessages = [LLM.syntheticWithImages "" imageUrls | not (null imageUrls)]
     pure
       ( request.agentState
           { transcript = appendMessages (resultMessages <> imageMessages) request.answered
@@ -50,13 +51,3 @@ runControlTurn Runtime{aroundToolTurn, aroundControlCall} request call action =
 toolResultMessage :: LLM.ToolCall -> ToolResult -> LLM.ChatMessage
 toolResultMessage call =
   LLM.toolResult call . toolResultContent
-
-toolImageMessages :: LLM.ToolCall -> ToolResult -> [LLM.ChatMessage]
-toolImageMessages _ result =
-  imageMessages
-  where
-    imageMessages =
-      [ LLM.syntheticWithImages "" imageUrls
-      | let imageUrls = toolResultImageUrls result
-      , not (null imageUrls)
-      ]

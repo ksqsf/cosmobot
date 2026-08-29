@@ -214,7 +214,8 @@ testThreadMessageKeyJsonPreservesLargeChatIds = do
 
 testThreadInspectionRpc :: IO ()
 testThreadInspectionRpc = do
-  (listResponse, invalidListResponse, missingResponse, invalidResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
+  let linkedKey = ThreadMessageKey PlatformRPC (Just 42) "reply-1"
+  (listResponse, invalidListResponse, missingResponse, invalidResponse, detailResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
     rpcState <- RPC.newRpcState
     let dispatch method params =
           RPCServer.dispatchRpcRequest rpcState (RPCThread.threadRpcCallbacks (pure []) (pure . (== Concurrency.Id 7))) (rpcRequest method params)
@@ -223,19 +224,26 @@ testThreadInspectionRpc = do
     missingResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
     invalidResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (0 :: Int)])
     let runId = "agent-linked"
-        linkedKey = ThreadMessageKey PlatformRPC Nothing "message-1"
+        incoming = mediaMessage PlatformRPC "prompt"
+        incomingKey = Just (ThreadMessageKey PlatformRPC (Just 42) "message-1")
+        trailingAliasKey = ThreadMessageKey PlatformRPC (Just 42) "reply-2"
     threads <- ThreadStorage.newThreadStore
-    ThreadStorage.rememberThreadTranscript threads (Just linkedKey) (Transcript mempty)
+    active <- ThreadStorage.rememberActiveThread threads runId Nothing incomingKey incoming "prompt" (Concurrency.Handle (Concurrency.Id 8)) (Transcript mempty)
+      >>= maybe (error "expected active thread") pure
+    ThreadStorage.addActiveThreadMessage threads active linkedKey
+    ThreadStorage.addActiveThreadMessage threads active trailingAliasKey
+    ThreadStorage.finishActiveThread threads active (Transcript mempty)
     void $ AgentAudit.recordEvent AgentAudit.AgentThreadLinked
       { runId
       , linkedMessageId = linkedKey.messageId
       , linkedMessageKey = Just linkedKey
       , parentMessageId = Nothing
       }
+    detailResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
     resolveResponse <- dispatch "thread.resolve_run" (Aeson.object ["runId" Aeson..= runId])
     activeResponse <- dispatch "thread.active" Aeson.Null
     haltResponse <- dispatch "thread.halt" (Aeson.object ["taskId" Aeson..= (7 :: Int)])
-    pure (listResponse, invalidListResponse, missingResponse, invalidResponse, resolveResponse, activeResponse, haltResponse)
+    pure (listResponse, invalidListResponse, missingResponse, invalidResponse, detailResponse, resolveResponse, activeResponse, haltResponse)
   listResponse @?= responseResult (Aeson.object
     [ "threads" Aeson..= ([] :: [Aeson.Value])
     , "total" Aeson..= (0 :: Int)
@@ -246,6 +254,22 @@ testThreadInspectionRpc = do
   responseErrorCode invalidListResponse @?= Just "invalid_params"
   missingResponse @?= responseResult Aeson.Null
   responseErrorCode invalidResponse @?= Just "invalid_params"
+  detailResponse @?= responseResult (Aeson.object
+    [ "summary" Aeson..= Aeson.object
+        [ "threadId" Aeson..= (1 :: Int)
+        , "latestPreview" Aeson..= ("" :: Text)
+        , "rootKey" Aeson..= linkedKey
+        , "latestKey" Aeson..= linkedKey
+        , "chatDisplayName" Aeson..= (Nothing :: Maybe Text)
+        , "nodeCount" Aeson..= (1 :: Int)
+        , "leafCount" Aeson..= (1 :: Int)
+        ]
+    , "nodes" Aeson..= [Aeson.object
+        [ "messageKey" Aeson..= linkedKey
+        , "parentMessageKey" Aeson..= (Nothing :: Maybe ThreadMessageKey)
+        , "messages" Aeson..= ([] :: [Aeson.Value])
+        ]]
+    ])
   resolveResponse @?= responseResult (Aeson.object ["threadId" Aeson..= (Just 1 :: Maybe Int), "taskId" Aeson..= (Nothing :: Maybe Int)])
   activeResponse @?= responseResult (Aeson.object ["threads" Aeson..= ([] :: [Aeson.Value])])
   haltResponse @?= responseResult (Aeson.object ["taskId" Aeson..= (7 :: Int), "halted" Aeson..= True])

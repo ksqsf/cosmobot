@@ -71,10 +71,11 @@ dispatchThreadMethod inspectActive haltActive request =
     "thread.get" ->
       parseParams request parseThreadId \threadId -> do
         rows <- Thread.loadThreadRowsByThreadId threadId
+        auditRecords <- AgentAudit.queryThreadMessagesAudit (map (.messageKey) rows)
         chatInfos <- Identity.loadChatInfos [(row.messageKey.platform, chatId) | row <- take 1 rows, chatId <- maybeToList row.messageKey.chatId]
         pure $ case nonEmpty rows of
           Nothing -> Aeson.Null
-          Just selectedRows -> threadValue chatInfos threadId selectedRows
+          Just selectedRows -> threadValue chatInfos (linkedMessageKeys auditRecords) threadId selectedRows
     "thread.resolve_run" ->
       parseParams request parseRunId \runId -> do
         active <- find ((== runId) . (.runId)) <$> inspectActive
@@ -160,15 +161,54 @@ summaryMatches rawQuery previews summary
       , Map.findWithDefault "" summary.latestRowId previews
       ]
 
-threadValue :: Map (ChatPlatform, Integer) (Maybe Text) -> Integer -> NonEmpty Thread.ThreadRow -> Aeson.Value
-threadValue chatInfos threadId rows =
+threadValue :: Map (ChatPlatform, Integer) (Maybe Text) -> Set ThreadMessageKey -> Integer -> NonEmpty Thread.ThreadRow -> Aeson.Value
+threadValue chatInfos linkedKeys threadId rows =
   Aeson.object
     [ "summary" Aeson..= maybe Aeson.Null (summaryValue chatInfos previews) summary
-    , "nodes" Aeson..= map nodeValue (sortOn (.rowId) (toList rows))
+    , "nodes" Aeson..= map nodeValue logicalRows
     ]
   where
-    summary = summarize threadId (map indexRow (toList rows))
-    previews = Map.fromList [(row.rowId, threadRowPreview row) | row <- toList rows]
+    logicalRows = collapseAliases linkedKeys (toList rows)
+    summary = summarize threadId (map indexRow logicalRows)
+    previews = Map.fromList [(row.rowId, threadRowPreview row) | row <- logicalRows]
+
+-- Multiple platform messages emitted by one agent turn are reply aliases for
+-- the same logical conversation node. Prefer its audit-linked response as the
+-- canonical link and redirect child links to it. Legacy rows without that
+-- audit event fall back to the last alias.
+collapseAliases :: Set ThreadMessageKey -> [Thread.ThreadRow] -> [Thread.ThreadRow]
+collapseAliases linkedKeys rows =
+  sortOn (.rowId)
+    [ remapParent canonical
+    | aliasGroup <- Map.elems groups
+    , let canonical = canonicalRow aliasGroup
+    ]
+  where
+    groups = Map.fromListWith (<>)
+      [ ((row.parentMessageKey, row.messagesJson), [row])
+      | row <- rows
+      ]
+    aliases = Map.fromList
+      [ (row.messageKey, canonical.messageKey)
+      | aliasGroup <- Map.elems groups
+      , let canonical = canonicalRow aliasGroup
+      , row <- aliasGroup
+      ]
+    canonicalRow aliasGroup = List.maximumBy (comparing (.rowId)) case filter ((`Set.member` linkedKeys) . (.messageKey)) aliasGroup of
+      [] -> aliasGroup
+      linked -> linked
+    remapParent :: Thread.ThreadRow -> Thread.ThreadRow
+    remapParent row =
+      Thread.ThreadRow row.rowId row.messageKey row.threadStorageId
+        (row.parentMessageKey <&> \parent -> Map.findWithDefault parent parent aliases)
+        row.messagesJson
+
+linkedMessageKeys :: [AgentAudit.AgentAuditRecord] -> Set ThreadMessageKey
+linkedMessageKeys records = Set.fromList
+  [ linkedMessageKey
+  | record <- records
+  , AgentAudit.AgentThreadLinked{linkedMessageKey = Just linkedMessageKey} <- [record.event]
+  ]
 
 nodeValue :: Thread.ThreadRow -> Aeson.Value
 nodeValue row =

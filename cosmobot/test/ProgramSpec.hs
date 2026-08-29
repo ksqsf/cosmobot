@@ -249,7 +249,7 @@ testToolTurnMessageOrder = do
   let firstCall = LLM.ToolCall "call-1" "first" "{}"
       secondCall = LLM.ToolCall "call-2" "second" "{}"
       request = requestWith (firstCall :| [secondCall])
-      results = toolTextWithImages "first-result\n" ["https://example.invalid/image"] :| [toolText "second-result"]
+      results = toolTextWithImages "first-result\n" ["https://example.invalid/first"] :| [toolTextWithImages "second-result" ["https://example.invalid/second"]]
       (continuedState, _) = runPureEff (finishToolTurn (\_ _ action -> action) request (pure results))
       messages = Foldable.toList continuedState.transcript.messages
   map (\message -> (message.role, messageText message)) messages @?=
@@ -258,10 +258,11 @@ testToolTurnMessageOrder = do
     , ("synthetic", "")
     ]
   case reverse messages of
-    LLM.ChatMessage{content = Just (LLM.PartsContent [LLM.ImageUrlPart url])} : _ ->
-      url @?= "https://example.invalid/image"
+    LLM.ChatMessage{content = Just (LLM.PartsContent [LLM.ImageUrlPart firstUrl, LLM.ImageUrlPart secondUrl])} : _ -> do
+      firstUrl @?= "https://example.invalid/first"
+      secondUrl @?= "https://example.invalid/second"
     _ ->
-      assertFailure "expected image-only synthetic context"
+      assertFailure "expected one image-only synthetic context containing both images"
 
 testPythonToolContract :: Assertion
 testPythonToolContract = do
