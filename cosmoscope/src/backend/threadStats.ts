@@ -10,6 +10,8 @@ export interface ThreadStats {
   readonly subagents: number
   readonly contextMessages: number
   readonly tokens: TokenUsage | null
+  readonly cachedPromptTokens: number | null
+  readonly promptCacheHitRate: number | null
   readonly modelMilliseconds: number
   readonly toolMilliseconds: number
   readonly wallMilliseconds: number
@@ -56,6 +58,13 @@ export function threadStats(records: readonly AuditRecord[]): ThreadStats {
   const reportedUsages = ordered.flatMap(({ event }) => event.tag === 'ModelTurnFinished' && event.tokenUsage !== null ? [event.tokenUsage] : [])
   const usages = reportedUsages.length === modelStarts.length && reportedUsages.length > 0 ? reportedUsages : null
   const cached = usages?.map(({ prompt_tokens_details }) => prompt_tokens_details?.cached_tokens).filter((value): value is number => value !== undefined) ?? []
+  const tokens = usages === null ? null : {
+    prompt_tokens: usages.reduce((sum, usage) => sum + usage.prompt_tokens, 0),
+    completion_tokens: usages.reduce((sum, usage) => sum + usage.completion_tokens, 0),
+    total_tokens: usages.reduce((sum, usage) => sum + usage.total_tokens, 0),
+    ...(cached.length === usages.length && cached.length > 0 ? { prompt_tokens_details: { cached_tokens: cached.reduce((sum, value) => sum + value, 0) } } : {}),
+  }
+  const cachedPromptTokens = usages !== null && cached.length === usages.length ? cached.reduce((sum, value) => sum + value, 0) : null
   return {
     runs: new Set(runStarts.map(({ event }) => event.runId)).size,
     modelTurns: modelStarts.length,
@@ -64,12 +73,9 @@ export function threadStats(records: readonly AuditRecord[]): ThreadStats {
     compactions: ordered.filter(({ event }) => event.tag === 'ContextCompacted').length,
     subagents: new Set(ordered.flatMap(({ event }) => event.tag === 'SubAgentRunStarted' ? [event.childRunId] : [])).size,
     contextMessages: Math.max(0, ...ordered.flatMap(({ event }) => event.tag === 'ModelTurnStarted' ? [event.messageCount] : [])),
-    tokens: usages === null ? null : {
-      prompt_tokens: usages.reduce((sum, usage) => sum + usage.prompt_tokens, 0),
-      completion_tokens: usages.reduce((sum, usage) => sum + usage.completion_tokens, 0),
-      total_tokens: usages.reduce((sum, usage) => sum + usage.total_tokens, 0),
-      ...(cached.length === usages.length && cached.length > 0 ? { prompt_tokens_details: { cached_tokens: cached.reduce((sum, value) => sum + value, 0) } } : {}),
-    },
+    tokens,
+    cachedPromptTokens,
+    promptCacheHitRate: cachedPromptTokens === null || tokens === null || tokens.prompt_tokens === 0 ? null : cachedPromptTokens / tokens.prompt_tokens,
     modelMilliseconds: sumReported(modelDurations),
     toolMilliseconds: sumReported(toolDurations),
     wallMilliseconds: wallDurations.reduce((sum, value) => sum + value, 0),
