@@ -25,15 +25,18 @@ instance NFData BenchMessages where
     foldr (\message rest -> forceMessage message `seq` rest) () messages
 
 forceMessage :: IncomingMessage -> ()
-forceMessage IncomingMessage{eventKind, platform, kind, chatId, chatAliases, digest, senderId, senderUsername, messageId, replyToMessageId, mentions, mentionUsernames, imageUrls, files, text, raw} =
+forceMessage IncomingMessage{eventKind, platform, kind, chatId, chatAliases, chatDisplayName, digest, senderId, senderUsername, senderDisplayName, senderGlobalDisplayName, messageId, replyToMessageId, mentions, mentionUsernames, imageUrls, files, text, raw} =
   forceEventKind eventKind
     `seq` forcePlatform platform
     `seq` forceKind kind
-    `seq` rnf chatId
+    `seq` rnf (chatIdText <$> chatId)
     `seq` rnf chatAliases
+    `seq` rnf chatDisplayName
     `seq` forceDigest digest
     `seq` rnf senderId
     `seq` rnf senderUsername
+    `seq` rnf senderDisplayName
+    `seq` rnf senderGlobalDisplayName
     `seq` forceMaybeMessageId messageId
     `seq` forceMaybeMessageId replyToMessageId
     `seq` rnf mentions
@@ -274,8 +277,9 @@ syntheticMessage index =
     { eventKind = IncomingMessageCreated
     , platform = platform
     , kind = kind
-    , chatId = Just (fromIntegral (100 + index `mod` 32))
+    , chatId = Just (integerChatId (fromIntegral (100 + index `mod` 32)))
     , chatAliases = []
+    , chatDisplayName = Nothing
     , digest = emptyMessageDigest
         { chatIsAllowed = kind == ChatGroup
         , senderIsAllowed = kind == ChatPrivate
@@ -284,6 +288,8 @@ syntheticMessage index =
         }
     , senderId = Just (show (1000 + index `mod` 256))
     , senderUsername = Just ("user" <> show (index `mod` 256))
+    , senderDisplayName = Nothing
+    , senderGlobalDisplayName = Nothing
     , messageId = Just (integerMessageId (fromIntegral index))
     , replyToMessageId = if index `mod` 13 == 0 then Just (integerMessageId (fromIntegral (max 1 (index - 1)))) else Nothing
     , mentions = if index `mod` 17 == 0 then ["42"] else []

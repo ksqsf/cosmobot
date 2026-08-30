@@ -11,8 +11,6 @@ import qualified Bot.Storage.SQLite as StorageSQLite
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
-import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.Text.Encoding as TextEncoding
 import qualified Database.Selda.Backend as SeldaBackend
 import qualified Database.Selda.SQLite as SeldaSQLite
 import Effectful.Timeout (Timeout, runTimeout, timeout)
@@ -207,10 +205,6 @@ runSchedulerStorage action =
     . ConcurrencyManager.runConcurrencyManager
     . StorageSQLite.runStorageSQLitePath ":memory:"
     ) action
-
-encodeMessage :: IncomingMessage -> Text
-encodeMessage =
-  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
 
 withSQLiteConnection
   :: (SeldaBackend.SeldaConnection SeldaSQLite.SQLite -> Eff '[IOE] a)
