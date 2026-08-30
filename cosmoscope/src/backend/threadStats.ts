@@ -2,7 +2,6 @@ import { threadMessageKeyId } from '@/backend/thread'
 import type { AuditRecord, ThreadMessageKey, TokenUsage } from '@/types/domain'
 
 export interface ThreadStats {
-  readonly runs: number
   readonly modelTurns: number
   readonly toolCalls: number
   readonly failedTools: number
@@ -10,11 +9,11 @@ export interface ThreadStats {
   readonly subagents: number
   readonly contextMessages: number
   readonly tokens: TokenUsage | null
+  readonly latestTokens: TokenUsage | null
   readonly cachedPromptTokens: number | null
   readonly promptCacheHitRate: number | null
   readonly modelMilliseconds: number
   readonly toolMilliseconds: number
-  readonly wallMilliseconds: number
   readonly unreportedModelTurns: number
   readonly unreportedToolCalls: number
 }
@@ -47,15 +46,8 @@ export function threadStats(records: readonly AuditRecord[]): ThreadStats {
       && start.event.tag === 'ToolCallStarted'
       && candidate.event.toolCallId === start.event.toolCall.id,
   ))
-  const runStarts = ordered.filter((record) => record.event.tag === 'AgentRunStarted')
-  const wallDurations = runStarts.flatMap((start) => {
-    const duration = durationTo(ordered, start, (candidate) =>
-      (candidate.event.tag === 'AgentRunFinished' || candidate.event.tag === 'AgentRunInterrupted')
-        && candidate.event.runId === start.event.runId,
-    )
-    return duration === undefined ? [] : [duration]
-  })
-  const reportedUsages = ordered.flatMap(({ event }) => event.tag === 'ModelTurnFinished' && event.tokenUsage !== null ? [event.tokenUsage] : [])
+  const turnUsages = ordered.flatMap(({ event }) => event.tag === 'ModelTurnFinished' ? [event.tokenUsage] : [])
+  const reportedUsages = turnUsages.filter((usage): usage is TokenUsage => usage !== null)
   const usages = reportedUsages.length === modelStarts.length && reportedUsages.length > 0 ? reportedUsages : null
   const cached = usages?.map(({ prompt_tokens_details }) => prompt_tokens_details?.cached_tokens).filter((value): value is number => value !== undefined) ?? []
   const tokens = usages === null ? null : {
@@ -66,7 +58,6 @@ export function threadStats(records: readonly AuditRecord[]): ThreadStats {
   }
   const cachedPromptTokens = usages !== null && cached.length === usages.length ? cached.reduce((sum, value) => sum + value, 0) : null
   return {
-    runs: new Set(runStarts.map(({ event }) => event.runId)).size,
     modelTurns: modelStarts.length,
     toolCalls: toolStarts.length,
     failedTools: ordered.filter(({ event }) => event.tag === 'ToolCallFinished' && !/^(?:ok|success|succeeded)$/i.test(event.status)).length,
@@ -74,11 +65,11 @@ export function threadStats(records: readonly AuditRecord[]): ThreadStats {
     subagents: new Set(ordered.flatMap(({ event }) => event.tag === 'SubAgentRunStarted' ? [event.childRunId] : [])).size,
     contextMessages: Math.max(0, ...ordered.flatMap(({ event }) => event.tag === 'ModelTurnStarted' ? [event.messageCount] : [])),
     tokens,
+    latestTokens: turnUsages.at(-1) ?? null,
     cachedPromptTokens,
     promptCacheHitRate: cachedPromptTokens === null || tokens === null || tokens.prompt_tokens === 0 ? null : cachedPromptTokens / tokens.prompt_tokens,
     modelMilliseconds: sumReported(modelDurations),
     toolMilliseconds: sumReported(toolDurations),
-    wallMilliseconds: wallDurations.reduce((sum, value) => sum + value, 0),
     unreportedModelTurns: modelDurations.filter((value) => value === undefined).length,
     unreportedToolCalls: toolDurations.filter((value) => value === undefined).length,
   }

@@ -14,14 +14,13 @@ describe('threadStats', () => {
     ]
 
     expect(threadStats(records)).toMatchObject({
-      runs: 1,
       modelTurns: 1,
       toolCalls: 1,
       contextMessages: 3,
       modelMilliseconds: 2000,
       toolMilliseconds: 1500,
-      wallMilliseconds: 7000,
       tokens: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+      latestTokens: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
       cachedPromptTokens: 8,
       promptCacheHitRate: 0.8,
     })
@@ -33,7 +32,7 @@ describe('threadStats', () => {
       { id: 2, occurredAt: '2026-01-01T00:00:01Z', event: { tag: 'ModelTurnFinished', runId: 'run-1', turn: 1, answerKind: 'final', contentLength: 2, toolCalls: [], tokenUsage: null } },
     ]
 
-    expect(threadStats(records).tokens).toBeNull()
+    expect(threadStats(records)).toMatchObject({ tokens: null, latestTokens: null })
   })
 
   it('keeps cumulative usage on the selected reply branch', () => {
@@ -50,7 +49,9 @@ describe('threadStats', () => {
       { id: 9, occurredAt: '2026-01-01T00:00:08Z', event: { tag: 'AgentThreadLinked', runId: 'right', linkedMessageId: 'right', linkedMessageKey: key('right'), parentMessageId: 'root' } },
     ]
 
-    expect(threadStats(auditRecordsLinkedTo(records, [key('root'), key('left')])).tokens?.total_tokens).toBe(33)
+    const stats = threadStats(auditRecordsLinkedTo(records, [key('root'), key('left')]))
+    expect(stats.tokens?.total_tokens).toBe(33)
+    expect(stats.latestTokens).toMatchObject({ prompt_tokens: 20, completion_tokens: 2 })
   })
 
   it('keeps backend run occurrences intact when audit ids interleave', () => {
