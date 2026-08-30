@@ -46,6 +46,7 @@ import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Unique (hashUnique, newUnique)
@@ -102,6 +103,7 @@ main =
       , testCase "resource and concurrency manager RPC methods" testManagerRpcMethods
       , testCase "media upload, send, history, and stats" testAttachmentLifecycle
       , testCase "media cache can resolve, inspect, and delete cached media" testMediaCacheResolveInspectDelete
+      , testCase "public media refs stop after failed normalization" testPublicMediaRefStopsAfterFailedNormalization
       , testCase "media search applies all filters across the full cache" testMediaSearchAppliesAllFilters
       , testCase "media stats totals are independent of the list limit" testMediaStatsTotalsIgnoreListLimit
       , testCase "media GC defaults to the configured policy" testMediaGcUsesConfiguredPolicy
@@ -759,6 +761,35 @@ testAttachmentLifecycle =
     incoming.imageUrls @?= [imageAttachment.url, "https://example.test/context.png", "data:image/png;base64,AA=="]
     assertEqual [i|history response: #{show historyResponse :: String}|] [[attachment.attachmentId, imageAttachment.attachmentId]] (responseMessageAttachments historyResponse)
     responseMediaStatsFiles mediaStatsResponse @?= 3
+
+testPublicMediaRefStopsAfterFailedNormalization :: IO ()
+testPublicMediaRefStopsAfterFailedNormalization = do
+  requests <- IORef.newIORef (0 :: Int)
+  withSQLiteTempPath "media-public-ref" \path -> do
+    result <- timeout 2_000_000 $ runRpcStorage path do
+      listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
+      port <- (fromIntegral :: Socket.PortNumber -> Int) <$> liftIO (Socket.socketPort listenSocket)
+      let ref = [i|http://127.0.0.1:#{port}/expired|]
+          server = liftIO $ Warp.runSettingsSocket Warp.defaultSettings listenSocket (remoteMediaFailureApp requests)
+          publicizeTwice = do
+            firstResolved <- Media.publicMediaRef ref
+            requestsAfterFirst <- liftIO (IORef.readIORef requests)
+            secondResolved <- Media.publicMediaRef ref
+            requestsAfterSecond <- liftIO (IORef.readIORef requests)
+            pure ([firstResolved, secondResolved], requestsAfterFirst, requestsAfterSecond)
+      raceEff server publicizeTwice
+    case result of
+      Nothing -> assertFailure "failed public media normalization did not terminate"
+      Just (Left ()) -> assertFailure "remote media failure server exited before client completed"
+      Just (Right (resolved, requestsAfterFirst, requestsAfterSecond)) -> do
+        assertBool "failed normalization should keep the original URL" (all ("/expired" `Text.isSuffixOf`) resolved)
+        assertBool "the first normalization should access the remote source" (requestsAfterFirst > 0)
+        requestsAfterSecond @?= requestsAfterFirst
+
+remoteMediaFailureApp :: IORef.IORef Int -> Wai.Application
+remoteMediaFailureApp requests _ respond = do
+  IORef.atomicModifyIORef' requests (\count -> (count + 1, ()))
+  respond (Wai.responseLBS Http.status400 [] "expired")
 
 testMediaCacheResolveInspectDelete :: IO ()
 testMediaCacheResolveInspectDelete =

@@ -404,9 +404,11 @@ onMounted(refresh)
         </div>
         <div
           v-else
-          class="empty-state"
+          class="empty-state stack stack-tight"
         >
-          <i class="pi pi-comments" /><strong>Select a chat log</strong><span>Choose a conversation to inspect its messages.</span>
+          <i class="pi pi-comments" />
+          <strong>Select a chat log</strong>
+          <span>Choose a conversation to inspect its messages.</span>
         </div>
       </main>
     </div>

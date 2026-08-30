@@ -19,8 +19,11 @@ import qualified Bot.Media.Object as MediaObject
 import qualified Bot.Media.S3 as S3
 import Bot.Prelude
 import qualified Data.Text as Text
+import qualified Data.Cache.LRU as LRU
+import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.FileSystem (FileSystem)
 import Effectful.Process (Process)
+import GHC.Clock (getMonotonicTimeNSec)
 import qualified Effectful.Timeout as Timeout
 import qualified Network.HTTP.Client as Client
 
@@ -28,6 +31,7 @@ data Runtime = Runtime
   { cfg :: !MediaConfig.Config
   , manager :: !Client.Manager
   , s3 :: !S3.Runtime
+  , failedRemoteRefs :: !(MVar.MVar (LRU.LRU Text Word64))
   }
 
 runMedia
@@ -39,7 +43,8 @@ runMedia cfg inner = do
   Cache.initializeMediaCache
   manager <- HTTP.manager
   s3 <- S3.newRuntime manager cfg
-  let runtime = Runtime{cfg, manager, s3}
+  failedRemoteRefs <- MVar.newMVar (LRU.newLRU (Just 512))
+  let runtime = Runtime{cfg, manager, s3, failedRemoteRefs}
   interpret
     ( \_ -> \case
         StoreMediaObject mediaObject ->
@@ -85,6 +90,10 @@ mediaNormalizeTimeoutMicroseconds :: Int
 mediaNormalizeTimeoutMicroseconds =
   15_000_000
 
+mediaNormalizeFailureTtlNanoseconds :: Word64
+mediaNormalizeFailureTtlNanoseconds =
+  5 * 60 * 1_000_000_000
+
 normalizeRef :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es) => Runtime -> Text -> Eff es Text
 normalizeRef runtime ref
   | Cache.isMediaId ref =
@@ -113,16 +122,34 @@ normalizeRemoteRef
   -> Text
   -> Eff es Text
 normalizeRemoteRef runtime ref = do
-  result <- Timeout.timeout mediaNormalizeTimeoutMicroseconds $
-    normalizeRemoteRefUnsafe runtime ref
-  case result of
-    Just (Just normalized) ->
-      pure normalized
-    Just Nothing ->
-      pure ref
+  Cache.loadCachedMediaBySource (cacheConfig runtime) (Text.strip ref) >>= \case
+    Just cached ->
+      pure (Cache.mediaIdForFileId cached.fileId)
     Nothing -> do
-      $(logWarning) [i|Remote media normalization timed out; keeping original ref: #{Text.take 160 ref}|]
-      pure ref
+      now <- liftIO getMonotonicTimeNSec
+      retryAt <- MVar.modifyMVar runtime.failedRemoteRefs \cache ->
+        let (next, found) = LRU.lookup (Text.strip ref) cache
+        in pure (next, found)
+      if maybe False (> now) retryAt
+        then pure ref
+        else do
+          result <- Timeout.timeout mediaNormalizeTimeoutMicroseconds $
+            normalizeRemoteRefUnsafe runtime ref
+          case result of
+            Just (Just normalized) ->
+              pure normalized
+            Just Nothing -> do
+              rememberNormalizationFailure runtime ref
+              pure ref
+            Nothing -> do
+              rememberNormalizationFailure runtime ref
+              $(logWarning) [i|Remote media normalization timed out; keeping original ref: #{Text.take 160 ref}|]
+              pure ref
+
+rememberNormalizationFailure :: (Concurrent :> es, IOE :> es) => Runtime -> Text -> Eff es ()
+rememberNormalizationFailure runtime ref = do
+  retryAt <- (+ mediaNormalizeFailureTtlNanoseconds) <$> liftIO getMonotonicTimeNSec
+  MVar.modifyMVar_ runtime.failedRemoteRefs (pure . LRU.insert (Text.strip ref) retryAt)
 
 normalizeRemoteRefUnsafe
   :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es)
@@ -140,7 +167,8 @@ normalizeRemoteRefUnsafe runtime ref =
 publicRef :: (Concurrent :> es, IOE :> es, KatipE :> es, FileSystem :> es, Process :> es, Fail :> es, Storage.Storage :> es, Timeout.Timeout :> es) => Runtime -> Text -> Eff es Text
 publicRef runtime ref =
   case Cache.parseMediaId ref of
-    Nothing -> normalizeRef runtime ref >>= publicRef runtime
+    Nothing -> normalizeRef runtime ref >>= \normalized ->
+      if normalized == ref then pure ref else publicRef runtime normalized
     Just fileId ->
       Cache.loadCachedMedia (cacheConfig runtime) fileId >>= \case
         Nothing ->
