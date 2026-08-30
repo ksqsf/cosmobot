@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import Button from 'primevue/button'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
@@ -12,6 +12,14 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ 'update:modelValue': [value: unknown[]] }>()
 const identityKinds = ref<('text' | 'number' | undefined)[]>([])
+
+watch(() => props.modelValue, () => {
+  const next = identityKinds.value.slice(0, items().length)
+  items().forEach((item, index) => {
+    if (item !== null && item !== undefined) next[index] = typeof item === 'number' ? 'number' : 'text'
+  })
+  identityKinds.value = next
+}, { deep: true })
 
 function items(): unknown[] {
   return Array.isArray(props.modelValue) ? props.modelValue : []

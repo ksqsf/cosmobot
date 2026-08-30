@@ -53,5 +53,8 @@ describe('configuration list editor', () => {
     expect(list.emitted('update:modelValue')?.at(-1)?.[0]).toEqual([null])
     expect((list.get('select').element as HTMLSelectElement).value).toBe('number')
     expect(list.get('input').element.value).toBe('')
+    await list.setProps({ modelValue: ['@room'] } as never)
+    expect((list.get('select').element as HTMLSelectElement).value).toBe('text')
+    expect(list.get('input').element.value).toBe('@room')
   })
 })
