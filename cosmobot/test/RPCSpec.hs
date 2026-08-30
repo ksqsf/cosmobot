@@ -219,7 +219,7 @@ testThreadInspectionRpc :: IO ()
 testThreadInspectionRpc = do
   let inputKey = ThreadMessageKey PlatformRPC (Just "42") "message-1"
       linkedKey = ThreadMessageKey PlatformRPC (Just "42") "reply-1"
-  (listResponse, invalidListResponse, missingResponse, invalidResponse, detailResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
+  (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, detailResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
     rpcState <- RPC.newRpcState
     let dispatch method params =
           RPCServer.dispatchRpcRequest rpcState (RPCThread.threadRpcCallbacks (pure []) (pure . (== Concurrency.Id 7))) (rpcRequest method params)
@@ -243,6 +243,7 @@ testThreadInspectionRpc = do
       , linkedMessageKey = Just linkedKey
       , parentMessageId = Nothing
       }
+    populatedListResponse <- dispatch "thread.list" Aeson.Null
     detailResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
     resolveResponse <- dispatch "thread.resolve_run" (Aeson.object ["runId" Aeson..= runId])
     let childInputKey = ThreadMessageKey PlatformRPC (Just "42") "message-2"
@@ -251,7 +252,7 @@ testThreadInspectionRpc = do
       (RPCThread.threadRpcCallbacks (ThreadStorage.listActiveThreadInspections threads) (pure . (== Concurrency.Id 7)))
       (rpcRequest "thread.active" Aeson.Null)
     haltResponse <- dispatch "thread.halt" (Aeson.object ["taskId" Aeson..= (7 :: Int)])
-    pure (listResponse, invalidListResponse, missingResponse, invalidResponse, detailResponse, resolveResponse, activeResponse, haltResponse)
+    pure (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, detailResponse, resolveResponse, activeResponse, haltResponse)
   listResponse @?= responseResult (Aeson.object
     [ "threads" Aeson..= ([] :: [Aeson.Value])
     , "total" Aeson..= (0 :: Int)
@@ -262,6 +263,8 @@ testThreadInspectionRpc = do
   responseErrorCode invalidListResponse @?= Just "invalid_params"
   missingResponse @?= responseResult Aeson.Null
   responseErrorCode invalidResponse @?= Just "invalid_params"
+  responseField populatedListResponse "nodes" @?= Just (1 :: Int)
+  responseField populatedListResponse "leaves" @?= Just (1 :: Int)
   detailResponse @?= responseResult (Aeson.object
     [ "summary" Aeson..= Aeson.object
         [ "threadId" Aeson..= (1 :: Int)

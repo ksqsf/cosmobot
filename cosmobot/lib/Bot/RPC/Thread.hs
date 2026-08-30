@@ -53,7 +53,9 @@ dispatchThreadMethod inspectActive haltActive request =
     "thread.list" ->
       parseParams request parseThreadListParams \params -> do
         rows <- Thread.loadThreadIndexRows
-        let summaries = filter (\summary -> maybe True (== summary.rootKey.platform) params.platform) (threadSummaries rows)
+        aliasRows <- Thread.loadThreadRowsByIds (aliasCandidateRowIds rows)
+        let logicalRows = collapseSummaryAliases (Map.fromList [(row.rowId, row.messagesJson) | row <- aliasRows]) rows
+            summaries = filter (\summary -> maybe True (== summary.rootKey.platform) params.platform) (threadSummaries logicalRows)
         -- ponytail: text search scans root blobs; add an indexed preview column if this becomes a sustained hot path.
         searchTails <- if Text.null params.query then pure [] else Thread.loadThreadRowsByIds (map (.latestRowId) summaries)
         let searchPreviews = Map.fromList [(row.rowId, threadRowPreview row) | row <- searchTails]
@@ -123,6 +125,31 @@ threadSummaries :: [Thread.ThreadIndexRow] -> [ThreadSummary]
 threadSummaries =
   sortOn (Down . (.threadId)) . mapMaybe (uncurry summarize) . Map.toList .
     Map.fromListWith (<>) . map (\row -> (resolvedThreadId row, [row]))
+
+aliasCandidateRowIds :: [Thread.ThreadIndexRow] -> [Integer]
+aliasCandidateRowIds rows =
+  [ row.rowId
+  | siblings <- Map.elems $ Map.fromListWith (<>)
+      [ ((resolvedThreadId row, row.parentMessageKey), [row])
+      | row <- rows
+      ]
+  , length siblings > 1
+  , row <- siblings
+  ]
+
+collapseSummaryAliases :: Map Integer Text -> [Thread.ThreadIndexRow] -> [Thread.ThreadIndexRow]
+collapseSummaryAliases messagesByRowId rows =
+  concatMap collapseThread $ Map.elems $ Map.fromListWith (<>)
+    [(resolvedThreadId row, [row]) | row <- rows]
+  where
+    collapseThread = map indexRow . collapseAliases Set.empty . map attachMessages
+    attachMessages row = Thread.ThreadRow
+      { rowId = row.rowId
+      , messageKey = row.messageKey
+      , threadStorageId = row.threadStorageId
+      , parentMessageKey = row.parentMessageKey
+      , messagesJson = Map.findWithDefault ("\NUL" <> toText (show row.rowId :: String)) row.rowId messagesByRowId
+      }
 
 summarize :: Integer -> [Thread.ThreadIndexRow] -> Maybe ThreadSummary
 summarize threadId rows = do
