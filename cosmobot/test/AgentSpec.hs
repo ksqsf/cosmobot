@@ -2800,7 +2800,8 @@ testLoadSkillAddsRelativeFileToContext =
         sourcePath = skillDir </> "assets" </> "report.txt"
         outsidePath = skillsDir </> "outside.txt"
     createDirectoryIfMissing True (takeDirectory sourcePath)
-    TextIO.writeFile (skillDir </> "SKILL.md") "---\nname: reports\n---\n"
+    let skillBody = "---\nname: reports\n---\n"
+    TextIO.writeFile (skillDir </> "SKILL.md") skillBody
     TextIO.writeFile sourcePath "retained skill asset"
     TextIO.writeFile outsidePath "must not be imported"
     runResult <- runEff
@@ -2814,13 +2815,18 @@ testLoadSkillAddsRelativeFileToContext =
           [ "name" Aeson..= ("reports" :: Text)
           , "path" Aeson..= ("assets/report.txt" :: Text)
           ])
+        root <- runner testToolCallMetadata (Aeson.object
+          [ "name" Aeson..= ("reports" :: Text)
+          , "path" Aeson..= ("" :: Text)
+          ])
         escaped <- runner testToolCallMetadata (Aeson.object
           [ "name" Aeson..= ("reports" :: Text)
           , "path" Aeson..= ("../outside.txt" :: Text)
           ])
-        pure (AgentTypes.toolResultContent loaded, AgentTypes.toolResultContent escaped)
-    let (loaded, escaped) = runResult
+        pure (AgentTypes.toolResultContent loaded, AgentTypes.toolResultContent root, AgentTypes.toolResultContent escaped)
+    let (loaded, root, escaped) = runResult
     loaded @?= "retained skill asset"
+    root @?= skillBody
     assertBool "parent traversal is rejected" ("outside" `Text.isInfixOf` Text.toLower escaped)
     assertBool "skill source file is retained" =<< doesFileExist sourcePath
 

@@ -23,12 +23,14 @@ loadSkillTool =
       ( requiredText "name" "Skill name advertised in the system prompt."
       , optionalText "path" "Optional file path relative to the skill directory."
       )
-      \name -> \case
+      \name path -> case path >>= nonBlank of
         Nothing ->
           toolText . fromMaybe "Skill not found." <$> Skills.loadSkill name
-        Just path ->
-          Skills.loadSkillFile name (Text.unpack path) >>= \case
+        Just relativePath ->
+          Skills.loadSkillFile name (Text.unpack relativePath) >>= \case
             Nothing ->
               pure (toolText "Skill file not found, not UTF-8 text, or path is outside the skill directory.")
             Just content ->
               pure (toolText content)
+  where
+    nonBlank value = value <$ guard (not (Text.null (Text.strip value)))
