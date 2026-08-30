@@ -231,8 +231,9 @@ Either field is `null` when that form of the thread is unavailable.
 ### `thread.active`
 
 Returns in-memory agent threads that are currently running, including task and
-run ids, prompt, linked message keys, pending steer count, and the current model
-transcript. This is a snapshot method; clients may poll it for monitoring.
+run ids, prompt, linked message keys, pending steer count, the current model
+transcript, and `parentThreadId` when the run extends a persisted thread. This
+is a snapshot method; clients may poll it for monitoring.
 
 ```json
 {"jsonrpc":"2.0","id":"4","method":"thread.active","params":{}}

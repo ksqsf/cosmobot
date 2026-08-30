@@ -91,7 +91,10 @@ dispatchThreadMethod inspectActive haltActive request =
     "thread.active" ->
       parseParams request parseNoParams \() -> do
         active <- inspectActive
-        pure $ Aeson.object ["threads" Aeson..= map activeThreadValue active]
+        parentThreadIds <- Map.fromList <$> Thread.loadThreadIdsByMessageKeys (mapMaybe (.parentMessageKey) active)
+        let value inspection =
+              activeThreadValue (inspection.parentMessageKey >>= (`Map.lookup` parentThreadIds)) inspection
+        pure $ Aeson.object ["threads" Aeson..= map value active]
     "thread.halt" ->
       parseParams request parseTaskId \taskId -> do
         halted <- haltActive (Id taskId)
@@ -246,13 +249,14 @@ readableMessageContent = \case
     nonEmptyPreview = nonEmptyText . Text.unwords . Text.words
     nonEmptyText text = text <$ guard (not (Text.null text))
 
-activeThreadValue :: Thread.ActiveThreadInspection -> Aeson.Value
-activeThreadValue active =
+activeThreadValue :: Maybe Integer -> Thread.ActiveThreadInspection -> Aeson.Value
+activeThreadValue parentThreadId active =
   Aeson.object
     [ "taskId" Aeson..= active.taskId.unId
     , "runId" Aeson..= active.runId
     , "prompt" Aeson..= active.prompt
     , "parentMessageKey" Aeson..= active.parentMessageKey
+    , "parentThreadId" Aeson..= parentThreadId
     , "messageKeys" Aeson..= active.messageKeys
     , "pendingSteers" Aeson..= active.pendingSteers
     , "messages" Aeson..= toList active.transcript.messages

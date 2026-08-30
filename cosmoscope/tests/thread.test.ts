@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { threadMessageChatKey, threadMessageKeyId, threadPathTo } from '@/backend/thread'
-import type { ThreadMessageKey, ThreadNode } from '@/types/domain'
+import { threadMessageChatKey, threadMessageKeyId, threadPathTo, threadToolActivity } from '@/backend/thread'
+import type { AuditRecord, ThreadMessageKey, ThreadNode } from '@/types/domain'
 
 const key = (messageId: string): ThreadMessageKey => ({ platform: 'PlatformRPC', chatId: null, messageId })
 const node = (messageId: string, parentMessageId: string | null): ThreadNode => ({
@@ -37,6 +37,19 @@ describe('threadPathTo', () => {
 
     expect(thread.messages.map((_, index) => threadMessageChatKey(thread, index))).toEqual([
       inputMessageKey, undefined, undefined, undefined, outputMessageKey,
+    ])
+  })
+
+  it('projects running and completed tool calls from live audit events', () => {
+    const records: AuditRecord[] = [
+      { id: 1, occurredAt: '', event: { tag: 'ToolCallStarted', runId: 'run', turn: 1, toolCall: { id: 'call-1', name: 'search', arguments: '{"q":"test"}' } } },
+      { id: 2, occurredAt: '', event: { tag: 'ToolCallStarted', runId: 'run', turn: 1, toolCall: { id: 'call-2', name: 'fetch', arguments: '{}' } } },
+      { id: 3, occurredAt: '', event: { tag: 'ToolCallFinished', runId: 'run', turn: 1, toolCallId: 'call-1', toolName: 'search', status: 'ok', result: 'found', resultLength: 5, messageIds: [] } },
+    ]
+
+    expect(threadToolActivity(records)).toEqual([
+      { id: 'call-1', name: 'search', arguments: '{"q":"test"}', turn: 1, status: 'ok', result: 'found' },
+      { id: 'call-2', name: 'fetch', arguments: '{}', turn: 1, status: 'running' },
     ])
   })
 })

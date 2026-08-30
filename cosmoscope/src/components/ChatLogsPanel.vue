@@ -108,38 +108,48 @@ async function copyMessageLink(item: ChatLogWindow['entries'][number]): Promise<
   await copyText(new URL(href, globalThis.location.href).href)
 }
 
-async function loadWindow(query: ChatLogWindowQuery): Promise<ChatLogWindow | undefined> {
+async function loadWindow(query: ChatLogWindowQuery, generation: number): Promise<ChatLogWindow | undefined> {
   const result = await runBackend(loadChatLogWindow(query))
-  if (result._tag === 'Failure') { error.value = result.error.message; return undefined }
+  if (result._tag === 'Failure') {
+    if (generation === requestGeneration) error.value = result.error.message
+    return undefined
+  }
   return result.value
 }
 
 async function selectFromRoute(): Promise<void> {
-  if (chats.value.length === 0) return
+  const generation = ++requestGeneration
+  loadingDirection.value = undefined
+  if (chats.value.length === 0) {
+    loadingWindow.value = false
+    return
+  }
   const candidates = chats.value.filter(({ scope }) => scopeMatchesRoute(scope))
   if (candidates.length === 0) {
+    loadingWindow.value = false
     const first = chats.value[0]
     if (first !== undefined) await selectChat(first.scope)
     return
   }
-  const generation = ++requestGeneration
   const messageId = routeValue(route.query['message'])
   loadingWindow.value = true
-  for (const { scope } of candidates) {
-    const result = await loadWindow({ ...scope, ...(messageId === undefined ? {} : { messageId }), limit: 50 })
-    if (generation !== requestGeneration) return
-    if (result !== undefined && (messageId === undefined || result.anchorFound)) {
-      window.value = result
-      error.value = ''
-      loadingWindow.value = false
-      await nextTick()
-      if (messageId === undefined) messagePane.value?.querySelector('.chat-log-message:last-of-type')?.scrollIntoView({ block: 'start' })
-      else messagePane.value?.querySelector('.targeted')?.scrollIntoView({ block: 'center' })
-      return
+  try {
+    for (const { scope } of candidates) {
+      const result = await loadWindow({ ...scope, ...(messageId === undefined ? {} : { messageId }), limit: 50 }, generation)
+      if (generation !== requestGeneration) return
+      if (result !== undefined && (messageId === undefined || result.anchorFound)) {
+        window.value = result
+        error.value = ''
+        await nextTick()
+        if (messageId === undefined) messagePane.value?.querySelector('.chat-log-message:last-of-type')?.scrollIntoView({ block: 'start' })
+        else messagePane.value?.querySelector('.targeted')?.scrollIntoView({ block: 'center' })
+        return
+      }
     }
+    if (messageId !== undefined) error.value = `Message ${messageId} was not found in this chat.`
+  } finally {
+    if (generation === requestGeneration) loadingWindow.value = false
   }
-  loadingWindow.value = false
-  if (messageId !== undefined) error.value = `Message ${messageId} was not found in this chat.`
 }
 
 async function selectChat(scope: ChatLogScope): Promise<void> {
@@ -150,25 +160,29 @@ async function page(direction: 'older' | 'newer'): Promise<void> {
   const current = window.value
   const edge = direction === 'older' ? current?.entries[0] : current?.entries.at(-1)
   if (current === undefined || edge === undefined || loadingDirection.value !== undefined) return
+  const generation = requestGeneration
   loadingDirection.value = direction
   const pane = messagePane.value
   const anchorTop = pane?.querySelector<HTMLElement>(`[data-row-id="${String(edge.rowId)}"]`)?.getBoundingClientRect().top
-  const result = await loadWindow({ ...current.scope, [direction === 'older' ? 'beforeRow' : 'afterRow']: edge.rowId, limit: 50 })
-  loadingDirection.value = undefined
-  if (result === undefined) return
-  const merged = mergeChatLogItems(current.entries, result.entries, direction, retainedMessages)
-  window.value = {
-    ...current,
-    entries: merged.entries,
-    hasOlder: direction === 'older' ? result.hasOlder : current.hasOlder || merged.pruned,
-    hasNewer: direction === 'newer' ? result.hasNewer : current.hasNewer || merged.pruned,
-  }
-  error.value = ''
-  if (anchorTop !== undefined) {
-    await nextTick()
-    const nextPane = messagePane.value
-    const nextTop = nextPane?.querySelector<HTMLElement>(`[data-row-id="${String(edge.rowId)}"]`)?.getBoundingClientRect().top
-    if (nextPane !== undefined && nextTop !== undefined) nextPane.scrollTop += nextTop - anchorTop
+  try {
+    const result = await loadWindow({ ...current.scope, [direction === 'older' ? 'beforeRow' : 'afterRow']: edge.rowId, limit: 50 }, generation)
+    if (generation !== requestGeneration || window.value !== current || result === undefined) return
+    const merged = mergeChatLogItems(current.entries, result.entries, direction, retainedMessages)
+    window.value = {
+      ...current,
+      entries: merged.entries,
+      hasOlder: direction === 'older' ? result.hasOlder : current.hasOlder || merged.pruned,
+      hasNewer: direction === 'newer' ? result.hasNewer : current.hasNewer || merged.pruned,
+    }
+    error.value = ''
+    if (anchorTop !== undefined) {
+      await nextTick()
+      const nextPane = messagePane.value
+      const nextTop = nextPane?.querySelector<HTMLElement>(`[data-row-id="${String(edge.rowId)}"]`)?.getBoundingClientRect().top
+      if (nextPane !== undefined && nextTop !== undefined) nextPane.scrollTop += nextTop - anchorTop
+    }
+  } finally {
+    if (generation === requestGeneration && loadingDirection.value === direction) loadingDirection.value = undefined
   }
 }
 
@@ -181,6 +195,9 @@ function loadAtScrollEdge(event: Event): void {
 
 async function refresh(): Promise<void> {
   const request = ++listRequest
+  requestGeneration += 1
+  loadingDirection.value = undefined
+  loadingWindow.value = false
   if (connection.state === 'opening' || connection.state === 'reconnecting') {
     loading.value = chats.value.length === 0
     return

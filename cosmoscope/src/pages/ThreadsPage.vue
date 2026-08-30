@@ -25,10 +25,11 @@ import MessageContent from '@/components/MessageContent.vue'
 import type { MessageContentAttachment } from '@/components/messageContent'
 import PlatformIcon from '@/components/PlatformIcon.vue'
 import RunIdLink from '@/components/RunIdLink.vue'
-import { getMedia, getThread, getThreadAudit, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun } from '@/backend/AdminBackend'
+import { getMedia, getRunAudit, getThread, getThreadAudit, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun, subscribeAudit } from '@/backend/AdminBackend'
+import { mergeAuditRecords } from '@/backend/audit'
 import { runBackend } from '@/backend/runBackend'
 import { safeDownloadUrl, safeImageUrl } from '@/backend/chat'
-import { threadMessageChatKey, threadMessageKeyId, threadPathTo } from '@/backend/thread'
+import { threadMessageChatKey, threadMessageKeyId, threadPathTo, threadToolActivity, type ThreadToolActivity } from '@/backend/thread'
 import { auditRecordsLinkedTo, threadStats } from '@/backend/threadStats'
 import { formatBytes } from '@/format'
 import { highlightCode, mediaRefsInText } from '@/markdown'
@@ -66,8 +67,10 @@ const tableLoading = ref(false)
 const loaded = ref(false)
 const detailLoading = ref(false)
 const activeError = ref('')
-const activeVisible = ref(false)
+const activeAuditError = ref('')
 const activeTaskId = ref<number>()
+const activeSnapshot = ref<ActiveThread>()
+const activeAuditRecords = ref<AuditRecord[]>([])
 const haltingTaskId = ref<number>()
 const visible = ref(false)
 const treeFocused = ref(false)
@@ -84,11 +87,12 @@ const toast = useToast()
 const connection = useConnectionStore()
 let detailGeneration = 0
 let activeGeneration = 0
+let stopActiveAuditSubscription: (() => void) | undefined
 let listGeneration = 0
 let monitorTimer: number | undefined
 let activePolling = false
+let finalizingRunId: string | undefined
 const { isTop: detailIsTop } = useOverlayLayer(visible)
-const { isTop: activeIsTop } = useOverlayLayer(activeVisible)
 const { isTop: previewIsTop } = useOverlayLayer(computed(() => previewImage.value !== undefined))
 const transcriptMenuLayer = useOverlayLayer()
 
@@ -111,14 +115,21 @@ const summary = computed(() => ({
   leaves: leafTotal.value,
   platforms: platformTotal.value,
 }))
+const activeSelected = computed(() => activeThreads.value.find(({ taskId }) => taskId === activeTaskId.value) ?? activeSnapshot.value)
 const nodeLookup = computed(() => new Map((detail.value?.nodes ?? []).map((node) => [threadMessageKeyId(node.messageKey), node])))
-const treeNodes = computed<PrimeTreeNode[]>(() => buildTree(detail.value?.nodes ?? []))
+const inspectedActiveThreads = computed(() => detail.value === undefined
+  ? activeSelected.value === undefined ? [] : [activeSelected.value]
+  : activeThreads.value.filter(({ parentThreadId }) => parentThreadId === detail.value?.summary.threadId))
+const treeNodes = computed<PrimeTreeNode[]>(() => buildActiveTree(detail.value?.nodes ?? [], inspectedActiveThreads.value))
 const selectedPath = computed(() => selectedNode.value === undefined ? [] : threadPathTo(selectedNode.value, nodeLookup.value))
 const transcript = computed<ThreadTranscriptEntry[]>(() => selectedPath.value.flatMap((node) =>
   node.messages.map((message, messageIndex) => ({ node, message, messageIndex })),
 ))
-const activeSelected = computed(() => activeThreads.value.find(({ taskId }) => taskId === activeTaskId.value))
+const activeStats = computed(() => threadStats(activeAuditRecords.value))
+const activeTools = computed(() => threadToolActivity(activeAuditRecords.value))
+const activeTranscriptMessages = computed<StoredThreadMessage[]>(() => [...(activeSelected.value?.messages ?? [])])
 const stats = computed(() => threadStats(auditRecordsLinkedTo(auditRecords.value, selectedPath.value.map(({ messageKey }) => messageKey))))
+const inspectorStats = computed(() => activeSelected.value === undefined ? stats.value : activeStats.value)
 const transcriptMenuItems = computed<MenuItem[]>(() => {
   const entry = contextTranscriptEntry.value
   if (entry === undefined) return []
@@ -180,13 +191,51 @@ function changePage(event: DataTablePageEvent): void {
 async function refreshActive(): Promise<void> {
   if (connection.state !== 'authenticated') { activeThreads.value = []; return }
   const generation = ++activeGeneration
+  const monitored = activeSelected.value
+  const keepTranscriptPinned = activeTranscriptIsPinned()
   const result = await runBackend(listActiveThreads)
   if (generation !== activeGeneration) return
   if (result._tag === 'Failure') { activeError.value = result.error.message; return }
   activeError.value = ''
   activeThreads.value = [...result.value]
-  if (activeTaskId.value !== undefined && activeSelected.value === undefined) activeVisible.value = false
-  await loadMediaForMessages(result.value.flatMap(({ messages }) => messages))
+  const selected = result.value.find(({ taskId }) => taskId === activeTaskId.value)
+  if (selected !== undefined) {
+    activeSnapshot.value = selected
+    await Promise.all([
+      stopActiveAuditSubscription === undefined ? refreshActiveAudit(selected.runId, generation) : Promise.resolve(),
+      loadMediaForMessages(selected.messages),
+    ])
+    if (generation === activeGeneration && keepTranscriptPinned) await scrollTranscriptToEnd()
+  } else if (monitored !== undefined && visible.value) {
+    await openFinalizedThread(monitored)
+  }
+}
+
+async function refreshActiveAudit(runId: string, generation: number): Promise<void> {
+  const result = await runBackend(getRunAudit(runId))
+  if (generation !== activeGeneration || activeSelected.value?.runId !== runId) return
+  if (result._tag === 'Failure') { activeAuditError.value = result.error.message; return }
+  activeAuditError.value = ''
+  activeAuditRecords.value = [...result.value]
+  await loadMediaForMessages(result.value.flatMap(({ event }) => event.tag === 'ToolCallFinished'
+    ? [{ role: 'tool', content: event.result } satisfies StoredThreadMessage]
+    : []))
+}
+
+async function openFinalizedThread(active: ActiveThread): Promise<void> {
+  if (finalizingRunId === active.runId) return
+  finalizingRunId = active.runId
+  try {
+    const result = await runBackend(resolveThreadRun(active.runId))
+    if (result._tag === 'Failure') { activeAuditError.value = result.error.message; return }
+    if (result.value.threadId === null) return
+    activeTaskId.value = undefined
+    activeSnapshot.value = undefined
+    activeAuditRecords.value = []
+    await router.replace({ name: 'threads', params: { threadId: String(result.value.threadId) } })
+  } finally {
+    finalizingRunId = undefined
+  }
 }
 
 function stopActivePolling(): void {
@@ -197,7 +246,7 @@ function stopActivePolling(): void {
 function scheduleActivePolling(): void {
   stopActivePolling()
   if (!activePolling || document.hidden || connection.state !== 'authenticated') return
-  monitorTimer = window.setTimeout(() => { void pollActiveThreads() }, 2000)
+  monitorTimer = window.setTimeout(() => { void pollActiveThreads() }, 1000)
 }
 
 async function pollActiveThreads(): Promise<void> {
@@ -210,9 +259,42 @@ function activeVisibilityChanged(): void {
   else void pollActiveThreads()
 }
 
-function monitor(active: ActiveThread): void {
+async function monitor(active: ActiveThread): Promise<void> {
+  if (active.parentThreadId === null) {
+    clearActiveSelection()
+    detail.value = undefined
+    detailError.value = ''
+    detailLoading.value = false
+    visible.value = true
+  } else if (detail.value?.summary.threadId !== active.parentThreadId) {
+    await inspectThread(active.parentThreadId)
+  }
   activeTaskId.value = active.taskId
-  activeVisible.value = true
+  activeSnapshot.value = active
+  activeAuditRecords.value = []
+  activeAuditError.value = ''
+  selectedNode.value = undefined
+  selectedKeys.value = { [activeTreeKey(active.taskId)]: true }
+  void installActiveAuditSubscription()
+  void loadMediaForMessages(active.messages)
+  void scrollTranscriptToEnd()
+}
+
+async function installActiveAuditSubscription(): Promise<void> {
+  stopActiveAuditSubscription?.()
+  stopActiveAuditSubscription = undefined
+  const result = await runBackend(subscribeAudit(
+    async () => {
+      const active = activeSelected.value
+      if (active !== undefined) await refreshActiveAudit(active.runId, activeGeneration)
+    },
+    (record) => {
+      if (record.event.runId !== activeSelected.value?.runId) return
+      activeAuditRecords.value = mergeAuditRecords(activeAuditRecords.value, [record], 2_000)
+    },
+  ))
+  if (result._tag === 'Success' && visible.value) stopActiveAuditSubscription = result.value
+  else if (result._tag === 'Success') result.value()
 }
 
 function requestHalt(active: ActiveThread): void {
@@ -255,7 +337,7 @@ async function inspectRun(runId: string): Promise<void> {
     const active = activeThreads.value.find(({ taskId }) => taskId === result.value.taskId)
     if (active === undefined) { error.value = `Agent run ${runId} is no longer active.`; return }
     error.value = ''
-    monitor(active)
+    await monitor(active)
     return
   }
   if (result.value.threadId !== null) {
@@ -278,6 +360,7 @@ function viewRunAudit(runId: string): void {
 }
 
 async function inspectThread(threadId: number): Promise<void> {
+  clearActiveSelection()
   const generation = ++detailGeneration
   visible.value = true
   detailLoading.value = true
@@ -323,6 +406,7 @@ async function loadMediaForMessages(messages: readonly StoredThreadMessage[], ge
 
 function closeDrawer(): void {
   detailGeneration += 1
+  clearActiveSelection()
   visible.value = false
   detail.value = undefined
   selectedNode.value = undefined
@@ -330,12 +414,29 @@ function closeDrawer(): void {
   if (route.params['threadId'] !== undefined) void router.replace({ name: 'threads' })
 }
 
-function closeActiveDrawer(): void {
+function clearActiveSelection(): void {
+  stopActiveAuditSubscription?.()
+  stopActiveAuditSubscription = undefined
   activeTaskId.value = undefined
-  if (route.query['run'] !== undefined) void router.replace({ name: 'threads' })
+  activeSnapshot.value = undefined
+  activeAuditRecords.value = []
+}
+
+function activeTranscriptIsPinned(): boolean {
+  const list = transcriptList.value
+  return list === undefined || list.scrollHeight - list.scrollTop - list.clientHeight < 80
+}
+
+async function scrollTranscriptToEnd(): Promise<void> {
+  await nextTick()
+  const list = transcriptList.value
+  if (list !== undefined) list.scrollTop = list.scrollHeight
 }
 
 function selectTreeNode(node: PrimeTreeNode): void {
+  const active = activeThreads.value.find(({ taskId }) => activeTreeKey(taskId) === node.key)
+  if (active !== undefined) { void monitor(active); return }
+  clearActiveSelection()
   const selected = nodeLookup.value.get(node.key)
   if (selected !== undefined) selectNode(selected)
 }
@@ -408,6 +509,46 @@ function buildTree(nodes: readonly ThreadNode[]): PrimeTreeNode[] {
     else parent.children.push(item)
   }
   return roots.length === 0 ? [...byKey.values()] : roots
+}
+
+function activeTreeKey(taskId: number): string {
+  return `active:${String(taskId)}`
+}
+
+function buildActiveTree(nodes: readonly ThreadNode[], activeThreads: readonly ActiveThread[]): PrimeTreeNode[] {
+  const roots = buildTree(nodes)
+  for (const active of activeThreads) {
+    const running: PrimeTreeNode = {
+      key: activeTreeKey(active.taskId),
+      label: active.prompt || 'Active thread',
+      icon: 'pi pi-spinner pi-spin',
+      styleClass: 'thread-tree-active',
+      children: [],
+    }
+    const parentKey = active.parentMessageKey === null ? undefined : threadMessageKeyId(active.parentMessageKey)
+    const parent = parentKey === undefined ? undefined : findTreeNode(roots, parentKey)
+    if (parent === undefined) roots.push(running)
+    else (parent.children ??= []).push(running)
+  }
+  return roots
+}
+
+function findTreeNode(nodes: readonly PrimeTreeNode[], key: string): PrimeTreeNode | undefined {
+  for (const node of nodes) {
+    if (node.key === key) return node
+    const found = findTreeNode(node.children ?? [], key)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+function toolStatusSeverity(status: string): 'success' | 'info' | 'danger' {
+  if (status === 'running') return 'info'
+  return /^(?:ok|success|succeeded)$/i.test(status) ? 'success' : 'danger'
+}
+
+function toolResultMessage(tool: ThreadToolActivity): StoredThreadMessage {
+  return { role: 'tool', content: tool.result ?? '' }
 }
 
 function nodeLabel(node: ThreadNode): string {
@@ -505,7 +646,7 @@ onMounted(() => {
   void pollActiveThreads()
   document.addEventListener('visibilitychange', activeVisibilityChanged)
 })
-onUnmounted(() => { activePolling = false; stopActivePolling(); document.removeEventListener('visibilitychange', activeVisibilityChanged); activeGeneration += 1; detailGeneration += 1; listGeneration += 1 })
+onUnmounted(() => { activePolling = false; stopActivePolling(); stopActiveAuditSubscription?.(); document.removeEventListener('visibilitychange', activeVisibilityChanged); activeGeneration += 1; detailGeneration += 1; listGeneration += 1 })
 watch([() => connection.state, () => connection.methods], () => { void refresh(); void pollActiveThreads() })
 watch([() => route.params['threadId'], () => route.query['run']], () => { void selectFromRoute() })
 watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
@@ -562,7 +703,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
       </div>
       <article class="panel active-thread-panel">
         <header class="stream-heading">
-          <span><i class="pi pi-circle-fill active-thread-pulse" />Active threads</span><small>Live · refreshes every 2 seconds</small>
+          <span><i class="pi pi-circle-fill active-thread-pulse" />Active threads</span><small>Live · refreshes every second</small>
         </header>
         <Message
           v-if="activeError"
@@ -588,7 +729,7 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
             <span class="manager-type-icon"><i class="pi pi-sparkles" /></span>
             <span><strong>{{ active.prompt || 'Untitled prompt' }}</strong><small>Task #{{ active.taskId }} · Run <RunIdLink :run-id="active.runId" /> · {{ active.messages.length }} messages<span v-if="active.pendingSteers"> · {{ active.pendingSteers }} pending steer</span></small></span>
             <Button
-              label="Monitor"
+              label="Open thread"
               icon="pi pi-eye"
               severity="secondary"
               size="small"
@@ -693,10 +834,13 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
         {{ detailError }}
       </Message>
       <div
-        v-else-if="detail"
+        v-else-if="detail || activeSelected"
         class="thread-inspector"
       >
-        <header class="drawer-hero">
+        <header
+          v-if="detail"
+          class="drawer-hero"
+        >
           <span class="platform-icon"><PlatformIcon :platform="detail.summary.rootKey.platform" /></span><div>
             <small>{{ platformNames[detail.summary.rootKey.platform] }} thread</small><h2>Thread #{{ detail.summary.threadId }}</h2>
             <div class="tag-list">
@@ -706,6 +850,10 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
               /><Tag
                 :value="`${detail.summary.leafCount} branch tips`"
                 severity="info"
+              /><Tag
+                v-if="activeSelected"
+                value="Generating"
+                severity="success"
               />
             </div>
           </div><Button
@@ -715,7 +863,26 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
             @click="viewThreadAudit(detail.summary.threadId)"
           />
         </header>
-        <dl class="detail-list">
+        <header
+          v-else-if="activeSelected"
+          class="drawer-hero"
+        >
+          <span class="platform-icon"><i class="pi pi-sparkles" /></span><div>
+            <small>Task #{{ activeSelected.taskId }} · live</small><h2>{{ activeSelected.prompt || 'Active thread' }}</h2><Tag
+              value="Generating"
+              severity="success"
+            />
+          </div><Button
+            label="View audit"
+            icon="pi pi-wave-pulse"
+            severity="secondary"
+            @click="viewRunAudit(activeSelected.runId)"
+          />
+        </header>
+        <dl
+          v-if="detail"
+          class="detail-list"
+        >
           <div>
             <dt>Chat</dt>
             <dd>
@@ -729,34 +896,40 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
           <div><dt>Root message</dt><dd><ChatLogMessageLink :message-key="detail.summary.rootKey" /></dd></div>
           <div><dt>Latest message</dt><dd><ChatLogMessageLink :message-key="detail.summary.latestKey" /></dd></div>
         </dl>
+        <dl
+          v-else-if="activeSelected"
+          class="detail-list"
+        >
+          <div><dt>Agent run</dt><dd><RunIdLink :run-id="activeSelected.runId" /></dd></div><div><dt>Linked messages</dt><dd>{{ activeSelected.messageKeys.length }}</dd></div><div><dt>Pending steers</dt><dd>{{ activeSelected.pendingSteers }}</dd></div>
+        </dl>
         <Message
-          v-if="statsError"
+          v-if="activeSelected ? activeAuditError : statsError"
           severity="warn"
           :closable="false"
         >
-          {{ statsError }}
+          {{ activeSelected ? activeAuditError : statsError }}
         </Message>
         <section
           v-else
           class="thread-stats"
           aria-label="Thread execution statistics"
         >
-          <div><span class="summary-mark violet"><i class="pi pi-chart-bar" /></span><span><strong>{{ stats.tokens?.total_tokens.toLocaleString() ?? 'Unreported' }}</strong><small v-if="stats.tokens">Tokens · {{ stats.tokens.prompt_tokens.toLocaleString() }} prompt / {{ stats.tokens.completion_tokens.toLocaleString() }} completion</small><small v-else>Token usage was not returned by the model provider</small></span></div>
-          <div><span class="summary-mark info"><i class="pi pi-sparkles" /></span><span><strong>{{ formatDuration(stats.modelMilliseconds, stats.unreportedModelTurns) }}</strong><small>Model time · {{ stats.modelTurns }} turns</small></span></div>
-          <div><span class="summary-mark warning"><i class="pi pi-wrench" /></span><span><strong>{{ formatDuration(stats.toolMilliseconds, stats.unreportedToolCalls) }}</strong><small>Tool time · {{ stats.toolCalls }} calls / {{ stats.failedTools }} failed</small></span></div>
-          <div><span class="summary-mark success"><i class="pi pi-clock" /></span><span><strong>{{ formatDuration(stats.wallMilliseconds) }}</strong><small>Run wall time · {{ stats.runs }} runs</small></span></div>
+          <div><span class="summary-mark violet"><i class="pi pi-chart-bar" /></span><span><strong>{{ inspectorStats.tokens?.total_tokens.toLocaleString() ?? 'Unreported' }}</strong><small v-if="inspectorStats.tokens">Tokens · {{ inspectorStats.tokens.prompt_tokens.toLocaleString() }} prompt / {{ inspectorStats.tokens.completion_tokens.toLocaleString() }} completion</small><small v-else>Token usage was not returned by the model provider</small></span></div>
+          <div><span class="summary-mark info"><i class="pi pi-sparkles" /></span><span><strong>{{ formatDuration(inspectorStats.modelMilliseconds, inspectorStats.unreportedModelTurns) }}</strong><small>Model time · {{ inspectorStats.modelTurns }} turns</small></span></div>
+          <div><span class="summary-mark warning"><i class="pi pi-wrench" /></span><span><strong>{{ formatDuration(inspectorStats.toolMilliseconds, inspectorStats.unreportedToolCalls) }}</strong><small>Tool time · {{ inspectorStats.toolCalls }} calls / {{ inspectorStats.failedTools }} failed</small></span></div>
+          <div><span class="summary-mark success"><i class="pi pi-clock" /></span><span><strong>{{ activeSelected ? activeTools.filter(({ status }) => status === 'running').length : formatDuration(inspectorStats.wallMilliseconds) }}</strong><small>{{ activeSelected ? 'Tools currently running' : `Run wall time · ${String(inspectorStats.runs)} runs` }}</small></span></div>
           <footer>
             <Tag
-              :value="`${stats.contextMessages} peak context messages`"
+              :value="`${inspectorStats.contextMessages} peak context messages`"
               severity="secondary"
             /><Tag
-              :value="`${stats.compactions} compactions`"
+              :value="`${inspectorStats.compactions} compactions`"
               severity="secondary"
             /><Tag
-              :value="`${stats.subagents} subagents`"
+              :value="`${inspectorStats.subagents} subagents`"
               severity="secondary"
             /><Tag
-              :value="`${auditRecords.length} audit events`"
+              :value="`${activeSelected ? activeAuditRecords.length : auditRecords.length} audit events`"
               severity="secondary"
             />
           </footer>
@@ -814,19 +987,94 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
           </section>
           <section class="thread-transcript-panel">
             <header>
-              <span>Context at node</span><small><ChatLogMessageLink
-                v-if="selectedNode"
+              <span>{{ activeSelected ? 'Live context' : 'Context at node' }}</span><small><template v-if="activeSelected">{{ activeTranscriptMessages.length }} messages</template><ChatLogMessageLink
+                v-else-if="selectedNode"
                 :message-key="selectedNode.messageKey"
               /><template v-else>No node selected</template></small>
             </header>
             <div
-              v-if="transcript.length === 0"
+              v-if="activeSelected && activeTools.length"
+              class="active-tool-stream"
+            >
+              <details
+                v-for="tool in activeTools"
+                :key="tool.id"
+                class="thread-tool-call"
+                :open="tool.status === 'running'"
+              >
+                <summary>
+                  <Tag
+                    :value="tool.name"
+                    severity="secondary"
+                  /><span>Turn {{ tool.turn }}</span><Tag
+                    :value="tool.status"
+                    :severity="toolStatusSeverity(tool.status)"
+                  />
+                </summary>
+                <div class="active-tool-detail">
+                  <small>Arguments</small><pre><code
+                    class="hljs language-json"
+                    :innerHTML="highlightCode(tool.arguments || '{}', 'json')"
+                  /></pre>
+                  <template v-if="tool.result !== undefined">
+                    <small>Result</small><MessageContent
+                      :text="tool.result"
+                      :images="imageUrls(toolResultMessage(tool))"
+                      :attachments="messageAttachments(toolResultMessage(tool))"
+                      @preview-image="previewImage = $event"
+                    />
+                  </template>
+                </div>
+              </details>
+            </div>
+            <div
+              v-if="activeSelected === undefined && transcript.length === 0"
               class="thread-empty"
             >
               No stored messages for this node.
             </div>
             <ol
-              v-else
+              v-if="activeSelected"
+              ref="transcriptList"
+              class="thread-transcript"
+            >
+              <li
+                v-for="(message, index) in activeTranscriptMessages"
+                :key="index"
+                :class="`role-${message.role}`"
+              >
+                <div><strong>{{ roleLabel(message.role) }}</strong><code v-if="message.tool_call_id">{{ message.tool_call_id }}</code></div>
+                <MessageContent
+                  :text="messageText(message)"
+                  :images="imageUrls(message)"
+                  :attachments="messageAttachments(message)"
+                  @preview-image="previewImage = $event"
+                />
+                <div
+                  v-if="message.tool_calls?.length"
+                  class="thread-tool-calls"
+                >
+                  <details
+                    v-for="call in message.tool_calls"
+                    :key="call.id"
+                    class="thread-tool-call"
+                  >
+                    <summary>
+                      <Tag
+                        :value="call.function.name"
+                        severity="secondary"
+                      /><span>Arguments</span>
+                    </summary>
+                    <pre><code
+                      class="hljs language-json"
+                      :innerHTML="highlightCode(call.function.arguments || '{}', 'json')"
+                    /></pre>
+                  </details>
+                </div>
+              </li>
+            </ol>
+            <ol
+              v-else-if="transcript.length"
               ref="transcriptList"
               class="thread-transcript"
             >
@@ -880,76 +1128,8 @@ watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })
             </ol>
           </section>
         </div>
-      </div>
-    </Drawer>
-    <Drawer
-      v-model:visible="activeVisible"
-      header="Active thread monitor"
-      position="right"
-      :style="{ width: 'min(720px, 100vw)' }"
-      :close-on-escape="activeIsTop"
-      @hide="closeActiveDrawer"
-    >
-      <div
-        v-if="activeSelected"
-        class="thread-inspector"
-      >
-        <header class="drawer-hero">
-          <span class="platform-icon"><i class="pi pi-sparkles" /></span><div>
-            <small>Task #{{ activeSelected.taskId }} · live</small><h2>{{ activeSelected.prompt || 'Active thread' }}</h2><Tag
-              value="Running"
-              severity="success"
-            />
-          </div><Button
-            label="View audit"
-            icon="pi pi-wave-pulse"
-            severity="secondary"
-            @click="viewRunAudit(activeSelected.runId)"
-          />
-        </header>
-        <dl class="detail-list">
-          <div><dt>Agent run</dt><dd><RunIdLink :run-id="activeSelected.runId" /></dd></div><div><dt>Linked messages</dt><dd>{{ activeSelected.messageKeys.length }}</dd></div><div><dt>Pending steers</dt><dd>{{ activeSelected.pendingSteers }}</dd></div>
-        </dl>
-        <section class="thread-transcript-panel active-transcript">
-          <header><span>Current model context</span><small>{{ activeSelected.messages.length }} messages</small></header>
-          <ol class="thread-transcript">
-            <li
-              v-for="(message, index) in activeSelected.messages"
-              :key="index"
-              :class="`role-${message.role}`"
-            >
-              <div><strong>{{ roleLabel(message.role) }}</strong><code v-if="message.tool_call_id">{{ message.tool_call_id }}</code></div>
-              <MessageContent
-                :text="messageText(message)"
-                :images="imageUrls(message)"
-                :attachments="messageAttachments(message)"
-                @preview-image="previewImage = $event"
-              />
-              <div
-                v-if="message.tool_calls?.length"
-                class="thread-tool-calls"
-              >
-                <details
-                  v-for="call in message.tool_calls"
-                  :key="call.id"
-                  class="thread-tool-call"
-                >
-                  <summary>
-                    <Tag
-                      :value="call.function.name"
-                      severity="secondary"
-                    /><span>Arguments</span>
-                  </summary>
-                  <pre><code
-                    class="hljs language-json"
-                    :innerHTML="highlightCode(call.function.arguments || '{}', 'json')"
-                  /></pre>
-                </details>
-              </div>
-            </li>
-          </ol>
-        </section>
         <Button
+          v-if="activeSelected"
           label="Halt thread"
           icon="pi pi-stop-circle"
           severity="danger"

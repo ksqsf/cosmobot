@@ -76,6 +76,7 @@ const activeThreadSchema = z.object({
   runId: z.string(),
   prompt: z.string(),
   parentMessageKey: threadMessageKeySchema.nullable(),
+  parentThreadId: z.number().int().positive().nullable(),
   messageKeys: z.array(threadMessageKeySchema),
   pendingSteers: z.number().int().nonnegative(),
   messages: z.array(storedThreadMessageSchema),

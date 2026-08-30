@@ -119,6 +119,7 @@ export interface ActiveThread {
   readonly runId: string
   readonly prompt: string
   readonly parentMessageKey: ThreadMessageKey | null
+  readonly parentThreadId: number | null
   readonly messageKeys: readonly ThreadMessageKey[]
   readonly pendingSteers: number
   readonly messages: readonly StoredThreadMessage[]

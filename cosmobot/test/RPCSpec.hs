@@ -244,7 +244,11 @@ testThreadInspectionRpc = do
       }
     detailResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
     resolveResponse <- dispatch "thread.resolve_run" (Aeson.object ["runId" Aeson..= runId])
-    activeResponse <- dispatch "thread.active" Aeson.Null
+    let childInputKey = ThreadMessageKey PlatformRPC (Just 42) "message-2"
+    void $ ThreadStorage.rememberActiveThread threads "agent-active" (Just linkedKey) (Just childInputKey) incoming "follow up" (Concurrency.Handle (Concurrency.Id 9)) (Transcript mempty)
+    activeResponse <- RPCServer.dispatchRpcRequest rpcState
+      (RPCThread.threadRpcCallbacks (ThreadStorage.listActiveThreadInspections threads) (pure . (== Concurrency.Id 7)))
+      (rpcRequest "thread.active" Aeson.Null)
     haltResponse <- dispatch "thread.halt" (Aeson.object ["taskId" Aeson..= (7 :: Int)])
     pure (listResponse, invalidListResponse, missingResponse, invalidResponse, detailResponse, resolveResponse, activeResponse, haltResponse)
   listResponse @?= responseResult (Aeson.object
@@ -275,7 +279,16 @@ testThreadInspectionRpc = do
         ]]
     ])
   resolveResponse @?= responseResult (Aeson.object ["threadId" Aeson..= (Just 1 :: Maybe Int), "taskId" Aeson..= (Nothing :: Maybe Int)])
-  activeResponse @?= responseResult (Aeson.object ["threads" Aeson..= ([] :: [Aeson.Value])])
+  activeResponse @?= responseResult (Aeson.object ["threads" Aeson..= [Aeson.object
+    [ "taskId" Aeson..= (9 :: Int)
+    , "runId" Aeson..= ("agent-active" :: Text)
+    , "prompt" Aeson..= ("follow up" :: Text)
+    , "parentMessageKey" Aeson..= Just linkedKey
+    , "parentThreadId" Aeson..= (Just 1 :: Maybe Int)
+    , "messageKeys" Aeson..= ([] :: [ThreadMessageKey])
+    , "pendingSteers" Aeson..= (0 :: Int)
+    , "messages" Aeson..= ([] :: [Aeson.Value])
+    ]]])
   haltResponse @?= responseResult (Aeson.object ["taskId" Aeson..= (7 :: Int), "halted" Aeson..= True])
 
 testChatLogRpc :: IO ()

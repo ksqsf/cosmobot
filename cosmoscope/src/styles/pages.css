@@ -487,6 +487,34 @@
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
 }
+.thread-tree-active > .p-tree-node-content {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+}
+.active-tool-stream {
+  display: grid;
+  max-height: 40%;
+  gap: var(--space-2);
+  overflow: auto;
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-2);
+}
+.active-tool-detail {
+  display: grid;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+}
+.active-tool-detail > small,
+.active-tool-detail > .markdown-body {
+  margin-inline: var(--space-3);
+}
+.active-tool-detail > small {
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
 .thread-message-id {
   display: block;
   max-width: 28rem;
