@@ -24,21 +24,20 @@ const confirm = useLayeredConfirm()
 const toast = useToast()
 const loading = ref(false)
 const error = ref('')
-const demo = ref(false)
-const snapshot = ref<ConfigurationSnapshot>(demoSnapshot())
-const selectedPath = ref('driver/telegram')
+const snapshot = ref<ConfigurationSnapshot>()
+const selectedPath = ref('')
 const drafts = ref<Record<string, ConfigChange>>({})
 const sectionChanges = ref<ConfigChange[]>([])
 const validation = ref<ConfigurationValidation>()
 const providerNames = ref<Record<string, string>>({})
 
-const sections = computed(() => snapshot.value.configuration.sections)
+const sections = computed(() => snapshot.value?.configuration.sections ?? [])
 const selected = computed(() => sections.value.find((section) => pathKey(section.path) === selectedPath.value) ?? sections.value[0])
 const changes = computed<ConfigChange[]>(() => [...Object.values(drafts.value), ...sectionChanges.value])
-const canManage = computed(() => !demo.value && snapshot.value.editable &&
+const canManage = computed(() => snapshot.value?.editable === true &&
   ['config.validate', 'config.update'].every((method) => connection.methods.has(method)))
-const canRollback = computed(() => canManage.value && snapshot.value.backup !== null && connection.methods.has('config.rollback'))
-const canRestart = computed(() => !demo.value && connection.methods.has('admin.restart'))
+const canRollback = computed(() => canManage.value && snapshot.value?.backup != null && connection.methods.has('config.rollback'))
+const canRestart = computed(() => snapshot.value !== undefined && connection.methods.has('admin.restart'))
 const applyReady = computed(() => changes.value.length > 0 && validation.value?.valid === true)
 
 function pathKey(path: readonly string[]): string { return path.join('/') }
@@ -60,6 +59,11 @@ function displayValue(value: unknown): string {
 function inputValue(option: ConfigOption): string {
   if (option.type.kind === 'secret') return ''
   return displayValue(draftValue(option)).replace(/^unset$/, '')
+}
+
+function numericValue(option: ConfigOption): number | null {
+  const value = draftValue(option)
+  return typeof value === 'number' ? value : null
 }
 
 function setOption(option: ConfigOption, value: unknown): void {
@@ -130,9 +134,11 @@ function clearDrafts(): void {
 
 async function refresh(): Promise<void> {
   if (connection.state !== 'authenticated' || !connection.methods.has('config.get')) {
-    demo.value = true
-    snapshot.value = demoSnapshot()
-    selectedPath.value = pathKey(snapshot.value.configuration.sections[0]?.path ?? [])
+    snapshot.value = undefined
+    selectedPath.value = ''
+    error.value = connection.state === 'authenticated'
+      ? 'This cosmobot server does not support configuration inspection.'
+      : 'Connect to cosmobot to inspect configuration.'
     clearDrafts()
     return
   }
@@ -141,7 +147,6 @@ async function refresh(): Promise<void> {
   loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
-  demo.value = false
   snapshot.value = result.value
   if (!sections.value.some((section) => pathKey(section.path) === selectedPath.value))
     selectedPath.value = pathKey(sections.value[0]?.path ?? [])
@@ -149,6 +154,7 @@ async function refresh(): Promise<void> {
 }
 
 async function validate(): Promise<void> {
+  if (!snapshot.value) return
   const result = await runBackend(validateConfiguration(snapshot.value.revision, changes.value))
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   validation.value = result.value
@@ -156,7 +162,7 @@ async function validate(): Promise<void> {
 }
 
 async function apply(): Promise<void> {
-  if (!applyReady.value) return
+  if (!applyReady.value || !snapshot.value) return
   loading.value = true
   const result = await runBackend(updateConfiguration(snapshot.value.revision, changes.value))
   loading.value = false
@@ -167,8 +173,8 @@ async function apply(): Promise<void> {
 }
 
 function requestRollback(): void {
-  const backup = snapshot.value.backup
-  if (backup === null) return
+  const backup = snapshot.value?.backup
+  if (!backup) return
   confirm.require({
     header: 'Roll back configuration?',
     message: 'Swap the current file with the previous valid configuration? A restart is still required.',
@@ -178,6 +184,7 @@ function requestRollback(): void {
 }
 
 async function rollback(backupRevision: string): Promise<void> {
+  if (!snapshot.value) return
   const result = await runBackend(rollbackConfiguration(snapshot.value.revision, backupRevision))
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   snapshot.value = result.value
@@ -197,30 +204,6 @@ async function restart(): Promise<void> {
   const result = await runBackend(restartCosmobot)
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   toast.add({ severity: 'info', summary: 'Restart requested', detail: 'The server acknowledged the request.', life: 3500 })
-}
-
-function demoSnapshot(): ConfigurationSnapshot {
-  const options: ConfigOption[] = [
-    {
-      path: ['driver', 'telegram', 'enabled'], label: 'Enabled', description: 'Start the Telegram driver.',
-      owner: 'Bot.Chat.Driver.Telegram.Config', type: { kind: 'boolean' }, required: false,
-      default: true, constraints: {}, activation: 'restart', source: { present: true, value: true }, effective: true,
-    },
-    {
-      path: ['driver', 'telegram', 'token'], label: 'Bot token', description: 'Telegram bot credential.',
-      owner: 'Bot.Chat.Driver.Telegram.Config', type: { kind: 'secret' }, required: true,
-      default: null, constraints: {}, activation: 'restart', source: { present: true, value: 'configured' }, effective: 'configured',
-    },
-    {
-      path: ['driver', 'telegram', 'poll_timeout'], label: 'Polling timeout', description: 'Long-poll timeout in seconds.',
-      owner: 'Bot.Chat.Driver.Telegram.Config', type: { kind: 'integer' }, required: false,
-      default: 20, constraints: { minimum: 1 }, activation: 'restart', source: { present: true, value: 25 }, effective: 25,
-    },
-  ]
-  return {
-    schemaVersion: 1, revision: 'demo', activeRevision: 'demo', sourceState: 'valid', editable: false,
-    diagnostics: [], configuration: { sections: [{ path: ['driver', 'telegram'], label: 'Driver / Telegram', repeatable: false, options }], repeatableSections: [] }, backup: null,
-  }
 }
 
 onMounted(refresh)
@@ -258,13 +241,6 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       </div>
     </PageHeading>
     <Message
-      v-if="demo"
-      severity="info"
-      :closable="false"
-    >
-      Demo configuration — connect to a server that advertises <code>config.get</code> to inspect live settings.
-    </Message>
-    <Message
       v-if="error"
       severity="error"
       closable
@@ -273,7 +249,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       {{ error }}
     </Message>
     <Message
-      v-if="snapshot.sourceState === 'invalid'"
+      v-if="snapshot?.sourceState === 'invalid'"
       severity="error"
       :closable="false"
     >
@@ -292,7 +268,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
     <div class="config-layout panel">
       <aside class="config-nav">
         <p class="nav-label">
-          {{ demo ? 'Demo sections' : 'Live sections' }}
+          Live sections
         </p>
         <button
           v-for="section in sections"
@@ -303,7 +279,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
         >
           {{ section.label }}
         </button>
-        <template v-if="canManage">
+        <template v-if="canManage && snapshot">
           <div
             v-for="repeatable in snapshot.configuration.repeatableSections"
             :key="pathKey(repeatable.path)"
@@ -312,6 +288,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
             <small>{{ repeatable.label }}</small>
             <InputText
               v-model="providerNames[pathKey(repeatable.path)]"
+              :aria-label="`New ${repeatable.label.toLowerCase()} name`"
               placeholder="Provider name"
               fluid
             />
@@ -364,7 +341,8 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
           </label>
           <InputNumber
             v-else-if="option.type.kind === 'integer' || option.type.kind === 'number'"
-            :model-value="Number(draftValue(option))"
+            :model-value="numericValue(option)"
+            :aria-label="option.label"
             :use-grouping="false"
             :disabled="!canManage"
             fluid
@@ -374,6 +352,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
             v-else-if="option.type.kind === 'enum'"
             class="config-select"
             :value="String(draftValue(option) ?? '')"
+            :aria-label="option.label"
             :disabled="!canManage"
             @change="setEnum(option, $event)"
           >
@@ -388,6 +367,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
           <InputText
             v-else-if="option.type.kind === 'secret'"
             :model-value="inputValue(option)"
+            :aria-label="option.label"
             type="password"
             autocomplete="new-password"
             placeholder="Leave blank to preserve"
@@ -398,6 +378,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
           <InputText
             v-else
             :model-value="inputValue(option)"
+            :aria-label="option.label"
             :disabled="!canManage"
             fluid
             @update:model-value="setText(option, $event)"
@@ -443,6 +424,14 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
               {{ displayPath(diagnostic.path) }}: {{ diagnostic.message }}
             </li>
           </ul>
+          <ul v-else-if="validation.diff.length">
+            <li
+              v-for="change in validation.diff"
+              :key="pathKey(change.path)"
+            >
+              <code>{{ displayPath(change.path) }}</code>: {{ displayValue(change.before) }} → {{ displayValue(change.after) }}
+            </li>
+          </ul>
         </Message>
         <div
           v-if="canManage"
@@ -475,8 +464,8 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
       >
         <h2>Section details</h2>
         <dl class="detail-list">
-          <div><dt>Revision</dt><dd><code>{{ snapshot.revision.slice(0, 12) }}</code></dd></div>
-          <div><dt>Active revision</dt><dd><code>{{ snapshot.activeRevision.slice(0, 12) }}</code></dd></div>
+          <div><dt>Revision</dt><dd><code>{{ snapshot?.revision.slice(0, 12) }}</code></dd></div>
+          <div><dt>Active revision</dt><dd><code>{{ snapshot?.activeRevision.slice(0, 12) }}</code></dd></div>
           <div><dt>Activation</dt><dd>Restart</dd></div>
           <div><dt>Draft changes</dt><dd>{{ changes.length }}</dd></div>
         </dl>
