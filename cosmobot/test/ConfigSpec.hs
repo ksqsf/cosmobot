@@ -44,6 +44,7 @@ main =
       , testCase "scalar edits preserve comments and surrounding bytes" testScalarEditPreservesComments
       , testCase "insertions preserve CRLF newlines" testEditPreservesCrLf
       , testCase "named providers quote arbitrary names" testNamedProviderInsertion
+      , testCase "provider removal preserves following sections" testProviderRemoval
       , testCase "inline tables are rejected without reformatting" testInlineTableRejected
       , testCase "every example assignment has one typed option" testExampleOptionCoverage
       ]
@@ -212,6 +213,10 @@ testSecretRedaction = do
   let inspected = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $ Config.configDocumentInspection document
   assertBool "inspection leaked a credential" (not (sentinel `Text.isInfixOf` inspected))
   assertBool "BotConfig Show leaked a credential" (not (sentinel `Text.isInfixOf` toText (show (Config.configDocumentRuntime document) :: String)))
+  for_ [ ConfigEdit.ReplaceSecret ["rpc", "token"] sentinel
+       , ConfigEdit.SetOption ["rpc", "token"] (Aeson.String sentinel)
+       ] \change ->
+    assertBool "ConfigChange Show leaked a credential" (not (sentinel `Text.isInfixOf` toText (show change :: String)))
 
 testSecretDiagnosticRedaction :: IO ()
 testSecretDiagnosticRedaction = do
@@ -225,7 +230,7 @@ testSecretDiagnosticRedaction = do
 
 testScalarEditPreservesComments :: IO ()
 testScalarEditPreservesComments = do
-  let source = Text.replace "command = \"!ask\"" "command = \"!ask\"  # keep this comment" minimalConfig
+  let source = "# Unicode before edited span: 配置\n" <> Text.replace "command = \"!ask\"" "command = \"!ask\"  # keep this comment" minimalConfig
   document <- parseDocument source
   changed <- applyChanges document [ConfigEdit.SetOption ["handler", "ask", "command"] (Aeson.String "!chat")]
   assertBool "replacement lost the comment" ("command = \"!chat\"  # keep this comment" `Text.isInfixOf` changed)
@@ -247,6 +252,22 @@ testNamedProviderInsertion = do
     ]
   assertBool "provider table name was not quoted" ("[llm.chat_provider.\"provider with spaces\"]" `Text.isInfixOf` changed)
   assertBool "provider option was not inserted" ("model = \"example/model\"" `Text.isInfixOf` changed)
+  void (parseDocument changed)
+
+testProviderRemoval :: IO ()
+testProviderRemoval = do
+  let source = minimalConfig <> Text.unlines
+        [ ""
+        , "[llm.chat_provider.temporary]"
+        , "model = \"temporary/model\""
+        , ""
+        , "[plugins]"
+        , "plugin_dir = \"extensions\""
+        ]
+  document <- parseDocument source
+  changed <- applyChanges document [ConfigEdit.RemoveSection ["llm", "chat_provider", "temporary"]]
+  assertBool "provider table was not removed" (not ("temporary/model" `Text.isInfixOf` changed))
+  assertBool "following section was removed" ("[plugins]\nplugin_dir = \"extensions\"" `Text.isInfixOf` changed)
   void (parseDocument changed)
 
 testInlineTableRejected :: IO ()

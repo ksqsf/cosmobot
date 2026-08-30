@@ -48,7 +48,7 @@ schema = Schema.ConfigSchema
       [ requiredText "host" "Host" "OneBot websocket host." (toText . (.host)) (toText . (.host))
       , requiredInt "port" "Port" "OneBot websocket port." (.port) (.port)
       , requiredText "path" "Path" "OneBot websocket path." (toText . (.path)) (toText . (.path))
-      , Schema.optionalOption ["token"] "Token" "OneBot access token." owner Schema.secret False Aeson.Null (.token) (.token)
+      , Schema.optionalOption ["token"] "Token" "OneBot access token." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.token)) (fmap Schema.Secret . (.token))
       , Schema.optionalOption ["bot_id"] "Bot ID" "QQ bot account id." owner Schema.integer False Aeson.Null (.botId) (.botQQ)
       , Schema.option ["allowed_groups"] "Allowed groups" "QQ groups allowed to use the bot." owner (Schema.list "integer") [] Aeson.Null (.allowedGroups) (.allowedGroups)
       , Schema.option ["allowed_users"] "Allowed users" "QQ users allowed to use the bot." owner (Schema.list "integer") [] Aeson.Null (.allowedUsers) (.allowedUsers)

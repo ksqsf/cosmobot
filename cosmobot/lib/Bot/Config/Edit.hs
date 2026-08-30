@@ -24,6 +24,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Toml.Syntax.Parser as TomlParser
 import qualified Toml.Syntax.Position as Position
 import qualified Toml.Syntax.Types as Syntax
+import qualified Prelude
 
 data ConfigChange
   = SetOption ![Text] !Aeson.Value
@@ -32,7 +33,16 @@ data ConfigChange
   | ClearSecret ![Text]
   | AddSection ![Text]
   | RemoveSection ![Text]
-  deriving (Eq, Show)
+  deriving (Eq)
+
+instance Show ConfigChange where
+  showsPrec _ = \case
+    SetOption path _ -> Prelude.showString "SetOption " . Prelude.shows path . Prelude.showString " <value>"
+    RemoveOption path -> Prelude.showString "RemoveOption " . Prelude.shows path
+    ReplaceSecret path _ -> Prelude.showString "ReplaceSecret " . Prelude.shows path . Prelude.showString " <secret>"
+    ClearSecret path -> Prelude.showString "ClearSecret " . Prelude.shows path
+    AddSection path -> Prelude.showString "AddSection " . Prelude.shows path
+    RemoveSection path -> Prelude.showString "RemoveSection " . Prelude.shows path
 
 instance Aeson.FromJSON ConfigChange where
   parseJSON = Aeson.withObject "configuration change" \object -> do

@@ -306,7 +306,7 @@ chatProviderSchema = Schema.ConfigSchema
       }
   , Schema.options =
       [ Schema.option ["base_url"] "Base URL" "OpenAI-compatible API base URL." owner Schema.text defaultChatProviderConfig.baseUrl Aeson.Null (.baseUrl) (.baseUrl)
-      , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (.apiKey) (.apiKey)
+      , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.apiKey)) (fmap Schema.Secret . (.apiKey))
       , Schema.option ["model"] "Model" "Chat model identifier." owner Schema.text defaultChatProviderConfig.model Aeson.Null (.model) (.model)
       , Schema.option ["reasoning_effort"] "Reasoning effort" "Requested reasoning effort." owner Schema.text defaultChatProviderConfig.reasoningEffort Aeson.Null (.reasoningEffort) (.reasoningEffort)
       , Schema.option ["timeout"] "Timeout" "Request timeout in seconds." owner Schema.integer defaultChatProviderConfig.requestTimeout positive (.requestTimeout) (.requestTimeout)
@@ -351,7 +351,7 @@ imageProviderSchema = Schema.ConfigSchema
       }
   , Schema.options =
       [ Schema.option ["base_url"] "Base URL" "OpenAI-compatible API base URL." owner Schema.text defaultImageProviderConfig.baseUrl Aeson.Null (.baseUrl) (.baseUrl)
-      , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (.apiKey) (.apiKey)
+      , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.apiKey)) (fmap Schema.Secret . (.apiKey))
       , Schema.option ["model"] "Model" "Image model identifier." owner Schema.text defaultImageProviderConfig.model Aeson.Null (.model) (.model)
       , Schema.option ["can_generate"] "Can generate" "Provider supports image generation." owner Schema.boolean defaultImageProviderConfig.canGenerate Aeson.Null (.canGenerate) (.canGenerate)
       , Schema.option ["can_edit"] "Can edit" "Provider supports image editing." owner Schema.boolean defaultImageProviderConfig.canEdit Aeson.Null (.canEdit) (.canEdit)
@@ -397,7 +397,7 @@ audioProviderSchema = Schema.ConfigSchema
       }
   , Schema.options =
       [ Schema.option ["base_url"] "Base URL" "OpenAI-compatible API base URL." owner Schema.text defaultAudioProviderConfig.baseUrl Aeson.Null (.baseUrl) (.baseUrl)
-      , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (.apiKey) (.apiKey)
+      , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.apiKey)) (fmap Schema.Secret . (.apiKey))
       , Schema.option ["model"] "Model" "Audio model identifier." owner Schema.text defaultAudioProviderConfig.model Aeson.Null (.model) (.model)
       , Schema.option ["voice"] "Voice" "Speech voice identifier." owner Schema.text defaultAudioProviderConfig.voice Aeson.Null (.voice) (.voice)
       , Schema.option ["response_format"] "Response format" "Generated audio format." owner Schema.text defaultAudioProviderConfig.responseFormat Aeson.Null (.responseFormat) (.responseFormat)

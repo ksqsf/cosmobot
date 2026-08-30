@@ -62,7 +62,7 @@ schema = Schema.ConfigSchema
     <*> fmap (fromMaybe defaultFileConfig.gatewayHost) (optKey "gateway_host")
     <*> fmap (fromMaybe defaultFileConfig.gatewayPath) (optKey "gateway_path")
   , Schema.options =
-      [ Schema.option ["bot_token"] "Bot token" "Discord bot token." owner Schema.secret defaultFileConfig.botToken Aeson.Null (.botToken) (.botToken)
+      [ Schema.option ["bot_token"] "Bot token" "Discord bot token." owner Schema.secret (Schema.Secret defaultFileConfig.botToken) Aeson.Null (Schema.Secret . (.botToken)) (Schema.Secret . (.botToken))
       , snowflake "bot_id" "Bot ID" "Discord bot user id." (.botId) (.botId)
       , snowflake "application_id" "Application ID" "Discord application id." (.applicationId) (.applicationId)
       , Schema.option ["allowed_guilds"] "Allowed guilds" "Discord guild ids allowed to use the bot." owner (Schema.list "integer") [] Aeson.Null (.allowedGuilds) (.allowedGuilds)

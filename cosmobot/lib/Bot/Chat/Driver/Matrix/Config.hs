@@ -60,7 +60,7 @@ schema = Schema.ConfigSchema
   , Schema.options =
       [ Schema.option ["homeserver"] "Homeserver" "Matrix homeserver URL." owner Schema.text defaultFileConfig.homeserver Aeson.Null (.homeserver) (.homeserver)
       , Schema.optionalOption ["login_user"] "Login user" "Matrix login user." owner Schema.text False Aeson.Null (.loginUser) (.loginUser)
-      , Schema.optionalOption ["login_password"] "Login password" "Matrix login password." owner Schema.secret False Aeson.Null (.loginPassword) (.loginPassword)
+      , Schema.optionalOption ["login_password"] "Login password" "Matrix login password." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.loginPassword)) (fmap Schema.Secret . (.loginPassword))
       , Schema.optionalOption ["device_id"] "Device ID" "Matrix device identifier." owner Schema.text False Aeson.Null (.deviceId) (.deviceId)
       , Schema.option ["direct_rooms"] "Direct rooms" "Rooms treated as direct chats." owner (Schema.list "text") [] Aeson.Null (.directRooms) (.directRooms)
       , Schema.optionalOption ["bot_id"] "Bot ID" "Matrix user id for the bot." owner Schema.text False Aeson.Null (.botId) (.userId)

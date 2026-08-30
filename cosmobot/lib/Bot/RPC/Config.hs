@@ -68,7 +68,7 @@ schema = Schema.ConfigSchema
       [ Schema.option ["enabled"] "Enabled" "Start the RPC server." owner Schema.boolean defaultFileConfig.enabled Aeson.Null (.enabled) (.enabled)
       , Schema.option ["host"] "Host" "RPC listen address." owner Schema.text (toText defaultFileConfig.host) Aeson.Null (toText . (.host)) (toText . (.host))
       , Schema.option ["port"] "Port" "RPC listen port." owner Schema.integer defaultFileConfig.port (Aeson.object ["minimum" Aeson..= (1 :: Int), "maximum" Aeson..= (65535 :: Int)]) (.port) (.port)
-      , Schema.option ["token"] "Token" "RPC bearer token." owner Schema.secret defaultFileConfig.token Aeson.Null (.token) (.token)
+      , Schema.option ["token"] "Token" "RPC bearer token." owner Schema.secret (Schema.Secret defaultFileConfig.token) Aeson.Null (Schema.Secret . (.token)) (Schema.Secret . (.token))
       , Schema.option ["allowed_browser_origins"] "Allowed browser origins" "Origins allowed to authenticate from a browser." owner (Schema.list "text") defaultFileConfig.allowedBrowserOrigins Aeson.Null (.allowedBrowserOrigins) (.allowedBrowserOrigins)
       ]
   }

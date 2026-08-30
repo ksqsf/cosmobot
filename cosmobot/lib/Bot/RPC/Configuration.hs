@@ -20,6 +20,7 @@ import qualified Bot.JSONRPC as RPC
 import qualified Crypto.Hash as CryptoHash
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
+import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.FileSystem as FileSystem
@@ -65,7 +66,7 @@ configurationMethods :: [Text]
 configurationMethods = ["config.get", "config.validate", "config.update", "config.rollback"]
 
 dispatchConfigurationRequest
-  :: (Concurrent :> es, FileSystem.FileSystem :> es, IOE :> es)
+  :: (Concurrent :> es, FileSystem.FileSystem :> es, KatipE :> es, IOE :> es)
   => Configuration
   -> RPC.RpcRequest
   -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
@@ -127,7 +128,7 @@ validateAgainstCurrent configuration params =
             Right changed -> Right $ validationJson revision current changed
 
 updateConfiguration
-  :: (Concurrent :> es, FileSystem.FileSystem :> es, IOE :> es)
+  :: (Concurrent :> es, FileSystem.FileSystem :> es, KatipE :> es, IOE :> es)
   => Configuration
   -> RPC.RpcRequest
   -> Eff es (Either RPC.RpcError Aeson.Value)
@@ -146,15 +147,20 @@ updateConfiguration configuration request =
                 Right changedSource -> case Config.parseConfigDocument configuration.path changedSource of
                   Left _ -> pure (Left (RPC.rpcError "validation_failed" "Configuration changes did not pass validation"))
                   Right changed
-                    | changedSource == source -> pure (Right $ updateJson False revision revision (Edit.semanticDiff current changed))
+                    | changedSource == source -> do
+                        logConfigurationOperation "update_noop" revision revision (map configChangePath params.changes)
+                        pure (Right $ updateJson False revision revision (Edit.semanticDiff current changed))
                     | otherwise -> do
                         writeResult <- trySync (atomicReplace configuration.path source changedSource)
-                        pure $ case writeResult of
-                          Left (_ :: SomeException) -> Left (RPC.rpcError "config_write_failed" "Configuration could not be written")
-                          Right () -> Right $ updateJson True (sourceRevision changedSource) revision (Edit.semanticDiff current changed)
+                        case writeResult of
+                          Left (_ :: SomeException) -> pure (Left (RPC.rpcError "config_write_failed" "Configuration could not be written"))
+                          Right () -> do
+                            let newRevision = sourceRevision changedSource
+                            logConfigurationOperation "update" revision newRevision (map configChangePath params.changes)
+                            pure (Right $ updateJson True newRevision revision (Edit.semanticDiff current changed))
 
 rollbackConfiguration
-  :: (Concurrent :> es, FileSystem.FileSystem :> es, IOE :> es)
+  :: (Concurrent :> es, FileSystem.FileSystem :> es, KatipE :> es, IOE :> es)
   => Configuration
   -> RPC.RpcRequest
   -> Eff es (Either RPC.RpcError Aeson.Value)
@@ -177,14 +183,17 @@ rollbackConfiguration configuration request =
               | Left _ <- Config.parseConfigDocument configuration.path backupSource -> pure (Left (RPC.rpcError "validation_failed" "Backup configuration is invalid"))
               | otherwise -> do
                   writeResult <- trySync (atomicReplace configuration.path currentSource backupSource)
-                  pure $ case writeResult of
-                    Left (_ :: SomeException) -> Left (RPC.rpcError "config_write_failed" "Configuration could not be rolled back")
-                    Right () -> Right $ Aeson.object
-                      [ "rolledBack" Aeson..= True
-                      , "revision" Aeson..= sourceRevision backupSource
-                      , "backupRevision" Aeson..= sourceRevision currentSource
-                      , "restartRequired" Aeson..= True
-                      ]
+                  case writeResult of
+                    Left (_ :: SomeException) -> pure (Left (RPC.rpcError "config_write_failed" "Configuration could not be rolled back"))
+                    Right () -> do
+                      let restoredRevision = sourceRevision backupSource
+                      logConfigurationOperation "rollback" params.revision restoredRevision []
+                      pure . Right $ Aeson.object
+                        [ "rolledBack" Aeson..= True
+                        , "revision" Aeson..= restoredRevision
+                        , "backupRevision" Aeson..= sourceRevision currentSource
+                        , "restartRequired" Aeson..= True
+                        ]
             _ -> pure (Left (RPC.rpcError "backup_unavailable" "Configuration backup could not be read"))
 
 configurationJson
@@ -248,6 +257,25 @@ editError Edit.ConfigEditError{code, message} = RPC.rpcError code message
 
 revisionConflict :: RPC.RpcError
 revisionConflict = RPC.rpcError "revision_conflict" "Configuration revision changed"
+
+configChangePath :: Edit.ConfigChange -> [Text]
+configChangePath = \case
+  Edit.SetOption path _ -> path
+  Edit.RemoveOption path -> path
+  Edit.ReplaceSecret path _ -> path
+  Edit.ClearSecret path -> path
+  Edit.AddSection path -> path
+  Edit.RemoveSection path -> path
+
+logConfigurationOperation :: KatipE :> es => Text -> Text -> Text -> [[Text]] -> Eff es ()
+logConfigurationOperation operation revision newRevision changedPaths =
+  katipAddContext
+    ( sl "config_operation" operation
+      <> sl "config_revision" revision
+      <> sl "config_new_revision" newRevision
+      <> sl "config_changed_paths" (map (Text.intercalate ".") changedPaths)
+    ) $
+    $(logInfo) "Configuration file operation completed"
 
 readCurrent
   :: (FileSystem.FileSystem :> es, IOE :> es)

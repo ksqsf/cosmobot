@@ -64,7 +64,7 @@ schema = Schema.ConfigSchema
       [ Schema.option ["enabled"] "Enabled" "Start the ACP server." owner Schema.boolean defaultFileConfig.enabled Aeson.Null (.enabled) (.enabled)
       , Schema.option ["host"] "Host" "ACP listen address." owner Schema.text (toText defaultFileConfig.host) Aeson.Null (toText . (.host)) (toText . (.host))
       , Schema.option ["port"] "Port" "ACP listen port." owner Schema.integer defaultFileConfig.port (Aeson.object ["minimum" Aeson..= (1 :: Int), "maximum" Aeson..= (65535 :: Int)]) (.port) (.port)
-      , Schema.option ["token"] "Token" "ACP bearer token." owner Schema.secret defaultFileConfig.token Aeson.Null (.token) (.token)
+      , Schema.option ["token"] "Token" "ACP bearer token." owner Schema.secret (Schema.Secret defaultFileConfig.token) Aeson.Null (Schema.Secret . (.token)) (Schema.Secret . (.token))
       ]
   }
   where owner = "Bot.ACP.Config"

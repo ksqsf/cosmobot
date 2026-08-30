@@ -71,7 +71,7 @@ schema = Schema.ConfigSchema
     <*> fmap (fromMaybe []) (optKey "allowed_chats")
     <*> fmap (fromMaybe []) (optKey "superusers")
   , Schema.options =
-      [ Schema.optionalOption ["bot_token"] "Bot token" "Telegram Bot API token." owner Schema.secret True Aeson.Null (Just . (.botToken)) (Just . (.botToken))
+      [ Schema.optionalOption ["bot_token"] "Bot token" "Telegram Bot API token." owner Schema.secret True Aeson.Null (Just . Schema.Secret . (.botToken)) (Just . Schema.Secret . (.botToken))
       , Schema.optionalOption ["bot_id"] "Bot ID" "Telegram numeric bot id or username." owner Schema.identity False Aeson.Null (fmap botIdValue . (.botId)) runtimeBotId
       , Schema.option ["allowed_chats"] "Allowed chats" "Allowed numeric chat ids or aliases." owner Schema.identityList [] Aeson.Null (map chatRefValue . (.allowedChats)) runtimeAllowedChats
       , Schema.option ["superusers"] "Superusers" "Telegram usernames with administrative access." owner (Schema.list "text") [] Aeson.Null (.superusers) (.superusers)

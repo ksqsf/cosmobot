@@ -124,9 +124,9 @@ schema = Schema.ConfigSchema
       , Schema.option ["web_search", "enable"] "Web search" "Allow web search." owner Schema.boolean defaultWebSearchFileConfig.enable Aeson.Null ((.enable) . (.webSearch)) (.webSearchEnable)
       , Schema.option ["web_search", "api"] "Search API" "Web search provider." owner (Schema.enum ["tavily", "brave", "exa"]) (webSearchApiText defaultWebSearchFileConfig.api) Aeson.Null (webSearchApiText . (.api) . (.webSearch)) (webSearchApiText . (.webSearchApi))
       , Schema.optionalOption ["web_search", "max_results"] "Maximum results" "Optional result limit." owner Schema.integer False positive ((.maxResults) . (.webSearch)) (.webSearchMaxResults)
-      , Schema.optionalOption ["web_search", "brave_api_key"] "Brave API key" "Brave Search API key." owner Schema.secret False Aeson.Null ((.braveApiKey) . (.webSearch)) (.braveApiKey)
-      , Schema.optionalOption ["web_search", "tavily_api_key"] "Tavily API key" "Tavily API key." owner Schema.secret False Aeson.Null ((.tavilyApiKey) . (.webSearch)) (.tavilyApiKey)
-      , Schema.optionalOption ["web_search", "exa_api_key"] "Exa API key" "Exa API key." owner Schema.secret False Aeson.Null ((.exaApiKey) . (.webSearch)) (.exaApiKey)
+      , Schema.optionalOption ["web_search", "brave_api_key"] "Brave API key" "Brave Search API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.braveApiKey) . (.webSearch)) (fmap Schema.Secret . (.braveApiKey))
+      , Schema.optionalOption ["web_search", "tavily_api_key"] "Tavily API key" "Tavily API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.tavilyApiKey) . (.webSearch)) (fmap Schema.Secret . (.tavilyApiKey))
+      , Schema.optionalOption ["web_search", "exa_api_key"] "Exa API key" "Exa API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.exaApiKey) . (.webSearch)) (fmap Schema.Secret . (.exaApiKey))
       ]
   }
   where

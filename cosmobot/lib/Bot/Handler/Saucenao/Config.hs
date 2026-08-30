@@ -35,7 +35,7 @@ schema :: Schema.ConfigSchema SaucenaoConfig SaucenaoConfig
 schema = Schema.ConfigSchema
   { Schema.parser = parseTableFromValue $ SaucenaoConfig <$> optToken "api_key"
   , Schema.options =
-      [ Schema.optionalOption ["api_key"] "API key" "SauceNAO API key." "Bot.Handler.Saucenao.Config" Schema.secret False Aeson.Null (.apiKey) (.apiKey)
+      [ Schema.optionalOption ["api_key"] "API key" "SauceNAO API key." "Bot.Handler.Saucenao.Config" Schema.secret False Aeson.Null (fmap Schema.Secret . (.apiKey)) (fmap Schema.Secret . (.apiKey))
       ]
   }
 

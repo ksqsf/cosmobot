@@ -100,10 +100,14 @@ enum values = (jsonType "enum" values)
       if value `elem` values then pure value else fail "value is not an allowed enum member"
   }
 
-secret :: OptionType Text
-secret = (jsonType "secret" [])
-  { encode = secretState
-  , configured = not . Text.null
+secret :: OptionType Secret
+secret = OptionType
+  { kind = "secret"
+  , choices = []
+  , encode = secretState
+  , decode = Aeson.withText "secret" (pure . Secret)
+  , render = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode . (.unSecret)
+  , configured = not . Text.null . (.unSecret)
   , isSecret = True
   }
 
@@ -124,7 +128,7 @@ identityList = (jsonType "identity_list" [])
 
 parseIdentity :: Aeson.Value -> AesonTypes.Parser Aeson.Value
 parseIdentity value@Aeson.String{} = pure value
-parseIdentity value@Aeson.Number{} = pure value
+parseIdentity value@Aeson.Number{} = (Aeson.parseJSON value :: AesonTypes.Parser Integer) $> value
 parseIdentity _ = fail "identity must be a string or integer"
 
 jsonType :: (Aeson.FromJSON a, Aeson.ToJSON a) => Text -> [Text] -> OptionType a
@@ -138,8 +142,8 @@ jsonType kind choices = OptionType
   , isSecret = False
   }
 
-secretState :: Text -> Aeson.Value
-secretState value = Aeson.String $ if Text.null value then "unset" else "configured"
+secretState :: Secret -> Aeson.Value
+secretState (Secret value) = Aeson.String $ if Text.null value then "unset" else "configured"
 
 option
   :: [Text]
