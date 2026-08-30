@@ -51,6 +51,7 @@ import qualified Bot.Scheduler as Scheduler
 import qualified Bot.RPC.Audit as RPCAudit
 import qualified Bot.RPC.ChatLog as RPCChatLog
 import qualified Bot.RPC.Config as RPCConfig
+import qualified Bot.RPC.Configuration as RPCConfiguration
 import qualified Bot.RPC.Plugin as RPCPlugin
 import qualified Bot.RPC.Memory as RPCMemory
 import qualified Bot.RPC.Server as RPCServer
@@ -104,7 +105,8 @@ mainWithConfig configPath =
 
 runOnce :: FilePath -> IO Bool
 runOnce configPath = runEff . runPrim . runFailIO $ do
-  cfg <- loadConfig configPath
+  configDocument <- loadConfigDocument configPath
+  let cfg = configDocumentRuntime configDocument
   restartRequested <- newIORef False
   threads <- newThreadStore
   rpcState <- runConcurrent RPC.newRpcState
@@ -145,6 +147,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
         PythonMiddleware.withPythonMiddleware \runTools message resourceOwner request ->
           Python.runPython resourceOwner ResourceEffect.Init{message, arguments} runTools request
   runRuntime . runInfrastructure $ do
+    configuration <- RPCConfiguration.newConfiguration configPath configDocument
     pythonArguments <- preparePython cfg.tool.python
     runApplication pythonArguments do
       $(logInfo) "Cosmobot stand by!"
@@ -157,7 +160,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
               (zipWith withRouteDebugLogging [1 :: Int ..] (routes cfg threads))
               (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
-      runConfiguredServers cfg threads rpcState acpState messageConsumer
+      runConfiguredServers cfg configuration threads rpcState acpState messageConsumer
   readIORef restartRequested
 
 preparePython
@@ -341,24 +344,26 @@ incomingMessageContext message =
     <> foldMap (sl "chat_message_id" . messageIdText) message.messageId
 
 runConfiguredServers
-  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, MediaEffect.Media :> es, Memory.Memory :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
+  :: ( ACPEffect.ACP :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, Memory.Memory :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es)
   => BotConfig
+  -> RPCConfiguration.Configuration
   -> ThreadStore
   -> RPC.RpcState
   -> ACP.AcpState
   -> Eff es ()
   -> Eff es ()
-runConfiguredServers cfg threads rpcState acpState messageConsumer =
-  runWithTaskGroup "servers" (serverTasks cfg threads rpcState acpState) "message.consumer" messageConsumer
+runConfiguredServers cfg configuration threads rpcState acpState messageConsumer =
+  runWithTaskGroup "servers" (serverTasks cfg configuration threads rpcState acpState) "message.consumer" messageConsumer
 
 serverTasks
-  :: ( AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, Memory.Memory :> es, Skills.Skills :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
+  :: ( AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, LifecycleEffect.Lifecycle :> es, Memory.Memory :> es, Skills.Skills :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
   => BotConfig
+  -> RPCConfiguration.Configuration
   -> ThreadStore
   -> RPC.RpcState
   -> ACP.AcpState
   -> [(Text, Eff es ())]
-serverTasks cfg threads rpcState acpState =
+serverTasks cfg configuration threads rpcState acpState =
   enabledTask cfg.rpc.enabled "rpc.server" (RPCServer.runRpcServer cfg.rpc rpcState callbacks)
     <> enabledTask cfg.acp.enabled "acp.server" (ACPServer.runAcpServer cfg.acp threads acpState)
   where
@@ -373,7 +378,11 @@ serverTasks cfg threads rpcState acpState =
       (haltThreadById threads Concurrency.cancel)
     memoryCallbacks = RPCMemory.memoryRpcCallbacks
     skillsCallbacks = RPCSkills.skillsRpcCallbacks
-    baseCallbacks = RPCServer.withManagerRpcCallbacks $
+    baseCallbacks = RPCServer.withConfigurationRpcCallbacks
+      (RPCConfiguration.dispatchConfigurationRequest configuration)
+      LifecycleEffect.requestRestartSilently
+      RPCConfiguration.configurationMethods
+      . RPCServer.withManagerRpcCallbacks $
       auditCallbacks
         { RPCServer.chatLogMethod = chatLogCallbacks.chatLogMethod
         , RPCServer.threadMethod = threadCallbacks.threadMethod

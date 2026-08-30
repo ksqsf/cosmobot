@@ -11,6 +11,7 @@ module Bot.RPC.Server
   , MediaGcSettings (..)
   , noRpcServerCallbacks
   , withManagerRpcCallbacks
+  , withConfigurationRpcCallbacks
   , runRpcServer
   , rpcConnectionOptions
   , rpcServerApplication
@@ -45,6 +46,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Version (showVersion)
 import Data.Typeable (typeOf)
 import qualified Effectful.FileSystem as FileSystem
+import qualified Effectful.Concurrent.STM as STM
 import qualified Effectful.Timeout as Timeout
 import GHC.Clock (getMonotonicTimeNSec)
 import qualified JSONRPC
@@ -62,6 +64,9 @@ data RpcServerCallbacks es = RpcServerCallbacks
   , memoryMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , skillsMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
   , pluginMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
+  , configurationMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
+  , restartMethod :: RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value))
+  , afterResponse :: RPC.RpcRequest -> Eff es ()
   , managerMethod :: RPC.RpcRequest -> Eff es (Maybe RPC.RpcResponse)
   , mediaGcSettings :: !MediaGcSettings
   , supportedMethods :: ![Text]
@@ -110,6 +115,9 @@ noRpcServerCallbacks = RpcServerCallbacks
   , memoryMethod = \_ -> pure Nothing
   , skillsMethod = \_ -> pure Nothing
   , pluginMethod = \_ -> pure Nothing
+  , configurationMethod = \_ -> pure Nothing
+  , restartMethod = \_ -> pure Nothing
+  , afterResponse = \_ -> pure ()
   , managerMethod = \_ -> pure Nothing
   , mediaGcSettings = MediaGcSettings False 0 0
   , supportedMethods = []
@@ -122,6 +130,22 @@ withManagerRpcCallbacks
 withManagerRpcCallbacks callbacks = callbacks
   { managerMethod = fmap Just . dispatchManagerRequest
   , supportedMethods = callbacks.supportedMethods <> managerMethods
+  }
+
+withConfigurationRpcCallbacks
+  :: (RPC.RpcRequest -> Eff es (Maybe (Either RPC.RpcError Aeson.Value)))
+  -> Eff es ()
+  -> [Text]
+  -> RpcServerCallbacks es
+  -> RpcServerCallbacks es
+withConfigurationRpcCallbacks configurationMethod restart configurationMethods callbacks = callbacks
+  { configurationMethod
+  , restartMethod = \request -> pure . Just $ case AesonTypes.parseEither parseNoParams (RPC.requestParams request) of
+      Left err -> Left (RPC.rpcError "invalid_params" (toText err))
+      Right () -> Right (Aeson.object ["acknowledged" Aeson..= True])
+  , afterResponse = \request ->
+      when (RPC.requestMethod request == "admin.restart" && isRight (AesonTypes.parseEither parseNoParams (RPC.requestParams request))) restart
+  , supportedMethods = callbacks.supportedMethods <> configurationMethods <> ["admin.restart"]
   }
 
 runRpcServer
@@ -279,6 +303,9 @@ writeQueuedFrames client conn =
     State.readClient client >>= \case
       State.RpcClientSend value ->
         liftIO (WS.sendTextData conn (Aeson.encode value))
+      State.RpcClientSendAndAck value acknowledgement -> do
+        liftIO (WS.sendTextData conn (Aeson.encode value))
+        STM.atomically (STM.putTMVar acknowledgement ())
       State.RpcClientDisconnect reason -> do
         liftIO (WS.sendClose conn reason)
         throwIO (RpcClientDisconnected reason)
@@ -295,21 +322,27 @@ readRequestFrames
 readRequestFrames cfg rpcState callbacks clientId client conn =
   forever do
     bytes <- liftIO (WS.receiveData conn :: IO ByteString)
-    response <- case Aeson.eitherDecodeStrict bytes of
+    (dispatchedRequest, response) <- case Aeson.eitherDecodeStrict bytes of
       Left err ->
-        pure (Just (RPC.parseErrorResponse (Text.pack err)))
+        pure (Nothing, Just (RPC.parseErrorResponse (Text.pack err)))
       Right value ->
         case Aeson.fromJSON value of
-          Aeson.Success (JSONRPC.RequestMessage request) ->
-            Just <$> dispatchClientRpcRequestWithConfig rpcState clientId client cfg callbacks request
+          Aeson.Success (JSONRPC.RequestMessage request) -> do
+            response <- dispatchClientRpcRequestWithConfig rpcState clientId client cfg callbacks request
+            pure (Just request, Just response)
           Aeson.Success (JSONRPC.NotificationMessage notification_) -> do
             _ <- dispatchClientRpcRequestWithConfig rpcState clientId client cfg callbacks (notificationToRequest notification_)
-            pure Nothing
+            pure (Nothing, Nothing)
           Aeson.Error err ->
-            pure (Just (RPC.invalidRequestResponse (Text.pack err)))
+            pure (Nothing, Just (RPC.invalidRequestResponse (Text.pack err)))
           Aeson.Success _ ->
-            pure (Just (RPC.invalidRequestResponse "Expected request or notification"))
-    traverse_ (State.writeClient client . Aeson.toJSON) response
+            pure (Nothing, Just (RPC.invalidRequestResponse "Expected request or notification"))
+    for_ response \rpcResponse ->
+      case dispatchedRequest of
+        Just request | RPC.requestMethod request == "admin.restart" -> do
+            State.writeClientAndWait client (Aeson.toJSON rpcResponse)
+            callbacks.afterResponse request
+        _ -> State.writeClient client (Aeson.toJSON rpcResponse)
 
 dispatchRpcRequest
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
@@ -399,6 +432,8 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
   case RPC.requestMethod request of
     "admin.capabilities" ->
       dispatchAdminCapabilities callbacks request
+    "admin.restart" ->
+      callbacks.restartMethod request >>= rpcCallbackResponse request
     "chat.open_session" ->
       dispatchOpenSession request
     "chat.list_sessions" ->
@@ -442,6 +477,8 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
     "media.gc" ->
       dispatchMediaGc callbacks request
     method
+      | "config." `Text.isPrefixOf` method ->
+          callbacks.configurationMethod request >>= rpcCallbackResponse request
       | "audit." `Text.isPrefixOf` method ->
           dispatchAudit callbacks request
       | "chat_log." `Text.isPrefixOf` method ->
@@ -468,11 +505,11 @@ dispatchAdminCapabilities callbacks request =
       , "methods" Aeson..= rpcMethods callbacks
       , "topics" Aeson..= (["audit.event", "chat.message"] :: [Text])
       , "permissions" Aeson..= if "concurrency.cancel" `elem` callbacks.supportedMethods
-          then (["tasks.cancel", "resources.manage"] :: [Text])
-          else []
+          then (["tasks.cancel", "resources.manage"] :: [Text]) <> configurationPermissions callbacks
+          else configurationPermissions callbacks
       , "features" Aeson..= Aeson.object
           [ "serviceLogs" Aeson..= ("demo" :: Text)
-          , "configWrite" Aeson..= ("unsupported" :: Text)
+          , "configWrite" Aeson..= if "config.update" `elem` callbacks.supportedMethods then ("supported" :: Text) else "unsupported"
           ]
       ]
 
@@ -490,6 +527,12 @@ rpcMethods callbacks =
   , "media.resolve_source", "media.get", "media.delete", "media.stats", "media.search", "media.gc"
   ]
     <> callbacks.supportedMethods
+
+configurationPermissions :: RpcServerCallbacks es -> [Text]
+configurationPermissions callbacks =
+  [ "config.read" | "config.get" `elem` callbacks.supportedMethods ]
+    <> [ "config.manage" | "config.update" `elem` callbacks.supportedMethods ]
+    <> [ "admin.restart" | "admin.restart" `elem` callbacks.supportedMethods ]
 
 managerMethods :: [Text]
 managerMethods =

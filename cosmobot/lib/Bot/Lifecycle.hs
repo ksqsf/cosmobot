@@ -8,6 +8,7 @@ Stability   : experimental
 module Bot.Lifecycle
   ( runLifecycle
   , runLifecycleEffect
+  , runLifecycleEffectWithSilent
   )
 where
 
@@ -54,7 +55,7 @@ runUntilExit inner = do
   withExitSignalHandlers exitRequest $
     Concurrency.raceTasks_
       "main.inner"
-      (runLifecycleEffect (queueRestart exitRequest) inner)
+      (runLifecycleEffectWithSilent (queueRestart exitRequest) (void (MVar.tryPutMVar exitRequest Restart)) inner)
       "main.shutdown"
       (MVar.takeMVar exitRequest >>= MVar.putMVar result)
   MVar.tryTakeMVar result >>= \case
@@ -97,7 +98,17 @@ runLifecycleEffect
   -> Eff (LifecycleEffect.Lifecycle : es) a
   -> Eff es a
 runLifecycleEffect onRestart =
-  interpret (\_ (LifecycleEffect.RequestRestart message body) -> onRestart message body)
+  runLifecycleEffectWithSilent onRestart (pure ())
+
+runLifecycleEffectWithSilent
+  :: (IncomingMessage -> Text -> Eff es ())
+  -> Eff es ()
+  -> Eff (LifecycleEffect.Lifecycle : es) a
+  -> Eff es a
+runLifecycleEffectWithSilent onRestart onSilentRestart =
+  interpret (\_ -> \case
+    LifecycleEffect.RequestRestart message body -> onRestart message body
+    LifecycleEffect.RequestRestartSilently -> onSilentRestart)
 
 runStartupActions
   :: (Chat.Chat :> es, Storage.Storage :> es, KatipE :> es)

@@ -6,6 +6,7 @@ import qualified Bot.ChatLog.Record as ChatLogRecord
 import qualified Bot.Chat.Types as Chat
 import qualified Bot.Chat.Driver.RPC as RPCDriver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
+import qualified Bot.Config as Config
 import Bot.Core.Message
 import Bot.Core.Thread (ThreadMessageKey (..))
 import Bot.Core.Transcript (Transcript (..))
@@ -20,11 +21,11 @@ import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.HTTP as BotHTTP
 import qualified Bot.Media.Config as MediaConfig
-import qualified Bot.Media.Cache as MediaCache
 import qualified Bot.Media.Interpreter as MediaInterpreter
 import qualified Bot.Media.Object as MediaObject
 import qualified Bot.Memory as MemoryStore
 import qualified Bot.RPC.Config as RPCConfig
+import qualified Bot.RPC.Configuration as RPCConfiguration
 import qualified Bot.RPC.ChatLog as RPCChatLog
 import qualified Bot.RPC.Plugin as RPCPlugin
 import qualified Bot.RPC.Memory as RPCMemory
@@ -49,6 +50,7 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.IO as TextIO
 import Data.Unique (hashUnique, newUnique)
 import Effectful.FileSystem (runFileSystem)
 import qualified Effectful.Concurrent.MVar as MVar
@@ -92,6 +94,7 @@ main =
       , testCase "memory and skills RPC inspect history and loaded skills" testMemoryAndSkillsRpc
       , testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "admin.capabilities describes the supported RPC surface" testAdminCapabilities
+      , testCase "configuration RPC validates, updates, conflicts, and rolls back" testConfigurationRpcLifecycle
       , testCase "plugin lifecycle RPC validates ids and serializes safe status" testPluginLifecycleRpc
       , testCase "chat.open_session returns generated session id" testOpenSessionReturnsGeneratedSessionId
       , testCase "chat.send constructs PlatformRPC incoming message" testChatSendConstructsIncomingMessage
@@ -460,15 +463,94 @@ testAdminCapabilities :: IO ()
 testAdminCapabilities = do
   response <- runRpcStorage ":memory:" do
     rpcState <- RPC.newRpcState
-    RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+    let callbacks = RPCServer.withConfigurationRpcCallbacks
+          (\_ -> pure Nothing)
+          (pure ())
+          ["config.get", "config.update"]
+          RPCServer.noRpcServerCallbacks
+    RPCServer.dispatchRpcRequest rpcState callbacks $
       rpcRequest "admin.capabilities" Aeson.Null
-  methods <- case response of
+  (methods, permissions) <- case response of
     WireJSONRPC.ResponseMessage result ->
-      parseJson =<< parseJsonField "methods" result.result
+      (,) <$> (parseJson =<< parseJsonField "methods" result.result)
+          <*> (parseJson =<< parseJsonField "permissions" result.result)
     other ->
       assertFailure [i|expected capabilities response, got #{show other :: String}|]
   assertBool "expected chat.list_sessions capability" ("chat.list_sessions" `elem` (methods :: [Text]))
   assertBool "manager capability must not be advertised without its callback" ("concurrency.list" `notElem` methods)
+  assertBool "expected configuration read capability" ("config.get" `elem` methods)
+  assertBool "expected configuration administration permission" ("config.manage" `elem` (permissions :: [Text]))
+
+testConfigurationRpcLifecycle :: IO ()
+testConfigurationRpcLifecycle = withSQLiteTempPath "configuration" \sqlitePath -> do
+  let configPath = takeDirectory sqlitePath </> "config.toml"
+      source = "[rpc]\ntoken = \"initial-rpc-secret\"\n\n" <>
+        Text.replace "command = \"!ask\"" "command = \"!ask\"  # preserved" rpcMinimalConfig
+  TextIO.writeFile configPath source
+  document <- either (assertFailure . show) pure (Config.parseConfigDocument configPath source)
+  (getResponse, validateResponse, updateResponse, changedSource, conflictResponse, rollbackResponse, invalidResponse) <- runRpcStorage sqlitePath do
+    configuration <- RPCConfiguration.newConfiguration configPath document
+    rpcState <- RPC.newRpcState
+    let callbacks = RPCServer.withConfigurationRpcCallbacks
+          (RPCConfiguration.dispatchConfigurationRequest configuration)
+          (pure ())
+          RPCConfiguration.configurationMethods
+          RPCServer.noRpcServerCallbacks
+        dispatch method params = RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest method params)
+    getResponse <- dispatch "config.get" Aeson.Null
+    let revision = fromMaybe (error "missing configuration revision") (responseField getResponse "revision" :: Maybe Text)
+        changes =
+          [ Aeson.object
+              [ "operation" Aeson..= ("set" :: Text)
+              , "path" Aeson..= (["handler", "ask", "command"] :: [Text])
+              , "value" Aeson..= ("!chat" :: Text)
+              ]
+          , Aeson.object
+              [ "operation" Aeson..= ("replace_secret" :: Text)
+              , "path" Aeson..= (["rpc", "token"] :: [Text])
+              , "value" Aeson..= ("replacement-rpc-secret" :: Text)
+              ]
+          ]
+        params = Aeson.object ["revision" Aeson..= revision, "changes" Aeson..= changes]
+    validateResponse <- dispatch "config.validate" params
+    updateResponse <- dispatch "config.update" params
+    changedSource <- TextEncoding.decodeUtf8 <$> FileSystemByteString.readFile configPath
+    conflictResponse <- dispatch "config.update" params
+    let updatedRevision = fromMaybe (error "missing updated revision") (responseField updateResponse "revision")
+        backupRevision = fromMaybe (error "missing backup revision") (responseField updateResponse "backupRevision")
+    rollbackResponse <- dispatch "config.rollback" (Aeson.object
+      [ "revision" Aeson..= (updatedRevision :: Text)
+      , "backupRevision" Aeson..= (backupRevision :: Text)
+      ])
+    FileSystemByteString.writeFile configPath "invalid = ["
+    invalidResponse <- dispatch "config.get" Aeson.Null
+    FileSystemByteString.writeFile configPath (TextEncoding.encodeUtf8 source)
+    pure (getResponse, validateResponse, updateResponse, changedSource, conflictResponse, rollbackResponse, invalidResponse)
+  responseField getResponse "sourceState" @?= Just ("valid" :: Text)
+  responseBool validateResponse "valid" @?= Just True
+  responseBool updateResponse "updated" @?= Just True
+  assertBool "configuration update lost the comment" ("command = \"!chat\"  # preserved" `Text.isInfixOf` changedSource)
+  for_ [getResponse, validateResponse, updateResponse] \response -> do
+    let encoded = TextEncoding.decodeUtf8 . LazyByteString.toStrict $ Aeson.encode response
+    assertBool "configuration RPC leaked the original secret" (not ("initial-rpc-secret" `Text.isInfixOf` encoded))
+    assertBool "configuration RPC leaked the replacement secret" (not ("replacement-rpc-secret" `Text.isInfixOf` encoded))
+  responseErrorCode conflictResponse @?= Just "revision_conflict"
+  responseBool rollbackResponse "rolledBack" @?= Just True
+  responseField invalidResponse "sourceState" @?= Just ("invalid" :: Text)
+  responseBool invalidResponse "editable" @?= Just False
+  TextIO.readFile configPath >>= (@?= source)
+
+rpcMinimalConfig :: Text
+rpcMinimalConfig = Text.unlines
+  [ "[llm]"
+  , ""
+  , "[handler.console]"
+  , "system_prompt = \"You are a coding agent.\""
+  , ""
+  , "[handler.ask]"
+  , "command = \"!ask\""
+  , "system_prompt = \"You are cosmobot.\""
+  ]
 
 testOpenSessionReturnsGeneratedSessionId :: IO ()
 testOpenSessionReturnsGeneratedSessionId = do
@@ -563,6 +645,8 @@ testChatSendBroadcastsNotification = do
     RPC.readClient queue >>= \case
       RPC.RpcClientSend value ->
         pure value
+      RPC.RpcClientSendAndAck _ _ ->
+        liftIO (assertFailure "unexpected acknowledged RPC response")
       RPC.RpcClientDisconnect reason ->
         liftIO (assertFailure [i|unexpected RPC client disconnect: #{reason}|])
 
@@ -625,6 +709,8 @@ testClientNotificationQueueOverflowDisconnects = do
       reason @?= "RPC notification queue overflow"
     RPC.RpcClientSend value ->
       assertFailure [i|expected queue overflow disconnect, got #{Aeson.encode value}|]
+    RPC.RpcClientSendAndAck _ _ ->
+      assertFailure "expected queue overflow disconnect, got acknowledged RPC response"
 
 testSyncRequestExceptionReturnsJsonRpcError :: IO ()
 testSyncRequestExceptionReturnsJsonRpcError = do
@@ -1037,6 +1123,7 @@ testRpcDriverPersistsAssistantRepliesAndEdits =
       notifications <- replicateM 7 do
         RPC.readClient queue >>= \case
           RPC.RpcClientSend value -> pure value
+          RPC.RpcClientSendAndAck _ _ -> liftIO (assertFailure "unexpected acknowledged RPC response")
           RPC.RpcClientDisconnect reason -> liftIO (assertFailure [i|unexpected RPC client disconnect: #{reason}|])
       pure (replyId, edited, notifications)
 

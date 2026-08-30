@@ -23,6 +23,7 @@ module Bot.RPC.State
   , unregisterClient
   , readClient
   , writeClient
+  , writeClientAndWait
   , subscribe
   , unsubscribe
   , publish
@@ -58,6 +59,8 @@ import qualified Effectful.Concurrent.STM as STM
 import qualified Effectful.FileSystem as FileSystem
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
+import Prelude (Show (showsPrec))
+import qualified Prelude
 
 type RpcClientId = Integer
 
@@ -68,8 +71,20 @@ data RpcClient = RpcClient
 
 data RpcClientEvent
   = RpcClientSend !Aeson.Value
+  | RpcClientSendAndAck !Aeson.Value !(STM.TMVar ())
   | RpcClientDisconnect !Text
-  deriving (Eq, Show)
+
+instance Eq RpcClientEvent where
+  RpcClientSend left == RpcClientSend right = left == right
+  RpcClientSendAndAck left _ == RpcClientSendAndAck right _ = left == right
+  RpcClientDisconnect left == RpcClientDisconnect right = left == right
+  _ == _ = False
+
+instance Show RpcClientEvent where
+  showsPrec _ = \case
+    RpcClientSend value -> Prelude.showString "RpcClientSend " . showsPrec 11 value
+    RpcClientSendAndAck value _ -> Prelude.showString "RpcClientSendAndAck " . showsPrec 11 value
+    RpcClientDisconnect reason -> Prelude.showString "RpcClientDisconnect " . showsPrec 11 reason
 
 type RpcSessionId = Session.SessionId
 
@@ -161,6 +176,12 @@ readClient client =
 writeClient :: Concurrent :> es => RpcClient -> Aeson.Value -> Eff es ()
 writeClient client value =
   STM.atomically (STM.writeTBQueue client.events (RpcClientSend value))
+
+writeClientAndWait :: Concurrent :> es => RpcClient -> Aeson.Value -> Eff es ()
+writeClientAndWait client value = do
+  acknowledgement <- STM.atomically STM.newEmptyTMVar
+  STM.atomically (STM.writeTBQueue client.events (RpcClientSendAndAck value acknowledgement))
+  STM.atomically (STM.takeTMVar acknowledgement)
 
 subscribe :: Concurrent :> es => RpcClient -> RpcTopic -> Eff es ()
 subscribe client topic =
