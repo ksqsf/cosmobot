@@ -61,6 +61,8 @@ schema = Schema.ConfigSchema
     port <- fromMaybe defaultFileConfig.port <$> optKey "port"
     token <- fromMaybe defaultFileConfig.token <$> optKey "token"
     allowedBrowserOrigins <- fromMaybe defaultFileConfig.allowedBrowserOrigins <$> optKey "allowed_browser_origins"
+    when (port < 1 || port > 65535) $
+      fail "rpc.port must be between 1 and 65535"
     when (enabled && Text.null token) $
       fail "rpc.token must be non-empty when rpc.enabled is true"
     pure FileConfig{enabled, host, port, token, allowedBrowserOrigins}
@@ -71,6 +73,8 @@ schema = Schema.ConfigSchema
       , Schema.option ["token"] "Token" "RPC bearer token." owner Schema.secret (Schema.Secret defaultFileConfig.token) Aeson.Null (Schema.Secret . (.token)) (Schema.Secret . (.token))
       , Schema.option ["allowed_browser_origins"] "Allowed browser origins" "Origins allowed to authenticate from a browser." owner (Schema.list "text") defaultFileConfig.allowedBrowserOrigins Aeson.Null (.allowedBrowserOrigins) (.allowedBrowserOrigins)
       ]
+  , Schema.sections = [Schema.section [] "RPC" ["interfaces"] "Interfaces"]
+  , Schema.repeatableSections = []
   }
   where owner = "Bot.RPC.Config"
 

@@ -289,10 +289,37 @@ configSchema = Schema.ConfigSchema
       <> owner ["handler", "ask"] ((.ask) . (.handler)) ((.ask) . (.handlers)) AskConfig.schema.options
       <> owner ["handler", "console"] ((.console) . (.handler)) ((.console) . (.handlers)) ConsoleConfig.schema.options
       <> owner ["handler", "shutup"] ((.shutup) . (.handler)) ((.shutup) . (.handlers)) ShutUpConfig.schema.options
+  , Schema.sections =
+      [ Schema.section ["log"] "Logging" ["runtime"] "Runtime"
+      , Schema.section ["storage"] "Storage" ["runtime"] "Runtime"
+      , Schema.section ["plugins"] "Plugins" ["runtime"] "Runtime"
+      ]
+      <> ownerSections ["acp"] ACPConfig.schema
+      <> ownerSections ["rpc"] RPCConfig.schema
+      <> ownerSections ["tool"] AgentConfig.schema
+      <> ownerSections ["media"] MediaConfig.schema
+      <> ownerSections ["memory"] MemoryConfig.schema
+      <> ownerSections ["skills"] SkillsConfig.schema
+      <> ownerSections ["resource", "sandbox"] Sandbox.schema
+      <> optionalOwnerSections ["driver", "qq"] QQConfig.schema
+      <> optionalOwnerSections ["driver", "telegram"] TelegramConfig.schema
+      <> optionalOwnerSections ["driver", "matrix"] MatrixConfig.schema
+      <> optionalOwnerSections ["driver", "discord"] DiscordConfig.schema
+      <> ownerSections ["handler", "admin"] AdminConfig.schema
+      <> ownerSections ["handler", "saucenao"] SaucenaoConfig.schema
+      <> ownerSections ["handler", "ask"] AskConfig.schema
+      <> ownerSections ["handler", "console"] ConsoleConfig.schema
+      <> ownerSections ["handler", "shutup"] ShutUpConfig.schema
+  , Schema.repeatableSections = []
   }
   where
     owner prefix source runtime = Schema.prefixOptions prefix . Schema.mapOptions source runtime
     optionalOwner prefix source runtime = Schema.prefixOptions prefix . Schema.mapMaybeOptions source runtime
+    ownerSections prefix = Schema.prefixSections prefix . (.sections)
+    optionalOwnerSections prefix ownerSchema =
+      [ configSection{Schema.optional = True}
+      | configSection <- ownerSections prefix ownerSchema
+      ]
 
 instance FromValue FileConfig where
   fromValue = Schema.schemaFromValue configSchema
@@ -336,23 +363,54 @@ providerDocumentOptions family getter options document =
           (const provider)
           options
 
-configDocumentInspection :: ConfigDocument -> Aeson.Value
-configDocumentInspection document = Aeson.object
+configDocumentInspection :: ConfigDocument -> ConfigDocument -> Aeson.Value
+configDocumentInspection document activeDocument = Aeson.object
   [ "sections" Aeson..= map sectionJson (Map.toList grouped)
   , "repeatableSections" Aeson..= repeatableSections
   ]
   where
-    options = configDocumentOptions document
-    inspected = Schema.inspectOptions (configPathPresent document) document document options
+    options = inspectionOptions document activeDocument
+    inspected = Schema.inspectOptions (configPathPresent document) document activeDocument options
     grouped = foldl' addOption Map.empty (zip options inspected)
     addOption sections (configOption, value) =
       Map.insertWith (flip (<>)) (safeInit (Schema.optionPath configOption)) [value] sections
     sectionJson (path, values) = Aeson.object
       [ "path" Aeson..= path
-      , "label" Aeson..= sectionLabel path
+      , "label" Aeson..= metadata.label
+      , "group" Aeson..= groupJson metadata.group
+      , "optional" Aeson..= metadata.optional
+      , "present" Aeson..= (not metadata.optional || configSectionPresent document path)
       , "repeatable" Aeson..= isRepeatableInstance path
       , "options" Aeson..= values
       ]
+      where
+        metadata = fromMaybe (error [i|missing configuration section metadata for #{path}|]) $
+          find ((== path) . (.path)) (configDocumentSections document activeDocument)
+
+inspectionOptions :: ConfigDocument -> ConfigDocument -> [Schema.ConfigOption ConfigDocument ConfigDocument]
+inspectionOptions document activeDocument =
+  Schema.mapOptions (.fileConfig) (.runtimeConfig) configSchema.options
+    <> Schema.prefixOptions ["llm"]
+      (Schema.mapOptions ((.llm) . (.fileConfig)) ((.llm) . (.fileConfig)) LLMConfig.schema.options)
+    <> providerInspectionOptions "chat_provider" (.chatProviders) LLMConfig.chatProviderSchema.options
+    <> providerInspectionOptions "image_provider" (.imageProviders) LLMConfig.imageProviderSchema.options
+    <> providerInspectionOptions "audio_provider" (.audioProviders) LLMConfig.audioProviderSchema.options
+  where
+    providerInspectionOptions
+      :: Text
+      -> (LLMConfig.FileConfig -> Map Text provider)
+      -> [Schema.ConfigOption provider provider]
+      -> [Schema.ConfigOption ConfigDocument ConfigDocument]
+    providerInspectionOptions family getter options =
+      concatMap instantiate providerNames
+      where
+        providerNames = Map.keysSet (getter document.fileConfig.llm) `mappend` Map.keysSet (getter activeDocument.fileConfig.llm)
+        instantiate name =
+          Schema.prefixOptions ["llm", family, name] $
+            Schema.mapMaybeOptions
+              (Map.lookup name . getter . (.llm) . (.fileConfig))
+              (Map.lookup name . getter . (.llm) . (.fileConfig))
+              options
 
 renderConfigValueAt :: ConfigDocument -> [Text] -> Aeson.Value -> Either Text Text
 renderConfigValueAt document path value =
@@ -370,11 +428,10 @@ configOptionKnownAt :: ConfigDocument -> [Text] -> Bool
 configOptionKnownAt document = isJust . findConfigOption document
 
 configDocumentOptionValues :: ConfigDocument -> Map [Text] Aeson.Value
-configDocumentOptionValues document = Map.fromList $ zip paths values
-  where
-    options = configDocumentOptions document
-    paths = map Schema.optionPath options
-    values = Schema.inspectOptions (configPathPresent document) document document options
+configDocumentOptionValues document = Map.fromList
+  [ (Schema.optionPath option, Schema.optionEffectiveJson document option)
+  | option <- configDocumentOptions document
+  ]
 
 findConfigOption :: ConfigDocument -> [Text] -> Maybe (Schema.ConfigOption ConfigDocument ConfigDocument)
 findConfigOption document path =
@@ -406,20 +463,62 @@ configRepeatableSection ["llm", family, name] =
 configRepeatableSection _ = False
 
 repeatableSections :: [Aeson.Value]
-repeatableSections =
-  [ template "chat_provider" "Chat providers" LLMConfig.defaultChatProviderFileConfig LLMConfig.chatProviderSchema.options
-  , template "image_provider" "Image providers" LLMConfig.defaultImageProviderFileConfig LLMConfig.imageProviderSchema.options
-  , template "audio_provider" "Audio providers" LLMConfig.defaultAudioProviderFileConfig LLMConfig.audioProviderSchema.options
-  ]
+repeatableSections = map template (Schema.prefixRepeatableSections ["llm"] LLMConfig.schema.repeatableSections)
   where
-    template family label defaults options = Aeson.object
-      [ "path" Aeson..= (["llm", family] :: [Text])
-      , "label" Aeson..= (label :: Text)
-      , "options" Aeson..= Schema.inspectOptions (const False) defaults defaults (Schema.prefixOptions ["llm", family, "*"] options)
+    template metadata@Schema.RepeatableSection{path = ["llm", family]} = Aeson.object
+      [ "path" Aeson..= metadata.path
+      , "label" Aeson..= metadata.label
+      , "group" Aeson..= groupJson metadata.group
+      , "options" Aeson..= templateOptions family
       ]
+    template Schema.RepeatableSection{path = sectionPath} =
+      error [i|invalid repeatable configuration section path #{sectionPath}|]
+
+    templateOptions = \case
+      "chat_provider" -> inspect LLMConfig.defaultChatProviderFileConfig LLMConfig.chatProviderSchema.options "chat_provider"
+      "image_provider" -> inspect LLMConfig.defaultImageProviderFileConfig LLMConfig.imageProviderSchema.options "image_provider"
+      "audio_provider" -> inspect LLMConfig.defaultAudioProviderFileConfig LLMConfig.audioProviderSchema.options "audio_provider"
+      family -> error [i|missing repeatable configuration options for #{family}|]
+
+    inspect defaults options family =
+      Schema.inspectOptions (const False) defaults defaults (Schema.prefixOptions ["llm", family, "*"] options)
+
+configDocumentSections :: ConfigDocument -> ConfigDocument -> [Schema.ConfigSection]
+configDocumentSections document activeDocument =
+  configSchema.sections
+    <> Schema.prefixSections ["llm"] LLMConfig.schema.sections
+    <> providerSections "chat_provider" (.chatProviders)
+    <> providerSections "image_provider" (.imageProviders)
+    <> providerSections "audio_provider" (.audioProviders)
+  where
+    providerSections
+      :: Text
+      -> (LLMConfig.FileConfig -> Map Text provider)
+      -> [Schema.ConfigSection]
+    providerSections family getter =
+      [ Schema.ConfigSection
+          { path = ["llm", family, name]
+          , label = name
+          , group = metadata.group
+          , optional = False
+          }
+      | name <- toList (Map.keysSet (getter document.fileConfig.llm) `mappend` Map.keysSet (getter activeDocument.fileConfig.llm))
+      ]
+      where
+        metadata = fromMaybe (error [i|missing repeatable configuration metadata for #{family}|]) $
+          find ((== [family]) . (.path)) LLMConfig.schema.repeatableSections
+
+groupJson :: Schema.ConfigGroup -> Aeson.Value
+groupJson sectionGroup = Aeson.object
+  [ "path" Aeson..= sectionGroup.path
+  , "label" Aeson..= sectionGroup.label
+  ]
 
 configPathPresent :: ConfigDocument -> [Text] -> Bool
 configPathPresent document = isJust . lookupTablePath document.table
+
+configSectionPresent :: ConfigDocument -> [Text] -> Bool
+configSectionPresent document = isJust . lookupTablePath document.table
 
 lookupTablePath :: TomlValue.Table' annotation -> [Text] -> Maybe (TomlValue.Value' annotation)
 lookupTablePath _ [] = Nothing
@@ -432,11 +531,6 @@ safeInit :: [a] -> [a]
 safeInit [] = []
 safeInit [_] = []
 safeInit (value : rest) = value : safeInit rest
-
-sectionLabel :: [Text] -> Text
-sectionLabel [] = "General"
-sectionLabel path = Text.intercalate " / " (map humanize path)
-  where humanize = Text.toTitle . Text.replace "_" " "
 
 isRepeatableInstance :: [Text] -> Bool
 isRepeatableInstance path = case path of

@@ -67,6 +67,8 @@ schema = Schema.ConfigSchema
       , Schema.option ["allowed_rooms"] "Allowed rooms" "Rooms allowed to use the bot." owner (Schema.list "text") [] Aeson.Null (.allowedRooms) (.allowedRooms)
       , Schema.option ["superusers"] "Superusers" "Matrix users with administrative access." owner (Schema.list "text") [] Aeson.Null (.superusers) (.superusers)
       ]
+  , Schema.sections = [Schema.section [] "Matrix" ["drivers"] "Chat drivers"]
+  , Schema.repeatableSections = []
   }
   where owner = "Bot.Chat.Driver.Matrix.Config"
 

@@ -128,6 +128,13 @@ schema = Schema.ConfigSchema
       , Schema.optionalOption ["web_search", "tavily_api_key"] "Tavily API key" "Tavily API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.tavilyApiKey) . (.webSearch)) (fmap Schema.Secret . (.tavilyApiKey))
       , Schema.optionalOption ["web_search", "exa_api_key"] "Exa API key" "Exa API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.exaApiKey) . (.webSearch)) (fmap Schema.Secret . (.exaApiKey))
       ]
+  , Schema.sections =
+      [ Schema.section [] "General" ["tools"] "Tools & resources"
+      , Schema.section ["python"] "Python" ["tools"] "Tools & resources"
+      , Schema.section ["web_fetch"] "Web fetch" ["tools"] "Tools & resources"
+      , Schema.section ["web_search"] "Web search" ["tools"] "Tools & resources"
+      ]
+  , Schema.repeatableSections = []
   }
   where
     owner = "Bot.Agent.Config"

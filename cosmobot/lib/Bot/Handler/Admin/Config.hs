@@ -42,6 +42,8 @@ schema = Schema.ConfigSchema
           (fmap (toText . (.script)) . (.upgrade))
           (fmap (toText . (.script)) . (.upgrade))
       ]
+  , Schema.sections = [Schema.section ["upgrade"] "Upgrade" ["handlers"] "Handlers"]
+  , Schema.repeatableSections = []
   }
 
 instance FromValue AdminConfig where

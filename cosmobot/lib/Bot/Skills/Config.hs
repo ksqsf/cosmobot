@@ -36,6 +36,8 @@ schema = Schema.ConfigSchema
   , Schema.options =
       [ Schema.option ["dir"] "Directory" "Skills directory." "Bot.Skills.Config" Schema.text (toText defaultFileConfig.dir) Aeson.Null (toText . (.dir)) (toText . (.dir))
       ]
+  , Schema.sections = [Schema.section [] "Skills" ["data"] "Data"]
+  , Schema.repeatableSections = []
   }
 
 instance FromValue FileConfig where

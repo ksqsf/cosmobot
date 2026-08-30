@@ -262,6 +262,12 @@ schema = Schema.ConfigSchema
       , selector "image" "Image provider" "Named provider used for image generation and editing." (.selectedImage)
       , selector "audio" "Audio provider" "Named provider used for speech generation." (.selectedAudio)
       ]
+  , Schema.sections = [Schema.section [] "General" ["llm"] "LLM"]
+  , Schema.repeatableSections =
+      [ Schema.repeatableSection ["chat_provider"] "Chat providers" ["llm"] "LLM"
+      , Schema.repeatableSection ["image_provider"] "Image providers" ["llm"] "LLM"
+      , Schema.repeatableSection ["audio_provider"] "Audio providers" ["llm"] "LLM"
+      ]
   }
   where
     selector key label description getter = Schema.optionalOption [key] label description "Bot.LLM.OpenAI.Config" Schema.text False Aeson.Null getter getter
@@ -311,6 +317,8 @@ chatProviderSchema = Schema.ConfigSchema
       , Schema.option ["reasoning_effort"] "Reasoning effort" "Requested reasoning effort." owner Schema.text defaultChatProviderConfig.reasoningEffort Aeson.Null (.reasoningEffort) (.reasoningEffort)
       , Schema.option ["timeout"] "Timeout" "Request timeout in seconds." owner Schema.integer defaultChatProviderConfig.requestTimeout positive (.requestTimeout) (.requestTimeout)
       ]
+  , Schema.sections = [Schema.section [] "Chat provider" ["llm"] "LLM"]
+  , Schema.repeatableSections = []
   }
   where
     owner = "Bot.LLM.OpenAI.Config"
@@ -363,6 +371,8 @@ imageProviderSchema = Schema.ConfigSchema
       , optionalText "background" "Background" "Optional background mode." (.background)
       , optionalText "moderation" "Moderation" "Optional moderation mode." (.moderation)
       ]
+  , Schema.sections = [Schema.section [] "Image provider" ["llm"] "LLM"]
+  , Schema.repeatableSections = []
   }
   where
     owner = "Bot.LLM.OpenAI.Config"
@@ -405,6 +415,8 @@ audioProviderSchema = Schema.ConfigSchema
       , Schema.optionalOption ["speed"] "Speed" "Optional speech speed multiplier." owner Schema.number False positive (.speed) (.speed)
       , Schema.optionalOption ["instructions"] "Instructions" "Optional speech instructions." owner Schema.text False Aeson.Null (.instructions) (.instructions)
       ]
+  , Schema.sections = [Schema.section [] "Audio provider" ["llm"] "LLM"]
+  , Schema.repeatableSections = []
   }
   where
     owner = "Bot.LLM.OpenAI.Config"

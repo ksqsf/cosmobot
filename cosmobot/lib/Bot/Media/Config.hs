@@ -59,6 +59,8 @@ schema = Schema.ConfigSchema
     publicBaseUrl <- optKey "public_base_url"
     compressionFormat <- optKey "compression_format"
     compressionLevel <- optKey "compression_level"
+    traverse_ (\level -> when (level < 0 || level > 100) $
+      fail "media.compression_level must be between 0 and 100") compressionLevel
     gc <- fromMaybe defaultConfig.gc <$> optKey "gc"
     s3 <- fromMaybe defaultConfig.s3 <$> optKey "s3"
     let compression = Image.ImageCompressionConfig{compressionFormat, compressionLevel}
@@ -72,6 +74,11 @@ schema = Schema.ConfigSchema
       , Schema.option ["gc", "older_than_days"] "Maximum age" "Age in days before unreferenced media is eligible." owner Schema.integer defaultGcConfig.olderThanDays (Aeson.object ["minimum" Aeson..= (0 :: Int)]) ((.olderThanDays) . (.gc)) ((.olderThanDays) . (.gc))
       , Schema.option ["gc", "interval_hours"] "Collection interval" "Hours between garbage collection passes." owner Schema.integer defaultGcConfig.intervalHours (Aeson.object ["minimum" Aeson..= (1 :: Int)]) ((.intervalHours) . (.gc)) ((.intervalHours) . (.gc))
       ] <> Schema.prefixOptions ["s3"] (Schema.mapOptions (.s3) (.s3) S3.schema.options)
+  , Schema.sections =
+      [ Schema.section [] "General" ["media"] "Media"
+      , Schema.section ["gc"] "GC" ["media"] "Media"
+      ] <> Schema.prefixSections ["s3"] S3.schema.sections
+  , Schema.repeatableSections = []
   }
   where owner = "Bot.Media.Config"
 
@@ -83,4 +90,8 @@ instance FromValue GcConfig where
     enabled <- fromMaybe defaultGcConfig.enabled <$> optKey "enabled"
     olderThanDays <- fromMaybe defaultGcConfig.olderThanDays <$> optKey "older_than_days"
     intervalHours <- fromMaybe defaultGcConfig.intervalHours <$> optKey "interval_hours"
+    when (olderThanDays < 0) $
+      fail "media.gc.older_than_days must not be negative"
+    when (intervalHours <= 0) $
+      fail "media.gc.interval_hours must be positive"
     pure GcConfig{enabled, olderThanDays, intervalHours}

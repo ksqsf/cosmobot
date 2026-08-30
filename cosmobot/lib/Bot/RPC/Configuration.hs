@@ -47,6 +47,11 @@ data RollbackParams = RollbackParams
   , backupRevision :: !Text
   }
 
+data ReadSource = ReadSource
+  { sourceText :: !(Either Config.ConfigDiagnostic Text)
+  , readRevision :: !Text
+  }
+
 newtype ConfigTargetError = ConfigTargetError Text
   deriving stock (Show)
 
@@ -88,11 +93,11 @@ getConfiguration configuration request =
     Right () -> do
       readCurrent configuration >>= \case
         Left message -> pure (Left (RPC.rpcError "config_write_failed" message))
-        Right (source, revision) -> do
+        Right ReadSource{sourceText, readRevision = revision} -> do
           backup <- backupMetadata configuration
-          pure . Right $ case Config.parseConfigDocument configuration.path source of
-            Left diagnostics -> configurationJson configuration.activeDocument revision configuration.activeRevision False diagnostics backup
-            Right document -> configurationJson document revision configuration.activeRevision True [] backup
+          pure . Right $ case first pure sourceText >>= Config.parseConfigDocument configuration.path of
+            Left diagnostics -> configurationJson configuration.activeDocument configuration.activeDocument revision configuration.activeRevision False diagnostics backup
+            Right document -> configurationJson document configuration.activeDocument revision configuration.activeRevision True [] backup
 
 validateConfiguration
   :: (FileSystem.FileSystem :> es, IOE :> es)
@@ -112,9 +117,10 @@ validateAgainstCurrent
 validateAgainstCurrent configuration params =
   readCurrent configuration >>= \case
     Left message -> pure (Left (RPC.rpcError "config_write_failed" message))
-    Right (source, revision)
+    Right ReadSource{sourceText, readRevision = revision}
       | revision /= params.revision -> pure (Left revisionConflict)
       | otherwise -> pure $ do
+          source <- first (const (invalidSource [])) sourceText
           current <- first invalidSource (Config.parseConfigDocument configuration.path source)
           changedSource <- first editError (Edit.applyConfigChanges current params.changes)
           case Config.parseConfigDocument configuration.path changedSource of
@@ -123,9 +129,9 @@ validateAgainstCurrent configuration params =
               , "revision" Aeson..= revision
               , "diagnostics" Aeson..= diagnostics
               , "diff" Aeson..= ([] :: [Aeson.Value])
-              , "restartRequired" Aeson..= True
+              , "restartRequired" Aeson..= (changedSource /= source)
               ]
-            Right changed -> Right $ validationJson revision current changed
+            Right changed -> Right $ validationJson (changedSource /= source) revision params.changes current changed
 
 updateConfiguration
   :: (Concurrent :> es, FileSystem.FileSystem :> es, KatipE :> es, IOE :> es)
@@ -138,9 +144,10 @@ updateConfiguration configuration request =
     Right params -> do
       readCurrent configuration >>= \case
         Left message -> pure (Left (RPC.rpcError "config_write_failed" message))
-        Right (source, revision)
+        Right ReadSource{sourceText, readRevision = revision}
           | revision /= params.revision -> pure (Left revisionConflict)
-          | otherwise -> case Config.parseConfigDocument configuration.path source of
+          | Left _ <- sourceText -> pure (Left (RPC.rpcError "validation_failed" "Current configuration is invalid"))
+          | Right source <- sourceText -> case Config.parseConfigDocument configuration.path source of
               Left _ -> pure (Left (RPC.rpcError "validation_failed" "Current configuration is invalid"))
               Right current -> case Edit.applyConfigChanges current params.changes of
                 Left err -> pure (Left (editError err))
@@ -149,7 +156,7 @@ updateConfiguration configuration request =
                   Right changed
                     | changedSource == source -> do
                         logConfigurationOperation "update_noop" revision revision (map configChangePath params.changes)
-                        pure (Right $ updateJson False revision revision (Edit.semanticDiff current changed))
+                        pure (Right $ updateJson False revision revision (Edit.semanticDiff params.changes current changed))
                     | otherwise -> do
                         writeResult <- trySync (atomicReplace configuration.path source changedSource)
                         case writeResult of
@@ -157,7 +164,7 @@ updateConfiguration configuration request =
                           Right () -> do
                             let newRevision = sourceRevision changedSource
                             logConfigurationOperation "update" revision newRevision (map configChangePath params.changes)
-                            pure (Right $ updateJson True newRevision revision (Edit.semanticDiff current changed))
+                            pure (Right $ updateJson True newRevision revision (Edit.semanticDiff params.changes current changed))
 
 rollbackConfiguration
   :: (Concurrent :> es, FileSystem.FileSystem :> es, KatipE :> es, IOE :> es)
@@ -198,31 +205,32 @@ rollbackConfiguration configuration request =
 
 configurationJson
   :: Config.ConfigDocument
+  -> Config.ConfigDocument
   -> Text
   -> Text
   -> Bool
   -> [Config.ConfigDiagnostic]
   -> Maybe Aeson.Value
   -> Aeson.Value
-configurationJson document revision activeRevision valid diagnostics backup =
+configurationJson document activeDocument revision activeRevision valid diagnostics backup =
   Aeson.object
-    [ "schemaVersion" Aeson..= (1 :: Int)
+    [ "schemaVersion" Aeson..= (2 :: Int)
     , "revision" Aeson..= revision
     , "activeRevision" Aeson..= activeRevision
     , "sourceState" Aeson..= if valid then ("valid" :: Text) else "invalid"
     , "editable" Aeson..= valid
     , "diagnostics" Aeson..= diagnostics
-    , "configuration" Aeson..= Config.configDocumentInspection document
+    , "configuration" Aeson..= Config.configDocumentInspection document activeDocument
     , "backup" Aeson..= backup
     ]
 
-validationJson :: Text -> Config.ConfigDocument -> Config.ConfigDocument -> Aeson.Value
-validationJson revision current changed = Aeson.object
+validationJson :: Bool -> Text -> [Edit.ConfigChange] -> Config.ConfigDocument -> Config.ConfigDocument -> Aeson.Value
+validationJson restartRequired revision changes current changed = Aeson.object
   [ "valid" Aeson..= True
   , "revision" Aeson..= revision
   , "diagnostics" Aeson..= ([] :: [Aeson.Value])
-  , "diff" Aeson..= Edit.semanticDiff current changed
-  , "restartRequired" Aeson..= True
+  , "diff" Aeson..= Edit.semanticDiff changes current changed
+  , "restartRequired" Aeson..= restartRequired
   ]
 
 updateJson :: Bool -> Text -> Text -> [Aeson.Value] -> Aeson.Value
@@ -280,9 +288,24 @@ logConfigurationOperation operation revision newRevision changedPaths =
 readCurrent
   :: (FileSystem.FileSystem :> es, IOE :> es)
   => Configuration
-  -> Eff es (Either Text (Text, Text))
-readCurrent configuration =
-  readUtf8File configuration.path <&> fmap \source -> (source, sourceRevision source)
+  -> Eff es (Either Text ReadSource)
+readCurrent configuration = do
+  result <- trySync (FileSystemByteString.readFile configuration.path)
+  pure $ case result of
+    Left (_ :: SomeException) -> Left "Configuration file could not be read"
+    Right bytes -> Right ReadSource
+      { sourceText = first (const invalidUtf8Diagnostic) (TextEncoding.decodeUtf8' bytes)
+      , readRevision = sourceRevisionBytes bytes
+      }
+
+invalidUtf8Diagnostic :: Config.ConfigDiagnostic
+invalidUtf8Diagnostic = Config.ConfigDiagnostic
+  { path = []
+  , code = "invalid_utf8"
+  , message = "Configuration file is not valid UTF-8"
+  , line = Nothing
+  , column = Nothing
+  }
 
 readUtf8File
   :: (FileSystem.FileSystem :> es, IOE :> es)
@@ -305,8 +328,11 @@ backupMetadata configuration = do
     readUtf8File backupPath <&> either (const Nothing) (Just . (\revision -> Aeson.object ["revision" Aeson..= revision]) . sourceRevision)
 
 sourceRevision :: Text -> Text
-sourceRevision source =
-  toText (show (CryptoHash.hash (TextEncoding.encodeUtf8 source) :: CryptoHash.Digest CryptoHash.SHA256) :: String)
+sourceRevision = sourceRevisionBytes . TextEncoding.encodeUtf8
+
+sourceRevisionBytes :: ByteString -> Text
+sourceRevisionBytes source =
+  toText (show (CryptoHash.hash source :: CryptoHash.Digest CryptoHash.SHA256) :: String)
 
 atomicReplace
   :: (FileSystem.FileSystem :> es, IOE :> es)
@@ -328,10 +354,17 @@ atomicReplace path previous replacement = do
     Temporary.withTempDirectory directory ".cosmobot-config-" \temporaryDirectory -> do
       let newPath = temporaryDirectory </> "new"
           oldPath = temporaryDirectory </> "previous"
+          savedBackupPath = temporaryDirectory </> "backup"
       writeReplacement status newPath replacement
       writeReplacement status oldPath previous
-      FileSystem.renameFile oldPath backupPath
-      FileSystem.renameFile newPath path
+      mask_ do
+        when backupExists (FileSystem.renameFile backupPath savedBackupPath)
+        let restoreBackup = do
+              installedBackup <- FileSystem.doesPathExist backupPath
+              when installedBackup (FileSystem.removeFile backupPath)
+              when backupExists (FileSystem.renameFile savedBackupPath backupPath)
+        (FileSystem.renameFile oldPath backupPath >> FileSystem.renameFile newPath path)
+          `onException` restoreBackup
 
 checkedTarget
   :: (FileSystem.FileSystem :> es, IOE :> es)

@@ -233,6 +233,7 @@ addSection source path = do
   located <- locateSource source
   when (any ((== path) . (.path)) located.tables) (invalid path "configuration section already exists")
   when (unsupportedInlineTarget located path) (unsupported path)
+  when (sectionSourceExists located path) (unsupported path)
   pure (appendTable source path "")
 
 removeSection :: Text -> [Text] -> Either ConfigEditError Text
@@ -241,20 +242,34 @@ removeSection source path = do
   case find ((== path) . (.path)) located.tables of
     Nothing
       | unsupportedInlineTarget located path -> unsupported path
+      | sectionSourceExists located path -> unsupported path
       | otherwise -> pure source
     Just table
       | table.arrayTable -> unsupported path
+      | hasNonContiguousDescendants located table path -> unsupported path
       | otherwise ->
           let owned = takeWhile (\candidate -> path `isPrefixOf` candidate.path) (dropWhile ((< table.start) . (.start)) located.tables)
               sectionEnd = maybe table.end (.end) (viaNonEmpty last owned)
           in pure (replaceSpan table.start sectionEnd "" source)
+
+sectionSourceExists :: LocatedSource -> [Text] -> Bool
+sectionSourceExists located path =
+  any (\assignment -> path `isPrefixOf` assignment.path) located.assignments
+    || any (\table -> path `isPrefixOf` table.path) located.tables
+
+hasNonContiguousDescendants :: LocatedSource -> LocatedTable -> [Text] -> Bool
+hasNonContiguousDescendants located table path =
+  any (\candidate -> path `isPrefixOf` candidate.path) afterOwned
+  where
+    following = dropWhile ((< table.start) . (.start)) located.tables
+    afterOwned = dropWhile (\candidate -> path `isPrefixOf` candidate.path) following
 
 unsupportedInlineTarget :: LocatedSource -> [Text] -> Bool
 unsupportedInlineTarget located target =
   any (\assignment -> assignment.inlineTable && assignment.path `isPrefixOf` target) located.assignments
 
 unsupported :: [Text] -> Either ConfigEditError a
-unsupported path = Left (ConfigEditError "unsupported_source_shape" "inline tables and array tables cannot be edited safely" path)
+unsupported path = Left (ConfigEditError "unsupported_source_shape" "configuration source shape cannot be edited safely" path)
 
 invalid :: [Text] -> Text -> Either ConfigEditError a
 invalid path message = Left (ConfigEditError "invalid_change" message path)
@@ -341,29 +356,32 @@ scanValueEnd source start = trimEnd (go start Normal 0 0 False)
             | at index == '\'' -> go (index + 1) Normal squares curlies False
             | otherwise -> go (index + 1) Literal squares curlies False
           MultiBasic
-            | starts index "\"\"\"" -> go (index + 3) Normal squares curlies False
+            | starts index "\"\"\"" -> go (index + quoteRun index '\"') Normal squares curlies False
             | escaped -> go (index + 1) MultiBasic squares curlies False
             | at index == '\\' -> go (index + 1) MultiBasic squares curlies True
             | otherwise -> go (index + 1) MultiBasic squares curlies False
           MultiLiteral
-            | starts index "'''" -> go (index + 3) Normal squares curlies False
+            | starts index "'''" -> go (index + quoteRun index '\'') Normal squares curlies False
             | otherwise -> go (index + 1) MultiLiteral squares curlies False
     skipComment index = index + Text.length (Text.takeWhile (/= '\n') (Text.drop index source))
+    quoteRun index quote = Text.length (Text.takeWhile (== quote) (Text.drop index source))
     trimEnd end =
       let value = Text.take (end - start) (Text.drop start source)
       in end - Text.length (Text.takeWhileEnd (`elem` [' ', '\t']) value)
 
-semanticDiff :: Config.ConfigDocument -> Config.ConfigDocument -> [Aeson.Value]
-semanticDiff before after = map render changedPaths
+semanticDiff :: [ConfigChange] -> Config.ConfigDocument -> Config.ConfigDocument -> [Aeson.Value]
+semanticDiff changes before after = map render changedPaths
   where
     beforeValues = Config.configDocumentOptionValues before
     afterValues = Config.configDocumentOptionValues after
     paths = Set.toList (Map.keysSet beforeValues <> Map.keysSet afterValues)
-    changedPaths = filter (\path -> Map.lookup path beforeValues /= Map.lookup path afterValues) paths
+    changedPaths = Set.toList $ Set.fromList
+      (filter (\path -> Map.lookup path beforeValues /= Map.lookup path afterValues) paths <> replacedSecrets)
+    replacedSecrets = [path | ReplaceSecret path _ <- changes]
     render path = Aeson.object
       [ "path" Aeson..= path
-      , "before" Aeson..= Map.lookup path beforeValues
-      , "after" Aeson..= Map.lookup path afterValues
+      , "before" Aeson..= Map.findWithDefault Aeson.Null path beforeValues
+      , "after" Aeson..= Map.findWithDefault Aeson.Null path afterValues
       , "activation" Aeson..= ("restart" :: Text)
       ]
 

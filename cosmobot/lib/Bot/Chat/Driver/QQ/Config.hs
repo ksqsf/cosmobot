@@ -54,6 +54,8 @@ schema = Schema.ConfigSchema
       , Schema.option ["allowed_users"] "Allowed users" "QQ users allowed to use the bot." owner (Schema.list "integer") [] Aeson.Null (.allowedUsers) (.allowedUsers)
       , Schema.option ["superusers"] "Superusers" "QQ users with administrative access." owner (Schema.list "integer") [] Aeson.Null (.superusers) (.superusers)
       ]
+  , Schema.sections = [Schema.section [] "QQ" ["drivers"] "Chat drivers"]
+  , Schema.repeatableSections = []
   }
   where
     owner = "Bot.Chat.Driver.QQ.Config"

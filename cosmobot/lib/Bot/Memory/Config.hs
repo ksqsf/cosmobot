@@ -36,6 +36,8 @@ schema = Schema.ConfigSchema
   , Schema.options =
       [ Schema.option ["dir"] "Directory" "Persistent memory directory." "Bot.Memory.Config" Schema.text (toText defaultFileConfig.dir) Aeson.Null (toText . (.dir)) (toText . (.dir))
       ]
+  , Schema.sections = [Schema.section [] "Memory" ["data"] "Data"]
+  , Schema.repeatableSections = []
   }
 
 instance FromValue FileConfig where

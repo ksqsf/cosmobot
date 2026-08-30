@@ -72,6 +72,8 @@ schema = Schema.ConfigSchema
       , Schema.option ["gateway_host"] "Gateway host" "Discord gateway host." owner Schema.text (toText defaultFileConfig.gatewayHost) Aeson.Null (toText . (.gatewayHost)) (toText . (.gatewayHost))
       , Schema.option ["gateway_path"] "Gateway path" "Discord gateway websocket path." owner Schema.text (toText defaultFileConfig.gatewayPath) Aeson.Null (toText . (.gatewayPath)) (toText . (.gatewayPath))
       ]
+  , Schema.sections = [Schema.section [] "Discord" ["drivers"] "Chat drivers"]
+  , Schema.repeatableSections = []
   }
   where
     owner = "Bot.Chat.Driver.Discord.Config"

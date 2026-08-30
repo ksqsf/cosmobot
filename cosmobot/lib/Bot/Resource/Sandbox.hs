@@ -62,6 +62,8 @@ schema = Schema.ConfigSchema
   , Schema.options =
       [ Schema.option ["image"] "Image" "Container image used for managed sandboxes." "Bot.Resource.Sandbox" Schema.text defaultConfig.image (Aeson.object ["minLength" Aeson..= (1 :: Int)]) (.image) (.image)
       ]
+  , Schema.sections = [Schema.section [] "Sandbox" ["tools"] "Tools & resources"]
+  , Schema.repeatableSections = []
   }
 
 instance FromValue Config where

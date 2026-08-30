@@ -38,6 +38,8 @@ schema = Schema.ConfigSchema
     drawCommand <- fromMaybe "!draw" <$> optKey "draw_command"
     systemPrompt <- reqKey "system_prompt"
     agentMaxTurns <- fromMaybe 4 <$> optKey "agent_max_turns"
+    when (agentMaxTurns <= 0) $
+      fail "handler.ask.agent_max_turns must be positive"
     contextStrategyText <- fromMaybe ("compaction" :: Text) <$> optKey "context_strategy"
     contextStrategy <- case contextStrategyText of
       "compaction" -> pure ContextCompaction
@@ -65,6 +67,8 @@ schema = Schema.ConfigSchema
       , Schema.option ["context_strategy"] "Context strategy" "Transcript context strategy." owner (Schema.enum ["compaction", "recursive_transcript"]) "compaction" Aeson.Null (renderContextStrategy . (.contextStrategy)) (renderContextStrategy . (.contextStrategy))
       , Schema.option ["context_compaction_threshold_ktokens"] "Compaction threshold" "Context threshold in thousands of tokens." owner Schema.integer (1000 :: Int) (Aeson.object ["minimum" Aeson..= (1 :: Int)]) (.contextCompactionThresholdKTokens) (.contextCompactionThresholdKTokens)
       ]
+  , Schema.sections = [Schema.section [] "Ask" ["handlers"] "Handlers"]
+  , Schema.repeatableSections = []
   }
   where owner = "Bot.Handler.Ask.Config"
 

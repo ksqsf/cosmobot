@@ -55,6 +55,8 @@ schema = Schema.ConfigSchema
           (map (.source) . (.deletePatterns))
           (map (.source) . (.deletePatterns))
       ]
+  , Schema.sections = [Schema.section [] "Shut up" ["handlers"] "Handlers"]
+  , Schema.repeatableSections = []
   }
 
 instance FromValue ShutUpConfig where

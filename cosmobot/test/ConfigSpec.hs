@@ -11,6 +11,7 @@ import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
@@ -38,14 +39,24 @@ main =
       , testCase "Python tool converted bounds reject overflow" testPythonOverflow
       , testCase "Python wall timeout is at most one hour" testPythonWallTimeoutBound
       , testCase "Python tool rejects unknown keys" testPythonUnknownKey
+      , testCase "advertised numeric constraints are enforced by owner parsers" testAdvertisedNumericConstraints
       , testCase "plugin directory resolves beside config" testPluginDirectory
       , testCase "inspection and Show redact secrets" testSecretRedaction
+      , testCase "inspection uses owner-defined section metadata" testInspectionSectionMetadata
+      , testCase "inspection separates current source from active runtime" testInspectionActiveRuntime
       , testCase "invalid secret diagnostics redact source values" testSecretDiagnosticRedaction
       , testCase "scalar edits preserve comments and surrounding bytes" testScalarEditPreservesComments
+      , testCase "multiline edits preserve bytes outside the changed value" testMultilineEditPreservesOutsideBytes
+      , testCase "multiline closing quote runs preserve following bytes" testMultilineClosingQuoteRuns
       , testCase "insertions preserve CRLF newlines" testEditPreservesCrLf
+      , testCase "dotted and quoted keys resolve by path segments" testDottedAndQuotedKeys
+      , testCase "mixed identity lists preserve integer and text identities" testMixedIdentityList
       , testCase "named providers quote arbitrary names" testNamedProviderInsertion
       , testCase "provider removal preserves following sections" testProviderRemoval
+      , testCase "conflicting edits are rejected atomically" testConflictingEdits
       , testCase "inline tables are rejected without reformatting" testInlineTableRejected
+      , testCase "unsupported section source shapes are rejected" testUnsupportedSectionShapes
+      , testCase "semantic diffs contain values and redact replaced secrets" testSemanticDiff
       , testCase "every example assignment has one typed option" testExampleOptionCoverage
       ]
 
@@ -196,6 +207,20 @@ testPythonUnknownKey =
   assertConfigFailureContains "unknown tool.python keys: timeout" $
     pythonConfig ["timeout = 30"]
 
+testAdvertisedNumericConstraints :: IO ()
+testAdvertisedNumericConstraints =
+  for_ cases \(expected, source) -> assertConfigFailureContains expected source
+  where
+    cases =
+      [ ("rpc.port must be between 1 and 65535", minimalConfig <> "\n[rpc]\nport = 0\n")
+      , ("acp.port must be between 1 and 65535", minimalConfig <> "\n[acp]\nport = 65536\n")
+      , ("media.compression_level must be between 0 and 100", minimalConfig <> "\n[media]\ncompression_level = 101\n")
+      , ("media.gc.older_than_days must not be negative", minimalConfig <> "\n[media.gc]\nolder_than_days = -1\n")
+      , ("media.gc.interval_hours must be positive", minimalConfig <> "\n[media.gc]\ninterval_hours = 0\n")
+      , ("handler.ask.agent_max_turns must be positive", Text.replace "command = \"!ask\"" "command = \"!ask\"\nagent_max_turns = 0" minimalConfig)
+      , ("handler.console.agent_max_turns must be positive", Text.replace "system_prompt = \"You are a coding agent.\"" "system_prompt = \"You are a coding agent.\"\nagent_max_turns = 0" minimalConfig)
+      ]
+
 testPluginDirectory :: IO ()
 testPluginDirectory =
   withSystemTempDirectory "cosmobot-config-spec-" \dir -> do
@@ -210,13 +235,111 @@ testSecretRedaction = do
   let sentinel = "sentinel-config-secret"
       source = "[rpc]\ntoken = \"" <> sentinel <> "\"\n\n" <> minimalConfig
   document <- parseDocument source
-  let inspected = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $ Config.configDocumentInspection document
+  let inspected = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $ Config.configDocumentInspection document document
   assertBool "inspection leaked a credential" (not (sentinel `Text.isInfixOf` inspected))
   assertBool "BotConfig Show leaked a credential" (not (sentinel `Text.isInfixOf` toText (show (Config.configDocumentRuntime document) :: String)))
   for_ [ ConfigEdit.ReplaceSecret ["rpc", "token"] sentinel
        , ConfigEdit.SetOption ["rpc", "token"] (Aeson.String sentinel)
        ] \change ->
     assertBool "ConfigChange Show leaked a credential" (not (sentinel `Text.isInfixOf` toText (show change :: String)))
+
+testInspectionSectionMetadata :: IO ()
+testInspectionSectionMetadata = do
+  document <- parseDocument minimalConfig
+  sections <- either assertFailure pure (AesonTypes.parseEither parseSectionMetadata (Config.configDocumentInspection document document))
+  let expected =
+        [ (["acp"], "ACP", ["interfaces"], "Interfaces")
+        , (["rpc"], "RPC", ["interfaces"], "Interfaces")
+        , (["driver", "qq"], "QQ", ["drivers"], "Chat drivers")
+        , (["llm"], "General", ["llm"], "LLM")
+        , (["media", "gc"], "GC", ["media"], "Media")
+        , (["media", "s3"], "S3", ["media"], "Media")
+        , (["handler", "saucenao"], "SauceNAO", ["handlers"], "Handlers")
+        ]
+  for_ expected \entry@(path, _, _, _) ->
+    assertBool [i|missing exact section metadata for #{path}|] (entry `elem` sections)
+  repeatables <- either assertFailure pure (AesonTypes.parseEither parseRepeatableMetadata (Config.configDocumentInspection document document))
+  repeatables @?=
+    [ (["llm", "chat_provider"], "Chat providers", ["llm"], "LLM")
+    , (["llm", "image_provider"], "Image providers", ["llm"], "LLM")
+    , (["llm", "audio_provider"], "Audio providers", ["llm"], "LLM")
+    ]
+
+testInspectionActiveRuntime :: IO ()
+testInspectionActiveRuntime = do
+  active <- parseDocument (providerConfig [("existing", "active-model"), ("removed", "removed-model")])
+  current <- parseDocument (providerConfig [("existing", "source-model"), ("added", "added-model")])
+  let inspection = Config.configDocumentInspection current active
+  optionSnapshot ["llm", "chat_provider", "existing", "model"] inspection
+    @?= (True, Just (Aeson.String "source-model"), Aeson.String "active-model")
+  optionSnapshot ["llm", "chat_provider", "added", "model"] inspection
+    @?= (True, Just (Aeson.String "added-model"), Aeson.Null)
+  optionSnapshot ["llm", "chat_provider", "removed", "model"] inspection
+    @?= (False, Nothing, Aeson.String "removed-model")
+  optionSnapshot ["driver", "discord", "gateway_host"] inspection
+    @?= (False, Nothing, Aeson.Null)
+  sectionSnapshot ["driver", "discord"] inspection @?= (True, False)
+
+parseSectionMetadata :: Aeson.Value -> AesonTypes.Parser [([Text], Text, [Text], Text)]
+parseSectionMetadata = Aeson.withObject "configuration inspection" \root -> do
+  sections <- root Aeson..: "sections"
+  traverse parseMetadata sections
+  where
+    parseMetadata = Aeson.withObject "configuration section" \sectionObject -> do
+      path <- sectionObject Aeson..: "path"
+      label <- sectionObject Aeson..: "label"
+      (groupPath, groupLabel) <- sectionObject Aeson..: "group" >>= parseGroup
+      pure (path, label, groupPath, groupLabel)
+
+parseRepeatableMetadata :: Aeson.Value -> AesonTypes.Parser [([Text], Text, [Text], Text)]
+parseRepeatableMetadata = Aeson.withObject "configuration inspection" \root -> do
+  sections <- root Aeson..: "repeatableSections"
+  traverse parseMetadata sections
+  where
+    parseMetadata = Aeson.withObject "repeatable configuration section" \sectionObject -> do
+      path <- sectionObject Aeson..: "path"
+      label <- sectionObject Aeson..: "label"
+      (groupPath, groupLabel) <- sectionObject Aeson..: "group" >>= parseGroup
+      pure (path, label, groupPath, groupLabel)
+
+parseGroup :: Aeson.Value -> AesonTypes.Parser ([Text], Text)
+parseGroup = Aeson.withObject "configuration group" \groupObject ->
+  (,) <$> groupObject Aeson..: "path" <*> groupObject Aeson..: "label"
+
+sectionSnapshot :: [Text] -> Aeson.Value -> (Bool, Bool)
+sectionSnapshot target inspection =
+  either (error . toText) id (AesonTypes.parseEither parse inspection)
+  where
+    parse = Aeson.withObject "configuration inspection" \root -> do
+      sections <- (root Aeson..: "sections" :: AesonTypes.Parser [Aeson.Value])
+      parsed <- traverse (Aeson.withObject "configuration section" \sectionObject ->
+        (,,) <$> sectionObject Aeson..: "path" <*> sectionObject Aeson..: "optional" <*> sectionObject Aeson..: "present") sections
+      maybe (fail [i|missing configuration section #{target}|]) (pure . \(_, sectionOptional, present) -> (sectionOptional, present)) $
+        find (\(path, _, _) -> path == target) parsed
+
+optionSnapshot :: [Text] -> Aeson.Value -> (Bool, Maybe Aeson.Value, Aeson.Value)
+optionSnapshot target inspection =
+  either (error . toText) id (AesonTypes.parseEither parse inspection)
+  where
+    parse = Aeson.withObject "configuration inspection" \root -> do
+      sections <- (root Aeson..: "sections" :: AesonTypes.Parser [Aeson.Value])
+      options <- concat <$> traverse (Aeson.withObject "configuration section" (Aeson..: "options")) sections
+      parsed <- traverse parseOption options
+      maybe (fail [i|missing configuration option #{target}|]) pure (find (\(path, _, _, _) -> path == target) parsed)
+        <&> \(_, present, sourceValue, effective) -> (present, sourceValue, effective)
+    parseOption = Aeson.withObject "configuration option" \optionObject -> do
+      path <- optionObject Aeson..: "path"
+      (present, sourceValue) <- optionObject Aeson..: "source" >>= Aeson.withObject "configuration source" \sourceObject ->
+        (,) <$> sourceObject Aeson..: "present" <*> sourceObject Aeson..:? "value"
+      effective <- optionObject Aeson..: "effective"
+      pure (path, present, sourceValue, effective)
+
+providerConfig :: [(Text, Text)] -> Text
+providerConfig providers =
+  Text.replace "\n[handler.console]" (providerTables <> "\n[handler.console]") minimalConfig
+  where
+    providerTables = foldMap (\(name, model) ->
+      [i|\n[llm.chat_provider.#{name}]\nmodel = "#{model}"\n|]) providers
 
 testSecretDiagnosticRedaction :: IO ()
 testSecretDiagnosticRedaction = do
@@ -235,6 +358,69 @@ testScalarEditPreservesComments = do
   changed <- applyChanges document [ConfigEdit.SetOption ["handler", "ask", "command"] (Aeson.String "!chat")]
   assertBool "replacement lost the comment" ("command = \"!chat\"  # keep this comment" `Text.isInfixOf` changed)
   Text.replace "command = \"!chat\"" "command = \"!ask\"" changed @?= source
+
+testMultilineEditPreservesOutsideBytes :: IO ()
+testMultilineEditPreservesOutsideBytes = do
+  let multiline = "system_prompt = \"\"\"\nYou are\ncosmobot.\n\"\"\"  # preserved after value"
+      source = "# preserved before\n" <> Text.replace "system_prompt = \"You are cosmobot.\"" multiline minimalConfig <> "# preserved after\n"
+  document <- parseDocument source
+  changed <- applyChanges document [ConfigEdit.SetOption ["handler", "ask", "system_prompt"] (Aeson.String "Replacement")]
+  assertBool "prefix outside multiline value changed" ("# preserved before\n" `Text.isPrefixOf` changed)
+  assertBool "suffix outside multiline value changed" ("  # preserved after value\n# preserved after\n" `Text.isSuffixOf` changed)
+  assertBool "multiline value was not replaced" ("system_prompt = \"Replacement\"" `Text.isInfixOf` changed)
+
+testMultilineClosingQuoteRuns :: IO ()
+testMultilineClosingQuoteRuns =
+  for_ values \value -> do
+    let source = Text.replace
+          "system_prompt = \"You are cosmobot.\""
+          ("system_prompt = " <> value)
+          minimalConfig
+          <> "\n[plugins]\nplugin_dir = \"extensions\"\n"
+    document <- parseDocument source
+    changed <- applyChanges document [ConfigEdit.SetOption ["handler", "ask", "system_prompt"] (Aeson.String "Replacement")]
+    assertBool "replacement consumed following TOML" ("[plugins]\nplugin_dir = \"extensions\"\n" `Text.isSuffixOf` changed)
+    void (parseDocument changed)
+  where
+    values =
+      [ "\"\"\"\nends in one quote\"\"\"\""
+      , "\"\"\"\nends in two quotes\"\"\"\"\""
+      , "'''\nends in one quote''''"
+      , "'''\nends in two quotes'''''"
+      ]
+
+testDottedAndQuotedKeys :: IO ()
+testDottedAndQuotedKeys = do
+  let source = Text.unlines
+        [ "[llm]"
+        , ""
+        , "[llm.chat_provider.\"provider.with.dot\"]"
+        , "model = \"old/model\""
+        , ""
+        , "[handler.console]"
+        , "system_prompt = \"You are a coding agent.\""
+        , ""
+        , "[handler]"
+        , "ask.command = \"!ask\"  # dotted key"
+        , "ask.system_prompt = \"You are cosmobot.\""
+        ]
+  document <- parseDocument source
+  changed <- applyChanges document
+    [ ConfigEdit.SetOption ["handler", "ask", "command"] (Aeson.String "!chat")
+    , ConfigEdit.SetOption ["llm", "chat_provider", "provider.with.dot", "model"] (Aeson.String "new/model")
+    ]
+  assertBool "dotted assignment was not replaced" ("ask.command = \"!chat\"  # dotted key" `Text.isInfixOf` changed)
+  assertBool "quoted provider was not replaced" ("model = \"new/model\"" `Text.isInfixOf` changed)
+  void (parseDocument changed)
+
+testMixedIdentityList :: IO ()
+testMixedIdentityList = do
+  let source = minimalConfig <> "\n[driver.telegram]\nbot_token = \"token\"\nallowed_chats = [1, \"room\"]\n"
+      identities = Aeson.Array (fromList [Aeson.Number 2, Aeson.String "other"])
+  document <- parseDocument source
+  changed <- applyChanges document [ConfigEdit.SetOption ["driver", "telegram", "allowed_chats"] identities]
+  assertBool "mixed identity list was not rendered" ("allowed_chats = [2,\"other\"]" `Text.isInfixOf` changed)
+  void (parseDocument changed)
 
 testEditPreservesCrLf :: IO ()
 testEditPreservesCrLf = do
@@ -270,12 +456,65 @@ testProviderRemoval = do
   assertBool "following section was removed" ("[plugins]\nplugin_dir = \"extensions\"" `Text.isInfixOf` changed)
   void (parseDocument changed)
 
+testConflictingEdits :: IO ()
+testConflictingEdits = do
+  document <- parseDocument minimalConfig
+  let path = ["handler", "ask", "command"]
+  for_ [ [ConfigEdit.SetOption path (Aeson.String "!chat"), ConfigEdit.RemoveOption path]
+       , [ConfigEdit.RemoveSection ["llm", "chat_provider", "new"], ConfigEdit.SetOption ["llm", "chat_provider", "new", "model"] (Aeson.String "model")]
+       ] \changes ->
+    case ConfigEdit.applyConfigChanges document changes of
+      Left err -> err.code @?= "invalid_change"
+      Right _ -> assertFailure "expected conflicting changes to be rejected"
+
 testInlineTableRejected :: IO ()
 testInlineTableRejected = do
   document <- parseDocument ("storage = { sqlite_path = \"state.sqlite3\" }\n" <> minimalConfig)
   case ConfigEdit.applyConfigChanges document [ConfigEdit.SetOption ["storage", "sqlite_path"] (Aeson.String "new.sqlite3")] of
     Left err -> err.code @?= "unsupported_source_shape"
     Right _ -> assertFailure "expected inline-table edit to be rejected"
+
+testUnsupportedSectionShapes :: IO ()
+testUnsupportedSectionShapes = do
+  dotted <- parseDocument (Text.replace "[llm]\n" "[llm]\nchat_provider.temporary.model = \"model\"\n" minimalConfig)
+  for_ [ ConfigEdit.AddSection ["llm", "chat_provider", "temporary"]
+       , ConfigEdit.RemoveSection ["llm", "chat_provider", "temporary"]
+       ] (assertUnsupported dotted)
+  separated <- parseDocument $ minimalConfig <> Text.unlines
+    [ ""
+    , "[media]"
+    , "cache_dir = \"cache\""
+    , ""
+    , "[plugins]"
+    , "plugin_dir = \"plugins\""
+    , ""
+    , "[media.gc]"
+    , "enabled = true"
+    ]
+  assertUnsupported separated (ConfigEdit.RemoveSection ["media"])
+  where
+    assertUnsupported document change =
+      case ConfigEdit.applyConfigChanges document [change] of
+        Left err -> err.code @?= "unsupported_source_shape"
+        Right _ -> assertFailure "expected unsupported section source shape"
+
+testSemanticDiff :: IO ()
+testSemanticDiff = do
+  let sentinel = "semantic-diff-secret"
+      source = "[rpc]\ntoken = \"old-secret\"\n\n" <> minimalConfig
+      changes =
+        [ ConfigEdit.SetOption ["handler", "ask", "command"] (Aeson.String "!chat")
+        , ConfigEdit.ReplaceSecret ["rpc", "token"] sentinel
+        ]
+  before <- parseDocument source
+  changedSource <- applyChanges before changes
+  afterDocument <- parseDocument changedSource
+  let encoded = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $ ConfigEdit.semanticDiff changes before afterDocument
+  assertBool "semantic diff omitted old value" ("\"before\":\"!ask\"" `Text.isInfixOf` encoded)
+  assertBool "semantic diff omitted new value" ("\"after\":\"!chat\"" `Text.isInfixOf` encoded)
+  assertBool "semantic diff returned option metadata" (not ("\"label\"" `Text.isInfixOf` encoded))
+  assertBool "semantic diff omitted secret replacement" ("\"rpc\",\"token\"" `Text.isInfixOf` encoded)
+  assertBool "semantic diff leaked a secret" (not (sentinel `Text.isInfixOf` encoded))
 
 testExampleOptionCoverage :: IO ()
 testExampleOptionCoverage = do

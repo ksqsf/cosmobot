@@ -70,6 +70,8 @@ schema = Schema.ConfigSchema
       , Schema.option ["public_read_acl"] "Public read ACL" "Apply a public-read object ACL." owner Schema.boolean defaultConfig.publicReadAcl Aeson.Null (.publicReadAcl) (.publicReadAcl)
       , Schema.option ["addressing_style"] "Addressing style" "Bucket addressing style." owner Schema.text defaultConfig.addressingStyle Aeson.Null (.addressingStyle) (.addressingStyle)
       ]
+  , Schema.sections = [Schema.section [] "S3" ["media"] "Media"]
+  , Schema.repeatableSections = []
   }
   where owner = "Bot.Media.S3.Config"
 

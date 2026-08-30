@@ -42,17 +42,21 @@ import qualified Bot.Resource as ResourceManager
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.Storage.ChatLog as ChatLogStorage
 import qualified Bot.Storage.Thread as ThreadStorage
+import qualified Crypto.Hash as CryptoHash
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as AesonKeyMap
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.ByteString.Lazy as LazyByteString
+import Data.Bits ((.&.))
+import qualified Data.ByteString as ByteString
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Unique (hashUnique, newUnique)
 import Effectful.FileSystem (runFileSystem)
+import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.FileSystem.IO.ByteString as FileSystemByteString
@@ -68,6 +72,7 @@ import qualified Network.WebSockets as WS
 import qualified Streaming.ByteString as Q
 import qualified Streaming.Prelude as S
 import System.FilePath ((</>), takeDirectory, takeExtension)
+import qualified System.Posix.Files as Posix
 import System.Timeout
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -95,6 +100,12 @@ main =
       , testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "admin.capabilities describes the supported RPC surface" testAdminCapabilities
       , testCase "configuration RPC validates, updates, conflicts, and rolls back" testConfigurationRpcLifecycle
+      , testCase "configuration inspection safely reports invalid UTF-8" testConfigurationInvalidUtf8
+      , testCase "configuration validation enforces typed changes and owner rules" testConfigurationValidationRules
+      , testCase "configuration writes preserve mode, skip no-ops, and reject symlinks" testConfigurationFileSafety
+      , testCase "configuration writes reject unsafe backup targets" testConfigurationBackupTargetSafety
+      , testCase "concurrent configuration updates serialize at the final revision check" testConcurrentConfigurationUpdates
+      , testCase "admin.restart runs only after its websocket reply is sent" testRestartAfterResponse
       , testCase "plugin lifecycle RPC validates ids and serializes safe status" testPluginLifecycleRpc
       , testCase "chat.open_session returns generated session id" testOpenSessionReturnsGeneratedSessionId
       , testCase "chat.send constructs PlatformRPC incoming message" testChatSendConstructsIncomingMessage
@@ -539,6 +550,256 @@ testConfigurationRpcLifecycle = withSQLiteTempPath "configuration" \sqlitePath -
   responseField invalidResponse "sourceState" @?= Just ("invalid" :: Text)
   responseBool invalidResponse "editable" @?= Just False
   TextIO.readFile configPath >>= (@?= source)
+
+testConfigurationInvalidUtf8 :: IO ()
+testConfigurationInvalidUtf8 = withSQLiteTempPath "configuration-invalid-utf8" \sqlitePath -> do
+  let configPath = takeDirectory sqlitePath </> "config.toml"
+      source = rpcMinimalConfig
+      invalidBytes = TextEncoding.encodeUtf8 source <> ByteString.pack [0xff]
+      expectedRevision = toText (show (CryptoHash.hash invalidBytes :: CryptoHash.Digest CryptoHash.SHA256) :: String)
+  TextIO.writeFile configPath source
+  document <- either (assertFailure . show) pure (Config.parseConfigDocument configPath source)
+  (getResponse, validateResponse, updateResponse, unchangedBytes) <- runRpcStorage sqlitePath do
+    configuration <- RPCConfiguration.newConfiguration configPath document
+    rpcState <- RPC.newRpcState
+    let callbacks = RPCServer.withConfigurationRpcCallbacks
+          (RPCConfiguration.dispatchConfigurationRequest configuration)
+          (pure ())
+          RPCConfiguration.configurationMethods
+          RPCServer.noRpcServerCallbacks
+        dispatch method params = RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest method params)
+    FileSystemByteString.writeFile configPath invalidBytes
+    getResponse <- dispatch "config.get" Aeson.Null
+    let revision = fromMaybe (error "missing invalid source revision") (responseField getResponse "revision" :: Maybe Text)
+        params = Aeson.object
+          [ "revision" Aeson..= revision
+          , "changes" Aeson..=
+              [Aeson.object
+                [ "operation" Aeson..= ("set" :: Text)
+                , "path" Aeson..= (["handler", "ask", "command"] :: [Text])
+                , "value" Aeson..= ("!chat" :: Text)
+                ]]
+          ]
+    validateResponse <- dispatch "config.validate" params
+    updateResponse <- dispatch "config.update" params
+    unchangedBytes <- FileSystemByteString.readFile configPath
+    pure (getResponse, validateResponse, updateResponse, unchangedBytes)
+  responseField getResponse "revision" @?= Just expectedRevision
+  responseField getResponse "sourceState" @?= Just ("invalid" :: Text)
+  responseBool getResponse "editable" @?= Just False
+  diagnostics <- maybe (assertFailure "missing invalid UTF-8 diagnostic") pure (responseField getResponse "diagnostics" :: Maybe [Aeson.Value])
+  traverse (parseJsonField "code") diagnostics >>= (@?= ["invalid_utf8" :: Text])
+  assertBool "active configuration snapshot was not returned" (responseHasField getResponse "configuration")
+  responseErrorCode validateResponse @?= Just "validation_failed"
+  responseErrorCode updateResponse @?= Just "validation_failed"
+  unchangedBytes @?= invalidBytes
+
+testConfigurationValidationRules :: IO ()
+testConfigurationValidationRules = withSQLiteTempPath "configuration-validation" \sqlitePath -> do
+  let configPath = takeDirectory sqlitePath </> "config.toml"
+      source = "[rpc]\ntoken = \"preserved-secret\"\n\n" <> rpcMinimalConfig
+  TextIO.writeFile configPath source
+  document <- either (assertFailure . show) pure (Config.parseConfigDocument configPath source)
+  (malformed, bounded, secretSet, requiredRemoval, providerCreation, clearSecret, noOpValidation, preserveUpdate, preservedSource) <- runRpcStorage sqlitePath do
+    configuration <- RPCConfiguration.newConfiguration configPath document
+    rpcState <- RPC.newRpcState
+    let callbacks = RPCServer.withConfigurationRpcCallbacks
+          (RPCConfiguration.dispatchConfigurationRequest configuration)
+          (pure ())
+          RPCConfiguration.configurationMethods
+          RPCServer.noRpcServerCallbacks
+    getResponse <- RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "config.get" Aeson.Null)
+    let revision = fromMaybe (error "missing revision") (responseField getResponse "revision" :: Maybe Text)
+        dispatch changes = RPCServer.dispatchRpcRequest rpcState callbacks $ rpcRequest "config.validate"
+          (Aeson.object ["revision" Aeson..= revision, "changes" Aeson..= changes])
+    malformed <- dispatch
+      [Aeson.object ["operation" Aeson..= ("set" :: Text), "path" Aeson..= (["handler", "ask", "agent_max_turns"] :: [Text]), "value" Aeson..= ("many" :: Text)]]
+    bounded <- dispatch
+      [Aeson.object ["operation" Aeson..= ("set" :: Text), "path" Aeson..= (["rpc", "port"] :: [Text]), "value" Aeson..= (0 :: Int)]]
+    secretSet <- dispatch
+      [Aeson.object ["operation" Aeson..= ("set" :: Text), "path" Aeson..= (["rpc", "token"] :: [Text]), "value" Aeson..= ("exposed" :: Text)]]
+    requiredRemoval <- dispatch
+      [Aeson.object ["operation" Aeson..= ("remove" :: Text), "path" Aeson..= (["handler", "ask", "command"] :: [Text])]]
+    providerCreation <- dispatch
+      [ Aeson.object ["operation" Aeson..= ("add_section" :: Text), "path" Aeson..= (["llm", "chat_provider", "new provider"] :: [Text])]
+      , Aeson.object ["operation" Aeson..= ("set" :: Text), "path" Aeson..= (["llm", "chat_provider", "new provider", "model"] :: [Text]), "value" Aeson..= ("example/model" :: Text)]
+      ]
+    clearSecret <- dispatch
+      [Aeson.object ["operation" Aeson..= ("clear_secret" :: Text), "path" Aeson..= (["rpc", "token"] :: [Text])]]
+    noOpValidation <- dispatch []
+    preserveUpdate <- RPCServer.dispatchRpcRequest rpcState callbacks $ rpcRequest "config.update" (Aeson.object
+      [ "revision" Aeson..= revision
+      , "changes" Aeson..=
+          [Aeson.object ["operation" Aeson..= ("set" :: Text), "path" Aeson..= (["handler", "ask", "command"] :: [Text]), "value" Aeson..= ("!chat" :: Text)]]
+      ])
+    preservedSource <- TextEncoding.decodeUtf8 <$> FileSystemByteString.readFile configPath
+    pure (malformed, bounded, secretSet, requiredRemoval, providerCreation, clearSecret, noOpValidation, preserveUpdate, preservedSource)
+  responseErrorCode malformed @?= Just "invalid_change"
+  responseBool bounded "valid" @?= Just False
+  responseErrorCode secretSet @?= Just "invalid_change"
+  responseBool requiredRemoval "valid" @?= Just False
+  responseBool providerCreation "valid" @?= Just True
+  responseBool clearSecret "valid" @?= Just True
+  responseBool noOpValidation "restartRequired" @?= Just False
+  responseBool preserveUpdate "updated" @?= Just True
+  assertBool "omitted secret was not preserved" ("token = \"preserved-secret\"" `Text.isInfixOf` preservedSource)
+  let clearEncoded = TextEncoding.decodeUtf8 . LazyByteString.toStrict $ Aeson.encode clearSecret
+  assertBool "clear-secret diff omitted configured state" ("\"before\":\"configured\"" `Text.isInfixOf` clearEncoded)
+  assertBool "clear-secret diff omitted unset state" ("\"after\":\"unset\"" `Text.isInfixOf` clearEncoded)
+
+testConfigurationFileSafety :: IO ()
+testConfigurationFileSafety = withSQLiteTempPath "configuration-files" \sqlitePath -> do
+  let directory = takeDirectory sqlitePath
+      configPath = directory </> "config.toml"
+      backupPath = configPath <> ".cosmobot.bak"
+      targetPath = directory </> "target.toml"
+      linkPath = directory </> "linked.toml"
+      source = rpcMinimalConfig
+  TextIO.writeFile configPath source
+  TextIO.writeFile targetPath source
+  Posix.setFileMode configPath 0o600
+  Posix.createSymbolicLink targetPath linkPath
+  document <- either (assertFailure . show) pure (Config.parseConfigDocument configPath source)
+  linkedDocument <- either (assertFailure . show) pure (Config.parseConfigDocument linkPath source)
+  (noOp, backupAfterNoOp, updateResponse, backupSource, linkedResponse, temporaryEntries) <- runRpcStorage sqlitePath do
+    rpcState <- RPC.newRpcState
+    configuration <- RPCConfiguration.newConfiguration configPath document
+    linkedConfiguration <- RPCConfiguration.newConfiguration linkPath linkedDocument
+    let callbacks cfg = RPCServer.withConfigurationRpcCallbacks
+          (RPCConfiguration.dispatchConfigurationRequest cfg)
+          (pure ())
+          RPCConfiguration.configurationMethods
+          RPCServer.noRpcServerCallbacks
+        dispatch cfg revision value = RPCServer.dispatchRpcRequest rpcState (callbacks cfg) $ rpcRequest "config.update" (Aeson.object
+          [ "revision" Aeson..= revision
+          , "changes" Aeson..=
+              [Aeson.object ["operation" Aeson..= ("set" :: Text), "path" Aeson..= (["handler", "ask", "command"] :: [Text]), "value" Aeson..= (value :: Text)]]
+          ])
+    getResponse <- RPCServer.dispatchRpcRequest rpcState (callbacks configuration) (rpcRequest "config.get" Aeson.Null)
+    let revision = fromMaybe (error "missing revision") (responseField getResponse "revision" :: Maybe Text)
+    noOp <- dispatch configuration revision "!ask"
+    backupAfterNoOp <- FileSystem.doesPathExist backupPath
+    updateResponse <- dispatch configuration revision "!chat"
+    backupSource <- TextEncoding.decodeUtf8 <$> FileSystemByteString.readFile backupPath
+    linkedGet <- RPCServer.dispatchRpcRequest rpcState (callbacks linkedConfiguration) (rpcRequest "config.get" Aeson.Null)
+    let linkedRevision = fromMaybe (error "missing linked revision") (responseField linkedGet "revision" :: Maybe Text)
+    linkedResponse <- dispatch linkedConfiguration linkedRevision "!linked"
+    temporaryEntries <- filter (".cosmobot-config-" `Text.isPrefixOf`) . map toText <$> FileSystem.listDirectory directory
+    pure (noOp, backupAfterNoOp, updateResponse, backupSource, linkedResponse, temporaryEntries)
+  responseBool noOp "updated" @?= Just False
+  backupAfterNoOp @?= False
+  responseBool updateResponse "updated" @?= Just True
+  backupSource @?= source
+  mode <- Posix.fileMode <$> Posix.getFileStatus configPath
+  mode .&. 0o777 @?= 0o600
+  responseErrorCode linkedResponse @?= Just "config_write_failed"
+  temporaryEntries @?= []
+  TextIO.readFile targetPath >>= (@?= source)
+
+testConfigurationBackupTargetSafety :: IO ()
+testConfigurationBackupTargetSafety = withSQLiteTempPath "configuration-backup-targets" \sqlitePath -> do
+  let directory = takeDirectory sqlitePath
+      symlinkConfigPath = directory </> "symlink-backup.toml"
+      symlinkBackupPath = symlinkConfigPath <> ".cosmobot.bak"
+      symlinkTargetPath = directory </> "backup-target.toml"
+      directoryConfigPath = directory </> "directory-backup.toml"
+      directoryBackupPath = directoryConfigPath <> ".cosmobot.bak"
+      source = rpcMinimalConfig
+  traverse_ (`TextIO.writeFile` source) [symlinkConfigPath, symlinkTargetPath, directoryConfigPath]
+  Posix.createSymbolicLink symlinkTargetPath symlinkBackupPath
+  symlinkDocument <- either (assertFailure . show) pure (Config.parseConfigDocument symlinkConfigPath source)
+  directoryDocument <- either (assertFailure . show) pure (Config.parseConfigDocument directoryConfigPath source)
+  (symlinkResponse, directoryResponse) <- runRpcStorage sqlitePath do
+    FileSystem.createDirectory directoryBackupPath
+    rpcState <- RPC.newRpcState
+    symlinkConfiguration <- RPCConfiguration.newConfiguration symlinkConfigPath symlinkDocument
+    directoryConfiguration <- RPCConfiguration.newConfiguration directoryConfigPath directoryDocument
+    let callbacks cfg = RPCServer.withConfigurationRpcCallbacks
+          (RPCConfiguration.dispatchConfigurationRequest cfg)
+          (pure ())
+          RPCConfiguration.configurationMethods
+          RPCServer.noRpcServerCallbacks
+        update cfg = do
+          getResponse <- RPCServer.dispatchRpcRequest rpcState (callbacks cfg) (rpcRequest "config.get" Aeson.Null)
+          let revision = fromMaybe (error "missing configuration revision") (responseField getResponse "revision" :: Maybe Text)
+          RPCServer.dispatchRpcRequest rpcState (callbacks cfg) $ rpcRequest "config.update" (Aeson.object
+            [ "revision" Aeson..= revision
+            , "changes" Aeson..=
+                [Aeson.object
+                  [ "operation" Aeson..= ("set" :: Text)
+                  , "path" Aeson..= (["handler", "ask", "command"] :: [Text])
+                  , "value" Aeson..= ("!chat" :: Text)
+                  ]]
+            ])
+    (,) <$> update symlinkConfiguration <*> update directoryConfiguration
+  responseErrorCode symlinkResponse @?= Just "config_write_failed"
+  responseErrorCode directoryResponse @?= Just "config_write_failed"
+  traverse_ (\path -> TextIO.readFile path >>= (@?= source)) [symlinkConfigPath, symlinkTargetPath, directoryConfigPath]
+  Posix.isDirectory <$> Posix.getFileStatus directoryBackupPath >>= (@?= True)
+
+testConcurrentConfigurationUpdates :: IO ()
+testConcurrentConfigurationUpdates = withSQLiteTempPath "configuration-concurrent" \sqlitePath -> do
+  let configPath = takeDirectory sqlitePath </> "config.toml"
+      source = rpcMinimalConfig
+  TextIO.writeFile configPath source
+  document <- either (assertFailure . show) pure (Config.parseConfigDocument configPath source)
+  responses <- runRpcStorage sqlitePath do
+    configuration <- RPCConfiguration.newConfiguration configPath document
+    rpcState <- RPC.newRpcState
+    let callbacks = RPCServer.withConfigurationRpcCallbacks
+          (RPCConfiguration.dispatchConfigurationRequest configuration)
+          (pure ())
+          RPCConfiguration.configurationMethods
+          RPCServer.noRpcServerCallbacks
+    getResponse <- RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "config.get" Aeson.Null)
+    let revision = fromMaybe (error "missing revision") (responseField getResponse "revision" :: Maybe Text)
+        update value = RPCServer.dispatchRpcRequest rpcState callbacks $ rpcRequest "config.update" (Aeson.object
+          [ "revision" Aeson..= revision
+          , "changes" Aeson..=
+              [Aeson.object ["operation" Aeson..= ("set" :: Text), "path" Aeson..= (["handler", "ask", "command"] :: [Text]), "value" Aeson..= (value :: Text)]]
+          ])
+    Async.concurrently (update "!left") (update "!right")
+  let outcomes = [fst responses, snd responses]
+  length (filter ((== Just True) . (`responseBool` "updated")) outcomes) @?= 1
+  length (filter ((== Just "revision_conflict") . responseErrorCode) outcomes) @?= 1
+
+testRestartAfterResponse :: IO ()
+testRestartAfterResponse = do
+  result <- timeout 5_000_000 $ runRpcServerTest do
+    rpcState <- RPC.newRpcState
+    restartEntered <- MVar.newEmptyMVar
+    releaseRestart <- MVar.newEmptyMVar
+    listenSocket <- liftIO (WS.makeListenSocket "127.0.0.1" 0)
+    port <- (fromIntegral :: Socket.PortNumber -> Int) <$> liftIO (Socket.socketPort listenSocket)
+    let cfg = RPCConfig.Config
+          { enabled = True
+          , host = "127.0.0.1"
+          , port
+          , token = "secret"
+          , allowedBrowserOrigins = []
+          }
+        restart = MVar.putMVar restartEntered () >> MVar.takeMVar releaseRestart
+        callbacks = RPCServer.withConfigurationRpcCallbacks (const (pure Nothing)) restart [] RPCServer.noRpcServerCallbacks
+        server = finally
+          (forever do
+            (clientSocket, _) <- liftIO (Socket.accept listenSocket)
+            pending <- liftIO (WS.makePendingConnection clientSocket WS.defaultConnectionOptions)
+            RPCServer.rpcServerApp cfg rpcState callbacks pending)
+          (liftIO (Socket.close listenSocket))
+        client = withEffToIO (ConcUnlift Persistent Unlimited) \runInIO -> liftIO $
+          WS.runClientWith "127.0.0.1" port "/rpc" WS.defaultConnectionOptions [("Authorization", "Bearer secret")] \conn -> do
+            WS.sendTextData conn $ Aeson.encode $ JSONRPC.rpcRequest "admin.restart" Aeson.Null "restart"
+            bytes <- WS.receiveData conn :: IO ByteString
+            response <- either fail pure (Aeson.eitherDecodeStrict' bytes :: Either String JSONRPC.RpcResponse)
+            runInIO (MVar.takeMVar restartEntered >> MVar.putMVar releaseRestart ())
+            pure response
+    raceEff server client
+  case result of
+    Just (Right response) -> response @?= JSONRPC.successResponse
+      (WireJSONRPC.RequestId (Aeson.String "restart"))
+      (Aeson.object ["acknowledged" Aeson..= True])
+    Just (Left ()) -> assertFailure "RPC server exited before restart client completed"
+    Nothing -> assertFailure "restart response was not sent before the restart callback"
 
 rpcMinimalConfig :: Text
 rpcMinimalConfig = Text.unlines

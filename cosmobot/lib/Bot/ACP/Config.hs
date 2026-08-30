@@ -57,6 +57,8 @@ schema = Schema.ConfigSchema
     host <- fromMaybe defaultFileConfig.host <$> optKey "host"
     port <- fromMaybe defaultFileConfig.port <$> optKey "port"
     token <- fromMaybe defaultFileConfig.token <$> optKey "token"
+    when (port < 1 || port > 65535) $
+      fail "acp.port must be between 1 and 65535"
     when (enabled && Text.null token) $
       fail "acp.token must be non-empty when acp.enabled is true"
     pure FileConfig{enabled, host, port, token}
@@ -66,6 +68,8 @@ schema = Schema.ConfigSchema
       , Schema.option ["port"] "Port" "ACP listen port." owner Schema.integer defaultFileConfig.port (Aeson.object ["minimum" Aeson..= (1 :: Int), "maximum" Aeson..= (65535 :: Int)]) (.port) (.port)
       , Schema.option ["token"] "Token" "ACP bearer token." owner Schema.secret (Schema.Secret defaultFileConfig.token) Aeson.Null (Schema.Secret . (.token)) (Schema.Secret . (.token))
       ]
+  , Schema.sections = [Schema.section [] "ACP" ["interfaces"] "Interfaces"]
+  , Schema.repeatableSections = []
   }
   where owner = "Bot.ACP.Config"
 

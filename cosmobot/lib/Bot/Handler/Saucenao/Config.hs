@@ -37,6 +37,8 @@ schema = Schema.ConfigSchema
   , Schema.options =
       [ Schema.optionalOption ["api_key"] "API key" "SauceNAO API key." "Bot.Handler.Saucenao.Config" Schema.secret False Aeson.Null (fmap Schema.Secret . (.apiKey)) (fmap Schema.Secret . (.apiKey))
       ]
+  , Schema.sections = [Schema.section [] "SauceNAO" ["handlers"] "Handlers"]
+  , Schema.repeatableSections = []
   }
 
 instance FromValue SaucenaoConfig where

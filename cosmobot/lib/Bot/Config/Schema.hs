@@ -8,6 +8,9 @@ Stability   : experimental
 
 module Bot.Config.Schema
   ( ConfigSchema (..)
+  , ConfigSection (..)
+  , ConfigGroup (..)
+  , RepeatableSection (..)
   , ConfigOption
   , OptionType
   , Secret (..)
@@ -22,11 +25,16 @@ module Bot.Config.Schema
   , identityList
   , option
   , optionalOption
+  , section
+  , repeatableSection
   , schemaFromValue
   , prefixOptions
+  , prefixSections
+  , prefixRepeatableSections
   , mapOptions
   , mapMaybeOptions
   , inspectOptions
+  , optionEffectiveJson
   , optionPath
   , optionIsSecret
   , optionIsRequired
@@ -76,10 +84,33 @@ data ConfigOption source runtime = forall a. ConfigOption
   , effectiveValue :: runtime -> Maybe a
   }
 
+data ConfigGroup = ConfigGroup
+  { path :: ![Text]
+  , label :: !Text
+  }
+  deriving stock (Eq, Show)
+
+data ConfigSection = ConfigSection
+  { path :: ![Text]
+  , label :: !Text
+  , group :: !ConfigGroup
+  , optional :: !Bool
+  }
+  deriving stock (Eq, Show)
+
+data RepeatableSection = RepeatableSection
+  { path :: ![Text]
+  , label :: !Text
+  , group :: !ConfigGroup
+  }
+  deriving stock (Eq, Show)
+
 -- | An owner parser and the inspection contract for the values it owns.
 data ConfigSchema source runtime = ConfigSchema
   { parser :: forall l. TomlValue.Value' l -> Matcher.Matcher l source
   , options :: ![ConfigOption source runtime]
+  , sections :: ![ConfigSection]
+  , repeatableSections :: ![RepeatableSection]
   }
 
 boolean :: OptionType Bool
@@ -195,6 +226,14 @@ optionalOption path label description owner optionType required constraints sour
     , effectiveValue
     }
 
+section :: [Text] -> Text -> [Text] -> Text -> ConfigSection
+section path label groupPath groupLabel =
+  ConfigSection{path, label, group = ConfigGroup{path = groupPath, label = groupLabel}, optional = False}
+
+repeatableSection :: [Text] -> Text -> [Text] -> Text -> RepeatableSection
+repeatableSection path label groupPath groupLabel =
+  RepeatableSection{path, label, group = ConfigGroup{path = groupPath, label = groupLabel}}
+
 schemaFromValue :: ConfigSchema source runtime -> TomlValue.Value' l -> Matcher.Matcher l source
 schemaFromValue ConfigSchema{parser} = parser
 
@@ -212,6 +251,14 @@ prefixOptions prefix = map \ConfigOption{path, label, description, owner, option
     , sourceValue
     , effectiveValue
     }
+
+prefixSections :: [Text] -> [ConfigSection] -> [ConfigSection]
+prefixSections prefix = map \ConfigSection{path, label, group = sectionGroup, optional = sectionOptional} ->
+  ConfigSection{path = prefix <> path, label, group = sectionGroup, optional = sectionOptional}
+
+prefixRepeatableSections :: [Text] -> [RepeatableSection] -> [RepeatableSection]
+prefixRepeatableSections prefix = map \RepeatableSection{path, label, group = sectionGroup} ->
+  RepeatableSection{path = prefix <> path, label, group = sectionGroup}
 
 mapOptions
   :: (outerSource -> source)
@@ -299,5 +346,13 @@ inspectOptions present source runtime = map inspect
             [ "present" Aeson..= sourcePresent
             , "value" Aeson..= if sourcePresent then sourcePublic else Nothing
             ]
-        , "effective" Aeson..= (effectivePublic <|> defaultPublic)
+        , "effective" Aeson..= effectivePublic
         ]
+
+optionEffectiveJson :: runtime -> ConfigOption source runtime -> Aeson.Value
+optionEffectiveJson runtime ConfigOption{optionType, effectiveValue} =
+  maybe Aeson.Null public (effectiveValue runtime)
+  where
+    public value
+      | optionType.isSecret = Aeson.String (if optionType.configured value then "configured" else "unset")
+      | otherwise = optionType.encode value

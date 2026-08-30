@@ -76,6 +76,8 @@ schema = Schema.ConfigSchema
       , Schema.option ["allowed_chats"] "Allowed chats" "Allowed numeric chat ids or aliases." owner Schema.identityList [] Aeson.Null (map chatRefValue . (.allowedChats)) runtimeAllowedChats
       , Schema.option ["superusers"] "Superusers" "Telegram usernames with administrative access." owner (Schema.list "text") [] Aeson.Null (.superusers) (.superusers)
       ]
+  , Schema.sections = [Schema.section [] "Telegram" ["drivers"] "Chat drivers"]
+  , Schema.repeatableSections = []
   }
   where owner = "Bot.Chat.Driver.Telegram.Config"
 
