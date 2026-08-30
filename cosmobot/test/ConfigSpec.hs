@@ -12,11 +12,14 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty
 import Test.Tasty.HUnit
+import qualified Toml.Syntax.Parser as TomlParser
+import qualified Toml.Syntax.Types as TomlSyntax
 
 main :: IO ()
 main =
@@ -42,6 +45,7 @@ main =
       , testCase "insertions preserve CRLF newlines" testEditPreservesCrLf
       , testCase "named providers quote arbitrary names" testNamedProviderInsertion
       , testCase "inline tables are rejected without reformatting" testInlineTableRejected
+      , testCase "every example assignment has one typed option" testExampleOptionCoverage
       ]
 
 testDriversTableMayBeOmitted :: IO ()
@@ -251,6 +255,25 @@ testInlineTableRejected = do
   case ConfigEdit.applyConfigChanges document [ConfigEdit.SetOption ["storage", "sqlite_path"] (Aeson.String "new.sqlite3")] of
     Left err -> err.code @?= "unsupported_source_shape"
     Right _ -> assertFailure "expected inline-table edit to be rejected"
+
+testExampleOptionCoverage :: IO ()
+testExampleOptionCoverage = do
+  source <- TextIO.readFile "config.example.toml"
+  document <- parseDocument source
+  expressions <- either (assertFailure . show) pure (TomlParser.parseRawToml source)
+  let values = Config.configDocumentOptionValues document
+      assigned = exampleAssignmentPaths expressions
+      missing = filter (`Map.notMember` values) assigned
+  assertEqual "example assignments missing from the typed schema" [] missing
+  assertEqual "typed option paths must be unique" (length (Config.configDocumentOptions document)) (Map.size values)
+
+exampleAssignmentPaths :: [TomlSyntax.Expr annotation] -> [[Text]]
+exampleAssignmentPaths = reverse . snd . foldl' step ([], [])
+  where
+    step (section, paths) = \case
+      TomlSyntax.KeyValExpr key _ -> (section, (section <> map snd (toList key)) : paths)
+      TomlSyntax.TableExpr key -> (map snd (toList key), paths)
+      TomlSyntax.ArrayTableExpr key -> (map snd (toList key), paths)
 
 parseDocument :: Text -> IO Config.ConfigDocument
 parseDocument source =

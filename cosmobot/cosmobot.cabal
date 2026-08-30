@@ -490,6 +490,7 @@ test-suite config-spec
     main-is:          ConfigSpec.hs
     build-depends:    temporary
                     , text
+                    , toml-parser
     hs-source-dirs:   test
 
 test-suite scheduler-spec

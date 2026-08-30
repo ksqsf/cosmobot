@@ -159,6 +159,7 @@ delete_patterns = []
 [handler.ask]
 command = "!ask"
 draw_command = "!draw"
+system_prompt = "You are cosmobot, a helpful assistant."
 agent_max_turns = 4
 context_strategy = "compaction" # "compaction" or "recursive_transcript"
 context_compaction_threshold_ktokens = 1000
@@ -168,5 +169,6 @@ system_prompt = "You are a coding agent. Work directly in the provided environme
 agent_max_turns = 20
 context_strategy = "compaction"
 context_compaction_threshold_ktokens = 1000
+
 [plugins]
 plugin_dir = "plugins"
