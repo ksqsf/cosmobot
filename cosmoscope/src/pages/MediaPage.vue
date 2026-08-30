@@ -403,9 +403,9 @@ watch([debouncedQuery, platforms, mimeTypes, sourceKinds], () => { void refreshS
               {{ formatBytes(data.size) }}
             </template>
           </Column>
-          <Column header="Last used">
+          <Column header="Added">
             <template #body="{ data }">
-              {{ formatTime(data.lastUsedAtUnix) }}
+              {{ formatTime(data.createdAtUnix) }}
             </template>
           </Column>
           <Column header="State">

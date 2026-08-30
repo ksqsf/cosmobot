@@ -266,6 +266,7 @@ listMediaEntries _ limit = do
       queryLimit 0 (max 0 limit) do
         object <- select mediaObjectRows
         order (object ! #created_at_unix) descending
+        order (object ! #file_id) descending
         pure object
   files <- traverse mediaObjectRowToInfo rows
   traverse (\file -> do
@@ -280,7 +281,8 @@ searchMediaEntries _ search = do
   ensureMediaCacheTables
   rows <- runSelda $ query do
     object <- select mediaObjectRows
-    order (object ! #last_used_at_unix) descending
+    order (object ! #created_at_unix) descending
+    order (object ! #file_id) descending
     pure object
   sourceRefs <- runSelda (query (select mediaSourceRows))
   platformRows <- runSelda (query (select mediaPlatformRows))
