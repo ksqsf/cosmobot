@@ -73,9 +73,9 @@ persistRecord :: (IOE :> es, KatipE :> es, Storage.Storage :> es) => ChatLogReco
 persistRecord record = do
   ensureChatLogTable
   recordedAt <- liftIO getCurrentTime
-  runSelda (transaction do
+  runImmediate do
       Identity.rememberIncomingIdentityRows recordedAt (chatLogRecordMessage record)
-      insert_ chatLogRows [chatLogRow (sanitizeChatLogEntry (chatLogEntry recordedAt record))])
+      insert_ chatLogRows [chatLogRow (sanitizeChatLogEntry (chatLogEntry recordedAt record))]
     `catchSync` \err ->
       $(logError) [i|Failed to persist chat log entry: #{show err :: String}|]
 

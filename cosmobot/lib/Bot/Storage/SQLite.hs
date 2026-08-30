@@ -12,6 +12,7 @@ where
 
 import Bot.Prelude
 import qualified Bot.Effect.Storage as Storage
+import qualified Database.Selda as Selda
 import qualified Database.Selda.Backend as SeldaBackend
 import qualified Database.Selda.SQLite as SeldaSQLite
 import qualified Effectful.Concurrent.STM as STM
@@ -40,6 +41,12 @@ runStorageSQLitePool connections inner = do
             (STM.atomically . STM.writeTBQueue pool)
             \connection ->
               liftIO (SeldaBackend.runSeldaT action connection)
+        Storage.RunImmediate action ->
+          bracket
+            (STM.atomically (STM.readTBQueue pool))
+            (STM.atomically . STM.writeTBQueue pool)
+            \connection ->
+              runImmediateTransaction connection action
     )
     inner
 
@@ -119,6 +126,21 @@ runSQLiteStatement connection statement =
     SeldaBackend.runSeldaT
       (SeldaBackend.withBackend \backend -> liftIO (SeldaBackend.runStmt backend statement []))
       connection
+
+runImmediateTransaction
+  :: IOE :> es
+  => SeldaBackend.SeldaConnection SeldaSQLite.SQLite
+  -> Selda.SeldaT SeldaSQLite.SQLite IO a
+  -> Eff es a
+runImmediateTransaction connection action =
+  mask \restore -> do
+    void (runSQLiteStatement connection "BEGIN IMMEDIATE;")
+    result <- restore (liftIO (SeldaBackend.runSeldaT action connection)) `onException` rollback
+    void (runSQLiteStatement connection "COMMIT;") `onException` rollback
+    pure result
+  where
+    rollback =
+      void (trySync (runSQLiteStatement connection "ROLLBACK;"))
 
 closeSQLiteConnections
   :: IOE :> es

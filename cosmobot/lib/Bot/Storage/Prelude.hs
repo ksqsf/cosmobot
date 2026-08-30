@@ -6,12 +6,13 @@ Stability   : experimental
 
 module Bot.Storage.Prelude
   ( runSelda
+  , runImmediate
   , queryLimit
   , module Database.Selda
   )
 where
 
-import Bot.Effect.Storage (runSelda)
+import Bot.Effect.Storage (runImmediate, runSelda)
 import Bot.Prelude (Int)
 import Database.Selda hiding (inner, limit, row, text, toString)
 import qualified Database.Selda as Selda

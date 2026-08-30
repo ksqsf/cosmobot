@@ -313,6 +313,7 @@ main =
       , testCase "agent audit records tool events" testAgentAuditRecordsToolEvents
       , testCase "agent audit decodes legacy run strategy" testAgentAuditDecodesLegacyRunStrategy
       , testCase "SQLite storage pool runs actions concurrently" testSQLiteStoragePoolRunsActionsConcurrently
+      , testCase "SQLite immediate transactions wait for the writer lock" testSQLiteImmediateTransactionsWait
       , testCase "thread stats accumulate the replied branch" testThreadStatsAccumulateRepliedBranch
       , testCase "thread stats and audit include active steerable replies" testThreadStatsShowActiveRunningTools
       , testCase "thread audit is scoped by platform, chat, and run occurrence" testThreadAuditScope
@@ -2872,33 +2873,60 @@ testAgentAuditDecodesLegacyRunStrategy = do
 testSQLiteStoragePoolRunsActionsConcurrently :: IO ()
 testSQLiteStoragePoolRunsActionsConcurrently =
   withSQLiteTempPath "storage-pool" \dbPath -> do
-    concurrent <- runEff $
-      runTimeout $
-        runConcurrent $
-          runPrim $
-            StorageSQLite.runStorageSQLitePath dbPath $
-              withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-                runInIO do
-                  firstStarted <- MVar.newEmptyMVar
-                  secondStarted <- MVar.newEmptyMVar
-                  release <- MVar.newEmptyMVar
-                  let holdConnection started =
-                        StorageEffect.runSelda $
-                          liftIO $
-                            runInIO do
-                              MVar.putMVar started ()
-                              MVar.takeMVar release
-                  firstWorker <- Async.async (holdConnection firstStarted)
-                  MVar.takeMVar firstStarted
-                  secondWorker <- Async.async (holdConnection secondStarted)
-                  startedTogether <- isJust <$> timeout 1_000_000 (MVar.takeMVar secondStarted)
-                  MVar.putMVar release ()
-                  unless startedTogether (MVar.takeMVar secondStarted)
-                  MVar.putMVar release ()
-                  Async.wait firstWorker
-                  Async.wait secondWorker
-                  pure startedTogether
+    concurrent <-
+      runEff
+        . runTimeout
+        . runConcurrent
+        . runPrim
+        . StorageSQLite.runStorageSQLitePath dbPath
+        $ withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+            runInIO do
+              firstStarted <- MVar.newEmptyMVar
+              secondStarted <- MVar.newEmptyMVar
+              release <- MVar.newEmptyMVar
+              let holdConnection started =
+                    StorageEffect.runSelda
+                      . liftIO
+                      $ runInIO do
+                          MVar.putMVar started ()
+                          MVar.takeMVar release
+              firstWorker <- Async.async (holdConnection firstStarted)
+              MVar.takeMVar firstStarted
+              secondWorker <- Async.async (holdConnection secondStarted)
+              startedTogether <- isJust <$> timeout 1_000_000 (MVar.takeMVar secondStarted)
+              MVar.putMVar release ()
+              unless startedTogether (MVar.takeMVar secondStarted)
+              MVar.putMVar release ()
+              Async.wait firstWorker
+              Async.wait secondWorker
+              pure startedTogether
     assertBool "separate pooled connections should execute concurrently" concurrent
+
+testSQLiteImmediateTransactionsWait :: IO ()
+testSQLiteImmediateTransactionsWait =
+  withSQLiteTempPath "storage-immediate" \dbPath ->
+    runEff
+      . runTimeout
+      . runConcurrent
+      . runPrim
+      . StorageSQLite.runStorageSQLitePath dbPath
+      $ withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+          runInIO do
+            firstStarted <- MVar.newEmptyMVar
+            secondStarted <- MVar.newEmptyMVar
+            release <- MVar.newEmptyMVar
+            firstWorker <- Async.async $ StorageEffect.runImmediate do
+              liftIO (runInIO (MVar.putMVar firstStarted () >> MVar.takeMVar release))
+            MVar.takeMVar firstStarted
+            secondWorker <- Async.async $ StorageEffect.runImmediate do
+              liftIO (runInIO (MVar.putMVar secondStarted ()))
+            startedWhileLocked <- isJust <$> timeout 100_000 (MVar.takeMVar secondStarted)
+            liftIO $ assertBool "second writer must wait for the first transaction" (not startedWhileLocked)
+            MVar.putMVar release ()
+            startedAfterRelease <- isJust <$> timeout 1_000_000 (MVar.takeMVar secondStarted)
+            liftIO $ assertBool "second writer should continue after commit" startedAfterRelease
+            Async.wait firstWorker
+            Async.wait secondWorker
 
 testThreadStatsAccumulateRepliedBranch :: IO ()
 testThreadStatsAccumulateRepliedBranch = do
