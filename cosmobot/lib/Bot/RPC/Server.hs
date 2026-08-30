@@ -1121,7 +1121,7 @@ scheduleValue :: Scheduler.ScheduledMessage -> Aeson.Value
 scheduleValue schedule = Aeson.object
   [ "id" Aeson..= schedule.scheduleId
   , "remainingSeconds" Aeson..= schedule.remainingSeconds
-  , "recurring" Aeson..= schedule.recurring
+  , "intervalSeconds" Aeson..= schedule.intervalSeconds
   , "prompt" Aeson..= schedule.message.text
   , "platform" Aeson..= chatPlatformKey schedule.message.platform
   , "chatId" Aeson..= fmap chatIdText schedule.message.chatId

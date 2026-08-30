@@ -117,7 +117,7 @@ testRecurringSchedulesRepeatUntilDeleted = runSchedulerTest do
   liftIO do
     map (fmap (.text)) [firstDelivery, secondDelivery] @?= [Just "repeat", Just "repeat"]
     map (.scheduleId) afterFirst @?= [1]
-    map (.recurring) afterFirst @?= [True]
+    map (.intervalSeconds) afterFirst @?= [Just 1]
     deleted @?= True
     assertBool "deleted recurring schedule is not delivered" (isNothing afterDelete)
     assertBool "deleted recurring schedule leaves no pending task" (null remaining)
@@ -171,7 +171,7 @@ testRecurringSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
     schedules <- Scheduler.listScheduledMessages (messageFrom "200" "list")
     liftIO do
       map (.scheduleId) schedules @?= [1]
-      map (.recurring) schedules @?= [True]
+      map (.intervalSeconds) schedules @?= [Just 60]
 
 testElapsedSchedulesPersistAcrossSchedulerRestart :: IO ()
 testElapsedSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do

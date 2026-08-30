@@ -38,8 +38,8 @@ const toast = useToast()
 const { isTop: drawerIsTop } = useOverlayLayer(visible)
 const summary = computed(() => ({
   total: schedules.value.length,
-  recurring: schedules.value.filter(({ recurring }) => recurring).length,
-  oneShot: schedules.value.filter(({ recurring }) => !recurring).length,
+  recurring: schedules.value.filter(({ intervalSeconds }) => intervalSeconds !== null).length,
+  oneShot: schedules.value.filter(({ intervalSeconds }) => intervalSeconds === null).length,
   owners: new Set(schedules.value.map(({ ownerId }) => ownerId).filter((owner) => owner !== null)).size,
 }))
 const platformOptions = computed(() => ['Any platform', ...new Set(schedules.value.map(({ platform }) => platform))])
@@ -51,7 +51,7 @@ const cadenceOptions = [
 const filtered = computed(() => schedules.value.filter((schedule) =>
   `${String(schedule.id)} ${schedule.prompt} ${schedule.platform} ${schedule.chatId ?? ''} ${schedule.ownerId ?? ''} ${schedule.runId ?? ''}`.toLowerCase().includes(query.value.toLowerCase())
   && (platformFilter.value === 'Any platform' || schedule.platform === platformFilter.value)
-  && (cadenceFilter.value === 'all' || schedule.recurring === (cadenceFilter.value === 'recurring')),
+  && (cadenceFilter.value === 'all' || (schedule.intervalSeconds !== null) === (cadenceFilter.value === 'recurring')),
 ))
 
 function remaining(seconds: number): string {
@@ -99,8 +99,9 @@ async function doDelete(): Promise<void> {
   const result = await runBackend(deleteSchedule(id))
   deleting.value = false
   if (result._tag === 'Failure') { toast.add({ severity: 'error', summary: result.error.message, life: 3500 }); return }
-  if (!result.value) { toast.add({ severity: 'warn', summary: `Schedule #${String(id)} no longer exists`, life: 2500 }); return }
-  toast.add({ severity: 'success', summary: `Schedule #${String(id)} deleted`, life: 2500 })
+  toast.add(result.value
+    ? { severity: 'success', summary: `Schedule #${String(id)} deleted`, life: 2500 }
+    : { severity: 'warn', summary: `Schedule #${String(id)} no longer exists`, life: 2500 })
   visible.value = false
   await router.replace({ name: 'schedules' })
   await refresh()
@@ -194,7 +195,7 @@ watch(() => route.params['scheduleId'], selectFromRoute)
             header="Schedule"
           >
             <template #body="{ data }">
-              <span class="manager-identity"><span class="manager-type-icon"><i class="pi pi-calendar-clock" /></span><span><strong>#{{ data.id }}</strong><small>{{ data.recurring ? 'Recurring' : 'One-shot' }}</small></span></span>
+              <span class="manager-identity"><span class="manager-type-icon"><i class="pi pi-calendar-clock" /></span><span><strong>#{{ data.id }}</strong><small>{{ data.intervalSeconds === null ? 'One-shot' : 'Recurring' }}</small></span></span>
             </template>
           </Column>
           <Column
@@ -235,8 +236,8 @@ watch(() => route.params['scheduleId'], selectFromRoute)
           <header class="drawer-hero">
             <span class="platform-icon"><i class="pi pi-calendar-clock" /></span><div>
               <small>Schedule</small><h2>#{{ selected.id }}</h2><Tag
-                :value="selected.recurring ? 'Recurring' : 'One-shot'"
-                :severity="selected.recurring ? 'info' : 'secondary'"
+                :value="selected.intervalSeconds === null ? 'One-shot' : 'Recurring'"
+                :severity="selected.intervalSeconds === null ? 'secondary' : 'info'"
               />
             </div>
           </header>
@@ -250,24 +251,20 @@ watch(() => route.params['scheduleId'], selectFromRoute)
             <div><dt>Chat</dt><dd><code>{{ selected.chatId ?? 'Unknown' }}</code></dd></div>
             <div><dt>Owner</dt><dd><code>{{ selected.ownerId ?? 'Unknown' }}</code></dd></div>
             <div><dt>Due in</dt><dd>{{ remaining(selected.remainingSeconds) }}</dd></div>
+            <div v-if="selected.intervalSeconds">
+              <dt>Repeats every</dt><dd>{{ selected.intervalSeconds }} seconds</dd>
+            </div>
             <div>
               <dt>Agent run</dt><dd>
                 <RunIdLink
-                  v-if="selected.runId"
+                  v-if="selected.runId && connection.methods.has('thread.resolve_run')"
                   :run-id="selected.runId"
-                /><span v-else>Unavailable</span>
+                /><code v-else-if="selected.runId">{{ selected.runId }}</code><span v-else>Unavailable</span>
               </dd>
             </div>
           </dl>
-          <Button
-            v-if="selected.runId"
-            label="Open agent thread"
-            icon="pi pi-sitemap"
-            as="router-link"
-            :to="{ name: 'threads', query: { run: selected.runId } }"
-          />
           <Message
-            v-else
+            v-if="!selected.runId"
             severity="secondary"
             :closable="false"
           >

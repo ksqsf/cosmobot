@@ -117,7 +117,7 @@ ttlFromMinutes minutes
 ownerFromMessage :: IncomingMessage -> Either ResourceError ResourceOwner
 ownerFromMessage message =
   ResourceOwner message.platform
-    <$> maybeToRight MissingResourceIdentity (show <$> message.chatId <|> listToMaybe message.chatAliases)
+    <$> maybeToRight MissingResourceIdentity (chatIdText <$> message.chatId <|> listToMaybe message.chatAliases)
     <*> maybeToRight MissingResourceIdentity message.senderId
 
 accessFromMessage :: IncomingMessage -> Either ResourceError ResourceAccess

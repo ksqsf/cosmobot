@@ -398,9 +398,11 @@ Resource failures use textual error codes such as `not_found`,
 | `schedule.list` | none | `schedules`: every pending schedule |
 | `schedule.delete` | `id` | `id` and whether it was `deleted` |
 
-Schedule entries contain `id`, `remainingSeconds`, `recurring`, `prompt`,
-`platform`, `chatId`, `ownerId`, and `runId`. Identity and run fields are
-`null` when the originating message did not provide them.
+Schedule entries contain `id`, `remainingSeconds`, `intervalSeconds`, `prompt`,
+`platform`, `chatId`, `ownerId`, and `runId`.
+`intervalSeconds` is `null` for one-shot schedules. Identity and run fields are
+`null` when the originating message did not provide them. Deleting an ID that
+is no longer pending succeeds with `deleted: false`.
 
 ## Plugin Methods
 

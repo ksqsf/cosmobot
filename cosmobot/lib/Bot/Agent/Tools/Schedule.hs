@@ -85,7 +85,7 @@ scheduleSummary schedule =
   ScheduleSummary
     { scheduleId = schedule.scheduleId
     , remainingSeconds = schedule.remainingSeconds
-    , recurring = schedule.recurring
+    , recurring = isJust schedule.intervalSeconds
     , prompt = scheduledPrompt schedule.message
     }
 

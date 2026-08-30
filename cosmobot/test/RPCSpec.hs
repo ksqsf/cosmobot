@@ -1043,7 +1043,7 @@ testSyncRequestExceptionReturnsJsonRpcError = do
 testManagerRpcMethods :: IO ()
 testManagerRpcMethods = runRpcManager do
   rpcState <- RPC.newRpcState
-  _ <- Scheduler.scheduleOneShotMessage 60 managerMessage
+  _ <- Scheduler.scheduleRecurringMessage 60 managerMessage
   worker <- Concurrency.fork "rpc-test-worker" never
   lookupResponse <- dispatch rpcState "concurrency.lookup" (Aeson.object ["id" Aeson..= worker.handleId.unId])
   cancelResponse <- dispatch rpcState "concurrency.cancel" (Aeson.object ["id" Aeson..= worker.handleId.unId])
@@ -1057,7 +1057,7 @@ testManagerRpcMethods = runRpcManager do
   missingResourceResponse <- dispatch rpcState "resource.detail" (Aeson.object ["id" Aeson..= ("missing" :: Text)])
   capabilitiesResponse <- dispatch rpcState "admin.capabilities" Aeson.Null
   liftIO do
-    (responseField lookupResponse "entry" >>= responseObjectText "label") @?= Just "rpc-test-worker"
+    (responseField lookupResponse "entry" >>= responseObjectField "label") @?= Just ("rpc-test-worker" :: Text)
     cancelResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "cancelled" Aeson..= True])
     awaitResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "awaited" Aeson..= True])
     associatedListResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "resources" Aeson..= ([] :: [Aeson.Value])])
@@ -1066,9 +1066,10 @@ testManagerRpcMethods = runRpcManager do
     schedule <- case responseField scheduleListResponse "schedules" >>= AesonTypes.parseMaybe (Aeson.withArray "schedules" (pure . listToMaybe . toList)) of
       Just (Just value) -> pure value
       _ -> assertFailure [i|expected one schedule, got #{show scheduleListResponse :: String}|] $> Aeson.Null
-    responseObjectText "platform" schedule @?= Just "telegram"
-    responseObjectText "chatId" schedule @?= Just "100"
-    responseObjectText "ownerId" schedule @?= Just "200"
+    responseObjectField "platform" schedule @?= Just ("telegram" :: Text)
+    responseObjectField "chatId" schedule @?= Just ("100" :: Text)
+    responseObjectField "ownerId" schedule @?= Just ("200" :: Text)
+    responseObjectField "intervalSeconds" schedule @?= Just (60 :: Int)
     scheduleDeleteResponse @?= responseResult (Aeson.object ["id" Aeson..= (1 :: Int), "deleted" Aeson..= True])
     scheduleAfterDeleteResponse @?= responseResult (Aeson.object ["schedules" Aeson..= ([] :: [Aeson.Value])])
     responseErrorCode missingResourceResponse @?= Just "not_found"
@@ -1083,8 +1084,8 @@ testManagerRpcMethods = runRpcManager do
     dispatch rpcState method params =
       RPCServer.dispatchRpcRequest rpcState (RPCServer.withManagerRpcCallbacks RPCServer.noRpcServerCallbacks) (rpcRequest method params)
 
-    responseObjectText :: Text -> Aeson.Value -> Maybe Text
-    responseObjectText field value =
+    responseObjectField :: Aeson.FromJSON a => Text -> Aeson.Value -> Maybe a
+    responseObjectField field value =
       AesonTypes.parseMaybe (Aeson.withObject "response object" (Aeson..: AesonKey.fromText field)) value
 
     never = threadDelay maxBound

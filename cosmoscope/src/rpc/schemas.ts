@@ -377,7 +377,7 @@ export const resourceListSchema = z.object({ resources: z.array(resourceSchema) 
 export const scheduleListSchema = z.object({ schedules: z.array(z.object({
   id: z.number().int().positive(),
   remainingSeconds: z.number().int().nonnegative(),
-  recurring: z.boolean(),
+  intervalSeconds: z.number().int().positive().nullable(),
   prompt: z.string(),
   platform: z.string(),
   chatId: z.string().nullable(),

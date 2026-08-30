@@ -30,7 +30,7 @@ export interface Resource {
 export interface Schedule {
   readonly id: number
   readonly remainingSeconds: number
-  readonly recurring: boolean
+  readonly intervalSeconds: number | null
   readonly prompt: string
   readonly platform: string
   readonly chatId: string | null

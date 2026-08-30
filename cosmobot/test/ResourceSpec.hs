@@ -615,6 +615,7 @@ testTypedResources = runManaged do
   liftIO $ firstResult @?= Right "res-1"
   liftIO $ secondResult @?= Right "res-2"
   access <- expectRight (Resource.accessFromMessage ownerMessage)
+  liftIO $ access.owner.chatId @?= "100"
   listed <- Resource.list access
   liftIO $ map (.owner) listed @?= replicate 2 access.owner
   liftIO $ map (\item -> (item.resourceType, item.sessionId, item.description, item.probeResult)) listed

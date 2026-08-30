@@ -14,14 +14,14 @@ describe('manager RPC backends', () => {
       }] })
       if (method === 'schedule.delete') return Promise.resolve({ id: 1, deleted: true })
       return Promise.resolve({ schedules: [{
-        id: 1, remainingSeconds: 60, recurring: false, prompt: 'continue', platform: 'telegram',
+        id: 1, remainingSeconds: 60, intervalSeconds: 60, prompt: 'continue', platform: 'telegram',
         chatId: '100', ownerId: '200', runId: 'run-1',
       }] })
     })
     const backend = makeRpcBackend(client, new Set(liveAdminMethods))
 
     await expect(Effect.runPromise(backend.resources.list())).resolves.toMatchObject([{ platform: 'telegram', chatId: '100', ownerId: '200' }])
-    await expect(Effect.runPromise(backend.schedules.list())).resolves.toMatchObject([{ runId: 'run-1', ownerId: '200' }])
+    await expect(Effect.runPromise(backend.schedules.list())).resolves.toMatchObject([{ runId: 'run-1', ownerId: '200', intervalSeconds: 60 }])
     await expect(Effect.runPromise(backend.schedules.delete(1))).resolves.toBe(true)
   })
 })

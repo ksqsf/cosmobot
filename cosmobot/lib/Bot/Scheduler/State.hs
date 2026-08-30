@@ -123,7 +123,7 @@ scheduledMessage now pending =
   ScheduledMessage
     { scheduleId = pending.scheduleId
     , remainingSeconds = remainingSecondsUntil now pending.dueAtUnixSeconds
-    , recurring = isJust pending.recurringIntervalSeconds
+    , intervalSeconds = pending.recurringIntervalSeconds
     , message = pending.message
     }
 

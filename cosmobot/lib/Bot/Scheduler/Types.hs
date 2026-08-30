@@ -33,7 +33,7 @@ import qualified Streaming.Prelude as S
 data ScheduledMessage = ScheduledMessage
   { scheduleId :: !Integer
   , remainingSeconds :: !Int
-  , recurring :: !Bool
+  , intervalSeconds :: !(Maybe Int)
   , message :: !IncomingMessage
   }
   deriving (Show, Generic, Aeson.ToJSON)
