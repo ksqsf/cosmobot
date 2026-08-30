@@ -104,6 +104,7 @@ main =
       , testCase "configuration validation enforces typed changes and owner rules" testConfigurationValidationRules
       , testCase "configuration writes preserve mode, skip no-ops, and reject symlinks" testConfigurationFileSafety
       , testCase "configuration writes reject unsafe backup targets" testConfigurationBackupTargetSafety
+      , testCase "configuration write failures preserve current and backup files" testConfigurationWriteFailures
       , testCase "concurrent configuration updates serialize at the final revision check" testConcurrentConfigurationUpdates
       , testCase "admin.restart runs only after its websocket reply is sent" testRestartAfterResponse
       , testCase "plugin lifecycle RPC validates ids and serializes safe status" testPluginLifecycleRpc
@@ -736,6 +737,51 @@ testConfigurationBackupTargetSafety = withSQLiteTempPath "configuration-backup-t
   responseErrorCode directoryResponse @?= Just "config_write_failed"
   traverse_ (\path -> TextIO.readFile path >>= (@?= source)) [symlinkConfigPath, symlinkTargetPath, directoryConfigPath]
   Posix.isDirectory <$> Posix.getFileStatus directoryBackupPath >>= (@?= True)
+
+testConfigurationWriteFailures :: IO ()
+testConfigurationWriteFailures = withSQLiteTempPath "configuration-write-failures" \sqlitePath -> do
+  let directory = takeDirectory sqlitePath
+      configPath = directory </> "config.toml"
+      backupPath = configPath <> ".cosmobot.bak"
+      previous = rpcMinimalConfig
+      replacement = Text.replace "command = \"!ask\"" "command = \"!changed\"" previous
+      priorBackup = Text.replace "command = \"!ask\"" "command = \"!prior\"" previous
+      stages =
+        [ RPCConfiguration.BeforeNewWrite
+        , RPCConfiguration.BeforeNewMetadata
+        , RPCConfiguration.BeforePreviousWrite
+        , RPCConfiguration.BeforePreviousMetadata
+        , RPCConfiguration.AfterBackupParked
+        , RPCConfiguration.BeforeBackupInstall
+        , RPCConfiguration.BeforeCurrentInstall
+        ]
+  for_ stages \failedStage -> do
+    TextIO.writeFile configPath previous
+    TextIO.writeFile backupPath priorBackup
+    result <- runRpcStorage sqlitePath $ trySync $
+      RPCConfiguration.atomicReplaceWithHook
+        (\stage -> "injected configuration write failure" <$ guard (stage == failedStage))
+        configPath
+        previous
+        replacement
+    assertBool [i|expected #{failedStage} failure|] (isLeft result)
+    TextIO.readFile configPath >>= (@?= previous)
+    TextIO.readFile backupPath >>= (@?= priorBackup)
+    temporaryEntries <- filter (".cosmobot-config-" `Text.isPrefixOf`) . map toText
+      <$> runRpcStorage sqlitePath (FileSystem.listDirectory directory)
+    temporaryEntries @?= []
+
+  TextIO.writeFile configPath previous
+  runRpcStorage sqlitePath (FileSystem.removeFile backupPath)
+  result <- runRpcStorage sqlitePath $ trySync $
+    RPCConfiguration.atomicReplaceWithHook
+      (\stage -> "injected final rename failure" <$ guard (stage == RPCConfiguration.BeforeCurrentInstall))
+      configPath
+      previous
+      replacement
+  assertBool "expected final rename failure without a prior backup" (isLeft result)
+  TextIO.readFile configPath >>= (@?= previous)
+  runRpcStorage sqlitePath (FileSystem.doesPathExist backupPath) >>= (@?= False)
 
 testConcurrentConfigurationUpdates :: IO ()
 testConcurrentConfigurationUpdates = withSQLiteTempPath "configuration-concurrent" \sqlitePath -> do

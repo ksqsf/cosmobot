@@ -3,6 +3,7 @@
 import { mount } from '@vue/test-utils'
 import PrimeVue from 'primevue/config'
 import { describe, expect, it } from 'vitest'
+import ConfigIdentityInput from '@/components/configuration/ConfigIdentityInput.vue'
 import ConfigListInput from '@/components/configuration/ConfigListInput.vue'
 
 describe('configuration list editor', () => {
@@ -32,5 +33,25 @@ describe('configuration list editor', () => {
     expect(wrapper.emitted('update:modelValue')?.at(-1)?.[0]).toEqual([])
     await wrapper.get('button[aria-label="Add entry"]').trigger('click')
     expect(wrapper.emitted('update:modelValue')?.at(-1)?.[0]).toEqual([10, null])
+  })
+
+  it('keeps invalid numeric identities blank instead of inventing zero', async () => {
+    const scalar = mount(ConfigIdentityInput, {
+      props: { modelValue: '@room', label: 'Allowed chat', disabled: false },
+      global: { plugins: [PrimeVue] },
+    })
+    await scalar.get('select').setValue('number')
+    expect(scalar.emitted('update:modelValue')?.at(-1)?.[0]).toBeNull()
+    expect((scalar.get('select').element as HTMLSelectElement).value).toBe('number')
+    expect(scalar.get('input').element.value).toBe('')
+
+    const list = mount(ConfigListInput, {
+      props: { modelValue: ['@room'], itemKind: 'identity', label: 'Allowed chats', disabled: false },
+      global: { plugins: [PrimeVue] },
+    })
+    await list.get('select').setValue('number')
+    expect(list.emitted('update:modelValue')?.at(-1)?.[0]).toEqual([null])
+    expect((list.get('select').element as HTMLSelectElement).value).toBe('number')
+    expect(list.get('input').element.value).toBe('')
   })
 })

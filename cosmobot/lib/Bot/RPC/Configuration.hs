@@ -10,6 +10,8 @@ module Bot.RPC.Configuration
   , newConfiguration
   , configurationMethods
   , dispatchConfigurationRequest
+  , AtomicReplaceStage (..)
+  , atomicReplaceWithHook
   )
 where
 
@@ -56,6 +58,16 @@ newtype ConfigTargetError = ConfigTargetError Text
   deriving stock (Show)
 
 instance Exception ConfigTargetError
+
+data AtomicReplaceStage
+  = BeforeNewWrite
+  | BeforeNewMetadata
+  | BeforePreviousWrite
+  | BeforePreviousMetadata
+  | AfterBackupParked
+  | BeforeBackupInstall
+  | BeforeCurrentInstall
+  deriving stock (Eq, Show)
 
 newConfiguration :: Concurrent :> es => FilePath -> Config.ConfigDocument -> Eff es Configuration
 newConfiguration path activeDocument = do
@@ -341,6 +353,16 @@ atomicReplace
   -> Text
   -> Eff es ()
 atomicReplace path previous replacement = do
+  atomicReplaceWithHook (const Nothing) path previous replacement
+
+atomicReplaceWithHook
+  :: (FileSystem.FileSystem :> es, IOE :> es)
+  => (AtomicReplaceStage -> Maybe Text)
+  -> FilePath
+  -> Text
+  -> Text
+  -> Eff es ()
+atomicReplaceWithHook hook path previous replacement = do
   status <- checkedTarget path
   let directory = takeDirectory path
       backupPath = path <> ".cosmobot.bak"
@@ -355,15 +377,20 @@ atomicReplace path previous replacement = do
       let newPath = temporaryDirectory </> "new"
           oldPath = temporaryDirectory </> "previous"
           savedBackupPath = temporaryDirectory </> "backup"
-      writeReplacement status newPath replacement
-      writeReplacement status oldPath previous
+      writeReplacement hook BeforeNewWrite BeforeNewMetadata status newPath replacement
+      writeReplacement hook BeforePreviousWrite BeforePreviousMetadata status oldPath previous
       mask_ do
         when backupExists (FileSystem.renameFile backupPath savedBackupPath)
         let restoreBackup = do
               installedBackup <- FileSystem.doesPathExist backupPath
               when installedBackup (FileSystem.removeFile backupPath)
               when backupExists (FileSystem.renameFile savedBackupPath backupPath)
-        (FileSystem.renameFile oldPath backupPath >> FileSystem.renameFile newPath path)
+        (do
+          runAtomicReplaceHook hook AfterBackupParked
+          runAtomicReplaceHook hook BeforeBackupInstall
+          FileSystem.renameFile oldPath backupPath
+          runAtomicReplaceHook hook BeforeCurrentInstall
+          FileSystem.renameFile newPath path)
           `onException` restoreBackup
 
 checkedTarget
@@ -379,14 +406,23 @@ checkedTarget path = do
 
 writeReplacement
   :: (FileSystem.FileSystem :> es, IOE :> es)
-  => Posix.FileStatus
+  => (AtomicReplaceStage -> Maybe Text)
+  -> AtomicReplaceStage
+  -> AtomicReplaceStage
+  -> Posix.FileStatus
   -> FilePath
   -> Text
   -> Eff es ()
-writeReplacement status path source = do
+writeReplacement hook writeStage metadataStage status path source = do
+  runAtomicReplaceHook hook writeStage
   FileSystemIO.withBinaryFile path FileSystemIO.WriteMode \fileHandle -> do
     FileSystemByteString.hPut fileHandle (TextEncoding.encodeUtf8 source)
     FileSystemIO.hFlush fileHandle
+  runAtomicReplaceHook hook metadataStage
   liftIO do
     Posix.setFileMode path (Posix.fileMode status)
     Posix.setOwnerAndGroup path (Posix.fileOwner status) (Posix.fileGroup status)
+
+runAtomicReplaceHook :: IOE :> es => (AtomicReplaceStage -> Maybe Text) -> AtomicReplaceStage -> Eff es ()
+runAtomicReplaceHook hook stage =
+  for_ (hook stage) (throwIO . ConfigTargetError)

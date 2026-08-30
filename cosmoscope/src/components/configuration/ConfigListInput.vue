@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import Button from 'primevue/button'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
@@ -10,6 +11,7 @@ const props = defineProps<{
   disabled: boolean
 }>()
 const emit = defineEmits<{ 'update:modelValue': [value: unknown[]] }>()
+const identityKinds = ref<('text' | 'number' | undefined)[]>([])
 
 function items(): unknown[] {
   return Array.isArray(props.modelValue) ? props.modelValue : []
@@ -25,14 +27,22 @@ function changeIdentityType(index: number, event: Event): void {
   const current = items()[index]
   const numeric = (event.target as HTMLSelectElement).value === 'number'
   const text = typeof current === 'string' || typeof current === 'number' ? String(current) : ''
-  update(index, numeric ? (typeof current === 'number' ? current : Number(text) || 0) : text)
+  identityKinds.value[index] = numeric ? 'number' : 'text'
+  const converted = text.trim() === '' ? Number.NaN : Number(text)
+  update(index, numeric ? (Number.isInteger(converted) ? converted : null) : text)
+}
+
+function identityKind(index: number, item: unknown): 'text' | 'number' {
+  return identityKinds.value[index] ?? (typeof item === 'number' ? 'number' : 'text')
 }
 
 function remove(index: number): void {
+  identityKinds.value.splice(index, 1)
   emit('update:modelValue', items().filter((_, itemIndex) => itemIndex !== index))
 }
 
 function add(): void {
+  identityKinds.value.push(props.itemKind === 'identity' ? 'text' : undefined)
   emit('update:modelValue', [...items(), null])
 }
 </script>
@@ -60,7 +70,7 @@ function add(): void {
       >
         <select
           class="config-select"
-          :value="typeof item === 'number' ? 'number' : 'text'"
+          :value="identityKind(index, item)"
           :aria-label="`${label} item ${index + 1} type`"
           :disabled="disabled"
           @change="changeIdentityType(index, $event)"
@@ -73,8 +83,8 @@ function add(): void {
           </option>
         </select>
         <InputNumber
-          v-if="typeof item === 'number'"
-          :model-value="item"
+          v-if="identityKind(index, item) === 'number'"
+          :model-value="typeof item === 'number' ? item : null"
           :aria-label="`${label} item ${index + 1}`"
           :use-grouping="false"
           :max-fraction-digits="0"
