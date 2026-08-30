@@ -7,6 +7,10 @@ import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import PageHeading from '@/components/PageHeading.vue'
+import ConfigListInput from '@/components/configuration/ConfigListInput.vue'
+import ConfigIdentityInput from '@/components/configuration/ConfigIdentityInput.vue'
+import { configSectionTitle, groupConfigSections } from '@/configuration/navigation'
+import { configListItemKind, configTextInputValue, displayConfigValue } from '@/configuration/values'
 import {
   getConfiguration, restartCosmobot, rollbackConfiguration,
   updateConfiguration, validateConfiguration,
@@ -28,37 +32,65 @@ const snapshot = ref<ConfigurationSnapshot>()
 const selectedPath = ref('')
 const drafts = ref<Record<string, ConfigChange>>({})
 const sectionChanges = ref<ConfigChange[]>([])
+const draftSections = ref<ConfigSection[]>([])
 const validation = ref<ConfigurationValidation>()
+const validating = ref(false)
+const validatedFingerprint = ref('')
 const providerNames = ref<Record<string, string>>({})
+let draftGeneration = 0
+let refreshGeneration = 0
 
-const sections = computed(() => snapshot.value?.configuration.sections ?? [])
+const sections = computed(() => {
+  const removed = new Set(sectionChanges.value.flatMap((change) => change.operation === 'remove_section' ? [pathKey(change.path)] : []))
+  return [...(snapshot.value?.configuration.sections ?? []), ...draftSections.value]
+    .filter((section) => section.optional || !removed.has(pathKey(section.path)))
+})
+const navigationGroups = computed(() => snapshot.value === undefined ? [] : groupConfigSections({
+  ...snapshot.value.configuration,
+  sections: sections.value,
+}))
 const selected = computed(() => sections.value.find((section) => pathKey(section.path) === selectedPath.value) ?? sections.value[0])
-const changes = computed<ConfigChange[]>(() => [...Object.values(drafts.value), ...sectionChanges.value])
-const canManage = computed(() => snapshot.value?.editable === true &&
+const changes = computed<ConfigChange[]>(() => [...sectionChanges.value, ...Object.values(drafts.value)])
+const selectedEnabled = computed(() => {
+  const section = selected.value
+  if (!section?.optional) return true
+  const operation = sectionChanges.value.find((change) => pathKey(change.path) === pathKey(section.path))?.operation
+  return operation === 'add_section' || (section.present && operation !== 'remove_section')
+})
+const changesFingerprint = computed(() => JSON.stringify(changes.value))
+const busy = computed(() => loading.value || validating.value)
+const supportsConfigGet = computed(() => connection.state === 'authenticated' && connection.methods.has('config.get'))
+const canManage = computed(() => connection.state === 'authenticated' && snapshot.value?.editable === true &&
   ['config.validate', 'config.update'].every((method) => connection.methods.has(method)))
-const canRollback = computed(() => canManage.value && snapshot.value?.backup != null && connection.methods.has('config.rollback'))
-const canRestart = computed(() => snapshot.value !== undefined && connection.methods.has('admin.restart'))
-const applyReady = computed(() => changes.value.length > 0 && validation.value?.valid === true)
+const controlsDisabled = computed(() => !canManage.value || busy.value || !selectedEnabled.value)
+const canRollback = computed(() => canManage.value && !busy.value && changes.value.length === 0 &&
+  snapshot.value?.backup != null && connection.methods.has('config.rollback'))
+const canRestart = computed(() => connection.state === 'authenticated' && !busy.value &&
+  snapshot.value !== undefined && connection.methods.has('admin.restart'))
+const applyReady = computed(() => changes.value.length > 0 && validation.value?.valid === true &&
+  validatedFingerprint.value === changesFingerprint.value)
 
-function pathKey(path: readonly string[]): string { return path.join('/') }
+function pathKey(path: readonly string[]): string { return JSON.stringify(path) }
 function displayPath(path: readonly string[]): string { return path.join('.') }
+
+function baseValue(option: ConfigOption): unknown {
+  return option.source.present ? option.source.value : option.effective ?? option.default
+}
 
 function draftValue(option: ConfigOption): unknown {
   const draft = drafts.value[pathKey(option.path)]
   if (draft?.operation === 'set' || draft?.operation === 'replace_secret') return draft.value
-  return option.source.present ? option.source.value : option.effective ?? option.default
+  if (draft?.operation === 'clear_secret') return null
+  if (draft?.operation === 'remove') return option.default
+  return baseValue(option)
 }
 
 function displayValue(value: unknown): string {
-  if (value === null || value === undefined) return 'unset'
-  if (Array.isArray(value)) return value.join(', ')
-  if (typeof value === 'object') return JSON.stringify(value)
-  return JSON.stringify(value)
+  return displayConfigValue(value)
 }
 
 function inputValue(option: ConfigOption): string {
-  if (option.type.kind === 'secret') return ''
-  return displayValue(draftValue(option)).replace(/^unset$/, '')
+  return configTextInputValue(draftValue(option), option.type.kind)
 }
 
 function numericValue(option: ConfigOption): number | null {
@@ -66,23 +98,39 @@ function numericValue(option: ConfigOption): number | null {
   return typeof value === 'number' ? value : null
 }
 
-function setOption(option: ConfigOption, value: unknown): void {
-  drafts.value = { ...drafts.value, [pathKey(option.path)]: { operation: 'set', path: option.path, value } }
+function listValue(option: ConfigOption): unknown[] {
+  const value = draftValue(option)
+  return Array.isArray(value) ? value : []
+}
+
+function identityValue(option: ConfigOption): string | number | null {
+  const value = draftValue(option)
+  return typeof value === 'string' || typeof value === 'number' ? value : null
+}
+
+function numericConstraint(option: ConfigOption, key: 'minimum' | 'maximum'): number | undefined {
+  if (typeof option.constraints !== 'object' || option.constraints === null) return undefined
+  const value = (option.constraints as Record<string, unknown>)[key]
+  return typeof value === 'number' ? value : undefined
+}
+
+function markDraftChanged(): void {
+  draftGeneration += 1
+  refreshGeneration += 1
   validation.value = undefined
+  validatedFingerprint.value = ''
+}
+
+function setOption(option: ConfigOption, value: unknown): void {
+  const key = pathKey(option.path)
+  drafts.value = JSON.stringify(value) === JSON.stringify(baseValue(option))
+    ? Object.fromEntries(Object.entries(drafts.value).filter(([path]) => path !== key))
+    : { ...drafts.value, [key]: { operation: 'set', path: option.path, value } }
+  markDraftChanged()
 }
 
 function setText(option: ConfigOption, value: string | undefined): void {
-  const text = value ?? ''
-  const parsed = option.type.kind === 'list'
-    ? text.split(',').map((part) => part.trim()).filter(Boolean)
-    : option.type.kind === 'identity_list'
-      ? text.split(',').map((part) => part.trim()).filter(Boolean).map(parseIdentity)
-      : option.type.kind === 'identity' ? parseIdentity(text) : text
-  setOption(option, parsed)
-}
-
-function parseIdentity(value: string): string | number {
-  return /^-?\d+$/.test(value) ? Number(value) : value
+  setOption(option, value ?? '')
 }
 
 function setEnum(option: ConfigOption, event: Event): void {
@@ -96,77 +144,158 @@ function replaceSecret(option: ConfigOption, value: string | undefined): void {
   if (next === '') drafts.value = Object.fromEntries(Object.entries(copy).filter(([path]) => path !== key))
   else copy[key] = { operation: 'replace_secret', path: option.path, value: next }
   if (next !== '') drafts.value = copy
-  validation.value = undefined
+  markDraftChanged()
 }
 
 function removeOption(option: ConfigOption): void {
   drafts.value = { ...drafts.value, [pathKey(option.path)]: {
     operation: option.type.kind === 'secret' ? 'clear_secret' : 'remove', path: option.path,
   } }
-  validation.value = undefined
+  markDraftChanged()
 }
 
 function resetOption(option: ConfigOption): void {
   const key = pathKey(option.path)
   drafts.value = Object.fromEntries(Object.entries(drafts.value).filter(([path]) => path !== key))
-  validation.value = undefined
+  markDraftChanged()
 }
 
-function addProvider(path: readonly string[]): void {
+function addProvider(template: ConfigurationSnapshot['configuration']['repeatableSections'][number]): void {
+  const path = template.path
   const family = pathKey(path)
   const name = providerNames.value[family]?.trim()
   if (!name) return
-  sectionChanges.value = [...sectionChanges.value, { operation: 'add_section', path: [...path, name] }]
+  const providerPath = [...path, name]
+  const existing = snapshot.value?.configuration.sections.find((section) => pathKey(section.path) === pathKey(providerPath))
+  const pendingRemoval = sectionChanges.value.some((change) => change.operation === 'remove_section' && pathKey(change.path) === pathKey(providerPath))
+  if (existing !== undefined && pendingRemoval) {
+    sectionChanges.value = sectionChanges.value.filter((change) => !(change.operation === 'remove_section' && pathKey(change.path) === pathKey(providerPath)))
+    providerNames.value = { ...providerNames.value, [family]: '' }
+    selectedPath.value = pathKey(providerPath)
+    error.value = ''
+    markDraftChanged()
+    return
+  }
+  if (sections.value.some((section) => pathKey(section.path) === pathKey(providerPath))) {
+    error.value = `A provider named “${name}” already exists in ${template.label.toLowerCase()}.`
+    return
+  }
+  const section: ConfigSection = {
+    path: providerPath,
+    label: name,
+    group: template.group,
+    optional: false,
+    present: false,
+    repeatable: true,
+    options: template.options.map((option) => ({
+      ...option,
+      path: option.path.map((segment) => segment === '*' ? name : segment),
+      source: { present: false, value: null },
+      effective: option.default,
+    })),
+  }
+  sectionChanges.value = [...sectionChanges.value, { operation: 'add_section', path: providerPath }]
+  draftSections.value = [...draftSections.value, section]
   providerNames.value = { ...providerNames.value, [family]: '' }
-  validation.value = undefined
+  selectedPath.value = pathKey(providerPath)
+  error.value = ''
+  markDraftChanged()
 }
 
 function removeProvider(section: ConfigSection): void {
-  sectionChanges.value = [...sectionChanges.value, { operation: 'remove_section', path: section.path }]
-  validation.value = undefined
+  const key = pathKey(section.path)
+  const wasAdded = draftSections.value.some((candidate) => pathKey(candidate.path) === key)
+  draftSections.value = draftSections.value.filter((candidate) => pathKey(candidate.path) !== key)
+  sectionChanges.value = wasAdded
+    ? sectionChanges.value.filter((change) => !(change.operation === 'add_section' && pathKey(change.path) === key))
+    : [...sectionChanges.value.filter((change) => pathKey(change.path) !== key), { operation: 'remove_section', path: section.path }]
+  drafts.value = Object.fromEntries(Object.entries(drafts.value).filter(([, change]) => !section.path.every((segment, index) => change.path[index] === segment)))
+  selectedPath.value = pathKey(sections.value[0]?.path ?? [])
+  markDraftChanged()
+}
+
+function addOptionalSection(section: ConfigSection): void {
+  sectionChanges.value = [
+    ...sectionChanges.value.filter((change) => pathKey(change.path) !== pathKey(section.path)),
+    ...(section.present ? [] : [{ operation: 'add_section' as const, path: section.path }]),
+  ]
+  markDraftChanged()
+}
+
+function removeOptionalSection(section: ConfigSection): void {
+  sectionChanges.value = [
+    ...sectionChanges.value.filter((change) => pathKey(change.path) !== pathKey(section.path)),
+    ...(section.present ? [{ operation: 'remove_section' as const, path: section.path }] : []),
+  ]
+  drafts.value = Object.fromEntries(Object.entries(drafts.value).filter(([, change]) =>
+    !section.path.every((segment, index) => change.path[index] === segment)))
+  markDraftChanged()
 }
 
 function clearDrafts(): void {
   drafts.value = {}
   sectionChanges.value = []
-  validation.value = undefined
+  draftSections.value = []
+  markDraftChanged()
+  if (!sections.value.some((section) => pathKey(section.path) === selectedPath.value))
+    selectedPath.value = pathKey(sections.value[0]?.path ?? [])
 }
 
-async function refresh(): Promise<void> {
+async function refresh(discardDrafts = false): Promise<void> {
   if (connection.state !== 'authenticated' || !connection.methods.has('config.get')) {
-    snapshot.value = undefined
-    selectedPath.value = ''
-    error.value = connection.state === 'authenticated'
-      ? 'This cosmobot server does not support configuration inspection.'
-      : 'Connect to cosmobot to inspect configuration.'
-    clearDrafts()
+    if (snapshot.value === undefined) {
+      selectedPath.value = ''
+      error.value = connection.state === 'authenticated'
+        ? 'This cosmobot server does not support configuration inspection.'
+        : 'Connect to cosmobot to inspect configuration.'
+    }
     return
   }
+  if (!discardDrafts && changes.value.length > 0) return
+  const generation = ++refreshGeneration
   loading.value = true
   const result = await runBackend(getConfiguration)
   loading.value = false
+  if (generation !== refreshGeneration) return
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
   snapshot.value = result.value
   if (!sections.value.some((section) => pathKey(section.path) === selectedPath.value))
     selectedPath.value = pathKey(sections.value[0]?.path ?? [])
-  clearDrafts()
+  if (discardDrafts) clearDrafts()
+}
+
+function requestRefresh(): void {
+  if (changes.value.length === 0) { void refresh(true); return }
+  confirm.require({
+    header: 'Discard drafts and refresh?',
+    message: 'Refreshing loads the current file and discards every unapplied configuration change.',
+    rejectLabel: 'Keep drafts', acceptLabel: 'Discard and refresh', acceptClass: 'p-button-danger',
+    accept: () => { void refresh(true) },
+  })
 }
 
 async function validate(): Promise<void> {
-  if (!snapshot.value) return
-  const result = await runBackend(validateConfiguration(snapshot.value.revision, changes.value))
+  if (!snapshot.value || busy.value || changes.value.length === 0) return
+  const generation = draftGeneration
+  const fingerprint = changesFingerprint.value
+  const revision = snapshot.value.revision
+  validating.value = true
+  const result = await runBackend(validateConfiguration(revision, changes.value))
+  validating.value = false
+  if (generation !== draftGeneration || fingerprint !== changesFingerprint.value || revision !== snapshot.value.revision) return
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   validation.value = result.value
+  validatedFingerprint.value = fingerprint
   error.value = ''
 }
 
 async function apply(): Promise<void> {
-  if (!applyReady.value || !snapshot.value) return
+  if (!applyReady.value || !snapshot.value || busy.value) return
   loading.value = true
   const result = await runBackend(updateConfiguration(snapshot.value.revision, changes.value))
   loading.value = false
-  if (result._tag === 'Failure') { error.value = result.error.message; validation.value = undefined; return }
+  if (result._tag === 'Failure') { error.value = result.error.message; validation.value = undefined; validatedFingerprint.value = ''; return }
   snapshot.value = result.value
   clearDrafts()
   toast.add({ severity: 'success', summary: 'Configuration updated', detail: 'Restart to activate the changes.', life: 3500 })
@@ -184,8 +313,10 @@ function requestRollback(): void {
 }
 
 async function rollback(backupRevision: string): Promise<void> {
-  if (!snapshot.value) return
+  if (!snapshot.value || busy.value || changes.value.length > 0) return
+  loading.value = true
   const result = await runBackend(rollbackConfiguration(snapshot.value.revision, backupRevision))
+  loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   snapshot.value = result.value
   clearDrafts()
@@ -201,13 +332,16 @@ function requestRestart(): void {
 }
 
 async function restart(): Promise<void> {
+  if (busy.value || connection.state !== 'authenticated') return
+  loading.value = true
   const result = await runBackend(restartCosmobot)
+  loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   toast.add({ severity: 'info', summary: 'Restart requested', detail: 'The server acknowledged the request.', life: 3500 })
 }
 
-onMounted(refresh)
-watch([() => connection.state, () => connection.methods], () => { void refresh() })
+onMounted(() => { void refresh() })
+watch(supportsConfigGet, (supported) => { if (supported) void refresh() })
 </script>
 
 <template>
@@ -223,7 +357,8 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
           icon="pi pi-refresh"
           severity="secondary"
           :loading="loading"
-          @click="refresh"
+          :disabled="busy"
+          @click="requestRefresh"
         />
         <Button
           v-if="canRollback"
@@ -267,55 +402,90 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
     </Message>
     <div class="config-layout panel">
       <aside class="config-nav">
-        <p class="nav-label">
-          Live sections
-        </p>
-        <button
-          v-for="section in sections"
-          :key="pathKey(section.path)"
-          class="config-nav-item"
-          :class="{ active: pathKey(section.path) === selectedPath }"
-          @click="selectedPath = pathKey(section.path)"
+        <div
+          v-for="group in navigationGroups"
+          :key="group.key"
+          class="config-nav-group"
         >
-          {{ section.label }}
-        </button>
-        <template v-if="canManage && snapshot">
+          <p class="nav-label">
+            {{ group.label }}
+          </p>
           <div
-            v-for="repeatable in snapshot.configuration.repeatableSections"
-            :key="pathKey(repeatable.path)"
-            class="provider-add"
+            v-for="cluster in group.clusters"
+            :key="cluster.key"
+            class="config-nav-cluster"
           >
-            <small>{{ repeatable.label }}</small>
-            <InputText
-              v-model="providerNames[pathKey(repeatable.path)]"
-              :aria-label="`New ${repeatable.label.toLowerCase()} name`"
-              placeholder="Provider name"
-              fluid
-            />
-            <Button
-              label="Add"
-              size="small"
-              severity="secondary"
-              @click="addProvider(repeatable.path)"
-            />
+            <small v-if="cluster.label">{{ cluster.label }}</small>
+            <button
+              v-for="section in cluster.sections"
+              :key="pathKey(section.path)"
+              class="config-nav-item"
+              :class="{ active: pathKey(section.path) === selectedPath }"
+              @click="selectedPath = pathKey(section.path)"
+            >
+              {{ configSectionTitle(section) }}
+            </button>
+            <div
+              v-if="canManage && cluster.repeatable"
+              class="provider-add"
+            >
+              <InputText
+                v-model="providerNames[pathKey(cluster.repeatable.path)]"
+                :aria-label="`New ${cluster.repeatable.label.toLowerCase()} name`"
+                placeholder="Provider name"
+                :disabled="controlsDisabled"
+                fluid
+              />
+              <Button
+                label="Add provider"
+                size="small"
+                severity="secondary"
+                :disabled="controlsDisabled"
+                @click="addProvider(cluster.repeatable)"
+              />
+            </div>
           </div>
-        </template>
+        </div>
       </aside>
       <section
         v-if="selected"
         class="config-form stack"
       >
         <div class="config-section-heading">
-          <div><h2>{{ selected.label }}</h2><p><code>{{ displayPath(selected.path) }}</code></p></div>
+          <div><h2>{{ configSectionTitle(selected) }}</h2><p><code>{{ displayPath(selected.path) }}</code></p></div>
           <Button
-            v-if="canManage && selected.repeatable"
+            v-if="canManage && selected.optional && selectedEnabled"
+            :label="`Remove ${selected.label}`"
+            severity="danger"
+            text
+            :disabled="busy"
+            @click="removeOptionalSection(selected)"
+          />
+          <Button
+            v-else-if="canManage && selected.optional"
+            :label="`Add ${selected.label}`"
+            severity="secondary"
+            :disabled="busy"
+            @click="addOptionalSection(selected)"
+          />
+          <Button
+            v-else-if="canManage && selected.repeatable"
             label="Remove provider"
             severity="danger"
             text
+            :disabled="controlsDisabled"
             @click="removeProvider(selected)"
           />
         </div>
         <Message
+          v-if="selected.optional && !selectedEnabled"
+          severity="info"
+          :closable="false"
+        >
+          Add this optional section before editing its settings.
+        </Message>
+        <Message
+          v-else
           severity="warn"
           :closable="false"
         >
@@ -335,7 +505,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
             <Checkbox
               :model-value="Boolean(draftValue(option))"
               binary
-              :disabled="!canManage"
+              :disabled="controlsDisabled"
               @update:model-value="setOption(option, $event)"
             /> Enabled
           </label>
@@ -344,7 +514,10 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
             :model-value="numericValue(option)"
             :aria-label="option.label"
             :use-grouping="false"
-            :disabled="!canManage"
+            :min="numericConstraint(option, 'minimum')"
+            :max="numericConstraint(option, 'maximum')"
+            :max-fraction-digits="option.type.kind === 'integer' ? 0 : undefined"
+            :disabled="controlsDisabled"
             fluid
             @update:model-value="setOption(option, $event)"
           />
@@ -353,7 +526,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
             class="config-select"
             :value="String(draftValue(option) ?? '')"
             :aria-label="option.label"
-            :disabled="!canManage"
+            :disabled="controlsDisabled"
             @change="setEnum(option, $event)"
           >
             <option
@@ -364,6 +537,13 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
               {{ choice }}
             </option>
           </select>
+          <ConfigIdentityInput
+            v-else-if="option.type.kind === 'identity'"
+            :model-value="identityValue(option)"
+            :label="option.label"
+            :disabled="controlsDisabled"
+            @update:model-value="setOption(option, $event)"
+          />
           <InputText
             v-else-if="option.type.kind === 'secret'"
             :model-value="inputValue(option)"
@@ -371,15 +551,23 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
             type="password"
             autocomplete="new-password"
             placeholder="Leave blank to preserve"
-            :disabled="!canManage"
+            :disabled="controlsDisabled"
             fluid
             @update:model-value="replaceSecret(option, $event)"
+          />
+          <ConfigListInput
+            v-else-if="option.type.kind === 'list' || option.type.kind === 'identity_list'"
+            :model-value="listValue(option)"
+            :item-kind="configListItemKind(option)"
+            :label="option.label"
+            :disabled="controlsDisabled"
+            @update:model-value="setOption(option, $event)"
           />
           <InputText
             v-else
             :model-value="inputValue(option)"
             :aria-label="option.label"
-            :disabled="!canManage"
+            :disabled="controlsDisabled"
             fluid
             @update:model-value="setText(option, $event)"
           />
@@ -398,6 +586,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
               size="small"
               severity="secondary"
               text
+              :disabled="controlsDisabled"
               @click="removeOption(option)"
             />
             <Button
@@ -406,6 +595,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
               size="small"
               severity="secondary"
               text
+              :disabled="controlsDisabled"
               @click="resetOption(option)"
             />
           </div>
@@ -440,12 +630,13 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
           <Button
             label="Validate"
             severity="secondary"
-            :disabled="changes.length === 0"
+            :loading="validating"
+            :disabled="changes.length === 0 || busy"
             @click="validate"
           />
           <Button
             label="Apply"
-            :disabled="!applyReady"
+            :disabled="!applyReady || busy"
             :loading="loading"
             @click="apply"
           />
@@ -453,7 +644,7 @@ watch([() => connection.state, () => connection.methods], () => { void refresh()
             label="Discard drafts"
             severity="secondary"
             text
-            :disabled="changes.length === 0"
+            :disabled="changes.length === 0 || busy"
             @click="clearDrafts"
           />
         </div>

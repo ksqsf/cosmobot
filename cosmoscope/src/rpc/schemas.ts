@@ -108,10 +108,17 @@ const configDiagnosticSchema = z.object({
   line: z.number().int().nullable(),
   column: z.number().int().nullable(),
 }).strict()
-const configOptionTypeSchema = z.object({
-  kind: z.enum(['boolean', 'integer', 'number', 'text', 'enum', 'secret', 'list', 'identity', 'identity_list']),
-  values: z.array(z.string()).optional(),
-}).strict()
+const configOptionTypeSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('boolean') }).strict(),
+  z.object({ kind: z.literal('integer') }).strict(),
+  z.object({ kind: z.literal('number') }).strict(),
+  z.object({ kind: z.literal('text') }).strict(),
+  z.object({ kind: z.literal('enum'), values: z.array(z.string()).min(1) }).strict(),
+  z.object({ kind: z.literal('secret') }).strict(),
+  z.object({ kind: z.literal('list'), values: z.tuple([z.enum(['text', 'integer'])]) }).strict(),
+  z.object({ kind: z.literal('identity') }).strict(),
+  z.object({ kind: z.literal('identity_list') }).strict(),
+])
 export const configOptionSchema = z.object({
   path: configPathSchema,
   label: z.string(),
@@ -125,36 +132,47 @@ export const configOptionSchema = z.object({
   source: z.object({ present: z.boolean(), value: z.unknown().nullable() }).strict(),
   effective: z.unknown().nullable(),
 }).strict().superRefine((option, context) => {
+  const type = option.type
   const values = [option.default, option.source.value, option.effective].filter((value) => value !== null)
   const valid = values.every((value) => {
-    switch (option.type.kind) {
+    switch (type.kind) {
       case 'boolean': return typeof value === 'boolean'
       case 'integer': return typeof value === 'number' && Number.isInteger(value)
       case 'number': return typeof value === 'number'
       case 'text': case 'enum': return typeof value === 'string'
       case 'secret': return value === 'configured' || value === 'unset'
-      case 'list': return Array.isArray(value)
+      case 'list': return Array.isArray(value) && value.every((entry) => type.values[0] === 'text'
+        ? typeof entry === 'string'
+        : typeof entry === 'number' && Number.isInteger(entry))
       case 'identity': return typeof value === 'string' || (typeof value === 'number' && Number.isInteger(value))
       case 'identity_list': return Array.isArray(value) && value.every((entry) => typeof entry === 'string' || (typeof entry === 'number' && Number.isInteger(entry)))
     }
   })
-  if (!valid) context.addIssue({ code: 'custom', message: `invalid ${option.type.kind} configuration value` })
+  if (!valid) context.addIssue({ code: 'custom', message: `invalid ${type.kind} configuration value` })
 })
 export type ConfigOption = z.infer<typeof configOptionSchema>
+const configGroupSchema = z.object({
+  path: configPathSchema,
+  label: z.string().min(1),
+}).strict()
 export const configSectionSchema = z.object({
   path: z.array(z.string()),
-  label: z.string(),
+  label: z.string().min(1),
+  group: configGroupSchema,
+  optional: z.boolean(),
+  present: z.boolean(),
   repeatable: z.boolean(),
   options: z.array(configOptionSchema),
 }).strict()
 export type ConfigSection = z.infer<typeof configSectionSchema>
 const repeatableConfigSectionSchema = z.object({
   path: configPathSchema,
-  label: z.string(),
+  label: z.string().min(1),
+  group: configGroupSchema,
   options: z.array(configOptionSchema),
 }).strict()
 export const configurationGetSchema = z.object({
-  schemaVersion: z.number().int().positive(),
+  schemaVersion: z.literal(2),
   revision: z.string(),
   activeRevision: z.string(),
   sourceState: z.enum(['valid', 'invalid']),
