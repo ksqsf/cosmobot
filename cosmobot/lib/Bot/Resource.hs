@@ -377,7 +377,7 @@ listMatchingIn stateRef access matches = do
     snapshot now (resourceId, resource) = do
       probeResult <- resource.probe
       description <- resource.describe probeResult
-      pure $ SomeResourceObject resourceId resource.resourceType resource.sessionId description probeResult (remainingMinutes now resource.expiresAt)
+      pure $ SomeResourceObject resourceId resource.resourceType resource.owner resource.sessionId description probeResult (remainingMinutes now resource.expiresAt)
 
     isAvailable = \case
       Available{} -> True

@@ -66,6 +66,7 @@ const backendProxy: AdminBackend = {
     keepAlive: (id) => activeBackend.resources.keepAlive(id),
     makePermanent: (id) => activeBackend.resources.makePermanent(id),
   },
+  schedules: { list: () => activeBackend.schedules.list(), delete: (id) => activeBackend.schedules.delete(id) },
   media: {
     list: (limit) => activeBackend.media.list(limit),
     search: (search) => activeBackend.media.search(search),

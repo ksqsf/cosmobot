@@ -53,6 +53,10 @@ runSchedulerWith prepareMessage inner = do
           deleted <- deletePersistedPendingMessage schedulerStateVar message scheduleId
           when deleted (signalSchedulerWake schedulerWake)
           pure deleted
+        DeleteScheduledMessageById scheduleId -> do
+          deleted <- deletePersistedPendingMessageById schedulerStateVar scheduleId
+          when deleted (signalSchedulerWake schedulerWake)
+          pure deleted
         ListScheduledMessages message -> do
           now <- currentUnixSeconds
           pending <- MVar.withMVar schedulerStateVar (pure . Map.elems . (.pendingById))
@@ -61,6 +65,9 @@ runSchedulerWith prepareMessage inner = do
             | pendingMessage <- pending
             , sameMessageOwner message pendingMessage.message
             ]
+        ListAllScheduledMessages -> do
+          now <- currentUnixSeconds
+          map (scheduledMessage now) . Map.elems . (.pendingById) <$> MVar.readMVar schedulerStateVar
         ReceiveScheduledMessage -> do
           pending <- receivePendingMessage schedulerStateVar queue
           when (isNothing pending.recurringIntervalSeconds) $
@@ -155,6 +162,17 @@ deletePersistedPendingMessage
 deletePersistedPendingMessage schedulerStateVar message scheduleId =
   MVar.modifyMVarMasked schedulerStateVar \schedulerState -> do
     let (nextState, deleted) = deletePendingMessageFromState message scheduleId schedulerState
+    when deleted (SchedulerStorage.deleteScheduledMessage scheduleId)
+    pure (nextState, deleted)
+
+deletePersistedPendingMessageById
+  :: (Concurrent :> es, Storage.Storage :> es)
+  => MVar.MVar SchedulerState
+  -> Integer
+  -> Eff es Bool
+deletePersistedPendingMessageById schedulerStateVar scheduleId =
+  MVar.modifyMVarMasked schedulerStateVar \schedulerState -> do
+    let (nextState, deleted) = deletePendingMessageByIdFromState scheduleId schedulerState
     when deleted (SchedulerStorage.deleteScheduledMessage scheduleId)
     pure (nextState, deleted)
 

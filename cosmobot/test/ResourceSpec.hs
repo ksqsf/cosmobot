@@ -616,6 +616,7 @@ testTypedResources = runManaged do
   liftIO $ secondResult @?= Right "res-2"
   access <- expectRight (Resource.accessFromMessage ownerMessage)
   listed <- Resource.list access
+  liftIO $ map (.owner) listed @?= replicate 2 access.owner
   liftIO $ map (\item -> (item.resourceType, item.sessionId, item.description, item.probeResult)) listed
     @?= [("Test", Nothing, "alpha", Right "healthy"), ("Other", Nothing, "other", Right "healthy")]
   otherAccess <- expectRight (Resource.accessFromMessage (ownerMessage{senderId = Just "other"}))

@@ -10,9 +10,12 @@ module Bot.Effect.Scheduler
   , scheduleOneShotMessage
   , scheduleRecurringMessage
   , deleteScheduledMessage
+  , deleteScheduledMessageById
   , listScheduledMessages
+  , listAllScheduledMessages
   , scheduledMessages
   , runScheduler
+  , scheduledRunId
   )
 where
 

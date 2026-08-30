@@ -9,6 +9,7 @@ module Bot.Scheduler.State
   , popDueMessagesFromState
   , rememberStoredMessage
   , deletePendingMessageFromState
+  , deletePendingMessageByIdFromState
   , scheduledMessage
   , sameMessageOwner
   )
@@ -96,17 +97,26 @@ deletePendingMessageFromState message scheduleId schedulerState =
       (schedulerState, False)
     Just schedule
       | sameMessageOwner message schedule.message ->
-          let due = PendingDue
-                { dueAtUnixSeconds = schedule.dueAtUnixSeconds
-                , scheduleId = scheduleId
-                }
-              nextState = schedulerState
-                { pendingById = Map.delete scheduleId schedulerState.pendingById
-                , pendingByDue = Set.delete due schedulerState.pendingByDue
-                }
-          in (nextState, True)
+          deletePendingMessageByIdFromState scheduleId schedulerState
       | otherwise ->
           (schedulerState, False)
+
+deletePendingMessageByIdFromState :: Integer -> SchedulerState -> (SchedulerState, Bool)
+deletePendingMessageByIdFromState scheduleId schedulerState =
+  case Map.lookup scheduleId schedulerState.pendingById of
+    Nothing ->
+      (schedulerState, False)
+    Just schedule ->
+      let due = PendingDue
+            { dueAtUnixSeconds = schedule.dueAtUnixSeconds
+            , scheduleId
+            }
+      in ( schedulerState
+            { pendingById = Map.delete scheduleId schedulerState.pendingById
+            , pendingByDue = Set.delete due schedulerState.pendingByDue
+            }
+         , True
+         )
 
 scheduledMessage :: Integer -> PendingMessage -> ScheduledMessage
 scheduledMessage now pending =

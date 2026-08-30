@@ -81,6 +81,7 @@ resourceLoader = ResourceLoader (Proxy @a)
 data SomeResourceObject = SomeResourceObject
   { resourceId :: !ResourceId
   , resourceType :: !Text
+  , owner :: !ResourceOwner
   , sessionId :: !(Maybe Text)
   , description :: !Text
   , probeResult :: !(Either Text Text)

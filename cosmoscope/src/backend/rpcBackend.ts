@@ -47,6 +47,8 @@ import {
   resourceListSchema,
   resourceMakePermanentSchema,
   resourceRenameSchema,
+  scheduleListSchema,
+  scheduleDeleteSchema,
   restartAcknowledgementSchema,
   skillDetailSchema,
   skillListSchema,
@@ -174,6 +176,10 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       rename: (id, newId) => rpcEffect('Could not rename the resource.', async () => resourceRenameSchema.parse(await client.request('resource.rename', { id, newId })).id),
       keepAlive: (id) => rpcEffect('Could not refresh the resource lifetime.', async () => { resourceKeepAliveSchema.parse(await client.request('resource.keep_alive', { id })) }),
       makePermanent: (id) => rpcEffect('Could not make the resource permanent.', async () => { resourceMakePermanentSchema.parse(await client.request('resource.make_permanent', { id })) }),
+    },
+    schedules: {
+      list: () => rpcEffect('Could not load schedules.', async () => scheduleListSchema.parse(await client.request('schedule.list')).schedules),
+      delete: (id) => rpcEffect('Could not delete the schedule.', async () => scheduleDeleteSchema.parse(await client.request('schedule.delete', { id })).deleted),
     },
     media: {
       list: (limit = 200) => rpcEffect('Could not load media.', async () => mediaSnapshotSchema.parse(await client.request('media.stats', { limit }))),

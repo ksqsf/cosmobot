@@ -374,7 +374,8 @@ always listed; finished task history is retained for 12 hours.
 | `resource.destroy_associated` | concurrency `id` | per-resource cleanup `results` |
 
 `resource.rename` also accepts `new_id`. Resource list entries contain `id`,
-`type`, `sessionId`, `description`, `probe`, and `remainingLifeMinutes`.
+`type`, `platform`, `chatId`, `ownerId`, `sessionId`, `description`, `probe`, and
+`remainingLifeMinutes`.
 `remainingLifeMinutes` is `null` for permanent resources. `probe` contains an
 `ok` boolean and either `result` or `error`.
 
@@ -389,6 +390,17 @@ hidden from the ordinary user-facing resource list.
 Resource failures use textual error codes such as `not_found`,
 `invalid_params`, `already_exists`, `unavailable`, and `resource_error` in
 `error.data.code`.
+
+### Schedules
+
+| Method | Parameters | Result |
+|---|---|---|
+| `schedule.list` | none | `schedules`: every pending schedule |
+| `schedule.delete` | `id` | `id` and whether it was `deleted` |
+
+Schedule entries contain `id`, `remainingSeconds`, `recurring`, `prompt`,
+`platform`, `chatId`, `ownerId`, and `runId`. Identity and run fields are
+`null` when the originating message did not provide them.
 
 ## Plugin Methods
 

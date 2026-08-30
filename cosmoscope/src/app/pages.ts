@@ -21,6 +21,7 @@ export const pages = [
   { name: 'media', path: '/media/:mediaId?', title: 'Media', icon: 'pi pi-images', requiredCapabilities: ['media.stats', 'media.search', 'media.get', 'media.delete', 'media.gc'], component: () => import('@/pages/MediaPage.vue') },
   { name: 'tasks', path: '/tasks/:taskId?', title: 'Tasks', icon: 'pi pi-bolt', requiredCapabilities: ['concurrency.list', 'concurrency.lookup', 'concurrency.cancel', 'resource.list_associated', 'resource.destroy_associated'], component: () => import('@/pages/TasksPage.vue') },
   { name: 'resources', path: '/resources/:resourceId?', title: 'Resources', icon: 'pi pi-box', requiredCapabilities: ['resource.list', 'resource.detail', 'resource.destroy', 'resource.rename', 'resource.keep_alive', 'resource.make_permanent'], component: () => import('@/pages/ResourcesPage.vue') },
+  { name: 'schedules', path: '/schedules/:scheduleId?', title: 'Schedules', icon: 'pi pi-calendar-clock', requiredCapabilities: ['schedule.list', 'schedule.delete', 'thread.resolve_run'], component: () => import('@/pages/SchedulesPage.vue') },
   { name: 'plugins', path: '/plugins', title: 'Plugins', icon: 'pi pi-objects-column', requiredCapabilities: ['plugin.list', 'plugin.load', 'plugin.reload', 'plugin.unload'], component: () => import('@/pages/PluginsPage.vue') },
   { name: 'configuration', path: '/configuration/:section?', title: 'Configuration', icon: 'pi pi-cog', requiredCapabilities: ['config.get'], component: () => import('@/pages/ConfigurationPage.vue') },
 ] satisfies readonly AdminPage[]

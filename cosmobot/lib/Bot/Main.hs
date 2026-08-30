@@ -356,7 +356,7 @@ runConfiguredServers cfg configuration threads rpcState acpState messageConsumer
   runWithTaskGroup "servers" (serverTasks cfg configuration threads rpcState acpState) "message.consumer" messageConsumer
 
 serverTasks
-  :: ( AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, LifecycleEffect.Lifecycle :> es, Memory.Memory :> es, Skills.Skills :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
+  :: ( AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, LifecycleEffect.Lifecycle :> es, Memory.Memory :> es, Skills.Skills :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, MediaEffect.Media :> es, KatipE :> es, Prim :> es, Concurrent :> es, Timeout :> es, FileSystem :> es, IOE :> es)
   => BotConfig
   -> RPCConfiguration.Configuration
   -> ThreadStore

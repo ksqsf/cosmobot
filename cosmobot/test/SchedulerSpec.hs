@@ -23,6 +23,8 @@ main =
   defaultMain $
     testGroup "scheduler"
       [ testCase "scheduled messages are scoped by current user" testScheduledMessagesAreScopedByCurrentUser
+      , testCase "administrative schedule list includes every owner" testListAllScheduledMessages
+      , testCase "administrative schedule delete ignores owner" testDeleteScheduledMessageById
       , testCase "scheduled messages are scoped by current chat" testScheduledMessagesAreScopedByCurrentChat
       , testCase "username scopes schedules when sender id is absent" testUsernameScopedSchedule
       , testCase "schedule ids increase in insertion order" testScheduleIdsIncrease
@@ -47,6 +49,24 @@ testScheduledMessagesAreScopedByCurrentUser = runSchedulerTest do
   liftIO $ length otherSchedules @?= 0
   liftIO $ assertBool "remaining seconds are positive" (all ((> 0) . (.remainingSeconds)) ownSchedules)
   liftIO $ assertBool "remaining seconds do not exceed delay" (all ((<= 60) . (.remainingSeconds)) ownSchedules)
+
+testListAllScheduledMessages :: IO ()
+testListAllScheduledMessages = runSchedulerTest do
+  _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "first")
+  _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "201" "second")
+  schedules <- Scheduler.listAllScheduledMessages
+  liftIO $ map ((.senderId) . (.message)) schedules @?= [Just "200", Just "201"]
+
+testDeleteScheduledMessageById :: IO ()
+testDeleteScheduledMessageById = runSchedulerTest do
+  _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "first")
+  deleted <- Scheduler.deleteScheduledMessageById 1
+  missing <- Scheduler.deleteScheduledMessageById 1
+  schedules <- Scheduler.listAllScheduledMessages
+  liftIO do
+    deleted @?= True
+    missing @?= False
+    assertBool "deleted schedule leaves the administrative list" (null schedules)
 
 testScheduledMessagesAreScopedByCurrentChat :: IO ()
 testScheduledMessagesAreScopedByCurrentChat = runSchedulerTest do

@@ -20,9 +20,6 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import qualified Bot.Scheduler.Interpreter as Interpreter
 import Bot.Storage.Thread
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.Types as AesonTypes
 import Effectful.Timeout (Timeout)
 
 runScheduler
@@ -49,15 +46,6 @@ linkToSourceThread threads message =
       pure message
         { replyToMessageId = (.messageId) <$> latestLinkedMessageKey records
         }
-
-scheduledRunId :: IncomingMessage -> Maybe Text
-scheduledRunId message =
-  AesonTypes.parseMaybe parser message.raw
-  where
-    parser = Aeson.withObject "scheduled agent action" \object -> do
-      actionType <- object Aeson..: Key.fromText "type"
-      guard (actionType == ("scheduled_agent_action" :: Text))
-      object Aeson..: Key.fromText "run_id"
 
 latestLinkedMessageKey :: [AgentAudit.AgentAuditRecord] -> Maybe ThreadMessageKey
 latestLinkedMessageKey records =

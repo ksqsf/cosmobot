@@ -18,10 +18,24 @@ export type ResourceProbe =
 export interface Resource {
   readonly id: string
   readonly type: string
+  readonly platform: string
+  readonly chatId: string
+  readonly ownerId: string
   readonly sessionId: string | null
   readonly description: string
   readonly probe: ResourceProbe
   readonly remainingLifeMinutes: number | null
+}
+
+export interface Schedule {
+  readonly id: number
+  readonly remainingSeconds: number
+  readonly recurring: boolean
+  readonly prompt: string
+  readonly platform: string
+  readonly chatId: string | null
+  readonly ownerId: string | null
+  readonly runId: string | null
 }
 
 export interface ResourceOperationResult {

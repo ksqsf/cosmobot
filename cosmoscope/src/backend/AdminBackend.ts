@@ -4,7 +4,7 @@ import type {
   ChatAttachment, ChatHistoryPage, ChatLogSummary, ChatLogWindow, ChatLogWindowQuery, ChatMessage, ChatSend, ChatSession,
   MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot,
   MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary,
-  Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task,
+  Plugin, Resource, ResourceOperationResult, Schedule, SkillDetail, SkillSummary, Task,
   ThreadDetail, ThreadListQuery, ThreadRunTarget, ThreadSnapshot,
 } from '@/types/domain'
 import type { ConfigChange, ConfigurationRollback, ConfigurationSnapshot, ConfigurationUpdate, ConfigurationValidation } from '@/rpc/schemas'
@@ -71,6 +71,10 @@ export interface AdminBackend {
     readonly rename: (id: string, newId: string) => BackendEffect<string>
     readonly keepAlive: (id: string) => BackendEffect<void>
     readonly makePermanent: (id: string) => BackendEffect<void>
+  }
+  readonly schedules: {
+    readonly list: () => BackendEffect<readonly Schedule[]>
+    readonly delete: (id: number) => BackendEffect<boolean>
   }
   readonly media: {
     readonly list: (limit?: number) => BackendEffect<MediaSnapshot>
@@ -185,6 +189,10 @@ export const keepResourceAlive = (id: string): Effect.Effect<void, BackendError,
   AdminBackendService.use((backend) => backend.resources.keepAlive(id))
 export const makeResourcePermanent = (id: string): Effect.Effect<void, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.resources.makePermanent(id))
+export const listSchedules: Effect.Effect<readonly Schedule[], BackendError, AdminBackend> =
+  AdminBackendService.use((backend) => backend.schedules.list())
+export const deleteSchedule = (id: number): Effect.Effect<boolean, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.schedules.delete(id))
 export const listMedia = (limit = 200): Effect.Effect<MediaSnapshot, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.media.list(limit))
 export const searchMedia = (search: MediaSearch): Effect.Effect<readonly MediaItem[], BackendError, AdminBackend> =>

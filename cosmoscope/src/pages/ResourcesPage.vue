@@ -27,6 +27,7 @@ const detail = ref('')
 const visible = ref(false)
 const query = ref('')
 const typeFilter = ref('Any type')
+const platformFilter = ref('Any platform')
 const probeFilter = ref<ProbeFilter>('all')
 const newId = ref('')
 const error = ref('')
@@ -48,6 +49,7 @@ const summary = computed(() => ({
   permanent: resources.value.filter(({ remainingLifeMinutes }) => remainingLifeMinutes === null).length,
 }))
 const typeOptions = computed(() => ['Any type', ...new Set(resources.value.map((resource) => resource.type))])
+const platformOptions = computed(() => ['Any platform', ...new Set(resources.value.map((resource) => resource.platform))])
 const probeOptions = [
   { label: 'Any health', value: 'all' },
   { label: 'Healthy', value: 'healthy' },
@@ -64,8 +66,9 @@ function resourceIcon(type: string): string {
   return resourceIcons[type] ?? 'pi pi-box'
 }
 const filtered = computed(() => resources.value.filter((resource) =>
-  `${resource.id} ${resource.type} ${resource.description}`.toLowerCase().includes(query.value.toLowerCase())
+  `${resource.id} ${resource.type} ${resource.description} ${resource.platform} ${resource.chatId} ${resource.ownerId}`.toLowerCase().includes(query.value.toLowerCase())
   && (typeFilter.value === 'Any type' || resource.type === typeFilter.value)
+  && (platformFilter.value === 'Any platform' || resource.platform === platformFilter.value)
   && (probeFilter.value === 'all' || resource.probe.ok === (probeFilter.value === 'healthy')),
 ))
 
@@ -221,7 +224,7 @@ watch(() => route.params['resourceId'], () => { void selectFromRoute() })
         <div class="table-toolbar resource-toolbar">
           <InputText
             v-model="query"
-            placeholder="Filter by ID, type, or description"
+            placeholder="Filter by ID, type, chat, owner, or description"
             aria-label="Filter resources"
           />
           <div>
@@ -229,6 +232,10 @@ watch(() => route.params['resourceId'], () => { void selectFromRoute() })
               v-model="typeFilter"
               :options="typeOptions"
               aria-label="Filter by resource type"
+            /><Select
+              v-model="platformFilter"
+              :options="platformOptions"
+              aria-label="Filter by platform"
             /><Select
               v-model="probeFilter"
               :options="probeOptions"
@@ -258,6 +265,18 @@ watch(() => route.params['resourceId'], () => { void selectFromRoute() })
           <Column
             field="description"
             header="Description"
+          />
+          <Column
+            field="platform"
+            header="Platform"
+          />
+          <Column
+            field="chatId"
+            header="Chat"
+          />
+          <Column
+            field="ownerId"
+            header="Owner"
           />
           <Column header="Health">
             <template #body="{ data }">
@@ -303,6 +322,9 @@ watch(() => route.params['resourceId'], () => { void selectFromRoute() })
             {{ selected.probe.error }}
           </Message>
           <dl class="detail-list">
+            <div><dt>Platform</dt><dd>{{ selected.platform }}</dd></div>
+            <div><dt>Chat</dt><dd><code>{{ selected.chatId }}</code></dd></div>
+            <div><dt>Owner</dt><dd><code>{{ selected.ownerId }}</code></dd></div>
             <div><dt>Session</dt><dd><code>{{ selected.sessionId ?? 'None' }}</code></dd></div>
             <div><dt>Probe</dt><dd>{{ selected.probe.ok ? selected.probe.result : selected.probe.error }}</dd></div>
             <div><dt>Lifetime</dt><dd>{{ selected.remainingLifeMinutes === null ? 'Permanent' : `${selected.remainingLifeMinutes} minutes` }}</dd></div>

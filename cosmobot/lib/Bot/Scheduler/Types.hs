@@ -13,15 +13,20 @@ module Bot.Scheduler.Types
   , scheduleOneShotMessage
   , scheduleRecurringMessage
   , deleteScheduledMessage
+  , deleteScheduledMessageById
   , listScheduledMessages
+  , listAllScheduledMessages
   , scheduledMessages
   , receiveScheduledMessage
+  , scheduledRunId
   )
 where
 
 import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.Types as AesonTypes
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 
@@ -62,11 +67,16 @@ data Scheduler :: Effect where
   ListScheduledMessages
     :: IncomingMessage
     -> Scheduler m [ScheduledMessage]
+  ListAllScheduledMessages
+    :: Scheduler m [ScheduledMessage]
   ReceiveScheduledMessage
     :: Scheduler m IncomingMessage
   DeleteScheduledMessage
     :: IncomingMessage
     -> Integer
+    -> Scheduler m Bool
+  DeleteScheduledMessageById
+    :: Integer
     -> Scheduler m Bool
 
 type instance DispatchOf Scheduler = Dynamic
@@ -86,6 +96,11 @@ listScheduledMessages :: Scheduler :> es => IncomingMessage -> Eff es [Scheduled
 listScheduledMessages =
   send . ListScheduledMessages
 
+-- | Return every pending schedule for administrative inspection.
+listAllScheduledMessages :: Scheduler :> es => Eff es [ScheduledMessage]
+listAllScheduledMessages =
+  send ListAllScheduledMessages
+
 -- | Stream of messages whose delay has elapsed.
 scheduledMessages :: Scheduler :> es => Stream (Of IncomingMessage) (Eff es) ()
 scheduledMessages = do
@@ -100,3 +115,17 @@ receiveScheduledMessage =
 -- | Delete a scheduled message with ID. Returns True if there is such an ID.
 deleteScheduledMessage :: Scheduler :> es => IncomingMessage -> Integer -> Eff es Bool
 deleteScheduledMessage message schedId = send (DeleteScheduledMessage message schedId)
+
+-- | Administratively delete a pending schedule regardless of owner.
+deleteScheduledMessageById :: Scheduler :> es => Integer -> Eff es Bool
+deleteScheduledMessageById =
+  send . DeleteScheduledMessageById
+
+scheduledRunId :: IncomingMessage -> Maybe Text
+scheduledRunId message =
+  AesonTypes.parseMaybe parser message.raw
+  where
+    parser = Aeson.withObject "scheduled agent action" \object -> do
+      actionType <- object Aeson..: Key.fromText "type"
+      guard (actionType == ("scheduled_agent_action" :: Text))
+      object Aeson..: Key.fromText "run_id"

@@ -53,6 +53,8 @@ export const liveAdminMethods = [
   'resource.make_permanent',
   'resource.list_associated',
   'resource.destroy_associated',
+  'schedule.list',
+  'schedule.delete',
   'plugin.list',
   'plugin.load',
   'plugin.reload',

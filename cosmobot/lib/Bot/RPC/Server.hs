@@ -22,10 +22,11 @@ module Bot.RPC.Server
 where
 
 import Bot.Prelude
-import Bot.Core.Message (ChatPlatform (PlatformRPC), IncomingMessage (..), MessageId)
+import Bot.Core.Message (ChatPlatform (PlatformRPC), IncomingMessage (..), MessageId, chatIdText, chatPlatformKey)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Effect.Scheduler as Scheduler
 import Bot.Effect.Media (MediaObject (..))
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.RPC.Config as Config
@@ -124,7 +125,7 @@ noRpcServerCallbacks = RpcServerCallbacks
   }
 
 withManagerRpcCallbacks
-  :: (Concurrency.Concurrency :> es, Resource.Resource :> es)
+  :: (Concurrency.Concurrency :> es, Resource.Resource :> es, Scheduler.Scheduler :> es)
   => RpcServerCallbacks es
   -> RpcServerCallbacks es
 withManagerRpcCallbacks callbacks = callbacks
@@ -491,7 +492,7 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
           dispatchSkills callbacks request
       | "plugin." `Text.isPrefixOf` method ->
           dispatchPlugin callbacks request
-      | "concurrency." `Text.isPrefixOf` method || "resource." `Text.isPrefixOf` method ->
+      | any (`Text.isPrefixOf` method) ["concurrency.", "resource.", "schedule."] ->
           dispatchManager callbacks request
       | otherwise ->
           pure (methodNotFound (RPC.requestId request) method)
@@ -539,6 +540,7 @@ managerMethods =
   [ "concurrency.list", "concurrency.lookup", "concurrency.cancel", "concurrency.await"
   , "resource.list", "resource.detail", "resource.destroy", "resource.rename"
   , "resource.keep_alive", "resource.make_permanent", "resource.list_associated", "resource.destroy_associated"
+  , "schedule.list", "schedule.delete"
   ]
 
 dispatchChatSubscription
@@ -875,7 +877,7 @@ dispatchMediaGc callbacks request =
             ]
 
 dispatchManagerRequest
-  :: (Concurrency.Concurrency :> es, Resource.Resource :> es)
+  :: (Concurrency.Concurrency :> es, Resource.Resource :> es, Scheduler.Scheduler :> es)
   => RPC.RpcRequest
   -> Eff es RPC.RpcResponse
 dispatchManagerRequest request =
@@ -892,6 +894,8 @@ dispatchManagerRequest request =
     "resource.make_permanent" -> dispatchResourceLifetime "permanent" Resource.makePermanent request
     "resource.list_associated" -> dispatchResourceListAssociated request
     "resource.destroy_associated" -> dispatchResourceDestroyAssociated request
+    "schedule.list" -> dispatchScheduleList request
+    "schedule.delete" -> dispatchScheduleDelete request
     method -> pure (methodNotFound (RPC.requestId request) method)
 
 dispatchConcurrencyList
@@ -1089,6 +1093,9 @@ resourceValue :: Resource.SomeResourceObject -> Aeson.Value
 resourceValue resource = Aeson.object
   [ "id" Aeson..= resource.resourceId
   , "type" Aeson..= resource.resourceType
+  , "platform" Aeson..= chatPlatformKey resource.owner.platform
+  , "chatId" Aeson..= resource.owner.chatId
+  , "ownerId" Aeson..= resource.owner.senderId
   , "sessionId" Aeson..= resource.sessionId
   , "description" Aeson..= resource.description
   , "probe" Aeson..= either
@@ -1097,6 +1104,49 @@ resourceValue resource = Aeson.object
       resource.probeResult
   , "remainingLifeMinutes" Aeson..= resource.remainingLifeMinutes
   ]
+
+dispatchScheduleList
+  :: Scheduler.Scheduler :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchScheduleList request =
+  case AesonTypes.parseEither parseNoParams (RPC.requestParams request) of
+    Left err -> pure (invalidParams request err)
+    Right () -> do
+      schedules <- Scheduler.listAllScheduledMessages
+      pure $ RPC.successResponse (RPC.requestId request) $
+        Aeson.object ["schedules" Aeson..= map scheduleValue schedules]
+
+scheduleValue :: Scheduler.ScheduledMessage -> Aeson.Value
+scheduleValue schedule = Aeson.object
+  [ "id" Aeson..= schedule.scheduleId
+  , "remainingSeconds" Aeson..= schedule.remainingSeconds
+  , "recurring" Aeson..= schedule.recurring
+  , "prompt" Aeson..= schedule.message.text
+  , "platform" Aeson..= chatPlatformKey schedule.message.platform
+  , "chatId" Aeson..= fmap chatIdText schedule.message.chatId
+  , "ownerId" Aeson..= (schedule.message.senderId <|> schedule.message.senderUsername)
+  , "runId" Aeson..= Scheduler.scheduledRunId schedule.message
+  ]
+
+dispatchScheduleDelete
+  :: Scheduler.Scheduler :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchScheduleDelete request =
+  case AesonTypes.parseEither parseScheduleId (RPC.requestParams request) of
+    Left err -> pure (invalidParams request err)
+    Right scheduleId -> do
+      deleted <- Scheduler.deleteScheduledMessageById scheduleId
+      pure $ RPC.successResponse (RPC.requestId request) $
+        Aeson.object ["id" Aeson..= scheduleId, "deleted" Aeson..= deleted]
+
+parseScheduleId :: Aeson.Value -> AesonTypes.Parser Integer
+parseScheduleId =
+  Aeson.withObject "schedule params" \object -> do
+    scheduleId <- object Aeson..: "id"
+    when (scheduleId < 1) (fail "id must be positive")
+    pure scheduleId
 
 respondResource
   :: RPC.RpcRequest

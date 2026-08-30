@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
 
-const axeRoutes = ['/login', '/overview', '/chat', '/threads', '/memory', '/skills', '/audit', '/tasks', '/configuration']
+const axeRoutes = ['/login', '/overview', '/chat', '/threads', '/memory', '/skills', '/audit', '/tasks', '/resources', '/schedules', '/configuration']
 
 for (const path of axeRoutes) {
   test(`${path} has no serious accessibility violations`, async ({ page }) => {
@@ -60,6 +60,15 @@ test('tasks and resources are independent navigation destinations', async ({ pag
   if (isMobile) await page.getByLabel('Open navigation').click()
   await page.getByRole('link', { name: 'Tasks' }).click()
   await expect(page).toHaveURL(/\/tasks/)
+})
+
+test('schedule navigation exposes the live-only manager', async ({ page, isMobile }) => {
+  await page.goto('/resources')
+  if (isMobile) await page.getByLabel('Open navigation').click()
+  await page.getByRole('link', { name: 'Schedules' }).click()
+  await expect(page).toHaveURL(/\/schedules/)
+  await expect(page.getByRole('heading', { name: 'Schedules' })).toBeVisible()
+  await expect(page.getByText('Connect to cosmobot to load schedules.')).toBeVisible()
 })
 
 test('manager pages expose real contracts without invented controls', async ({ page }) => {

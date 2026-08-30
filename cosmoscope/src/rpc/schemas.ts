@@ -365,12 +365,26 @@ const resourceProbeSchema = z.discriminatedUnion('ok', [
 export const resourceSchema = z.object({
   id: z.string().min(1),
   type: z.string(),
+  platform: z.string(),
+  chatId: z.string(),
+  ownerId: z.string(),
   sessionId: z.string().nullable(),
   description: z.string(),
   probe: resourceProbeSchema,
   remainingLifeMinutes: z.number().int().nullable(),
 }) satisfies z.ZodType<Resource>
 export const resourceListSchema = z.object({ resources: z.array(resourceSchema) })
+export const scheduleListSchema = z.object({ schedules: z.array(z.object({
+  id: z.number().int().positive(),
+  remainingSeconds: z.number().int().nonnegative(),
+  recurring: z.boolean(),
+  prompt: z.string(),
+  platform: z.string(),
+  chatId: z.string().nullable(),
+  ownerId: z.string().nullable(),
+  runId: z.string().nullable(),
+})) })
+export const scheduleDeleteSchema = z.object({ id: z.number().int().positive(), deleted: z.boolean() })
 export const resourceDetailSchema = z.object({ id: z.string(), detail: z.string() })
 export const resourceDestroySchema = z.object({ id: z.string(), destroyed: z.literal(true) })
 export const resourceRenameSchema = z.object({ id: z.string() })

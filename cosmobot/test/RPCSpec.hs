@@ -17,6 +17,7 @@ import qualified Bot.Effect.HTTP as EffectHTTP
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.HTTP as BotHTTP
@@ -1042,6 +1043,7 @@ testSyncRequestExceptionReturnsJsonRpcError = do
 testManagerRpcMethods :: IO ()
 testManagerRpcMethods = runRpcManager do
   rpcState <- RPC.newRpcState
+  _ <- Scheduler.scheduleOneShotMessage 60 managerMessage
   worker <- Concurrency.fork "rpc-test-worker" never
   lookupResponse <- dispatch rpcState "concurrency.lookup" (Aeson.object ["id" Aeson..= worker.handleId.unId])
   cancelResponse <- dispatch rpcState "concurrency.cancel" (Aeson.object ["id" Aeson..= worker.handleId.unId])
@@ -1049,6 +1051,9 @@ testManagerRpcMethods = runRpcManager do
   associatedListResponse <- dispatch rpcState "resource.list_associated" (Aeson.object ["id" Aeson..= worker.handleId.unId])
   associatedResponse <- dispatch rpcState "resource.destroy_associated" (Aeson.object ["id" Aeson..= worker.handleId.unId])
   resourceListResponse <- dispatch rpcState "resource.list" Aeson.Null
+  scheduleListResponse <- dispatch rpcState "schedule.list" Aeson.Null
+  scheduleDeleteResponse <- dispatch rpcState "schedule.delete" (Aeson.object ["id" Aeson..= (1 :: Int)])
+  scheduleAfterDeleteResponse <- dispatch rpcState "schedule.list" Aeson.Null
   missingResourceResponse <- dispatch rpcState "resource.detail" (Aeson.object ["id" Aeson..= ("missing" :: Text)])
   capabilitiesResponse <- dispatch rpcState "admin.capabilities" Aeson.Null
   liftIO do
@@ -1058,12 +1063,22 @@ testManagerRpcMethods = runRpcManager do
     associatedListResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "resources" Aeson..= ([] :: [Aeson.Value])])
     associatedResponse @?= responseResult (Aeson.object ["id" Aeson..= worker.handleId.unId, "results" Aeson..= ([] :: [Aeson.Value])])
     resourceListResponse @?= responseResult (Aeson.object ["resources" Aeson..= ([] :: [Aeson.Value])])
+    schedule <- case responseField scheduleListResponse "schedules" >>= AesonTypes.parseMaybe (Aeson.withArray "schedules" (pure . listToMaybe . toList)) of
+      Just (Just value) -> pure value
+      _ -> assertFailure [i|expected one schedule, got #{show scheduleListResponse :: String}|] $> Aeson.Null
+    responseObjectText "platform" schedule @?= Just "telegram"
+    responseObjectText "chatId" schedule @?= Just "100"
+    responseObjectText "ownerId" schedule @?= Just "200"
+    scheduleDeleteResponse @?= responseResult (Aeson.object ["id" Aeson..= (1 :: Int), "deleted" Aeson..= True])
+    scheduleAfterDeleteResponse @?= responseResult (Aeson.object ["schedules" Aeson..= ([] :: [Aeson.Value])])
     responseErrorCode missingResourceResponse @?= Just "not_found"
     methods <- case capabilitiesResponse of
       WireJSONRPC.ResponseMessage result -> parseJson =<< parseJsonField "methods" result.result
       other -> assertFailure [i|expected capabilities response, got #{show other :: String}|]
     assertBool "expected installed manager capability" ("concurrency.list" `elem` (methods :: [Text]))
     assertBool "expected associated resource preview capability" ("resource.list_associated" `elem` methods)
+    assertBool "expected schedule snapshot capability" ("schedule.list" `elem` methods)
+    assertBool "expected schedule delete capability" ("schedule.delete" `elem` methods)
   where
     dispatch rpcState method params =
       RPCServer.dispatchRpcRequest rpcState (RPCServer.withManagerRpcCallbacks RPCServer.noRpcServerCallbacks) (rpcRequest method params)
@@ -1073,6 +1088,18 @@ testManagerRpcMethods = runRpcManager do
       AesonTypes.parseMaybe (Aeson.withObject "response object" (Aeson..: AesonKey.fromText field)) value
 
     never = threadDelay maxBound
+
+    managerMessage = IncomingMessage
+      { eventKind = IncomingMessageCreated, platform = PlatformTelegram, kind = ChatPrivate
+      , chatId = Just (integerChatId 100), chatAliases = [], chatDisplayName = Nothing
+      , digest = emptyMessageDigest, senderId = Just "200", senderUsername = Just "alice"
+      , senderDisplayName = Nothing, senderGlobalDisplayName = Nothing, messageId = Just "300"
+      , replyToMessageId = Nothing, mentions = [], mentionUsernames = [], imageUrls = [], files = []
+      , text = "scheduled prompt", raw = Aeson.object
+          [ "type" Aeson..= ("scheduled_agent_action" :: Text)
+          , "run_id" Aeson..= ("run-1" :: Text)
+          ]
+      }
 
 testAttachmentLifecycle :: IO ()
 testAttachmentLifecycle =
@@ -1942,10 +1969,11 @@ runRpcStorage path action =
   MediaInterpreter.runMedia (testMediaConfig path) $ action
 
 runRpcManager
-  :: Eff '[Resource.Resource, Media.Media, Storage.Storage, FileSystem.FileSystem, Concurrency.Concurrency, KatipE, Prim, Concurrent, IOE] a
+  :: Eff '[Scheduler.Scheduler, Resource.Resource, Media.Media, Storage.Storage, FileSystem.FileSystem, Concurrency.Concurrency, KatipE, Prim, Concurrent, EffectfulTimeout.Timeout, IOE] a
   -> IO a
 runRpcManager action =
   runEff $
+  EffectfulTimeout.runTimeout $
   runConcurrent $
   runPrim $
   runTestLog $
@@ -1953,7 +1981,8 @@ runRpcManager action =
   runFileSystem $
   StorageSQLite.runStorageSQLitePath ":memory:" $
   Media.runMediaPassthrough $
-  ResourceManager.runResourceManager action
+  ResourceManager.runResourceManager $
+  Scheduler.runScheduler action
 
 testMediaConfig :: FilePath -> MediaConfig.Config
 testMediaConfig path =
