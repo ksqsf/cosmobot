@@ -31,8 +31,6 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time (getCurrentTime)
-import qualified Database.Selda.Backend as SeldaBackend
-import qualified Database.Selda.SQLite as SeldaSQLite
 
 data ChatLogRow = ChatLogRow
   { id :: ID ChatLogRow
@@ -68,27 +66,8 @@ chatLogRows =
 
 ensureChatLogTable :: Storage.Storage :> es => Eff es ()
 ensureChatLogTable = do
-  runSelda $ transaction do
-    tryCreateTable chatLogRows
-    migrateChatLogFiles
-    migrateChatLogDisplayNames
+  runSelda (tryCreateTable chatLogRows)
   Identity.ensureIdentityTables
-
-migrateChatLogFiles :: SeldaT SeldaSQLite.SQLite IO ()
-migrateChatLogFiles =
-  SeldaBackend.withBackend \backend -> liftIO do
-    (_, rows) <- SeldaBackend.runStmt backend "PRAGMA table_info(chat_log)" []
-    let columns = [name | _ : SeldaBackend.SqlString name : _ <- rows]
-    unless ("files_json" `elem` columns) $
-      void (SeldaBackend.runStmt backend "ALTER TABLE chat_log ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'" [])
-
-migrateChatLogDisplayNames :: SeldaT SeldaSQLite.SQLite IO ()
-migrateChatLogDisplayNames =
-  SeldaBackend.withBackend \backend -> liftIO do
-    (_, rows) <- SeldaBackend.runStmt backend "PRAGMA table_info(chat_log)" []
-    let columns = [name | _ : SeldaBackend.SqlString name : _ <- rows]
-    unless ("sender_display_name" `elem` columns) $
-      void (SeldaBackend.runStmt backend "ALTER TABLE chat_log ADD COLUMN sender_display_name TEXT" [])
 
 persistRecord :: (IOE :> es, KatipE :> es, Storage.Storage :> es) => ChatLogRecord -> Eff es ()
 persistRecord record = do

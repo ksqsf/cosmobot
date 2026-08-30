@@ -30,8 +30,6 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Int as Int
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Database.Selda.Backend as SeldaBackend
-import qualified Database.Selda.SQLite as SeldaSQLite
 
 data AgentAuditRow = AgentAuditRow
   { id :: RowID
@@ -162,9 +160,7 @@ queryStoredThreadMessagesAudit messageKeys = do
 
 ensureAgentAuditTable :: Storage.Storage :> es => Eff es ()
 ensureAgentAuditTable =
-  runSelda $ transaction do
-    migrateAgentAuditTable
-    backfillAuditIndexColumns
+  runSelda (tryCreateTable agentAuditRows)
 
 queryStoredRecentToolStarts :: Storage.Storage :> es => Int -> Eff es [AgentAuditRecord]
 queryStoredRecentToolStarts limit = do
@@ -203,44 +199,6 @@ queryStoredRelatedToolEvents starts = do
       [ literal runId
       | AgentAuditRecord{event = ToolCallStarted{runId}} <- starts
       ]
-
-migrateAgentAuditTable :: SeldaT SeldaSQLite.SQLite IO ()
-migrateAgentAuditTable =
-  SeldaBackend.withBackend \backend -> liftIO do
-    runStatement backend
-      "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, occurred_at DATETIME NOT NULL, linked_message_id TEXT, parent_message_id TEXT, event_json TEXT NOT NULL, event_kind TEXT NOT NULL DEFAULT '', tool_call_id TEXT)"
-    (_, rows) <- SeldaBackend.runStmt backend "PRAGMA table_info(audit_log)" []
-    let columns = [name | _ : SeldaBackend.SqlString name : _ <- rows]
-    unless ("event_kind" `elem` columns) $
-      runStatement backend "ALTER TABLE audit_log ADD COLUMN event_kind TEXT NOT NULL DEFAULT ''"
-    unless ("tool_call_id" `elem` columns) $
-      runStatement backend "ALTER TABLE audit_log ADD COLUMN tool_call_id TEXT"
-    traverse_ (runStatement backend)
-      [ "CREATE INDEX IF NOT EXISTS audit_log_run_id_idx ON audit_log(run_id)"
-      , "CREATE INDEX IF NOT EXISTS audit_log_linked_message_id_idx ON audit_log(linked_message_id)"
-      , "CREATE INDEX IF NOT EXISTS audit_log_parent_message_id_idx ON audit_log(parent_message_id)"
-      , "CREATE INDEX IF NOT EXISTS audit_log_event_kind_idx ON audit_log(event_kind)"
-      , "CREATE INDEX IF NOT EXISTS audit_log_tool_call_id_idx ON audit_log(tool_call_id)"
-      ]
-  where
-    runStatement backend statement =
-      void (SeldaBackend.runStmt backend statement [])
-
-backfillAuditIndexColumns :: SeldaT SeldaSQLite.SQLite IO ()
-backfillAuditIndexColumns = do
-  rows <- query do
-    row <- select agentAuditRows
-    restrict (row ! #event_kind .== literal "")
-    pure row
-  for_ rows \row ->
-    for_ (decodeJsonText row.event_json) \event ->
-      update_
-        agentAuditRows
-        (\candidate -> candidate ! #id .== literal row.id)
-        (\candidate -> candidate `with`
-          [ #event_kind := literal (auditEventKind event)
-          , #tool_call_id := literal (auditEventToolCallId event)
-          ])
 
 toolCallStartedKind :: Text
 toolCallStartedKind =

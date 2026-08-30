@@ -107,7 +107,6 @@ main =
       , testCase "media search applies all filters across the full cache" testMediaSearchAppliesAllFilters
       , testCase "media stats totals are independent of the list limit" testMediaStatsTotalsIgnoreListLimit
       , testCase "media GC defaults to the configured policy" testMediaGcUsesConfiguredPolicy
-      , testCase "legacy media provenance only recognizes known platform sources" testLegacyMediaPlatformHeuristic
       , testCase "media cache sniffs streamed image content" testMediaCacheSniffsStreamedImageContent
       , testCase "media cache uses the JPEG extension" testMediaCacheUsesJpegExtension
       , testCase "remote media MIME is probed with range GET" testRemoteMediaMimeUsesRangeGetProbe
@@ -937,17 +936,6 @@ testMediaGcUsesConfiguredPolicy =
       ])
     responseField gcResponse "maxAgeSeconds" @?= Just (7 * 24 * 60 * 60 :: Int)
     responseField forceGcResponse "maxAgeSeconds" @?= Just (0 :: Int)
-
-testLegacyMediaPlatformHeuristic :: IO ()
-testLegacyMediaPlatformHeuristic = do
-  MediaCache.legacySourcePlatform "https://multimedia.nt.qq.com.cn/file" @?= Just "qq"
-  MediaCache.legacySourcePlatform "mxc://matrix.example/media" @?= Just "matrix"
-  MediaCache.legacySourcePlatform "https://api.telegram.org/file/bot123/photo.jpg" @?= Just "telegram"
-  MediaCache.legacySourcePlatform "https://cdn.discordapp.com/attachments/1/2/image.png" @?= Just "discord"
-  MediaCache.legacySourcePlatform "https://example.test/telegram-not-a-host.png" @?= Nothing
-  MediaCache.legacySourceKind "tool-result.json" @?= Just Media.ToolResultSource
-  MediaCache.legacySourceKind "llm-image.webp" @?= Just Media.GeneratedImageSource
-  MediaCache.legacySourceKind "report.json" @?= Nothing
 
 testMediaCacheSniffsStreamedImageContent :: IO ()
 testMediaCacheSniffsStreamedImageContent =

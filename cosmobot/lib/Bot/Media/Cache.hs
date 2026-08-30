@@ -31,8 +31,6 @@ module Bot.Media.Cache
   , recordPlatform
   , recordSourceKind
   , initializeMediaCache
-  , legacySourcePlatform
-  , legacySourceKind
   , extensionFor
   )
 where
@@ -138,13 +136,6 @@ data MediaSearchIndex = MediaSearchIndex
   , sourceKinds :: !(Map.Map Text (Set.Set MediaSourceKind))
   }
 
-newtype MediaMigrationRow = MediaMigrationRow
-  { name :: Text
-  }
-  deriving (Generic)
-
-instance SqlRow MediaMigrationRow
-
 mediaObjectRows :: Table MediaObjectRow
 mediaObjectRows =
   table "media_files"
@@ -180,104 +171,9 @@ mediaSourceKindRows =
     , #file_id :- index
     ]
 
-mediaMigrationRows :: Table MediaMigrationRow
-mediaMigrationRows =
-  table "media_migrations" [#name :- primary]
-
 initializeMediaCache :: Storage.Storage :> es => Eff es ()
-initializeMediaCache = do
+initializeMediaCache =
   ensureMediaCacheTables
-  migrateLegacyMediaPlatforms
-  migrateLegacyMediaSourceKinds
-
--- ponytail: temporary one-shot backfill for databases created before media
--- provenance; remove this migration after every deployment has recorded v1.
-migrateLegacyMediaPlatforms :: Storage.Storage :> es => Eff es ()
-migrateLegacyMediaPlatforms = do
-  alreadyMigrated <- runSelda do
-    rows <- query do
-      row <- select mediaMigrationRows
-      restrict (row ! #name .== literal platformBackfillMigration)
-      pure (row ! #name)
-    pure (not (null rows))
-  unless alreadyMigrated do
-    sources <- runSelda (query (select mediaSourceRows))
-    cachedRefs <- runSelda (query (select mediaPlatformRefRows))
-    let inferred =
-          Set.toAscList $ Set.fromList $
-            [ (platform, source.file_id)
-            | source <- sources
-            , platform <- maybeToList (legacySourcePlatform source.source_ref)
-            ]
-              <> [(ref.platform_key, ref.file_id) | ref <- cachedRefs]
-    runSelda $ transaction do
-      for_ inferred \(platform, fileId) -> do
-        deleteFrom_ mediaPlatformRows \row ->
-          row ! #platform_key .== literal platform
-            .&& row ! #file_id .== literal fileId
-        insert_ mediaPlatformRows [MediaPlatformRow{platform_key = platform, file_id = fileId}]
-      insert_ mediaMigrationRows [MediaMigrationRow{name = platformBackfillMigration}]
-
-platformBackfillMigration :: Text
-platformBackfillMigration = "media-platform-provenance-v1"
-
--- ponytail: temporary one-shot filename backfill for media created before
--- explicit source tagging; remove after every deployment has recorded v2.
-migrateLegacyMediaSourceKinds :: Storage.Storage :> es => Eff es ()
-migrateLegacyMediaSourceKinds = do
-  alreadyMigrated <- migrationApplied sourceKindBackfillMigration
-  unless alreadyMigrated do
-    objects <- runSelda (query (select mediaObjectRows))
-    platforms <- runSelda (query (select mediaPlatformRows))
-    let inferred =
-          Set.toAscList $ Set.fromList $
-            [ MediaSourceKindRow
-                { source_kind = Media.mediaSourceKindKey sourceKind
-                , file_id = object.file_id
-                }
-            | object <- objects
-            , sourceKind <- maybeToList (legacySourceKind =<< object.source_name)
-            ]
-              <> [ MediaSourceKindRow
-                    { source_kind = Media.mediaSourceKindKey ChatSource
-                    , file_id = platform.file_id
-                    }
-                 | platform <- platforms
-                 ]
-    runSelda $ transaction do
-      for_ inferred \source -> do
-        deleteFrom_ mediaSourceKindRows \row ->
-          row ! #source_kind .== literal source.source_kind
-            .&& row ! #file_id .== literal source.file_id
-        insert_ mediaSourceKindRows [source]
-      insert_ mediaMigrationRows [MediaMigrationRow{name = sourceKindBackfillMigration}]
-
-migrationApplied :: Storage.Storage :> es => Text -> Eff es Bool
-migrationApplied migration = runSelda do
-  rows <- query do
-    row <- select mediaMigrationRows
-    restrict (row ! #name .== literal migration)
-    pure (row ! #name)
-  pure (not (null rows))
-
-sourceKindBackfillMigration :: Text
-sourceKindBackfillMigration = "media-source-kind-v2"
-
-legacySourceKind :: Text -> Maybe MediaSourceKind
-legacySourceKind sourceName
-  | "tool-result." `Text.isPrefixOf` Text.toLower (Text.strip sourceName) = Just ToolResultSource
-  | "llm-image." `Text.isPrefixOf` Text.toLower (Text.strip sourceName) = Just GeneratedImageSource
-  | otherwise = Nothing
-
-legacySourcePlatform :: Text -> Maybe Text
-legacySourcePlatform source
-  | "qq.com" `Text.isInfixOf` normalized || "qq:" `Text.isPrefixOf` normalized || "qqfile:" `Text.isPrefixOf` normalized = Just "qq"
-  | "mxc://" `Text.isPrefixOf` normalized || "matrix:" `Text.isPrefixOf` normalized || "matrix.to" `Text.isInfixOf` normalized = Just "matrix"
-  | "telegram:" `Text.isPrefixOf` normalized || "telegram.org" `Text.isInfixOf` normalized || "t.me/" `Text.isInfixOf` normalized = Just "telegram"
-  | "discord:" `Text.isPrefixOf` normalized || any (`Text.isInfixOf` normalized) ["discord.com", "discordapp.com", "discordapp.net"] = Just "discord"
-  | otherwise = Nothing
-  where
-    normalized = Text.toLower (Text.strip source)
 
 cacheMediaObject
   :: (Storage.Storage :> es, FileSystem :> es, IOE :> es)
@@ -811,7 +707,6 @@ ensureMediaCacheTables =
     tryCreateTable mediaPlatformRefRows
     tryCreateTable mediaPlatformRows
     tryCreateTable mediaSourceKindRows
-    tryCreateTable mediaMigrationRows
 
 touchMediaFile :: (Storage.Storage :> es, IOE :> es) => Text -> Eff es ()
 touchMediaFile fileId = do

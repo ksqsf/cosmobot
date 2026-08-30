@@ -12,10 +12,7 @@ import Bot.Core.Message
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.Int as Int
-import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Database.Selda as Selda
 import qualified Database.Selda.Backend as SeldaBackend
 import qualified Database.Selda.SQLite as SeldaSQLite
 import Effectful.Timeout (Timeout, runTimeout, timeout)
@@ -40,37 +37,8 @@ main =
       , testCase "pending schedules persist across scheduler restart" testPendingSchedulesPersistAcrossSchedulerRestart
       , testCase "recurring schedules persist across scheduler restart" testRecurringSchedulesPersistAcrossSchedulerRestart
       , testCase "elapsed schedules persist across scheduler restart" testElapsedSchedulesPersistAcrossSchedulerRestart
-      , testCase "scheduler migrates old ids to database primary keys" testSchedulerMigratesLegacyIds
-      , testCase "scheduler migrates one-shot tables for recurrence" testSchedulerMigratesOneShotTable
       , testCase "storage failures do not commit scheduler memory state" testStorageFailuresDoNotCommitSchedulerState
       ]
-
-data LegacyScheduledMessageRow = LegacyScheduledMessageRow
-  { legacy_id :: Selda.RowID
-  , legacy_schedule_id :: Int.Int64
-  , legacy_due_at_unix_seconds :: Int.Int64
-  , legacy_platform_key :: Text
-  , legacy_chat_id :: Maybe Int.Int64
-  , legacy_sender_id :: Maybe Text
-  , legacy_sender_username :: Maybe Text
-  , legacy_message_json :: Text
-  }
-  deriving (Generic)
-
-instance Selda.SqlRow LegacyScheduledMessageRow
-
-legacyScheduledMessages :: Selda.Table LegacyScheduledMessageRow
-legacyScheduledMessages =
-  Selda.tableFieldMod "scheduled_messages"
-    [ #legacy_id Selda.:- Selda.untypedAutoPrimary
-    , #legacy_schedule_id Selda.:- Selda.unique
-    , #legacy_due_at_unix_seconds Selda.:- Selda.index
-    , #legacy_platform_key Selda.:- Selda.index
-    , #legacy_chat_id Selda.:- Selda.index
-    , #legacy_sender_id Selda.:- Selda.index
-    , #legacy_sender_username Selda.:- Selda.index
-    ]
-    (fromMaybe "" . Text.stripPrefix "legacy_")
 
 testScheduledMessagesAreScopedByCurrentUser :: IO ()
 testScheduledMessagesAreScopedByCurrentUser = runSchedulerTest do
@@ -198,63 +166,6 @@ testElapsedSchedulesPersistAcrossSchedulerRestart = runSchedulerStorage do
     liftIO do
       ((.text) <$> delivered) @?= Just "!ask after restart"
       length schedules @?= 0
-
-testSchedulerMigratesLegacyIds :: IO ()
-testSchedulerMigratesLegacyIds = runEff $
-  withSQLiteConnection \connection -> do
-    let legacyMessage = messageFrom "200" "!ask legacy"
-    liftIO $ SeldaBackend.runSeldaT
-      (do
-        SeldaBackend.withBackend \backend -> liftIO $ void $
-          SeldaBackend.runStmt backend
-            "CREATE TABLE \"scheduled_messages\"(\n      \"id\" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,\n      \"schedule_id\" BIGINT NOT NULL UNIQUE,\n      \"due_at_unix_seconds\" BIGINT NOT NULL,\n      \"platform_key\" TEXT NOT NULL,\n      \"chat_id\" BIGINT NULL,\n      \"sender_id\" TEXT NULL,\n      \"sender_username\" TEXT NULL,\n      \"message_json\" TEXT NOT NULL,\n      UNIQUE(\"schedule_id\")\n    )"
-            []
-        Selda.insert_ legacyScheduledMessages
-          [ LegacyScheduledMessageRow
-              { legacy_id = Selda.def
-              , legacy_schedule_id = 7
-              , legacy_due_at_unix_seconds = maxBound
-              , legacy_platform_key = "telegram"
-              , legacy_chat_id = Just 100
-              , legacy_sender_id = Just "200"
-              , legacy_sender_username = Just "alice"
-              , legacy_message_json = encodeMessage legacyMessage
-              }
-          ])
-      connection
-    runTimeout $
-      runConcurrent $
-        runPrim $
-          startKatipE "scheduler-spec" "test" $
-          ConcurrencyManager.runConcurrencyManager $
-            StorageSQLite.runStorageSQLite connection $
-              Scheduler.runScheduler do
-                before <- Scheduler.listScheduledMessages legacyMessage
-                _ <- Scheduler.scheduleOneShotMessage 60 (messageFrom "200" "!ask new")
-                migrated <- Scheduler.listScheduledMessages legacyMessage
-                liftIO do
-                  map (.scheduleId) before @?= [7]
-                  map (.scheduleId) migrated @?= [7, 8]
-
-testSchedulerMigratesOneShotTable :: IO ()
-testSchedulerMigratesOneShotTable = runEff $
-  withSQLiteConnection \connection -> do
-    liftIO $ SeldaBackend.runSeldaT
-      (SeldaBackend.withBackend \backend -> liftIO $ void $
-        SeldaBackend.runStmt backend
-          "CREATE TABLE scheduled_messages (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, due_at_unix_seconds BIGINT NOT NULL, platform_key TEXT NOT NULL, chat_id BIGINT NULL, sender_id TEXT NULL, sender_username TEXT NULL, message_json TEXT NOT NULL)"
-          [])
-      connection
-    runTimeout $
-      runConcurrent $
-        runPrim $
-          startKatipE "scheduler-spec" "test" $
-          ConcurrencyManager.runConcurrencyManager $
-            StorageSQLite.runStorageSQLite connection $
-              Scheduler.runScheduler do
-                _ <- Scheduler.scheduleRecurringMessage 60 (messageFrom "200" "recurring")
-                schedules <- Scheduler.listScheduledMessages (messageFrom "200" "list")
-                liftIO $ map (.recurring) schedules @?= [True]
 
 testStorageFailuresDoNotCommitSchedulerState :: IO ()
 testStorageFailuresDoNotCommitSchedulerState = runEff $

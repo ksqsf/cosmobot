@@ -22,8 +22,6 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Int as Int
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Database.Selda.Backend as SeldaBackend
-import qualified Database.Selda.SQLite as SeldaSQLite
 
 data StoredScheduledMessage = StoredScheduledMessage
   { scheduleId :: !Integer
@@ -111,36 +109,7 @@ deleteScheduledMessage scheduleId = do
 
 ensureScheduledMessagesTable :: Storage.Storage :> es => Eff es ()
 ensureScheduledMessagesTable =
-  runSelda (transaction migrateScheduledMessagesTable)
-
-migrateScheduledMessagesTable :: SeldaT SeldaSQLite.SQLite IO ()
-migrateScheduledMessagesTable =
-  SeldaBackend.withBackend \backend -> liftIO do
-    runStatement backend [i|CREATE TABLE IF NOT EXISTS scheduled_messages (#{scheduledMessageColumns})|]
-    (_, rows) <- SeldaBackend.runStmt backend "PRAGMA table_info(scheduled_messages)" []
-    let columns = [name | _ : SeldaBackend.SqlString name : _ <- rows]
-    when ("schedule_id" `elem` columns) do
-      runStatement backend "DROP TABLE IF EXISTS scheduled_messages_new"
-      runStatement backend [i|CREATE TABLE scheduled_messages_new (#{scheduledMessageColumns})|]
-      runStatement backend "INSERT INTO scheduled_messages_new (id, due_at_unix_seconds, platform_key, chat_id, sender_id, sender_username, message_json) SELECT schedule_id, due_at_unix_seconds, platform_key, chat_id, sender_id, sender_username, message_json FROM scheduled_messages"
-      runStatement backend "DROP TABLE scheduled_messages"
-      runStatement backend "ALTER TABLE scheduled_messages_new RENAME TO scheduled_messages"
-    when ("schedule_id" `notElem` columns && "recurring_interval_seconds" `notElem` columns) $
-      runStatement backend "ALTER TABLE scheduled_messages ADD COLUMN recurring_interval_seconds BIGINT NULL"
-    traverse_ (runStatement backend)
-      [ "CREATE INDEX IF NOT EXISTS scheduled_messages_due_at_idx ON scheduled_messages(due_at_unix_seconds)"
-      , "CREATE INDEX IF NOT EXISTS scheduled_messages_platform_idx ON scheduled_messages(platform_key)"
-      , "CREATE INDEX IF NOT EXISTS scheduled_messages_chat_idx ON scheduled_messages(chat_id)"
-      , "CREATE INDEX IF NOT EXISTS scheduled_messages_sender_idx ON scheduled_messages(sender_id)"
-      , "CREATE INDEX IF NOT EXISTS scheduled_messages_username_idx ON scheduled_messages(sender_username)"
-      ]
-  where
-    runStatement backend statement =
-      void (SeldaBackend.runStmt backend statement [])
-
-scheduledMessageColumns :: Text
-scheduledMessageColumns =
-  "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, due_at_unix_seconds BIGINT NOT NULL, recurring_interval_seconds BIGINT NULL, platform_key TEXT NOT NULL, chat_id TEXT NULL, sender_id TEXT NULL, sender_username TEXT NULL, message_json TEXT NOT NULL"
+  runSelda (tryCreateTable scheduledMessages)
 
 storedScheduledMessageFromRow :: ScheduledMessageRow -> Maybe StoredScheduledMessage
 storedScheduledMessageFromRow row = do
