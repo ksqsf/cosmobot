@@ -42,7 +42,7 @@ data ChatLogEntry = ChatLogEntry
   { recordedAt :: !(Maybe UTCTime)
   , platform :: !ChatPlatform
   , kind :: !ChatKind
-  , chatId :: !(Maybe Integer)
+  , chatId :: !(Maybe ChatId)
   , senderId :: !(Maybe Text)
   , senderUsername :: !(Maybe Text)
   , senderDisplayName :: !(Maybe Text)
@@ -60,7 +60,7 @@ data ChatLogEntry = ChatLogEntry
 data ChatLogScope = ChatLogScope
   { platform :: !ChatPlatform
   , kind :: !ChatKind
-  , chatId :: !(Maybe Integer)
+  , chatId :: !(Maybe ChatId)
   }
   deriving (Eq, Show, Generic, Aeson.ToJSON, Aeson.FromJSON)
 

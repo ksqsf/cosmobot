@@ -151,7 +151,7 @@ currentMessageSystemPrompt cfg message =
     , [i|- platform: #{platformText}|]
     , [i|- bot_id: #{botIdText} (cosmobot's own platform user id)|]
     , [i|- chat_kind: #{kindText}|]
-    , [i|- chat_id: #{chatIdText}|]
+    , [i|- chat_id: #{chatIdValue}|]
     , [i|- sender_id: #{senderIdText} (the platform user id of the user who sent this message)|]
     , [i|- sender_username: #{senderUsernameText}|]
     ]
@@ -159,7 +159,7 @@ currentMessageSystemPrompt cfg message =
     platformText = show message.platform :: String
     botIdText = maybe "unavailable" Text.unpack (message.digest.botId <|> configuredBotId)
     kindText = show message.kind :: String
-    chatIdText = maybe "unavailable" show message.chatId :: String
+    chatIdValue = maybe "unavailable" (Text.unpack . chatIdText) message.chatId
     senderIdText = maybe "unavailable" Text.unpack message.senderId
     senderUsernameText = fromMaybe "unavailable" message.senderUsername
     configuredBotId = listToMaybe [botId | (platform, botId) <- cfg.botIds, platform == message.platform]

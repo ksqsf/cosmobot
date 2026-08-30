@@ -10,7 +10,7 @@ module Bot.RPC.Thread
 where
 
 import Bot.Core.Thread (ThreadMessageKey (..))
-import Bot.Core.Message (ChatPlatform (..))
+import Bot.Core.Message (ChatId, ChatPlatform (..), chatIdText)
 import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import Bot.Effect.Concurrency (Id (..))
@@ -142,7 +142,7 @@ resolvedThreadId :: Thread.ThreadIndexRow -> Integer
 resolvedThreadId row =
   fromMaybe row.rowId row.threadStorageId
 
-summaryValue :: Map (ChatPlatform, Integer) (Maybe Text) -> Map Integer Text -> ThreadSummary -> Aeson.Value
+summaryValue :: Map (ChatPlatform, ChatId) (Maybe Text) -> Map Integer Text -> ThreadSummary -> Aeson.Value
 summaryValue chatInfos previews summary =
   Aeson.object
     [ "threadId" Aeson..= summary.threadId
@@ -163,11 +163,11 @@ summaryMatches rawQuery previews summary
     searchable = Text.unwords
       [ toText (show summary.threadId :: String)
       , toText (show summary.rootKey.platform :: String)
-      , maybe "" (toText . (show :: Integer -> String)) summary.rootKey.chatId
+      , maybe "" chatIdText summary.rootKey.chatId
       , Map.findWithDefault "" summary.latestRowId previews
       ]
 
-threadValue :: Map (ChatPlatform, Integer) (Maybe Text) -> Map ThreadMessageKey ThreadMessageKey -> Integer -> NonEmpty Thread.ThreadRow -> Aeson.Value
+threadValue :: Map (ChatPlatform, ChatId) (Maybe Text) -> Map ThreadMessageKey ThreadMessageKey -> Integer -> NonEmpty Thread.ThreadRow -> Aeson.Value
 threadValue chatInfos inputMessageKeys threadId rows =
   Aeson.object
     [ "summary" Aeson..= maybe Aeson.Null (summaryValue chatInfos previews) summary

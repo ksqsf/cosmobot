@@ -305,12 +305,11 @@ canonicalConsoleMessage :: Text -> IncomingMessage -> IncomingMessage
 canonicalConsoleMessage sessionId message =
   message
     { platform = PlatformRPC
-    , chatId = Nothing
+    , chatId = Just (textChatId sessionId)
     , chatAliases = [sessionId]
     , senderId = Just sessionId
     }
 
 consoleThreadMessageKey :: Session.SessionId -> MessageId -> ThreadMessageKey
 consoleThreadMessageKey sessionId messageId =
-  ThreadMessageKey PlatformRPC Nothing $
-    textMessageId (Session.sessionIdText sessionId <> ":" <> messageIdText messageId)
+  ThreadMessageKey PlatformRPC (Just (textChatId (Session.sessionIdText sessionId))) messageId

@@ -13,6 +13,11 @@ module Bot.Core.Message
   , messageIdInteger
 
     -- * Chat identity
+  , ChatId (..)
+  , chatIdText
+  , textChatId
+  , integerChatId
+  , chatIdInteger
   , ChatPlatform (..)
   , chatPlatformKey
   , chatPlatformFromKey
@@ -75,6 +80,34 @@ integerMessageId =
 messageIdInteger :: MessageId -> Maybe Integer
 messageIdInteger =
   readMaybe . Text.unpack . messageIdText
+
+-- | Platform-native chat identity. Text preserves opaque identifiers such as
+-- Matrix room IDs and RPC session IDs without lossy hashing.
+newtype ChatId = ChatId Text
+  deriving (Eq, Ord, Show, Generic)
+
+instance IsString ChatId where
+  fromString = ChatId . Text.pack
+
+instance Aeson.ToJSON ChatId where
+  toJSON = Aeson.String . chatIdText
+
+instance Aeson.FromJSON ChatId where
+  parseJSON value =
+    (textChatId <$> (Aeson.parseJSON value :: AesonTypes.Parser Text))
+      <|> (integerChatId <$> (Aeson.parseJSON value :: AesonTypes.Parser Integer))
+
+chatIdText :: ChatId -> Text
+chatIdText (ChatId value) = value
+
+textChatId :: Text -> ChatId
+textChatId = ChatId
+
+integerChatId :: Integer -> ChatId
+integerChatId = ChatId . show
+
+chatIdInteger :: ChatId -> Maybe Integer
+chatIdInteger = readMaybe . Text.unpack . chatIdText
 
 -- | Chat platform backends supported by the unified message layer.
 data ChatPlatform
@@ -156,7 +189,7 @@ data IncomingMessage = IncomingMessage
   { eventKind :: !IncomingMessageEventKind
   , platform  :: !ChatPlatform
   , kind      :: !ChatKind
-  , chatId    :: !(Maybe Integer)
+  , chatId    :: !(Maybe ChatId)
   , chatAliases :: ![Text]
   , chatDisplayName :: !(Maybe Text)
   , digest    :: !MessageDigest

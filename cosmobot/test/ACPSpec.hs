@@ -8,7 +8,7 @@ import qualified Bot.JSONRPC as RPC
 import qualified Bot.Chat.Driver.ACP as ACPDriver
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
-import Bot.Core.Message (ChatKind (ChatPrivate), ChatPlatform (PlatformACP), IncomingMessage (..), IncomingMessageEventKind (IncomingMessageCreated), MessageDigest (..))
+import Bot.Core.Message (ChatKind (ChatPrivate), ChatPlatform (PlatformACP), IncomingMessage (..), IncomingMessageEventKind (IncomingMessageCreated), MessageDigest (..), textChatId)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.ACP as ACPEffect
 import qualified Bot.Effect.Media as Media
@@ -907,7 +907,7 @@ acpToolMessage sessionId =
     { eventKind = IncomingMessageCreated
     , platform = PlatformACP
     , kind = ChatPrivate
-    , chatId = Nothing
+    , chatId = Just (textChatId (Session.sessionIdText sessionId))
     , chatAliases = [Session.sessionIdText sessionId]
     , chatDisplayName = Nothing
     , digest = MessageDigest

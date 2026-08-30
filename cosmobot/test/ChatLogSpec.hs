@@ -103,7 +103,7 @@ testInspectionWindow = runChatLogTest do
   traverse_ (\messageId -> ChatLog.recordMessage (messageFromChat messageId 200 [i|message #{messageId}|])) [100 .. 104]
   ChatLog.recordMessage ((messageFromChat 200 201 "other chat"){platform = PlatformQQ})
   summaries <- ChatLog.listChats
-  let scope = ChatLog.ChatLogScope PlatformTelegram ChatPrivate (Just 200)
+  let scope = ChatLog.ChatLogScope PlatformTelegram ChatPrivate (Just "200")
   window <- ChatLog.queryWindow scope (ChatLog.AroundChatLogMessage "102") 3
   missing <- ChatLog.queryWindow scope (ChatLog.AroundChatLogMessage "missing") 3
   liftIO $ do
@@ -127,26 +127,27 @@ testIdentityDirectory = runChatLogTest do
     , chatDisplayName = Just "QQ user"
     })
   senders <- Identity.loadSenderInfos [(PlatformTelegram, "200")]
-  chats <- Identity.loadChatInfos [(PlatformTelegram, 200)]
+  chats <- Identity.loadChatInfos [(PlatformTelegram, "200")]
   qqChats <- Identity.loadScopedChatInfos
-    [ (PlatformQQ, ChatGroup, 300)
-    , (PlatformQQ, ChatPrivate, 300)
+    [ (PlatformQQ, ChatGroup, "300")
+    , (PlatformQQ, ChatPrivate, "300")
     ]
-  let bulkScopes = [(PlatformQQ, ChatGroup, chatId) | chatId <- [400 .. 439]]
-  traverse_ (\(_, _, chatId) -> ChatLog.recordMessage ((messageFromChat chatId chatId "bulk")
+  let bulkIds = [400 .. 439]
+      bulkScopes = [(PlatformQQ, ChatGroup, integerChatId chatId) | chatId <- bulkIds]
+  traverse_ (\chatId -> ChatLog.recordMessage ((messageFromChat chatId chatId "bulk")
     { platform = PlatformQQ
     , kind = ChatGroup
     , chatDisplayName = Just [i|Group #{chatId}|]
-    })) bulkScopes
+    })) bulkIds
   bulkChats <- Identity.loadScopedChatInfos bulkScopes
   liftIO $ do
     Map.lookup (PlatformTelegram, "200") senders @?= Just Identity.SenderInfo
       { displayName = Just "Alice"
       , username = Just "alice"
       }
-    Map.lookup (PlatformTelegram, 200) chats @?= Just (Just "Example chat")
-    Map.lookup (PlatformQQ, ChatGroup, 300) qqChats @?= Just (Just "QQ group")
-    Map.lookup (PlatformQQ, ChatPrivate, 300) qqChats @?= Just (Just "QQ user")
+    Map.lookup (PlatformTelegram, "200") chats @?= Just (Just "Example chat")
+    Map.lookup (PlatformQQ, ChatGroup, "300") qqChats @?= Just (Just "QQ group")
+    Map.lookup (PlatformQQ, ChatPrivate, "300") qqChats @?= Just (Just "QQ user")
     Map.size bulkChats @?= length bulkScopes
 
 runChatLogTest :: Eff '[ChatLog.ChatLog, Storage.Storage, KatipE, Concurrent, IOE] a -> IO a
@@ -170,7 +171,7 @@ messageFromChatWithFiles messageId chatId text imageUrls files =
     { eventKind = IncomingMessageCreated
     , platform = PlatformTelegram
     , kind = ChatPrivate
-    , chatId = Just chatId
+    , chatId = Just (integerChatId chatId)
     , chatAliases = []
     , chatDisplayName = Just "Example chat"
     , digest = emptyMessageDigest

@@ -46,9 +46,9 @@ testPromptOrImages = do
 
 testFromGroups :: IO ()
 testFromGroups = do
-  assertBool "allowed group matches" (isJust (applyFilter (fromGroups [100]) (message "hello"){kind = ChatGroup, chatId = Just 100}))
-  assertBool "other group does not match" (isNothing (applyFilter (fromGroups [100]) (message "hello"){kind = ChatGroup, chatId = Just 101}))
-  assertBool "private chat does not match" (isNothing (applyFilter (fromGroups [100]) (message "hello"){kind = ChatPrivate, chatId = Just 100}))
+  assertBool "allowed group matches" (isJust (applyFilter (fromGroups [100]) (message "hello"){kind = ChatGroup, chatId = Just "100"}))
+  assertBool "other group does not match" (isNothing (applyFilter (fromGroups [100]) (message "hello"){kind = ChatGroup, chatId = Just "101"}))
+  assertBool "private chat does not match" (isNothing (applyFilter (fromGroups [100]) (message "hello"){kind = ChatPrivate, chatId = Just "100"}))
 
 testNotReply :: IO ()
 testNotReply = do
@@ -149,7 +149,7 @@ messageFromWithImages senderId text imageUrls =
     { eventKind = IncomingMessageCreated
     , platform = PlatformTelegram
     , kind = ChatPrivate
-    , chatId = Just 100
+    , chatId = Just "100"
     , chatAliases = []
     , chatDisplayName = Nothing
     , digest = emptyMessageDigest

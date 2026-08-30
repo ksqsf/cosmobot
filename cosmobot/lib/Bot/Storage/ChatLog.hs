@@ -27,7 +27,6 @@ import qualified Bot.Storage.Identity as Identity
 import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.Int as Int
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -39,7 +38,7 @@ data ChatLogRow = ChatLogRow
   { id :: ID ChatLogRow
   , platform_key :: Text
   , kind_key :: Text
-  , chat_id :: Maybe Int.Int64
+  , chat_id :: Maybe Text
   , sender_id :: Maybe Text
   , sender_username :: Maybe Text
   , sender_display_name :: Maybe Text
@@ -262,13 +261,13 @@ scopeMatches :: forall (backend :: Type). ChatLogScope -> Row backend ChatLogRow
 scopeMatches scope row =
   row ! #platform_key .== literal (platformKey scope.platform)
     .&& row ! #kind_key .== literal (kindKey scope.kind)
-    .&& maybe (isNull (row ! #chat_id)) (\chatId -> row ! #chat_id .== literal (Just (fromIntegral chatId))) scope.chatId
+    .&& maybe (isNull (row ! #chat_id)) (\chatId -> row ! #chat_id .== literal (Just (chatIdText chatId))) scope.chatId
 
-summaryFromRow :: Text :*: Text :*: Maybe Int.Int64 :*: Int :*: Maybe (Maybe UTCTime) -> Maybe ChatLogSummary
+summaryFromRow :: Text :*: Text :*: Maybe Text :*: Int :*: Maybe (Maybe UTCTime) -> Maybe ChatLogSummary
 summaryFromRow (platformKey' :*: kindKey' :*: chatId' :*: messageCount :*: latestAt) = do
   platform <- platformFromKey platformKey'
   pure ChatLogSummary
-    { scope = ChatLogScope{platform, kind = kindFromKey kindKey', chatId = fromIntegral <$> chatId'}
+    { scope = ChatLogScope{platform, kind = kindFromKey kindKey', chatId = textChatId <$> chatId'}
     , messageCount
     , latestAt = join latestAt
     }
@@ -295,7 +294,7 @@ chatLogRow entry =
     { id = def
     , platform_key = platformKey entry.platform
     , kind_key = kindKey entry.kind
-    , chat_id = fromIntegral <$> entry.chatId
+    , chat_id = chatIdText <$> entry.chatId
     , sender_id = entry.senderId
     , sender_username = entry.senderUsername
     , sender_display_name = entry.senderDisplayName
@@ -320,7 +319,7 @@ chatLogEntryFromScope scope row =
     { recordedAt = row.recorded_at
     , platform = scope.platform
     , kind = scope.kind
-    , chatId = fromIntegral <$> row.chat_id
+    , chatId = textChatId <$> row.chat_id
     , senderId = row.sender_id
     , senderUsername = row.sender_username
     , senderDisplayName = row.sender_display_name
@@ -341,11 +340,11 @@ chatLogMatches message includeBotMessages row =
     .&& chatIdMatches message.chatId row
     .&& botVisibilityMatches includeBotMessages row
 
-chatIdMatches :: forall (backend :: Type). Maybe Integer -> Row backend ChatLogRow -> Col backend Bool
+chatIdMatches :: forall (backend :: Type). Maybe ChatId -> Row backend ChatLogRow -> Col backend Bool
 chatIdMatches Nothing row =
   isNull (row ! #chat_id)
 chatIdMatches (Just chatId) row =
-  row ! #chat_id .== literal (Just (fromIntegral chatId :: Int.Int64))
+  row ! #chat_id .== literal (Just (chatIdText chatId))
 
 botVisibilityMatches :: forall (backend :: Type). Bool -> Row backend ChatLogRow -> Col backend Bool
 botVisibilityMatches True _ =

@@ -91,20 +91,22 @@ instance Driver.ChatDriver QQDriver where
     pure (Chat.ChunkedMessage maxBound)
 
   getMessageContent (QQDriver driver) message messageId =
-    getMessageContentQQ driver message.chatId messageId
+    getMessageContentQQ driver (message.chatId >>= chatIdInteger) messageId
 
   getSenderMemberInfo (QQDriver driver) message =
     case (message.kind, message.chatId, message.senderId) of
-      (ChatGroup, Just groupId, Just rawUserId)
-        | Just userId <- parseIntegerUserId rawUserId ->
+      (ChatGroup, Just chatId, Just rawUserId)
+        | Just groupId <- chatIdInteger chatId
+        , Just userId <- parseIntegerUserId rawUserId ->
         getGroupMemberInfo driver groupId userId
       _ ->
         pure Nothing
 
   getMemberInfo (QQDriver driver) message userId =
     case (message.kind, message.chatId) of
-      (ChatGroup, Just groupId)
-        | Just numericUserId <- parseIntegerUserId userId ->
+      (ChatGroup, Just chatId)
+        | Just groupId <- chatIdInteger chatId
+        , Just numericUserId <- parseIntegerUserId userId ->
           getGroupMemberInfo driver groupId numericUserId
       _ ->
         pure Nothing
@@ -117,7 +119,8 @@ instance Driver.ChatDriver QQDriver where
 
   listGroupMembers (QQDriver driver) message =
     case (message.kind, message.chatId) of
-      (ChatGroup, Just groupId) ->
+      (ChatGroup, Just chatId)
+        | Just groupId <- chatIdInteger chatId ->
         getGroupMemberList driver groupId
       _ ->
         pure Nothing
@@ -194,7 +197,7 @@ replyAction
 replyAction botId message text content
   | Text.length text > qqForwardMessageThreshold = do
       qq <- maybe (Left "QQ merged-forward replies require the bot QQ id.") Right botId
-      case (message.kind, message.chatId, message.senderId) of
+      case (message.kind, message.chatId >>= chatIdInteger, message.senderId) of
         (ChatGroup, Just groupId, _) ->
           Right ("send_group_forward_msg", forwardRequest "send_group_forward_msg" "group_id" groupId qq content)
         (ChatPrivate, _, Just rawUserId)
@@ -202,7 +205,7 @@ replyAction botId message text content
             Right ("send_private_forward_msg", forwardRequest "send_private_forward_msg" "user_id" userId qq content)
         _ -> Left "QQ reply requires a QQ group id or private sender id."
   | otherwise =
-      case (message.kind, message.chatId, message.senderId) of
+      case (message.kind, message.chatId >>= chatIdInteger, message.senderId) of
         (ChatGroup, Just groupId, _) ->
           Right ("send_group_msg", messageRequest "send_group_msg" "group_id" groupId (withReply content))
         (ChatPrivate, _, Just rawUserId)
@@ -277,7 +280,7 @@ mentionUserQQ
   -> Text
   -> Eff es (Either Text MessageId)
 mentionUserQQ driver message userId body =
-  case (message.kind, message.chatId, message.senderId) of
+  case (message.kind, message.chatId >>= chatIdInteger, message.senderId) of
     (ChatGroup, Just groupId, _)
       | Just numericUserId <- parseIntegerUserId userId -> do
         qqMessage <- mentionMessage message numericUserId body
@@ -309,7 +312,7 @@ uploadFileQQ
   -> Maybe Text
   -> Eff es (Either Text MessageId)
 uploadFileQQ driver message path fileName =
-  case (message.kind, message.chatId, message.senderId) of
+  case (message.kind, message.chatId >>= chatIdInteger, message.senderId) of
     (ChatGroup, Just groupId, _) -> do
       fileRef <- localFileRef path
       response <- sendFileMessage driver "send_group_msg"
@@ -338,7 +341,7 @@ replyAudioQQ
   -> Maybe Text
   -> Eff es (Either Text MessageId)
 replyAudioQQ driver message audioRef caption =
-  case (message.kind, message.chatId, message.senderId) of
+  case (message.kind, message.chatId >>= chatIdInteger, message.senderId) of
     (ChatGroup, Just groupId, _) -> do
       qqMessage <- audioMessage audioRef caption
       response <- sendAudioMessage driver "send_group_msg"
@@ -501,7 +504,7 @@ rawFieldValue name fields =
 
 normalizeQQMessageFiles :: Media.Media :> es => IncomingMessage -> Eff es IncomingMessage
 normalizeQQMessageFiles message = do
-  files <- traverse (normalizeQQFile message.chatId) message.files
+  files <- traverse (normalizeQQFile (message.chatId >>= chatIdInteger)) message.files
   pure (message :: IncomingMessage){files}
 
 normalizeReferencedFiles :: Media.Media :> es => Maybe Integer -> ReferencedMessage -> Eff es ReferencedMessage
@@ -621,7 +624,8 @@ resolveQQChatDisplayName
 resolveQQChatDisplayName driver message = case (message.kind, message.chatId) of
   (ChatPrivate, _) ->
     pure message{chatDisplayName = message.senderGlobalDisplayName}
-  (ChatGroup, Just groupId) -> do
+  (ChatGroup, Just chatId)
+    | Just groupId <- chatIdInteger chatId -> do
     cached <- liftIO (Map.lookup groupId <$> IORef.readIORef driver.groupDisplayNames)
     displayName <- case cached of
       Just name -> pure (Just name)
@@ -668,7 +672,7 @@ setGroupMemberTitleQQ
   -> Text
   -> Eff es Bool
 setGroupMemberTitleQQ driver message userId title =
-  case (message.kind, message.chatId) of
+  case (message.kind, message.chatId >>= chatIdInteger) of
     (ChatGroup, Just groupId)
       | Just numericUserId <- parseIntegerUserId userId -> do
       response <- sendAction driver (Aeson.object
@@ -1018,7 +1022,7 @@ eventToIncomingMessageWith cfg event
         { eventKind = IncomingMessageDeleted
         , platform = PlatformQQ
         , kind = maybe ChatPrivate (const ChatGroup) event.groupId
-        , chatId = event.groupId <|> event.userId
+        , chatId = integerChatId <$> (event.groupId <|> event.userId)
         , chatAliases = []
         , chatDisplayName = Nothing
         , digest = qqMessageDigest cfg event
@@ -1041,7 +1045,7 @@ eventToIncomingMessageWith cfg event
       { eventKind = IncomingMessageCreated
       , platform  = PlatformQQ
       , kind      = oneBotChatKind event.messageType
-      , chatId    = event.groupId <|> event.userId
+      , chatId    = integerChatId <$> (event.groupId <|> event.userId)
       , chatAliases = []
       , chatDisplayName = Nothing
       , digest = qqMessageDigest cfg event

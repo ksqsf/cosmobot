@@ -20,7 +20,6 @@ import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import Bot.Storage.Prelude
 import qualified Data.Map.Strict as Map
-import qualified Data.Int as Int
 import qualified Data.Text as Text
 import qualified Database.Selda.SQLite as SeldaSQLite
 
@@ -46,7 +45,7 @@ data ChatInfoRow = ChatInfoRow
   { identity_key :: !Text
   , platform_key :: !Text
   , kind_key :: !Text
-  , chat_id :: !Int.Int64
+  , chat_id :: !Text
   , display_name :: !(Maybe Text)
   , updated_at :: !UTCTime
   }
@@ -104,7 +103,7 @@ rememberIncomingIdentityRows updatedAt message = do
           { identity_key = key
           , platform_key = chatPlatformKey message.platform
           , kind_key = chatKindKey message.kind
-          , chat_id = fromIntegral chatId
+          , chat_id = chatIdText chatId
           , display_name = nonEmptyText message.chatDisplayName <|> (existing >>= (.display_name))
           , updated_at = updatedAt
           }
@@ -124,7 +123,7 @@ loadSenderInfos requested = do
     , Just platform <- [chatPlatformFromKey row.platform_key]
     ]
 
-loadChatInfos :: Storage.Storage :> es => [(ChatPlatform, Integer)] -> Eff es (Map (ChatPlatform, Integer) (Maybe Text))
+loadChatInfos :: Storage.Storage :> es => [(ChatPlatform, ChatId)] -> Eff es (Map (ChatPlatform, ChatId) (Maybe Text))
 loadChatInfos requested = do
   ensureIdentityTables
   let keys = ordNub requested
@@ -132,21 +131,21 @@ loadChatInfos requested = do
     row <- select chatInfoRows
     restrict (foldr (.||) (literal False)
       [ row ! #platform_key .== literal (chatPlatformKey platform)
-          .&& row ! #chat_id .== literal (fromIntegral chatId)
+          .&& row ! #chat_id .== literal (chatIdText chatId)
       | (platform, chatId) <- batch
       ])
     order (row ! #updated_at) ascending
     pure row) (identityBatches keys)
   pure $ Map.fromList
-    [ ((platform, fromIntegral row.chat_id), row.display_name)
+    [ ((platform, textChatId row.chat_id), row.display_name)
     | row <- rows
     , Just platform <- [chatPlatformFromKey row.platform_key]
     ]
 
 loadScopedChatInfos
   :: Storage.Storage :> es
-  => [(ChatPlatform, ChatKind, Integer)]
-  -> Eff es (Map (ChatPlatform, ChatKind, Integer) (Maybe Text))
+  => [(ChatPlatform, ChatKind, ChatId)]
+  -> Eff es (Map (ChatPlatform, ChatKind, ChatId) (Maybe Text))
 loadScopedChatInfos requested = do
   ensureIdentityTables
   let keys = ordNub requested
@@ -165,9 +164,9 @@ loadScopedChatInfos requested = do
 senderKey :: ChatPlatform -> Text -> Text
 senderKey platform senderId = chatPlatformKey platform <> ":" <> senderId
 
-scopedChatKey :: ChatPlatform -> ChatKind -> Integer -> Text
+scopedChatKey :: ChatPlatform -> ChatKind -> ChatId -> Text
 scopedChatKey platform kind chatId =
-  Text.intercalate ":" [chatPlatformKey platform, chatKindKey kind, Text.pack (show chatId)]
+  Text.intercalate ":" [chatPlatformKey platform, chatKindKey kind, chatIdText chatId]
 
 chatKindKey :: ChatKind -> Text
 chatKindKey = \case

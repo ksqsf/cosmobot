@@ -302,7 +302,7 @@ message text = IncomingMessage
   { eventKind = IncomingMessageCreated
   , platform = PlatformTelegram
   , kind = ChatPrivate
-  , chatId = Just 100
+  , chatId = Just "100"
   , chatAliases = []
   , chatDisplayName = Nothing
   , digest = emptyMessageDigest{senderIsAllowed = True}

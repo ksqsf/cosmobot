@@ -56,7 +56,7 @@ newtype MemoryConfig = MemoryConfig
 
 data MemoryScope
   = SenderMemory !ChatPlatform !Text
-  | ChatMemory !ChatPlatform !Integer
+  | ChatMemory !ChatPlatform !ChatId
   deriving (Eq, Show)
 
 newtype MemoryCommitMessage = MemoryCommitMessage Text
@@ -141,7 +141,7 @@ listMemories cfg =
                 fmap (MemoryEntry scope) <$> loadMemory cfg scope
               Just _ -> pure Nothing
     senderScope platform = Just . SenderMemory platform
-    chatScope platform = fmap (ChatMemory platform) . readMaybe . Text.unpack
+    chatScope platform = Just . ChatMemory platform . textChatId
 
 memoryHistory :: Process :> es => MemoryConfig -> MemoryScope -> Eff es [MemoryHistoryEntry]
 memoryHistory cfg scope = do
@@ -295,7 +295,7 @@ memoryPath cfg scope =
         SenderMemory scopePlatform senderId ->
           (scopePlatform, "sender", senderId)
         ChatMemory scopePlatform chatId ->
-          (scopePlatform, "chat", Text.pack (show chatId))
+          (scopePlatform, "chat", chatIdText chatId)
 
 platformPathPart :: ChatPlatform -> FilePath
 platformPathPart = toString . chatPlatformKey

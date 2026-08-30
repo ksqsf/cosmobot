@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import type { ActiveThread, AuditRecord, ChatAttachment, ChatLogSummary, ChatLogWindow, ChatMessage, ChatSession, MediaDetail, MediaGcResult, MediaItem, MediaSnapshot, Plugin, Resource, StoredThreadMessage, Task, ThreadDetail, ThreadMessageKey, ThreadRunTarget, ThreadSnapshot, ThreadSummary, TokenUsage, ToolCallTrace } from '@/types/domain'
 
+const chatIdSchema = z.string().min(1).nullable()
+
 export const taskSchema = z.object({
   id: z.number().int().positive(),
   label: z.string(),
@@ -28,7 +30,7 @@ const tokenUsageSchema = z.object({
 }) satisfies z.ZodType<TokenUsage>
 export const threadMessageKeySchema = z.object({
   platform: z.enum(['PlatformQQ', 'PlatformTelegram', 'PlatformMatrix', 'PlatformDiscord', 'PlatformRPC', 'PlatformACP']),
-  chatId: z.string().regex(/^-?\d+$/).nullable(),
+  chatId: chatIdSchema,
   messageId: z.string(),
 }) satisfies z.ZodType<ThreadMessageKey>
 const threadSummarySchema = z.object({
@@ -145,7 +147,7 @@ export const chatUploadSchema = chatAttachmentSchema.extend({ mediaRef: z.string
 const chatLogScopeSchema = z.object({
   platform: z.enum(['PlatformQQ', 'PlatformTelegram', 'PlatformMatrix', 'PlatformDiscord', 'PlatformRPC', 'PlatformACP']),
   kind: z.union([z.enum(['ChatPrivate', 'ChatGroup', 'ChatChannel']), z.templateLiteral(['ChatUnknown:', z.string()])]),
-  chatId: z.string().regex(/^-?\d+$/).nullable(),
+  chatId: chatIdSchema,
 })
 const chatLogEntrySchema = chatLogScopeSchema.extend({
   recordedAt: z.string().nullable(), senderId: z.string().nullable(), senderUsername: z.string().nullable(), senderDisplayName: z.string().nullable(),

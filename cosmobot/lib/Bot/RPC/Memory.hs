@@ -9,7 +9,7 @@ module Bot.RPC.Memory
   )
 where
 
-import Bot.Core.Message (ChatPlatform (..), chatPlatformKey)
+import Bot.Core.Message (ChatId, ChatPlatform (..), chatIdText, chatPlatformKey, textChatId)
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.JSONRPC as RPC
@@ -74,7 +74,7 @@ revertMemory (scope, revision) = do
   names <- loadMemoryIdentity scope
   pure $ Aeson.object ["reverted" Aeson..= True, "memory" Aeson..= maybe Aeson.Null (memoryDetailValue scope names) content]
 
-memorySummaryValue :: Map (ChatPlatform, Text) Identity.SenderInfo -> Map (ChatPlatform, Integer) (Maybe Text) -> MemoryStore.MemoryEntry -> Aeson.Value
+memorySummaryValue :: Map (ChatPlatform, Text) Identity.SenderInfo -> Map (ChatPlatform, ChatId) (Maybe Text) -> MemoryStore.MemoryEntry -> Aeson.Value
 memorySummaryValue senderInfos chatInfos entry =
   let (platform, scopeType, scopeId) = memoryScopeParts entry.scope
       (displayName, username) = memoryIdentity senderInfos chatInfos entry.scope
@@ -109,7 +109,7 @@ loadMemoryIdentity scope = case scope of
     infos <- Identity.loadChatInfos [(platform, chatId)]
     pure (Map.lookup (platform, chatId) infos >>= id, Nothing)
 
-memoryIdentity :: Map (ChatPlatform, Text) Identity.SenderInfo -> Map (ChatPlatform, Integer) (Maybe Text) -> MemoryStore.MemoryScope -> (Maybe Text, Maybe Text)
+memoryIdentity :: Map (ChatPlatform, Text) Identity.SenderInfo -> Map (ChatPlatform, ChatId) (Maybe Text) -> MemoryStore.MemoryScope -> (Maybe Text, Maybe Text)
 memoryIdentity senderInfos chatInfos = \case
   MemoryStore.SenderMemory platform senderId ->
     maybe (Nothing, Nothing) (\info -> (info.displayName, info.username)) (Map.lookup (platform, senderId) senderInfos)
@@ -126,7 +126,7 @@ memoryHistoryValue entry =
 memoryScopeParts :: MemoryStore.MemoryScope -> (ChatPlatform, Text, Text)
 memoryScopeParts = \case
   MemoryStore.SenderMemory platform senderId -> (platform, "sender", senderId)
-  MemoryStore.ChatMemory platform chatId -> (platform, "chat", toText (show chatId :: String))
+  MemoryStore.ChatMemory platform chatId -> (platform, "chat", chatIdText chatId)
 
 parseParams
   :: RPC.RpcRequest
@@ -151,7 +151,7 @@ parseMemoryScope = Aeson.withObject "memory params" \o -> do
     fail "scopeId must be a non-empty path component"
   case scopeType :: Text of
     "sender" -> pure (MemoryStore.SenderMemory platform scopeId)
-    "chat" -> maybe (fail "scopeId must be an integer for chat memory") (pure . MemoryStore.ChatMemory platform) (readMaybe (Text.unpack scopeId))
+    "chat" -> pure (MemoryStore.ChatMemory platform (textChatId scopeId))
     _ -> fail "scope must be sender or chat"
 
 validScopeId :: Text -> Bool

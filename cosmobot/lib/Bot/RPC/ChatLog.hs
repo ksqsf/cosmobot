@@ -46,7 +46,8 @@ dispatchChatLogMethod
 dispatchChatLogMethod parentMessage finalAssistantText threadIds publicMediaRef request =
   Just <$> case RPC.requestMethod request of
     "chat_log.list" ->
-      parseParams request parseNoParams \() -> ChatLog.listChats >>= chatLogSummariesValue
+      parseParams request parseNoParams \() ->
+        ChatLog.listChats >>= chatLogSummariesValue
     "chat_log.window" ->
       parseParams request parseWindowParams \(scope, anchor, limit) ->
         queryWindowWithThreadFallback parentMessage finalAssistantText scope anchor limit >>= chatLogWindowValue threadIds publicMediaRef
@@ -93,10 +94,8 @@ parseMessageId value =
       then fail "messageId must contain between 1 and 512 characters"
       else pure (textMessageId stripped)
 
-parseChatId :: Aeson.Value -> AesonTypes.Parser Integer
-parseChatId value =
-  Aeson.withText "chat id" (maybe (fail "chatId must be an integer") pure . readMaybe . toString) value
-    <|> Aeson.parseJSON value
+parseChatId :: Aeson.Value -> AesonTypes.Parser ChatId
+parseChatId = Aeson.parseJSON
 
 parsePlatform :: Text -> AesonTypes.Parser ChatPlatform
 parsePlatform = \case
@@ -122,7 +121,7 @@ chatLogSummariesValue summaries = do
   names <- Identity.loadScopedChatInfos [(scope.platform, scope.kind, chatId) | summary <- summaries, let scope = summary.scope, chatId <- maybeToList scope.chatId]
   pure $ Aeson.object ["chats" Aeson..= map (chatLogSummaryValue names) summaries]
 
-chatLogSummaryValue :: Map (ChatPlatform, ChatKind, Integer) (Maybe Text) -> ChatLog.ChatLogSummary -> Aeson.Value
+chatLogSummaryValue :: Map (ChatPlatform, ChatKind, ChatId) (Maybe Text) -> ChatLog.ChatLogSummary -> Aeson.Value
 chatLogSummaryValue names summary =
   Aeson.object
     [ "scope" Aeson..= chatLogScopeValue summary.scope
@@ -158,7 +157,7 @@ chatLogScopeValue scope =
   Aeson.object
     [ "platform" Aeson..= scope.platform
     , "kind" Aeson..= chatKindValue scope.kind
-    , "chatId" Aeson..= (show <$> scope.chatId :: Maybe Text)
+    , "chatId" Aeson..= scope.chatId
     ]
 
 chatLogItemValue :: Map (ChatPlatform, Text) Identity.SenderInfo -> Map ThreadMessageKey Integer -> ChatLog.ChatLogScope -> ChatLog.ChatLogItem -> Aeson.Value
@@ -187,7 +186,7 @@ chatLogEntryValue senders entry =
     [ "recordedAt" Aeson..= entry.recordedAt
     , "platform" Aeson..= entry.platform
     , "kind" Aeson..= chatKindValue entry.kind
-    , "chatId" Aeson..= (show <$> entry.chatId :: Maybe Text)
+    , "chatId" Aeson..= entry.chatId
     , "senderId" Aeson..= entry.senderId
     , "senderUsername" Aeson..= entry.senderUsername
     , "senderDisplayName" Aeson..= lookupSenderDisplayName senders entry
@@ -201,7 +200,7 @@ chatLogEntryValue senders entry =
     , "text" Aeson..= entry.text
     ]
 
-lookupChatDisplayName :: Map (ChatPlatform, ChatKind, Integer) (Maybe Text) -> ChatLog.ChatLogScope -> Maybe Text
+lookupChatDisplayName :: Map (ChatPlatform, ChatKind, ChatId) (Maybe Text) -> ChatLog.ChatLogScope -> Maybe Text
 lookupChatDisplayName names scope =
   scope.chatId >>= \chatId -> Map.lookup (scope.platform, scope.kind, chatId) names >>= id
 

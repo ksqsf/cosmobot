@@ -108,14 +108,14 @@ instance Driver.ChatDriver TelegramDriver where
     getMessageContentTelegram driver
 
   getSenderMemberInfo (TelegramDriver driver) message =
-    case (message.kind, message.chatId, message.senderId) of
+    case (message.kind, message.chatId >>= chatIdInteger, message.senderId) of
       (ChatGroup, Just chatId, Just rawUserId)
         | Just userId <- parseIntegerUserId rawUserId ->
             Just . Aeson.toJSON <$> getChatMember driver chatId userId
       _ -> pure Nothing
 
   getMemberInfo (TelegramDriver driver) message userId =
-    case (message.kind, message.chatId) of
+    case (message.kind, message.chatId >>= chatIdInteger) of
       (ChatGroup, Just chatId)
         | Just numericUserId <- parseIntegerUserId userId ->
             Just . Aeson.toJSON <$> getChatMember driver chatId numericUserId
@@ -128,7 +128,7 @@ instance Driver.ChatDriver TelegramDriver where
     mentionUserTelegram driver
 
   setTyping (TelegramDriver driver) message _ =
-    for_ message.chatId (Protocol.setTypingTelegram driver)
+    for_ (message.chatId >>= chatIdInteger) (Protocol.setTypingTelegram driver)
 
 incomingMessages
   :: (HTTP.HTTP :> es, KatipE :> es, Concurrent :> es, IOE :> es)
@@ -168,7 +168,7 @@ updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
     { eventKind = IncomingMessageCreated
     , platform  = PlatformTelegram
     , kind      = telegramChatKind message.chat.type_
-    , chatId    = Just message.chat.id
+    , chatId    = Just (integerChatId message.chat.id)
     , chatAliases = telegramChatAliases message.chat
     , chatDisplayName = telegramChatDisplayName message.chat
     , digest = telegramMessageDigest cfg message
@@ -380,7 +380,7 @@ replyToTelegram
   -> Text
   -> Eff es (Either Text MessageId)
 replyToTelegram driver message body =
-  case message.chatId of
+  case message.chatId >>= chatIdInteger of
     Just chatId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
       sent <- replyTextAndImages driver chatId replyToMessageId body `catch` \(err :: TelegramException) ->
@@ -414,7 +414,7 @@ editMessageTelegram
   -> Text
   -> Eff es Bool
 editMessageTelegram driver message messageId body =
-  case (message.chatId, messageIdInteger messageId) of
+  case (message.chatId >>= chatIdInteger, messageIdInteger messageId) of
     (Just chatId, Just rawMessageId) -> do
       let text = ChatEffect.renderReplyBody body
       void $
@@ -446,7 +446,7 @@ deleteMessageForTelegram
   -> MessageId
   -> Eff es Bool
 deleteMessageForTelegram driver message messageId =
-  case (message.chatId, messageIdInteger messageId) of
+  case (message.chatId >>= chatIdInteger, messageIdInteger messageId) of
     (Just chatId, Just rawMessageId) ->
       deleteMessage driver chatId rawMessageId
     _ ->
@@ -461,7 +461,7 @@ mentionUserTelegram
   -> Text
   -> Eff es (Either Text MessageId)
 mentionUserTelegram driver message userId body =
-  case message.chatId of
+  case message.chatId >>= chatIdInteger of
     Just chatId
       | Just numericUserId <- parseIntegerUserId userId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
@@ -487,7 +487,7 @@ replyAudioTelegram
   -> Maybe Text
   -> Eff es (Either Text MessageId)
 replyAudioTelegram driver message audioRef caption =
-  case message.chatId of
+  case message.chatId >>= chatIdInteger of
     Just chatId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
       sent <- sendVoiceRequest driver SendVoiceRequest
@@ -513,7 +513,7 @@ uploadFileTelegram
   -> Maybe Text
   -> Eff es (Either Text MessageId)
 uploadFileTelegram driver message path fileName =
-  case message.chatId of
+  case message.chatId >>= chatIdInteger of
     Just chatId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
           baseRequest =

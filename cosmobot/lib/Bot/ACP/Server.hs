@@ -17,7 +17,7 @@ import qualified Bot.ACP.Config as Config
 import qualified Bot.ACP.Content as Content
 import qualified Bot.ACP.State as State
 import qualified Bot.JSONRPC as RPC
-import Bot.Core.Message (ChatPlatform (PlatformACP), IncomingMessage (..), MessageId)
+import Bot.Core.Message (ChatPlatform (PlatformACP), IncomingMessage (..), MessageId, textChatId)
 import Bot.Core.Thread (ThreadMessageKey (..))
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
@@ -269,8 +269,8 @@ dispatchAcpRequestWithThreadStore
   -> RPC.JsonRpcRequest
   -> Eff es RPC.JsonRpcResponse
 dispatchAcpRequestWithThreadStore threads =
-  dispatchAcpRequestWithCancel \_sessionId messageIds ->
-    traverse_ (cancelAcpThread threads) messageIds
+  dispatchAcpRequestWithCancel \sessionId messageIds ->
+    traverse_ (cancelAcpThread threads sessionId) messageIds
 
 dispatchAcpRequestWithCancel
   :: (Concurrent :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
@@ -509,16 +509,17 @@ dispatchPrompt acpState queue request =
 cancelAcpThread
   :: (Concurrency.Concurrency :> es, Storage.Storage :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => ThreadStore
+  -> State.AcpSessionId
   -> MessageId
   -> Eff es ()
-cancelAcpThread threads messageId =
-  void (haltThread threads Concurrency.cancel (acpThreadMessageKey messageId))
+cancelAcpThread threads sessionId messageId =
+  void (haltThread threads Concurrency.cancel (acpThreadMessageKey sessionId messageId))
 
-acpThreadMessageKey :: MessageId -> ThreadMessageKey
-acpThreadMessageKey messageId =
+acpThreadMessageKey :: State.AcpSessionId -> MessageId -> ThreadMessageKey
+acpThreadMessageKey sessionId messageId =
   ThreadMessageKey
     { platform = PlatformACP
-    , chatId = Nothing
+    , chatId = Just (textChatId (State.acpSessionIdText sessionId))
     , messageId
     }
 

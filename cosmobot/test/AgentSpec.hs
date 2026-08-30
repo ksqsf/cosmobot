@@ -1053,7 +1053,7 @@ testSubAgentLifecycle = do
             , AgentTypes.originRunId = "agent-root"
             }
         otherContext = agentContext{Agent.message = testMessage{senderId = Just "other"}}
-        otherChatContext = agentContext{Agent.message = testMessage{Message.chatId = Just 999}}
+        otherChatContext = agentContext{Agent.message = testMessage{Message.chatId = Just "999"}}
     schema <- encodedToolParameters tool
     liftIO $ assertBool "subagent create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` schema)
     createRun <- AgentTool.startTool tool agentContext
@@ -3327,9 +3327,9 @@ testThreadAuditScope = do
         runTestLog $
           StorageSQLite.runStorageSQLitePath ":memory:" do
             AgentAuditStorage.ensureAgentAuditTable
-            let firstKey = ThreadMessageKey PlatformQQ (Just 1) "same-message"
-                secondKey = ThreadMessageKey PlatformQQ (Just 2) "same-message"
-                otherPlatformKey = ThreadMessageKey PlatformTelegram (Just 1) "same-message"
+            let firstKey = ThreadMessageKey PlatformQQ (Just "1") "same-message"
+                secondKey = ThreadMessageKey PlatformQQ (Just "2") "same-message"
+                otherPlatformKey = ThreadMessageKey PlatformTelegram (Just "1") "same-message"
             persistAuditOccurrence firstKey "first"
             persistAuditOccurrence secondKey "second"
             persistAuditOccurrence otherPlatformKey "other-platform"
@@ -4255,8 +4255,7 @@ testConsoleRestoresRequestedSession = do
         , replyToMessageId = Nothing
         }
     consoleKey sessionId messageId =
-      ThreadMessageKey PlatformRPC Nothing $
-        textMessageId (Session.sessionIdText sessionId <> ":" <> messageIdText messageId)
+      ThreadMessageKey PlatformRPC (Just (textChatId (Session.sessionIdText sessionId))) messageId
 
 testWebFetchMaxUsesLimitsCalls :: IO ()
 testWebFetchMaxUsesLimitsCalls = do
@@ -4792,7 +4791,7 @@ testMessageInChat chatId =
     { eventKind = IncomingMessageCreated
     , platform = testMessage.platform
     , kind = testMessage.kind
-    , chatId = Just chatId
+    , chatId = Just (integerChatId chatId)
     , chatAliases = testMessage.chatAliases
     , chatDisplayName = testMessage.chatDisplayName
     , digest = testMessage.digest
@@ -4839,7 +4838,7 @@ chatLogMessage messageId senderId chatId text =
   testMessage
     { messageId = Just (integerMessageId messageId)
     , senderId = Just senderId
-    , chatId = Just chatId
+    , chatId = Just (integerChatId chatId)
     , text = text
     }
 
@@ -5671,7 +5670,7 @@ testMessage =
     { eventKind = IncomingMessageCreated
     , platform = PlatformTelegram
     , kind = ChatPrivate
-    , chatId = Just 100
+    , chatId = Just "100"
     , chatAliases = []
     , chatDisplayName = Nothing
     , digest = emptyMessageDigest
@@ -5717,7 +5716,7 @@ askHandlerMessage =
     { eventKind = IncomingMessageCreated
     , platform = PlatformQQ
     , kind = ChatGroup
-    , chatId = Just 906230260
+    , chatId = Just "906230260"
     , chatAliases = []
     , chatDisplayName = Nothing
     , digest = emptyMessageDigest

@@ -29,7 +29,7 @@ describe('audit timeline', () => {
   })
 
   it('finds the latest durable thread correlation and caps rendered payloads', () => {
-    const linkedMessageKey = { platform: 'PlatformDiscord', chatId: '1152921504606846976', messageId: 'message-2' } as const
+    const linkedMessageKey = { platform: 'PlatformMatrix', chatId: '!room:example.org', messageId: 'message-2' } as const
     const linked: AuditRecord = {
       id: 8,
       occurredAt: '2026-08-28T12:00:01Z',
@@ -38,6 +38,7 @@ describe('audit timeline', () => {
         linkedMessageKey,
       },
     }
+    expect(auditRecordSchema.parse(linked)).toEqual(linked)
     expect(linkedThread([record(7), linked], 'run-1')).toEqual(linkedMessageKey)
     expect(boundedStructuredText('x'.repeat(20), 8)).toEqual({ text: 'xxxxxxxx\n…', truncated: true })
   })

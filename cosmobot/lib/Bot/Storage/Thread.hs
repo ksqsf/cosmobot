@@ -116,7 +116,7 @@ data SteeringState
   | SteeringFinishing
   deriving (Eq)
 
-data ActiveChatScope = ActiveChatScope !ChatPlatform !(Either Integer Text)
+data ActiveChatScope = ActiveChatScope !ChatPlatform !Text
   deriving (Eq)
 
 data ActiveThreadInfo = ActiveThreadInfo
@@ -156,10 +156,10 @@ data ThreadIndexRow = ThreadIndexRow
 data ThreadStorageRow = ThreadStorageRow
   { id :: ID ThreadStorageRow
   , platform_key :: Text
-  , chat_id :: Maybe Int.Int64
+  , chat_id :: Maybe Text
   , message_id :: Text
   , thread_id :: Maybe Int.Int64
-  , parent_chat_id :: Maybe Int.Int64
+  , parent_chat_id :: Maybe Text
   , parent_message_id :: Maybe Text
   , messages_json :: Text
   }
@@ -170,10 +170,10 @@ instance SqlRow ThreadStorageRow
 data ThreadIndexStorageRow = ThreadIndexStorageRow
   { id :: ID ThreadIndexStorageRow
   , platform_key :: Text
-  , chat_id :: Maybe Int.Int64
+  , chat_id :: Maybe Text
   , message_id :: Text
   , thread_id :: Maybe Int.Int64
-  , parent_chat_id :: Maybe Int.Int64
+  , parent_chat_id :: Maybe Text
   , parent_message_id :: Maybe Text
   }
   deriving (Generic)
@@ -572,7 +572,7 @@ haltThreadById store@ThreadStore{activeThreadStore = activeRef} cancel requested
 activeChatScopeFromMessage :: IncomingMessage -> Maybe ActiveChatScope
 activeChatScopeFromMessage message =
   ActiveChatScope message.platform
-    <$> (Left <$> message.chatId <|> Right <$> listToMaybe message.chatAliases)
+    <$> (chatIdText <$> message.chatId <|> listToMaybe message.chatAliases)
 
 haltCandidateKeys :: IncomingMessage -> [ThreadMessageKey]
 haltCandidateKeys message =
@@ -789,18 +789,21 @@ loadThreadIdsByMessageKeys messageKeys = do
 deleteSessionThreadTranscripts :: Storage.Storage :> es => [(Text, MessageId)] -> Eff es ()
 deleteSessionThreadTranscripts messages = do
   ensureThreadTable
-  unless (null keys) $
+  unless (null pairs) $
     runSelda $
       deleteFrom_ threadRows \row ->
         row ! #platform_key .== literal "rpc"
-          .&& isNull (row ! #chat_id)
-          .&& row ! #message_id `isIn` map literal keys
+          .&& foldr (.||) false
+            [ ( row ! #chat_id .== literal (Just sessionId)
+                  .&& row ! #message_id .== literal (messageIdText messageId)
+              )
+                .|| ( isNull (row ! #chat_id)
+                      .&& row ! #message_id .== literal (sessionId <> ":" <> messageIdText messageId)
+                    )
+            | (sessionId, messageId) <- pairs
+            ]
   where
-    keys = ordNub $
-      [ sessionId <> ":" <> messageIdText messageId
-      | (sessionId, messageId) <- messages
-      ]
-      <> [messageIdText messageId | (_, messageId) <- messages]
+    pairs = ordNub messages
 
 loadThreadRow :: Storage.Storage :> es => ThreadMessageKey -> Eff es (Maybe ThreadRow)
 loadThreadRow targetMessageKey = do
@@ -860,17 +863,17 @@ saveThreadMessages messageKeys requestedThreadStorageId parentMessageKey storedM
     threadStorageRow threadStorageId messageKey = ThreadStorageRow
       { id = def
       , platform_key = chatPlatformKey messageKey.platform
-      , chat_id = fromIntegral <$> messageKey.chatId
+      , chat_id = chatIdText <$> messageKey.chatId
       , message_id = messageIdText messageKey.messageId
       , thread_id = fromIntegral <$> threadStorageId
-      , parent_chat_id = fromIntegral <$> (parentMessageKey >>= (.chatId))
+      , parent_chat_id = chatIdText <$> (parentMessageKey >>= (.chatId))
       , parent_message_id = messageIdText <$> (parentMessageKey <&> (.messageId))
       , messages_json = storedMessagesJson
       }
 
 threadRowFromStorage :: ThreadStorageRow -> ThreadRow
 threadRowFromStorage row =
-  let messageKey = ThreadMessageKey{platform = platformFromKey row.platform_key, chatId = fromIntegral <$> row.chat_id, messageId = textMessageId row.message_id}
+  let messageKey = ThreadMessageKey{platform = platformFromKey row.platform_key, chatId = textChatId <$> row.chat_id, messageId = textMessageId row.message_id}
   in ThreadRow
     { rowId = fromIntegral (fromId row.id)
     , messageKey = messageKey
@@ -879,7 +882,7 @@ threadRowFromStorage row =
         parentMessageId <- textMessageId <$> row.parent_message_id
         pure ThreadMessageKey
           { platform = messageKey.platform
-          , chatId = fromIntegral <$> row.parent_chat_id
+          , chatId = textChatId <$> row.parent_chat_id
           , messageId = parentMessageId
           }
     , messagesJson = row.messages_json
@@ -889,7 +892,7 @@ threadIndexRowFromStorage :: ThreadIndexStorageRow -> ThreadIndexRow
 threadIndexRowFromStorage row =
   let messageKey = ThreadMessageKey
         { platform = platformFromKey row.platform_key
-        , chatId = fromIntegral <$> row.chat_id
+        , chatId = textChatId <$> row.chat_id
         , messageId = textMessageId row.message_id
         }
   in ThreadIndexRow
@@ -900,7 +903,7 @@ threadIndexRowFromStorage row =
         parentId <- textMessageId <$> row.parent_message_id
         pure ThreadMessageKey
           { platform = messageKey.platform
-          , chatId = fromIntegral <$> row.parent_chat_id
+          , chatId = textChatId <$> row.parent_chat_id
           , messageId = parentId
           }
     }
@@ -908,14 +911,14 @@ threadIndexRowFromStorage row =
 threadKeyMatches :: forall (backend :: Type). ThreadMessageKey -> Row backend ThreadStorageRow -> Col backend Bool
 threadKeyMatches key row =
   row ! #platform_key .== literal (chatPlatformKey key.platform)
-    .&& nullableIntegerMatches key.chatId (row ! #chat_id)
+    .&& nullableChatIdMatches key.chatId (row ! #chat_id)
     .&& row ! #message_id .== literal (messageIdText key.messageId)
 
-nullableIntegerMatches :: forall (backend :: Type). Maybe Integer -> Col backend (Maybe Int.Int64) -> Col backend Bool
-nullableIntegerMatches Nothing column =
+nullableChatIdMatches :: forall (backend :: Type). Maybe ChatId -> Col backend (Maybe Text) -> Col backend Bool
+nullableChatIdMatches Nothing column =
   isNull column
-nullableIntegerMatches (Just value) column =
-  column .== literal (Just (fromIntegral value :: Int.Int64))
+nullableChatIdMatches (Just value) column =
+  column .== literal (Just (chatIdText value))
 
 platformFromKey :: Text -> ChatPlatform
 platformFromKey = \case

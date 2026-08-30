@@ -42,7 +42,7 @@ data ScheduledMessageRow = ScheduledMessageRow
   , due_at_unix_seconds :: Int.Int64
   , recurring_interval_seconds :: Maybe Int.Int64
   , platform_key :: Text
-  , chat_id :: Maybe Int.Int64
+  , chat_id :: Maybe Text
   , sender_id :: Maybe Text
   , sender_username :: Maybe Text
   , message_json :: Text
@@ -84,7 +84,7 @@ createScheduledMessage dueAtUnixSeconds recurringIntervalSeconds message = do
           , due_at_unix_seconds = fromIntegral dueAtUnixSeconds
           , recurring_interval_seconds = fromIntegral <$> recurringIntervalSeconds
           , platform_key = chatPlatformKey message.platform
-          , chat_id = fromIntegral <$> message.chatId
+          , chat_id = chatIdText <$> message.chatId
           , sender_id = message.senderId
           , sender_username = message.senderUsername
           , message_json = encodeMessage message
@@ -140,7 +140,7 @@ migrateScheduledMessagesTable =
 
 scheduledMessageColumns :: Text
 scheduledMessageColumns =
-  "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, due_at_unix_seconds BIGINT NOT NULL, recurring_interval_seconds BIGINT NULL, platform_key TEXT NOT NULL, chat_id BIGINT NULL, sender_id TEXT NULL, sender_username TEXT NULL, message_json TEXT NOT NULL"
+  "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, due_at_unix_seconds BIGINT NOT NULL, recurring_interval_seconds BIGINT NULL, platform_key TEXT NOT NULL, chat_id TEXT NULL, sender_id TEXT NULL, sender_username TEXT NULL, message_json TEXT NOT NULL"
 
 storedScheduledMessageFromRow :: ScheduledMessageRow -> Maybe StoredScheduledMessage
 storedScheduledMessageFromRow row = do

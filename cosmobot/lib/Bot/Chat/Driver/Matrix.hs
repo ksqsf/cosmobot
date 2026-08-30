@@ -1477,7 +1477,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
         { eventKind = IncomingMessageDeleted
         , platform = PlatformMatrix
         , kind = if roomIsDirect then ChatPrivate else ChatGroup
-        , chatId = Just (stableTextId (matrixRoomIdText roomId))
+        , chatId = Just (textChatId (matrixRoomIdText roomId))
         , chatAliases = [matrixRoomIdText roomId]
         , chatDisplayName = Nothing
         , digest = matrixMessageDigest cfg roomId event ""
@@ -1502,7 +1502,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
         { eventKind = IncomingMessageCreated
         , platform = PlatformMatrix
         , kind = if roomIsDirect then ChatPrivate else ChatGroup
-        , chatId = Just (stableTextId (matrixRoomIdText roomId))
+        , chatId = Just (textChatId (matrixRoomIdText roomId))
         , chatAliases = [matrixRoomIdText roomId]
         , chatDisplayName = Nothing
         , digest = matrixMessageDigest cfg roomId event body
@@ -1653,15 +1653,6 @@ defaultConfig = Config
   , allowedRooms = []
   , superusers = []
   }
-
-stableTextId :: Text -> Integer
-stableTextId =
-  Text.foldl' step 14695981039346656037
-  where
-    step acc char =
-      fromIntegral ((fromIntegral acc `xor` fromIntegral (fromEnum char)) * fnvPrime :: Word64)
-    fnvPrime :: Word64
-    fnvPrime = 1099511628211
 
 matrixOutgoingMentionUserIds :: Text -> [Text] -> [Text]
 matrixOutgoingMentionUserIds body explicitUserIds =

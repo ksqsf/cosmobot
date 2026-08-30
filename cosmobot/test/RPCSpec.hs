@@ -197,12 +197,12 @@ testAuditRun = do
 
 testThreadMessageKeyJsonPreservesLargeChatIds :: IO ()
 testThreadMessageKeyJsonPreservesLargeChatIds = do
-  let chatId = 1152921504606846976
+  let chatId = integerChatId 1152921504606846976
       key = ThreadMessageKey PlatformDiscord (Just chatId) "message-1"
   Aeson.toJSON key @?=
     Aeson.object
       [ "platform" Aeson..= ("PlatformDiscord" :: Text)
-      , "chatId" Aeson..= (Just (show chatId) :: Maybe String)
+      , "chatId" Aeson..= (Just (chatIdText chatId) :: Maybe Text)
       , "messageId" Aeson..= ("message-1" :: Text)
       ]
   Aeson.fromJSON (Aeson.object ["platform" Aeson..= ("PlatformDiscord" :: Text), "chatId" Aeson..= chatId, "messageId" Aeson..= ("message-1" :: Text)]) @?= Aeson.Success key
@@ -216,8 +216,8 @@ testThreadMessageKeyJsonPreservesLargeChatIds = do
 
 testThreadInspectionRpc :: IO ()
 testThreadInspectionRpc = do
-  let inputKey = ThreadMessageKey PlatformRPC (Just 42) "message-1"
-      linkedKey = ThreadMessageKey PlatformRPC (Just 42) "reply-1"
+  let inputKey = ThreadMessageKey PlatformRPC (Just "42") "message-1"
+      linkedKey = ThreadMessageKey PlatformRPC (Just "42") "reply-1"
   (listResponse, invalidListResponse, missingResponse, invalidResponse, detailResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
     rpcState <- RPC.newRpcState
     let dispatch method params =
@@ -228,7 +228,7 @@ testThreadInspectionRpc = do
     invalidResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (0 :: Int)])
     let runId = "agent-linked"
         incoming = mediaMessage PlatformRPC "prompt"
-        trailingAliasKey = ThreadMessageKey PlatformRPC (Just 42) "reply-2"
+        trailingAliasKey = ThreadMessageKey PlatformRPC (Just "42") "reply-2"
     threads <- ThreadStorage.newThreadStore
     active <- ThreadStorage.rememberActiveThread threads runId Nothing (Just inputKey) incoming "prompt" (Concurrency.Handle (Concurrency.Id 8)) (Transcript mempty)
       >>= maybe (error "expected active thread") pure
@@ -244,7 +244,7 @@ testThreadInspectionRpc = do
       }
     detailResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
     resolveResponse <- dispatch "thread.resolve_run" (Aeson.object ["runId" Aeson..= runId])
-    let childInputKey = ThreadMessageKey PlatformRPC (Just 42) "message-2"
+    let childInputKey = ThreadMessageKey PlatformRPC (Just "42") "message-2"
     void $ ThreadStorage.rememberActiveThread threads "agent-active" (Just linkedKey) (Just childInputKey) incoming "follow up" (Concurrency.Handle (Concurrency.Id 9)) (Transcript mempty)
     activeResponse <- RPCServer.dispatchRpcRequest rpcState
       (RPCThread.threadRpcCallbacks (ThreadStorage.listActiveThreadInspections threads) (pure . (== Concurrency.Id 7)))
@@ -293,7 +293,7 @@ testThreadInspectionRpc = do
 
 testChatLogRpc :: IO ()
 testChatLogRpc = do
-  let largeChatId = 1152921504606846976
+  let largeChatId = integerChatId 1152921504606846976
       incoming = (mediaMessage PlatformMatrix "")
         { platform = PlatformMatrix
         , kind = ChatGroup
@@ -305,12 +305,14 @@ testChatLogRpc = do
       params messageId = Aeson.object
         [ "platform" Aeson..= ("PlatformMatrix" :: Text)
         , "kind" Aeson..= ("ChatGroup" :: Text)
-        , "chatId" Aeson..= (show largeChatId :: String)
+        , "chatId" Aeson..= chatIdText largeChatId
         , "messageId" Aeson..= (messageId :: Text)
         ]
       assistant key = pure $ "answer" <$ guard (key.messageId == "legacy-sent")
   (listResponse, windowResponse, legacyResponse) <- runRpcStorage ":memory:" $ ChatLog.runChatLog do
     ChatLog.recordMessage incoming
+    ChatLog.recordMessage incoming{Bot.Core.Message.platform = PlatformRPC, Bot.Core.Message.messageId = Just "rpc-incoming"}
+    ChatLog.recordMessage incoming{Bot.Core.Message.platform = PlatformACP, Bot.Core.Message.messageId = Just "acp-incoming"}
     ChatLog.recordSelfMessage incoming Nothing "answer"
     rpcState <- RPC.newRpcState
     let callbacks = RPCChatLog.chatLogRpcCallbacks parent assistant (pure . map (, 42)) pure
@@ -318,9 +320,14 @@ testChatLogRpc = do
          <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.window" (params "sent"))
          <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.window" (params "legacy-sent"))
   chats <- maybe (assertFailure "chat_log.list did not return chats") pure (responseField listResponse "chats" :: Maybe [Aeson.Value])
-  chatScope <- maybe (assertFailure "chat_log.list returned no chat") (parseJsonField "scope") (viaNonEmpty head chats)
+  length chats @?= 3
+  chatScopes <- traverse (parseJsonField "scope") chats
+  platforms <- traverse (parseJsonField "platform") chatScopes
+  sort platforms @?= (["PlatformACP", "PlatformMatrix", "PlatformRPC"] :: [Text])
+  chatScope <- maybe (assertFailure "chat_log.list returned no Matrix chat") pure $
+    viaNonEmpty head [scope | (platform, scope) <- zip platforms chatScopes, platform == "PlatformMatrix"]
   chatId <- parseJsonField "chatId" chatScope
-  chatId @?= (show largeChatId :: Text)
+  chatId @?= chatIdText largeChatId
   responseField windowResponse "anchorFound" @?= Just True
   responseField windowResponse "anchorMessageId" @?= Just ("incoming" :: Text)
   entries <- maybe (assertFailure "chat_log.window returned no entries") pure (responseField windowResponse "entries")
@@ -858,7 +865,7 @@ mediaMessage platform mediaRef = IncomingMessage
   { eventKind = IncomingMessageCreated
   , platform
   , kind = ChatPrivate
-  , chatId = Just 42
+  , chatId = Just "42"
   , chatAliases = []
   , chatDisplayName = Nothing
   , digest = emptyMessageDigest

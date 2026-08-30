@@ -29,7 +29,7 @@ import qualified Data.Map.Strict as Map
 -- and chat identity together with the message id.
 data ThreadMessageKey = ThreadMessageKey
   { platform :: !ChatPlatform
-  , chatId :: !(Maybe Integer)
+  , chatId :: !(Maybe ChatId)
   , messageId :: !MessageId
   }
   deriving (Eq, Ord, Show, Generic)
@@ -38,7 +38,7 @@ instance Aeson.ToJSON ThreadMessageKey where
   toJSON ThreadMessageKey{platform, chatId, messageId} =
     Aeson.object
       [ "platform" Aeson..= platform
-      , "chatId" Aeson..= (toText . (show :: Integer -> String) <$> chatId)
+      , "chatId" Aeson..= chatId
       , "messageId" Aeson..= messageId
       ]
 
@@ -47,12 +47,8 @@ instance Aeson.FromJSON ThreadMessageKey where
     Aeson.withObject "ThreadMessageKey" \o ->
       ThreadMessageKey
         <$> o Aeson..: "platform"
-        <*> (o Aeson..:? "chatId" >>= traverse parseChatId)
+        <*> o Aeson..:? "chatId"
         <*> o Aeson..: "messageId"
-    where
-      parseChatId value =
-        Aeson.withText "chatId" (maybe (fail "chatId must be an integer") pure . readMaybe . toString) value
-          <|> Aeson.parseJSON value
 
 threadMessageKey :: IncomingMessage -> MessageId -> ThreadMessageKey
 threadMessageKey message messageId =

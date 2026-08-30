@@ -5,6 +5,7 @@ import { mergeChatLogItems, mergeChatMessage, safeDownloadUrl, safeImageUrl } fr
 import { highlightCode, mediaRefsInText, renderMarkdown } from '@/markdown'
 import { RpcClient } from '@/rpc/client'
 import { liveAdminMethods } from '@/rpc/protocol'
+import { chatLogListSchema } from '@/rpc/schemas'
 import type { ChatMessage } from '@/types/domain'
 
 const message: ChatMessage = {
@@ -19,6 +20,11 @@ const message: ChatMessage = {
 }
 
 describe('chat projection', () => {
+  it('accepts native platform chat identifiers', () => {
+    const scope = { platform: 'PlatformMatrix', kind: 'ChatPrivate', chatId: '!room:example.org' }
+    expect(chatLogListSchema.parse({ chats: [{ scope, chatDisplayName: null, messageCount: 1, latestAt: null }] }).chats[0]?.scope).toEqual(scope)
+  })
+
   it('requests bounded history pages with a stable cursor', async () => {
     const client = new RpcClient()
     const request = vi.spyOn(client, 'request').mockResolvedValue({ sessionId: 'session-1', messages: [message], hasOlder: true })

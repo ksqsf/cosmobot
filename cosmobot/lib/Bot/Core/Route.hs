@@ -92,7 +92,7 @@ rejecting predicate =
 fromGroups :: [Integer] -> MessageFilter IncomingMessage
 fromGroups allowed =
   MessageFilter $ \message ->
-    if message.kind == ChatGroup && maybe False (`elem` allowed) message.chatId
+    if message.kind == ChatGroup && maybe False (`elem` map integerChatId allowed) message.chatId
       then Just message
       else Nothing
 

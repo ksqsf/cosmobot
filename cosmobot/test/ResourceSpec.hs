@@ -635,7 +635,7 @@ testOwnership = runManaged do
   Resource.destroy otherAccess resourceId >>= liftIO . (@?= Left Resource.ResourceNotFoundOrNotOwned)
   let adminMessage = ownerMessage
         { platform = PlatformDiscord
-        , chatId = Just 999
+        , chatId = Just "999"
         , senderId = Just "admin"
         , digest = emptyMessageDigest{senderIsSuperuser = True}
         }
@@ -973,7 +973,7 @@ ownerMessage = IncomingMessage
   { eventKind = IncomingMessageCreated
   , platform = PlatformTelegram
   , kind = ChatPrivate
-  , chatId = Just 100
+  , chatId = Just "100"
   , chatAliases = []
   , chatDisplayName = Nothing
   , digest = emptyMessageDigest

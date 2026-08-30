@@ -209,7 +209,7 @@ testQqRecallConvertsToDeletedMessage = do
       incoming = fromMaybe (error "expected QQ recall") (QQ.eventToIncomingMessage recall)
   incoming.eventKind @?= IncomingMessageDeleted
   incoming.messageId @?= Just (integerMessageId 80001)
-  incoming.chatId @?= Just 90001
+  incoming.chatId @?= Just "90001"
 
 testIncomingMessageJsonDefaultsMissingFiles :: IO ()
 testIncomingMessageJsonDefaultsMissingFiles = do
