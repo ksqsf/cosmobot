@@ -191,14 +191,10 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
     config: {
       get: supports('config.get') ? () => rpcEffect('Could not load configuration.', async () => configurationGetSchema.parse(await client.request('config.get'))) : unsupported('config.get'),
       validate: (revision, changes) => rpcEffect('Could not validate configuration.', async () => configurationValidationSchema.parse(await client.request('config.validate', { revision, changes }))),
-      update: (revision, changes) => rpcEffect('Could not update configuration.', async () => {
-        configurationUpdateSchema.parse(await client.request('config.update', { revision, changes }))
-        return configurationGetSchema.parse(await client.request('config.get'))
-      }),
-      rollback: (revision, backupRevision) => rpcEffect('Could not roll back configuration.', async () => {
-        configurationRollbackSchema.parse(await client.request('config.rollback', { revision, backupRevision }))
-        return configurationGetSchema.parse(await client.request('config.get'))
-      }),
+      update: (revision, changes) => rpcEffect('Could not update configuration.', async () =>
+        configurationUpdateSchema.parse(await client.request('config.update', { revision, changes }))),
+      rollback: (revision, backupRevision) => rpcEffect('Could not roll back configuration.', async () =>
+        configurationRollbackSchema.parse(await client.request('config.rollback', { revision, backupRevision }))),
       restart: () => rpcEffect('Could not restart cosmobot.', async () => { restartAcknowledgementSchema.parse(await client.request('admin.restart')) }),
     },
   }

@@ -379,7 +379,7 @@ configDocumentInspection document activeDocument = Aeson.object
       , "label" Aeson..= metadata.label
       , "group" Aeson..= groupJson metadata.group
       , "optional" Aeson..= metadata.optional
-      , "present" Aeson..= (not metadata.optional || configSectionPresent document path)
+      , "present" Aeson..= configSectionPresent document path
       , "repeatable" Aeson..= isRepeatableInstance path
       , "options" Aeson..= values
       ]

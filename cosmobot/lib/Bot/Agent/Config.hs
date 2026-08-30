@@ -182,6 +182,8 @@ instance FromValue WebFetchFileConfig where
     enable <- fromMaybe defaultWebFetchFileConfig.enable <$> optKey "enable"
     maxUses <- optKey "max_uses"
     maxContentTokens <- optKey "max_content_tokens"
+    requireOptionalPositive "tool.web_fetch.max_uses" maxUses
+    requireOptionalPositive "tool.web_fetch.max_content_tokens" maxContentTokens
     pure WebFetchFileConfig
       { enable = enable
       , maxUses = maxUses
@@ -193,6 +195,7 @@ instance FromValue WebSearchFileConfig where
     enable <- fromMaybe defaultWebSearchFileConfig.enable <$> optKey "enable"
     api <- maybe (pure defaultWebSearchFileConfig.api) parseWebSearchApi =<< optKey "api"
     maxResults <- optKey "max_results"
+    requireOptionalPositive "tool.web_search.max_results" maxResults
     braveApiKey <- optToken "brave_api_key"
     tavilyApiKey <- optToken "tavily_api_key"
     exaApiKey <- optToken "exa_api_key"
@@ -204,6 +207,10 @@ instance FromValue WebSearchFileConfig where
       , tavilyApiKey = tavilyApiKey
       , exaApiKey = exaApiKey
       }
+
+requireOptionalPositive :: Text -> Maybe Int -> ParseTable l ()
+requireOptionalPositive path = traverse_ \value ->
+  unless (value > 0) $ fail [i|#{path} must be positive|]
 
 parseWebSearchApi :: Text -> ParseTable l Agent.WebSearchApi
 parseWebSearchApi value =

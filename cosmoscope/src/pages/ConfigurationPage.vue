@@ -53,8 +53,10 @@ const selected = computed(() => sections.value.find((section) => pathKey(section
 const changes = computed<ConfigChange[]>(() => [...sectionChanges.value, ...Object.values(drafts.value)])
 const selectedEnabled = computed(() => {
   const section = selected.value
-  if (!section?.optional) return true
+  if (section === undefined) return true
   const operation = sectionChanges.value.find((change) => pathKey(change.path) === pathKey(section.path))?.operation
+  if (section.repeatable && !section.present) return operation === 'add_section'
+  if (!section.optional) return true
   return operation === 'add_section' || (section.present && operation !== 'remove_section')
 })
 const changesFingerprint = computed(() => JSON.stringify(changes.value))
@@ -63,6 +65,7 @@ const supportsConfigGet = computed(() => connection.state === 'authenticated' &&
 const canManage = computed(() => connection.state === 'authenticated' && snapshot.value?.editable === true &&
   ['config.validate', 'config.update'].every((method) => connection.methods.has(method)))
 const controlsDisabled = computed(() => !canManage.value || busy.value || !selectedEnabled.value)
+const managementDisabled = computed(() => !canManage.value || busy.value)
 const canRollback = computed(() => canManage.value && !busy.value && changes.value.length === 0 &&
   snapshot.value?.backup != null && connection.methods.has('config.rollback'))
 const canRestart = computed(() => connection.state === 'authenticated' && !busy.value &&
@@ -74,6 +77,10 @@ function pathKey(path: readonly string[]): string { return JSON.stringify(path) 
 function displayPath(path: readonly string[]): string { return path.join('.') }
 
 function baseValue(option: ConfigOption): unknown {
+  const ownerSection = sections.value.find((section) => section.options.some((candidate) => pathKey(candidate.path) === pathKey(option.path)))
+  const readded = ownerSection !== undefined && !ownerSection.present && sectionChanges.value.some((change) =>
+    change.operation === 'add_section' && pathKey(change.path) === pathKey(ownerSection.path))
+  if (readded) return option.default
   return option.source.present ? option.source.value : option.effective ?? option.default
 }
 
@@ -176,6 +183,14 @@ function addProvider(template: ConfigurationSnapshot['configuration']['repeatabl
     markDraftChanged()
     return
   }
+  if (existing !== undefined && !existing.present) {
+    sectionChanges.value = [...sectionChanges.value.filter((change) => pathKey(change.path) !== pathKey(providerPath)), { operation: 'add_section', path: providerPath }]
+    providerNames.value = { ...providerNames.value, [family]: '' }
+    selectedPath.value = pathKey(providerPath)
+    error.value = ''
+    markDraftChanged()
+    return
+  }
   if (sections.value.some((section) => pathKey(section.path) === pathKey(providerPath))) {
     error.value = `A provider named “${name}” already exists in ${template.label.toLowerCase()}.`
     return
@@ -204,7 +219,8 @@ function addProvider(template: ConfigurationSnapshot['configuration']['repeatabl
 
 function removeProvider(section: ConfigSection): void {
   const key = pathKey(section.path)
-  const wasAdded = draftSections.value.some((candidate) => pathKey(candidate.path) === key)
+  const wasAdded = draftSections.value.some((candidate) => pathKey(candidate.path) === key) ||
+    sectionChanges.value.some((change) => change.operation === 'add_section' && pathKey(change.path) === key)
   draftSections.value = draftSections.value.filter((candidate) => pathKey(candidate.path) !== key)
   sectionChanges.value = wasAdded
     ? sectionChanges.value.filter((change) => !(change.operation === 'add_section' && pathKey(change.path) === key))
@@ -296,9 +312,9 @@ async function apply(): Promise<void> {
   const result = await runBackend(updateConfiguration(snapshot.value.revision, changes.value))
   loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; validation.value = undefined; validatedFingerprint.value = ''; return }
-  snapshot.value = result.value
   clearDrafts()
   toast.add({ severity: 'success', summary: 'Configuration updated', detail: 'Restart to activate the changes.', life: 3500 })
+  await refresh()
 }
 
 function requestRollback(): void {
@@ -318,9 +334,9 @@ async function rollback(backupRevision: string): Promise<void> {
   const result = await runBackend(rollbackConfiguration(snapshot.value.revision, backupRevision))
   loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
-  snapshot.value = result.value
   clearDrafts()
   toast.add({ severity: 'success', summary: 'Configuration rolled back', detail: 'Restart to activate it.', life: 3500 })
+  await refresh()
 }
 
 function requestRestart(): void {
@@ -433,14 +449,14 @@ watch(supportsConfigGet, (supported) => { if (supported) void refresh() })
                 v-model="providerNames[pathKey(cluster.repeatable.path)]"
                 :aria-label="`New ${cluster.repeatable.label.toLowerCase()} name`"
                 placeholder="Provider name"
-                :disabled="controlsDisabled"
+                :disabled="managementDisabled"
                 fluid
               />
               <Button
                 label="Add provider"
                 size="small"
                 severity="secondary"
-                :disabled="controlsDisabled"
+                :disabled="managementDisabled"
                 @click="addProvider(cluster.repeatable)"
               />
             </div>
@@ -469,8 +485,8 @@ watch(supportsConfigGet, (supported) => { if (supported) void refresh() })
             @click="addOptionalSection(selected)"
           />
           <Button
-            v-else-if="canManage && selected.repeatable"
-            label="Remove provider"
+            v-else-if="canManage && selected.repeatable && selectedEnabled"
+            :label="selected.present ? 'Remove provider' : 'Cancel provider add'"
             severity="danger"
             text
             :disabled="controlsDisabled"
@@ -483,6 +499,13 @@ watch(supportsConfigGet, (supported) => { if (supported) void refresh() })
           :closable="false"
         >
           Add this optional section before editing its settings.
+        </Message>
+        <Message
+          v-else-if="selected.repeatable && !selectedEnabled"
+          severity="info"
+          :closable="false"
+        >
+          This provider is active until restart but is no longer present in the source. Add it again to edit it.
         </Message>
         <Message
           v-else

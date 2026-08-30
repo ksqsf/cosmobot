@@ -7,7 +7,7 @@ import type {
   Plugin, Resource, ResourceOperationResult, SkillDetail, SkillSummary, Task,
   ThreadDetail, ThreadListQuery, ThreadRunTarget, ThreadSnapshot,
 } from '@/types/domain'
-import type { ConfigChange, ConfigurationSnapshot, ConfigurationValidation } from '@/rpc/schemas'
+import type { ConfigChange, ConfigurationRollback, ConfigurationSnapshot, ConfigurationUpdate, ConfigurationValidation } from '@/rpc/schemas'
 
 export class OfflineError extends Data.TaggedError('OfflineError')<{ readonly message: string }> {}
 export class RpcBackendError extends Data.TaggedError('RpcBackendError')<{ readonly message: string }> {}
@@ -92,8 +92,8 @@ export interface AdminBackend {
   readonly config: {
     readonly get: () => BackendEffect<ConfigurationSnapshot>
     readonly validate: (revision: string, changes: readonly ConfigChange[]) => BackendEffect<ConfigurationValidation>
-    readonly update: (revision: string, changes: readonly ConfigChange[]) => BackendEffect<ConfigurationSnapshot>
-    readonly rollback: (revision: string, backupRevision: string) => BackendEffect<ConfigurationSnapshot>
+    readonly update: (revision: string, changes: readonly ConfigChange[]) => BackendEffect<ConfigurationUpdate>
+    readonly rollback: (revision: string, backupRevision: string) => BackendEffect<ConfigurationRollback>
     readonly restart: () => BackendEffect<void>
   }
 }
@@ -211,9 +211,9 @@ export const getConfiguration: Effect.Effect<ConfigurationSnapshot, BackendError
   AdminBackendService.use((backend) => backend.config.get())
 export const validateConfiguration = (revision: string, changes: readonly ConfigChange[]): Effect.Effect<ConfigurationValidation, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.config.validate(revision, changes))
-export const updateConfiguration = (revision: string, changes: readonly ConfigChange[]): Effect.Effect<ConfigurationSnapshot, BackendError, AdminBackend> =>
+export const updateConfiguration = (revision: string, changes: readonly ConfigChange[]): Effect.Effect<ConfigurationUpdate, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.config.update(revision, changes))
-export const rollbackConfiguration = (revision: string, backupRevision: string): Effect.Effect<ConfigurationSnapshot, BackendError, AdminBackend> =>
+export const rollbackConfiguration = (revision: string, backupRevision: string): Effect.Effect<ConfigurationRollback, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.config.rollback(revision, backupRevision))
 export const restartCosmobot: Effect.Effect<void, BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.config.restart())

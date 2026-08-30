@@ -206,12 +206,14 @@ export const configurationUpdateSchema = z.object({
   diff: z.array(configDiffSchema),
   restartRequired: z.boolean(),
 }).strict()
+export type ConfigurationUpdate = z.infer<typeof configurationUpdateSchema>
 export const configurationRollbackSchema = z.object({
   rolledBack: z.boolean(),
   revision: z.string(),
   backupRevision: z.string(),
   restartRequired: z.boolean(),
 }).strict()
+export type ConfigurationRollback = z.infer<typeof configurationRollbackSchema>
 export const restartAcknowledgementSchema = z.object({ acknowledged: z.literal(true) }).strict()
 
 export const auditRecordSchema = z.object({

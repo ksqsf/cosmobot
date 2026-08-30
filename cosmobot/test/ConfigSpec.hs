@@ -219,6 +219,9 @@ testAdvertisedNumericConstraints =
       , ("media.gc.interval_hours must be positive", minimalConfig <> "\n[media.gc]\ninterval_hours = 0\n")
       , ("handler.ask.agent_max_turns must be positive", Text.replace "command = \"!ask\"" "command = \"!ask\"\nagent_max_turns = 0" minimalConfig)
       , ("handler.console.agent_max_turns must be positive", Text.replace "system_prompt = \"You are a coding agent.\"" "system_prompt = \"You are a coding agent.\"\nagent_max_turns = 0" minimalConfig)
+      , ("tool.web_fetch.max_uses must be positive", minimalConfig <> "\n[tool.web_fetch]\nmax_uses = 0\n")
+      , ("tool.web_fetch.max_content_tokens must be positive", minimalConfig <> "\n[tool.web_fetch]\nmax_content_tokens = 0\n")
+      , ("tool.web_search.max_results must be positive", minimalConfig <> "\n[tool.web_search]\nmax_results = 0\n")
       ]
 
 testPluginDirectory :: IO ()
