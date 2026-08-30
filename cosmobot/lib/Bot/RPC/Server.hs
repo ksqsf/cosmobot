@@ -258,11 +258,16 @@ serveAcceptedClient cfg rpcState callbacks conn = do
       (writeQueuedFrames client conn)
       [i|rpc.client.#{clientId}.reader|]
       (readRequestFrames cfg rpcState callbacks clientId client conn)
-    `catchSync` \err ->
+    `catchSync` \err -> unless (gracefulClientClose err) $
       $(logDebug) [i|RPC client #{clientId} disconnected: #{displayException err}|])
     `finally` do
       State.unregisterClient rpcState clientId
       $(logDebug) [i|RPC client #{clientId} unregistered|]
+
+gracefulClientClose :: SomeException -> Bool
+gracefulClientClose err = case fromException err of
+  Just (WS.CloseRequest 1000 _) -> True
+  _ -> False
 
 writeQueuedFrames
   :: (IOE :> es, Concurrent :> es)
