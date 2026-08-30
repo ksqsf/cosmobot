@@ -96,7 +96,7 @@ runPythonDescriptionFor PythonConfig{wallTimeoutSeconds, cpuSeconds, memoryMiB, 
   , ""
   , "Each call gets a new interpreter and a fresh writable `/work`; files disappear afterward. The Python standard library and networking, including host loopback, are available. Host files, child processes, threads, and `file://` URLs are unavailable."
   , ""
-  , "Tool names and argument schemas are the tools visible in this model request. Enable needed tool tags before calling `py`. Program-control tools are host-only."
+  , "Tool names and argument schemas are the tools visible in this model request. Pass the exact bare name to `run_tool` or `run_tools` (for example, `web_fetch`); never add `functions.` or another namespace. Enable needed tool tags before calling `py`. Program-control tools are host-only."
   , ""
   , [i|Limits: #{wallTimeoutSeconds} s wall, #{cpuSeconds} s CPU, #{memoryMiB} MiB memory, #{maxToolCalls} nested calls, and 16 calls per batch.|]
   ]

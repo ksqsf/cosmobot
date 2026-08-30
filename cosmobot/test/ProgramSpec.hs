@@ -274,6 +274,8 @@ testPythonToolContract = do
       , "sequencing, branching, loops, aggregation, or recovery"
       , "def run_tool(name: str, args: Json) -> ToolSuccess"
       , "def run_tools(calls: list[ToolCall]) -> list[ToolSuccess]"
+      , "exact bare name"
+      , "never add `functions.` or another namespace"
       ]
 
 messageText :: LLM.ChatMessage -> Text
