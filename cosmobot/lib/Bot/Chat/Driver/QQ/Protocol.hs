@@ -86,12 +86,11 @@ qqConnectionLoop
   -> Eff es ()
 qqConnectionLoop cfg eventChan actionChan =
   forever do
-    result <- runQQConnectionOnce cfg eventChan actionChan
-    case result of
+    trySync (runQQConnectionOnce cfg eventChan actionChan) >>= \case
       Right () ->
         $(logDebug) "QQ websocket disconnected; reconnecting"
       Left err ->
-        $(logDebug) [i|QQ websocket failed; reconnecting: #{err}|]
+        $(logWarning) [i|QQ websocket failed; reconnecting: #{Text.takeWhile (/= '\n') (toText (displayException err))}|]
     threadDelay qqReconnectDelayMicroseconds
 
 runQQConnectionOnce
@@ -99,21 +98,11 @@ runQQConnectionOnce
   => Config
   -> Chan.Chan Event
   -> Chan.Chan ActionRequest
-  -> Eff es (Either String ())
+  -> Eff es ()
 runQQConnectionOnce cfg eventChan actionChan =
-  (Right <$> do
-    withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
-      liftIO $ WS.runClient cfg.host cfg.port (websocketPath cfg) \conn ->
-        runInIO (runConnection eventChan actionChan conn)
-  )
-    `catch` \(connectionErr :: WS.ConnectionException) ->
-      pure (Left (show connectionErr))
-    `catch` \(handshakeErr :: WS.HandshakeException) ->
-      pure (Left (show handshakeErr))
-    `catch` \(ioErr :: IOException) ->
-      pure (Left (show ioErr))
-    `catchSync` \err ->
-      pure (Left (displayException err))
+  withEffToIO (ConcUnlift Persistent Unlimited) \runInIO ->
+    liftIO $ WS.runClient cfg.host cfg.port (websocketPath cfg) \conn ->
+      runInIO (runConnection eventChan actionChan conn)
 
 runConnection
   :: (IOE :> es, KatipE :> es, Timeout :> es, Concurrent :> es, Concurrency.Concurrency :> es)
