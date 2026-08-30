@@ -83,6 +83,13 @@ const backendProxy: AdminBackend = {
     list: () => activeBackend.chatLogs.list(),
     window: (query) => activeBackend.chatLogs.window(query),
   },
+  config: {
+    get: () => activeBackend.config.get(),
+    validate: (revision, changes) => activeBackend.config.validate(revision, changes),
+    update: (revision, changes) => activeBackend.config.update(revision, changes),
+    rollback: (revision, backupRevision) => activeBackend.config.rollback(revision, backupRevision),
+    restart: () => activeBackend.config.restart(),
+  },
 }
 const backendRuntime = ManagedRuntime.make(Layer.succeed(AdminBackendService, backendProxy))
 

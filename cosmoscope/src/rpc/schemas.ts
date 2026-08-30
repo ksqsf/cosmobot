@@ -90,6 +90,112 @@ export const threadRunTargetSchema = z.object({
 }) satisfies z.ZodType<ThreadRunTarget>
 export const haltThreadSchema = z.object({ taskId: z.number().int().positive(), halted: z.boolean() })
 
+export const configPathSchema = z.array(z.string().min(1)).min(1)
+export const configChangeSchema = z.discriminatedUnion('operation', [
+  z.object({ operation: z.literal('set'), path: configPathSchema, value: z.unknown() }).strict(),
+  z.object({ operation: z.literal('remove'), path: configPathSchema }).strict(),
+  z.object({ operation: z.literal('replace_secret'), path: configPathSchema, value: z.string() }).strict(),
+  z.object({ operation: z.literal('clear_secret'), path: configPathSchema }).strict(),
+  z.object({ operation: z.literal('add_section'), path: configPathSchema }).strict(),
+  z.object({ operation: z.literal('remove_section'), path: configPathSchema }).strict(),
+])
+export type ConfigChange = z.infer<typeof configChangeSchema>
+
+const configDiagnosticSchema = z.object({
+  path: z.array(z.string()),
+  code: z.string(),
+  message: z.string(),
+  line: z.number().int().nullable(),
+  column: z.number().int().nullable(),
+}).strict()
+const configOptionTypeSchema = z.object({
+  kind: z.enum(['boolean', 'integer', 'number', 'text', 'enum', 'secret', 'list', 'identity', 'identity_list']),
+  values: z.array(z.string()).optional(),
+}).strict()
+export const configOptionSchema = z.object({
+  path: configPathSchema,
+  label: z.string(),
+  description: z.string(),
+  owner: z.string(),
+  type: configOptionTypeSchema,
+  required: z.boolean(),
+  default: z.unknown().nullable(),
+  constraints: z.unknown(),
+  activation: z.literal('restart'),
+  source: z.object({ present: z.boolean(), value: z.unknown().nullable() }).strict(),
+  effective: z.unknown().nullable(),
+}).strict().superRefine((option, context) => {
+  const values = [option.default, option.source.value, option.effective].filter((value) => value !== null)
+  const valid = values.every((value) => {
+    switch (option.type.kind) {
+      case 'boolean': return typeof value === 'boolean'
+      case 'integer': return typeof value === 'number' && Number.isInteger(value)
+      case 'number': return typeof value === 'number'
+      case 'text': case 'enum': return typeof value === 'string'
+      case 'secret': return value === 'configured' || value === 'unset'
+      case 'list': return Array.isArray(value)
+      case 'identity': return typeof value === 'string' || (typeof value === 'number' && Number.isInteger(value))
+      case 'identity_list': return Array.isArray(value) && value.every((entry) => typeof entry === 'string' || (typeof entry === 'number' && Number.isInteger(entry)))
+    }
+  })
+  if (!valid) context.addIssue({ code: 'custom', message: `invalid ${option.type.kind} configuration value` })
+})
+export type ConfigOption = z.infer<typeof configOptionSchema>
+export const configSectionSchema = z.object({
+  path: z.array(z.string()),
+  label: z.string(),
+  repeatable: z.boolean(),
+  options: z.array(configOptionSchema),
+}).strict()
+export type ConfigSection = z.infer<typeof configSectionSchema>
+const repeatableConfigSectionSchema = z.object({
+  path: configPathSchema,
+  label: z.string(),
+  options: z.array(configOptionSchema),
+}).strict()
+export const configurationGetSchema = z.object({
+  schemaVersion: z.number().int().positive(),
+  revision: z.string(),
+  activeRevision: z.string(),
+  sourceState: z.enum(['valid', 'invalid']),
+  editable: z.boolean(),
+  diagnostics: z.array(configDiagnosticSchema),
+  configuration: z.object({
+    sections: z.array(configSectionSchema),
+    repeatableSections: z.array(repeatableConfigSectionSchema),
+  }).strict(),
+  backup: z.object({ revision: z.string() }).strict().nullable(),
+}).strict()
+export type ConfigurationSnapshot = z.infer<typeof configurationGetSchema>
+const configDiffSchema = z.object({
+  path: configPathSchema,
+  before: z.unknown().nullable(),
+  after: z.unknown().nullable(),
+  activation: z.literal('restart'),
+}).strict()
+export const configurationValidationSchema = z.object({
+  valid: z.boolean(),
+  revision: z.string(),
+  diagnostics: z.array(configDiagnosticSchema),
+  diff: z.array(configDiffSchema),
+  restartRequired: z.boolean(),
+}).strict()
+export type ConfigurationValidation = z.infer<typeof configurationValidationSchema>
+export const configurationUpdateSchema = z.object({
+  updated: z.boolean(),
+  revision: z.string(),
+  backupRevision: z.string(),
+  diff: z.array(configDiffSchema),
+  restartRequired: z.boolean(),
+}).strict()
+export const configurationRollbackSchema = z.object({
+  rolledBack: z.boolean(),
+  revision: z.string(),
+  backupRevision: z.string(),
+  restartRequired: z.boolean(),
+}).strict()
+export const restartAcknowledgementSchema = z.object({ acknowledged: z.literal(true) }).strict()
+
 export const auditRecordSchema = z.object({
   id: z.number().int(),
   occurredAt: z.string(),

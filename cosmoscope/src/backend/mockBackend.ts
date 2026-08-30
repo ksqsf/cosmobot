@@ -26,6 +26,7 @@ const mockBackend: AdminBackend = {
   media: { list: unavailable, search: unavailable, get: unavailable, delete: unavailable, gc: unavailable },
   plugins: { list: unavailable, load: unavailable, reload: unavailable, unload: unavailable },
   chatLogs: { list: unavailable, window: unavailable },
+  config: { get: unavailable, validate: unavailable, update: unavailable, rollback: unavailable, restart: unavailable },
 }
 
 export const mockBackendLayer = Layer.succeed(AdminBackendService, mockBackend)

@@ -57,6 +57,11 @@ export const liveAdminMethods = [
   'plugin.load',
   'plugin.reload',
   'plugin.unload',
+  'config.get',
+  'config.validate',
+  'config.update',
+  'config.rollback',
+  'admin.restart',
   ...chatMethods,
 ] as const
 export type LiveAdminMethod = typeof liveAdminMethods[number]
