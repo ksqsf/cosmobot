@@ -11,6 +11,7 @@ module Bot.Chat.Driver.Discord.Types
 where
 
 import Bot.Prelude
+import qualified Prelude
 
 data Config = Config
   { botToken :: !Text
@@ -23,7 +24,9 @@ data Config = Config
   , gatewayHost :: !String
   , gatewayPath :: !String
   }
-  deriving (Show)
+
+instance Show Config where
+  showsPrec _ _ = Prelude.showString "<Discord.Config>"
 
 defaultConfig :: Config
 defaultConfig = Config

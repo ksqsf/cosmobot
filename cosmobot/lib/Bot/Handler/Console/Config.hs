@@ -6,11 +6,14 @@ Stability   : experimental
 
 module Bot.Handler.Console.Config
   ( ConsoleHandlerConfig (..)
+  , schema
   )
 where
 
 import Bot.Agent.Types (ContextStrategy (..))
+import qualified Bot.Config.Schema as Schema
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
 import Toml.Schema
 
 data ConsoleHandlerConfig = ConsoleHandlerConfig
@@ -21,8 +24,9 @@ data ConsoleHandlerConfig = ConsoleHandlerConfig
   }
   deriving (Show)
 
-instance FromValue ConsoleHandlerConfig where
-  fromValue = parseTableFromValue do
+schema :: Schema.ConfigSchema ConsoleHandlerConfig ConsoleHandlerConfig
+schema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     systemPrompt <- reqKey "system_prompt"
     agentMaxTurns <- fromMaybe 4 <$> optKey "agent_max_turns"
     contextStrategyText <- fromMaybe ("compaction" :: Text) <$> optKey "context_strategy"
@@ -39,3 +43,19 @@ instance FromValue ConsoleHandlerConfig where
       , contextStrategy
       , contextCompactionThresholdKTokens
       }
+  , Schema.options =
+      [ Schema.optionalOption ["system_prompt"] "System prompt" "System instructions for RPC console sessions." owner Schema.text True Aeson.Null (Just . (.systemPrompt)) (Just . (.systemPrompt))
+      , Schema.option ["agent_max_turns"] "Maximum turns" "Maximum model/tool turns per run." owner Schema.integer (4 :: Int) (Aeson.object ["minimum" Aeson..= (1 :: Int)]) (.agentMaxTurns) (.agentMaxTurns)
+      , Schema.option ["context_strategy"] "Context strategy" "Transcript context strategy." owner (Schema.enum ["compaction", "recursive_transcript"]) "compaction" Aeson.Null (renderContextStrategy . (.contextStrategy)) (renderContextStrategy . (.contextStrategy))
+      , Schema.option ["context_compaction_threshold_ktokens"] "Compaction threshold" "Context threshold in thousands of tokens." owner Schema.integer (1000 :: Int) (Aeson.object ["minimum" Aeson..= (1 :: Int)]) (.contextCompactionThresholdKTokens) (.contextCompactionThresholdKTokens)
+      ]
+  }
+  where owner = "Bot.Handler.Console.Config"
+
+instance FromValue ConsoleHandlerConfig where
+  fromValue = Schema.schemaFromValue schema
+
+renderContextStrategy :: ContextStrategy -> Text
+renderContextStrategy = \case
+  ContextCompaction -> "compaction"
+  RecursiveTranscript -> "recursive_transcript"

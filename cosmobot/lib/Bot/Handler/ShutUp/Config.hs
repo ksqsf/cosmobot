@@ -8,10 +8,13 @@ module Bot.Handler.ShutUp.Config
   ( ShutUpConfig (..)
   , DeletePattern (..)
   , defaultShutUpConfig
+  , schema
   )
 where
 
 import Bot.Prelude
+import qualified Bot.Config.Schema as Schema
+import qualified Data.Aeson as Aeson
 import Prelude (Show (..), showString)
 import Toml.Schema
 import Text.Regex.TDFA
@@ -41,11 +44,21 @@ defaultShutUpConfig = ShutUpConfig
   { deletePatterns = []
   }
 
-instance FromValue ShutUpConfig where
-  fromValue = parseTableFromValue do
+schema :: Schema.ConfigSchema ShutUpConfig ShutUpConfig
+schema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     patterns <- fromMaybe [] <$> optKey "delete_patterns"
     deletePatterns <- traverse compileDeletePattern patterns
     pure ShutUpConfig{deletePatterns}
+  , Schema.options =
+      [ Schema.option ["delete_patterns"] "Delete patterns" "Regular expressions for messages to delete." "Bot.Handler.ShutUp.Config" (Schema.list "text") [] Aeson.Null
+          (map (.source) . (.deletePatterns))
+          (map (.source) . (.deletePatterns))
+      ]
+  }
+
+instance FromValue ShutUpConfig where
+  fromValue = Schema.schemaFromValue schema
 
 compileDeletePattern :: Text -> ParseTable l DeletePattern
 compileDeletePattern source =

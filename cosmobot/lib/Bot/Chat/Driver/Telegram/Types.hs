@@ -10,6 +10,7 @@ module Bot.Chat.Driver.Telegram.Types
 where
 
 import Bot.Prelude
+import qualified Prelude
 
 -- | Telegram Bot API credentials.
 data Config = Config
@@ -20,4 +21,6 @@ data Config = Config
   , allowedChatAliases :: ![Text]
   , superusers :: ![Text]
   }
-  deriving (Show)
+
+instance Show Config where
+  showsPrec _ _ = Prelude.showString "<Telegram.Config>"

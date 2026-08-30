@@ -10,6 +10,7 @@ module Bot.Chat.Driver.Matrix.Types
 where
 
 import Bot.Prelude
+import qualified Prelude
 
 data Config = Config
   { homeserver :: !Text
@@ -21,4 +22,6 @@ data Config = Config
   , allowedRooms :: ![Text]
   , superusers :: ![Text]
   }
-  deriving (Show)
+
+instance Show Config where
+  showsPrec _ _ = Prelude.showString "<Matrix.Config>"

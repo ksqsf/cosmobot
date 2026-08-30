@@ -8,11 +8,14 @@ module Bot.Memory.Config
   ( FileConfig (..)
   , defaultFileConfig
   , toMemoryConfig
+  , schema
   )
 where
 
 import qualified Bot.Memory as Memory
+import qualified Bot.Config.Schema as Schema
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
 import Toml.Schema
 
 newtype FileConfig = FileConfig
@@ -25,10 +28,18 @@ defaultFileConfig = FileConfig
   { dir = "memory"
   }
 
-instance FromValue FileConfig where
-  fromValue = parseTableFromValue do
+schema :: Schema.ConfigSchema FileConfig Memory.MemoryConfig
+schema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     dir <- fromMaybe defaultFileConfig.dir <$> optKey "dir"
     pure FileConfig{dir}
+  , Schema.options =
+      [ Schema.option ["dir"] "Directory" "Persistent memory directory." "Bot.Memory.Config" Schema.text (toText defaultFileConfig.dir) Aeson.Null (toText . (.dir)) (toText . (.dir))
+      ]
+  }
+
+instance FromValue FileConfig where
+  fromValue = Schema.schemaFromValue schema
 
 toMemoryConfig :: FileConfig -> Memory.MemoryConfig
 toMemoryConfig cfg =

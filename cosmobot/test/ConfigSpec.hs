@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified Bot.Config as Config
+import qualified Bot.Config.Edit as ConfigEdit
 import qualified Bot.Agent.Types as Agent
 import qualified Bot.ACP.Config as ACPConfig
 import Bot.Chat.Driver.Telegram (Config (..))
@@ -9,6 +10,9 @@ import qualified Bot.RPC.Config as RPCConfig
 import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
+import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy as LazyByteString
+import qualified Data.Text.Encoding as TextEncoding
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty
@@ -32,6 +36,12 @@ main =
       , testCase "Python wall timeout is at most one hour" testPythonWallTimeoutBound
       , testCase "Python tool rejects unknown keys" testPythonUnknownKey
       , testCase "plugin directory resolves beside config" testPluginDirectory
+      , testCase "inspection and Show redact secrets" testSecretRedaction
+      , testCase "invalid secret diagnostics redact source values" testSecretDiagnosticRedaction
+      , testCase "scalar edits preserve comments and surrounding bytes" testScalarEditPreservesComments
+      , testCase "insertions preserve CRLF newlines" testEditPreservesCrLf
+      , testCase "named providers quote arbitrary names" testNamedProviderInsertion
+      , testCase "inline tables are rejected without reformatting" testInlineTableRejected
       ]
 
 testDriversTableMayBeOmitted :: IO ()
@@ -189,6 +199,65 @@ testPluginDirectory =
     TextIO.writeFile path source
     cfg <- runEff . runFailIO $ Config.loadConfig path
     cfg.plugins.pluginDir @?= dir </> "extensions"
+
+testSecretRedaction :: IO ()
+testSecretRedaction = do
+  let sentinel = "sentinel-config-secret"
+      source = "[rpc]\ntoken = \"" <> sentinel <> "\"\n\n" <> minimalConfig
+  document <- parseDocument source
+  let inspected = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $ Config.configDocumentInspection document
+  assertBool "inspection leaked a credential" (not (sentinel `Text.isInfixOf` inspected))
+  assertBool "BotConfig Show leaked a credential" (not (sentinel `Text.isInfixOf` toText (show (Config.configDocumentRuntime document) :: String)))
+
+testSecretDiagnosticRedaction :: IO ()
+testSecretDiagnosticRedaction = do
+  let sentinel = "sentinel-invalid-secret"
+      source = "[rpc]\ntoken = [\"" <> sentinel <> "\"]\n\n" <> minimalConfig
+  case Config.parseConfigDocument "private/config.toml" source of
+    Left diagnostics -> do
+      let encoded = TextEncoding.decodeUtf8 . LazyByteString.toStrict $ Aeson.encode diagnostics
+      assertBool "diagnostic leaked a credential" (not (sentinel `Text.isInfixOf` encoded))
+    Right _ -> assertFailure "expected invalid secret type"
+
+testScalarEditPreservesComments :: IO ()
+testScalarEditPreservesComments = do
+  let source = Text.replace "command = \"!ask\"" "command = \"!ask\"  # keep this comment" minimalConfig
+  document <- parseDocument source
+  changed <- applyChanges document [ConfigEdit.SetOption ["handler", "ask", "command"] (Aeson.String "!chat")]
+  assertBool "replacement lost the comment" ("command = \"!chat\"  # keep this comment" `Text.isInfixOf` changed)
+  Text.replace "command = \"!chat\"" "command = \"!ask\"" changed @?= source
+
+testEditPreservesCrLf :: IO ()
+testEditPreservesCrLf = do
+  let source = Text.replace "\n" "\r\n" minimalConfig
+  document <- parseDocument source
+  changed <- applyChanges document [ConfigEdit.SetOption ["storage", "sqlite_path"] (Aeson.String "state.sqlite3")]
+  assertBool "inserted table did not use CRLF" ("\r\n[storage]\r\nsqlite_path = \"state.sqlite3\"\r\n" `Text.isInfixOf` changed)
+
+testNamedProviderInsertion :: IO ()
+testNamedProviderInsertion = do
+  document <- parseDocument minimalConfig
+  changed <- applyChanges document
+    [ ConfigEdit.AddSection ["llm", "chat_provider", "provider with spaces"]
+    , ConfigEdit.SetOption ["llm", "chat_provider", "provider with spaces", "model"] (Aeson.String "example/model")
+    ]
+  assertBool "provider table name was not quoted" ("[llm.chat_provider.\"provider with spaces\"]" `Text.isInfixOf` changed)
+  assertBool "provider option was not inserted" ("model = \"example/model\"" `Text.isInfixOf` changed)
+  void (parseDocument changed)
+
+testInlineTableRejected :: IO ()
+testInlineTableRejected = do
+  document <- parseDocument ("storage = { sqlite_path = \"state.sqlite3\" }\n" <> minimalConfig)
+  case ConfigEdit.applyConfigChanges document [ConfigEdit.SetOption ["storage", "sqlite_path"] (Aeson.String "new.sqlite3")] of
+    Left err -> err.code @?= "unsupported_source_shape"
+    Right _ -> assertFailure "expected inline-table edit to be rejected"
+
+parseDocument :: Text -> IO Config.ConfigDocument
+parseDocument source =
+  either (assertFailure . toString . Text.unlines . map (.message)) pure (Config.parseConfigDocument "config.toml" source)
+
+applyChanges :: Config.ConfigDocument -> [ConfigEdit.ConfigChange] -> IO Text
+applyChanges document = either (assertFailure . show) pure . ConfigEdit.applyConfigChanges document
 
 pythonConfig :: [Text] -> Text
 pythonConfig fields =

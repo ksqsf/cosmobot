@@ -9,6 +9,7 @@ Stability   : experimental
 module Bot.Resource.Sandbox
   ( Config (..)
   , defaultConfig
+  , schema
   , SandboxArgs (..)
   , Sandbox (..)
   , SandboxOutput (..)
@@ -27,6 +28,7 @@ module Bot.Resource.Sandbox
 where
 
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Config.Schema as Schema
 import Bot.Prelude
 import qualified Bot.Util.Process as ProcessUtil
 import qualified Data.Aeson as Aeson
@@ -51,11 +53,19 @@ defaultConfig = Config
   { image = "localhost/cosmobox:latest"
   }
 
-instance FromValue Config where
-  fromValue = parseTableFromValue do
+schema :: Schema.ConfigSchema Config Config
+schema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     image <- fromMaybe defaultConfig.image <$> optKey "image"
     unless (validImage image) $ fail "resource.sandbox.image must be non-empty and must not contain NUL"
     pure Config{image}
+  , Schema.options =
+      [ Schema.option ["image"] "Image" "Container image used for managed sandboxes." "Bot.Resource.Sandbox" Schema.text defaultConfig.image (Aeson.object ["minLength" Aeson..= (1 :: Int)]) (.image) (.image)
+      ]
+  }
+
+instance FromValue Config where
+  fromValue = Schema.schemaFromValue schema
 
 data Sandbox = Sandbox
   { containerId :: !Text

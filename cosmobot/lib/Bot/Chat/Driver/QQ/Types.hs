@@ -14,6 +14,7 @@ import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Prelude
 
 data Config = Config
   { host  :: !String
@@ -25,7 +26,9 @@ data Config = Config
   , allowedUsers :: ![Integer]
   , superusers :: ![Integer]
   }
-  deriving (Show)
+
+instance Show Config where
+  showsPrec _ _ = Prelude.showString "<QQ.Config>"
 
 data Event = Event
   { time        :: !(Maybe Integer)

@@ -8,10 +8,13 @@ module Bot.Handler.Admin.Config
   ( AdminConfig (..)
   , UpgradeConfig (..)
   , defaultAdminConfig
+  , schema
   )
 where
 
 import Bot.Prelude
+import qualified Bot.Config.Schema as Schema
+import qualified Data.Aeson as Aeson
 import Toml.Schema
 
 -- | Administrative command settings.
@@ -31,9 +34,18 @@ defaultAdminConfig = AdminConfig
   { upgrade = Nothing
   }
 
+schema :: Schema.ConfigSchema AdminConfig AdminConfig
+schema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue $ AdminConfig <$> optKey "upgrade"
+  , Schema.options =
+      [ Schema.optionalOption ["upgrade", "script"] "Upgrade script" "Executable used by the upgrade command." "Bot.Handler.Admin.Config" Schema.text True Aeson.Null
+          (fmap (toText . (.script)) . (.upgrade))
+          (fmap (toText . (.script)) . (.upgrade))
+      ]
+  }
+
 instance FromValue AdminConfig where
-  fromValue = parseTableFromValue $ AdminConfig
-    <$> optKey "upgrade"
+  fromValue = Schema.schemaFromValue schema
 
 instance FromValue UpgradeConfig where
   fromValue = parseTableFromValue $ UpgradeConfig

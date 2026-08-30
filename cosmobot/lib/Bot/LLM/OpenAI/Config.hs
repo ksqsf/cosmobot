@@ -13,16 +13,29 @@ module Bot.LLM.OpenAI.Config
   , defaultChatProviderConfig
   , defaultImageProviderConfig
   , defaultAudioProviderConfig
+  , defaultChatProviderFileConfig
+  , defaultImageProviderFileConfig
+  , defaultAudioProviderFileConfig
   , FileConfig (..)
+  , ChatProviderFileConfig (..)
+  , ImageProviderFileConfig (..)
+  , AudioProviderFileConfig (..)
+  , schema
+  , chatProviderSchema
+  , imageProviderSchema
+  , audioProviderSchema
   , toRuntimeConfig
   )
 where
 
 import Bot.Util.Toml
+import qualified Bot.Config.Schema as Schema
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Toml.Schema
+import qualified Prelude
 
 -- | Runtime configuration for OpenAI-compatible LLM endpoints.
 data Config = Config
@@ -30,7 +43,10 @@ data Config = Config
   , imageProvider :: !(Maybe ImageProviderConfig)
   , audioProvider :: !(Maybe AudioProviderConfig)
   }
-  deriving (Eq, Show)
+  deriving (Eq)
+
+instance Show Config where
+  showsPrec _ _ = Prelude.showString "<LLM.Config>"
 
 data ChatProviderConfig = ChatProviderConfig
   { baseUrl :: !Text
@@ -39,7 +55,10 @@ data ChatProviderConfig = ChatProviderConfig
   , reasoningEffort :: !Text
   , requestTimeout :: !Int
   }
-  deriving (Eq, Show)
+  deriving (Eq)
+
+instance Show ChatProviderConfig where
+  showsPrec _ _ = Prelude.showString "<LLM.ChatProviderConfig>"
 
 data ImageProviderConfig = ImageProviderConfig
   { baseUrl :: !Text
@@ -55,7 +74,10 @@ data ImageProviderConfig = ImageProviderConfig
   , background :: !(Maybe Text)
   , moderation :: !(Maybe Text)
   }
-  deriving (Eq, Show)
+  deriving (Eq)
+
+instance Show ImageProviderConfig where
+  showsPrec _ _ = Prelude.showString "<LLM.ImageProviderConfig>"
 
 data AudioProviderConfig = AudioProviderConfig
   { baseUrl :: !Text
@@ -67,7 +89,10 @@ data AudioProviderConfig = AudioProviderConfig
   , speed :: !(Maybe Double)
   , instructions :: !(Maybe Text)
   }
-  deriving (Eq, Show)
+  deriving (Eq)
+
+instance Show AudioProviderConfig where
+  showsPrec _ _ = Prelude.showString "<LLM.AudioProviderConfig>"
 
 -- | Defaults for optional LLM features.
 defaultConfig :: Config
@@ -115,11 +140,19 @@ defaultAudioProviderConfig = AudioProviderConfig
   }
 
 data FileConfig = FileConfig
-  { chatProvider :: !(Maybe ChatProviderFileConfig)
+  { selectedChat :: !(Maybe Text)
+  , selectedImage :: !(Maybe Text)
+  , selectedAudio :: !(Maybe Text)
+  , chatProviders :: !(Map Text ChatProviderFileConfig)
+  , imageProviders :: !(Map Text ImageProviderFileConfig)
+  , audioProviders :: !(Map Text AudioProviderFileConfig)
+  , chatProvider :: !(Maybe ChatProviderFileConfig)
   , imageProvider :: !(Maybe ImageProviderFileConfig)
   , audioProvider :: !(Maybe AudioProviderFileConfig)
   }
-  deriving (Show)
+
+instance Show FileConfig where
+  showsPrec _ _ = Prelude.showString "<LLM.FileConfig>"
 
 data ChatProviderFileConfig = ChatProviderFileConfig
   { baseUrl :: !Text
@@ -128,7 +161,9 @@ data ChatProviderFileConfig = ChatProviderFileConfig
   , reasoningEffort :: !Text
   , requestTimeout :: !Int
   }
-  deriving (Show)
+
+instance Show ChatProviderFileConfig where
+  showsPrec _ _ = Prelude.showString "<LLM.ChatProviderFileConfig>"
 
 data ImageProviderFileConfig = ImageProviderFileConfig
   { baseUrl :: !Text
@@ -144,7 +179,9 @@ data ImageProviderFileConfig = ImageProviderFileConfig
   , background :: !(Maybe Text)
   , moderation :: !(Maybe Text)
   }
-  deriving (Show)
+
+instance Show ImageProviderFileConfig where
+  showsPrec _ _ = Prelude.showString "<LLM.ImageProviderFileConfig>"
 
 data AudioProviderFileConfig = AudioProviderFileConfig
   { baseUrl :: !Text
@@ -156,10 +193,50 @@ data AudioProviderFileConfig = AudioProviderFileConfig
   , speed :: !(Maybe Double)
   , instructions :: !(Maybe Text)
   }
-  deriving (Show)
 
-instance FromValue FileConfig where
-  fromValue = parseTableFromValue do
+instance Show AudioProviderFileConfig where
+  showsPrec _ _ = Prelude.showString "<LLM.AudioProviderFileConfig>"
+
+defaultChatProviderFileConfig :: ChatProviderFileConfig
+defaultChatProviderFileConfig = ChatProviderFileConfig
+  { baseUrl = defaultChatProviderConfig.baseUrl
+  , apiKey = defaultChatProviderConfig.apiKey
+  , model = defaultChatProviderConfig.model
+  , reasoningEffort = defaultChatProviderConfig.reasoningEffort
+  , requestTimeout = defaultChatProviderConfig.requestTimeout
+  }
+
+defaultImageProviderFileConfig :: ImageProviderFileConfig
+defaultImageProviderFileConfig = ImageProviderFileConfig
+  { baseUrl = defaultImageProviderConfig.baseUrl
+  , apiKey = defaultImageProviderConfig.apiKey
+  , model = defaultImageProviderConfig.model
+  , canGenerate = defaultImageProviderConfig.canGenerate
+  , canEdit = defaultImageProviderConfig.canEdit
+  , requestTimeout = defaultImageProviderConfig.requestTimeout
+  , outputFormat = defaultImageProviderConfig.outputFormat
+  , quality = defaultImageProviderConfig.quality
+  , size = defaultImageProviderConfig.size
+  , aspectRatio = defaultImageProviderConfig.aspectRatio
+  , background = defaultImageProviderConfig.background
+  , moderation = defaultImageProviderConfig.moderation
+  }
+
+defaultAudioProviderFileConfig :: AudioProviderFileConfig
+defaultAudioProviderFileConfig = AudioProviderFileConfig
+  { baseUrl = defaultAudioProviderConfig.baseUrl
+  , apiKey = defaultAudioProviderConfig.apiKey
+  , model = defaultAudioProviderConfig.model
+  , voice = defaultAudioProviderConfig.voice
+  , responseFormat = defaultAudioProviderConfig.responseFormat
+  , requestTimeout = defaultAudioProviderConfig.requestTimeout
+  , speed = defaultAudioProviderConfig.speed
+  , instructions = defaultAudioProviderConfig.instructions
+  }
+
+schema :: Schema.ConfigSchema FileConfig FileConfig
+schema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     selectedChat <- optKey "chat"
     selectedImage <- optKey "image"
     selectedAudio <- optKey "audio"
@@ -170,10 +247,27 @@ instance FromValue FileConfig where
     imageProvider <- selectedProvider "llm.image" "llm.image_provider" selectedImage imageProviders
     audioProvider <- selectedProvider "llm.audio" "llm.audio_provider" selectedAudio audioProviders
     pure FileConfig
-      { chatProvider = chatProvider
+      { selectedChat
+      , selectedImage
+      , selectedAudio
+      , chatProviders
+      , imageProviders
+      , audioProviders
+      , chatProvider = chatProvider
       , imageProvider = imageProvider
       , audioProvider = audioProvider
       }
+  , Schema.options =
+      [ selector "chat" "Chat provider" "Named provider used for chat completions." (.selectedChat)
+      , selector "image" "Image provider" "Named provider used for image generation and editing." (.selectedImage)
+      , selector "audio" "Audio provider" "Named provider used for speech generation." (.selectedAudio)
+      ]
+  }
+  where
+    selector key label description getter = Schema.optionalOption [key] label description "Bot.LLM.OpenAI.Config" Schema.text False Aeson.Null getter getter
+
+instance FromValue FileConfig where
+  fromValue = Schema.schemaFromValue schema
 
 selectedProvider
   :: Text
@@ -194,8 +288,9 @@ selectedProvider selectorName tableName selected providers =
         Nothing ->
           fail [i|#{selectorName} selects #{name}, but #{tableName}.#{name} is not defined|]
 
-instance FromValue ChatProviderFileConfig where
-  fromValue = parseTableFromValue do
+chatProviderSchema :: Schema.ConfigSchema ChatProviderFileConfig ChatProviderFileConfig
+chatProviderSchema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     baseUrl <- fmap (fromMaybe defaultChatProviderConfig.baseUrl) (optKey "base_url")
     apiKey <- optToken "api_key"
     model <- fmap (fromMaybe defaultChatProviderConfig.model) (optKey "model")
@@ -209,9 +304,24 @@ instance FromValue ChatProviderFileConfig where
       , reasoningEffort = reasoningEffort
       , requestTimeout = requestTimeout
       }
+  , Schema.options =
+      [ Schema.option ["base_url"] "Base URL" "OpenAI-compatible API base URL." owner Schema.text defaultChatProviderConfig.baseUrl Aeson.Null (.baseUrl) (.baseUrl)
+      , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (.apiKey) (.apiKey)
+      , Schema.option ["model"] "Model" "Chat model identifier." owner Schema.text defaultChatProviderConfig.model Aeson.Null (.model) (.model)
+      , Schema.option ["reasoning_effort"] "Reasoning effort" "Requested reasoning effort." owner Schema.text defaultChatProviderConfig.reasoningEffort Aeson.Null (.reasoningEffort) (.reasoningEffort)
+      , Schema.option ["timeout"] "Timeout" "Request timeout in seconds." owner Schema.integer defaultChatProviderConfig.requestTimeout positive (.requestTimeout) (.requestTimeout)
+      ]
+  }
+  where
+    owner = "Bot.LLM.OpenAI.Config"
+    positive = Aeson.object ["minimum" Aeson..= (1 :: Int)]
 
-instance FromValue ImageProviderFileConfig where
-  fromValue = parseTableFromValue do
+instance FromValue ChatProviderFileConfig where
+  fromValue = Schema.schemaFromValue chatProviderSchema
+
+imageProviderSchema :: Schema.ConfigSchema ImageProviderFileConfig ImageProviderFileConfig
+imageProviderSchema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     baseUrl <- fmap (fromMaybe defaultImageProviderConfig.baseUrl) (optKey "base_url")
     apiKey <- optToken "api_key"
     model <- fmap (fromMaybe defaultImageProviderConfig.model) (optKey "model")
@@ -239,9 +349,32 @@ instance FromValue ImageProviderFileConfig where
       , background = background
       , moderation = moderation
       }
+  , Schema.options =
+      [ Schema.option ["base_url"] "Base URL" "OpenAI-compatible API base URL." owner Schema.text defaultImageProviderConfig.baseUrl Aeson.Null (.baseUrl) (.baseUrl)
+      , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (.apiKey) (.apiKey)
+      , Schema.option ["model"] "Model" "Image model identifier." owner Schema.text defaultImageProviderConfig.model Aeson.Null (.model) (.model)
+      , Schema.option ["can_generate"] "Can generate" "Provider supports image generation." owner Schema.boolean defaultImageProviderConfig.canGenerate Aeson.Null (.canGenerate) (.canGenerate)
+      , Schema.option ["can_edit"] "Can edit" "Provider supports image editing." owner Schema.boolean defaultImageProviderConfig.canEdit Aeson.Null (.canEdit) (.canEdit)
+      , Schema.option ["timeout"] "Timeout" "Request timeout in seconds." owner Schema.integer defaultImageProviderConfig.requestTimeout positive (.requestTimeout) (.requestTimeout)
+      , optionalText "output_format" "Output format" "Optional image output format." (.outputFormat)
+      , optionalText "quality" "Quality" "Optional image quality." (.quality)
+      , optionalText "size" "Size" "Optional image size." (.size)
+      , optionalText "aspect_ratio" "Aspect ratio" "Optional image aspect ratio." (.aspectRatio)
+      , optionalText "background" "Background" "Optional background mode." (.background)
+      , optionalText "moderation" "Moderation" "Optional moderation mode." (.moderation)
+      ]
+  }
+  where
+    owner = "Bot.LLM.OpenAI.Config"
+    positive = Aeson.object ["minimum" Aeson..= (1 :: Int)]
+    optionalText key label description getter = Schema.optionalOption [key] label description owner Schema.text False Aeson.Null getter getter
 
-instance FromValue AudioProviderFileConfig where
-  fromValue = parseTableFromValue do
+instance FromValue ImageProviderFileConfig where
+  fromValue = Schema.schemaFromValue imageProviderSchema
+
+audioProviderSchema :: Schema.ConfigSchema AudioProviderFileConfig AudioProviderFileConfig
+audioProviderSchema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     baseUrl <- fmap (fromMaybe defaultAudioProviderConfig.baseUrl) (optKey "base_url")
     apiKey <- optToken "api_key"
     model <- fmap (fromMaybe defaultAudioProviderConfig.model) (optKey "model")
@@ -262,6 +395,23 @@ instance FromValue AudioProviderFileConfig where
       , speed = speed
       , instructions = instructions
       }
+  , Schema.options =
+      [ Schema.option ["base_url"] "Base URL" "OpenAI-compatible API base URL." owner Schema.text defaultAudioProviderConfig.baseUrl Aeson.Null (.baseUrl) (.baseUrl)
+      , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (.apiKey) (.apiKey)
+      , Schema.option ["model"] "Model" "Audio model identifier." owner Schema.text defaultAudioProviderConfig.model Aeson.Null (.model) (.model)
+      , Schema.option ["voice"] "Voice" "Speech voice identifier." owner Schema.text defaultAudioProviderConfig.voice Aeson.Null (.voice) (.voice)
+      , Schema.option ["response_format"] "Response format" "Generated audio format." owner Schema.text defaultAudioProviderConfig.responseFormat Aeson.Null (.responseFormat) (.responseFormat)
+      , Schema.option ["timeout"] "Timeout" "Request timeout in seconds." owner Schema.integer defaultAudioProviderConfig.requestTimeout positive (.requestTimeout) (.requestTimeout)
+      , Schema.optionalOption ["speed"] "Speed" "Optional speech speed multiplier." owner Schema.number False positive (.speed) (.speed)
+      , Schema.optionalOption ["instructions"] "Instructions" "Optional speech instructions." owner Schema.text False Aeson.Null (.instructions) (.instructions)
+      ]
+  }
+  where
+    owner = "Bot.LLM.OpenAI.Config"
+    positive = Aeson.object ["exclusiveMinimum" Aeson..= (0 :: Int)]
+
+instance FromValue AudioProviderFileConfig where
+  fromValue = Schema.schemaFromValue audioProviderSchema
 
 toRuntimeConfig :: FileConfig -> Config
 toRuntimeConfig cfg =

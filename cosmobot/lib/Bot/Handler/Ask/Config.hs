@@ -6,12 +6,15 @@ Stability   : experimental
 
 module Bot.Handler.Ask.Config
   ( AskHandlerConfig (..)
+  , schema
   )
 where
 
 import Bot.Prelude
 import Bot.Agent.Types (ContextStrategy (..))
+import qualified Bot.Config.Schema as Schema
 import Bot.Core.Message (ChatPlatform)
+import qualified Data.Aeson as Aeson
 import Toml.Schema
 
 -- | Identity, command, and prompt settings for the ask handler.
@@ -27,8 +30,9 @@ data AskHandlerConfig = AskHandlerConfig
   }
   deriving (Show)
 
-instance FromValue AskHandlerConfig where
-  fromValue = parseTableFromValue do
+schema :: Schema.ConfigSchema AskHandlerConfig AskHandlerConfig
+schema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     name <- optKey "name"
     command <- reqKey "command"
     drawCommand <- fromMaybe "!draw" <$> optKey "draw_command"
@@ -52,3 +56,22 @@ instance FromValue AskHandlerConfig where
       , contextCompactionThresholdKTokens = contextCompactionThresholdKTokens
       , botIds = []
       }
+  , Schema.options =
+      [ Schema.optionalOption ["name"] "Name" "Optional displayed bot name." owner Schema.text False Aeson.Null (.name) (.name)
+      , Schema.optionalOption ["command"] "Command" "Command that starts an ask conversation." owner Schema.text True Aeson.Null (Just . (.command)) (Just . (.command))
+      , Schema.option ["draw_command"] "Draw command" "Command that starts image generation." owner Schema.text "!draw" Aeson.Null (.drawCommand) (.drawCommand)
+      , Schema.optionalOption ["system_prompt"] "System prompt" "System instructions for ask conversations." owner Schema.text True Aeson.Null (Just . (.systemPrompt)) (Just . (.systemPrompt))
+      , Schema.option ["agent_max_turns"] "Maximum turns" "Maximum model/tool turns per run." owner Schema.integer (4 :: Int) (Aeson.object ["minimum" Aeson..= (1 :: Int)]) (.agentMaxTurns) (.agentMaxTurns)
+      , Schema.option ["context_strategy"] "Context strategy" "Transcript context strategy." owner (Schema.enum ["compaction", "recursive_transcript"]) "compaction" Aeson.Null (renderContextStrategy . (.contextStrategy)) (renderContextStrategy . (.contextStrategy))
+      , Schema.option ["context_compaction_threshold_ktokens"] "Compaction threshold" "Context threshold in thousands of tokens." owner Schema.integer (1000 :: Int) (Aeson.object ["minimum" Aeson..= (1 :: Int)]) (.contextCompactionThresholdKTokens) (.contextCompactionThresholdKTokens)
+      ]
+  }
+  where owner = "Bot.Handler.Ask.Config"
+
+instance FromValue AskHandlerConfig where
+  fromValue = Schema.schemaFromValue schema
+
+renderContextStrategy :: ContextStrategy -> Text
+renderContextStrategy = \case
+  ContextCompaction -> "compaction"
+  RecursiveTranscript -> "recursive_transcript"

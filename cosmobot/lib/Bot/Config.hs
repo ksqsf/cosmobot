@@ -17,6 +17,20 @@ module Bot.Config
   , Skills.SkillsConfig (..)
   , MediaConfig.Config (..)
   , loadConfig
+  , loadConfigDocument
+  , ConfigDocument
+  , ConfigDiagnostic (..)
+  , parseConfigDocument
+  , configDocumentRuntime
+  , configDocumentSource
+  , configDocumentInspection
+  , configDocumentOptions
+  , renderConfigValueAt
+  , configOptionIsSecretAt
+  , configOptionIsRequiredAt
+  , configOptionKnownAt
+  , configDocumentOptionValues
+  , configRepeatableSection
   )
 where
 
@@ -29,6 +43,7 @@ import qualified Bot.Chat.Driver.Matrix.Config as MatrixConfig
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import qualified Bot.Chat.Driver.Telegram.Config as TelegramConfig
 import qualified Bot.ACP.Config as ACPConfig
+import qualified Bot.Config.Schema as Schema
 import qualified Bot.LLM.OpenAI.Config as LLMConfig
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.RPC.Config as RPCConfig
@@ -42,9 +57,11 @@ import qualified Bot.Handler.Admin.Config as AdminConfig
 import Bot.Handler.Ask.Config
   ( AskHandlerConfig (..)
   )
+import qualified Bot.Handler.Ask.Config as AskConfig
 import Bot.Handler.Console.Config
   ( ConsoleHandlerConfig (..)
   )
+import qualified Bot.Handler.Console.Config as ConsoleConfig
 import qualified Bot.Handler.Saucenao.Config as SaucenaoConfig
 import Bot.Handler.Saucenao.Config
   ( SaucenaoConfig (..)
@@ -59,12 +76,18 @@ import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Skills as Skills
 import qualified Bot.Skills.Config as SkillsConfig
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import qualified Toml.Semantics.Types as TomlValue
-import qualified Toml
+import qualified Toml.Schema.Matcher as Matcher
+import qualified Toml.Semantics as TomlSemantics
+import qualified Toml.Syntax.Position as TomlPosition
+import qualified Toml.Syntax.Parser as TomlParser
 import Toml.Schema
 import System.FilePath (isRelative, normalise, takeDirectory, (</>))
+import qualified Prelude
 
 -- | Fully normalized runtime configuration.
 data BotConfig = BotConfig
@@ -85,7 +108,9 @@ data BotConfig = BotConfig
   , logLevel :: !Severity
   , sqlitePath :: !FilePath
   }
-  deriving (Show)
+
+instance Show BotConfig where
+  showsPrec _ _ = Prelude.showString "<BotConfig>"
 
 -- | Configuration for all handler groups.
 data HandlersConfig = HandlersConfig
@@ -111,13 +136,79 @@ instance FromValue PluginsConfig where
 -- | Read and normalize the TOML configuration used by the executable.
 loadConfig :: (IOE :> es, Fail :> es) => FilePath -> Eff es BotConfig
 loadConfig path = do
+  (.runtimeConfig) <$> loadConfigDocument path
+
+loadConfigDocument :: (IOE :> es, Fail :> es) => FilePath -> Eff es ConfigDocument
+loadConfigDocument path = do
   content <- liftIO $ TextIO.readFile path
-  case Toml.decode content of
-    Toml.Failure errors ->
-      fail [i|Failed to parse #{path}: #{unlines (map toText errors)}|]
-    Toml.Success warnings config_ -> do
-      traverse_ (putStrLn . ("TOML warning: " <>)) warnings
-      pure (toBotConfig path config_)
+  case parseConfigDocument path content of
+    Left errors ->
+      fail [i|Failed to parse configuration: #{Text.unlines (map diagnosticMessage errors)}|]
+    Right document ->
+      pure document
+
+parseConfigDocument :: FilePath -> Text -> Either [ConfigDiagnostic] ConfigDocument
+parseConfigDocument configPath source =
+  case TomlParser.parseRawToml source of
+    Left located -> Left [positionedDiagnostic [] "syntax_error" "Invalid TOML syntax" located.locPosition]
+    Right expressions -> case TomlSemantics.semantics expressions of
+      Left semantic -> Left
+        [ positionedDiagnostic [semantic.errorKey] "semantic_error" (semanticMessage semantic) semantic.errorAnn
+        ]
+      Right parsedTable -> case Matcher.runMatcher (Schema.schemaFromValue configSchema (TomlValue.Table' TomlPosition.startPos parsedTable)) of
+        Matcher.Failure errors -> Left (map matchDiagnostic errors)
+        Matcher.Success _warnings fileConfig -> Right ConfigDocument
+          { source
+          , table = parsedTable
+          , fileConfig
+          , runtimeConfig = toBotConfig configPath fileConfig
+          }
+
+configDocumentRuntime :: ConfigDocument -> BotConfig
+configDocumentRuntime = (.runtimeConfig)
+
+configDocumentSource :: ConfigDocument -> Text
+configDocumentSource = (.source)
+
+diagnosticMessage :: ConfigDiagnostic -> Text
+diagnosticMessage ConfigDiagnostic{message} = message
+
+positionedDiagnostic :: [Text] -> Text -> Text -> TomlPosition.Position -> ConfigDiagnostic
+positionedDiagnostic path code message position = ConfigDiagnostic
+  { path
+  , code
+  , message
+  , line = Just position.posLine
+  , column = Just position.posColumn
+  }
+
+matchDiagnostic :: Matcher.MatchMessage TomlPosition.Position -> ConfigDiagnostic
+matchDiagnostic match =
+  case match.matchAnn of
+    Nothing -> ConfigDiagnostic path "schema_error" message Nothing Nothing
+    Just position -> positionedDiagnostic path "schema_error" message position
+  where
+    path = map scopeText match.matchPath
+    message
+      | secretDiagnosticPath path = "Secret value is invalid"
+      | otherwise = toText match.matchMessage
+    scopeText = \case
+      Matcher.ScopeKey key -> key
+      Matcher.ScopeIndex index -> show index
+
+secretDiagnosticPath :: [Text] -> Bool
+secretDiagnosticPath path =
+  any (\option -> Schema.optionPath option == path && Schema.optionIsSecret option) configSchema.options
+    || case path of
+      ["llm", family, _name, "api_key"] -> family `elem` ["chat_provider", "image_provider", "audio_provider"]
+      _ -> False
+
+semanticMessage :: TomlSemantics.SemanticError annotation -> Text
+semanticMessage semantic =
+  "invalid TOML assignment for " <> semantic.errorKey <> ": " <> case semantic.errorKind of
+    TomlSemantics.AlreadyAssigned -> "key is already assigned"
+    TomlSemantics.ClosedTable -> "table is already closed"
+    TomlSemantics.ImplicitlyTable -> "key is already an implicit table"
 
 data FileConfig = FileConfig
   { log      :: !LogFileConfig
@@ -136,8 +227,34 @@ data FileConfig = FileConfig
   }
   deriving (Show)
 
-instance FromValue FileConfig where
-  fromValue = parseTableFromValue $ FileConfig
+data ConfigDocument = ConfigDocument
+  { source :: !Text
+  , table :: !(TomlValue.Table' TomlPosition.Position)
+  , fileConfig :: !FileConfig
+  , runtimeConfig :: !BotConfig
+  }
+
+data ConfigDiagnostic = ConfigDiagnostic
+  { path :: ![Text]
+  , code :: !Text
+  , message :: !Text
+  , line :: !(Maybe Int)
+  , column :: !(Maybe Int)
+  }
+  deriving (Eq, Show)
+
+instance Aeson.ToJSON ConfigDiagnostic where
+  toJSON diagnostic = Aeson.object
+    [ "path" Aeson..= diagnostic.path
+    , "code" Aeson..= diagnostic.code
+    , "message" Aeson..= diagnostic.message
+    , "line" Aeson..= diagnostic.line
+    , "column" Aeson..= diagnostic.column
+    ]
+
+configSchema :: Schema.ConfigSchema FileConfig BotConfig
+configSchema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue $ FileConfig
     <$> fmap (fromMaybe defaultLogFileConfig) (optKey "log")
     <*> fmap (fromMaybe defaultStorageFileConfig) (optKey "storage")
     <*> fmap (fromMaybe defaultDriverFileConfig) (optKey "driver")
@@ -151,6 +268,180 @@ instance FromValue FileConfig where
     <*> fmap (fromMaybe ACPConfig.defaultFileConfig) (optKey "acp")
     <*> fmap (fromMaybe defaultPluginsConfig) (optKey "plugins")
     <*> reqKey "handler"
+  , Schema.options =
+      [ Schema.option ["log", "level"] "Log level" "Minimum emitted log severity." "Bot.Config" (Schema.enum severityNames) "info" Aeson.Null (severityText . (.level) . (.log)) (severityText . (.logLevel))
+      , Schema.option ["storage", "sqlite_path"] "SQLite path" "SQLite database path." "Bot.Config" Schema.text (toText defaultStorageFileConfig.sqlitePath) Aeson.Null (toText . (.sqlitePath) . (.storage)) (toText . (.sqlitePath))
+      , Schema.option ["plugins", "plugin_dir"] "Plugin directory" "Directory containing plugin bundles." "Bot.Config" Schema.text (toText defaultPluginsConfig.pluginDir) Aeson.Null (toText . (.pluginDir) . (.plugins)) (toText . (.pluginDir) . (.plugins))
+      ]
+      <> owner ["acp"] (.acp) (.acp) ACPConfig.schema.options
+      <> owner ["rpc"] (.rpc) (.rpc) RPCConfig.schema.options
+      <> owner ["tool"] (.tool) (.tool) AgentConfig.schema.options
+      <> owner ["media"] (.media) (.media) MediaConfig.schema.options
+      <> owner ["memory"] (.memory) (.memory) MemoryConfig.schema.options
+      <> owner ["skills"] (.skills) (.skills) SkillsConfig.schema.options
+      <> owner ["resource", "sandbox"] ((.sandbox) . (.resource)) (\cfg -> Sandbox.Config cfg.tool.sandboxImage) Sandbox.schema.options
+      <> optionalOwner ["driver", "qq"] ((.qq) . (.driver)) (.qq) QQConfig.schema.options
+      <> optionalOwner ["driver", "telegram"] ((.telegram) . (.driver)) (.telegram) TelegramConfig.schema.options
+      <> optionalOwner ["driver", "matrix"] ((.matrix) . (.driver)) (.matrix) MatrixConfig.schema.options
+      <> optionalOwner ["driver", "discord"] ((.discord) . (.driver)) (.discord) DiscordConfig.schema.options
+      <> owner ["handler", "admin"] ((.admin) . (.handler)) ((.admin) . (.handlers)) AdminConfig.schema.options
+      <> owner ["handler", "saucenao"] ((.saucenao) . (.handler)) (.saucenao) SaucenaoConfig.schema.options
+      <> owner ["handler", "ask"] ((.ask) . (.handler)) ((.ask) . (.handlers)) AskConfig.schema.options
+      <> owner ["handler", "console"] ((.console) . (.handler)) ((.console) . (.handlers)) ConsoleConfig.schema.options
+      <> owner ["handler", "shutup"] ((.shutup) . (.handler)) ((.shutup) . (.handlers)) ShutUpConfig.schema.options
+  }
+  where
+    owner prefix source runtime = Schema.prefixOptions prefix . Schema.mapOptions source runtime
+    optionalOwner prefix source runtime = Schema.prefixOptions prefix . Schema.mapMaybeOptions source runtime
+
+instance FromValue FileConfig where
+  fromValue = Schema.schemaFromValue configSchema
+
+severityNames :: [Text]
+severityNames = ["debug", "info", "notice", "warning", "error", "critical", "alert", "emergency"]
+
+severityText :: Severity -> Text
+severityText = \case
+  DebugS -> "debug"
+  InfoS -> "info"
+  NoticeS -> "notice"
+  WarningS -> "warning"
+  ErrorS -> "error"
+  CriticalS -> "critical"
+  AlertS -> "alert"
+  EmergencyS -> "emergency"
+
+configDocumentOptions :: ConfigDocument -> [Schema.ConfigOption ConfigDocument ConfigDocument]
+configDocumentOptions document =
+  Schema.mapOptions (.fileConfig) (.runtimeConfig) configSchema.options
+    <> Schema.prefixOptions ["llm"]
+      (Schema.mapOptions ((.llm) . (.fileConfig)) ((.llm) . (.fileConfig)) LLMConfig.schema.options)
+    <> providerDocumentOptions "chat_provider" (.chatProviders) LLMConfig.chatProviderSchema.options document
+    <> providerDocumentOptions "image_provider" (.imageProviders) LLMConfig.imageProviderSchema.options document
+    <> providerDocumentOptions "audio_provider" (.audioProviders) LLMConfig.audioProviderSchema.options document
+
+providerDocumentOptions
+  :: Text
+  -> (LLMConfig.FileConfig -> Map Text provider)
+  -> [Schema.ConfigOption provider provider]
+  -> ConfigDocument
+  -> [Schema.ConfigOption ConfigDocument ConfigDocument]
+providerDocumentOptions family getter options document =
+  concatMap instantiate (Map.toList (getter document.fileConfig.llm))
+  where
+    instantiate (name, provider) =
+      Schema.prefixOptions ["llm", family, name] $
+        Schema.mapOptions
+          (\doc -> fromMaybe provider (Map.lookup name (getter doc.fileConfig.llm)))
+          (const provider)
+          options
+
+configDocumentInspection :: ConfigDocument -> Aeson.Value
+configDocumentInspection document = Aeson.object
+  [ "sections" Aeson..= map sectionJson (Map.toList grouped)
+  , "repeatableSections" Aeson..= repeatableSections
+  ]
+  where
+    options = configDocumentOptions document
+    inspected = Schema.inspectOptions (configPathPresent document) document document options
+    grouped = foldl' addOption Map.empty (zip options inspected)
+    addOption sections (configOption, value) =
+      Map.insertWith (flip (<>)) (safeInit (Schema.optionPath configOption)) [value] sections
+    sectionJson (path, values) = Aeson.object
+      [ "path" Aeson..= path
+      , "label" Aeson..= sectionLabel path
+      , "repeatable" Aeson..= isRepeatableInstance path
+      , "options" Aeson..= values
+      ]
+
+renderConfigValueAt :: ConfigDocument -> [Text] -> Aeson.Value -> Either Text Text
+renderConfigValueAt document path value =
+  maybe (Left "unknown configuration path") (first toText . (`Schema.optionToml` value)) (findConfigOption document path)
+
+configOptionIsSecretAt :: ConfigDocument -> [Text] -> Bool
+configOptionIsSecretAt document path =
+  maybe False Schema.optionIsSecret (findConfigOption document path)
+
+configOptionIsRequiredAt :: ConfigDocument -> [Text] -> Bool
+configOptionIsRequiredAt document path =
+  maybe False Schema.optionIsRequired (findConfigOption document path)
+
+configOptionKnownAt :: ConfigDocument -> [Text] -> Bool
+configOptionKnownAt document = isJust . findConfigOption document
+
+configDocumentOptionValues :: ConfigDocument -> Map [Text] Aeson.Value
+configDocumentOptionValues document = Map.fromList $ zip paths values
+  where
+    options = configDocumentOptions document
+    paths = map Schema.optionPath options
+    values = Schema.inspectOptions (configPathPresent document) document document options
+
+findConfigOption :: ConfigDocument -> [Text] -> Maybe (Schema.ConfigOption ConfigDocument ConfigDocument)
+findConfigOption document path =
+  find ((== path) . Schema.optionPath) (configDocumentOptions document)
+    <|> repeatableOption path
+  where
+    repeatableOption ["llm", family, _name, key] =
+      case family of
+        "chat_provider" -> templateConfigOption (safeInit path) LLMConfig.defaultChatProviderFileConfig LLMConfig.chatProviderSchema.options key
+        "image_provider" -> templateConfigOption (safeInit path) LLMConfig.defaultImageProviderFileConfig LLMConfig.imageProviderSchema.options key
+        "audio_provider" -> templateConfigOption (safeInit path) LLMConfig.defaultAudioProviderFileConfig LLMConfig.audioProviderSchema.options key
+        _ -> Nothing
+    repeatableOption _ = Nothing
+
+templateConfigOption
+  :: [Text]
+  -> provider
+  -> [Schema.ConfigOption provider provider]
+  -> Text
+  -> Maybe (Schema.ConfigOption ConfigDocument ConfigDocument)
+templateConfigOption prefix defaults options key = do
+  configOption <- find ((== [key]) . Schema.optionPath) options
+  viaNonEmpty head $
+    Schema.prefixOptions prefix (Schema.mapOptions (const defaults) (const defaults) [configOption])
+
+configRepeatableSection :: [Text] -> Bool
+configRepeatableSection ["llm", family, name] =
+  not (Text.null name) && family `elem` ["chat_provider", "image_provider", "audio_provider"]
+configRepeatableSection _ = False
+
+repeatableSections :: [Aeson.Value]
+repeatableSections =
+  [ template "chat_provider" "Chat providers" LLMConfig.defaultChatProviderFileConfig LLMConfig.chatProviderSchema.options
+  , template "image_provider" "Image providers" LLMConfig.defaultImageProviderFileConfig LLMConfig.imageProviderSchema.options
+  , template "audio_provider" "Audio providers" LLMConfig.defaultAudioProviderFileConfig LLMConfig.audioProviderSchema.options
+  ]
+  where
+    template family label defaults options = Aeson.object
+      [ "path" Aeson..= (["llm", family] :: [Text])
+      , "label" Aeson..= (label :: Text)
+      , "options" Aeson..= Schema.inspectOptions (const False) defaults defaults (Schema.prefixOptions ["llm", family, "*"] options)
+      ]
+
+configPathPresent :: ConfigDocument -> [Text] -> Bool
+configPathPresent document = isJust . lookupTablePath document.table
+
+lookupTablePath :: TomlValue.Table' annotation -> [Text] -> Maybe (TomlValue.Value' annotation)
+lookupTablePath _ [] = Nothing
+lookupTablePath (TomlValue.MkTable values) [key] = snd <$> Map.lookup key values
+lookupTablePath (TomlValue.MkTable values) (key : rest) = do
+  (_, TomlValue.Table' _ nestedTable) <- Map.lookup key values
+  lookupTablePath nestedTable rest
+
+safeInit :: [a] -> [a]
+safeInit [] = []
+safeInit [_] = []
+safeInit (value : rest) = value : safeInit rest
+
+sectionLabel :: [Text] -> Text
+sectionLabel [] = "General"
+sectionLabel path = Text.intercalate " / " (map humanize path)
+  where humanize = Text.toTitle . Text.replace "_" " "
+
+isRepeatableInstance :: [Text] -> Bool
+isRepeatableInstance path = case path of
+  ["llm", family, _] -> family `elem` ["chat_provider", "image_provider", "audio_provider"]
+  _ -> False
 
 data DriverFileConfig = DriverFileConfig
   { qq       :: !(Maybe QQConfig.FileConfig)

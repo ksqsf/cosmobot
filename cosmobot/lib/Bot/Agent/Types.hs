@@ -39,6 +39,7 @@ import Bot.Core.Thread (ThreadMessageKey)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
+import qualified Prelude
 
 type AgentRunId = Text
 
@@ -62,7 +63,9 @@ data ToolConfig = ToolConfig
   , python :: !PythonConfig
   , sandboxImage :: !Text
   }
-  deriving (Show)
+
+instance Show ToolConfig where
+  showsPrec _ _ = Prelude.showString "<ToolConfig>"
 
 -- | Host-controlled limits for the Python composition tool.
 data PythonConfig = PythonConfig

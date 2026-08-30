@@ -12,14 +12,18 @@ module Bot.Chat.Driver.Telegram.Config
   , telegramBotIds
   , telegramBotUsernames
   , toRuntimeConfig
+  , schema
   )
 where
 
 import qualified Bot.Chat.Driver.Telegram as Telegram
+import qualified Bot.Config.Schema as Schema
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import qualified Toml.Semantics.Types as TomlValue
 import Toml.Schema
+import qualified Prelude
 
 data FileConfig = FileConfig
   { botToken :: !Text
@@ -27,7 +31,9 @@ data FileConfig = FileConfig
   , allowedChats :: ![TelegramChatRef]
   , superusers :: ![Text]
   }
-  deriving (Show)
+
+instance Show FileConfig where
+  showsPrec _ _ = Prelude.showString "<Telegram.FileConfig>"
 
 data TelegramBotId
   = TelegramBotNumeric !Integer
@@ -57,12 +63,42 @@ instance FromValue TelegramChatRef where
     _ ->
       fail "driver.telegram.allowed_chats entries must be integer chat ids or username/title strings"
 
-instance FromValue FileConfig where
-  fromValue = parseTableFromValue $ FileConfig
+schema :: Schema.ConfigSchema FileConfig Telegram.Config
+schema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue $ FileConfig
     <$> reqKey "bot_token"
     <*> optKey "bot_id"
     <*> fmap (fromMaybe []) (optKey "allowed_chats")
     <*> fmap (fromMaybe []) (optKey "superusers")
+  , Schema.options =
+      [ Schema.optionalOption ["bot_token"] "Bot token" "Telegram Bot API token." owner Schema.secret True Aeson.Null (Just . (.botToken)) (Just . (.botToken))
+      , Schema.optionalOption ["bot_id"] "Bot ID" "Telegram numeric bot id or username." owner Schema.identity False Aeson.Null (fmap botIdValue . (.botId)) runtimeBotId
+      , Schema.option ["allowed_chats"] "Allowed chats" "Allowed numeric chat ids or aliases." owner Schema.identityList [] Aeson.Null (map chatRefValue . (.allowedChats)) runtimeAllowedChats
+      , Schema.option ["superusers"] "Superusers" "Telegram usernames with administrative access." owner (Schema.list "text") [] Aeson.Null (.superusers) (.superusers)
+      ]
+  }
+  where owner = "Bot.Chat.Driver.Telegram.Config"
+
+instance FromValue FileConfig where
+  fromValue = Schema.schemaFromValue schema
+
+botIdValue :: TelegramBotId -> Aeson.Value
+botIdValue = \case
+  TelegramBotNumeric value -> Aeson.toJSON value
+  TelegramBotUsername value -> Aeson.toJSON value
+
+chatRefValue :: TelegramChatRef -> Aeson.Value
+chatRefValue = \case
+  TelegramChatNumeric value -> Aeson.toJSON value
+  TelegramChatUsername value -> Aeson.toJSON value
+
+runtimeBotId :: Telegram.Config -> Maybe Aeson.Value
+runtimeBotId cfg =
+  Aeson.toJSON <$> viaNonEmpty head cfg.botIds
+    <|> Aeson.toJSON <$> viaNonEmpty head cfg.botUsernames
+
+runtimeAllowedChats :: Telegram.Config -> [Aeson.Value]
+runtimeAllowedChats cfg = map Aeson.toJSON cfg.allowedChatIds <> map Aeson.toJSON cfg.allowedChatAliases
 
 normalizeUsername :: Text -> Text
 normalizeUsername =

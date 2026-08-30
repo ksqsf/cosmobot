@@ -264,6 +264,8 @@ library
         Bot.ChatLog.Record
         Bot.ChatLog.Types
         Bot.Config
+        Bot.Config.Edit
+        Bot.Config.Schema
         Bot.Concurrency.Manager
         Bot.Core.Thread
         Bot.Core.Transcript
@@ -341,6 +343,7 @@ library
         Bot.RPC.ChatLog
         Bot.RPC.Client
         Bot.RPC.Config
+        Bot.RPC.Configuration
         Bot.RPC.Memory
         Bot.RPC.Plugin
         Bot.RPC.Server

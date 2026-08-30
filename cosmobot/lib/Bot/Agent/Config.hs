@@ -11,16 +11,20 @@ module Bot.Agent.Config
   , WebSearchFileConfig (..)
   , defaultFileConfig
   , toToolConfig
+  , schema
   )
 where
 
 import qualified Bot.Agent.Types as Agent
+import qualified Bot.Config.Schema as Schema
 import Bot.Util.Toml
 import Bot.Prelude
+import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Toml.Semantics.Types as TomlValue
 import Toml.Schema
+import qualified Prelude
 
 data FileConfig = FileConfig
   { webSearch :: !WebSearchFileConfig
@@ -28,7 +32,9 @@ data FileConfig = FileConfig
   , datetime :: !Bool
   , python :: !PythonFileConfig
   }
-  deriving (Show)
+
+instance Show FileConfig where
+  showsPrec _ _ = Prelude.showString "<Agent.FileConfig>"
 
 data PythonFileConfig = PythonFileConfig
   { enable :: !Bool
@@ -54,7 +60,9 @@ data WebSearchFileConfig = WebSearchFileConfig
   , tavilyApiKey :: !(Maybe Text)
   , exaApiKey :: !(Maybe Text)
   }
-  deriving (Show)
+
+instance Show WebSearchFileConfig where
+  showsPrec _ _ = Prelude.showString "<Agent.WebSearchFileConfig>"
 
 defaultFileConfig :: FileConfig
 defaultFileConfig = FileConfig
@@ -90,8 +98,9 @@ defaultWebSearchFileConfig = WebSearchFileConfig
   , exaApiKey = Agent.defaultToolConfig.exaApiKey
   }
 
-instance FromValue FileConfig where
-  fromValue = parseTableFromValue do
+schema :: Schema.ConfigSchema FileConfig Agent.ToolConfig
+schema = Schema.ConfigSchema
+  { Schema.parser = parseTableFromValue do
     webSearch <- fromMaybe defaultFileConfig.webSearch <$> optKey "web_search"
     webFetch <- fromMaybe defaultFileConfig.webFetch <$> optKey "web_fetch"
     datetime <- fromMaybe defaultFileConfig.datetime <$> optKey "datetime"
@@ -102,6 +111,31 @@ instance FromValue FileConfig where
       , datetime = datetime
       , python = python
       }
+  , Schema.options =
+      [ Schema.option ["datetime"] "Date and time tool" "Allow the date/time tool." owner Schema.boolean defaultFileConfig.datetime Aeson.Null (.datetime) (.datetime)
+      , Schema.option ["python", "enable"] "Python tool" "Allow Python worker execution." owner Schema.boolean defaultPythonFileConfig.enable Aeson.Null ((.enable) . (.python)) ((.enabled) . (.python))
+      , Schema.option ["python", "wall_timeout_seconds"] "Wall timeout" "Python wall-clock timeout in seconds." owner Schema.integer defaultPythonFileConfig.wallTimeoutSeconds (positiveMaximum Agent.maxPythonWallTimeoutSeconds) ((.wallTimeoutSeconds) . (.python)) ((.wallTimeoutSeconds) . (.python))
+      , Schema.option ["python", "cpu_seconds"] "CPU limit" "Python CPU limit in seconds." owner Schema.integer defaultPythonFileConfig.cpuSeconds positive ((.cpuSeconds) . (.python)) ((.cpuSeconds) . (.python))
+      , Schema.option ["python", "memory_mib"] "Memory limit" "Python memory limit in MiB." owner Schema.integer defaultPythonFileConfig.memoryMiB positive ((.memoryMiB) . (.python)) ((.memoryMiB) . (.python))
+      , Schema.option ["python", "max_tool_calls"] "Maximum tool calls" "Maximum nested tool calls per Python run." owner Schema.integer defaultPythonFileConfig.maxToolCalls positive ((.maxToolCalls) . (.python)) ((.maxToolCalls) . (.python))
+      , Schema.option ["web_fetch", "enable"] "Web fetch" "Allow direct web fetching." owner Schema.boolean defaultWebFetchFileConfig.enable Aeson.Null ((.enable) . (.webFetch)) (.webFetch)
+      , Schema.optionalOption ["web_fetch", "max_uses"] "Maximum fetches" "Optional fetch-use limit." owner Schema.integer False positive ((.maxUses) . (.webFetch)) (.webFetchMaxUses)
+      , Schema.optionalOption ["web_fetch", "max_content_tokens"] "Maximum content tokens" "Optional fetched-content token limit." owner Schema.integer False positive ((.maxContentTokens) . (.webFetch)) (.webFetchMaxContentTokens)
+      , Schema.option ["web_search", "enable"] "Web search" "Allow web search." owner Schema.boolean defaultWebSearchFileConfig.enable Aeson.Null ((.enable) . (.webSearch)) (.webSearchEnable)
+      , Schema.option ["web_search", "api"] "Search API" "Web search provider." owner (Schema.enum ["tavily", "brave", "exa"]) (webSearchApiText defaultWebSearchFileConfig.api) Aeson.Null (webSearchApiText . (.api) . (.webSearch)) (webSearchApiText . (.webSearchApi))
+      , Schema.optionalOption ["web_search", "max_results"] "Maximum results" "Optional result limit." owner Schema.integer False positive ((.maxResults) . (.webSearch)) (.webSearchMaxResults)
+      , Schema.optionalOption ["web_search", "brave_api_key"] "Brave API key" "Brave Search API key." owner Schema.secret False Aeson.Null ((.braveApiKey) . (.webSearch)) (.braveApiKey)
+      , Schema.optionalOption ["web_search", "tavily_api_key"] "Tavily API key" "Tavily API key." owner Schema.secret False Aeson.Null ((.tavilyApiKey) . (.webSearch)) (.tavilyApiKey)
+      , Schema.optionalOption ["web_search", "exa_api_key"] "Exa API key" "Exa API key." owner Schema.secret False Aeson.Null ((.exaApiKey) . (.webSearch)) (.exaApiKey)
+      ]
+  }
+  where
+    owner = "Bot.Agent.Config"
+    positive = Aeson.object ["minimum" Aeson..= (1 :: Int)]
+    positiveMaximum maximumValue = Aeson.object ["minimum" Aeson..= (1 :: Int), "maximum" Aeson..= maximumValue]
+
+instance FromValue FileConfig where
+  fromValue = Schema.schemaFromValue schema
 
 instance FromValue PythonFileConfig where
   fromValue = parseTableFromValue do
@@ -171,6 +205,12 @@ parseWebSearchApi value =
     "brave"  -> pure Agent.WebSearchBrave
     "exa"    -> pure Agent.WebSearchExa
     _        -> fail "tool.web_search.api must be one of: tavily, brave, exa"
+
+webSearchApiText :: Agent.WebSearchApi -> Text
+webSearchApiText = \case
+  Agent.WebSearchTavily -> "tavily"
+  Agent.WebSearchBrave -> "brave"
+  Agent.WebSearchExa -> "exa"
 
 toToolConfig :: FileConfig -> Agent.ToolConfig
 toToolConfig cfg =
