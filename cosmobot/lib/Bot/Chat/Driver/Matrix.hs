@@ -1010,7 +1010,7 @@ matrixEventFileMediaRefs =
       mimeType <- content Aeson..:? "info" Aeson..!= Aeson.Object mempty >>=
         Aeson.withObject "Matrix file info" (Aeson..:? "mimetype")
       pure do
-        guard (msgtype `elem` ["m.file", "m.audio"])
+        guard (msgtype `elem` ["m.file", "m.audio", "m.video"])
         fileName <- maybeToList (name >>= nonEmptyText)
         (mediaUrl, encryptedFile) <- maybeToList (contentRef url encrypted)
         let mediaRef = MatrixMediaRef mediaUrl (nonEmptyText =<< mimeType) encryptedFile

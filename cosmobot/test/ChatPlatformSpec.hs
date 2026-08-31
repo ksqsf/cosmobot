@@ -47,9 +47,11 @@ main =
       , testCase "QQ forwarded messages merge all node text" testQqForwardedMessagesMergeAllNodeText
       , testCase "QQ file segment becomes a message file" testQqFileSegmentBecomesMessageFile
       , testCase "QQ record segment becomes a message file" testQqRecordSegmentBecomesMessageFile
+      , testCase "QQ video segment becomes a message file" testQqVideoSegmentBecomesMessageFile
       , testCase "QQ sends local file bytes as a base64 resource" testQqBase64FileRef
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
       , testCase "Telegram audio becomes a message file" testTelegramAudioBecomesMessageFile
+      , testCase "Telegram video becomes a message file" testTelegramVideoBecomesMessageFile
       , testCase "Telegram sticker records its emoji" testTelegramStickerRecordsEmoji
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
@@ -73,6 +75,7 @@ main =
       , testCase "Matrix referenced message uses latest replacement" testMatrixReferencedMessageUsesLatestReplacement
       , testCase "Matrix file message includes a message file" testMatrixFileMessageIncludesMessageFile
       , testCase "Matrix audio message includes a message file" testMatrixAudioMessageIncludesMessageFile
+      , testCase "Matrix video message includes a message file" testMatrixVideoMessageIncludesMessageFile
       , testCase "Matrix encrypted image bytes decrypt and verify ciphertext hash" testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash
       , testCase "Matrix reply relation converts to reply message id" testMatrixReplyRelationConvertsToReplyMessageId
       , testCase "Matrix reply relation strips multiline fallback" testMatrixReplyRelationStripsMultilineFallback
@@ -282,6 +285,20 @@ testQqRecordSegmentBecomesMessageFile = do
   ((.files) <$> QQ.eventToIncomingMessage event)
     @?= Just [MessageFile{name = "audio", ref = "https://example.test/voice.ogg"}]
 
+testQqVideoSegmentBecomesMessageFile :: IO ()
+testQqVideoSegmentBecomesMessageFile = do
+  let original = qqMessageEvent 10001
+      event = original
+        { QQ.message = Just (Aeson.toJSON
+            [ Aeson.object
+                [ "type" Aeson..= ("video" :: Text)
+                , "data" Aeson..= Aeson.object ["file" Aeson..= ("https://example.test/clip.mp4" :: Text)]
+                ]
+            ])
+        }
+  ((.files) <$> QQ.eventToIncomingMessage event)
+    @?= Just [MessageFile{name = "video", ref = "https://example.test/clip.mp4"}]
+
 testQqSuperuserIsAlsoAllowedSender :: IO ()
 testQqSuperuserIsAlsoAllowedSender = do
   let cfg = QQ.Config
@@ -435,6 +452,17 @@ testTelegramAudioBecomesMessageFile = do
         }
       incoming = Telegram.updateToIncomingMessage (telegramUpdateWithMessage (telegramMessage False){Telegram.audio = Just audio})
   ((.files) <$> incoming) @?= Just [MessageFile{name = "song.mp3", ref = "audio-file-id"}]
+
+testTelegramVideoBecomesMessageFile :: IO ()
+testTelegramVideoBecomesMessageFile = do
+  let video = Telegram.TelegramMedia
+        { Telegram.fileId = "video-file-id"
+        , Telegram.fileUniqueId = "video-unique-id"
+        , Telegram.fileName = Just "clip.mp4"
+        , Telegram.mimeType = Just "video/mp4"
+        }
+      incoming = Telegram.updateToIncomingMessage (telegramUpdateWithMessage (telegramMessage False){Telegram.video = Just video})
+  ((.files) <$> incoming) @?= Just [MessageFile{name = "clip.mp4", ref = "video-file-id"}]
 
 testTelegramStickerRecordsEmoji :: IO ()
 testTelegramStickerRecordsEmoji = do
@@ -799,6 +827,20 @@ testMatrixAudioMessageIncludesMessageFile = do
         }
       incoming = Matrix.eventToIncomingMessage matrixRoomEvent{Matrix.event = event}
   ((.files) <$> incoming) @?= Just [MessageFile{name = "voice.ogg", ref = "mxc://example.org/voice"}]
+
+testMatrixVideoMessageIncludesMessageFile :: IO ()
+testMatrixVideoMessageIncludesMessageFile = do
+  let event = matrixRoomEvent.event
+        { Matrix.content = matrixRoomEvent.event.content{Matrix.msgtype = Just "m.video", Matrix.body = Just "clip.mp4"}
+        , Matrix.raw = matrixImageRawContent
+            [ "msgtype" Aeson..= ("m.video" :: Text)
+            , "body" Aeson..= ("clip.mp4" :: Text)
+            , "url" Aeson..= ("mxc://example.org/clip" :: Text)
+            , "info" Aeson..= Aeson.object ["mimetype" Aeson..= ("video/mp4" :: Text)]
+            ]
+        }
+      incoming = Matrix.eventToIncomingMessage matrixRoomEvent{Matrix.event = event}
+  ((.files) <$> incoming) @?= Just [MessageFile{name = "clip.mp4", ref = "mxc://example.org/clip"}]
 
 testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash :: IO ()
 testMatrixEncryptedImageBytesDecryptAndVerifyCiphertextHash = do
@@ -1173,6 +1215,9 @@ telegramMessage fromBot =
     , document = Nothing
     , audio = Nothing
     , voice = Nothing
+    , video = Nothing
+    , videoNote = Nothing
+    , animation = Nothing
     , sticker = Nothing
     }
 
