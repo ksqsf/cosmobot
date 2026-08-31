@@ -5,6 +5,7 @@ import Button from 'primevue/button'
 import ContextMenu, { type ContextMenuMethods } from 'primevue/contextmenu'
 import Dialog from 'primevue/dialog'
 import Message from 'primevue/message'
+import MultiSelect from 'primevue/multiselect'
 import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import DisplayIdentity from '@/components/DisplayIdentity.vue'
@@ -27,6 +28,7 @@ const route = useRoute()
 const router = useRouter()
 const connection = useConnectionStore()
 const chats = ref<readonly ChatLogSummary[]>([])
+const selectedPlatforms = ref<AuditPlatform[]>([])
 const window = ref<ChatLogWindow>()
 const loading = ref(true)
 const loadingWindow = ref(false)
@@ -42,7 +44,8 @@ let listRequest = 0
 const { isTop: previewIsTop } = useOverlayLayer(computed(() => previewImage.value !== undefined))
 const messageMenuLayer = useOverlayLayer()
 
-const groupedChats = computed(() => [...chats.value.reduce((groups, chat) => {
+const platformOptions = computed(() => [...new Set(chats.value.map(({ scope }) => scope.platform))].map((value) => ({ label: platformLabels[value], value })))
+const groupedChats = computed(() => [...chats.value.filter(({ scope }) => selectedPlatforms.value.length === 0 || selectedPlatforms.value.includes(scope.platform)).reduce((groups, chat) => {
   const entries = groups.get(chat.scope.platform) ?? []
   groups.set(chat.scope.platform, [...entries, chat])
   return groups
@@ -231,7 +234,15 @@ onMounted(refresh)
       @hide="messageMenuLayer.hide(); contextItem = undefined"
     />
     <div class="cluster chat-log-actions">
-      <span>Read-only platform history</span><Button
+      <MultiSelect
+        v-model="selectedPlatforms"
+        :options="platformOptions"
+        option-label="label"
+        option-value="value"
+        display="chip"
+        placeholder="All platforms"
+        aria-label="Filter chat logs by platform"
+      /><Button
         icon="pi pi-refresh"
         label="Refresh"
         severity="secondary"

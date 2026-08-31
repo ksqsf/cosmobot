@@ -1722,14 +1722,60 @@
   .chat-page {
     height: calc(100dvh - 102px);
   }
+  .chat-page > .page-heading {
+    align-items: center;
+    flex-direction: row;
+    gap: var(--space-2);
+    margin-bottom: 0;
+  }
+  .chat-page > .page-heading .eyebrow,
+  .chat-page > .page-heading p:not(.eyebrow),
+  .chat-page > .page-heading .p-button-label {
+    display: none;
+  }
+  .chat-page > .page-heading h1 {
+    margin: 0;
+    font-size: 20px;
+  }
+  .chat-page > .page-heading .heading-actions {
+    width: auto;
+    margin-left: auto;
+    flex-wrap: nowrap;
+  }
   .chat-layout {
     min-height: 0;
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(120px, 28vh) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
   }
   .conversation-list {
+    display: flex;
+    gap: var(--space-2);
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 6px;
     border-right: 0;
     border-bottom: 1px solid var(--line-soft);
+  }
+  .conversation-search {
+    flex: 0 0 150px;
+  }
+  .conversation {
+    flex: 0 0 180px;
+    padding-block: 6px;
+  }
+  .transcript-header {
+    min-height: 44px;
+    padding-block: 4px;
+  }
+  .messages {
+    padding-block: 12px;
+  }
+  .composer {
+    width: calc(100% - 16px);
+    margin-bottom: 8px;
+  }
+  .composer-input {
+    min-height: 44px;
   }
   .config-layout {
     grid-template-columns: 1fr;

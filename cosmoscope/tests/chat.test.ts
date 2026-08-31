@@ -8,7 +8,7 @@ import { highlightCode, mediaRefsInText, renderMarkdown } from '@/markdown'
 import { RpcClient } from '@/rpc/client'
 import { liveAdminMethods } from '@/rpc/protocol'
 import { chatLogListSchema } from '@/rpc/schemas'
-import type { ChatMessage } from '@/types/domain'
+import type { ChatLogSummary, ChatMessage } from '@/types/domain'
 
 const pageMocks = vi.hoisted(() => ({
   route: { params: {}, query: {} },
@@ -37,10 +37,13 @@ vi.mock('@/backend/AdminBackend', () => ({
   renameChatSession: () => ({ kind: 'unused' }),
   forkChatSession: () => ({ kind: 'unused' }),
   deleteChatSession: () => ({ kind: 'unused' }),
+  listChatLogs: { kind: 'log-list' },
+  loadChatLogWindow: (scope: unknown) => ({ kind: 'log-window', scope }),
 }))
 vi.mock('@/backend/runBackend', () => ({ runBackend: (operation: { kind: string, [key: string]: unknown }) => Promise.resolve(pageMocks.respond(operation)) }))
 
 import ChatPage from '@/pages/ChatPage.vue'
+import ChatLogsPanel from '@/components/ChatLogsPanel.vue'
 import MessageContent from '@/components/MessageContent.vue'
 import ChatTranscript from '@/components/chat/ChatTranscript.vue'
 import { chatMethods } from '@/rpc/protocol'
@@ -75,6 +78,24 @@ describe('chat projection', () => {
     const item = (rowId: number) => ({ rowId, threadId: null, entry: { platform: 'PlatformRPC', kind: 'ChatPrivate', chatId: '1', recordedAt: null, senderId: null, senderUsername: null, senderDisplayName: null, messageId: String(rowId), replyToMessageId: null, isBot: false, mentions: [], mentionUsernames: [], imageUrls: [], files: [], text: '' } } as const)
     expect(mergeChatLogItems([item(3), item(4)], [item(1), item(2), item(3)], 'older', 3)).toEqual({ entries: [item(1), item(2), item(3)], pruned: true })
     expect(mergeChatLogItems([item(1), item(2)], [item(2), item(3), item(4)], 'newer', 3)).toEqual({ entries: [item(2), item(3), item(4)], pruned: true })
+  })
+
+  it('filters platform chat logs by multiple selected platforms', async () => {
+    const log = (platform: 'PlatformQQ' | 'PlatformMatrix' | 'PlatformRPC', chatId: string): ChatLogSummary => ({
+      scope: { platform, kind: 'ChatPrivate' as const, chatId }, chatDisplayName: null, messageCount: 1, latestAt: null,
+    })
+    pageMocks.route.query = { view: 'logs' }
+    pageMocks.connection.state = 'authenticated'
+    pageMocks.respond.mockReturnValue(success([log('PlatformQQ', 'qq'), log('PlatformMatrix', 'matrix'), log('PlatformRPC', 'rpc')]))
+    const wrapper = shallowMount(ChatLogsPanel)
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'MultiSelect' }).vm.$emit('update:modelValue', ['PlatformQQ', 'PlatformRPC'])
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.chat-log-nav').text()).toContain('QQ')
+    expect(wrapper.find('.chat-log-nav').text()).toContain('RPC')
+    expect(wrapper.find('.chat-log-nav').text()).not.toContain('Matrix')
   })
 
   it('deduplicates complete streaming snapshots in place', () => {

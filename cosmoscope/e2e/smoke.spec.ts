@@ -1,6 +1,11 @@
 import { expect, test } from '@playwright/test'
 import { AxeBuilder } from '@axe-core/playwright'
 
+const chatRpcMethods = [
+  'chat.open_session', 'chat.list_sessions', 'chat.get_session', 'chat.history', 'chat.fork', 'chat.rename_session',
+  'chat.delete_session', 'chat.upload_attachment', 'chat.send', 'chat.subscribe', 'chat.unsubscribe', 'media.delete',
+]
+
 const axeRoutes = ['/login', '/overview', '/chat', '/threads', '/memory', '/skills', '/audit', '/tasks', '/resources', '/schedules', '/configuration']
 
 for (const path of axeRoutes) {
@@ -96,4 +101,34 @@ test('responsive navigation opens on mobile', async ({ page, isMobile }) => {
   await expect(navigation).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(navigation).toBeHidden()
+})
+
+test('chat remains usable in a short mobile viewport', async ({ page, isMobile }) => {
+  test.skip(!isMobile, 'mobile project only')
+  await page.setViewportSize({ width: 667, height: 375 })
+  await page.routeWebSocket('ws://127.0.0.1:39999/rpc', (socket) => {
+    socket.onMessage((message) => {
+      const request = JSON.parse(typeof message === 'string' ? message : message.toString()) as { id: number, method: string }
+      const session = { sessionId: 'session-1', label: 'First session', parentSessionId: null, parentMessageId: null }
+      const result = request.method === 'admin.authenticate' ? { authenticated: true }
+        : request.method === 'admin.capabilities' ? { serverVersion: 'test', methods: [...chatRpcMethods, 'chat_log.list', 'chat_log.window'], topics: [], permissions: [], features: {} }
+          : request.method === 'chat.list_sessions' ? { sessions: [session] }
+            : request.method === 'chat.history' ? { sessionId: session.sessionId, messages: [], hasOlder: false }
+              : {}
+      socket.send(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }))
+    })
+  })
+  await page.goto('/login')
+  await page.getByLabel('RPC endpoint').fill('ws://127.0.0.1:39999/rpc')
+  await page.getByLabel('RPC token').fill('token')
+  await page.getByRole('button', { name: 'Connect' }).click()
+  await page.goto('/chat')
+
+  await expect(page.getByLabel('Chat transcript')).toBeVisible()
+  const heading = await page.locator('.chat-page > .page-heading').boundingBox()
+  const selector = await page.getByLabel('Chat sessions').boundingBox()
+  const transcript = await page.getByLabel('Chat transcript').boundingBox()
+  expect(heading?.height).toBeLessThanOrEqual(44)
+  expect(selector?.height).toBeLessThanOrEqual(56)
+  expect(transcript?.height).toBeGreaterThan(140)
 })
