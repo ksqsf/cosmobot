@@ -236,7 +236,7 @@ testThreadInspectionRpc :: IO ()
 testThreadInspectionRpc = do
   let inputKey = ThreadMessageKey PlatformRPC (Just "42") "message-1"
       linkedKey = ThreadMessageKey PlatformRPC (Just "42") "reply-1"
-  (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, countResponse, detailResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
+  (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, multiPlatformResponse, countResponse, detailResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
     rpcState <- RPC.newRpcState
     let dispatch method params =
           RPCServer.dispatchRpcRequest rpcState (RPCThread.threadRpcCallbacks (pure []) (pure . (== Concurrency.Id 7))) (rpcRequest method params)
@@ -261,6 +261,7 @@ testThreadInspectionRpc = do
       , parentMessageId = Nothing
       }
     populatedListResponse <- dispatch "thread.list" Aeson.Null
+    multiPlatformResponse <- dispatch "thread.list" (Aeson.object ["platforms" Aeson..= (["acp", "rpc"] :: [Text])])
     countResponse <- dispatch "thread.count" Aeson.Null
     detailResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
     resolveResponse <- dispatch "thread.resolve_run" (Aeson.object ["runId" Aeson..= runId])
@@ -270,7 +271,7 @@ testThreadInspectionRpc = do
       (RPCThread.threadRpcCallbacks (ThreadStorage.listActiveThreadInspections threads) (pure . (== Concurrency.Id 7)))
       (rpcRequest "thread.active" Aeson.Null)
     haltResponse <- dispatch "thread.halt" (Aeson.object ["taskId" Aeson..= (7 :: Int)])
-    pure (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, countResponse, detailResponse, resolveResponse, activeResponse, haltResponse)
+    pure (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, multiPlatformResponse, countResponse, detailResponse, resolveResponse, activeResponse, haltResponse)
   listResponse @?= responseResult (Aeson.object
     [ "threads" Aeson..= ([] :: [Aeson.Value])
     , "total" Aeson..= (0 :: Int)
@@ -289,6 +290,7 @@ testThreadInspectionRpc = do
   populatedLeafCount <- parseJsonField "leafCount" populatedThread
   populatedNodeCount @?= (1 :: Int)
   populatedLeafCount @?= (1 :: Int)
+  responseField multiPlatformResponse "total" @?= Just (1 :: Int)
   countResponse @?= responseResult (Aeson.object ["threads" Aeson..= (1 :: Int)])
   detailResponse @?= responseResult (Aeson.object
     [ "summary" Aeson..= Aeson.object

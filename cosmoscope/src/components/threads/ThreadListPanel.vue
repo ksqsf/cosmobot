@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import Column from 'primevue/column'
 import DataTable, { type DataTablePageEvent } from 'primevue/datatable'
+import FloatLabel from 'primevue/floatlabel'
 import InputText from 'primevue/inputtext'
-import Select from 'primevue/select'
+import MultiSelect from 'primevue/multiselect'
 import Tag from 'primevue/tag'
 import DisplayIdentity from '@/components/DisplayIdentity.vue'
 import PlatformIcon from '@/components/PlatformIcon.vue'
@@ -14,7 +15,7 @@ defineProps<{
   first: number
   rows: number
   loading: boolean
-  platformOptions: { label: string, value: AuditPlatform | 'all' }[]
+  platformOptions: { label: string, value: AuditPlatform }[]
   platformNames: Readonly<Record<AuditPlatform, string>>
 }>()
 const emit = defineEmits<{
@@ -22,7 +23,7 @@ const emit = defineEmits<{
   inspect: [thread: ThreadSummary]
 }>()
 const query = defineModel<string>('query', { required: true })
-const platform = defineModel<AuditPlatform | 'all'>('platform', { required: true })
+const platforms = defineModel<AuditPlatform[]>('platforms', { required: true })
 </script>
 
 <template>
@@ -33,13 +34,18 @@ const platform = defineModel<AuditPlatform | 'all'>('platform', { required: true
         placeholder="Filter by thread, chat, or message"
         aria-label="Filter threads"
       />
-      <Select
-        v-model="platform"
-        :options="platformOptions"
-        option-label="label"
-        option-value="value"
-        aria-label="Filter by platform"
-      />
+      <FloatLabel variant="on">
+        <MultiSelect
+          v-model="platforms"
+          :options="platformOptions"
+          input-id="thread-platform-filter"
+          option-label="label"
+          option-value="value"
+          display="chip"
+          placeholder="All"
+        />
+        <label for="thread-platform-filter">Platform</label>
+      </FloatLabel>
     </div>
     <DataTable
       :value="threads"

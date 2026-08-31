@@ -6,9 +6,10 @@ import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Drawer from 'primevue/drawer'
+import FloatLabel from 'primevue/floatlabel'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
-import Select from 'primevue/select'
+import MultiSelect from 'primevue/multiselect'
 import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
@@ -19,13 +20,13 @@ import type { Schedule } from '@/types/domain'
 import { useConnectionStore } from '@/stores/connection'
 import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 
-type CadenceFilter = 'all' | 'one-shot' | 'recurring'
+type CadenceFilter = 'one-shot' | 'recurring'
 const schedules = ref<Schedule[]>([])
 const selected = ref<Schedule>()
 const visible = ref(false)
 const query = ref('')
-const platformFilter = ref('Any platform')
-const cadenceFilter = ref<CadenceFilter>('all')
+const platformFilters = ref<string[]>([])
+const cadenceFilters = ref<CadenceFilter[]>([])
 const error = ref('')
 const loading = ref(true)
 const loaded = ref(false)
@@ -42,16 +43,15 @@ const summary = computed(() => ({
   oneShot: schedules.value.filter(({ intervalSeconds }) => intervalSeconds === null).length,
   owners: new Set(schedules.value.map(({ ownerId }) => ownerId).filter((owner) => owner !== null)).size,
 }))
-const platformOptions = computed(() => ['Any platform', ...new Set(schedules.value.map(({ platform }) => platform))])
+const platformOptions = computed(() => [...new Set(schedules.value.map(({ platform }) => platform))])
 const cadenceOptions = [
-  { label: 'Any cadence', value: 'all' },
   { label: 'One-shot', value: 'one-shot' },
   { label: 'Recurring', value: 'recurring' },
 ] satisfies readonly { label: string; value: CadenceFilter }[]
 const filtered = computed(() => schedules.value.filter((schedule) =>
   `${String(schedule.id)} ${schedule.prompt} ${schedule.platform} ${schedule.chatId ?? ''} ${schedule.ownerId ?? ''} ${schedule.runId ?? ''}`.toLowerCase().includes(query.value.toLowerCase())
-  && (platformFilter.value === 'Any platform' || schedule.platform === platformFilter.value)
-  && (cadenceFilter.value === 'all' || (schedule.intervalSeconds !== null) === (cadenceFilter.value === 'recurring')),
+  && (platformFilters.value.length === 0 || platformFilters.value.includes(schedule.platform))
+  && (cadenceFilters.value.length === 0 || cadenceFilters.value.includes(schedule.intervalSeconds === null ? 'one-shot' : 'recurring')),
 ))
 
 function remaining(seconds: number): string {
@@ -167,18 +167,28 @@ watch(() => route.params['scheduleId'], selectFromRoute)
             aria-label="Filter schedules"
           />
           <div>
-            <Select
-              v-model="platformFilter"
-              :options="platformOptions"
-              aria-label="Filter by platform"
-            />
-            <Select
-              v-model="cadenceFilter"
-              :options="cadenceOptions"
-              option-label="label"
-              option-value="value"
-              aria-label="Filter by cadence"
-            />
+            <FloatLabel variant="on">
+              <MultiSelect
+                v-model="platformFilters"
+                :options="platformOptions"
+                input-id="schedule-platform-filter"
+                display="chip"
+                placeholder="All"
+              />
+              <label for="schedule-platform-filter">Platform</label>
+            </FloatLabel>
+            <FloatLabel variant="on">
+              <MultiSelect
+                v-model="cadenceFilters"
+                :options="cadenceOptions"
+                input-id="schedule-cadence-filter"
+                option-label="label"
+                option-value="value"
+                display="chip"
+                placeholder="All"
+              />
+              <label for="schedule-cadence-filter">Cadence</label>
+            </FloatLabel>
           </div>
         </div>
         <DataTable

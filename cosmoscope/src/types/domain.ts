@@ -86,7 +86,7 @@ export interface ThreadListQuery {
   readonly offset: number
   readonly limit: number
   readonly query?: string | undefined
-  readonly platform?: AuditPlatform | undefined
+  readonly platforms?: readonly AuditPlatform[] | undefined
 }
 
 export interface ThreadSnapshot {

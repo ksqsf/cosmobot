@@ -54,7 +54,7 @@ dispatchThreadMethod inspectActive haltActive request =
       parseParams request parseThreadListParams \params -> do
         rows <- Thread.loadThreadIndexRows
         let logicalRows = collapseSummaryAliases rows
-            summaries = filter (\summary -> maybe True (== summary.rootKey.platform) params.platform) (threadSummaries logicalRows)
+            summaries = filter (\summary -> null params.platforms || summary.rootKey.platform `elem` params.platforms) (threadSummaries logicalRows)
         -- ponytail: text search scans root blobs; add an indexed preview column if this becomes a sustained hot path.
         searchTails <- if Text.null params.query then pure [] else Thread.loadThreadRowsByIds (map (.latestRowId) summaries)
         let searchPreviews = Map.fromList [(row.rowId, threadRowPreview row) | row <- searchTails]
@@ -121,7 +121,7 @@ data ThreadListParams = ThreadListParams
   { offset :: !Int
   , limit :: !Int
   , query :: !Text
-  , platform :: !(Maybe ChatPlatform)
+  , platforms :: ![ChatPlatform]
   }
 
 threadSummaries :: [Thread.ThreadIndexRow] -> [ThreadSummary]
@@ -297,18 +297,18 @@ parseNoParams Aeson.Null = pure ()
 parseNoParams value = Aeson.withObject "thread.list params" (\o -> unless (null o) (fail "params must be empty")) value
 
 parseThreadListParams :: Aeson.Value -> AesonTypes.Parser ThreadListParams
-parseThreadListParams Aeson.Null = pure (ThreadListParams 0 25 "" Nothing)
+parseThreadListParams Aeson.Null = pure (ThreadListParams 0 25 "" [])
 parseThreadListParams value = Aeson.withObject "thread.list params" parse value
   where
     parse o = do
       offset <- fromMaybe 0 <$> o Aeson..:? "offset"
       limit <- fromMaybe 25 <$> o Aeson..:? "limit"
       query <- Text.strip . fromMaybe "" <$> o Aeson..:? "query"
-      platform <- o Aeson..:? "platform" >>= traverse parsePlatform
+      platforms <- ordNub <$> (fromMaybe [] <$> o Aeson..:? "platforms" >>= traverse parsePlatform)
       unless (offset >= 0) (fail "offset must be non-negative")
       unless (limit >= 1 && limit <= 200) (fail "limit must be between 1 and 200")
       unless (Text.length query <= 256) (fail "query must be at most 256 characters")
-      pure ThreadListParams{offset, limit, query, platform}
+      pure ThreadListParams{offset, limit, query, platforms}
 
 parsePlatform :: Text -> AesonTypes.Parser ChatPlatform
 parsePlatform = \case

@@ -6,9 +6,10 @@ import Button from 'primevue/button'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
 import Drawer from 'primevue/drawer'
+import FloatLabel from 'primevue/floatlabel'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
-import Select from 'primevue/select'
+import MultiSelect from 'primevue/multiselect'
 import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
@@ -19,16 +20,16 @@ import { useConnectionStore } from '@/stores/connection'
 import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
 
 const resourceMethods = ['resource.list', 'resource.detail', 'resource.destroy', 'resource.rename', 'resource.keep_alive', 'resource.make_permanent'] as const
-type ProbeFilter = 'all' | 'healthy' | 'failed'
+type ProbeFilter = 'healthy' | 'failed'
 type PendingAction = 'detail' | 'rename' | 'keep-alive' | 'permanent' | 'destroy'
 const resources = ref<Resource[]>([])
 const selected = ref<Resource>()
 const detail = ref('')
 const visible = ref(false)
 const query = ref('')
-const typeFilter = ref('Any type')
-const platformFilter = ref('Any platform')
-const probeFilter = ref<ProbeFilter>('all')
+const typeFilters = ref<string[]>([])
+const platformFilters = ref<string[]>([])
+const probeFilters = ref<ProbeFilter[]>([])
 const newId = ref('')
 const error = ref('')
 const loading = ref(true)
@@ -48,10 +49,9 @@ const summary = computed(() => ({
   expiring: resources.value.filter(({ remainingLifeMinutes }) => remainingLifeMinutes !== null).length,
   permanent: resources.value.filter(({ remainingLifeMinutes }) => remainingLifeMinutes === null).length,
 }))
-const typeOptions = computed(() => ['Any type', ...new Set(resources.value.map((resource) => resource.type))])
-const platformOptions = computed(() => ['Any platform', ...new Set(resources.value.map((resource) => resource.platform))])
+const typeOptions = computed(() => [...new Set(resources.value.map((resource) => resource.type))])
+const platformOptions = computed(() => [...new Set(resources.value.map((resource) => resource.platform))])
 const probeOptions = [
-  { label: 'Any health', value: 'all' },
   { label: 'Healthy', value: 'healthy' },
   { label: 'Probe failed', value: 'failed' },
 ] satisfies readonly { label: string; value: ProbeFilter }[]
@@ -67,9 +67,9 @@ function resourceIcon(type: string): string {
 }
 const filtered = computed(() => resources.value.filter((resource) =>
   `${resource.id} ${resource.type} ${resource.description} ${resource.platform} ${resource.chatId} ${resource.ownerId}`.toLowerCase().includes(query.value.toLowerCase())
-  && (typeFilter.value === 'Any type' || resource.type === typeFilter.value)
-  && (platformFilter.value === 'Any platform' || resource.platform === platformFilter.value)
-  && (probeFilter.value === 'all' || resource.probe.ok === (probeFilter.value === 'healthy')),
+  && (typeFilters.value.length === 0 || typeFilters.value.includes(resource.type))
+  && (platformFilters.value.length === 0 || platformFilters.value.includes(resource.platform))
+  && (probeFilters.value.length === 0 || probeFilters.value.includes(resource.probe.ok ? 'healthy' : 'failed')),
 ))
 
 async function refresh(): Promise<void> {
@@ -228,21 +228,36 @@ watch(() => route.params['resourceId'], () => { void selectFromRoute() })
             aria-label="Filter resources"
           />
           <div>
-            <Select
-              v-model="typeFilter"
-              :options="typeOptions"
-              aria-label="Filter by resource type"
-            /><Select
-              v-model="platformFilter"
-              :options="platformOptions"
-              aria-label="Filter by platform"
-            /><Select
-              v-model="probeFilter"
-              :options="probeOptions"
-              option-label="label"
-              option-value="value"
-              aria-label="Filter by health"
-            />
+            <FloatLabel variant="on">
+              <MultiSelect
+                v-model="typeFilters"
+                :options="typeOptions"
+                input-id="resource-type-filter"
+                display="chip"
+                placeholder="All"
+              />
+              <label for="resource-type-filter">Type</label>
+            </FloatLabel><FloatLabel variant="on">
+              <MultiSelect
+                v-model="platformFilters"
+                :options="platformOptions"
+                input-id="resource-platform-filter"
+                display="chip"
+                placeholder="All"
+              />
+              <label for="resource-platform-filter">Platform</label>
+            </FloatLabel><FloatLabel variant="on">
+              <MultiSelect
+                v-model="probeFilters"
+                :options="probeOptions"
+                input-id="resource-health-filter"
+                option-label="label"
+                option-value="value"
+                display="chip"
+                placeholder="All"
+              />
+              <label for="resource-health-filter">Health</label>
+            </FloatLabel>
           </div>
         </div>
         <DataTable

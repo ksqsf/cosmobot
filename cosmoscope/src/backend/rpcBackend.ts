@@ -111,7 +111,7 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
         offset: query.offset,
         limit: query.limit,
         ...(query.query === undefined ? {} : { query: query.query }),
-        ...(query.platform === undefined ? {} : { platform: auditPlatformKey(query.platform) }),
+        ...(query.platforms === undefined ? {} : { platforms: query.platforms.map(auditPlatformKey) }),
       }))),
       get: (id) => rpcEffect('Could not load the thread.', async () => threadDetailSchema.nullable().parse(await client.request('thread.get', { threadId: id }))),
       resolveRun: (runId) => rpcEffect('Could not find the agent thread.', async () => threadRunTargetSchema.parse(await client.request('thread.resolve_run', { runId }))),

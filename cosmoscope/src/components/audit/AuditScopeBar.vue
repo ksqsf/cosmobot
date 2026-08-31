@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import Select from 'primevue/select'
+import FloatLabel from 'primevue/floatlabel'
+import MultiSelect from 'primevue/multiselect'
 import SearchQualifierInput from '@/components/SearchQualifierInput.vue'
 import {
   auditEventTypeOptions, auditPlatformOptions, type AuditEventFilter, type AuditPlatformFilter,
 } from '@/composables/useAuditStream'
 
-defineProps<{ query: string, platform: AuditPlatformFilter, eventType: AuditEventFilter }>()
+defineProps<{ query: string, platforms: AuditPlatformFilter[], eventTypes: AuditEventFilter[] }>()
 const emit = defineEmits<{
   'update:query': [value: string]
-  'update:platform': [value: AuditPlatformFilter]
-  'update:eventType': [value: AuditEventFilter]
+  'update:platforms': [value: AuditPlatformFilter[]]
+  'update:eventTypes': [value: AuditEventFilter[]]
   submit: [value: string]
 }>()
 const qualifiers = [
@@ -28,23 +29,31 @@ const qualifiers = [
       @update:model-value="emit('update:query', $event)"
       @submit="emit('submit', $event)"
     />
-    <Select
-      :model-value="platform"
-      :options="[...auditPlatformOptions]"
-      option-label="label"
-      option-value="value"
-      aria-label="Platform"
-      size="small"
-      @update:model-value="emit('update:platform', $event)"
-    />
-    <Select
-      :model-value="eventType"
-      :options="[...auditEventTypeOptions]"
-      option-label="label"
-      option-value="value"
-      aria-label="Event type"
-      size="small"
-      @update:model-value="emit('update:eventType', $event)"
-    />
+    <FloatLabel variant="on">
+      <MultiSelect
+        :model-value="platforms"
+        :options="[...auditPlatformOptions]"
+        input-id="audit-platform-filter"
+        option-label="label"
+        option-value="value"
+        display="chip"
+        placeholder="All"
+        @update:model-value="emit('update:platforms', $event)"
+      />
+      <label for="audit-platform-filter">Platform</label>
+    </FloatLabel>
+    <FloatLabel variant="on">
+      <MultiSelect
+        :model-value="eventTypes"
+        :options="[...auditEventTypeOptions]"
+        input-id="audit-event-filter"
+        option-label="label"
+        option-value="value"
+        display="chip"
+        placeholder="All"
+        @update:model-value="emit('update:eventTypes', $event)"
+      />
+      <label for="audit-event-filter">Event type</label>
+    </FloatLabel>
   </div>
 </template>

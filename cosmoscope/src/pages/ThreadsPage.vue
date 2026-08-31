@@ -60,7 +60,7 @@ const platformNames = {
   PlatformDiscord: 'Discord', PlatformRPC: 'RPC', PlatformACP: 'ACP',
 } satisfies Record<AuditPlatform, string>
 const allPlatforms: readonly AuditPlatform[] = ['PlatformQQ', 'PlatformTelegram', 'PlatformMatrix', 'PlatformDiscord', 'PlatformRPC', 'PlatformACP']
-const platformOptions = computed(() => [{ label: 'All platforms', value: 'all' as const }, ...allPlatforms.map((value) => ({ label: platformNames[value], value }))])
+const platformOptions = computed(() => allPlatforms.map((value) => ({ label: platformNames[value], value })))
 const inspectedActiveThreads = computed(() => inspector.detail.value === undefined
   ? active.selected.value === undefined ? [] : [active.selected.value]
   : active.activeThreads.value.filter(({ parentThreadId }) => parentThreadId === inspector.detail.value?.summary.threadId))
@@ -177,7 +177,7 @@ async function halt(thread: ActiveThread): Promise<void> {
 onMounted(() => { void list.refresh(); active.startPolling() })
 watch([() => connection.state, () => connection.methods], () => { void list.refresh(); void active.poll() })
 watch([() => route.params['threadId'], () => route.query['run']], () => { void selectFromRoute() })
-watch([list.debouncedQuery, list.platform], () => { list.first.value = 0; void list.refresh() })
+watch([list.debouncedQuery, list.platforms], () => { list.first.value = 0; void list.refresh() })
 </script>
 
 <template>
@@ -232,7 +232,7 @@ watch([list.debouncedQuery, list.platform], () => { list.first.value = 0; void l
       />
       <ThreadListPanel
         v-model:query="list.query.value"
-        v-model:platform="list.platform.value"
+        v-model:platforms="list.platforms.value"
         :threads="list.threads.value"
         :total="list.total.value"
         :first="list.first.value"

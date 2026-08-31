@@ -11,7 +11,7 @@ interface ThreadList {
   readonly threads: Ref<ThreadSummary[]>
   readonly query: Ref<string>
   readonly debouncedQuery: Readonly<Ref<string>>
-  readonly platform: Ref<AuditPlatform | 'all'>
+  readonly platforms: Ref<AuditPlatform[]>
   readonly first: Ref<number>
   readonly rows: Ref<number>
   readonly total: Ref<number>
@@ -30,7 +30,7 @@ export function useThreadList(afterRefresh: () => void | Promise<void>): ThreadL
   const threads = ref<ThreadSummary[]>([])
   const query = ref('')
   const debouncedQuery = refDebounced(query, 250)
-  const platform = ref<AuditPlatform | 'all'>('all')
+  const platforms = ref<AuditPlatform[]>([])
   const first = ref(0)
   const rows = ref(25)
   const total = ref(0)
@@ -68,7 +68,7 @@ export function useThreadList(afterRefresh: () => void | Promise<void>): ThreadL
       offset: first.value,
       limit: rows.value,
       ...(debouncedQuery.value.trim() === '' ? {} : { query: debouncedQuery.value.trim() }),
-      ...(platform.value === 'all' ? {} : { platform: platform.value }),
+      ...(platforms.value.length === 0 ? {} : { platforms: platforms.value }),
     }))
     if (!latest.current(token)) return
     loading.value = false
@@ -94,7 +94,7 @@ export function useThreadList(afterRefresh: () => void | Promise<void>): ThreadL
   }
 
   return {
-    threads, query, debouncedQuery, platform, first, rows, total, error, loading, tableLoading, loaded, summary,
+    threads, query, debouncedQuery, platforms, first, rows, total, error, loading, tableLoading, loaded, summary,
     refresh, changePage,
   }
 }

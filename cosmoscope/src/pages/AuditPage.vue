@@ -19,7 +19,7 @@ const scope = useAuditScopeRoute(reload, select)
 const stream = useAuditStream(scope)
 const {
   state, error, events, buffered, paused, selectedId, selected, related, detailError, threadError,
-  platform, eventType, filteredEvents, installSubscription,
+  platforms, eventTypes, filteredEvents, installSubscription,
 } = stream
 </script>
 
@@ -87,8 +87,8 @@ const {
       </p>
       <AuditScopeBar
         v-model:query="scope.query.value"
-        v-model:platform="platform"
-        v-model:event-type="eventType"
+        v-model:platforms="platforms"
+        v-model:event-types="eventTypes"
         @submit="scope.submitSearch"
       />
       <Message

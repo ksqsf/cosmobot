@@ -12,12 +12,11 @@ import { useConnectionStore } from '@/stores/connection'
 import type { AuditEvent, AuditPlatform, AuditRecord } from '@/types/domain'
 import type { AuditScopeRoute } from './useAuditScopeRoute'
 
-export type AuditEventFilter = 'all' | 'tool' | 'model' | 'failure'
-export type AuditPlatformFilter = 'all' | AuditPlatform | 'unlinked'
+export type AuditEventFilter = 'tool' | 'model' | 'failure'
+export type AuditPlatformFilter = AuditPlatform | 'unlinked'
 export type AuditPageState = 'loading' | 'ready' | 'unavailable' | 'error'
 
 export const auditPlatformOptions = [
-  { label: 'All platforms', value: 'all' },
   { label: 'QQ', value: 'PlatformQQ' },
   { label: 'Telegram', value: 'PlatformTelegram' },
   { label: 'Matrix', value: 'PlatformMatrix' },
@@ -28,7 +27,6 @@ export const auditPlatformOptions = [
 ] satisfies readonly { readonly label: string; readonly value: AuditPlatformFilter }[]
 
 export const auditEventTypeOptions = [
-  { label: 'All events', value: 'all' },
   { label: 'Tool calls', value: 'tool' },
   { label: 'Model turns', value: 'model' },
   { label: 'Failures', value: 'failure' },
@@ -37,7 +35,6 @@ export const auditEventTypeOptions = [
 const loadedLimit = 200
 const bufferedLimit = 100
 const eventFilters = {
-  all: () => true,
   tool: (event: AuditEvent) => auditPresentation(event).category === 'tool',
   model: (event: AuditEvent) => auditPresentation(event).category === 'model',
   failure: isAuditFailure,
@@ -54,8 +51,8 @@ export interface AuditStream {
   related: Ref<AuditRecord[]>
   detailError: Ref<string>
   threadError: Ref<string>
-  platform: Ref<AuditPlatformFilter>
-  eventType: Ref<AuditEventFilter>
+  platforms: Ref<AuditPlatformFilter[]>
+  eventTypes: Ref<AuditEventFilter[]>
   filteredEvents: ComputedRef<AuditRecord[]>
   loadSnapshot: () => Promise<void>
   loadSelection: (id: number) => Promise<void>
@@ -77,8 +74,8 @@ export function useAuditStream(scope: AuditScopeRoute): AuditStream {
   const related = ref<AuditRecord[]>([])
   const detailError = ref('')
   const threadError = ref('')
-  const platform = ref<AuditPlatformFilter>('all')
-  const eventType = ref<AuditEventFilter>('all')
+  const platforms = ref<AuditPlatformFilter[]>([])
+  const eventTypes = ref<AuditEventFilter[]>([])
   const snapshotLatest = useLatest()
   const detailLatest = useLatest()
   const subscription = useLatestSubscription()
@@ -88,11 +85,11 @@ export function useAuditStream(scope: AuditScopeRoute): AuditStream {
     const presentation = auditPresentation(record.event)
     const searchable = `${presentation.kind} ${presentation.summary} ${record.event.runId}`.toLowerCase()
     const recordPlatform = auditPlatform(allKnownEvents.value, record.event.runId)
-    const platformMatches = platform.value === 'all'
-      || platform.value === 'unlinked' && recordPlatform === undefined
-      || platform.value === recordPlatform
+    const platformMatches = platforms.value.length === 0 || platforms.value.some((platform) =>
+      platform === 'unlinked' ? recordPlatform === undefined : platform === recordPlatform)
     return searchable.includes(scope.submittedSearch.value.text.trim().toLowerCase())
-      && platformMatches && eventFilters[eventType.value](record.event)
+      && platformMatches
+      && (eventTypes.value.length === 0 || eventTypes.value.some((eventType) => eventFilters[eventType](record.event)))
   }))
   const requiredMethods = ['audit.recent', 'audit.search', 'audit.get', 'audit.thread', 'audit.subscribe'] as const
   const supportsAudit = computed(() => requiredMethods.every((method) => connection.methods.has(method)))
@@ -218,7 +215,7 @@ export function useAuditStream(scope: AuditScopeRoute): AuditStream {
 
   return {
     state, error, events, buffered, paused, selectedId, selected, related, detailError, threadError,
-    platform, eventType, filteredEvents, loadSnapshot, loadSelection, installSubscription,
+    platforms, eventTypes, filteredEvents, loadSnapshot, loadSelection, installSubscription,
     platformLabel, resume, discard,
   }
 }
