@@ -992,7 +992,7 @@
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
   }
-  .chat-log-nav { max-height: 18rem; }
+  .chat-log-nav { max-height: 8rem; }
 }
 .message {
   width: min(820px, 100%);
