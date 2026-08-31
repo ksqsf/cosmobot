@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
@@ -17,6 +17,7 @@ import type { BackendError } from '@/backend/AdminBackend'
 import { auditArguments, auditDetailFields, auditPlatform, auditPresentation, auditResult, boundedStructuredText, isAuditFailure, mergeAuditRecords, parseAuditSearch } from '@/backend/audit'
 import { runBackend } from '@/backend/runBackend'
 import type { BackendResult } from '@/backend/runBackend'
+import { useLatest, useLatestSubscription } from '@/async'
 import { mediaRefFromClick, renderMarkdown } from '@/markdown'
 import { useConnectionStore } from '@/stores/connection'
 import type { AuditEvent, AuditPlatform, AuditRecord, ThreadMessageKey } from '@/types/domain'
@@ -44,9 +45,9 @@ const selectedDetail = ref<AuditRecord>()
 const related = ref<AuditRecord[]>([])
 const detailError = ref('')
 const threadError = ref('')
-let stopSubscription: (() => void) | undefined
-let subscriptionGeneration = 0
-let detailGeneration = 0
+const snapshotLatest = useLatest()
+const detailLatest = useLatest()
+const subscription = useLatestSubscription()
 
 const platformOptions = [
   { label: 'All platforms', value: 'all' },
@@ -123,7 +124,10 @@ function platformLabel(record: AuditRecord): string {
 }
 
 async function loadSnapshot(): Promise<void> {
+  const token = snapshotLatest.begin()
+  if (!snapshotLatest.current(token)) return
   const result = await loadRequestedAudit()
+  if (!snapshotLatest.current(token)) return
   if (result._tag === 'Failure') {
     error.value = result.error.message
     if (state.value !== 'ready') state.value = 'error'
@@ -173,9 +177,9 @@ function receive(record: AuditRecord): void {
 }
 
 async function installSubscription(): Promise<void> {
-  const generation = ++subscriptionGeneration
-  stopSubscription?.()
-  stopSubscription = undefined
+  const token = subscription.begin()
+  if (!subscription.current(token)) return
+  snapshotLatest.invalidate()
   if (connection.state === 'opening' || connection.state === 'reconnecting') {
     state.value = events.value.length === 0 ? 'loading' : 'ready'
     return
@@ -188,16 +192,19 @@ async function installSubscription(): Promise<void> {
     return
   }
   state.value = events.value.length === 0 ? 'loading' : 'ready'
-  const result = await runBackend(subscribeAudit(loadSnapshot, receive))
-  if (generation !== subscriptionGeneration) {
-    if (result._tag === 'Success') result.value()
+  const result = await runBackend(subscribeAudit(
+    () => subscription.current(token) ? loadSnapshot() : Promise.resolve(),
+    (record) => { if (subscription.current(token)) receive(record) },
+  ))
+  if (!subscription.current(token)) {
+    if (result._tag === 'Success') subscription.own(token, result.value)
     return
   }
   if (result._tag === 'Failure') {
     error.value = result.error.message
     state.value = events.value.length === 0 ? 'error' : 'ready'
   } else {
-    stopSubscription = result.value
+    subscription.own(token, result.value)
   }
 }
 
@@ -290,9 +297,10 @@ async function loadSelection(id: number): Promise<void> {
   related.value = []
   detailError.value = ''
   threadError.value = ''
-  const generation = ++detailGeneration
+  const token = detailLatest.begin()
+  if (!detailLatest.current(token)) return
   const result = await runBackend(getAudit(id))
-  if (generation !== detailGeneration) return
+  if (!detailLatest.current(token)) return
   if (result._tag === 'Failure') {
     detailError.value = result.error.message
     return
@@ -303,13 +311,13 @@ async function loadSelection(id: number): Promise<void> {
   }
   selectedDetail.value = result.value
   const target = await runBackend(resolveThreadRun(result.value.event.runId))
-  if (generation !== detailGeneration) return
+  if (!detailLatest.current(token)) return
   if (target._tag === 'Failure' || target.value.threadId === null) {
     related.value = events.value.filter(({ event }) => event.runId === result.value?.event.runId)
     return
   }
   const threadResult = await loadThreadAudit(target.value.threadId)
-  if (generation !== detailGeneration) return
+  if (!detailLatest.current(token)) return
   if (threadResult._tag === 'Success') related.value = [...threadResult.value]
   else threadError.value = threadResult.error.message
 }
@@ -332,7 +340,6 @@ watch(() => route.params['auditId'], () => {
 watch([() => route.query['run'], () => route.query['thread']], routeScopeChanged)
 watch([() => connection.state, () => connection.methods], () => { void installSubscription() })
 onMounted(() => { syncScopeFromRoute(); void installSubscription() })
-onUnmounted(() => { subscriptionGeneration += 1; stopSubscription?.(); detailGeneration += 1 })
 </script>
 
 <template>

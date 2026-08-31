@@ -18,6 +18,7 @@ import PageHeading from '@/components/PageHeading.vue'
 import { collectMediaGarbage, deleteMedia, getMedia, listMedia, searchMedia } from '@/backend/AdminBackend'
 import { safeDownloadUrl } from '@/backend/chat'
 import { runBackend } from '@/backend/runBackend'
+import { useLatest } from '@/async'
 import { formatBytes } from '@/format'
 import { useConnectionStore } from '@/stores/connection'
 import { useLayeredConfirm, useOverlayLayer } from '@/overlay'
@@ -54,8 +55,11 @@ const pending = ref<PendingAction>()
 const searchResults = ref<readonly MediaItem[]>()
 const searching = ref(false)
 const searchError = ref('')
-let searchGeneration = 0
-let detailGeneration = 0
+const searchLatest = useLatest()
+const detailLatest = useLatest()
+const listLatest = useLatest()
+const pageLatest = useLatest()
+const pageToken = pageLatest.begin()
 const route = useRoute()
 const router = useRouter()
 const confirm = useLayeredConfirm()
@@ -99,6 +103,8 @@ function platformIcon(platform: string): string { return platformIcons[platform.
 function platformLabel(platform: string): string { return platformLabels[platform.toLowerCase()] ?? platform }
 
 async function refresh(): Promise<void> {
+  const token = listLatest.begin()
+  if (!listLatest.current(token)) return
   if (connection.state === 'opening' || connection.state === 'reconnecting') { loading.value = true; return }
   if (connection.state !== 'authenticated') {
     loading.value = false
@@ -107,6 +113,7 @@ async function refresh(): Promise<void> {
   }
   loading.value = true
   const result = await runBackend(listMedia())
+  if (!listLatest.current(token)) return
   loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
@@ -119,7 +126,8 @@ async function refresh(): Promise<void> {
   void refreshSearch()
 }
 async function refreshSearch(): Promise<void> {
-  const generation = ++searchGeneration
+  const token = searchLatest.begin()
+  if (!searchLatest.current(token)) return
   const selectedPlatforms = platforms.value.filter((platform) => platform !== noPlatform)
   const text = debouncedQuery.value.trim()
   const hasConditions = text !== '' || platforms.value.length > 0 || mimeTypes.value.length > 0 || sourceKinds.value.length > 0
@@ -139,7 +147,7 @@ async function refreshSearch(): Promise<void> {
     sourceKinds: sourceKinds.value,
     limit: 500,
   }))
-  if (generation !== searchGeneration) return
+  if (!searchLatest.current(token)) return
   searching.value = false
   if (result._tag === 'Failure') {
     searchError.value = result.error.message
@@ -148,7 +156,8 @@ async function refreshSearch(): Promise<void> {
   searchResults.value = result.value
 }
 async function selectFromRoute(): Promise<void> {
-  const generation = ++detailGeneration
+  const token = detailLatest.begin()
+  if (!detailLatest.current(token)) return
   const mediaId = route.params['mediaId']
   if (typeof mediaId !== 'string') {
     detail.value = undefined
@@ -158,7 +167,7 @@ async function selectFromRoute(): Promise<void> {
   }
   pending.value = 'detail'
   const result = await runBackend(getMedia(mediaId))
-  if (generation !== detailGeneration) return
+  if (!detailLatest.current(token)) return
   pending.value = undefined
   if (result._tag === 'Failure') { drawerOpen.value = false; error.value = result.error.message; return }
   detail.value = result.value
@@ -166,7 +175,7 @@ async function selectFromRoute(): Promise<void> {
 }
 function inspect(item: MediaItem): void { void router.replace(`/media/${encodeURIComponent(item.mediaId)}`) }
 function closeDrawer(): void {
-  detailGeneration += 1
+  detailLatest.invalidate()
   detail.value = undefined
   zoomOpen.value = false
   if (pending.value === 'detail') pending.value = undefined
@@ -177,6 +186,7 @@ async function remove(ids: readonly string[]): Promise<void> {
   pending.value = ids.length === 1 ? 'delete' : 'batch-delete'
   const results = []
   for (const id of ids) results.push(await runBackend(deleteMedia(id)))
+  if (!pageLatest.current(pageToken)) return
   pending.value = undefined
   const failed = results.filter(({ _tag }) => _tag === 'Failure').length
   const deleted = ids.length - failed
@@ -199,6 +209,7 @@ async function runGc(force: boolean): Promise<void> {
   const before = stats.value.totalBytes
   pending.value = 'gc'
   const result = await runBackend(collectMediaGarbage(force ? 0 : undefined))
+  if (!pageLatest.current(pageToken)) return
   pending.value = undefined
   if (result._tag === 'Failure') { toast.add({ severity: 'error', summary: result.error.message, life: 3500 }); return }
   await refresh()
@@ -229,7 +240,7 @@ async function copyPublicUrl(): Promise<void> {
   } catch { toast.add({ severity: 'error', summary: 'Could not copy the public URL', life: 3000 }) }
 }
 
-onMounted(refresh)
+onMounted(() => { void refresh() })
 watch([() => connection.state, () => connection.methods], () => { void refresh() })
 watch(() => route.params['mediaId'], () => { void selectFromRoute() })
 watch([debouncedQuery, platforms, mimeTypes, sourceKinds], () => { void refreshSearch() }, { deep: true })

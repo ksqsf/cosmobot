@@ -1,8 +1,22 @@
 import { Effect } from 'effect'
+import { flushPromises, shallowMount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import { makeRpcBackend } from '@/backend/rpcBackend'
 import { RpcClient } from '@/rpc/client'
 import { liveAdminMethods } from '@/rpc/protocol'
+
+const pageMocks = vi.hoisted(() => ({ connection: { state: 'authenticated', methods: new Set<string>(), error: '' }, runBackend: vi.fn() }))
+vi.mock('@/backend/runBackend', () => ({ runBackend: pageMocks.runBackend }))
+vi.mock('@/stores/connection', () => ({ useConnectionStore: () => pageMocks.connection }))
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ params: {} }),
+  useRouter: () => ({ replace: vi.fn(() => Promise.resolve()) }),
+}))
+vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }))
+vi.mock('@/overlay', () => ({
+  useLayeredConfirm: () => ({ require: vi.fn() }),
+  useOverlayLayer: () => ({ isTop: { value: true } }),
+}))
 
 const item = {
   mediaId: 'media:file-1', fileId: 'file-1', digest: 'abc', mimeType: 'image/png', sourceName: 'image.png',
@@ -53,5 +67,26 @@ describe('media backend', () => {
       ['media.gc', {}],
       ['media.gc', { maxAgeSeconds: 0 }],
     ])
+  })
+
+  it('keeps the newest media snapshot when list requests finish out of order', async () => {
+    const pending: ((result: unknown) => void)[] = []
+    pageMocks.connection.methods = new Set(liveAdminMethods)
+    pageMocks.runBackend.mockImplementation(() => new Promise((resolve) => pending.push(resolve)))
+    const { default: MediaPage } = await import('@/pages/MediaPage.vue')
+    const wrapper = shallowMount(MediaPage)
+    await flushPromises()
+    void (wrapper.vm as unknown as { refresh: () => Promise<void> }).refresh()
+    expect(pending).toHaveLength(2)
+    const snapshot = (name: string): unknown => ({
+      _tag: 'Success',
+      value: { files: [{ ...item, sourceName: name }], stats: { files: 1, existingFiles: 1, missingFiles: 0, totalBytes: 1024, sources: 1, platformRefs: 1, platformAssociations: 1, mimeTypes: ['image/png'], platforms: ['telegram'] }, gcSettings: { enabled: true, maxAgeSeconds: 604800, intervalHours: 24 } },
+    })
+    pending[1]?.(snapshot('new.png'))
+    await flushPromises()
+    pending[0]?.(snapshot('old.png'))
+    await flushPromises()
+    expect((wrapper.vm as unknown as { media: unknown }).media).toMatchObject([{ sourceName: 'new.png' }])
+    wrapper.unmount()
   })
 })

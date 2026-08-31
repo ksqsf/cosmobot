@@ -28,6 +28,7 @@ import RunIdLink from '@/components/RunIdLink.vue'
 import { getMedia, getRunAudit, getThread, getThreadAudit, haltActiveThread, listActiveThreads, listThreads, resolveThreadRun, subscribeAudit } from '@/backend/AdminBackend'
 import { mergeAuditRecords } from '@/backend/audit'
 import { runBackend } from '@/backend/runBackend'
+import { useLatest, useLatestSubscription, type LatestToken } from '@/async'
 import { safeDownloadUrl, safeImageUrl } from '@/backend/chat'
 import { threadMessageChatKey, threadMessageKeyId, threadPathTo, threadToolActivity, type ThreadToolActivity } from '@/backend/thread'
 import { auditRecordsLinkedTo, threadStats } from '@/backend/threadStats'
@@ -85,10 +86,12 @@ const router = useRouter()
 const confirm = useLayeredConfirm()
 const toast = useToast()
 const connection = useConnectionStore()
-let detailGeneration = 0
-let activeGeneration = 0
-let stopActiveAuditSubscription: (() => void) | undefined
-let listGeneration = 0
+const listLatest = useLatest()
+const activeLatest = useLatest()
+const activeAuditLatest = useLatest()
+const inspectorLatest = useLatest()
+const activeAuditSubscription = useLatestSubscription()
+let activeSelectionToken: LatestToken | undefined
 let monitorTimer: number | undefined
 let activePolling = false
 let finalizingRunId: string | undefined
@@ -145,6 +148,8 @@ const transcriptMenuItems = computed<MenuItem[]>(() => {
 })
 
 async function refresh(): Promise<void> {
+  const token = listLatest.begin()
+  if (!listLatest.current(token)) return
   if (connection.state === 'opening' || connection.state === 'reconnecting') {
     if (loaded.value) tableLoading.value = true
     else loading.value = true
@@ -156,7 +161,6 @@ async function refresh(): Promise<void> {
     error.value = connection.error || 'Connect to cosmobot to load threads.'
     return
   }
-  const generation = ++listGeneration
   if (loaded.value) tableLoading.value = true
   else loading.value = true
   const result = await runBackend(listThreads({
@@ -165,7 +169,7 @@ async function refresh(): Promise<void> {
     ...(debouncedQuery.value.trim() === '' ? {} : { query: debouncedQuery.value.trim() }),
     ...(platform.value === 'all' ? {} : { platform: platform.value }),
   }))
-  if (generation !== listGeneration) return
+  if (!listLatest.current(token)) return
   loading.value = false
   tableLoading.value = false
   if (result._tag === 'Failure') {
@@ -189,12 +193,14 @@ function changePage(event: DataTablePageEvent): void {
 }
 
 async function refreshActive(): Promise<void> {
+  const token = activeLatest.begin()
+  if (!activeLatest.current(token)) return
   if (connection.state !== 'authenticated') { activeThreads.value = []; return }
-  const generation = ++activeGeneration
   const monitored = activeSelected.value
+  const selectionToken = activeSelectionToken
   const keepTranscriptPinned = activeTranscriptIsPinned()
   const result = await runBackend(listActiveThreads)
-  if (generation !== activeGeneration) return
+  if (!activeLatest.current(token)) return
   if (result._tag === 'Failure') { activeError.value = result.error.message; return }
   activeError.value = ''
   activeThreads.value = [...result.value]
@@ -202,18 +208,20 @@ async function refreshActive(): Promise<void> {
   if (selected !== undefined) {
     activeSnapshot.value = selected
     await Promise.all([
-      stopActiveAuditSubscription === undefined ? refreshActiveAudit(selected.runId, generation) : Promise.resolve(),
-      loadMediaForMessages(selected.messages),
+      activeAuditSubscription.owned() ? Promise.resolve() : refreshActiveAudit(selected.runId),
+      loadMediaForMessages(selected.messages, selectionToken),
     ])
-    if (generation === activeGeneration && keepTranscriptPinned) await scrollTranscriptToEnd()
-  } else if (monitored !== undefined && visible.value) {
-    await openFinalizedThread(monitored)
+    if (activeLatest.current(token) && keepTranscriptPinned) await scrollTranscriptToEnd()
+  } else if (monitored !== undefined && selectionToken !== undefined && visible.value) {
+    await openFinalizedThread(monitored, selectionToken)
   }
 }
 
-async function refreshActiveAudit(runId: string, generation: number): Promise<void> {
+async function refreshActiveAudit(runId: string): Promise<void> {
+  const token = activeAuditLatest.begin()
+  if (!activeAuditLatest.current(token)) return
   const result = await runBackend(getRunAudit(runId))
-  if (generation !== activeGeneration || activeSelected.value?.runId !== runId) return
+  if (!activeAuditLatest.current(token) || activeSelected.value?.runId !== runId) return
   if (result._tag === 'Failure') { activeAuditError.value = result.error.message; return }
   activeAuditError.value = ''
   activeAuditRecords.value = [...result.value]
@@ -222,11 +230,12 @@ async function refreshActiveAudit(runId: string, generation: number): Promise<vo
     : []))
 }
 
-async function openFinalizedThread(active: ActiveThread): Promise<void> {
+async function openFinalizedThread(active: ActiveThread, selectionToken: LatestToken): Promise<void> {
   if (finalizingRunId === active.runId) return
   finalizingRunId = active.runId
   try {
     const result = await runBackend(resolveThreadRun(active.runId))
+    if (!inspectorLatest.current(selectionToken) || activeSelectionToken !== selectionToken || !visible.value || activeTaskId.value !== active.taskId) return
     if (result._tag === 'Failure') { activeAuditError.value = result.error.message; return }
     if (result.value.threadId === null) return
     activeTaskId.value = undefined
@@ -234,7 +243,7 @@ async function openFinalizedThread(active: ActiveThread): Promise<void> {
     activeAuditRecords.value = []
     await router.replace({ name: 'threads', params: { threadId: String(result.value.threadId) } })
   } finally {
-    finalizingRunId = undefined
+    if (finalizingRunId === active.runId) finalizingRunId = undefined
   }
 }
 
@@ -259,7 +268,8 @@ function activeVisibilityChanged(): void {
   else void pollActiveThreads()
 }
 
-async function monitor(active: ActiveThread): Promise<void> {
+async function monitor(active: ActiveThread, selectionToken = inspectorLatest.begin()): Promise<void> {
+  if (!inspectorLatest.current(selectionToken)) return
   if (active.parentThreadId === null) {
     clearActiveSelection()
     detail.value = undefined
@@ -267,8 +277,10 @@ async function monitor(active: ActiveThread): Promise<void> {
     detailLoading.value = false
     visible.value = true
   } else if (detail.value?.summary.threadId !== active.parentThreadId) {
-    await inspectThread(active.parentThreadId)
+    await inspectThread(active.parentThreadId, selectionToken)
   }
+  if (!inspectorLatest.current(selectionToken)) return
+  activeSelectionToken = selectionToken
   activeTaskId.value = active.taskId
   activeSnapshot.value = active
   activeAuditRecords.value = []
@@ -281,20 +293,23 @@ async function monitor(active: ActiveThread): Promise<void> {
 }
 
 async function installActiveAuditSubscription(): Promise<void> {
-  stopActiveAuditSubscription?.()
-  stopActiveAuditSubscription = undefined
+  const token = activeAuditSubscription.begin()
+  if (!activeAuditSubscription.current(token)) return
+  const runId = activeSelected.value?.runId
+  if (runId === undefined) return
   const result = await runBackend(subscribeAudit(
     async () => {
-      const active = activeSelected.value
-      if (active !== undefined) await refreshActiveAudit(active.runId, activeGeneration)
+      if (activeAuditSubscription.current(token)) await refreshActiveAudit(runId)
     },
     (record) => {
-      if (record.event.runId !== activeSelected.value?.runId) return
+      if (!activeAuditSubscription.current(token) || record.event.runId !== runId) return
       activeAuditRecords.value = mergeAuditRecords(activeAuditRecords.value, [record], 2_000)
     },
   ))
-  if (result._tag === 'Success' && visible.value) stopActiveAuditSubscription = result.value
-  else if (result._tag === 'Success') result.value()
+  if (result._tag === 'Success') {
+    if (activeAuditSubscription.current(token) && (!visible.value || activeSelected.value?.runId !== runId)) activeAuditSubscription.invalidate()
+    activeAuditSubscription.own(token, result.value)
+  }
 }
 
 function requestHalt(active: ActiveThread): void {
@@ -330,14 +345,18 @@ async function selectFromRoute(): Promise<void> {
 }
 
 async function inspectRun(runId: string): Promise<void> {
+  const token = inspectorLatest.begin()
+  if (!inspectorLatest.current(token)) return
   const result = await runBackend(resolveThreadRun(runId))
+  if (!inspectorLatest.current(token)) return
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   if (result.value.taskId !== null) {
     await refreshActive()
+    if (!inspectorLatest.current(token)) return
     const active = activeThreads.value.find(({ taskId }) => taskId === result.value.taskId)
     if (active === undefined) { error.value = `Agent run ${runId} is no longer active.`; return }
     error.value = ''
-    await monitor(active)
+    await monitor(active, token)
     return
   }
   if (result.value.threadId !== null) {
@@ -348,6 +367,7 @@ async function inspectRun(runId: string): Promise<void> {
 }
 
 function inspect(thread: ThreadSummary): void {
+  inspectorLatest.invalidate()
   void router.replace({ name: 'threads', params: { threadId: String(thread.threadId) } })
 }
 
@@ -359,9 +379,9 @@ function viewRunAudit(runId: string): void {
   void router.push({ name: 'audit', query: { run: runId } })
 }
 
-async function inspectThread(threadId: number): Promise<void> {
+async function inspectThread(threadId: number, selectionToken = inspectorLatest.begin()): Promise<void> {
+  if (!inspectorLatest.current(selectionToken)) return
   clearActiveSelection()
-  const generation = ++detailGeneration
   visible.value = true
   detailLoading.value = true
   detailError.value = ''
@@ -373,7 +393,7 @@ async function inspectThread(threadId: number): Promise<void> {
   treeZoom.value = 100
   mediaByRef.value = new Map()
   const result = await runBackend(getThread(threadId))
-  if (generation !== detailGeneration) return
+  if (!inspectorLatest.current(selectionToken)) return
   detailLoading.value = false
   if (result._tag === 'Failure') { detailError.value = result.error.message; return }
   if (result.value === null) { detailError.value = `Thread #${String(threadId)} was not found.`; return }
@@ -381,31 +401,31 @@ async function inspectThread(threadId: number): Promise<void> {
   expandedKeys.value = Object.fromEntries(result.value.nodes.map((node) => [threadMessageKeyId(node.messageKey), true]))
   const latest = nodeLookup.value.get(threadMessageKeyId(result.value.summary.latestKey)) ?? result.value.nodes.at(-1)
   if (latest !== undefined) selectNode(latest)
-  await Promise.all([loadThreadMedia(result.value, generation), loadThreadStats(result.value, generation)])
+  await Promise.all([loadThreadMedia(result.value, selectionToken), loadThreadStats(result.value, selectionToken)])
 }
 
-async function loadThreadStats(thread: ThreadDetail, generation: number): Promise<void> {
+async function loadThreadStats(thread: ThreadDetail, selectionToken: LatestToken): Promise<void> {
   const result = await runBackend(getThreadAudit(thread.summary.threadId))
-  if (generation !== detailGeneration) return
+  if (!inspectorLatest.current(selectionToken)) return
   if (result._tag === 'Failure') { statsError.value = result.error.message; return }
   if (result.value === null) { statsError.value = `Thread #${String(thread.summary.threadId)} was not found.`; return }
   auditRecords.value = [...result.value]
 }
 
-async function loadThreadMedia(thread: ThreadDetail, generation: number): Promise<void> {
-  await loadMediaForMessages(thread.nodes.flatMap(({ messages }) => messages), generation)
+async function loadThreadMedia(thread: ThreadDetail, selectionToken: LatestToken): Promise<void> {
+  await loadMediaForMessages(thread.nodes.flatMap(({ messages }) => messages), selectionToken)
 }
 
-async function loadMediaForMessages(messages: readonly StoredThreadMessage[], generation?: number): Promise<void> {
+async function loadMediaForMessages(messages: readonly StoredThreadMessage[], selectionToken?: LatestToken): Promise<void> {
   const refs = [...new Set(messages.flatMap(mediaRefs))].filter((ref) => !mediaByRef.value.has(ref))
   if (refs.length === 0) return
   const results = await Promise.all(refs.map(async (ref) => [ref, await runBackend(getMedia(ref))] as const))
-  if (generation !== undefined && generation !== detailGeneration) return
+  if (selectionToken !== undefined && !inspectorLatest.current(selectionToken)) return
   mediaByRef.value = new Map([...mediaByRef.value, ...results.flatMap(([ref, result]) => result._tag === 'Success' ? [[ref, result.value] as const] : [])])
 }
 
 function closeDrawer(): void {
-  detailGeneration += 1
+  inspectorLatest.invalidate()
   clearActiveSelection()
   visible.value = false
   detail.value = undefined
@@ -415,8 +435,9 @@ function closeDrawer(): void {
 }
 
 function clearActiveSelection(): void {
-  stopActiveAuditSubscription?.()
-  stopActiveAuditSubscription = undefined
+  activeAuditSubscription.invalidate()
+  activeAuditLatest.invalidate()
+  activeSelectionToken = undefined
   activeTaskId.value = undefined
   activeSnapshot.value = undefined
   activeAuditRecords.value = []
@@ -436,6 +457,7 @@ async function scrollTranscriptToEnd(): Promise<void> {
 function selectTreeNode(node: PrimeTreeNode): void {
   const active = activeThreads.value.find(({ taskId }) => activeTreeKey(taskId) === node.key)
   if (active !== undefined) { void monitor(active); return }
+  if (activeTaskId.value !== undefined) inspectorLatest.invalidate()
   clearActiveSelection()
   const selected = nodeLookup.value.get(node.key)
   if (selected !== undefined) selectNode(selected)
@@ -646,7 +668,7 @@ onMounted(() => {
   void pollActiveThreads()
   document.addEventListener('visibilitychange', activeVisibilityChanged)
 })
-onUnmounted(() => { activePolling = false; stopActivePolling(); stopActiveAuditSubscription?.(); document.removeEventListener('visibilitychange', activeVisibilityChanged); activeGeneration += 1; detailGeneration += 1; listGeneration += 1 })
+onUnmounted(() => { activePolling = false; stopActivePolling(); clearActiveSelection(); document.removeEventListener('visibilitychange', activeVisibilityChanged) })
 watch([() => connection.state, () => connection.methods], () => { void refresh(); void pollActiveThreads() })
 watch([() => route.params['threadId'], () => route.query['run']], () => { void selectFromRoute() })
 watch([debouncedQuery, platform], () => { first.value = 0; void refresh() })

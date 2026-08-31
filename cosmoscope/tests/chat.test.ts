@@ -1,5 +1,7 @@
 import { Effect } from 'effect'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, shallowMount } from '@vue/test-utils'
+import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 import { makeRpcBackend } from '@/backend/rpcBackend'
 import { mergeChatLogItems, mergeChatMessage, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
 import { highlightCode, mediaRefsInText, renderMarkdown } from '@/markdown'
@@ -7,6 +9,39 @@ import { RpcClient } from '@/rpc/client'
 import { liveAdminMethods } from '@/rpc/protocol'
 import { chatLogListSchema } from '@/rpc/schemas'
 import type { ChatMessage } from '@/types/domain'
+
+const pageMocks = vi.hoisted(() => ({
+  route: { params: {}, query: {} },
+  router: { push: vi.fn(() => Promise.resolve()), replace: vi.fn(() => Promise.resolve()) },
+  connection: { state: 'authenticated', methods: new Set<string>(), error: '' },
+  respond: vi.fn<(operation: { kind: string, [key: string]: unknown }) => unknown>(),
+  listOperation: { kind: 'list' },
+  discard: vi.fn((attachmentId: string) => ({ kind: 'discard', attachmentId })),
+}))
+
+vi.mock('vue-router', () => ({ useRoute: () => pageMocks.route, useRouter: () => pageMocks.router }))
+vi.mock('primevue/usetoast', () => ({ useToast: () => ({ add: vi.fn() }) }))
+vi.mock('@/stores/connection', () => ({ useConnectionStore: () => pageMocks.connection }))
+vi.mock('@/overlay', () => ({
+  useLayeredConfirm: () => ({ require: vi.fn() }),
+  useOverlayLayer: () => ({ isTop: true, show: vi.fn(), hide: vi.fn() }),
+}))
+vi.mock('@/backend/AdminBackend', () => ({
+  listChatSessions: pageMocks.listOperation,
+  loadChatHistory: (sessionId: string) => ({ kind: 'history', sessionId }),
+  subscribeChat: (sessionId: string) => ({ kind: 'subscribe', sessionId }),
+  uploadChatAttachment: (file: File) => ({ kind: 'upload', file }),
+  discardChatAttachment: pageMocks.discard,
+  sendChatMessage: (message: unknown) => ({ kind: 'send', message }),
+  openChatSession: () => ({ kind: 'create' }),
+  renameChatSession: () => ({ kind: 'unused' }),
+  forkChatSession: () => ({ kind: 'unused' }),
+  deleteChatSession: () => ({ kind: 'unused' }),
+}))
+vi.mock('@/backend/runBackend', () => ({ runBackend: (operation: { kind: string, [key: string]: unknown }) => Promise.resolve(pageMocks.respond(operation)) }))
+
+import ChatPage from '@/pages/ChatPage.vue'
+import { chatMethods } from '@/rpc/protocol'
 
 const message: ChatMessage = {
   sessionId: 'session-1',
@@ -89,5 +124,147 @@ describe('chat projection', () => {
 
     expect(renderMarkdown(source)).toContain(`data-media-ref="${ref}"`)
     expect(mediaRefsInText(source)).toEqual([ref])
+  })
+})
+
+const success = <T>(value: T): { _tag: 'Success', value: T } => ({ _tag: 'Success', value })
+const sessions = [
+  { sessionId: 'session-1', label: 'First', createdAt: null, updatedAt: null },
+  { sessionId: 'session-2', label: 'Second', createdAt: null, updatedAt: null },
+]
+
+function deferred<T>(): { promise: Promise<T>, resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+async function mountChat(): Promise<VueWrapper> {
+  const wrapper = shallowMount(ChatPage, { global: { stubs: { PageHeading: { template: '<div><slot /></div>' } } } })
+  await flushPromises()
+  return wrapper
+}
+
+function secondSessionButton(wrapper: VueWrapper): DOMWrapper<Element> {
+  const button = wrapper.findAll('.conversation').at(1)
+  if (button === undefined) throw new Error('Expected a second chat session')
+  return button
+}
+
+describe('chat page session lifecycles', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    pageMocks.route.params = {}
+    pageMocks.route.query = {}
+    pageMocks.connection.state = 'authenticated'
+    pageMocks.connection.methods = new Set(chatMethods)
+  })
+
+  it('does not apply a completed send to a newly selected session', async () => {
+    const firstSend = deferred<ReturnType<typeof success<string>>>()
+    const secondSend = deferred<ReturnType<typeof success<string>>>()
+    let sends = 0
+    const attachment = { attachmentId: 'sent', name: 'sent.txt', kind: 'file', mediaType: 'text/plain', size: 1, url: '/sent' }
+    pageMocks.respond.mockImplementation((operation) => {
+      if (operation.kind === 'send') { sends += 1; return sends === 1 ? firstSend.promise : secondSend.promise }
+      return operation.kind === 'upload' ? success(attachment) : operation.kind === 'list' ? success(sessions) : success(() => undefined)
+    })
+    const wrapper = await mountChat()
+    const composer = wrapper.findComponent({ name: 'Textarea' })
+    const input = wrapper.find('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['x'], 'sent.txt')] })
+    await input.trigger('change')
+    await flushPromises()
+    composer.vm.$emit('update:modelValue', 'message for first')
+    await wrapper.find('form').trigger('submit')
+
+    await secondSessionButton(wrapper).trigger('click')
+    await flushPromises()
+    expect(pageMocks.discard).not.toHaveBeenCalled()
+    composer.vm.$emit('update:modelValue', 'draft for second')
+    await wrapper.find('form').trigger('submit')
+    firstSend.resolve(success('message-1'))
+    await flushPromises()
+
+    expect(wrapper.findComponent({ name: 'Textarea' }).attributes('modelvalue')).toBe('draft for second')
+    expect(wrapper.findAll('.message')).toHaveLength(0)
+    secondSend.resolve(success('message-2'))
+    await flushPromises()
+    expect(wrapper.findAll('.message')).toHaveLength(1)
+  })
+
+  it('discards an upload that completes after changing sessions', async () => {
+    const pendingUpload = deferred<ReturnType<typeof success<unknown>>>()
+    pageMocks.respond.mockImplementation((operation) => operation.kind === 'upload' ? pendingUpload.promise : operation.kind === 'list' ? success(sessions) : success(() => undefined))
+    const wrapper = await mountChat()
+    const input = wrapper.find('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['x'], 'late.txt')] })
+    await input.trigger('change')
+    await secondSessionButton(wrapper).trigger('click')
+    pendingUpload.resolve(success({ attachmentId: 'late', name: 'late.txt', kind: 'file', mediaType: 'text/plain', size: 1, url: '/late' }))
+    await flushPromises()
+
+    expect(pageMocks.discard).toHaveBeenCalledWith('late')
+    expect(wrapper.text()).not.toContain('late.txt')
+  })
+
+  it('ignores an older session-list response', async () => {
+    const oldList = deferred<ReturnType<typeof success<typeof sessions>>>()
+    let lists = 0
+    pageMocks.respond.mockImplementation((operation) => {
+      if (operation.kind !== 'list') return success(() => undefined)
+      lists += 1
+      return lists === 1 ? oldList.promise : success(sessions.slice(1))
+    })
+    const wrapper = await mountChat()
+    const rpcSessions = wrapper.find('button-stub[label="RPC sessions"]')
+    await rpcSessions.trigger('click')
+    await flushPromises()
+    oldList.resolve(success(sessions))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Second')
+    expect(wrapper.text()).not.toContain('First')
+  })
+
+  it('does not restore an attachment removed while sending or changing sessions', async () => {
+    const pendingDiscard = deferred<{ _tag: 'Failure', error: { message: string } }>()
+    const attachment = { attachmentId: 'late', name: 'late.txt', kind: 'file', mediaType: 'text/plain', size: 1, url: '/late' }
+    pageMocks.respond.mockImplementation((operation) => {
+      if (operation.kind === 'list') return success(sessions)
+      if (operation.kind === 'upload') return success(attachment)
+      if (operation.kind === 'discard') return pendingDiscard.promise
+      if (operation.kind === 'send') return success('message-1')
+      return success(() => undefined)
+    })
+    const wrapper = await mountChat()
+    const input = wrapper.find('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['x'], 'late.txt')] })
+    await input.trigger('change')
+    await flushPromises()
+    await wrapper.find('button-stub[aria-label="Remove late.txt"]').trigger('click')
+    wrapper.findComponent({ name: 'Textarea' }).vm.$emit('update:modelValue', 'text only')
+    await wrapper.find('form').trigger('submit')
+    await secondSessionButton(wrapper).trigger('click')
+    pendingDiscard.resolve({ _tag: 'Failure', error: { message: 'too late' } })
+    await flushPromises()
+
+    const send = pageMocks.respond.mock.calls.map(([operation]) => operation).find(({ kind }) => kind === 'send')
+    expect(send?.['message']).toMatchObject({ attachments: [] })
+    expect(wrapper.text()).not.toContain('late.txt')
+    expect(pageMocks.discard).toHaveBeenCalledOnce()
+  })
+
+  it('does not continue creating a session after unmount', async () => {
+    const pendingCreate = deferred<ReturnType<typeof success<{ sessionId: string }>>>()
+    pageMocks.respond.mockImplementation((operation) => operation.kind === 'create' ? pendingCreate.promise : operation.kind === 'list' ? success(sessions) : success(() => undefined))
+    const wrapper = await mountChat()
+    const listsBefore = pageMocks.respond.mock.calls.filter(([operation]) => operation.kind === 'list').length
+    await wrapper.find('button-stub[label="New session"]').trigger('click')
+    wrapper.unmount()
+    pendingCreate.resolve(success({ sessionId: 'late-session' }))
+    await flushPromises()
+
+    expect(pageMocks.respond.mock.calls.filter(([operation]) => operation.kind === 'list')).toHaveLength(listsBefore)
   })
 })

@@ -18,6 +18,7 @@ import PageHeading from '@/components/PageHeading.vue'
 import ChatLogsPanel from '@/components/ChatLogsPanel.vue'
 import { deleteChatSession, discardChatAttachment, forkChatSession, listChatSessions, loadChatHistory, openChatSession, renameChatSession, sendChatMessage, subscribeChat, uploadChatAttachment } from '@/backend/AdminBackend'
 import { runBackend } from '@/backend/runBackend'
+import { useLatest, useLatestSubscription, type LatestToken } from '@/async'
 import { mergeChatMessage, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
 import { useConnectionStore } from '@/stores/connection'
 import { chatMethods } from '@/rpc/protocol'
@@ -51,8 +52,13 @@ const previewImage = ref<string>()
 const contextMessage = ref<ChatMessage>()
 const drafts = reactive(new Map<string, string>())
 const streamingMessageIds = ref<ReadonlySet<string>>(new Set())
-let stopSubscription: (() => void) | undefined
-let selectionGeneration = 0
+const pageLatest = useLatest()
+const pageToken = pageLatest.begin()
+const sessionsLatest = useLatest()
+const sessionSubscription = useLatestSubscription()
+let selectedSessionToken: LatestToken | undefined
+let composerGeneration = 0
+let sendGeneration = 0
 const { isTop: previewIsTop } = useOverlayLayer(computed(() => previewImage.value !== undefined))
 const messageMenuLayer = useOverlayLayer()
 
@@ -93,9 +99,9 @@ function finishMessage(messageId: string): void {
   streamingMessageIds.value = next
 }
 
-async function refreshHistory(sessionId: string, generation: number): Promise<void> {
+async function refreshHistory(sessionId: string, token: LatestToken): Promise<void> {
   const result = await runBackend(loadChatHistory(sessionId))
-  if (generation !== selectionGeneration || selectedId.value !== sessionId) return
+  if (!sessionSubscription.current(token) || selectedId.value !== sessionId) return
   loading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
@@ -108,14 +114,14 @@ async function refreshHistory(sessionId: string, generation: number): Promise<vo
 
 async function loadOlder(): Promise<void> {
   const sessionId = selectedId.value
-  const generation = selectionGeneration
+  const token = selectedSessionToken
   const oldest = messages.value[0]
   const pane = messagePane.value
-  if (sessionId === undefined || oldest === undefined || loadingOlder.value || !hasOlder.value) return
+  if (sessionId === undefined || token === undefined || oldest === undefined || loadingOlder.value || !hasOlder.value) return
   const previousHeight = pane?.scrollHeight ?? 0
   loadingOlder.value = true
   const result = await runBackend(loadChatHistory(sessionId, oldest.messageId))
-  if (generation !== selectionGeneration || selectedId.value !== sessionId) return
+  if (!sessionSubscription.current(token) || selectedId.value !== sessionId) return
   loadingOlder.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   const known = new Set(messages.value.map(({ messageId }) => messageId))
@@ -131,37 +137,43 @@ function loadOlderAtTop(event: Event): void {
 }
 
 async function selectSession(sessionId: string): Promise<void> {
-  if (selectedId.value === sessionId && stopSubscription !== undefined) return
-  if (!await discardPendingAttachments()) return
-  stopSubscription?.()
-  stopSubscription = undefined
+  if (!pageLatest.current(pageToken) || selectedId.value === sessionId && sessionSubscription.owned()) return
+  const composer = ++composerGeneration
+  uploading.value = true
+  const discarded = await discardPendingAttachments()
+  if (composer !== composerGeneration) return
+  uploading.value = false
+  if (!discarded) return
+  sendGeneration += 1
+  sending.value = false
+  const token = sessionSubscription.begin()
+  if (!sessionSubscription.current(token)) return
+  selectedSessionToken = token
   selectedId.value = sessionId
   messages.value = []
   hasOlder.value = false
   loadingOlder.value = false
   streamingMessageIds.value = new Set()
   loading.value = true
-  const generation = ++selectionGeneration
   await router.replace({ name: 'chat', params: { sessionId } })
+  if (!sessionSubscription.current(token)) return
   const result = await runBackend(subscribeChat(
     sessionId,
-    () => refreshHistory(sessionId, generation),
+    () => sessionSubscription.current(token) ? refreshHistory(sessionId, token) : Promise.resolve(),
     (message) => {
-      if (selectedId.value !== sessionId) return
+      if (!sessionSubscription.current(token) || selectedId.value !== sessionId) return
       mergeMessage(message)
       if (message.sender === 'assistant') streamingMessageIds.value = new Set(streamingMessageIds.value).add(message.messageId)
     },
-    (messageId) => { if (selectedId.value === sessionId) finishMessage(messageId) },
+    (messageId) => { if (sessionSubscription.current(token) && selectedId.value === sessionId) finishMessage(messageId) },
   ))
-  if (generation !== selectionGeneration) {
-    if (result._tag === 'Success') result.value()
-    return
-  }
-  if (result._tag === 'Success') stopSubscription = result.value
-  else { loading.value = false; error.value = result.error.message }
+  if (result._tag === 'Success') sessionSubscription.own(token, result.value)
+  else if (sessionSubscription.current(token)) { loading.value = false; error.value = result.error.message }
 }
 
 async function loadSessions(preferredId?: string): Promise<void> {
+  const token = sessionsLatest.begin()
+  if (!sessionsLatest.current(token)) return
   if (showingPlatformLogs.value) { sessionsLoading.value = false; return }
   if (connection.state === 'opening' || connection.state === 'reconnecting') { sessionsLoading.value = true; return }
   if (!live.value) {
@@ -173,6 +185,7 @@ async function loadSessions(preferredId?: string): Promise<void> {
   }
   sessionsLoading.value = true
   const result = await runBackend(listChatSessions)
+  if (!sessionsLatest.current(token)) return
   sessionsLoading.value = false
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   error.value = ''
@@ -185,9 +198,15 @@ async function loadSessions(preferredId?: string): Promise<void> {
     : result.value[0]?.sessionId
   if (nextId !== undefined) await selectSession(nextId)
   else {
+    const composer = ++composerGeneration
+    uploading.value = true
     await discardPendingAttachments()
-    stopSubscription?.()
-    stopSubscription = undefined
+    if (composer !== composerGeneration) return
+    uploading.value = false
+    sendGeneration += 1
+    sending.value = false
+    sessionSubscription.invalidate()
+    selectedSessionToken = undefined
     selectedId.value = undefined
     messages.value = []
     hasOlder.value = false
@@ -198,6 +217,7 @@ async function loadSessions(preferredId?: string): Promise<void> {
 
 async function createSession(): Promise<void> {
   const result = await runBackend(openChatSession('New session'))
+  if (!pageLatest.current(pageToken)) return
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   await loadSessions(result.value.sessionId)
 }
@@ -208,6 +228,7 @@ async function renameSelected(): Promise<void> {
   const label = window.prompt('Session name', sessionName(session))?.trim()
   if (!label || label === session.label) return
   const result = await runBackend(renameChatSession(session.sessionId, label))
+  if (!pageLatest.current(pageToken)) return
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   sessions.value = sessions.value.map((item) => item.sessionId === result.value.sessionId ? result.value : item)
 }
@@ -217,6 +238,7 @@ async function forkAt(message: ChatMessage): Promise<void> {
   const label = window.prompt('Fork name', `Fork of ${parentName}`)?.trim()
   if (label === undefined) return
   const result = await runBackend(forkChatSession(message.sessionId, message.messageId, label || undefined))
+  if (!pageLatest.current(pageToken)) return
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   await loadSessions(result.value.sessionId)
 }
@@ -252,6 +274,7 @@ function requestDelete(): void {
 
 async function removeSession(sessionId: string): Promise<void> {
   const result = await runBackend(deleteChatSession(sessionId))
+  if (!pageLatest.current(pageToken)) return
   if (result._tag === 'Failure') { error.value = result.error.message; return }
   if (!result.value) { error.value = 'The session no longer exists.'; return }
   drafts.delete(sessionId)
@@ -268,44 +291,76 @@ async function attachFiles(event: Event): Promise<void> {
     toast.add({ severity: 'error', summary: `${oversized.name} exceeds the 25 MiB limit`, life: 3500 })
     return
   }
+  const sessionId = selectedId.value
+  const generation = composerGeneration
+  if (sessionId === undefined) return
   uploading.value = true
   for (const file of files) {
     const result = await runBackend(uploadChatAttachment(file))
+    if (generation !== composerGeneration || selectedId.value !== sessionId) {
+      if (result._tag === 'Success') await runBackend(discardChatAttachment(result.value.attachmentId))
+      break
+    }
     if (result._tag === 'Failure') { error.value = result.error.message; break }
     pendingAttachments.value = [...pendingAttachments.value, result.value]
   }
-  uploading.value = false
+  if (generation === composerGeneration) uploading.value = false
 }
 
 async function discardAttachment(attachment: ChatAttachment): Promise<void> {
-  const result = await runBackend(discardChatAttachment(attachment.attachmentId))
-  if (result._tag === 'Failure') { error.value = result.error.message; return }
+  const sessionId = selectedId.value
+  const composer = composerGeneration
+  if (sessionId === undefined || !pendingAttachments.value.some(({ attachmentId }) => attachmentId === attachment.attachmentId)) return
   pendingAttachments.value = pendingAttachments.value.filter(({ attachmentId }) => attachmentId !== attachment.attachmentId)
+  const result = await runBackend(discardChatAttachment(attachment.attachmentId))
+  if (result._tag === 'Failure' && composer === composerGeneration && selectedId.value === sessionId) {
+    pendingAttachments.value = [...pendingAttachments.value, attachment]
+    error.value = result.error.message
+  }
 }
 
 async function discardPendingAttachments(): Promise<boolean> {
+  const sessionId = selectedId.value
+  const composer = composerGeneration
   const attachments = pendingAttachments.value
+  pendingAttachments.value = []
   const results = await Promise.all(attachments.map(({ attachmentId }) => runBackend(discardChatAttachment(attachmentId))))
   const retained = attachments.filter((_attachment, index) => results[index]?._tag === 'Failure')
-  pendingAttachments.value = retained
-  if (retained.length > 0) error.value = 'Could not discard every pending attachment.'
+  if (composer === composerGeneration && selectedId.value === sessionId) {
+    pendingAttachments.value = [...retained, ...pendingAttachments.value]
+    if (retained.length > 0) error.value = 'Could not discard every pending attachment.'
+  }
   return retained.length === 0
 }
 
 async function send(): Promise<void> {
   const sessionId = selectedId.value
-  const text = draft.value.trim()
+  const selection = selectedSessionToken
+  const composer = composerGeneration
+  const originalDraft = draft.value
+  const text = originalDraft.trim()
   const attachments = pendingAttachments.value
   if (sessionId === undefined || sending.value || (text === '' && attachments.length === 0)) return
+  const generation = ++sendGeneration
+  pendingAttachments.value = []
   sending.value = true
   const result = await runBackend(sendChatMessage({ sessionId, text, attachments }))
-  sending.value = false
-  if (result._tag === 'Failure') { error.value = result.error.message; return }
-  if (!messages.value.some(({ messageId }) => messageId === result.value)) {
+  if (generation === sendGeneration) sending.value = false
+  const currentSession = selection !== undefined && sessionSubscription.current(selection) && composer === composerGeneration && selectedId.value === sessionId
+  if (result._tag === 'Failure') {
+    if (currentSession) {
+      const pendingIds = new Set(pendingAttachments.value.map(({ attachmentId }) => attachmentId))
+      pendingAttachments.value = [...attachments.filter(({ attachmentId }) => !pendingIds.has(attachmentId)), ...pendingAttachments.value]
+      error.value = result.error.message
+    } else {
+      await Promise.all(attachments.map(({ attachmentId }) => runBackend(discardChatAttachment(attachmentId))))
+    }
+    return
+  }
+  if (drafts.get(sessionId) === originalDraft) drafts.delete(sessionId)
+  if (currentSession && !messages.value.some(({ messageId }) => messageId === result.value)) {
     mergeMessage({ sessionId, messageId: result.value, sender: 'user', text, imageUrls: [], attachments, replyToMessageId: null, parentMessageId: null })
   }
-  draft.value = ''
-  pendingAttachments.value = []
 }
 
 function imageUrls(message: ChatMessage): readonly string[] {
@@ -329,8 +384,12 @@ function previewMarkdownImage(event: MouseEvent): void {
 watch([() => connection.state, () => connection.methods], ([state]) => {
   void loadSessions()
   if (state === 'offline' || state === 'failed') {
-    stopSubscription?.()
-    stopSubscription = undefined
+    composerGeneration += 1
+    sendGeneration += 1
+    uploading.value = false
+    sending.value = false
+    sessionSubscription.invalidate()
+    selectedSessionToken = undefined
     selectedId.value = undefined
     sessions.value = []
     messages.value = []
@@ -343,7 +402,7 @@ watch(() => route.params['sessionId'], (sessionId) => {
   if (typeof sessionId === 'string' && sessionId !== selectedId.value && sessions.value.some((session) => session.sessionId === sessionId)) void selectSession(sessionId)
 })
 onMounted(() => { void loadSessions() })
-onUnmounted(() => { stopSubscription?.(); selectionGeneration += 1; void discardPendingAttachments() })
+onUnmounted(() => { composerGeneration += 1; sendGeneration += 1; void discardPendingAttachments() })
 </script>
 
 <template>

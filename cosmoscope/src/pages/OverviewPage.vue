@@ -14,6 +14,7 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import { countAudit, countResources, countSessions, listChatLogs, listMedia, listTasks, listThreads, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
 import { auditActivity, mergeAuditRecords } from '@/backend/overview'
 import { runBackend } from '@/backend/runBackend'
+import { useLatest, useLatestSubscription } from '@/async'
 import { formatBytes } from '@/format'
 import { useConnectionStore } from '@/stores/connection'
 import type { Activity, AuditRecord, MediaStats, Task } from '@/types/domain'
@@ -52,40 +53,51 @@ const resourceLoading = ref(true)
 const selectedTask = ref<Task>()
 const drawerOpen = ref(false)
 const { isTop: drawerIsTop } = useOverlayLayer(drawerOpen)
-let stopAuditSubscription: (() => void) | undefined
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 let mounted = false
-let loadGeneration = 0
+const cycleLatest = useLatest()
+const auditLatest = useLatest()
+const auditCountLatest = useLatest()
+const auditSubscription = useLatestSubscription()
 
 const supports = (method: LiveAdminMethod): boolean => connection.state === 'authenticated' && connection.methods.has(method)
-async function loadTasks(): Promise<void> {
+async function loadTasks(token: symbol): Promise<void> {
   const result = await runBackend(listTasks)
+  if (!cycleLatest.current(token)) return
   if (result._tag === 'Failure') { taskError.value = result.error.message; return }
   taskError.value = ''; tasks.value = [...result.value]
   if (selectedTask.value) selectedTask.value = tasks.value.find(({ id }) => id === selectedTask.value?.id) ?? selectedTask.value
 }
 
 async function loadAudit(): Promise<void> {
+  const token = auditLatest.begin()
+  if (!auditLatest.current(token)) return
   const result = await runBackend(recentAudit())
+  if (!auditLatest.current(token)) return
   auditLoading.value = false
   if (result._tag === 'Failure') { auditError.value = result.error.message; return }
   auditError.value = ''; auditRecords.value = [...result.value]; activities.value = auditActivity(result.value)
 }
 
 async function loadAuditCount(): Promise<void> {
+  const token = auditCountLatest.begin()
+  if (!auditCountLatest.current(token)) return
   const result = await runBackend(countAudit)
+  if (!auditCountLatest.current(token)) return
   if (result._tag === 'Failure') { auditCountError.value = result.error.message; return }
   auditCountError.value = ''; auditCount.value = result.value
 }
 
-async function loadSessions(): Promise<void> {
+async function loadSessions(token: symbol): Promise<void> {
   const result = await runBackend(countSessions)
+  if (!cycleLatest.current(token)) return
   if (result._tag === 'Failure') { sessionError.value = result.error.message; return }
   sessionError.value = ''; sessionCount.value = result.value
 }
 
-async function loadChatLogs(): Promise<void> {
+async function loadChatLogs(token: symbol): Promise<void> {
   const result = await runBackend(listChatLogs)
+  if (!cycleLatest.current(token)) return
   chatLogLoading.value = false
   if (result._tag === 'Failure') { chatLogError.value = result.error.message; return }
   chatLogError.value = ''
@@ -93,22 +105,25 @@ async function loadChatLogs(): Promise<void> {
   chatPlatformCount.value = new Set(result.value.map(({ scope }) => scope.platform)).size
 }
 
-async function loadThreads(): Promise<void> {
+async function loadThreads(token: symbol): Promise<void> {
   const result = await runBackend(listThreads({ offset: 0, limit: 1 }))
+  if (!cycleLatest.current(token)) return
   threadLoading.value = false
   if (result._tag === 'Failure') { threadError.value = result.error.message; return }
   threadError.value = ''; threadCount.value = result.value.total
 }
 
-async function loadResources(): Promise<void> {
+async function loadResources(token: symbol): Promise<void> {
   const result = await runBackend(countResources)
+  if (!cycleLatest.current(token)) return
   resourceLoading.value = false
   if (result._tag === 'Failure') { resourceError.value = result.error.message; return }
   resourceError.value = ''; resourceCount.value = result.value
 }
 
-async function loadMedia(): Promise<void> {
+async function loadMedia(token: symbol): Promise<void> {
   const result = await runBackend(listMedia(4))
+  if (!cycleLatest.current(token)) return
   mediaLoading.value = false
   if (result._tag === 'Failure') { mediaError.value = result.error.message; return }
   mediaError.value = ''; mediaStats.value = result.value.stats
@@ -116,18 +131,27 @@ async function loadMedia(): Promise<void> {
 
 async function installAuditSubscription(): Promise<void> {
   if (!supports('audit.subscribe') || !supports('audit.recent')) return
-  const result = await runBackend(subscribeAudit(async () => { await Promise.all([loadAudit(), loadAuditCount()]) }, (record) => {
+  const token = auditSubscription.begin()
+  if (!auditSubscription.current(token)) return
+  const result = await runBackend(subscribeAudit(async () => {
+    if (!auditSubscription.current(token)) return
+    await Promise.all([loadAudit(), loadAuditCount()])
+  }, (record) => {
+    if (!auditSubscription.current(token)) return
     auditRecords.value = mergeAuditRecords(auditRecords.value, record)
     activities.value = auditActivity(auditRecords.value)
     auditCount.value += 1
   }))
-  if (result._tag === 'Success') stopAuditSubscription = result.value
-  else { auditLoading.value = false; auditError.value = result.error.message }
+  if (result._tag === 'Success') {
+    if (auditSubscription.current(token) && (!supports('audit.subscribe') || !supports('audit.recent'))) auditSubscription.invalidate()
+    auditSubscription.own(token, result.value)
+  }
+  else if (auditSubscription.current(token)) { auditLoading.value = false; auditError.value = result.error.message }
 }
 
 function startPolling(): void {
   stopPolling()
-  if (!mounted || document.hidden || connection.state !== 'authenticated') return
+  if (!mounted || document.hidden || connection.state !== 'authenticated' || connection.methods.size === 0) return
   pollTimer = setTimeout(async () => {
     await loadSlowSnapshots()
     startPolling()
@@ -139,29 +163,34 @@ function stopPolling(): void {
   pollTimer = undefined
 }
 
-async function loadImmediateSnapshots(): Promise<void> {
+async function loadImmediateSnapshots(token: symbol): Promise<void> {
   await Promise.all([
-    supports('concurrency.list') ? loadTasks() : Promise.resolve(),
+    supports('concurrency.list') ? loadTasks(token) : Promise.resolve(),
     supports('audit.count') ? loadAuditCount() : Promise.resolve(),
   ])
 }
 
-async function loadDeferredSnapshots(): Promise<void> {
+async function loadDeferredSnapshots(token: symbol): Promise<void> {
   await Promise.all([
-    supports('chat.list_sessions') ? loadSessions() : Promise.resolve(),
-    supports('media.stats') ? loadMedia() : Promise.resolve(),
-    supports('chat_log.list') ? loadChatLogs() : Promise.resolve(),
-    supports('thread.list') ? loadThreads() : Promise.resolve(),
-    supports('resource.list') ? loadResources() : Promise.resolve(),
+    supports('chat.list_sessions') ? loadSessions(token) : Promise.resolve(),
+    supports('media.stats') ? loadMedia(token) : Promise.resolve(),
+    supports('chat_log.list') ? loadChatLogs(token) : Promise.resolve(),
+    supports('thread.list') ? loadThreads(token) : Promise.resolve(),
+    supports('resource.list') ? loadResources(token) : Promise.resolve(),
   ])
 }
 
 async function loadSlowSnapshots(): Promise<void> {
-  await loadImmediateSnapshots()
-  await loadDeferredSnapshots()
+  const token = cycleLatest.begin()
+  if (!cycleLatest.current(token)) return
+  await loadImmediateSnapshots(token)
+  if (!cycleLatest.current(token)) return
+  await loadDeferredSnapshots(token)
 }
 
 async function refreshLive(): Promise<void> {
+  const token = cycleLatest.begin()
+  if (!cycleLatest.current(token)) return
   if (connection.state === 'opening' || connection.state === 'reconnecting') {
     if (state.value !== 'ready') state.value = 'loading'
     return
@@ -172,7 +201,6 @@ async function refreshLive(): Promise<void> {
     return
   }
   if (state.value !== 'ready') state.value = 'loading'
-  const generation = ++loadGeneration
   error.value = ''
   auditError.value = supports('audit.recent') ? '' : 'The server does not support audit.recent.'
   auditCountError.value = supports('audit.count') ? '' : 'The server does not support audit.count.'
@@ -188,31 +216,32 @@ async function refreshLive(): Promise<void> {
   if (!supports('media.stats')) mediaLoading.value = false
   if (!supports('resource.list')) resourceLoading.value = false
   if (supports('audit.subscribe') && supports('audit.recent')) {
-    if (stopAuditSubscription === undefined) await installAuditSubscription()
+    if (!auditSubscription.owned()) await installAuditSubscription()
   }
   else {
-    stopAuditSubscription?.()
-    stopAuditSubscription = undefined
+    auditSubscription.invalidate()
   }
-  const immediate = loadImmediateSnapshots()
+  if (!cycleLatest.current(token)) return
+  const immediate = loadImmediateSnapshots(token)
   if (supports('audit.recent') && !supports('audit.subscribe')) void loadAudit()
   await immediate
-  if (!mounted || generation !== loadGeneration) return
+  if (!cycleLatest.current(token)) return
   state.value = 'ready'
-  await loadDeferredSnapshots()
-  startPolling()
+  await loadDeferredSnapshots(token)
+  if (cycleLatest.current(token)) startPolling()
 }
 
 function stopLive(): void {
-  loadGeneration += 1
-  stopAuditSubscription?.()
-  stopAuditSubscription = undefined
+  cycleLatest.invalidate()
+  auditLatest.invalidate()
+  auditCountLatest.invalidate()
+  auditSubscription.invalidate()
   stopPolling()
 }
 
 function onVisibilityChange(): void {
   if (document.hidden) stopPolling()
-  else {
+  else if (connection.state === 'authenticated' && connection.methods.size > 0) {
     void loadSlowSnapshots().then(startPolling)
   }
 }
@@ -225,7 +254,7 @@ function taskElapsed(task: Task): string {
 
 watch([() => connection.state, () => connection.methods], ([next]) => {
   if (next === 'authenticated' && connection.methods.size > 0) void refreshLive()
-  else if (next === 'offline' || next === 'failed') stopLive()
+  else stopLive()
 })
 onMounted(() => {
   mounted = true
