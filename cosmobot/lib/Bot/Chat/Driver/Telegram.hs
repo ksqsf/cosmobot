@@ -271,6 +271,9 @@ telegramMessageFiles message =
     [ telegramMessageFile "document" <$> message.document
     , telegramMessageFile "audio" <$> message.audio
     , telegramMessageFile "voice" <$> message.voice
+    , telegramMessageFile "video" <$> message.video
+    , telegramMessageFile "video-note" <$> message.videoNote
+    , telegramMessageFile "animation" <$> message.animation
     ]
 
 telegramMessageFile :: Text -> TelegramMedia -> MessageFile

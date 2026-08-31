@@ -1133,16 +1133,19 @@ fileSegment :: Aeson.Value -> Maybe MessageFile
 fileSegment = Aeson.parseMaybe $
   Aeson.withObject "QQ file segment" \o -> do
     type_ <- o Aeson..: "type"
-    guard (type_ `elem` (["file", "record"] :: [Text]))
+    guard (type_ `elem` (["file", "record", "video"] :: [Text]))
     data_ <- o Aeson..: "data"
     Aeson.withObject "QQ file data" (\file -> do
       fileRef <- file Aeson..:? "file"
       name <- file Aeson..:? "name"
       url <- file Aeson..:? "url"
       fileId <- file Aeson..:? "file_id"
-      let fallbackName = if type_ == "record" then "audio" else fromMaybe "file" fileRef
+      let fallbackName = case type_ of
+            "record" -> "audio"
+            "video" -> "video"
+            _ -> fromMaybe "file" fileRef
           name' = fromMaybe fallbackName name
-          platformRef = if type_ == "record" then fileRef else ((qqFileRefPrefix <>) <$> fileId) <|> fileRef
+          platformRef = if type_ `elem` ["record", "video"] then fileRef else ((qqFileRefPrefix <>) <$> fileId) <|> fileRef
           ref = fromMaybe name' (url <|> platformRef)
       pure MessageFile{name = name', ref}) data_
 
