@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
@@ -112,7 +112,6 @@ async function selectFromRoute(): Promise<void> {
 
 async function inspectThread(threadId: number, token?: LatestToken): Promise<void> {
   await inspector.inspectThread(threadId, token)
-  await nextTick()
   await transcriptView.value?.scrollToEnd()
 }
 
