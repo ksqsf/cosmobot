@@ -287,7 +287,8 @@ testQqRecordSegmentBecomesMessageFile = do
 
 testQqVideoSegmentBecomesMessageFile :: IO ()
 testQqVideoSegmentBecomesMessageFile = do
-  let original = qqMessageEvent 10001
+  let original :: QQ.Event
+      original = qqMessageEvent 10001
       event = original
         { QQ.message = Just (Aeson.toJSON
             [ Aeson.object
