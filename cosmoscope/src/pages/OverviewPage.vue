@@ -1,25 +1,24 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
-import Column from 'primevue/column'
-import DataTable from 'primevue/datatable'
-import Drawer from 'primevue/drawer'
 import Message from 'primevue/message'
 import Skeleton from 'primevue/skeleton'
-import Tag from 'primevue/tag'
 import PageHeading from '@/components/PageHeading.vue'
-import RunIdLink from '@/components/RunIdLink.vue'
-import StatusBadge from '@/components/StatusBadge.vue'
+import OverviewActivityPanel from '@/components/overview/OverviewActivityPanel.vue'
+import OverviewMetrics from '@/components/overview/OverviewMetrics.vue'
+import type { OverviewMetric } from '@/components/overview/OverviewMetrics.vue'
+import OverviewTaskDrawer from '@/components/overview/OverviewTaskDrawer.vue'
+import OverviewTaskPanel from '@/components/overview/OverviewTaskPanel.vue'
 import { countAudit, countResources, countSessions, listChatLogs, listMedia, listTasks, listThreads, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
 import { auditActivity, mergeAuditRecords } from '@/backend/overview'
 import { runBackend } from '@/backend/runBackend'
 import { useLatest, useLatestSubscription } from '@/async'
+import { useVisibilityPolling } from '@/composables/useVisibilityPolling'
 import { formatBytes } from '@/format'
 import { useConnectionStore } from '@/stores/connection'
 import type { Activity, AuditRecord, MediaStats, Task } from '@/types/domain'
 import type { LiveAdminMethod } from '@/rpc/protocol'
-import { useOverlayLayer } from '@/overlay'
 
 const router = useRouter()
 const connection = useConnectionStore()
@@ -52,15 +51,20 @@ const mediaLoading = ref(true)
 const resourceLoading = ref(true)
 const selectedTask = ref<Task>()
 const drawerOpen = ref(false)
-const { isTop: drawerIsTop } = useOverlayLayer(drawerOpen)
-let pollTimer: ReturnType<typeof setTimeout> | undefined
-let mounted = false
 const cycleLatest = useLatest()
 const auditLatest = useLatest()
 const auditCountLatest = useLatest()
 const auditSubscription = useLatestSubscription()
 
 const supports = (method: LiveAdminMethod): boolean => connection.state === 'authenticated' && connection.methods.has(method)
+const metrics = computed<readonly OverviewMetric[]>(() => [
+  { to: '/threads', icon: 'pi pi-sitemap', tone: 'violet', available: supports('thread.list'), loading: threadLoading.value, value: threadCount.value, label: 'Conversation threads', detail: 'Persisted reply trees', error: threadError.value },
+  { to: '/chat', icon: 'pi pi-comments', tone: 'green', available: supports('chat.list_sessions'), loading: chatLogLoading.value, value: chatMessageCount.value, label: 'Chat messages', detail: `${String(chatPlatformCount.value)} platforms · ${String(sessionCount.value)} RPC sessions`, error: chatLogError.value || sessionError.value },
+  { to: '/audit', icon: 'pi pi-wave-pulse', tone: 'blue', available: supports('audit.count'), value: auditCount.value, label: 'Audit events', detail: 'Complete event history', error: auditCountError.value },
+  { to: '/media', icon: 'pi pi-images', tone: 'violet', available: supports('media.stats'), loading: mediaLoading.value, value: formatBytes(mediaStats.value.totalBytes), label: 'Media storage', detail: `${String(mediaStats.value.files)} objects · ${String(mediaStats.value.missingFiles)} missing`, error: mediaError.value },
+  { to: '/resources', icon: 'pi pi-box', tone: 'blue', available: supports('resource.list'), loading: resourceLoading.value, value: resourceCount.value, label: 'Managed resources', detail: 'Current resource snapshot', error: resourceError.value },
+  { to: '/tasks', icon: 'pi pi-bolt', tone: 'green', available: supports('concurrency.list'), value: tasks.value.length, label: 'Tasks', detail: `${String(tasks.value.filter(({ status }) => status === 'running').length)} active`, error: taskError.value },
+])
 async function loadTasks(token: symbol): Promise<void> {
   const result = await runBackend(listTasks)
   if (!cycleLatest.current(token)) return
@@ -149,20 +153,6 @@ async function installAuditSubscription(): Promise<void> {
   else if (auditSubscription.current(token)) { auditLoading.value = false; auditError.value = result.error.message }
 }
 
-function startPolling(): void {
-  stopPolling()
-  if (!mounted || document.hidden || connection.state !== 'authenticated' || connection.methods.size === 0) return
-  pollTimer = setTimeout(async () => {
-    await loadSlowSnapshots()
-    startPolling()
-  }, 30_000)
-}
-
-function stopPolling(): void {
-  if (pollTimer !== undefined) clearTimeout(pollTimer)
-  pollTimer = undefined
-}
-
 async function loadImmediateSnapshots(token: symbol): Promise<void> {
   await Promise.all([
     supports('concurrency.list') ? loadTasks(token) : Promise.resolve(),
@@ -187,6 +177,8 @@ async function loadSlowSnapshots(): Promise<void> {
   if (!cycleLatest.current(token)) return
   await loadDeferredSnapshots(token)
 }
+
+const polling = useVisibilityPolling(loadSlowSnapshots, { interval: 30_000 })
 
 async function refreshLive(): Promise<void> {
   const token = cycleLatest.begin()
@@ -228,7 +220,7 @@ async function refreshLive(): Promise<void> {
   if (!cycleLatest.current(token)) return
   state.value = 'ready'
   await loadDeferredSnapshots(token)
-  if (cycleLatest.current(token)) startPolling()
+  if (cycleLatest.current(token)) polling.start()
 }
 
 function stopLive(): void {
@@ -236,32 +228,17 @@ function stopLive(): void {
   auditLatest.invalidate()
   auditCountLatest.invalidate()
   auditSubscription.invalidate()
-  stopPolling()
-}
-
-function onVisibilityChange(): void {
-  if (document.hidden) stopPolling()
-  else if (connection.state === 'authenticated' && connection.methods.size > 0) {
-    void loadSlowSnapshots().then(startPolling)
-  }
+  polling.stop()
 }
 function inspect(task: Task): void { selectedTask.value = task; drawerOpen.value = true }
-function formatTaskTime(value: string): string { return new Date(value).toLocaleTimeString() }
-function taskElapsed(task: Task): string {
-  const end = task.finishedAt === null ? Date.now() : Date.parse(task.finishedAt)
-  return `${String(Math.max(0, Math.round((end - Date.parse(task.startedAt)) / 60_000)))}m`
-}
 
 watch([() => connection.state, () => connection.methods], ([next]) => {
   if (next === 'authenticated' && connection.methods.size > 0) void refreshLive()
   else stopLive()
 })
 onMounted(() => {
-  mounted = true
-  document.addEventListener('visibilitychange', onVisibilityChange)
   void refreshLive()
 })
-onUnmounted(() => { mounted = false; stopLive(); document.removeEventListener('visibilitychange', onVisibilityChange) })
 </script>
 
 <template>
@@ -323,244 +300,26 @@ onUnmounted(() => { mounted = false; stopLive(); document.removeEventListener('v
       >
         {{ error }}
       </Message>
-      <div class="metric-grid overview-summary-grid">
-        <RouterLink
-          class="metric"
-          to="/threads"
-        >
-          <div class="metric-top">
-            <span class="pi pi-sitemap metric-icon violet" /><Tag
-              :value="supports('thread.list') ? 'Live' : 'Unavailable'"
-              :severity="supports('thread.list') ? 'success' : 'warn'"
-            />
-          </div>
-          <Skeleton
-            v-if="threadLoading"
-            width="4rem"
-            height="2.2rem"
-          /><strong v-else>{{ threadCount }}</strong><p>Conversation threads</p>
-          <small
-            v-if="threadError"
-            class="metric-error"
-          >{{ threadError }}</small><small v-else>Persisted reply trees</small>
-        </RouterLink>
-        <RouterLink
-          class="metric"
-          to="/chat"
-        >
-          <div class="metric-top">
-            <span class="pi pi-comments metric-icon green" /><Tag
-              :value="supports('chat.list_sessions') ? 'Live' : 'Unavailable'"
-              :severity="supports('chat.list_sessions') ? 'success' : 'warn'"
-            />
-          </div>
-          <Skeleton
-            v-if="chatLogLoading"
-            width="4rem"
-            height="2.2rem"
-          /><strong v-else>{{ chatMessageCount }}</strong><p>Chat messages</p>
-          <small
-            v-if="chatLogError || sessionError"
-            class="metric-error"
-          >{{ chatLogError || sessionError }}</small><small v-else>{{ chatPlatformCount }} platforms · {{ sessionCount }} RPC sessions</small>
-        </RouterLink>
-        <RouterLink
-          class="metric"
-          to="/audit"
-        >
-          <div class="metric-top">
-            <span class="pi pi-wave-pulse metric-icon blue" /><Tag
-              :value="supports('audit.count') ? 'Live' : 'Unavailable'"
-              :severity="supports('audit.count') ? 'success' : 'warn'"
-            />
-          </div>
-          <strong>{{ auditCount }}</strong><p>Audit events</p>
-          <small
-            v-if="auditCountError"
-            class="metric-error"
-          >{{ auditCountError }}</small><small v-else>Complete event history</small>
-        </RouterLink>
-        <RouterLink
-          class="metric"
-          to="/media"
-        >
-          <div class="metric-top">
-            <span class="pi pi-images metric-icon violet" /><Tag
-              :value="supports('media.stats') ? 'Live' : 'Unavailable'"
-              :severity="supports('media.stats') ? 'success' : 'warn'"
-            />
-          </div>
-          <Skeleton
-            v-if="mediaLoading"
-            width="5rem"
-            height="2.2rem"
-          /><strong v-else>{{ formatBytes(mediaStats.totalBytes) }}</strong><p>Media storage</p>
-          <small
-            v-if="mediaError"
-            class="metric-error"
-          >{{ mediaError }}</small><small v-else>{{ mediaStats.files }} objects · {{ mediaStats.missingFiles }} missing</small>
-        </RouterLink>
-        <RouterLink
-          class="metric"
-          to="/resources"
-        >
-          <div class="metric-top">
-            <span class="pi pi-box metric-icon blue" /><Tag
-              :value="supports('resource.list') ? 'Live' : 'Unavailable'"
-              :severity="supports('resource.list') ? 'success' : 'warn'"
-            />
-          </div>
-          <Skeleton
-            v-if="resourceLoading"
-            width="4rem"
-            height="2.2rem"
-          /><strong v-else>{{ resourceCount }}</strong><p>Managed resources</p>
-          <small
-            v-if="resourceError"
-            class="metric-error"
-          >{{ resourceError }}</small><small v-else>Current resource snapshot</small>
-        </RouterLink>
-        <RouterLink
-          class="metric"
-          to="/tasks"
-        >
-          <div class="metric-top">
-            <span class="pi pi-bolt metric-icon green" /><Tag
-              :value="supports('concurrency.list') ? 'Live' : 'Unavailable'"
-              :severity="supports('concurrency.list') ? 'success' : 'warn'"
-            />
-          </div>
-          <strong>{{ tasks.length }}</strong><p>Tasks</p>
-          <small
-            v-if="taskError"
-            class="metric-error"
-          >{{ taskError }}</small><small v-else>{{ tasks.filter(({ status }) => status === 'running').length }} active</small>
-        </RouterLink>
-      </div>
+      <OverviewMetrics :metrics="metrics" />
       <div class="overview-grid">
-        <article class="panel">
-          <div class="panel-heading">
-            <div><h2>Active tasks</h2><p>Work managed by Concurrency</p></div><Button
-              label="View all"
-              text
-              @click="router.push('/tasks')"
-            />
-          </div>
-          <Message
-            v-if="taskError"
-            severity="error"
-            :closable="false"
-          >
-            {{ taskError }}
-          </Message>
-          <DataTable
-            v-else
-            :value="tasks.filter(({ status }) => status === 'running').slice(0, 8)"
-            data-key="id"
-            selection-mode="single"
-            @row-select="inspect($event.data)"
-          >
-            <Column
-              field="label"
-              header="Task"
-            >
-              <template #body="{ data }">
-                <span class="task-name"><span class="platform-icon"><i class="pi pi-bolt" /></span><span><strong>{{ data.label }}</strong><small>Task #{{ data.id }}</small></span></span>
-              </template>
-            </Column>
-            <Column
-              field="status"
-              header="Status"
-            >
-              <template #body="{ data }">
-                <StatusBadge :status="data.status" />
-              </template>
-            </Column>
-            <Column
-              header="Started"
-            >
-              <template #body="{ data }">
-                {{ formatTaskTime(data.startedAt) }}
-              </template>
-            </Column><Column
-              header="Elapsed"
-            >
-              <template #body="{ data }">
-                {{ taskElapsed(data) }}
-              </template>
-            </Column>
-          </DataTable>
-        </article>
-        <article class="panel activity-panel">
-          <div class="panel-heading">
-            <div><h2>Recent activity</h2><p>Agent audit events</p></div><Tag
-              :value="supports('audit.subscribe') ? 'Live' : 'Snapshot'"
-              :severity="supports('audit.subscribe') ? 'success' : 'secondary'"
-            />
-          </div>
-          <Message
-            v-if="auditError"
-            severity="error"
-            :closable="false"
-          >
-            {{ auditError }}
-          </Message>
-          <div
-            v-else-if="auditLoading"
-            class="manager-loading"
-          >
-            <Skeleton
-              v-for="index in 4"
-              :key="index"
-              height="2.5rem"
-            />
-          </div>
-          <ol
-            v-else
-            class="activity-list"
-          >
-            <li
-              v-for="item in activities.slice(0, 8)"
-              :key="item.id"
-            >
-              <i
-                class="pi pi-circle-fill"
-                :class="item.tone"
-              /><div>
-                <p>
-                  <RouterLink :to="`/audit/${item.id}`">
-                    <strong>{{ item.kind }}</strong> {{ item.summary }}
-                  </RouterLink>
-                </p><small><RunIdLink :run-id="item.source" /> · {{ item.time }}</small>
-              </div>
-            </li>
-          </ol>
-        </article>
+        <OverviewTaskPanel
+          :tasks="tasks"
+          :error="taskError"
+          @inspect="inspect"
+          @view-all="router.push('/tasks')"
+        />
+        <OverviewActivityPanel
+          :activities="activities"
+          :error="auditError"
+          :loading="auditLoading"
+          :live="supports('audit.subscribe')"
+        />
       </div>
     </template>
-    <Drawer
+    <OverviewTaskDrawer
       v-model:visible="drawerOpen"
-      position="right"
-      header="Task detail"
-      :close-on-escape="drawerIsTop"
-      aria-label="Task detail"
-      :style="{ width: 'min(420px, 100vw)' }"
+      :task="selectedTask"
       @hide="selectedTask = undefined"
-    >
-      <template v-if="selectedTask">
-        <div class="stack stack-loose">
-          <div class="drawer-hero">
-            <span class="platform-icon"><i class="pi pi-bolt" /></span><div><h2>{{ selectedTask.label }}</h2><StatusBadge :status="selectedTask.status" /></div>
-          </div>
-          <dl class="detail-list">
-            <div><dt>ID</dt><dd>#{{ selectedTask.id }}</dd></div><div><dt>Started</dt><dd>{{ formatTaskTime(selectedTask.startedAt) }}</dd></div><div><dt>Elapsed</dt><dd>{{ taskElapsed(selectedTask) }}</dd></div>
-          </dl>
-          <Button
-            label="Open task page"
-            @click="router.push(`/tasks/${selectedTask?.id}`)"
-          />
-        </div>
-      </template>
-    </Drawer>
+    />
   </section>
 </template>

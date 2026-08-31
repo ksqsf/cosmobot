@@ -12,11 +12,14 @@ defineProps<{
 const emit = defineEmits<{ previewImage: [url: string] }>()
 const router = useRouter()
 
-function openMediaRef(event: MouseEvent): void {
+function handleContentClick(event: MouseEvent): void {
   const mediaRef = mediaRefFromClick(event)
-  if (mediaRef === undefined) return
-  event.preventDefault()
-  void router.push({ name: 'media', params: { mediaId: mediaRef } })
+  if (mediaRef !== undefined) {
+    event.preventDefault()
+    void router.push({ name: 'media', params: { mediaId: mediaRef } })
+  } else if (event.target instanceof HTMLImageElement) {
+    emit('previewImage', event.target.currentSrc || event.target.src)
+  }
 }
 </script>
 
@@ -82,6 +85,6 @@ function openMediaRef(event: MouseEvent): void {
     v-if="text"
     class="markdown-body"
     :innerHTML="renderMarkdown(text)"
-    @click="openMediaRef"
+    @click="handleContentClick"
   />
 </template>

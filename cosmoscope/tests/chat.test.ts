@@ -1,6 +1,6 @@
 import { Effect } from 'effect'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 import { makeRpcBackend } from '@/backend/rpcBackend'
 import { mergeChatLogItems, mergeChatMessage, safeDownloadUrl, safeImageUrl } from '@/backend/chat'
@@ -29,7 +29,7 @@ vi.mock('@/overlay', () => ({
 vi.mock('@/backend/AdminBackend', () => ({
   listChatSessions: pageMocks.listOperation,
   loadChatHistory: (sessionId: string) => ({ kind: 'history', sessionId }),
-  subscribeChat: (sessionId: string) => ({ kind: 'subscribe', sessionId }),
+  subscribeChat: (sessionId: string, refresh: () => Promise<void>) => ({ kind: 'subscribe', sessionId, refresh }),
   uploadChatAttachment: (file: File) => ({ kind: 'upload', file }),
   discardChatAttachment: pageMocks.discard,
   sendChatMessage: (message: unknown) => ({ kind: 'send', message }),
@@ -41,6 +41,8 @@ vi.mock('@/backend/AdminBackend', () => ({
 vi.mock('@/backend/runBackend', () => ({ runBackend: (operation: { kind: string, [key: string]: unknown }) => Promise.resolve(pageMocks.respond(operation)) }))
 
 import ChatPage from '@/pages/ChatPage.vue'
+import MessageContent from '@/components/MessageContent.vue'
+import ChatTranscript from '@/components/chat/ChatTranscript.vue'
 import { chatMethods } from '@/rpc/protocol'
 
 const message: ChatMessage = {
@@ -125,6 +127,13 @@ describe('chat projection', () => {
     expect(renderMarkdown(source)).toContain(`data-media-ref="${ref}"`)
     expect(mediaRefsInText(source)).toEqual([ref])
   })
+
+  it('opens markdown images through the shared message preview', async () => {
+    const wrapper = mount(MessageContent, { props: { text: '![result](/inline.png)', images: [], attachments: [] } })
+    await wrapper.find('.markdown-body img').trigger('click')
+
+    expect(wrapper.emitted('previewImage')?.[0]?.[0]).toMatch(/\/inline\.png$/u)
+  })
 })
 
 const success = <T>(value: T): { _tag: 'Success', value: T } => ({ _tag: 'Success', value })
@@ -140,7 +149,16 @@ function deferred<T>(): { promise: Promise<T>, resolve: (value: T) => void } {
 }
 
 async function mountChat(): Promise<VueWrapper> {
-  const wrapper = shallowMount(ChatPage, { global: { stubs: { PageHeading: { template: '<div><slot /></div>' } } } })
+  const wrapper = shallowMount(ChatPage, { global: { stubs: {
+    PageHeading: { template: '<div><slot /></div>' },
+    ChatSessionList: false,
+    ChatTranscript: false,
+    ChatMessage: false,
+    ChatMessageItem: false,
+    ChatComposer: false,
+    AttachmentTray: false,
+    MessageContent: false,
+  } } })
   await flushPromises()
   return wrapper
 }
@@ -227,6 +245,33 @@ describe('chat page session lifecycles', () => {
     expect(wrapper.text()).not.toContain('First')
   })
 
+  it('ignores an older history refresh in the same session', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const oldHistory = deferred<ReturnType<typeof success<unknown>>>()
+    const newHistory = deferred<ReturnType<typeof success<unknown>>>()
+    let histories = 0
+    pageMocks.respond.mockImplementation((operation) => {
+      if (operation.kind === 'list') return success(sessions)
+      if (operation.kind === 'history') { histories += 1; return histories === 1 ? oldHistory.promise : newHistory.promise }
+      return success(() => undefined)
+    })
+    const wrapper = await mountChat()
+    const subscribe = pageMocks.respond.mock.calls.map(([operation]) => operation).find(({ kind }) => kind === 'subscribe')
+    const refresh = subscribe?.['refresh'] as (() => Promise<void>) | undefined
+    if (refresh === undefined) throw new Error('Expected a chat refresh callback')
+
+    const oldRequest = refresh()
+    const newRequest = refresh()
+    newHistory.resolve(success({ messages: [{ ...message, text: 'new history' }], hasOlder: false }))
+    await newRequest
+    oldHistory.resolve(success({ messages: [{ ...message, text: 'old history' }], hasOlder: false }))
+    await oldRequest
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('new history')
+    expect(wrapper.text()).not.toContain('old history')
+  })
+
   it('does not restore an attachment removed while sending or changing sessions', async () => {
     const pendingDiscard = deferred<{ _tag: 'Failure', error: { message: string } }>()
     const attachment = { attachmentId: 'late', name: 'late.txt', kind: 'file', mediaType: 'text/plain', size: 1, url: '/late' }
@@ -266,5 +311,34 @@ describe('chat page session lifecycles', () => {
     await flushPromises()
 
     expect(pageMocks.respond.mock.calls.filter(([operation]) => operation.kind === 'list')).toHaveLength(listsBefore)
+  })
+
+  it('does not apply an older-page scroll adjustment to a new session', async () => {
+    const pendingOlder = deferred<undefined>()
+    const loadOlder = vi.fn(() => pendingOlder.promise)
+    const first = { sessionId: 'session-1', label: 'First', parentSessionId: null, parentMessageId: null }
+    const second = { sessionId: 'session-2', label: 'Second', parentSessionId: null, parentMessageId: null }
+    const wrapper = shallowMount(ChatTranscript, {
+      props: {
+        session: first,
+        messages: [message],
+        streamingMessageIds: new Set<string>(),
+        loading: false,
+        loadingOlder: false,
+        hasOlder: true,
+        loadOlder,
+      } as never,
+    })
+    const pane = wrapper.find('.messages').element
+    Object.defineProperty(pane, 'scrollHeight', { configurable: true, value: 100 })
+    pane.scrollTop = 7
+    await wrapper.find('button-stub[label="Load older messages"]').trigger('click')
+    await wrapper.setProps({ session: second, messages: [] } as never)
+    Object.defineProperty(pane, 'scrollHeight', { configurable: true, value: 300 })
+    pendingOlder.resolve(undefined)
+    await flushPromises()
+
+    expect(loadOlder).toHaveBeenCalledOnce()
+    expect(pane.scrollTop).toBe(7)
   })
 })

@@ -2,7 +2,9 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import { threadMessageChatKey, threadMessageKeyId, threadPathTo, threadToolActivity } from '@/backend/thread'
-import type { ActiveThread, AuditRecord, ThreadDetail, ThreadMessageKey, ThreadNode } from '@/types/domain'
+import { formatDuration, mediaRefs, messageText } from '@/domain/threadTranscript'
+import { activeTreeKey, buildActiveTree, buildTree, findTreeNode } from '@/domain/threadTree'
+import type { ActiveThread, AuditRecord, StoredThreadMessage, ThreadDetail, ThreadMessageKey, ThreadNode } from '@/types/domain'
 
 const key = (messageId: string): ThreadMessageKey => ({ platform: 'PlatformRPC', chatId: null, messageId })
 const node = (messageId: string, parentMessageId: string | null): ThreadNode => ({
@@ -13,6 +15,29 @@ const node = (messageId: string, parentMessageId: string | null): ThreadNode => 
 })
 
 describe('threadPathTo', () => {
+  it('builds stored and active branches without UI state', () => {
+    const nodes = [node('root', null), node('child', 'root')]
+    const active: ActiveThread = {
+      taskId: 7, runId: 'run-7', prompt: 'Working', parentMessageKey: key('child'),
+      parentThreadId: 1, messageKeys: [], pendingSteers: 0, messages: [],
+    }
+    const tree = buildActiveTree(nodes, [active])
+
+    expect(buildTree(nodes)[0]?.children[0]?.key).toContain('child')
+    expect(findTreeNode(tree, activeTreeKey(7))?.label).toBe('Working')
+  })
+
+  it('projects transcript text, media references, and durations', () => {
+    const message: StoredThreadMessage = {
+      role: 'user',
+      content: [{ type: 'text', text: 'hello' }, { type: 'image_url', image_url: 'media:mf_image' }],
+      tool_calls: [{ id: 'call', type: 'function', function: { name: 'read', arguments: '{"file":"media:mf_file123"}' } }],
+    }
+
+    expect(messageText(message)).toContain('hello')
+    expect(mediaRefs(message)).toEqual(['media:mf_image', 'media:mf_file123'])
+    expect(formatDuration(1250, 1)).toBe('1.3 s · 1 unreported')
+  })
   it('returns only the selected branch from the root', () => {
     const leaf = node('leaf', 'left')
     const nodes = [node('root', null), node('left', 'root'), node('right', 'root'), leaf]
@@ -98,8 +123,7 @@ describe('threadPathTo', () => {
     await flushPromises()
     const page = wrapper.vm as unknown as {
       monitor: (active: ActiveThread) => Promise<void>
-      inspectThread: (threadId: number) => Promise<void>
-      detail?: ThreadDetail
+      inspector: { inspectThread: (threadId: number) => Promise<void>, detail: { value?: ThreadDetail } }
     }
     const active = (taskId: number): ActiveThread => ({
       taskId, runId: `run-${String(taskId)}`, prompt: '', parentMessageKey: null,
@@ -123,7 +147,7 @@ describe('threadPathTo', () => {
 
     let resolveThread!: (value: unknown) => void
     threadRequests.push(new Promise((resolve) => { resolveThread = resolve }))
-    const persisted = page.inspectThread(42)
+    const persisted = page.inspector.inspectThread(42)
     subscriptions.push(Promise.resolve({ _tag: 'Success', value: vi.fn() }))
     await page.monitor(active(3))
     const detail: ThreadDetail = {
@@ -135,7 +159,7 @@ describe('threadPathTo', () => {
     }
     resolveThread({ _tag: 'Success', value: detail })
     await persisted
-    expect(page.detail).toBeUndefined()
+    expect(page.inspector.detail.value).toBeUndefined()
     wrapper.unmount()
 
     vi.resetModules()

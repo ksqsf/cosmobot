@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment jsdom
+
+import { flushPromises, mount } from '@vue/test-utils'
+import { defineComponent, h, reactive, nextTick } from 'vue'
+import { describe, expect, it, vi } from 'vitest'
 import { configChangeSchema, configurationGetSchema } from '@/rpc/schemas'
 import { configSectionTitle, groupConfigSections } from '@/configuration/navigation'
 import { configListItemKind, configTextInputValue, displayConfigValue } from '@/configuration/values'
@@ -84,5 +88,67 @@ describe('configuration RPC schemas', () => {
     if (parsedOption === undefined) throw new Error('missing configuration option fixture')
     expect(configListItemKind({ ...parsedOption, type: { kind: 'list', values: ['integer'] } })).toBe('integer')
     expect(configListItemKind({ ...parsedOption, type: { kind: 'identity_list' } })).toBe('identity')
+  })
+
+  it('keeps drafts when an update from an old connection completes after reconnect', async () => {
+    vi.resetModules()
+    const connection = reactive<{ state: string, methods: Set<string> }>({
+      state: 'authenticated',
+      methods: new Set(['config.get', 'config.validate', 'config.update']),
+    })
+    const addToast = vi.fn()
+    let resolveUpdate!: (value: unknown) => void
+    vi.doMock('primevue/usetoast', () => ({ useToast: () => ({ add: addToast }) }))
+    vi.doMock('@/stores/connection', () => ({ useConnectionStore: () => connection }))
+    vi.doMock('@/backend/AdminBackend', () => ({
+      getConfiguration: { tag: 'get' },
+      validateConfiguration: () => ({ tag: 'validate' }),
+      updateConfiguration: () => ({ tag: 'update' }),
+      rollbackConfiguration: () => ({ tag: 'rollback' }),
+    }))
+    vi.doMock('@/backend/runBackend', () => ({
+      runBackend: (operation: { tag: string }): Promise<unknown> => {
+        if (operation.tag === 'get') return Promise.resolve({ _tag: 'Success', value: configurationGetSchema.parse(snapshot) })
+        if (operation.tag === 'validate') return Promise.resolve({
+          _tag: 'Success',
+          value: { valid: true, revision: 'current', diagnostics: [], diff: [], restartRequired: true },
+        })
+        if (operation.tag === 'update') return new Promise((resolve) => { resolveUpdate = resolve })
+        return Promise.resolve({ _tag: 'Failure', error: new Error('unexpected operation') })
+      },
+    }))
+    const { useConfigurationDraft } = await import('@/composables/useConfigurationDraft')
+    let draft!: ReturnType<typeof useConfigurationDraft>
+    const wrapper = mount(defineComponent({
+      setup() { draft = useConfigurationDraft(); return () => h('div') },
+    }))
+    await flushPromises()
+    const parsedOption = draft.snapshot.value?.configuration.sections[0]?.options[0]
+    if (parsedOption === undefined) throw new Error('missing configuration option fixture')
+    draft.replaceSecret(parsedOption, 'replacement')
+    await draft.validate()
+    expect(draft.applyReady.value).toBe(true)
+
+    const applying = draft.apply()
+    expect(draft.loading.value).toBe(true)
+    connection.state = 'reconnecting'
+    await nextTick()
+    expect(draft.loading.value).toBe(false)
+    expect(draft.changes.value).toHaveLength(1)
+    connection.state = 'authenticated'
+    connection.methods = new Set(['config.get', 'config.validate', 'config.update'])
+    await nextTick()
+    resolveUpdate({ _tag: 'Success', value: { updated: true } })
+    await applying
+
+    expect(draft.changes.value).toHaveLength(1)
+    expect(draft.validation.value).toBeUndefined()
+    expect(addToast).not.toHaveBeenCalled()
+    wrapper.unmount()
+    vi.resetModules()
+    vi.doUnmock('primevue/usetoast')
+    vi.doUnmock('@/stores/connection')
+    vi.doUnmock('@/backend/AdminBackend')
+    vi.doUnmock('@/backend/runBackend')
   })
 })
