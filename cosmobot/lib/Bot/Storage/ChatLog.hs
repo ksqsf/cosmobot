@@ -29,6 +29,7 @@ import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time (getCurrentTime)
@@ -127,9 +128,6 @@ loadChatLogStats = do
     messageCounts <- query $ aggregate do
       row <- select chatLogRows
       pure (count (row ! #id))
-    platforms <- query $ aggregate do
-      row <- select chatLogRows
-      groupBy (row ! #platform_key)
     chats <- query $ aggregate do
       row <- select chatLogRows
       platform <- groupBy (row ! #platform_key)
@@ -138,7 +136,7 @@ loadChatLogStats = do
       pure (platform :*: kind :*: chat)
     pure
       ( fromMaybe 0 (viaNonEmpty head messageCounts)
-      , length platforms
+      , Set.size (Set.fromList [platform | platform :*: _ :*: _ <- chats])
       , length chats
       )
 

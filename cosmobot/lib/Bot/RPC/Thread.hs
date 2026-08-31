@@ -53,15 +53,14 @@ dispatchThreadMethod inspectActive haltActive request =
     "thread.list" ->
       parseParams request parseThreadListParams \params -> do
         rows <- Thread.loadThreadIndexRows
-        aliasRows <- Thread.loadThreadRowsByIds (aliasCandidateRowIds rows)
-        let logicalRows = collapseSummaryAliases (Map.fromList [(row.rowId, row.messagesJson) | row <- aliasRows]) rows
+        let logicalRows = collapseSummaryAliases rows
             summaries = filter (\summary -> maybe True (== summary.rootKey.platform) params.platform) (threadSummaries logicalRows)
         -- ponytail: text search scans root blobs; add an indexed preview column if this becomes a sustained hot path.
         searchTails <- if Text.null params.query then pure [] else Thread.loadThreadRowsByIds (map (.latestRowId) summaries)
         let searchPreviews = Map.fromList [(row.rowId, threadRowPreview row) | row <- searchTails]
             filtered = filter (summaryMatches params.query searchPreviews) summaries
             page = take params.limit (drop params.offset filtered)
-        pageTails <- if Text.null params.query then Thread.loadThreadRowsByIds (map (.latestRowId) page) else pure []
+        pageTails <- Thread.loadThreadRowsByIds (map (.latestRowId) page)
         let previews = searchPreviews <> Map.fromList [(row.rowId, threadRowPreview row) | row <- pageTails]
         chatInfos <- Identity.loadChatInfos [(summary.rootKey.platform, chatId) | summary <- page, chatId <- maybeToList summary.rootKey.chatId]
         pure $ Aeson.object
@@ -130,19 +129,8 @@ threadSummaries =
   sortOn (Down . (.threadId)) . mapMaybe (uncurry summarize) . Map.toList .
     Map.fromListWith (<>) . map (\row -> (resolvedThreadId row, [row]))
 
-aliasCandidateRowIds :: [Thread.ThreadIndexRow] -> [Integer]
-aliasCandidateRowIds rows =
-  [ row.rowId
-  | siblings <- Map.elems $ Map.fromListWith (<>)
-      [ ((resolvedThreadId row, row.parentMessageKey), [row])
-      | row <- rows
-      ]
-  , length siblings > 1
-  , row <- siblings
-  ]
-
-collapseSummaryAliases :: Map Integer Text -> [Thread.ThreadIndexRow] -> [Thread.ThreadIndexRow]
-collapseSummaryAliases messagesByRowId rows =
+collapseSummaryAliases :: [Thread.ThreadIndexRow] -> [Thread.ThreadIndexRow]
+collapseSummaryAliases rows =
   concatMap collapseThread $ Map.elems $ Map.fromListWith (<>)
     [(resolvedThreadId row, [row]) | row <- rows]
   where
@@ -151,8 +139,9 @@ collapseSummaryAliases messagesByRowId rows =
       { rowId = row.rowId
       , messageKey = row.messageKey
       , threadStorageId = row.threadStorageId
+      , aliasGroupId = row.aliasGroupId
       , parentMessageKey = row.parentMessageKey
-      , messagesJson = Map.findWithDefault ("\NUL" <> toText (show row.rowId :: String)) row.rowId messagesByRowId
+      , messagesJson = ""
       }
 
 summarize :: Integer -> [Thread.ThreadIndexRow] -> Maybe ThreadSummary
@@ -222,7 +211,7 @@ collapseAliases linkedKeys rows =
     ]
   where
     groups = Map.fromListWith (<>)
-      [ ((row.parentMessageKey, row.messagesJson), [row])
+      [ (fromMaybe row.rowId row.aliasGroupId, [row])
       | row <- rows
       ]
     aliases = Map.fromList
@@ -236,7 +225,7 @@ collapseAliases linkedKeys rows =
       linked -> linked
     remapParent :: Thread.ThreadRow -> Thread.ThreadRow
     remapParent row =
-      Thread.ThreadRow row.rowId row.messageKey row.threadStorageId
+      Thread.ThreadRow row.rowId row.messageKey row.threadStorageId row.aliasGroupId
         (row.parentMessageKey <&> \parent -> Map.findWithDefault parent parent aliases)
         row.messagesJson
 
@@ -362,6 +351,7 @@ indexRow row = Thread.ThreadIndexRow
   { rowId = row.rowId
   , messageKey = row.messageKey
   , threadStorageId = row.threadStorageId
+  , aliasGroupId = row.aliasGroupId
   , parentMessageKey = row.parentMessageKey
   }
 

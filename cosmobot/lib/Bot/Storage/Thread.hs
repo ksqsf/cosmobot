@@ -142,6 +142,7 @@ data ThreadRow = ThreadRow
   { rowId :: !Integer
   , messageKey :: !ThreadMessageKey
   , threadStorageId :: !(Maybe Integer)
+  , aliasGroupId :: !(Maybe Integer)
   , parentMessageKey :: !(Maybe ThreadMessageKey)
   , messagesJson :: !Text
   }
@@ -151,6 +152,7 @@ data ThreadIndexRow = ThreadIndexRow
   { rowId :: !Integer
   , messageKey :: !ThreadMessageKey
   , threadStorageId :: !(Maybe Integer)
+  , aliasGroupId :: !(Maybe Integer)
   , parentMessageKey :: !(Maybe ThreadMessageKey)
   }
   deriving (Eq, Show)
@@ -161,6 +163,7 @@ data ThreadStorageRow = ThreadStorageRow
   , chat_id :: Maybe Text
   , message_id :: Text
   , thread_id :: Maybe Int.Int64
+  , alias_group_id :: Maybe Int.Int64
   , parent_chat_id :: Maybe Text
   , parent_message_id :: Maybe Text
   , messages_json :: Text
@@ -175,6 +178,7 @@ data ThreadIndexStorageRow = ThreadIndexStorageRow
   , chat_id :: Maybe Text
   , message_id :: Text
   , thread_id :: Maybe Int.Int64
+  , alias_group_id :: Maybe Int.Int64
   , parent_chat_id :: Maybe Text
   , parent_message_id :: Maybe Text
   }
@@ -190,6 +194,7 @@ threadRows =
     , #chat_id :- index
     , #message_id :- index
     , #thread_id :- index
+    , #alias_group_id :- index
     , #parent_message_id :- index
     ]
 
@@ -201,6 +206,7 @@ threadIndexRows =
     , #chat_id :- index
     , #message_id :- index
     , #thread_id :- index
+    , #alias_group_id :- index
     , #parent_message_id :- index
     ]
 
@@ -842,10 +848,18 @@ loadThreadMessageIdsFromStorage messageKey = do
     Nothing ->
       pure []
     Just targetRow ->
-      case targetRow.threadStorageId of
-        Nothing ->
+      case (targetRow.threadStorageId, targetRow.aliasGroupId) of
+        (_, Just targetAliasGroupId) -> do
+          rows <- runSelda $
+            query do
+              row <- select threadRows
+              restrict (row ! #alias_group_id .== literal (Just (fromIntegral targetAliasGroupId :: Int.Int64)))
+              order (row ! #id) ascending
+              pure row
+          pure (map (textMessageId . (.message_id)) rows)
+        (Nothing, Nothing) ->
           pure []
-        Just targetThreadStorageId -> do
+        (Just targetThreadStorageId, Nothing) -> do
           rows <- runSelda $
             query do
               row <- select threadRows
@@ -865,26 +879,27 @@ saveThreadMessages messageKeys requestedThreadStorageId parentMessageKey storedM
   runSelda $ transaction do
     for_ messageKeys \messageKey ->
       deleteFrom_ threadRows \row -> threadKeyMatches messageKey row
-    case requestedThreadStorageId of
-      Just threadStorageId ->
-        insert_ threadRows (map (threadStorageRow (Just threadStorageId)) (toList messageKeys)) $> threadStorageId
-      Nothing -> do
-        let firstKey :| remainingKeys = messageKeys
-        insertedId <- insertWithPK threadRows [threadStorageRow Nothing firstKey]
-        let threadStorageId = fromIntegral (fromId insertedId)
-        update_ threadRows
-          (\row -> row ! #id .== literal insertedId)
-          (\row -> row `with` [#thread_id := literal (Just (fromIntegral threadStorageId :: Int.Int64))])
-        unless (null remainingKeys) $
-          insert_ threadRows (map (threadStorageRow (Just threadStorageId)) remainingKeys)
-        pure threadStorageId
+    let firstKey :| remainingKeys = messageKeys
+    insertedId <- insertWithPK threadRows [threadStorageRow (fromIntegral <$> requestedThreadStorageId) Nothing firstKey]
+    let aliasGroupId = fromId insertedId
+        threadStorageId = fromMaybe aliasGroupId (fromIntegral <$> requestedThreadStorageId)
+    update_ threadRows
+      (\row -> row ! #id .== literal insertedId)
+      (\row -> row `with`
+        [ #thread_id := literal (Just threadStorageId)
+        , #alias_group_id := literal (Just aliasGroupId)
+        ])
+    unless (null remainingKeys) $
+      insert_ threadRows (map (threadStorageRow (Just threadStorageId) (Just aliasGroupId)) remainingKeys)
+    pure (fromIntegral threadStorageId)
   where
-    threadStorageRow threadStorageId messageKey = ThreadStorageRow
+    threadStorageRow threadStorageId aliasGroupId messageKey = ThreadStorageRow
       { id = def
       , platform_key = chatPlatformKey messageKey.platform
       , chat_id = chatIdText <$> messageKey.chatId
       , message_id = messageIdText messageKey.messageId
-      , thread_id = fromIntegral <$> threadStorageId
+      , thread_id = threadStorageId
+      , alias_group_id = aliasGroupId
       , parent_chat_id = chatIdText <$> (parentMessageKey >>= (.chatId))
       , parent_message_id = messageIdText <$> (parentMessageKey <&> (.messageId))
       , messages_json = storedMessagesJson
@@ -897,6 +912,7 @@ threadRowFromStorage row =
     { rowId = fromIntegral (fromId row.id)
     , messageKey = messageKey
     , threadStorageId = fromIntegral <$> row.thread_id
+    , aliasGroupId = fromIntegral <$> row.alias_group_id
     , parentMessageKey = do
         parentMessageId <- textMessageId <$> row.parent_message_id
         pure ThreadMessageKey
@@ -918,6 +934,7 @@ threadIndexRowFromStorage row =
     { rowId = fromIntegral (fromId row.id)
     , messageKey
     , threadStorageId = fromIntegral <$> row.thread_id
+    , aliasGroupId = fromIntegral <$> row.alias_group_id
     , parentMessageKey = do
         parentId <- textMessageId <$> row.parent_message_id
         pure ThreadMessageKey

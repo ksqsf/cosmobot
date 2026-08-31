@@ -77,6 +77,7 @@ import qualified System.Posix.Files as Posix
 import System.Timeout
 import Test.Tasty
 import Test.Tasty.HUnit
+import Test.Tasty.Runners (NumThreads (..))
 import qualified Toml
 import Toml.Schema
 
@@ -87,7 +88,7 @@ instance Exception TestRpcException
 
 main :: IO ()
 main =
-  defaultMain $
+  defaultMain $ localOption (NumThreads 1) $
     testGroup "rpc"
       [ testCase "request params default to empty object" testRequestParamsDefaultToEmptyObject
       , testCase "audit.recent bounds its snapshot limit" testAuditRecentBoundsLimit
@@ -282,6 +283,12 @@ testThreadInspectionRpc = do
   responseErrorCode invalidResponse @?= Just "invalid_params"
   responseField populatedListResponse "nodes" @?= Just (1 :: Int)
   responseField populatedListResponse "leaves" @?= Just (1 :: Int)
+  populatedThreads <- maybe (assertFailure "thread.list returned no threads") pure (responseField populatedListResponse "threads" :: Maybe [Aeson.Value])
+  populatedThread <- maybe (assertFailure "thread.list returned an empty page") pure (viaNonEmpty head populatedThreads)
+  populatedNodeCount <- parseJsonField "nodeCount" populatedThread
+  populatedLeafCount <- parseJsonField "leafCount" populatedThread
+  populatedNodeCount @?= (1 :: Int)
+  populatedLeafCount @?= (1 :: Int)
   countResponse @?= responseResult (Aeson.object ["threads" Aeson..= (1 :: Int)])
   detailResponse @?= responseResult (Aeson.object
     [ "summary" Aeson..= Aeson.object
