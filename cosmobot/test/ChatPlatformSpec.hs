@@ -289,13 +289,24 @@ testQqVideoSegmentBecomesMessageFile :: IO ()
 testQqVideoSegmentBecomesMessageFile = do
   let original :: QQ.Event
       original = qqMessageEvent 10001
-      event = original
-        { QQ.message = Just (Aeson.toJSON
+      event = QQ.Event
+        { QQ.time = original.time
+        , QQ.selfId = original.selfId
+        , QQ.postType = original.postType
+        , QQ.messageType = original.messageType
+        , QQ.subType = original.subType
+        , QQ.messageId = original.messageId
+        , QQ.userId = original.userId
+        , QQ.groupId = original.groupId
+        , QQ.message = Just (Aeson.toJSON
             [ Aeson.object
                 [ "type" Aeson..= ("video" :: Text)
                 , "data" Aeson..= Aeson.object ["file" Aeson..= ("https://example.test/clip.mp4" :: Text)]
                 ]
             ])
+        , QQ.rawMessage = original.rawMessage
+        , QQ.sender = original.sender
+        , QQ.rawEvent = original.rawEvent
         }
   ((.files) <$> QQ.eventToIncomingMessage event)
     @?= Just [MessageFile{name = "video", ref = "https://example.test/clip.mp4"}]
