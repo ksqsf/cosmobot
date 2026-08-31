@@ -11,6 +11,7 @@ module Bot.Storage.Session
   , StoredChatSession (..)
   , ensureSessionTables
   , createSession
+  , countSessions
   , listSessions
   , loadSession
   , loadSessionHistory
@@ -171,6 +172,14 @@ listSessions = do
       order (row ! #id) ascending
       pure row
   pure (map sessionFromRow rows)
+
+countSessions :: Storage.Storage :> es => Eff es Int
+countSessions = do
+  ensureSessionTables
+  counts <- runSelda $ query $ aggregate do
+    row <- select sessionRows
+    pure (count (row ! #id))
+  pure (fromMaybe 0 (viaNonEmpty head counts))
 
 loadSession :: Storage.Storage :> es => Text -> Eff es (Maybe StoredChatSession)
 loadSession targetSessionId = do

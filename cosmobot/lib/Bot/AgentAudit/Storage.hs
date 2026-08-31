@@ -29,6 +29,8 @@ import Bot.Storage.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Int as Int
+import qualified Data.List as List
+import qualified Data.Map.Strict as Map
 import qualified Data.Text.Encoding as TextEncoding
 
 data AgentAuditRow = AgentAuditRow
@@ -156,7 +158,8 @@ queryStoredThreadMessagesAudit [] =
   pure []
 queryStoredThreadMessagesAudit messageKeys = do
   linkedRuns <- linkedRunOccurrences messageKeys
-  ordNubOn (.id) . concat <$> traverse (uncurry queryStoredRunOccurrence) linkedRuns
+  rowsByRun <- queryStoredRunOccurrences linkedRuns
+  pure $ concatMap (uncurry (storedRunOccurrence rowsByRun)) linkedRuns
 
 ensureAgentAuditTable :: Storage.Storage :> es => Eff es ()
 ensureAgentAuditTable =
@@ -232,16 +235,22 @@ auditEventToolCallId = \case
   ToolCallFinished{toolCallId} -> Just toolCallId
   _ -> Nothing
 
-queryStoredRunOccurrence :: Storage.Storage :> es => Text -> RowID -> Eff es [AgentAuditRecord]
-queryStoredRunOccurrence runId linkedAuditId = do
+queryStoredRunOccurrences :: Storage.Storage :> es => [(Text, RowID)] -> Eff es (Map Text [AgentAuditRow])
+queryStoredRunOccurrences [] =
+  pure Map.empty
+queryStoredRunOccurrences linkedRuns = do
   rows <- runSelda $
     query do
       row <- select agentAuditRows
-      restrict (row ! #run_id .== literal runId)
-      restrict (row ! #id .<= literal linkedAuditId)
+      restrict (row ! #run_id `isIn` map (literal . fst) linkedRuns)
+      restrict (row ! #id .<= literal (List.maximum (map snd linkedRuns)))
       order (row ! #id) ascending
       pure row
-  pure $ case reverse rows of
+  pure (Map.fromListWith (flip (<>)) [(row.run_id, [row]) | row <- rows])
+
+storedRunOccurrence :: Map Text [AgentAuditRow] -> Text -> RowID -> [AgentAuditRecord]
+storedRunOccurrence rowsByRun runId linkedAuditId =
+  case reverse (takeWhile ((<= linkedAuditId) . (.id)) (Map.findWithDefault [] runId rowsByRun)) of
     [] -> []
     linked : earlier ->
       mapMaybe storedAuditRecord (reverse (linked : takeWhile (isNothing . (.linked_message_id)) earlier))

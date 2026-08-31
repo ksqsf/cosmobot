@@ -21,6 +21,7 @@ import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Bot.Storage.Identity as Identity
+import qualified Bot.Storage.ChatLog as ChatLogStorage
 
 chatLogRpcCallbacks
   :: (ChatLog.ChatLog :> es, Storage.Storage :> es)
@@ -32,7 +33,7 @@ chatLogRpcCallbacks
 chatLogRpcCallbacks parentMessage finalAssistantText threadIds publicMediaRef =
   noRpcServerCallbacks
     { chatLogMethod = dispatchChatLogMethod parentMessage finalAssistantText threadIds publicMediaRef
-    , supportedMethods = ["chat_log.list", "chat_log.window"]
+    , supportedMethods = ["chat_log.list", "chat_log.stats", "chat_log.window"]
     }
 
 dispatchChatLogMethod
@@ -48,6 +49,14 @@ dispatchChatLogMethod parentMessage finalAssistantText threadIds publicMediaRef 
     "chat_log.list" ->
       parseParams request parseNoParams \() ->
         ChatLog.listChats >>= chatLogSummariesValue
+    "chat_log.stats" ->
+      parseParams request parseNoParams \() -> do
+        (messages, platforms, chats) <- ChatLogStorage.loadChatLogStats
+        pure $ Aeson.object
+          [ "messages" Aeson..= messages
+          , "platforms" Aeson..= platforms
+          , "chats" Aeson..= chats
+          ]
     "chat_log.window" ->
       parseParams request parseWindowParams \(scope, anchor, limit) ->
         queryWindowWithThreadFallback parentMessage finalAssistantText scope anchor limit >>= chatLogWindowValue threadIds publicMediaRef

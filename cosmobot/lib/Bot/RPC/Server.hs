@@ -48,6 +48,7 @@ import Data.Version (showVersion)
 import Data.Typeable (typeOf)
 import qualified Effectful.FileSystem as FileSystem
 import qualified Effectful.Concurrent.STM as STM
+import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Timeout as Timeout
 import GHC.Clock (getMonotonicTimeNSec)
 import qualified JSONRPC
@@ -77,6 +78,11 @@ data MediaGcSettings = MediaGcSettings
   { gcEnabled :: !Bool
   , maxAgeSeconds :: !Int
   , intervalHours :: !Int
+  }
+
+data RpcClientWork = RpcClientWork
+  { request :: !RPC.RpcRequest
+  , respond :: !Bool
   }
 
 data RpcAttachmentUpload = RpcAttachmentUpload
@@ -312,7 +318,7 @@ writeQueuedFrames client conn =
         throwIO (RpcClientDisconnected reason)
 
 readRequestFrames
-  :: (IOE :> es, KatipE :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
+  :: (IOE :> es, KatipE :> es, Concurrency.Concurrency :> es, Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, Media.Media :> es)
   => Config.Config
   -> State.RpcState
   -> RpcServerCallbacks es
@@ -320,30 +326,44 @@ readRequestFrames
   -> State.RpcClient
   -> WS.Connection
   -> Eff es ()
-readRequestFrames cfg rpcState callbacks clientId client conn =
-  forever do
-    bytes <- liftIO (WS.receiveData conn :: IO ByteString)
-    (dispatchedRequest, response) <- case Aeson.eitherDecodeStrict bytes of
-      Left err ->
-        pure (Nothing, Just (RPC.parseErrorResponse (Text.pack err)))
-      Right value ->
-        case Aeson.fromJSON value of
-          Aeson.Success (JSONRPC.RequestMessage request) -> do
-            response <- dispatchClientRpcRequestWithConfig rpcState clientId client cfg callbacks request
-            pure (Just request, Just response)
-          Aeson.Success (JSONRPC.NotificationMessage notification_) -> do
-            _ <- dispatchClientRpcRequestWithConfig rpcState clientId client cfg callbacks (notificationToRequest notification_)
-            pure (Nothing, Nothing)
-          Aeson.Error err ->
-            pure (Nothing, Just (RPC.invalidRequestResponse (Text.pack err)))
-          Aeson.Success _ ->
-            pure (Nothing, Just (RPC.invalidRequestResponse "Expected request or notification"))
-    for_ response \rpcResponse ->
-      case dispatchedRequest of
-        Just request | RPC.requestMethod request == "admin.restart" -> do
-            State.writeClientAndWait client (Aeson.toJSON rpcResponse)
+readRequestFrames cfg rpcState callbacks clientId client conn = do
+  work <- STM.newTBQueueIO 64
+  foldr
+    (\workerId -> Concurrency.withWorker [i|rpc.client.#{clientId}.request.#{workerId}|] (dispatchQueuedRequests work))
+    (receiveRequestFrames work)
+    [1 .. rpcClientWorkerCount]
+  where
+  dispatchQueuedRequests work =
+    forever do
+      RpcClientWork{request, respond} <- STM.atomically (STM.readTBQueue work)
+      response <- dispatchClientRpcRequestWithConfig rpcState clientId client cfg callbacks request
+      when respond $
+        if RPC.requestMethod request == "admin.restart"
+          then do
+            State.writeClientAndWait client (Aeson.toJSON response)
             callbacks.afterResponse request
-        _ -> State.writeClient client (Aeson.toJSON rpcResponse)
+          else State.writeClient client (Aeson.toJSON response)
+
+  receiveRequestFrames work =
+    forever do
+      bytes <- liftIO (WS.receiveData conn :: IO ByteString)
+      case Aeson.eitherDecodeStrict bytes of
+        Left err ->
+          State.writeClient client (Aeson.toJSON (RPC.parseErrorResponse (Text.pack err)))
+        Right value ->
+          case Aeson.fromJSON value of
+            Aeson.Success (JSONRPC.RequestMessage request) ->
+              STM.atomically (STM.writeTBQueue work (RpcClientWork request True))
+            Aeson.Success (JSONRPC.NotificationMessage notification_) ->
+              STM.atomically (STM.writeTBQueue work (RpcClientWork (notificationToRequest notification_) False))
+            Aeson.Error err ->
+              State.writeClient client (Aeson.toJSON (RPC.invalidRequestResponse (Text.pack err)))
+            Aeson.Success _ ->
+              State.writeClient client (Aeson.toJSON (RPC.invalidRequestResponse "Expected request or notification"))
+
+rpcClientWorkerCount :: Int
+rpcClientWorkerCount =
+  8
 
 dispatchRpcRequest
   :: (Concurrent :> es, Storage.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es)
@@ -439,6 +459,8 @@ dispatchRpcRequestUnsafe rpcState client _cfg callbacks request =
       dispatchOpenSession request
     "chat.list_sessions" ->
       dispatchListSessions request
+    "chat.count_sessions" ->
+      dispatchCountSessions request
     "chat.get_session" ->
       dispatchGetSession request
     "chat.history" ->
@@ -521,7 +543,7 @@ parseNoParams value = Aeson.withObject "empty params" (\o -> unless (null o) (fa
 rpcMethods :: RpcServerCallbacks es -> [Text]
 rpcMethods callbacks =
   [ "admin.capabilities"
-  , "chat.open_session", "chat.list_sessions", "chat.get_session", "chat.history"
+  , "chat.open_session", "chat.list_sessions", "chat.count_sessions", "chat.get_session", "chat.history"
   , "chat.fork", "chat.rename_session", "chat.delete_session", "chat.upload_attachment"
   , "chat.send", "chat.subscribe", "chat.unsubscribe"
   , "audit.subscribe", "audit.unsubscribe", "events.subscribe", "events.unsubscribe"
@@ -613,6 +635,15 @@ dispatchListSessions request = do
   pure $
     RPC.successResponse (RPC.requestId request) $
       Aeson.object ["sessions" Aeson..= sessions]
+
+dispatchCountSessions
+  :: Storage.Storage :> es
+  => RPC.RpcRequest
+  -> Eff es RPC.RpcResponse
+dispatchCountSessions request = do
+  sessionCount <- State.countChatSessions
+  pure $ RPC.successResponse (RPC.requestId request) $
+    Aeson.object ["sessions" Aeson..= sessionCount]
 
 dispatchGetSession
   :: Storage.Storage :> es
@@ -769,7 +800,7 @@ dispatchChatSend rpcState request =
                 ]
 
 dispatchMediaStats
-  :: Media.Media :> es
+  :: (Concurrent :> es, Media.Media :> es)
   => RpcServerCallbacks es
   -> RPC.RpcRequest
   -> Eff es RPC.RpcResponse
@@ -779,8 +810,7 @@ dispatchMediaStats callbacks request = do
       pure (RPC.errorResponse (RPC.requestId request) "invalid_params" (Text.pack err))
     Right params ->
       do
-        stats <- Media.mediaCacheStats
-        entries <- Media.listMediaEntries params.limit
+        (stats, entries) <- Async.concurrently Media.mediaCacheStats (Media.listMediaEntries params.limit)
         pure $
           RPC.successResponse (RPC.requestId request) $
             Aeson.object

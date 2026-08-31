@@ -39,7 +39,7 @@ threadRpcCallbacks
 threadRpcCallbacks inspectActive haltActive =
   noRpcServerCallbacks
     { threadMethod = dispatchThreadMethod inspectActive haltActive
-    , supportedMethods = ["thread.list", "thread.get", "thread.resolve_run", "thread.active", "thread.halt"]
+    , supportedMethods = ["thread.list", "thread.count", "thread.get", "thread.resolve_run", "thread.active", "thread.halt"]
     }
 
 dispatchThreadMethod
@@ -71,6 +71,10 @@ dispatchThreadMethod inspectActive haltActive request =
           , "leaves" Aeson..= sum (map (.leafCount) filtered)
           , "platforms" Aeson..= Set.size (Set.fromList (map (.rootKey.platform) filtered))
           ]
+    "thread.count" ->
+      parseParams request parseNoParams \() -> do
+        count <- Thread.countStoredThreads
+        pure (Aeson.object ["threads" Aeson..= count])
     "thread.get" ->
       parseParams request parseThreadId \threadId -> do
         rows <- Thread.loadThreadRowsByThreadId threadId

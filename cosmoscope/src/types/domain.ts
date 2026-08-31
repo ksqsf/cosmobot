@@ -337,8 +337,6 @@ export interface MediaDetail extends MediaItem {
 
 export interface MediaStats {
   readonly files: number
-  readonly existingFiles: number
-  readonly missingFiles: number
   readonly totalBytes: number
   readonly sources: number
   readonly platformRefs: number

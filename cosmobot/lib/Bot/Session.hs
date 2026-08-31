@@ -13,6 +13,7 @@ module Bot.Session
   , SessionAttachmentRef (..)
   , SessionSend (..)
   , openSession
+  , countSessions
   , listSessions
   , getSession
   , sessionHistory
@@ -104,6 +105,10 @@ openSession label =
 listSessions :: StorageEffect.Storage :> es => Eff es [Session]
 listSessions =
   map storedSessionToSession <$> Storage.listSessions
+
+countSessions :: StorageEffect.Storage :> es => Eff es Int
+countSessions =
+  Storage.countSessions
 
 getSession :: StorageEffect.Storage :> es => SessionId -> Eff es (Maybe Session)
 getSession sessionId =

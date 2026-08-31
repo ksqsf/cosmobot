@@ -11,7 +11,7 @@ const mockBackend: AdminBackend = {
   audit: {
     recent: unavailable, count: unavailable, search: unavailable, get: unavailable, run: unavailable, thread: unavailable, subscribe: unavailable,
   },
-  threads: { list: unavailable, get: unavailable, resolveRun: unavailable, active: unavailable, halt: unavailable },
+  threads: { count: unavailable, list: unavailable, get: unavailable, resolveRun: unavailable, active: unavailable, halt: unavailable },
   memory: { list: unavailable, get: unavailable, history: unavailable, getRevision: unavailable, revert: unavailable },
   skills: { list: unavailable, get: unavailable, remove: unavailable },
   chat: {
@@ -26,7 +26,7 @@ const mockBackend: AdminBackend = {
   schedules: { list: unavailable, delete: unavailable },
   media: { list: unavailable, search: unavailable, get: unavailable, delete: unavailable, gc: unavailable },
   plugins: { list: unavailable, load: unavailable, reload: unavailable, unload: unavailable },
-  chatLogs: { list: unavailable, window: unavailable },
+  chatLogs: { list: unavailable, stats: unavailable, window: unavailable },
   config: { get: unavailable, validate: unavailable, update: unavailable, rollback: unavailable, restart: unavailable },
 }
 

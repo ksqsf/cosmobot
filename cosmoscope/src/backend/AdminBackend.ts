@@ -32,6 +32,7 @@ export interface AdminBackend {
     readonly subscribe: (refresh: () => Promise<void>, handler: (record: AuditRecord) => void) => BackendEffect<() => void>
   }
   readonly threads: {
+    readonly count: () => BackendEffect<number>
     readonly list: (query: ThreadListQuery) => BackendEffect<ThreadSnapshot>
     readonly get: (id: number) => BackendEffect<ThreadDetail | null>
     readonly resolveRun: (runId: string) => BackendEffect<ThreadRunTarget>
@@ -91,6 +92,7 @@ export interface AdminBackend {
   }
   readonly chatLogs: {
     readonly list: () => BackendEffect<readonly ChatLogSummary[]>
+    readonly stats: () => BackendEffect<{ readonly messages: number, readonly platforms: number, readonly chats: number }>
     readonly window: (query: ChatLogWindowQuery) => BackendEffect<ChatLogWindow>
   }
   readonly config: {
@@ -129,6 +131,8 @@ export const subscribeAudit = (refresh: () => Promise<void>, handler: (record: A
   AdminBackendService.use((backend) => backend.audit.subscribe(refresh, handler))
 export const listThreads = (query: ThreadListQuery): Effect.Effect<ThreadSnapshot, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.threads.list(query))
+export const countThreads: Effect.Effect<number, BackendError, AdminBackend> =
+  AdminBackendService.use((backend) => backend.threads.count())
 export const getThread = (id: number): Effect.Effect<ThreadDetail | null, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.threads.get(id))
 export const resolveThreadRun = (runId: string): Effect.Effect<ThreadRunTarget, BackendError, AdminBackend> =>
@@ -213,6 +217,8 @@ export const unloadPlugin = (id: string): Effect.Effect<void, BackendError, Admi
   AdminBackendService.use((backend) => backend.plugins.unload(id))
 export const listChatLogs: Effect.Effect<readonly ChatLogSummary[], BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.chatLogs.list())
+export const getChatLogStats: Effect.Effect<{ readonly messages: number, readonly platforms: number, readonly chats: number }, BackendError, AdminBackend> =
+  AdminBackendService.use((backend) => backend.chatLogs.stats())
 export const loadChatLogWindow = (query: ChatLogWindowQuery): Effect.Effect<ChatLogWindow, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.chatLogs.window(query))
 export const getConfiguration: Effect.Effect<ConfigurationSnapshot, BackendError, AdminBackend> =

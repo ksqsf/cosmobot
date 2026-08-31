@@ -18,7 +18,7 @@ import { formatBytes } from '@/format'
 import { useConnectionStore } from '@/stores/connection'
 import type { MediaDetail, MediaGcSettings, MediaItem, MediaStats } from '@/types/domain'
 
-const emptyStats: MediaStats = { files: 0, existingFiles: 0, missingFiles: 0, totalBytes: 0, sources: 0, platformRefs: 0, platformAssociations: 0, mimeTypes: [], platforms: [] }
+const emptyStats: MediaStats = { files: 0, totalBytes: 0, sources: 0, platformRefs: 0, platformAssociations: 0, mimeTypes: [], platforms: [] }
 const emptyGcSettings: MediaGcSettings = { enabled: false, maxAgeSeconds: 0, intervalHours: 0 }
 const media = ref<readonly MediaItem[]>([])
 const stats = ref<MediaStats>(emptyStats)
@@ -151,12 +151,6 @@ watch(() => route.params['mediaId'], () => { void selectFromRoute() })
         <div><span class="summary-mark violet"><i class="pi pi-images" /></span><span><strong>{{ stats.files }}</strong><small>Objects</small></span></div>
         <div><span class="summary-mark info"><i class="pi pi-database" /></span><span><strong>{{ formatBytes(stats.totalBytes) }}</strong><small>Total size</small></span></div>
         <div><span class="summary-mark success"><i class="pi pi-link" /></span><span><strong>{{ stats.platformAssociations }}</strong><small>Platform associations</small></span></div>
-        <div>
-          <span
-            class="summary-mark"
-            :class="stats.missingFiles === 0 ? 'neutral' : 'warning'"
-          ><i class="pi pi-exclamation-circle" /></span><span><strong>{{ stats.missingFiles }}</strong><small>Missing files</small></span>
-        </div>
       </div>
       <article class="panel manager-table">
         <MediaFilterBar

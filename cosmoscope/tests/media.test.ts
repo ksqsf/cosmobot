@@ -39,7 +39,7 @@ describe('media backend', () => {
     const client = new RpcClient()
     const request = vi.spyOn(client, 'request').mockImplementation((method) => {
       if (method === 'media.stats') return Promise.resolve({
-        stats: { files: 1, existingFiles: 1, missingFiles: 0, totalBytes: 1024, sources: 1, platformRefs: 1, platformAssociations: 1, mimeTypes: ['image/png'], platforms: ['telegram'] },
+        stats: { files: 1, totalBytes: 1024, sources: 1, platformRefs: 1, platformAssociations: 1, mimeTypes: ['image/png'], platforms: ['telegram'] },
         files: [item], gcSettings: { enabled: true, maxAgeSeconds: 604800, intervalHours: 24 },
       })
       if (method === 'media.get') return Promise.resolve({
@@ -80,7 +80,7 @@ describe('media backend', () => {
     expect(pending).toHaveLength(2)
     const snapshot = (name: string): unknown => ({
       _tag: 'Success',
-      value: { files: [{ ...item, sourceName: name }], stats: { files: 1, existingFiles: 1, missingFiles: 0, totalBytes: 1024, sources: 1, platformRefs: 1, platformAssociations: 1, mimeTypes: ['image/png'], platforms: ['telegram'] }, gcSettings: { enabled: true, maxAgeSeconds: 604800, intervalHours: 24 } },
+      value: { files: [{ ...item, sourceName: name }], stats: { files: 1, totalBytes: 1024, sources: 1, platformRefs: 1, platformAssociations: 1, mimeTypes: ['image/png'], platforms: ['telegram'] }, gcSettings: { enabled: true, maxAgeSeconds: 604800, intervalHours: 24 } },
     })
     pending[1]?.(snapshot('new.png'))
     await flushPromises()

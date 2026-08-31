@@ -1510,8 +1510,6 @@ runMediaStoreWith store =
     Media.GetMediaCacheStats ->
       pure Media.MediaCacheStats
         { files = 0
-        , existingFiles = 0
-        , missingFiles = 0
         , totalBytes = 0
         , sources = 0
         , platformRefs = 0

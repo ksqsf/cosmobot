@@ -5550,7 +5550,7 @@ runMediaNormalizingRefs =
     Media.SearchMediaEntries _ ->
       pure []
     Media.GetMediaCacheStats ->
-      pure Media.MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0, platformAssociations = 0, mimeTypes = [], platforms = []}
+      pure Media.MediaCacheStats{files = 0, totalBytes = 0, sources = 0, platformRefs = 0, platformAssociations = 0, mimeTypes = [], platforms = []}
     Media.GcMediaCache _ _ ->
       pure 0
     Media.NormalizeMediaRef ref ->
@@ -5590,7 +5590,7 @@ runMediaLeavingRefs =
     Media.SearchMediaEntries _ ->
       pure []
     Media.GetMediaCacheStats ->
-      pure Media.MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0, platformAssociations = 0, mimeTypes = [], platforms = []}
+      pure Media.MediaCacheStats{files = 0, totalBytes = 0, sources = 0, platformRefs = 0, platformAssociations = 0, mimeTypes = [], platforms = []}
     Media.GcMediaCache _ _ ->
       pure 0
     Media.NormalizeMediaRef ref ->

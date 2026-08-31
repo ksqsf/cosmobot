@@ -315,8 +315,6 @@ export const mediaItemSchema = z.object({
 }) satisfies z.ZodType<MediaItem>
 const mediaStatsSchema = z.object({
   files: z.number().int().nonnegative(),
-  existingFiles: z.number().int().nonnegative(),
-  missingFiles: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
   sources: z.number().int().nonnegative(),
   platformRefs: z.number().int().nonnegative(),

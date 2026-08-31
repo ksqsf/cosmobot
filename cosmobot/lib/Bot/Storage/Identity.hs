@@ -152,8 +152,8 @@ loadScopedChatInfos requested = do
       identityKeys = map (\(platform, kind, chatId) -> scopedChatKey platform kind chatId) keys
   rows <- runSelda $ concat <$> traverse (\batch -> query do
     row <- select chatInfoRows
-    restrict (foldr (.||) (literal False) [row ! #identity_key .== literal key | key <- batch])
-    pure row) (identityBatches identityKeys)
+    restrict (row ! #identity_key `isIn` map literal batch)
+    pure row) (identityKeyBatches identityKeys)
   pure $ Map.fromList
     [ (key, row.display_name)
     | key@(platform, kind, chatId) <- keys
@@ -185,3 +185,9 @@ identityBatches [] = []
 identityBatches values = batch : identityBatches rest
   where
     (batch, rest) = splitAt 20 values
+
+identityKeyBatches :: [a] -> [[a]]
+identityKeyBatches [] = []
+identityKeyBatches values = batch : identityKeyBatches rest
+  where
+    (batch, rest) = splitAt 500 values

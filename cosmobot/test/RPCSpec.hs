@@ -235,7 +235,7 @@ testThreadInspectionRpc :: IO ()
 testThreadInspectionRpc = do
   let inputKey = ThreadMessageKey PlatformRPC (Just "42") "message-1"
       linkedKey = ThreadMessageKey PlatformRPC (Just "42") "reply-1"
-  (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, detailResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
+  (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, countResponse, detailResponse, resolveResponse, activeResponse, haltResponse) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
     rpcState <- RPC.newRpcState
     let dispatch method params =
           RPCServer.dispatchRpcRequest rpcState (RPCThread.threadRpcCallbacks (pure []) (pure . (== Concurrency.Id 7))) (rpcRequest method params)
@@ -260,6 +260,7 @@ testThreadInspectionRpc = do
       , parentMessageId = Nothing
       }
     populatedListResponse <- dispatch "thread.list" Aeson.Null
+    countResponse <- dispatch "thread.count" Aeson.Null
     detailResponse <- dispatch "thread.get" (Aeson.object ["threadId" Aeson..= (1 :: Int)])
     resolveResponse <- dispatch "thread.resolve_run" (Aeson.object ["runId" Aeson..= runId])
     let childInputKey = ThreadMessageKey PlatformRPC (Just "42") "message-2"
@@ -268,7 +269,7 @@ testThreadInspectionRpc = do
       (RPCThread.threadRpcCallbacks (ThreadStorage.listActiveThreadInspections threads) (pure . (== Concurrency.Id 7)))
       (rpcRequest "thread.active" Aeson.Null)
     haltResponse <- dispatch "thread.halt" (Aeson.object ["taskId" Aeson..= (7 :: Int)])
-    pure (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, detailResponse, resolveResponse, activeResponse, haltResponse)
+    pure (listResponse, invalidListResponse, missingResponse, invalidResponse, populatedListResponse, countResponse, detailResponse, resolveResponse, activeResponse, haltResponse)
   listResponse @?= responseResult (Aeson.object
     [ "threads" Aeson..= ([] :: [Aeson.Value])
     , "total" Aeson..= (0 :: Int)
@@ -281,6 +282,7 @@ testThreadInspectionRpc = do
   responseErrorCode invalidResponse @?= Just "invalid_params"
   responseField populatedListResponse "nodes" @?= Just (1 :: Int)
   responseField populatedListResponse "leaves" @?= Just (1 :: Int)
+  countResponse @?= responseResult (Aeson.object ["threads" Aeson..= (1 :: Int)])
   detailResponse @?= responseResult (Aeson.object
     [ "summary" Aeson..= Aeson.object
         [ "threadId" Aeson..= (1 :: Int)
@@ -329,21 +331,25 @@ testChatLogRpc = do
         , "messageId" Aeson..= (messageId :: Text)
         ]
       assistant key = pure $ "answer" <$ guard (key.messageId == "legacy-sent")
-  (listResponse, windowResponse, legacyResponse) <- runRpcStorage ":memory:" $ ChatLog.runChatLog do
+  (listResponse, statsResponse, windowResponse, legacyResponse) <- runRpcStorage ":memory:" $ ChatLog.runChatLog do
     ChatLog.recordMessage incoming
     ChatLog.recordMessage incoming{Bot.Core.Message.platform = PlatformRPC, Bot.Core.Message.messageId = Just "rpc-incoming"}
     ChatLog.recordMessage incoming{Bot.Core.Message.platform = PlatformACP, Bot.Core.Message.messageId = Just "acp-incoming"}
     ChatLog.recordSelfMessage incoming Nothing "answer"
     rpcState <- RPC.newRpcState
     let callbacks = RPCChatLog.chatLogRpcCallbacks parent assistant (pure . map (, 42)) pure
-    (,,) <$> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.list" Aeson.Null)
-         <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.window" (params "sent"))
-         <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.window" (params "legacy-sent"))
+    (,,,) <$> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.list" Aeson.Null)
+          <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.stats" Aeson.Null)
+          <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.window" (params "sent"))
+          <*> RPCServer.dispatchRpcRequest rpcState callbacks (rpcRequest "chat_log.window" (params "legacy-sent"))
   chats <- maybe (assertFailure "chat_log.list did not return chats") pure (responseField listResponse "chats" :: Maybe [Aeson.Value])
   length chats @?= 3
   chatScopes <- traverse (parseJsonField "scope") chats
   platforms <- traverse (parseJsonField "platform") chatScopes
   sort platforms @?= (["PlatformACP", "PlatformMatrix", "PlatformRPC"] :: [Text])
+  responseField statsResponse "messages" @?= Just (4 :: Int)
+  responseField statsResponse "platforms" @?= Just (3 :: Int)
+  responseField statsResponse "chats" @?= Just (3 :: Int)
   chatScope <- maybe (assertFailure "chat_log.list returned no Matrix chat") pure $
     viaNonEmpty head [scope | (platform, scope) <- zip platforms chatScopes, platform == "PlatformMatrix"]
   chatId <- parseJsonField "chatId" chatScope
@@ -1402,10 +1408,12 @@ testChatSessionsPersistAcrossRestart =
 
     firstResponse @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= Just ("message-1" :: Text)])
 
-    (listResponse, historyResponse, sendResponse) <- runRpcStorage path do
+    (listResponse, countResponse, historyResponse, sendResponse) <- runRpcStorage path do
       rpcState <- RPC.newRpcState
       listResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.list_sessions" Aeson.Null
+      countResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
+        rpcRequest "chat.count_sessions" Aeson.Null
       historyResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
         rpcRequest "chat.history" (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text)])
       sendResponse <- RPCServer.dispatchRpcRequest rpcState RPCServer.noRpcServerCallbacks $
@@ -1414,11 +1422,12 @@ testChatSessionsPersistAcrossRestart =
             [ "sessionId" Aeson..= ("local-1" :: Text)
             , "text" Aeson..= ("after restart" :: Text)
             ]
-      pure (listResponse, historyResponse, sendResponse)
+      pure (listResponse, countResponse, historyResponse, sendResponse)
 
     listResponse @?=
       responseResult
         (Aeson.object ["sessions" Aeson..= [sessionValue "local-1" (Just "local") Nothing Nothing]])
+    countResponse @?= responseResult (Aeson.object ["sessions" Aeson..= (1 :: Int)])
     historyResponse @?=
       responseResult
         ( Aeson.object

@@ -16,6 +16,7 @@ export const chatMethods = [
 ] as const
 
 export const liveAdminMethods = [
+  'chat.count_sessions',
   'concurrency.list',
   'concurrency.lookup',
   'concurrency.cancel',
@@ -27,6 +28,7 @@ export const liveAdminMethods = [
   'audit.thread',
   'audit.subscribe',
   'thread.list',
+  'thread.count',
   'thread.get',
   'thread.resolve_run',
   'thread.active',
@@ -40,6 +42,7 @@ export const liveAdminMethods = [
   'skills.get',
   'skills.remove',
   'chat_log.list',
+  'chat_log.stats',
   'chat_log.window',
   'media.stats',
   'media.search',

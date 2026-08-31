@@ -11,6 +11,7 @@ module Bot.Storage.ChatLog
   , queryStored
   , queryCurrentSenderStored
   , listStoredChats
+  , loadChatLogStats
   , queryStoredWindow
   , loadReplyMessageKeys
   , findLegacyReplyAnchor
@@ -118,6 +119,28 @@ listStoredChats = do
     chatId' <- groupBy (row ! #chat_id)
     pure (platformKey' :*: kindKey' :*: chatId' :*: count (row ! #id) :*: max_ (row ! #recorded_at))
   pure $ sortOn (Down . (.latestAt)) $ mapMaybe summaryFromRow rows
+
+loadChatLogStats :: Storage.Storage :> es => Eff es (Int, Int, Int)
+loadChatLogStats = do
+  ensureChatLogTable
+  runSelda do
+    messageCounts <- query $ aggregate do
+      row <- select chatLogRows
+      pure (count (row ! #id))
+    platforms <- query $ aggregate do
+      row <- select chatLogRows
+      groupBy (row ! #platform_key)
+    chats <- query $ aggregate do
+      row <- select chatLogRows
+      platform <- groupBy (row ! #platform_key)
+      kind <- groupBy (row ! #kind_key)
+      chat <- groupBy (row ! #chat_id)
+      pure (platform :*: kind :*: chat)
+    pure
+      ( fromMaybe 0 (viaNonEmpty head messageCounts)
+      , length platforms
+      , length chats
+      )
 
 queryStoredWindow
   :: Storage.Storage :> es

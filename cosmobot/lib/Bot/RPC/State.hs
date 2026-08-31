@@ -29,6 +29,7 @@ module Bot.RPC.State
   , publish
   , broadcastAuditRecord
   , openChatSession
+  , countChatSessions
   , listChatSessions
   , getChatSession
   , chatHistoryPage
@@ -209,6 +210,10 @@ openChatSession =
 listChatSessions :: StorageEffect.Storage :> es => Eff es [RpcChatSession]
 listChatSessions =
   Session.listSessions
+
+countChatSessions :: StorageEffect.Storage :> es => Eff es Int
+countChatSessions =
+  Session.countSessions
 
 getChatSession :: StorageEffect.Storage :> es => RpcSessionId -> Eff es (Maybe RpcChatSession)
 getChatSession sessionId =

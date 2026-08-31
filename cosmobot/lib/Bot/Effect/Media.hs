@@ -116,8 +116,6 @@ data MediaCacheEntry = MediaCacheEntry
 
 data MediaCacheStats = MediaCacheStats
   { files :: !Int
-  , existingFiles :: !Int
-  , missingFiles :: !Int
   , totalBytes :: !Int
   , sources :: !Int
   , platformRefs :: !Int
@@ -311,7 +309,7 @@ runMediaPassthrough =
     SearchMediaEntries _ ->
       pure []
     GetMediaCacheStats ->
-      pure MediaCacheStats{files = 0, existingFiles = 0, missingFiles = 0, totalBytes = 0, sources = 0, platformRefs = 0, platformAssociations = 0, mimeTypes = [], platforms = []}
+      pure MediaCacheStats{files = 0, totalBytes = 0, sources = 0, platformRefs = 0, platformAssociations = 0, mimeTypes = [], platforms = []}
     GcMediaCache _ _ ->
       pure 0
     NormalizeMediaRef ref ->

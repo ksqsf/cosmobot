@@ -1,5 +1,5 @@
 import { Effect } from 'effect'
-import { ZodError } from 'zod'
+import { z, ZodError } from 'zod'
 import { RpcBackendError, type AdminBackend } from './AdminBackend'
 import {
   activeThreadListSchema,
@@ -106,6 +106,7 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       )) : unsupported('audit.subscribe'),
     },
     threads: {
+      count: () => rpcEffect('Could not load the thread count.', async () => z.object({ threads: z.number().int().nonnegative() }).parse(await client.request('thread.count')).threads),
       list: (query) => rpcEffect('Could not load threads.', async () => threadListSchema.parse(await client.request('thread.list', {
         offset: query.offset,
         limit: query.limit,
@@ -130,10 +131,12 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       remove: (name) => rpcEffect('Could not remove skill.', async () => skillRemoveSchema.parse(await client.request('skills.remove', { name })).removed),
     },
     chat: {
-      sessionCount: supports('chat.list_sessions') ? () => Effect.tryPromise({
-        try: async () => chatSessionsSchema.parse(await client.request('chat.list_sessions')).sessions.length,
+      sessionCount: supports('chat.count_sessions') || supports('chat.list_sessions') ? () => Effect.tryPromise({
+        try: async () => supports('chat.count_sessions')
+          ? z.object({ sessions: z.number().int().nonnegative() }).parse(await client.request('chat.count_sessions')).sessions
+          : chatSessionsSchema.parse(await client.request('chat.list_sessions')).sessions.length,
         catch: () => new RpcBackendError({ message: 'Could not load the session count.' }),
-      }) : unsupported('chat.list_sessions'),
+      }) : unsupported('chat.count_sessions'),
       list: () => rpcEffect('Could not load chat sessions.', async () => chatSessionsSchema.parse(await client.request('chat.list_sessions')).sessions),
       open: (label) => rpcEffect('Could not create the chat session.', async () => chatOpenSchema.parse(await client.request('chat.open_session', { label })).session),
       history: (sessionId, beforeMessageId, limit = 100) => rpcEffect('Could not load the chat transcript.', async () => chatHistorySchema.parse(await client.request('chat.history', { sessionId, beforeMessageId, limit }))),
@@ -163,6 +166,9 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
     },
     chatLogs: {
       list: () => rpcEffect('Could not load chat logs.', async () => chatLogListSchema.parse(await client.request('chat_log.list')).chats),
+      stats: () => rpcEffect('Could not load chat statistics.', async () => z.object({
+        messages: z.number().int().nonnegative(), platforms: z.number().int().nonnegative(), chats: z.number().int().nonnegative(),
+      }).parse(await client.request('chat_log.stats'))),
       window: (query) => rpcEffect('Could not load chat messages.', async () => chatLogWindowSchema.parse(await client.request('chat_log.window', query))),
     },
     resources: {

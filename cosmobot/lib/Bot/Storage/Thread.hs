@@ -42,6 +42,7 @@ module Bot.Storage.Thread
   , haltActiveThreadsForMessage
   , loadThreadRows
   , loadThreadIndexRows
+  , countStoredThreads
   , loadThreadRowsByThreadId
   , loadThreadRowsByIds
   , loadThreadIdByMessageKey
@@ -72,6 +73,7 @@ import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text as Text
+import qualified Database.Selda as Selda
 
 data ThreadStore = ThreadStore
   { unThreadStore :: IORef ThreadState
@@ -742,6 +744,23 @@ loadThreadIndexRows = do
       order (row ! #id) ascending
       pure row
   pure (map threadIndexRowFromStorage rows)
+
+countStoredThreads :: Storage.Storage :> es => Eff es Int
+countStoredThreads = do
+  ensureThreadTable
+  (threadCounts, legacyCounts) <- runSelda do
+    threadCounts <- query $ aggregate do
+      threadId <- Selda.inner $ distinct do
+        row <- select threadRows
+        restrict (not_ (isNull (row ! #thread_id)))
+        pure (row ! #thread_id)
+      pure (count threadId)
+    legacyCounts <- query $ aggregate do
+      row <- select threadRows
+      restrict (isNull (row ! #thread_id))
+      pure (count (row ! #id))
+    pure (threadCounts, legacyCounts)
+  pure (fromMaybe 0 (viaNonEmpty head threadCounts) + fromMaybe 0 (viaNonEmpty head legacyCounts))
 
 loadThreadRowsByThreadId :: Storage.Storage :> es => Integer -> Eff es [ThreadRow]
 loadThreadRowsByThreadId targetThreadId = do

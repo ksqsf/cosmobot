@@ -26,6 +26,7 @@ const backendProxy: AdminBackend = {
     subscribe: (refresh, handler) => activeBackend.audit.subscribe(refresh, handler),
   },
   threads: {
+    count: () => activeBackend.threads.count(),
     list: (query) => activeBackend.threads.list(query),
     get: (id) => activeBackend.threads.get(id),
     resolveRun: (runId) => activeBackend.threads.resolveRun(runId),
@@ -82,6 +83,7 @@ const backendProxy: AdminBackend = {
   },
   chatLogs: {
     list: () => activeBackend.chatLogs.list(),
+    stats: () => activeBackend.chatLogs.stats(),
     window: (query) => activeBackend.chatLogs.window(query),
   },
   config: {

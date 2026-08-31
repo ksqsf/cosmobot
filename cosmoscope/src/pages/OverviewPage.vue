@@ -10,7 +10,7 @@ import OverviewMetrics from '@/components/overview/OverviewMetrics.vue'
 import type { OverviewMetric } from '@/components/overview/OverviewMetrics.vue'
 import OverviewTaskDrawer from '@/components/overview/OverviewTaskDrawer.vue'
 import OverviewTaskPanel from '@/components/overview/OverviewTaskPanel.vue'
-import { countAudit, countResources, countSessions, listChatLogs, listMedia, listTasks, listThreads, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
+import { countAudit, countResources, countSessions, countThreads, getChatLogStats, listMedia, listTasks, recentAudit, subscribeAudit } from '@/backend/AdminBackend'
 import { auditActivity, mergeAuditRecords } from '@/backend/overview'
 import { runBackend } from '@/backend/runBackend'
 import { useLatest, useLatestSubscription } from '@/async'
@@ -35,7 +35,7 @@ const chatMessageCount = ref(0)
 const chatPlatformCount = ref(0)
 const auditCount = ref(0)
 const resourceCount = ref(0)
-const mediaStats = ref<MediaStats>({ files: 0, existingFiles: 0, missingFiles: 0, totalBytes: 0, sources: 0, platformRefs: 0, platformAssociations: 0, mimeTypes: [], platforms: [] })
+const mediaStats = ref<MediaStats>({ files: 0, totalBytes: 0, sources: 0, platformRefs: 0, platformAssociations: 0, mimeTypes: [], platforms: [] })
 const taskError = ref('')
 const auditError = ref('')
 const auditCountError = ref('')
@@ -58,10 +58,10 @@ const auditSubscription = useLatestSubscription()
 
 const supports = (method: LiveAdminMethod): boolean => connection.state === 'authenticated' && connection.methods.has(method)
 const metrics = computed<readonly OverviewMetric[]>(() => [
-  { to: '/threads', icon: 'pi pi-sitemap', tone: 'violet', available: supports('thread.list'), loading: threadLoading.value, value: threadCount.value, label: 'Conversation threads', detail: 'Persisted reply trees', error: threadError.value },
+  { to: '/threads', icon: 'pi pi-sitemap', tone: 'violet', available: supports('thread.count'), loading: threadLoading.value, value: threadCount.value, label: 'Conversation threads', detail: 'Persisted reply trees', error: threadError.value },
   { to: '/chat', icon: 'pi pi-comments', tone: 'green', available: supports('chat.list_sessions'), loading: chatLogLoading.value, value: chatMessageCount.value, label: 'Chat messages', detail: `${String(chatPlatformCount.value)} platforms · ${String(sessionCount.value)} RPC sessions`, error: chatLogError.value || sessionError.value },
   { to: '/audit', icon: 'pi pi-wave-pulse', tone: 'blue', available: supports('audit.count'), value: auditCount.value, label: 'Audit events', detail: 'Complete event history', error: auditCountError.value },
-  { to: '/media', icon: 'pi pi-images', tone: 'violet', available: supports('media.stats'), loading: mediaLoading.value, value: formatBytes(mediaStats.value.totalBytes), label: 'Media storage', detail: `${String(mediaStats.value.files)} objects · ${String(mediaStats.value.missingFiles)} missing`, error: mediaError.value },
+  { to: '/media', icon: 'pi pi-images', tone: 'violet', available: supports('media.stats'), loading: mediaLoading.value, value: formatBytes(mediaStats.value.totalBytes), label: 'Media storage', detail: `${String(mediaStats.value.files)} objects`, error: mediaError.value },
   { to: '/resources', icon: 'pi pi-box', tone: 'blue', available: supports('resource.list'), loading: resourceLoading.value, value: resourceCount.value, label: 'Managed resources', detail: 'Current resource snapshot', error: resourceError.value },
   { to: '/tasks', icon: 'pi pi-bolt', tone: 'green', available: supports('concurrency.list'), value: tasks.value.length, label: 'Tasks', detail: `${String(tasks.value.filter(({ status }) => status === 'running').length)} active`, error: taskError.value },
 ])
@@ -100,21 +100,21 @@ async function loadSessions(token: symbol): Promise<void> {
 }
 
 async function loadChatLogs(token: symbol): Promise<void> {
-  const result = await runBackend(listChatLogs)
+  const result = await runBackend(getChatLogStats)
   if (!cycleLatest.current(token)) return
   chatLogLoading.value = false
   if (result._tag === 'Failure') { chatLogError.value = result.error.message; return }
   chatLogError.value = ''
-  chatMessageCount.value = result.value.reduce((total, chat) => total + chat.messageCount, 0)
-  chatPlatformCount.value = new Set(result.value.map(({ scope }) => scope.platform)).size
+  chatMessageCount.value = result.value.messages
+  chatPlatformCount.value = result.value.platforms
 }
 
 async function loadThreads(token: symbol): Promise<void> {
-  const result = await runBackend(listThreads({ offset: 0, limit: 1 }))
+  const result = await runBackend(countThreads)
   if (!cycleLatest.current(token)) return
   threadLoading.value = false
   if (result._tag === 'Failure') { threadError.value = result.error.message; return }
-  threadError.value = ''; threadCount.value = result.value.total
+  threadError.value = ''; threadCount.value = result.value
 }
 
 async function loadResources(token: symbol): Promise<void> {
@@ -164,8 +164,8 @@ async function loadDeferredSnapshots(token: symbol): Promise<void> {
   await Promise.all([
     supports('chat.list_sessions') ? loadSessions(token) : Promise.resolve(),
     supports('media.stats') ? loadMedia(token) : Promise.resolve(),
-    supports('chat_log.list') ? loadChatLogs(token) : Promise.resolve(),
-    supports('thread.list') ? loadThreads(token) : Promise.resolve(),
+    supports('chat_log.stats') ? loadChatLogs(token) : Promise.resolve(),
+    supports('thread.count') ? loadThreads(token) : Promise.resolve(),
     supports('resource.list') ? loadResources(token) : Promise.resolve(),
   ])
 }
@@ -198,13 +198,13 @@ async function refreshLive(): Promise<void> {
   auditCountError.value = supports('audit.count') ? '' : 'The server does not support audit.count.'
   taskError.value = supports('concurrency.list') ? '' : 'The server does not support concurrency.list.'
   sessionError.value = supports('chat.list_sessions') ? '' : 'The server does not support chat.list_sessions.'
-  chatLogError.value = supports('chat_log.list') ? '' : 'The server does not support chat_log.list.'
-  threadError.value = supports('thread.list') ? '' : 'The server does not support thread.list.'
+  chatLogError.value = supports('chat_log.stats') ? '' : 'The server does not support chat_log.stats.'
+  threadError.value = supports('thread.count') ? '' : 'The server does not support thread.count.'
   resourceError.value = supports('resource.list') ? '' : 'The server does not support resource.list.'
   mediaError.value = supports('media.stats') ? '' : 'The server does not support media.stats.'
   if (!supports('audit.recent')) auditLoading.value = false
-  if (!supports('thread.list')) threadLoading.value = false
-  if (!supports('chat_log.list')) chatLogLoading.value = false
+  if (!supports('thread.count')) threadLoading.value = false
+  if (!supports('chat_log.stats')) chatLogLoading.value = false
   if (!supports('media.stats')) mediaLoading.value = false
   if (!supports('resource.list')) resourceLoading.value = false
   if (supports('audit.subscribe') && supports('audit.recent')) {

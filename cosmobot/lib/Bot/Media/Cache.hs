@@ -268,13 +268,7 @@ listMediaEntries _ limit = do
         order (object ! #file_id) descending
         order (object ! #created_at_unix) descending
         pure object
-  files <- traverse mediaObjectRowToInfo rows
-  traverse (\file -> do
-    sourceRefs <- loadSourceRefs file.fileId
-    platformRefs <- loadPlatformRefs file.fileId
-    platforms <- loadPlatforms file.fileId
-    sourceKinds <- loadSourceKinds file.fileId
-    pure MediaCacheEntry{file, sourceRefs, platformRefs, platforms, sourceKinds}) files
+  mediaEntriesFromRows rows
 
 searchMediaEntries :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> MediaSearchQuery -> Eff es [MediaCacheEntry]
 searchMediaEntries _ search = do
@@ -297,13 +291,7 @@ searchMediaEntries _ search = do
             ]
         }
       matched = take search.limit (filter (matchesMediaSearch search searchIndex) rows)
-  files <- traverse mediaObjectRowToInfo matched
-  traverse (\file -> do
-    refs <- loadSourceRefs file.fileId
-    platformRefs <- loadPlatformRefs file.fileId
-    platforms <- loadPlatforms file.fileId
-    sourceKinds <- loadSourceKinds file.fileId
-    pure MediaCacheEntry{file, sourceRefs = refs, platformRefs, platforms, sourceKinds}) files
+  mediaEntriesFromRows matched
 
 -- ponytail: full in-memory index scan is simplest at the current cache size;
 -- add paged indexed search when media counts make this measurably slow.
@@ -335,30 +323,88 @@ matchesMediaSearch search searchIndex object =
     mimeMatches = Set.null search.mimeTypes || Set.member object.mime_type search.mimeTypes
     sourceKindMatches = Set.null search.sourceKinds || not (Set.disjoint search.sourceKinds effectiveSourceKinds)
 
-mediaCacheStats :: (Storage.Storage :> es, FileSystem :> es) => CacheConfig -> Eff es MediaCacheStats
-mediaCacheStats cfg = do
-  files <- listMediaFiles cfg
-  sourceCount <- runSelda do
-    rows <- query (select mediaSourceRows)
-    pure (length rows)
-  platformRefCount <- runSelda do
-    rows <- query (select mediaPlatformRefRows)
-    pure (length rows)
-  platformRows <- runSelda (query (select mediaPlatformRows))
-  let existingFiles = length (filter (.exists) files)
-      missingFiles = length files - existingFiles
-      totalBytes = sum [file.size | file <- files, file.exists]
+mediaCacheStats :: Storage.Storage :> es => CacheConfig -> Eff es MediaCacheStats
+mediaCacheStats _ = do
+  (fileGroups, sourceCounts, platformRefCounts, platformGroups) <- runSelda do
+    fileGroups <- query $ aggregate do
+      row <- select mediaObjectRows
+      mimeType <- groupBy (row ! #mime_type)
+      pure (mimeType :*: count (row ! #file_id) :*: sum_ (row ! #size_bytes))
+    sourceCounts <- query $ aggregate do
+      row <- select mediaSourceRows
+      pure (count (row ! #source_ref))
+    platformRefCounts <- query $ aggregate do
+      row <- select mediaPlatformRefRows
+      pure (count (row ! #file_id))
+    platformGroups <- query $ aggregate do
+      row <- select mediaPlatformRows
+      platform <- groupBy (row ! #platform_key)
+      pure (platform :*: count (row ! #file_id))
+    pure (fileGroups, sourceCounts, platformRefCounts, platformGroups)
+  let files = sum [count' | _ :*: count' :*: _ <- fileGroups]
+      totalBytes = sum [bytes | _ :*: _ :*: bytes <- fileGroups]
+      sourceCount = fromMaybe 0 (viaNonEmpty head sourceCounts)
+      platformRefCount = fromMaybe 0 (viaNonEmpty head platformRefCounts)
   pure MediaCacheStats
-    { files = length files
-    , existingFiles
-    , missingFiles
+    { files
     , totalBytes
     , sources = sourceCount
     , platformRefs = platformRefCount
-    , platformAssociations = length platformRows
-    , mimeTypes = Set.toAscList (Set.fromList (map (.mimeType) files))
-    , platforms = Set.toAscList (Set.fromList (map (.platform_key) platformRows))
+    , platformAssociations = sum [count' | _ :*: count' <- platformGroups]
+    , mimeTypes = sort [mimeType | mimeType :*: _ :*: _ <- fileGroups]
+    , platforms = sort [platform | platform :*: _ <- platformGroups]
     }
+
+mediaEntriesFromRows
+  :: (Storage.Storage :> es, FileSystem :> es)
+  => [MediaObjectRow]
+  -> Eff es [MediaCacheEntry]
+mediaEntriesFromRows [] =
+  pure []
+mediaEntriesFromRows rows = do
+  files <- traverse mediaObjectRowToInfo rows
+  let fileIds = map (.file_id) rows
+  sourceRows <- runSelda $ query do
+    row <- select mediaSourceRows
+    restrict (row ! #file_id `isIn` map literal fileIds)
+    order (row ! #source_ref) ascending
+    pure row
+  platformRefRows <- runSelda $ query do
+    row <- select mediaPlatformRefRows
+    restrict (row ! #file_id `isIn` map literal fileIds)
+    order (row ! #platform_key) ascending
+    order (row ! #scope_key) ascending
+    pure row
+  platformRows <- runSelda $ query do
+    row <- select mediaPlatformRows
+    restrict (row ! #file_id `isIn` map literal fileIds)
+    pure row
+  sourceKindRows <- runSelda $ query do
+    row <- select mediaSourceKindRows
+    restrict (row ! #file_id `isIn` map literal fileIds)
+    order (row ! #source_kind) ascending
+    pure row
+  let sourceRefsByFile = Map.fromListWith (flip (<>)) [(row.file_id, [row.source_ref]) | row <- sourceRows]
+      platformRefsByFile = Map.fromListWith (flip (<>))
+        [ (row.file_id, [MediaPlatformRefInfo row.platform_key row.scope_key row.platform_ref])
+        | row <- platformRefRows
+        ]
+      platformsByFile = Map.fromListWith Set.union [(row.file_id, Set.singleton row.platform_key) | row <- platformRows]
+      sourceKindsByFile = Map.fromListWith (flip (<>))
+        [ (row.file_id, [sourceKind])
+        | row <- sourceKindRows
+        , sourceKind <- maybeToList (Media.mediaSourceKindFromKey row.source_kind)
+        ]
+  pure
+    [ MediaCacheEntry
+        { file
+        , sourceRefs = Map.findWithDefault [] file.fileId sourceRefsByFile
+        , platformRefs = Map.findWithDefault [] file.fileId platformRefsByFile
+        , platforms = Set.toAscList (Map.findWithDefault Set.empty file.fileId platformsByFile)
+        , sourceKinds = Map.findWithDefault [] file.fileId sourceKindsByFile
+        }
+    | file <- files
+    ]
 
 lookupCachedDigest :: (Storage.Storage :> es, FileSystem :> es, IOE :> es) => CacheConfig -> Text -> Eff es (Maybe CachedMedia)
 lookupCachedDigest _ targetDigest = do
@@ -750,7 +796,10 @@ mediaObjectRowToCached row =
 mediaObjectRowToInfo :: FileSystem :> es => MediaObjectRow -> Eff es MediaFileInfo
 mediaObjectRowToInfo row = do
   exists <- FileSystem.doesFileExist (Text.unpack row.path)
-  pure MediaFileInfo
+  pure (mediaObjectRowInfo exists row)
+
+mediaObjectRowInfo :: Bool -> MediaObjectRow -> MediaFileInfo
+mediaObjectRowInfo exists row = MediaFileInfo
     { fileId = row.file_id
     , ref = mediaIdForFileId row.file_id
     , digest = row.digest

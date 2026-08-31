@@ -12,10 +12,10 @@ vi.mock('@/backend/AdminBackend', () => ({
   countAudit: 'audit.count',
   countResources: 'resource.count',
   countSessions: 'chat.count',
-  listChatLogs: 'chat-logs.list',
+  countThreads: 'threads.count',
+  getChatLogStats: 'chat-logs.stats',
   listMedia: () => 'media.list',
   listTasks: 'tasks.list',
-  listThreads: () => 'threads.list',
   recentAudit: () => 'audit.recent',
   subscribeAudit: (...args: unknown[]) => ({ operation: 'subscribe', args }),
 }))
