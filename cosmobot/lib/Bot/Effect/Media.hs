@@ -1,3 +1,5 @@
+{-# LANGUAGE RecordWildCards #-}
+
 {-|
 Module      : Bot.Effect.Media
 Description : Media normalization and object storage capability
@@ -240,10 +242,10 @@ normalizeMediaRefs =
   traverse normalizeMediaRef
 
 normalizeIncomingMessage :: Media :> es => IncomingMessage -> Eff es IncomingMessage
-normalizeIncomingMessage message = do
-  imageUrls <- traverse (normalizePlatformMediaRef message.platform) message.imageUrls
-  files <- traverse (normalizePlatformMessageFile message.platform) message.files
-  pure (message :: IncomingMessage){imageUrls, files}
+normalizeIncomingMessage IncomingMessage{platform = messagePlatform, imageUrls = oldImageUrls, files = oldFiles, ..} = do
+  imageUrls <- traverse (normalizePlatformMediaRef messagePlatform) oldImageUrls
+  files <- traverse (normalizePlatformMessageFile messagePlatform) oldFiles
+  pure IncomingMessage{platform = messagePlatform, ..}
   where
     normalizePlatformMediaRef platform ref = do
       normalized <- normalizeMediaRef ref

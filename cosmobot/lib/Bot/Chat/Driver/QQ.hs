@@ -503,9 +503,9 @@ rawFieldValue name fields =
   Text.stripPrefix (name <> "=") =<< find (Text.isPrefixOf (name <> "=")) (Text.splitOn "," fields)
 
 normalizeQQMessageFiles :: Media.Media :> es => IncomingMessage -> Eff es IncomingMessage
-normalizeQQMessageFiles message = do
-  files <- traverse (normalizeQQFile (message.chatId >>= chatIdInteger)) message.files
-  pure (message :: IncomingMessage){files}
+normalizeQQMessageFiles IncomingMessage{files = oldFiles, ..} = do
+  files <- traverse (normalizeQQFile (chatId >>= chatIdInteger)) oldFiles
+  pure IncomingMessage{..}
 
 normalizeReferencedFiles :: Media.Media :> es => Maybe Integer -> ReferencedMessage -> Eff es ReferencedMessage
 normalizeReferencedFiles chatId message = do
@@ -553,12 +553,13 @@ appendForwardedIncomingMessage
   -> [ForwardedSource]
   -> IncomingMessage
   -> Eff es IncomingMessage
-appendForwardedIncomingMessage driver sources message = do
+appendForwardedIncomingMessage driver sources IncomingMessage{text = oldText, imageUrls = oldImageUrls, files = oldFiles, ..} = do
   forwarded <- foldMapM (expandForwardedSource driver Set.empty) sources
-  pure (message :: IncomingMessage)
-    { text = joinMessageTexts [message.text, forwarded.text]
-    , imageUrls = message.imageUrls <> forwarded.imageUrls
-    , files = message.files <> forwarded.files
+  pure IncomingMessage
+    { text = joinMessageTexts [oldText, forwarded.text]
+    , imageUrls = oldImageUrls <> forwarded.imageUrls
+    , files = oldFiles <> forwarded.files
+    , ..
     }
 
 expandForwardedSource

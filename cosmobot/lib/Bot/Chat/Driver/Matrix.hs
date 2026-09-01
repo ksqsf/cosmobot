@@ -716,18 +716,25 @@ normalizeMatrixReferencedEvent driver originalEvent =
         }
 
 normalizeMatrixIncomingMessage :: (HTTP.HTTP :> es, Media.Media :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es) => Protocol.MatrixDriver -> IncomingMessage -> Eff es IncomingMessage
-normalizeMatrixIncomingMessage driver message = do
+normalizeMatrixIncomingMessage driver message@IncomingMessage
+  { imageUrls = oldImageUrls
+  , files = _
+  , chatDisplayName = _
+  , senderDisplayName = _
+  , senderGlobalDisplayName = _
+  , ..
+  } = do
   imageUrls <-
     case matrixEventImageMediaRefs message.raw of
       [] ->
-        normalizeMatrixMediaRefs driver message.imageUrls
+        normalizeMatrixMediaRefs driver oldImageUrls
       mediaRefs ->
         normalizeMatrixMediaRefsWithMetadata driver mediaRefs
   files <- normalizeMatrixFiles driver (matrixEventFileMediaRefs message.raw)
   (senderDisplayName, senderGlobalDisplayName) <- matrixSenderNames driver message
   roomDisplayName <- cachedMatrixRoomDisplayName driver message
   let chatDisplayName = roomDisplayName <|> if message.kind == ChatPrivate then senderDisplayName else Nothing
-  pure (message :: IncomingMessage){imageUrls, files, chatDisplayName, senderDisplayName, senderGlobalDisplayName}
+  pure IncomingMessage{..}
 
 cachedMatrixRoomDisplayName
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)

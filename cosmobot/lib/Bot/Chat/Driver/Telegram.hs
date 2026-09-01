@@ -151,10 +151,10 @@ incomingMessagesProtocol driver = S.for (updatesStream driver) $ \update -> do
       S.yield message
 
 resolveIncomingMessageMedia :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Protocol.TelegramDriver -> IncomingMessage -> Eff es IncomingMessage
-resolveIncomingMessageMedia driver message = do
-  imageUrls <- traverse (fileUrl driver) message.imageUrls
-  files <- traverse (traverseMessageFileRef (fileUrl driver)) message.files
-  pure (message :: IncomingMessage){imageUrls, files}
+resolveIncomingMessageMedia driver IncomingMessage{imageUrls = oldImageUrls, files = oldFiles, ..} = do
+  imageUrls <- traverse (fileUrl driver) oldImageUrls
+  files <- traverse (traverseMessageFileRef (fileUrl driver)) oldFiles
+  pure IncomingMessage{..}
 
 updateToIncomingMessage :: Update -> Maybe IncomingMessage
 updateToIncomingMessage =
