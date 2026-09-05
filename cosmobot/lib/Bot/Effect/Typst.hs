@@ -33,4 +33,3 @@ withTypstPng = withTypst TypstOutputPNG
 
 withTypstPdf :: Typst :> es => Text -> (FilePath -> Eff es a) -> Eff es a
 withTypstPdf = withTypst TypstOutputPDF
-

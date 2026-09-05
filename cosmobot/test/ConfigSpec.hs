@@ -214,7 +214,6 @@ testAdvertisedNumericConstraints =
     cases =
       [ ("rpc.port must be between 1 and 65535", minimalConfig <> "\n[rpc]\nport = 0\n")
       , ("acp.port must be between 1 and 65535", minimalConfig <> "\n[acp]\nport = 65536\n")
-      , ("media.compression_level must be between 0 and 100", minimalConfig <> "\n[media]\ncompression_level = 101\n")
       , ("media.gc.older_than_days must not be negative", minimalConfig <> "\n[media.gc]\nolder_than_days = -1\n")
       , ("media.gc.interval_hours must be positive", minimalConfig <> "\n[media.gc]\ninterval_hours = 0\n")
       , ("handler.ask.agent_max_turns must be positive", Text.replace "command = \"!ask\"" "command = \"!ask\"\nagent_max_turns = 0" minimalConfig)

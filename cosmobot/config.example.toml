@@ -95,8 +95,6 @@ timeout = 300
 [media]
 cache_dir = "media-cache"
 public_base_url = "https://media.example.com/cosmobot-media"
-compression_format = "webp"
-compression_level = 80
 
 [media.gc]
 enabled = false

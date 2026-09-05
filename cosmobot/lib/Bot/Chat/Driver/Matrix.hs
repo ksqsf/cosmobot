@@ -13,7 +13,6 @@ module Bot.Chat.Driver.Matrix
   ( MatrixDriver
   , Config (..)
   , newMatrixDriver
-  , chatHandler
   , runMatrixClient
   , incomingMessages
   , SyncResponse (..)
@@ -141,13 +140,6 @@ instance Driver.ChatDriver MatrixDriver where
     case viaNonEmpty head message.chatAliases of
       Just roomId -> typing driver (matrixRoomId roomId) timeoutMs
       Nothing -> pure ()
-
-chatHandler
-  :: Driver.ChatDriverEffects MatrixDriver es
-  => MatrixDriver
-  -> Chat.ChatHandler es
-chatHandler =
-  Chat.chatDriverHandler
 
 runMatrixClient
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Concurrent :> es, Prim :> es)

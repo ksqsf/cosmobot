@@ -39,7 +39,6 @@ module Bot.Effect.Media
   , recordMediaSourceKind
   , normalizeIncomingMessage
   , normalizeIncomingMessages
-  , normalizeReferencedMessage
   , normalizeReplyBody
   , runMediaPassthrough
   )
@@ -265,20 +264,6 @@ normalizeIncomingMessages
   -> Stream (Of IncomingMessage) (Eff es) ()
 normalizeIncomingMessages =
   S.mapM normalizeIncomingMessage
-
-normalizeReferencedMessage :: Media :> es => ReferencedMessage -> Eff es ReferencedMessage
-normalizeReferencedMessage message = do
-  imageUrls <- normalizeMediaRefs message.imageUrls
-  files <- traverse normalizeMessageFile message.files
-  pure ReferencedMessage
-    { messageId = message.messageId
-    , senderDisplayName = message.senderDisplayName
-    , senderIdentifier = message.senderIdentifier
-    , senderIsBot = message.senderIsBot
-    , text = message.text
-    , imageUrls
-    , files
-    }
 
 normalizeMessageFile :: Media :> es => MessageFile -> Eff es MessageFile
 normalizeMessageFile file = do

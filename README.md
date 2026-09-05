@@ -263,8 +263,6 @@ You can configure [Cloudflare R2](https://www.cloudflare.com/products/r2/) or an
 [media]
 cache_dir = "./cache"
 public_base_url = "https://s3.your_custom_domain.com/"
-compression_format = "webp"
-compression_level = 95
 
 [media.gc]
 enabled = true

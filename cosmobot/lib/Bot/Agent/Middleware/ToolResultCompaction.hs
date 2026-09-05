@@ -26,8 +26,6 @@ import qualified Bot.Util.HList as HList
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Lazy as LazyByteString
-import qualified Data.Foldable as Foldable
-import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Streaming.ByteString as Q
@@ -99,7 +97,7 @@ compactLargeToolResultText =
 
 compactToolResultsInTranscript :: Media.Media :> es => Int -> Transcript -> Eff es Transcript
 compactToolResultsInTranscript maxChars (Transcript messages) =
-  Transcript . Seq.fromList <$> traverse (compactToolResultMessage maxChars) (Foldable.toList messages)
+  Transcript <$> traverse (compactToolResultMessage maxChars) messages
 
 compactToolResultText :: Media.Media :> es => Int -> Text -> Eff es Text
 compactToolResultText maxChars text

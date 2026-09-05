@@ -6,7 +6,6 @@ Stability   : experimental
 
 module Bot.HTTP
   ( runHTTP
-  , httpsEndpointUrl
   , streamingJsonPostRequest
   )
 where
@@ -16,21 +15,12 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.Text as Text
-import qualified Control.Exception as Exception
 import Network.Connection (TLSSettings (..))
 import qualified Network.HTTP.Client as Client
 import qualified Network.HTTP.Client.TLS as ClientTLS
-import Network.HTTP.Req (HttpConfig (..), Option, Req, Url, useHttpsURI, (/:))
+import Network.HTTP.Req (HttpConfig (..))
 import qualified Network.HTTP.Req as Req
 import qualified Network.TLS as TLS
-import qualified Text.URI as URI
-
-newtype UnsupportedHttpsEndpoint = UnsupportedHttpsEndpoint Text
-  deriving (Eq, Show)
-
-instance Exception UnsupportedHttpsEndpoint where
-  displayException (UnsupportedHttpsEndpoint endpoint) =
-    Text.unpack [i|Unsupported HTTPS endpoint URL: #{endpoint}. Use a full HTTPS base URL.|]
 
 runHTTP :: IOE :> es => Eff (HTTP.HTTP : es) a -> Eff es a
 runHTTP inner = do
@@ -40,9 +30,9 @@ runHTTP inner = do
         HTTP.Manager ->
           pure sharedManager
         HTTP.RunReq action ->
-          liftIO $ runReqWithConfigIO (httpConfig sharedManager) action
+          liftIO $ Req.runReq (withSharedManager sharedManager Req.defaultHttpConfig) action
         HTTP.RunReqWithConfig config action ->
-          liftIO $ runReqWithConfigIO (withSharedManager sharedManager config) action
+          liftIO $ Req.runReq (withSharedManager sharedManager config) action
         HTTP.OpenResponse request ->
           liftIO $ Client.responseOpen request sharedManager
     )
@@ -54,15 +44,6 @@ withSharedManager sharedManager config =
     { httpConfigAltManager = Just sharedManager
     }
 
-httpsEndpointUrl :: Text -> [Text] -> IO (Url 'Req.Https, Option 'Req.Https)
-httpsEndpointUrl endpoint path = do
-  uri <- URI.mkURI endpoint
-  case useHttpsURI uri of
-    Nothing ->
-      Exception.throwIO (UnsupportedHttpsEndpoint endpoint)
-    Just (url, options) ->
-      pure (foldl' (/:) url path, options)
-
 newTlsManager :: IO Client.Manager
 newTlsManager =
   ClientTLS.newTlsManagerWith
@@ -73,16 +54,6 @@ newTlsManager =
 sharedManagerConnectionCount :: Int
 sharedManagerConnectionCount =
   64
-
-httpConfig :: Client.Manager -> HttpConfig
-httpConfig sharedManager =
-  Req.defaultHttpConfig
-    { httpConfigAltManager = Just sharedManager
-    }
-
-runReqWithConfigIO :: HttpConfig -> Req a -> IO a
-runReqWithConfigIO =
-  Req.runReq
 
 tlsSettings :: TLSSettings
 tlsSettings =

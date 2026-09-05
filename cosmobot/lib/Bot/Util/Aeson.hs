@@ -13,7 +13,6 @@ module Bot.Util.Aeson
   ( SnakeJSON (..)
   , SnakeJSONOmitNothing (..)
   , PrefixedSnakeJSON (..)
-  , PrefixedSnakeJSONOmitNothing (..)
   , PrefixedEnumJSON (..)
   , JSON (..)
   )
@@ -33,8 +32,6 @@ newtype SnakeJSONOmitNothing a = SnakeJSONOmitNothing a
 newtype JSON a = JSON a
 
 newtype PrefixedSnakeJSON (prefix :: Symbol) a = PrefixedSnakeJSON a
-
-newtype PrefixedSnakeJSONOmitNothing (prefix :: Symbol) a = PrefixedSnakeJSONOmitNothing a
 
 newtype PrefixedEnumJSON (prefix :: Symbol) a = PrefixedEnumJSON a
 
@@ -109,24 +106,6 @@ instance
   , KnownSymbol prefix
   , Aeson.GToJSON' Aeson.Value Aeson.Zero (Rep a)
   )
-  => Aeson.ToJSON (PrefixedSnakeJSONOmitNothing prefix a) where
-  toJSON (PrefixedSnakeJSONOmitNothing value) =
-    Aeson.genericToJSON (prefixedSnakeOmitNothingOptions @prefix) value
-
-instance
-  ( Generic a
-  , KnownSymbol prefix
-  , Aeson.GFromJSON Aeson.Zero (Rep a)
-  )
-  => Aeson.FromJSON (PrefixedSnakeJSONOmitNothing prefix a) where
-  parseJSON =
-    fmap PrefixedSnakeJSONOmitNothing . Aeson.genericParseJSON (prefixedSnakeOmitNothingOptions @prefix)
-
-instance
-  ( Generic a
-  , KnownSymbol prefix
-  , Aeson.GToJSON' Aeson.Value Aeson.Zero (Rep a)
-  )
   => Aeson.ToJSON (PrefixedEnumJSON prefix a) where
   toJSON (PrefixedEnumJSON value) =
     Aeson.genericToJSON (prefixedEnumOptions @prefix) value
@@ -156,12 +135,6 @@ prefixedSnakeOptions :: forall prefix. KnownSymbol prefix => Aeson.Options
 prefixedSnakeOptions =
   Aeson.defaultOptions
     { Aeson.fieldLabelModifier = snakeFieldLabel . dropFieldPrefix (symbolVal (Proxy @prefix))
-    }
-
-prefixedSnakeOmitNothingOptions :: forall prefix. KnownSymbol prefix => Aeson.Options
-prefixedSnakeOmitNothingOptions =
-  (prefixedSnakeOptions @prefix)
-    { Aeson.omitNothingFields = True
     }
 
 prefixedEnumOptions :: forall prefix. KnownSymbol prefix => Aeson.Options

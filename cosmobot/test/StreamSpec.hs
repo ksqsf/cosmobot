@@ -3,6 +3,7 @@ module Main (main) where
 import Bot.Prelude
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Effect.Concurrency as Concurrency
+import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Util.Stream as StreamUtil
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
@@ -19,10 +20,22 @@ main =
   defaultMain $
     testGroup "stream"
       [ testCase "failed input does not stop merged stream" testFailedInputDoesNotStopMergedStream
+      , testCase "lifting a stream preserves chunks and its return value" testLiftLocalStream
       , testCase "finished inputs do not end merge before slower inputs" testFinishedInputsDoNotEndMergeEarly
       , testCase "resource is released when consumption stops early" testEarlyStopReleasesResource
       , testCase "merged pumps stop when consumption stops early" testEarlyStopCancelsMergedPumps
       ]
+
+testLiftLocalStream :: IO ()
+testLiftLocalStream = do
+  let source :: Stream (Of Int) (Eff '[IOE]) Text
+      source = do
+        value <- Streaming.lift (pure 1)
+        S.yield value
+        S.yield 2
+        pure "done"
+  result <- S.toList (LLM.liftLocalStream runEff source)
+  result @?= ([1, 2] S.:> "done")
 
 testFailedInputDoesNotStopMergedStream :: IO ()
 testFailedInputDoesNotStopMergedStream = do

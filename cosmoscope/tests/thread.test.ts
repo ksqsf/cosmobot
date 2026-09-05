@@ -15,6 +15,21 @@ const node = (messageId: string, parentMessageId: string | null): ThreadNode => 
 })
 
 describe('threadPathTo', () => {
+  it('labels branches with the latest user text, then the latest visible text', () => {
+    const branch: ThreadNode = {
+      ...node('root', null),
+      messages: [
+        { role: 'user', content: 'first prompt' },
+        { role: 'user', content: 'latest prompt' },
+        { role: 'assistant', content: 'answer' },
+        { role: 'synthetic', content: 'hidden' },
+      ],
+    }
+    expect(buildTree([branch])[0]?.label).toBe('latest prompt')
+    expect(buildTree([{ ...branch, messages: branch.messages.slice(2) }])[0]?.label).toBe('answer')
+    expect(branch.messages[0]?.content).toBe('first prompt')
+  })
+
   it('builds stored and active branches without UI state', () => {
     const nodes = [node('root', null), node('child', 'root')]
     const active: ActiveThread = {

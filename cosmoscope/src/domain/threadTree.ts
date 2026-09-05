@@ -60,9 +60,9 @@ export function findTreeNode(nodes: readonly ThreadTreeNode[], key: string): Thr
 }
 
 function nodeLabel(node: ThreadNode): string {
-  const visibleMessages = node.messages.filter(({ role }) => role !== 'synthetic')
-  const preferred = [...visibleMessages].reverse().find((message) => message.role === 'user' && readableMessageText(message) !== '')
-    ?? [...visibleMessages].reverse().find((message) => readableMessageText(message) !== '')
+  const visibleMessages = node.messages.filter(({ role }) => role !== 'synthetic').reverse()
+  const preferred = visibleMessages.find((message) => message.role === 'user' && readableMessageText(message) !== '')
+    ?? visibleMessages.find((message) => readableMessageText(message) !== '')
   if (preferred === undefined) return node.messageKey.messageId
   const text = readableMessageText(preferred)
   return text.length > 64 ? `${text.slice(0, 61)}…` : text

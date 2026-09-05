@@ -377,7 +377,6 @@ library
         Bot.Storage.Session
         Bot.Storage.Scheduler
         Bot.Storage.SQLite
-        Bot.System.ImageMagick
         Bot.System.Typst.CLI
         Bot.System.Typst.Test
         Bot.System.Typst.Types

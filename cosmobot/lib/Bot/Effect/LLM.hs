@@ -55,6 +55,7 @@ where
 
 import Bot.Prelude hiding (ask)
 import Bot.LLM.Types
+import qualified Streaming
 import qualified Streaming.Prelude as S
 
 -- | Effect for text, image, and tool-calling LLM requests.
@@ -187,11 +188,4 @@ liftLocalStream
   => (forall x. Eff es x -> m x)
   -> Stream (Of a) (Eff es) r
   -> Stream (Of a) m r
-liftLocalStream liftLocal stream = do
-  next <- lift (liftLocal (S.next stream))
-  case next of
-    Left result ->
-      pure result
-    Right (chunk, rest) -> do
-      S.yield chunk
-      liftLocalStream liftLocal rest
+liftLocalStream = Streaming.hoist

@@ -8,7 +8,6 @@ module Bot.Agent.Tools.Shell
   ( runBashTool
   , commandTool
   , runBashSafe
-  , runSandboxBashSafe
   , runSandboxBashStreaming
   , observeCommand
   )
@@ -209,19 +208,6 @@ processExitGraceMicroseconds :: Int
 processExitGraceMicroseconds =
   5 * 1_000_000
 
-runSandboxBashSafe
-  :: (IOE :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es)
-  => Int
-  -> Sandbox.Sandbox
-  -> Text
-  -> Maybe Int
-  -> Eff es (Either Text Text)
-runSandboxBashSafe timeoutSeconds sandbox script outputByteLimit =
-  Sandbox.runCommand timeoutSeconds sandbox script outputByteLimit <&> fmap \output ->
-    if output.timedOut
-      then formatSandboxTimeout (max 1 timeoutSeconds) output
-      else formatSandboxResult (fromMaybe 1 output.exitCode) output
-
 runSandboxBashStreaming
   :: (FileSystem :> es, IOE :> es, Timeout :> es, Concurrency.Concurrency :> es, Concurrent :> es, TypedProcess.TypedProcess :> es)
   => Int -> Sandbox.Sandbox -> Text -> Maybe Int -> Command.Command -> Eff es (Either Text Text)
@@ -237,11 +223,9 @@ runSandboxBashStreaming timeoutSeconds sandbox script outputByteLimit command =
     let (stdoutText, stderrText) = case status of
           Command.Running out err -> (out, err)
           Command.Finished _ out err -> (out, err)
-        render exitCode = Text.strip $ Text.unlines $ filter (not . Text.null)
-          [if Text.null stdoutText then "" else "stdout:\n" <> stdoutText, if Text.null stderrText then "" else "stderr:\n" <> stderrText, "exit code: " <> show exitCode]
     pure $ case outcome of
       Nothing -> Left "Podman command did not exit after its timeout."
-      Just exitCode -> Right (render exitCode)
+      Just exitCode -> Right (formatBashResult exitCode stdoutText stderrText)
   where
     effectiveTimeout = max 1 timeoutSeconds
     limit = fromMaybe (1024 * 1024) outputByteLimit
@@ -251,26 +235,6 @@ runSandboxBashStreaming timeoutSeconds sandbox script outputByteLimit command =
       TypedProcess.setStdout TypedProcess.createPipe .
       TypedProcess.setStderr TypedProcess.createPipe $
       TypedProcess.proc "podman" (Sandbox.podmanExecArgs sandbox.containerId effectiveTimeout limit script)
-
-formatSandboxTimeout :: Int -> Sandbox.SandboxOutput -> Text
-formatSandboxTimeout timeoutSeconds output =
-  Text.strip $ Text.unlines $ filter (not . Text.null)
-    [ "Script timed out after " <> show timeoutSeconds <> " seconds and was killed."
-    , renderSandboxOutput output
-    ]
-
-formatSandboxResult :: Int -> Sandbox.SandboxOutput -> Text
-formatSandboxResult exitCode output =
-  Text.strip $ Text.unlines $ filter (not . Text.null)
-    [ renderSandboxOutput output
-    , "exit code: " <> show exitCode
-    ]
-
-renderSandboxOutput :: Sandbox.SandboxOutput -> Text
-renderSandboxOutput output
-  | Text.null output.output = ""
-  | output.truncated = "output (truncated):\n" <> output.output
-  | otherwise = "output:\n" <> output.output
 
 validScript :: Text -> Either Text Text
 validScript script

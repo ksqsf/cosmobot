@@ -7,7 +7,6 @@
 module Cosmocode.RPC.WebSocket
   ( runRpcWebSocket
   , decodeServerEvent
-  , chatSendRequest
   ) where
 
 import Control.Monad (forever, void)
@@ -219,10 +218,6 @@ requestValue requestId method params = Aeson.object
   , "method" Aeson..= method
   , "params" Aeson..= params
   ]
-
-chatSendRequest :: Int -> Text -> Text -> Aeson.Value
-chatSendRequest requestId sessionId body =
-  requestValue requestId "chat.send" (chatSendParams sessionId body)
 
 chatSendParams :: Text -> Text -> Aeson.Value
 chatSendParams sessionId body =
