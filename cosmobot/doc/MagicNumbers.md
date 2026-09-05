@@ -4,22 +4,22 @@ This document records constants that are not configurable through `config.toml` 
 
 ## Concurrency, Storage, and Caching
 
-- `Bot.Concurrency.Manager.finishedTaskRetention` : Retains finished tasks for 12 hours, long enough to investigate recent failures without allowing task history to grow forever; active tasks are never pruned by age.
+- `Bot.Concurrency.Manager.finishedTaskRetention` : Retains finished tasks for 12 hours for failure investigation; active tasks are never pruned by age.
 - `Bot.Util.Stream.streamQueueCapacity` : Buffers 1,024 events per merged input stream, balancing short bursts against bounded memory use.
 - `Bot.Scheduler.Interpreter.scheduledMessageQueueCapacity` : Buffers 1,024 scheduled messages so brief consumer delays do not block the scheduler.
 - `Bot.ACP.State.acpClientQueueCapacity` : Queues at most 256 outbound items per ACP client, bounding memory used by slow clients.
 - `Bot.RPC.State.rpcClientQueueCapacity` : Queues at most 256 outbound items per RPC client, bounding memory used by slow clients.
-- `Bot.HTTP.sharedManagerConnectionCount` : Allows 64 connections in the shared HTTP manager, enough for concurrent tools and drivers without excessive socket use.
+- `Bot.HTTP.sharedManagerConnectionCount` : Allows 64 connections in the shared HTTP manager for concurrent tools and drivers.
 - `Bot.Storage.SQLite.sqlitePoolSize` : Uses four SQLite connections because writes are serialized and a larger pool would add little useful concurrency.
-- `Bot.Storage.SQLite.sqliteBusyTimeoutMilliseconds` : Waits up to five seconds for a busy SQLite database, allowing short transactions to finish without blocking indefinitely.
+- `Bot.Storage.SQLite.sqliteBusyTimeoutMilliseconds` : Waits up to five seconds for a busy SQLite database, allowing short transactions to finish.
 - `Bot.Storage.Thread.maxCachedThreads` : Caches at most four conversation-thread trees, limiting how many large transcripts remain resident.
-- `Bot.Media.S3.publicObjects` : Holds 512 public object URLs in the LRU cache, reducing repeated signing and lookup without creating an unbounded cache.
-- `Bot.Resource.reclaimExpired` : Checks for expired resources every 100 ms, making reclamation prompt without busy-waiting.
+- `Bot.Media.S3.publicObjects` : Holds 512 public object URLs in the LRU cache, reducing repeated signing and lookup.
+- `Bot.Resource.reclaimExpired` : Checks for expired resources every 100 ms.
 - `Cosmocode.Terminal.Brick.runTerminalIO` : Gives the TUI event channel a capacity of 256, absorbing short UI bursts while bounding its backlog.
 
 ## Retries, Timeouts, and Lifecycles
 
-- `Bot.LLM.OpenAI.Retry.maxLLMRetries` : Retries an OpenAI-compatible request at most three times, covering transient failures without replaying it for too long.
+- `Bot.LLM.OpenAI.Retry.maxLLMRetries` : Retries an OpenAI-compatible request at most three times for transient failures.
 - `Bot.LLM.OpenAI.Retry.retryDelaySeconds` : Uses `2^n` seconds as the retry-delay floor while honoring a larger `Retry-After`, preventing immediate retry pressure on the server.
 - `Bot.Media.Interpreter.mediaNormalizeTimeoutMicroseconds` : Allows 15 seconds to normalize remote media, then preserves the original reference so message processing is not blocked.
 - `Bot.Effect.ChatLog.chatLogRecordTimeoutMicroseconds` : Allows one second for a chat-log write because logging failure should not delay a chat reply.
@@ -34,11 +34,11 @@ This document records constants that are not configurable through `config.toml` 
 - `Bot.Resource.Python.cleanupGraceSeconds` : Gives Python workers five seconds to complete protocol shutdown and process cleanup.
 - `Bot.Resource.Python.orphanMarginSeconds` : Adds a ten-second margin before orphan cleanup so workers finishing near their deadline are not killed prematurely.
 - `Bot.Resource.Python.Sandbox.healthCheck` : Allows five seconds for each sandbox health check, failing promptly when an external process is unhealthy.
-- `Bot.Agent.Tools.Shell.runBashTool` : Runs shell commands for 30 seconds by default, covering ordinary tool work without allowing unbounded execution.
+- `Bot.Agent.Tools.Shell.runBashTool` : Runs shell commands for 30 seconds by default.
 - `Bot.Agent.Tools.Shell.parseCommandCall` : Waits ten seconds by default for a background command, balancing interaction latency against its chance of completing.
 - `Bot.Agent.Tools.Shell.processExitGraceMicroseconds` : Gives a timed-out shell process five seconds to exit, followed by at most ten seconds for final termination.
 - `Bot.Agent.Tools.Emacs.emacsEvalTool` : Allows ten seconds by default for Emacs evaluation or startup, preventing ordinary Lisp operations from occupying a tool call indefinitely.
-- `Bot.Agent.Tools.Emacs.validTimeout` : Caps the Emacs tool timeout at 60 seconds so callers cannot create excessively long blocking operations.
+- `Bot.Agent.Tools.Emacs.validTimeout` : Caps the Emacs tool timeout at 60 seconds.
 - `Bot.Handler.Safebooru.safebooruOptions` : Allows 15 seconds for a Safebooru request so a slow external site does not block the handler.
 - `Bot.Agent.Tools.Web.webRequestOptions` : Allows 15 seconds for a web-tool HTTP request, bounding external fetch latency.
 - `Bot.Agent.Middleware.Typing.typingNotificationTimeoutMillis` : Gives typing notifications a 30-second lifetime, covering long model turns while still expiring automatically.
@@ -51,7 +51,7 @@ This document records constants that are not configurable through `config.toml` 
 - `Bot.Chat.Driver.QQ.qqReconnectDelayMicroseconds` : Waits five seconds before reconnecting QQ, preventing rapid retries against the server.
 - `Bot.Chat.Driver.QQ.qqConnectionCloseTimeoutMicroseconds` : Allows two seconds to close an old QQ connection so replacement cannot remain blocked.
 - `Bot.Chat.Driver.QQ.qqConnectionThreadStopTimeoutMicroseconds` : Allows two seconds for a QQ connection worker to stop before replacement continues.
-- `Bot.Chat.Driver.QQ.qqHeartbeatCheckMicroseconds` : Checks QQ heartbeats every 15 seconds, detecting disconnects promptly without excessive polling.
+- `Bot.Chat.Driver.QQ.qqHeartbeatCheckMicroseconds` : Checks QQ heartbeats every 15 seconds.
 - `Bot.Chat.Driver.QQ.qqHeartbeatTimeout` : Treats 90 seconds without a QQ heartbeat as a disconnect, tolerating several transient delays.
 - `Bot.Chat.Driver.Telegram.telegramPollingRetryDelayMicroseconds` : Waits five seconds after Telegram polling fails, preventing immediate retries.
 - `Bot.Chat.Driver.Telegram.telegramLongPollTimeoutSeconds` : Uses a 30-second Telegram server-side long-poll timeout to reduce requests at low traffic.
@@ -69,7 +69,7 @@ This document records constants that are not configurable through `config.toml` 
 ## Frame, Output, and Memory Limits
 
 - `Bot.Memory.memoryLimitChars` : Limits persistent memory for non-superusers to 1,000 characters, bounding prompt and disk growth.
-- `Bot.RPC.Server.defaultUploadMaxBytes` : Sets the default RPC upload limit to 25 MiB, accommodating ordinary media without accepting huge requests.
+- `Bot.RPC.Server.defaultUploadMaxBytes` : Sets the default RPC upload limit to 25 MiB.
 - `Bot.RPC.Server.rpcConnectionOptions` : Limits RPC WebSocket frames and assembled messages to the maximum 25 MiB upload encoded as base64 plus a 64 KiB JSON-RPC envelope, rejecting larger input before JSON decoding.
 - `Bot.Plugin.Protocol.maxFrameBytes` : Limits host-side plugin JSON lines to 1 MiB, bounding the framing buffer.
 - `Cosmobot.Plugin.maxLineBytes` : Limits Haskell plugin SDK JSON lines to 1 MiB, matching the host wire contract.
@@ -79,7 +79,7 @@ This document records constants that are not configurable through `config.toml` 
 - `Bot.Resource.Python.Protocol.maxCompletedBytes` : Limits completed Python results to 1 MiB so returned data cannot overwhelm agent context.
 - `cosmobot_worker.MAX_STDOUT_BYTES` : Retains at most 1 MiB of Python worker stdout and truncates the remainder.
 - `cosmobot_worker.MAX_STDERR_BYTES` : Retains at most 64 KiB of Python worker stderr because diagnostics usually need less space.
-- `Bot.Resource.Sandbox.defaultOutputByteLimit` : Retains 1 MiB of generic sandbox output by default, enough for diagnostics without unbounded accumulation.
+- `Bot.Resource.Sandbox.defaultOutputByteLimit` : Retains 1 MiB of generic sandbox output by default.
 - `Bot.Resource.Sandbox.podmanRunArgs` : Limits a generic sandbox to 1 GiB of memory, one CPU, and 256 PIDs for basic resource isolation.
 - `Bot.Resource.Python.Sandbox.bwrapArguments` : Limits the Python sandbox `/work` tmpfs to 64 MiB, bounding temporary-file use.
 - `Bot.Resource.Python.Sandbox.start` : Limits the Python sandbox to 64 open file descriptors, constraining resource abuse.
@@ -104,7 +104,7 @@ This document records constants that are not configurable through `config.toml` 
 - `Bot.Agent.Tools.Transcript.parseCall` : Reads at most 200 transcript messages per call and defaults to 20.
 - `Bot.Agent.Tools.Transcript.maxMatches` : Returns at most 100 transcript-search matches per call and defaults to 20.
 - `Bot.Agent.Tools.Transcript.queryTranscript` : Limits a transcript query range to 200,000 characters; larger ranges should be split.
-- `Bot.Agent.Tools.Transcript.searchTranscript` : Retains 1,000 characters per transcript-search snippet, providing context without returning the full message.
+- `Bot.Agent.Tools.Transcript.searchTranscript` : Retains 1,000 characters per transcript-search snippet.
 - `Bot.Agent.Middleware.Python.maxNestedBatchCalls` : Accepts at most 16 nested tool calls per Python middleware batch, bounding fan-out.
 - `Bot.Agent.Middleware.Python.maxNestedToolCallIdChars` : Limits nested tool-call IDs to 256 characters, bounding protocol metadata.
 - `Bot.Agent.Types.maxPythonWallTimeoutSeconds` : Caps configured Python wall timeouts at one hour, preventing nearly permanent worker calls.

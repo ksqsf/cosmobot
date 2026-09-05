@@ -79,6 +79,6 @@ Sandboxed bundles run through Bubblewrap with the bundle writable at `/plugin` e
 
 - The [Haskell SDK](../../cosmobot-plugin-sdk/README.md) is a standalone package exposing `Cosmobot.Plugin`. Its declaration DSL is Applicative (not Monad); invocation handlers are monadic.
 - The [Python SDK](../../cosmobot-plugin-python/README.md) is standalone and dependency-free, with async decorators and dataclass-derived tool schemas.
-- `examples/plugins/echo/` replaces the former built-in `!echo` route. Run `make echo-plugin` at the repository root to create a self-contained zipapp bundle under `plugins/echo`; the sandbox never depends on host site-packages or a virtualenv.
+- `examples/plugins/echo/` replaces the former built-in `!echo` route. Run `make echo-plugin` at the repository root to create a self-contained zipapp bundle under `plugins/echo`.
 
 Plugins own their state and synchronization. The host deliberately provides no cross-plugin calls, retained invocation context, execution queue, background-task API, raw database, arbitrary filesystem/process access, memory, scheduler, streaming agent, or steering API.

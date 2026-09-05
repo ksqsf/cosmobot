@@ -69,8 +69,7 @@ Notifications have no `id`:
 ```
 
 Responses and notifications may be interleaved on one WebSocket connection.
-Clients must route responses by `id` instead of assuming that the next frame is
-the response to the most recent request.
+Clients must route responses by `id`.
 
 Inbound WebSocket frames and assembled messages are limited to 35,018,072
 bytes. Connections that exceed either limit are closed before JSON decoding.
@@ -152,9 +151,7 @@ Returns audit records associated with a stored thread, or `null` when the thread
 
 ### `audit.subscribe`
 
-Subscribes this connection to live updates for all persisted agent audit
-records. Other connected clients do not receive those updates unless they also
-subscribe.
+Subscribes this connection to live updates for all persisted agent audit records.
 
 ```json
 {"jsonrpc":"2.0","id":"1","method":"audit.subscribe","params":{}}
@@ -575,8 +572,8 @@ list. Each list entry includes a `platforms` provenance array, `sourceKinds`
 tags (`chat`, `generated-image`, `tool-result`, or `sandbox`), source references, and separately cached
 platform-native references. `platforms` may be empty and may contain more than
 one platform. `limit` defaults to `50` and is capped at `500`.
-The `stats.files` and `stats.totalBytes` values aggregate the complete cache;
-they are not affected by the list `limit`. Stats also include the complete
+The `stats.files` and `stats.totalBytes` values aggregate the complete cache
+independently of the list `limit`. Stats also include the complete
 distinct `platforms` and `mimeTypes` values used to populate filters.
 
 ```json

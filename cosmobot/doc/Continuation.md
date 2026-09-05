@@ -90,14 +90,12 @@ remain better fits for those cases.
 ## Implementation
 
 The two tools are model-visible control forms interpreted by
-`Bot.Agent.Middleware.Continuation`, rather than ordinary external
-capabilities.
+`Bot.Agent.Middleware.Continuation`.
 
 The middleware wraps the coinductive agent `Program` through
 `aroundProgram`. A captured continuation is the actual `Program`
 resumption closure together with a monotonically increasing nesting
-ordinal. The saved map is lexical to that program run; it is not part
-of `TurnState` or the typed middleware context.
+ordinal. The saved map is lexical to that program run.
 
 The continuation ID is the original tool-call ID. On resume, the
 middleware:
@@ -146,16 +144,11 @@ such as ordinary continuation values and unrestricted multi-shot
 invocation. The two verb-named tools expose exactly the supported
 actions.
 
-Also `callcc` is high-order and does not immediately translate to what
-an agent expects.
-
 ### Subagents
 
 Subagents provide clean context, concurrency, independent prompts, and
-separate tool permissions. They return a result to the parent but do
-not restore the parent agent's own earlier decision point. They are
-preferable for delegation; continuations are preferable for local
-backtracking.
+separate tool permissions, returning a result to the parent. Use them for
+delegation and continuations for local backtracking.
 
 ### Session Forks and Transcript Compaction
 

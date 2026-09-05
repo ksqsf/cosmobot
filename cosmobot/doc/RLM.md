@@ -33,8 +33,7 @@ The paper distinguishes recursion depths:
 - depth 1: programs call ordinary sub-LLMs;
 - depth greater than 1: programs call sub-RLMs with their own REPLs.
 
-The essential idea is not merely retrieval. Model calls can be launched inside
-loops and their results combined symbolically.
+Model calls can be launched inside loops and their results combined symbolically.
 
 ## Literature
 
@@ -61,8 +60,7 @@ context_compaction_threshold_ktokens = 1000
 projection. Tool-result compaction remains active in both modes.
 
 When old history crosses the threshold, `withRecursiveTranscript` changes only
-`modelInputTranscript`. It never rewrites `TurnState.transcript`, so storage
-and tools retain the complete history.
+`modelInputTranscript`, preserving `TurnState.transcript` for storage and tools.
 
 The always-visible `transcript` tool operates on canonical history:
 

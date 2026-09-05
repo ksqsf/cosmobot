@@ -132,13 +132,11 @@ Within structural agent-program middleware, use `interpretX` and
 example, the internal `PythonInterpreter` handles a parsed `py`
 control call by producing the replacement agent program that eventually
 resumes the original continuation. Elsewhere, an interpreter may translate a
-typed protocol operation into its semantic carrier result; the name still
-describes translation, not external execution.
+typed protocol operation into its semantic carrier result.
 
 Code that performs an external operation is a runner: name it `runX`, `RunX`,
-or `XRunner`. Starting the Python worker and exchanging its protocol messages
-is execution, not interpretation, even though it is called from the program
-interpreter. Keep implementation-shape aliases internal unless another module
+or `XRunner`, as with starting the Python worker and exchanging its protocol
+messages. Keep implementation-shape aliases internal unless another module
 must state the contract directly.
 
 ## Program and runtime
