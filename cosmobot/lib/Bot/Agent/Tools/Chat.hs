@@ -26,6 +26,7 @@ import Bot.Core.Message
 import qualified Bot.Core.ReplyBody as ReplyBody
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
+import qualified Bot.Effect.Media as Media
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
@@ -88,14 +89,14 @@ queryCurrentSenderChatLogTool =
                 entries <- ChatLog.queryCurrentSenderChatLog context.message scope keywords limit timeRange
                 pure (toolText (jsonText (map chatLogToolEntry entries)))
 
-sendReplyTool :: Chat.Chat :> es => Tool (Eff es)
+sendReplyTool :: (Chat.Chat :> es, Media.Media :> es) => Tool (Eff es)
 sendReplyTool =
   sendChatMessageTool
     "send_reply"
     "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
     Chat.replyTo
 
-sendMessageTool :: Chat.Chat :> es => Tool (Eff es)
+sendMessageTool :: (Chat.Chat :> es, Media.Media :> es) => Tool (Eff es)
 sendMessageTool =
   sendChatMessageTool
     "send_message"
@@ -103,7 +104,7 @@ sendMessageTool =
     Chat.sendMessage
 
 sendChatMessageTool
-  :: Chat.Chat :> es
+  :: (Chat.Chat :> es, Media.Media :> es)
   => Text
   -> Text
   -> (forall xs. Chat.Chat :> xs => IncomingMessage -> Text -> Eff xs [Either Text MessageId])
@@ -113,17 +114,19 @@ sendChatMessageTool name description sendToChat =
   . withDescription description
   $ tool name
       ( optionalText "text" "Message text to send. May be omitted when image_urls is non-empty."
-      , optionalTextArray "image_urls" "Image URLs to send in the same message. The platform must be able to fetch these URLs."
+      , optionalTextArray "image_urls" "Image URLs to send in the same message. Images are cached as media references before sending. Existing media: references are accepted."
       )
       \maybeText maybeImageUrls -> do
         context <- askToolContext
         let text = Text.strip (fromMaybe "" maybeText)
             imageUrls = filter (not . Text.null) (map Text.strip (fromMaybe [] maybeImageUrls))
-            body = replyBodyWithImages text imageUrls
-        if Text.null body
+        if Text.null text && null imageUrls
           then pure (argumentFailure "Either text or image_urls must be provided.")
           else do
-            sent <- sendToChat context.message body
+            imageRefs <- Media.normalizeMediaRefs imageUrls
+            sent <- if all (Text.isPrefixOf "media:") imageRefs
+              then sendToChat context.message (replyBodyWithImages text imageRefs)
+              else pure [Left "Image URLs could not be cached as media references."]
             case rights sent of
               messageIds@(_:_) -> do
                 let sentText = show messageIds :: String

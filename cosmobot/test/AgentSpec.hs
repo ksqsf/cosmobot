@@ -1181,7 +1181,7 @@ testSubAgentWaitOperations = do
 testSendReplyToolUsesChatEffect :: IO ()
 testSendReplyToolUsesChatEffect = do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "send_reply" (Aeson.object ["text" Aeson..= ("hello" :: Text), "image_urls" Aeson..= ["https://example.test/image.png" :: Text]])]
+    [ chatAnswer "" [toolCall "call-1" "send_reply" (Aeson.object ["text" Aeson..= ("hello" :: Text), "image_urls" Aeson..= ["media:test-image" :: Text]])]
     , chatAnswer "sent" []
     ]
   replies <- IORef.newIORef ([] :: [Text])
@@ -1190,9 +1190,30 @@ testSendReplyToolUsesChatEffect = do
   (answer, _) <- runAgentWith answers (ChatMock (Just replies) (Just "42") Nothing) do
     runAgentWithToolMessageCapture 4 agentContext AgentTools.defaultTools (startWithEnabledTools ["chat"] "send it") recorded remembered
   answer @?= "sent"
-  IORef.readIORef replies >>= (@?= ["hello\n[image] https://example.test/image.png"])
-  IORef.readIORef recorded >>= (@?= ["hello\n[image] https://example.test/image.png"])
+  IORef.readIORef replies >>= (@?= ["hello\n[image] media:test-image"])
+  IORef.readIORef recorded >>= (@?= ["hello\n[image] media:test-image"])
   IORef.readIORef remembered >>= (@?= [Just "42"])
+
+  forM_ [ChatTools.sendReplyTool, ChatTools.sendMessageTool] $ \chatTool -> do
+    forM_ [True, False] $ \cacheSucceeds -> do
+      sent <- IORef.newIORef ([] :: [Text])
+      result <- runEff $ runConcurrent $
+        (if cacheSucceeds then runMediaNormalizingRefs else runMediaLeavingRefs) $
+        Chat.runChatWith defaultAgentMockChatDriver
+          { agentReply = \_ body -> do
+              liftIO $ IORef.modifyIORef' sent (<> [body])
+              pure (Right "42")
+          } do
+            run <- AgentTool.startTool chatTool agentContext
+            run testToolCallMetadata (Aeson.object
+              [ "text" Aeson..= ("hello" :: Text)
+              , "image_urls" Aeson..= ["https://example.test/image.png" :: Text]
+              ])
+      IORef.readIORef sent >>= (@?= if cacheSucceeds
+        then ["hello\n[image] media:https://example.test/image.png"]
+        else [])
+      unless cacheSucceeds $
+        assertBool "cache failure is reported" ("could not be cached" `Text.isInfixOf` AgentTypes.toolResultContent result)
 
 testSendMessageToolOmitsReplyTarget :: IO ()
 testSendMessageToolOmitsReplyTarget = do
@@ -1200,6 +1221,7 @@ testSendMessageToolOmitsReplyTarget = do
   remembered <- IORef.newIORef ([] :: [Maybe MessageId])
   result <- runEff $
     runConcurrent $
+      Media.runMediaPassthrough $
       Chat.runChatWith defaultAgentMockChatDriver
         { agentReply = \message body -> do
             liftIO $ IORef.modifyIORef' sent (<> [(message.messageId, body)])
