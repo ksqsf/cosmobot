@@ -12,7 +12,6 @@ module Bot.Agent.Tools
 where
 
 import Bot.Agent.Tools.Chat
-import Bot.Agent.Tools.Emacs
 import Bot.Agent.Tools.Files
 import Bot.Agent.Tools.Image
 import Bot.Agent.Tools.Media
@@ -149,7 +148,6 @@ defaultToolsWith extraTools = tools
       , captureContinuationTool
       , resumeContinuationTool
       , subagentTool tools
-      , emacsEvalTool
       ] <> extraTools
 
 acpTools :: ACP.ACP :> es => [Tool (Eff es)]

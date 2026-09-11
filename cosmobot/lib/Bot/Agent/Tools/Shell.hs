@@ -38,14 +38,16 @@ runBashTool :: (Resource.Resource :> es, FileSystem :> es, IOE :> es, Fail :> es
 runBashTool =
   tagged [workTag]
   . allowWhen (\context -> superuserOnly context && hasResourceIdentity context)
-  . withDescription "Run a bash script and obtain outputs; do not run malicious code. Avoid it except when doing a whole-system-level task."
+  . withDescription "Run a Bash script on the host and return stdout, stderr, and exit status. Use only for tasks in dedicated /work workspaces or host operations explicitly approved by the user. Set working_directory to the workspace path for workspace tasks. This tool is not sandboxed; never run malicious code or access unrelated host files. Commands still running after 10 seconds return a handle for the command tool; timeout_seconds limits total runtime."
   $ tool "run_bash"
       ( validateArgument validScript
-          (requiredText "script" "The bash script to be executed in the cwd")
+          (requiredText "script" "The Bash script to execute.")
       , validateArgument validTimeout
           (withDefault 30 (optionalInt "timeout_seconds" "Maximum seconds to wait before killing the process. Defaults to 30."))
+      , validateArgument (traverse validWorkingDirectory)
+          (optionalText "working_directory" "Directory in which to run the script. Defaults to the bot process working directory; use the dedicated /work workspace path for workspace tasks.")
       )
-      \script timeoutSeconds -> do
+      \script timeoutSeconds workingDirectory -> do
         context <- askToolContext
         metadata <- askToolCallMetadata
         case Resource.accessFromMessage context.message of
@@ -53,7 +55,7 @@ runBashTool =
           Right access -> do
             command <- Command.createAndStart access metadata.resourceOwner Resource.Init
               { message = context.message, arguments = () }
-              (\_ command -> Right <$> runBashStreaming timeoutSeconds (Text.unpack script) command)
+              (\_ command -> Right <$> runBashStreaming timeoutSeconds (Text.unpack <$> workingDirectory) (Text.unpack script) command)
             case command of
               Left err -> pure (resourceToolFailure err)
               Right commandId -> observeCommand True access metadata.resourceOwner commandId 10 0 0
@@ -163,8 +165,8 @@ runBashSafe timeoutSeconds script =
 
 runBashStreaming
   :: (FileSystem :> es, IOE :> es, Timeout :> es, Concurrency.Concurrency :> es, Concurrent :> es, TypedProcess.TypedProcess :> es)
-  => Int -> String -> Command.Command -> Eff es Text
-runBashStreaming timeoutSeconds script command =
+  => Int -> Maybe FilePath -> String -> Command.Command -> Eff es Text
+runBashStreaming timeoutSeconds workingDirectory script command =
   ProcessUtil.withProcessGroup processConfig \process ->
   Concurrency.withWorkerHandle "command stdout" (drainOutput (TypedProcess.getStdout process) (Command.appendStdout command)) \stdoutWorker ->
   Concurrency.withWorkerHandle "command stderr" (drainOutput (TypedProcess.getStderr process) (Command.appendStderr command)) \stderrWorker -> do
@@ -183,11 +185,12 @@ runBashStreaming timeoutSeconds script command =
   where
     effectiveTimeout = max 1 timeoutSeconds
     processConfig =
+      maybe id TypedProcess.setWorkingDir workingDirectory .
       TypedProcess.setCreateGroup True .
       TypedProcess.setStdin TypedProcess.closed .
       TypedProcess.setStdout TypedProcess.createPipe .
       TypedProcess.setStderr TypedProcess.createPipe $
-      TypedProcess.shell script
+      TypedProcess.proc "bash" ["-c", script]
 
 drainOutput :: FileSystem :> es => Handle -> (Text -> Eff es ()) -> Eff es ()
 drainOutput outputHandle append = do
@@ -249,3 +252,9 @@ validTimeout timeoutSeconds
       Left "timeout_seconds must be positive."
   | otherwise =
       Right timeoutSeconds
+
+validWorkingDirectory :: Text -> Either Text Text
+validWorkingDirectory directory
+  | Text.null (Text.strip directory) = Left "working_directory must not be empty."
+  | Text.any (== '\NUL') directory = Left "working_directory must not contain NUL."
+  | otherwise = Right directory

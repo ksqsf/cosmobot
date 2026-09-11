@@ -369,6 +369,7 @@ main =
       , testCase "memory commit messages are short single-line subjects" testMemoryCommitMessageValidation
       , testCase "memory update rolls back when git commit fails" testMemoryUpdateRollsBackOnCommitFailure
       , testCase "run_bash captures stdout and stderr" testRunBashCapturesStdoutAndStderr
+      , testCase "run_bash rejects invalid working directories" testRunBashRejectsInvalidWorkingDirectories
       , testCase "run_bash kills timed out process" testRunBashKillsTimedOutProcess
       , testCase "run_bash kills process group when cancelled" testRunBashKillsProcessGroupWhenCancelled
       , testCase "LLM response timeout summary is concise" testLLMResponseTimeoutSummaryIsConcise
@@ -4582,18 +4583,35 @@ testMemoryUpdateRollsBackOnCommitFailure = withMemoryTempDir \dir -> do
   Process.readProcess "git" ["-C", dir, "status", "--porcelain"] "" >>= (@?= "")
 
 testRunBashCapturesStdoutAndStderr :: IO ()
-testRunBashCapturesStdoutAndStderr = do
+testRunBashCapturesStdoutAndStderr = withTempDir "run-bash working directory" \dir -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("printf stdout; printf stderr >&2" :: Text), "timeout_seconds" Aeson..= (5 :: Int)])]
+    [ chatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object ["script" Aeson..= ("printf stdout; printf stderr >&2; [[ -n $BASH_VERSION ]] && pwd" :: Text), "working_directory" Aeson..= dir, "timeout_seconds" Aeson..= (5 :: Int)])]
     , chatAnswer "done" []
     ]
   (answer, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     runTestAgent 4 superuserContext AgentTools.defaultTools (startWithEnabledTools ["work"] "run command")
   answer @?= "done"
   let output = Text.unlines (toolOutputs transcript)
+  assertBool "working directory is used by Bash" (Text.pack dir `Text.isInfixOf` output)
   assertBool "stdout is included" ("stdout:\nstdout" `Text.isInfixOf` output)
   assertBool "stderr is included" ("stderr:\nstderr" `Text.isInfixOf` output)
   assertBool "exit code is included" ("exit code: ExitSuccess" `Text.isInfixOf` output)
+
+testRunBashRejectsInvalidWorkingDirectories :: IO ()
+testRunBashRejectsInvalidWorkingDirectories =
+  forM_ ["", "   ", "bad\NULpath"] \directory -> do
+    answers <- IORef.newIORef
+      [ chatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object
+          [ "script" Aeson..= ("printf should-not-run" :: Text)
+          , "working_directory" Aeson..= (directory :: Text)
+          ])]
+      , chatAnswer "done" []
+      ]
+    (_, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+      runTestAgent 4 superuserContext AgentTools.defaultTools (startWithEnabledTools ["work"] "run command")
+    let output = Text.unlines (toolOutputs transcript)
+    assertBool "invalid directory is rejected" ("working_directory must not" `Text.isInfixOf` output)
+    assertBool "script was not executed" (not ("should-not-run" `Text.isInfixOf` output))
 
 testRunBashKillsTimedOutProcess :: IO ()
 testRunBashKillsTimedOutProcess = do
