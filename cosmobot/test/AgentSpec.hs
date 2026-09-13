@@ -1626,6 +1626,7 @@ testAskHandlerIncludesReferencedImageUrlsInTextContext = do
         }
       message = askHandlerMessage
         { replyToMessageId = Just "70001"
+        , replyQuote = Just "original"
         , imageUrls = []
         , text = "krkr 重发被回复的图"
         }
@@ -1649,6 +1650,8 @@ testAskHandlerIncludesReferencedImageUrlsInTextContext = do
     Just request -> do
       let userText = Text.unlines (chatMessageTextsByRole "user" request)
       assertBool "referenced image URL should appear in text context" ("被回复图片：media:mf_replied" `Text.isInfixOf` userText)
+      assertBool "full replied text is retained" ("original image" `Text.isInfixOf` userText)
+      assertBool "selected quote is separate" ("User-selected quote:\n> original" `Text.isInfixOf` userText)
       requestUserImageUrls request @?= [referencedImage]
     Nothing ->
       assertFailure "expected captured LLM request"
@@ -1761,7 +1764,7 @@ testAskHandlerGroupIdentity =
           , senderGlobalDisplayName = globalName, text = prompt
           , digest = askHandlerMessage.digest{mentionsBot = True}
           }
-        followUp = message{messageId = Just "70002", replyToMessageId = Just "900", text = "again"}
+        followUp = message{messageId = Just "70002", replyToMessageId = Just "900", replyQuote = Just "first", text = "again"}
     answers <- IORef.newIORef [chatAnswer "first" [], chatAnswer "second" []]
     captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
     _ <- runAgentCapturingMessages captured answers (ChatMock Nothing (Just "900") Nothing) do
@@ -1770,7 +1773,7 @@ testAskHandlerGroupIdentity =
       runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads followUp
     requests <- IORef.readIORef captured
     map (chatMessageTextsByRole "user") requests @?=
-      [[prefix <> "hello"], [prefix <> "hello", prefix <> "again"]]
+      [[prefix <> "hello"], [prefix <> "hello", prefix <> "again\n\nUser-selected quote:\n> first\n"]]
 
 testAskHandlerRoutesActiveReplyAsSteering :: IO ()
 testAskHandlerRoutesActiveReplyAsSteering = for_ [ChatPrivate, ChatGroup] \kind -> do
@@ -4808,6 +4811,7 @@ testMessageInChat :: Integer -> IncomingMessage
 testMessageInChat chatId =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = testMessage.platform
     , kind = testMessage.kind
@@ -4833,6 +4837,7 @@ testMessageWithImages :: [Text] -> IncomingMessage
 testMessageWithImages imageUrls =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = testMessage.platform
     , kind = testMessage.kind
@@ -5689,6 +5694,7 @@ testMessage :: IncomingMessage
 testMessage =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = PlatformTelegram
     , kind = ChatPrivate
@@ -5736,6 +5742,7 @@ askHandlerMessage :: IncomingMessage
 askHandlerMessage =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = PlatformQQ
     , kind = ChatGroup

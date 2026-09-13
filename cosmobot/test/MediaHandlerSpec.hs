@@ -202,6 +202,7 @@ message :: Text -> IncomingMessage
 message body =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = PlatformTelegram
     , kind = ChatPrivate

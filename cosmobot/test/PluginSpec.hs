@@ -300,6 +300,7 @@ withExternalEcho source use = withSystemTempDirectory "cosmobot-plugin-e2e" \roo
 message :: Text -> IncomingMessage
 message text = IncomingMessage
   { eventKind = IncomingMessageCreated
+  , replyQuote = Nothing
   , timestamp = Nothing
   , platform = PlatformTelegram
   , kind = ChatPrivate

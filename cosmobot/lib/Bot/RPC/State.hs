@@ -280,6 +280,7 @@ rpcIncomingMessage chatSend messageRow = do
   llmImageUrls <- Session.sessionSendLlmImageUrls canonicalSend
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Just timestamp
     , platform = PlatformRPC
     , kind = ChatPrivate

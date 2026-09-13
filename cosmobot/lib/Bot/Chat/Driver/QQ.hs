@@ -1022,6 +1022,7 @@ eventToIncomingMessageWith cfg event
       recalledMessageId <- integerMessageId <$> event.messageId
       pure IncomingMessage
         { eventKind = IncomingMessageDeleted
+        , replyQuote = Nothing
         , timestamp = posixSecondsToUTCTime . fromInteger <$> event.time
         , platform = PlatformQQ
         , kind = maybe ChatPrivate (const ChatGroup) event.groupId
@@ -1046,6 +1047,7 @@ eventToIncomingMessageWith cfg event
   | isSelfMessage event = Nothing
   | otherwise = Just IncomingMessage
       { eventKind = IncomingMessageCreated
+      , replyQuote = Nothing
       , timestamp = posixSecondsToUTCTime . fromInteger <$> event.time
       , platform  = PlatformQQ
       , kind      = oneBotChatKind event.messageType

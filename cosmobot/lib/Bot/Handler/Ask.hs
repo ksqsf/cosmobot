@@ -462,9 +462,10 @@ askInput :: IncomingMessage -> Text -> [Text] -> [MessageFile] -> MessageInput
 askInput message prompt =
   inputWithAttachments $
     if message.kind == ChatGroup
-      then senderLabel <> ": " <> prompt
-      else prompt
+      then senderLabel <> ": " <> quotedPrompt
+      else quotedPrompt
   where
+    quotedPrompt = prompt <> foldMap (\quote -> "\n\nUser-selected quote:\n" <> Text.unlines (map ("> " <>) (Text.lines quote))) message.replyQuote
     name = listToMaybe . filter (not . Text.null) . map Text.strip $
       catMaybes [message.senderDisplayName, message.senderGlobalDisplayName, message.senderId]
     senderLabel = Text.intercalate " " . catMaybes $
@@ -484,12 +485,12 @@ promptWithReferencedContext prompt referenced imageUrls =
     ("", Just quotedContext) ->
       [i|请根据被回复消息回答。
 
-被回复消息：
+Replied-to message:
 #{quotedContext}|]
     (userPrompt, Just quotedContext) ->
       [i|#{userPrompt}
 
-被回复消息：
+Replied-to message:
 #{quotedContext}|]
     (userPrompt, _) ->
       userPrompt
@@ -505,7 +506,7 @@ referencedMessageContext referenced =
 
 referencedSenderLine :: ReferencedMessage -> [Text]
 referencedSenderLine referenced =
-  [ "被回复用户：" <> Text.intercalate " " (catMaybes [referenced.senderDisplayName, parenthesized <$> referenced.senderIdentifier])
+  [ "Replied-to user: " <> Text.intercalate " " (catMaybes [referenced.senderDisplayName, parenthesized <$> referenced.senderIdentifier])
   | isJust referenced.senderDisplayName || isJust referenced.senderIdentifier
   ]
   where

@@ -395,6 +395,7 @@ incomingMessageToJson message = Aeson.object
   , "senderGlobalDisplayName" Aeson..= message.senderGlobalDisplayName
   , "messageId" Aeson..= message.messageId
   , "replyToMessageId" Aeson..= message.replyToMessageId
+  , "replyQuote" Aeson..= message.replyQuote
   , "mentions" Aeson..= message.mentions
   , "mentionUsernames" Aeson..= message.mentionUsernames
   , "imageUrls" Aeson..= message.imageUrls
@@ -419,6 +420,7 @@ parseIncomingMessage = Aeson.withObject "plugin incoming message" \object -> Inc
   <*> object Aeson..:? "senderGlobalDisplayName"
   <*> object Aeson..:? "messageId"
   <*> object Aeson..:? "replyToMessageId"
+  <*> object Aeson..:? "replyQuote"
   <*> object Aeson..:? "mentions" Aeson..!= []
   <*> object Aeson..:? "mentionUsernames" Aeson..!= []
   <*> object Aeson..:? "imageUrls" Aeson..!= []

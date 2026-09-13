@@ -355,6 +355,7 @@ messageWith :: Text -> MessageDigest -> IncomingMessage
 messageWith body digest =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = PlatformTelegram
     , kind = ChatPrivate

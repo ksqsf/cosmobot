@@ -167,6 +167,7 @@ updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
   guard (not (isBotMessage message))
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = message.quote >>= \q -> if q.isManual == Just True then Just q.text else Nothing
     , timestamp = posixSecondsToUTCTime . fromInteger <$> message.date
     , platform  = PlatformTelegram
     , kind      = telegramChatKind message.chat.type_

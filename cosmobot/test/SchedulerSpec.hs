@@ -242,6 +242,7 @@ messageFromChat :: Text -> Integer -> Text -> IncomingMessage
 messageFromChat senderId chatId text =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = PlatformTelegram
     , kind = ChatPrivate

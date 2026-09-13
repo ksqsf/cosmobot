@@ -275,6 +275,7 @@ syntheticMessage :: Int -> IncomingMessage
 syntheticMessage index =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = platform
     , kind = kind

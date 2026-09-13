@@ -142,6 +142,7 @@ messageFrom :: Text -> Text -> IncomingMessage
 messageFrom senderId text =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = PlatformTelegram
     , kind = ChatPrivate

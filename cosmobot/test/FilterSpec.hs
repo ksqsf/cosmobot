@@ -147,6 +147,7 @@ messageFromWithImages :: Text -> Text -> [Text] -> IncomingMessage
 messageFromWithImages senderId text imageUrls =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = PlatformTelegram
     , kind = ChatPrivate

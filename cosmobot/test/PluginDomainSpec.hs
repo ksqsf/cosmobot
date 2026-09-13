@@ -216,6 +216,7 @@ validManifest = PluginManifest
 matchingMessage :: IncomingMessage
 matchingMessage = IncomingMessage
   { eventKind = IncomingMessageCreated
+  , replyQuote = Nothing
   , timestamp = Nothing
   , platform = PlatformMatrix
   , kind = ChatGroup

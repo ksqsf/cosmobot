@@ -80,6 +80,7 @@ messageWithText :: Text -> IncomingMessage
 messageWithText body =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = PlatformTelegram
     , kind = ChatPrivate

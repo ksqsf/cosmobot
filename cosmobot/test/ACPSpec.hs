@@ -905,6 +905,7 @@ acpToolMessage :: ACPState.AcpSessionId -> IncomingMessage
 acpToolMessage sessionId =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Nothing
     , platform = PlatformACP
     , kind = ChatPrivate

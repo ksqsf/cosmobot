@@ -373,6 +373,7 @@ data Message = Message
   , senderChat      :: !(Maybe Chat)
   , chat            :: !Chat
   , replyToMessage  :: !(Maybe Message)
+  , quote           :: !(Maybe TextQuote)
   , text            :: !(Maybe Text)
   , entities        :: !(Maybe [MessageEntity])
   , caption         :: !(Maybe Text)
@@ -387,6 +388,13 @@ data Message = Message
   , sticker         :: !(Maybe Sticker)
   } deriving (Show, Generic)
     deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing Message)
+
+-- | The quoted fragment supplied by Telegram.
+data TextQuote = TextQuote
+  { text :: !Text
+  , isManual :: !(Maybe Bool)
+  } deriving (Show, Generic)
+    deriving (Aeson.FromJSON, Aeson.ToJSON) via (SnakeJSONOmitNothing TextQuote)
 
 -- | Telegram photo variant metadata.
 data PhotoSize = PhotoSize

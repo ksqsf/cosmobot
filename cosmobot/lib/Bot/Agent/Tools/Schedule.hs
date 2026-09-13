@@ -102,6 +102,7 @@ scheduledAgentMessage context runId delaySeconds prompt recurring =
   in original
       { messageId = original.messageId
       , replyToMessageId = Nothing
+      , replyQuote = Nothing
       , mentions = original.mentions
       , mentionUsernames = original.mentionUsernames
       , imageUrls = []

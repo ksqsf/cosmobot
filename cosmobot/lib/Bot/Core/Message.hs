@@ -202,6 +202,8 @@ data IncomingMessage = IncomingMessage
   , senderGlobalDisplayName :: !(Maybe Text)
   , messageId :: !(Maybe MessageId)
   , replyToMessageId :: !(Maybe MessageId)
+  -- | A fragment explicitly selected by the sender, additional to reply context.
+  , replyQuote :: !(Maybe Text)
   , mentions  :: ![Text]
   , mentionUsernames :: ![Text]
   , imageUrls :: ![Text]
@@ -228,6 +230,7 @@ instance Aeson.FromJSON IncomingMessage where
       <*> o Aeson..:? "senderGlobalDisplayName"
       <*> o Aeson..:? "messageId"
       <*> o Aeson..:? "replyToMessageId"
+      <*> o Aeson..:? "replyQuote"
       <*> o Aeson..:? "mentions" Aeson..!= []
       <*> o Aeson..:? "mentionUsernames" Aeson..!= []
       <*> o Aeson..:? "imageUrls" Aeson..!= []

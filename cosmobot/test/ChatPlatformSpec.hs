@@ -53,6 +53,7 @@ main =
       , testCase "QQ video segment becomes a message file" testQqVideoSegmentBecomesMessageFile
       , testCase "QQ sends local file bytes as a base64 resource" testQqBase64FileRef
       , testCase "Telegram user message converts to incoming message" testTelegramUserMessageConvertsToIncomingMessage
+      , testCase "Telegram manually selected quote survives parsing" testTelegramSelectedQuote
       , testCase "Telegram audio becomes a message file" testTelegramAudioBecomesMessageFile
       , testCase "Telegram video becomes a message file" testTelegramVideoBecomesMessageFile
       , testCase "Telegram sticker records its emoji" testTelegramStickerRecordsEmoji
@@ -457,6 +458,29 @@ testTelegramUserMessageConvertsToIncomingMessage = do
   let incoming = Telegram.updateToIncomingMessage (telegramUpdate False)
   ((.platform) <$> incoming) @?= Just PlatformTelegram
   ((.text) <$> incoming) @?= Just "hello"
+
+testTelegramSelectedQuote :: IO ()
+testTelegramSelectedQuote = do
+  for_ [Just True, Just False, Nothing] \manual -> do
+    let value = Aeson.object
+          [ "message_id" Aeson..= (42 :: Int)
+          , "chat" Aeson..= telegramChat
+          , "from" Aeson..= telegramUser False
+          , "text" Aeson..= ("explain" :: Text)
+          , "reply_to_message" Aeson..= telegramMessage False
+          , "quote" Aeson..= Aeson.object
+              [ "text" Aeson..= ("selected text" :: Text)
+              , "position" Aeson..= (0 :: Int)
+              , "is_manual" Aeson..= manual
+              ]
+          ]
+    case Aeson.fromJSON value of
+      Aeson.Error err -> assertFailure err
+      Aeson.Success message -> do
+        let incoming = Telegram.updateToIncomingMessage (telegramUpdateWithMessage message)
+        (incoming >>= (.replyQuote)) @?= if manual == Just True then Just "selected text" else Nothing
+        (incoming >>= (.replyToMessageId)) @?= Just (integerMessageId (telegramMessage False).messageId)
+  (Telegram.updateToIncomingMessage (telegramUpdate False) >>= (.replyQuote)) @?= Nothing
 
 testTelegramAudioBecomesMessageFile :: IO ()
 testTelegramAudioBecomesMessageFile = do
@@ -1223,6 +1247,7 @@ telegramMessage fromBot =
     , from = Just (telegramUser fromBot)
     , senderChat = Nothing
     , chat = telegramChat
+    , quote = Nothing
     , replyToMessage = Nothing
     , text = Just "hello"
     , entities = Nothing

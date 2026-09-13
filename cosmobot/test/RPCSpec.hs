@@ -1108,6 +1108,7 @@ testManagerRpcMethods = runRpcManager do
 
     managerMessage = IncomingMessage
       { eventKind = IncomingMessageCreated
+      , replyQuote = Nothing
       , timestamp = Nothing, platform = PlatformTelegram, kind = ChatPrivate
       , chatId = Just (integerChatId 100), chatAliases = [], chatDisplayName = Nothing
       , digest = emptyMessageDigest, senderId = Just "200", senderUsername = Just "alice"
@@ -1334,6 +1335,7 @@ testMediaStatsTotalsIgnoreListLimit =
 mediaMessage :: ChatPlatform -> Text -> IncomingMessage
 mediaMessage platform mediaRef = IncomingMessage
   { eventKind = IncomingMessageCreated
+  , replyQuote = Nothing
   , timestamp = Nothing
   , platform
   , kind = ChatPrivate

@@ -1475,6 +1475,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
       redactedEventId <- matrixRedactedEventId event.raw
       pure IncomingMessage
         { eventKind = IncomingMessageDeleted
+        , replyQuote = Nothing
         , timestamp = (\milliseconds -> posixSecondsToUTCTime (fromInteger milliseconds / 1000)) <$> event.originServerTs
         , platform = PlatformMatrix
         , kind = if roomIsDirect then ChatPrivate else ChatGroup
@@ -1501,6 +1502,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
       body <- matrixEventText event
       pure IncomingMessage
         { eventKind = IncomingMessageCreated
+        , replyQuote = Nothing
         , timestamp = (\milliseconds -> posixSecondsToUTCTime (fromInteger milliseconds / 1000)) <$> event.originServerTs
         , platform = PlatformMatrix
         , kind = if roomIsDirect then ChatPrivate else ChatGroup

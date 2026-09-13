@@ -410,6 +410,7 @@ acpIncomingMessage sessionSend messageRow = do
   llmImageUrls <- Session.sessionSendLlmImageUrls sessionSend
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
+    , replyQuote = Nothing
     , timestamp = Just timestamp
     , platform = PlatformACP
     , kind = ChatPrivate
