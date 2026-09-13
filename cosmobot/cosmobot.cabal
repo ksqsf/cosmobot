@@ -177,6 +177,7 @@ library
                     , language
                     , lib-deps
     hs-source-dirs:   lib
+    ghc-options:      -funbox-strict-fields
     other-modules:    Paths_cosmobot
     autogen-modules:  Paths_cosmobot
     exposed-modules:
