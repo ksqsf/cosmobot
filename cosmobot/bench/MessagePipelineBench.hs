@@ -275,6 +275,7 @@ syntheticMessage :: Int -> IncomingMessage
 syntheticMessage index =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = Nothing
     , platform = platform
     , kind = kind
     , chatId = Just (integerChatId (fromIntegral (100 + index `mod` 32)))

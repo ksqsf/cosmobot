@@ -382,6 +382,7 @@ stripLineEnding bytes = case ByteString.unsnoc bytes of
 incomingMessageToJson :: IncomingMessage -> Aeson.Value
 incomingMessageToJson message = Aeson.object
   [ "eventKind" Aeson..= eventName message.eventKind
+  , "timestamp" Aeson..= message.timestamp
   , "platform" Aeson..= platformName message.platform
   , "kind" Aeson..= chatKindName message.kind
   , "chatId" Aeson..= message.chatId
@@ -405,6 +406,7 @@ incomingMessageToJson message = Aeson.object
 parseIncomingMessage :: Aeson.Value -> AesonTypes.Parser IncomingMessage
 parseIncomingMessage = Aeson.withObject "plugin incoming message" \object -> IncomingMessage
   <$> (object Aeson..:? "eventKind" Aeson..!= "created" >>= parseEvent)
+  <*> object Aeson..:? "timestamp"
   <*> (object Aeson..: "platform" >>= parsePlatform)
   <*> (object Aeson..: "kind" >>= parseChatKind)
   <*> object Aeson..:? "chatId"

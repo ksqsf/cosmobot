@@ -41,6 +41,7 @@ import Bot.Core.Message
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
+import Data.Time (getCurrentTime)
 import qualified Bot.Session as Session
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -404,10 +405,12 @@ acpIncomingMessage
   -> Session.SessionMessage
   -> Eff es IncomingMessage
 acpIncomingMessage sessionSend messageRow = do
+  timestamp <- liftIO getCurrentTime
   let sessionText = Session.sessionIdText sessionSend.sessionId
   llmImageUrls <- Session.sessionSendLlmImageUrls sessionSend
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = Just timestamp
     , platform = PlatformACP
     , kind = ChatPrivate
     , chatId = Just (textChatId sessionText)

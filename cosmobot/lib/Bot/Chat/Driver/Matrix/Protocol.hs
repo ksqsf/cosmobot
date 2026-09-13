@@ -1116,6 +1116,7 @@ instance Aeson.FromJSON Timeline where
 data Event = Event
   { type_ :: !Text
   , sender :: !Text
+  , originServerTs :: !(Maybe Integer)
   , eventId :: !(Maybe MatrixEventId)
   , content :: !EventContent
   , raw :: !Aeson.Value
@@ -1128,9 +1129,10 @@ instance Aeson.FromJSON Event where
       parse o = do
         type_ <- o Aeson..: "type"
         sender <- o Aeson..: "sender"
+        originServerTs <- o Aeson..:? "origin_server_ts"
         eventId <- fmap matrixEventId <$> o Aeson..:? "event_id"
         content <- o Aeson..:? "content" Aeson..!= EventContent Nothing Nothing [] Nothing
-        pure Event{type_, sender, eventId, content, raw = value}
+        pure Event{type_, sender, originServerTs, eventId, content, raw = value}
 
 data EventContent = EventContent
   { msgtype :: !(Maybe Text)

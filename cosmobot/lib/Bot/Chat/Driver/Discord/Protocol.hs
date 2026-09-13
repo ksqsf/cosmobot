@@ -14,6 +14,7 @@ import Bot.Chat.Driver.Discord.Types (Config (..))
 import qualified Bot.Chat.Driver.Types as Driver
 import Bot.Core.Message
 import Bot.Prelude
+import Data.Time (UTCTime)
 import Bot.Util.Aeson
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -466,6 +467,7 @@ data Message = Message
   { id :: !Text
   , channelId :: !Text
   , guildId :: !(Maybe Text)
+  , timestamp :: !(Maybe UTCTime)
   , author :: !User
   , member :: !(Maybe Member)
   , content :: !Text
@@ -485,6 +487,7 @@ instance Aeson.FromJSON Message where
       <$> o Aeson..: "id"
       <*> o Aeson..: "channel_id"
       <*> o Aeson..:? "guild_id"
+      <*> o Aeson..:? "timestamp"
       <*> o Aeson..: "author"
       <*> o Aeson..:? "member"
       <*> fmap (fromMaybe "") (o Aeson..:? "content")

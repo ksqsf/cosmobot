@@ -906,6 +906,7 @@ testChatSendConstructsIncomingMessage = do
     pure (response, incoming)
 
   response @?= responseResult (Aeson.object ["sessionId" Aeson..= ("local-1" :: Text), "messageId" Aeson..= ("message-1" :: Text)])
+  assertBool "RPC incoming message has a reception timestamp" (isJust incoming.timestamp)
   incoming.platform @?= PlatformRPC
   incoming.kind @?= ChatPrivate
   incoming.chatAliases @?= ["local-1"]
@@ -1106,7 +1107,8 @@ testManagerRpcMethods = runRpcManager do
     never = threadDelay maxBound
 
     managerMessage = IncomingMessage
-      { eventKind = IncomingMessageCreated, platform = PlatformTelegram, kind = ChatPrivate
+      { eventKind = IncomingMessageCreated
+      , timestamp = Nothing, platform = PlatformTelegram, kind = ChatPrivate
       , chatId = Just (integerChatId 100), chatAliases = [], chatDisplayName = Nothing
       , digest = emptyMessageDigest, senderId = Just "200", senderUsername = Just "alice"
       , senderDisplayName = Nothing, senderGlobalDisplayName = Nothing, messageId = Just "300"
@@ -1332,6 +1334,7 @@ testMediaStatsTotalsIgnoreListLimit =
 mediaMessage :: ChatPlatform -> Text -> IncomingMessage
 mediaMessage platform mediaRef = IncomingMessage
   { eventKind = IncomingMessageCreated
+  , timestamp = Nothing
   , platform
   , kind = ChatPrivate
   , chatId = Just "42"

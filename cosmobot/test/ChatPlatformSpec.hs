@@ -9,8 +9,10 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Matrix.Protocol as MatrixProtocol
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
+import qualified Bot.Plugin.Protocol as PluginProtocol
 import Bot.Core.Message
 import Bot.Prelude
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import qualified Crypto.Cipher.AES as CryptoAES
 import qualified Crypto.Cipher.Types as CryptoCipher
 import qualified Crypto.Error as CryptoError
@@ -30,7 +32,8 @@ main :: IO ()
 main =
   defaultMain $
     testGroup "chat platforms"
-      [ testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      [ testCase "incoming timestamps normalize platform units and survive JSON" testIncomingTimestamps
+      , testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
       , testCase "QQ market face records its summary" testQqMarketFaceRecordsSummary
       , testCase "QQ group info exposes its display name" testQqGroupInfoDisplayName
       , testCase "Matrix room state exposes its display name" testMatrixRoomDisplayName
@@ -218,10 +221,11 @@ testIncomingMessageJsonDefaultsMissingFiles :: IO ()
 testIncomingMessageJsonDefaultsMissingFiles = do
   let message = fromMaybe (error "expected QQ message") (QQ.eventToIncomingMessage (qqMessageEvent 10001))
       legacyJson = case Aeson.toJSON message of
-        Aeson.Object fields -> Aeson.Object (AesonKeyMap.delete "eventKind" (AesonKeyMap.delete "files" fields))
+        Aeson.Object fields -> Aeson.Object (AesonKeyMap.delete "timestamp" (AesonKeyMap.delete "eventKind" (AesonKeyMap.delete "files" fields)))
         _ -> error "expected message object"
   case Aeson.fromJSON legacyJson of
     Aeson.Success (decoded :: IncomingMessage) -> do
+      decoded.timestamp @?= Nothing
       decoded.files @?= []
       decoded.eventKind @?= IncomingMessageCreated
     Aeson.Error err -> assertFailure err
@@ -1214,6 +1218,7 @@ telegramMessage :: Bool -> Telegram.Message
 telegramMessage fromBot =
   Telegram.Message
     { messageId = 80001
+    , date = Nothing
     , messageThreadId = Nothing
     , from = Just (telegramUser fromBot)
     , senderChat = Nothing
@@ -1275,6 +1280,7 @@ matrixRoomEvent =
     , Matrix.event = Matrix.Event
         { Matrix.type_ = "m.room.message"
         , Matrix.sender = "@alice:example.org"
+        , Matrix.originServerTs = Nothing
         , Matrix.eventId = Just "$event:example.org"
         , Matrix.content = Matrix.EventContent
             { Matrix.msgtype = Just "m.text"
@@ -1426,6 +1432,7 @@ matrixMentionRoomEvent =
             }
         , Matrix.type_ = "m.room.message"
         , Matrix.sender = "@alice:example.org"
+        , Matrix.originServerTs = Nothing
         , Matrix.eventId = Just "$event:example.org"
         , Matrix.raw = Aeson.Null
         }
@@ -1474,6 +1481,7 @@ discordMessage =
     { Discord.id = "70001"
     , Discord.channelId = "90001"
     , Discord.guildId = Just "80001"
+    , Discord.timestamp = Nothing
     , Discord.author = discordUser "10001" "alice" False
     , Discord.member = Nothing
     , Discord.content = "hello <@424242>"
@@ -1509,6 +1517,7 @@ discordMessageNoReference messageId =
     { Discord.id = messageId
     , Discord.channelId = "90001"
     , Discord.guildId = Just "80001"
+    , Discord.timestamp = Nothing
     , Discord.author = discordUser "20001" "bob" False
     , Discord.member = Nothing
     , Discord.content = ""
@@ -1530,3 +1539,42 @@ discordUser userId username fromBot =
     , Discord.bot = fromBot
     , Discord.avatar = Nothing
     }
+
+
+testIncomingTimestamps :: Assertion
+testIncomingTimestamps = do
+  let expected = posixSecondsToUTCTime 1700000000
+      decode :: Aeson.FromJSON a => Aeson.Value -> a
+      decode value = case Aeson.fromJSON value of
+        Aeson.Success result -> result
+        Aeson.Error err -> error (toText err)
+      telegram = decode (Aeson.object
+        [ "message_id" Aeson..= (1 :: Int), "date" Aeson..= (1700000000 :: Integer)
+        , "chat" Aeson..= telegramChat, "from" Aeson..= telegramUser False
+        , "text" Aeson..= ("hello" :: Text)
+        ])
+      discord = decode (Aeson.object
+        [ "id" Aeson..= ("1" :: Text), "channel_id" Aeson..= ("2" :: Text)
+        , "author" Aeson..= Aeson.object ["id" Aeson..= ("3" :: Text)]
+        , "content" Aeson..= ("hello" :: Text)
+        , "timestamp" Aeson..= ("2023-11-14T22:13:20Z" :: Text)
+        ])
+      matrix = decode (Aeson.object
+        [ "type" Aeson..= ("m.room.message" :: Text), "sender" Aeson..= ("@alice:example.org" :: Text)
+        , "origin_server_ts" Aeson..= (1700000000123 :: Integer)
+        , "content" Aeson..= Aeson.object ["msgtype" Aeson..= ("m.text" :: Text), "body" Aeson..= ("hello" :: Text)]
+        ])
+      messages =
+        [ (QQ.eventToIncomingMessage (qqMessageEvent 10001){QQ.time = Just 1700000000}, expected)
+        , (Telegram.updateToIncomingMessage (telegramUpdateWithMessage telegram), expected)
+        , (Discord.eventToIncomingMessage discord, expected)
+        , (Matrix.eventToIncomingMessage matrixRoomEvent{Matrix.event = matrix}, posixSecondsToUTCTime 1700000000.123)
+        ]
+  for_ messages \(incoming, time) -> case incoming of
+    Nothing -> assertFailure "expected normalized incoming message"
+    Just message -> do
+      message.timestamp @?= Just time
+      (decode (Aeson.toJSON message) :: IncomingMessage).timestamp @?= Just time
+      let invocation = PluginProtocol.RouteInvokeParams "call" "route" message "" 30
+      (decode (Aeson.toJSON invocation) :: PluginProtocol.RouteInvokeParams).message.timestamp @?= Just time
+  (Discord.deletedEventToIncomingMessageWith discordConfig (Discord.DeletedMessage "1" "2" Nothing Aeson.Null)).timestamp @?= Nothing

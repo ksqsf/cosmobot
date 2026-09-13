@@ -50,6 +50,7 @@ selfMessage :: IncomingMessage -> Maybe MessageId -> Text -> [MessageFile] -> In
 selfMessage context messageId body files =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = Nothing
     , platform = context.platform
     , kind = context.kind
     , chatId = context.chatId

@@ -46,6 +46,7 @@ import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Media.Mime as Mime
 import qualified Bot.Storage.Matrix as MatrixStorage
 import Bot.Prelude
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Control.Monad.Trans.Resource (ResourceT, runResourceT)
 import qualified Crypto.Cipher.AES as CryptoAES
 import qualified Crypto.Cipher.Types as CryptoCipher
@@ -1474,6 +1475,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
       redactedEventId <- matrixRedactedEventId event.raw
       pure IncomingMessage
         { eventKind = IncomingMessageDeleted
+        , timestamp = (\milliseconds -> posixSecondsToUTCTime (fromInteger milliseconds / 1000)) <$> event.originServerTs
         , platform = PlatformMatrix
         , kind = if roomIsDirect then ChatPrivate else ChatGroup
         , chatId = Just (textChatId (matrixRoomIdText roomId))
@@ -1499,6 +1501,7 @@ eventToIncomingMessageWith cfg RoomEvent{roomId, roomIsDirect, event}
       body <- matrixEventText event
       pure IncomingMessage
         { eventKind = IncomingMessageCreated
+        , timestamp = (\milliseconds -> posixSecondsToUTCTime (fromInteger milliseconds / 1000)) <$> event.originServerTs
         , platform = PlatformMatrix
         , kind = if roomIsDirect then ChatPrivate else ChatGroup
         , chatId = Just (textChatId (matrixRoomIdText roomId))

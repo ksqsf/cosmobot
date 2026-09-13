@@ -169,6 +169,7 @@ messageFromChatWithFiles :: Integer -> Integer -> Text -> [Text] -> [MessageFile
 messageFromChatWithFiles messageId chatId text imageUrls files =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = Nothing
     , platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just (integerChatId chatId)

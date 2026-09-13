@@ -1862,6 +1862,7 @@ testContext =
     { message =
         IncomingMessage
           { eventKind = IncomingMessageCreated
+          , timestamp = Nothing
           , platform = PlatformRPC
           , kind = ChatPrivate
           , chatId = Just "1"

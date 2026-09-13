@@ -43,6 +43,7 @@ module Bot.Core.Message
 where
 
 import Bot.Prelude
+import Data.Time (UTCTime)
 import Bot.Util.Aeson
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as AesonTypes
@@ -187,6 +188,8 @@ data IncomingMessageEventKind
 
 data IncomingMessage = IncomingMessage
   { eventKind :: !IncomingMessageEventKind
+  -- | Platform event time, absent when the source does not supply it.
+  , timestamp :: !(Maybe UTCTime)
   , platform  :: !ChatPlatform
   , kind      :: !ChatKind
   , chatId    :: !(Maybe ChatId)
@@ -212,6 +215,7 @@ instance Aeson.FromJSON IncomingMessage where
   parseJSON = Aeson.withObject "IncomingMessage" \o ->
     IncomingMessage
       <$> o Aeson..:? "eventKind" Aeson..!= IncomingMessageCreated
+      <*> o Aeson..:? "timestamp"
       <*> o Aeson..: "platform"
       <*> o Aeson..: "kind"
       <*> o Aeson..:? "chatId"

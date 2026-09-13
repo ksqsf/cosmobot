@@ -35,6 +35,7 @@ import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Media as Media
 import Bot.Core.Message
 import Bot.Prelude
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as Aeson
@@ -1021,6 +1022,7 @@ eventToIncomingMessageWith cfg event
       recalledMessageId <- integerMessageId <$> event.messageId
       pure IncomingMessage
         { eventKind = IncomingMessageDeleted
+        , timestamp = posixSecondsToUTCTime . fromInteger <$> event.time
         , platform = PlatformQQ
         , kind = maybe ChatPrivate (const ChatGroup) event.groupId
         , chatId = integerChatId <$> (event.groupId <|> event.userId)
@@ -1044,6 +1046,7 @@ eventToIncomingMessageWith cfg event
   | isSelfMessage event = Nothing
   | otherwise = Just IncomingMessage
       { eventKind = IncomingMessageCreated
+      , timestamp = posixSecondsToUTCTime . fromInteger <$> event.time
       , platform  = PlatformQQ
       , kind      = oneBotChatKind event.messageType
       , chatId    = integerChatId <$> (event.groupId <|> event.userId)

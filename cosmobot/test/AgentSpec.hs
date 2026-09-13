@@ -3990,6 +3990,7 @@ testDeletingBotReplyHaltsActiveRun = do
         replyKey = messageKey 2
         deleted = testMessage
           { eventKind = IncomingMessageDeleted
+          , timestamp = Nothing
           , messageId = Just (integerMessageId 2)
           , text = ""
           }
@@ -4777,6 +4778,7 @@ testMessageInChat :: Integer -> IncomingMessage
 testMessageInChat chatId =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = Nothing
     , platform = testMessage.platform
     , kind = testMessage.kind
     , chatId = Just (integerChatId chatId)
@@ -4801,6 +4803,7 @@ testMessageWithImages :: [Text] -> IncomingMessage
 testMessageWithImages imageUrls =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = Nothing
     , platform = testMessage.platform
     , kind = testMessage.kind
     , chatId = testMessage.chatId
@@ -5656,6 +5659,7 @@ testMessage :: IncomingMessage
 testMessage =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = Nothing
     , platform = PlatformTelegram
     , kind = ChatPrivate
     , chatId = Just "100"
@@ -5702,6 +5706,7 @@ askHandlerMessage :: IncomingMessage
 askHandlerMessage =
   IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = Nothing
     , platform = PlatformQQ
     , kind = ChatGroup
     , chatId = Just "906230260"

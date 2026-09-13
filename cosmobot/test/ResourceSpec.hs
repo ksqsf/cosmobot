@@ -973,6 +973,7 @@ newTestInit label failing = do
 ownerMessage :: IncomingMessage
 ownerMessage = IncomingMessage
   { eventKind = IncomingMessageCreated
+  , timestamp = Nothing
   , platform = PlatformTelegram
   , kind = ChatPrivate
   , chatId = Just "100"

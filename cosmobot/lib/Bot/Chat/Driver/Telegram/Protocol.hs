@@ -367,6 +367,7 @@ data User = User
 -- | Telegram message object fields consumed by the unified parser.
 data Message = Message
   { messageId       :: !Integer
+  , date            :: !(Maybe Integer)
   , messageThreadId :: !(Maybe Integer)
   , from            :: !(Maybe User)
   , senderChat      :: !(Maybe Chat)

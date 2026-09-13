@@ -60,6 +60,7 @@ import qualified Bot.Effect.Media as Media
 import qualified Bot.Media.Mime as Mime
 import Bot.Util.Multipart
 import Bot.Prelude
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Base64 as Base64
@@ -166,6 +167,7 @@ updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
   guard (not (isBotMessage message))
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = posixSecondsToUTCTime . fromInteger <$> message.date
     , platform  = PlatformTelegram
     , kind      = telegramChatKind message.chat.type_
     , chatId    = Just (integerChatId message.chat.id)

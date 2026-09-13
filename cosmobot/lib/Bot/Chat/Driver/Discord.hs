@@ -197,6 +197,7 @@ eventToIncomingMessageWith cfg message = do
   guard (not (Text.null content) || not (null message.attachments))
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = message.timestamp
     , platform = PlatformDiscord
     , kind = if isJust message.guildId then ChatGroup else ChatPrivate
     , chatId = Just (textChatId message.channelId)
@@ -224,6 +225,7 @@ deletedEventToIncomingMessageWith :: Config -> DeletedMessage -> IncomingMessage
 deletedEventToIncomingMessageWith cfg deleted =
   IncomingMessage
     { eventKind = IncomingMessageDeleted
+    , timestamp = Nothing
     , platform = PlatformDiscord
     , kind = if isJust deleted.guildId then ChatGroup else ChatPrivate
     , chatId = Just (textChatId deleted.channelId)

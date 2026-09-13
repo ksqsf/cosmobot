@@ -48,6 +48,7 @@ where
 import Bot.Core.Message
 import qualified Bot.Effect.Media as Media
 import Bot.Prelude
+import Data.Time (getCurrentTime)
 import qualified Bot.JSONRPC as RPC
 import qualified Bot.Session as Session
 import qualified Bot.Effect.Storage as StorageEffect
@@ -265,6 +266,7 @@ incomingMessages rpcState = forever do
 
 rpcIncomingMessage :: (StorageEffect.Storage :> es, FileSystem.FileSystem :> es, IOE :> es, Media.Media :> es) => RpcChatSend -> RpcChatMessage -> Eff es IncomingMessage
 rpcIncomingMessage chatSend messageRow = do
+  timestamp <- liftIO getCurrentTime
   let sessionText = Session.sessionIdText chatSend.sessionId
       canonicalSend :: Session.SessionSend
       canonicalSend =
@@ -278,6 +280,7 @@ rpcIncomingMessage chatSend messageRow = do
   llmImageUrls <- Session.sessionSendLlmImageUrls canonicalSend
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
+    , timestamp = Just timestamp
     , platform = PlatformRPC
     , kind = ChatPrivate
     , chatId = Just (textChatId sessionText)
