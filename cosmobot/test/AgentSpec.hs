@@ -302,6 +302,7 @@ main =
       , testCase "ask handler system context includes configured bot and sender ids" testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds
       , testCase "ask handler system context uses message bot id" testAskHandlerSystemContextUsesMessageBotId
       , testCase "ask handler injects startup skill metadata" testAskHandlerInjectsStartupSkillMetadata
+      , testCase "ask handler labels group messages once across turns" testAskHandlerGroupIdentity
       , testCase "ask handler routes replies to active aliases as steering" testAskHandlerRoutesActiveReplyAsSteering
       , testCase "group reply from another sender does not continue a finished user alias" testGroupReplyDoesNotContinueFinishedUserAlias
       , testCase "ask handler continues a finished bot reply" testAskHandlerContinuesFinishedBotReply
@@ -949,7 +950,7 @@ testScheduledActionContinuesSourceThread = do
   case reverse requests of
     continued : _ -> do
       assertElem "source complete" (chatMessageTextsByRole "assistant" continued)
-      assertElem "check oven" (chatMessageTextsByRole "user" continued)
+      assertElem "20001 (@20001): check oven" (chatMessageTextsByRole "user" continued)
     [] ->
       assertFailure "expected scheduled LLM request"
 
@@ -1744,16 +1745,44 @@ testAskHandlerHandlesReplyToNonBotMessageByChatKind = do
       runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads privateReply
   IORef.readIORef captured >>= assertEqual "mentioned group and unmentioned private replies should call the LLM" 2 . length
 
+testAskHandlerGroupIdentity :: Assertion
+testAskHandlerGroupIdentity =
+  for_ [(ChatGroup, Just "Alice", Just "Global", Just "42", "!ask hello", "Alice (@42): ")
+       ,(ChatGroup, Just " ", Just "Global", Just "42", "!ask hello", "Global (@42): ")
+       ,(ChatGroup, Nothing, Nothing, Just "42", "!ask hello", "42 (@42): ")
+       ,(ChatGroup, Just "Alice", Nothing, Just "@alice:example.org", "!ask hello", "Alice (@alice:example.org): ")
+       ,(ChatGroup, Just "Alice", Nothing, Just "42", "hello", "Alice (@42): ")
+       ,(ChatPrivate, Just "Alice", Nothing, Just "42", "!ask hello", "")
+       ,(ChatGroup, Just "Alice", Nothing, Nothing, "!ask hello", "Alice: ")
+       ,(ChatGroup, Nothing, Nothing, Nothing, "!ask hello", "unknown: ")
+       ] \(kind, displayName, globalName, sender, prompt, prefix) -> do
+    let message = askHandlerMessage
+          { kind, senderId = sender, senderDisplayName = displayName
+          , senderGlobalDisplayName = globalName, text = prompt
+          , digest = askHandlerMessage.digest{mentionsBot = True}
+          }
+        followUp = message{messageId = Just "70002", replyToMessageId = Just "900", text = "again"}
+    answers <- IORef.newIORef [chatAnswer "first" [], chatAnswer "second" []]
+    captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
+    _ <- runAgentCapturingMessages captured answers (ChatMock Nothing (Just "900") Nothing) do
+      threads <- newThreadStore
+      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads message
+      runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads followUp
+    requests <- IORef.readIORef captured
+    map (chatMessageTextsByRole "user") requests @?=
+      [[prefix <> "hello"], [prefix <> "hello", prefix <> "again"]]
+
 testAskHandlerRoutesActiveReplyAsSteering :: IO ()
-testAskHandlerRoutesActiveReplyAsSteering = do
+testAskHandlerRoutesActiveReplyAsSteering = for_ [ChatPrivate, ChatGroup] \kind -> do
+  let message = testMessage{kind, senderDisplayName = Just "Alice"}
   answers <- IORef.newIORef [chatAnswer "continued by another user" []]
   queued <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     threads <- newThreadStore
     active <- fromMaybe (error "expected active thread") <$>
-      rememberActiveThread threads "test-run" Nothing (Just (messageKey 1)) testMessage "start" (Concurrency.Handle (Concurrency.Id 1)) (startWithUser "start")
+      rememberActiveThread threads "test-run" Nothing (Just (messageKey 1)) message "start" (Concurrency.Handle (Concurrency.Id 1)) (startWithUser "start")
     let steer :: IncomingMessage
         steer =
-          testMessage
+          message
             { messageId = Just (integerMessageId 2)
             , replyToMessageId = Just (integerMessageId 1)
             , text = "change direction"
@@ -1765,13 +1794,13 @@ testAskHandlerRoutesActiveReplyAsSteering = do
             , text = "hijack"
             }
         askCommand =
-          testMessage
+          message
             { messageId = Just (integerMessageId 4)
             , replyToMessageId = Just (integerMessageId 1)
             , text = "!ask start over"
             }
         imageSteer =
-          testMessage
+          message
             { messageId = Just (integerMessageId 5)
             , replyToMessageId = Just (integerMessageId 1)
             , imageUrls = ["media:image"]
@@ -1779,7 +1808,7 @@ testAskHandlerRoutesActiveReplyAsSteering = do
             }
         steerFile = MessageFile{name = "notes.txt", ref = "media:file"}
         fileSteer =
-          testMessage
+          message
             { messageId = Just (integerMessageId 6)
             , replyToMessageId = Just (integerMessageId 1)
             , files = [steerFile]
@@ -1791,14 +1820,15 @@ testAskHandlerRoutesActiveReplyAsSteering = do
     runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads otherSender
     runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) askCommand
     drainActiveThreadSteers active
-  map (.text) queued @?= ["change direction", "请根据图片回答。", "附件：notes.txt (media:file)\n", "!ask start over"]
+  let prefix = if kind == ChatGroup then "Alice (@200): " else ""
+  map (.text) queued @?= map (prefix <>) ["change direction", "请根据图片回答。", "附件：notes.txt (media:file)\n", "!ask start over"]
   map messageInputImageUrls queued @?= [[], ["media:image"], [], []]
   map messageInputFiles queued @?= [[], [], [MessageFile{name = "notes.txt", ref = "media:file"}], []]
   IORef.readIORef answers >>= assertBool "other sender should continue from the active snapshot" . null
 
 testGroupReplyDoesNotContinueFinishedUserAlias :: IO ()
 testGroupReplyDoesNotContinueFinishedUserAlias = do
-  let parentId = "294869878"
+  let parentId = "80001"
       parentMessage =
         askHandlerMessage
           { digest = askHandlerMessage.digest{senderIsSuperuser = False}
@@ -1877,7 +1907,7 @@ testAskHandlerContinuesFinishedBotReply = do
       liftIO $ assertBool "persisted transcript should not contain a system prompt" $
         all ((/= "system") . (.role)) (maybe [] (Foldable.toList . (.messages)) linked)
       rememberThreadTranscript threads (Just (threadMessageKey askHandlerMessage botReplyId)) $
-        appendAssistant "你好" (startWithSystemAndUser "legacy memory for sender 295947730" "krkr 看下我的头像")
+        appendAssistant "你好" (startWithSystemAndUser "legacy memory for sender 20001" "krkr 看下我的头像")
       runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads followUp
   IORef.readIORef replies >>= (@?= ["你好", "再见"])
   requests <- IORef.readIORef captured
@@ -1888,7 +1918,7 @@ testAskHandlerContinuesFinishedBotReply = do
       case chatMessageTextsByRole "system" continued of
         [systemPrompt] -> do
           assertBool "continued request uses the current sender" ("- sender_id: another-user" `Text.isInfixOf` systemPrompt)
-          assertBool "continued request drops the original sender context" (not ("- sender_id: 295947730" `Text.isInfixOf` systemPrompt))
+          assertBool "continued request drops the original sender context" (not ("- sender_id: 20001" `Text.isInfixOf` systemPrompt))
           assertBool "continued request drops a legacy persisted system prompt" (not ("legacy memory" `Text.isInfixOf` systemPrompt))
         other ->
           assertFailure [i|expected one rebuilt system prompt, got #{show other :: String}|]
@@ -2172,8 +2202,8 @@ testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
         { Agent.systemContext = Text.unlines
             [ "Current message context:"
             , "- platform: PlatformQQ"
-            , "- bot_id: 2044933066"
-            , "- sender_id: 295947730"
+            , "- bot_id: 20002"
+            , "- sender_id: 20001"
             ]
         })
       AgentTools.defaultTools
@@ -2186,8 +2216,8 @@ testAgentRequestMergesCurrentMessageContextIntoSystemPrompt = do
       case message.content of
         Just (LLM.TextContent content) -> do
           assertBool "system context preserves configured prompt" ("base system prompt" `Text.isInfixOf` content)
-          assertBool "system context contains bot id" ("- bot_id: 2044933066" `Text.isInfixOf` content)
-          assertBool "system context contains sender id" ("- sender_id: 295947730" `Text.isInfixOf` content)
+          assertBool "system context contains bot id" ("- bot_id: 20002" `Text.isInfixOf` content)
+          assertBool "system context contains sender id" ("- sender_id: 20001" `Text.isInfixOf` content)
         other ->
           assertFailure [i|expected text system content, got #{show other :: String}|]
     other ->
@@ -2723,8 +2753,8 @@ testAskHandlerSystemContextIncludesConfiguredBotAndSenderIds = do
       case message.content of
         Just (LLM.TextContent content) -> do
           assertBool "ask handler system context preserves configured prompt" ("base system prompt" `Text.isInfixOf` content)
-          assertBool "ask handler system context contains configured bot id" ("- bot_id: 2044933066 (cosmobot's own platform user id)" `Text.isInfixOf` content)
-          assertBool "ask handler system context contains sender id" ("- sender_id: 295947730 (the platform user id of the user who sent this message)" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains configured bot id" ("- bot_id: 20002 (cosmobot's own platform user id)" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains sender id" ("- sender_id: 20001 (the platform user id of the user who sent this message)" `Text.isInfixOf` content)
         other ->
           assertFailure [i|expected text system content, got #{show other :: String}|]
     other ->
@@ -2737,7 +2767,7 @@ testAskHandlerSystemContextUsesMessageBotId = do
   _ <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     threads <- newThreadStore
     let cfg = askHandlerConfig{botIds = []}
-        message = askHandlerMessage{digest = askHandlerMessage.digest{botId = Just "2044933066"}}
+        message = askHandlerMessage{digest = askHandlerMessage.digest{botId = Just "20002"}}
     runAskHandlersAndWait Agent.defaultToolConfig cfg threads message
   requests <- IORef.readIORef captured
   case viaNonEmpty head requests of
@@ -2746,8 +2776,8 @@ testAskHandlerSystemContextUsesMessageBotId = do
       assertBool "second request message is not system" (secondMessage.role /= "system")
       case message.content of
         Just (LLM.TextContent content) -> do
-          assertBool "ask handler system context contains message bot id" ("- bot_id: 2044933066 (cosmobot's own platform user id)" `Text.isInfixOf` content)
-          assertBool "ask handler system context contains sender id" ("- sender_id: 295947730 (the platform user id of the user who sent this message)" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains message bot id" ("- bot_id: 20002 (cosmobot's own platform user id)" `Text.isInfixOf` content)
+          assertBool "ask handler system context contains sender id" ("- sender_id: 20001 (the platform user id of the user who sent this message)" `Text.isInfixOf` content)
         other ->
           assertFailure [i|expected text system content, got #{show other :: String}|]
     other ->
@@ -5690,7 +5720,7 @@ askHandlerConfig =
     , agentMaxTurns = 4
     , contextStrategy = AgentTypes.ContextCompaction
     , contextCompactionThresholdKTokens = 1000
-    , botIds = [(PlatformQQ, "2044933066")]
+    , botIds = [(PlatformQQ, "20002")]
     }
 
 consoleHandlerConfig :: ConsoleHandlerConfig
@@ -5709,7 +5739,7 @@ askHandlerMessage =
     , timestamp = Nothing
     , platform = PlatformQQ
     , kind = ChatGroup
-    , chatId = Just "906230260"
+    , chatId = Just "90001"
     , chatAliases = []
     , chatDisplayName = Nothing
     , digest = emptyMessageDigest
@@ -5717,11 +5747,11 @@ askHandlerMessage =
         , senderIsAllowed = True
         , senderIsSuperuser = True
         }
-    , senderId = Just "295947730"
+    , senderId = Just "20001"
     , senderUsername = Nothing
     , senderDisplayName = Nothing
     , senderGlobalDisplayName = Nothing
-    , messageId = Just "294869878"
+    , messageId = Just "80001"
     , replyToMessageId = Nothing
     , mentions = []
     , mentionUsernames = []

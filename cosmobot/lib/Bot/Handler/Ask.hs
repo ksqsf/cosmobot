@@ -244,7 +244,7 @@ steeringInput :: Policy -> Maybe MessageInput
 steeringInput policy = do
   guard (isJust policy.msg.replyToMessageId && (policy.hasPrompt || policy.hasImages || policy.hasFiles))
   pure $
-    inputWithAttachments
+    askInput policy.msg
       (promptWithCurrentFiles (promptOrImageDefault policy.msg.text policy.msg.imageUrls) policy.msg.files)
       policy.msg.imageUrls
       policy.msg.files
@@ -354,7 +354,7 @@ startAskThread label toolCfg tools cfg threads resource message prompt = do
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextFiles = referencedFiles referenced <> message.files
   let contextPrompt = promptWithCurrentFiles (promptWithReferencedContext prompt referenced contextImages) message.files
-  let input = inputWithAttachments contextPrompt contextImages contextFiles
+  let input = askInput message contextPrompt contextImages contextFiles
   let transcript = startWithUserInput input
   void $ runAskAgentThread toolCfg tools cfg threads resource Nothing message input transcript
 
@@ -373,7 +373,7 @@ startDrawThread label cfg threads message prompt = do
   let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
   let contextFiles = referencedFiles referenced <> message.files
   let contextPrompt = promptWithCurrentFiles (promptWithReferencedContext prompt referenced contextImages) message.files
-  let input = inputWithAttachments contextPrompt contextImages contextFiles
+  let input = askInput message contextPrompt contextImages contextFiles
   let transcript = startWithUserInput input
   systemPrompt <- askSystemPrompt cfg message
   answer <- drawTranscript systemPrompt transcript
@@ -405,7 +405,7 @@ startThreadFromReply toolCfg tools cfg threads resource message parentId = do
   let contextFiles = referencedFiles referenced <> message.files
   let prompt = promptWithCurrentFiles (promptWithReferencedContext message.text referenced contextImages) message.files
   unless (Text.null prompt && null contextImages) do
-    let input = inputWithAttachments prompt contextImages contextFiles
+    let input = askInput message prompt contextImages contextFiles
     let transcript = startWithUserInput input
     void $ runAskAgentThread toolCfg tools cfg threads resource (Just (threadMessageKey message parentId)) message input transcript
 
@@ -423,7 +423,7 @@ continueThread
 continueThread toolCfg tools cfg threads resource message parentKey transcript = do
   $(logInfo) [i|continuing thread: #{incomingMessageLog message}|]
   let prompt = promptWithCurrentFiles (promptOrImageDefault message.text message.imageUrls) message.files
-  let input = inputWithAttachments prompt message.imageUrls message.files
+  let input = askInput message prompt message.imageUrls message.files
   let nextTranscript =
         appendUserInput input (withoutLegacySystemPrompt transcript)
   void $ runAskAgentThread toolCfg tools cfg threads resource (Just parentKey) message input nextTranscript
@@ -456,6 +456,19 @@ drawTranscript systemPrompt transcript =
     $(logError) [i|LLM image request failed: #{show err :: String}|]
     pure ("Image generation failed: " <> (Failure.failureFromException err).userMessage)
 
+
+-- | Attach sender identity once, when a chat message enters the transcript.
+askInput :: IncomingMessage -> Text -> [Text] -> [MessageFile] -> MessageInput
+askInput message prompt =
+  inputWithAttachments $
+    if message.kind == ChatGroup
+      then senderLabel <> ": " <> prompt
+      else prompt
+  where
+    name = listToMaybe . filter (not . Text.null) . map Text.strip $
+      catMaybes [message.senderDisplayName, message.senderGlobalDisplayName, message.senderId]
+    senderLabel = Text.intercalate " " . catMaybes $
+      [Just (fromMaybe "unknown" name), (\sender -> "(@" <> Text.dropWhile (== '@') sender <> ")") <$> message.senderId]
 
 promptOrImageDefault :: Text -> [Text] -> Text
 promptOrImageDefault prompt imageUrls
