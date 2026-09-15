@@ -5,6 +5,72 @@ on:
   pull_request:
 
 jobs:
+  debian:
+    name: Debian 13 package (amd64)
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install --yes build-essential debhelper dpkg-dev dh-sequence-python3 pybuild-plugin-pyproject python3-all python3-setuptools git curl ca-certificates xz-utils libgmp-dev libnuma-dev libffi-dev libncurses-dev zlib1g-dev libsystemd-dev pkg-config
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: cosmoscope/package-lock.json
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.10.3"
+          cabal-version: "3.14.2.0"
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cabal/store
+            dist-debian
+          key: debian-trixie-amd64-ghc-9.10.3-${{ hashFiles('cabal.project', '**/*.cabal', 'debian/rules') }}
+          restore-keys: debian-trixie-amd64-ghc-9.10.3-
+
+      - name: Build Debian package
+        run: |
+          cabal update
+          # Toolchains come from setup actions, rather than dpkg's database.
+          dpkg-buildpackage --build=binary --no-sign -d -nc
+
+      - name: Install and smoke-test package
+        run: |
+          apt-get install --yes --no-install-recommends ../cosmobot_*.deb ../cosmobot-plugin-sdk_*.deb ../python3-cosmobot-plugin_*.deb ../cosmoscope_*.deb
+          python3 -c 'from cosmobot_plugin import Plugin, Context, serve'
+          cosmobot --help
+          cosmobot serve --help
+          test -r /usr/share/cosmobot/python/cosmobot_worker.py
+          test -r /usr/share/cosmobot/cosmobox/Containerfile
+          systemd-analyze verify /usr/lib/systemd/system/cosmobot.service
+          python3 -c 'from pathlib import Path; p = Path("/usr/share/cosmobot/python/cosmobot_worker.py"); compile(p.read_bytes(), str(p), "exec")'
+          podman --version
+          bwrap --version
+          prlimit --version
+          git --version
+          tree --version
+          # Build and test the installed SDK independently of the checkout.
+          mkdir -p /tmp/cosmobot-sdk-check
+          printf 'packages: /usr/share/cosmobot-plugin-sdk\n' > /tmp/cosmobot-sdk-check/cabal.project
+          cabal build -j --project-dir=/tmp/cosmobot-sdk-check exe:echo-plugin
+          cabal test -j --project-dir=/tmp/cosmobot-sdk-check sdk-spec --test-options=--hide-successes
+          mkdir -p artifacts
+          cp ../cosmobot*.deb ../python3-cosmobot-plugin_*.deb ../cosmoscope_*.deb ../cosmobot*.changes ../cosmobot*.buildinfo artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cosmobot-debian-trixie-amd64
+          path: artifacts/*
+          if-no-files-found: error
+
   web:
     name: Web
     runs-on: ubuntu-latest

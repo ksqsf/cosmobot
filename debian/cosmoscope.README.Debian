@@ -1,0 +1,28 @@
+Cosmoscope
+==========
+
+The compiled frontend is installed in /usr/share/cosmoscope.  Serve it
+at the root of a dedicated website (the build uses / as its base URL).
+Configure history fallback to index.html so direct links such as
+/configuration work.
+
+An nginx example is provided in examples/cosmoscope.nginx.  Replace
+scope.example.com with your domain and provision a TLS certificate
+(for example using Let's Encrypt); adjust ssl_certificate and
+ssl_certificate_key to match.  Copy it to
+/etc/nginx/sites-available/cosmoscope, enable it with a symlink in
+/etc/nginx/sites-enabled, run nginx -t, and reload nginx. It
+reverse-proxies /rpc to the RPC websocket.
+
+For Caddy, copy examples/cosmoscope.Caddyfile to
+/etc/caddy/cosmoscope.Caddyfile, replace scope.example.com with your
+domain, and import it from /etc/caddy/Caddyfile:
+
+    import /etc/caddy/cosmoscope.Caddyfile
+
+Enable Cosmobot's RPC listener and set a non-empty token.  Add the
+exact origin used in the browser (scheme, hostname, and port) to
+rpc.allowed_browser_origins, then restart Cosmobot.  At the login
+page, enter a WebSocket URL reachable from the browser and the RPC
+token.  An HTTPS page needs a secure wss:// connection, usually
+through your reverse proxy.

@@ -19,7 +19,31 @@ Beware: Cosmobot is just a hobby project. Won't be big and professional like Ope
 - **Observable & Auditable**: Audit traces, observability over RPC
 - **Lean**: VPS-friendly. Very low CPU or RAM consumption (consistently under 100 MiB) even under heavy load.
 
-## Building
+## Install
+
+### Prebuilt binaries
+
+CI builds Debian 13 (Trixie) amd64 packages on pushes and pull
+requests.  Download `cosmobot` from the workflow's artifacts, extract
+it, install it, and manage it with systemd:
+
+```bash
+sudo apt install ./cosmobot_*.deb
+
+# Prepare config; see below for details
+cp /usr/share/doc/cosmobot/examples/config.example.toml config.toml
+sudo install -d -m700 /srv/cosmobot
+sudo install -m600 /usr/share/doc/cosmobot/examples/config.example.toml /srv/cosmobot/config.toml
+sudoedit /srv/cosmobot/config.toml
+
+# Prepare sandbox
+sudo podman build -t localhost/cosmobox:latest /usr/share/cosmobot/cosmobox
+
+# Enable it
+sudo systemctl enable --now cosmobot.service
+```
+
+### Build
 
 Currently, only GHC 9.10.3 and Cabal 3.14 are supported. Package versions are pinned to [Stackage LTS 24.42](https://www.stackage.org/lts-24.42). After [setting up your toolchain](https://www.haskell.org/ghcup/), to build the whole project, run:
 
@@ -49,15 +73,18 @@ Cosmobot is experimental also because it tries some crazy ideas (e.g. `continuat
 
 ## Cosmobot Deployment
 
-Cosmobot reads `config.toml` from the current working directory. If it's listening for messages, you should see "Cosmobot stand by!" in the logs.
+Unfortuantely, you need to set Cosmobot up correctly before it can do
+anything useful, and Cosmobot is not the easiest to configure.
+
+Cosmobot reads `config.toml` from the current working directory by
+default.  If it's listening for messages, you should see "Cosmobot
+stand by!" in the logs.
 
 There is a template config to get you started.
 
 ```
 cp cosmobot/config.example.toml config.toml
 ```
-
-But, unfortunately, you need to set Cosmobot up correctly before it can do anything useful.
 
 ### 1. Chat interfaces
 

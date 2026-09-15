@@ -1,81 +1,159 @@
+# Cosmobot configuration
+# =====================
+#
+# Copy this file to config.toml and replace the placeholder
+# credentials/IDs.  Start with one chat driver and one chat provider;
+# remove unused [driver.*] sections entirely. A present driver section
+# enables that driver, even when its credentials are empty. RPC can
+# also be used without a chat driver.
+#
+# Run with: cosmobot serve --config config.toml
+#
+# Relative paths below resolve against the process's working
+# directory, not this file's directory.  The systemd unit file shipped
+# by the Debian package assumes /srv/cosmobot.  Restart Cosmobot after
+# changing configuration.  Keep this file private: it contains
+# credentials (for example, chmod 600 config.toml).
+#
+# Values here are examples, not a complete list of the built-in
+# defaults.  Lines beginning with # are comments; uncomment an
+# optional setting to use it.
+
+# Logging and persistent state -------------------------------------------------
 [log]
+# Use info for normal operation; debug adds diagnostic detail.
 level = "info"
 
 [storage]
+# SQLite database for conversations, chat history, schedules, and other state.
+# Keep this file on persistent storage and include it in your backup plan.
 sqlite_path = "cosmobot.sqlite3"
 
 [resource.sandbox]
+# Podman image used by container-backed shell tools. Build it as the same user
+# that runs Cosmobot; root and regular users have separate image stores.
+# Debian package: podman build -t localhost/cosmobox:latest /usr/share/cosmobot/cosmobox
+# The image must include bash, timeout, and tini; see cosmobox/Containerfile.
 image = "localhost/cosmobox:latest"
 
+# Remote interfaces -----------------------------------------------------------
 [rpc]
+# RPC serves the CLI, Cosmoscope, and administrative operations.
 enabled = false
+# Keep access local; use an SSH tunnel or private network for remote clients.
 host = "127.0.0.1"
 port = 38765
+# Required and non-empty when enabled. Choose a long, random bearer token.
 token = ""
+# Exact browser origins allowed to authenticate, including scheme and port.
+# Example: ["http://localhost:5173"]. An empty list permits no browser origins;
+# non-browser RPC clients do not need an entry here.
 allowed_browser_origins = []
 
 [acp]
+# Agent Client Protocol server for compatible coding clients.
+# This is a separate listener from RPC and has its own bearer token.
 enabled = false
 host = "127.0.0.1"
 port = 38766
+# Required and non-empty when enabled.
 token = ""
 
+# Chat drivers ----------------------------------------------------------------
+# Keep only the drivers you use. Configure the bot's own identity so mentions
+# can be recognized, and list your identity in that driver's superusers.
+# Superusers have administrative access; allowed_* lists admit other users or
+# rooms. Empty lists do not mean "allow everyone".
+
 [driver.qq]
+# Connect to a OneBot WebSocket server, such as NapCat's WebSocket Server mode.
 host = "127.0.0.1"
 port = 3001
 path = "/"
+# Must match the OneBot server's token; omit if the server has no token.
 token = "xxx"
+# QQ IDs are TOML integers, for example 123456789 (without quotes).
 bot_id = 0
 superusers = []
 allowed_groups = []
 allowed_users = []
 
 [driver.telegram]
+# Bot API token issued by BotFather.
 bot_token = ""
+# Numeric bot ID or username string, for example "my_example_bot".
 bot_id = ""
+# Telegram usernames, for example ["alice"], rather than numeric user IDs.
 superusers = []
+# Mix numeric chat IDs and username/title strings as needed:
+# [-1001234567890, "my_example_group"]. Numeric IDs are unquoted.
 allowed_chats = []
 
 [driver.matrix]
+# Use a homeserver URL, or a local encryption proxy URL for encrypted rooms.
+# Cosmobot does not implement Matrix end-to-end encryption itself.
 homeserver = "https://matrix.org"
 login_user = ""
 login_password = ""
+# Keep the device identifier stable across restarts.
 device_id = "cosmobot"
-direct_rooms = []
 bot_id = "@bot:matrix.org"
+# Full Matrix user IDs, for example ["@alice:example.org"].
 superusers = []
+# Full room IDs, for example ["!roomid:example.org"].
 allowed_rooms = []
+# Room IDs to treat as direct chats, for example ["!roomid:example.org"].
+direct_rooms = []
 
 [driver.discord]
+# Create a Discord application/bot and enable its Message Content Intent.
 bot_token = ""
+# Bot user ID and application ID; strings preserve Discord's large numeric IDs.
 bot_id = ""
 application_id = ""
+# Guild/server and channel IDs are unquoted integers.
 allowed_guilds = []
 allowed_channels = []
+# User IDs may be quoted strings or integers; do not use display names.
 allowed_users = []
 superusers = []
+# Normal Discord gateway settings; usually leave these unchanged.
 gateway_host = "gateway.discord.gg"
 gateway_path = "/?v=10&encoding=json"
 
+# Model providers -------------------------------------------------------------
+# Define named providers below, then select them here by their final table name.
+# For example, chat = "openrouter" selects [llm.chat_provider.openrouter].
+# Copy a provider table under a different name to configure more providers.
+# Model IDs and supported request options depend on your provider/account.
 [llm]
+# Select a chat provider to enable agent conversations.
 chat = "openrouter"
+# Omit a selector, or set it to "", to disable that provider family.
 image = "openai"
 audio = "openai"
 
 [llm.chat_provider.openrouter]
+# API base URL, including /v1 where required; do not append /chat/completions.
 base_url = "https://openrouter.ai/api/v1"
 api_key = ""
 model = "openai/gpt-4o-mini"
+# Sent to the provider; choose a value supported by the selected model.
 reasoning_effort = "low"
+# Request timeout in seconds; must be positive.
 timeout = 60
 
 [llm.image_provider.openai]
 base_url = "https://api.openai.com/v1"
 api_key = ""
 model = "gpt-image-1.5"
+# Advertise only the operations that this provider/model actually supports.
 can_generate = true
 can_edit = false
+# Image requests often need longer timeouts than chat requests (seconds).
 timeout = 300
+# Optional provider-specific request fields. Omit unsupported fields rather
+# than copying settings intended for a different model or API.
 quality = "medium"
 size = "1024x1024"
 aspect_ratio = "1:1"
@@ -83,90 +161,167 @@ background = "auto"
 moderation = "auto"
 
 [llm.audio_provider.openai]
+# Text-to-speech provider; select its name with llm.audio above.
 base_url = "https://api.openai.com/v1"
 api_key = ""
 model = "gpt-4o-mini-tts"
 voice = "coral"
 response_format = "mp3"
 timeout = 300
+# Optional positive speed multiplier and voice/style instructions. Support
+# depends on the selected model; 1.0 means normal speed.
 # speed = 1.0
 # instructions = "Speak clearly."
 
+# Media storage ---------------------------------------------------------------
 [media]
+# Local copies of incoming and generated media. This directory must be writable.
 cache_dir = "media-cache"
+# Public URL used to share media. Cosmobot does not serve this directory over
+# HTTP: configure your own web server, or enable S3 mirroring below.
+# Without S3, this URL should serve cache_dir. With S3, it should serve the
+# bucket root; the object prefix below is appended when constructing URLs.
 public_base_url = "https://media.example.com/cosmobot-media"
 
 [media.gc]
+# Periodically remove old, unreferenced local media. Retained media is protected.
 enabled = false
+# Eligibility age in days (zero is allowed); collection interval in hours (> 0).
 older_than_days = 7
 interval_hours = 24
 
 [media.s3]
+# Mirror media to S3-compatible storage. (Local caching is used
+# regardless of whether you enable S3.)
 enabled = false
+# Required when S3 is enabled. Configure the bucket and its public
+# access URL.
 bucket = "cosmobot-media"
 region = "us-east-1"
+# Omit endpoint for AWS's normal regional endpoint; set it for
+# compatible APIs.
+#
 # endpoint = "https://s3.example.com"
-# For Cloudflare R2, use:
+#
+# For Cloudflare R2, replace region and addressing_style with the
+# following values and uncomment endpoint (do not define the same TOML
+# key twice):
+#
 # region = "auto"
 # endpoint = "https://<account-id>.r2.cloudflarestorage.com"
 # addressing_style = "path"
 access_key_id = ""
 secret_access_key = ""
+# Object-key prefix within the bucket, independent of the local cache
+# path.
 prefix = "cosmobot/media"
+# Enable only if the service supports object ACLs and public-read is
+# intended.  Keep false for Cloudflare R2; configure public access at
+# the bucket/domain.
 public_read_acl = false
+# Bucket addressing: "auto", "path", or "virtual".
 addressing_style = "auto"
 
+# Memory and skills -----------------------------------------------------------
 [memory]
+# Markdown memory files, scoped by platform and user/room identity.
 dir = "memory"
 
 [skills]
+# Directory containing agent skill definitions. !reload reloads skill
+# frontmatter.
 dir = "skills"
 
+# Agent tools -----------------------------------------------------------------
 [tool]
-datetime = false
+# Expose the date/time lookup tool to the agent.
+datetime = true
 
 [tool.python]
+# Allow sandboxed Python programs to compose calls to the agent's
+# other tools.  Requires Linux, Python 3, /usr/bin/bwrap, and
+# /usr/bin/prlimit. Sandbox setup is checked at startup; missing
+# prerequisites prevent startup when enabled.
 enable = true
+# Limits per Python run. All must be positive; wall timeout is at most
+# 3600 s.
 wall_timeout_seconds = 30
+# CPU time (seconds), independent of elapsed wall time.
 cpu_seconds = 20
+# Address-space limit in MiB (1 MiB = 1024 * 1024 bytes).
 memory_mib = 512
+# Maximum nested tool calls a single Python run may make.
 max_tool_calls = 64
 
 [tool.web_fetch]
+# Fetch page text directly; no search-provider API key is needed.
 enable = false
+# Maximum fetches per agent run; omit for no configured use limit.
 max_uses = 5
+# Default approximate token budget per fetch; the tool can request
+# another size.
 max_content_tokens = 50000
 
 [tool.web_search]
 enable = false
+# Choose "tavily", "brave", or "exa" and supply that provider's API
+# key.
 api = "tavily"
+# Default number of search results; must be positive when configured.
 max_results = 5
 tavily_api_key = ""
 brave_api_key = ""
 exa_api_key = ""
 
+# Message handlers ------------------------------------------------------------
 [handler.saucenao]
+# SauceNAO image-source lookup key, used by !saucenao on a reply to an
+# image.
 api_key = ""
 
 [handler.admin.upgrade]
+# Local executable invoked by the superuser-only !upgrade command.
+# Supply an executable script owned by the operator; it runs as the
+# bot user.  This example script is not installed by the Debian
+# package.
 script = "./update.sh"
 
 [handler.shutup]
+# POSIX extended regular expressions matching incoming messages to delete.
+# Empty means no automatic deletion. Patterns are checked when config is read.
+# TOML literal strings make backslashes easier to write, e.g. ['^spam[0-9]+$'].
 delete_patterns = []
 
 [handler.ask]
+# Commands for starting a conversation and requesting image
+# generation.
 command = "!ask"
 draw_command = "!draw"
+# Personal instructions added to the agent's chat context.
 system_prompt = "You are cosmobot, a helpful assistant."
-agent_max_turns = 4
-context_strategy = "compaction" # "compaction" or "recursive_transcript"
-context_compaction_threshold_ktokens = 1000
+# Maximum model/tool turns per run (> 0); more turns allow longer tool
+# workflows.
+agent_max_turns = 12
+# "compaction" summarizes older context. "recursive_transcript"
+# externalizes older transcript content so the agent can retrieve it
+# when needed.
+context_strategy = "recursive_transcript"
+# Threshold in thousands of estimated tokens: 250 means 250,000
+# tokens.  Set this below the selected model's recommended context
+# limit for lower costs and best performance.
+context_compaction_threshold_ktokens = 250
 
 [handler.console]
+# Separate agent instructions and limits for RPC console/coding sessions.
 system_prompt = "You are a coding agent. Work directly in the provided environment and report concise results."
-agent_max_turns = 20
-context_strategy = "compaction"
-context_compaction_threshold_ktokens = 1000
+# This example permits longer coding runs than the chat handler above.
+agent_max_turns = 64
+# See handler.ask for details.
+context_strategy = "recursive_transcript"
+context_compaction_threshold_ktokens = 250
 
 [plugins]
+# Each immediate subdirectory is a plugin bundle containing an executable
+# named after the directory and a config.toml. See doc/Plugins.md for the
+# protocol, permissions, and per-plugin lifecycle/sandbox settings.
 plugin_dir = "plugins"

@@ -1,0 +1,54 @@
+# Include from nginx's http context (e.g. via sites-enabled).
+# Replace scope.example.com and provision the TLS certificate before reloading.
+# Enable RPC with a non-empty token and add https://scope.example.com to
+# rpc.allowed_browser_origins. Connect using wss://scope.example.com/rpc.
+map $uri $cosmoscope_cache_control {
+    default "no-cache";
+    /rpc "";
+    ~^/assets/ "public, max-age=31536000, immutable";
+}
+
+server {
+    listen 80;
+    server_name scope.example.com;
+    return 308 https://scope.example.com$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name scope.example.com;
+    ssl_certificate /etc/letsencrypt/live/scope.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/scope.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    root /usr/share/cosmoscope;
+    index index.html;
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    # Keep add_header directives together: location-level additions would
+    # prevent inheritance of these security headers on Debian 13's nginx.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; media-src 'self' https:; connect-src 'self' wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Cache-Control $cosmoscope_cache_control;
+
+    location = /rpc {
+        proxy_pass http://127.0.0.1:38765;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
+    }
+
+    # Missing assets must return 404, not the application's index page.
+    location /assets/ {
+        try_files $uri =404;
+    }
+
+    # Vue uses browser history: direct links need the application's index page.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

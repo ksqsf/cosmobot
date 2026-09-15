@@ -1,0 +1,32 @@
+# Copy this example to /etc/caddy/ and import it from /etc/caddy/Caddyfile.
+# Replace scope.example.com with your domain.
+# Enable RPC with a non-empty token and add https://scope.example.com to
+# rpc.allowed_browser_origins.
+# Connect using wss://scope.example.com/rpc.
+scope.example.com {
+	root * /usr/share/cosmoscope
+	encode zstd gzip
+	header {
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; media-src 'self' https:; connect-src 'self' wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Content-Type-Options "nosniff"
+	}
+
+	handle /rpc {
+		reverse_proxy 127.0.0.1:38765
+	}
+
+	# Missing assets should return 404, not the application's index page.
+	handle /assets/* {
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# Vue uses browser history: direct links need the application's index page.
+	handle {
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

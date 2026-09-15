@@ -1,0 +1,41 @@
+#!/usr/bin/make -f
+
+CABAL_FLAGS = --builddir=dist-debian --prefix=/usr --datadir=/usr/share --datasubdir=cosmobot --disable-shared --disable-executable-dynamic
+export PYBUILD_NAME = cosmobot-plugin
+export PYBUILD_DIR = cosmobot-plugin-python
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	npm --prefix cosmoscope ci
+
+override_dh_auto_build:
+	cabal build -j exe:cosmobot $(CABAL_FLAGS)
+	pybuild --clean
+	pybuild --build
+	npm --prefix cosmoscope run build
+
+# The full Haskell suite runs in the Cabal CI job.
+override_dh_auto_test:
+	cd cosmobot-plugin-python && PYTHONPATH=src python3 -m unittest discover -s tests
+	npm --prefix cosmoscope test
+
+override_dh_auto_install:
+	install -D -m755 "$$(cabal list-bin -v0 exe:cosmobot $(CABAL_FLAGS))" debian/cosmobot/usr/bin/cosmobot
+	install -D -m644 cosmobot/python/cosmobot_worker.py debian/cosmobot/usr/share/cosmobot/python/cosmobot_worker.py
+	install -D -m644 cosmobox/Containerfile debian/cosmobot/usr/share/cosmobot/cosmobox/Containerfile
+	pybuild --install --dest-dir=$(CURDIR)/debian/python3-cosmobot-plugin
+
+override_dh_auto_clean:
+	rm -rf dist-debian
+	pybuild --clean
+	rm -rf cosmoscope/dist
+
+# Credentials and the sandbox image must be configured by the operator first.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start
+
+# The GHC build does not contain DWARF debug information.
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym

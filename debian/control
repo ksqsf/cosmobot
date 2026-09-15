@@ -1,0 +1,47 @@
+Source: cosmobot
+Section: net
+Priority: optional
+Maintainer: ksqsf <i@ksqsf.moe>
+Build-Depends: debhelper-compat (= 13), dh-sequence-python3, pybuild-plugin-pyproject, python3-all, python3-setuptools, ghc (>= 9.10.3), cabal-install (>= 3.14), nodejs (>= 24), npm, pkg-config, libgmp-dev, zlib1g-dev, libsystemd-dev, git, ca-certificates
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/ksqsf/cosmobot
+X-Python3-Version: >= 3.10
+
+Package: cosmobot
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ca-certificates, podman, uidmap, passt, dbus-user-session, bubblewrap, python3, git, tree
+Recommends: fuse-overlayfs
+Suggests: emacs-nox, typst
+Description: extensible AI bot for chat platforms
+ Platform-neutral agent runtime with Matrix, Telegram, QQ, Discord,
+ and RPC interfaces, sandboxed tools, and persistent conversations.
+
+Package: cosmobot-plugin-sdk
+Section: haskell
+Architecture: all
+Depends: ${misc:Depends}
+Recommends: cabal-install, ghc (>= 9.6)
+Description: Cabal source SDK for developing cosmobot plugins
+ Haskell declarations and a JSON-RPC runtime for standalone plugins.
+ Includes sources, an example, tests, and the plugin protocol guide.
+ Add /usr/share/cosmobot-plugin-sdk to the packages in cabal.project.
+ Cabal builds the SDK with the plugin's compiler and dependencies.
+
+Package: python3-cosmobot-plugin
+Section: python
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends}
+Description: Python SDK for developing cosmobot plugins
+ Async handlers, typed tool schemas, and a JSON-RPC runtime for standalone
+ cosmobot plugins. Import cosmobot_plugin to declare commands and tools.
+
+Package: cosmoscope
+Section: web
+Architecture: all
+Depends: ${misc:Depends}
+Suggests: nginx | caddy | httpd
+Description: static web interface for cosmobot
+ Browser interface for chat, configuration, and administration over RPC.
+ Static files are installed in /usr/share/cosmoscope. Configure a web server
+ to serve that directory; no Node.js runtime is required.

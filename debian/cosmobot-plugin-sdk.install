@@ -1,0 +1,6 @@
+cosmobot-plugin-sdk/cosmobot-plugin-sdk.cabal usr/share/cosmobot-plugin-sdk/
+cosmobot-plugin-sdk/cabal.project usr/share/cosmobot-plugin-sdk/
+cosmobot-plugin-sdk/src usr/share/cosmobot-plugin-sdk/
+cosmobot-plugin-sdk/example usr/share/cosmobot-plugin-sdk/
+cosmobot-plugin-sdk/test usr/share/cosmobot-plugin-sdk/
+cosmobot/protocol-fixtures/route-invoke.json usr/share/cosmobot/protocol-fixtures/
