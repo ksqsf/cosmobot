@@ -12,6 +12,8 @@ for (const path of axeRoutes) {
   test(`${path} has no serious accessibility violations`, async ({ page }) => {
     await page.goto(path)
     await expect(page.locator('h1')).toBeVisible()
+    // Measure final colors, not the opacity of an entering error message.
+    await expect(page.locator('.p-message-enter-active')).toHaveCount(0)
     const results = await new AxeBuilder({ page }).analyze()
     expect(results.violations.filter(({ impact }) => impact === 'critical' || impact === 'serious')).toEqual([])
   })

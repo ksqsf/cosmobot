@@ -37,6 +37,7 @@ module Bot.Chat.Driver.Telegram
   , SendDocumentRequest (..)
   , SendVoiceRequest (..)
   , TelegramException (..)
+  , TelegramResponseParameters (..)
   , TelegramResult
   , parseTelegramResult
   , formatTelegramRichHtml
@@ -389,27 +390,14 @@ replyToTelegram driver message body =
   case message.chatId >>= chatIdInteger of
     Just chatId -> do
       let replyToMessageId = messageIdInteger =<< message.messageId
-      sent <- replyTextAndImages driver chatId replyToMessageId body `catch` \(err :: TelegramException) ->
-        sendTelegramFailureReply driver chatId replyToMessageId err
+      sent <- replyTextAndImages driver chatId replyToMessageId body
       pure (Right (integerMessageId sent.messageId))
     _ ->
       pure (Left "Telegram reply requires a Telegram chat id.")
 
-sendTelegramFailureReply :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => Protocol.TelegramDriver -> Integer -> Maybe Integer -> TelegramException -> Eff es Message
-sendTelegramFailureReply driver chatId replyToMessageId err =
-  callTelegram driver SendMessageRequest
-    { chatId = chatId
-    , messageThreadId = Nothing
-    , text = telegramFailureReplyText err
-    , parseMode = Nothing
-    , entities = Nothing
-    , disableNotification = Nothing
-    , replyToMessageId = replyToMessageId
-    }
-
 telegramFailureReplyText :: TelegramException -> Text
-telegramFailureReplyText (TelegramException message) =
-  "Telegram request failed: " <> message
+telegramFailureReplyText err =
+  "Telegram request failed: " <> Protocol.telegramExceptionMessage err
 
 -- | Edit a Telegram text message previously sent by this bot.
 editMessageTelegram

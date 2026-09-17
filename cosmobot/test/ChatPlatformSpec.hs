@@ -9,6 +9,9 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Matrix.Protocol as MatrixProtocol
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
+import qualified Bot.Chat.Driver.Telegram.Protocol as TelegramProtocol
+import qualified Bot.Chat.Driver.Telegram.Types as TelegramTypes
+import qualified Network.HTTP.Client as Client
 import qualified Bot.HTTP as HTTPTransport
 import qualified Control.Retry as Retry
 import qualified Control.Exception as Exception
@@ -25,6 +28,7 @@ import qualified Crypto.Cipher.AES as CryptoAES
 import qualified Crypto.Cipher.Types as CryptoCipher
 import qualified Crypto.Error as CryptoError
 import qualified Crypto.Hash as CryptoHash
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64 as Base64
 import qualified Data.ByteString.Base64.URL as Base64URL
@@ -76,7 +80,9 @@ main =
       , testCase "Telegram display math spans paragraphs" testTelegramDisplayMathSpansParagraphs
       , testCase "Telegram CommonMark renders rich media blocks" testTelegramCommonMarkRendersRichMedia
       , testCase "Telegram ok false becomes TelegramException description" testTelegramOkFalseBecomesTelegramExceptionDescription
-      , testCase "Telegram failure reply is concise" testTelegramFailureReplyIsConcise
+      , testCase "Telegram rate limits have bounded retries" testTelegramRateLimitRetries
+      , testCase "Telegram transport does not replay failed sends" testTelegramTransportNoRetries
+      , testCase "Telegram errors retain metadata and redact credentials" testTelegramErrorMetadata
       , testCase "Matrix message converts to incoming message" testMatrixMessageConvertsToIncomingMessage
       , testCase "Matrix sticker records its description" testMatrixStickerRecordsDescription
       , testCase "Matrix sync finds room invitations" testMatrixSyncFindsRoomInvitations
@@ -661,12 +667,80 @@ testDriverHttpRetries = do
 
 testTelegramRichMessageFallback :: IO ()
 testTelegramRichMessageFallback = do
-  assertBool "short bad requests can use the legacy request" $
-    Telegram.richMessageFallbackAllowed "body" (Telegram.TelegramException "Bad Request: can't parse rich message")
-  assertBool "transport failures must not risk duplicate sends" $
-    not (Telegram.richMessageFallbackAllowed "body" (Telegram.TelegramException "connection reset"))
-  assertBool "legacy requests cannot carry long rich messages" $
-    not (Telegram.richMessageFallbackAllowed (Text.replicate 4097 "x") (Telegram.TelegramException "Bad Request: can't parse rich message"))
+  let formatError = Telegram.TelegramAPIError 400 "Bad Request: can't parse rich message" Nothing
+      unrelated =
+        [ Telegram.TelegramAPIError 400 message Nothing
+        | message <-
+            [ "Bad Request: chat not found"
+            , "Bad Request: message to be replied not found"
+            , "Bad Request: message is not modified"
+            , "Bad Request: unknown error"
+            , "Bad Request: can't parse rich message unrelated"
+            ]
+        ] <>
+        [ Telegram.TelegramTransportError "connection reset"
+        , Telegram.TelegramResponseError "invalid JSON"
+        , Telegram.TelegramAPIError 429 "Too Many Requests" Nothing
+        , Telegram.TelegramAPIError 403 "Forbidden" Nothing
+        , Telegram.TelegramAPIError 500 "Bad Request: can't parse rich message" Nothing
+        ]
+  for_ [formatError, Telegram.TelegramAPIError 400 "Bad Request: can't parse entities: invalid tag" Nothing] \err -> do
+    result <- runEff $ TelegramProtocol.withRichMessageFallback "body" (throwIO err) (pure True)
+    assertBool "known formatting rejection falls back" result
+  for_ ((Text.replicate 4097 "x", formatError) : map ("body",) unrelated) \(body, err) -> do
+    result <- runEff $ try @Telegram.TelegramException $
+      TelegramProtocol.withRichMessageFallback body (throwIO err) (pure ())
+    result @?= Left err
+  result <- runEff $ try @Exception.AsyncException $
+    TelegramProtocol.withRichMessageFallback "body" (throwIO Exception.ThreadKilled) (pure ())
+  result @?= Left Exception.ThreadKilled
+
+testTelegramRateLimitRetries :: IO ()
+testTelegramRateLimitRetries = do
+  let limited seconds = Telegram.TelegramAPIError 429 "Too Many Requests" $
+        Just (Telegram.TelegramResponseParameters seconds Nothing)
+  for_ [(limited (Just 2), 3, [2, 2]), (limited Nothing, 1, []),
+        (limited (Just (-1)), 1, []), (limited (Just 31), 3, [31, 31]),
+        (limited (Just (10 ^ (30 :: Int))), 3, replicate 2 (10 ^ (30 :: Int))),
+        (Telegram.TelegramTransportError "timeout", 1, []),
+        (Telegram.TelegramAPIError 503 "Unavailable" Nothing, 1, [])] \(err, expectedAttempts, expectedDelays) -> do
+    attempts <- IORef.newIORef (0 :: Int)
+    delays <- IORef.newIORef []
+    result <- runEff $ try @Telegram.TelegramException $
+      TelegramProtocol.withTelegramRateLimitRetry
+        (\n -> liftIO (IORef.modifyIORef' delays (<> [n])))
+        (liftIO (IORef.modifyIORef' attempts (+ 1)) >> throwIO err :: Eff '[IOE] ())
+    result @?= Left err
+    IORef.readIORef attempts >>= (@?= expectedAttempts)
+    IORef.readIORef delays >>= (@?= expectedDelays)
+  attempts <- IORef.newIORef (0 :: Int)
+  result <- runEff $ TelegramProtocol.withTelegramRateLimitRetry (const (pure ())) do
+    n <- liftIO $ IORef.atomicModifyIORef' attempts (\n -> (n + 1, n))
+    if n == 0 then throwIO (limited (Just 0)) else pure "sent"
+  result @?= ("sent" :: Text)
+  IORef.readIORef attempts >>= (@?= 2)
+  cancelled <- runEff $ try @Exception.AsyncException $
+    TelegramProtocol.withTelegramRateLimitRetry
+      (const (throwIO Exception.ThreadKilled))
+      (throwIO (limited (Just 1)) :: Eff '[IOE] ())
+  cancelled @?= Left Exception.ThreadKilled
+
+testTelegramTransportNoRetries :: IO ()
+testTelegramTransportNoRetries = do
+  let config = TelegramProtocol.telegramHttpConfig
+  let retry = Req.httpConfigRetryJudgeException config Retry.defaultRetryStatus $
+        toException (Client.HttpExceptionRequest Client.defaultRequest Client.ResponseTimeout)
+  assertBool "ambiguous delivery must not retry" (not retry)
+  for_ [400, 429, 502, 503, 504] \code -> do
+    attempts <- IORef.newIORef (0 :: Int)
+    let app _ respond = do
+          IORef.modifyIORef' attempts (+ 1)
+          respond (Wai.responseLBS (HTTPTypes.mkStatus code "test") [] "{}")
+    Warp.testWithApplication (pure app) \port -> do
+      result <- Exception.try @Req.HttpException $ Req.runReq config $
+        Req.req Req.POST (Req.http "127.0.0.1") (Req.ReqBodyJson (Aeson.object [])) Req.bsResponse (Req.port port)
+      assertBool "HTTP failure propagates" (isLeft result)
+    IORef.readIORef attempts >>= (@?= 1)
 
 testTelegramCommonMarkRendersRichHtml :: IO ()
 testTelegramCommonMarkRendersRichHtml = do
@@ -762,10 +836,36 @@ testTelegramOkFalseBecomesTelegramExceptionDescription = do
     Right _ ->
       assertFailure "expected TelegramException"
 
-testTelegramFailureReplyIsConcise :: IO ()
-testTelegramFailureReplyIsConcise =
-  Telegram.telegramFailureReplyText (Telegram.TelegramException "Bad Request: message is too long")
-    @?= "Telegram request failed: Bad Request: message is too long"
+testTelegramErrorMetadata :: IO ()
+testTelegramErrorMetadata = do
+  let cfg = TelegramTypes.Config "test-secret-token" [] [] [] [] []
+      raw = "{\"ok\":false,\"error_code\":429,\"description\":\"test-secret-token limited\",\"parameters\":{\"retry_after\":2,\"migrate_to_chat_id\":-100123}}"
+      expected = Telegram.TelegramAPIError 429 "<telegram-token> limited" $
+        Just (Telegram.TelegramResponseParameters (Just 2) (Just (-100123)))
+  result <- runEff $ try @Telegram.TelegramException $
+    TelegramProtocol.decodeTelegramResult cfg raw >>= Telegram.parseTelegramResult @'[IOE] @Aeson.Value
+  result @?= Left expected
+  -- Real non-2xx responses take the HttpException path, not the JSON-success path.
+  let app _ respond = respond (Wai.responseLBS HTTPTypes.status429 [] (LazyByteString.fromStrict raw))
+  Warp.testWithApplication (pure app) \port -> do
+    response <- Exception.try @Req.HttpException $ Req.runReq TelegramProtocol.telegramHttpConfig $
+      Req.req Req.POST (Req.http "127.0.0.1") (Req.ReqBodyJson (Aeson.object [])) Req.bsResponse (Req.port port)
+    case response of
+      Left err -> TelegramProtocol.telegramHttpException cfg err @?= expected
+      Right _ -> assertFailure "expected HTTP 429"
+  for_ ["not JSON test-secret-token", "{\"ok\":true,\"result\":null}"] \body -> do
+    invalid <- runEff $ try @Telegram.TelegramException $ do
+      response <- TelegramProtocol.decodeTelegramResult cfg body
+      Telegram.parseTelegramResult response :: Eff '[IOE] Telegram.Message
+    case invalid of
+      Left (Telegram.TelegramResponseError message) ->
+        assertBool "decode errors do not expose response data" (not ("test-secret-token" `Text.isInfixOf` message))
+      _ -> assertFailure "expected response decoding failure"
+  let transportError = TelegramProtocol.telegramHttpException cfg $
+        Req.VanillaHttpException (Client.HttpExceptionRequest
+          Client.defaultRequest{Client.path = "/bottest-secret-token/sendMessage"} Client.ResponseTimeout)
+  assertBool "transport errors redact the token" $
+    not ("test-secret-token" `Text.isInfixOf` Text.pack (show transportError))
 
 exceptionFirstLine :: Exception err => err -> Text
 exceptionFirstLine =

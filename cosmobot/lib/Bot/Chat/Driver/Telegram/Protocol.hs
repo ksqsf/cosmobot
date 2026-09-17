@@ -13,6 +13,7 @@ Stability   : experimental
 
 module Bot.Chat.Driver.Telegram.Protocol where
 
+import qualified Data.ByteString as ByteString
 import qualified Bot.Chat.Driver.Types as Driver
 import Bot.Chat.Driver.Telegram.Types (Config (..))
 import qualified Bot.Effect.HTTP as HTTP
@@ -116,8 +117,12 @@ getUpdatesRetrying
 getUpdatesRetrying driver offset =
   getUpdates driver offset `catchSync` \err -> do
     let summary = Text.takeWhile (/= '\n') (toText (displayException err))
-    $(logWarning) [i|Telegram polling failed; retrying in 5 seconds: #{summary}|]
-    threadDelay telegramPollingRetryDelayMicroseconds
+        seconds = case fromException err of
+          Just (TelegramAPIError 429 _ (Just TelegramResponseParameters{retryAfter = Just retrySeconds}))
+            | retrySeconds >= 0 -> retrySeconds
+          _ -> toInteger telegramPollingRetryDelayMicroseconds `div` 1000000
+    $(logWarning) [i|Telegram polling failed; retrying in #{seconds} seconds: #{summary}|]
+    telegramRetryDelay seconds
     getUpdatesRetrying driver offset
 
 telegramPollingRetryDelayMicroseconds :: Int
@@ -146,16 +151,16 @@ apiCall
   -> Text
   -> body
   -> Eff es result
-apiCall cfg method body = katipAddContext (sl "telegram_method" method) do
+apiCall cfg method body = withTelegramRateLimitRetry telegramRetryDelay $ katipAddContext (sl "telegram_method" method) do
   logTelegramApiRequest method
-  resp :: TelegramResult <-
-    ( HTTP.runReq $
-        req POST (apiUrl cfg method) (ReqBodyJson body) jsonResponse (telegramRequestOptions method)
+  resp <-
+    ( HTTP.runReqWithConfig telegramHttpConfig $
+        req POST (apiUrl cfg method) (ReqBodyJson body) bsResponse (telegramRequestOptions method)
           <&> responseBody
     ) `catch` \(err :: HttpException) ->
-      throwIO (TelegramException (telegramExceptionMessage cfg err))
+      throwIO (telegramHttpException cfg err)
   logTelegramApiResponse method
-  parseTelegramResult resp
+  decodeTelegramResult cfg resp >>= parseTelegramResult
 
 apiMultipartCall
   :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es, Aeson.FromJSON result)
@@ -163,27 +168,68 @@ apiMultipartCall
   -> Text
   -> [Multipart.Part]
   -> Eff es result
-apiMultipartCall cfg method parts = katipAddContext (sl "telegram_method" method) do
+apiMultipartCall cfg method parts = withTelegramRateLimitRetry telegramRetryDelay $ katipAddContext (sl "telegram_method" method) do
   logTelegramApiRequest method
-  resp :: TelegramResult <-
-    ( HTTP.runReq do
+  resp <-
+    ( HTTP.runReqWithConfig telegramHttpConfig do
         body <- reqBodyMultipart parts
-        req POST (apiUrl cfg method) body jsonResponse (telegramRequestOptions method)
+        req POST (apiUrl cfg method) body bsResponse (telegramRequestOptions method)
           <&> responseBody
     ) `catch` \(err :: HttpException) ->
-      throwIO (TelegramException (telegramExceptionMessage cfg err))
+      throwIO (telegramHttpException cfg err)
   logTelegramApiResponse method
-  parseTelegramResult resp
+  decodeTelegramResult cfg resp >>= parseTelegramResult
 
-telegramExceptionMessage :: Config -> HttpException -> Text
-telegramExceptionMessage cfg err =
+-- Telegram owns retries: never replay a possibly delivered request after a
+-- transport failure, server error, or undecodable successful response.
+telegramHttpConfig :: HttpConfig
+telegramHttpConfig = defaultHttpConfig
+  { httpConfigRetryJudge = \_ _ -> False
+  , httpConfigRetryJudgeException = \_ _ -> False
+  }
+
+telegramHttpException :: Config -> HttpException -> TelegramException
+telegramHttpException cfg err =
   case err of
     VanillaHttpException (Client.HttpExceptionRequest _ (Client.StatusCodeException _ body)) ->
       case Aeson.eitherDecodeStrict body of
-        Right result -> telegramResultError result
-        Left _ -> sanitizeTelegramException cfg err
-    _ ->
-      sanitizeTelegramException cfg err
+        Right result -> redactTelegramError cfg (telegramResultError result)
+        Left _ -> TelegramResponseError "Telegram returned an invalid HTTP error response."
+    _ -> TelegramTransportError (sanitizeTelegramException cfg err)
+
+decodeTelegramResult :: IOE :> es => Config -> ByteString.ByteString -> Eff es TelegramResult
+decodeTelegramResult cfg body =
+  case Aeson.eitherDecodeStrict body of
+    Left _ -> throwIO (TelegramResponseError "Telegram returned an invalid JSON response.")
+    Right (Err err) -> pure (Err (redactTelegramError cfg err))
+    Right result -> pure result
+
+redactTelegramError :: Config -> TelegramException -> TelegramException
+redactTelegramError cfg = \case
+  TelegramAPIError code description parameters ->
+    TelegramAPIError code (Text.replace cfg.botToken "<telegram-token>" description) parameters
+  err -> err
+
+-- Split only to fit threadDelay's Int microseconds; never shorten the wait.
+telegramRetryDelay :: IOE :> es => Integer -> Eff es ()
+telegramRetryDelay seconds
+  | seconds <= 0 = pure ()
+  | otherwise = do
+      let chunk = min seconds (toInteger (maxBound :: Int) `div` 1000000)
+      runConcurrent $ threadDelay (fromInteger (chunk * 1000000))
+      telegramRetryDelay (seconds - chunk)
+
+-- At most two retries, each waiting the full server delay in seconds.
+withTelegramRateLimitRetry :: IOE :> es => (Integer -> Eff es ()) -> Eff es a -> Eff es a
+withTelegramRateLimitRetry delay action = go (2 :: Int)
+  where
+    go remaining = action `catch` \(err :: TelegramException) ->
+      case err of
+        TelegramAPIError 429 _ (Just TelegramResponseParameters{retryAfter = Just seconds})
+          | remaining > 0, seconds >= 0 -> do
+              delay seconds
+              go (remaining - 1)
+        _ -> throwIO err
 
 sanitizeTelegramException :: Show err => Config -> err -> Text
 sanitizeTelegramException cfg err =
@@ -205,15 +251,32 @@ parseTelegramResult
   -> Eff es result
 parseTelegramResult resp =
   case resp of
-    Err desc -> throwIO (TelegramException desc)
+    Err err -> throwIO err
     Ok value -> case Aeson.fromJSON value of
       Aeson.Success x  -> pure x
-      Aeson.Error  err -> throwIO (TelegramException (Text.pack err))
+      Aeson.Error _ -> throwIO (TelegramResponseError "Telegram returned an unexpected result shape.")
 
-newtype TelegramException = TelegramException Text
-  deriving (Show)
+data TelegramResponseParameters = TelegramResponseParameters
+  { retryAfter :: !(Maybe Integer)
+  , migrateToChatId :: !(Maybe Integer)
+  }
+  deriving (Eq, Show, Generic)
+  deriving (Aeson.FromJSON) via (SnakeJSONOmitNothing TelegramResponseParameters)
+
+data TelegramException
+  = TelegramAPIError Int Text (Maybe TelegramResponseParameters)
+  | TelegramTransportError Text
+  | TelegramResponseError Text
+  deriving (Eq, Show)
+
 instance Exception TelegramException where
-  displayException (TelegramException message) = Text.unpack message
+  displayException = Text.unpack . telegramExceptionMessage
+
+telegramExceptionMessage :: TelegramException -> Text
+telegramExceptionMessage = \case
+  TelegramAPIError _ message _ -> message
+  TelegramTransportError message -> message
+  TelegramResponseError message -> message
 
 withRichMessageFallback :: IOE :> es => Text -> Eff es a -> Eff es a -> Eff es a
 withRichMessageFallback text action fallback =
@@ -224,13 +287,21 @@ withRichMessageFallback text action fallback =
       _ -> throwIO err
 
 richMessageFallbackAllowed :: Text -> TelegramException -> Bool
-richMessageFallbackAllowed text (TelegramException message) =
-  Text.length text <= telegramLegacyMessageTextLimit
-    && "Bad Request:" `Text.isPrefixOf` message
+richMessageFallbackAllowed text = \case
+  TelegramAPIError 400 message _ ->
+    Text.length text <= telegramLegacyMessageTextLimit
+      && any (matches message)
+        [ "Bad Request: can't parse rich message"
+        , "Bad Request: can't parse entities"
+        ]
+  _ -> False
+  where
+    -- Match the known error or its detail suffix, not arbitrary Bad Requests.
+    matches message prefix = message == prefix || (prefix <> ": ") `Text.isPrefixOf` message
 
 data TelegramResult
-  = Ok  Aeson.Value
-  | Err Text
+  = Ok Aeson.Value
+  | Err TelegramException
   deriving (Show, Generic)
 
 instance Aeson.FromJSON TelegramResult where
@@ -238,12 +309,12 @@ instance Aeson.FromJSON TelegramResult where
     ok <- o Aeson..: "ok"
     if ok
       then Ok <$> o Aeson..: "result"
-      else Err <$> o Aeson..: "description"
+      else Err <$> (TelegramAPIError <$> o Aeson..: "error_code" <*> o Aeson..: "description" <*> o Aeson..:? "parameters")
 
-telegramResultError :: TelegramResult -> Text
+telegramResultError :: TelegramResult -> TelegramException
 telegramResultError = \case
-  Ok _ -> "Telegram API returned ok result in an HTTP error response."
-  Err desc -> desc
+  Ok _ -> TelegramResponseError "Telegram API returned ok result in an HTTP error response."
+  Err err -> err
 
 telegramLongPollTimeoutSeconds :: Int
 telegramLongPollTimeoutSeconds = 30
