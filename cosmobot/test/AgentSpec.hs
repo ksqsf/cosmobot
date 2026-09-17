@@ -342,6 +342,7 @@ main =
       , testCase "editable segmented replies open a new tail after tool messages" testEditableSegmentedRepliesOpenNewTail
       , testCase "segmented replies flush final open segment" testSegmentedRepliesFlushFinalOpenSegment
       , testCase "editable chat streaming splits long replies and yields aliases" testEditableChatStreamingSplitsLongReplies
+      , testCase "UTF-8 chat limits preserve code points in sends and edits" testUtf8ChatLimits
       , testCase "chunked active thread aliases every sent reply" testChunkedActiveThreadAliasesEverySentReply
       , testCase "halt command cancels active run for current thread message" testHaltCommandCancelsCurrentThreadMessage
       , testCase "deleting a bot reply halts its active run" testDeletingBotReplyHaltsActiveRun
@@ -3968,6 +3969,49 @@ testEditableChatStreamingSplitsLongReplies = do
   IORef.readIORef replies >>= (@?= [(Just "300", "ab"), (Just "1", "efgh"), (Just "2", "ijkl")])
   IORef.readIORef edits >>= (@?= [("1", "abcd")])
   IORef.readIORef updates >>= (@?= [(Just "1", ["1"], "ab"), (Just "1", [], "abcd"), (Just "1", [], "abcdef"), (Just "1", [], "abcdefgh"), (Just "1", [], "abcdefghij"), (Just "1", [], "abcdefghijkl"), (Just "1", ["2", "3"], "abcdefghijkl")])
+
+testUtf8ChatLimits :: IO ()
+testUtf8ChatLimits =
+  forM_ ["x", "é", "中", "😀"] $ \character ->
+    forM_ [29996 .. 30000] $ \prefixLength -> do
+      let prefix = Text.replicate prefixLength "a"
+          suffix = Text.replicate 30001 character
+          body = prefix <> suffix
+          checkBodies bodies = do
+            Text.concat bodies @?= body
+            forM_ bodies $ \chunk -> do
+              assertBool "nonempty chunk" (not (Text.null chunk))
+              assertBool "at most 30000 UTF-8 bytes" (StrictByteString.length (TextEncoding.encodeUtf8 chunk) <= 30000)
+      forM_ [False, True] $ \unthreaded -> do
+        replies <- IORef.newIORef []
+        nextReplyId <- IORef.newIORef 1
+        _ <- runEff $ runPrim $ Chat.runChatWith
+          defaultAgentMockChatDriver
+            { agentReply = recordReply replies nextReplyId
+            , agentMessageOutPolicy = \_ -> pure (Chat.EditableUtf8Message 2 30000)
+            } $
+            (if unthreaded then Chat.sendMessage else Chat.replyTo) testMessage body
+        IORef.readIORef replies >>= checkBodies . map snd
+      forM_ [[body], [prefix, character, Text.drop 1 suffix]] $ \chunks -> do
+        replies <- IORef.newIORef []
+        edits <- IORef.newIORef []
+        nextReplyId <- IORef.newIORef 1
+        (result, ()) <- runEff $ runPrim $ Chat.runChatWith
+          defaultAgentMockChatDriver
+            { agentReply = recordReply replies nextReplyId
+            , agentEditMessage = recordEdit edits
+            , agentMessageOutPolicy = \_ -> pure (Chat.EditableUtf8Message 2 30000)
+            } $
+            S.effects (Chat.streamReplyTo testMessage (S.each chunks))
+        result.answer @?= body
+        sent <- map snd <$> IORef.readIORef replies
+        edited <- map snd <$> IORef.readIORef edits
+        forM_ (sent <> edited) $ \chunk ->
+          assertBool "stream send/edit fits UTF-8 limit" (StrictByteString.length (TextEncoding.encodeUtf8 chunk) <= 30000)
+        case (sent, reverse edited) of
+          (_ : rest, finalEdit : _) -> checkBodies (finalEdit : rest)
+          (_, []) -> checkBodies sent
+          _ -> assertFailure "expected a streamed reply"
 
 testChunkedActiveThreadAliasesEverySentReply :: IO ()
 testChunkedActiveThreadAliasesEverySentReply = runEff $ runConcurrent $ runPrim $ runTestLog $ StorageSQLite.runStorageSQLitePath ":memory:" $ Media.runMediaPassthrough do

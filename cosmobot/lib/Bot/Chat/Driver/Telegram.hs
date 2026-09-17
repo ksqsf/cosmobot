@@ -103,7 +103,7 @@ instance Driver.ChatDriver TelegramDriver where
     deleteMessageForTelegram driver
 
   messageOutPolicy _ _ =
-    pure (ChatEffect.EditableMessage Protocol.telegramEditChunkChars Protocol.telegramMessageTextLimit)
+    pure (ChatEffect.EditableUtf8Message Protocol.telegramEditChunkChars Protocol.telegramMessageTextLimit)
 
   getMessageContent (TelegramDriver driver) =
     getMessageContentTelegram driver

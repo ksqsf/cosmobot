@@ -16,6 +16,7 @@ import Bot.Core.Message (IncomingMessage(..), MessageId)
 import Bot.Chat.Types
 import qualified Bot.Effect.ChatDriver as ChatDriver
 import Bot.Prelude hiding (state)
+import qualified Data.Text.Foreign as TextForeign
 import qualified Data.Text as Text
 import qualified Data.Text.Lazy as LazyText
 import qualified Data.Text.Lazy.Builder as TextBuilder
@@ -26,9 +27,9 @@ import qualified Streaming.Prelude as S
 replyTo :: ChatDriver.ChatDriver :> es => IncomingMessage -> Text -> Eff es [Either Text MessageId]
 replyTo message body = do
   policy <- ChatDriver.messageOutPolicy message
-  let messageLimit = messageOutPolicyLimit policy
+  let splitMessage = messageOutPolicySplit policy
       state = appendAnswer (nonEmptyMessageBody body) emptyMessageOutState
-  (_, sent) <- sendTextChunks messageLimit message state (answerText state)
+  (_, sent) <- sendTextChunks splitMessage message state (answerText state)
   pure sent
 
 -- | Send to the same chat without creating a platform reply relation.
@@ -36,7 +37,7 @@ sendMessage :: ChatDriver.ChatDriver :> es => IncomingMessage -> Text -> Eff es 
 sendMessage message body = do
   policy <- ChatDriver.messageOutPolicy message
   let target = message{messageId = Nothing, replyToMessageId = Nothing}
-      chunks = Text.chunksOf (max 1 (messageOutPolicyLimit policy)) (nonEmptyMessageBody body)
+      chunks = unfoldr (\pending -> if Text.null pending then Nothing else Just (messageOutPolicySplit policy pending)) (nonEmptyMessageBody body)
   concat <$> traverse (ChatDriver.sendReplyMessage target) chunks
 
 streamReplyTo
@@ -103,12 +104,26 @@ messageOutResult state sentMessageResults =
     , answer = answerText state
     }
 
-messageOutPolicyLimit :: MessageOutPolicy -> Int
-messageOutPolicyLimit = \case
+messageOutPolicySplit :: MessageOutPolicy -> Text -> (Text, Text)
+messageOutPolicySplit = \case
   EditableMessage _ messageLimit ->
-    messageLimit
+    Text.splitAt (max 1 messageLimit)
+  EditableUtf8Message _ messageLimit ->
+    splitUtf8Bytes (max 4 messageLimit)
   ChunkedMessage messageLimit ->
-    messageLimit
+    Text.splitAt (max 1 messageLimit)
+
+-- | Slice the existing UTF-8 storage without encoding, decoding, or copying.
+-- takeWord8 rounds up at a code point boundary, so retreat at most three bytes.
+splitUtf8Bytes :: Int -> Text -> (Text, Text)
+splitUtf8Bytes limit body = go limit
+  where
+    go n =
+      let prefix = TextForeign.takeWord8 (fromIntegral n) body
+          bytes = TextForeign.lengthWord8 prefix
+      in if bytes > limit
+           then go (n - 1)
+           else (prefix, TextForeign.dropWord8 (fromIntegral bytes) body)
 
 streamOneReply
   :: ChatDriver.ChatDriver :> es
@@ -116,19 +131,22 @@ streamOneReply
   -> MessageOutPolicy
   -> Stream (Of Text) (Eff es) r
   -> Stream (Of MessageOutResult) (Eff es) (Maybe MessageOutResult, r)
-streamOneReply message = \case
-  EditableMessage editChunkChars messageLimit ->
-    streamReply
-      (pushEditableReplyChunk message editChunkChars messageLimit)
-      (finishEditableReply message messageLimit)
-      emptyMessageOutState
-      False
+streamOneReply message policy = case policy of
+  EditableMessage editChunkChars _ -> editable editChunkChars
+  EditableUtf8Message editChunkChars _ -> editable editChunkChars
   ChunkedMessage messageLimit ->
     streamReply
       (pushChunkedReplyChunk message messageLimit)
       (finishChunkedReply message messageLimit)
       emptyMessageOutState
       False
+  where
+    editable editChunkChars =
+      streamReply
+        (pushEditableReplyChunk message editChunkChars (messageOutPolicySplit policy))
+        (finishEditableReply message (messageOutPolicySplit policy))
+        emptyMessageOutState
+        False
 
 streamReply
   :: ChatDriver.ChatDriver :> es
@@ -163,17 +181,17 @@ pushEditableReplyChunk
   :: ChatDriver.ChatDriver :> es
   => IncomingMessage
   -> Int
-  -> Int
+  -> (Text -> (Text, Text))
   -> MessageOutState
   -> Text
   -> Text
   -> Eff es (MessageOutState, [Either Text MessageId])
-pushEditableReplyChunk message editChunkChars messageLimit state _ body = do
-  (stateWithMessage, sent) <- ensureEditableReply message state (editableBody messageLimit body)
+pushEditableReplyChunk message editChunkChars splitMessage state _ body = do
+  (stateWithMessage, sent) <- ensureEditableReply message state (editableBody splitMessage body)
   case stateWithMessage.firstMessageId of
     Just messageId
       | Text.length body - stateWithMessage.lastEditOffset >= editChunkChars -> do
-          edited <- editReplyIfChanged message stateWithMessage messageId (editableBody messageLimit body)
+          edited <- editReplyIfChanged message stateWithMessage messageId (editableBody splitMessage body)
           pure (edited{lastEditOffset = Text.length body}, sent)
     _ ->
       pure (stateWithMessage, sent)
@@ -181,12 +199,12 @@ pushEditableReplyChunk message editChunkChars messageLimit state _ body = do
 finishEditableReply
   :: ChatDriver.ChatDriver :> es
   => IncomingMessage
-  -> Int
+  -> (Text -> (Text, Text))
   -> MessageOutState
   -> Eff es (MessageOutState, [Either Text MessageId])
-finishEditableReply message messageLimit state = do
+finishEditableReply message splitMessage state = do
   let finalBody = nonEmptyMessageBody (answerText state)
-      (editableText, overflow) = Text.splitAt messageLimit finalBody
+      (editableText, overflow) = splitMessage finalBody
   (stateWithMessage, sentFirst) <- ensureEditableReply message state editableText
   stateAfterEdit <- case stateWithMessage.firstMessageId of
     Nothing ->
@@ -198,7 +216,7 @@ finishEditableReply message messageLimit state = do
     then pure (stateAfterEdit, sentFirst)
     else do
       let target = maybe (chunkTarget message stateAfterEdit) (editableTailTarget message stateAfterEdit) stateWithMessage.firstMessageId
-      (finished, sentTail) <- sendTextChunks messageLimit target stateAfterEdit overflow
+      (finished, sentTail) <- sendTextChunks splitMessage target stateAfterEdit overflow
       pure (finished, sentFirst <> sentTail)
 
 ensureEditableReply
@@ -252,9 +270,9 @@ completeEditableReply message messageId state = do
   _ <- ChatDriver.completeMessageEdit message messageId
   pure state
 
-editableBody :: Int -> Text -> Text
-editableBody messageLimit =
-  Text.take messageLimit . initialEditableBody
+editableBody :: (Text -> (Text, Text)) -> Text -> Text
+editableBody splitMessage =
+  fst . splitMessage . initialEditableBody
 
 initialEditableBody :: Text -> Text
 initialEditableBody body
@@ -287,7 +305,7 @@ finishChunkedReply message messageLimit state
           sent <- ChatDriver.sendReplyMessage message (nonEmptyMessageBody (answerText state))
           pure (recordSentMessages state sent, sent)
   | otherwise =
-      sendTextChunks messageLimit (chunkTarget message state) state pending
+      sendTextChunks (Text.splitAt (max 1 messageLimit)) (chunkTarget message state) state pending
   where
     pending =
       Text.drop state.sentOffset (answerText state)
@@ -301,14 +319,14 @@ sendReadyChunks
 sendReadyChunks message messageLimit state =
   sendChunksWhile
     (\pending -> Text.length pending >= messageLimit)
-    messageLimit
+    (Text.splitAt (max 1 messageLimit))
     (chunkTarget message state)
     state
     (Text.drop state.sentOffset (answerText state))
 
 sendTextChunks
   :: ChatDriver.ChatDriver :> es
-  => Int
+  => (Text -> (Text, Text))
   -> IncomingMessage
   -> MessageOutState
   -> Text
@@ -319,18 +337,18 @@ sendTextChunks =
 sendChunksWhile
   :: ChatDriver.ChatDriver :> es
   => (Text -> Bool)
-  -> Int
+  -> (Text -> (Text, Text))
   -> IncomingMessage
   -> MessageOutState
   -> Text
   -> Eff es (MessageOutState, [Either Text MessageId])
-sendChunksWhile shouldSend messageLimit target state pending
+sendChunksWhile shouldSend splitMessage target state pending
   | shouldSend pending = do
-      let (body, rest) = Text.splitAt messageLimit pending
+      let (body, rest) = splitMessage pending
       sent <- ChatDriver.sendReplyMessage target body
       let stateAfterSend = (recordSentMessages state sent){sentOffset = state.sentOffset + Text.length body}
           nextTarget = chunkTarget target stateAfterSend
-      (finished, later) <- sendChunksWhile shouldSend messageLimit nextTarget stateAfterSend rest
+      (finished, later) <- sendChunksWhile shouldSend splitMessage nextTarget stateAfterSend rest
       pure (finished, sent <> later)
   | otherwise =
       pure (state, [])

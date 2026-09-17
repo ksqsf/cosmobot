@@ -16,6 +16,8 @@ import Bot.Prelude
 
 data MessageOutPolicy
   = EditableMessage !Int !Int
+  -- | Edit cadence in code points; message limit in UTF-8 bytes (at least 4).
+  | EditableUtf8Message !Int !Int
   | ChunkedMessage !Int
 
 data MessageOutResult = MessageOutResult

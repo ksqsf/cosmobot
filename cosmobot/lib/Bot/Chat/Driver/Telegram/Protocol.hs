@@ -55,6 +55,7 @@ setTypingTelegram driver chatId =
 telegramEditChunkChars :: Int
 telegramEditChunkChars = 512
 
+-- | UTF-8 byte budget for source text, leaving room for rich HTML markup.
 telegramMessageTextLimit :: Int
 telegramMessageTextLimit = 30000
 

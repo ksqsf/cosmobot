@@ -10,7 +10,7 @@ Beware: Cosmobot is just a hobby project. Won't be big and professional like Ope
 
 - **Multiple platforms**: Matrix, Telegram, QQ (OneBot), or Discord.
 - **Multiple interfaces**: Both Private Chat and Group Chat are supported.
-- **Any LLM provider**: Any OpenAI-compatible API provider is supported.
+- **Any LLM provider**: Any OpenAI-Chat-Completions-compatible API provider is supported.
 - **Capable**: Image generation/editing; Shell scripting; File sending; of course, Web searching and fetching. And more!
 - **Extendable**: Carefully designed abstractions allowing for super easy extension.
 - **Robust**: No resource leaks. Exceptions, concurrency, and lifecycle of long-running resources are guaranteed to be handled robustly and correctly.
