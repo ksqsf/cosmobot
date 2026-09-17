@@ -9,6 +9,14 @@ import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Matrix.Protocol as MatrixProtocol
 import qualified Bot.Chat.Driver.QQ as QQ
 import qualified Bot.Chat.Driver.Telegram as Telegram
+import qualified Bot.HTTP as HTTPTransport
+import qualified Control.Retry as Retry
+import qualified Control.Exception as Exception
+import qualified Data.IORef as IORef
+import qualified Network.HTTP.Req as Req
+import qualified Network.HTTP.Types as HTTPTypes
+import qualified Network.Wai as Wai
+import qualified Network.Wai.Handler.Warp as Warp
 import qualified Bot.Plugin.Protocol as PluginProtocol
 import Bot.Core.Message
 import Bot.Prelude
@@ -63,6 +71,7 @@ main =
       , testCase "Telegram rich messages use HTML, media, and structured replies" testTelegramRichMessageRequest
       , testCase "Telegram rich-message edits keep HTML content" testTelegramRichMessageEditRequest
       , testCase "Telegram rich-message fallback is safe" testTelegramRichMessageFallback
+      , testCase "Driver HTTP retries back off three times" testDriverHttpRetries
       , testCase "Telegram CommonMark renders rich HTML" testTelegramCommonMarkRendersRichHtml
       , testCase "Telegram display math spans paragraphs" testTelegramDisplayMathSpansParagraphs
       , testCase "Telegram CommonMark renders rich media blocks" testTelegramCommonMarkRendersRichMedia
@@ -616,6 +625,39 @@ testTelegramRichMessageEditRequest =
           [ "html" Aeson..= ("<p><strong>updated</strong></p>" :: Text)
           ]
       ]
+
+testDriverHttpRetries :: IO ()
+testDriverHttpRetries = do
+  let config = HTTPTransport.retryHttpConfig
+      policy = Req.httpConfigRetryPolicy config
+      status n = Retry.defaultRetryStatus{Retry.rsIterNumber = n}
+      fastConfig = config
+        { Req.httpConfigRetryPolicy = Retry.RetryPolicyM $ \s ->
+            fmap (fmap (const 0)) (Retry.getRetryPolicyM policy s)
+        }
+  traverse (Retry.getRetryPolicyM policy . status) [0 .. 3]
+    >>= (@?= [Just 1000000, Just 2000000, Just 4000000, Nothing])
+  for_ [(502, 4), (503, 4), (504, 4), (400, 1), (401, 1), (403, 1)] \(code, expectedAttempts) -> do
+    attempts <- IORef.newIORef (0 :: Int)
+    let app _ respond = do
+          IORef.modifyIORef' attempts (+ 1)
+          respond (Wai.responseLBS (HTTPTypes.mkStatus code "test") [] "{}")
+    Warp.testWithApplication (pure app) \port -> do
+      result <- Exception.try @Req.HttpException $ Req.runReq fastConfig $
+        Req.req Req.POST (Req.http "127.0.0.1") (Req.ReqBodyJson (Aeson.object [])) Req.bsResponse (Req.port port)
+      case result of
+        Left _ -> pure ()
+        Right _ -> assertFailure "expected HTTP failure after retry budget"
+    IORef.readIORef attempts >>= (@?= expectedAttempts)
+  attempts <- IORef.newIORef (0 :: Int)
+  let recoveringApp _ respond = do
+        n <- IORef.atomicModifyIORef' attempts (\n -> (n + 1, n + 1))
+        respond (Wai.responseLBS (if n < 3 then HTTPTypes.status502 else HTTPTypes.status200) [] "{}")
+  Warp.testWithApplication (pure recoveringApp) \port -> do
+    response <- Req.runReq fastConfig $
+      Req.req Req.POST (Req.http "127.0.0.1") (Req.ReqBodyJson (Aeson.object [])) Req.bsResponse (Req.port port)
+    Req.responseStatusCode response @?= 200
+  IORef.readIORef attempts >>= (@?= 3)
 
 testTelegramRichMessageFallback :: IO ()
 testTelegramRichMessageFallback = do

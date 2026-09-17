@@ -14,6 +14,7 @@ import Bot.Chat.Driver.Matrix.Types (Config (..))
 import qualified Bot.Effect.Matrix as Matrix
 import Bot.Util.Aeson
 import Bot.Prelude
+import qualified Bot.HTTP as HTTPTransport
 import qualified Bot.Effect.HTTP as HTTP
 import Control.Monad.Trans.Resource (ResourceT)
 import qualified Data.Aeson as Aeson
@@ -670,7 +671,7 @@ matrixUnauthenticatedCall cfg method logMessage addOptions buildRequest = katipA
   $(logDebug) [i|Matrix API request: #{logMessage}|]
   withMatrixBaseUrl cfg.homeserver \baseUrl baseOptions ->
     matrixReq method $
-      HTTP.runReqWithConfig matrixHttpConfig $
+      HTTP.runReqWithConfig (matrixHttpConfig method) $
         buildRequest baseUrl (addOptions baseOptions)
 
 matrixUnauthenticatedJsonCall
@@ -919,12 +920,15 @@ matrixAuth :: Text -> Option scheme
 matrixAuth token =
   header "Authorization" (ByteString.pack [i|Bearer #{token}|])
 
-matrixHttpConfig :: HttpConfig
-matrixHttpConfig =
-  defaultHttpConfig
-    { httpConfigRetryJudge = \_ _ -> False
-    , httpConfigRetryJudgeException = \_ _ -> False
-    }
+matrixHttpConfig :: Text -> HttpConfig
+matrixHttpConfig method
+  -- Login has its own retry loop; a refresh token may already have been consumed.
+  | method `elem` ["login", "refresh"] =
+      defaultHttpConfig
+        { httpConfigRetryJudge = \_ _ -> False
+        , httpConfigRetryJudgeException = \_ _ -> False
+        }
+  | otherwise = HTTPTransport.retryHttpConfig
 
 nonEmptyMatrixBody :: Text -> Text
 nonEmptyMatrixBody body

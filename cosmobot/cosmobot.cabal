@@ -116,6 +116,7 @@ common lib-deps
                     , modern-uri
                     , mime-types
                     , req
+                    , retry
                     , http-client
                     , http-client-tls
                     , crypton-connection
@@ -476,6 +477,7 @@ test-suite chat-platform-spec
     build-depends:    base64-bytestring
                     , http-client
                     , req
+                    , retry
                     , toml-parser
                     , websockets
     hs-source-dirs:   test

@@ -6,11 +6,14 @@ Stability   : experimental
 
 module Bot.HTTP
   ( runHTTP
+  , retryHttpConfig
   , streamingJsonPostRequest
   )
 where
 
 import Bot.Prelude
+import qualified Control.Retry as Retry
+import qualified Network.HTTP.Types.Status as HTTPStatus
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Char8 as ByteString
@@ -30,13 +33,22 @@ runHTTP inner = do
         HTTP.Manager ->
           pure sharedManager
         HTTP.RunReq action ->
-          liftIO $ Req.runReq (withSharedManager sharedManager Req.defaultHttpConfig) action
+          liftIO $ Req.runReq (withSharedManager sharedManager retryHttpConfig) action
         HTTP.RunReqWithConfig config action ->
           liftIO $ Req.runReq (withSharedManager sharedManager config) action
         HTTP.OpenResponse request ->
           liftIO $ Client.responseOpen request sharedManager
     )
     inner
+
+-- Retry each API request at most three times, after 1, 2, and 4 seconds.
+retryHttpConfig :: HttpConfig
+retryHttpConfig = Req.defaultHttpConfig
+  { httpConfigRetryPolicy = Retry.exponentialBackoff 1000000 <> Retry.limitRetries 3
+  , httpConfigRetryJudge = \status response ->
+      HTTPStatus.statusCode (Client.responseStatus response) `elem` [502, 503]
+        || httpConfigRetryJudge Req.defaultHttpConfig status response
+  }
 
 withSharedManager :: Client.Manager -> HttpConfig -> HttpConfig
 withSharedManager sharedManager config =
