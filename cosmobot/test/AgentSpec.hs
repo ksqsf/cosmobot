@@ -51,6 +51,8 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Plugin as Plugin
+import qualified Bot.Effect.Telegram as Telegram
+import qualified Bot.Agent.Tools.Telegram as TelegramTools
 import qualified Bot.Effect.Matrix as Matrix
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
@@ -85,6 +87,7 @@ import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.Test as TypstTest
 import qualified Bot.System.Typst.Types as TypstTypes
 import qualified Bot.Util.HList as HList
+import qualified Control.Exception as Exception
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
@@ -126,6 +129,7 @@ import Test.Tasty.HUnit
 
 type AgentStack =
   '[ ACP.ACP
+   , Telegram.Telegram
    , Matrix.Matrix
    , Chat.Chat
    , AgentAudit.AgentAudit
@@ -248,6 +252,7 @@ main =
       , testCase "tool tags are enabled from the thread transcript" testToolTagsEnabledFromTranscript
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
       , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
+      , testCase "telegram request permissions, arguments and dispatch" testTelegramRequestTool
       , testCase "matrix request tool is Matrix-superuser-only" testMatrixRequestToolScope
       , testCase "subagent lifecycle is shared within a chat" testSubAgentLifecycle
       , testCase "subagent wait operations avoid polling without cancelling work" testSubAgentWaitOperations
@@ -999,6 +1004,41 @@ testTerminalAndSandboxToolScopes = do
   assertBool "workspace should be hidden from non-superusers" (not (AgentTool.toolAllowed workspaceTool agentContext))
   assertBool "workspace should be visible to superusers" (AgentTool.toolAllowed workspaceTool superuserContext)
   assertBool "workspace should require resource identity" (not (AgentTool.toolAllowed workspaceTool superuserContext{Agent.message = testMessage{senderId = Nothing}}))
+
+testTelegramRequestTool :: IO ()
+testTelegramRequestTool = do
+  let definition = TelegramTools.telegramRequestTool :: AgentTool.Tool (Eff '[Telegram.Telegram, IOE])
+      admin = superuserContext{Agent.message = testMessage{Message.platform = PlatformTelegram}}
+      user = admin{Agent.superuser = False}
+      other = admin{Agent.message = testMessage{Message.platform = PlatformMatrix}}
+      arguments method = Aeson.object ["method" Aeson..= (method :: Text)]
+  assertBool "Telegram admin can use the tool" (AgentTool.toolAllowed definition admin)
+  assertBool "ordinary users cannot use the tool" (not (AgentTool.toolAllowed definition user))
+  assertBool "other platforms cannot use the tool" (not (AgentTool.toolAllowed definition other))
+  calls <- IORef.newIORef ([] :: [(Text, Aeson.Object)])
+  runEff . interpret (\_ (Telegram.TelegramCall method parameters) -> do
+    liftIO (IORef.modifyIORef' calls ((method, parameters) :))
+    if method == "fail"
+      then liftIO (Exception.throwIO (Exception.ErrorCall "test API failure"))
+      else pure (Aeson.Bool True)) $ do
+    run <- AgentTool.startTool definition admin
+    result <- run testToolCallMetadata (arguments "getMe")
+    liftIO $ AgentTypes.toolResultContent result @?= "true"
+    let parameters = Aeson.object ["chat_id" Aeson..= (123 :: Int)]
+    sent <- run testToolCallMetadata (Aeson.object ["method" Aeson..= ("getChat" :: Text), "parameters" Aeson..= parameters])
+    liftIO $ assertBool "object parameters accepted" (isNothing (AgentTypes.toolResultFailure sent))
+    forM_ ["", "../getMe", "https://example.com", "getMe?token=x", "getMe\n"] \method -> do
+      rejected <- run testToolCallMetadata (arguments method)
+      liftIO $ assertBool "invalid method rejected" (isJust (AgentTypes.toolResultFailure rejected))
+    malformed <- run testToolCallMetadata (Aeson.object ["method" Aeson..= ("getMe" :: Text), "parameters" Aeson..= ([] :: [Int])])
+    liftIO $ assertBool "non-object parameters rejected" (isJust (AgentTypes.toolResultFailure malformed))
+    forM_ [user, other] \context -> do
+      denied <- AgentTool.startTool definition context >>= (\invoke -> invoke testToolCallMetadata (arguments "getMe"))
+      liftIO $ assertBool "direct invocation checks permission" (isJust (AgentTypes.toolResultFailure denied))
+    failed <- run testToolCallMetadata (arguments "fail")
+    liftIO $ assertBool "API failure becomes a tool failure" (isJust (AgentTypes.toolResultFailure failed))
+  observed <- IORef.readIORef calls
+  observed @?= [("fail", mempty), ("getChat", AesonKeyMap.fromList [("chat_id", Aeson.toJSON (123 :: Int))]), ("getMe", mempty)]
 
 testMatrixRequestToolScope :: IO ()
 testMatrixRequestToolScope = do
@@ -5376,6 +5416,7 @@ runAgentWithMemorySkillsAndTypstAndCaptureAndImageGenerateAndEditAndReferenced r
               , agentUserAvatar = mockUserAvatar chatMock
           }
           . runTestMatrix
+          . interpret (\_ (Telegram.TelegramCall _ _) -> pure Aeson.Null)
           . runTestACP
   result <-
     runEff (runStack action)
@@ -5424,6 +5465,7 @@ runAgentWithStreamingAnswers answers chatMock action = withMemoryTempDir \memory
               , agentUserAvatar = mockUserAvatar chatMock
               }
           . runTestMatrix
+          . interpret (\_ (Telegram.TelegramCall _ _) -> pure Aeson.Null)
           . runTestACP
   result <-
     runEff (runStack action)

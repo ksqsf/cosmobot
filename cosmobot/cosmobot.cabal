@@ -220,6 +220,7 @@ library
         Bot.Agent.Tools.Image
         Bot.Agent.Tools.Media
         Bot.Agent.Tools.Memory
+        Bot.Agent.Tools.Telegram
         Bot.Agent.Tools.Matrix
         Bot.Agent.Tools.Schedule
         Bot.Agent.Tools.Sandbox
@@ -285,6 +286,7 @@ library
         Bot.Effect.LLM
         Bot.Effect.Lifecycle
         Bot.Effect.Media
+        Bot.Effect.Telegram
         Bot.Effect.Matrix
         Bot.Effect.Memory
         Bot.Effect.Plugin

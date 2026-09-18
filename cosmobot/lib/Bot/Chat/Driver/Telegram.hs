@@ -12,6 +12,7 @@ Stability   : experimental
 
 module Bot.Chat.Driver.Telegram
   ( TelegramDriver
+  , runTelegramClient
   , newTelegramDriver
   , Config (..)
   , User (..)
@@ -56,6 +57,7 @@ import Bot.Chat.Driver.Telegram.Protocol hiding (TelegramDriver, newTelegramDriv
 import Bot.Chat.Driver.Telegram.Types (Config (..))
 import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Effect.Chat as ChatEffect
+import qualified Bot.Effect.Telegram as Telegram
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Media.Mime as Mime
@@ -74,6 +76,18 @@ import qualified Network.HTTP.Client.MultipartFormData as Multipart
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
 import System.FilePath ((</>), (<.>))
+
+runTelegramClient
+  :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es)
+  => Maybe TelegramDriver
+  -> Eff (Telegram.Telegram : es) a
+  -> Eff es a
+runTelegramClient driver =
+  interpret \_ -> \case
+    Telegram.TelegramCall method parameters ->
+      case driver of
+        Nothing -> throwIO (TelegramResponseError "Telegram driver is not configured.")
+        Just (TelegramDriver protocol) -> Protocol.apiCall protocol.config method (Aeson.Object parameters)
 
 newtype TelegramDriver = TelegramDriver Protocol.TelegramDriver
 

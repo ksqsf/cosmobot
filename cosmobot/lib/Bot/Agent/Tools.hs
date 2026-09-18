@@ -16,6 +16,7 @@ import Bot.Agent.Tools.Files
 import Bot.Agent.Tools.Image
 import Bot.Agent.Tools.Media
 import Bot.Agent.Tools.Memory
+import Bot.Agent.Tools.Telegram
 import Bot.Agent.Tools.Matrix
 import Bot.Agent.Tools.Schedule
 import Bot.Agent.Tools.Sandbox
@@ -42,6 +43,7 @@ import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Memory as Memory
+import qualified Bot.Effect.Telegram as Telegram
 import qualified Bot.Effect.Matrix as Matrix
 import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Scheduler as Scheduler
@@ -63,6 +65,7 @@ defaultTools
   => LLM.LLM :> es
   => Media.Media :> es
   => Memory.Memory :> es
+  => Telegram.Telegram :> es
   => Matrix.Matrix :> es
   => Resource.Resource :> es
   => Scheduler.Scheduler :> es
@@ -92,6 +95,7 @@ defaultToolsWith
   => LLM.LLM :> es
   => Media.Media :> es
   => Memory.Memory :> es
+  => Telegram.Telegram :> es
   => Matrix.Matrix :> es
   => Resource.Resource :> es
   => Scheduler.Scheduler :> es
@@ -136,6 +140,7 @@ defaultToolsWith extraTools = tools
       , listGroupMembersTool
       , currentMessageInfoTool
       , matrixRequestTool
+      , telegramRequestTool
       , scheduleTool
       , senderMemoryTool
       , chatMemoryTool
