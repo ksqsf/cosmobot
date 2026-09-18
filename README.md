@@ -2,14 +2,20 @@
 
 > FULL DISCLAIMER: Most of the code is LLM-generated!
 
-Cosmobot is a lightweight and extensible AI agent framework. It can receive user messages from [Matrix](https://matrix.org/), Telegram, QQ (OneBot), and Discord. It can even act like a ChatBot in a group chat for fun!
+Cosmobot is a lightweight, self-programmable AI agent runtime. (It might have not reached there, but close.)
+
+Unlike agent frameworks where the LLM is the center of the entire execution, in Cosmobot, LLM is merely part of the stateful execution: LLM essentially writes code that the runtime interprets, and you can write that code, too. There is no "agent loop" in Cosmobot.
+
+In Cosmobot, "agent programs" (a unified model of LLM-equipped computations) can be composed: an LLM and deterministic computation can call each other, recursively. In fact, an "agent run" does not even need to start with a call to an LLM. This unusual flexibility opens the door to a lot of interesting ideas: Programmatic Tool Calling, Recursive Language Models, resumable agent workflows, and more.
+
+Cosmobot also provides a robust infrastructure for running such agent programs. It handles persistence, concurrency, long-lived resource objects (e.g. sandboxes), and more. Every action is logged and auditable.
 
 Beware: Cosmobot is just a hobby project. Won't be big and professional like OpenClaw. /jk
 
 ## Features
 
-- **Multiple platforms**: Matrix, Telegram, QQ (OneBot), or Discord.
-- **Multiple interfaces**: Both Private Chat and Group Chat are supported.
+- **Multiple platforms**: Matrix, Telegram, QQ (OneBot), or Discord.  Also Web UI and TUI (WIP).
+- **Multiple interfaces**: Instant messaging, Web, TUI.
 - **Any LLM provider**: Any OpenAI-Chat-Completions-compatible API provider is supported.
 - **Capable**: Image generation/editing; Shell scripting; File sending; of course, Web searching and fetching. And more!
 - **Extendable**: Carefully designed abstractions allowing for super easy extension.
@@ -400,9 +406,9 @@ Reply to a message that contains an image:
 
 You need to provide `api_key` in `[handler.saucenao]`. Currently, only the top result with similarity > 90% is reported.
 
-## Long-living resources
+## Long-lived resources
 
-Cosmobot provides a unified abstraction for certain kinds of long-living resources, including Sandboxes, Workspaces, and SubAgents. 
+Cosmobot provides a unified abstraction for certain kinds of long-lived resources, including Sandboxes, Workspaces, and SubAgents. 
 These objects can live even if the conversation is interrupted.
 
 A "Resource" can be created, operated upon, and deleted. To ease management, resources by default are subject to a parameter called "Time-To-Live" (TTL).  After the expiry, the resources are automatically deleted. But Agents cannot create permanent resources; instead, the "owner" or a superuser can manually make them permanent with `!res/permanent`.
