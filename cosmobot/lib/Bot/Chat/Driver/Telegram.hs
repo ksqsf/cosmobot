@@ -114,6 +114,14 @@ instance Driver.ChatDriver TelegramDriver where
   editMessage (TelegramDriver driver) =
     editMessageTelegram driver
 
+  addReaction (TelegramDriver driver) message messageId reaction =
+    case (message.chatId >>= chatIdInteger, messageIdInteger messageId, reaction) of
+      (Just chatId, Just rawMessageId, Aeson.String emoji) ->
+        setTelegramReaction driver chatId rawMessageId (Aeson.object ["type" Aeson..= ("emoji" :: Text), "emoji" Aeson..= emoji])
+      (Just chatId, Just rawMessageId, native@Aeson.Object{}) ->
+        setTelegramReaction driver chatId rawMessageId native
+      _ -> pure (Left "Telegram reactions require numeric chat/message ids and an emoji string or ReactionType object.")
+
   deleteMessage (TelegramDriver driver) =
     deleteMessageForTelegram driver
 

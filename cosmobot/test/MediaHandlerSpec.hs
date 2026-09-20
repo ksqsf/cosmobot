@@ -2,12 +2,14 @@ module Main (main) where
 
 import Bot.Chat.Driver.Types (ChatDriverEffects)
 import qualified Bot.Chat.Driver.Types as Driver
+import qualified Bot.Chat.Driver.Telegram.Protocol as Telegram
 import Bot.Core.Message
 import Bot.Core.Route
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Media as Media
 import Bot.Handler.Media
 import Bot.Prelude
+import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
@@ -39,6 +41,7 @@ main =
       , testCase "info omits local media paths" testMediaInfoOmitsPath
       , testCase "info extracts media ids from the replied message" testRepliedMediaInfo
       , testCase "url extracts media ids from the replied message" testRepliedMediaUrl
+      , testCase "reply commands expose Telegram errors without swallowing cancellation" testRepliedMediaErrors
       , testCase "cache reports downloaded media ids and failures" testMediaCache
       , testCase "get rejects non-superusers" testMediaGetRejectsNonSuperuser
       , testCase "commands require at least one media id" testMediaCommandUsage
@@ -128,6 +131,26 @@ testRepliedMediaUrl = do
     runHandlers mediaHandlers ((message "!media/url"){replyToMessageId = Just "parent"})
   replyBody <- viaNonEmpty head <$> IORef.readIORef replies
   replyBody @?= Just "- media:mf_known: https://media.example/mf_known"
+
+testRepliedMediaErrors :: IO ()
+testRepliedMediaErrors = do
+  for_ ["!media/info", "!media/url"] $ \commandText -> do
+    replies <- IORef.newIORef []
+    let request = (message commandText){replyToMessageId = Just "parent"}
+        failFetch :: (Chat.Chat :> es, Exception e) => e -> Eff es a -> Eff es a
+        failFetch err = interpose $ \env -> \case
+          Chat.GetMessageContent _ _ -> throwIO err
+          op -> passthrough env op
+    runMediaHandlers replies $ failFetch (Telegram.TelegramAPIError 400 "Bad Request: file is too big" Nothing) $
+      runHandlers mediaHandlers request
+    IORef.readIORef replies >>= (@?= ["Could not read the replied message: Bad Request: file is too big"])
+    cancelled <- Exception.try @AsyncException $ runMediaHandlers replies $ failFetch ThreadKilled $
+      runHandlers mediaHandlers request
+    cancelled @?= Left ThreadKilled
+    IORef.readIORef replies >>= (@?= ["Could not read the replied message: Bad Request: file is too big"])
+    IORef.writeIORef replies []
+    runMediaHandlers replies (runHandlers mediaHandlers request)
+    IORef.readIORef replies >>= (@?= ["Could not read the replied message."])
 
 runMediaHandlers
   :: IORef.IORef [Text]

@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.Agent.Tools.Chat
   ( queryChatLogTool
   , queryCurrentSenderChatLogTool
+  , addReactionTool
   , sendReplyTool
   , sendMessageTool
   , sendFileTool
@@ -88,6 +89,41 @@ queryCurrentSenderChatLogTool =
               Right timeRange -> do
                 entries <- ChatLog.queryCurrentSenderChatLog context.message scope keywords limit timeRange
                 pure (toolText (jsonText (map chatLogToolEntry entries)))
+
+addReactionTool :: Chat.Chat :> es => Tool (Eff es)
+addReactionTool =
+  tagged [chatTag]
+  . withDescriptionBy (\context ->
+      "Add a reaction to a message in the current chat. Defaults to the current message. "
+        <> case context.message.platform of
+          PlatformQQ -> "reaction is a QQ emoji ID string."
+          PlatformDiscord -> "reaction is a Unicode emoji or name:id for a custom Discord emoji."
+          PlatformMatrix -> "reaction is any Matrix reaction key string. message_id is the native event ID."
+          PlatformTelegram -> "reaction is an emoji string or native Telegram ReactionType object (e.g. {type: custom_emoji, custom_emoji_id: ...}). Replaces the bot's existing reaction."
+          _ -> "Reactions are not supported on this platform."
+        <> " Platform permissions and supported reactions apply.")
+  $ tool "add_reaction"
+      ( optionalArgument (fieldText "message_id" "Target id in this chat: use message_info.reply_to_message_id for a replied-to message or chat_log messageId for history. Omitted means the current message.")
+      , requiredArgument ("reaction", Aeson.object
+          [ "type" Aeson..= (["string", "object"] :: [Text])
+          , "description" Aeson..= ("Platform-native reaction; no emoji whitelist." :: Text)
+          ])
+      )
+      \target reaction -> do
+        context <- askToolContext
+        case target <|> context.message.messageId of
+          Nothing -> pure (argumentFailure "No target message_id is available.")
+          Just messageId
+            | Text.null (Text.strip (messageIdText messageId)) ->
+                pure (argumentFailure "message_id must not be empty.")
+            | otherwise ->
+                Chat.addReaction context.message messageId reaction >>= \case
+                  Right () -> pure (toolText "Reaction added.")
+                  Left err -> pure (toolFailure Failure
+                    { category = ExternalServiceUnavailable
+                    , userMessage = "添加 reaction 失敗：" <> err
+                    , detail = err
+                    })
 
 sendReplyTool :: (Chat.Chat :> es, Media.Media :> es) => Tool (Eff es)
 sendReplyTool =

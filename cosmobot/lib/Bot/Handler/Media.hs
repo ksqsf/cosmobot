@@ -45,7 +45,7 @@ resolveMediaIds commandName message input
   | mediaIds@(_ : _) <- ordNub (Text.words input) =
       pure (Right mediaIds)
   | Just messageId <- message.replyToMessageId =
-      maybe (Left "Could not read the replied message.") referencedMediaIdsResult
+      (>>= referencedMediaIdsResult)
         <$> Chat.getMessageContent message messageId
   | otherwise =
       pure (Left [i|Usage: #{commandName} <media_id>..., or reply to a message containing media.|])

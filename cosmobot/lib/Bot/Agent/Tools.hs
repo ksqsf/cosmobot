@@ -129,6 +129,7 @@ defaultToolsWith extraTools = tools
       , generateImageTool
       , editImageTool
       , typstRenderTool
+      , addReactionTool
       , sendReplyTool
       , sendMessageTool
       , sendFileTool

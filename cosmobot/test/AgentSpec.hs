@@ -89,6 +89,7 @@ import qualified Bot.System.Typst.Types as TypstTypes
 import qualified Bot.Util.HList as HList
 import qualified Control.Exception as Exception
 import Bot.Prelude
+import qualified Bot.Chat.Driver.Telegram.Protocol as TelegramProtocol
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as AesonKey
 import qualified Data.Aeson.KeyMap as AesonKeyMap
@@ -269,6 +270,7 @@ main =
       , testCase "chatlog tool filters by sender" testChatLogToolFiltersBySender
       , testCase "chatlog tool treats a blank sender as no filter" testChatLogToolIgnoresBlankSender
       , testCase "current sender chatlog tool queries matching sender messages globally" testCurrentSenderChatLogToolQueriesChatLog
+      , testCase "reaction tool preserves native payloads and resolves message ids" testAddReactionTool
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
       , testCase "user avatar tool rejects zero user id" testUserAvatarToolRejectsZeroUserId
@@ -277,6 +279,7 @@ main =
       , testCase "ask handler passes referenced images to image_edit tool" testAskHandlerPassesReferencedImagesToEditImageTool
       , testCase "ask handler includes referenced image URLs in text context" testAskHandlerIncludesReferencedImageUrlsInTextContext
       , testCase "ask handler includes current and referenced files in text context" testAskHandlerIncludesFilesInTextContext
+      , testCase "ask and draw expose replied-message failures to the LLM" testAskHandlerIncludesReferencedFailure
       , testCase "ask handler requires mention for group non-bot replies but not private replies" testAskHandlerHandlesReplyToNonBotMessageByChatKind
       , testCase "LLM failure replies remain linked to their thread" testLLMFailureReplyLinksThread
       , testCase "image_generate tool passes image request options" testGenerateImageToolPassesImageRequestOptions
@@ -1529,6 +1532,40 @@ testChatLogToolIgnoresBlankSender = do
   texts <- traverse (either assertFailure pure . AesonTypes.parseEither (Aeson.withObject "chat log entry" (\entry -> entry Aeson..: "text" :: AesonTypes.Parser Text))) entries
   texts @?= ["alice", "bob"]
 
+testAddReactionTool :: IO ()
+testAddReactionTool = do
+  for_ [(PlatformQQ, "QQ emoji ID", "Telegram"), (PlatformTelegram, "ReactionType", "Discord"), (PlatformDiscord, "name:id", "Matrix"), (PlatformMatrix, "native event ID", "QQ")] \(platform, expected, absent) -> do
+    description <- runEff . Chat.runChatWith defaultAgentMockChatDriver $ do
+      schema <- AgentTool.resolveToolSchema ChatTools.addReactionTool
+        agentContext{Agent.message = testMessage{Message.platform = platform}} (startWithUser "") 0
+      pure (foldMap (.description) schema)
+    assertBool "reaction description should explain the current platform" (expected `Text.isInfixOf` description)
+    assertBool "reaction description should omit other platforms" (not (absent `Text.isInfixOf` description))
+  let native = Aeson.object ["type" Aeson..= ("custom_emoji" :: Text), "custom_emoji_id" Aeson..= ("123456" :: Text)]
+  for_ [(Nothing, Aeson.String "任意 reaction"), (Just "$event:server", native)] \(target, reaction) -> do
+    answers <- IORef.newIORef
+      [ chatAnswer "" [toolCall "call-1" "add_reaction" (Aeson.object
+          (["reaction" Aeson..= reaction] <> maybe [] (\value -> ["message_id" Aeson..= (value :: Text)]) target))]
+      , chatAnswer "done" []
+      ]
+    calls <- IORef.newIORef []
+    (_, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) $
+      interpose (\localEnv -> \case
+        Chat.AddReaction message messageId value -> do
+          liftIO $ IORef.modifyIORef' calls (<> [(message.chatId, messageId, value)])
+          pure (Right ())
+        operation -> passthrough localEnv operation) $
+        runTestAgent 4 agentContext AgentTools.defaultTools (startWithEnabledTools ["chat"] "react")
+    IORef.readIORef calls >>= (@?= [(testMessage.chatId, fromMaybe "missing" ((textMessageId <$> target) <|> testMessage.messageId), reaction)])
+    toolOutputs transcript @?= ["Reaction added."]
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "add_reaction" (Aeson.object ["reaction" Aeson..= ("👍" :: Text)])]
+    , chatAnswer "failed" []
+    ]
+  (_, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) $
+    runTestAgent 4 agentContext AgentTools.defaultTools (startWithEnabledTools ["chat"] "react")
+  assertBool "unsupported driver must report failure" (any (Text.isInfixOf "does not support reactions") (toolOutputs transcript))
+
 testUserAvatarToolQueriesChatEffect :: IO ()
 testUserAvatarToolQueriesChatEffect = do
   let avatar = Aeson.object
@@ -1738,6 +1775,34 @@ testAskHandlerIncludesFilesInTextContext = do
       assertBool ("current file should appear in text context: " <> Text.unpack userText) ("附件：new.txt (media:mf_new)" `Text.isInfixOf` userText)
     Nothing ->
       assertFailure "expected captured LLM request"
+
+testAskHandlerIncludesReferencedFailure :: IO ()
+testAskHandlerIncludesReferencedFailure =
+  for_ ["!ask inspect this", "!draw inspect this", "@bot inspect this"] $ \prompt -> do
+    answers <- IORef.newIORef [chatAnswer "done" []]
+    captured <- IORef.newIORef []
+    let message = askHandlerMessage
+          { replyToMessageId = Just "70001"
+          , text = prompt
+          , digest = askHandlerMessage.digest{mentionsBot = True}
+          , files = [MessageFile "current.txt" "media:mf_current"]
+          }
+    runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) $
+      interpose (\env -> \case
+        Chat.GetMessageContent _ _ -> throwIO (TelegramProtocol.TelegramAPIError 400 "Bad Request: file is too big" Nothing)
+        op -> passthrough env op) do
+          threads <- newThreadStore
+          runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads message
+    requests <- IORef.readIORef captured
+    case viaNonEmpty head requests of
+      Nothing -> assertFailure "expected an LLM request despite the failed lookup"
+      Just request -> do
+        let userText = Text.unlines (chatMessageTextsByRole "user" request)
+        assertBool "original failure is included in context" $
+          "Could not read the replied message: Bad Request: file is too big" `Text.isInfixOf` userText
+        Text.count "Could not read the replied message" userText @?= 1
+        assertBool "current prompt is retained" ("inspect this" `Text.isInfixOf` userText)
+        assertBool "current attachments are retained" ("current.txt (media:mf_current)" `Text.isInfixOf` userText)
 
 testAskHandlerHandlesReplyToNonBotMessageByChatKind :: IO ()
 testAskHandlerHandlesReplyToNonBotMessageByChatKind = do

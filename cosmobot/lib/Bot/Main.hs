@@ -65,6 +65,7 @@ import Data.Text.Lazy.Builder (Builder, fromText)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Language.Haskell.TH (Loc (loc_module))
 import qualified System.Environment as Environment
+import System.IO.Error (userError)
 import Bot.Handler.Admin
 import Bot.Handler.Ask
 import Bot.Handler.Ask.AgentRun (askSystemPrompt)
@@ -233,7 +234,7 @@ pluginHostCallbacks cfg = PluginManager.HostCallbacks
   { chatReply = \message body -> Aeson.toJSON <$> Chat.replyTo message body
   , chatReferenced = \message -> case message.replyToMessageId of
       Nothing -> pure Aeson.Null
-      Just messageId -> maybe Aeson.Null Aeson.toJSON <$> Chat.getMessageContent message messageId
+      Just messageId -> Chat.getMessageContent message messageId >>= either (throwIO . userError . toString) (pure . Aeson.toJSON)
   , llmComplete = LLM.ask
   , agentRun = runPluginAgent cfg
   , mediaResolve = resolvePluginMedia

@@ -72,10 +72,12 @@ sendSaucenaoResults cfg message =
         void $ Chat.replyTo message "SauceNAO 需要配置 API key。"
       Just _ -> do
         referenced <- fetchReferencedMessage message
-        case referenced >>= nonEmptyImageUrls of
-          Nothing ->
+        case fmap (>>= nonEmptyImageUrls) referenced of
+          Left err ->
+            void $ Chat.replyTo message err
+          Right Nothing ->
             void $ Chat.replyTo message "请回复一条包含图片的消息。"
-          Just imageUrls -> do
+          Right (Just imageUrls) -> do
             results <- traverse (searchOne cfg) imageUrls
             let body = Text.intercalate "\n\n" (mapMaybe renderResult results)
             if Text.null body
@@ -90,9 +92,9 @@ sendSaucenaoResults cfg message =
 fetchReferencedMessage
   :: Chat.Chat :> es
   => IncomingMessage
-  -> Eff es (Maybe ReferencedMessage)
+  -> Eff es (Either Text (Maybe ReferencedMessage))
 fetchReferencedMessage message =
-  traverse (Chat.getMessageContent message) message.replyToMessageId <&> join
+  traverse (Chat.getMessageContent message) message.replyToMessageId <&> sequenceA
 
 nonEmptyImageUrls :: ReferencedMessage -> Maybe [Text]
 nonEmptyImageUrls referenced =

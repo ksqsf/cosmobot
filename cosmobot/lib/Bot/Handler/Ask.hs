@@ -351,8 +351,8 @@ startAskThread
 startAskThread label toolCfg tools cfg threads resource message prompt = do
   $(logInfo) [i|#{label}: #{incomingMessageLog message}|]
   referenced <- fetchReferencedMessage message
-  let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
-  let contextFiles = referencedFiles referenced <> message.files
+  let contextImages = foldMap (maybe [] (.imageUrls)) referenced <> message.imageUrls
+  let contextFiles = foldMap referencedFiles referenced <> message.files
   let contextPrompt = promptWithCurrentFiles (promptWithReferencedContext prompt referenced contextImages) message.files
   let input = askInput message contextPrompt contextImages contextFiles
   let transcript = startWithUserInput input
@@ -370,8 +370,8 @@ startDrawThread
 startDrawThread label cfg threads message prompt = do
   $(logInfo) [i|#{label}: #{incomingMessageLog message}|]
   referenced <- fetchReferencedMessage message
-  let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
-  let contextFiles = referencedFiles referenced <> message.files
+  let contextImages = foldMap (maybe [] (.imageUrls)) referenced <> message.imageUrls
+  let contextFiles = foldMap referencedFiles referenced <> message.files
   let contextPrompt = promptWithCurrentFiles (promptWithReferencedContext prompt referenced contextImages) message.files
   let input = askInput message contextPrompt contextImages contextFiles
   let transcript = startWithUserInput input
@@ -384,9 +384,9 @@ startDrawThread label cfg threads message prompt = do
 fetchReferencedMessage
   :: Chat.Chat :> es
   => IncomingMessage
-  -> Eff es (Maybe ReferencedMessage)
+  -> Eff es (Either Text (Maybe ReferencedMessage))
 fetchReferencedMessage message =
-  traverse (Chat.getMessageContent message) message.replyToMessageId <&> join
+  traverse (Chat.getMessageContent message) message.replyToMessageId <&> sequenceA
 
 startThreadFromReply
   :: HandlerEffects es
@@ -400,9 +400,9 @@ startThreadFromReply
   -> Eff es ()
 startThreadFromReply toolCfg tools cfg threads resource message parentId = do
   $(logInfo) [i|starting thread from mentioned reply: #{incomingMessageLog message}|]
-  referenced <- Chat.getMessageContent message parentId
-  let contextImages = maybe [] (.imageUrls) referenced <> message.imageUrls
-  let contextFiles = referencedFiles referenced <> message.files
+  referenced <- fetchReferencedMessage message{replyToMessageId = Just parentId}
+  let contextImages = foldMap (maybe [] (.imageUrls)) referenced <> message.imageUrls
+  let contextFiles = foldMap referencedFiles referenced <> message.files
   let prompt = promptWithCurrentFiles (promptWithReferencedContext message.text referenced contextImages) message.files
   unless (Text.null prompt && null contextImages) do
     let input = askInput message prompt contextImages contextFiles
@@ -479,9 +479,9 @@ promptOrImageDefault prompt imageUrls
   where
     stripped = Text.strip prompt
 
-promptWithReferencedContext :: Text -> Maybe ReferencedMessage -> [Text] -> Text
+promptWithReferencedContext :: Text -> Either Text (Maybe ReferencedMessage) -> [Text] -> Text
 promptWithReferencedContext prompt referenced imageUrls =
-  case (promptOrImageDefault prompt imageUrls, referenced >>= referencedMessageContext) of
+  case (promptOrImageDefault prompt imageUrls, context) of
     ("", Just quotedContext) ->
       [i|请根据被回复消息回答。
 
@@ -494,6 +494,8 @@ Replied-to message:
 #{quotedContext}|]
     (userPrompt, _) ->
       userPrompt
+  where
+    context = either Just (>>= referencedMessageContext) referenced
 
 referencedMessageContext :: ReferencedMessage -> Maybe Text
 referencedMessageContext referenced =

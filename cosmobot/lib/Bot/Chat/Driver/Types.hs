@@ -58,6 +58,10 @@ class ChatDriver driver where
   publishActivity _ _ _ =
     pure ()
 
+  addReaction :: ChatDriverEffects driver es => driver -> IncomingMessage -> MessageId -> Aeson.Value -> Eff es (Either Text ())
+  addReaction driver _ _ _ =
+    pure (Left [i|#{driverPlatform driver} does not support reactions.|])
+
   deleteMessage :: ChatDriverEffects driver es => driver -> IncomingMessage -> MessageId -> Eff es Bool
   deleteMessage _ _ _ =
     pure False

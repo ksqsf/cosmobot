@@ -90,6 +90,13 @@ instance Driver.ChatDriver DiscordDriver where
   editMessage (DiscordDriver driver) message messageId body =
     editMessageDiscord driver message messageId body
 
+  addReaction (DiscordDriver driver) message messageId reaction =
+    case (discordChannelId message, reaction) of
+      (Just channelId, Aeson.String emoji) -> do
+        createDiscordReaction driver channelId (messageIdText messageId) emoji
+        pure (Right ())
+      _ -> pure (Left "Discord reactions require a channel and emoji string (Unicode or name:id).")
+
   deleteMessage (DiscordDriver driver) =
     deleteMessageDiscord
       driver

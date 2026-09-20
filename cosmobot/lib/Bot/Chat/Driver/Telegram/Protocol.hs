@@ -921,6 +921,16 @@ uploadVideo driver request path fileName =
 uploadDocument :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> SendDocumentRequest -> FilePath -> Maybe Text -> Eff es Message
 uploadDocument driver request path fileName =
   apiMultipartCall driver.config "sendDocument" (sendDocumentParts request path fileName)
+
+setTelegramReaction :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Integer -> Aeson.Value -> Eff es (Either Text ())
+setTelegramReaction driver chatId messageId reaction = do
+  success <- apiCall driver.config "setMessageReaction" (Aeson.object
+    [ "chat_id" Aeson..= chatId
+    , "message_id" Aeson..= messageId
+    , "reaction" Aeson..= [reaction]
+    ])
+  pure (if success then Right () else Left "Telegram rejected the reaction.")
+
 deleteMessage :: (HTTP.HTTP :> es, IOE :> es, KatipE :> es) => TelegramDriver -> Integer -> Integer -> Eff es Bool
 deleteMessage driver chatId messageId =
   callTelegram driver DeleteMessageRequest{..}

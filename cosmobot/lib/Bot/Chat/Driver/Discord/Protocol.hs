@@ -86,6 +86,10 @@ editDiscordMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -
 editDiscordMessage driver channelId messageId request =
   discordJsonRequest driver.config "PATCH" PATCH ["channels", channelId, "messages", messageId] request
 
+createDiscordReaction :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Text -> Eff es ()
+createDiscordReaction driver channelId messageId emoji =
+  discordNoResponseRequest driver.config "PUT" PUT ["channels", channelId, "messages", messageId, "reactions", emoji, "@me"]
+
 deleteDiscordMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Eff es ()
 deleteDiscordMessage driver channelId messageId =
   discordNoResponseRequest driver.config "DELETE" DELETE ["channels", channelId, "messages", messageId]

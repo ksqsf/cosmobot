@@ -203,6 +203,8 @@ data MatrixCompleteStreamMessage = MatrixCompleteStreamMessage
   , completeStreamMessageRequest :: !MatrixEditMessageRequest
   }
 
+data MatrixReaction = MatrixReaction !Text !MatrixEventId !Text
+
 data MatrixRedactEvent = MatrixRedactEvent
   { redactRoomId :: !Text
   , redactEventId :: !MatrixEventId
@@ -332,6 +334,22 @@ instance MatrixAPI MatrixCompleteStreamMessage where
       PUT
       (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText completeStreamMessageRoomId /: "send" /: "m.room.message" /: txnId)
       (ReqBodyJson completeStreamMessageRequest)
+
+instance MatrixAPI MatrixReaction where
+  type MatrixResponse MatrixReaction = SendMessageResponse
+
+  call driver (MatrixReaction roomId eventId key) = do
+    txnId <- liftIO (show <$> getMonotonicTimeNSec)
+    matrixClientJsonCall driver "send" "send m.reaction" matrixApiOptions
+      PUT
+      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: roomId /: "send" /: "m.reaction" /: txnId)
+      (ReqBodyJson (Aeson.object
+        [ "m.relates_to" Aeson..= Aeson.object
+            [ "rel_type" Aeson..= ("m.annotation" :: Text)
+            , "event_id" Aeson..= matrixEventIdText eventId
+            , "key" Aeson..= key
+            ]
+        ]))
 
 instance MatrixAPI MatrixRedactEvent where
   type MatrixResponse MatrixRedactEvent = Aeson.Value

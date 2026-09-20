@@ -110,6 +110,14 @@ instance Driver.ChatDriver MatrixDriver where
   completeMessageEdit (MatrixDriver driver) =
     completeMessageEditMatrix driver
 
+  addReaction (MatrixDriver driver) message messageId reaction =
+    case (viaNonEmpty head message.chatAliases, reaction) of
+      (Just roomId, Aeson.String key)
+        | Text.isPrefixOf "$" (messageIdText messageId) ->
+            fmap (const ()) <$> eitherCall "send m.reaction" driver
+              (MatrixReaction roomId (matrixEventId (messageIdText messageId)) key)
+      _ -> pure (Left "Matrix reactions require a room, native event id and reaction key string.")
+
   deleteMessage (MatrixDriver driver) =
     deleteMessageMatrix driver
 

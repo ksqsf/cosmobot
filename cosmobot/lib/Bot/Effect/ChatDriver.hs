@@ -20,6 +20,7 @@ module Bot.Effect.ChatDriver
   , editMessage
   , completeMessageEdit
   , publishActivity
+  , addReaction
   , deleteMessage
   , messageOutPolicy
   , getMessageContent
@@ -82,6 +83,7 @@ data ChatDriver :: Effect where
     :: IncomingMessage
     -> Activity
     -> ChatDriver m ()
+  AddReaction :: IncomingMessage -> MessageId -> Aeson.Value -> ChatDriver m (Either Text ())
   DeleteMessage
     :: IncomingMessage
     -> MessageId
@@ -182,14 +184,20 @@ deleteMessage :: ChatDriver :> es => IncomingMessage -> MessageId -> Eff es Bool
 deleteMessage message messageId =
   send (DeleteMessage message messageId)
 
+-- | Add a platform-native reaction in the current chat.
+addReaction :: ChatDriver :> es => IncomingMessage -> MessageId -> Aeson.Value -> Eff es (Either Text ())
+addReaction message messageId reaction =
+  send (AddReaction message messageId reaction)
+
 messageOutPolicy :: ChatDriver :> es => IncomingMessage -> Eff es MessageOutPolicy
 messageOutPolicy message =
   send (MessageOutPolicy message)
 
--- | Fetch content for a referenced platform message id.
-getMessageContent :: ChatDriver :> es => IncomingMessage -> MessageId -> Eff es (Maybe ReferencedMessage)
+-- | Fetch referenced content, retaining lookup failures for replies and LLM context.
+getMessageContent :: ChatDriver :> es => IncomingMessage -> MessageId -> Eff es (Either Text ReferencedMessage)
 getMessageContent message messageId =
-  send (GetMessageContent message messageId)
+  (maybe (Left "Could not read the replied message.") Right <$> send (GetMessageContent message messageId))
+    `catchSync` \(SomeException err) -> pure (Left [i|Could not read the replied message: #{displayException err}|])
 
 -- | Fetch member info for the sender of the current message.
 getSenderMemberInfo :: ChatDriver :> es => IncomingMessage -> Eff es (Maybe Aeson.Value)
@@ -261,6 +269,8 @@ chatDriverEffectHandler driver _ = \case
     Driver.completeMessageEdit driver message messageId
   PublishActivity message activity ->
     Driver.publishActivity driver message activity
+  AddReaction message messageId reaction ->
+    Driver.addReaction driver message messageId reaction
   DeleteMessage message messageId ->
     Driver.deleteMessage driver message messageId
   MessageOutPolicy message ->

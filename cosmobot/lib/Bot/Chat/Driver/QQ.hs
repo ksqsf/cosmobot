@@ -85,6 +85,20 @@ instance Driver.ChatDriver QQDriver where
   uploadFile (QQDriver driver) =
     uploadFileQQ driver
 
+  addReaction (QQDriver driver) message messageId reaction =
+    case (message.chatId, messageIdInteger messageId, reaction) of
+      (Just _, Just rawMessageId, Aeson.String emojiId) -> do
+        response <- sendAction driver (Aeson.object
+          [ "action" Aeson..= ("set_msg_emoji_like" :: Text)
+          , "params" Aeson..= Aeson.object
+              [ "message_id" Aeson..= rawMessageId
+              , "emoji_id" Aeson..= emojiId
+              , "set" Aeson..= True
+              ]
+          ])
+        pure (if actionSucceeded response then Right () else Left "QQ rejected the reaction.")
+      _ -> pure (Left "QQ reactions require a chat, numeric message id and emoji ID string.")
+
   deleteMessage (QQDriver driver) =
     deleteMessageQQ driver
 

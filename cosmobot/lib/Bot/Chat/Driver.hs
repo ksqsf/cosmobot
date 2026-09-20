@@ -107,6 +107,10 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
   publishActivity (NormalizingChatDriver driver) message activity =
     publishActivity driver message activity
 
+  addReaction (NormalizingChatDriver driver) message messageId reaction =
+    withChatDriverEither message "Add reaction" do
+      addReaction driver message messageId reaction
+
   deleteMessage (NormalizingChatDriver driver) message messageId =
     fromMaybe False <$> withChatDriverMaybe message "chat delete" do
       Just <$> deleteMessage driver message messageId
@@ -116,7 +120,7 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
       Just <$> messageOutPolicy driver message
 
   getMessageContent (NormalizingChatDriver driver) message messageId =
-    withChatDriverMaybe message "fetch referenced message" do
+    logExceptionAt InfoS do
       traverse (normalizeReferencedMessageMedia driver) =<< getMessageContent driver message messageId
 
   getSenderMemberInfo (NormalizingChatDriver driver) message =
@@ -196,6 +200,10 @@ instance ChatDriver ChatDrivers where
   publishActivity drivers message activity =
     withMessageDriver drivers message \driver ->
       publishActivity driver message activity
+
+  addReaction drivers message messageId reaction =
+    withMessageDriver drivers message \driver ->
+      addReaction driver message messageId reaction
 
   deleteMessage drivers message messageId =
     withMessageDriver drivers message \driver ->
@@ -281,8 +289,8 @@ withChatDriverEither
   :: (KatipE :> es)
   => IncomingMessage
   -> Text
-  -> Eff es (Either Text MessageId)
-  -> Eff es (Either Text MessageId)
+  -> Eff es (Either Text a)
+  -> Eff es (Either Text a)
 withChatDriverEither message label action =
   action `catchSync` \err -> do
     let platformText = show message.platform :: String
