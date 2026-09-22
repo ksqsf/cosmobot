@@ -13,6 +13,7 @@ import Bot.Agent.Tools.Common
 import Bot.Agent.Tool
 import Bot.Agent.Types
 import Bot.Prelude
+import Bot.Util.Time (secondsToMicroseconds)
 import qualified Data.Text as Text
 import System.Exit (ExitCode (..))
 import Effectful.Process (Process, StdStream (..), proc, readCreateProcessWithExitCode, waitForProcess, createProcess, std_err, std_out)
@@ -67,7 +68,7 @@ tryEval timeoutSeconds expression =
   trySync do
     let effectiveTimeout = max 1 timeoutSeconds
         process = proc "emacsclient" ["--socket-name", emacsSocketName, "--eval", Text.unpack expression]
-    outcome <- timeout (effectiveTimeout * 1_000_000) (readCreateProcessWithExitCode process "")
+    outcome <- timeout (secondsToMicroseconds (toInteger effectiveTimeout)) (readCreateProcessWithExitCode process "")
     case outcome of
       Nothing ->
         throwIO (EmacsEvalTimedOut effectiveTimeout)
@@ -85,7 +86,7 @@ startEmacsDaemon timeoutSeconds = do
       { std_out = CreatePipe
       , std_err = CreatePipe
       }
-  outcome <- timeout (effectiveTimeout * 1_000_000) (waitForProcess processHandle)
+  outcome <- timeout (secondsToMicroseconds (toInteger effectiveTimeout)) (waitForProcess processHandle)
   traverse_ hClose outHandle
   traverse_ hClose errHandle
   case outcome of

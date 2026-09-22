@@ -22,6 +22,9 @@ import qualified Bot.Agent.Tools.Python as PythonTools
 import Bot.Core.Message
 import Bot.Core.Transcript
 import qualified Bot.Effect.LLM as LLM
+import qualified Bot.Effect.HTTP as HTTPEffect
+import qualified Bot.LLM.OpenAI.Config as LLMConfig
+import qualified Bot.LLM.OpenAI.Config as ChatConfig (ChatProviderConfig (..))
 import qualified Bot.Effect.Media as Media
 import qualified Bot.LLM.OpenAI.Retry as Retry
 import qualified Bot.LLM.OpenAI.Transport as LLMTransport
@@ -142,6 +145,9 @@ transportFailureTests :: TestTree
 transportFailureTests =
   testGroup "streaming transport corruption"
     [ testCase "UTF-8 split across HTTP chunks is preserved" testUtf8SplitAcrossSseChunks
+    , testCase "SSE event framing survives every byte boundary" testSseEventBoundaries
+    , testCase "SSE dispatch does not wait for another HTTP chunk" testSseDispatch
+    , testCase "LLM timeouts saturate without wrapping" testLLMTimeoutBounds
     , testCase "malformed chunk shape is rejected" testMalformedStreamChunk
     , testCase "premature EOF drops an incomplete tool call" testPrematureToolCallEOF
     , testCase "duplicate deltas keep stream and terminal answer consistent" testDuplicateStreamDelta
@@ -949,6 +955,59 @@ testUtf8SplitAcrossSseChunks = do
         ]
   payloads <- S.toList_ (LLMTransport.streamSsePayloads (S.each chunks))
   payloads @?= [TextEncoding.encodeUtf8 json]
+
+-- Expected events are specified independently of the parser; vary transport
+-- fragmentation without changing the logical event stream.
+testSseEventBoundaries :: Assertion
+testSseEventBoundaries = do
+  for_ ["\n", "\r", "\r\n"] \ending ->
+    for_ ["", "\xfeff"] \bom -> do
+      let wire = TextEncoding.encodeUtf8 $ bom <> Text.intercalate ending
+            [ "data: {", ": heartbeat", "event: message", "data:  \"content\": \"你\"", "data: }", ""
+            , " data: ignored", "Data: ignored", ""
+            , "data:  spaced \t ", "", "data", ""
+            , "data: [DONE]", "", "data: unfinished"
+            ]
+          expected = map TextEncoding.encodeUtf8 ["{\n \"content\": \"你\"\n}", " spaced \t ", ""]
+          partitions = [map StrictByteString.singleton (StrictByteString.unpack wire)] <>
+            [[StrictByteString.take n wire, "", StrictByteString.drop n wire] | n <- [0 .. StrictByteString.length wire]]
+      for_ partitions \chunks -> do
+        actual <- S.toList (LLMTransport.streamSsePayloads (S.each chunks >> pure (17 :: Int)))
+        actual @?= (expected S.:> 17)
+  for_ ["data: incomplete", "data: incomplete\n", "data: incomplete\r\n"] \wire -> do
+    actual <- S.toList_ (LLMTransport.streamSsePayloads (S.yield wire))
+    actual @?= []
+
+testSseDispatch :: Assertion
+testSseDispatch =
+  for_ ["data: ready\n\n", "data: ready\r\r", "data: ready\r\n\r\n"] \wire -> do
+    payload <- S.head_ $ LLMTransport.streamSsePayloads do
+      S.yield wire
+      liftIO $ runEff $ throwIO (InjectedFailure "read past the event boundary")
+    payload @?= Just "ready"
+
+testLLMTimeoutBounds :: Assertion
+testLLMTimeoutBounds = do
+  let boundary = maxBound `div` 1_000_000 :: Int
+      cases = [1, 60, boundary - 1, boundary, boundary + 1, maxBound]
+  for_ cases \seconds -> do
+    captured <- IORef.newIORef (Nothing :: Maybe String)
+    let provider = LLMConfig.defaultChatProviderConfig
+          { ChatConfig.apiKey = Just "test-key"
+          , ChatConfig.requestTimeout = seconds
+          }
+        config = LLMConfig.Config (Just provider) Nothing Nothing
+        expected = if seconds <= boundary then seconds * 1_000_000 else maxBound
+    outcome <- runEff $ runFailIO $ runTimeout $ Resource.runResource $
+      startKatipE "timeout-spec" "test" $
+      interpret (\_ -> \case
+        HTTPEffect.OpenResponse request -> do
+          liftIO $ IORef.writeIORef captured (Just (show (HTTP.responseTimeout request)))
+          throwIO (InjectedFailure "request captured")
+        _ -> throwIO (InjectedFailure "unexpected HTTP operation")) $
+      trySync $ S.toList_ (LLMTransport.askOpenAIStreaming config [])
+    assertBool "capture interrupts transport before any network access" (isLeft outcome)
+    IORef.readIORef captured >>= (@?= Just (show (HTTP.responseTimeoutMicro expected)))
 
 testPrematureToolCallEOF :: Assertion
 testPrematureToolCallEOF = do

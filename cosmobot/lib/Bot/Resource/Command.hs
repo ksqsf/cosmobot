@@ -15,6 +15,7 @@ where
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
+import Bot.Util.Time (secondsToMicroseconds)
 import qualified Data.Text as Text
 import qualified Effectful.Concurrent.MVar as MVar
 import Effectful.Timeout (Timeout, timeout)
@@ -96,5 +97,5 @@ waitCommand
   -> Eff es CommandStatus
 waitCommand seconds command = do
   active <- MVar.readMVar command.worker
-  for_ active \workerHandle -> void $ timeout (max 1 seconds * 1000000) (Concurrency.await workerHandle)
+  for_ active \workerHandle -> void $ timeout (secondsToMicroseconds (toInteger (max 1 seconds))) (Concurrency.await workerHandle)
   queryCommand command

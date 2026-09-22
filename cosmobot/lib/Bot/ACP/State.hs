@@ -115,14 +115,17 @@ registerClient acpState =
 
 unregisterClient :: Concurrent :> es => AcpState -> AcpClientId -> Eff es ()
 unregisterClient acpState clientId =
-  STM.atomically do
-    STM.modifyTVar' acpState.clients (Map.delete clientId)
-    STM.modifyTVar' acpState.clientCapabilities (Map.delete clientId)
-    STM.modifyTVar' acpState.activeSessionClients (Map.filter (/= clientId))
-    pending <- STM.readTVar acpState.pendingClientRequests
-    let (removed, remaining) = Map.partitionWithKey (\(pendingClientId, _) _ -> pendingClientId == clientId) pending
-    STM.writeTVar acpState.pendingClientRequests remaining
-    traverse_ (\waiter -> STM.tryPutTMVar waiter (Left "ACP client disconnected")) removed
+  STM.atomically (unregisterClientSTM acpState clientId)
+
+unregisterClientSTM :: AcpState -> AcpClientId -> STM.STM ()
+unregisterClientSTM acpState clientId = do
+  STM.modifyTVar' acpState.clients (Map.delete clientId)
+  STM.modifyTVar' acpState.clientCapabilities (Map.delete clientId)
+  STM.modifyTVar' acpState.activeSessionClients (Map.filter (/= clientId))
+  pending <- STM.readTVar acpState.pendingClientRequests
+  let (removed, remaining) = Map.partitionWithKey (\(pendingClientId, _) _ -> pendingClientId == clientId) pending
+  STM.writeTVar acpState.pendingClientRequests remaining
+  traverse_ (\waiter -> STM.tryPutTMVar waiter (Left "ACP client disconnected")) removed
 
 setClientCapabilities :: Concurrent :> es => AcpState -> AcpClientQueue -> AcpClientCapabilities -> Eff es ()
 setClientCapabilities acpState queue capabilities =
@@ -159,14 +162,14 @@ requestSessionClient
   -> Aeson.Value
   -> Eff es (Either Text Aeson.Value)
 requestSessionClient acpState sessionId method supported params =
-  STM.atomically acquire >>= \case
-    Left err ->
-      pure (Left err)
-    Right (queue, requestId, waiter) -> do
-      writeClient queue (Aeson.toJSON (clientRequest requestId))
-      STM.atomically (STM.readTMVar waiter)
-        `finally` cleanupPending queue requestId
+  bracket (STM.atomically acquire) release use
   where
+    release = \case
+      Left _ -> pure ()
+      Right (queue, requestId, _) -> cleanupPending queue requestId
+    use = \case
+      Left err -> pure (Left err)
+      Right (_, _, waiter) -> STM.atomically (STM.readTMVar waiter)
     acquire = do
       activeClients <- STM.readTVar acpState.activeSessionClients
       clients <- STM.readTVar acpState.clients
@@ -185,6 +188,9 @@ requestSessionClient acpState sessionId method supported params =
               let requestId = JSONRPC.RequestId (Aeson.Number (fromInteger requestNumber))
               waiter <- STM.newEmptyTMVar
               STM.modifyTVar' acpState.pendingClientRequests (Map.insert (clientId, requestKey requestId) waiter)
+              -- Publish the request and its waiter atomically. A full queue
+              -- retries acquisition, including the client liveness check.
+              STM.writeTBQueue queue.events (AcpClientSend (Aeson.toJSON (clientRequest requestId)))
               pure (Right (queue, requestId, waiter))
     clientRequest requestId =
       JSONRPC.RequestMessage $
@@ -260,6 +266,7 @@ broadcast acpState value =
     clients <- STM.readTVar acpState.clients
     clients' <- Map.traverseMaybeWithKey (broadcastClient value) clients
     STM.writeTVar acpState.clients clients'
+    traverse_ (unregisterClientSTM acpState) (Map.keys (Map.difference clients clients'))
 
 openSession :: Storage.Storage :> es => Maybe Text -> Eff es Session.Session
 openSession =

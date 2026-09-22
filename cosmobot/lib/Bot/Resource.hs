@@ -211,7 +211,7 @@ createIn stateRef unlift _ parent creatorRunId requestedName initValue =
         case reservation of
           Left err -> pure (Left err)
           Right (createId, resourceId) ->
-            (mask \restore -> createAndRegister ttlSeconds restore owner resourceId) `finally` finishCreate createId gate
+            (mask \restore -> createAndRegister ttlSeconds restore owner resourceId) `finally` finishReservation stateRef createId gate
 
     createAndRegister ttlSeconds restore owner resourceId =
       restore (unlift (createResourceObject @(Eff localEs) @a initValue)) >>= \case
@@ -259,15 +259,21 @@ createIn stateRef unlift _ parent creatorRunId requestedName initValue =
                     ResourceStorage.setResourceLifetime resourceId ((,) <$> ttlSeconds <*> expiresAt)
                  ) `onException` discard)
           case persisted of
-            Left err -> discard $> Left (ResourceCreationFailed ("Failed to persist resource: " <> conciseException err))
+            Left err -> pure (Left (ResourceCreationFailed ("Failed to persist resource: " <> conciseException err)))
             Right () -> do
               atomicModifyIORef' stateRef \state ->
                 (state{resources = Map.insert resourceId resource state.resources}, ())
               pure (Right resourceId)
 
-    finishCreate createId gate = do
-      atomicModifyIORef' stateRef \state -> (state{creating = Map.delete createId state.creating}, ())
-      void (MVar.tryPutMVar gate ())
+finishReservation
+  :: (Prim :> es, Concurrent :> es)
+  => IORef (ManagerState es)
+  -> Integer
+  -> MVar.MVar ()
+  -> Eff es ()
+finishReservation stateRef reservationId gate = do
+  atomicModifyIORef' stateRef \state -> (state{creating = Map.delete reservationId state.creating}, ())
+  void (MVar.tryPutMVar gate ())
 
 reserveName
   :: ManagerState es
@@ -318,21 +324,17 @@ withIn
   -> (a -> Eff localEs b)
   -> Eff es (Either ResourceError b)
 withIn stateRef unlift access resourceId user callback =
-  acquire stateRef access resourceId user >>= \case
+  mask \restore -> acquire stateRef access resourceId user >>= \case
     Left err -> pure (Left err)
     Right (dynamicValue, persistent, previousLifetime, currentLifetime) ->
-      case Dynamic.fromDynamic dynamicValue of
-        Nothing -> do
-          rollbackLifetime stateRef resourceId currentLifetime previousLifetime
-          releaseUser stateRef resourceId user
-          pure (Left ResourceTypeMismatch)
-        Just object ->
-          persistRefreshedLifetime persistent resourceId currentLifetime >>= \case
-            Left err -> do
-              rollbackLifetime stateRef resourceId currentLifetime previousLifetime
-              releaseUser stateRef resourceId user
-              pure (Left err)
-            Right () -> Right <$> unlift (callback object) `finally` releaseUser stateRef resourceId user
+      let rollback = rollbackLifetime stateRef resourceId currentLifetime previousLifetime
+      in (case Dynamic.fromDynamic dynamicValue of
+            Nothing -> rollback $> Left ResourceTypeMismatch
+            Just object ->
+              (restore (persistRefreshedLifetime persistent resourceId currentLifetime) `onException` rollback) >>= \case
+                Left err -> rollback $> Left err
+                Right () -> Right <$> restore (unlift (callback object)))
+          `finally` releaseUser stateRef resourceId user
 
 listIn
   :: (Prim :> es, IOE :> es)
@@ -418,7 +420,7 @@ destroyIn stateRef access resourceId =
       finishDestroy stateRef resourceId cleanup persistent
 
 renameIn
-  :: (Storage.Storage :> es, Prim :> es, IOE :> es)
+  :: (Storage.Storage :> es, Concurrent :> es, Prim :> es, IOE :> es)
   => IORef (ManagerState es)
   -> ResourceAccess
   -> ResourceId
@@ -427,19 +429,21 @@ renameIn
 renameIn stateRef access resourceId newId =
   case validateResourceName newId of
     Left err -> pure (Left err)
-    Right validId -> mask \_ -> beginRename stateRef access resourceId validId >>= \case
-      Left err -> pure (Left err)
-      Right Nothing -> pure (Right validId)
-      Right (Just persistent) -> do
-        let rollback = do
-              when persistent $ void $ trySync (ResourceStorage.renameResource validId resourceId)
-              rollbackRename stateRef resourceId validId
-            persist
-              | persistent = ResourceStorage.renameResource resourceId validId
-              | otherwise = pure ()
-        trySync (persist `onException` rollback) >>= \case
-          Left err -> rollbackRename stateRef resourceId validId $> Left (ResourceRenameFailed (conciseException err))
-          Right () -> finishRename stateRef validId $> Right validId
+    Right validId -> mask \_ -> do
+      gate <- MVar.newEmptyMVar
+      beginRename stateRef access resourceId validId gate >>= \case
+        Left err -> pure (Left err)
+        Right Nothing -> pure (Right validId)
+        Right (Just (persistent, reservationId)) -> flip finally (finishReservation stateRef reservationId gate) do
+          let rollback = do
+                when persistent $ void $ trySync (ResourceStorage.renameResource validId resourceId)
+                rollbackRename stateRef resourceId validId
+              persist
+                | persistent = ResourceStorage.renameResource resourceId validId
+                | otherwise = pure ()
+          trySync (persist `onException` rollback) >>= \case
+            Left err -> pure (Left (ResourceRenameFailed (conciseException err)))
+            Right () -> finishRename stateRef validId $> Right validId
 
 beginRename
   :: Prim :> es
@@ -447,13 +451,15 @@ beginRename
   -> ResourceAccess
   -> ResourceId
   -> ResourceId
-  -> Eff es (Either ResourceError (Maybe Bool))
-beginRename stateRef access resourceId newId =
+  -> MVar.MVar ()
+  -> Eff es (Either ResourceError (Maybe (Bool, Integer)))
+beginRename stateRef access resourceId newId gate =
   atomicModifyIORef' stateRef \state ->
     case Map.lookup resourceId state.resources of
       Nothing -> (state, Left ResourceNotFoundOrNotOwned)
       Just resource
         | not (mayAccess access resource) -> (state, Left ResourceNotFoundOrNotOwned)
+        | not state.accepting -> (state, Left ResourceUnavailable)
         | resourceId == newId, Available{} <- resource.availability -> (state, Right Nothing)
         | not (isAvailableWithoutUsers resource.availability) -> (state, Left ResourceUnavailable)
         | Map.member newId state.resources || any ((== newId) . fst) state.creating ->
@@ -461,7 +467,12 @@ beginRename stateRef access resourceId newId =
         | otherwise ->
             let renamed = resource{availability = Destroying}
                 resources = Map.insert newId renamed (Map.delete resourceId state.resources)
-            in (state{resources}, Right (Just resource.persistent))
+                -- Keep the source name reserved for rollback, and make shutdown
+                -- await this operation just as it awaits in-flight creation.
+                reservationId = state.nextCreate
+            in ( state{resources, nextCreate = reservationId + 1, creating = Map.insert reservationId (resourceId, gate) state.creating}
+               , Right (Just (resource.persistent, reservationId))
+               )
   where
     isAvailableWithoutUsers = \case
       Available _ activeUses -> activeUses == 0
@@ -697,15 +708,17 @@ finishDestroy
   -> Bool
   -> Eff es (Either ResourceError ())
 finishDestroy stateRef resourceId cleanup persistent =
-  trySync cleanup >>= \case
-    Right (Right ()) ->
-      if persistent
-        then trySync (ResourceStorage.deleteResource resourceId) >>= \case
-          Right () -> removeDestroyed stateRef resourceId $> Right ()
-          Left err -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed (conciseException err))
-        else removeDestroyed stateRef resourceId $> Right ()
-    Right (Left err) -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed err)
-    Left err -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed (conciseException err))
+  mask \restore ->
+    (trySync (restore cleanup) >>= \case
+      Right (Right ()) ->
+        if persistent
+          then trySync (ResourceStorage.deleteResource resourceId) >>= \case
+            Right () -> removeDestroyed stateRef resourceId $> Right ()
+            Left err -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed (conciseException err))
+          else removeDestroyed stateRef resourceId $> Right ()
+      Right (Left err) -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed err)
+      Left err -> restoreDestroyed stateRef resourceId $> Left (ResourceCleanupFailed (conciseException err)))
+      `onException` restoreDestroyed stateRef resourceId
 
 shutdown :: (Concurrency.Concurrency :> es, Concurrent :> es, Prim :> es) => IORef (ManagerState es) -> Eff es ()
 shutdown stateRef = do

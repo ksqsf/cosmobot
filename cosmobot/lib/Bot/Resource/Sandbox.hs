@@ -31,6 +31,7 @@ import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Config.Schema as Schema
 import Bot.Prelude
 import qualified Bot.Util.Process as ProcessUtil
+import Bot.Util.Time (secondsToMicroseconds)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
@@ -128,7 +129,7 @@ runCommand timeoutSeconds sandbox script requestedLimit = do
   let effectiveTimeout = max 1 timeoutSeconds
       limit = fromMaybe defaultOutputByteLimit requestedLimit
       args = podmanExecArgs sandbox.containerId effectiveTimeout limit script
-  outcome <- timeout ((effectiveTimeout + commandExitGraceSeconds) * 1_000_000) (runPodmanCommand args)
+  outcome <- timeout (secondsToMicroseconds (toInteger effectiveTimeout + toInteger commandExitGraceSeconds)) (runPodmanCommand args)
   case outcome of
     Nothing -> pure (Left "Podman command did not exit after its timeout.")
     Just result -> pure do

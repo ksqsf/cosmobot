@@ -1348,7 +1348,9 @@ parseChatHistoryParams :: Aeson.Value -> AesonTypes.Parser ChatHistoryParams
 parseChatHistoryParams =
   Aeson.withObject "chat.history params" \o -> do
     sessionId <- Session.SessionId <$> (o Aeson..: "sessionId" <|> o Aeson..: "session_id")
-    beforeMessageId <- o Aeson..:? "beforeMessageId" <|> o Aeson..:? "before_message_id"
+    beforeMessageId <- o Aeson..:? "beforeMessageId" >>= \case
+      Just value -> pure (Just value)
+      Nothing -> o Aeson..:? "before_message_id"
     limit <- fromMaybe 100 <$> o Aeson..:? "limit"
     when (limit < 1 || limit > 200) $
       fail "limit must be between 1 and 200"

@@ -103,7 +103,7 @@ loadResourceLifetimes = do
 saveResource :: Storage.Storage :> es => StoredResource -> Eff es ()
 saveResource resource = do
   ensureTable
-  runSelda do
+  runSelda $ transaction do
     deleteFrom_ resources \row -> row ! #resource_id .== literal resource.resourceId
     deleteFrom_ resourceCreators \row -> row ! #resource_id .== literal resource.resourceId
     insert_ resources [toRow resource]
@@ -113,7 +113,7 @@ saveResource resource = do
 deleteResource :: Storage.Storage :> es => ResourceId -> Eff es ()
 deleteResource resourceId = do
   ensureTable
-  runSelda do
+  runSelda $ transaction do
     deleteFrom_ resourceLifetimes \row -> row ! #resource_id .== literal resourceId
     deleteFrom_ resourceCreators \row -> row ! #resource_id .== literal resourceId
     deleteFrom_ resources \row -> row ! #resource_id .== literal resourceId
@@ -121,7 +121,7 @@ deleteResource resourceId = do
 renameResource :: Storage.Storage :> es => ResourceId -> ResourceId -> Eff es ()
 renameResource oldId newId = do
   ensureTable
-  runSelda do
+  runSelda $ transaction do
     update_ resources
       (\row -> row ! #resource_id .== literal oldId)
       (\row -> row `with` [#resource_id := literal newId])
@@ -135,7 +135,7 @@ renameResource oldId newId = do
 setResourceLifetime :: Storage.Storage :> es => ResourceId -> Maybe (Int, UTCTime) -> Eff es ()
 setResourceLifetime resourceId lifetime = do
   ensureTable
-  runSelda do
+  runSelda $ transaction do
     deleteFrom_ resourceLifetimes \row -> row ! #resource_id .== literal resourceId
     for_ lifetime \(ttlSeconds, expiresAt) ->
       insert_ resourceLifetimes [ResourceLifetimeRow resourceId ttlSeconds expiresAt]

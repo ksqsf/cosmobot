@@ -31,8 +31,15 @@ retryLLMStreamRequest
   -> Stream (Of a) (Eff es) r
   -> Stream (Of a) (Eff es) r
 retryLLMStreamRequest =
-  retryLLMStreamRequestWith \seconds ->
-    threadDelay (seconds * 1_000_000)
+  retryLLMStreamRequestWith sleepSeconds
+  where
+    -- Fit each threadDelay argument without overflowing or shortening the wait.
+    sleepSeconds seconds
+      | seconds <= 0 = pure ()
+      | otherwise = do
+          let chunk = min seconds (maxBound `div` 1_000_000)
+          threadDelay (chunk * 1_000_000)
+          sleepSeconds (seconds - chunk)
 
 retryLLMStreamRequestWith
   :: (IOE :> es, KatipE :> es)
@@ -117,10 +124,12 @@ retryAfterSeconds err =
 
 parseDeltaSeconds :: ByteString.ByteString -> Maybe Int
 parseDeltaSeconds raw =
-  case ByteString.readInt raw of
+  case ByteString.readInteger raw of
     Just (seconds, rest)
       | seconds >= 0
+      , seconds <= toInteger (maxBound :: Int)
+      , ByteString.all (\char -> char >= '0' && char <= '9') raw
       , ByteString.null rest ->
-          Just seconds
+          Just (fromInteger seconds)
     _ ->
       Nothing

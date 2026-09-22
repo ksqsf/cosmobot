@@ -7,6 +7,7 @@ Stability   : experimental
 
 module Bot.Handler.Typing
   ( typingHandlers
+  , tigerRows
   )
 where
 
@@ -158,7 +159,9 @@ tigerRow =
     hitRate <- o Aeson..:? "hit_rate" :: AesonTypes.Parser (Maybe Double)
     kpw <- o Aeson..:? "kpw" :: AesonTypes.Parser (Maybe Double)
     wordRatio <- o Aeson..:? "word_ratio" :: AesonTypes.Parser (Maybe Double)
-    time <- (o Aeson..:? "total_time" <|> o Aeson..:? "time") :: AesonTypes.Parser (Maybe Double)
+    time <- o Aeson..:? "total_time" >>= \case
+      Just value -> pure (Just value)
+      Nothing -> o Aeson..:? "time"
     accuracy <- o Aeson..:? "accuracy" :: AesonTypes.Parser (Maybe Double)
     inputMethod <- o Aeson..:? "input_method" :: AesonTypes.Parser (Maybe Text)
     pure

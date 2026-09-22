@@ -25,7 +25,39 @@ main =
       , testCase "base64 image references are sanitized" testImageSanitization
       , testCase "lists chats and queries a message window" testInspectionWindow
       , testCase "records sender and chat identity with the message" testIdentityDirectory
+      , testCase "global search preserves each stored chat kind" testGlobalChatKinds
+      , testCase "legacy reply lookup excludes identified replies" testLegacyReplyAnchor
       ]
+
+testGlobalChatKinds :: IO ()
+testGlobalChatKinds = runChatLogTest do
+  let kinds = [ChatPrivate, ChatGroup, ChatChannel, ChatUnknown "custom"]
+  for_ (zip [100..] kinds) \(ident, kind) ->
+    ChatLog.recordMessage (messageFromChat ident ident "needle"){kind}
+  for_ kinds \kind -> do
+    entries <- ChatLog.queryCurrentSenderChatLog
+      (messageFromChat 999 999 "query"){kind}
+      ChatLog.SenderChatLogGlobal [["needle"]] 10 ChatLog.unboundedChatLogTimeRange
+    liftIO $ map (\entry -> (entry.kind, entry.chatId)) entries
+      @?= reverse (zip kinds (map (Just . integerChatId) [100..103]))
+
+testLegacyReplyAnchor :: IO ()
+testLegacyReplyAnchor = runChatLogTest do
+  let scope = ChatLog.ChatLogScope PlatformTelegram ChatPrivate (Just "200")
+      lookupReply = ChatLog.findLegacyReplyAnchor scope "same answer"
+  ChatLog.recordSelfMessage (messageFromChat 100 200 "old question") Nothing "same answer"
+  ChatLog.recordSelfMessage (messageFromChat 101 200 "new question") (Just "bot-101") "same answer"
+  lookupReply >>= liftIO . (@?= Just "100")
+  ChatLog.recordSelfMessage (messageFromChat 102 200 "latest legacy") Nothing "same answer"
+  ChatLog.recordSelfMessage (messageFromChat 103 201 "other chat") Nothing "same answer"
+  lookupReply >>= liftIO . (@?= Just "102")
+  modernOnly <- ChatLog.findLegacyReplyAnchor
+    (ChatLog.ChatLogScope PlatformTelegram ChatPrivate (Just "300")) "modern only"
+  liftIO $ modernOnly @?= Nothing
+  ChatLog.recordSelfMessage (messageFromChat 104 300 "question") (Just "bot-104") "modern only"
+  afterModern <- ChatLog.findLegacyReplyAnchor
+    (ChatLog.ChatLogScope PlatformTelegram ChatPrivate (Just "300")) "modern only"
+  liftIO $ afterModern @?= Nothing
 
 testQueryCurrentChat :: IO ()
 testQueryCurrentChat = runChatLogTest do

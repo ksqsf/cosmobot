@@ -40,15 +40,19 @@ runSchedulerWith
 runSchedulerWith prepareMessage inner = do
   storedMessages <- SchedulerStorage.loadScheduledMessages
   queue <- STM.newTBQueueIO scheduledMessageQueueCapacity
+  receiver <- MVar.newMVar ()
   schedulerStateVar <- MVar.newMVar (schedulerStateFromStoredMessages storedMessages)
   schedulerWake <- MVar.newEmptyMVar
   Concurrency.withWorker "scheduler.worker" (schedulerWorker schedulerStateVar schedulerWake queue) $
     interpret
       (\_ -> \case
         ScheduleMessage delaySeconds recurringIntervalSeconds message -> do
-          _ <- persistPendingMessage schedulerStateVar delaySeconds recurringIntervalSeconds message
-          signalSchedulerWake schedulerWake
-          pure True
+          if isNothing message.chatId || (isNothing message.senderId && isNothing message.senderUsername)
+            then pure False
+            else do
+              _ <- persistPendingMessage schedulerStateVar delaySeconds recurringIntervalSeconds message
+              signalSchedulerWake schedulerWake
+              pure True
         DeleteScheduledMessage message scheduleId -> do
           deleted <- deletePersistedPendingMessage schedulerStateVar message scheduleId
           when deleted (signalSchedulerWake schedulerWake)
@@ -68,11 +72,20 @@ runSchedulerWith prepareMessage inner = do
         ListAllScheduledMessages -> do
           now <- currentUnixSeconds
           map (scheduledMessage now) . Map.elems . (.pendingById) <$> MVar.readMVar schedulerStateVar
-        ReceiveScheduledMessage -> do
-          pending <- receivePendingMessage schedulerStateVar queue
-          when (isNothing pending.recurringIntervalSeconds) $
-            SchedulerStorage.deleteScheduledMessage pending.scheduleId
-          prepareMessage pending.message)
+        ReceiveScheduledMessage ->
+          MVar.withMVar receiver \() ->
+            let receive = do
+                  pending <- receivePendingMessage schedulerStateVar queue
+                  -- Keep the queue head and durable record available if preparation fails.
+                  prepared <- prepareMessage pending.message
+                  active <- mask_ do
+                    active <- case pending.recurringIntervalSeconds of
+                      Nothing -> deletePersistedPendingMessageById schedulerStateVar pending.scheduleId
+                      Just _ -> MVar.withMVar schedulerStateVar (pure . Map.member pending.scheduleId . (.pendingById))
+                    void (STM.atomically (STM.readTBQueue queue))
+                    pure active
+                  if active then pure prepared else receive
+            in receive)
       inner
 
 receivePendingMessage
@@ -81,12 +94,13 @@ receivePendingMessage
   -> STM.TBQueue PendingMessage
   -> Eff es PendingMessage
 receivePendingMessage schedulerStateVar queue = do
-  pending <- STM.atomically (STM.readTBQueue queue)
-  case pending.recurringIntervalSeconds of
-    Nothing -> pure pending
-    Just _ -> do
-      active <- MVar.withMVar schedulerStateVar (pure . Map.member pending.scheduleId . (.pendingById))
-      if active then pure pending else receivePendingMessage schedulerStateVar queue
+  pending <- STM.atomically (STM.peekTBQueue queue)
+  active <- MVar.withMVar schedulerStateVar (pure . Map.member pending.scheduleId . (.pendingById))
+  if active
+    then pure pending
+    else do
+      void (STM.atomically (STM.readTBQueue queue))
+      receivePendingMessage schedulerStateVar queue
 
 schedulerWorker
   :: (Concurrent :> es, IOE :> es, Storage.Storage :> es, Timeout :> es)

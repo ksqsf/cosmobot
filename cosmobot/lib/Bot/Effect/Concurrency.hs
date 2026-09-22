@@ -114,8 +114,9 @@ withWorkerHandle
   -> Eff es ()
   -> (Handle -> Eff es a)
   -> Eff es a
-withWorkerHandle label worker =
-  bracket (fork label worker) cancelAndAwait
+withWorkerHandle label worker inner =
+  mask \restore ->
+    bracket (fork label (restore worker)) cancelAndAwait (restore . inner)
 
 raceTasks_
   :: (Concurrency :> es, Concurrent :> es, IOE :> es)
@@ -126,12 +127,9 @@ raceTasks_
   -> Eff es ()
 raceTasks_ leftLabel leftAction rightLabel rightAction = do
   done <- MVar.newEmptyMVar
-  left <- fork leftLabel (capture done leftAction)
-  right <- fork rightLabel (capture done rightAction)
-  let cancelBoth = do
-        cancelAndAwait left
-        cancelAndAwait right
-  result <- MVar.takeMVar done `finally` cancelBoth
+  result <- withWorker leftLabel (capture done leftAction) $
+    withWorker rightLabel (capture done rightAction) $
+      MVar.takeMVar done
   either throwIO pure result
   where
     capture

@@ -246,7 +246,8 @@ findLegacyReplyAnchor scope body = do
   ensureChatLogTable
   rows <- runSelda $ query $ queryLimit 0 1 do
     row <- select chatLogRows
-    restrict (scopeMatches scope row .&& row ! #is_bot .== literal True .&& row ! #body_text .== literal body)
+    restrict (scopeMatches scope row .&& row ! #is_bot .== literal True
+      .&& isNull (row ! #message_id) .&& row ! #body_text .== literal body)
     order (row ! #id) descending
     pure (row ! #reply_to_message_id)
   pure (textMessageId <$> (join (viaNonEmpty head rows)))
@@ -318,7 +319,7 @@ chatLogEntryFromScope scope row =
   ChatLogEntry
     { recordedAt = row.recorded_at
     , platform = scope.platform
-    , kind = scope.kind
+    , kind = kindFromKey row.kind_key
     , chatId = textChatId <$> row.chat_id
     , senderId = row.sender_id
     , senderUsername = row.sender_username

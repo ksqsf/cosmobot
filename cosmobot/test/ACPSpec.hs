@@ -51,7 +51,13 @@ main :: IO ()
 main =
   defaultMain $
     testGroup "acp"
-      [ testCase "enabled config requires token" testEnabledConfigRequiresToken
+      [ testCase "ACP requests survive queue capacity boundaries" testRequestQueueBoundaries
+      , testCase "ACP responses match request and client across delivery orders" testResponseRouting
+      , testCase "ACP cancelled full-queue request leaves no waiter" testCancelledFullQueueRequest
+      , testCase "ACP disconnect unblocks full-queue request" testDisconnectedFullQueueRequest
+      , testCase "ACP overflow resolves pending requests and preserves other clients" testOverflowPendingRequest
+      , testCase "ACP cancelled response wait rejects late responses" testCancelledResponseWait
+      , testCase "enabled config requires token" testEnabledConfigRequiresToken
       , testCase "session/new creates session and session/delete deletes it" testSessionNewAndDelete
       , testCase "session/list returns durable sessions with cwd filter" testSessionList
       , testCase "session/load replays durable text history" testSessionLoadReplaysHistory
@@ -71,6 +77,118 @@ main =
       , testCase "ACP client terminal checks advertised capability" testClientTerminalChecksAdvertisedCapability
       , testCase "websocket server authenticates and handles initialize" testWebSocketServerAuthenticatesAndHandlesInitialize
       ]
+
+testRequestQueueBoundaries :: IO ()
+testRequestQueueBoundaries = for_ [0, 255, 256] \queued -> do
+  result <- timeout 1_000_000 $ runEff $ runConcurrent do
+    acpState <- ACPState.newAcpState
+    (_, queue) <- ACPState.registerClient acpState
+    replicateM_ queued (ACPState.writeClient queue Aeson.Null)
+    ACPState.withActiveSessionClient acpState queue (Session.SessionId "test") $
+      Async.concurrently
+        (ACPState.requestSessionClient acpState (Session.SessionId "test") "test" (const True) Aeson.Null)
+        do
+          replicateM_ queued do
+            event <- ACPState.readClient queue
+            liftIO $ event @?= ACPState.AcpClientSend Aeson.Null
+          request <- readClientRequest queue
+          resolveClientRequest acpState queue request (Aeson.String "ok")
+  result @?= Just (Right (Aeson.String "ok"), ())
+
+testResponseRouting :: IO ()
+testResponseRouting = for_ [[0,1,2], [0,2,1], [1,0,2], [1,2,0], [2,0,1], [2,1,0]] \order -> do
+  result <- timeout 1_000_000 $ runEff $ runConcurrent do
+    acpState <- ACPState.newAcpState
+    (_, queue) <- ACPState.registerClient acpState
+    (_, other) <- ACPState.registerClient acpState
+    ACPState.withActiveSessionClient acpState queue (Session.SessionId "test") $
+      Async.concurrently
+        (Async.mapConcurrently
+          (\method -> ACPState.requestSessionClient acpState (Session.SessionId "test") method (const True) Aeson.Null)
+          ["first", "second", "third"])
+        do
+          requests <- replicateM 3 (readClientRequest queue)
+          for_ order \index -> do
+            request <- maybe (liftIO $ assertFailure "missing concurrent request") pure (requests !!? index)
+            let response = JSONRPC.ResponseMessage $
+                  JSONRPC.JSONRPCResponse JSONRPC.rPC_VERSION request.id (Aeson.String request.method)
+            wrongClient <- ACPState.resolveClientResponse acpState other response
+            accepted <- ACPState.resolveClientResponse acpState queue response
+            duplicate <- ACPState.resolveClientResponse acpState queue response
+            liftIO $ (wrongClient, accepted, duplicate) @?= (False, True, False)
+  result @?= Just (map (Right . Aeson.String) ["first", "second", "third"], ())
+
+-- Fill the public outbound queue to its 256-event boundary.
+testCancelledFullQueueRequest :: IO ()
+testCancelledFullQueueRequest = runEff $ runConcurrent do
+  acpState <- ACPState.newAcpState
+  (_, queue) <- ACPState.registerClient acpState
+  replicateM_ 256 (ACPState.writeClient queue Aeson.Null)
+  ACPState.withActiveSessionClient acpState queue (Session.SessionId "test") do
+    outcome <- Async.race (threadDelay 50_000) $
+      ACPState.requestSessionClient acpState (Session.SessionId "test") "test" (const True) Aeson.Null
+    liftIO $ outcome @?= Left ()
+    accepted <- ACPState.resolveClientResponse acpState queue $
+      JSONRPC.ResponseMessage $ JSONRPC.JSONRPCResponse JSONRPC.rPC_VERSION (JSONRPC.RequestId (Aeson.Number 1)) Aeson.Null
+    liftIO $ assertBool "cancelled send must not retain a response waiter" (not accepted)
+
+testDisconnectedFullQueueRequest :: IO ()
+testDisconnectedFullQueueRequest = do
+  result <- timeout 1_000_000 $ runEff $ runConcurrent do
+    acpState <- ACPState.newAcpState
+    (clientId, queue) <- ACPState.registerClient acpState
+    replicateM_ 256 (ACPState.writeClient queue Aeson.Null)
+    ACPState.withActiveSessionClient acpState queue (Session.SessionId "test") $
+      Async.concurrently
+        (ACPState.requestSessionClient acpState (Session.SessionId "test") "test" (const True) Aeson.Null)
+        (threadDelay 50_000 >> ACPState.unregisterClient acpState clientId)
+  case result of
+    Just (Left _, ()) -> pure ()
+    _ -> assertFailure "disconnect must unblock a request even when its send queue stays full"
+
+testOverflowPendingRequest :: IO ()
+testOverflowPendingRequest = do
+  result <- timeout 1_000_000 $ runEff $ runConcurrent do
+    acpState <- ACPState.newAcpState
+    (_, queue) <- ACPState.registerClient acpState
+    (_, healthy) <- ACPState.registerClient acpState
+    ACPState.withActiveSessionClient acpState queue (Session.SessionId "test") do
+      (response, ()) <- Async.concurrently
+        (ACPState.requestSessionClient acpState (Session.SessionId "test") "test" (const True) Aeson.Null)
+        do
+          _ <- readClientRequest queue
+          replicateM_ 256 (ACPState.writeClient queue Aeson.Null)
+          ACPState.broadcast acpState (Aeson.String "update")
+          event <- ACPState.readClient queue
+          healthyEvent <- ACPState.readClient healthy
+          liftIO do
+            event @?= ACPState.AcpClientDisconnect "ACP notification queue overflow"
+            healthyEvent @?= ACPState.AcpClientSend (Aeson.String "update")
+      liftIO $ response @?= Left "ACP client disconnected"
+      -- Other clients can still complete requests after the overflow.
+      ACPState.withActiveSessionClient acpState healthy (Session.SessionId "healthy") do
+        (value, ()) <- Async.concurrently
+          (ACPState.requestSessionClient acpState (Session.SessionId "healthy") "test" (const True) Aeson.Null)
+          do
+            request <- readClientRequest healthy
+            resolveClientRequest acpState healthy request (Aeson.String "ok")
+        liftIO $ value @?= Right (Aeson.String "ok")
+  result @?= Just ()
+
+testCancelledResponseWait :: IO ()
+testCancelledResponseWait = runEff $ runConcurrent do
+  acpState <- ACPState.newAcpState
+  (_, queue) <- ACPState.registerClient acpState
+  ACPState.withActiveSessionClient acpState queue (Session.SessionId "test") do
+    outcome <- Async.race
+      (readClientRequest queue)
+      (ACPState.requestSessionClient acpState (Session.SessionId "test") "test" (const True) Aeson.Null)
+    case outcome of
+      Left request -> do
+        accepted <- ACPState.resolveClientResponse acpState queue $
+          JSONRPC.ResponseMessage $ JSONRPC.JSONRPCResponse JSONRPC.rPC_VERSION request.id Aeson.Null
+        liftIO $ assertBool "cancelled response wait must reject late responses" (not accepted)
+      Right _ -> liftIO $ assertFailure "request completed without a response"
 
 testEnabledConfigRequiresToken :: IO ()
 testEnabledConfigRequiresToken =

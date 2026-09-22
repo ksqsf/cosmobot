@@ -23,6 +23,19 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Int as Int
 import qualified Data.Text.Encoding as TextEncoding
 
+data ScheduledIntegerOutOfRange = ScheduledIntegerOutOfRange
+  deriving (Show)
+
+instance Exception ScheduledIntegerOutOfRange
+
+-- SQLite INTEGER is signed 64-bit; unchecked conversion can change a deadline
+-- into the past or make an unrelated id target an existing schedule.
+checkedInt64 :: Integer -> Eff es Int.Int64
+checkedInt64 value
+  | value < toInteger (minBound :: Int.Int64) || value > toInteger (maxBound :: Int.Int64) =
+      throwIO ScheduledIntegerOutOfRange
+  | otherwise = pure (fromInteger value)
+
 data StoredScheduledMessage = StoredScheduledMessage
   { scheduleId :: !Integer
   -- | Absolute due time as Unix epoch seconds.
@@ -73,13 +86,14 @@ loadScheduledMessages = do
 
 createScheduledMessage :: Storage.Storage :> es => Integer -> Maybe Int -> IncomingMessage -> Eff es StoredScheduledMessage
 createScheduledMessage dueAtUnixSeconds recurringIntervalSeconds message = do
+  storedDueAt <- checkedInt64 dueAtUnixSeconds
   ensureScheduledMessagesTable
   scheduleId <- fromIntegral . fromId <$> runSelda
     ( insertWithPK
       scheduledMessages
       [ ScheduledMessageRow
           { id = def
-          , due_at_unix_seconds = fromIntegral dueAtUnixSeconds
+          , due_at_unix_seconds = storedDueAt
           , recurring_interval_seconds = fromIntegral <$> recurringIntervalSeconds
           , platform_key = chatPlatformKey message.platform
           , chat_id = chatIdText <$> message.chatId
@@ -93,19 +107,21 @@ createScheduledMessage dueAtUnixSeconds recurringIntervalSeconds message = do
 
 rescheduleScheduledMessages :: Storage.Storage :> es => [(Integer, Integer)] -> Eff es ()
 rescheduleScheduledMessages schedules = do
+  checked <- traverse (\(scheduleId, dueAt) -> (,) <$> checkedInt64 scheduleId <*> checkedInt64 dueAt) schedules
   ensureScheduledMessagesTable
   runSelda . transaction $
-    for_ schedules \(scheduleId, dueAtUnixSeconds) ->
+    for_ checked \(scheduleId, dueAtUnixSeconds) ->
       update_ scheduledMessages
-        (\row -> row ! #id .== literal (toRowId (fromIntegral scheduleId :: Int.Int64)))
-        (\row -> row `with` [#due_at_unix_seconds := literal (fromIntegral dueAtUnixSeconds)])
+        (\row -> row ! #id .== literal (toRowId scheduleId))
+        (\row -> row `with` [#due_at_unix_seconds := literal dueAtUnixSeconds])
 
 deleteScheduledMessage :: Storage.Storage :> es => Integer -> Eff es ()
 deleteScheduledMessage scheduleId = do
+  storedId <- checkedInt64 scheduleId
   ensureScheduledMessagesTable
   runSelda $
     deleteFrom_ scheduledMessages \row ->
-      row ! #id .== literal (toRowId (fromIntegral scheduleId :: Int.Int64))
+      row ! #id .== literal (toRowId storedId)
 
 ensureScheduledMessagesTable :: Storage.Storage :> es => Eff es ()
 ensureScheduledMessagesTable =

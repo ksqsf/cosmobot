@@ -1616,16 +1616,21 @@ testChatHistoryPagination =
         ])
       _ <- sendMessage "branch-1" "branch only"
       latest <- dispatch "chat.history" (Aeson.object ["sessionId" Aeson..= ("branch-1" :: Text), "limit" Aeson..= (2 :: Int)])
-      older <- dispatch "chat.history" (Aeson.object
-        [ "sessionId" Aeson..= ("branch-1" :: Text)
-        , "beforeMessageId" Aeson..= ("message-2" :: Text)
-        , "limit" Aeson..= (2 :: Int)
-        ])
+      older <- forM
+        [ ["beforeMessageId" Aeson..= ("message-2" :: Text)]
+        , ["before_message_id" Aeson..= ("message-2" :: Text)]
+        , ["beforeMessageId" Aeson..= Aeson.Null, "before_message_id" Aeson..= ("message-2" :: Text)]
+        , ["beforeMessageId" Aeson..= ("message-2" :: Text), "before_message_id" Aeson..= ("message-1" :: Text)]
+        ] \cursor -> dispatch "chat.history" (Aeson.object
+          ([ "sessionId" Aeson..= ("branch-1" :: Text)
+           , "limit" Aeson..= (2 :: Int)
+           ] <> cursor))
       pure (latest, older)
     responseMessageTexts latest @?= ["second", "branch only"]
     responseBool latest "hasOlder" @?= Just True
-    responseMessageTexts older @?= ["first"]
-    responseBool older "hasOlder" @?= Just False
+    for_ older \page -> do
+      responseMessageTexts page @?= ["first"]
+      responseBool page "hasOlder" @?= Just False
 
 testRenameAndDeleteSession :: IO ()
 testRenameAndDeleteSession =

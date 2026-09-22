@@ -5,12 +5,13 @@ import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Util.Stream as StreamUtil
+import qualified Data.List as List
 import qualified Data.IORef as IORef
 import qualified Data.Text as Text
 import qualified Effectful.Resource as Resource
 import qualified Streaming
 import qualified Streaming.Prelude as S
-import System.IO.Error (userError)
+import System.IO.Error (IOError, userError)
 import System.Timeout
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -19,7 +20,11 @@ main :: IO ()
 main =
   defaultMain $
     testGroup "stream"
-      [ testCase "failed input does not stop merged stream" testFailedInputDoesNotStopMergedStream
+      [ testCase "empty merge terminates" testEmptyMerge
+      , testCase "all failed inputs propagate failure" testAllInputsFail
+      , testCase "merge preserves each producer order beyond queue capacity" testMergeOrdering
+      , testCase "bracket releases exactly once on completion and failure" testBracketRelease
+      , testCase "failed input does not stop merged stream" testFailedInputDoesNotStopMergedStream
       , testCase "lifting a stream preserves chunks and its return value" testLiftLocalStream
       , testCase "finished inputs do not end merge before slower inputs" testFinishedInputsDoNotEndMergeEarly
       , testCase "resource is released when consumption stops early" testEarlyStopReleasesResource
@@ -84,6 +89,54 @@ testEarlyStopCancelsMergedPumps = do
       )
   firstChunk @?= Just 1
   statuses @?= [Concurrency.Cancelled]
+
+testEmptyMerge :: IO ()
+testEmptyMerge = do
+  result <- timeout 1_000_000 $ runEff $ runConcurrent $ runPrim $ runTestLog $
+    Resource.runResource $ ConcurrencyManager.runConcurrencyManager $
+      S.toList_ (StreamUtil.mergeStreams [])
+  result @?= Just ([] :: [Int])
+
+testAllInputsFail :: IO ()
+testAllInputsFail = do
+  result <- timeout 1_000_000 $ runEff $ runConcurrent $ runPrim $ runTestLog $
+    Resource.runResource $ ConcurrencyManager.runConcurrencyManager $ trySync $
+      S.toList_ $ StreamUtil.mergeStreams $
+        replicate 3 (S.yield (1 :: Int) >> Streaming.lift (throwIO (userError "producer failure")))
+  case result of
+    Just (Left err) -> (fromException err :: Maybe IOError) @?= Just (userError "producer failure")
+    _ -> assertFailure "all-failed merge must propagate the producer exception"
+
+testMergeOrdering :: IO ()
+testMergeOrdering = do
+  let items = [(producer, index) | producer <- [1..3 :: Int], index <- [1..1500 :: Int]]
+  result <- timeout 5_000_000 $ runEff $ runConcurrent $ runPrim $ runTestLog $
+    Resource.runResource $ ConcurrencyManager.runConcurrencyManager $
+      S.toList_ $ StreamUtil.mergeStreams
+        [S.each [(producer, index) | index <- [1..1500]] | producer <- [1..3]]
+  case result of
+    Nothing -> assertFailure "merge did not drain its bounded queue"
+    Just actual -> do
+      List.sort actual @?= items
+      for_ [1..3] \producer ->
+        [index | (owner, index) <- actual, owner == producer] @?= [1..1500]
+
+testBracketRelease :: IO ()
+testBracketRelease = for_ [False, True] \fails -> do
+  releases <- IORef.newIORef (0 :: Int)
+  result <- runEff $ Resource.runResource $ trySync $ S.toList $
+    StreamUtil.bracketStream
+      (pure ())
+      (\() -> liftIO $ IORef.modifyIORef' releases (+ 1))
+      (\() -> do
+        S.yield (7 :: Int)
+        when fails (Streaming.lift $ throwIO (userError "stream failure"))
+        pure (23 :: Int))
+  case result of
+    Left err | fails -> (fromException err :: Maybe IOError) @?= Just (userError "stream failure")
+    Right value | not fails -> value @?= ([7] S.:> 23)
+    _ -> assertFailure "unexpected stream outcome"
+  IORef.readIORef releases >>= (@?= 1)
 
 runTestLog :: IOE :> es => Eff (KatipE : es) a -> Eff es a
 runTestLog action = startKatipE "stream-spec" "test" action

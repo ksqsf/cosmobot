@@ -30,6 +30,7 @@ import Bot.LLM.OpenAI.Config
 import Bot.LLM.Types
 import Bot.Util.Aeson
 import qualified Bot.Util.Stream as StreamUtil
+import Bot.Util.Time (secondsToMicroseconds)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as AesonTypes
@@ -82,10 +83,6 @@ endpointText url path =
     [] -> Text.dropWhileEnd (== '/') url
     _  -> Text.dropWhileEnd (== '/') url <> "/" <> Text.intercalate "/" path
 
-secondsToMicros :: Int -> Int
-secondsToMicros seconds =
-  seconds * 1000000
-
 chatNotConfiguredMessage :: Text
 chatNotConfiguredMessage =
   "LLM chat is not configured: set llm.chat and llm.chat_provider.<name>.api_key."
@@ -116,7 +113,7 @@ audioApiKeyNotConfiguredMessage =
 
 runTimedEff :: (Timeout.Timeout :> es, IOE :> es) => Text -> Int -> Eff es a -> Eff es a
 runTimedEff label timeoutSeconds action = do
-  result <- Timeout.timeout (secondsToMicros timeoutSeconds) action
+  result <- Timeout.timeout (secondsToMicroseconds (toInteger timeoutSeconds)) action
   case result of
     Just value ->
       pure value
@@ -175,7 +172,7 @@ askAudioOpenAIStreaming Config{audioProvider = Just cfg@AudioProviderConfig{apiK
     runTimedEff "LLM audio streaming request" requestTimeout $
       writeGeneratedAudioStream request.responseFormat $
         Q.fromChunks $
-          streamRawJsonPost requestBaseUrl requestPath key (secondsToMicros requestTimeout) "application/octet-stream" request
+          streamRawJsonPost requestBaseUrl requestPath key (secondsToMicroseconds (toInteger requestTimeout)) "application/octet-stream" request
   lift $ $(logInfo) ("audio response: " <> audioResponseLogLine requestEndpoint request.model request.responseFormat ref)
   S.yield ref
   pure ref
@@ -209,7 +206,7 @@ askImageChatCompletionsOpenAIStreaming cfg@ImageProviderConfig{apiKey, model, re
       do
         lift $ $(logInfo) ("image chat streaming request: " <> llmRequestLogLine requestEndpoint request)
         lift $ logLLMRequestMessages request
-        answer <- streamChatCompletion False requestBaseUrl requestPath key (secondsToMicros requestTimeout) request
+        answer <- streamChatCompletion False requestBaseUrl requestPath key (secondsToMicroseconds (toInteger requestTimeout)) request
         lift $ $(logInfo) ("image chat streaming response: " <> llmStreamResponseLogLine requestEndpoint requestModel answer)
         let text = chatAnswerContent answer
         if Text.null (Text.strip text)
@@ -243,7 +240,7 @@ askOpenAIStreaming Config{chatProvider = Just cfg@ChatProviderConfig{apiKey = Ju
         }
   lift $ $(logInfo) ("streaming request: " <> llmRequestLogLine requestEndpoint request)
   lift $ logLLMRequestMessages request
-  answer <- streamChatCompletion True cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
+  answer <- streamChatCompletion True cfg.baseUrl chatCompletionsPath key (secondsToMicroseconds (toInteger requestTimeout)) request
   lift $ $(logInfo) ("streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
   pure (chatAnswerContent answer)
 
@@ -273,7 +270,7 @@ askOpenAIWithToolsStreaming Config{chatProvider = Just cfg@ChatProviderConfig{ap
         }
   lift $ $(logInfo) ("streaming request: " <> llmRequestLogLine requestEndpoint request)
   lift $ logLLMRequestMessages request
-  answer <- streamChatCompletion True cfg.baseUrl chatCompletionsPath key (secondsToMicros requestTimeout) request
+  answer <- streamChatCompletion True cfg.baseUrl chatCompletionsPath key (secondsToMicroseconds (toInteger requestTimeout)) request
   lift $ $(logInfo) ("streaming response: " <> llmStreamResponseLogLine requestEndpoint model answer)
   pure answer
 
@@ -481,7 +478,7 @@ downloadImageReference timeoutSeconds index imageRef = do
       throwIO (LLMException [i|Unsupported image reference URL for image edit: #{imageRef}. Use HTTPS, file://, or data:image/...;base64.|])
     Just _ -> do
       request <- liftIO (Client.parseRequest (Text.unpack imageRef))
-      let requestWithTimeout = request{Client.responseTimeout = Client.responseTimeoutMicro (secondsToMicros timeoutSeconds)}
+      let requestWithTimeout = request{Client.responseTimeout = Client.responseTimeoutMicro (secondsToMicroseconds (toInteger timeoutSeconds))}
           extension = extensionFromName (Text.pack (takeFileName (Text.unpack imageRef)))
       runTimedEff "LLM image edit input download" timeoutSeconds $
         writeTemporaryImageUpload index extension (Q.fromChunks (streamHttpResponseBody requestWithTimeout))
@@ -721,7 +718,7 @@ streamImageGenerationOpenAIBytes provider@ImageProviderConfig{baseUrl, model, re
   Q.fromChunks do
     let requestPath = ["images", "generations"]
         request = imageGenerationStreamingRequestPayload provider options model (imagePromptFromMessages messages)
-    httpRequest <- liftIO (sseJsonPostRequest baseUrl requestPath apiKey (secondsToMicros requestTimeout) request)
+    httpRequest <- liftIO (sseJsonPostRequest baseUrl requestPath apiKey (secondsToMicroseconds (toInteger requestTimeout)) request)
     imageBytesFromResponse (streamHttpResponseBody httpRequest)
 
 streamImageEditOpenAIBytes
@@ -741,7 +738,7 @@ streamImageEditOpenAIBytes cfg@ImageProviderConfig{baseUrl, model, requestTimeou
       \(imageUploads, maskUpload) -> do
         let requestPath = imageEditsPath
             parts = imageEditMultipartParts cfg options model prompt imageUploads maskUpload
-        httpRequest <- liftIO (sseMultipartPostRequest baseUrl requestPath key (secondsToMicros requestTimeout) parts)
+        httpRequest <- liftIO (sseMultipartPostRequest baseUrl requestPath key (secondsToMicroseconds (toInteger requestTimeout)) parts)
         imageBytesFromResponse (streamHttpResponseBody httpRequest)
 
 streamRawJsonPost
@@ -803,41 +800,43 @@ streamSsePayloads
   => Stream (Of StrictByteString.ByteString) m r
   -> Stream (Of StrictByteString.ByteString) m r
 streamSsePayloads =
-  go mempty
+  events [] . linesFromChunks [] False True
   where
-    go pending input = do
+    -- Keep fragments separately so one long line split into small HTTP chunks
+    -- is copied only once. A CR ends a line immediately; swallow its optional LF.
+    linesFromChunks fragments skipLF firstLine input =
       lift (S.next input) >>= \case
-        Left result -> do
-          traverse_ S.yield (snd (ssePayloadsFromBytes True pending mempty))
-          pure result
-        Right (chunk, rest) -> do
-          let (nextPending, payloads) =
-                ssePayloadsFromBytes False pending chunk
-          traverse_ S.yield payloads
-          go nextPending rest
+        Left result -> pure result -- An unterminated event is not dispatched.
+        Right (chunk, rest)
+          | StrictByteString.null chunk -> linesFromChunks fragments skipLF firstLine rest
+          | otherwise -> consume fragments firstLine
+              (if skipLF then fromMaybe chunk (ByteString.stripPrefix "\n" chunk) else chunk) rest
 
-ssePayloadsFromBytes
-  :: Bool
-  -> StrictByteString.ByteString
-  -> StrictByteString.ByteString
-  -> (StrictByteString.ByteString, [StrictByteString.ByteString])
-ssePayloadsFromBytes flush pending bytes =
-  let buffered = pending <> bytes
-      lines_ = ByteString.split '\n' buffered
-      completeLines =
-        if flush then lines_ else dropLast lines_
-      pendingLine =
-        if flush then mempty else fromMaybe mempty (viaNonEmpty last lines_)
-  in (pendingLine, mapMaybe sseDataPayload completeLines)
+    consume fragments firstLine bytes rest =
+      let (prefix, suffix) = ByteString.break (\c -> c == '\r' || c == '\n') bytes
+      in case ByteString.uncons suffix of
+        Nothing -> linesFromChunks (prefix : fragments) False firstLine rest
+        Just (ending, remaining) -> do
+          let line = StrictByteString.concat (reverse (prefix : fragments))
+              withoutBom = if firstLine then fromMaybe line (StrictByteString.stripPrefix "\xef\xbb\xbf" line) else line
+          S.yield withoutBom
+          if StrictByteString.null remaining
+            then linesFromChunks [] (ending == '\r') False rest
+            else consume [] False
+              (if ending == '\r' then fromMaybe remaining (ByteString.stripPrefix "\n" remaining) else remaining) rest
 
-sseDataPayload :: StrictByteString.ByteString -> Maybe StrictByteString.ByteString
-sseDataPayload rawLine = do
-  payload <- stripSseSpace <$> ByteString.stripPrefix "data:" (ByteString.dropWhile isSseSpace rawLine)
-  guard (not (ByteString.null payload) && payload /= "[DONE]")
-  pure payload
-  where
-    stripSseSpace = ByteString.dropWhileEnd isSseSpace . ByteString.dropWhile isSseSpace
-    isSseSpace char = char == ' ' || char == '\t' || char == '\r'
+    events fields input =
+      lift (S.next input) >>= \case
+        Left result -> pure result
+        Right (line, rest)
+          | StrictByteString.null line -> do
+              let payload = ByteString.intercalate "\n" (reverse fields)
+              unless (null fields || payload == "[DONE]") (S.yield payload)
+              events [] rest
+          | line == "data" -> events ("" : fields) rest
+          | Just value <- ByteString.stripPrefix "data:" line ->
+              events (fromMaybe value (ByteString.stripPrefix " " value) : fields) rest
+          | otherwise -> events fields rest
 
 ensureSuccessfulStreamingResponse :: IOE :> es => Client.Request -> Client.Response Client.BodyReader -> Stream (Of a) (Eff es) ()
 ensureSuccessfulStreamingResponse request response = do
@@ -856,8 +855,8 @@ imageBytesFromResponse
   -> Stream (Of StrictByteString.ByteString) (Eff es) ()
 imageBytesFromResponse response = do
   body <- StrictByteString.concat <$> lift (S.toList_ response)
-  let ssePayloads = snd (ssePayloadsFromBytes True mempty body)
-      payloads = if null ssePayloads then [body] else ssePayloads
+  ssePayloads <- lift (S.toList_ (streamSsePayloads (S.yield body)))
+  let payloads = if null ssePayloads then [body] else ssePayloads
   payloadValues <- traverse decodePayload payloads
   case imageGenerationStreamBytesFromPayloads payloadValues of
     Right bytes ->
@@ -947,11 +946,6 @@ streamChatCompletion emitContentDeltas baseUrl path apiKey timeoutMicros request
 monotonicMilliseconds :: IOE :> es => Eff es Integer
 monotonicMilliseconds =
   fromIntegral . (`div` 1_000_000) <$> liftIO getMonotonicTimeNSec
-
-dropLast :: [a] -> [a]
-dropLast [] = []
-dropLast [_] = []
-dropLast (x : xs) = x : dropLast xs
 
 data StreamState = StreamState
   { contentAccumulator :: !TextBuilder.Builder

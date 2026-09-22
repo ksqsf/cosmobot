@@ -381,6 +381,7 @@ main =
       , testCase "run_bash captures stdout and stderr" testRunBashCapturesStdoutAndStderr
       , testCase "run_bash rejects invalid working directories" testRunBashRejectsInvalidWorkingDirectories
       , testCase "run_bash kills timed out process" testRunBashKillsTimedOutProcess
+      , testCase "run_bash accepts large timeouts without wrapping" testRunBashLargeTimeout
       , testCase "run_bash kills process group when cancelled" testRunBashKillsProcessGroupWhenCancelled
       , testCase "LLM response timeout summary is concise" testLLMResponseTimeoutSummaryIsConcise
       , testCase "LLM exception summary describes LLM errors" testLLMExceptionSummaryDescribesLLMErrors
@@ -4795,6 +4796,22 @@ testRunBashRejectsInvalidWorkingDirectories =
     let output = Text.unlines (toolOutputs transcript)
     assertBool "invalid directory is rejected" ("working_directory must not" `Text.isInfixOf` output)
     assertBool "script was not executed" (not ("should-not-run" `Text.isInfixOf` output))
+
+testRunBashLargeTimeout :: IO ()
+testRunBashLargeTimeout = do
+  let seconds = maxBound `div` 32 + 1 :: Int
+      script = "sleep 0.02; printf completed"
+  direct <- runEff $ runFailIO $ runConcurrent $ runTimeout $ TypedProcess.runTypedProcess $
+    runBashSafe seconds script
+  assertBool "direct execution completed" ("completed" `Text.isInfixOf` direct)
+  answers <- IORef.newIORef
+    [ chatAnswer "" [toolCall "call-1" "run_bash" (Aeson.object
+        ["script" Aeson..= script, "timeout_seconds" Aeson..= seconds])]
+    , chatAnswer "done" []
+    ]
+  (_, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    runTestAgent 4 superuserContext AgentTools.defaultTools (startWithEnabledTools ["work"] "run command")
+  assertBool "streaming execution completed" ("completed" `Text.isInfixOf` Text.unlines (toolOutputs transcript))
 
 testRunBashKillsTimedOutProcess :: IO ()
 testRunBashKillsTimedOutProcess = do

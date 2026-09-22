@@ -22,6 +22,7 @@ import qualified Bot.Resource.Command as Command
 import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Util.Process as ProcessUtil
+import Bot.Util.Time (secondsToMicroseconds)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
@@ -138,7 +139,7 @@ runBashSafe timeoutSeconds script =
   ProcessUtil.withProcessGroup processConfig \process -> do
     let killProcess =
           ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
-    outcome <- timeout (effectiveTimeout * 1_000_000) (TypedProcess.waitExitCode process)
+    outcome <- timeout (secondsToMicroseconds (toInteger effectiveTimeout)) (TypedProcess.waitExitCode process)
     case outcome of
       Nothing -> do
         killProcess
@@ -171,7 +172,7 @@ runBashStreaming timeoutSeconds workingDirectory script command =
   Concurrency.withWorkerHandle "command stdout" (drainOutput (TypedProcess.getStdout process) (Command.appendStdout command)) \stdoutWorker ->
   Concurrency.withWorkerHandle "command stderr" (drainOutput (TypedProcess.getStderr process) (Command.appendStderr command)) \stderrWorker -> do
     let killProcess = ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
-    outcome <- timeout (effectiveTimeout * 1_000_000) (TypedProcess.waitExitCode process)
+    outcome <- timeout (secondsToMicroseconds (toInteger effectiveTimeout)) (TypedProcess.waitExitCode process)
     when (isNothing outcome) killProcess
     traverse_ Concurrency.await [stdoutWorker, stderrWorker]
     status <- Command.queryCommand command
@@ -219,7 +220,7 @@ runSandboxBashStreaming timeoutSeconds sandbox script outputByteLimit command =
   Concurrency.withWorkerHandle "sandbox command stdout" (drainOutput (TypedProcess.getStdout process) (Command.appendStdout command)) \stdoutWorker ->
   Concurrency.withWorkerHandle "sandbox command stderr" (drainOutput (TypedProcess.getStderr process) (Command.appendStderr command)) \stderrWorker -> do
     let killProcess = ProcessUtil.killProcessGroup (TypedProcess.unsafeProcessHandle process)
-    outcome <- timeout ((effectiveTimeout + 10) * 1_000_000) (TypedProcess.waitExitCode process)
+    outcome <- timeout (secondsToMicroseconds (toInteger effectiveTimeout + 10)) (TypedProcess.waitExitCode process)
     when (isNothing outcome) killProcess
     traverse_ Concurrency.await [stdoutWorker, stderrWorker]
     status <- Command.queryCommand command

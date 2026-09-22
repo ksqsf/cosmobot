@@ -390,6 +390,7 @@ library
         Bot.Util.Multipart
         Bot.Util.Process
         Bot.Util.Stream
+        Bot.Util.Time
         Bot.Util.Toml
     build-depends:    log-base
                     , websockets

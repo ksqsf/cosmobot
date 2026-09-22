@@ -63,7 +63,8 @@ popDueMessagesFromState now schedulerState =
 
     nextPendingById pending pendingById =
       case nextOccurrence now pending of
-        Nothing -> Map.delete pending.scheduleId pendingById
+        -- One-shot messages remain cancellable until delivery is acknowledged.
+        Nothing -> pendingById
         Just next -> Map.insert pending.scheduleId next pendingById
 
     insertNextDue pending dues =
@@ -141,7 +142,7 @@ remainingSecondsUntil :: Integer -> Integer -> Int
 remainingSecondsUntil now dueAt
   | dueAt <= now = 0
   | otherwise =
-      fromIntegral (dueAt - now)
+      fromIntegral (min (toInteger (maxBound :: Int)) (dueAt - now))
 
 sameMessageOwner :: IncomingMessage -> IncomingMessage -> Bool
 sameMessageOwner left right =
@@ -156,6 +157,6 @@ sameSender left right =
     (Just leftId, Just rightId) ->
       leftId == rightId
     (Nothing, Nothing) ->
-      left.senderUsername == right.senderUsername
+      isJust left.senderUsername && left.senderUsername == right.senderUsername
     _ ->
       False

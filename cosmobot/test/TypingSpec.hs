@@ -1,6 +1,10 @@
 module Main (main) where
 
 import Bot.Handler.Typing.Typst
+import Bot.Handler.Typing (tigerRows)
+import qualified Bot.Util.Html as Html
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as AesonTypes
 import Bot.Prelude
 import Bot.System.Typst.CLI (typstOutputFileName)
 import Bot.System.Typst.Types (TypstOutputFormat (TypstOutputPNG))
@@ -12,10 +16,31 @@ main :: IO ()
 main =
   defaultMain $
     testGroup "typing"
-      [ testCase "rank cells are emitted as Typst string content" testRankCellsUseTextStrings
+      [ testCase "HTML entities decode exactly one layer" testHtmlEntities
+      , testCase "leaderboard time uses fallback only for absent or null primary" testTigerTimeFallback
+      , testCase "rank cells are emitted as Typst string content" testRankCellsUseTextStrings
       , testCase "Typst strings escape only string syntax" testTypstStringEscapesStringSyntax
       , testCase "different rank documents render to different output names" testDifferentRankDocumentsUseDifferentOutputNames
       ]
+
+testHtmlEntities :: IO ()
+testHtmlEntities = for_ [("lt", "<"), ("gt", ">"), ("quot", "\""), ("apos", "'"), ("#39", "'"), ("nbsp", " "), ("amp", "&")] \(entity, decoded) -> do
+  Html.htmlDecode ("&" <> entity <> ";") @?= decoded
+  Html.htmlDecode ("&amp;" <> entity <> ";") @?= "&" <> entity <> ";"
+  Html.htmlToPlainText ("<p>&amp;" <> entity <> ";</p>") @?= "&" <> entity <> ";"
+
+testTigerTimeFallback :: IO ()
+testTigerTimeFallback = for_
+  [ ([], "-")
+  , (["time" Aeson..= (65 :: Int)], "01:05")
+  , (["total_time" Aeson..= Aeson.Null, "time" Aeson..= (65 :: Int)], "01:05")
+  , (["total_time" Aeson..= (0 :: Int), "time" Aeson..= (65 :: Int)], "00:00")
+  , (["total_time" Aeson..= (125 :: Int), "time" Aeson..= (65 :: Int)], "02:05")
+  ] \(fields, expected) -> do
+    let value = Aeson.object ["data" Aeson..= Aeson.object ["leaderboard" Aeson..= [Aeson.object fields]]]
+    case AesonTypes.parseEither tigerRows value of
+      Right [_, row] -> take 1 (drop 7 row) @?= [expected]
+      result -> assertFailure (show result)
 
 testRankCellsUseTextStrings :: IO ()
 testRankCellsUseTextStrings = do

@@ -27,6 +27,7 @@ import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Storage as Storage
 import Bot.Handler.Resource (removeResources, renderResources, resourceIds)
 import Bot.Prelude
+import Bot.Util.Time (secondsToMicroseconds)
 import qualified Bot.Resource as ResourceManager
 import qualified Bot.Resource.Python as Python
 import qualified Bot.Resource.Python.Protocol as PythonProtocol
@@ -34,11 +35,13 @@ import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Resource.Command as Command
 import qualified Bot.Resource.Workspace as Workspace
 import qualified Bot.Storage.SQLite as StorageSQLite
+import qualified Bot.Storage.Resource as ResourceStorage
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Time (getCurrentTime)
 import qualified Effectful.Concurrent.MVar as MVar
 import qualified Effectful.Concurrent.Async as Async
 import Effectful.Timeout (Timeout, runTimeout)
@@ -48,6 +51,9 @@ import qualified Effectful.Process as Process
 import qualified Effectful.Process.Typed as TypedProcess
 import qualified Paths_cosmobot as Paths
 import qualified Data.Unique as Unique
+import qualified Control.Exception as Exception
+import qualified Database.Selda.Backend as SeldaBackend
+import qualified Database.Selda.SQLite as SeldaSQLite
 import qualified Network.Socket as Socket
 import System.FilePath ((</>))
 import System.Exit (ExitCode (..))
@@ -70,6 +76,21 @@ data BlockingObject = BlockingObject
 data BlockingCreateObject = BlockingCreateObject
 
 newtype PersistentObject = PersistentObject Text
+
+newtype CountedPersistentObject = CountedPersistentObject (IORef.IORef Int)
+
+instance Prim :> es => Resource.ResourceObject (Eff es) CountedPersistentObject where
+  type CreationArgs CountedPersistentObject = IORef.IORef Int
+  resourceTypeName _ = "CountedPersistent"
+  resourcePersistence _ = Resource.PersistentResource
+    { encodeResource = const "counted"
+    , restoreResource = const (pure (Left "test object cannot be restored"))
+    }
+  createResourceObject Resource.Init{arguments} = pure (Right (CountedPersistentObject arguments))
+  destroyResourceObject (CountedPersistentObject count) =
+    IORef.modifyIORef' count (+ 1) $> Right ()
+  describeResourceObject _ _ = pure "counted"
+  probeResourceObject _ = pure (Right "healthy")
 
 data PersistentInit = PersistentInit
   { label :: !Text
@@ -163,6 +184,15 @@ main = defaultMain $ testGroup "resource"
   , testCase "persistent resource expiry includes downtime" testPersistentExpiry
   , testCase "resource names are globally unique and renameable" testResourceNames
   , testCase "resource names are reserved during concurrent creation" testConcurrentResourceNames
+  , testCase "rename reserves both names until persistence completes" testRenameReservation
+  , testGroup "resource storage rolls back partial writes"
+      [testCase operation (testResourceStorageAtomicity operation) | operation <- ["save", "delete", "rename", "lifetime"]]
+  , testCase "cancelled creation releases its reserved name" testCancelledCreation
+  , testCase "nested leases retain the outer user's cancellation handle" testNestedLeases
+  , testCase "untracked leases block destruction and rename until released" testUntrackedLease
+  , testCase "cancelled cleanup restores resource availability" testCancelledCleanup
+  , testCase "failed persistence destroys the new object exactly once" testPersistenceCleanupOnce
+  , testCase "cancellation during lease persistence releases the lease" testCancelledLeasePersistence
   , testCase "Podman sandbox arguments preserve isolation" testPodmanArguments
   , testCase "Podman sandbox command preserves scripts as argv" testPodmanExecArguments
   , testCase "Podman sandbox parses state and truncates retained output" testPodmanOutput
@@ -177,6 +207,8 @@ main = defaultMain $ testGroup "resource"
       Resource.resourceScope @(Eff '[Concurrent, TypedProcess.TypedProcess, IOE]) (Proxy @Sandbox.Sandbox) @?= Resource.ChatResource
   , testCase "commands stay out of the generic resource list" $
       Resource.resourceListed @(Eff '[Resource.Resource, Concurrency.Concurrency, Concurrent]) (Proxy @Command.Command) @?= False
+  , testCase "large command waits do not overflow into immediate polls" testCommandWaitOverflow
+  , testCase "timeout conversion saturates at the Int boundary" testTimeoutConversion
   , testCase "resource removal reports partial results independently" testPartialRemoval
   , testGroup "Python JSON-RPC framing"
       [ testCase "round-trips Unicode and embedded newlines" testPythonFrameRoundTrip
@@ -685,6 +717,190 @@ testConcurrentResourceNames = runManaged do
   MVar.putMVar finish ()
   MVar.takeMVar created >>= liftIO . (@?= Right "reserved")
 
+testCancelledCreation :: Assertion
+testCancelledCreation = runManaged do
+  started <- MVar.newEmptyMVar
+  finish <- MVar.newEmptyMVar
+  worker <- Concurrency.fork "cancelled-create" $
+    void $ Resource.createNamed @BlockingCreateObject "reserved" Resource.Init
+      { message = ownerMessage, arguments = (started, finish) }
+  MVar.takeMVar started
+  Concurrency.cancel worker.handleId >>= liftIO . (@?= True)
+  Concurrency.await worker
+  Resource.createNamed @OtherObject "reserved" Resource.Init
+    { message = ownerMessage, arguments = () }
+    >>= liftIO . (@?= Right "reserved")
+
+testNestedLeases :: Assertion
+testNestedLeases = runManaged do
+  (testInit, destroyed) <- newTestInit "nested" False
+  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
+  access <- expectRight (Resource.accessFromMessage ownerMessage)
+  innerReleased <- MVar.newEmptyMVar
+  stopped <- MVar.newEmptyMVar
+  worker <- Concurrency.forkWithHandle "nested-user" \user ->
+    void $ Resource.withResource @TestObject access resourceId (Just user) \_ ->
+      (do
+        Resource.withResource @TestObject access resourceId (Just user) (const (pure ()))
+          >>= liftIO . (@?= Right ())
+        MVar.putMVar innerReleased ()
+        never) `finally` MVar.putMVar stopped ()
+  MVar.takeMVar innerReleased
+  Resource.destroy access resourceId >>= liftIO . (@?= Right ())
+  MVar.tryTakeMVar stopped >>= liftIO . (@?= Just ())
+  MVar.tryTakeMVar destroyed >>= liftIO . (@?= Just ())
+  Concurrency.lookup worker.handleId >>= liftIO . (@?= Just Concurrency.Cancelled) . fmap (.status)
+
+testUntrackedLease :: Assertion
+testUntrackedLease = runManaged do
+  (testInit, destroyed) <- newTestInit "untracked" False
+  resourceId <- Resource.create @TestObject Resource.Init{message = ownerMessage, arguments = testInit} >>= expectRight
+  access <- expectRight (Resource.accessFromMessage ownerMessage)
+  Resource.withResource @TestObject access resourceId Nothing (\_ -> do
+    Resource.destroy access resourceId >>= liftIO . (@?= Left Resource.ResourceUnavailable)
+    Resource.rename access resourceId "new-name" >>= liftIO . (@?= Left Resource.ResourceUnavailable)
+    MVar.tryTakeMVar destroyed >>= liftIO . (@?= Nothing))
+    >>= liftIO . (@?= Right ())
+  Resource.rename access resourceId "new-name" >>= liftIO . (@?= Right "new-name")
+  Resource.destroy access "new-name" >>= liftIO . (@?= Right ())
+
+testCancelledCleanup :: Assertion
+testCancelledCleanup = runManaged do
+  started <- MVar.newEmptyMVar
+  finish <- MVar.newEmptyMVar
+  resourceId <- Resource.create @BlockingObject Resource.Init
+    { message = ownerMessage, arguments = (started, finish) } >>= expectRight
+  access <- expectRight (Resource.accessFromMessage ownerMessage)
+  worker <- Concurrency.fork "cancelled-destroy" $ void (Resource.destroy access resourceId)
+  MVar.takeMVar started
+  Concurrency.cancel worker.handleId >>= liftIO . (@?= True)
+  Concurrency.await worker
+  -- Let shutdown finish even if the availability assertion fails.
+  MVar.putMVar finish ()
+  Resource.withResource @BlockingObject access resourceId Nothing (const (pure ()))
+    >>= liftIO . (@?= Right ())
+
+testPersistenceCleanupOnce :: Assertion
+testPersistenceCleanupOnce = runEff $ runConcurrent $ runPrim $ startKatipE "resource-spec" "test" $
+  bracket
+    (liftIO (SeldaSQLite.sqliteOpen ":memory:"))
+    (\connection -> void (trySync (liftIO (SeldaBackend.seldaClose connection)))) \connection ->
+      StorageSQLite.runStorageSQLite connection $ ConcurrencyManager.runConcurrencyManager $
+        ResourceManager.runResourceManager do
+          count <- IORef.newIORef 0
+          liftIO (SeldaBackend.seldaClose connection)
+          created <- Resource.createNamed @CountedPersistentObject "failed" Resource.Init
+            { message = ownerMessage, arguments = count }
+          liftIO $ case created of
+            Left Resource.ResourceCreationFailed{} -> pure ()
+            other -> assertFailure (show other)
+          IORef.readIORef count >>= liftIO . (@?= 1)
+          -- Failure must also release the name and avoid registering a phantom.
+          Resource.createNamed @OtherObject "failed" Resource.Init
+            { message = ownerMessage, arguments = () }
+            >>= liftIO . (@?= Right "failed")
+
+testCancelledLeasePersistence :: Assertion
+testCancelledLeasePersistence = for_ [False, True] \tracked ->
+  runEff $ runConcurrent $ runPrim $ startKatipE "resource-spec" "test" $
+    StorageSQLite.runStorageSQLitePath ":memory:" $ ConcurrencyManager.runConcurrencyManager do
+      armed <- IORef.newIORef False
+      persisting <- MVar.newEmptyMVar
+      proceed <- MVar.newEmptyMVar
+      called <- MVar.newEmptyMVar
+      -- Interpose below the manager so the fault hits its persistence work,
+      -- after acquisition and before the user's callback.
+      interpose @Storage.Storage (\env op -> do
+        block <- IORef.atomicModifyIORef' armed (\enabled -> (False, enabled))
+        when block (MVar.putMVar persisting () >> MVar.takeMVar proceed)
+        passthrough env op) $ ResourceManager.runResourceManager do
+          resourceId <- Resource.createNamed @PersistentObject "leased" Resource.Init
+            { message = ownerMessage
+            , arguments = PersistentInit{label = "leased", persistentTTLSeconds = Just 600}
+            } >>= expectRight
+          access <- expectRight (Resource.accessFromMessage ownerMessage)
+          IORef.writeIORef armed True
+          worker <- Concurrency.forkWithHandle "acquire" \self ->
+            void $ Resource.withResource @PersistentObject access resourceId (if tracked then Just self else Nothing)
+              (const (MVar.putMVar called ()))
+          MVar.takeMVar persisting
+          Concurrency.cancel worker.handleId >>= liftIO . (@?= True)
+          Concurrency.await worker
+          MVar.tryTakeMVar called >>= liftIO . (@?= Nothing)
+          -- Rename requires zero active leases, including tracked ones whose
+          -- worker has already retired. A later use must still work normally.
+          Resource.rename access resourceId "released" >>= liftIO . (@?= Right "released")
+          Resource.withResource @PersistentObject access "released" Nothing (const (liftIO Exception.getMaskingState))
+            >>= liftIO . (@?= Right Exception.Unmasked)
+          Resource.destroy access "released" >>= liftIO . (@?= Right ())
+
+testRenameReservation :: Assertion
+testRenameReservation = for_ ["success", "failure", "cancel" :: Text] \mode ->
+  runEff $ runConcurrent $ runPrim $ startKatipE "resource-spec" "test" $
+    StorageSQLite.runStorageSQLitePath ":memory:" $ ConcurrencyManager.runConcurrencyManager do
+      armed <- IORef.newIORef False
+      persisting <- MVar.newEmptyMVar
+      proceed <- MVar.newEmptyMVar
+      interpose @Storage.Storage (\env op -> do
+        block <- IORef.atomicModifyIORef' armed (\enabled -> (False, enabled))
+        when block do
+          MVar.putMVar persisting ()
+          MVar.takeMVar proceed
+          when (mode == "failure") (throwIO TestFailure)
+        passthrough env op) $ ResourceManager.runResourceManager do
+          let create name = Resource.createNamed @PersistentObject name Resource.Init
+                { message = ownerMessage
+                , arguments = PersistentInit{label = name, persistentTTLSeconds = Nothing}
+                }
+          _ <- create "old" >>= expectRight
+          access <- expectRight (Resource.accessFromMessage ownerMessage)
+          IORef.writeIORef armed True
+          Async.withAsync (Resource.rename access "old" "new") \renaming -> do
+            MVar.takeMVar persisting
+            -- Capture before resuming, but assert after joining so a failed
+            -- assertion cannot strand the rename at its persistence gate.
+            oldCollision <- create "old"
+            newCollision <- create "new"
+            if mode == "cancel" then Async.cancel renaming else MVar.putMVar proceed ()
+            renamed <- Async.waitCatch renaming
+            liftIO do
+              oldCollision @?= Left Resource.ResourceNameAlreadyExists
+              newCollision @?= Left Resource.ResourceNameAlreadyExists
+              case (mode, renamed) of
+                ("failure", Right (Left Resource.ResourceRenameFailed{})) -> pure ()
+                ("cancel", Left err) -> assertBool "cancellation propagates" (isJust (fromException err :: Maybe Async.AsyncCancelled))
+                ("success", Right (Right "new")) -> pure ()
+                _ -> assertFailure (show renamed)
+          let (retained, freed) = if mode == "success" then ("new", "old") else ("old", "new")
+          Resource.withResource @PersistentObject access retained Nothing (\(PersistentObject label) -> pure label)
+            >>= liftIO . (@?= Right "old")
+          ResourceStorage.loadResources >>= liftIO . (@?= [retained]) . map (.resourceId)
+          create freed >>= liftIO . (@?= Right freed)
+
+testResourceStorageAtomicity :: String -> Assertion
+testResourceStorageAtomicity operation =
+  runEff $ runConcurrent $ StorageSQLite.runStorageSQLitePath ":memory:" do
+    owner <- expectRight (Resource.ownerFromMessage ownerMessage)
+    now <- liftIO getCurrentTime
+    let stored = ResourceStorage.StoredResource
+          { resourceId = "original", resourceType = "PersistentTest", owner
+          , sessionId = Just "session", creatorRunId = Just "run", payload = "original payload"
+          }
+    ResourceStorage.saveResource stored
+    ResourceStorage.setResourceLifetime "original" (Just (600, now))
+    let (trigger, action) = case operation of
+          "save" -> ("BEFORE INSERT ON resources", ResourceStorage.saveResource stored{ResourceStorage.payload = "replacement"})
+          "delete" -> ("BEFORE DELETE ON resources", ResourceStorage.deleteResource "original")
+          "rename" -> ("BEFORE UPDATE ON resource_creators", ResourceStorage.renameResource "original" "renamed")
+          _ -> ("BEFORE INSERT ON resource_lifetimes", ResourceStorage.setResourceLifetime "original" (Just (900, now)))
+    Storage.runSelda $ SeldaBackend.withBackend \backend -> liftIO $ void $
+      SeldaBackend.runStmt backend
+        ("CREATE TRIGGER fail_write " <> trigger <> " BEGIN SELECT RAISE(ABORT, 'injected failure'); END") []
+    outcome <- trySync action
+    liftIO $ assertBool ("expected injected " <> operation <> " failure") (isLeft outcome)
+    ResourceStorage.loadResources >>= liftIO . (@?= [stored])
+    ResourceStorage.loadResourceLifetimes >>= liftIO . (@?= [("original", (600, now))])
+
 testScopedException :: Assertion
 testScopedException = runManaged do
   (testInit, _) <- newTestInit "scope" False
@@ -923,6 +1139,31 @@ testPodmanFailures = do
   Sandbox.renderPodmanFailure "inspect" 125 "" "missing container\n" @?=
     "Podman inspect failed (exit 125): missing container"
   Sandbox.renderPodmanFailure "wait" 1 "" "" @?= "Podman wait failed (exit 1)."
+
+testCommandWaitOverflow :: Assertion
+testCommandWaitOverflow = for_ [1, maxBound `div` 32 + 1, maxBound] \seconds -> do
+  result <- runManagedPython do
+    access <- expectRight (Resource.accessFromMessage ownerMessage)
+    awaited <- MVar.newEmptyMVar :: Eff ManagedPythonStack (MVar.MVar ())
+    commandId <- Command.createAndStart access Nothing Resource.Init
+      { message = ownerMessage, arguments = () }
+      (\_ _ -> MVar.takeMVar awaited $> Right "done") >>= expectRight
+    interpose @Concurrency.Concurrency (\env op -> case op of
+      Concurrency.Await _ -> void (MVar.tryPutMVar awaited ()) >> passthrough env op
+      _ -> passthrough env op) $
+      Resource.withResource @Command.Command access commandId Nothing (Command.waitCommand seconds)
+  result @?= Right (Command.Finished (Right "done") "" "")
+
+testTimeoutConversion :: Assertion
+testTimeoutConversion = do
+  let limit = toInteger (maxBound :: Int)
+      boundary = limit `div` 1_000_000
+  for_ [-1, 0, 1, boundary - 1, boundary, boundary + 1, limit, limit + 10] \seconds -> do
+    let actual = toInteger (secondsToMicroseconds seconds)
+    if seconds <= 0 then actual @?= 0
+    else if seconds <= boundary
+      then actual `quotRem` seconds @?= (1_000_000, 0)
+      else actual @?= limit
 
 testWorkspaceLifecycle :: Assertion
 testWorkspaceLifecycle =

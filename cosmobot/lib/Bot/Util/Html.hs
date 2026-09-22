@@ -31,10 +31,10 @@ stripHtmlTags =
 
 htmlDecode :: Text -> Text
 htmlDecode =
-  Text.replace "&#39;" "'"
+  Text.replace "&amp;" "&"
+    . Text.replace "&#39;" "'"
     . Text.replace "&quot;" "\""
     . Text.replace "&apos;" "'"
     . Text.replace "&gt;" ">"
     . Text.replace "&lt;" "<"
     . Text.replace "&nbsp;" " "
-    . Text.replace "&amp;" "&"

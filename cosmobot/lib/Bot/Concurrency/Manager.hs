@@ -24,7 +24,8 @@ data ManagerState = ManagerState
   }
 
 data Entries = Entries
-  { runtimes :: !(Map Id EntryRuntime)
+  { closingReason :: !(Maybe SomeException)
+  , runtimes :: !(Map Id EntryRuntime)
   , history :: !(Map Id Info)
   , historyOrder :: !(Map (UTCTime, Id) ())
   }
@@ -50,12 +51,12 @@ runConcurrencyManagerWithFailureObserver
   => (Text -> SomeException -> Eff es ())
   -> Eff (Concurrency : es) a
   -> Eff es a
-runConcurrencyManagerWithFailureObserver observeFailure inner = do
+runConcurrencyManagerWithFailureObserver observeFailure inner = mask \restore -> do
   nextIdRef <- newIORef (Id 1)
-  entriesRef <- newIORef Entries{runtimes = Map.empty, history = Map.empty, historyOrder = Map.empty}
+  entriesRef <- newIORef Entries{closingReason = Nothing, runtimes = Map.empty, history = Map.empty, historyOrder = Map.empty}
   let managerState = ManagerState{nextIdRef, entriesRef}
       runInner = interpret (runConcurrencyOperation managerState observeFailure) inner
-  try runInner >>= \case
+  try (restore runInner) >>= \case
     Right result -> do
       cancelAndAwaitAll managerState
       pure result
@@ -115,10 +116,8 @@ forkWithHandleIn managerState observeFailure label action = mask \restore -> do
   let workerHandle = Handle{handleId = entryInfo.id}
   startGate <- MVar.newEmptyMVar
   thread <- Async.async $
-    restore $
-      MVar.takeMVar startGate
-        *> (runAction managerState observeFailure entryInfo (action workerHandle)
-              `finally` retireEntry managerState entryInfo.id)
+    restore (MVar.takeMVar startGate *> runAction managerState observeFailure entryInfo (action workerHandle))
+      `finally` retireEntry managerState entryInfo.id
   let runtime = EntryRuntime
         { info = entryInfo
         , thread
@@ -184,7 +183,7 @@ awaitAnyIn managerState workerHandles = do
       pure worker
     Nothing -> do
       let workers = [(worker, (runtimes Map.! worker.handleId).thread) | worker <- toList workerHandles]
-      void (Async.waitAny (map snd workers))
+      void (Async.waitAnyCatch (map snd workers))
       firstCompleted workers
   where
     firstCompleted ((worker, thread) : remaining) =
@@ -227,10 +226,13 @@ allocateId managerState =
   atomicModifyIORef' managerState.nextIdRef \(Id current) ->
     (Id (current + 1), Id current)
 
-insertRuntime :: Prim :> es => ManagerState -> EntryRuntime -> Eff es ()
-insertRuntime managerState runtime =
-  atomicModifyIORef' managerState.entriesRef \entries ->
-    (entries{runtimes = Map.insert runtime.info.id runtime entries.runtimes}, ())
+insertRuntime :: (Prim :> es, IOE :> es) => ManagerState -> EntryRuntime -> Eff es ()
+insertRuntime managerState runtime = do
+  rejected <- atomicModifyIORef' managerState.entriesRef \entries ->
+    case entries.closingReason of
+      Just err -> (entries, Just err)
+      Nothing -> (entries{runtimes = Map.insert runtime.info.id runtime entries.runtimes}, Nothing)
+  traverse_ throwIO rejected
 
 lookupRuntime :: Prim :> es => ManagerState -> Id -> Eff es (Maybe EntryRuntime)
 lookupRuntime managerState handleId =
@@ -298,15 +300,8 @@ pruneEntriesBefore cutoff entries =
       }
 
 cancelAndAwaitAll :: (IOE :> es, Prim :> es, Concurrent :> es) => ManagerState -> Eff es ()
-cancelAndAwaitAll managerState = do
-  threads <- managedThreads managerState
-  traverse_ cancelAndAwait threads
-  where
-    cancelAndAwait (entryInfo, thread) = do
-      unless (finished entryInfo) do
-        finishEntry managerState entryInfo.id Cancelled
-        Async.cancel thread
-      void (Async.waitCatch thread)
+cancelAndAwaitAll managerState =
+  cancelAndAwaitAllWith managerState (toException Async.AsyncCancelled)
 
 cancelAndAwaitAllWith
   :: (IOE :> es, Prim :> es, Concurrent :> es)
@@ -314,15 +309,21 @@ cancelAndAwaitAllWith
   -> SomeException
   -> Eff es ()
 cancelAndAwaitAllWith managerState err = do
-  threads <- managedThreads managerState
-  traverse_ cancelAndAwaitWith threads
+  threads <- closeManager managerState err
+  -- Mark the whole set first so worker cleanup cannot initiate a second cancel.
+  for_ threads \(entryInfo, _) ->
+    unless (finished entryInfo) (finishEntry managerState entryInfo.id Cancelled)
+  -- cancelWith waits for cleanup, which may itself await another live worker.
+  Async.mapConcurrently_ cancelAndAwaitWith threads
   where
     cancelAndAwaitWith (entryInfo, thread) = do
-      unless (finished entryInfo) do
-        finishEntry managerState entryInfo.id Cancelled
-        Async.cancelWith thread err
+      unless (finished entryInfo) (Async.cancelWith thread err)
       void (Async.waitCatch thread)
 
-managedThreads :: Prim :> es => ManagerState -> Eff es [(Info, Async.Async ())]
-managedThreads managerState =
-  map (\runtime -> (runtime.info, runtime.thread)) . Map.elems . (.runtimes) <$> readIORef managerState.entriesRef
+closeManager :: Prim :> es => ManagerState -> SomeException -> Eff es [(Info, Async.Async ())]
+closeManager managerState err =
+  -- Registration must either precede this snapshot or fail before its gate opens.
+  atomicModifyIORef' managerState.entriesRef \entries ->
+    ( entries{closingReason = Just err}
+    , map (\runtime -> (runtime.info, runtime.thread)) (Map.elems entries.runtimes)
+    )
