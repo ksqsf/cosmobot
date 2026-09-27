@@ -24,6 +24,7 @@ import Data.Time (UTCTime)
 
 data SenderChatLogScope
   = SenderChatLogChat
+  | SenderChatLogDM
   | SenderChatLogGlobal
   deriving (Eq, Show)
 

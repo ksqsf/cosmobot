@@ -269,7 +269,7 @@ main =
       , testCase "successful media sends record every platform" testSuccessfulMediaSendsRecordEveryPlatform
       , testCase "chatlog tool filters by sender" testChatLogToolFiltersBySender
       , testCase "chatlog tool treats a blank sender as no filter" testChatLogToolIgnoresBlankSender
-      , testCase "current sender chatlog tool queries matching sender messages globally" testCurrentSenderChatLogToolQueriesChatLog
+      , testCase "current sender chatlog tool queries global and dm scopes" testCurrentSenderChatLogToolQueriesChatLog
       , testCase "reaction tool preserves native payloads and resolves message ids" testAddReactionTool
       , testCase "user avatar tool queries chat effect" testUserAvatarToolQueriesChatEffect
       , testCase "user avatar tool requires user id" testUserAvatarToolRequiresUserId
@@ -1477,9 +1477,9 @@ runSendFileTool replies upload =
         runner testToolCallMetadata (Aeson.object ["path" Aeson..= ("file:///tmp/report.txt" :: Text)])
 
 testCurrentSenderChatLogToolQueriesChatLog :: IO ()
-testCurrentSenderChatLogToolQueriesChatLog = do
+testCurrentSenderChatLogToolQueriesChatLog = for_ ["global", "dm"] \scope -> do
   answers <- IORef.newIORef
-    [ chatAnswer "" [toolCall "call-1" "sender_log" (Aeson.object ["scope" Aeson..= ("global" :: Text), "keywords" Aeson..= ([["needle"] :: [Text]] :: [[Text]]), "limit" Aeson..= (10 :: Int), "before" Aeson..= ("2100-01-01T00:00:00Z" :: Text)])]
+    [ chatAnswer "" [toolCall "call-1" "sender_log" (Aeson.object ["scope" Aeson..= (scope :: Text), "keywords" Aeson..= ([["needle"] :: [Text]] :: [[Text]]), "limit" Aeson..= (10 :: Int), "before" Aeson..= ("2100-01-01T00:00:00Z" :: Text)])]
     , chatAnswer "found" []
     ]
   (answer, transcript) <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
@@ -1487,11 +1487,12 @@ testCurrentSenderChatLogToolQueriesChatLog = do
     ChatLog.recordMessage (chatLogMessage 302 "201" 100 "other sender needle")
     ChatLog.recordMessage (chatLogMessage 303 "200" 101 "other chat needle")
     ChatLog.recordMessage (chatLogMessage 304 "200" 100 "newer needle")
+    ChatLog.recordMessage (chatLogMessage 305 "200" 100 "group needle"){kind = ChatGroup}
     runTestAgent 4 agentContext AgentTools.defaultTools (startWithEnabledTools ["chat"] "search my history")
   answer @?= "found"
   entries <- decodeSingleChatLogToolOutput transcript
   texts <- traverse (either assertFailure pure . AesonTypes.parseEither (Aeson.withObject "chat log entry" (\entry -> entry Aeson..: "text" :: AesonTypes.Parser Text))) entries
-  texts @?= ["newer needle", "other chat needle", "older needle"]
+  texts @?= (["group needle" | scope == "global"] <> ["newer needle", "other chat needle", "older needle"])
   for_ entries \case
     Aeson.Object entry ->
       sort (AesonKeyMap.keys entry) @?= sort (map AesonKey.fromText ["timestamp", "chatId", "senderId", "senderUsername", "messageId", "imageUrls", "text"])

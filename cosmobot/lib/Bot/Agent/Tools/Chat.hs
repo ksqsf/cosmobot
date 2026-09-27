@@ -62,7 +62,7 @@ queryChatLogTool =
 queryCurrentSenderChatLogTool :: ChatLog.ChatLog :> es => Tool (Eff es)
 queryCurrentSenderChatLogTool =
   tagged [chatTag]
-  . withDescription "Return messages from the current sender whose text matches any keyword group. scope=chat searches only the current chat; scope=global searches all chats on the current platform. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
+  . withDescription "Return messages from the current sender whose text matches any keyword group. scope=chat searches only the current chat; scope=dm searches only private chats on the current platform; scope=global searches all chats on the current platform. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
   $ tool "sender_log"
       ( requiredArgument (fieldTextArrayArray "keywords" "Keyword groups. Each inner array is joined with '%' and wrapped with '%' for ordered fuzzy matching.")
       , validateArgument validSenderLogLimit
@@ -71,8 +71,8 @@ queryCurrentSenderChatLogTool =
           (withDefault "chat" (optionalArgument
             ("scope", Aeson.object
           [ "type" Aeson..= ("string" :: Text)
-          , "enum" Aeson..= (["chat", "global"] :: [Text])
-          , "description" Aeson..= ("Search the current chat or all chats on the current platform. Defaults to chat." :: Text)
+          , "enum" Aeson..= (["chat", "dm", "global"] :: [Text])
+          , "description" Aeson..= ("Search the current chat, private chats (dm), or all chats on the current platform. Defaults to chat." :: Text)
           ])))
       , optionalArgument (fieldDateTime "since" "Return messages strictly after this ISO-8601 UTC timestamp.")
       , optionalArgument (fieldDateTime "before" "Return messages strictly before this ISO-8601 UTC timestamp.")
@@ -316,10 +316,12 @@ parseSenderChatLogScope :: Text -> Either Text ChatLog.SenderChatLogScope
 parseSenderChatLogScope = \case
   "chat" ->
     Right ChatLog.SenderChatLogChat
+  "dm" ->
+    Right ChatLog.SenderChatLogDM
   "global" ->
     Right ChatLog.SenderChatLogGlobal
   _ ->
-    Left "scope must be chat or global."
+    Left "scope must be chat, dm, or global."
 
 validSenderLogLimit :: Int -> Either Text Int
 validSenderLogLimit limit

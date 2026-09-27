@@ -20,6 +20,7 @@ main =
       , testCase "filters current chat by sender" testQueryCurrentChatBySender
       , testCase "queries current sender chat log newest first by keyword groups" testQueryCurrentSenderChatLog
       , testCase "queries current sender across chats in global scope" testQueryCurrentSenderGlobalChatLog
+      , testCase "dm scope only queries the current sender private messages on this platform" testQueryCurrentSenderDMChatLog
       , testCase "queries a bounded chat-log time window" testQueryTimeWindow
       , testCase "bot messages are hidden unless requested" testBotMessageVisibility
       , testCase "base64 image references are sanitized" testImageSanitization
@@ -96,6 +97,26 @@ testQueryCurrentSenderGlobalChatLog = runChatLogTest do
   ChatLog.recordMessage ((messageFromChat 103 203 "other platform needle"){platform = PlatformQQ})
   entries <- ChatLog.queryCurrentSenderChatLog (messageFromChat 999 200 "query") ChatLog.SenderChatLogGlobal [["needle"]] 10 ChatLog.unboundedChatLogTimeRange
   liftIO $ map (.text) entries @?= ["other chat needle", "same chat needle"]
+
+testQueryCurrentSenderDMChatLog :: IO ()
+testQueryCurrentSenderDMChatLog = runChatLogTest do
+  ChatLog.recordMessage (messageFromChat 100 200 "older needle")
+  ChatLog.recordMessage (messageFromChat 101 201 "newer needle")
+  for_ [ChatGroup, ChatChannel, ChatUnknown "custom"] \kind ->
+    ChatLog.recordMessage (messageFromChat 102 200 "non-dm needle"){kind}
+  ChatLog.recordMessage (messageFromSenderInChat "201" 103 200 "other sender needle")
+  ChatLog.recordMessage (messageFromChat 104 200 "other platform needle"){platform = PlatformQQ}
+  ChatLog.recordSelfMessage (messageFromChat 105 200 "query") (Just "bot-105") "bot needle"
+  ChatLog.recordMessage (messageFromChat 106 200 "no match")
+  for_ [Just (integerChatId 200), Nothing] \chatId -> do
+    let context = (messageFromChat 999 200 "query"){kind = ChatGroup, chatId}
+        query message limit = ChatLog.queryCurrentSenderChatLog message ChatLog.SenderChatLogDM [["needle"]] limit ChatLog.unboundedChatLogTimeRange
+    entries <- query context 10
+    limited <- query context 1
+    missingSender <- query context{senderId = Nothing} 10
+    liftIO $ map (.text) entries @?= ["newer needle", "older needle"]
+    liftIO $ map (.text) limited @?= ["newer needle"]
+    liftIO $ map (.text) missingSender @?= []
 
 testQueryTimeWindow :: IO ()
 testQueryTimeWindow = runChatLogTest do

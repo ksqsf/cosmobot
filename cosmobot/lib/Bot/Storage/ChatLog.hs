@@ -98,7 +98,7 @@ queryCurrentSenderStored message scope keywords limitCount timeRange = do
   ensureChatLogTable
   case (message.senderId, keywordLikePatterns keywords) of
     (Just _, patterns@(_ : _))
-      | scope == SenderChatLogGlobal || isJust message.chatId -> do
+      | scope /= SenderChatLogChat || isJust message.chatId -> do
           rows <- runSelda $
             query $
               queryLimit 0 (boundedChatLogLimit limitCount) do
@@ -367,6 +367,8 @@ currentSenderChatLogMatches scope message patterns row =
     .&& keywordPatternsMatch patterns row
 
 senderChatLogScopeMatches :: forall (backend :: Type). SenderChatLogScope -> IncomingMessage -> Row backend ChatLogRow -> Col backend Bool
+senderChatLogScopeMatches SenderChatLogDM _ row =
+  row ! #kind_key .== literal (kindKey ChatPrivate)
 senderChatLogScopeMatches SenderChatLogGlobal _ _ =
   true
 senderChatLogScopeMatches SenderChatLogChat message row =
