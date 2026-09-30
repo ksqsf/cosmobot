@@ -66,7 +66,7 @@ sendAction
   -> Eff es ActionResponse
 sendAction driver value = do
   responseVar <- liftIO newEmptyMVar
-  liftIO $ Chan.writeChan driver.actionChan (ActionRequest value responseVar)
+  liftIO $ Chan.writeChan driver.actionChan (ActionRequest (withSendTimeout value) responseVar)
   result <- timeout qqActionTimeoutMicroseconds (takeMVar responseVar)
   case result of
     Just response ->
@@ -77,6 +77,16 @@ sendAction driver value = do
       pure failedActionResponse
 
 data ActionRequest = ActionRequest !Aeson.Value !(MVar ActionResponse)
+
+-- NapCat's per-send timeout is in milliseconds; the outer wait also allows
+-- time for media preparation and delivery of the action response.
+withSendTimeout :: Aeson.Value -> Aeson.Value
+withSendTimeout value@(Aeson.Object request)
+  | qqActionName value `elem` map Just ["send_group_msg", "send_private_msg", "send_msg"]
+  , Just (Aeson.Object params) <- KeyMap.lookup "params" request =
+      Aeson.Object (KeyMap.insert "params"
+        (Aeson.Object (KeyMap.insert "timeout" (Aeson.toJSON (120000 :: Int)) params)) request)
+withSendTimeout value = value
 
 qqConnectionLoop
   :: (IOE :> es, KatipE :> es, Concurrent :> es, Timeout :> es, Concurrency.Concurrency :> es)
@@ -266,7 +276,7 @@ failedActionResponse =
 
 qqActionTimeoutMicroseconds :: Int
 qqActionTimeoutMicroseconds =
-  40 * 1000000
+  150 * 1000000
 
 qqReconnectDelayMicroseconds :: Int
 qqReconnectDelayMicroseconds =

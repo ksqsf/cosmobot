@@ -8,6 +8,7 @@ import qualified Bot.Chat.Driver.Discord.Protocol as DiscordProtocol
 import qualified Bot.Chat.Driver.Matrix as Matrix
 import qualified Bot.Chat.Driver.Matrix.Protocol as MatrixProtocol
 import qualified Bot.Chat.Driver.QQ as QQ
+import qualified Bot.Chat.Driver.QQ.Protocol as QQProtocol
 import qualified Bot.Chat.Driver.Telegram as Telegram
 import qualified Bot.Chat.Driver.Telegram.Protocol as TelegramProtocol
 import qualified Bot.Chat.Driver.Telegram.Types as TelegramTypes
@@ -40,6 +41,17 @@ import qualified Data.Text.Encoding as TextEncoding
 import Test.Tasty
 import Test.Tasty.HUnit
 
+testQqSendTimeout :: Assertion
+testQqSendTimeout = do
+  let request action fields = Aeson.object ["action" Aeson..= (action :: Text), "params" Aeson..= Aeson.object fields]
+      params = ["group_id" Aeson..= (42 :: Int), "message" Aeson..= ("image" :: Text)]
+  for_ ["send_group_msg", "send_private_msg", "send_msg"] \action ->
+    QQProtocol.withSendTimeout (request action params)
+      @?= request action (params <> ["timeout" Aeson..= (120000 :: Int)])
+  let query = request "get_group_info" params
+  QQProtocol.withSendTimeout query @?= query
+  assertBool "outer wait leaves time for the NapCat response" (QQProtocol.qqActionTimeoutMicroseconds > 120000 * 1000)
+
 main :: IO ()
 main =
   defaultMain $
@@ -48,6 +60,7 @@ main =
       , testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
       , testCase "QQ market face records its summary" testQqMarketFaceRecordsSummary
       , testCase "QQ group info exposes its display name" testQqGroupInfoDisplayName
+      , testCase "QQ sends allow 120 seconds within the outer wait" testQqSendTimeout
       , testCase "Matrix room state exposes its display name" testMatrixRoomDisplayName
       , testCase "Discord channel metadata exposes its display name" testDiscordChannelDisplayName
       , testCase "incoming message log is compact and multiline" testIncomingMessageLog

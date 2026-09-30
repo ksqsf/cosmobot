@@ -47,7 +47,8 @@ This document records constants that are not configurable through `config.toml` 
 ## Chat Drivers
 
 - `Bot.Chat.Driver.Discord.discordReconnectDelayMicroseconds` : Waits five seconds before reconnecting the Discord Gateway, preventing a tight reconnect loop.
-- `Bot.Chat.Driver.QQ.qqActionTimeoutMicroseconds` : Allows 40 seconds for a OneBot action, accommodating media operations while reclaiming lost requests.
+- `Bot.Chat.Driver.QQ.Protocol.qqActionTimeoutMicroseconds` : Allows 150 seconds for a OneBot action, leaving 30 seconds beyond NapCat's send timeout for media preparation and response delivery.
+- `Bot.Chat.Driver.QQ.Protocol.withSendTimeout` : Sets NapCat's per-request `timeout` to 120,000 milliseconds for `send_group_msg`, `send_private_msg`, and `send_msg`, overriding its automatic size-based send timeout to allow slower QQ send confirmations.
 - `Bot.Chat.Driver.QQ.qqReconnectDelayMicroseconds` : Waits five seconds before reconnecting QQ, preventing rapid retries against the server.
 - `Bot.Chat.Driver.QQ.qqConnectionCloseTimeoutMicroseconds` : Allows two seconds to close an old QQ connection so replacement cannot remain blocked.
 - `Bot.Chat.Driver.QQ.qqConnectionThreadStopTimeoutMicroseconds` : Allows two seconds for a QQ connection worker to stop before replacement continues.
