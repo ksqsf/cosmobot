@@ -58,6 +58,7 @@ main =
     testGroup "chat platforms"
       [ testCase "incoming timestamps normalize platform units and survive JSON" testIncomingTimestamps
       , testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
+      , testCase "QQ unsupported segments fall back to raw_message" testQqUnsupportedSegmentsUseRawMessage
       , testCase "QQ market face records its summary" testQqMarketFaceRecordsSummary
       , testCase "QQ group info exposes its display name" testQqGroupInfoDisplayName
       , testCase "QQ sends allow 120 seconds within the outer wait" testQqSendTimeout
@@ -162,6 +163,39 @@ testQqMarketFaceRecordsSummary = do
       event = qqMessageEventWithMessage 10001 (Aeson.toJSON [marketFace])
       incoming = QQ.eventToIncomingMessage event
   ((.text) <$> incoming) @?= Just "[sticker: 拍拍]"
+
+testQqUnsupportedSegmentsUseRawMessage :: Assertion
+testQqUnsupportedSegmentsUseRawMessage = do
+  let segment type_ = Aeson.object
+        [ "type" Aeson..= (type_ :: Text)
+        , "data" Aeson..= Aeson.object ["data" Aeson..= ("card payload" :: Text)]
+        ]
+      raw = "original raw message"
+      render segments = (.text) <$> QQ.eventToIncomingMessage
+        ((qqMessageEventWithMessage 10001 (Aeson.toJSON segments)){QQ.rawMessage = Just raw})
+      reply = Aeson.object
+        [ "type" Aeson..= ("reply" :: Text)
+        , "data" Aeson..= Aeson.object ["id" Aeson..= (80000 :: Integer)]
+        ]
+      mention = Aeson.object
+        [ "type" Aeson..= ("at" :: Text)
+        , "data" Aeson..= Aeson.object ["qq" Aeson..= (123456 :: Integer)]
+        ]
+  for_ ["json", "xml", "future-segment"] $ \type_ -> do
+    let card = segment type_
+    render [card] @?= Just raw
+    render [textSegment "before", card, textSegment "after"] @?= Just raw
+    render [reply, mention, card] @?= Just raw
+    QQ.forwardedMessagesText (Aeson.toJSON
+      [ Aeson.object
+          [ "message" Aeson..= [textSegment "before", card]
+          , "raw_message" Aeson..= raw
+          ]
+      ]) @?= raw
+  render [textSegment "parsed"] @?= Just "parsed"
+  for_ ["image", "file", "record", "video", "reply", "forward", "node"] $ \type_ -> do
+    render [segment type_] @?= Just ""
+    render [textSegment "caption", segment type_] @?= Just "caption"
 
 testQqGroupInfoDisplayName :: Assertion
 testQqGroupInfoDisplayName =

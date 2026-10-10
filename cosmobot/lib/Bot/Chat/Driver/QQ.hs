@@ -495,7 +495,7 @@ qqReplyMention (Aeson.Array segments) =
     reply : mention : rest
       | isJust (replySegmentId reply)
       , isJust (mentionSegmentId mention) ->
-          Just (Text.strip (foldMap segmentText (reply : rest)))
+          Text.strip . mconcat <$> traverse segmentText (reply : rest)
     _ -> Nothing
 qqReplyMention (Aeson.String text) = do
   (reply, afterReply) <- cqSegmentAtStart "reply" text
@@ -1136,7 +1136,7 @@ oneBotChatKind = \case
 messageText :: Aeson.Value -> Maybe Text
 messageText = \case
   Aeson.String text -> Just (Text.strip (rawMessageText text))
-  Aeson.Array segments -> Just (Text.strip (foldMap segmentText segments))
+  Aeson.Array segments -> Text.strip . fold <$> traverse segmentText segments
   _ -> Nothing
 
 messageImageUrls :: Aeson.Value -> [Text]
@@ -1342,7 +1342,7 @@ messageContent :: Aeson.Value -> ForwardedContent
 messageContent value =
   ForwardedContent
     { text = case value of
-        Aeson.Object _ -> Text.strip (segmentText value)
+        Aeson.Object _ -> maybe "" Text.strip (segmentText value)
         _ -> fromMaybe "" (messageText value)
     , imageUrls = case value of
         Aeson.Object _ -> maybeToList (imageSegmentUrl value)
@@ -1399,26 +1399,30 @@ imageSegmentUrl = \case
           _ -> Nothing
   _ -> Nothing
 
-segmentText :: Aeson.Value -> Text
+segmentText :: Aeson.Value -> Maybe Text
 segmentText = \case
   Aeson.Object obj
     | Just (Aeson.String "text") <- KeyMap.lookup "type" obj
     , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj
     , Just (Aeson.String text) <- KeyMap.lookup "text" data_ ->
-        text
+        Just text
     | Just (Aeson.String "at") <- KeyMap.lookup "type" obj
     , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj
     , Just value <- KeyMap.lookup "qq" data_
     , Just qq <- mentionValueText value ->
-        "@" <> qq
+        Just ("@" <> qq)
     | Just (Aeson.String "mface") <- KeyMap.lookup "type" obj
     , Just (Aeson.Object data_) <- KeyMap.lookup "data" obj
     , Just (Aeson.String summary) <- KeyMap.lookup "summary" data_
     , not (Text.null (Text.strip summary)) ->
-        "[sticker: " <> Text.strip summary <> "]"
+        Just ("[sticker: " <> Text.strip summary <> "]")
     | Just (Aeson.String "mface") <- KeyMap.lookup "type" obj ->
-        "[sticker]"
-  _ -> ""
+        Just "[sticker]"
+    -- These segments are represented by message metadata or resolved separately.
+    | Just (Aeson.String type_) <- KeyMap.lookup "type" obj
+    , type_ `elem` ["image", "file", "record", "video", "reply", "forward", "node"] ->
+        Just ""
+  _ -> Nothing
 
 rawMessageText :: Text -> Text
 rawMessageText text =
