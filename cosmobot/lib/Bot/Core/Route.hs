@@ -132,12 +132,17 @@ promptOrImages =
       then Nothing
       else Just prompt
 
+-- | Whether the message is from an explicitly allowed chat.
+isAllowedChat :: IncomingMessage -> Bool
+isAllowedChat message =
+  message.digest.chatIsAllowed
+
 -- | Whether a group message is from an explicitly allowed chat.
 isAllowedGroup :: IncomingMessage -> Bool
 isAllowedGroup message =
   message.kind == ChatGroup && message.digest.chatIsAllowed
 
--- | Whether a private message may start a thread.
+-- | Whether a private message is from an explicitly allowed chat.
 isAllowedPrivate :: IncomingMessage -> Bool
 isAllowedPrivate message =
   message.kind == ChatPrivate && message.digest.senderIsAllowed
