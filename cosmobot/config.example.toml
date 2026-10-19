@@ -264,7 +264,7 @@ max_content_tokens = 50000
 
 [tool.web_search]
 enable = false
-# Choose "tavily", "brave", or "exa" and supply that provider's API
+# Choose "tavily", "brave", "exa", or "deepseek" and supply that provider's API
 # key.
 api = "tavily"
 # Default number of search results; must be positive when configured.
@@ -272,6 +272,7 @@ max_results = 5
 tavily_api_key = ""
 brave_api_key = ""
 exa_api_key = ""
+deepseek_api_key = ""
 
 # Message handlers ------------------------------------------------------------
 [handler.saucenao]

@@ -33,6 +33,7 @@ main =
       , testCase "ask recursive transcript strategy is configurable" testAskRecursiveTranscriptStrategy
       , testCase "sandbox image is configurable" testSandboxImage
       , testCase "Exa web search is configurable" testExaWebSearch
+      , testCase "DeepSeek web search is configurable" testDeepSeekWebSearch
       , testCase "Python tool defaults are safe and enabled" testPythonDefaults
       , testCase "Python tool limits are configurable" testPythonConfig
       , testCase "Python tool bounds must be positive" testPythonPositiveBounds
@@ -158,6 +159,20 @@ testExaWebSearch = do
   webSearchApi @?= Agent.WebSearchExa
   exaApiKey @?= Just "exa-test-key"
 
+testDeepSeekWebSearch :: IO ()
+testDeepSeekWebSearch = do
+  cfg <- loadConfigText $
+    minimalConfig
+      <> Text.unlines
+        [ ""
+        , "[tool.web_search]"
+        , "api = \"deepseek\""
+        , "deepseek_api_key = \"deepseek-test-key\""
+        ]
+  let Agent.ToolConfig{webSearchApi, deepseekApiKey} = cfg.tool
+  webSearchApi @?= Agent.WebSearchDeepSeek
+  deepseekApiKey @?= Just "deepseek-test-key"
+
 testPythonDefaults :: IO ()
 testPythonDefaults = do
   cfg <- loadConfigText minimalConfig
@@ -236,7 +251,7 @@ testSecretRedaction :: IO ()
 testSecretRedaction = do
   let sentinel = "sentinel-config-secret"
       source = "[rpc]\ntoken = \"" <> sentinel <> "\"\n\n" <> minimalConfig
-  document <- parseDocument source
+  document <- parseDocument (source <> "\n[tool.web_search]\ndeepseek_api_key = \"" <> sentinel <> "\"\n")
   let inspected = TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $ Config.configDocumentInspection document document
   assertBool "inspection leaked a credential" (not (sentinel `Text.isInfixOf` inspected))
   assertBool "BotConfig Show leaked a credential" (not (sentinel `Text.isInfixOf` toText (show (Config.configDocumentRuntime document) :: String)))

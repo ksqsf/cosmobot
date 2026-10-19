@@ -6,6 +6,7 @@ Stability   : experimental
 
 module Bot.Agent.Tools.Web
   ( webSearchTool
+  , parseDeepSeekResults
   , webFetchTool
   )
 where
@@ -38,6 +39,7 @@ instance Exception WebToolException where
       case source of
         WebSearchTavily -> "Tavily search is not configured: set tool.web_search.tavily_api_key."
         WebSearchBrave -> "Brave search is not configured: set tool.web_search.brave_api_key."
+        WebSearchDeepSeek -> "DeepSeek search is not configured: set tool.web_search.deepseek_api_key."
         WebSearchExa -> "Exa search is not configured: set tool.web_search.exa_api_key."
     InvalidWebSearchResponse source err -> [i|Invalid #{webSearchSource source} search response: #{err}|]
     UnsupportedWebUrl url -> [i|Unsupported URL: #{url}. Use an http or https URL.|]
@@ -47,7 +49,7 @@ webSearchTool =
   allowWhen (.toolConfig.webSearchEnable)
   . withDescription "Search the web for current information. Returns a JSON object with the query and a results array containing title, url, and snippet."
   $ tool "search_web"
-      ( requiredText "query" "Search query."
+      ( requiredText "query" "Search query. DeepSeek supports at most 128 Unicode characters."
       , optionalInteger "max_results" "Maximum number of results to return. Defaults to 5 and is capped at 20."
       )
       \rawQuery requestedMaxResults -> do
@@ -57,6 +59,10 @@ webSearchTool =
           requestedMaxResults of
           Left err ->
             pure (argumentFailure err)
+          Right (query, _)
+            | context.toolConfig.webSearchApi == WebSearchDeepSeek
+            , Text.length query > 128 ->
+                pure (argumentFailure "DeepSeek search query must contain at most 128 Unicode characters.")
           Right (query, maxResults) -> do
             let searchConfig = context.toolConfig
             results <- webSearch searchConfig query maxResults
@@ -101,6 +107,10 @@ webSearch cfg query maxResults =
       case cfg.braveApiKey of
         Nothing -> throwIO (WebSearchNotConfigured WebSearchBrave)
         Just key -> braveSearch key query maxResults
+    WebSearchDeepSeek ->
+      case cfg.deepseekApiKey of
+        Nothing -> throwIO (WebSearchNotConfigured WebSearchDeepSeek)
+        Just key -> deepseekSearch key query maxResults
     WebSearchExa ->
       case cfg.exaApiKey of
         Nothing -> throwIO (WebSearchNotConfigured WebSearchExa)
@@ -111,6 +121,7 @@ webSearchSource = \case
   WebSearchTavily -> "tavily"
   WebSearchBrave -> "brave"
   WebSearchExa -> "exa"
+  WebSearchDeepSeek -> "deepseek"
 
 tavilySearch :: HTTP.HTTP :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
 tavilySearch apiKey query maxResults = do
@@ -164,6 +175,36 @@ exaSearch apiKey query maxResults = do
       )
   either (throwIO . InvalidWebSearchResponse WebSearchExa . Text.pack) pure $
     AesonTypes.parseEither parseExaResults (responseBody response)
+
+deepseekSearch :: HTTP.HTTP :> es => Text -> Text -> Int -> Eff es [Aeson.Value]
+deepseekSearch apiKey query maxResults = do
+  response <- HTTP.runReq $
+    req POST
+      (https "api.deepseek.com" /: "v1" /: "tools" /: "search")
+      (ReqBodyJson (Aeson.object
+        [ "query" Aeson..= query
+        , "count" Aeson..= maxResults
+        , "need_content" Aeson..= False
+        ]))
+      jsonResponse
+      ( header "Authorization" (TextEncoding.encodeUtf8 ("Bearer " <> apiKey))
+          <> webRequestOptions
+      )
+  either (throwIO . InvalidWebSearchResponse WebSearchDeepSeek . Text.pack) pure $
+    AesonTypes.parseEither parseDeepSeekResults (responseBody response)
+
+parseDeepSeekResults :: Aeson.Value -> AesonTypes.Parser [Aeson.Value]
+parseDeepSeekResults =
+  Aeson.withObject "DeepSeek search response" $ \o -> do
+    results <- o Aeson..: "results"
+    traverse parseResult results
+  where
+    parseResult =
+      Aeson.withObject "DeepSeek result" $ \o -> do
+        title <- o Aeson..: "title"
+        url <- o Aeson..: "url"
+        summary <- o Aeson..: "summary"
+        pure (searchResult title url summary)
 
 parseTavilyResults :: Aeson.Value -> AesonTypes.Parser [Aeson.Value]
 parseTavilyResults =

@@ -5,6 +5,7 @@ module Main (main) where
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Tools as AgentTools
+import qualified Bot.Agent.Tools.Web as WebTools
 import qualified Bot.Agent.Core as AgentCore
 import qualified Bot.Agent.Middleware.Python as PythonMiddleware
 import qualified Bot.Agent.Middleware.RecursiveTranscript as RecursiveTranscript
@@ -386,6 +387,8 @@ main =
       , testCase "LLM response timeout summary is concise" testLLMResponseTimeoutSummaryIsConcise
       , testCase "LLM exception summary describes LLM errors" testLLMExceptionSummaryDescribesLLMErrors
       , testCase "LLM status error summary is concise" testLLMStatusErrorSummaryIsConcise
+      , testCase "DeepSeek results use model summaries and reject malformed responses" testDeepSeekResults
+      , testCase "DeepSeek query limit counts Unicode characters" testDeepSeekQueryLimit
       , testCase "agent failure summarizes Req HTTP errors" testAgentFailureSummarizesReqHttpErrors
       ]
 
@@ -5977,3 +5980,50 @@ runAskHandlersAndWait toolConfig config threads message = do
       started = filter ((`notElem` existingIds) . (.id)) snapshotAfter.entries
   when (null started) (liftIO $ assertFailure "ask handler did not start background work")
   for_ started (Concurrency.await . Concurrency.Handle . (.id))
+
+
+testDeepSeekResults :: IO ()
+testDeepSeekResults = do
+  let parse = AesonTypes.parseEither WebTools.parseDeepSeekResults
+      result = Aeson.object
+        [ "title" Aeson..= ("Title" :: Text)
+        , "url" Aeson..= ("https://example.test" :: Text)
+        , "snippet" Aeson..= ("Short UI snippet" :: Text)
+        , "summary" Aeson..= ("Long model summary" :: Text)
+        ]
+  parse (Aeson.object ["results" Aeson..= [result]]) @?= Right
+    [Aeson.object
+      [ "title" Aeson..= ("Title" :: Text)
+      , "url" Aeson..= ("https://example.test" :: Text)
+      , "snippet" Aeson..= ("Long model summary" :: Text)
+      ]]
+  parse (Aeson.object ["results" Aeson..= ([] :: [Aeson.Value])]) @?= Right []
+  for_ [Aeson.object [], Aeson.object ["results" Aeson..= [Aeson.object []]]] \bad ->
+    case parse bad of
+      Left _ -> pure ()
+      Right value -> assertFailure [i|accepted malformed response: #{value}|]
+
+testDeepSeekQueryLimit :: IO ()
+testDeepSeekQueryLimit =
+  for_ [("界", 128), ("界", 129), ("😀", 128), ("😀", 129)] \(character, count) -> do
+    let context = agentContext
+          { Agent.toolConfig = Agent.defaultToolConfig
+              { Agent.webSearchEnable = True
+              , Agent.webSearchApi = Agent.WebSearchDeepSeek
+              }
+          }
+    outcome <- runEff . trySync
+      . interpret @HTTP.HTTP (\_ _ -> error "unexpected HTTP request")
+      $ do
+        runner <- AgentTool.startTool WebTools.webSearchTool context
+        runner testToolCallMetadata
+          (Aeson.object ["query" Aeson..= ("  " <> Text.replicate count character <> "  ")])
+    case outcome of
+      Left err -> do
+        count @?= 128
+        assertBool "valid query reaches missing-key check"
+          (Text.isInfixOf "deepseek_api_key" (toText (displayException err)))
+      Right result -> do
+        count @?= 129
+        assertBool "oversized query is an argument failure"
+          (Text.isInfixOf "128 Unicode characters" (AgentTypes.toolResultContent result))

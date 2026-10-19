@@ -56,6 +56,7 @@ data ToolConfig = ToolConfig
   , braveApiKey :: !(Maybe Text)
   , tavilyApiKey :: !(Maybe Text)
   , exaApiKey :: !(Maybe Text)
+  , deepseekApiKey :: !(Maybe Text)
   , webFetch :: !Bool
   , webFetchMaxUses :: !(Maybe Int)
   , webFetchMaxContentTokens :: !(Maybe Int)
@@ -81,6 +82,7 @@ data WebSearchApi
   = WebSearchTavily
   | WebSearchBrave
   | WebSearchExa
+  | WebSearchDeepSeek
   deriving (Eq, Show)
 
 defaultToolConfig :: ToolConfig
@@ -91,6 +93,7 @@ defaultToolConfig = ToolConfig
   , braveApiKey = Nothing
   , tavilyApiKey = Nothing
   , exaApiKey = Nothing
+  , deepseekApiKey = Nothing
   , webFetch = False
   , webFetchMaxUses = Nothing
   , webFetchMaxContentTokens = Nothing

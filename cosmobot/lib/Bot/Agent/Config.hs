@@ -59,6 +59,7 @@ data WebSearchFileConfig = WebSearchFileConfig
   , braveApiKey :: !(Maybe Text)
   , tavilyApiKey :: !(Maybe Text)
   , exaApiKey :: !(Maybe Text)
+  , deepseekApiKey :: !(Maybe Text)
   }
 
 instance Show WebSearchFileConfig where
@@ -96,6 +97,7 @@ defaultWebSearchFileConfig = WebSearchFileConfig
   , braveApiKey = Agent.defaultToolConfig.braveApiKey
   , tavilyApiKey = Agent.defaultToolConfig.tavilyApiKey
   , exaApiKey = Agent.defaultToolConfig.exaApiKey
+  , deepseekApiKey = Agent.defaultToolConfig.deepseekApiKey
   }
 
 schema :: Schema.ConfigSchema FileConfig Agent.ToolConfig
@@ -122,11 +124,12 @@ schema = Schema.ConfigSchema
       , Schema.optionalOption ["web_fetch", "max_uses"] "Maximum fetches" "Optional fetch-use limit." owner Schema.integer False positive ((.maxUses) . (.webFetch)) (.webFetchMaxUses)
       , Schema.optionalOption ["web_fetch", "max_content_tokens"] "Maximum content tokens" "Optional fetched-content token limit." owner Schema.integer False positive ((.maxContentTokens) . (.webFetch)) (.webFetchMaxContentTokens)
       , Schema.option ["web_search", "enable"] "Web search" "Allow web search." owner Schema.boolean defaultWebSearchFileConfig.enable Aeson.Null ((.enable) . (.webSearch)) (.webSearchEnable)
-      , Schema.option ["web_search", "api"] "Search API" "Web search provider." owner (Schema.enum ["tavily", "brave", "exa"]) (webSearchApiText defaultWebSearchFileConfig.api) Aeson.Null (webSearchApiText . (.api) . (.webSearch)) (webSearchApiText . (.webSearchApi))
+      , Schema.option ["web_search", "api"] "Search API" "Web search provider." owner (Schema.enum ["tavily", "brave", "exa", "deepseek"]) (webSearchApiText defaultWebSearchFileConfig.api) Aeson.Null (webSearchApiText . (.api) . (.webSearch)) (webSearchApiText . (.webSearchApi))
       , Schema.optionalOption ["web_search", "max_results"] "Maximum results" "Optional result limit." owner Schema.integer False positive ((.maxResults) . (.webSearch)) (.webSearchMaxResults)
       , Schema.optionalOption ["web_search", "brave_api_key"] "Brave API key" "Brave Search API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.braveApiKey) . (.webSearch)) (fmap Schema.Secret . (.braveApiKey))
       , Schema.optionalOption ["web_search", "tavily_api_key"] "Tavily API key" "Tavily API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.tavilyApiKey) . (.webSearch)) (fmap Schema.Secret . (.tavilyApiKey))
       , Schema.optionalOption ["web_search", "exa_api_key"] "Exa API key" "Exa API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.exaApiKey) . (.webSearch)) (fmap Schema.Secret . (.exaApiKey))
+      , Schema.optionalOption ["web_search", "deepseek_api_key"] "DeepSeek API key" "DeepSeek API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.deepseekApiKey) . (.webSearch)) (fmap Schema.Secret . (.deepseekApiKey))
       ]
   , Schema.sections =
       [ Schema.section [] "General" ["tools"] "Tools & resources"
@@ -199,6 +202,7 @@ instance FromValue WebSearchFileConfig where
     braveApiKey <- optToken "brave_api_key"
     tavilyApiKey <- optToken "tavily_api_key"
     exaApiKey <- optToken "exa_api_key"
+    deepseekApiKey <- optToken "deepseek_api_key"
     pure WebSearchFileConfig
       { enable = enable
       , api = api
@@ -206,6 +210,7 @@ instance FromValue WebSearchFileConfig where
       , braveApiKey = braveApiKey
       , tavilyApiKey = tavilyApiKey
       , exaApiKey = exaApiKey
+      , deepseekApiKey = deepseekApiKey
       }
 
 requireOptionalPositive :: Text -> Maybe Int -> ParseTable l ()
@@ -218,13 +223,15 @@ parseWebSearchApi value =
     "tavily" -> pure Agent.WebSearchTavily
     "brave"  -> pure Agent.WebSearchBrave
     "exa"    -> pure Agent.WebSearchExa
-    _        -> fail "tool.web_search.api must be one of: tavily, brave, exa"
+    "deepseek" -> pure Agent.WebSearchDeepSeek
+    _        -> fail "tool.web_search.api must be one of: tavily, brave, exa, deepseek"
 
 webSearchApiText :: Agent.WebSearchApi -> Text
 webSearchApiText = \case
   Agent.WebSearchTavily -> "tavily"
   Agent.WebSearchBrave -> "brave"
   Agent.WebSearchExa -> "exa"
+  Agent.WebSearchDeepSeek -> "deepseek"
 
 toToolConfig :: FileConfig -> Agent.ToolConfig
 toToolConfig cfg =
@@ -235,6 +242,7 @@ toToolConfig cfg =
     , braveApiKey = cfg.webSearch.braveApiKey
     , tavilyApiKey = cfg.webSearch.tavilyApiKey
     , exaApiKey = cfg.webSearch.exaApiKey
+    , deepseekApiKey = cfg.webSearch.deepseekApiKey
     , webFetch = cfg.webFetch.enable
     , webFetchMaxUses = cfg.webFetch.maxUses
     , webFetchMaxContentTokens = cfg.webFetch.maxContentTokens

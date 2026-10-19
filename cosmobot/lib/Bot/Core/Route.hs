@@ -23,6 +23,7 @@ module Bot.Core.Route
   , Route (..)
   , RouteDecision (..)
   , RouteHelp (..)
+  , isAllowedChat
   , isAllowedGroup
   , isAllowedPrivate
   , isSuperuser
