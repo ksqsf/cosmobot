@@ -18,7 +18,7 @@ import qualified Bot.Plugin.Types as PluginTypes
 import Bot.Prelude
 import qualified Data.Text as Text
 
-pluginHandlers :: (Chat.Chat :> es, Plugin.Plugin :> es) => [RouteHandler es]
+pluginHandlers :: (Chat.Chat :> es, Plugin.Plugin :> es) => [RouteHandler (Eff es)]
 pluginHandlers =
   [ lifecycleRoute "!plugin/load" "Load an installed plugin." Plugin.load renderLoaded
   , lifecycleRoute "!plugin/reload" "Reload a plugin." Plugin.reload renderLoaded
@@ -26,7 +26,7 @@ pluginHandlers =
   , listRoute
   ]
 
-pluginRouteGateway :: Plugin.Plugin :> es => RouteHandler es
+pluginRouteGateway :: Plugin.Plugin :> es => RouteHandler (Eff es)
 pluginRouteGateway =
   Route
     { help = Nothing
@@ -44,21 +44,21 @@ lifecycleRoute
   -> Text
   -> (PluginTypes.PluginId -> Eff es (Either Text PluginTypes.PluginStatus))
   -> (PluginTypes.PluginStatus -> Text)
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 lifecycleRoute commandName description operation renderSuccess =
   withHelp (RouteHelp (commandName <> " <id>") (description <> " (superuser only).")) $
     requireAuth isSuperuser denied $
       stopOn (command commandName) \message rawId ->
         withPluginId message rawId operation renderSuccess
 
-unloadRoute :: (Chat.Chat :> es, Plugin.Plugin :> es) => RouteHandler es
+unloadRoute :: (Chat.Chat :> es, Plugin.Plugin :> es) => RouteHandler (Eff es)
 unloadRoute =
   withHelp (RouteHelp "!plugin/unload <id>" "Unload an optional plugin (superuser only).") $
     requireAuth isSuperuser denied $
       stopOn (command "!plugin/unload") \message rawId ->
         withPluginId message rawId Plugin.unload (const "Plugin unloaded.")
 
-listRoute :: (Chat.Chat :> es, Plugin.Plugin :> es) => RouteHandler es
+listRoute :: (Chat.Chat :> es, Plugin.Plugin :> es) => RouteHandler (Eff es)
 listRoute =
   withHelp (RouteHelp "!plugin/list" "List active plugins (superuser only).") $
     requireAuth isSuperuser denied $

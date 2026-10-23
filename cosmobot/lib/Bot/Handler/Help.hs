@@ -17,14 +17,14 @@ import qualified Bot.Effect.Chat as Chat
 import Bot.Prelude
 import qualified Data.Text as Text
 
-helpHandlers :: Chat.Chat :> es => [RouteHandler es] -> [RouteHandler es]
+helpHandlers :: Chat.Chat :> es => [RouteHandler (Eff es)] -> [RouteHandler (Eff es)]
 helpHandlers = helpHandlersWith (const (pure []))
 
 helpHandlersWith
   :: Chat.Chat :> es
   => (IncomingMessage -> Eff es [RouteHelp])
-  -> [RouteHandler es]
-  -> [RouteHandler es]
+  -> [RouteHandler (Eff es)]
+  -> [RouteHandler (Eff es)]
 helpHandlersWith dynamicHelp routes =
   [ helpRoute ]
   where

@@ -77,7 +77,7 @@ askHandlers
   -> [AgentTool.Tool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
-  -> [RouteHandler es]
+  -> [RouteHandler (Eff es)]
 askHandlers toolCfg tools cfg threads =
   [ deletedMessageRoute threads
   , haltRoute threads
@@ -89,7 +89,7 @@ askHandlers toolCfg tools cfg threads =
 deletedMessageRoute
   :: (Storage.Storage :> es, Concurrency.Concurrency :> es, KatipE :> es, Prim :> es, Concurrent :> es)
   => ThreadStore
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 deletedMessageRoute threads =
   stopOn (matching ((== IncomingMessageDeleted) . (.eventKind))) \message _ ->
     for_ message.messageId \messageId -> do
@@ -178,7 +178,7 @@ conversationRoute
   -> [AgentTool.Tool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 conversationRoute toolCfg tools cfg threads =
   Route Nothing (const True) \message -> do
     policy <- classifyPolicy cfg threads message
@@ -260,7 +260,7 @@ drawRoute
   => ChatLog.ChatLog :> es
   => AskHandlerConfig
   -> ThreadStore
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 drawRoute cfg threads =
   withHelp (RouteHelp (cfg.drawCommand <> " <prompt>") "Generate an image from a prompt.") $
   requireAuth (\message -> isAllowedPrivate message || isAllowedGroup message || (message.kind == ChatGroup && message.digest.mentionsBot)) (\_ -> pure ()) $
@@ -274,7 +274,7 @@ askRoute
   -> [AgentTool.Tool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 askRoute toolCfg tools cfg threads =
   withHelp (RouteHelp (cfg.command <> " <prompt>") "Start an agent conversation.") $
   requireAuth (\message -> isAllowedPrivate message || isAllowedGroup message || (message.kind == ChatGroup && message.digest.mentionsBot)) (\_ -> pure ()) $
@@ -291,7 +291,7 @@ haltRoute
   => Concurrent :> es
   => IOE :> es
   => ThreadStore
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 haltRoute threads =
   withHelp (RouteHelp "!halt [all|<id>...]" "List or stop active agent threads in this chat.") $
   stopOn (command "!halt") (handleHalt threads)

@@ -45,7 +45,7 @@ saucenaoCommand =
 saucenaoHandlers
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Media.Media :> es, KatipE :> es, IOE :> es)
   => SaucenaoConfig
-  -> [RouteHandler es]
+  -> [RouteHandler (Eff es)]
 saucenaoHandlers saucenaoCfg =
   [ saucenaoRoute saucenaoCfg
   ]
@@ -53,7 +53,7 @@ saucenaoHandlers saucenaoCfg =
 saucenaoRoute
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Media.Media :> es, KatipE :> es, IOE :> es)
   => SaucenaoConfig
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 saucenaoRoute saucenaoCfg =
   withHelp (RouteHelp "!saucenao" "Reverse-search images in the replied-to message.") $
   stopOn (command saucenaoCommand) \message _ -> do

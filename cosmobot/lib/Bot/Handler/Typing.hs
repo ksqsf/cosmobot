@@ -50,7 +50,7 @@ tigerRankCommand = "!hbcj"
 -- | Routes that render typing leaderboard snapshots.
 typingHandlers
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Typst.Typst :> es, KatipE :> es, IOE :> es)
-  => [RouteHandler es]
+  => [RouteHandler (Eff es)]
 typingHandlers =
   [ rankRoute championshipRankCommand "锦标赛成绩" "锦标赛排行榜生成失败。" fetchChampionshipRows
   , rankRoute tigerRankCommand "虎杯成绩" "虎杯成绩生成失败。" fetchTigerRows
@@ -62,7 +62,7 @@ rankRoute
   -> Text
   -> Text
   -> Eff es [[Text]]
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 rankRoute commandText titleSuffix failureMessage fetchRows =
   withHelp (RouteHelp commandText ("Render the " <> titleSuffix <> " leaderboard.")) $
   stopOn (command commandText) \message _ -> do

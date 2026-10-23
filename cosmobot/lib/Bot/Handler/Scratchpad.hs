@@ -23,7 +23,7 @@ import qualified Data.Text as Text
 
 scratchpadHandlers
   :: (Chat.Chat :> es, Storage.Storage :> es)
-  => [RouteHandler es]
+  => [RouteHandler (Eff es)]
 scratchpadHandlers =
   [ scratchpadRoute "!todo" TodoCommand
   , scratchpadRoute "!done" DoneCommand
@@ -78,7 +78,7 @@ scratchpadRoute
   :: (Chat.Chat :> es, Storage.Storage :> es)
   => Text
   -> ScratchpadCommand
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 scratchpadRoute commandText commandKind =
   withHelp (scratchpadHelp commandKind) $
     stopOn (command commandText) \message args ->

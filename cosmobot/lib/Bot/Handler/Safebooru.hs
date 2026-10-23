@@ -83,14 +83,14 @@ safebooruLinkRows =
 -- | Routes for public Safebooru image commands.
 safebooruHandlers
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, Storage.Storage :> es, KatipE :> es, IOE :> es, Fail :> es)
-  => [RouteHandler es]
+  => [RouteHandler (Eff es)]
 safebooruHandlers =
   safebooruHandlersWith (searchSafebooruImageLinks)
 
 safebooruHandlersWith
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, KatipE :> es, IOE :> es)
   => SafebooruSearch es
-  -> [RouteHandler es]
+  -> [RouteHandler (Eff es)]
 safebooruHandlersWith search =
   [ safebooruRoute search
   ]
@@ -98,7 +98,7 @@ safebooruHandlersWith search =
 safebooruRoute
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Storage.Storage :> es, KatipE :> es, IOE :> es)
   => SafebooruSearch es
-  -> RouteHandler es
+  -> RouteHandler (Eff es)
 safebooruRoute search =
   withHelp (RouteHelp "!ball <keyword> [1-5]" "Find random Safebooru images.") $
   stopOn ballCommandArgs \message args -> do

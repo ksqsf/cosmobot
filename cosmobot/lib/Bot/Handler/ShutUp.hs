@@ -20,7 +20,7 @@ import qualified Data.Text as Text
 import qualified Effectful.Prim.IORef as IORef
 import Text.Regex.TDFA (matchTest)
 
-shutUpHandlers :: (Chat.Chat :> es, Prim :> es) => ShutUpConfig -> Eff es [RouteHandler es]
+shutUpHandlers :: (Chat.Chat :> es, Prim :> es) => ShutUpConfig -> Eff es [RouteHandler (Eff es)]
 shutUpHandlers cfg = do
   repeats <- IORef.newIORef Map.empty
   pure [stopOnM (deleteMatch repeats) deleteMatchedMessage]

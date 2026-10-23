@@ -251,7 +251,7 @@ lastMessage [] =
 lastMessage messages =
   fromMaybe (syntheticMessage 1) (viaNonEmpty last messages)
 
-benchmarkHandlers :: IOE :> es => IORef.IORef Int -> [RouteHandler es]
+benchmarkHandlers :: IOE :> es => IORef.IORef Int -> [RouteHandler (Eff es)]
 benchmarkHandlers handled =
   [ continueOn (command "!never") \_ _ ->
       liftIO $ IORef.modifyIORef' handled (+ 1000000)

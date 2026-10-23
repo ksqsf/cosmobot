@@ -69,14 +69,14 @@ testStoppingMatchedRoutePreventsLaterHandlers = do
 testMonadicRoutes :: IO ()
 testMonadicRoutes = do
   calls <- IORef.newIORef ([] :: [Text])
-  let record label = liftIO $ IORef.modifyIORef' calls (<> [label])
+  let record label = IORef.modifyIORef' calls (<> [label])
       match label result _ = record label $> result
       recordMatched _ value = record value
-  runEff $ runHandlers
+  runHandlers
     [ stopOnM (match "skip" Nothing) recordMatched
     , continueOnM (match "continue" (Just "continued")) recordMatched
     , stopOnM (match "stop" (Just "stopped")) recordMatched
-    , appendContinueCall calls "unreachable"
+    , continueOn anything \_ _ -> record "unreachable"
     ] (message "hello")
   IORef.readIORef calls >>= (@?= ["skip", "continue", "continued", "stop", "stopped"])
 
@@ -111,6 +111,7 @@ testCollectRouteHelp = do
   where
     normalMessage = message "!help"
     superuserMessage = normalMessage{digest = emptyMessageDigest{senderIsSuperuser = True}}
+    routes :: [Route IO]
     routes =
       [ withHelp firstHelp (stopOn anything \_ _ -> pure ())
       , stopOn anything \_ _ -> pure ()
@@ -125,19 +126,19 @@ testRenderHelp =
   renderHelp [RouteHelp "!ping" "Check the bot."]
     @?= "Available commands:\n- `!ping` — Check the bot.\n"
 
-appendContinueCall :: IORef.IORef [Text] -> Text -> RouteHandler '[IOE]
+appendContinueCall :: IORef.IORef [Text] -> Text -> RouteHandler (Eff '[IOE])
 appendContinueCall calls label =
   appendCall continueOn calls label
 
-appendStopCall :: IORef.IORef [Text] -> Text -> RouteHandler '[IOE]
+appendStopCall :: IORef.IORef [Text] -> Text -> RouteHandler (Eff '[IOE])
 appendStopCall calls label =
   appendCall stopOn calls label
 
 appendCall
-  :: (MessageFilter IncomingMessage -> (IncomingMessage -> IncomingMessage -> Eff '[IOE] ()) -> RouteHandler '[IOE])
+  :: (MessageFilter IncomingMessage -> (IncomingMessage -> IncomingMessage -> Eff '[IOE] ()) -> RouteHandler (Eff '[IOE]))
   -> IORef.IORef [Text]
   -> Text
-  -> RouteHandler '[IOE]
+  -> RouteHandler (Eff '[IOE])
 appendCall mkRoute calls label =
   mkRoute anything \_ _ ->
     liftIO $ IORef.modifyIORef' calls (<> [label])

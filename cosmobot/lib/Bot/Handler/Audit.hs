@@ -26,7 +26,7 @@ import Data.Time (FormatTime, UTCTime, defaultTimeLocale, diffUTCTime, formatTim
 auditHandlers
   :: (AgentAudit.AgentAudit :> es, Chat.Chat :> es, Resource.Resource :> es, Storage.Storage :> es, Prim :> es, Concurrent :> es, IOE :> es)
   => ThreadStore
-  -> [RouteHandler es]
+  -> [RouteHandler (Eff es)]
 auditHandlers threads =
   [ withHelp (RouteHelp "!stats" "Show cumulative agent statistics for a replied thread message (superuser only).") $
     stopOn (command "!stats") (handleStats threads)

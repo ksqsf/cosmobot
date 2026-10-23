@@ -20,7 +20,7 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 
-resourceHandlers :: (Chat.Chat :> es, Resource.Resource :> es) => [RouteHandler es]
+resourceHandlers :: (Chat.Chat :> es, Resource.Resource :> es) => [RouteHandler (Eff es)]
 resourceHandlers =
   [ documented "!res/ls" "List resources accessible in this chat and their remaining life." $
       stopOn (command "!res/ls") handleList

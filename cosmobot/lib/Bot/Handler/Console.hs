@@ -76,7 +76,7 @@ consoleHandlers
   -> [AgentTool.Tool (Eff es)]
   -> ConsoleHandlerConfig
   -> ThreadStore
-  -> [RouteHandler es]
+  -> [RouteHandler (Eff es)]
 consoleHandlers toolCfg tools cfg threads =
   [ stopOn (matching isConsoleMessage) \message _ ->
       handleConsoleMessage toolCfg tools cfg threads message

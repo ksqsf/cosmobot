@@ -180,7 +180,7 @@ routes
   :: ( ACPEffect.ACP :> es, AgentEffect.Agent :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, TelegramEffect.Telegram :> es, MatrixEffect.Matrix :> es, Memory.Memory :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es, EffectfulResource.Resource :> es)
   => BotConfig
   -> ThreadStore
-  -> Eff es [RouteHandler es]
+  -> Eff es [RouteHandler (Eff es)]
 routes cfg threads = do
   initializedRoutes <- shutUpHandlers cfg.handlers.shutup
   let allRoutes = initializedRoutes <> pureRoutes
@@ -309,7 +309,7 @@ resolvePluginMedia canonicalReference = do
     , "localPath" Aeson..= localPath
     ]
 
-withRouteDebugLogging :: KatipE :> es => Int -> Route es -> Route es
+withRouteDebugLogging :: KatipE :> es => Int -> Route (Eff es) -> Route (Eff es)
 withRouteDebugLogging index route =
   route
     { decide = \message -> do
@@ -328,13 +328,13 @@ withRouteDebugLogging index route =
       $(logDebug)
         [i|Route matched: index=#{index} label=#{routeLabel route} decision=#{decision}|]
 
-routeLabel :: Route es -> Text
+routeLabel :: Route (Eff es) -> Text
 routeLabel route =
   maybe "-" (.label) route.help
 
 consumeWithLogContext
   :: KatipE :> es
-  => [RouteHandler es]
+  => [RouteHandler (Eff es)]
   -> Stream (Of IncomingMessage) (Eff es) ()
   -> Eff es ()
 consumeWithLogContext handlers =

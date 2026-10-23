@@ -30,7 +30,7 @@ import Effectful.FileSystem (FileSystem)
 import qualified Effectful.Process.Typed as TypedProcess
 import qualified System.Exit as Exit
 
-adminHandlers :: (Chat.Chat :> es, Skills.Skills :> es, LifecycleEffect.Lifecycle :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler es]
+adminHandlers :: (Chat.Chat :> es, Skills.Skills :> es, LifecycleEffect.Lifecycle :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => AdminConfig -> [RouteHandler (Eff es)]
 adminHandlers cfg =
   [ pingRoute
   , echoRoute
@@ -40,7 +40,7 @@ adminHandlers cfg =
   , idRoute
   ] <> maybeToList (upgradeRoute <$> cfg.upgrade)
 
-pingRoute :: Chat.Chat :> es => RouteHandler es
+pingRoute :: Chat.Chat :> es => RouteHandler (Eff es)
 pingRoute =
   withHelp (RouteHelp "!ping" "Check whether the bot is responding.") $
     stopOn (command "!ping") handlePing
@@ -49,7 +49,7 @@ handlePing :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 handlePing message _ =
   void $ Chat.replyTo message "pong"
 
-echoRoute :: Chat.Chat :> es => RouteHandler es
+echoRoute :: Chat.Chat :> es => RouteHandler (Eff es)
 echoRoute =
   withHelp (RouteHelp "!echo <text>" "Echo text back to the chat.") $
     stopOn (command "!echo") handleEcho
@@ -58,7 +58,7 @@ handleEcho :: Chat.Chat :> es => IncomingMessage -> Text -> Eff es ()
 handleEcho message arguments =
   void $ Chat.replyTo message arguments
 
-reloadRoute :: (Chat.Chat :> es, Skills.Skills :> es) => RouteHandler es
+reloadRoute :: (Chat.Chat :> es, Skills.Skills :> es) => RouteHandler (Eff es)
 reloadRoute =
   withHelp (RouteHelp "!reload" "Reload skills (superuser only).") $
   requireAuth
@@ -71,7 +71,7 @@ handleReload message _ = do
   Skills.reloadSkills
   void $ Chat.replyTo message "已重新载入 skill 列表。"
 
-restartRoute :: (Chat.Chat :> es, LifecycleEffect.Lifecycle :> es) => RouteHandler es
+restartRoute :: (Chat.Chat :> es, LifecycleEffect.Lifecycle :> es) => RouteHandler (Eff es)
 restartRoute =
   withHelp (RouteHelp "!restart" "Restart cosmobot (superuser only).") $
   requireAuth
@@ -84,7 +84,7 @@ handleRestart message _ = do
   void $ Chat.replyTo message "正在重启 cosmobot。"
   LifecycleEffect.requestRestart message "cosmobot 重启完成啦 (｡•̀ᴗ-)✧"
 
-titleRoute :: Chat.Chat :> es => RouteHandler es
+titleRoute :: Chat.Chat :> es => RouteHandler (Eff es)
 titleRoute =
   withHelp (RouteHelp "!title <id> <title>" "Set a group member title (superuser only).") $
   requireAuth
@@ -118,7 +118,7 @@ parseTitleArgs rawArgs = do
   guard (not (Text.null userId) && userId /= "0" && not (Text.null title))
   pure (userId, title)
 
-upgradeRoute :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> RouteHandler es
+upgradeRoute :: (Chat.Chat :> es, Concurrency.Concurrency :> es, Concurrent :> es, FileSystem :> es, TypedProcess.TypedProcess :> es, Storage.Storage :> es, KatipE :> es, IOE :> es) => UpgradeConfig -> RouteHandler (Eff es)
 upgradeRoute cfg =
   withHelp (RouteHelp "!upgrade" "Run the configured upgrade script (superuser only).") $
   requireAuth
@@ -199,7 +199,7 @@ scriptOutput stdoutText stderrText =
       , not (Text.null body)
       ]
 
-idRoute :: Chat.Chat :> es => RouteHandler es
+idRoute :: Chat.Chat :> es => RouteHandler (Eff es)
 idRoute =
   withHelp (RouteHelp "!id" "Find sender ID and chat ID.") $
     stopOn (command "!id") handleId

@@ -156,10 +156,10 @@ isSuperuser message =
   message.digest.senderIsSuperuser
 
 -- | The routing algebra: skip, handle and continue, or handle and stop.
-data RouteDecision es
+data RouteDecision m
   = Skip
-  | ContinueWith (Eff es ())
-  | StopWith (Eff es ())
+  | ContinueWith (m ())
+  | StopWith (m ())
 
 -- | Metadata that can be folded into user-visible help without inspecting the route function.
 data RouteHelp = RouteHelp
@@ -169,34 +169,34 @@ data RouteHelp = RouteHelp
   deriving (Eq, Show)
 
 -- | A route is an executable decision function plus optional help metadata.
-data Route es = Route
+data Route m = Route
   { help   :: !(Maybe RouteHelp)
   , helpVisible :: IncomingMessage -> Bool
-  , decide :: IncomingMessage -> Eff es (RouteDecision es)
+  , decide :: IncomingMessage -> m (RouteDecision m)
   }
 
-type RouteHandler es = Route es
+type RouteHandler m = Route m
 
-continueOn :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> Route es
+continueOn :: Monad m => MessageFilter a -> (IncomingMessage -> a -> m ()) -> Route m
 continueOn (MessageFilter match) =
   continueOnM (pure . match)
 
-stopOn :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> Route es
+stopOn :: Monad m => MessageFilter a -> (IncomingMessage -> a -> m ()) -> Route m
 stopOn (MessageFilter match) =
   stopOnM (pure . match)
 
 -- | Match effectfully, then handle and continue routing.
-continueOnM :: (IncomingMessage -> Eff es (Maybe a)) -> (IncomingMessage -> a -> Eff es ()) -> Route es
+continueOnM :: Monad m => (IncomingMessage -> m (Maybe a)) -> (IncomingMessage -> a -> m ()) -> Route m
 continueOnM =
   onMatchM ContinueWith
 
 -- | Match effectfully, then handle and stop routing.
-stopOnM :: (IncomingMessage -> Eff es (Maybe a)) -> (IncomingMessage -> a -> Eff es ()) -> Route es
+stopOnM :: Monad m => (IncomingMessage -> m (Maybe a)) -> (IncomingMessage -> a -> m ()) -> Route m
 stopOnM =
   onMatchM StopWith
 
 -- | Skip an otherwise matched route unless its effectful guard passes.
-guardRouteM :: (IncomingMessage -> Eff es Bool) -> Route es -> Route es
+guardRouteM :: Monad m => (IncomingMessage -> m Bool) -> Route m -> Route m
 guardRouteM allowed route =
   route
     { decide = \message ->
@@ -208,10 +208,11 @@ guardRouteM allowed route =
     }
 
 onMatchM
-  :: (Eff es () -> RouteDecision es)
-  -> (IncomingMessage -> Eff es (Maybe a))
-  -> (IncomingMessage -> a -> Eff es ())
-  -> Route es
+  :: Monad m
+  => (m () -> RouteDecision m)
+  -> (IncomingMessage -> m (Maybe a))
+  -> (IncomingMessage -> a -> m ())
+  -> Route m
 onMatchM matched match handler =
   Route
     { help = Nothing
@@ -226,10 +227,11 @@ onMatchM matched match handler =
     }
 
 requireAuth
-  :: (IncomingMessage -> Bool)
-  -> (IncomingMessage -> Eff es ())
-  -> Route es
-  -> Route es
+  :: Monad m
+  => (IncomingMessage -> Bool)
+  -> (IncomingMessage -> m ())
+  -> Route m
+  -> Route m
 requireAuth allowed denied route =
   route
     { helpVisible = \message -> allowed message && route.helpVisible message
@@ -250,28 +252,28 @@ requireAuth allowed denied route =
                 StopWith (denied message)
     }
 
-withHelp :: RouteHelp -> Route es -> Route es
+withHelp :: RouteHelp -> Route m -> Route m
 withHelp help route =
   route{help = Just help}
 
 -- | Collect help visible to this sender in route evaluation order.
-collectRouteHelp :: IncomingMessage -> [Route es] -> [RouteHelp]
+collectRouteHelp :: IncomingMessage -> [Route m] -> [RouteHelp]
 collectRouteHelp message =
   mapMaybe \route -> guard (route.helpVisible message) *> route.help
 
 -- | Execute a route action and return whether routing should continue.
-runRouteDecision :: RouteDecision es -> Eff es Bool
+runRouteDecision :: Monad m => RouteDecision m -> m Bool
 runRouteDecision = \case
   Skip                -> pure True
   ContinueWith action -> action $> True
   StopWith action     -> action $> False
 
-runRoute :: Route es -> IncomingMessage -> Eff es (RouteDecision es)
+runRoute :: Route m -> IncomingMessage -> m (RouteDecision m)
 runRoute route message =
   route.decide message
 
 -- | Run handlers left-to-right until one asks the router to stop.
-runHandlers :: [RouteHandler es] -> IncomingMessage -> Eff es ()
+runHandlers :: Monad m => [RouteHandler m] -> IncomingMessage -> m ()
 runHandlers [] _ =
   pure ()
 runHandlers (handler : handlers) message = do
@@ -280,8 +282,9 @@ runHandlers (handler : handlers) message = do
 
 -- | Consume a message stream with a fixed handler pipeline.
 consumeWith
-  :: [RouteHandler es]
-  -> Stream (Of IncomingMessage) (Eff es) ()
-  -> Eff es ()
+  :: Monad m
+  => [RouteHandler m]
+  -> Stream (Of IncomingMessage) m ()
+  -> m ()
 consumeWith handlers =
   S.mapM_ (runHandlers handlers)

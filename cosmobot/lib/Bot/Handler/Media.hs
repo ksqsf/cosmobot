@@ -20,7 +20,7 @@ import qualified Data.Char as Char
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 
-mediaHandlers :: (Chat.Chat :> es, Media.Media :> es) => [RouteHandler es]
+mediaHandlers :: (Chat.Chat :> es, Media.Media :> es) => [RouteHandler (Eff es)]
 mediaHandlers =
   [ withHelp (RouteHelp "!media/info <media_id>..." "Show cached media information.") $
       stopOn (command "!media/info") handleInfo
