@@ -33,7 +33,40 @@ main =
     testGroup "shutup"
       [ testCase "matching message is deleted and routing stops" testMatchingMessageIsDeleted
       , testCase "nonmatching message continues routing" testNonmatchingMessageContinues
+      , testCase "fourth repeat and containing suffixes are deleted" $
+          checkStream (map messageWithText ["a", "a", "a", "a", "xa", "ax", "b", "b", "b", "b"]) [4,5,6,10]
+      , testCase "arming requires exact consecutive text" $
+          checkStream (map messageWithText ["a", "xa", "a", "a", "b", "a", "a", "a", "a"]) [9]
+      , testCase "empty messages reset without arming" $
+          checkStream (map messageWithText ["", "", "", "hello", "a", "a", "a", "", "a"]) []
+      , testCase "pattern is literal and preserved after substring matches" $
+          checkStream (map messageWithText [".*", ".*", ".*", "x.*", ".*", "anything"]) [4,5]
+      , testCase "chat and platform scope are independent" $
+          let a = messageWithText "a"
+              b = a{chatId = Just "101"}
+              c = a{platform = PlatformMatrix}
+          in checkStream [a,b,c,a,b,c,a,b,c,a,b,c] [10,11,12]
+      , testCase "missing chat identity does not contribute" $
+          let a = messageWithText "a"
+          in checkStream [a,a{chatId = Nothing},a,a,a] [5]
+      , testCase "deletion events do not contribute or reset" $
+          let a = messageWithText "a"
+          in checkStream [a,a,a{eventKind = IncomingMessageDeleted},a,(messageWithText "b"){eventKind = IncomingMessageDeleted},a] [6]
       ]
+
+checkStream :: [IncomingMessage] -> [Int] -> IO ()
+checkStream messages expected = do
+  deleted <- IORef.newIORef []
+  continued <- IORef.newIORef []
+  runEff $ runPrim $ Chat.runChatWith
+    (DeleteChatDriver \_ messageId -> liftIO (IORef.modifyIORef' deleted (<> [messageId])) $> True) do
+      handlers <- shutUpHandlers defaultShutUpConfig
+      let later = continueOn anything \message _ ->
+            liftIO $ IORef.modifyIORef' continued (<> [message.messageId])
+      forM_ (zip [1 :: Int ..] messages) \(index, message) ->
+        runHandlers (handlers <> [later]) message{Bot.Core.Message.messageId = Just (fromString (show index))}
+  IORef.readIORef deleted >>= (@?= map (fromString . show) expected)
+  IORef.readIORef continued >>= (@?= [Just (fromString (show index)) | index <- [1..length messages], index `notElem` expected])
 
 testMatchingMessageIsDeleted :: IO ()
 testMatchingMessageIsDeleted = do
@@ -55,13 +88,15 @@ testNonmatchingMessageContinues = do
 
 runShutUp :: IORef.IORef [MessageId] -> IORef.IORef Bool -> ShutUpConfig -> IncomingMessage -> IO ()
 runShutUp deleted later cfg incoming =
-  runEff $
+  runEff $ runPrim $
     Chat.runChatWith
       ( DeleteChatDriver \_ messageId -> do
           liftIO $ IORef.modifyIORef' deleted (<> [messageId])
           pure True
       ) $
-      runHandlers (shutUpHandlers cfg <> [laterRoute]) incoming
+      do
+        handlers <- shutUpHandlers cfg
+        runHandlers (handlers <> [laterRoute]) incoming
   where
     laterRoute =
       continueOn anything \_ _ ->

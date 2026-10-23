@@ -153,13 +153,14 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
     pythonArguments <- preparePython cfg.tool.python
     runApplication pythonArguments do
       $(logInfo) "Cosmobot stand by!"
+      initializedRoutes <- routes cfg threads
       let allStreams =
             [ Chat.incomingMessages
             , Scheduler.scheduledMessages
             ]
           messageConsumer =
             consumeWithLogContext
-              (zipWith withRouteDebugLogging [1 :: Int ..] (routes cfg threads))
+              (zipWith withRouteDebugLogging [1 :: Int ..] initializedRoutes)
               (ChatLog.recordIncomingMessages (StreamUtil.mergeStreams allStreams))
 
       runConfiguredServers cfg configuration threads rpcState acpState messageConsumer
@@ -179,11 +180,13 @@ routes
   :: ( ACPEffect.ACP :> es, AgentEffect.Agent :> es, Chat.Chat :> es, AgentAudit.AgentAudit :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es, HTTP.HTTP :> es, LLM.LLM :> es, LifecycleEffect.Lifecycle :> es, MediaEffect.Media :> es, TelegramEffect.Telegram :> es, MatrixEffect.Matrix :> es, Memory.Memory :> es, PluginEffect.Plugin :> es, ResourceEffect.Resource :> es, Skills.Skills :> es, Scheduler.Scheduler :> es, Storage.Storage :> es, Typst.Typst :> es, KatipE :> es, Prim :> es, Concurrent :> es, Fail :> es, Timeout :> es, FileSystem :> es, Process :> es, IOE :> es, EffectfulResource.Resource :> es)
   => BotConfig
   -> ThreadStore
-  -> [RouteHandler es]
-routes cfg threads =
-  helpHandlersWith PluginEffect.helpEntries baseRoutes <> baseRoutes
+  -> Eff es [RouteHandler es]
+routes cfg threads = do
+  initializedRoutes <- shutUpHandlers cfg.handlers.shutup
+  let allRoutes = initializedRoutes <> pureRoutes
+  pure (helpHandlersWith PluginEffect.helpEntries allRoutes <> allRoutes)
   where
-    baseRoutes =
+    pureRoutes =
       builtInRoutes
         <> pluginHandlers
         <> [pluginRouteGateway]
@@ -191,8 +194,7 @@ routes cfg threads =
         <> askHandlers cfg.tool agentTools cfg.handlers.ask threads
     agentTools = AgentTools.defaultToolsWith AgentTools.acpTools
     builtInRoutes =
-      shutUpHandlers cfg.handlers.shutup
-        <> auditHandlers threads
+      auditHandlers threads
         <> adminHandlers cfg.handlers.admin
         <> mediaHandlers
         <> scratchpadHandlers
