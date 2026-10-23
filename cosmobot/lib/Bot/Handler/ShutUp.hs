@@ -36,11 +36,10 @@ shutUpHandlers cfg = do
         _ -> pure False
       pure (() <$ guard (repeated || isJust ((deletePattern cfg).runMessageFilter message)))
 
--- The count saturates at three; matching suffixes never replace the original pattern.
 stepRepeat :: Text -> Maybe (Text, Int) -> (Maybe (Text, Int), Bool)
 stepRepeat body previous
   | Text.null body = (Nothing, False)
-  | Just (pattern_, 3) <- previous, pattern_ `Text.isInfixOf` body =
+  | Just (pattern_, 2) <- previous, pattern_ `Text.isInfixOf` body =
       (previous, True)
   | Just (pattern_, count) <- previous, pattern_ == body =
       (Just (body, count + 1), False)

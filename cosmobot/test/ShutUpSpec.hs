@@ -33,25 +33,25 @@ main =
     testGroup "shutup"
       [ testCase "matching message is deleted and routing stops" testMatchingMessageIsDeleted
       , testCase "nonmatching message continues routing" testNonmatchingMessageContinues
-      , testCase "fourth repeat and containing suffixes are deleted" $
-          checkStream (map messageWithText ["a", "a", "a", "a", "xa", "ax", "b", "b", "b", "b"]) [4,5,6,10]
+      , testCase "third repeat and containing suffixes are deleted" $
+          checkStream (map messageWithText ["a", "a", "a", "a", "xa", "ax", "b", "b", "b", "b"]) [3,4,5,6,9,10]
       , testCase "arming requires exact consecutive text" $
-          checkStream (map messageWithText ["a", "xa", "a", "a", "b", "a", "a", "a", "a"]) [9]
+          checkStream (map messageWithText ["a", "xa", "a", "a", "b", "a", "a", "a", "a"]) [8,9]
       , testCase "empty messages reset without arming" $
-          checkStream (map messageWithText ["", "", "", "hello", "a", "a", "a", "", "a"]) []
+          checkStream (map messageWithText ["", "", "", "hello", "a", "a", "", "a"]) []
       , testCase "pattern is literal and preserved after substring matches" $
-          checkStream (map messageWithText [".*", ".*", ".*", "x.*", ".*", "anything"]) [4,5]
+          checkStream (map messageWithText [".*", ".*", ".*", "x.*", ".*", "anything"]) [3,4,5]
       , testCase "chat and platform scope are independent" $
           let a = messageWithText "a"
               b = a{chatId = Just "101"}
               c = a{platform = PlatformMatrix}
-          in checkStream [a,b,c,a,b,c,a,b,c,a,b,c] [10,11,12]
+          in checkStream [a,b,c,a,b,c,a,b,c,a,b,c] [7,8,9,10,11,12]
       , testCase "missing chat identity does not contribute" $
           let a = messageWithText "a"
-          in checkStream [a,a{chatId = Nothing},a,a,a] [5]
+          in checkStream [a,a{chatId = Nothing},a,a,a] [4,5]
       , testCase "deletion events do not contribute or reset" $
           let a = messageWithText "a"
-          in checkStream [a,a,a{eventKind = IncomingMessageDeleted},a,(messageWithText "b"){eventKind = IncomingMessageDeleted},a] [6]
+          in checkStream [a,a,a{eventKind = IncomingMessageDeleted},a,(messageWithText "b"){eventKind = IncomingMessageDeleted},a] [4,6]
       ]
 
 checkStream :: [IncomingMessage] -> [Int] -> IO ()
