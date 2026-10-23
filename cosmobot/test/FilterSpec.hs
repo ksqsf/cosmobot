@@ -19,6 +19,7 @@ main =
       , testCase "fromGroups matches only allowed group chats" testFromGroups
       , testCase "notReply rejects replies" testNotReply
       , testCase "stopping matched route prevents later handlers" testStoppingMatchedRoutePreventsLaterHandlers
+      , testCase "monadic matchers run once and preserve skip/continue/stop" testMonadicRoutes
       , testCase "route continues to later handlers" testRouteContinueRunsLaterHandlers
       , testCase "restricted route stops after access failure" testRestrictedRouteStopsAfterAccessFailure
       , testCase "route help is collected in parser order" testCollectRouteHelp
@@ -64,6 +65,20 @@ testStoppingMatchedRoutePreventsLaterHandlers = do
     ]
     (message "hello")
   IORef.readIORef calls >>= (@?= ["first"])
+
+testMonadicRoutes :: IO ()
+testMonadicRoutes = do
+  calls <- IORef.newIORef ([] :: [Text])
+  let record label = liftIO $ IORef.modifyIORef' calls (<> [label])
+      match label result _ = record label $> result
+      recordMatched _ value = record value
+  runEff $ runHandlers
+    [ stopOnM (match "skip" Nothing) recordMatched
+    , continueOnM (match "continue" (Just "continued")) recordMatched
+    , stopOnM (match "stop" (Just "stopped")) recordMatched
+    , appendContinueCall calls "unreachable"
+    ] (message "hello")
+  IORef.readIORef calls >>= (@?= ["skip", "continue", "continued", "stop", "stopped"])
 
 testRouteContinueRunsLaterHandlers :: IO ()
 testRouteContinueRunsLaterHandlers = do

@@ -29,7 +29,9 @@ module Bot.Core.Route
   , isSuperuser
   , RouteHandler
   , continueOn
+  , continueOnM
   , stopOn
+  , stopOnM
   , guardRouteM
   , requireAuth
   , withHelp
@@ -176,12 +178,22 @@ data Route es = Route
 type RouteHandler es = Route es
 
 continueOn :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> Route es
-continueOn =
-  onMatch ContinueWith
+continueOn (MessageFilter match) =
+  continueOnM (pure . match)
 
 stopOn :: MessageFilter a -> (IncomingMessage -> a -> Eff es ()) -> Route es
-stopOn =
-  onMatch StopWith
+stopOn (MessageFilter match) =
+  stopOnM (pure . match)
+
+-- | Match effectfully, then handle and continue routing.
+continueOnM :: (IncomingMessage -> Eff es (Maybe a)) -> (IncomingMessage -> a -> Eff es ()) -> Route es
+continueOnM =
+  onMatchM ContinueWith
+
+-- | Match effectfully, then handle and stop routing.
+stopOnM :: (IncomingMessage -> Eff es (Maybe a)) -> (IncomingMessage -> a -> Eff es ()) -> Route es
+stopOnM =
+  onMatchM StopWith
 
 -- | Skip an otherwise matched route unless its effectful guard passes.
 guardRouteM :: (IncomingMessage -> Eff es Bool) -> Route es -> Route es
@@ -195,17 +207,18 @@ guardRouteM allowed route =
             allowed message <&> \passes -> if passes then matched else Skip
     }
 
-onMatch
+onMatchM
   :: (Eff es () -> RouteDecision es)
-  -> MessageFilter a
+  -> (IncomingMessage -> Eff es (Maybe a))
   -> (IncomingMessage -> a -> Eff es ())
   -> Route es
-onMatch matched (MessageFilter filt) handler =
+onMatchM matched match handler =
   Route
     { help = Nothing
     , helpVisible = const True
-    , decide = \message ->
-        pure case filt message of
+    , decide = \message -> do
+        result <- match message
+        pure case result of
           Nothing ->
             Skip
           Just value ->
