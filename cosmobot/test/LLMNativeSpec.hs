@@ -10,6 +10,7 @@ import qualified Network.Wai.Handler.Warp as Warp
 import qualified Streaming.Prelude as S
 import qualified Prelude
 import qualified Bot.LLM.Anthropic as Anthropic
+import qualified Bot.LLM.Gemini as Gemini
 import qualified Bot.LLM.Config as Config
 import qualified Bot.LLM.Config as ChatConfig (ChatProviderConfig (..))
 import Bot.LLM.Types
@@ -22,7 +23,11 @@ import Test.Tasty.HUnit
 
 main :: IO ()
 main = defaultMain $ testGroup "native LLM"
-  [ testCase "Anthropic HTTP/SSE integration" testHTTP
+  [ testCase "Gemini request and HTTP/SSE image integration" testGeminiHTTP
+  , testCase "Gemini signatures, parallel same-name calls and missing ids" testGeminiTools
+  , testCase "Gemini text, hidden thoughts and cumulative usage" testGeminiText
+  , testCase "Gemini rejects incomplete, blocked and malformed responses" testGeminiErrors
+  , testCase "Anthropic HTTP/SSE integration" testHTTP
   , testCase "Anthropic request uses native fields and auth" testRequest
   , testCase "Anthropic signed thinking and parallel tools survive transcript persistence" testToolRoundTrip
   , testCase "Anthropic rejects truncated and invalid tool streams" testIncomplete
@@ -196,3 +201,122 @@ testHTTP = do
     result <- runEff $ Resource.runResource $ HTTPInterpreter.runHTTP $ trySync $
       S.toList (Anthropic.askStreaming provider{ChatConfig.baseUrl = "http://127.0.0.1:" <> show port, ChatConfig.apiKey = Just "key"} [] [userText "hi"])
     assertBool "HTTP EOF cannot complete a tool turn" (isLeft result)
+
+gemini :: Config.ChatProviderConfig
+gemini = Config.defaultChatProviderConfig
+  { ChatConfig.api = "gemini"
+  , ChatConfig.baseUrl = "https://generativelanguage.googleapis.com/v1beta"
+  , ChatConfig.model = "gemini-2.5-flash"
+  , ChatConfig.reasoningEffort = ""
+  }
+
+geminiFrame :: [A.Value] -> Maybe Text -> A.Value
+geminiFrame ps reason = A.object ["candidates" A..= [A.object $
+  ["index" A..= (0 :: Int), "content" A..= A.object ["role" A..= A.String "model", "parts" A..= ps]]
+  <> ["finishReason" A..= r | r <- maybeToList reason]]]
+
+testGeminiTools :: Assertion
+testGeminiTools = do
+  -- Enumerate missing/present ids on both sides of a collision with prior history.
+  for_ [False, True] $ \firstHasId -> for_ [False, True] $ \secondHasId -> do
+    let call hasId ident signed = A.object $
+          ["functionCall" A..= A.object
+            (["name" A..= A.String "weather", "args" A..= json "{\"city\":\"東京\"}"] <> ["id" A..= ident | hasId])]
+          <> ["thoughtSignature" A..= A.String "signed" | signed]
+        raw = [call firstHasId ("gemini-call-0" :: Text) True, call secondHasId ("native-second" :: Text) False]
+    (_, answer) <- right $ Gemini.streamFromPayloads ["gemini-call-1"] [geminiFrame raw (Just "STOP")]
+    let calls = chatAnswerToolCalls answer
+        ids = map (.id) calls
+    length calls @?= 2
+    length (ordNub ids) @?= 2
+    assertBool "generated ids avoid history" ("gemini-call-1" `notElem` ids)
+    persisted <- right (A.eitherDecode (A.encode (assistantAnswer answer)) :: Either String ChatMessage)
+    body <- right $ Gemini.requestPayload gemini [] ([userText "weather", persisted] <> map (\c -> toolResult c "sunny") calls)
+    let turns = array (field "contents" body)
+        responses = map (field "functionResponse") (array (field "parts" (turns Prelude.!! 2)))
+    field "parts" (turns Prelude.!! 1) @?= A.toJSON raw
+    map (field "name") responses @?= replicate 2 (A.String "weather")
+    map (field "id") responses @?=
+      [if firstHasId then A.String "gemini-call-0" else A.Null, if secondHasId then A.String "native-second" else A.Null]
+    -- A second model/tool turn must retain the earlier signed part unchanged.
+    (_, next) <- right $ Gemini.streamFromPayloads ids [geminiFrame [call False ("unused" :: Text) True] (Just "STOP")]
+    body2 <- right $ Gemini.requestPayload gemini [] $
+      [userText "weather", persisted] <> map (\c -> toolResult c "sunny") calls <>
+      [assistantAnswer next] <> map (\c -> toolResult c "rain") (chatAnswerToolCalls next)
+    field "parts" (array (field "contents" body2) Prelude.!! 1) @?= A.toJSON raw
+
+testGeminiText :: Assertion
+testGeminiText = do
+  let frames =
+        [ geminiFrame [json "{\"text\":\"private\",\"thought\":true}"] Nothing
+        , json "{\"usageMetadata\":{\"promptTokenCount\":2,\"candidatesTokenCount\":1}}"
+        , geminiFrame [json "{\"text\":\"Hi\"}"] Nothing
+        , geminiFrame [json "{\"text\":\" there\"}", json "{\"text\":\"\",\"thoughtSignature\":\"signed\"}"] (Just "STOP")
+        , json "{\"usageMetadata\":{\"promptTokenCount\":7,\"cachedContentTokenCount\":3,\"candidatesTokenCount\":2,\"thoughtsTokenCount\":5,\"toolUsePromptTokenCount\":1,\"totalTokenCount\":15}}"
+        ]
+  (output, answer) <- right $ Gemini.streamFromPayloads [] frames
+  output @?= ["Hi", " there"]
+  chatAnswerContent answer @?= "Hi there"
+  chatAnswerTokenUsage answer @?= Just (TokenUsage 8 7 15 (Just 3))
+  (answer.providerState >>= listToMaybe . reverse . (.blocks)) @?= Just (json "{\"text\":\"\",\"thoughtSignature\":\"signed\"}")
+
+testGeminiErrors :: Assertion
+testGeminiErrors = do
+  let call = json "{\"functionCall\":{\"id\":\"a\",\"name\":\"f\",\"args\":{}}}"
+      valid = [geminiFrame [call] Nothing, geminiFrame [] (Just "STOP")]
+  for_ [0 .. length valid - 1] $ \n ->
+    assertBool "incomplete prefixes fail" (isLeft (Gemini.streamFromPayloads [] (take n valid)))
+  for_ [ [geminiFrame [call] (Just "MAX_TOKENS")]
+       , [geminiFrame [] (Just "SAFETY")]
+       , [json "{\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}"]
+       , [json "{\"error\":{\"code\":429}}"]
+       , [geminiFrame [call, call] (Just "STOP")]
+       , [geminiFrame [json "{\"functionCall\":{\"name\":\"f\",\"args\":[]}}"] (Just "STOP")]
+       , [geminiFrame [json "{\"inlineData\":{\"data\":\"a\"}}"] (Just "STOP")]
+       , [json "{\"candidates\":[{},{}]}"]
+       , valid <> valid
+       ] $ \frames -> assertBool "invalid stream fails" (isLeft (Gemini.streamFromPayloads [] frames))
+  assertBool "orphan tool result fails" (isLeft (Gemini.requestPayload gemini [] [toolResult (ToolCall "orphan" "f" "{}") "x"]))
+  badModel <- runEff $ trySync $ liftIO (Gemini.httpRequest gemini{ChatConfig.model = "../secret?key=x"} "key" A.Null)
+  assertBool "model cannot inject URL" (isLeft badModel)
+
+testGeminiHTTP :: Assertion
+testGeminiHTTP = do
+  captured <- IORef.newIORef Nothing
+  imageHeaders <- IORef.newIORef []
+  let wire = "data: " <> A.encode (geminiFrame [json "{\"text\":\"hello\"}"] (Just "STOP")) <> "\n\n"
+      app req respond
+        | Wai.pathInfo req == ["image"] = do
+            IORef.writeIORef imageHeaders (Wai.requestHeaders req)
+            respond (Wai.responseLBS Status.status200 [] "\137PNG\r\n\26\nimage")
+        | otherwise = do
+            body <- Wai.strictRequestBody req
+            IORef.writeIORef captured (Just (Wai.pathInfo req, Wai.queryString req, Wai.requestHeaders req, body))
+            respond (Wai.responseLBS Status.status200 [("Content-Type", "text/event-stream")] wire)
+  Warp.testWithApplication (pure app) $ \port -> do
+    let root = "http://127.0.0.1:" <> show port
+        cfg = gemini{ChatConfig.baseUrl = root <> "/v1beta", ChatConfig.apiKey = Just "test-key", ChatConfig.reasoningEffort = "high"}
+        schema = json "{\"type\":\"object\",\"additionalProperties\":false}"
+    (output S.:> answer) <- runEff $ Resource.runResource $ HTTPInterpreter.runHTTP $
+      S.toList (Gemini.askStreaming cfg [FunctionTool "weather" "Weather" schema]
+        [systemText "system", userWithImages "hi" [root <> "/image"]])
+    output @?= ["hello"]
+    chatAnswerContent answer @?= "hello"
+    IORef.readIORef captured >>= \case
+      Just (path, query, headers, body) -> do
+        path @?= ["v1beta", "models", "gemini-2.5-flash:streamGenerateContent"]
+        query @?= [("alt", Just "sse")]
+        Prelude.lookup "x-goog-api-key" headers @?= Just "test-key"
+        decoded <- right (A.eitherDecode body)
+        field "systemInstruction" decoded @?= json "{\"parts\":[{\"text\":\"system\"}]}"
+        field "thinkingConfig" (field "generationConfig" decoded) @?= json "{\"thinkingLevel\":\"high\"}"
+        let ps = concatMap (array . field "parts") (array (field "contents" decoded))
+        field "mimeType" (field "inlineData" (ps Prelude.!! 1)) @?= A.String "image/png"
+        field "parametersJsonSchema" (array (field "functionDeclarations" (array (field "tools" decoded) Prelude.!! 0)) Prelude.!! 0) @?= schema
+      Nothing -> assertFailure "request was not received"
+  headers <- IORef.readIORef imageHeaders
+  Prelude.lookup "x-goog-api-key" headers @?= Nothing
+  omitted <- right (Gemini.requestPayload gemini [] [userText "hello"])
+  field "thinkingConfig" (field "generationConfig" omitted) @?= A.Null
+  req <- Gemini.httpRequest gemini "key" omitted
+  HTTP.redirectCount req @?= 0

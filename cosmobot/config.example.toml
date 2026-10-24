@@ -134,13 +134,13 @@ image = "openai"
 audio = "openai"
 
 [llm.chat_provider.openrouter]
-# Wire protocol: openai (default) or anthropic (native Messages API).
+# Wire protocol: openai (default), anthropic (Messages), or gemini (GenerateContent).
 api = "openai"
 # API base URL, including /v1 where required; do not append /chat/completions.
 base_url = "https://openrouter.ai/api/v1"
 api_key = ""
 model = "openai/gpt-4o-mini"
-# OpenAI reasoning_effort / Anthropic output_config.effort; empty omits native effort.
+# OpenAI reasoning_effort / Anthropic output_config.effort / Gemini thinkingLevel.
 reasoning_effort = "low"
 # Request timeout in seconds; must be positive.
 timeout = 60
@@ -157,6 +157,17 @@ model = "anthropic/claude-opus-5.5"
 thinking = "adaptive"
 reasoning_effort = "high"
 # Native API output token limit; must be positive.
+max_tokens = 16384
+timeout = 120
+
+# Direct Google Gemini; select with llm.chat = "gemini".
+[llm.chat_provider.gemini]
+api = "gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+api_key = ""
+model = "gemini-2.5-flash"
+# Empty uses the model default. Gemini 3 models accept thinkingLevel values.
+reasoning_effort = ""
 max_tokens = 16384
 timeout = 120
 

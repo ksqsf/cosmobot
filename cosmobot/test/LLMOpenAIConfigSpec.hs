@@ -241,3 +241,10 @@ testNativeOptions = do
   assertParseFailureContains "api must be" "[chat_provider.x]\napi = \"unknown\""
   assertParseFailureContains "thinking must be adaptive" "[chat_provider.x]\nthinking = \"adaptive\""
   assertBool "native base URL and model are required" (isLeft (parseRuntimeConfigEither "[chat_provider.x]\napi = \"anthropic\""))
+
+  let google = Text.replace "anthropic" "gemini" native
+  googleCfg <- parseRuntimeConfig (google <> "reasoning_effort = \"\"\n")
+  fmap (.api) googleCfg.chatProvider @?= Just "gemini"
+  fmap (.reasoningEffort) googleCfg.chatProvider @?= Just ""
+  assertParseFailureContains "thinking must be adaptive" (google <> "thinking = \"adaptive\"")
+  assertParseFailureContains "requires api = anthropic" (google <> "anthropic_auth = \"bearer\"")

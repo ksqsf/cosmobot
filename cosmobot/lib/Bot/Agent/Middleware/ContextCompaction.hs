@@ -183,4 +183,8 @@ summaryMessage summary =
 
 messagesJson :: [LLM.ChatMessage] -> Text
 messagesJson =
-  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode
+  TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode . map summaryView
+  where
+    -- Opaque wire state is replay metadata, not material for the summary prompt.
+    summaryView LLM.ChatMessage{role, content, toolCalls, toolCallId} =
+      LLM.ChatMessage role content toolCalls toolCallId Nothing

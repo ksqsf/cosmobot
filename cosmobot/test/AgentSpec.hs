@@ -89,6 +89,7 @@ import qualified Bot.System.Typst.Test as TypstTest
 import qualified Bot.System.Typst.Types as TypstTypes
 import qualified Bot.Util.HList as HList
 import qualified Control.Exception as Exception
+import qualified Bot.LLM.Types as LLMTypes
 import Bot.Prelude
 import qualified Bot.Chat.Driver.Telegram.Protocol as TelegramProtocol
 import qualified Data.Aeson as Aeson
@@ -1888,7 +1889,11 @@ testAskHandlerGroupIdentity =
 
 testAskHandlerRoutesActiveReplyAsSteering :: IO ()
 testAskHandlerRoutesActiveReplyAsSteering = for_ [ChatPrivate, ChatGroup] \kind -> do
-  let message = testMessage{kind, senderDisplayName = Just "Alice"}
+  let message = testMessage
+        { kind
+        , senderDisplayName = Just "Alice"
+        , digest = emptyMessageDigest{chatIsAllowed = True, senderIsAllowed = True}
+        }
   answers <- IORef.newIORef [chatAnswer "continued by another user" []]
   queued <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
     threads <- newThreadStore
@@ -2346,14 +2351,20 @@ testAgentCompactsOldTranscriptContextBeforeModelTurn = do
     ]
   captured <- IORef.newIORef ([] :: [[LLM.ChatMessage]])
   let Transcript enabledPrefix = startWithEnabledTools ["chat"] "message 1"
-      longTranscript =
-        Transcript (enabledPrefix <> Seq.fromList [LLM.userText [i|message #{index}|] | index <- [2 .. 51 :: Int]])
+      oldReply = LLMTypes.ChatMessage "assistant" (Just (LLM.TextContent "old reply")) [] Nothing
+        (Just (LLMTypes.ProviderState "gemini" [Aeson.String "opaque-marker"]))
+      longTranscript = Transcript
+        (enabledPrefix <> Seq.singleton oldReply <> Seq.fromList [LLM.userText [i|message #{index}|] | index <- [2 .. 51 :: Int]])
   records <- runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
     agentRun <- startTestRuntime 4 agentContext AgentTools.defaultTools
     let program = Agent.defaultRuntime AgentAudit.agentAuditObserver 1000 agentRun
     _ <- S.mapM_ (\_ -> pure ()) (Agent.agentStream program longTranscript)
     AgentAudit.queryRunAudit (Agent.runIdOf agentRun)
   requests <- IORef.readIORef captured
+  case requests of
+    [_, summaryRequest, _] -> assertBool "summary excludes opaque provider state"
+      (not ("opaque-marker" `Text.isInfixOf` TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode summaryRequest))))
+    _ -> assertFailure "expected summary request"
   case requests of
     [_firstModelRequest, _summaryRequest, compactedRequest] ->
       case compactedRequest of

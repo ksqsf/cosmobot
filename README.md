@@ -16,7 +16,7 @@ Beware: Cosmobot is just a hobby project. Won't be big and professional like Ope
 
 - **Multiple platforms**: Matrix, Telegram, QQ (OneBot), or Discord.  Also Web UI and TUI (WIP).
 - **Multiple interfaces**: Instant messaging, Web, TUI.
-- **Any LLM provider**: OpenAI Chat Completions compatible endpoints and the native Anthropic Messages API are supported.
+- **Any LLM provider**: OpenAI Chat Completions compatible endpoints and native Anthropic Messages / Gemini GenerateContent APIs are supported.
 - **Capable**: Image generation/editing; Shell scripting; File sending; of course, Web searching and fetching. And more!
 - **Extendable**: Carefully designed abstractions allowing for super easy extension.
 - **Robust**: No resource leaks. Exceptions, concurrency, and lifecycle of long-running resources are guaranteed to be handled robustly and correctly.
@@ -157,7 +157,7 @@ Cosmobot on Matrix or Telegram is highly recommended. Both platforms have great 
 
 ### LLM providers
 
-See [LLM provider protocols](cosmobot/doc/LLM.md) for native Anthropic and OpenRouter Claude configuration.
+See [LLM provider protocols](cosmobot/doc/LLM.md) for Anthropic, OpenRouter Claude, and Gemini configuration.
 
 Cosmobot supports three types of models, Chat (or Text), Image, and Audio. Chat is required. You need to select one provider for each type after defining a Provider.
 

@@ -324,6 +324,7 @@ library
         Bot.LLM.OpenAI
         Bot.LLM.Test
         Bot.LLM.Stream
+        Bot.LLM.Gemini
         Bot.LLM.Anthropic
         Bot.LLM.Types
         Bot.Lifecycle

@@ -6,11 +6,11 @@ protocol, independently of the model name. Existing configurations default to
 
 | Setting | Meaning |
 | --- | --- |
-| `api` | `openai` for Chat Completions, `anthropic` for native Messages |
+| `api` | `openai` for Chat Completions, `anthropic` for native Messages, `gemini` for native GenerateContent |
 | `base_url` | API root including its version, without the method path |
 | `model` | Model identifier accepted by the selected endpoint |
 | `api_key` | Credential; configuration inspection exposes only configured/unset |
-| `reasoning_effort` | OpenAI `reasoning_effort` or Anthropic `output_config.effort`; empty omits native effort |
+| `reasoning_effort` | OpenAI `reasoning_effort`, Anthropic `output_config.effort`, or Gemini `generationConfig.thinkingConfig.thinkingLevel`; empty omits native effort |
 | `thinking` | Optional `adaptive`, for Anthropic only; omitted uses the model default |
 | `anthropic_auth` | `api_key` (default) sends `x-api-key`; `bearer` sends `Authorization: Bearer` |
 | `max_tokens` | Positive native output limit, default `16384`; unused by OpenAI chat |
@@ -58,14 +58,41 @@ All configuration changes require a restart, including changes made through
 Cosmoscope. Its controls come from the same typed schema. Image generation,
 image editing, and speech providers continue to use OpenAI APIs.
 
+## Direct Gemini
+
+Select `llm.chat = "gemini"` and supply a Google Gemini key in the example's
+`[llm.chat_provider.gemini]` table. The endpoint is
+`https://generativelanguage.googleapis.com/v1beta`; the transport appends
+`/models/{model}:streamGenerateContent?alt=sse` and sends `x-goog-api-key`.
+
+For Gemini 2.5, use `reasoning_effort = ""` to omit `thinkingLevel`.
+For models supporting it (Gemini 3), set a supported level such as `low` or
+`high`. Omit the Anthropic-only `thinking` setting.
+
+Text, local function tools, image inputs, and token usage are supported.
+Thought signatures stay attached to their original parts across tool turns and
+stored transcripts. Missing function call IDs get unique local IDs; only native
+IDs are echoed to Google. Imported historical calls use Google's documented
+signature-validation sentinel. Blocked, malformed, and truncated responses fail
+before tools execute.
+
+HTTP image URLs are downloaded without the Gemini credential and encoded as
+inline PNG/JPEG/GIF/WebP data. Typed base64 data URIs and Gemini Files API URIs
+are also accepted. Inline requests are limited to 20 MB; use Files API URIs for
+larger inputs. Vertex AI authentication, server-side tools, audio/video input,
+and generated media are outside this chat transport.
+
 ## Implementation
 
 `Bot.Effect.LLM` is the provider-neutral interface. `Bot.LLM` owns dispatch,
 media resolution, and result normalization. Shared configuration, retry policy,
 and HTTP/SSE lifecycle live in `Bot.LLM.Config`, `Bot.LLM.Retry`, and
-`Bot.LLM.Stream`. `Bot.LLM.OpenAI` and `Bot.LLM.Anthropic` own their respective
-wire formats. Provider transcript state is excluded from OpenAI requests/logs.
+`Bot.LLM.Stream`. `Bot.LLM.OpenAI`, `Bot.LLM.Anthropic`, and `Bot.LLM.Gemini` own their respective
+wire formats. Provider transcript state is excluded from OpenAI requests/logs and summary
+prompts.
 
 References: [Anthropic streaming](https://platform.claude.com/docs/en/build-with-claude/streaming),
 [Anthropic thinking](https://platform.claude.com/docs/en/build-with-claude/thinking),
+[Gemini GenerateContent](https://ai.google.dev/api/generate-content),
+[Gemini thought signatures](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures),
 and [OpenRouter Messages](https://openrouter.ai/docs/api/api-reference/anthropic-messages/create-messages).
