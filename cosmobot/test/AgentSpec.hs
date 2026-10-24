@@ -320,6 +320,7 @@ main =
       , testCase "ask handler routes replies to active aliases as steering" testAskHandlerRoutesActiveReplyAsSteering
       , testCase "group reply from another sender does not continue a finished user alias" testGroupReplyDoesNotContinueFinishedUserAlias
       , testCase "ask handler continues a finished bot reply" testAskHandlerContinuesFinishedBotReply
+      , testCase "thread replies use chat-kind admission with text and bot-image history" testThreadReplyAdmission
       , testCase "load_skill loads only advertised skill instructions" testLoadSkillLoadsAdvertisedSkillInstructions
       , testCase "load_skill adds relative skill files to context" testLoadSkillAddsRelativeFileToContext
       , testCase "ask handler announces noisy tool calls with audit id" testAskHandlerAnnouncesNoisyToolCallsWithAuditId
@@ -1904,7 +1905,7 @@ testAskHandlerRoutesActiveReplyAsSteering = for_ [ChatPrivate, ChatGroup] \kind 
   let message = testMessage
         { kind
         , senderDisplayName = Just "Alice"
-        , digest = emptyMessageDigest{chatIsAllowed = True, senderIsAllowed = True}
+        , digest = emptyMessageDigest{chatIsAllowed = kind == ChatGroup, senderIsAllowed = kind == ChatPrivate}
         }
   answers <- IORef.newIORef [chatAnswer "continued by another user" []]
   queued <- runAgentWith answers (ChatMock Nothing Nothing Nothing) do
@@ -1945,6 +1946,9 @@ testAskHandlerRoutesActiveReplyAsSteering = for_ [ChatPrivate, ChatGroup] \kind 
             , files = [steerFile]
             , text = ""
             }
+    runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads)
+      steer{digest = emptyMessageDigest{chatIsAllowed = kind == ChatPrivate, senderIsAllowed = kind == ChatGroup}}
+    drainActiveThreadSteers active >>= liftIO . assertBool "the other chat-kind allowlist must not admit steering" . null
     runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) steer
     runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) imageSteer
     runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) fileSteer
@@ -2055,6 +2059,45 @@ testAskHandlerContinuesFinishedBotReply = do
           assertFailure [i|expected one rebuilt system prompt, got #{show other :: String}|]
     other ->
       assertFailure [i|expected two bot-reply model requests, got #{length other}|]
+
+testThreadReplyAdmission :: IO ()
+testThreadReplyAdmission =
+  for_ [ChatPrivate, ChatGroup] \kind ->
+    for_ [True, False] \allowed ->
+      for_ [False, True] \withImage -> do
+        let parentId = "900"
+            followUp = testMessage
+              { kind
+              , replyToMessageId = Just parentId
+              , text = "follow up"
+              , digest = emptyMessageDigest
+                  { chatIsAllowed = if kind == ChatGroup then allowed else not allowed
+                  , senderIsAllowed = if kind == ChatPrivate then allowed else not allowed
+                  }
+              }
+            imageRef = "media:mf_prior_image"
+            history = appendAssistant
+              (if withImage then ReplyBody.imageDirective imageRef else "previous answer")
+              (startWithUser "previous prompt")
+        answers <- IORef.newIORef [chatAnswer "follow-up answer" []]
+        captured <- IORef.newIORef []
+        replies <- IORef.newIORef []
+        runAgentCapturingMessages captured answers (ChatMock (Just replies) (Just "901") Nothing) do
+          threads <- newThreadStore
+          rememberThreadTranscript threads (Just (threadMessageKey followUp parentId)) history
+          if allowed
+            then runAskHandlersAndWait Agent.defaultToolConfig askHandlerConfig threads followUp
+            else do
+              before <- Concurrency.list
+              runHandlers (askHandlers Agent.defaultToolConfig AgentTools.defaultTools askHandlerConfig threads) followUp
+              snapshotAfter <- Concurrency.list
+              liftIO $ assertEqual "denied replies must not start background work"
+                (map (.id) before.entries) (map (.id) snapshotAfter.entries)
+        IORef.readIORef replies >>= (@?= ["follow-up answer" | allowed])
+        requests <- IORef.readIORef captured
+        length requests @?= if allowed then 1 else 0
+        when (allowed && withImage) $
+          assertBool "the continued request retains the bot image" (imageRef `Text.isInfixOf` jsonText requests)
 
 testLLMFailureReplyLinksThread :: IO ()
 testLLMFailureReplyLinksThread = do

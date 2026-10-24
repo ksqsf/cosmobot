@@ -125,13 +125,13 @@ data Action
 decide :: Policy -> Action
 decide policy
   -- Reply to a "steerable message" (which must be owned by the current sender)
-  | isAllowedChat policy.msg
+  | isAllowedPrivate policy.msg || isAllowedGroup policy.msg
   , ActiveThread{} <- policy.replyTarget
   , Just steer <- steeringInput policy =
       Steer steer
 
   -- Continuing a finished thread
-  | isAllowedChat policy.msg
+  | isAllowedPrivate policy.msg || isAllowedGroup policy.msg
   , FinishedThread parentKey transcript <- policy.replyTarget =
       Continue parentKey transcript
 
