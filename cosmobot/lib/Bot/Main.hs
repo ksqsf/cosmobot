@@ -41,7 +41,7 @@ import qualified Bot.Effect.Resource as ResourceEffect
 import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Storage as Storage
 import qualified Bot.Effect.Typst as Typst
-import qualified Bot.LLM.OpenAI as OpenAI
+import qualified Bot.LLM as LLMInterpreter
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as Media
 import qualified Bot.Resource as Resource
@@ -127,7 +127,7 @@ runOnce configPath = runEff . runPrim . runFailIO $ do
           . Media.runMedia cfg.media
           . TypstCLI.runTypst
           . EffectfulResource.runResource
-          . OpenAI.runLLM cfg.llm
+          . LLMInterpreter.runLLM cfg.llm
       runApplication pythonArguments =
         ConcurrencyManager.runConcurrencyManager
           . Resource.runResourceManagerWith

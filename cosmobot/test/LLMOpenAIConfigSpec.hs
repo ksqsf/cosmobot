@@ -1,6 +1,6 @@
 module Main (main) where
 
-import qualified Bot.LLM.OpenAI.Config as LLMConfig
+import qualified Bot.LLM.Config as LLMConfig
 import Bot.Prelude
 import qualified Data.Text as Text
 import qualified Toml
@@ -11,7 +11,8 @@ main :: IO ()
 main =
   defaultMain $
     testGroup "llm-openai-config"
-      [ testCase "selects named chat provider" testSelectsNamedChatProvider
+      [ testCase "native API options and validation" testNativeOptions
+      , testCase "selects named chat provider" testSelectsNamedChatProvider
       , testCase "selects named image provider" testSelectsNamedImageProvider
       , testCase "selects named audio provider" testSelectsNamedAudioProvider
       , testCase "blank selectors disable providers" testBlankSelectorsDisableProviders
@@ -219,3 +220,24 @@ assertParseFailureContains expected source =
       assertBool [i|expected #{expected} in #{err}|] (expected `Text.isInfixOf` Text.pack err)
     Right cfg ->
       assertFailure [i|expected parse failure, got #{show cfg :: String}|]
+
+testNativeOptions :: Assertion
+testNativeOptions = do
+  let native = "chat = \"claude\"\n[chat_provider.claude]\napi = \"anthropic\"\nbase_url = \"https://api.anthropic.com/v1\"\nmodel = \"claude-opus-5-5\"\n"
+  cfg <- parseRuntimeConfig (native <> "thinking = \"adaptive\"\nmax_tokens = 42\nreasoning_effort = \"high\"\n")
+  case cfg.chatProvider of
+    Just p -> do
+      p.api @?= "anthropic"
+      p.thinking @?= Just "adaptive"
+      p.maxTokens @?= 42
+      p.reasoningEffort @?= "high"
+    Nothing -> assertFailure "missing native provider"
+  proxy <- parseRuntimeConfig (native <> "anthropic_auth = \"bearer\"")
+  fmap (.anthropicAuth) proxy.chatProvider @?= Just "bearer"
+  assertParseFailureContains "anthropic_auth must be" (native <> "anthropic_auth = \"invalid\"")
+  assertParseFailureContains "requires api = anthropic" "[chat_provider.x]\nanthropic_auth = \"bearer\""
+  assertParseFailureContains "max_tokens must be positive" (native <> "max_tokens = 0")
+  assertParseFailureContains "thinking must be adaptive" (native <> "thinking = \"enabled\"")
+  assertParseFailureContains "api must be" "[chat_provider.x]\napi = \"unknown\""
+  assertParseFailureContains "thinking must be adaptive" "[chat_provider.x]\nthinking = \"adaptive\""
+  assertBool "native base URL and model are required" (isLeft (parseRuntimeConfigEither "[chat_provider.x]\napi = \"anthropic\""))

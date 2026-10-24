@@ -44,7 +44,7 @@ import qualified Bot.Chat.Driver.Telegram as Telegram
 import qualified Bot.Chat.Driver.Telegram.Config as TelegramConfig
 import qualified Bot.ACP.Config as ACPConfig
 import qualified Bot.Config.Schema as Schema
-import qualified Bot.LLM.OpenAI.Config as LLMConfig
+import qualified Bot.LLM.Config as LLMConfig
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.RPC.Config as RPCConfig
 import qualified Bot.Agent.Types as Agent

@@ -486,7 +486,7 @@ joinSystemPrompts systemPrompt context =
 
 replaceMessageContent :: Maybe LLM.MessageContent -> LLM.ChatMessage -> LLM.ChatMessage
 replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
-  LLM.ChatMessage role content toolCalls toolCallId
+  LLM.ChatMessage role content toolCalls toolCallId Nothing
 
 -----------------------------------------------------------------------------------------
 -- * Tool execution

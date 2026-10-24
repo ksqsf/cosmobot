@@ -126,6 +126,7 @@ compactToolResultMessage maxChars message@LLM.ChatMessage{role = "tool", content
     , content = Just content
     , toolCalls = message.toolCalls
     , toolCallId = message.toolCallId
+    , providerState = message.providerState
     }
 compactToolResultMessage _ message =
   pure message

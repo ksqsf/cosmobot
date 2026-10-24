@@ -2,7 +2,7 @@ module Main (main) where
 
 import Bot.Prelude
 import qualified Control.Exception as Exception
-import qualified Bot.LLM.OpenAI.Retry as Retry
+import qualified Bot.LLM.Retry as Retry
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.IORef as IORef

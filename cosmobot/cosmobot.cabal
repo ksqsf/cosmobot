@@ -47,6 +47,7 @@ extra-doc-files:    CHANGELOG.md
                   , doc/Continuation.md
                   , doc/RPC.md
                   , doc/Plugins.md
+                  , doc/LLM.md
 
 data-files:         python/cosmobot_worker.py
 
@@ -317,11 +318,13 @@ library
         Bot.Handler.Typing
         Bot.Handler.Typing.Typst
         Bot.JSONRPC
+        Bot.LLM
+        Bot.LLM.Config
+        Bot.LLM.Retry
         Bot.LLM.OpenAI
-        Bot.LLM.OpenAI.Config
-        Bot.LLM.OpenAI.Retry
-        Bot.LLM.OpenAI.Transport
         Bot.LLM.Test
+        Bot.LLM.Stream
+        Bot.LLM.Anthropic
         Bot.LLM.Types
         Bot.Lifecycle
         Bot.Log
@@ -686,3 +689,13 @@ benchmark message-pipeline-bench
                     , resourcet-effectful
                     , tasty-bench
     hs-source-dirs:   bench
+
+test-suite llm-native-spec
+    import:           warnings
+                    , language
+                    , test-deps
+                    , test-build
+    type:             exitcode-stdio-1.0
+    main-is:          LLMNativeSpec.hs
+    build-depends:    resourcet-effectful
+    hs-source-dirs:   test

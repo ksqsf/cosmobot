@@ -134,14 +134,31 @@ image = "openai"
 audio = "openai"
 
 [llm.chat_provider.openrouter]
+# Wire protocol: openai (default) or anthropic (native Messages API).
+api = "openai"
 # API base URL, including /v1 where required; do not append /chat/completions.
 base_url = "https://openrouter.ai/api/v1"
 api_key = ""
 model = "openai/gpt-4o-mini"
-# Sent to the provider; choose a value supported by the selected model.
+# OpenAI reasoning_effort / Anthropic output_config.effort; empty omits native effort.
 reasoning_effort = "low"
 # Request timeout in seconds; must be positive.
 timeout = 60
+
+# Select with llm.chat = "openrouter_claude".
+[llm.chat_provider.openrouter_claude]
+api = "anthropic"
+base_url = "https://openrouter.ai/api/v1"
+# Uses this OpenRouter key in Authorization: Bearer (direct Anthropic defaults to api_key).
+api_key = ""
+anthropic_auth = "bearer"
+model = "anthropic/claude-opus-5.5"
+# Omit thinking to use the model default. Native effort maps to output_config.effort.
+thinking = "adaptive"
+reasoning_effort = "high"
+# Native API output token limit; must be positive.
+max_tokens = 16384
+timeout = 120
 
 [llm.image_provider.openai]
 base_url = "https://api.openai.com/v1"

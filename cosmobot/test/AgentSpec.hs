@@ -57,9 +57,9 @@ import qualified Bot.Agent.Tools.Telegram as TelegramTools
 import qualified Bot.Effect.Matrix as Matrix
 import qualified Bot.Media.Config as MediaConfig
 import qualified Bot.Media.Interpreter as MediaInterpreter
-import qualified Bot.LLM.OpenAI.Config as LLMConfig
-import qualified Bot.LLM.OpenAI as LLMOpenAI
-import qualified Bot.LLM.OpenAI.Transport as LLMTransport
+import qualified Bot.LLM.Config as LLMConfig
+import qualified Bot.LLM as LLMInterpreter
+import qualified Bot.LLM.OpenAI as LLMTransport
 import qualified Bot.LLM.Test as LLMTest
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Effect.Resource as ResourceEffect
@@ -3893,7 +3893,7 @@ testLLMImageEditRejectsExpiredMediaRef = do
       . runTimeout
       . runMediaLeavingRefs
       . EffectfulResource.runResource
-      . LLMOpenAI.runLLM LLMConfig.defaultConfig
+      . LLMInterpreter.runLLM LLMConfig.defaultConfig
       $ S.toList_ (LLM.askImageEditStreaming "edit it" ["media:mf_expired"] Nothing)
   case result of
     Left err ->

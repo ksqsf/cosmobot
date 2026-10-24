@@ -1,11 +1,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-|
-Module      : Bot.LLM.OpenAI.Retry
+Module      : Bot.LLM.Retry
 Description : LLM retry and response validation policy
 Stability   : experimental
 -}
 
-module Bot.LLM.OpenAI.Retry
+module Bot.LLM.Retry
   ( retryLLMStreamRequest
   , retryLLMStreamRequestWith
   )

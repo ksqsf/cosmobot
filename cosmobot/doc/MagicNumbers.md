@@ -19,8 +19,8 @@ This document records constants that are not configurable through `config.toml` 
 
 ## Retries, Timeouts, and Lifecycles
 
-- `Bot.LLM.OpenAI.Retry.maxLLMRetries` : Retries an OpenAI-compatible request at most three times for transient failures.
-- `Bot.LLM.OpenAI.Retry.retryDelaySeconds` : Uses `2^n` seconds as the retry-delay floor while honoring a larger `Retry-After`, preventing immediate retry pressure on the server.
+- `Bot.LLM.Retry.maxLLMRetries` : Retries an LLM request at most three times for transient failures.
+- `Bot.LLM.Retry.retryDelaySeconds` : Uses `2^n` seconds as the retry-delay floor while honoring a larger `Retry-After`, preventing immediate retry pressure on the server.
 - `Bot.Media.Interpreter.mediaNormalizeTimeoutMicroseconds` : Allows 15 seconds to normalize remote media, then preserves the original reference so message processing is not blocked.
 - `Bot.Effect.ChatLog.chatLogRecordTimeoutMicroseconds` : Allows one second for a chat-log write because logging failure should not delay a chat reply.
 - `Bot.Plugin.Manager.startBundle` : Allows ten seconds for plugin initialization RPC, giving the process time to start while detecting broken plugins promptly.

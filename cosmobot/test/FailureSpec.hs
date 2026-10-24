@@ -23,11 +23,12 @@ import Bot.Core.Message
 import Bot.Core.Transcript
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.HTTP as HTTPEffect
-import qualified Bot.LLM.OpenAI.Config as LLMConfig
-import qualified Bot.LLM.OpenAI.Config as ChatConfig (ChatProviderConfig (..))
+import qualified Bot.LLM.Types as LLMTypes
+import qualified Bot.LLM.Config as LLMConfig
+import qualified Bot.LLM.Config as ChatConfig (ChatProviderConfig (..))
 import qualified Bot.Effect.Media as Media
-import qualified Bot.LLM.OpenAI.Retry as Retry
-import qualified Bot.LLM.OpenAI.Transport as LLMTransport
+import qualified Bot.LLM.Retry as Retry
+import qualified Bot.LLM.OpenAI as LLMTransport
 import qualified Bot.LLM.Test as LLMTest
 import Bot.Prelude
 import qualified Bot.Util.HList as HList
@@ -39,6 +40,7 @@ import qualified Data.List as List
 import qualified Data.Sequence as Seq
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.ByteString.Lazy as LazyByteString
 import qualified Data.ByteString as StrictByteString
 import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Concurrent.MVar as MVar
@@ -992,6 +994,7 @@ testLLMTimeoutBounds = do
       cases = [1, 60, boundary - 1, boundary, boundary + 1, maxBound]
   for_ cases \seconds -> do
     captured <- IORef.newIORef (Nothing :: Maybe String)
+    capturedBody <- IORef.newIORef Nothing
     let provider = LLMConfig.defaultChatProviderConfig
           { ChatConfig.apiKey = Just "test-key"
           , ChatConfig.requestTimeout = seconds
@@ -1003,11 +1006,18 @@ testLLMTimeoutBounds = do
       interpret (\_ -> \case
         HTTPEffect.OpenResponse request -> do
           liftIO $ IORef.writeIORef captured (Just (show (HTTP.responseTimeout request)))
+          case HTTP.requestBody request of
+            HTTP.RequestBodyLBS body -> liftIO $ IORef.writeIORef capturedBody (Just body)
+            _ -> pure ()
           throwIO (InjectedFailure "request captured")
         _ -> throwIO (InjectedFailure "unexpected HTTP operation")) $
-      trySync $ S.toList_ (LLMTransport.askOpenAIStreaming config [])
+      trySync $ S.toList_ (LLMTransport.askOpenAIStreaming config
+        [(LLM.assistantText "hello"){LLM.providerState = Just (LLMTypes.ProviderState "anthropic" [])}])
     assertBool "capture interrupts transport before any network access" (isLeft outcome)
     IORef.readIORef captured >>= (@?= Just (show (HTTP.responseTimeoutMicro expected)))
+    body <- IORef.readIORef capturedBody
+    assertBool "native transcript state must not enter OpenAI wire JSON"
+      (maybe False (not . Text.isInfixOf "provider_state" . TextEncoding.decodeUtf8 . LazyByteString.toStrict) body)
 
 testPrematureToolCallEOF :: Assertion
 testPrematureToolCallEOF = do

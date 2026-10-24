@@ -7,6 +7,7 @@ Stability   : experimental
 module Bot.LLM.Types
   ( LLMException (..)
   , llmExceptionSummary
+  , ProviderState (..)
   , ChatMessage (..)
   , MessageContent (..)
   , ContentPart (..)
@@ -27,11 +28,13 @@ module Bot.LLM.Types
   , chatAnswerContent
   , chatAnswerToolCalls
   , chatAnswerTokenUsage
+  , withChatAnswerProviderState
   , withChatAnswerTokenUsage
   )
 where
 
 import Bot.Prelude
+import qualified Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Encode.Pretty as AesonPretty
 import qualified Data.Aeson.Types as AesonTypes
@@ -123,23 +126,35 @@ previewMultilineText maxChars text
   | Text.length text > maxChars = Text.take maxChars text <> "\n..."
   | otherwise = text
 
--- | One message in an OpenAI-compatible chat transcript.
+-- | Opaque assistant blocks needed to continue a native provider's tool turn.
+data ProviderState = ProviderState
+  { provider :: !Text
+  , blocks :: ![Aeson.Value]
+  }
+  deriving (Eq, Generic, Aeson.ToJSON, Aeson.FromJSON)
+
+instance Show ProviderState where
+  showsPrec _ _ = Prelude.showString "<provider-state>"
+
+-- | One provider-neutral chat transcript message.
 data ChatMessage = ChatMessage
   { role    :: !Text
   , content :: !(Maybe MessageContent)
   , toolCalls :: ![ToolCall]
   , toolCallId :: !(Maybe Text)
+  , providerState :: !(Maybe ProviderState)
   }
   deriving (Show)
 
 instance Aeson.ToJSON ChatMessage where
-  toJSON ChatMessage{role, content, toolCalls, toolCallId} =
+  toJSON ChatMessage{role, content, toolCalls, toolCallId, providerState} =
     Aeson.object $
       [ "role" Aeson..= role
       ]
       <> maybe [] (\value -> ["content" Aeson..= value]) content
       <> [ "tool_calls" Aeson..= toolCalls | not (null toolCalls) ]
       <> maybe [] (\value -> ["tool_call_id" Aeson..= value]) toolCallId
+      <> maybe [] (\value -> ["provider_state" Aeson..= value]) providerState
 
 instance Aeson.FromJSON ChatMessage where
   parseJSON = Aeson.withObject "ChatMessage" $ \o -> do
@@ -147,11 +162,13 @@ instance Aeson.FromJSON ChatMessage where
     content <- o Aeson..:? "content"
     toolCalls <- fromMaybe [] <$> o Aeson..:? "tool_calls"
     toolCallId <- o Aeson..:? "tool_call_id"
+    providerState <- o Aeson..:? "provider_state"
     pure ChatMessage
       { role = role
       , content = content
       , toolCalls = toolCalls
       , toolCallId = toolCallId
+      , providerState
       }
 
 -- | Chat message content as plain text or OpenAI-compatible content parts.
@@ -233,11 +250,13 @@ data ChatAnswer
   = ChatFinalAnswer
       { content :: !Text
       , tokenUsage :: !(Maybe TokenUsage)
+      , providerState :: !(Maybe ProviderState)
       }
   | ChatToolRequest
       { content   :: !Text
       , toolCalls :: !(NonEmpty ToolCall)
       , tokenUsage :: !(Maybe TokenUsage)
+      , providerState :: !(Maybe ProviderState)
       }
   deriving (Show, Generic)
 
@@ -284,9 +303,9 @@ chatAnswer :: Text -> [ToolCall] -> ChatAnswer
 chatAnswer content calls =
   case nonEmpty calls of
     Nothing ->
-      ChatFinalAnswer{content, tokenUsage = Nothing}
+      ChatFinalAnswer{content, tokenUsage = Nothing, providerState = Nothing}
     Just toolCalls ->
-      ChatToolRequest{content, toolCalls, tokenUsage = Nothing}
+      ChatToolRequest{content, toolCalls, tokenUsage = Nothing, providerState = Nothing}
 
 chatAnswerContent :: ChatAnswer -> Text
 chatAnswerContent = \case
@@ -310,11 +329,12 @@ chatAnswerTokenUsage = \case
     tokenUsage
 
 withChatAnswerTokenUsage :: Maybe TokenUsage -> ChatAnswer -> ChatAnswer
-withChatAnswerTokenUsage usage = \case
-  ChatFinalAnswer{content} ->
-    ChatFinalAnswer{content, tokenUsage = usage}
-  ChatToolRequest{content, toolCalls} ->
-    ChatToolRequest{content, toolCalls, tokenUsage = usage}
+withChatAnswerTokenUsage usage answer = answer{tokenUsage = usage}
+
+withChatAnswerProviderState :: ProviderState -> ChatAnswer -> ChatAnswer
+withChatAnswerProviderState opaque = \case
+  ChatFinalAnswer{content, tokenUsage} -> ChatFinalAnswer content tokenUsage (Just opaque)
+  ChatToolRequest{content, toolCalls, tokenUsage} -> ChatToolRequest content toolCalls tokenUsage (Just opaque)
 
 -- | A single function call requested by the model.
 data ToolCall = ToolCall
@@ -357,12 +377,12 @@ instance Aeson.ToJSON ToolCall where
 -- | Construct a text-only user message.
 userText :: Text -> ChatMessage
 userText prompt =
-  ChatMessage "user" (Just (TextContent prompt)) [] Nothing
+  ChatMessage "user" (Just (TextContent prompt)) [] Nothing Nothing
 
 -- | Construct a system prompt message.
 systemText :: Text -> ChatMessage
 systemText prompt =
-  ChatMessage "system" (Just (TextContent prompt)) [] Nothing
+  ChatMessage "system" (Just (TextContent prompt)) [] Nothing Nothing
 
 memorySystemPrompt :: Text -> Maybe Text -> Maybe Text -> Text
 memorySystemPrompt systemPrompt senderMemory chatMemory =
@@ -393,24 +413,24 @@ userWithImages :: Text -> [Text] -> ChatMessage
 userWithImages prompt [] =
   userText prompt
 userWithImages prompt urls =
-  ChatMessage "user" (Just (PartsContent (TextPart prompt : map ImageUrlPart urls))) [] Nothing
+  ChatMessage "user" (Just (PartsContent (TextPart prompt : map ImageUrlPart urls))) [] Nothing Nothing
 
 -- | Internal context projected to a user message at the Chat Completions edge.
 syntheticWithImages :: Text -> [Text] -> ChatMessage
 syntheticWithImages prompt urls =
-  ChatMessage "synthetic" (Just (PartsContent (textParts <> map ImageUrlPart urls))) [] Nothing
+  ChatMessage "synthetic" (Just (PartsContent (textParts <> map ImageUrlPart urls))) [] Nothing Nothing
   where
     textParts = [TextPart prompt | not (Text.null prompt)]
 
 -- | Construct a text-only assistant message.
 assistantText :: Text -> ChatMessage
 assistantText answer =
-  ChatMessage "assistant" (Just (TextContent answer)) [] Nothing
+  ChatMessage "assistant" (Just (TextContent answer)) [] Nothing Nothing
 
 -- | Convert a normalized answer back into transcript form.
 assistantAnswer :: ChatAnswer -> ChatMessage
 assistantAnswer answer =
-  ChatMessage "assistant" messageContent (chatAnswerToolCalls answer) Nothing
+  ChatMessage "assistant" messageContent (chatAnswerToolCalls answer) Nothing answer.providerState
   where
     content = chatAnswerContent answer
     messageContent
@@ -420,7 +440,7 @@ assistantAnswer answer =
 -- | Construct a tool result message for a previously requested call.
 toolResult :: ToolCall -> Text -> ChatMessage
 toolResult call result =
-  ChatMessage "tool" (Just (TextContent result)) [] (Just call.id)
+  ChatMessage "tool" (Just (TextContent result)) [] (Just call.id) Nothing
 
 previewText :: Int -> Text -> Text
 previewText maxChars text =

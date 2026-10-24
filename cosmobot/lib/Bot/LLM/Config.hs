@@ -1,10 +1,10 @@
 {-|
-Module      : Bot.LLM.OpenAI.Config
+Module      : Bot.LLM.Config
 Description : LLM file configuration
 Stability   : experimental
 -}
 
-module Bot.LLM.OpenAI.Config
+module Bot.LLM.Config
   ( Config (..)
   , ChatProviderConfig (..)
   , ImageProviderConfig (..)
@@ -37,7 +37,7 @@ import qualified Data.Text as Text
 import Toml.Schema
 import qualified Prelude
 
--- | Runtime configuration for OpenAI-compatible LLM endpoints.
+-- | Runtime configuration for named LLM endpoints.
 data Config = Config
   { chatProvider :: !(Maybe ChatProviderConfig)
   , imageProvider :: !(Maybe ImageProviderConfig)
@@ -49,7 +49,11 @@ instance Show Config where
   showsPrec _ _ = Prelude.showString "<LLM.Config>"
 
 data ChatProviderConfig = ChatProviderConfig
-  { baseUrl :: !Text
+  { api :: !Text
+  , anthropicAuth :: !Text
+  , thinking :: !(Maybe Text)
+  , maxTokens :: !Int
+  , baseUrl :: !Text
   , apiKey :: !(Maybe Text)
   , model :: !Text
   , reasoningEffort :: !Text
@@ -104,7 +108,11 @@ defaultConfig = Config
 
 defaultChatProviderConfig :: ChatProviderConfig
 defaultChatProviderConfig = ChatProviderConfig
-  { baseUrl = "https://openrouter.ai/api/v1"
+  { api = "openai"
+  , anthropicAuth = "api_key"
+  , thinking = Nothing
+  , maxTokens = 16384
+  , baseUrl = "https://openrouter.ai/api/v1"
   , apiKey = Nothing
   , model = "openai/gpt-4o-mini"
   , reasoningEffort = "low"
@@ -155,7 +163,11 @@ instance Show FileConfig where
   showsPrec _ _ = Prelude.showString "<LLM.FileConfig>"
 
 data ChatProviderFileConfig = ChatProviderFileConfig
-  { baseUrl :: !Text
+  { api :: !Text
+  , anthropicAuth :: !Text
+  , thinking :: !(Maybe Text)
+  , maxTokens :: !Int
+  , baseUrl :: !Text
   , apiKey :: !(Maybe Text)
   , model :: !Text
   , reasoningEffort :: !Text
@@ -199,7 +211,11 @@ instance Show AudioProviderFileConfig where
 
 defaultChatProviderFileConfig :: ChatProviderFileConfig
 defaultChatProviderFileConfig = ChatProviderFileConfig
-  { baseUrl = defaultChatProviderConfig.baseUrl
+  { api = defaultChatProviderConfig.api
+  , anthropicAuth = defaultChatProviderConfig.anthropicAuth
+  , thinking = defaultChatProviderConfig.thinking
+  , maxTokens = defaultChatProviderConfig.maxTokens
+  , baseUrl = defaultChatProviderConfig.baseUrl
   , apiKey = defaultChatProviderConfig.apiKey
   , model = defaultChatProviderConfig.model
   , reasoningEffort = defaultChatProviderConfig.reasoningEffort
@@ -270,7 +286,7 @@ schema = Schema.ConfigSchema
       ]
   }
   where
-    selector key label description getter = Schema.optionalOption [key] label description "Bot.LLM.OpenAI.Config" Schema.text False Aeson.Null getter getter
+    selector key label description getter = Schema.optionalOption [key] label description "Bot.LLM.Config" Schema.text False Aeson.Null getter getter
 
 instance FromValue FileConfig where
   fromValue = Schema.schemaFromValue schema
@@ -297,21 +313,40 @@ selectedProvider selectorName tableName selected providers =
 chatProviderSchema :: Schema.ConfigSchema ChatProviderFileConfig ChatProviderFileConfig
 chatProviderSchema = Schema.ConfigSchema
   { Schema.parser = parseTableFromValue do
-    baseUrl <- fmap (fromMaybe defaultChatProviderConfig.baseUrl) (optKey "base_url")
+    api <- fmap (fromMaybe "openai") (optKey "api")
+    unless (api `elem` ["openai", "anthropic"]) (fail "chat provider api must be openai or anthropic")
+    anthropicAuth <- fmap (fromMaybe "api_key") (optKey "anthropic_auth")
+    unless (anthropicAuth `elem` ["api_key", "bearer"]) (fail "anthropic_auth must be api_key or bearer")
+    when (anthropicAuth == "bearer" && api /= "anthropic") (fail "anthropic_auth = bearer requires api = anthropic")
+    thinking <- optKey "thinking"
+    unless (isNothing thinking || (api == "anthropic" && thinking == Just "adaptive"))
+      (fail "thinking must be adaptive and requires api = anthropic")
+    maxTokens <- fmap (fromMaybe defaultChatProviderConfig.maxTokens) (optKey "max_tokens")
+    when (maxTokens <= 0) (fail "chat provider max_tokens must be positive")
+    baseUrl <- if api == "openai"
+      then fmap (fromMaybe defaultChatProviderConfig.baseUrl) (optKey "base_url")
+      else reqKey "base_url"
     apiKey <- optToken "api_key"
-    model <- fmap (fromMaybe defaultChatProviderConfig.model) (optKey "model")
+    model <- if api == "openai"
+      then fmap (fromMaybe defaultChatProviderConfig.model) (optKey "model")
+      else reqKey "model"
     reasoningEffort <- fmap (fromMaybe defaultChatProviderConfig.reasoningEffort) (optKey "reasoning_effort")
     requestTimeout <- fmap (fromMaybe defaultChatProviderConfig.requestTimeout) (optKey "timeout")
     when (requestTimeout <= 0) (fail "llm.chat_provider.<name>.timeout must be positive")
     pure ChatProviderFileConfig
-      { baseUrl = baseUrl
+      { api, anthropicAuth, thinking, maxTokens
+      , baseUrl = baseUrl
       , apiKey = apiKey
       , model = model
       , reasoningEffort = reasoningEffort
       , requestTimeout = requestTimeout
       }
   , Schema.options =
-      [ Schema.option ["base_url"] "Base URL" "OpenAI-compatible API base URL." owner Schema.text defaultChatProviderConfig.baseUrl Aeson.Null (.baseUrl) (.baseUrl)
+      [ Schema.option ["api"] "API" "Chat wire protocol; native APIs require explicit base_url and model." owner (Schema.enum ["openai", "anthropic"]) "openai" Aeson.Null (.api) (.api)
+      , Schema.option ["anthropic_auth"] "Anthropic authentication" "api_key for Anthropic; bearer for proxies such as OpenRouter. Uses api_key in either case." owner (Schema.enum ["api_key", "bearer"]) "api_key" Aeson.Null (.anthropicAuth) (.anthropicAuth)
+      , Schema.optionalOption ["thinking"] "Thinking" "Anthropic adaptive thinking; omitted by default." owner (Schema.enum ["adaptive"]) False Aeson.Null (.thinking) (.thinking)
+      , Schema.option ["max_tokens"] "Max tokens" "Native API output token limit; unused by OpenAI chat." owner Schema.integer defaultChatProviderConfig.maxTokens positive (.maxTokens) (.maxTokens)
+      , Schema.option ["base_url"] "Base URL" "API base URL including version, without the method path." owner Schema.text defaultChatProviderConfig.baseUrl Aeson.Null (.baseUrl) (.baseUrl)
       , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.apiKey)) (fmap Schema.Secret . (.apiKey))
       , Schema.option ["model"] "Model" "Chat model identifier." owner Schema.text defaultChatProviderConfig.model Aeson.Null (.model) (.model)
       , Schema.option ["reasoning_effort"] "Reasoning effort" "Requested reasoning effort." owner Schema.text defaultChatProviderConfig.reasoningEffort Aeson.Null (.reasoningEffort) (.reasoningEffort)
@@ -321,7 +356,7 @@ chatProviderSchema = Schema.ConfigSchema
   , Schema.repeatableSections = []
   }
   where
-    owner = "Bot.LLM.OpenAI.Config"
+    owner = "Bot.LLM.Config"
     positive = Aeson.object ["minimum" Aeson..= (1 :: Int)]
 
 instance FromValue ChatProviderFileConfig where
@@ -375,7 +410,7 @@ imageProviderSchema = Schema.ConfigSchema
   , Schema.repeatableSections = []
   }
   where
-    owner = "Bot.LLM.OpenAI.Config"
+    owner = "Bot.LLM.Config"
     positive = Aeson.object ["minimum" Aeson..= (1 :: Int)]
     optionalText key label description getter = Schema.optionalOption [key] label description owner Schema.text False Aeson.Null getter getter
 
@@ -419,7 +454,7 @@ audioProviderSchema = Schema.ConfigSchema
   , Schema.repeatableSections = []
   }
   where
-    owner = "Bot.LLM.OpenAI.Config"
+    owner = "Bot.LLM.Config"
     positive = Aeson.object ["exclusiveMinimum" Aeson..= (0 :: Int)]
 
 instance FromValue AudioProviderFileConfig where
@@ -436,7 +471,11 @@ toRuntimeConfig cfg =
 toRuntimeChatProviderConfig :: ChatProviderFileConfig -> ChatProviderConfig
 toRuntimeChatProviderConfig cfg =
   ChatProviderConfig
-    { baseUrl = cfg.baseUrl
+    { api = cfg.api
+    , anthropicAuth = cfg.anthropicAuth
+    , thinking = cfg.thinking
+    , maxTokens = cfg.maxTokens
+    , baseUrl = cfg.baseUrl
     , apiKey = cfg.apiKey
     , model = cfg.model
     , reasoningEffort = cfg.reasoningEffort
