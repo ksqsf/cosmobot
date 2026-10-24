@@ -319,6 +319,7 @@ library
         Bot.Handler.Typing.Typst
         Bot.JSONRPC
         Bot.LLM
+        Bot.LLM.ImageInput
         Bot.LLM.Config
         Bot.LLM.Retry
         Bot.LLM.OpenAI

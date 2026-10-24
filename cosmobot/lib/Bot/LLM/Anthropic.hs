@@ -9,6 +9,7 @@ import Bot.Prelude hiding (state)
 import Control.Monad (foldM)
 import qualified Bot.Effect.HTTP as HTTP
 import Bot.LLM.Config (ChatProviderConfig (..))
+import Bot.LLM.ImageInput (parseDataImage)
 import Bot.LLM.Stream
 import Bot.LLM.Types
 import Bot.Util.Time (secondsToMicroseconds)
@@ -71,10 +72,9 @@ contentBlock = \case
   TextPart t -> pure (textBlock t)
   ImageUrlPart url -> do
     source <- case T.stripPrefix "data:" url of
-      Just rest -> case T.breakOn ";base64," rest of
-        (mime, encoded) | "image/" `T.isPrefixOf` mime && not (T.null encoded) ->
-          pure $ A.object ["type" A..= A.String "base64", "media_type" A..= mime, "data" A..= T.drop 8 encoded]
-        _ -> fail "Invalid Anthropic image data URI"
+      Just _ -> do
+        (mime, encoded) <- parseDataImage url
+        pure $ A.object ["type" A..= A.String "base64", "media_type" A..= mime, "data" A..= encoded]
       Nothing | "https://" `T.isPrefixOf` url || "http://" `T.isPrefixOf` url ->
         pure $ A.object ["type" A..= A.String "url", "url" A..= url]
       _ -> fail "Anthropic images require an HTTP URL or base64 data URI"

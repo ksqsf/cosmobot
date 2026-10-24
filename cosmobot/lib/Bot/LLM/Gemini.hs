@@ -10,6 +10,7 @@ import Control.Monad (foldM)
 import qualified Control.Exception as Exception
 import qualified Bot.Effect.HTTP as HTTP
 import Bot.LLM.Config (ChatProviderConfig (..))
+import Bot.LLM.ImageInput (parseDataImage)
 import Bot.LLM.Stream
 import Bot.LLM.Types
 import Bot.Media.Mime (sniffMime)
@@ -90,10 +91,9 @@ contentPart :: ContentPart -> A.Parser A.Value
 contentPart = \case
   TextPart t -> pure (textPart t)
   ImageUrlPart url -> case T.stripPrefix "data:" url of
-    Just rest -> case T.breakOn ";base64," rest of
-      (mime, encoded) | "image/" `T.isPrefixOf` mime && not (T.null encoded) ->
-        pure $ A.object ["inlineData" A..= A.object ["mimeType" A..= mime, "data" A..= T.drop 8 encoded]]
-      _ -> fail "Invalid Gemini image data URI"
+    Just _ -> do
+      (mime, encoded) <- parseDataImage url
+      pure $ A.object ["inlineData" A..= A.object ["mimeType" A..= mime, "data" A..= encoded]]
     Nothing | isGeminiFile url -> pure $ A.object ["fileData" A..= A.object ["fileUri" A..= url]]
     _ -> fail "Gemini image URL must be resolved to inline data or a Gemini file URI"
 

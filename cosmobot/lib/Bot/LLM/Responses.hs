@@ -9,6 +9,7 @@ import Bot.Prelude hiding (state)
 import Control.Monad (foldM)
 import qualified Bot.Effect.HTTP as HTTP
 import Bot.LLM.Config (ChatProviderConfig (..))
+import Bot.LLM.ImageInput (parseDataImage)
 import Bot.LLM.Stream
 import Bot.LLM.Types
 import Bot.Util.Time (secondsToMicroseconds)
@@ -91,6 +92,7 @@ inputPart :: ContentPart -> A.Parser A.Value
 inputPart = \case
   TextPart t -> pure $ A.object ["type" A..= A.String "input_text", "text" A..= t]
   ImageUrlPart url -> do
+    when ("data:" `T.isPrefixOf` url) (void (parseDataImage url))
     unless (any (`T.isPrefixOf` url) ["http://", "https://", "data:image/"])
       (fail "Responses images require an HTTP URL or image data URI")
     pure $ A.object ["type" A..= A.String "input_image", "image_url" A..= url, "detail" A..= A.String "auto"]

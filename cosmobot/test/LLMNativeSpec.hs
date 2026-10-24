@@ -24,7 +24,15 @@ import Test.Tasty.HUnit
 
 main :: IO ()
 main = defaultMain $ testGroup "native LLM"
-  [ testCase "Responses request format and authentication" testResponsesRequest
+  [ testGroup "Image input validation"
+      [ testCase name (testImageInputs build)
+      | (name, build) <- [("anthropic", Anthropic.requestPayload provider []), ("gemini", Gemini.requestPayload gemini []), ("responses", Responses.requestPayload responses [])]
+      ]
+  , testGroup "Synthetic image input"
+      [ testCase name (testSyntheticImages (toText name) build)
+      | (name, build) <- [("anthropic", Anthropic.requestPayload provider []), ("gemini", Gemini.requestPayload gemini []), ("responses", Responses.requestPayload responses [])]
+      ]
+  , testCase "Responses request format and authentication" testResponsesRequest
   , testCase "Responses reasoning, phase and parallel call ids survive persistence" testResponsesTools
   , testCase "Responses text and refusal deltas are not duplicated" testResponsesText
   , testCase "Responses rejects incomplete and malformed output" testResponsesErrors
@@ -192,7 +200,7 @@ testHTTP = do
   Warp.testWithApplication (pure app) $ \port -> do
     let cfg = provider{ChatConfig.baseUrl = "http://127.0.0.1:" <> show port <> "/v1", ChatConfig.apiKey = Just "test-key"}
     (outputs S.:> answer) <- runEff $ Resource.runResource $ HTTPInterpreter.runHTTP $
-      S.toList (Anthropic.askStreaming cfg [] [userText "hello"])
+      S.toList (Anthropic.askStreaming cfg [] [userText "hello", syntheticWithImages "" [imageA, imageB, "https://example.org/image.png"]])
     outputs @?= []
     chatAnswerToolCalls answer @?= [ToolCall "call" "weather" "{}"]
   IORef.readIORef captured >>= \case
@@ -201,6 +209,9 @@ testHTTP = do
       Prelude.lookup "x-api-key" headers @?= Just "test-key"
       decoded <- right (A.eitherDecode body)
       field "model" decoded @?= A.String "claude-opus-5-5"
+      let ps = array (field "content" (fromMaybe A.Null (listToMaybe (array (field "messages" decoded)))))
+      map (field "data" . field "source") (take 2 (drop 1 ps)) @?= map (A.String . T.drop 22) [imageA, imageB]
+      field "source" (ps Prelude.!! 3) @?= json "{\"type\":\"url\",\"url\":\"https://example.org/image.png\"}"
     Nothing -> assertFailure "request was not received"
   let incomplete _ respond = respond (Wai.responseLBS Status.status200 [("Content-Type", "text/event-stream")] ("data: " <> A.encode start <> "\n\n"))
   Warp.testWithApplication (pure incomplete) $ \port -> do
@@ -305,7 +316,7 @@ testGeminiHTTP = do
         schema = json "{\"type\":\"object\",\"additionalProperties\":false}"
     (output S.:> answer) <- runEff $ Resource.runResource $ HTTPInterpreter.runHTTP $
       S.toList (Gemini.askStreaming cfg [FunctionTool "weather" "Weather" schema]
-        [systemText "system", userWithImages "hi" [root <> "/image"]])
+        [systemText "system", userText "hi", syntheticWithImages "" [root <> "/image", imageA, imageB]])
     output @?= ["hello"]
     chatAnswerContent answer @?= "hello"
     IORef.readIORef captured >>= \case
@@ -318,6 +329,8 @@ testGeminiHTTP = do
         field "thinkingConfig" (field "generationConfig" decoded) @?= json "{\"thinkingLevel\":\"high\"}"
         let ps = concatMap (array . field "parts") (array (field "contents" decoded))
         field "mimeType" (field "inlineData" (ps Prelude.!! 1)) @?= A.String "image/png"
+        field "data" (field "inlineData" (ps Prelude.!! 1)) @?= A.String "iVBORw0KGgppbWFnZQ=="
+        map (field "data" . field "inlineData") (drop 2 ps) @?= map (A.String . T.drop 22) [imageA, imageB]
         field "parametersJsonSchema" (array (field "functionDeclarations" (array (field "tools" decoded) Prelude.!! 0)) Prelude.!! 0) @?= schema
       Nothing -> assertFailure "request was not received"
   headers <- IORef.readIORef imageHeaders
@@ -467,7 +480,7 @@ testResponsesHTTP = do
   Warp.testWithApplication (pure app) $ \port -> do
     let cfg = responses{ChatConfig.baseUrl = "http://127.0.0.1:" <> show port <> "/v1", ChatConfig.apiKey = Just "key"}
     (_ S.:> answer) <- runEff $ Resource.runResource $ HTTPInterpreter.runHTTP $
-      S.toList (Responses.askStreaming cfg [] [userText "hello"])
+      S.toList (Responses.askStreaming cfg [] [userText "hello", syntheticWithImages "" [imageA, imageB, "https://example.org/image.png"]])
     chatAnswerToolCalls answer @?= [ToolCall "call-a" "weather" "{}"]
   IORef.readIORef captured >>= \case
     Just (path, headers, body) -> do
@@ -475,6 +488,10 @@ testResponsesHTTP = do
       Prelude.lookup "Authorization" headers @?= Just "Bearer key"
       decoded <- right (A.eitherDecode body)
       field "store" decoded @?= A.Bool False
+      let input = array (field "input" decoded)
+          ps = array (field "content" (fromMaybe A.Null (listToMaybe (drop 1 input))))
+      map (field "role") input @?= [A.String "user", A.String "user"]
+      map (field "image_url") ps @?= map A.String [imageA, imageB, "https://example.org/image.png"]
     Nothing -> assertFailure "request was not received"
 
   let incomplete _ respond = respond (Wai.responseLBS Status.status200 [("Content-Type","text/event-stream")]
@@ -483,3 +500,42 @@ testResponsesHTTP = do
     result <- runEff $ Resource.runResource $ HTTPInterpreter.runHTTP $ trySync $
       S.toList (Responses.askStreaming responses{ChatConfig.baseUrl = "http://127.0.0.1:" <> show port, ChatConfig.apiKey = Just "key"} [] [userText "hi"])
     assertBool "Responses HTTP EOF cannot release a tool turn" (isLeft result)
+
+-- Validate the base64 envelope; actual image decoding belongs to the provider.
+testImageInputs :: ([ChatMessage] -> Either Text A.Value) -> Assertion
+testImageInputs build = do
+  for_ ["data:image/png;base64,", "data:image/;base64,YQ==",
+        "data:image/png;base64,%%%%", "data:image/png;base64,YQ=",
+        "data:image/png,hello", "data:text/plain;base64,YQ==", "file:///tmp/image.png"] $ \url ->
+    assertBool ("invalid image accepted: " <> toString url) (isLeft (build [userWithImages "check" [url]]))
+  for_ ["data:image/png;base64,YQ==", "data:image/jpeg;base64,YWI=", "data:image/webp;base64,YWJj"] $ \url ->
+    void (right (build [userWithImages "check" [url]]))
+
+imageA, imageB :: Text
+imageA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAABACAIAAABdtOgoAAAA10lEQVR4nO3RwQkAQRCEwMk/6bsg9lE0CP4VvO9uGu1/Rvsb4BMasIz2N8AnNGAa7W+AT2jAMtrfAJ/QgGm0vwE+oQHLaH8DfEIDptH+BviEBiyj/Q3wCQ2YRvsb4BMasIz2N8AnNGAa7W+AT2jAMtrfAJ/QgGm0vwE+oQHLaH8DfEIDptH+BviEBiyj/Q3wCQ2YRvsb4BMasIz2N8AnNGAa7W+AT2jAMtrfAJ/QgGm0vwE+oQHLaH8DfEIDptH+BviEBiyj/Q3wCQ2YRvsb4BMasIz2v/IDR0rh0rxBIoYAAAAASUVORK5CYII="
+imageB = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAABACAIAAABdtOgoAAAArklEQVR4nO3RwQnAQBDEsO2/6aSIewwGgQsw6O6+dPuDt249AGD/AKDc/gBAOgAAAKTbHwBIBwAAgHT7AwDpAAAAkG5/ACAdAAAA0u0PAKQDAABAuv0BgHQAAABItz8AkA4AAADp9gcA0gEAACDd/gBAOgAAAKTbHwBIBwAAgHT7AwDpAAAAkG5/ACAdAAAA0u0PAKQDAABAuv0BgHQAAABItz8AkA4AAADp9gdv/UdK4dKJSmHtAAAAAElFTkSuQmCC"
+
+testSyntheticImages :: Text -> ([ChatMessage] -> Either Text A.Value) -> Assertion
+testSyntheticImages protocol build = do
+  let call = ToolCall "image-call" "inspect_image" "{}"
+      history = [userText "Inspect the tool images", assistantAnswer (chatAnswer "" [call]), toolResult call "images attached"]
+  for_ [[imageA, imageB], [imageB, imageA]] $ \urls -> do
+    let synthetic = syntheticWithImages "" urls
+        user = ChatMessage "user" (Just (PartsContent (map ImageUrlPart urls))) [] Nothing Nothing
+    persisted <- right (A.eitherDecode (A.encode synthetic) :: Either String ChatMessage)
+    persisted.role @?= "synthetic"
+    actual <- right (build (history <> [persisted]))
+    expected <- right (build (history <> [user]))
+    actual @?= expected
+    let turns = array (field (case protocol of "anthropic" -> "messages"; "gemini" -> "contents"; _ -> "input") actual)
+        lastTurn = fromMaybe A.Null (listToMaybe (reverse turns))
+        content = array (field (if protocol == "gemini" then "parts" else "content") lastTurn)
+        images = filter (\part -> field "type" part `elem` [A.String "image", A.String "input_image"] || field "inlineData" part /= A.Null) content
+        encoded part = case protocol of
+          "anthropic" -> field "data" (field "source" part)
+          "gemini" -> field "data" (field "inlineData" part)
+          _ -> field "image_url" part
+    field "role" lastTurn @?= A.String "user"
+    map encoded images @?= map (A.String . if protocol == "responses" then id else T.drop 22) urls
+    assertBool "no empty text block" (all (\part -> field "text" part /= A.String "") content)
+  assertBool "synthetic invalid image rejected" (isLeft (build (history <> [syntheticWithImages "" ["data:image/png;base64,"]])))
