@@ -147,7 +147,7 @@ instance Driver.ChatDriver QQDriver where
     setGroupMemberTitleQQ driver
 
 qqForwardMessageThreshold :: Int
-qqForwardMessageThreshold = 1000
+qqForwardMessageThreshold = 500
 
 qqForwardNodeLimit :: Int
 qqForwardNodeLimit = 2000

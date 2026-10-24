@@ -69,7 +69,7 @@ main =
       , testCase "Matrix room state exposes its display name" testMatrixRoomDisplayName
       , testCase "Discord channel metadata exposes its display name" testDiscordChannelDisplayName
       , testCase "incoming message log is compact and multiline" testIncomingMessageLog
-      , testCase "QQ replies over 1000 characters use merged forwarding" testQqLongReplyUsesMergedForwarding
+      , testCase "QQ replies over 500 characters use merged forwarding" testQqLongReplyUsesMergedForwarding
       , testCase "QQ invitation actions accept friend and group invites" testQqInvitationActions
       , testCase "QQ recall converts to a deleted incoming message" testQqRecallConvertsToDeletedMessage
       , testCase "incoming message JSON defaults missing files" testIncomingMessageJsonDefaultsMissingFiles
@@ -240,8 +240,8 @@ testQqLongReplyUsesMergedForwarding = do
             , "content" Aeson..= content
             ]
         ]
-  actionFor (Text.replicate 1000 "x") @?= Right "send_group_msg"
-  actionFor (Text.replicate 1001 "x") @?= Right "send_group_forward_msg"
+  actionFor (Text.replicate 500 "x") @?= Right "send_group_msg"
+  actionFor (Text.replicate 501 "x") @?= Right "send_group_forward_msg"
   QQ.replyAction (Just qqBotUserId) message longText [textSegment longText, image]
     @?= Right
       ( "send_group_forward_msg"
