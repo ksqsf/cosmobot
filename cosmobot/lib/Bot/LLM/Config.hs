@@ -108,7 +108,7 @@ defaultConfig = Config
 
 defaultChatProviderConfig :: ChatProviderConfig
 defaultChatProviderConfig = ChatProviderConfig
-  { api = "openai"
+  { api = "chat_completions"
   , anthropicAuth = "api_key"
   , thinking = Nothing
   , maxTokens = 16384
@@ -313,8 +313,8 @@ selectedProvider selectorName tableName selected providers =
 chatProviderSchema :: Schema.ConfigSchema ChatProviderFileConfig ChatProviderFileConfig
 chatProviderSchema = Schema.ConfigSchema
   { Schema.parser = parseTableFromValue do
-    api <- fmap (fromMaybe "openai") (optKey "api")
-    unless (api `elem` ["openai", "anthropic", "gemini"]) (fail "chat provider api must be openai, anthropic, or gemini")
+    api <- fmap (fromMaybe "chat_completions") (optKey "api")
+    unless (api `elem` ["chat_completions", "responses", "anthropic", "gemini"]) (fail "chat provider api must be chat_completions, responses, anthropic, or gemini")
     anthropicAuth <- fmap (fromMaybe "api_key") (optKey "anthropic_auth")
     unless (anthropicAuth `elem` ["api_key", "bearer"]) (fail "anthropic_auth must be api_key or bearer")
     when (anthropicAuth == "bearer" && api /= "anthropic") (fail "anthropic_auth = bearer requires api = anthropic")
@@ -323,11 +323,11 @@ chatProviderSchema = Schema.ConfigSchema
       (fail "thinking must be adaptive and requires api = anthropic")
     maxTokens <- fmap (fromMaybe defaultChatProviderConfig.maxTokens) (optKey "max_tokens")
     when (maxTokens <= 0) (fail "chat provider max_tokens must be positive")
-    baseUrl <- if api == "openai"
+    baseUrl <- if api == "chat_completions"
       then fmap (fromMaybe defaultChatProviderConfig.baseUrl) (optKey "base_url")
       else reqKey "base_url"
     apiKey <- optToken "api_key"
-    model <- if api == "openai"
+    model <- if api == "chat_completions"
       then fmap (fromMaybe defaultChatProviderConfig.model) (optKey "model")
       else reqKey "model"
     reasoningEffort <- fmap (fromMaybe defaultChatProviderConfig.reasoningEffort) (optKey "reasoning_effort")
@@ -342,14 +342,14 @@ chatProviderSchema = Schema.ConfigSchema
       , requestTimeout = requestTimeout
       }
   , Schema.options =
-      [ Schema.option ["api"] "API" "Chat wire protocol; native APIs require explicit base_url and model." owner (Schema.enum ["openai", "anthropic", "gemini"]) "openai" Aeson.Null (.api) (.api)
+      [ Schema.option ["api"] "API" "Chat wire protocol; native APIs require explicit base_url and model." owner (Schema.enum ["chat_completions", "responses", "anthropic", "gemini"]) "chat_completions" Aeson.Null (.api) (.api)
       , Schema.option ["anthropic_auth"] "Anthropic authentication" "api_key for Anthropic; bearer for proxies such as OpenRouter. Uses api_key in either case." owner (Schema.enum ["api_key", "bearer"]) "api_key" Aeson.Null (.anthropicAuth) (.anthropicAuth)
       , Schema.optionalOption ["thinking"] "Thinking" "Anthropic adaptive thinking; omitted by default." owner (Schema.enum ["adaptive"]) False Aeson.Null (.thinking) (.thinking)
       , Schema.option ["max_tokens"] "Max tokens" "Native API output token limit; unused by OpenAI chat." owner Schema.integer defaultChatProviderConfig.maxTokens positive (.maxTokens) (.maxTokens)
       , Schema.option ["base_url"] "Base URL" "API base URL including version, without the method path." owner Schema.text defaultChatProviderConfig.baseUrl Aeson.Null (.baseUrl) (.baseUrl)
       , Schema.optionalOption ["api_key"] "API key" "Provider API key." owner Schema.secret False Aeson.Null (fmap Schema.Secret . (.apiKey)) (fmap Schema.Secret . (.apiKey))
       , Schema.option ["model"] "Model" "Chat model identifier." owner Schema.text defaultChatProviderConfig.model Aeson.Null (.model) (.model)
-      , Schema.option ["reasoning_effort"] "Reasoning effort" "OpenAI reasoning_effort, Anthropic output_config.effort, or Gemini thinkingLevel. Empty omits native effort; use empty for Gemini 2.5." owner Schema.text defaultChatProviderConfig.reasoningEffort Aeson.Null (.reasoningEffort) (.reasoningEffort)
+      , Schema.option ["reasoning_effort"] "Reasoning effort" "OpenAI Chat Completions reasoning_effort, Responses reasoning.effort, Anthropic output_config.effort, or Gemini thinkingLevel. Empty omits native effort; use empty for Gemini 2.5." owner Schema.text defaultChatProviderConfig.reasoningEffort Aeson.Null (.reasoningEffort) (.reasoningEffort)
       , Schema.option ["timeout"] "Timeout" "Request timeout in seconds." owner Schema.integer defaultChatProviderConfig.requestTimeout positive (.requestTimeout) (.requestTimeout)
       ]
   , Schema.sections = [Schema.section [] "Chat provider" ["llm"] "LLM"]

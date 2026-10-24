@@ -49,7 +49,7 @@ const snapshot = {
       { path: ['llm'], label: 'General', group: group(['llm'], 'LLM'), optional: false, present: true, repeatable: false, options: [textOption(['llm', 'chat'], 'Chat provider', 'openrouter')] },
       { path: ['llm', 'chat_provider', 'openrouter'], label: 'openrouter', group: group(['llm'], 'LLM'), optional: false, present: true, repeatable: true, options: [
         textOption(['llm', 'chat_provider', 'openrouter', 'model'], 'Model', 'openai/gpt-5'),
-        { ...textOption(['llm', 'chat_provider', 'openrouter', 'api'], 'API', 'openai'), type: { kind: 'enum', values: ['openai', 'anthropic', 'gemini'] } },
+        { ...textOption(['llm', 'chat_provider', 'openrouter', 'api'], 'API', 'chat_completions'), type: { kind: 'enum', values: ['chat_completions', 'responses', 'anthropic', 'gemini'] } },
         { ...textOption(['llm', 'chat_provider', 'openrouter', 'thinking'], 'Thinking', ''), type: { kind: 'enum', values: ['adaptive'] }, default: null, source: { present: false, value: null }, effective: null },
         { ...textOption(['llm', 'chat_provider', 'openrouter', 'max_tokens'], 'Max tokens', ''), type: { kind: 'integer' }, default: 16384, source: { present: false, value: null }, effective: 16384 },
       ] },
@@ -279,14 +279,16 @@ test('native provider options use enum and integer schema controls', async ({ pa
   ])
 })
 
-test('Gemini protocol is selectable through schema controls', async ({ page, isMobile }) => {
-  test.skip(isMobile, 'interaction coverage runs once in the desktop project')
-  const rpc = await installConfigRpc(page)
-  await connect(page)
-  await page.locator('.config-nav').getByRole('button', { name: 'openrouter', exact: true }).click()
-  await page.getByRole('combobox', { name: 'API', exact: true }).selectOption('gemini')
-  await page.getByRole('button', { name: 'Validate' }).click()
-  await expect.poll(() => rpc.requests.filter(({ method }) => method === 'config.validate').at(-1)?.params.changes).toEqual([
-    { operation: 'set', path: ['llm', 'chat_provider', 'openrouter', 'api'], value: 'gemini' },
-  ])
-})
+for (const api of ['gemini', 'responses']) {
+  test(`${api} protocol is selectable through schema controls`, async ({ page, isMobile }) => {
+    test.skip(isMobile, 'interaction coverage runs once in the desktop project')
+    const rpc = await installConfigRpc(page)
+    await connect(page)
+    await page.locator('.config-nav').getByRole('button', { name: 'openrouter', exact: true }).click()
+    await page.getByRole('combobox', { name: 'API', exact: true }).selectOption(api)
+    await page.getByRole('button', { name: 'Validate' }).click()
+    await expect.poll(() => rpc.requests.filter(({ method }) => method === 'config.validate').at(-1)?.params.changes).toEqual([
+      { operation: 'set', path: ['llm', 'chat_provider', 'openrouter', 'api'], value: api },
+    ])
+  })
+}

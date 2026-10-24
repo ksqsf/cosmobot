@@ -296,7 +296,7 @@ testInspectionActiveRuntime = do
   optionSnapshot ["driver", "discord", "gateway_host"] inspection
     @?= (False, Nothing, Aeson.Null)
   sectionSnapshot ["driver", "discord"] inspection @?= (True, False)
-  for_ [("api", Aeson.String "openai"), ("max_tokens", Aeson.Number 16384)] \(key, expected) ->
+  for_ [("api", Aeson.String "chat_completions"), ("max_tokens", Aeson.Number 16384)] \(key, expected) ->
     optionSnapshot ["llm", "chat_provider", "existing", key] inspection
       @?= (False, Nothing, expected)
 

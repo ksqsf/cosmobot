@@ -134,8 +134,8 @@ image = "openai"
 audio = "openai"
 
 [llm.chat_provider.openrouter]
-# Wire protocol: openai (default), anthropic (Messages), or gemini (GenerateContent).
-api = "openai"
+# Wire protocol: chat_completions (default), responses, anthropic (Messages), or gemini (GenerateContent).
+api = "chat_completions"
 # API base URL, including /v1 where required; do not append /chat/completions.
 base_url = "https://openrouter.ai/api/v1"
 api_key = ""
@@ -144,6 +144,18 @@ model = "openai/gpt-4o-mini"
 reasoning_effort = "low"
 # Request timeout in seconds; must be positive.
 timeout = 60
+
+# Select with llm.chat = "openai_responses".
+[llm.chat_provider.openai_responses]
+api = "responses"
+base_url = "https://api.openai.com/v1"
+api_key = ""
+model = "gpt-5.4-mini"
+# Maps to reasoning.effort; empty omits it for models without reasoning support.
+reasoning_effort = "low"
+# max_output_tokens includes both visible output and reasoning tokens.
+max_tokens = 16384
+timeout = 120
 
 # Select with llm.chat = "openrouter_claude".
 [llm.chat_provider.openrouter_claude]

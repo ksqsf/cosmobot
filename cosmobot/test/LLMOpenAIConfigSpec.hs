@@ -171,6 +171,7 @@ testProviderDefaultsAreApplied = do
       , "[audio_provider.default_audio]"
       ]
   cfg.chatProvider @?= Just LLMConfig.defaultChatProviderConfig
+  fmap (.api) cfg.chatProvider @?= Just "chat_completions"
   cfg.imageProvider @?= Just LLMConfig.defaultImageProviderConfig
   cfg.audioProvider @?= Just LLMConfig.defaultAudioProviderConfig
 
@@ -248,3 +249,20 @@ testNativeOptions = do
   fmap (.reasoningEffort) googleCfg.chatProvider @?= Just ""
   assertParseFailureContains "thinking must be adaptive" (google <> "thinking = \"adaptive\"")
   assertParseFailureContains "requires api = anthropic" (google <> "anthropic_auth = \"bearer\"")
+
+  let responses = Text.replace "anthropic" "responses" native
+  responsesCfg <- parseRuntimeConfig (responses <> "reasoning_effort = \"\"\nmax_tokens = 2048")
+  case responsesCfg.chatProvider of
+    Just p -> do
+      p.api @?= "responses"
+      p.maxTokens @?= 2048
+      p.reasoningEffort @?= ""
+    Nothing -> assertFailure "missing Responses provider"
+  assertParseFailureContains "thinking must be adaptive" (responses <> "thinking = \"adaptive\"")
+  assertParseFailureContains "requires api = anthropic" (responses <> "anthropic_auth = \"bearer\"")
+  assertBool "Responses requires explicit endpoint and model"
+    (isLeft (parseRuntimeConfigEither "[chat_provider.x]\napi = \"responses\""))
+
+  explicitChat <- parseRuntimeConfig "chat = \"x\"\n[chat_provider.x]\napi = \"chat_completions\""
+  fmap (.api) explicitChat.chatProvider @?= Just "chat_completions"
+  assertParseFailureContains "api must be" "[chat_provider.x]\napi = \"openai\""
