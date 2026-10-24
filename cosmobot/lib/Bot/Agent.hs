@@ -148,6 +148,8 @@ runAgentOperation metadataFor localEnv = \case
         unlift (use runtime
           { toolCallMetadata = metadataFor runtime.runId
           })
+    AgentEffect.Wait action -> localSeqUnlift localEnv \unlift -> Just <$> unlift action
+    AgentEffect.HasPendingChildren{} -> pure False
     AgentEffect.RegisterChild{} -> pure ()
     AgentEffect.ConsumeChild{} -> pure ()
 

@@ -64,7 +64,10 @@ data ActiveRun = ActiveRun
   , steering :: !SteeringQueue
   }
 
-type SteeringQueue = MVar.MVar (Maybe (Seq.Seq MessageInput))
+data SteeringQueue = SteeringQueue
+  { queued :: !(MVar.MVar (Maybe (Seq.Seq MessageInput)))
+  , wake :: !(MVar.MVar ())
+  }
 
 instance
   (Resource.Resource :> es, Concurrency.Concurrency :> es, Concurrent :> es)
@@ -158,12 +161,12 @@ sendPrompt metadata subagentId availableTools context subagent prompt =
               childContext = context {Agent.systemContext = subagent.arguments.systemContext}
           worker <- Concurrency.forkWithHandle "subagent" \worker -> do
             let finish result = do
-                  MVar.modifyMVar_ steering (const (pure Nothing))
+                  MVar.modifyMVar_ steering.queued (const (pure Nothing))
                   MVar.modifyMVar_ subagent.state (pure . finishRun worker result)
                   void $ MVar.tryPutMVar output (either
                     (\err -> "Subagent failed: " <> Text.take 500 (show err)) fst result)
                 cancelled = do
-                  MVar.modifyMVar_ steering (const (pure Nothing))
+                  MVar.modifyMVar_ steering.queued (const (pure Nothing))
                   MVar.modifyMVar_ subagent.state \current -> pure $
                     if ((.worker) <$> current.active) == Just worker
                       then current{active = Nothing, answer = Just "Subagent cancelled."}
@@ -206,7 +209,7 @@ sendPrompt metadata subagentId availableTools context subagent prompt =
             MVar.modifyMVar_ subagent.state \current ->
               if ((.worker) <$> current.active) == Just child.worker
                 then do
-                  for_ current.active (\active -> MVar.modifyMVar_ active.steering (const (pure Nothing)))
+                  for_ current.active (\active -> MVar.modifyMVar_ active.steering.queued (const (pure Nothing)))
                   pure current{active = Nothing, answer = Just "Subagent cancelled."}
                 else pure current
             void $ MVar.tryPutMVar output "Subagent cancelled."
@@ -241,25 +244,32 @@ steer subagent prompt = do
 
 newSteeringQueue :: Concurrent :> es => Eff es SteeringQueue
 newSteeringQueue =
-  MVar.newMVar (Just Seq.empty)
+  SteeringQueue <$> MVar.newMVar (Just Seq.empty) <*> MVar.newEmptyMVar
 
 enqueueSteer :: Concurrent :> es => SteeringQueue -> MessageInput -> Eff es Bool
 enqueueSteer steering input =
-  MVar.modifyMVar steering \case
+  mask_ $ MVar.modifyMVar steering.queued \case
     Nothing -> pure (Nothing, False)
-    Just queued -> pure (Just (queued Seq.|> input), True)
+    Just queued -> do
+      void $ MVar.tryPutMVar steering.wake ()
+      pure (Just (queued Seq.|> input), True)
 
 steeringControl :: Concurrent :> es => SteeringQueue -> Agent.SteeringControl es
 steeringControl steering =
   Agent.SteeringControl
-    { drain = MVar.modifyMVar steering \case
+    { awaitPending = MVar.readMVar steering.wake
+    , drain = mask_ $ MVar.modifyMVar steering.queued \case
         Nothing -> pure (Nothing, [])
-        Just queued -> pure (Just Seq.empty, Foldable.toList queued)
-    , complete = MVar.modifyMVar steering \case
+        Just queued -> do
+          void $ MVar.tryTakeMVar steering.wake
+          pure (Just Seq.empty, Foldable.toList queued)
+    , complete = mask_ $ MVar.modifyMVar steering.queued \case
         Nothing -> pure (Nothing, Nothing)
         Just queued
           | Seq.null queued -> pure (Nothing, Nothing)
-          | otherwise -> pure (Just Seq.empty, Just (Foldable.toList queued))
+          | otherwise -> do
+              void $ MVar.tryTakeMVar steering.wake
+              pure (Just Seq.empty, Just (Foldable.toList queued))
     }
 
 queryOutput :: (AgentEffect.Agent :> es, Concurrent :> es) => Text -> SubAgent -> Eff es Text
@@ -273,36 +283,39 @@ queryOutput parent subagent = do
 
 waitAnyOutput
   :: (AgentEffect.Agent :> es, Concurrency.Concurrency :> es, Concurrent :> es)
-  => Text -> NonEmpty (Text, SubAgent) -> Eff es (Text, Text)
+  => Text -> NonEmpty (Text, SubAgent) -> Eff es (Maybe (Text, Text))
 waitAnyOutput parent subagents = do
   snapshots <- traverse snapshotRun subagents
-  ready <- filterM (maybe (pure True) (fmap isJust . MVar.tryReadMVar . (.output)) . snd) (toList snapshots)
-  case ready of
-    readyRun : _ -> outputFor parent readyRun
-    [] -> do
-      let runs = mapMaybe snd (toList snapshots)
-      winner <- waitAnyChild (fromMaybe (error "missing subagent workers") (nonEmpty runs))
-      outputFor parent (fromMaybe (error "missing winning subagent")
-        (find ((== Just winner.worker) . fmap (.worker) . snd) snapshots))
+  selected <- AgentEffect.wait do
+    ready <- filterM (maybe (pure True) (fmap isJust . MVar.tryReadMVar . (.output)) . snd) (toList snapshots)
+    winner <- case ready of
+      readyRun : _ -> pure readyRun
+      [] -> do
+        let runs = mapMaybe snd (toList snapshots)
+        child <- waitAnyChild (fromMaybe (error "missing subagent workers") (nonEmpty runs))
+        pure (fromMaybe (error "missing winning subagent")
+          (find ((== Just child.worker) . fmap (.worker) . snd) snapshots))
+    output <- readOutput winner
+    pure (winner, output)
+  forM selected \((_, child), output) -> do
+    for_ child (AgentEffect.consumeChild parent . (.worker))
+    pure output
 
 waitAllOutputs
   :: (AgentEffect.Agent :> es, Concurrency.Concurrency :> es, Concurrent :> es)
-  => Text -> NonEmpty (Text, SubAgent) -> Eff es (NonEmpty (Text, Text))
+  => Text -> NonEmpty (Text, SubAgent) -> Eff es (Maybe (NonEmpty (Text, Text)))
 waitAllOutputs parent subagents = do
   snapshots <- traverse snapshotRun subagents
-  results <- forM snapshots \(name, child) ->
-    (name,) <$> maybe (pure "No prompt has been sent.") childOutput child
-  for_ snapshots (traverse_ (AgentEffect.consumeChild parent . (.worker)) . snd)
+  results <- AgentEffect.wait (traverse readOutput snapshots)
+  for_ results \_ ->
+    for_ snapshots (traverse_ (AgentEffect.consumeChild parent . (.worker)) . snd)
   pure results
 
 snapshotRun :: Concurrent :> es => (Text, SubAgent) -> Eff es (Text, Maybe AgentEffect.ChildRun)
 snapshotRun (name, subagent) = (name,) . (.latestRun) <$> MVar.readMVar subagent.state
 
-outputFor
-  :: (AgentEffect.Agent :> es, Concurrency.Concurrency :> es, Concurrent :> es)
-  => Text -> (Text, Maybe AgentEffect.ChildRun) -> Eff es (Text, Text)
-outputFor _ (name, Nothing) = pure (name, "No prompt has been sent.")
-outputFor parent (name, Just child) = do
-  output <- childOutput child
-  AgentEffect.consumeChild parent child.worker
-  pure (name, output)
+readOutput
+  :: (Concurrency.Concurrency :> es, Concurrent :> es)
+  => (Text, Maybe AgentEffect.ChildRun) -> Eff es (Text, Text)
+readOutput (name, child) =
+  (name,) <$> maybe (pure "No prompt has been sent.") childOutput child

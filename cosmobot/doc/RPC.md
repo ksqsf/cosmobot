@@ -765,3 +765,14 @@ cancels and joins remaining children, recursively; reusable resources survive.
 Automatic resumption uses the remaining model-turn budget; at exhaustion the
 completed child results are returned with `subagent_limit`, without another
 model request. Previously streamed parent text remains visible.
+
+
+Steering wakes explicit subagent waits, automatic structured joins, and command
+waits (including the initial wait after starting a command), and ACP terminal
+exit waits. The wait releases
+its resource leases and resumes the parent with a tool result, followed by the
+queued steering input on the next model request. Subagent waits report
+`status: interrupted_by_steering`; command waits return the current command
+snapshot. Background work continues, and interrupted subagent waits do not
+consume child results. Ordinary tools and model generation still finish their
+current operation before steering is injected.

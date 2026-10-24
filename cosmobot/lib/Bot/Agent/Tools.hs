@@ -159,7 +159,7 @@ defaultToolsWith extraTools = tools
       , subagentTool tools
       ] <> extraTools
 
-acpTools :: ACP.ACP :> es => [BotTool (Eff es)]
+acpTools :: (Agent.Agent :> es, ACP.ACP :> es) => [BotTool (Eff es)]
 acpTools =
   [ acpReadClientFileTool
   , acpWriteClientFileTool

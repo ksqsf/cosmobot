@@ -29,6 +29,7 @@ module Bot.Storage.Thread
   , addActiveThreadMessage
   , enqueueActiveThreadSteer
   , enqueueActiveSessionThreadSteer
+  , awaitActiveThreadSteers
   , drainActiveThreadSteers
   , completeActiveThreadSteering
   , updateActiveThread
@@ -104,6 +105,7 @@ data ActiveThread = ActiveThread
   , activePrompt :: !Text
   , activeParentMessageKey :: !(Maybe ThreadMessageKey)
   , activeReplyMessageKeys :: !(IORef [ThreadMessageKey])
+  , activeSteerWake :: !(MVar.MVar ())
   , activeSteering :: !(MVar.MVar SteeringState)
   , activeCurrent :: !(IORef Transcript)
   , activeDone :: !(MVar.MVar Transcript)
@@ -308,6 +310,7 @@ rememberActiveThreadWithKeys
 rememberActiveThreadWithKeys extraKeys ThreadStore{activeThreadStore = activeRef} activeRunId parentMessageKey messageKey message prompt activeHandle transcript = do
   replyMessageKeys <- newIORef []
   steering <- MVar.newMVar (SteeringOpen Seq.empty)
+  steerWake <- MVar.newEmptyMVar
   current <- newIORef transcript
   done <- MVar.newEmptyMVar
   let active = ActiveThread
@@ -317,6 +320,7 @@ rememberActiveThreadWithKeys extraKeys ThreadStore{activeThreadStore = activeRef
         , activePrompt = prompt
         , activeParentMessageKey = parentMessageKey
         , activeReplyMessageKeys = replyMessageKeys
+        , activeSteerWake = steerWake
         , activeSteering = steering
         , activeCurrent = current
         , activeDone = done
@@ -369,9 +373,10 @@ enqueueActiveThreadSteer ThreadStore{activeThreadStore = activeRef} message stee
       case active of
         Just activeThread
           | maybe False ((== activeThread.activeSenderId) . Just) message.senderId ->
-              MVar.modifyMVar activeThread.activeSteering \case
+              mask_ $ MVar.modifyMVar activeThread.activeSteering \case
                 SteeringOpen queued -> do
                   traverse_ (addMessageAlias activeRef activeThread . threadMessageKey message) message.messageId
+                  void $ MVar.tryPutMVar activeThread.activeSteerWake ()
                   pure (SteeringOpen (queued Seq.|> steer), True)
                 steeringState ->
                   pure (steeringState, False)
@@ -390,30 +395,36 @@ enqueueActiveSessionThreadSteer ThreadStore{activeThreadStore = activeRef} sessi
   case active of
     Just activeThread
       | mayManageActiveThread message activeThread ->
-          MVar.modifyMVar activeThread.activeSteering \case
+          mask_ $ MVar.modifyMVar activeThread.activeSteering \case
             SteeringOpen queued -> do
               traverse_ (addMessageAlias activeRef activeThread . threadMessageKey message) message.messageId
+              void $ MVar.tryPutMVar activeThread.activeSteerWake ()
               pure (SteeringOpen (queued Seq.|> steer), True)
             steeringState ->
               pure (steeringState, False)
     _ ->
       pure False
 
+awaitActiveThreadSteers :: Concurrent :> es => ActiveThreadHandle -> Eff es ()
+awaitActiveThreadSteers (ActiveThreadHandle active) = MVar.readMVar active.activeSteerWake
+
 drainActiveThreadSteers :: Concurrent :> es => ActiveThreadHandle -> Eff es [MessageInput]
 drainActiveThreadSteers (ActiveThreadHandle active) =
-  MVar.modifyMVar active.activeSteering \case
-    SteeringOpen queued ->
+  mask_ $ MVar.modifyMVar active.activeSteering \case
+    SteeringOpen queued -> do
+      void $ MVar.tryTakeMVar active.activeSteerWake
       pure (SteeringOpen Seq.empty, Foldable.toList queued)
     steeringState ->
       pure (steeringState, [])
 
 completeActiveThreadSteering :: Concurrent :> es => ActiveThreadHandle -> Eff es (Maybe [MessageInput])
 completeActiveThreadSteering (ActiveThreadHandle active) =
-  MVar.modifyMVar active.activeSteering \case
+  mask_ $ MVar.modifyMVar active.activeSteering \case
     SteeringOpen queued
       | Seq.null queued ->
           pure (SteeringCompleted, Nothing)
-      | otherwise ->
+      | otherwise -> do
+          void $ MVar.tryTakeMVar active.activeSteerWake
           pure (SteeringOpen Seq.empty, Just (Foldable.toList queued))
     steeringState ->
       pure (steeringState, Nothing)
@@ -439,7 +450,7 @@ finishActiveThread
   -> Transcript
   -> Eff es ()
 finishActiveThread store@ThreadStore{activeThreadStore = activeRef} (ActiveThreadHandle active) transcript = do
-  replyMessageKeys <- MVar.modifyMVar active.activeSteering \case
+  replyMessageKeys <- mask_ $ MVar.modifyMVar active.activeSteering \case
     SteeringFinishing ->
       pure (SteeringFinishing, Nothing)
     _ -> do

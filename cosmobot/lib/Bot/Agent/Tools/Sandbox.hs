@@ -16,6 +16,7 @@ import Bot.Agent.Tool (parsedArguments, allowWhen, tagged, tool, withDescription
 import Bot.Agent.Types
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Effect.Agent as Agent
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Media.Object as MediaObject
 import Bot.Prelude
@@ -33,7 +34,7 @@ import System.FilePath ((</>))
 import qualified System.FilePath.Posix as Posix
 
 sandboxTool
-  :: (Media.Media :> es, Resource.Resource :> es, Concurrency.Concurrency :> es, FileSystem :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
+  :: (Agent.Agent :> es, Media.Media :> es, Resource.Resource :> es, Concurrency.Concurrency :> es, FileSystem :> es, Timeout :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
   => BotTool (Eff es)
 sandboxTool =
   tagged [workTag]

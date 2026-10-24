@@ -87,9 +87,9 @@ subagentTool availableTools =
             Query resourceId ->
               use access resourceId (fmap Right . SubAgent.queryOutput metadata.agentRunId)
             WaitAny resourceIds ->
-              useMany access resourceIds (fmap (jsonText . outputValue) . SubAgent.waitAnyOutput metadata.agentRunId)
+              useMany access resourceIds (fmap (maybe interruptedWait (jsonText . outputValue)) . SubAgent.waitAnyOutput metadata.agentRunId)
             WaitAll resourceIds ->
-              useMany access resourceIds (fmap (jsonText . map outputValue . toList) . SubAgent.waitAllOutputs metadata.agentRunId)
+              useMany access resourceIds (fmap (maybe interruptedWait (jsonText . map outputValue . toList)) . SubAgent.waitAllOutputs metadata.agentRunId)
             Destroy resourceId ->
               Resource.destroy access resourceId
                 <&> either resourceToolFailure (const (toolText "Subagent destroyed."))
@@ -119,6 +119,8 @@ subagentTool availableTools =
                 acquire resourceId' callback =
                   Resource.withResource @SubAgent.SubAgent access' resourceId' metadata.resourceOwner callback
                     <&> join
+
+        interruptedWait = jsonText (Aeson.object ["status" Aeson..= ("interrupted_by_steering" :: Text)])
 
         outputValue (resourceId, output) =
           Aeson.object

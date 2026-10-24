@@ -209,7 +209,7 @@ withActiveConsoleThread threads sessionId runId parentMessageKey messageKey mess
       restore (use activeHandle) `onException` finishActiveThreadCurrent threads activeHandle
 
 runActiveConsoleAgent
-  :: ( Chat.Chat :> es
+  :: ( AgentEffect.Agent :> es, Chat.Chat :> es
      , ChatLog.ChatLog :> es
      , AgentAudit.AgentAudit :> es
      , Concurrency.Concurrency :> es
@@ -236,7 +236,8 @@ runActiveConsoleAgent threads active parentMessageKey sessionId message runtime 
           ordNub (maybeToList update.responseId <> rights update.sentMessageResults)
         updateActiveThread active (appendAssistant update.answer transcript)
       steering = Agent.SteeringControl
-        { drain = drainActiveThreadSteers active
+        { awaitPending = awaitActiveThreadSteers active
+        , drain = drainActiveThreadSteers active
         , complete = completeActiveThreadSteering active
         }
   reply <- streamAgentReplyWith

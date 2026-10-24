@@ -20,6 +20,7 @@ import Bot.Prelude
 import qualified Bot.Resource.Sandbox as Sandbox
 import qualified Bot.Resource.Command as Command
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Effect.Agent as Agent
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Util.Process as ProcessUtil
 import Bot.Util.Time (secondsToMicroseconds)
@@ -35,7 +36,7 @@ import Effectful.FileSystem (FileSystem)
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout
 
-runBashTool :: (Resource.Resource :> es, FileSystem :> es, IOE :> es, Fail :> es, Timeout :> es, Concurrency.Concurrency :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => BotTool (Eff es)
+runBashTool :: (Agent.Agent :> es, Resource.Resource :> es, FileSystem :> es, IOE :> es, Fail :> es, Timeout :> es, Concurrency.Concurrency :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => BotTool (Eff es)
 runBashTool =
   tagged [workTag]
   . allowWhen (\context -> superuserOnly context && hasResourceIdentity context)
@@ -61,7 +62,7 @@ runBashTool =
               Left err -> pure (resourceToolFailure err)
               Right commandId -> observeCommand True access metadata.resourceOwner commandId 10 0 0
 
-commandTool :: (Resource.Resource :> es, Concurrency.Concurrency :> es, Timeout :> es, Concurrent :> es) => BotTool (Eff es)
+commandTool :: (Agent.Agent :> es, Resource.Resource :> es, Concurrency.Concurrency :> es, Timeout :> es, Concurrent :> es) => BotTool (Eff es)
 commandTool =
   tagged [workTag]
   . allowWhen hasResourceIdentity
@@ -104,11 +105,12 @@ parseCommandCall = Aeson.withObject "command arguments" \o -> do
     _ -> fail "op must be one of: query, wait, cancel."
 
 observeCommand
-  :: (Resource.Resource :> es, Concurrency.Concurrency :> es, Timeout :> es, Concurrent :> es)
+  :: (Agent.Agent :> es, Resource.Resource :> es, Concurrency.Concurrency :> es, Timeout :> es, Concurrent :> es)
   => Bool -> Resource.ResourceAccess -> Maybe Concurrency.Handle -> Text -> Int -> Int -> Int -> Eff es ToolResult
 observeCommand initial access owner commandId seconds stdoutOffset stderrOffset = do
   result <- Resource.withResource @Command.Command access commandId owner \command ->
-    if seconds == 0 then Command.queryCommand command else Command.waitCommand seconds command
+    if seconds == 0 then Command.queryCommand command else
+      Agent.wait (Command.waitCommand seconds command) >>= maybe (Command.queryCommand command) pure
   case result of
     Left err -> pure (resourceToolFailure err)
     Right (Command.Running stdoutText stderrText) -> pure (toolText (commandSnapshot initial commandId "running" stdoutOffset stderrOffset stdoutText stderrText))

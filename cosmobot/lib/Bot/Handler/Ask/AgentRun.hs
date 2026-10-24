@@ -41,6 +41,7 @@ import Bot.Handler.Ask.Config
 import qualified Bot.Memory as MemoryStore
 import qualified Bot.Plugin.Tool as PluginTool
 import Bot.Prelude
+import qualified Effectful.Concurrent.MVar as MVar
 import Bot.Storage.Thread
 import qualified Data.Text as Text
 import qualified Data.Text.Lazy as LazyText
@@ -167,7 +168,7 @@ currentMessageSystemPrompt cfg message =
     configuredBotId = listToMaybe [botId | (platform, botId) <- cfg.botIds, platform == message.platform]
 
 streamAgentReply
-  :: ( Chat.Chat :> es
+  :: ( AgentEffect.Agent :> es, Chat.Chat :> es
      , ChatLog.ChatLog :> es
      , Concurrency.Concurrency :> es
      , LLM.LLM :> es
@@ -321,7 +322,9 @@ activeSteeringControl
   -> Agent.SteeringControl es
 activeSteeringControl activeReply =
   Agent.SteeringControl
-    { drain =
+    { awaitPending = IORef.readIORef activeReply.activeRef
+        >>= maybe (MVar.newEmptyMVar >>= MVar.takeMVar) awaitActiveThreadSteers
+    , drain =
         IORef.readIORef activeReply.activeRef
           >>= maybe (pure []) drainActiveThreadSteers
     , complete =

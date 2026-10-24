@@ -16,13 +16,14 @@ import Bot.Agent.Tool (parsedArguments, allowWhen, tagged, tool, withDescription
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.ACP as ACP
+import qualified Bot.Effect.Agent as Agent
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
-terminalTool :: ACP.ACP :> es => BotTool (Eff es)
+terminalTool :: (Agent.Agent :> es, ACP.ACP :> es) => BotTool (Eff es)
 terminalTool =
   tagged [workTag]
   . allowWhen ((== PlatformACP) . (.platform) . (.message))
@@ -53,7 +54,7 @@ data TerminalCall
   deriving (Eq, Show)
 
 runTerminalCall
-  :: ACP.ACP :> es
+  :: (Agent.Agent :> es, ACP.ACP :> es)
   => IncomingMessage
   -> TerminalCall
   -> Eff es (Either Text Text)
@@ -64,7 +65,10 @@ runTerminalCall message = \case
   TerminalOutput terminalId ->
     ACP.readClientTerminalOutput message terminalId <&> fmap (jsonText . terminalOutputValue)
   TerminalWaitForExit terminalId ->
-    ACP.waitForClientTerminalExit message terminalId <&> fmap (jsonText . terminalExitStatusValue)
+    Agent.wait (ACP.waitForClientTerminalExit message terminalId) <&> \case
+      Nothing -> Right (jsonText (Aeson.object
+        ["terminalId" Aeson..= terminalId, "status" Aeson..= ("interrupted_by_steering" :: Text)]))
+      Just result -> fmap (jsonText . terminalExitStatusValue) result
   TerminalKill terminalId ->
     ACP.killClientTerminal message terminalId <&> fmap (const "Terminal killed.")
   TerminalRelease terminalId ->

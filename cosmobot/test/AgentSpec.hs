@@ -35,6 +35,7 @@ import qualified Bot.Agent.Tools.Workspace as WorkspaceTools
 import qualified Bot.Agent.Types as AgentTypes
 import qualified Bot.Agent.ToolRegistry as ToolRegistry
 import Bot.Agent.Tools.Shell (runBashSafe, runBashTool)
+import qualified Bot.Agent.Tools.Shell as ShellTools
 import qualified Bot.AgentAudit.Storage as AgentAuditStorage
 import Bot.Agent.Tools.Common (UseLimit (..), chatTag, newUseLimiter, workTag)
 import Bot.Chat.Driver.Types (ChatDriverEffects)
@@ -86,6 +87,7 @@ import Bot.Handler.Console.Config (ConsoleHandlerConfig (..))
 import qualified Bot.HTTP as HTTP
 import qualified Bot.Log as Log
 import qualified Bot.Storage.Session as SessionStorage
+import qualified Bot.Resource.Command as Command
 import Bot.Storage.Thread
 import qualified Bot.Storage.SQLite as StorageSQLite
 import qualified Bot.System.Typst.Test as TypstTest
@@ -313,6 +315,10 @@ main =
       , testCase "agent rejects continuation calls mixed with sibling tools" testAgentRejectsConcurrentContinuationCalls
       , testCase "agent does not intercept unexposed continuation tools" testAgentDoesNotInterceptUnexposedContinuationTools
       , testCase "agent may resume a continuation at the tool limit" testAgentResumesContinuationAtToolLimit
+      , testCase "steering interrupts subagent and command waits without cancelling work" testSteeringInterruptsWaits
+      , testCase "subagent steering wakes its command wait" testSubagentSteeringWait
+      , testCase "steering interrupts ACP terminal waits and joins waiter cleanup" testSteeringInterruptsTerminal
+      , testCase "steering interrupts structured joins and preserves child results" testSteeringInterruptsJoin
       , testCase "agent steering continues after a final answer" testAgentSteeringContinuesAfterFinalAnswer
       , testCase "agent steering preserves surrounding model middleware" testAgentSteeringPreservesModelMiddleware
       , testCase "agent steering waits for complete tool results" testAgentSteeringWaitsForToolResults
@@ -1293,7 +1299,7 @@ testSubAgentLifecycle = do
     schema <- encodedToolParameters tool
     liftIO $ assertBool "subagent create schema should expose ttl_minutes" ("ttl_minutes" `Text.isInfixOf` schema)
     createRun <- AgentTool.startTool tool agentContext
-    tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (4 :: Int)])
+    tooShort <- createRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("too-short" :: Text), "ttl_minutes" Aeson..= (4 :: Int)])
     liftIO $ assertBool "subagent rejects TTL below five minutes" ("at least 5" `Text.isInfixOf` AgentTypes.toolResultContent tooShort)
     created <- createRun descendantMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("researcher" :: Text), "system_prompt" Aeson..= ("Research carefully." :: Text), "tools" Aeson..= (["sandbox", "block"] :: [Text]), "ttl_minutes" Aeson..= (5 :: Int)])
     let resourceId = fromMaybe (error "missing subagent id") (Text.stripPrefix "Subagent created: " (AgentTypes.toolResultContent created))
@@ -2970,6 +2976,185 @@ testAgentResumesContinuationAtToolLimit = do
     other ->
       assertFailure [i|expected resume to reach a fourth model request, got #{length other}|]
 
+testSteeringInterruptsWaits :: IO ()
+testSteeringInterruptsWaits = for_ ["wait_any", "wait_all", "command"] \operation -> do
+  answers <- IORef.newIORef $
+    if operation == "command" then [] else
+      [chatAnswer "" [toolCall "block" "block" (Aeson.object [])], chatAnswer "child evidence" []]
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    completed <- timeout 5_000_000 do
+      started <- MVar.newEmptyMVar
+      release <- MVar.newEmptyMVar
+      waiting <- MVar.newEmptyMVar
+      steer <- MVar.newEmptyMVar
+      let block = AgentTool.tool "block" AgentTool.noArguments $
+            MVar.putMVar started () *> MVar.readMVar release $> Agent.toolText "released"
+      Agent.withRun 4 AgentTypes.ContextCompaction 1000000 superuserContext [] \runtime -> do
+        let steering = Agent.SteeringControl
+              { awaitPending = MVar.putMVar waiting () *> MVar.readMVar steer
+              , drain = pure []
+              , complete = pure Nothing
+              }
+            observed = Agent.withSteering steering runtime
+            access = either (error . show) id (ResourceEffect.accessFromMessage superuserContext.message)
+        (waitAction, queryAction, finishAction) <- if operation == "command" then do
+          Right commandId <- Command.createAndStart access Nothing ResourceEffect.Init
+            {message = superuserContext.message, arguments = ()} \_ _ ->
+              MVar.putMVar started () *> MVar.readMVar release $> Right "command evidence"
+          runner <- AgentTool.startTool ShellTools.commandTool superuserContext
+          let call op = runner runtime.toolCallMetadata (Aeson.object
+                ["op" Aeson..= (op :: Text), "command" Aeson..= commandId, "timeout_seconds" Aeson..= (60 :: Int)])
+          pure (call "wait", call "query", call "wait")
+        else do
+          runner <- AgentTool.startTool (SubAgentTools.subagentTool [block]) superuserContext
+          void $ runner runtime.toolCallMetadata (Aeson.object
+            ["op" Aeson..= ("create" :: Text), "name" Aeson..= ("worker" :: Text), "ttl_minutes" Aeson..= (5 :: Int), "tools" Aeson..= (["block"] :: [Text])])
+          void $ runner runtime.toolCallMetadata (Aeson.object
+            ["op" Aeson..= ("send" :: Text), "resource" Aeson..= ("worker" :: Text), "prompt" Aeson..= ("work" :: Text)])
+          let waitAction = runner runtime.toolCallMetadata (Aeson.object
+                ["op" Aeson..= operation, "resources" Aeson..= (["worker"] :: [Text])])
+              queryAction = runner runtime.toolCallMetadata (Aeson.object
+                ["op" Aeson..= ("query" :: Text), "resource" Aeson..= ("worker" :: Text)])
+          pure (waitAction, queryAction, waitAction)
+        MVar.takeMVar started
+        waiter <- Async.async $ observed.aroundToolCall 1 (toolCall "wait" operation (Aeson.object [])) HList.HNil waitAction
+        MVar.takeMVar waiting
+        MVar.putMVar steer ()
+        interrupted <- Async.wait waiter
+        queried <- queryAction
+        liftIO do
+          assertBool "wait returns early" ((if operation == "command" then "running" else "interrupted_by_steering") `Text.isInfixOf` AgentTypes.toolResultContent interrupted)
+          assertBool "work continues" ((if operation == "command" then "running" else "still generating") `Text.isInfixOf` AgentTypes.toolResultContent queried)
+        MVar.putMVar release ()
+        finished <- finishAction
+        liftIO $ assertBool "result remains available" ("evidence" `Text.isInfixOf` AgentTypes.toolResultContent finished)
+    liftIO $ assertBool ("wait wakes on steering: " <> Text.unpack operation) (isJust completed)
+
+testSubagentSteeringWait :: IO ()
+testSubagentSteeringWait = do
+  answers <- IORef.newIORef []
+  captured <- IORef.newIORef []
+  runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    completed <- timeout 5_000_000 do
+      release <- MVar.newEmptyMVar
+      entered <- (MVar.newEmptyMVar :: Eff AgentStack (MVar.MVar ()))
+      let access = either (error . show) id (ResourceEffect.accessFromMessage superuserContext.message)
+      Right commandId <- Command.createAndStart access Nothing ResourceEffect.Init
+        {message = superuserContext.message, arguments = ()} \_ _ ->
+          MVar.readMVar release $> Right "command finished"
+      liftIO $ IORef.writeIORef answers
+        [ chatAnswer "" [toolCall "enable" "tool_enable" (Aeson.object ["tags" Aeson..= ["work" :: Text]])]
+        , chatAnswer "" [toolCall "wait" "command" (Aeson.object
+            ["op" Aeson..= ("wait" :: Text), "command" Aeson..= commandId, "timeout_seconds" Aeson..= (60 :: Int)])]
+        , chatAnswer "steered child answer" []
+        ]
+      runner <- AgentTool.startTool (SubAgentTools.subagentTool [MetaTools.toolEnableTool, ShellTools.commandTool]) superuserContext
+      let call op fields = runner testToolCallMetadata (Aeson.object (("op" Aeson..= (op :: Text)) : fields))
+      void $ call "create"
+        ["name" Aeson..= ("worker" :: Text), "ttl_minutes" Aeson..= (5 :: Int), "tools" Aeson..= (["command"] :: [Text])]
+      interpose (\env -> \case
+          request@Concurrency.Await{} -> void (MVar.tryPutMVar entered ()) *> passthrough env request
+          request -> passthrough env request) $
+        void $ call "send" ["resource" Aeson..= ("worker" :: Text), "prompt" Aeson..= ("work" :: Text)]
+      MVar.takeMVar entered
+      steered <- call "steer" ["resource" Aeson..= ("worker" :: Text), "prompt" Aeson..= ("change direction" :: Text)]
+      liftIO $ AgentTypes.toolResultContent steered @?= "Steer queued."
+      result <- call "wait_any" ["resources" Aeson..= (["worker"] :: [Text])]
+      liftIO $ assertBool "child resumes while command is blocked" ("steered child answer" `Text.isInfixOf` AgentTypes.toolResultContent result)
+      MVar.putMVar release ()
+      void $ ResourceEffect.destroy access commandId
+    liftIO $ assertBool "subagent steering interrupts its wait" (isJust completed)
+  requests <- IORef.readIORef captured
+  case requests of
+    [_, _, resumed] -> do
+      chatMessageTextsByRole "user" resumed @?= ["work", "change direction"]
+      assertBool "command snapshot precedes steering" (any ("running" `Text.isInfixOf`) (chatMessageTextsByRole "tool" resumed))
+    _ -> assertFailure "expected exactly three subagent model turns"
+
+testSteeringInterruptsTerminal :: IO ()
+testSteeringInterruptsTerminal = do
+  answers <- IORef.newIORef []
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    completed <- timeout 5_000_000 do
+      entered <- (MVar.newEmptyMVar :: Eff AgentStack (MVar.MVar ()))
+      wake <- MVar.newEmptyMVar
+      cleaned <- MVar.newEmptyMVar
+      never <- (MVar.newEmptyMVar :: Eff AgentStack (MVar.MVar (Either Text ACP.TerminalExitStatus)))
+      Agent.withRun 4 AgentTypes.ContextCompaction 1000000 agentContext [] \runtime -> do
+        let steering = Agent.SteeringControl
+              { awaitPending = MVar.readMVar wake, drain = pure [], complete = pure Nothing }
+            observed = Agent.withSteering steering runtime
+            context = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session"]}}
+        runner <- AgentTool.startTool TerminalTools.terminalTool context
+        waiter <- Async.async $ interpose (\env -> \case
+            ACP.WaitForClientTerminalExit{} ->
+              (MVar.putMVar entered () *> MVar.takeMVar never)
+                `finally` MVar.putMVar cleaned ()
+            request@ACP.KillClientTerminal{} -> do
+              _ <- liftIO $ assertFailure "steering must not kill the terminal"
+              passthrough env request
+            request -> passthrough env request) $
+          observed.aroundToolCall 1 (toolCall "wait" "terminal" (Aeson.object [])) HList.HNil $
+            runner runtime.toolCallMetadata (Aeson.object
+              ["action" Aeson..= ("wait_for_exit" :: Text), "terminal_id" Aeson..= ("terminal-1" :: Text)])
+        MVar.takeMVar entered
+        MVar.putMVar wake ()
+        result <- Async.wait waiter
+        cleanup <- MVar.tryTakeMVar cleaned
+        liftIO do
+          assertBool "terminal wait returns on steering" ("interrupted_by_steering" `Text.isInfixOf` AgentTypes.toolResultContent result)
+          cleanup @?= Just ()
+    liftIO $ assertBool "terminal wait interrupted promptly" (isJust completed)
+
+testSteeringInterruptsJoin :: IO ()
+testSteeringInterruptsJoin = for_ [False, True] \beforeWait -> do
+  answers <- IORef.newIORef [chatAnswer "provisional" [], chatAnswer "after steering" [], chatAnswer "done" []]
+  captured <- IORef.newIORef []
+  runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) do
+    completed <- timeout 5_000_000 $
+      Agent.withRun 5 AgentTypes.ContextCompaction 1000000 agentContext [] \runtime -> do
+        release <- MVar.newEmptyMVar
+        output <- MVar.newEmptyMVar
+        waiting <- MVar.newEmptyMVar
+        child <- Concurrency.fork "subagent" (MVar.readMVar release *> MVar.putMVar output "child evidence")
+        AgentEffect.registerChild runtime.runId (AgentEffect.ChildRun "worker" child output)
+        threads <- newThreadStore
+        active <- fromMaybe (error "expected active thread") <$>
+          rememberActiveThread threads runtime.runId Nothing (Just (messageKey 1)) testMessage "start" child (startWithUser "start")
+        firstWait <- MVar.newMVar True
+        let steerMessage = testMessage{messageId = Just (integerMessageId 2), replyToMessageId = Just (integerMessageId 1)}
+            enqueue = enqueueActiveThreadSteer threads steerMessage (inputWithImages "change direction" []) >>= \accepted ->
+              liftIO (assertBool "steering remains open during join" accepted)
+            steering = Agent.SteeringControl
+              { awaitPending = void (MVar.tryPutMVar waiting ()) *> awaitActiveThreadSteers active
+              , drain = drainActiveThreadSteers active
+              , complete = completeActiveThreadSteering active
+              }
+            observed = Agent.withSteering steering runtime
+              { AgentCore.aroundControlCall = \turn call context action -> do
+                  firstCall <- MVar.swapMVar firstWait False
+                  when (beforeWait && firstCall) enqueue
+                  runtime.aroundControlCall turn call context action
+              , AgentCore.aroundModelTurn = \context agentState action -> do
+                  when ("change direction" `elem` chatMessageTextsByRole "user" (transcriptMessagesList agentState.transcript)) do
+                    pending <- lift (MVar.tryReadMVar output)
+                    notReleased <- lift (MVar.tryPutMVar release ())
+                    when notReleased do
+                      liftIO $ pending @?= Nothing
+                      lift (Concurrency.await child)
+                  runtime.aroundModelTurn context agentState action
+              }
+        parent <- Async.async (S.toList (Agent.agentStream observed (startWithUser "start")))
+        unless beforeWait (MVar.takeMVar waiting *> enqueue)
+        _ S.:> result <- Async.wait parent
+        liftIO do
+          result.finalText @?= "done"
+          let messages = transcriptMessagesList result.transcript
+          chatMessageTextsByRole "user" messages @?= ["start", "change direction"]
+          length (filter ("interrupted_by_steering" `Text.isInfixOf`) (chatMessageTextsByRole "tool" messages)) @?= 1
+          length (filter ("child evidence" `Text.isInfixOf`) (chatMessageTextsByRole "tool" messages)) @?= 1
+    liftIO $ assertBool "structured join resumes for steering" (isJust completed)
+
 testAgentSteeringContinuesAfterFinalAnswer :: IO ()
 testAgentSteeringContinuesAfterFinalAnswer = do
   answers <- IORef.newIORef [chatAnswer "first answer" [], chatAnswer "steered answer" []]
@@ -2980,7 +3165,8 @@ testAgentSteeringContinuesAfterFinalAnswer = do
     agentRun <- startTestRuntime 4 agentContext AgentTools.defaultTools
     let steering =
           Agent.SteeringControl
-            { Agent.drain = liftIO (popSteering [] drains)
+            { Agent.awaitPending = MVar.newEmptyMVar >>= MVar.takeMVar
+            , Agent.drain = liftIO (popSteering [] drains)
             , Agent.complete = liftIO (popSteering Nothing completions)
             }
         program =
@@ -3010,7 +3196,8 @@ testAgentSteeringPreservesModelMiddleware = do
     agentRun <- startTestRuntime 4 agentContext AgentTools.defaultTools
     let steering =
           Agent.SteeringControl
-            { Agent.drain = liftIO (popSteering [] drains)
+            { Agent.awaitPending = MVar.newEmptyMVar >>= MVar.takeMVar
+            , Agent.drain = liftIO (popSteering [] drains)
             , Agent.complete = liftIO (popSteering Nothing completions)
             }
         countModelTurns counter runtime =
@@ -3041,7 +3228,8 @@ testAgentSteeringWaitsForToolResults = do
     agentRun <- startTestRuntime 4 agentContext AgentTools.defaultTools
     let steering =
           Agent.SteeringControl
-            { Agent.drain = liftIO (popSteering [] drains)
+            { Agent.awaitPending = MVar.newEmptyMVar >>= MVar.takeMVar
+            , Agent.drain = liftIO (popSteering [] drains)
             , Agent.complete = liftIO (popSteering Nothing completions)
             }
         program =
@@ -3073,7 +3261,8 @@ testAgentSteeringClearsContinuations = do
     agentRun <- startTestRuntime 5 agentContext AgentTools.defaultTools
     let steering =
           Agent.SteeringControl
-            { Agent.drain = liftIO (popSteering [] drains)
+            { Agent.awaitPending = MVar.newEmptyMVar >>= MVar.takeMVar
+            , Agent.drain = liftIO (popSteering [] drains)
             , Agent.complete = liftIO (popSteering Nothing completions)
             }
         program =
@@ -4564,6 +4753,8 @@ testActiveThreadSteeringLifecycle = runEff $ runConcurrent $ runPrim $ runTestLo
   active <- fromMaybe (error "expected active thread") <$> rememberActiveThread store "test-run" Nothing (Just (messageKey 1)) testMessage "hello" (Concurrency.Handle (Concurrency.Id 1)) transcript
   firstAccepted <- enqueueActiveThreadSteer store firstSteer (inputWithImages firstSteer.text [])
   secondAccepted <- enqueueActiveThreadSteer store secondSteer (inputWithImages secondSteer.text [])
+  awaitActiveThreadSteers active
+  awaitActiveThreadSteers active
   queued <- drainActiveThreadSteers active
   closed <- completeActiveThreadSteering active
   rejectedAfterClose <- enqueueActiveThreadSteer store secondSteer (inputWithImages "too late" [])
@@ -4617,6 +4808,7 @@ testConsoleSessionSteering = runEff $ runConcurrent $ runPrim $ runTestLog $ Sto
   duplicate <- rememberActiveSessionThread store (Session.SessionId "work-1") "run-2" Nothing Nothing steerMessage steerMessage.text (Concurrency.Handle (Concurrency.Id 2)) transcript
   accepted <- enqueueActiveSessionThreadSteer store (Session.SessionId "work-1") steerMessage (inputWithImages steerMessage.text [])
   rejectedOtherSession <- enqueueActiveSessionThreadSteer store (Session.SessionId "work-2") other (inputWithImages other.text [])
+  awaitActiveThreadSteers active
   queued <- drainActiveThreadSteers active
   liftIO do
     accepted @?= True

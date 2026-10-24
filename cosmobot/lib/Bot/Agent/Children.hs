@@ -37,10 +37,13 @@ withStructuredChildren runtime use = do
         let notify waiting = void $ Audit.recordEvent Audit.AgentChildrenWait
               { runId = runtime.runId, waiting, subagentIds = map (.name) owned }
         output <- (notify True *> do
-          child <- waitAnyChild (fromMaybe (error "empty structured join") (nonEmpty owned))
-          result <- childOutput child
-          consume child.worker
-          pure (Aeson.object ["resource" Aeson..= child.name, "output" Aeson..= result]))
+          selected <- Agent.wait (waitAnyChild (fromMaybe (error "empty structured join") (nonEmpty owned)))
+          case selected of
+            Nothing -> pure (Aeson.object ["status" Aeson..= ("interrupted_by_steering" :: Text)])
+            Just child -> do
+              result <- childOutput child
+              consume child.worker
+              pure (Aeson.object ["resource" Aeson..= child.name, "output" Aeson..= result]))
           `finally` notify False
         pure . toolText . TextEncoding.decodeUtf8 . LazyByteString.toStrict $ Aeson.encode output
       configured = runtime
@@ -48,6 +51,7 @@ withStructuredChildren runtime use = do
             runtime.aroundProgram finalRuntime . joinChildren finalRuntime pending collect
         }
   interpose (\localEnv -> \case
+      Agent.HasPendingChildren parent | parent == runtime.runId -> not . null <$> pending
       Agent.RegisterChild parent child | parent == runtime.runId -> register child
       Agent.ConsumeChild parent worker | parent == runtime.runId -> consume worker
       operation -> passthrough localEnv operation)
@@ -90,7 +94,7 @@ joinChildren runtime pending collect (Program action) = Program $
             (nextState, result) <- lift (runControlTurn runtime request call (collect owned))
             if agentState.turn >= runtime.maxTurns
               then do
-                let notice = "Child result received; model turn budget exhausted. Remaining children cancelled.\n" <> toolResultContent result
+                let notice = "Subagent wait ended; model turn budget exhausted. Remaining children cancelled.\n" <> toolResultContent result
                 S.yield (ContentDelta notice)
                 pure . Finished $ completion
                   { transcript = appendMessage (LLM.assistantText notice) nextState.transcript

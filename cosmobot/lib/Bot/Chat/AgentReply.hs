@@ -15,6 +15,7 @@ import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Failure as Failure
 import Bot.Core.Message
 import Bot.Core.Transcript
+import qualified Bot.Effect.Agent as AgentEffect
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.ChatLog as ChatLog
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -34,7 +35,7 @@ data AgentReply = AgentReply
   }
 
 streamAgentReplyWith
-  :: ( Chat.Chat :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es
+  :: ( AgentEffect.Agent :> es, Chat.Chat :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es
      , LLM.LLM :> es, Media.Media :> es, Storage.Storage :> es
      , KatipE :> es, Prim :> es, Concurrent :> es )
   => BotRuntime '[] (Eff es)

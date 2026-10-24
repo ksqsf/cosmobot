@@ -10,6 +10,8 @@ module Bot.Effect.Agent
   , ChildRun (..)
   , registerChild
   , consumeChild
+  , wait
+  , hasPendingChildren
   , withRun
   )
 where
@@ -26,6 +28,8 @@ data ChildRun = ChildRun
   }
 
 data Agent :: Effect where
+  Wait :: m a -> Agent m (Maybe a)
+  HasPendingChildren :: Text -> Agent m Bool
   RegisterChild :: Text -> ChildRun -> Agent m ()
   ConsumeChild :: Text -> Concurrency.Handle -> Agent m ()
   RunAgent
@@ -48,3 +52,10 @@ registerChild parent = send . RegisterChild parent
 
 consumeChild :: Agent :> es => Text -> Concurrency.Handle -> Eff es ()
 consumeChild parent = send . ConsumeChild parent
+
+-- Only suspend observation; callers retain ownership of the underlying work.
+wait :: Agent :> es => Eff es a -> Eff es (Maybe a)
+wait = send . Wait
+
+hasPendingChildren :: Agent :> es => Text -> Eff es Bool
+hasPendingChildren = send . HasPendingChildren
