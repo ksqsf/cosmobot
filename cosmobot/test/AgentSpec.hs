@@ -261,6 +261,10 @@ main =
       , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
       , testCase "telegram request permissions, arguments and dispatch" testTelegramRequestTool
       , testCase "matrix request tool is Matrix-superuser-only" testMatrixRequestToolScope
+      , testCase "structured subagents join, consume explicit waits, and respect budgets" testStructuredSubagents
+      , testCase "structured join wakes for one child and resumes before the other finishes" testStructuredWakeAny
+      , testCase "structured parent cancellation joins child cleanup" testStructuredCancellation
+      , testCase "subagent waits retain the captured run across another send" testSubagentWaitRunIdentity
       , testCase "subagent lifecycle is shared within a chat" testSubAgentLifecycle
       , testCase "subagent wait operations avoid polling without cancelling work" testSubAgentWaitOperations
       , testCase "send reply tool uses chat effect and records bot message" testSendReplyToolUsesChatEffect
@@ -1061,6 +1065,177 @@ testMatrixRequestToolScope = do
   assertBool "matrix request is hidden outside Matrix" (not (AgentTool.toolAllowed tool superuserContext))
   assertBool "matrix request is hidden from Matrix non-superusers" (not (AgentTool.toolAllowed tool matrixUser))
   assertBool "matrix request is available to Matrix superusers" (AgentTool.toolAllowed tool matrixAdmin)
+
+testStructuredSubagents :: IO ()
+testStructuredSubagents = for_ ["running", "ready", "wait_all", "wait_any", "query", "foreign_wait", "failure", "budget"] \mode -> do
+  let explicitlyConsumed = mode `elem` ["wait_all", "wait_any", "query"]
+      childFirst = mode `elem` ["ready", "wait_all", "wait_any", "query", "foreign_wait"]
+      parentAnswer = chatAnswer "parent provisional" []
+      childAnswer = chatAnswer "child evidence" []
+  answers <- IORef.newIORef $
+    [chatAnswer "" [toolCall "block" "block" (Aeson.object [])]]
+      <> (if childFirst then [childAnswer, parentAnswer] else [parentAnswer] <> [childAnswer | mode /= "failure"])
+      <> [chatAnswer "parent synthesis" [] | not explicitlyConsumed && mode /= "budget"]
+  captured <- IORef.newIORef []
+  runAgentCapturingMessages captured answers (ChatMock Nothing Nothing Nothing) $ interpose (\env -> \case
+      LLM.AskToolsStream _ messages
+        | mode == "failure"
+        , "child work" `elem` chatMessageTextsByRole "user" messages
+        , not (null (chatMessageTextsByRole "tool" messages)) -> throwIO (Exception.ErrorCall "child model failed")
+      request -> passthrough env request) do
+    started <- MVar.newEmptyMVar
+    release <- MVar.newEmptyMVar
+    let block = AgentTool.tool "block" AgentTool.noArguments do
+          MVar.putMVar started ()
+          MVar.takeMVar release
+          pure (Agent.toolText "evidence ready")
+        tool = SubAgentTools.subagentTool [block]
+    completed <- timeout 5_000_000 $
+      Agent.withRun (if mode == "budget" then 1 else 4) AgentTypes.ContextCompaction 1000000 agentContext [] \runtime -> do
+        runner <- AgentTool.startTool tool agentContext
+        let call operation fields = runner runtime.toolCallMetadata
+              (Aeson.object (("op" Aeson..= (operation :: Text)) : fields))
+        void $ call "create"
+          ["ttl_minutes" Aeson..= (5 :: Int), "name" Aeson..= ("worker" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= (["block"] :: [Text])]
+        sent <- call "send" ["resource" Aeson..= ("worker" :: Text), "prompt" Aeson..= ("child work" :: Text)]
+        liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
+        MVar.takeMVar started
+        when childFirst do
+          MVar.putMVar release ()
+          workers <- Concurrency.list
+          traverse_ (Concurrency.await . Concurrency.Handle . (.id)) (filter (\entry -> entry.label `elem` ["subagent", "grandchild"]) workers.entries)
+        when (mode == "foreign_wait") do
+          void $ runner runtime.toolCallMetadata{Agent.agentRunId = "unrelated-parent"}
+            (Aeson.object ["op" Aeson..= ("wait_all" :: Text), "resources" Aeson..= (["worker"] :: [Text])])
+        when explicitlyConsumed do
+          result <- if mode == "query"
+            then call mode ["resource" Aeson..= ("worker" :: Text)]
+            else call mode ["resources" Aeson..= (["worker"] :: [Text])]
+          liftIO $ assertBool "explicit wait returns the child result" ("child evidence" `Text.isInfixOf` AgentTypes.toolResultContent result)
+        let observed = runtime{AgentCore.aroundControlCall = \turn controlCall context action -> do
+              void (MVar.tryPutMVar release ())
+              runtime.aroundControlCall turn controlCall context action}
+        _ S.:> result <- S.toList (Agent.agentStream observed (startWithUser "parent work"))
+        events <- AgentAudit.queryRunAudit runtime.runId
+        liftIO do
+          result.status @?= if mode == "budget" then "subagent_limit" else "answered"
+          unless (mode == "budget") $
+            result.finalText @?= if explicitlyConsumed then "parent provisional" else "parent synthesis"
+          let waits = [waiting | AgentAudit.AgentAuditRecord{event = AgentAudit.AgentChildrenWait{waiting}} <- events]
+          waits @?= if explicitlyConsumed then [] else [True, False]
+          let delivered = filter ((if mode == "failure" then "Subagent failed:" else "child evidence") `Text.isInfixOf`) $
+                chatMessageTextsByRole "tool" (transcriptMessagesList result.transcript)
+          length delivered @?= if explicitlyConsumed then 0 else 1
+        pure ()
+    liftIO $ assertBool ("structured subagent completed: " <> Text.unpack mode) (isJust completed)
+  remaining <- IORef.readIORef answers
+  liftIO $ length remaining @?= 0
+
+testStructuredWakeAny :: IO ()
+testStructuredWakeAny = for_ ["second evidence", "Subagent failed: second failure"] \secondResult -> do
+  answers <- IORef.newIORef [chatAnswer "provisional" [], chatAnswer "after second" [], chatAnswer "done" []]
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    completed <- timeout 5_000_000 $
+      Agent.withRun 4 AgentTypes.ContextCompaction 1000000 agentContext [] \runtime -> do
+        firstGate <- MVar.newEmptyMVar
+        secondGate <- MVar.newEmptyMVar
+        firstOutput <- MVar.newEmptyMVar
+        secondOutput <- MVar.newEmptyMVar
+        firstWorker <- Concurrency.fork "subagent" (MVar.takeMVar firstGate *> MVar.putMVar firstOutput "first evidence")
+        AgentEffect.registerChild runtime.runId (AgentEffect.ChildRun "first" firstWorker firstOutput)
+        secondWorker <- Concurrency.fork "subagent" (MVar.takeMVar secondGate *> MVar.putMVar secondOutput secondResult)
+        AgentEffect.registerChild runtime.runId (AgentEffect.ChildRun "second" secondWorker secondOutput)
+        calls <- MVar.newMVar (0 :: Int)
+        let observed = runtime{AgentCore.aroundControlCall = \turn call context action -> do
+              count <- MVar.modifyMVar calls (\n -> pure (n + 1, n))
+              if count == 0 then MVar.putMVar secondGate () else do
+                pending <- MVar.tryReadMVar firstOutput
+                liftIO $ pending @?= Nothing
+                MVar.putMVar firstGate ()
+              runtime.aroundControlCall turn call context action}
+        _ S.:> result <- S.toList (Agent.agentStream observed (startWithUser "parent"))
+        count <- MVar.readMVar calls
+        liftIO do
+          count @?= 2
+          result.finalText @?= "done"
+          let outputs = chatMessageTextsByRole "tool" (transcriptMessagesList result.transcript)
+          length outputs @?= 2
+          assertBool "second child delivered first" (maybe False (secondResult `Text.isInfixOf`) (viaNonEmpty head outputs))
+          assertBool "first child delivered only on next join" (maybe False ("first evidence" `Text.isInfixOf`) (viaNonEmpty last outputs))
+    liftIO $ assertBool "join resumes without waiting for all children" (isJust completed)
+
+testStructuredCancellation :: IO ()
+testStructuredCancellation = do
+  answers <- IORef.newIORef [chatAnswer "" [toolCall "block" "block" (Aeson.object [])], chatAnswer "parent provisional" []]
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    started <- MVar.newEmptyMVar
+    waiting <- (MVar.newEmptyMVar :: Eff AgentStack (MVar.MVar ()))
+    cleaned <- MVar.newEmptyMVar
+    childCleaned <- MVar.newEmptyMVar
+    never <- MVar.newEmptyMVar
+    let block = AgentTool.tool "block" AgentTool.noArguments $
+          (raise $ Agent.withRun 4 AgentTypes.ContextCompaction 1000000 agentContext [] \nested -> do
+            output <- MVar.newEmptyMVar
+            leafStarted <- MVar.newEmptyMVar
+            leaf <- Concurrency.fork "grandchild" $
+              (MVar.putMVar leafStarted () *> MVar.takeMVar never)
+                `finally` (MVar.putMVar output "cancelled" *> MVar.putMVar cleaned ())
+            AgentEffect.registerChild nested.runId (AgentEffect.ChildRun "leaf" leaf output)
+            MVar.takeMVar leafStarted
+            MVar.putMVar started ()
+            MVar.takeMVar never
+            pure (Agent.toolText "unexpected"))
+            `finally` MVar.putMVar childCleaned ()
+    completed <- timeout 5_000_000 do
+      parent <- Async.async $
+        Agent.withRun 4 AgentTypes.ContextCompaction 1000000 agentContext [] \runtime -> do
+          runner <- AgentTool.startTool (SubAgentTools.subagentTool [block]) agentContext
+          void $ runner runtime.toolCallMetadata (Aeson.object ["op" Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (5 :: Int), "name" Aeson..= ("worker" :: Text), "system_prompt" Aeson..= ("" :: Text), "tools" Aeson..= (["block"] :: [Text])])
+          void $ runner runtime.toolCallMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= ("worker" :: Text), "prompt" Aeson..= ("child work" :: Text)])
+          MVar.takeMVar started
+          interpose (\env -> \case
+              request@Concurrency.AwaitAny{} -> MVar.putMVar waiting () *> passthrough env request
+              request -> passthrough env request) $
+            S.effects (Agent.agentStream runtime (startWithUser "parent work"))
+      MVar.takeMVar waiting
+      Async.cancel parent
+      MVar.takeMVar cleaned
+      MVar.takeMVar childCleaned
+      workers <- Concurrency.list
+      liftIO $ assertBool "no child remains running after parent cancellation" (all Concurrency.finished (filter (\entry -> entry.label `elem` ["subagent", "grandchild"]) workers.entries))
+    liftIO $ assertBool "cancellation joins child cleanup" (isJust completed)
+
+testSubagentWaitRunIdentity :: IO ()
+testSubagentWaitRunIdentity = for_ ["wait_any", "wait_all"] \operation -> do
+  answers <- IORef.newIORef [chatAnswer "first result" [], chatAnswer "second result" []]
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) do
+    runner <- AgentTool.startTool (SubAgentTools.subagentTool []) agentContext
+    let call op fields = runner testToolCallMetadata (Aeson.object (("op" Aeson..= (op :: Text)) : fields))
+        sendPrompt = call "send" ["resource" Aeson..= ("worker" :: Text), "prompt" Aeson..= ("work" :: Text)]
+        awaitWorkers = Concurrency.list >>= traverse_ (Concurrency.await . Concurrency.Handle . (.id)) . filter ((== "subagent") . (.label)) . (.entries)
+    void $ call "create" ["ttl_minutes" Aeson..= (5 :: Int), "name" Aeson..= ("worker" :: Text)]
+    void sendPrompt
+    awaitWorkers
+    captured <- (MVar.newEmptyMVar :: Eff AgentStack (MVar.MVar ()))
+    release <- MVar.newEmptyMVar
+    completed <- timeout 5_000_000 do
+      waiter <- Async.async $ interpose (\env -> \case
+          request@Concurrency.Await{} -> do
+            result <- passthrough env request
+            MVar.putMVar captured ()
+            MVar.takeMVar release
+            pure result
+          request -> passthrough env request) $
+        call operation ["resources" Aeson..= (["worker"] :: [Text])]
+      MVar.takeMVar captured
+      void sendPrompt
+      awaitWorkers
+      MVar.putMVar release ()
+      result <- Async.wait waiter
+      liftIO $ do
+        assertBool "wait returns the original captured result" ("first result" `Text.isInfixOf` AgentTypes.toolResultContent result)
+        assertBool "later run cannot replace the answer" (not ("second result" `Text.isInfixOf` AgentTypes.toolResultContent result))
+    liftIO $ assertBool "captured run wait completed" (isJust completed)
 
 testSubAgentLifecycle :: IO ()
 testSubAgentLifecycle = do

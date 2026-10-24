@@ -49,6 +49,7 @@ withPythonMiddleware runPython =
                   resourceOwner
                   pythonRequest
         in passthrough localEnv (Agent.RunAgent (withPythonProgram adapted runtime) use)
+    operation -> passthrough localEnv operation
 
 withPythonRunner
   :: Concurrent :> es

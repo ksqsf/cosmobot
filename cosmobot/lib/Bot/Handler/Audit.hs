@@ -663,6 +663,7 @@ phaseFromRecords (Just runId) runningTools records
       AgentAudit.ContextCompacted{} -> "model"
       AgentAudit.RecursiveTranscriptFlushed{} -> "model"
       AgentAudit.SubAgentRunStarted{} -> "tools"
+      AgentAudit.AgentChildrenWait{waiting} -> if waiting then "waiting for subagents" else "between turns"
       AgentAudit.ToolCallStarted{} -> "tools"
       AgentAudit.ToolCallFinished{} -> "between turns"
       AgentAudit.AgentRunFinished{} -> "finishing"

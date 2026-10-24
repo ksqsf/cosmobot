@@ -39,6 +39,14 @@ describe('subagent projection', () => {
     expect(subagentStatus([record(4, { tag: 'AgentRunInterrupted', runId: 'a', reason: 'cancelled' }), finish(3, 'a')])).toBe('Interrupted: cancelled')
   })
 
+  it('shows waiting until a join or a later model turn', () => {
+    const waiting = record(1, { tag: 'AgentChildrenWait', runId: 'parent', waiting: true, subagentIds: ['worker'] })
+    const joined = record(2, { tag: 'AgentChildrenWait', runId: 'parent', waiting: false, subagentIds: ['worker'] })
+    expect(subagentStatus([waiting])).toBe('Waiting for subagents')
+    expect(subagentStatus([joined, waiting])).toBe('Running')
+    expect(subagentStatus([waiting, finish(3, 'parent')])).toBe('success')
+  })
+
   it('keeps distinct child runs under shuffled duplicate delivery', () => {
     let seed = 73
     const random = (): number => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed }

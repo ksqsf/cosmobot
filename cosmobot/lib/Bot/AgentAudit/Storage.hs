@@ -223,6 +223,7 @@ auditEventKind = \case
   ContextCompacted{} -> "context_compacted"
   RecursiveTranscriptFlushed{} -> "recursive_transcript_flushed"
   SubAgentRunStarted{} -> "subagent_run_started"
+  AgentChildrenWait{} -> "agent_children_wait"
   ToolCallStarted{} -> toolCallStartedKind
   ToolCallFinished{} -> toolCallFinishedKind
   AgentRunFinished{} -> "agent_run_finished"

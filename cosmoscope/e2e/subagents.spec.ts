@@ -42,6 +42,7 @@ test('thread inspector preserves the parent while exploring nested subagent audi
   await expect(panel.getByText('Found evidence', { exact: true })).toBeVisible()
   await expect(panel.locator('.thread-transcript > li strong')).toHaveText(['User', 'Assistant', 'Tool', 'Assistant'])
   await expect(panel.getByText('Research complete', { exact: true })).toBeVisible()
+  await expect(panel.getByRole('link', { name: 'View parent run' })).toHaveAttribute('href', /run=parent/)
   await expect(panel.getByRole('link', { name: 'View subagent audit' })).toHaveAttribute('href', /run=child-a/)
   await expect(panel.getByRole('link', { name: 'Open subagent thread' })).toHaveCount(0)
   await panel.getByRole('button', { name: 'Reviewer', exact: true }).click()

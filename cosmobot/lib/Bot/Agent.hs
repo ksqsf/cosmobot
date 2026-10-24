@@ -42,6 +42,7 @@ module Bot.Agent
   )
 where
 
+import Bot.Agent.Children (withStructuredChildren)
 import Bot.Core.Transcript
 import Bot.Agent.Program (agentProgram)
 import qualified Bot.Agent.Runtime as AgentRuntime
@@ -136,6 +137,7 @@ passthroughAgentMetadata metadataFor localEnv = \case
   AgentEffect.RunAgent runtime use ->
     passthrough localEnv $ AgentEffect.RunAgent runtime \configured ->
       use configured{toolCallMetadata = metadataFor configured.runId}
+  operation -> passthrough localEnv operation
 
 runAgentOperation
   :: (Text -> ToolCallMetadata)
@@ -146,6 +148,8 @@ runAgentOperation metadataFor localEnv = \case
         unlift (use runtime
           { toolCallMetadata = metadataFor runtime.runId
           })
+    AgentEffect.RegisterChild{} -> pure ()
+    AgentEffect.ConsumeChild{} -> pure ()
 
 withRun
   :: ( AgentEffect.Agent :> es
@@ -196,7 +200,7 @@ withRunObserved observe maxTurns contextStrategy contextTokenThreshold context t
   let observer event = AgentAudit.agentAuditObserver event <* observe event
   AgentEffect.withRun
     (defaultRuntimeWithStrategy observer contextStrategy contextTokenThreshold baseRuntime)
-    use
+    (\runtime -> withStructuredChildren runtime use)
 
 agentStream
   :: (LLM.LLM :> es, Concurrent :> es, KatipE :> es)

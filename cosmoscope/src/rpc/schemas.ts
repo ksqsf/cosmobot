@@ -226,6 +226,7 @@ export const auditRecordSchema = z.object({
     z.object({ tag: z.literal('ModelTurnFinished'), runId: z.string(), turn: z.number().int(), answerKind: z.string(), contentLength: z.number().int(), toolCalls: z.array(toolCallTraceSchema), tokenUsage: tokenUsageSchema.nullable() }),
     z.object({ tag: z.literal('ContextCompacted'), runId: z.string(), turn: z.number().int(), messageCount: z.number().int(), tokenUsage: tokenUsageSchema.nullable() }),
     z.object({ tag: z.literal('RecursiveTranscriptFlushed'), runId: z.string(), turn: z.number().int() }),
+    z.object({ tag: z.literal('AgentChildrenWait'), runId: z.string(), waiting: z.boolean(), subagentIds: z.array(z.string()) }),
     z.object({ tag: z.literal('SubAgentRunStarted'), runId: z.string(), childRunId: z.string(), subagentId: z.string() }),
     z.object({ tag: z.literal('ToolCallStarted'), runId: z.string(), turn: z.number().int(), toolCall: toolCallTraceSchema }),
     z.object({ tag: z.literal('ToolCallFinished'), runId: z.string(), turn: z.number().int(), toolCallId: z.string(), toolName: z.string(), status: z.string(), result: z.string(), resultLength: z.number().int(), messageIds: z.array(z.string().nullable()) }),

@@ -23,6 +23,7 @@ watch(child.messages, (messages) => {
   const token = mediaLatest.begin()
   if (messages !== null) void media.loadMediaForMessages(messages, () => mediaLatest.current(token))
 })
+const parentWaiting = computed(() => subagentStatus(props.records) === 'Waiting for subagents')
 const roots = computed(() => subagentRuns(props.records))
 const children = computed(() => subagentRuns(child.selected.value ? child.records.value : props.records)
   .filter(({ childRunId }) => !child.trail.value.some((ancestor) => ancestor.childRunId === childRunId)))
@@ -41,6 +42,12 @@ watch(roots, (runs) => {
     aria-label="Subagents"
   >
     <h3>Subagents</h3>
+    <p
+      v-if="parentWaiting"
+      role="status"
+    >
+      Parent is waiting for subagent results.
+    </p>
     <nav
       v-if="child.selected.value"
       aria-label="Subagent ancestry"
@@ -70,6 +77,9 @@ watch(roots, (runs) => {
           :value="status"
           severity="secondary"
         />
+        <RouterLink :to="{ name: 'audit', query: { run: child.selected.value.runId } }">
+          View parent run
+        </RouterLink>
         <RouterLink :to="{ name: 'audit', query: { run: child.selected.value.childRunId } }">
           View subagent audit
         </RouterLink>

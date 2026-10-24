@@ -69,6 +69,11 @@ data AgentAuditEvent
       , childRunId :: !Text
       , subagentId :: !Text
       }
+  | AgentChildrenWait
+      { runId :: !Text
+      , waiting :: !Bool
+      , subagentIds :: ![Text]
+      }
   | ToolCallStarted
       { runId :: !Text
       , turn :: !Int
@@ -144,6 +149,7 @@ eventRunId = \case
   ContextCompacted{runId} -> runId
   RecursiveTranscriptFlushed{runId} -> runId
   SubAgentRunStarted{runId} -> runId
+  AgentChildrenWait{runId} -> runId
   ToolCallStarted{runId} -> runId
   ToolCallFinished{runId} -> runId
   AgentRunFinished{runId} -> runId

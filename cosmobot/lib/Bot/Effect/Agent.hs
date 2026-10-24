@@ -7,14 +7,27 @@ Stability   : experimental
 -}
 module Bot.Effect.Agent
   ( Agent (..)
+  , ChildRun (..)
+  , registerChild
+  , consumeChild
   , withRun
   )
 where
 
 import Bot.Agent.Types (BotRuntime)
+import qualified Bot.Effect.Concurrency as Concurrency
+import qualified Effectful.Concurrent.MVar as MVar
 import Bot.Prelude
 
+data ChildRun = ChildRun
+  { name :: !Text
+  , worker :: !Concurrency.Handle
+  , output :: !(MVar.MVar Text)
+  }
+
 data Agent :: Effect where
+  RegisterChild :: Text -> ChildRun -> Agent m ()
+  ConsumeChild :: Text -> Concurrency.Handle -> Agent m ()
   RunAgent
     :: !(BotRuntime '[] m)
     -> (BotRuntime '[] m -> m a)
@@ -29,3 +42,9 @@ withRun
   -> Eff es a
 withRun runtime =
   send . RunAgent runtime
+
+registerChild :: Agent :> es => Text -> ChildRun -> Eff es ()
+registerChild parent = send . RegisterChild parent
+
+consumeChild :: Agent :> es => Text -> Concurrency.Handle -> Eff es ()
+consumeChild parent = send . ConsumeChild parent

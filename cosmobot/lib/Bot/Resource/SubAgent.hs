@@ -16,6 +16,7 @@ module Bot.Resource.SubAgent
   )
 where
 
+import Bot.Agent.Children (waitAnyChild, childOutput)
 import qualified Bot.Agent as Agent
 import Bot.Agent.Tool
 import Bot.Agent.Types
@@ -55,6 +56,7 @@ data SubAgentState = SubAgentState
   , answer :: !(Maybe Text)
   , active :: !(Maybe ActiveRun)
   , runs :: ![Concurrency.Handle]
+  , latestRun :: !(Maybe AgentEffect.ChildRun)
   }
 
 data ActiveRun = ActiveRun
@@ -82,6 +84,7 @@ instance
           , answer = Nothing
           , active = Nothing
           , runs = []
+          , latestRun = Nothing
           }
 
   destroyResourceObject subagent = do
@@ -135,46 +138,79 @@ sendPrompt
   -> Text
   -> Eff es (Either Text ())
 sendPrompt metadata subagentId availableTools context subagent prompt =
-  MVar.modifyMVar subagent.state \snapshot ->
-    case snapshot.active of
-      Just _ -> pure (snapshot, Left "Subagent is still generating.")
-      Nothing -> do
-        steering <- newSteeringQueue
-        let transcript = maybe (startWithUser prompt) (appendUser prompt) snapshot.transcript
-            requestedNames = subagent.arguments.toolNames
-            requestedTools = filter ((`elem` requestedNames) . toolName) availableTools
-            needsEnable = any (any isNamedTag . toolTags) requestedTools
-            selectedTools = filter
-              (\definition ->
-                toolName definition `elem` requestedNames
+  mask \restore -> do
+    gate <- MVar.newEmptyMVar
+    ready <- MVar.newEmptyMVar
+    output <- MVar.newEmptyMVar
+    started <- MVar.modifyMVar subagent.state \snapshot ->
+      case snapshot.active of
+        Just _ -> pure (snapshot, Left "Subagent is still generating.")
+        Nothing -> do
+          steering <- newSteeringQueue
+          let transcript = maybe (startWithUser prompt) (appendUser prompt) snapshot.transcript
+              requestedNames = subagent.arguments.toolNames
+              requestedTools = filter ((`elem` requestedNames) . toolName) availableTools
+              needsEnable = any (any isNamedTag . toolTags) requestedTools
+              selectedTools = filter
+                (\definition -> toolName definition `elem` requestedNames
                   || needsEnable && toolName definition == toolEnableName)
-              availableTools
-            childContext = context {Agent.systemContext = subagent.arguments.systemContext}
-        worker <- Concurrency.forkWithHandle "subagent" \worker -> do
-          result <- trySync do
-            EffectfulResource.runResource do
-              Agent.withAgentMetadata
-                (\runId -> ToolCallMetadata
-                  { agentRunId = runId
-                  , originRunId = metadata.originRunId
-                  , resourceOwner = Just worker
-                  }) $
-                Agent.withRun 8 ContextCompaction 1000000 childContext (map (hoistTool raise) selectedTools) \runtime -> do
-                  void $ AgentAudit.agentAuditObserver SubAgentRunStarted
-                    { runId = metadata.agentRunId
-                    , childRunId = Agent.runIdOf runtime
-                    , subagentId
-                    }
-                  _ S.:> agentResult <- S.toList
-                    (Agent.agentStream
-                      (Agent.withSteering (steeringControl steering)
-                        (withTranscriptSnapshots
-                          (\snapshot -> AgentTranscript.saveRunTranscript (Agent.runIdOf runtime) snapshot
-                            `catchSync` \_ -> $(logWarning) "Could not persist subagent transcript") runtime)) transcript)
-                  pure (agentResult.finalText, agentResult.transcript)
-          MVar.modifyMVar_ steering (const (pure Nothing))
-          MVar.modifyMVar_ subagent.state (pure . finishRun worker result)
-        pure (snapshot {active = Just ActiveRun{worker, steering}, runs = worker : snapshot.runs}, Right ())
+                availableTools
+              childContext = context {Agent.systemContext = subagent.arguments.systemContext}
+          worker <- Concurrency.forkWithHandle "subagent" \worker -> do
+            let finish result = do
+                  MVar.modifyMVar_ steering (const (pure Nothing))
+                  MVar.modifyMVar_ subagent.state (pure . finishRun worker result)
+                  void $ MVar.tryPutMVar output (either
+                    (\err -> "Subagent failed: " <> Text.take 500 (show err)) fst result)
+                cancelled = do
+                  MVar.modifyMVar_ steering (const (pure Nothing))
+                  MVar.modifyMVar_ subagent.state \current -> pure $
+                    if ((.worker) <$> current.active) == Just worker
+                      then current{active = Nothing, answer = Just "Subagent cancelled."}
+                      else current
+                  void $ MVar.tryPutMVar output "Subagent cancelled."
+            (do
+              MVar.putMVar ready ()
+              result <- trySync $ restore do
+                MVar.takeMVar gate
+                EffectfulResource.runResource do
+                  Agent.withAgentMetadata
+                    (\runId -> ToolCallMetadata
+                      { agentRunId = runId
+                      , originRunId = metadata.originRunId
+                      , resourceOwner = Just worker
+                      }) $
+                    Agent.withRun 8 ContextCompaction 1000000 childContext (map (hoistTool raise) selectedTools) \runtime -> do
+                      void $ AgentAudit.agentAuditObserver SubAgentRunStarted
+                        { runId = metadata.agentRunId
+                        , childRunId = Agent.runIdOf runtime
+                        , subagentId
+                        }
+                      _ S.:> agentResult <- S.toList
+                        (Agent.agentStream
+                          (Agent.withSteering (steeringControl steering)
+                            (withTranscriptSnapshots
+                              (\saved -> AgentTranscript.saveRunTranscript (Agent.runIdOf runtime) saved
+                                `catchSync` \_ -> $(logWarning) "Could not persist subagent transcript") runtime)) transcript)
+                      pure (agentResult.finalText, agentResult.transcript)
+              finish result) `onException` cancelled
+          let child = AgentEffect.ChildRun subagentId worker output
+          pure (snapshot {active = Just ActiveRun{worker, steering}, runs = worker : snapshot.runs, latestRun = Just child}, Right child)
+    case started of
+      Left err -> pure (Left err)
+      Right child -> do
+        (AgentEffect.registerChild metadata.agentRunId child *> MVar.takeMVar ready *> MVar.putMVar gate ())
+          `onException` do
+            void (Concurrency.cancel child.worker.handleId)
+            Concurrency.await child.worker
+            MVar.modifyMVar_ subagent.state \current ->
+              if ((.worker) <$> current.active) == Just child.worker
+                then do
+                  for_ current.active (\active -> MVar.modifyMVar_ active.steering (const (pure Nothing)))
+                  pure current{active = Nothing, answer = Just "Subagent cancelled."}
+                else pure current
+            void $ MVar.tryPutMVar output "Subagent cancelled."
+        pure (Right ())
   where
     isNamedTag = \case
       Named _ -> True
@@ -226,52 +262,47 @@ steeringControl steering =
           | otherwise -> pure (Just Seq.empty, Just (Foldable.toList queued))
     }
 
-queryOutput :: (Concurrent :> es) => SubAgent -> Eff es Text
-queryOutput subagent = do
+queryOutput :: (AgentEffect.Agent :> es, Concurrent :> es) => Text -> SubAgent -> Eff es Text
+queryOutput parent subagent = do
   snapshot <- MVar.readMVar subagent.state
-  pure $ case snapshot.active of
-    Just _ -> "The subagent is still generating."
-    Nothing -> fromMaybe "No prompt has been sent." snapshot.answer
+  case snapshot.active of
+    Just _ -> pure "The subagent is still generating."
+    Nothing -> do
+      for_ snapshot.latestRun (AgentEffect.consumeChild parent . (.worker))
+      pure (fromMaybe "No prompt has been sent." snapshot.answer)
 
 waitAnyOutput
-  :: (Concurrency.Concurrency :> es, Concurrent :> es)
-  => NonEmpty (Text, SubAgent)
-  -> Eff es (Text, Text)
-waitAnyOutput subagents = do
-  snapshots <- traverse snapshot subagents
-  case traverse requireActive snapshots of
-    Nothing ->
-      answerFor (fst (fromMaybe (error "missing ready subagent") (find (isNothing . snd) snapshots)))
-    Just activeSubagents -> do
-      winner <- Concurrency.awaitAny (snd <$> activeSubagents)
-      answerFor (fst (fromMaybe (error "missing winning subagent") (find ((== winner) . snd) activeSubagents)))
-  where
-    snapshot named@(_, subagent) =
-      (named,) . fmap (.worker) . (.active) <$> MVar.readMVar subagent.state
-
-    requireActive (named, worker) =
-      (named,) <$> worker
+  :: (AgentEffect.Agent :> es, Concurrency.Concurrency :> es, Concurrent :> es)
+  => Text -> NonEmpty (Text, SubAgent) -> Eff es (Text, Text)
+waitAnyOutput parent subagents = do
+  snapshots <- traverse snapshotRun subagents
+  ready <- filterM (maybe (pure True) (fmap isJust . MVar.tryReadMVar . (.output)) . snd) (toList snapshots)
+  case ready of
+    readyRun : _ -> outputFor parent readyRun
+    [] -> do
+      let runs = mapMaybe snd (toList snapshots)
+      winner <- waitAnyChild (fromMaybe (error "missing subagent workers") (nonEmpty runs))
+      outputFor parent (fromMaybe (error "missing winning subagent")
+        (find ((== Just winner.worker) . fmap (.worker) . snd) snapshots))
 
 waitAllOutputs
-  :: (Concurrency.Concurrency :> es, Concurrent :> es)
-  => NonEmpty (Text, SubAgent)
-  -> Eff es (NonEmpty (Text, Text))
-waitAllOutputs =
-  traverse outputFor
+  :: (AgentEffect.Agent :> es, Concurrency.Concurrency :> es, Concurrent :> es)
+  => Text -> NonEmpty (Text, SubAgent) -> Eff es (NonEmpty (Text, Text))
+waitAllOutputs parent subagents = do
+  snapshots <- traverse snapshotRun subagents
+  results <- forM snapshots \(name, child) ->
+    (name,) <$> maybe (pure "No prompt has been sent.") childOutput child
+  for_ snapshots (traverse_ (AgentEffect.consumeChild parent . (.worker)) . snd)
+  pure results
+
+snapshotRun :: Concurrent :> es => (Text, SubAgent) -> Eff es (Text, Maybe AgentEffect.ChildRun)
+snapshotRun (name, subagent) = (name,) . (.latestRun) <$> MVar.readMVar subagent.state
 
 outputFor
-  :: (Concurrency.Concurrency :> es, Concurrent :> es)
-  => (Text, SubAgent)
-  -> Eff es (Text, Text)
-outputFor (name, subagent) = do
-  snapshot <- MVar.readMVar subagent.state
-  traverse_ (Concurrency.await . (.worker)) snapshot.active
-  answerFor (name, subagent)
-
-answerFor
-  :: Concurrent :> es
-  => (Text, SubAgent)
-  -> Eff es (Text, Text)
-answerFor (name, subagent) = do
-  finished <- MVar.readMVar subagent.state
-  pure (name, fromMaybe "No prompt has been sent." finished.answer)
+  :: (AgentEffect.Agent :> es, Concurrency.Concurrency :> es, Concurrent :> es)
+  => Text -> (Text, Maybe AgentEffect.ChildRun) -> Eff es (Text, Text)
+outputFor _ (name, Nothing) = pure (name, "No prompt has been sent.")
+outputFor parent (name, Just child) = do
+  output <- childOutput child
+  AgentEffect.consumeChild parent child.worker
+  pure (name, output)

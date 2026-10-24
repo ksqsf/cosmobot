@@ -47,7 +47,7 @@ subagentTool
 subagentTool availableTools =
   tagged [workTag]
   . allowWhen (isRight . Resource.accessFromMessage . (.message))
-  . withDescription "Manage background agents scoped to the current chat. steer adds input to an active run. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for all current runs. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
+  . withDescription "Manage subagent resources scoped to the current chat. Each sent run belongs to the sending agent run; a final parent answer automatically waits for unconsumed child results and resumes. Cancelling the parent cancels its children. steer adds input to an active run. list returns accessible subagent resource names. wait_any waits for one current run; wait_all waits for every requested current run and returns all results. Ready resources return immediately, and waiting never cancels unfinished subagents. Use these instead of polling query."
   $ tool "subagent"
       (parsedArguments
         (objectSchema
@@ -85,11 +85,11 @@ subagentTool availableTools =
                 SubAgent.steer subagent prompt
                   <&> fmap (const "Steer queued.")
             Query resourceId ->
-              use access resourceId (fmap Right . SubAgent.queryOutput)
+              use access resourceId (fmap Right . SubAgent.queryOutput metadata.agentRunId)
             WaitAny resourceIds ->
-              useMany access resourceIds (fmap (jsonText . outputValue) . SubAgent.waitAnyOutput)
+              useMany access resourceIds (fmap (jsonText . outputValue) . SubAgent.waitAnyOutput metadata.agentRunId)
             WaitAll resourceIds ->
-              useMany access resourceIds (fmap (jsonText . map outputValue . toList) . SubAgent.waitAllOutputs)
+              useMany access resourceIds (fmap (jsonText . map outputValue . toList) . SubAgent.waitAllOutputs metadata.agentRunId)
             Destroy resourceId ->
               Resource.destroy access resourceId
                 <&> either resourceToolFailure (const (toolText "Subagent destroyed."))

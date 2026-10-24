@@ -739,3 +739,29 @@ an unbounded archive. Opaque provider continuation state is excluded. Runs from
 before this feature have no transcript to reconstruct from audit metadata.
 Cosmoscope polls the selected conversation while visible; older servers expose
 an explicit unavailable state for this capability.
+
+
+### Structured subagent runs
+
+`SubAgentRunStarted.runId` is the immediate parent run; `childRunId` is the
+new child run, even when the same named resource receives another prompt.
+Cosmoscope exposes the parent audit link from the child inspector.
+
+`AgentChildrenWait` audit events contain `runId`, `waiting`, and `subagentIds`.
+`waiting: true` marks automatic joining at a final parent model answer;
+`waiting: false` closes that wait, including interruption. A subsequent model
+turn or terminal event determines the next state. These events use the existing
+`audit.run` and `audit.subscribe` protocol.
+
+A parent final answer watches all unconsumed child runs, wakes when any finishes
+or fails, and resumes with that child result once. Other runs remain
+active and are joined at later final answers. Tool-request turns do not wait. Explicit `wait_any`, `wait_all`,
+and completed `query` consume results only for their calling parent. Waits
+capture run handles and completion cells, so later prompts cannot replace their
+answers. `wait_all` waits for every requested run and returns all results.
+`wait_any` returns one ready result. The automatic join uses the same operation and records a
+matched assistant `subagent` / `wait_any` tool call and tool result. Failures/cancellation produce terminal child results. Parent exit
+cancels and joins remaining children, recursively; reusable resources survive.
+Automatic resumption uses the remaining model-turn budget; at exhaustion the
+completed child results are returned with `subagent_limit`, without another
+model request. Previously streamed parent text remains visible.

@@ -57,6 +57,7 @@ export function auditPresentation(event: AuditEvent): AuditPresentation {
     case 'ModelTurnFinished': return { kind: 'Model turn finished', summary: event.answerKind, category: 'model', tone: 'success' }
     case 'ContextCompacted': return { kind: 'Context compacted', summary: `${String(event.messageCount)} messages remain`, category: 'context', tone: 'warning' }
     case 'RecursiveTranscriptFlushed': return { kind: 'Transcript flushed', summary: `After turn ${String(event.turn)}`, category: 'context', tone: 'info' }
+    case 'AgentChildrenWait': return { kind: event.waiting ? 'Waiting for subagents' : 'Subagents joined', summary: event.subagentIds.join(', '), category: 'agent', tone: 'info' }
     case 'SubAgentRunStarted': return { kind: 'Sub-agent started', summary: event.subagentId, category: 'agent', tone: 'info' }
     case 'ToolCallStarted': return { kind: 'Tool called', summary: event.toolCall.name, category: 'tool', tone: 'info' }
     case 'ToolCallFinished': return { kind: event.status === 'ok' ? 'Tool finished' : 'Tool failed', summary: event.toolName, category: 'tool', tone: event.status === 'ok' ? 'success' : 'danger' }
@@ -74,6 +75,7 @@ export function auditDetailFields(event: AuditEvent): readonly AuditDetailField[
     case 'ModelTurnFinished': return [...common, { label: 'Turn', value: String(event.turn) }, { label: 'Answer kind', value: event.answerKind }, { label: 'Content length', value: formatSize(event.contentLength) }, { label: 'Tool calls', value: String(event.toolCalls.length) }]
     case 'ContextCompacted': return [...common, { label: 'Turn', value: String(event.turn) }, { label: 'Messages', value: String(event.messageCount) }]
     case 'RecursiveTranscriptFlushed': return [...common, { label: 'Turn', value: String(event.turn) }]
+    case 'AgentChildrenWait': return [...common, { label: 'Waiting', value: String(event.waiting) }, { label: 'Subagents', value: event.subagentIds.join(', ') }]
     case 'SubAgentRunStarted': return [...common, { label: 'Child run', value: event.childRunId, kind: 'run' }, { label: 'Sub-agent', value: event.subagentId }]
     case 'ToolCallStarted': return [...common, { label: 'Turn', value: String(event.turn) }, { label: 'Tool', value: event.toolCall.name }, { label: 'Call ID', value: event.toolCall.id }]
     case 'ToolCallFinished': return [...common, { label: 'Turn', value: String(event.turn) }, { label: 'Tool', value: event.toolName }, { label: 'Call ID', value: event.toolCallId }, { label: 'Status', value: event.status }, { label: 'Result size', value: formatSize(event.resultLength) }]

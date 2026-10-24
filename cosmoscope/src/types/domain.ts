@@ -255,6 +255,7 @@ export type AuditEvent =
   | { tag: 'ModelTurnFinished'; runId: string; turn: number; answerKind: string; contentLength: number; toolCalls: readonly ToolCallTrace[]; tokenUsage: TokenUsage | null }
   | { tag: 'ContextCompacted'; runId: string; turn: number; messageCount: number; tokenUsage: TokenUsage | null }
   | { tag: 'RecursiveTranscriptFlushed'; runId: string; turn: number }
+  | { tag: 'AgentChildrenWait'; runId: string; waiting: boolean; subagentIds: string[] }
   | { tag: 'SubAgentRunStarted'; runId: string; childRunId: string; subagentId: string }
   | { tag: 'ToolCallStarted'; runId: string; turn: number; toolCall: ToolCallTrace }
   | { tag: 'ToolCallFinished'; runId: string; turn: number; toolCallId: string; toolName: string; status: string; result: string; resultLength: number; messageIds: readonly (string | null)[] }

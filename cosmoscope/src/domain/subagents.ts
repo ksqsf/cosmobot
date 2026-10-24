@@ -16,8 +16,10 @@ export function subagentRuns(records: readonly AuditRecord[]): SubagentRun[] {
 
 export function subagentStatus(records: readonly AuditRecord[]): string {
   const terminal = [...records].sort((a, b) => b.id - a.id).find(({ event }) =>
-    event.tag === 'AgentRunFinished' || event.tag === 'AgentRunInterrupted',
+    event.tag === 'AgentRunFinished' || event.tag === 'AgentRunInterrupted' || event.tag === 'AgentChildrenWait' || event.tag === 'ModelTurnStarted',
   )?.event
+  if (terminal?.tag === 'AgentChildrenWait') return terminal.waiting ? 'Waiting for subagents' : 'Running'
+  if (terminal?.tag === 'ModelTurnStarted') return 'Running'
   if (terminal?.tag === 'AgentRunFinished') return terminal.status
   if (terminal?.tag === 'AgentRunInterrupted') return `Interrupted: ${terminal.reason}`
   return 'Unknown'
