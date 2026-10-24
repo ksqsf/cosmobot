@@ -43,7 +43,7 @@ sandboxTool =
       (parsedArguments
         (objectSchema
           [ fieldText "op" "One of: create, list, run, file_to_media, media_to_file, rename, delete."
-          , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
+          , fieldText "name" "Required globally unique resource name for create and rename."
           , fieldText "sandbox" "Sandbox name; required except for create and list."
           , fieldText "path" "Sandbox file path; required for file_to_media and media_to_file."
           , fieldText "media_id" "Cached media id; required for media_to_file."
@@ -61,7 +61,7 @@ sandboxTool =
           Left err -> pure (resourceToolFailure err)
           Right access -> case call of
             SandboxCreate requestedName ttlMinutes ->
-              createSandbox metadata requestedName Resource.Init
+              Resource.createNamedForRun @Sandbox.Sandbox metadata.originRunId metadata.resourceOwner requestedName Resource.Init
                 { message = context.message
                 , arguments = Sandbox.SandboxArgs{image = context.toolConfig.sandboxImage, ttlMinutes}
                 } <&> \case
@@ -95,13 +95,9 @@ sandboxTool =
               Resource.destroy access sandboxId <&> either resourceToolFailure (const (toolText "Sandbox deleted."))
             SandboxRename sandboxId newName ->
               Resource.rename access sandboxId newName <&> either resourceToolFailure (toolText . ("Sandbox renamed: " <>))
-  where
-    createSandbox metadata = \case
-      Nothing -> Resource.createForRun @Sandbox.Sandbox metadata.originRunId metadata.resourceOwner
-      Just name -> Resource.createNamedForRun @Sandbox.Sandbox metadata.originRunId metadata.resourceOwner name
 
 data SandboxCall
-  = SandboxCreate !(Maybe Text) !Int
+  = SandboxCreate !Text !Int
   | SandboxList
   | SandboxRun !Text !Text !Int !(Maybe Int)
   | SandboxFileToMedia !Text !FilePath
@@ -114,7 +110,7 @@ sandboxArgs = Aeson.withObject "sandbox arguments" \o -> do
   op <- o Aeson..: Key.fromText "op"
   case op :: Text of
     "create" -> do
-      requestedName <- o Aeson..:? Key.fromText "name"
+      requestedName <- o Aeson..: Key.fromText "name" >>= validText "name"
       SandboxCreate requestedName <$> parseTTLMinutes o
     "list" -> pure SandboxList
     "run" -> do

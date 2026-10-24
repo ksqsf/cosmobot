@@ -36,7 +36,7 @@ workspaceTool =
         (objectSchema
           [ fieldText "action" "One of: create, list, query, update, rename, delete."
           , fieldText "id" "Short stable descriptive id for create; letters, digits, dot, underscore, and hyphen only."
-          , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
+          , fieldText "name" "Required globally unique resource name for create and rename."
           , fieldText "goal" "Initial work goal for create, or complete replacement WORK.md contents for update."
           , fieldText "resource" "Resource name returned by create; required for query, update, rename, and delete."
           , fieldInteger "ttl_minutes" "Resource inactivity lifetime in minutes; required for create, minimum 5."
@@ -49,7 +49,7 @@ workspaceTool =
         runWorkspaceCall context metadata call
 
 data WorkspaceCall
-  = CreateWorkspace !(Maybe Text) !Workspace.WorkspaceArgs
+  = CreateWorkspace !Text !Workspace.WorkspaceArgs
   | ListWorkspaces
   | QueryWorkspace !Text
   | UpdateWorkspace !Text !Text
@@ -67,7 +67,7 @@ runWorkspaceCall context metadata call =
     Left err -> pure (resourceToolFailure err)
     Right access -> case call of
       CreateWorkspace requestedName arguments ->
-        createWorkspace requestedName Resource.Init{message = context.message, arguments} <&> \case
+        Resource.createNamedForRun @Workspace.Workspace metadata.originRunId metadata.resourceOwner requestedName Resource.Init{message = context.message, arguments} <&> \case
           Left err -> resourceToolFailure err
           Right resourceId -> toolText (jsonText (Aeson.object
             [ "resource" Aeson..= resourceId
@@ -85,10 +85,6 @@ runWorkspaceCall context metadata call =
       RenameWorkspace resourceId newName ->
         Resource.rename access resourceId newName <&> first renderResourceError <&> resultWith "Workspace renamed."
   where
-    createWorkspace = \case
-      Nothing -> Resource.createForRun @Workspace.Workspace metadata.originRunId metadata.resourceOwner
-      Just name -> Resource.createNamedForRun @Workspace.Workspace metadata.originRunId metadata.resourceOwner name
-
     use
       :: forall a. Resource.ResourceAccess
       -> Text
@@ -107,7 +103,7 @@ parseWorkspaceCall = Aeson.withObject "workspace arguments" \o -> do
   action <- o Aeson..: Key.fromText "action"
   case action :: Text of
     "create" -> CreateWorkspace
-      <$> o Aeson..:? Key.fromText "name"
+      <$> (o Aeson..: Key.fromText "name" >>= validNonEmpty "name")
       <*> (Workspace.WorkspaceArgs
         <$> (o Aeson..: Key.fromText "id" >>= validWorkId)
         <*> (o Aeson..: Key.fromText "goal" >>= validNonEmpty "goal")

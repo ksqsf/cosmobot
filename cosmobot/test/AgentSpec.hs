@@ -259,6 +259,7 @@ main =
       , testCase "tool tags are enabled from the thread transcript" testToolTagsEnabledFromTranscript
       , testCase "ACP client file tools are ACP-only" testAcpClientFileToolsAreAcpOnly
       , testCase "terminal and sandbox tools respect their scopes" testTerminalAndSandboxToolScopes
+      , testCase "sandbox workspace and subagent creation require explicit names" testResourceToolNames
       , testCase "telegram request permissions, arguments and dispatch" testTelegramRequestTool
       , testCase "matrix request tool is Matrix-superuser-only" testMatrixRequestToolScope
       , testCase "structured subagents join, consume explicit waits, and respect budgets" testStructuredSubagents
@@ -988,6 +989,34 @@ testAcpClientFileToolsAreAcpOnly = do
   assertBool "write tool should be hidden outside ACP" (not (AgentTool.toolAllowed writeTool agentContext))
   assertBool "read tool should be visible for ACP" (AgentTool.toolAllowed readTool acpContext)
   assertBool "write tool should be visible for ACP" (AgentTool.toolAllowed writeTool acpContext)
+
+testResourceToolNames :: IO ()
+testResourceToolNames = do
+  answers <- IORef.newIORef []
+  created <- IORef.newIORef ([] :: [Maybe Text])
+  runAgentWith answers (ChatMock Nothing Nothing Nothing) $
+    interpose (\env -> \case
+        ResourceEffect.Create _ _ _ name _ -> do
+          liftIO $ IORef.modifyIORef' created (<> [name])
+          pure (Right (fromMaybe "unexpected-generated-name" name))
+        request -> passthrough env request) $
+      for_ [ (SandboxTools.sandboxTool, "op", [])
+           , (WorkspaceTools.workspaceTool, "action", ["id" Aeson..= ("work" :: Text), "goal" Aeson..= ("test" :: Text)])
+           , (SubAgentTools.subagentTool [], "op", [])
+           ] \(definition, operationKey, extra) -> do
+        run <- AgentTool.startTool definition superuserContext
+        let args name = Aeson.object $
+              [operationKey Aeson..= ("create" :: Text), "ttl_minutes" Aeson..= (5 :: Int)]
+                <> extra <> maybe [] (\value -> ["name" Aeson..= value]) name
+        for_ [Nothing, Just Aeson.Null, Just (Aeson.String ""), Just (Aeson.String "  "), Just (Aeson.Number 42)] \name -> do
+          result <- run testToolCallMetadata (args name)
+          liftIO $ assertBool (show (AgentTool.toolName definition, name, AgentTypes.toolResultContent result)) (isJust (AgentTypes.toolResultFailure result))
+        result <- run testToolCallMetadata (args (Just (Aeson.String "named-worker")))
+        liftIO do
+          AgentTypes.toolResultFailure result @?= Nothing
+          assertBool "supplied name is returned" ("named-worker" `Text.isInfixOf` AgentTypes.toolResultContent result)
+  observed <- IORef.readIORef created
+  observed @?= replicate 3 (Just "named-worker")
 
 testTerminalAndSandboxToolScopes :: IO ()
 testTerminalAndSandboxToolScopes = do

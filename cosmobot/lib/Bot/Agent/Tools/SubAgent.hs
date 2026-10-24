@@ -52,7 +52,7 @@ subagentTool availableTools =
       (parsedArguments
         (objectSchema
           [ fieldText "op" "One of: create, list, send, steer, query, wait_any, wait_all, rename, delete."
-          , fieldText "name" "Optional globally unique resource name for create; required as the new name for rename."
+          , fieldText "name" "Required globally unique resource name for create and rename."
           , fieldText "system_prompt" "System prompt for create; empty inherits the current system prompt."
           , fieldTextArray "tools" "Tool names exposed to the subagent for create; empty exposes none."
           , fieldText "resource" "Subagent resource name; required for send, steer, query, rename, and delete."
@@ -131,17 +131,13 @@ subagentTool availableTools =
         Left err ->
           pure (clientFailure err)
         Right names ->
-          createResource requestedName
+          Resource.createNamedForRun @SubAgent.SubAgent metadata.originRunId metadata.resourceOwner requestedName
             Resource.Init
               { message = context.message
               , arguments = SubAgent.SubAgentArgs{systemContext, toolNames = names, ttlMinutes}
               }
             <&> either resourceToolFailure (toolText . ("Subagent created: " <>))
       where
-        createResource = \case
-          Nothing -> Resource.createForRun @SubAgent.SubAgent metadata.originRunId metadata.resourceOwner
-          Just name -> Resource.createNamedForRun @SubAgent.SubAgent metadata.originRunId metadata.resourceOwner name
-
         systemContext
           | Text.null (Text.strip systemPrompt) = context.systemContext
           | otherwise = systemPrompt
@@ -156,7 +152,7 @@ subagentTool availableTools =
               | otherwise -> Left ("Tool is not allowed: " <> name)
 
 data Call
-  = Create !(Maybe Text) !Text ![Text] !Int
+  = Create !Text !Text ![Text] !Int
   | ListResources
   | Send !Text !Text
   | Steer !Text !Text
@@ -172,7 +168,7 @@ parseCall = Aeson.withObject "subagent arguments" \o -> do
   case op :: Text of
     "create" ->
       Create
-        <$> o Aeson..:? Key.fromText "name"
+        <$> requiredTextValue o "name"
         <*> (fromMaybe "" <$> o Aeson..:? Key.fromText "system_prompt")
         <*> (fromMaybe [] <$> o Aeson..:? Key.fromText "tools")
         <*> parseTTLMinutes o
