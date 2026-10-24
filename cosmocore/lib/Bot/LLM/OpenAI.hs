@@ -27,10 +27,10 @@ import Bot.LLM.Stream (streamHttpResponseBody, streamSsePayloads)
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.HTTP as HTTP
 import qualified Bot.Effect.LLM as LLM
-import Bot.LLM.Config
+import Bot.LLM.Provider
 import Bot.LLM.Types
 import Bot.Util.Aeson
-import qualified Bot.Util.Stream as StreamUtil
+import qualified Bot.Util.StreamLifetime as StreamUtil
 import Bot.Util.Time (secondsToMicroseconds)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap

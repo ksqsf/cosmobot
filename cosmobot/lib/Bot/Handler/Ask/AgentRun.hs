@@ -12,12 +12,14 @@ module Bot.Handler.Ask.AgentRun
   )
 where
 
+import Bot.Agent.Types (BotTool, BotRuntime)
+import Bot.Chat.Transcript (appendAssistant)
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Failure as Failure
 import qualified Bot.Agent.Middleware.Observation as AgentObservation
 import Bot.Core.Thread
-import Bot.Core.Transcript
+import Bot.Core.Transcript hiding (appendAssistant)
 import Bot.Core.Message
 import Bot.Core.Route (isSuperuser)
 import qualified Bot.Effect.AgentAudit as AgentAudit
@@ -76,7 +78,7 @@ runAskAgentThread
      , IOE :> es
      )
   => Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle
@@ -175,7 +177,7 @@ streamAgentReply
      , Prim :> es
      , Concurrent :> es
   )
-  => Agent.Runtime '[] (Eff es)
+  => BotRuntime '[] (Eff es)
   -> ActiveReplyState
   -> IncomingMessage
   -> Transcript

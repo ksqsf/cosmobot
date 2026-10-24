@@ -58,8 +58,8 @@ withPythonRunner
        -> PythonRequest
        -> Eff es PythonExit
      )
-  -> Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  -> BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withPythonRunner runPython =
   withPythonProgram \maxCalls outerCallId runOne message resourceOwner pythonRequest -> do
     nestedState <- MVar.newMVar (NestedToolState maxCalls 1)
@@ -72,8 +72,8 @@ withPythonRunner runPython =
 withPythonProgram
   :: Monad m
   => PythonProgramRunner m
-  -> Runtime context m
-  -> Runtime context m
+  -> BotRuntime context m
+  -> BotRuntime context m
 withPythonProgram runPython runtime =
   runtime
     { aroundProgram = \finalRuntime@Runtime{aroundToolTurn = toolTurn} ->

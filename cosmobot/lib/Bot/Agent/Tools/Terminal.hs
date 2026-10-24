@@ -12,7 +12,7 @@ module Bot.Agent.Tools.Terminal
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (parsedArguments, allowWhen, tagged, tool, withDescription)
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.ACP as ACP
@@ -22,7 +22,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
-terminalTool :: ACP.ACP :> es => Tool (Eff es)
+terminalTool :: ACP.ACP :> es => BotTool (Eff es)
 terminalTool =
   tagged [workTag]
   . allowWhen ((== PlatformACP) . (.platform) . (.message))

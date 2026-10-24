@@ -8,7 +8,11 @@ Stability   : experimental
 -}
 
 module Bot.Agent.Tools.Common
-  ( chatTag
+  ( askToolContext
+  , askToolCallMetadata
+  , askToolTurn
+  , askToolTranscript
+  , chatTag
   , specialTag
   , workTag
   , superuserOnly
@@ -37,9 +41,12 @@ module Bot.Agent.Tools.Common
   )
 where
 
-import Bot.Agent.Tool
+import qualified Bot.Agent.Tool as CoreTool
+import Bot.Agent.Tool (NamedTag (..), ToolArgument, requiredArgument, optionalArgument)
 import Bot.Agent.Types
 import qualified Bot.Effect.Resource as Resource
+import Bot.Core.Transcript (Transcript)
+import qualified Effectful.Reader.Static as Reader
 import Bot.Prelude
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
@@ -198,3 +205,15 @@ newUseLimiter maxUses = do
             (currentUses, UseLimitReached currentUses)
           _ ->
             (currentUses + 1, UseAllowed)
+
+askToolContext :: Reader.Reader (CoreTool.ToolCallContext Context ToolCallMetadata) :> es => Eff es Context
+askToolContext = CoreTool.askToolContext @Context @ToolCallMetadata
+
+askToolCallMetadata :: Reader.Reader (CoreTool.ToolCallContext Context ToolCallMetadata) :> es => Eff es ToolCallMetadata
+askToolCallMetadata = CoreTool.askToolCallMetadata @Context @ToolCallMetadata
+
+askToolTurn :: Reader.Reader (CoreTool.ToolCallContext Context ToolCallMetadata) :> es => Eff es Int
+askToolTurn = CoreTool.askToolTurn @Context @ToolCallMetadata
+
+askToolTranscript :: Reader.Reader (CoreTool.ToolCallContext Context ToolCallMetadata) :> es => Eff es Transcript
+askToolTranscript = CoreTool.askToolTranscript @Context @ToolCallMetadata

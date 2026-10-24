@@ -11,7 +11,7 @@ module Bot.Agent
   , Event (..)
   , Observer
   , Program
-  , Runtime
+  , BotRuntime
   , Result (..)
   , Output (..)
   , ToolEmittedMessageSink (..)
@@ -43,12 +43,9 @@ module Bot.Agent
 where
 
 import Bot.Core.Transcript
-import Bot.Agent.Transcript
-  ( appendMessage
-  , closeInterruptedToolCalls
-  )
+import Bot.Agent.Program (agentProgram)
+import qualified Bot.Agent.Runtime as AgentRuntime
 import Bot.Agent.Core
-import Bot.Agent.Control (finishToolTurn)
 import Bot.Agent.Middleware.ContextCompaction
   ( withContextCompactionNotice
   )
@@ -92,12 +89,7 @@ import Bot.Agent.Middleware.ToolReplyNormalization
 import Bot.Agent.Middleware.Typing
   ( withTypingNotification
   )
-import Bot.Agent.ToolRegistry
-  ( resolveToolSchemas
-  , startToolRun
-  )
-import qualified Bot.Agent.ToolRegistry as ToolRegistry
-import Bot.Agent.Tool (Tool, toolAllowed, toolName)
+import Bot.Agent.Tool (toolName)
 import Bot.Agent.Tools.Continuation (resumeContinuationTool)
 import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
@@ -106,17 +98,15 @@ import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
-import Bot.Prelude
 import qualified Bot.Util.HList as HList
+import Bot.Prelude
 import qualified Crypto.Random as CryptoRandom
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Base64.URL as Base64URL
 import qualified Data.Foldable as Foldable
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import qualified Effectful.Concurrent.Async as Async
 import qualified Effectful.Resource as EffectfulResource
-import qualified Streaming.Prelude as S
 
 -----------------------------------------------------------------------------------------
 -- * Public runners
@@ -174,8 +164,8 @@ withRun
   -> ContextStrategy
   -> Int
   -> Context
-  -> [Tool (Eff es)]
-  -> (Runtime '[] (Eff es) -> Eff es a)
+  -> [BotTool (Eff es)]
+  -> (BotRuntime '[] (Eff es) -> Eff es a)
   -> Eff es a
 withRun maxTurns contextStrategy contextTokenThreshold context tools use = do
   withRunObserved (const (pure ())) maxTurns contextStrategy contextTokenThreshold context tools use
@@ -198,8 +188,8 @@ withRunObserved
   -> ContextStrategy
   -> Int
   -> Context
-  -> [Tool (Eff es)]
-  -> (Runtime '[] (Eff es) -> Eff es a)
+  -> [BotTool (Eff es)]
+  -> (BotRuntime '[] (Eff es) -> Eff es a)
   -> Eff es a
 withRunObserved observe maxTurns contextStrategy contextTokenThreshold context tools use = do
   baseRuntime <- startRuntime maxTurns context tools
@@ -210,16 +200,16 @@ withRunObserved observe maxTurns contextStrategy contextTokenThreshold context t
 
 agentStream
   :: (LLM.LLM :> es, Concurrent :> es, KatipE :> es)
-  => Runtime '[] (Eff es)
+  => BotRuntime '[] (Eff es)
   -> Transcript
   -> Stream (Of Output) (Eff es) Result
 agentStream runtime transcript =
   runtime.aroundAgentRun HList.HNil
-    . runProgram runtime
+    . AgentRuntime.runProgram agentRequestMessages runtime
     . runtime.aroundProgram runtime
-    $ agentProgram runtime (initialState transcript)
+    $ agentProgram runtime.runId (AgentRuntime.initialState transcript)
 
-runIdOf :: Runtime context (Eff es) -> Text
+runIdOf :: BotRuntime context (Eff es) -> Text
 runIdOf =
   (.runId)
 
@@ -227,52 +217,24 @@ runIdOf =
 -- * Run setup
 -----------------------------------------------------------------------------------------
 
-startRuntime :: (Chat.Chat :> es, Concurrent :> es, IOE :> es) => Int -> Context -> [Tool (Eff es)] -> Eff es (Runtime context (Eff es))
+startRuntime :: (Chat.Chat :> es, Concurrent :> es, IOE :> es) => Int -> Context -> [BotTool (Eff es)] -> Eff es (BotRuntime context (Eff es))
 startRuntime maxTurns context tools = do
   runId <- newAgentRunId
-  let exposedTools = filter (`toolAllowed` context) tools
-      toolCallMetadata = ToolCallMetadata{agentRunId = runId, originRunId = runId, resourceOwner = Nothing}
-  runningTools <- traverse (startToolRun context) exposedTools
-  let dispatchToolCall metadata turn transcript =
-        ToolRegistry.runToolCallWithTranscript context metadata turn transcript tools runningTools
-  pure Runtime
-    { runId
-    , toolCallMetadata
-    , context
-    , tools
-    , exposedTools
-    , runningTools
-    , dispatchToolCall
-    , maxTurns = max 1 maxTurns
-    , modelInputTranscript = \_ agentState -> pure agentState.transcript
-    , aroundProgram = \_ program -> program
-    , aroundAgentRun = \_ action -> action
-    , aroundModelTurn = \_ agentState action -> action agentState
-    , aroundToolTurn = \_ _ action -> action
-    , aroundControlCall = \_ _ _ action -> action
-    , aroundToolCall = \_ _ _ action -> action
-    }
+  AgentRuntime.startRuntime runId maxTurns context
+    ToolCallMetadata{agentRunId = runId, originRunId = runId, resourceOwner = Nothing}
+    tools
 
 newAgentRunId :: IOE :> es => Eff es AgentRunId
 newAgentRunId = do
   bytes <- liftIO (CryptoRandom.getRandomBytes 16 :: IO StrictByteString.ByteString)
   pure ("agent-" <> TextEncoding.decodeUtf8 (Base64URL.encodeUnpadded bytes))
 
-initialState :: Transcript -> TurnState
-initialState transcript =
-  TurnState
-    { transcript = closeInterruptedToolCalls transcript
-    , nextModelTranscript = Nothing
-    , turn = 1
-    , modelTokenUsage = Nothing
-    }
-
 defaultRuntime
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, LLM.LLM :> es, Media.Media :> es, KatipE :> es, Prim :> es, EffectfulResource.Resource :> es)
   => Observer ObservationContext (Eff es)
   -> Int
-  -> Runtime '[ObservationContext, EventObservation es, ToolResultObservation es] (Eff es)
-  -> Runtime '[] (Eff es)
+  -> BotRuntime '[ObservationContext, EventObservation es, ToolResultObservation es] (Eff es)
+  -> BotRuntime '[] (Eff es)
 defaultRuntime observer compactionTokenThreshold =
   defaultRuntimeWithStrategy observer ContextCompaction compactionTokenThreshold
 
@@ -281,8 +243,8 @@ defaultRuntimeWithStrategy
   => Observer ObservationContext (Eff es)
   -> ContextStrategy
   -> Int
-  -> Runtime '[ObservationContext, EventObservation es, ToolResultObservation es] (Eff es)
-  -> Runtime '[] (Eff es)
+  -> BotRuntime '[ObservationContext, EventObservation es, ToolResultObservation es] (Eff es)
+  -> BotRuntime '[] (Eff es)
 defaultRuntimeWithStrategy observer contextStrategy contextTokenThreshold =
   ( withLogContext
   . withContinuations
@@ -299,7 +261,7 @@ defaultRuntimeWithStrategy observer contextStrategy contextTokenThreshold =
       ContextCompaction -> withContextCompactionNotice contextTokenThreshold
       RecursiveTranscript -> withRecursiveTranscript contextTokenThreshold
 
-isResumeTransfer :: Runtime context (Eff es) -> NonEmpty LLM.ToolCall -> Bool
+isResumeTransfer :: BotRuntime context (Eff es) -> NonEmpty LLM.ToolCall -> Bool
 isResumeTransfer runtime calls =
   case toList calls of
     [call] ->
@@ -307,160 +269,6 @@ isResumeTransfer runtime calls =
         && any ((== call.name) . toolName) runtime.exposedTools
     _ ->
       False
-
-agentProgram
-  :: Runtime context (Eff es)
-  -> TurnState
-  -> Program (Eff es) Result
-agentProgram runtime agentState = do
-  (modelState, answer) <- runModel agentState
-  interpretModelAnswer runtime modelState answer
-
-runProgram
-  :: (LLM.LLM :> es, Concurrent :> es, KatipE :> es)
-  => Runtime '[] (Eff es)
-  -> Program (Eff es) Result
-  -> Stream (Of Output) (Eff es) Result
-runProgram runtime program =
-  program.observe >>= \case
-    Finished result@Result{status, turnsUsed} -> do
-      lift $ logAgentState runtime.runId [i|step=finished status=#{status} turns=#{turnsUsed}|]
-      pure result
-    Continues next -> do
-      lift $ logAgentState runtime.runId "step=continues"
-      runProgram runtime next
-    Visible event continue ->
-      interpretAgentEvent runtime event >>= runProgram runtime . continue
-
-interpretAgentEvent
-  :: (LLM.LLM :> es, Concurrent :> es, KatipE :> es)
-  => Runtime '[] (Eff es)
-  -> AgentEvent response
-  -> Stream (Of Output) (Eff es) response
-interpretAgentEvent runtime = \case
-  RunModel agentState@TurnState{turn, transcript} -> do
-    lift $ logAgentState runtime.runId
-      [i|step=visible event=RunModel turn=#{turn} messages=#{transcriptMessageCount transcript}|]
-    runtime.aroundModelTurn HList.HNil agentState \modelState@TurnState{turn = modelTurn} -> do
-      inputTranscript <- lift (runtime.modelInputTranscript HList.HNil modelState)
-      answer <- askNext runtime modelState inputTranscript
-      lift $ logAgentState runtime.runId
-        [i|event=RunModel completed turn=#{modelTurn} answer=#{answerKind answer}|]
-      pure (modelState, answer)
-  RunTools request@ToolRequest{agentState = TurnState{turn}, toolCalls} ->
-    lift do
-      logAgentState runtime.runId
-        [i|step=visible event=RunTools turn=#{turn} calls=#{toolCallSummary toolCalls}|]
-      continuedState@TurnState{turn = nextTurn, transcript} <-
-        fst <$> toolPhase runtime request
-      logAgentState runtime.runId
-        [i|event=RunTools completed next_turn=#{nextTurn} messages=#{transcriptMessageCount transcript}|]
-      pure continuedState
-
-logAgentState :: KatipE :> es => Text -> Text -> Eff es ()
-logAgentState runId message =
-  $(logDebug) [i|Agent state: run=#{runId} #{message}|]
-
-answerKind :: LLM.ChatAnswer -> Text
-answerKind = \case
-  LLM.ChatFinalAnswer{} ->
-    "final"
-  LLM.ChatToolRequest{toolCalls} ->
-    "tools:" <> toolCallSummary toolCalls
-
-toolCallSummary :: NonEmpty LLM.ToolCall -> Text
-toolCallSummary =
-  Text.intercalate "," . map (\call -> call.id <> ":" <> call.name) . toList
-
-transcriptMessageCount :: Transcript -> Int
-transcriptMessageCount =
-  Foldable.length . (.messages)
-
-interpretModelAnswer
-  :: Runtime context (Eff es)
-  -> TurnState
-  -> LLM.ChatAnswer
-  -> Program (Eff es) Result
-interpretModelAnswer runtime agentState answer =
-  case answer of
-    LLM.ChatFinalAnswer{content} ->
-      pure (agentCompletion runtime "answered" content agentState.turn (LLM.chatAnswerTokenUsage answer) answered)
-    LLM.ChatToolRequest{content, toolCalls}
-      | Just message <- toolCallIdError toolCalls ->
-          modelProtocolError runtime agentState answer message
-      | otherwise -> do
-          Program do
-            S.yield (ToolCallNotification toolCalls)
-            pure (Finished ())
-          nextState <- runTools ToolRequest{agentState = observedState, answered, toolContent = content, toolCalls}
-          agentProgram runtime nextState
-  where
-    observedState =
-      agentState{modelTokenUsage = LLM.chatAnswerTokenUsage answer}
-    answered =
-      appendMessage (LLM.assistantAnswer answer) agentState.transcript
-
-modelProtocolError
-  :: Runtime context (Eff es)
-  -> TurnState
-  -> LLM.ChatAnswer
-  -> Text
-  -> Program (Eff es) Result
-modelProtocolError runtime agentState answer message =
-  Program do
-    S.yield (ContentDelta message)
-    pure . Finished $
-      agentCompletion
-        runtime
-        "model_protocol_error"
-        message
-        agentState.turn
-        (LLM.chatAnswerTokenUsage answer)
-        agentState.transcript
-
-toolCallIdError :: NonEmpty LLM.ToolCall -> Maybe Text
-toolCallIdError calls
-  | any (Text.null . Text.strip . (.id)) callList =
-      Just "Model returned a tool call with an empty id."
-  | duplicateIds@(_ : _) <-
-      mapMaybe listToMaybe
-        . filter ((> 1) . length)
-        . group
-        . sort
-        $ map (.id) callList =
-      Just [i|Model returned duplicate tool-call ids: #{Text.intercalate ", " duplicateIds}|]
-  | otherwise =
-      Nothing
-  where
-    callList = toList calls
-
--- | Interpret one tool phase and advance to the next model phase.
-toolPhase
-  :: (Concurrent :> es, KatipE :> es)
-  => Runtime '[] (Eff es)
-  -> ToolRequest
-  -> Eff es (TurnState, NonEmpty ToolResult)
-toolPhase runtime@Runtime{aroundToolTurn = toolTurn} request =
-  finishToolTurn toolTurn request $
-    Async.mapConcurrently (executeToolCall runtime request.agentState) request.toolCalls
-
------------------------------------------------------------------------------------------
--- * Model helpers
------------------------------------------------------------------------------------------
-
--- | Ask the LLM for the next assistant message.
-askNext
-  :: (LLM.LLM :> es, Concurrent :> es)
-  => Runtime context (Eff es)
-  -> TurnState
-  -> Transcript
-  -> Stream (Of Output) (Eff es) LLM.ChatAnswer
-askNext runtime agentState transcript = do
-  schemas <- lift (resolveToolSchemas agentState.transcript agentState.turn runtime.runningTools)
-  S.map ContentDelta $
-    LLM.askWithToolsStreaming
-      schemas
-      (agentRequestMessages runtime.context transcript)
 
 agentRequestMessages :: Context -> Transcript -> [LLM.ChatMessage]
 agentRequestMessages context (Transcript messages) =
@@ -496,35 +304,5 @@ replaceMessageContent content LLM.ChatMessage{role, toolCalls, toolCallId} =
 --
 -- Tool failures must still produce a tool result message; otherwise the next
 -- LLM request would contain an assistant tool call without its required result.
-executeToolCall :: (Concurrent :> es, KatipE :> es) => Runtime '[] (Eff es) -> TurnState -> LLM.ToolCall -> Eff es ToolResult
-executeToolCall runtime@Runtime{runId} agentState call@LLM.ToolCall{id = callId, name, arguments} = do
-  let turn = agentState.turn
-  $(logDebug)
-    [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=started argument_chars=#{Text.length arguments}|]
-  result <-
-    runtime.aroundToolCall turn call HList.HNil
-      (runtime.dispatchToolCall runtime.toolCallMetadata turn agentState.transcript call)
-      `onException` $(logDebug)
-        [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=interrupted|]
-  $(logDebug)
-    [i|Agent tool: run=#{runId} turn=#{turn} id=#{callId} name=#{name} state=finished status=#{toolResultStatus result} result_chars=#{Text.length (toolResultContent result)} images=#{length (toolResultImageUrls result)}|]
-  pure result
-
-toolResultStatus :: ToolResult -> Text
-toolResultStatus =
-  maybe "ok" failureStatus . toolResultFailure
-
------------------------------------------------------------------------------------------
 -- * Completion
 -----------------------------------------------------------------------------------------
-
-agentCompletion :: Runtime context (Eff es) -> Text -> Text -> Int -> Maybe LLM.TokenUsage -> Transcript -> Result
-agentCompletion runtime status answer turnsUsed tokenUsage transcript =
-  Result
-    { runId = runtime.runId
-    , transcript
-    , status
-    , finalText = answer
-    , turnsUsed
-    , tokenUsage
-    }

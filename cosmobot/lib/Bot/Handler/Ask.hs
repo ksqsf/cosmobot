@@ -10,11 +10,12 @@ module Bot.Handler.Ask
   )
 where
 
+import Bot.Agent.Types (BotTool)
+import Bot.Chat.Transcript (startWithUserInput, appendUserInput, appendAssistant)
 import qualified Bot.Agent as Agent
-import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Failure as Failure
 import Bot.Core.Thread
-import Bot.Core.Transcript
+import Bot.Core.Transcript hiding (appendAssistant)
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Agent as AgentEffect
 import qualified Bot.Effect.AgentAudit as AgentAudit
@@ -74,7 +75,7 @@ askHandlers
   :: HandlerEffects es
   => ChatLog.ChatLog :> es
   => Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
   -> [RouteHandler (Eff es)]
@@ -175,7 +176,7 @@ decide policy
 conversationRoute
   :: HandlerEffects es
   => Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
   -> RouteHandler (Eff es)
@@ -271,7 +272,7 @@ drawRoute cfg threads =
 askRoute
   :: HandlerEffects es
   => Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
   -> RouteHandler (Eff es)
@@ -343,7 +344,7 @@ startAskThread
   :: HandlerEffects es
   => Text
   -> Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle
@@ -393,7 +394,7 @@ fetchReferencedMessage message =
 startThreadFromReply
   :: HandlerEffects es
   => Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle
@@ -414,7 +415,7 @@ startThreadFromReply toolCfg tools cfg threads resource message parentId = do
 continueThread
   :: HandlerEffects es
   => Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> AskHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle

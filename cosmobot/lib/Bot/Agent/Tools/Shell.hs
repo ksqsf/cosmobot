@@ -14,7 +14,7 @@ module Bot.Agent.Tools.Shell
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (parsedArguments, validateArgument, withDefault, allowWhen, tagged, tool, withDescription)
 import Bot.Agent.Types
 import Bot.Prelude
 import qualified Bot.Resource.Sandbox as Sandbox
@@ -35,7 +35,7 @@ import Effectful.FileSystem (FileSystem)
 import qualified Effectful.Process.Typed as TypedProcess
 import Effectful.Timeout
 
-runBashTool :: (Resource.Resource :> es, FileSystem :> es, IOE :> es, Fail :> es, Timeout :> es, Concurrency.Concurrency :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => Tool (Eff es)
+runBashTool :: (Resource.Resource :> es, FileSystem :> es, IOE :> es, Fail :> es, Timeout :> es, Concurrency.Concurrency :> es, Concurrent :> es, TypedProcess.TypedProcess :> es) => BotTool (Eff es)
 runBashTool =
   tagged [workTag]
   . allowWhen (\context -> superuserOnly context && hasResourceIdentity context)
@@ -61,7 +61,7 @@ runBashTool =
               Left err -> pure (resourceToolFailure err)
               Right commandId -> observeCommand True access metadata.resourceOwner commandId 10 0 0
 
-commandTool :: (Resource.Resource :> es, Concurrency.Concurrency :> es, Timeout :> es, Concurrent :> es) => Tool (Eff es)
+commandTool :: (Resource.Resource :> es, Concurrency.Concurrency :> es, Timeout :> es, Concurrent :> es) => BotTool (Eff es)
 commandTool =
   tagged [workTag]
   . allowWhen hasResourceIdentity

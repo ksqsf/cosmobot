@@ -11,13 +11,13 @@ module Bot.Agent.Tools.Files
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (allowWhen, tagged, tool, withDescription)
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.ACP as ACP
 import Bot.Prelude
 
-acpReadClientFileTool :: ACP.ACP :> es => Tool (Eff es)
+acpReadClientFileTool :: ACP.ACP :> es => BotTool (Eff es)
 acpReadClientFileTool =
   tagged [workTag]
   . allowWhen acpOnly
@@ -35,7 +35,7 @@ acpReadClientFileTool =
           Right content ->
             pure (toolText content)
 
-acpWriteClientFileTool :: ACP.ACP :> es => Tool (Eff es)
+acpWriteClientFileTool :: ACP.ACP :> es => BotTool (Eff es)
 acpWriteClientFileTool =
   tagged [workTag]
   . allowWhen acpOnly

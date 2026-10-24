@@ -5,7 +5,7 @@ module Bot.LLM.Stream
 
 import Bot.Prelude
 import qualified Bot.Effect.HTTP as HTTP
-import qualified Bot.Util.Stream as StreamUtil
+import qualified Bot.Util.StreamLifetime as StreamUtil
 import qualified Data.ByteString as StrictByteString
 import qualified Data.ByteString.Char8 as ByteString
 import qualified Data.ByteString.Lazy as LazyByteString

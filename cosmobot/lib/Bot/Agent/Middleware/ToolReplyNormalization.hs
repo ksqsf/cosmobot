@@ -9,6 +9,7 @@ module Bot.Agent.Middleware.ToolReplyNormalization
   )
 where
 
+import Bot.Agent.Types (BotRuntime)
 import Bot.Agent.Core
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Media as Media
@@ -17,8 +18,8 @@ import qualified Data.Text as Text
 
 withNormalizingToolReplies
   :: (Chat.Chat :> es, Media.Media :> es)
-  => Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  => BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withNormalizingToolReplies program =
   program
     { aroundToolCall = \turn call context action ->

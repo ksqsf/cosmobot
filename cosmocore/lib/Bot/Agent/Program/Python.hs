@@ -5,7 +5,7 @@ module Bot.Agent.Program.Python
   )
 where
 
-import Bot.Agent.Types
+import Bot.Agent.Result
 import Bot.Prelude
 
 -- | One worker-originated call. The host, not Python, supplies the audit id.

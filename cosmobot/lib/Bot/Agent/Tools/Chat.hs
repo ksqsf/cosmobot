@@ -21,7 +21,7 @@ module Bot.Agent.Tools.Chat
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (ToolArgument, noArguments, requiredArgument, optionalArgument, mapArgument, validateArgument, withDefault, allowWhen, noisy, tagged, tool, withDescription, withDescriptionBy)
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Core.ReplyBody as ReplyBody
@@ -35,7 +35,7 @@ import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 import Data.Time (UTCTime)
 
-queryChatLogTool :: ChatLog.ChatLog :> es => Tool (Eff es)
+queryChatLogTool :: ChatLog.ChatLog :> es => BotTool (Eff es)
 queryChatLogTool =
   tagged [chatTag]
   . withDescription "Return recent messages recorded in the current chat, optionally filtered by exact sender id. Results are in chronological order and include timestamps, sender ids, message ids, image urls, and text. Use since or before to page through time."
@@ -59,7 +59,7 @@ queryChatLogTool =
             entries <- ChatLog.queryChat context.message senderFilter (max 0 limit) includeBotMessages timeRange
             pure (toolText (jsonText (map chatLogToolEntry entries)))
 
-queryCurrentSenderChatLogTool :: ChatLog.ChatLog :> es => Tool (Eff es)
+queryCurrentSenderChatLogTool :: ChatLog.ChatLog :> es => BotTool (Eff es)
 queryCurrentSenderChatLogTool =
   tagged [chatTag]
   . withDescription "Return messages from the current sender whose text matches any keyword group. scope=chat searches only the current chat; scope=dm searches only private chats on the current platform; scope=global searches all chats on the current platform. Each keyword group is matched as a SQL LIKE pattern with '%' between its terms. Results are newest first and limited to at most 100."
@@ -90,7 +90,7 @@ queryCurrentSenderChatLogTool =
                 entries <- ChatLog.queryCurrentSenderChatLog context.message scope keywords limit timeRange
                 pure (toolText (jsonText (map chatLogToolEntry entries)))
 
-addReactionTool :: Chat.Chat :> es => Tool (Eff es)
+addReactionTool :: Chat.Chat :> es => BotTool (Eff es)
 addReactionTool =
   tagged [chatTag]
   . withDescriptionBy (\context ->
@@ -125,14 +125,14 @@ addReactionTool =
                     , detail = err
                     })
 
-sendReplyTool :: (Chat.Chat :> es, Media.Media :> es) => Tool (Eff es)
+sendReplyTool :: (Chat.Chat :> es, Media.Media :> es) => BotTool (Eff es)
 sendReplyTool =
   sendChatMessageTool
     "send_reply"
     "Send a reply message to the same chat as the current user message. Supports text and image URLs. Use image_urls when the user asks you to send an image found or generated elsewhere. Use only when the user asks you to send an additional message before the final answer."
     Chat.replyTo
 
-sendMessageTool :: (Chat.Chat :> es, Media.Media :> es) => Tool (Eff es)
+sendMessageTool :: (Chat.Chat :> es, Media.Media :> es) => BotTool (Eff es)
 sendMessageTool =
   sendChatMessageTool
     "send_message"
@@ -144,7 +144,7 @@ sendChatMessageTool
   => Text
   -> Text
   -> (forall xs. Chat.Chat :> xs => IncomingMessage -> Text -> Eff xs [Either Text MessageId])
-  -> Tool (Eff es)
+  -> BotTool (Eff es)
 sendChatMessageTool name description sendToChat =
   tagged [chatTag]
   . withDescription description
@@ -176,7 +176,7 @@ sendChatMessageTool name description sendToChat =
                   , detail = err
                   })
 
-sendFileTool :: Chat.Chat :> es => Tool (Eff es)
+sendFileTool :: Chat.Chat :> es => BotTool (Eff es)
 sendFileTool =
   tagged [chatTag]
   . noisy
@@ -208,7 +208,7 @@ sendFileTool =
               , detail = err
               })
 
-mentionUserTool :: Chat.Chat :> es => Tool (Eff es)
+mentionUserTool :: Chat.Chat :> es => BotTool (Eff es)
 mentionUserTool =
   tagged [chatTag]
   . withDescription "Send a reply in the current chat that mentions the given platform user id. Matrix user ids are textual, for example @user:server."
@@ -229,7 +229,7 @@ mentionUserTool =
               , detail = err
               })
 
-senderMemberInfoTool :: Chat.Chat :> es => Tool (Eff es)
+senderMemberInfoTool :: Chat.Chat :> es => BotTool (Eff es)
 senderMemberInfoTool =
   tagged [chatTag]
   . withDescription "Get platform-provided member information for the sender of the current message in the current group chat."
@@ -238,7 +238,7 @@ senderMemberInfoTool =
       info <- Chat.getSenderMemberInfo context.message
       pure (toolText (maybe "No member information is available for this message." jsonText info))
 
-memberInfoTool :: Chat.Chat :> es => Tool (Eff es)
+memberInfoTool :: Chat.Chat :> es => BotTool (Eff es)
 memberInfoTool =
   tagged [chatTag]
   . withDescription "Get platform-provided member information for any user id in the current group chat."
@@ -249,7 +249,7 @@ memberInfoTool =
         info <- Chat.getMemberInfo context.message userId
         pure (toolText (maybe "No member information is available for this user in the current chat." jsonText info))
 
-userAvatarTool :: (Chat.Chat :> es, KatipE :> es) => Tool (Eff es)
+userAvatarTool :: (Chat.Chat :> es, KatipE :> es) => BotTool (Eff es)
 userAvatarTool =
   tagged [chatTag]
   . withDescription "Get avatar information for a platform user id and send the avatar image to the current chat."
@@ -264,7 +264,7 @@ userAvatarTool =
           Just value ->
             userAvatarResult context value
 
-listGroupMembersTool :: Chat.Chat :> es => Tool (Eff es)
+listGroupMembersTool :: Chat.Chat :> es => BotTool (Eff es)
 listGroupMembersTool =
   tagged [chatTag]
   . withDescription "List members in the current group chat, including platform user ids and nicknames when available. QQ groups are supported. Telegram Bot API does not expose full member lists, so Telegram may return unavailable."
@@ -273,7 +273,7 @@ listGroupMembersTool =
       members <- Chat.listGroupMembers context.message
       pure (toolText (maybe "Group member listing is not available for this platform or chat." jsonText members))
 
-currentMessageInfoTool :: Tool (Eff es)
+currentMessageInfoTool :: BotTool (Eff es)
 currentMessageInfoTool =
   tagged [chatTag]
   . withDescription "Return structured metadata for the current message, including platform, chat, sender, message ids, mentions, image URLs, and text."

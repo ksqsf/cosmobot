@@ -12,7 +12,7 @@ module Bot.Agent.Tools.Media
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (validateArgument, withDefault, noisy, tagged, tool, withDescription)
 import Bot.Agent.Types
 import Bot.Core.Message (MessageFile (..))
 import qualified Bot.Effect.Chat as Chat
@@ -35,7 +35,7 @@ maxReadSize :: Int
 maxReadSize =
   16384
 
-readMediaTextTool :: (Media.Media :> es, FileSystem :> es) => Tool (Eff es)
+readMediaTextTool :: (Media.Media :> es, FileSystem :> es) => BotTool (Eff es)
 readMediaTextTool =
   tagged [workTag]
   . withDescription "Read a UTF-8 text slice from a cached media object. Use this with media ids returned in omitted tool results, such as mf_xxx or media:mf_xxx. offset and size are character counts."
@@ -50,7 +50,7 @@ readMediaTextTool =
       \mediaId offset size ->
         readMediaText ReadMediaTextArgs{mediaId, offset, size}
 
-mediaToFileTool :: Media.Media :> es => Tool (Eff es)
+mediaToFileTool :: Media.Media :> es => BotTool (Eff es)
 mediaToFileTool =
   tagged [workTag]
   . withDescription "Resolve a cached media object to its existing local cache file path. The file is not attached to agent context."
@@ -58,7 +58,7 @@ mediaToFileTool =
       (requiredText "media_id" "Media id to resolve, either mf_xxx or media:mf_xxx.")
       (resolveMediaPath . Text.strip)
 
-sendMediaTool :: (Chat.Chat :> es, Media.Media :> es) => Tool (Eff es)
+sendMediaTool :: (Chat.Chat :> es, Media.Media :> es) => BotTool (Eff es)
 sendMediaTool =
   tagged [chatTag]
   . noisy

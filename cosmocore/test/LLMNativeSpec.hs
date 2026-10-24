@@ -12,8 +12,8 @@ import qualified Prelude
 import qualified Bot.LLM.Anthropic as Anthropic
 import qualified Bot.LLM.Gemini as Gemini
 import qualified Bot.LLM.Responses as Responses
-import qualified Bot.LLM.Config as Config
-import qualified Bot.LLM.Config as ChatConfig (ChatProviderConfig (..))
+import qualified Bot.LLM.Provider as Config
+import qualified Bot.LLM.Provider as ChatConfig (ChatProviderConfig (..))
 import Bot.LLM.Types
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as KM

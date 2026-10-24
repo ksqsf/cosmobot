@@ -38,7 +38,7 @@ emacsSocketName :: String
 emacsSocketName =
   "cosmobot"
 
-emacsEvalTool :: (Process :> es, Timeout :> es, Concurrent :> es, IOE :> es, FileSystem :> es) => Tool (Eff es)
+emacsEvalTool :: (Process :> es, Timeout :> es, Concurrent :> es, IOE :> es, FileSystem :> es) => BotTool (Eff es)
 emacsEvalTool =
   tagged [workTag]
   . allowWhen superuserOnly

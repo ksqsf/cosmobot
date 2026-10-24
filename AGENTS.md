@@ -1,12 +1,25 @@
 Favor correctness, explicit data flow, small algebraic modules, and abstractions that make the code clearer in practice.
 
-Packages: `cosmobot` (bot), `cosmobot-plugin-sdk` (plugin SDK), and `cosmocode` (RPC coding TUI).
+Packages: `cosmocore` (reusable agent calculus and LLM transport), `cosmobot` (bot), `cosmobot-plugin-sdk` (plugin SDK), and `cosmocode` (RPC coding TUI).
+
+`cosmocore` retains the shared `Bot.*` module names and must not depend on `cosmobot`. Application context, chat projection, resource ownership, configuration schemas, and concrete bot tools stay in `cosmobot`; import shared modules directly, without compatibility modules.
 
 + Think about areas likely to have subtle bugs before implementing; for each, state likely mistakes and plausible alternative interpretations, then come up with a check where the results differ (prefer asymmetric / boundary examples on both sides of the boundary)
 + After implementing, for high risk areas, independently re-derive the result without context on production code and compare (fresh context, do not re-use helper functions)
 + When feasible, use property-based testing or randomized inputs to try to explore the space, minimizing effort on no-panic or no-crash randomization
 + When randomizing, lean towards inputs that will explore interesting state and code paths (don't just naively randomize inputs that all fall into the same error paths); this may require structured random inputs
 + If you're unsure about details, use independent reasoning to check what's correct (fresh context, do not re-use helper functions)
+
+## Abstraction coherence
+
+Actively refactor code that is incoherent (commit separately):
+
+- Judge abstractions by how easily real callers compose and change, not by line count, speed, or genericity alone.
+- Keep one authoritative representation and operation for each concept. Reuse it; translate only at boundaries with genuinely different semantics.
+- Pass only the data or capability an operation needs. Make assumptions explicit instead of coupling it to a larger application model.
+- Complete migrations across callers, tests, and documentation. Remove superseded implementations and temporary bridges within the agreed scope.
+- Test an abstraction against distinct supported contexts and boundary cases. Record remaining limits; passing current tests does not establish universal reuse.
+- Review the whole change path for extra conversions, competing conventions, and hidden dependencies. Prefer fewer concepts to a locally shorter patch; avoid speculative frameworks.
 
 ## Architecture
 
@@ -47,11 +60,11 @@ Pass narrow callbacks or data across implementation boundaries to keep imports a
 - Keep programs, runtimes, tools, and observers polymorphic in carrier `m`; specialize to `Eff es` at application boundaries.
 - Start root and child agents through `Bot.Effect.Agent.withRun`. Origin and resource ownership are interpreter metadata installed with `withAgentMetadata`.
 - Use `TurnState` only for data spanning model/tool turns. Keep middleware-private state lexical and pass dynamic middleware context through the runtime HList.
-- Pick the narrowest middleware hook; consult `Runtime` in `cosmobot/lib/Bot/Agent/Core.hs` for available boundaries.
+- Pick the narrowest middleware hook; consult `Runtime` in `cosmocore/lib/Bot/Agent/Core.hs` for available boundaries.
 - Keep the immediate next-model transcript separate from the more aggressively compacted canonical/durable transcript; respect each view's tool-result limits. Keep media projection, audit projection, conversation storage, and chat-message linking as separate middleware responsibilities.
 - Capture tool-emitted platform messages through chat interposition; do not return platform message ids in `ToolResult`.
 
-Test agent policy, calculus laws, and deterministic failures/cancellation in `cosmobot/test/{Agent,Program,Failure}Spec.hs`, respectively.
+Test calculus laws and generic runtime behavior in `cosmocore/test/{Program,Runtime}Spec.hs`; test bot policy, Python programs, and failures/cancellation in `cosmobot/test/{Agent,Program,Failure}Spec.hs`.
 
 ## Concurrency, resources, and identity
 
@@ -114,7 +127,7 @@ Use `-j` for Cabal builds/tests and `--test-options=--hide-successes` for tests.
 
 - configuration/RPC: `cabal test -j config-spec rpc-spec --test-options=--hide-successes`;
 - concurrency/resource: `cabal test -j concurrency-spec resource-spec --test-options=--hide-successes`;
-- agent calculus/runtime/failures: `cabal test -j program-spec agent-spec failure-spec --test-options=--hide-successes`;
+- agent calculus/runtime/failures: `cabal test -j core-program-spec core-runtime-spec program-spec agent-spec failure-spec --test-options=--hide-successes`;
 - scheduler/chat log: `cabal test -j scheduler-spec chat-log-spec --test-options=--hide-successes`;
 - executable/config/module wiring: `cabal build -j exe:cosmobot`;
 - Cosmoscope: run lint, typecheck, unit/build checks, and focused Playwright coverage for changed flows.

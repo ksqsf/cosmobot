@@ -14,6 +14,7 @@ module Bot.Agent.Middleware.ToolResultCompaction
   )
 where
 
+import Bot.Agent.Types (BotRuntime)
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types (ToolResultObservation (..))
 import Bot.Agent.Types (toolResultContent)
@@ -40,8 +41,8 @@ maxImmediateToolResultChars =
 
 withToolResultCompaction
   :: Media.Media :> es
-  => Runtime (ToolResultObservation es ': context) (Eff es)
-  -> Runtime context (Eff es)
+  => BotRuntime (ToolResultObservation es ': context) (Eff es)
+  -> BotRuntime context (Eff es)
 withToolResultCompaction program@Runtime{aroundToolTurn = toolTurn} =
   program
     { aroundAgentRun = \context action ->

@@ -35,7 +35,7 @@ isPythonProgramControl name =
     || name == toolEnableName
     || isContinuationToolName name
 
-runPythonTool :: Tool (Eff es)
+runPythonTool :: BotTool (Eff es)
 runPythonTool =
   tagged [specialTag, workTag]
     . allowWhen (.toolConfig.python.enabled)

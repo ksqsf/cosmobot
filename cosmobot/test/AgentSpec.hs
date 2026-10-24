@@ -2,6 +2,9 @@
 
 module Main (main) where
 
+import qualified Bot.Agent.Tools.Common as BotTools
+import Bot.Agent.Types (BotTool, BotRuntime)
+import Bot.Chat.Transcript (appendAssistant)
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Tools as AgentTools
@@ -39,7 +42,7 @@ import qualified Bot.Chat.Driver.Types as Driver
 import qualified Bot.Chat.Driver as ChatDriver
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Thread
-import Bot.Core.Transcript
+import Bot.Core.Transcript hiding (appendAssistant)
 import qualified Bot.Core.ReplyBody as ReplyBody
 import Bot.Core.Route (runHandlers)
 import qualified Bot.Effect.AgentAudit as AgentAudit
@@ -395,7 +398,7 @@ main =
 
 testToolArgumentDSL :: IO ()
 testToolArgumentDSL = do
-  let definition :: AgentTool.Tool (Eff '[])
+  let definition :: BotTool (Eff '[])
       definition =
         AgentTool.withDescription "Echo a value."
         $ AgentTool.tool "echo"
@@ -407,8 +410,8 @@ testToolArgumentDSL = do
                   ("count", Aeson.object ["type" Aeson..= ("integer" :: Text)]))
             )
             \value count -> do
-              context <- AgentTool.askToolContext
-              metadata <- AgentTool.askToolCallMetadata
+              context <- BotTools.askToolContext
+              metadata <- BotTools.askToolCallMetadata
               let command = context.askCommand
                   runId = metadata.agentRunId
               pure (Agent.toolText [i|#{value}:#{count}:#{command}:#{runId}|])
@@ -427,7 +430,7 @@ testToolArgumentDSL = do
 testDynamicToolVisibilitySnapshot :: IO ()
 testDynamicToolVisibilitySnapshot = do
   visible <- IORef.newIORef True
-  let definition :: AgentTool.Tool (Eff '[Concurrent, IOE])
+  let definition :: BotTool (Eff '[Concurrent, IOE])
       definition =
         AgentTool.hideUnlessM (\_ _ _ -> liftIO (IORef.readIORef visible))
         . AgentTool.withDescription "Dynamically visible."
@@ -456,12 +459,12 @@ testPythonNestedRegistryDispatch = do
     [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("compose" :: Text)])]
     , chatAnswer "done" []
     ]
-  let dynamicTool :: AgentTool.Tool (Eff AgentStack)
+  let dynamicTool :: BotTool (Eff AgentStack)
       dynamicTool =
         AgentTool.hideUnlessM (\_ _ _ -> liftIO (IORef.readIORef visible))
         . AgentTool.withDescription "Visible for the frozen model turn."
         $ AgentTool.tool "python_dynamic" AgentTool.noArguments (pure (Agent.toolText "dynamic-ran"))
-      deniedTool :: AgentTool.Tool (Eff AgentStack)
+      deniedTool :: BotTool (Eff AgentStack)
       deniedTool =
         AgentTool.allowWhen (const False)
         . AgentTool.withDescription "Denied in this context."
@@ -507,7 +510,7 @@ testPythonConfiguration = do
       disabledContext = agentContext
         { Agent.toolConfig = Agent.defaultToolConfig{AgentTypes.python = disabledPython}
         }
-      tool = PythonTools.runPythonTool :: AgentTool.Tool (Eff '[IOE])
+      tool = PythonTools.runPythonTool :: BotTool (Eff '[IOE])
   assertBool "disabled Python config hides py" (not (AgentTool.toolAllowed tool disabledContext))
   schema <- runEff $ AgentTool.resolveToolSchema tool configuredContext (startWithUser "") 0
   let description = foldMap (.description) schema
@@ -531,10 +534,10 @@ testPythonActionMiddlewareMetadata = do
       configuredContext = agentContext
         { Agent.toolConfig = Agent.defaultToolConfig{AgentTypes.python = configuredPython}
         }
-      markerTool :: AgentTool.Tool (Eff AgentStack)
+      markerTool :: BotTool (Eff AgentStack)
       markerTool = AgentTool.withDescription "Records action-level Python metadata." $
         AgentTool.tool "python_metadata_marker" AgentTool.noArguments do
-          metadata <- AgentTool.askToolCallMetadata
+          metadata <- BotTools.askToolCallMetadata
           liftIO $ IORef.modifyIORef' observedMetadata (<> [metadata])
           pure (Agent.toolText "recorded")
       interpreter runTools _message resourceOwner _request = do
@@ -600,7 +603,7 @@ testPythonResourceContinuation = do
     [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("compose" :: Text)])]
     , chatAnswer "continued once" []
     ]
-  let nestedTool :: AgentTool.Tool (Eff AgentStack)
+  let nestedTool :: BotTool (Eff AgentStack)
       nestedTool = AgentTool.withDescription "Records protocol dispatch." $
         AgentTool.tool "python_protocol_marker" AgentTool.noArguments do
           liftIO $ IORef.modifyIORef' seen (<> ["ran"])
@@ -632,7 +635,7 @@ testPythonRejectsProgramControls = do
     [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("controls" :: Text)])]
     , chatAnswer "done" []
     ]
-  let markerTool :: AgentTool.Tool (Eff AgentStack)
+  let markerTool :: BotTool (Eff AgentStack)
       markerTool =
         AgentTool.withDescription "Records dispatch."
         $ AgentTool.tool "python_marker" AgentTool.noArguments do
@@ -668,7 +671,7 @@ testPythonNestedIdsAndBudget = do
     [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("budget" :: Text)])]
     , chatAnswer "done" []
     ]
-  let markerTool :: AgentTool.Tool (Eff AgentStack)
+  let markerTool :: BotTool (Eff AgentStack)
       markerTool =
         AgentTool.withDescription "Counts nested dispatch."
         $ AgentTool.tool "python_budgeted" AgentTool.noArguments do
@@ -721,7 +724,7 @@ testPythonControlAndNestedScopes = do
     [ chatAnswer "" [toolCall "outer-python" PythonTools.runPythonToolName (Aeson.object ["code" Aeson..= ("emit" :: Text)])]
     , chatAnswer "done" []
     ]
-  let emittingTool :: AgentTool.Tool (Eff AgentStack)
+  let emittingTool :: BotTool (Eff AgentStack)
       emittingTool =
         AgentTool.withDescription "Emits one platform message."
         $ AgentTool.tool "python_emit" AgentTool.noArguments do
@@ -845,7 +848,7 @@ testPythonMixedBatchHasNoCallSideEffects = do
         ]
     , chatAnswer "done" []
     ]
-  let markerTool :: AgentTool.Tool (Eff AgentStack)
+  let markerTool :: BotTool (Eff AgentStack)
       markerTool =
         AgentTool.withDescription "Must not run in a mixed control batch."
         $ AgentTool.tool "python_marker" AgentTool.noArguments do
@@ -869,16 +872,16 @@ testPythonMixedBatchHasNoCallSideEffects = do
 
 testToolTagsEnabledFromTranscript :: IO ()
 testToolTagsEnabledFromTranscript = do
-  let alwaysTool :: AgentTool.Tool (Eff '[Concurrent, IOE])
+  let alwaysTool :: BotTool (Eff '[Concurrent, IOE])
       alwaysTool =
         AgentTool.withDescription "Always available."
         $ AgentTool.tool "always_test" AgentTool.noArguments (pure (Agent.toolText "always"))
-      chatTool :: AgentTool.Tool (Eff '[Concurrent, IOE])
+      chatTool :: BotTool (Eff '[Concurrent, IOE])
       chatTool =
         AgentTool.tagged [chatTag]
         . AgentTool.withDescription "Chat tool."
         $ AgentTool.tool "chat_test" AgentTool.noArguments (pure (Agent.toolText "chat"))
-      workTool :: AgentTool.Tool (Eff '[Concurrent, IOE])
+      workTool :: BotTool (Eff '[Concurrent, IOE])
       workTool =
         AgentTool.tagged [workTag]
         . AgentTool.withDescription "Work tool."
@@ -970,8 +973,8 @@ testScheduledActionContinuesSourceThread = do
 
 testAcpClientFileToolsAreAcpOnly :: IO ()
 testAcpClientFileToolsAreAcpOnly = do
-  let readTool = FileTools.acpReadClientFileTool :: AgentTool.Tool (Eff AgentStack)
-      writeTool = FileTools.acpWriteClientFileTool :: AgentTool.Tool (Eff AgentStack)
+  let readTool = FileTools.acpReadClientFileTool :: BotTool (Eff AgentStack)
+      writeTool = FileTools.acpWriteClientFileTool :: BotTool (Eff AgentStack)
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
   AgentTool.toolName readTool @?= "acp_read_client_file"
   AgentTool.toolName writeTool @?= "acp_write_client_file"
@@ -983,10 +986,10 @@ testAcpClientFileToolsAreAcpOnly = do
 testTerminalAndSandboxToolScopes :: IO ()
 testTerminalAndSandboxToolScopes = do
   answers <- IORef.newIORef []
-  let terminalTool = TerminalTools.terminalTool :: AgentTool.Tool (Eff AgentStack)
-      sandboxTool = SandboxTools.sandboxTool :: AgentTool.Tool (Eff AgentStack)
-      trustedBashTool = runBashTool :: AgentTool.Tool (Eff AgentStack)
-      workspaceTool = WorkspaceTools.workspaceTool :: AgentTool.Tool (Eff AgentStack)
+  let terminalTool = TerminalTools.terminalTool :: BotTool (Eff AgentStack)
+      sandboxTool = SandboxTools.sandboxTool :: BotTool (Eff AgentStack)
+      trustedBashTool = runBashTool :: BotTool (Eff AgentStack)
+      workspaceTool = WorkspaceTools.workspaceTool :: BotTool (Eff AgentStack)
       acpContext = agentContext{Agent.message = testMessage{platform = PlatformACP, chatAliases = ["session-1"]}}
       missingIdentity = agentContext{Agent.message = testMessage{senderId = Nothing}}
   (sandboxSchema, workspaceSchema, trustedBashSchema) <-
@@ -1015,7 +1018,7 @@ testTerminalAndSandboxToolScopes = do
 
 testTelegramRequestTool :: IO ()
 testTelegramRequestTool = do
-  let definition = TelegramTools.telegramRequestTool :: AgentTool.Tool (Eff '[Telegram.Telegram, IOE])
+  let definition = TelegramTools.telegramRequestTool :: BotTool (Eff '[Telegram.Telegram, IOE])
       admin = superuserContext{Agent.message = testMessage{Message.platform = PlatformTelegram}}
       user = admin{Agent.superuser = False}
       other = admin{Agent.message = testMessage{Message.platform = PlatformMatrix}}
@@ -1050,7 +1053,7 @@ testTelegramRequestTool = do
 
 testMatrixRequestToolScope :: IO ()
 testMatrixRequestToolScope = do
-  let tool = MatrixTools.matrixRequestTool :: AgentTool.Tool (Eff AgentStack)
+  let tool = MatrixTools.matrixRequestTool :: BotTool (Eff AgentStack)
       matrixAdmin = superuserContext{Agent.message = testMessage{Message.platform = PlatformMatrix}}
       matrixUser = matrixAdmin{Agent.superuser = False}
   assertBool "matrix request is hidden outside Matrix" (not (AgentTool.toolAllowed tool superuserContext))
@@ -1068,7 +1071,7 @@ testSubAgentLifecycle = do
     started <- MVar.newEmptyMVar
     finish <- MVar.newEmptyMVar
     let blockTool = AgentTool.tool "block" AgentTool.noArguments do
-          childMetadata <- AgentTool.askToolCallMetadata
+          childMetadata <- BotTools.askToolCallMetadata
           MVar.putMVar started childMetadata
           MVar.takeMVar finish
           pure (Agent.toolText "finished")
@@ -1156,7 +1159,7 @@ testSubAgentWaitOperations = do
     firstStarted <- MVar.newEmptyMVar
     secondStarted <- MVar.newEmptyMVar
     let blockTool = AgentTool.tool "block" AgentTool.noArguments do
-          context <- AgentTool.askToolContext
+          context <- BotTools.askToolContext
           let (started, gate)
                 | context.systemContext == "first" = (firstStarted, firstGate)
                 | otherwise = (secondStarted, secondGate)
@@ -1352,7 +1355,7 @@ testSendFileToolReportsUploadFailure = do
 
 testSendFileToolIsNoisyAndSuperuserOnly :: IO ()
 testSendFileToolIsNoisyAndSuperuserOnly = do
-  let tool = ChatTools.sendFileTool :: AgentTool.Tool (Eff '[Chat.Chat, IOE])
+  let tool = ChatTools.sendFileTool :: BotTool (Eff '[Chat.Chat, IOE])
       qqContext =
         superuserContext
           { Agent.message = superuserContext.message{Message.platform = PlatformQQ}
@@ -1416,7 +1419,7 @@ testSendMediaToolUploadsCachedMedia =
                   ])
         pure (expectedPath, defaultResult, namedResult)
       (expectedPath, defaultResult, namedResult) <- either assertFailure pure runResult
-      let tool = MediaTools.sendMediaTool :: AgentTool.Tool (Eff AgentStack)
+      let tool = MediaTools.sendMediaTool :: BotTool (Eff AgentStack)
       AgentTool.toolIsNoisy tool @?= True
       assertBool "send_media should be available to normal users" (AgentTool.toolAllowed tool agentContext)
       IORef.readIORef uploads >>= (@?= [(expectedPath, Nothing), (expectedPath, Just "../report.png")])
@@ -2183,7 +2186,7 @@ testReadMediaTextToolReadsCachedSlices =
           ])
         pure (mediaRef, result)
       (mediaRef, result) <- either assertFailure pure runResult
-      let tool = MediaTools.readMediaTextTool :: AgentTool.Tool (Eff AgentStack)
+      let tool = MediaTools.readMediaTextTool :: BotTool (Eff AgentStack)
       assertBool "expected stored media ref" (maybe False ("media:mf_" `Text.isPrefixOf`) mediaRef)
       AgentTool.toolIsNoisy tool @?= False
       assertBool "media_text should be available to everyone" (AgentTool.toolAllowed tool agentContext)
@@ -2265,7 +2268,7 @@ testGenerateAudioToolUsesConfiguredAudioOptions = do
       assertFailure [i|expected audio generation success, got #{show failure :: String}|]
   IORef.readIORef generateCalls >>= (@?= [AudioGenerateCall "say hello" expectedOptions])
   IORef.readIORef audioReplies >>= (@?= [(generatedAudio, Nothing)])
-  let tool = AudioTools.generateAudioTool :: AgentTool.Tool (Eff '[Chat.Chat, LLM.LLM])
+  let tool = AudioTools.generateAudioTool :: BotTool (Eff '[Chat.Chat, LLM.LLM])
   AgentTool.toolIsNoisy tool @?= True
 
 testEditImageToolPassesImageRequestOptions :: IO ()
@@ -3597,7 +3600,7 @@ testAgentAuditStorageOmitsLargeToolResults =
         other ->
           assertFailure [i|expected one cached result file, got #{length other}|]
 
-largeAuditResultTool :: Text -> AgentTool.Tool (Eff es)
+largeAuditResultTool :: Text -> BotTool (Eff es)
 largeAuditResultTool result =
   AgentTool.withDescription "fake large audit result"
   $ AgentTool.tool "large_audit_result" AgentTool.noArguments
@@ -4442,7 +4445,7 @@ testWebFetchMaxUsesLimitsCalls = do
   answer @?= "done"
   IORef.readIORef fetches >>= (@?= 1)
 
-fakeWebFetchTool :: IOE :> es => IORef.IORef Int -> AgentTool.Tool (Eff es)
+fakeWebFetchTool :: IOE :> es => IORef.IORef Int -> BotTool (Eff es)
 fakeWebFetchTool fetches =
   AgentTool.withDescription "fake web fetch"
   $ AgentTool.toolWithRunState "fetch_url" AgentTool.noArguments
@@ -4661,7 +4664,7 @@ testThreadStorageOmitsLargeToolResults =
         other ->
           assertFailure [i|expected one cached result file, got #{length other}|]
 
-largeResultTool :: Text -> AgentTool.Tool (Eff es)
+largeResultTool :: Text -> BotTool (Eff es)
 largeResultTool result =
   AgentTool.withDescription "fake large result"
   $ AgentTool.tool "large_tool" AgentTool.noArguments
@@ -5675,7 +5678,7 @@ toolCall callId name arguments =
     , arguments = jsonText arguments
     }
 
-encodedToolParameters :: AgentTool.Tool (Eff es) -> Eff es Text
+encodedToolParameters :: BotTool (Eff es) -> Eff es Text
 encodedToolParameters definition = do
   schema <- AgentTool.resolveToolSchema definition agentContext (startWithUser "") 0
   pure . TextEncoding.decodeUtf8 . LazyByteString.toStrict . Aeson.encode $
@@ -5704,15 +5707,15 @@ startTestRuntime
   :: (Chat.Chat :> es, Concurrent :> es, IOE :> es)
   => Int
   -> Agent.Context
-  -> [AgentTool.Tool (Eff es)]
-  -> Eff es (Agent.Runtime context (Eff es))
+  -> [BotTool (Eff es)]
+  -> Eff es (BotRuntime context (Eff es))
 startTestRuntime =
   Agent.startRuntime
 
 runTestAgent
   :: Int
   -> Agent.Context
-  -> [AgentTool.Tool (Eff AgentStack)]
+  -> [BotTool (Eff AgentStack)]
   -> Transcript
   -> Eff AgentStack (Text, Transcript)
 runTestAgent maxTurns context tools transcript = do
@@ -5724,7 +5727,7 @@ runTestAgent maxTurns context tools transcript = do
 runTestAgentStreaming
   :: Int
   -> Agent.Context
-  -> [AgentTool.Tool (Eff AgentStack)]
+  -> [BotTool (Eff AgentStack)]
   -> Transcript
   -> Stream (Of Agent.Output) (Eff AgentStack) Transcript
 runTestAgentStreaming maxTurns context tools transcript = do
@@ -5735,7 +5738,7 @@ runTestAgentStreaming maxTurns context tools transcript = do
 runAgentWithToolMessageCapture
   :: Int
   -> Agent.Context
-  -> [AgentTool.Tool (Eff AgentStack)]
+  -> [BotTool (Eff AgentStack)]
   -> Transcript
   -> IORef.IORef [Text]
   -> IORef.IORef [Maybe MessageId]

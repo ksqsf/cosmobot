@@ -11,22 +11,13 @@ module Bot.Util.Stream
   )
 where
 
+import Bot.Util.StreamLifetime (bracketStream, streamFinally)
 import Bot.Prelude
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Effectful.Concurrent.STM as STM
 import qualified Effectful.Resource as Resource
 import qualified Streaming as S
 import qualified Streaming.Prelude as S
-
-bracketStream
-  :: Resource.Resource :> es
-  => Eff es resource
-  -> (resource -> Eff es ())
-  -> (resource -> Stream (Of item) (Eff es) result)
-  -> Stream (Of item) (Eff es) result
-bracketStream acquire release use = do
-  (releaseKey, resource) <- S.lift (Resource.allocateEff acquire release)
-  use resource `streamFinally` Resource.releaseEff releaseKey
 
 -- | Merge several streams into one stream through a bounded FIFO queue.
 --
@@ -96,23 +87,6 @@ readMerged streamCount queue =
           S.lift (throwIO err)
       | otherwise =
           pure ()
-
-streamFinally
-  :: Stream (Of a) (Eff es) r
-  -> Eff es ()
-  -> Stream (Of a) (Eff es) r
-streamFinally stream cleanup =
-  go stream
-  where
-    go current = do
-      next <- S.lift (S.next current `onException` cleanup)
-      case next of
-        Left result -> do
-          S.lift cleanup
-          pure result
-        Right (item, rest) -> do
-          S.yield item
-          go rest
 
 cleanupPumps :: Concurrency.Concurrency :> es => [Concurrency.Handle] -> Eff es ()
 cleanupPumps pumps =

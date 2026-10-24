@@ -9,11 +9,11 @@ import Bot.Prelude hiding (state)
 import Control.Monad (foldM)
 import qualified Control.Exception as Exception
 import qualified Bot.Effect.HTTP as HTTP
-import Bot.LLM.Config (ChatProviderConfig (..))
+import Bot.LLM.Provider (ChatProviderConfig (..))
 import Bot.LLM.ImageInput (parseDataImage)
 import Bot.LLM.Stream
 import Bot.LLM.Types
-import Bot.Media.Mime (sniffMime)
+import Bot.Util.Mime (sniffMime)
 import Bot.Util.Time (secondsToMicroseconds)
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as KM

@@ -9,7 +9,7 @@ where
 
 import Bot.Agent.Core
 import Bot.Agent.Transcript (appendMessages)
-import Bot.Agent.Types
+import Bot.Agent.Result
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Bot.Util.HList as HList
@@ -38,7 +38,7 @@ finishToolTurn aroundToolTurn request action =
 
 runControlTurn
   :: Monad m
-  => Runtime '[] m
+  => Runtime host metadata '[] m
   -> ToolRequest
   -> LLM.ToolCall
   -> m ToolResult

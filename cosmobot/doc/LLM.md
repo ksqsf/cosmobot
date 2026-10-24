@@ -113,9 +113,11 @@ and generated media are outside this chat transport.
 
 ## Implementation
 
-`Bot.Effect.LLM` is the provider-neutral interface. `Bot.LLM` owns dispatch,
-media resolution, and result normalization. Shared configuration, retry policy,
-and HTTP/SSE lifecycle live in `Bot.LLM.Config`, `Bot.LLM.Retry`, and
+`cosmocore` owns the provider-neutral `Bot.Effect.LLM` interface and provider
+dispatch in `Bot.LLM.Transport`. `cosmobot`'s `Bot.LLM` owns media resolution
+and result normalization. Runtime settings live in `Bot.LLM.Provider`; TOML
+parsing and schema metadata stay in `Bot.LLM.Config`. Retry policy
+and HTTP/SSE lifecycle live in `Bot.LLM.Retry` and
 `Bot.LLM.Stream`. `Bot.LLM.OpenAI`, `Bot.LLM.Responses`, `Bot.LLM.Anthropic`, and `Bot.LLM.Gemini` own their respective
 wire formats. Provider transcript state is excluded from Chat Completions requests/logs and summary
 prompts.

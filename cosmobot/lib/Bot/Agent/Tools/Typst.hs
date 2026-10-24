@@ -10,7 +10,7 @@ module Bot.Agent.Tools.Typst
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (requiredArgument, tagged, tool, withDescription)
 import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.Typst as Typst
@@ -18,7 +18,7 @@ import Bot.Prelude
 import Bot.System.Typst.Types
 import qualified Data.Text as Text
 
-typstRenderTool :: (Chat.Chat :> es, Typst.Typst :> es) => Tool (Eff es)
+typstRenderTool :: (Chat.Chat :> es, Typst.Typst :> es) => BotTool (Eff es)
 typstRenderTool =
   tagged [workTag]
   . withDescription "Render a Typst document and send it to the current chat. Use this for diagrams, tables, formulas, posters, or other precise layouts that should be generated from Typst source. The source must be a complete Typst document."

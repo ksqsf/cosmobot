@@ -4,7 +4,9 @@ Description : Agent context, events, and tool results
 Stability   : experimental
 -}
 module Bot.Agent.Types
-  ( AgentRunId
+  ( BotTool
+  , BotRuntime
+  , AgentRunId
   , ContextStrategy (..)
   , ToolCallMetadata (..)
   , Context (..)
@@ -33,13 +35,19 @@ module Bot.Agent.Types
   )
 where
 
-import Bot.Agent.Failure
+import qualified Bot.Agent.Core as Core
+import qualified Bot.Agent.Tool as Tool
+import Bot.Agent.Result
 import Bot.Core.Message
 import Bot.Core.Thread (ThreadMessageKey)
 import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Prelude
+
+type BotTool = Tool.Tool Context ToolCallMetadata
+
+type BotRuntime = Core.Runtime Context ToolCallMetadata
 
 type AgentRunId = Text
 
@@ -211,48 +219,3 @@ type Observer ctx m =
 ignoreObserver :: Applicative m => ctx -> Observer ctx m
 ignoreObserver ctx =
   const (pure ctx)
-
--- | One tool call outcome. Failures are still returned as tool results because
--- OpenAI-compatible history requires every requested tool call to have a
--- corresponding tool-result message.
-data ToolResult
-  = ToolSucceeded
-      { content :: !Text
-      , imageUrls :: ![Text]
-      }
-  | ToolFailed
-      { failure :: !Failure
-      }
-
-toolText :: Text -> ToolResult
-toolText content =
-  ToolSucceeded content []
-
-toolTextWithImages :: Text -> [Text] -> ToolResult
-toolTextWithImages content imageUrls =
-  ToolSucceeded content imageUrls
-
-toolFailure :: Failure -> ToolResult
-toolFailure failure =
-  ToolFailed failure
-
-toolResultContent :: ToolResult -> Text
-toolResultContent = \case
-  ToolSucceeded{content} ->
-    content
-  ToolFailed{failure} ->
-    failure.userMessage
-
-toolResultImageUrls :: ToolResult -> [Text]
-toolResultImageUrls = \case
-  ToolSucceeded{imageUrls} ->
-    imageUrls
-  ToolFailed{} ->
-    []
-
-toolResultFailure :: ToolResult -> Maybe Failure
-toolResultFailure = \case
-  ToolSucceeded{} ->
-    Nothing
-  ToolFailed{failure} ->
-    Just failure

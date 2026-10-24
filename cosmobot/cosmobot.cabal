@@ -82,7 +82,8 @@ common language
         BlockArguments
 
 common lib-deps
-    build-depends:    base >=4.18.0.0
+    build-depends:    cosmocore
+                    , base >=4.18.0.0
                     , relude
                     , text
                     , containers
@@ -141,6 +142,7 @@ common lib-deps
 common test-deps
     build-depends:    base >=4.18.0.0
                     , cosmobot
+                    , cosmocore
                     , tasty
                     , tasty-hunit
                     , aeson
@@ -189,12 +191,7 @@ library
         Bot.ACP.State
         Bot.Agent
         Bot.Agent.Config
-        Bot.Agent.Control
-        Bot.Agent.Transcript
-        Bot.Agent.Core
-        Bot.Agent.Failure
         Bot.Agent.Middleware.ContextCompaction
-        Bot.Agent.Middleware.LogContext
         Bot.Agent.Middleware.RecursiveTranscript
         Bot.Agent.Middleware.Continuation
         Bot.Agent.Middleware.Observation
@@ -206,9 +203,6 @@ library
         Bot.Agent.Middleware.ToolResultCompaction
         Bot.Agent.Middleware.Typing
         Bot.Agent.Middleware.Tools
-        Bot.Agent.Program.Python
-        Bot.Agent.Tool
-        Bot.Agent.ToolRegistry
         Bot.Agent.Tools
         Bot.Agent.Tools.Audio
         Bot.Agent.Tools.Chat
@@ -263,6 +257,7 @@ library
         Bot.Chat.Driver.Telegram.Types
         Bot.Chat.Driver.Types
         Bot.Chat.AgentReply
+        Bot.Chat.Transcript
         Bot.Chat.Types
         Bot.ChatLog.Record
         Bot.ChatLog.Types
@@ -271,7 +266,6 @@ library
         Bot.Config.Schema
         Bot.Concurrency.Manager
         Bot.Core.Thread
-        Bot.Core.Transcript
         Bot.Core.Message
         Bot.Core.ReplyBody
         Bot.Core.Route
@@ -283,8 +277,6 @@ library
         Bot.Effect.ChatDriver
         Bot.Effect.ChatLog
         Bot.Effect.Concurrency
-        Bot.Effect.HTTP
-        Bot.Effect.LLM
         Bot.Effect.Lifecycle
         Bot.Effect.Media
         Bot.Effect.Telegram
@@ -296,7 +288,6 @@ library
         Bot.Effect.Skills
         Bot.Effect.Storage
         Bot.Effect.Typst
-        Bot.HTTP
         Bot.Handler.Admin
         Bot.Handler.Admin.Config
         Bot.Handler.Ask
@@ -319,16 +310,7 @@ library
         Bot.Handler.Typing.Typst
         Bot.JSONRPC
         Bot.LLM
-        Bot.LLM.ImageInput
         Bot.LLM.Config
-        Bot.LLM.Retry
-        Bot.LLM.OpenAI
-        Bot.LLM.Test
-        Bot.LLM.Stream
-        Bot.LLM.Responses
-        Bot.LLM.Gemini
-        Bot.LLM.Anthropic
-        Bot.LLM.Types
         Bot.Lifecycle
         Bot.Log
         Bot.Main
@@ -341,7 +323,6 @@ library
         Bot.Media.S3.Config
         Bot.Memory
         Bot.Memory.Config
-        Bot.Prelude
         Bot.Plugin.Config
         Bot.Plugin.Manager
         Bot.Plugin.Protocol
@@ -389,14 +370,11 @@ library
         Bot.System.Typst.CLI
         Bot.System.Typst.Test
         Bot.System.Typst.Types
-        Bot.Util.Aeson
         Bot.Util.Html
-        Bot.Util.HList
         Bot.Util.Image
         Bot.Util.Multipart
         Bot.Util.Process
         Bot.Util.Stream
-        Bot.Util.Time
         Bot.Util.Toml
     build-depends:    log-base
                     , websockets
@@ -419,6 +397,7 @@ executable cosmobot
     -- Other library packages from which modules are imported.
     build-depends:    base >=4.18.0.0
                     , cosmobot
+                    , cosmocore
                     , aeson
                     , bytestring
                     , effectful
@@ -569,8 +548,6 @@ test-suite program-spec
                     , test-build
     type:             exitcode-stdio-1.0
     main-is:          ProgramSpec.hs
-    build-depends:    QuickCheck
-                    , tasty-quickcheck
     hs-source-dirs:   test
 
 test-suite failure-spec
@@ -584,14 +561,6 @@ test-suite failure-spec
     build-depends:    resourcet-effectful
     hs-source-dirs:   test
 
-test-suite llm-retry-spec
-    import:           warnings
-                    , language
-                    , test-deps
-                    , test-build
-    type:             exitcode-stdio-1.0
-    main-is:          LLMRetrySpec.hs
-    hs-source-dirs:   test
 
 test-suite rpc-spec
     import:           warnings
@@ -692,13 +661,3 @@ benchmark message-pipeline-bench
                     , resourcet-effectful
                     , tasty-bench
     hs-source-dirs:   bench
-
-test-suite llm-native-spec
-    import:           warnings
-                    , language
-                    , test-deps
-                    , test-build
-    type:             exitcode-stdio-1.0
-    main-is:          LLMNativeSpec.hs
-    build-depends:    resourcet-effectful
-    hs-source-dirs:   test

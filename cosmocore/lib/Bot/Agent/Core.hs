@@ -23,7 +23,7 @@ where
 
 import Bot.Agent.Tool (Tool)
 import Bot.Agent.ToolRegistry (RunningTool)
-import Bot.Agent.Types
+import Bot.Agent.Result
 import Bot.Core.Transcript
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -128,18 +128,18 @@ mapStep f = \case
 -- behavior gets named middleware boundaries. For example, transcript
 -- compaction belongs in 'aroundModelTurn': it can rewrite state before the
 -- next LLM request without changing tool execution or completion handling.
-data Runtime (context :: [Type]) m = Runtime
+data Runtime host metadata (context :: [Type]) m = Runtime
   { runId :: !Text
-  , toolCallMetadata :: !ToolCallMetadata
-  , context :: Context
+  , toolCallMetadata :: !metadata
+  , context :: host
     -- | All configured tools, including tools unavailable to this request.
-  , tools :: [Tool m]
+  , tools :: [Tool host metadata m]
     -- | Tools whose schemas are visible to the model.
-  , exposedTools :: [Tool m]
+  , exposedTools :: [Tool host metadata m]
     -- | Per-run tool implementations.
-  , runningTools :: [RunningTool m]
+  , runningTools :: [RunningTool metadata m]
     -- | Dispatch one call through the frozen per-run registry.
-  , dispatchToolCall :: ToolCallMetadata -> Int -> Transcript -> LLM.ToolCall -> m ToolResult
+  , dispatchToolCall :: metadata -> Int -> Transcript -> LLM.ToolCall -> m ToolResult
     -- | Maximum number of model-requested tool turns.
   , maxTurns :: !Int
     -- | Select the transcript sent to the next model request. Most programs
@@ -149,7 +149,7 @@ data Runtime (context :: [Type]) m = Runtime
     --
     -- The final runtime is supplied so middleware uses every installed
     -- bracket, including wrappers added later in the composition chain.
-  , aroundProgram :: Runtime '[] m -> Program m Result -> Program m Result
+  , aroundProgram :: Runtime host metadata '[] m -> Program m Result -> Program m Result
     -- | Wrap one complete agent run.
   , aroundAgentRun :: HList.HList context -> Stream (Of Output) m Result -> Stream (Of Output) m Result
     -- | Wrap one complete model phase.

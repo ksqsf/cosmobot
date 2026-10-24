@@ -8,7 +8,7 @@ module Bot.LLM.Responses
 import Bot.Prelude hiding (state)
 import Control.Monad (foldM)
 import qualified Bot.Effect.HTTP as HTTP
-import Bot.LLM.Config (ChatProviderConfig (..))
+import Bot.LLM.Provider (ChatProviderConfig (..))
 import Bot.LLM.ImageInput (parseDataImage)
 import Bot.LLM.Stream
 import Bot.LLM.Types

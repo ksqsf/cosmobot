@@ -10,13 +10,15 @@ module Bot.Handler.Console
   )
 where
 
+import Bot.Agent.Types (BotTool, BotRuntime)
+import Bot.Chat.Transcript (startWithUserInput, appendUserInput, appendAssistant)
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Middleware.Observation as AgentObservation
 import qualified Bot.Agent.Tool as AgentTool
 import Bot.Core.Message
 import Bot.Core.Route
 import Bot.Core.Thread
-import Bot.Core.Transcript
+import Bot.Core.Transcript hiding (appendAssistant)
 import qualified Bot.Effect.Agent as AgentEffect
 import qualified Bot.Effect.AgentAudit as AgentAudit
 import qualified Bot.Effect.Chat as Chat
@@ -73,7 +75,7 @@ type HandlerEffects es =
 consoleHandlers
   :: HandlerEffects es
   => Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> ConsoleHandlerConfig
   -> ThreadStore
   -> [RouteHandler (Eff es)]
@@ -91,7 +93,7 @@ isConsoleMessage message =
 handleConsoleMessage
   :: HandlerEffects es
   => Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> ConsoleHandlerConfig
   -> ThreadStore
   -> IncomingMessage
@@ -129,7 +131,7 @@ haltConsoleSession threads message = do
 runConsoleAgent
   :: HandlerEffects es
   => Agent.ToolConfig
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> ConsoleHandlerConfig
   -> ThreadStore
   -> Concurrency.Handle
@@ -223,7 +225,7 @@ runActiveConsoleAgent
   -> Maybe ThreadMessageKey
   -> Session.SessionId
   -> IncomingMessage
-  -> Agent.Runtime '[] (Eff es)
+  -> BotRuntime '[] (Eff es)
   -> Transcript
   -> Eff es ()
 runActiveConsoleAgent threads active parentMessageKey sessionId message runtime transcript = do

@@ -1,5 +1,18 @@
 # Agent Programs
 
+The calculus and generic runtime live in the `cosmocore` package, under the
+existing `Bot.Agent.Core`, `Bot.Agent.Program`, and `Bot.Agent.Runtime` module
+names. `Program m result` is independent of application identity. Tools and
+runtimes take host context and metadata parameters; the bot specializes them
+as `BotTool` and `BotRuntime` in `Bot.Agent.Types`. Bot tool handlers obtain
+their context through `Bot.Agent.Tools.Common`, without type applications.
+
+`Bot.Core.Transcript` contains model messages only. Chat input conversion and
+assistant reply directives belong to `Bot.Chat.Transcript`. Provider runtime
+settings live in `Bot.LLM.Provider`; TOML parsing and inspection metadata stay
+in `Bot.LLM.Config`. The bot still starts root and child runs through
+`Bot.Effect.Agent.withRun`, which owns their application metadata.
+
 Cosmobot treats an agent run as one region of a composable `Program`. The
 program may perform ordinary computation, enter an agent loop, react to its
 result, and continue with another computation. A running program can also
@@ -56,13 +69,15 @@ ordinary computation
 
 `Program m result` is the unit of composition. `agentProgram` enters the
 recursive model/tool loop and returns its final `Result` as an ordinary
-program value:
+program value. It needs only the run id; the interpreter supplies model and tool
+capabilities when executing the program:
 
 ```haskell
 agentProgram
-  :: Runtime context (Eff es)
+  :: Monad m
+  => Text  -- run id
   -> TurnState
-  -> Program (Eff es) Result
+  -> Program m Result
 ```
 
 A program can therefore place computation on either side of an agent run:

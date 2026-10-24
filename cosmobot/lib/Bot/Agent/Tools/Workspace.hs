@@ -12,7 +12,7 @@ module Bot.Agent.Tools.Workspace
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (parsedArguments, allowWhen, tagged, tool, withDescription)
 import Bot.Agent.Types
 import qualified Bot.Effect.Resource as Resource
 import Bot.Prelude
@@ -26,7 +26,7 @@ import qualified Effectful.Process.Typed as TypedProcess
 
 workspaceTool
   :: (Resource.Resource :> es, FileSystem.FileSystem :> es, Concurrent :> es, TypedProcess.TypedProcess :> es, IOE :> es)
-  => Tool (Eff es)
+  => BotTool (Eff es)
 workspaceTool =
   tagged [workTag]
   . allowWhen (\context -> superuserOnly context && isRight (Resource.accessFromMessage context.message))

@@ -125,7 +125,7 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ runner.os }}-ghc-9.10.3-cabal-${{ hashFiles('cabal.project', 'cosmobot/cosmobot.cabal', 'cosmocode/cosmocode.cabal') }}
+          key: ${{ runner.os }}-ghc-9.10.3-cabal-${{ hashFiles('cabal.project', '**/*.cabal') }}
           restore-keys: |
             ${{ runner.os }}-ghc-9.10.3-cabal-
 

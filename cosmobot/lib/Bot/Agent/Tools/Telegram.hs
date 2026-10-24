@@ -4,7 +4,7 @@ module Bot.Agent.Tools.Telegram
 where
 
 import Bot.Agent.Failure (externalServiceFailure)
-import Bot.Agent.Tool
+import Bot.Agent.Tool (requiredArgument, optionalArgument, validateArgument, withDefault, allowWhen, tagged, tool, withDescription)
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Core.Message (ChatPlatform (PlatformTelegram), IncomingMessage (..))
@@ -14,7 +14,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import Data.Char (isAscii, isAlpha)
 
-telegramRequestTool :: Telegram.Telegram :> es => Tool (Eff es)
+telegramRequestTool :: Telegram.Telegram :> es => BotTool (Eff es)
 telegramRequestTool =
   tagged [chatTag]
   . allowWhen telegramSuperuser

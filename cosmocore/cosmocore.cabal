@@ -1,0 +1,118 @@
+cabal-version: 3.14
+name: cosmocore
+version: 0.1.0.0
+synopsis: Reusable LLM transports and agent calculus
+license: NONE
+author: ksqsf
+maintainer: i@ksqsf.moe
+build-type: Simple
+
+common language
+    default-language: GHC2024
+    default-extensions:
+        DeriveAnyClass
+        DerivingVia
+        DuplicateRecordFields
+        NoFieldSelectors
+        NoImplicitPrelude
+        OverloadedRecordDot
+        OverloadedStrings
+        QuasiQuotes
+        TemplateHaskell
+        TypeFamilies
+        BlockArguments
+
+library
+    import: language
+    ghc-options: -Wall
+    hs-source-dirs: lib
+    exposed-modules:
+        Bot.Agent.Control
+        Bot.Agent.Core
+        Bot.Agent.Failure
+        Bot.Agent.Middleware.LogContext
+        Bot.Agent.Program
+        Bot.Agent.Program.Python
+        Bot.Agent.Result
+        Bot.Agent.Runtime
+        Bot.Agent.Tool
+        Bot.Agent.ToolRegistry
+        Bot.Agent.Transcript
+        Bot.Core.Transcript
+        Bot.Effect.HTTP
+        Bot.Effect.LLM
+        Bot.HTTP
+        Bot.LLM.Anthropic
+        Bot.LLM.Gemini
+        Bot.LLM.ImageInput
+        Bot.LLM.OpenAI
+        Bot.LLM.Provider
+        Bot.LLM.Responses
+        Bot.LLM.Retry
+        Bot.LLM.Stream
+        Bot.LLM.Test
+        Bot.LLM.Transport
+        Bot.LLM.Types
+        Bot.Log.Common
+        Bot.Prelude
+        Bot.Util.Aeson
+        Bot.Util.HList
+        Bot.Util.Mime
+        Bot.Util.StreamLifetime
+        Bot.Util.Time
+    build-depends: base >=4.18.0.0
+                 , relude
+                 , text
+                 , containers
+                 , effectful
+                 , katip-effectful
+                 , streaming
+                 , streaming-bytestring
+                 , transformers
+                 , resourcet-effectful
+                 , bytestring
+                 , base64-bytestring
+                 , aeson
+                 , aeson-pretty
+                 , string-interpolate
+                 , template-haskell
+                 , filepath
+                 , modern-uri
+                 , req
+                 , retry
+                 , http-client
+                 , http-client-tls
+                 , crypton-connection
+                 , tls >= 2.1
+                 , http-types
+                 , optics
+
+common test-deps
+    build-depends: base, cosmocore, tasty, tasty-hunit, QuickCheck, tasty-quickcheck,
+                   aeson, bytestring, containers, effectful, http-client, http-types,
+                   streaming, text, wai, warp, resourcet-effectful
+    ghc-options: -Wall -O0 -threaded
+
+test-suite llm-retry-spec
+    import: language, test-deps
+    type: exitcode-stdio-1.0
+    main-is: LLMRetrySpec.hs
+    hs-source-dirs: test
+
+test-suite llm-native-spec
+    import: language, test-deps
+    type: exitcode-stdio-1.0
+    main-is: LLMNativeSpec.hs
+    hs-source-dirs: test
+
+test-suite core-program-spec
+    import: language, test-deps
+    type: exitcode-stdio-1.0
+    main-is: ProgramSpec.hs
+    hs-source-dirs: test
+
+test-suite core-runtime-spec
+    import: language, test-deps
+    type: exitcode-stdio-1.0
+    main-is: RuntimeSpec.hs
+    hs-source-dirs: test

@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-|
 Module      : Bot.Agent.Tool
 Description : Dynamic agent tools, schemas, and argument decoding
@@ -5,6 +6,7 @@ Stability   : experimental
 -}
 module Bot.Agent.Tool
   ( Tool
+  , ToolCallContext
   , NamedTag (..)
   , ToolTag (..)
   , ToolRunner
@@ -44,7 +46,7 @@ module Bot.Agent.Tool
   )
 where
 
-import Bot.Agent.Types
+import Bot.Agent.Result
 import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -55,45 +57,45 @@ import qualified Data.Foldable as Foldable
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Effectful.Reader.Static as Reader
 
-type ToolRunner m =
-  ToolCallMetadata -> Aeson.Value -> m ToolResult
+type ToolRunner metadata m =
+  metadata -> Aeson.Value -> m ToolResult
 
-type ContextualToolRunner m =
-  ToolCallMetadata -> Int -> Transcript -> Aeson.Value -> m ToolResult
+type ContextualToolRunner metadata m =
+  metadata -> Int -> Transcript -> Aeson.Value -> m ToolResult
 
-data ToolCallContext = ToolCallContext
-  { agentContext :: !Context
-  , metadata :: !ToolCallMetadata
+data ToolCallContext host metadata = ToolCallContext
+  { agentContext :: !host
+  , metadata :: !metadata
   , turn :: !Int
   , transcript :: !Transcript
   }
 
-type ToolAction es =
-  Eff (Reader.Reader ToolCallContext : es) ToolResult
+type ToolAction host metadata es =
+  Eff (Reader.Reader (ToolCallContext host metadata) : es) ToolResult
 
 askToolContext
-  :: Reader.Reader ToolCallContext :> es
-  => Eff es Context
+  :: forall host metadata es. Reader.Reader (ToolCallContext host metadata) :> es
+  => Eff es host
 askToolContext =
-  Reader.ask @ToolCallContext <&> (.agentContext)
+  Reader.ask @(ToolCallContext host metadata) <&> (.agentContext)
 
 askToolCallMetadata
-  :: Reader.Reader ToolCallContext :> es
-  => Eff es ToolCallMetadata
+  :: forall host metadata es. Reader.Reader (ToolCallContext host metadata) :> es
+  => Eff es metadata
 askToolCallMetadata =
-  Reader.ask @ToolCallContext <&> (.metadata)
+  Reader.ask @(ToolCallContext host metadata) <&> (.metadata)
 
 askToolTurn
-  :: Reader.Reader ToolCallContext :> es
+  :: forall host metadata es. Reader.Reader (ToolCallContext host metadata) :> es
   => Eff es Int
 askToolTurn =
-  Reader.ask @ToolCallContext <&> (.turn)
+  Reader.ask @(ToolCallContext host metadata) <&> (.turn)
 
 askToolTranscript
-  :: Reader.Reader ToolCallContext :> es
+  :: forall host metadata es. Reader.Reader (ToolCallContext host metadata) :> es
   => Eff es Transcript
 askToolTranscript =
-  Reader.ask @ToolCallContext <&> (.transcript)
+  Reader.ask @(ToolCallContext host metadata) <&> (.transcript)
 
 data NamedTag = NamedTag
   { tagName :: !Text
@@ -192,18 +194,18 @@ parsedArguments schema parser =
   ParsedArguments{parsedSchema = schema, parsedParser = parser}
 
 class ToolArguments arguments where
-  type ToolHandler arguments (es :: [Effect])
+  type ToolHandler arguments host metadata (es :: [Effect])
 
   toolArgumentsSchema :: arguments -> Aeson.Value
 
   parseToolHandler
     :: arguments
-    -> ToolHandler arguments es
+    -> ToolHandler arguments host metadata es
     -> Aeson.Value
-    -> AesonTypes.Parser (ToolAction es)
+    -> AesonTypes.Parser (ToolAction host metadata es)
 
 instance ToolArguments NoArguments where
-  type ToolHandler NoArguments es = ToolAction es
+  type ToolHandler NoArguments host metadata es = ToolAction host metadata es
 
   toolArgumentsSchema _ =
     emptyObjectSchema
@@ -212,7 +214,7 @@ instance ToolArguments NoArguments where
     Aeson.withObject "tool arguments" (const (pure handler))
 
 instance ToolArguments (ToolArgument a) where
-  type ToolHandler (ToolArgument a) es = a -> ToolAction es
+  type ToolHandler (ToolArgument a) host metadata es = a -> ToolAction host metadata es
 
   toolArgumentsSchema argument =
     argumentsObjectSchema [argumentField argument] (maybeToList (requiredName argument))
@@ -222,7 +224,7 @@ instance ToolArguments (ToolArgument a) where
       handler <$> argument.argumentParser object
 
 instance ToolArguments (ToolArgument a, ToolArgument b) where
-  type ToolHandler (ToolArgument a, ToolArgument b) es = a -> b -> ToolAction es
+  type ToolHandler (ToolArgument a, ToolArgument b) host metadata es = a -> b -> ToolAction host metadata es
 
   toolArgumentsSchema (a, b) =
     argumentsObjectSchema
@@ -234,8 +236,8 @@ instance ToolArguments (ToolArgument a, ToolArgument b) where
       handler <$> a.argumentParser object <*> b.argumentParser object
 
 instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c) where
-  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c) es =
-    a -> b -> c -> ToolAction es
+  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c) host metadata es =
+    a -> b -> c -> ToolAction host metadata es
 
   toolArgumentsSchema (a, b, c) =
     argumentsObjectSchema
@@ -250,8 +252,8 @@ instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c) where
         <*> c.argumentParser object
 
 instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d) where
-  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d) es =
-    a -> b -> c -> d -> ToolAction es
+  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d) host metadata es =
+    a -> b -> c -> d -> ToolAction host metadata es
 
   toolArgumentsSchema (a, b, c, d) =
     argumentsObjectSchema
@@ -267,8 +269,8 @@ instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgu
         <*> d.argumentParser object
 
 instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d, ToolArgument e) where
-  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d, ToolArgument e) es =
-    a -> b -> c -> d -> e -> ToolAction es
+  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d, ToolArgument e) host metadata es =
+    a -> b -> c -> d -> e -> ToolAction host metadata es
 
   toolArgumentsSchema (a, b, c, d, e) =
     argumentsObjectSchema
@@ -285,8 +287,8 @@ instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgu
         <*> e.argumentParser object
 
 instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d, ToolArgument e, ToolArgument f) where
-  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d, ToolArgument e, ToolArgument f) es =
-    a -> b -> c -> d -> e -> f -> ToolAction es
+  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d, ToolArgument e, ToolArgument f) host metadata es =
+    a -> b -> c -> d -> e -> f -> ToolAction host metadata es
 
   toolArgumentsSchema (a, b, c, d, e, f) =
     argumentsObjectSchema
@@ -304,8 +306,8 @@ instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgu
         <*> f.argumentParser object
 
 instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d, ToolArgument e, ToolArgument f, ToolArgument g) where
-  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d, ToolArgument e, ToolArgument f, ToolArgument g) es =
-    a -> b -> c -> d -> e -> f -> g -> ToolAction es
+  type ToolHandler (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgument d, ToolArgument e, ToolArgument f, ToolArgument g) host metadata es =
+    a -> b -> c -> d -> e -> f -> g -> ToolAction host metadata es
 
   toolArgumentsSchema (a, b, c, d, e, f, g) =
     argumentsObjectSchema
@@ -324,7 +326,7 @@ instance ToolArguments (ToolArgument a, ToolArgument b, ToolArgument c, ToolArgu
         <*> g.argumentParser object
 
 instance ToolArguments (ParsedArguments a) where
-  type ToolHandler (ParsedArguments a) es = a -> ToolAction es
+  type ToolHandler (ParsedArguments a) host metadata es = a -> ToolAction host metadata es
 
   toolArgumentsSchema =
     (.parsedSchema)
@@ -363,16 +365,16 @@ argumentsObjectSchema fields required =
 -- Use the smart constructor and combinators rather than constructing this
 -- value directly. A tool's name is its stable dispatch identity; schema
 -- resolution may hide the tool or change its description and parameters.
-data Tool m = Tool
+data Tool host metadata m = Tool
   { name :: !Text
   , tags :: ![ToolTag]
-  , schemaResolver :: Context -> Transcript -> Int -> m (Maybe LLM.FunctionTool)
+  , schemaResolver :: host -> Transcript -> Int -> m (Maybe LLM.FunctionTool)
   , noisyFlag :: !Bool
-  , allowedPredicate :: Context -> Bool
-  , runnerFactory :: Context -> m (ContextualToolRunner m)
+  , allowedPredicate :: host -> Bool
+  , runnerFactory :: host -> m (ContextualToolRunner metadata m)
   }
 
-hoistTool :: Monad n => (forall x. m x -> n x) -> Tool m -> Tool n
+hoistTool :: Monad n => (forall x. m x -> n x) -> Tool host metadata m -> Tool host metadata n
 hoistTool liftTool definition =
   Tool
     { name = definition.name
@@ -391,8 +393,8 @@ tool
   :: ToolArguments arguments
   => Text
   -> arguments
-  -> ToolHandler arguments es
-  -> Tool (Eff es)
+  -> ToolHandler arguments host metadata es
+  -> Tool host metadata (Eff es)
 tool name arguments handler =
   toolWithRunState name arguments (const (pure ())) (const handler)
 
@@ -400,9 +402,9 @@ toolWithRunState
   :: ToolArguments arguments
   => Text
   -> arguments
-  -> (Context -> Eff es state)
-  -> (state -> ToolHandler arguments es)
-  -> Tool (Eff es)
+  -> (host -> Eff es state)
+  -> (state -> ToolHandler arguments host metadata es)
+  -> Tool host metadata (Eff es)
 toolWithRunState name arguments initialize handler =
   Tool
     { name
@@ -435,26 +437,26 @@ toolWithRunState name arguments initialize handler =
     argumentFailure err =
       toolFailure (permanentArgumentFailure err err)
 
-allowWhen :: (Context -> Bool) -> Tool m -> Tool m
+allowWhen :: (host -> Bool) -> Tool host metadata m -> Tool host metadata m
 allowWhen predicate definition =
   definition
     { allowedPredicate = \context ->
         definition.allowedPredicate context && predicate context
     }
 
-tagged :: [NamedTag] -> Tool m -> Tool m
+tagged :: [NamedTag] -> Tool host metadata m -> Tool host metadata m
 tagged tags definition =
   definition{tags = map Named tags}
 
-noisy :: Tool m -> Tool m
+noisy :: Tool host metadata m -> Tool host metadata m
 noisy definition =
   definition{noisyFlag = True}
 
 mapSchemaM
   :: Monad m
-  => (Context -> Transcript -> Int -> LLM.FunctionTool -> m (Maybe LLM.FunctionTool))
-  -> Tool m
-  -> Tool m
+  => (host -> Transcript -> Int -> LLM.FunctionTool -> m (Maybe LLM.FunctionTool))
+  -> Tool host metadata m
+  -> Tool host metadata m
 mapSchemaM transform definition =
   definition
     { schemaResolver = \context transcript turn -> do
@@ -467,35 +469,35 @@ mapSchemaM transform definition =
 
 hideUnlessM
   :: Monad m
-  => (Context -> Transcript -> Int -> m Bool)
-  -> Tool m
-  -> Tool m
+  => (host -> Transcript -> Int -> m Bool)
+  -> Tool host metadata m
+  -> Tool host metadata m
 hideUnlessM predicate =
   mapSchemaM \context transcript turn schema ->
     predicate context transcript turn <&> \visible ->
       if visible then Just schema else Nothing
 
-withDescription :: Monad m => Text -> Tool m -> Tool m
+withDescription :: Monad m => Text -> Tool host metadata m -> Tool host metadata m
 withDescription =
   withDescriptionBy . const
 
-withDescriptionBy :: Monad m => (Context -> Text) -> Tool m -> Tool m
+withDescriptionBy :: Monad m => (host -> Text) -> Tool host metadata m -> Tool host metadata m
 withDescriptionBy description =
   mapSchemaM \context _ _ schema ->
     pure (Just schema{LLM.description = description context})
 
-toolName :: Tool m -> Text
+toolName :: Tool host metadata m -> Text
 toolName Tool{name} =
   name
 
-toolTags :: Tool m -> [ToolTag]
+toolTags :: Tool host metadata m -> [ToolTag]
 toolTags Tool{tags} =
   tags
 
 resolveToolSchema
   :: Functor m
-  => Tool m
-  -> Context
+  => Tool host metadata m
+  -> host
   -> Transcript
   -> Int
   -> m (Maybe LLM.FunctionTool)
@@ -507,19 +509,19 @@ resolveToolSchema Tool{name, schemaResolver} context transcript turn =
     })
     (schemaResolver context transcript turn)
 
-toolIsNoisy :: Tool m -> Bool
+toolIsNoisy :: Tool host metadata m -> Bool
 toolIsNoisy Tool{noisyFlag} =
   noisyFlag
 
-toolAllowed :: Tool m -> Context -> Bool
+toolAllowed :: Tool host metadata m -> host -> Bool
 toolAllowed Tool{allowedPredicate} =
   allowedPredicate
 
-startTool :: Functor m => Tool m -> Context -> m (ToolRunner m)
+startTool :: Functor m => Tool host metadata m -> host -> m (ToolRunner metadata m)
 startTool definition context =
   (\run metadata arguments -> run metadata 0 (Transcript mempty) arguments)
     <$> startToolWithTranscript definition context
 
-startToolWithTranscript :: Tool m -> Context -> m (ContextualToolRunner m)
+startToolWithTranscript :: Tool host metadata m -> host -> m (ContextualToolRunner metadata m)
 startToolWithTranscript Tool{runnerFactory} =
   runnerFactory

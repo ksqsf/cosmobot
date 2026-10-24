@@ -9,6 +9,7 @@ module Bot.Agent.Middleware.ContextCompaction
   )
 where
 
+import Bot.Agent.Types (BotRuntime)
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types (EventObservation (..))
 import Bot.Agent.Tool (toolEnableName)
@@ -36,8 +37,8 @@ compactionNoticeMessage =
 withContextCompaction
   :: LLM.LLM :> es
   => Int
-  -> Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  -> BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withContextCompaction tokenThreshold program =
   withContextCompactionUsing
     (\_ agentState -> fst <$> compactAgentState tokenThreshold (pure ()) agentState)
@@ -50,8 +51,8 @@ withContextCompactionNotice
      , HList.Has (EventObservation es) context
      )
   => Int
-  -> Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  -> BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withContextCompactionNotice tokenThreshold program =
   withContextCompactionUsing
     (\context agentState -> do
@@ -73,8 +74,8 @@ withContextCompactionNotice tokenThreshold program =
 
 withContextCompactionUsing
   :: (HList.HList context -> TurnState -> Eff es TurnState)
-  -> Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  -> BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withContextCompactionUsing compact program =
   program
     { aroundModelTurn = \context agentState action -> do

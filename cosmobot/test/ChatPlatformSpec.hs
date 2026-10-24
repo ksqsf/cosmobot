@@ -22,6 +22,9 @@ import qualified Network.HTTP.Types as HTTPTypes
 import qualified Network.Wai as Wai
 import qualified Network.Wai.Handler.Warp as Warp
 import qualified Bot.Plugin.Protocol as PluginProtocol
+import qualified Bot.Chat.Transcript as ChatTranscript
+import Bot.Core.Transcript (Transcript (..))
+import qualified Bot.LLM.Types as LLM
 import Bot.Core.Message
 import Bot.Prelude
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
@@ -56,7 +59,8 @@ main :: IO ()
 main =
   defaultMain $
     testGroup "chat platforms"
-      [ testCase "incoming timestamps normalize platform units and survive JSON" testIncomingTimestamps
+      [ testCase "chat input preserves system prompt and image order" testChatTranscript
+      , testCase "incoming timestamps normalize platform units and survive JSON" testIncomingTimestamps
       , testCase "QQ user message converts to incoming message" testQqUserMessageConvertsToIncomingMessage
       , testCase "QQ unsupported segments fall back to raw_message" testQqUnsupportedSegmentsUseRawMessage
       , testCase "QQ market face records its summary" testQqMarketFaceRecordsSummary
@@ -1792,3 +1796,14 @@ testIncomingTimestamps = do
       let invocation = PluginProtocol.RouteInvokeParams "call" "route" message "" 30
       (decode (Aeson.toJSON invocation) :: PluginProtocol.RouteInvokeParams).message.timestamp @?= Just time
   (Discord.deletedEventToIncomingMessageWith discordConfig (Discord.DeletedMessage "1" "2" Nothing Aeson.Null)).timestamp @?= Nothing
+
+testChatTranscript :: Assertion
+testChatTranscript = for_ ["", "system"] $ \system -> do
+  let input = inputWithImages "first" ["https://example.invalid/a.png", "https://example.invalid/b.png"]
+      transcript = ChatTranscript.appendUserInput (inputWithImages "second" [])
+        (ChatTranscript.startWithSystemAndUserInput system input)
+      expected = [LLM.systemText system | not (Text.null system)]
+        <> [ LLM.userWithImages "first" ["https://example.invalid/a.png", "https://example.invalid/b.png"]
+           , LLM.userText "second"
+           ]
+  Aeson.toJSON (toList transcript.messages) @?= Aeson.toJSON expected

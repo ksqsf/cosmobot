@@ -12,7 +12,7 @@ module Bot.Agent.Tools.Transcript
 where
 
 import qualified Bot.Agent as Agent
-import Bot.Agent.Tool
+import Bot.Agent.Tool (parsedArguments, toolWithRunState, withDescription)
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Core.Transcript (Transcript (..))
@@ -56,7 +56,7 @@ transcriptTool
      , IOE :> es
      , EffectfulResource.Resource :> es
      )
-  => Tool (Eff es)
+  => BotTool (Eff es)
 transcriptTool =
   transcriptToolWith maxRecursiveDepth Nothing Nothing
 
@@ -76,7 +76,7 @@ transcriptToolWith
   => Int
   -> Maybe Transcript
   -> Maybe (Eff es UseLimit)
-  -> Tool (Eff es)
+  -> BotTool (Eff es)
 transcriptToolWith depth boundTranscript sharedUseLimit =
   withDescription "Inspect the canonical transcript. info reports its size; search finds messages with a POSIX regular expression; read returns a bounded message range; query starts a bounded recursive analyst over a selected range. Message indexes are zero-based."
   $ toolWithRunState "transcript"

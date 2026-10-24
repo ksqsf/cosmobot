@@ -16,6 +16,7 @@ import Bot.Agent.Transcript
   ( appendMessages
   , pausedToolResult
   )
+import Bot.Agent.Program (limitProgram)
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types
 import Bot.Agent.Tool
@@ -28,7 +29,7 @@ import qualified Bot.Util.HList as HList
 import qualified Data.Text as Text
 import qualified Streaming.Prelude as S
 
-withToolFailureRecovery :: Runtime context (Eff es) -> Runtime context (Eff es)
+withToolFailureRecovery :: BotRuntime context (Eff es) -> BotRuntime context (Eff es)
 withToolFailureRecovery program =
   program
     { aroundControlCall = \turn call context action ->
@@ -37,7 +38,7 @@ withToolFailureRecovery program =
         safeToolCall call (program.aroundToolCall turn call context action)
     }
 
-withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => Runtime context (Eff es) -> Runtime context (Eff es)
+withToolMessage :: (Chat.Chat :> es, HList.Has ObservationContext context) => BotRuntime context (Eff es) -> BotRuntime context (Eff es)
 withToolMessage program =
   program
     { aroundControlCall = \turn call context action -> do
@@ -48,7 +49,7 @@ withToolMessage program =
         program.aroundToolCall turn call context action
     }
 
-announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => Runtime context (Eff es) -> LLM.ToolCall -> HList.HList context -> Eff es ()
+announceNoisyTool :: (Chat.Chat :> es, HList.Has ObservationContext context) => BotRuntime context (Eff es) -> LLM.ToolCall -> HList.HList context -> Eff es ()
 announceNoisyTool program call context =
   case find ((== call.name) . toolName) program.tools of
     Just definition
@@ -95,40 +96,19 @@ handleToolLimit runId turn _content calls answered = do
 
 withToolLimit
   :: KatipE :> es
-  => (Runtime '[] (Eff es) -> NonEmpty LLM.ToolCall -> Bool)
-  -> Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  => (BotRuntime '[] (Eff es) -> NonEmpty LLM.ToolCall -> Bool)
+  -> BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withToolLimit mayTransfer runtime =
   runtime
     { aroundProgram = \finalRuntime ->
-        limitProgram finalRuntime (mayTransfer finalRuntime)
+        limitProgram finalRuntime.maxTurns (mayTransfer finalRuntime) (finishAtLimit finalRuntime)
           . runtime.aroundProgram finalRuntime
     }
 
-limitProgram
-  :: KatipE :> es
-  => Runtime '[] (Eff es)
-  -> (NonEmpty LLM.ToolCall -> Bool)
-  -> Program (Eff es) Result
-  -> Program (Eff es) Result
-limitProgram runtime mayTransfer (Program action) =
-  Program $ action >>= \case
-    Finished result ->
-      pure (Finished result)
-    Continues next ->
-      pure (Continues (limitProgram runtime mayTransfer next))
-    Visible (RunTools request) continue
-      | request.agentState.turn >= runtime.maxTurns
-      , not (mayTransfer request.toolCalls) ->
-          finishAtLimit runtime request
-      | otherwise ->
-          pure (Visible (RunTools request) (limitProgram runtime mayTransfer . continue))
-    Visible event continue ->
-      pure (Visible event (limitProgram runtime mayTransfer . continue))
-
 finishAtLimit
   :: KatipE :> es
-  => Runtime '[] (Eff es)
+  => BotRuntime '[] (Eff es)
   -> ToolRequest
   -> Stream (Of Output) (Eff es) (Step (Eff es) Result)
 finishAtLimit runtime request = do

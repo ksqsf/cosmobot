@@ -15,7 +15,7 @@ module Bot.Agent.ToolRegistry
 where
 
 import Bot.Agent.Tool
-import Bot.Agent.Types
+import Bot.Agent.Result
 import Bot.Core.Transcript (Transcript (..))
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
@@ -35,17 +35,17 @@ instance Exception ToolRegistryException where
     Text.unpack [i|Duplicate resolved tool names: #{Text.intercalate ", " names}|]
 
 -- | A tool runner bound to one agent run.
-data RunningTool m = RunningTool
+data RunningTool metadata m = RunningTool
   { name  :: !Text
   , tags :: ![ToolTag]
   , noisy :: !Bool
   , currentSchema :: !(MVar.MVar (Maybe LLM.FunctionTool))
   , resolveSchema :: Transcript -> Int -> m (Maybe LLM.FunctionTool)
-  , run  :: ToolCallMetadata -> Int -> Transcript -> Aeson.Value -> m ToolResult
+  , run  :: metadata -> Int -> Transcript -> Aeson.Value -> m ToolResult
   }
 
 -- | Start a tool for this agent run.
-startToolRun :: Concurrent :> es => Context -> Tool (Eff es) -> Eff es (RunningTool (Eff es))
+startToolRun :: Concurrent :> es => host -> Tool host metadata (Eff es) -> Eff es (RunningTool metadata (Eff es))
 startToolRun context definition = do
   currentSchema <- MVar.newMVar Nothing
   run <- startToolWithTranscript definition context
@@ -60,7 +60,7 @@ resolveToolSchemas
   :: Concurrent :> es
   => Transcript
   -> Int
-  -> [RunningTool (Eff es)]
+  -> [RunningTool metadata (Eff es)]
   -> Eff es [LLM.FunctionTool]
 resolveToolSchemas transcript turn runningTools = do
   schemas <- catMaybes <$> traverse resolve runningTools
@@ -86,7 +86,7 @@ resolveToolSchemas transcript turn runningTools = do
       MVar.modifyMVar_ runningTool.currentSchema (const (pure schema))
       pure schema
 
-enabledToolGroups :: Transcript -> [RunningTool m] -> [(Text, Int)]
+enabledToolGroups :: Transcript -> [RunningTool metadata m] -> [(Text, Int)]
 enabledToolGroups transcript runningTools =
   ("essential", countTag Essential)
     : [ (tag.tagName, countTag (Named tag))
@@ -100,7 +100,7 @@ enabledToolGroups transcript runningTools =
     countTag tag =
       length [() | runningTool <- runningTools, tag `elem` runningTool.tags]
 
-enabledTagNames :: Transcript -> [RunningTool m] -> Set.Set Text
+enabledTagNames :: Transcript -> [RunningTool metadata m] -> Set.Set Text
 enabledTagNames transcript runningTools =
   Set.fromList
     [ tag
@@ -118,7 +118,7 @@ toolTagsVisible enabledTags =
     Named tag ->
       Set.member tag.tagName enabledTags
 
-availableNamedTags :: [RunningTool m] -> [NamedTag]
+availableNamedTags :: [RunningTool metadata m] -> [NamedTag]
 availableNamedTags runningTools =
   ordNub
     [ tag
@@ -126,11 +126,11 @@ availableNamedTags runningTools =
     , Named tag <- runningTool.tags
     ]
 
-availableTagNames :: [RunningTool m] -> Set.Set Text
+availableTagNames :: [RunningTool metadata m] -> Set.Set Text
 availableTagNames =
   Set.fromList . map (.tagName) . availableNamedTags
 
-toolEnableSchema :: [RunningTool m] -> LLM.FunctionTool -> LLM.FunctionTool
+toolEnableSchema :: [RunningTool metadata m] -> LLM.FunctionTool -> LLM.FunctionTool
 toolEnableSchema runningTools schema =
   schema
     { LLM.description =
@@ -182,10 +182,10 @@ duplicateNames schemas =
 -- per-run runner.
 runToolCall
   :: Concurrent :> es
-  => Context
-  -> ToolCallMetadata
-  -> [Tool (Eff es)]
-  -> [RunningTool (Eff es)]
+  => host
+  -> metadata
+  -> [Tool host metadata (Eff es)]
+  -> [RunningTool metadata (Eff es)]
   -> LLM.ToolCall
   -> Eff es ToolResult
 runToolCall context metadata =
@@ -193,12 +193,12 @@ runToolCall context metadata =
 
 runToolCallWithTranscript
   :: Concurrent :> es
-  => Context
-  -> ToolCallMetadata
+  => host
+  -> metadata
   -> Int
   -> Transcript
-  -> [Tool (Eff es)]
-  -> [RunningTool (Eff es)]
+  -> [Tool host metadata (Eff es)]
+  -> [RunningTool metadata (Eff es)]
   -> LLM.ToolCall
   -> Eff es ToolResult
 runToolCallWithTranscript context metadata turn transcript tools runningTools call =
@@ -222,7 +222,7 @@ runToolCallWithTranscript context metadata turn transcript tools runningTools ca
   where
     callName = call.name
 
-toolEnableArgumentError :: [RunningTool m] -> Text -> Aeson.Value -> Maybe Text
+toolEnableArgumentError :: [RunningTool metadata m] -> Text -> Aeson.Value -> Maybe Text
 toolEnableArgumentError runningTools callName arguments
   | callName /= toolEnableName =
       Nothing
@@ -242,7 +242,7 @@ toolEnableArgumentError runningTools callName arguments
     parser =
       Aeson.withObject "tool_enable arguments" (Aeson..: Key.fromText "tags")
 
-findRunningTool :: Concurrent :> es => Text -> [RunningTool (Eff es)] -> Eff es (Maybe (RunningTool (Eff es)))
+findRunningTool :: Concurrent :> es => Text -> [RunningTool metadata (Eff es)] -> Eff es (Maybe (RunningTool metadata (Eff es)))
 findRunningTool _ [] =
   pure Nothing
 findRunningTool name (runningTool : rest) = do

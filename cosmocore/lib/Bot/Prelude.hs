@@ -10,7 +10,7 @@ module Bot.Prelude
   , module Effectful
   , module Effectful.Concurrent
   , module Effectful.Dispatch.Dynamic
-  , module Bot.Log
+  , module Bot.Log.Common
   , module Effectful.Exception
   , module Effectful.Fail
   , module Effectful.Prim.IORef
@@ -40,7 +40,7 @@ import Relude hiding
 -- ---------------------------------------------------------------------------
 
 import Data.String.Interpolate
-import Bot.Log
+import Bot.Log.Common
 
 -- ---------------------------------------------------------------------------
 -- Effects

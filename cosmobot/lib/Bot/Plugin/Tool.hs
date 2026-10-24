@@ -9,6 +9,8 @@ module Bot.Plugin.Tool
   )
 where
 
+import qualified Bot.Agent.Tools.Common as BotTools
+import Bot.Agent.Types (BotTool)
 import qualified Bot.Agent.Tool as AgentTool
 import qualified Bot.Agent.Failure as AgentFailure
 import qualified Bot.Agent.Types as Agent
@@ -19,20 +21,20 @@ import Bot.Prelude
 definitions
   :: Plugin.Plugin :> es
   => [Plugin.PluginTool]
-  -> [AgentTool.Tool (Eff es)]
+  -> [BotTool (Eff es)]
 definitions = map definition
 
 definition
   :: Plugin.Plugin :> es
   => Plugin.PluginTool
-  -> AgentTool.Tool (Eff es)
+  -> BotTool (Eff es)
 definition pluginTool =
   AgentTool.withDescription pluginTool.description $
     AgentTool.tool
       pluginTool.modelName
       (AgentTool.parsedArguments pluginTool.schema pure)
       \arguments -> do
-        context <- AgentTool.askToolContext
+        context <- BotTools.askToolContext
         toAgentResult <$> Plugin.invokeTool pluginTool context.message arguments
 
 toAgentResult :: Plugin.ToolInvocationResult -> Agent.ToolResult

@@ -100,13 +100,14 @@ directly. `AgentEvent` stays focused on agent control points observed by
 middleware.
 
 The definitions live in
-[`Bot.Agent.Core`](../lib/Bot/Agent/Core.hs). Their algebraic properties live in
-[`ProgramSpec`](../test/ProgramSpec.hs).
+[`Bot.Agent.Core`](../../cosmocore/lib/Bot/Agent/Core.hs). Their algebraic properties live in
+[`ProgramSpec`](../../cosmocore/test/ProgramSpec.hs).
 
 ## Interpretation and streaming
 
-[`Bot.Agent`](../lib/Bot/Agent.hs) constructs the recursive program and folds
-it. `runProgram` interprets each visible event, applies the event response to
+[`Bot.Agent.Program`](../../cosmocore/lib/Bot/Agent/Program.hs) constructs the
+recursive program; [`Bot.Agent.Runtime`](../../cosmocore/lib/Bot/Agent/Runtime.hs)
+folds it. `runProgram` interprets each visible event, applies the event response to
 its continuation, and resumes the fold.
 
 `Program` carries two complementary forms of observation:
@@ -141,7 +142,7 @@ must state the contract directly.
 
 ## Program and runtime
 
-`Runtime context m` supplies tools, run metadata, event interpretation, and
+`Runtime host metadata context m` supplies tools, run metadata, event interpretation, and
 middleware hooks. The program describes which operations happen and how their
 responses determine subsequent work. The runtime describes how each operation
 runs.

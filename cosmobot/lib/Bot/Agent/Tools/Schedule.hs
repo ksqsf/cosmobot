@@ -10,7 +10,7 @@ module Bot.Agent.Tools.Schedule
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (parsedArguments, tagged, tool, withDescription)
 import Bot.Agent.Types
 import Bot.Core.Message
 import qualified Bot.Effect.Scheduler as Scheduler
@@ -19,7 +19,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 
-scheduleTool :: Scheduler.Scheduler :> es => Tool (Eff es)
+scheduleTool :: Scheduler.Scheduler :> es => BotTool (Eff es)
 scheduleTool =
   tagged [workTag]
   . withDescription "Create, list, or delete scheduled agent actions owned by the current user in the current chat."

@@ -7,6 +7,8 @@ module Bot.Main
   )
 where
 
+import Bot.Chat.Transcript (startWithUserInput)
+import Bot.Log (journalScribe)
 import Bot.Prelude
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Middleware.Python as PythonMiddleware
@@ -19,7 +21,6 @@ import qualified Bot.ACP.State as ACP
 import Bot.Config
 import qualified Bot.Concurrency.Manager as ConcurrencyManager
 import Bot.Core.Message (IncomingMessage (..), MessageDigest (..), chatPlatformKey, inputWithAttachments, messageIdText)
-import Bot.Core.Transcript (startWithUserInput)
 import Bot.Core.Route
 import qualified Bot.Lifecycle as Lifecycle
 import qualified Bot.Chat.Driver as ChatDriver

@@ -11,21 +11,21 @@ module Bot.Effect.Agent
   )
 where
 
-import Bot.Agent.Core (Runtime)
+import Bot.Agent.Types (BotRuntime)
 import Bot.Prelude
 
 data Agent :: Effect where
   RunAgent
-    :: !(Runtime '[] m)
-    -> (Runtime '[] m -> m a)
+    :: !(BotRuntime '[] m)
+    -> (BotRuntime '[] m -> m a)
     -> Agent m a
 
 type instance DispatchOf Agent = Dynamic
 
 withRun
   :: Agent :> es
-  => Runtime '[] (Eff es)
-  -> (Runtime '[] (Eff es) -> Eff es a)
+  => BotRuntime '[] (Eff es)
+  -> (BotRuntime '[] (Eff es) -> Eff es a)
   -> Eff es a
 withRun runtime =
   send . RunAgent runtime

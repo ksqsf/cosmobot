@@ -12,7 +12,7 @@ where
 
 import Bot.Agent.Types
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (parsedArguments, noisy, tool, withDescription)
 import Bot.Core.Message
 import qualified Bot.Effect.Memory as Memory
 import qualified Bot.Memory as MemoryStore
@@ -22,19 +22,19 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.Types as AesonTypes
 import qualified Data.Text as Text
 
-senderMemoryTool :: Memory.Memory :> es => Tool (Eff es)
+senderMemoryTool :: Memory.Memory :> es => BotTool (Eff es)
 senderMemoryTool = memoryTool
   "sender_memory"
   "View, replace, or clear persistent memory for the current sender. Use it for personal facts and preferences. Keep non-superuser memory within 1000 characters."
   senderMemoryScope
 
-chatMemoryTool :: Memory.Memory :> es => Tool (Eff es)
+chatMemoryTool :: Memory.Memory :> es => BotTool (Eff es)
 chatMemoryTool = memoryTool
   "chat_memory"
   "View, replace, or clear persistent memory shared by the current chat. Keep non-superuser memory within 1000 characters."
   chatMemoryScope
 
-memoryTool :: Memory.Memory :> es => Text -> Text -> MemoryScope -> Tool (Eff es)
+memoryTool :: Memory.Memory :> es => Text -> Text -> MemoryScope -> BotTool (Eff es)
 memoryTool name description scope =
   noisy
   . withDescription description

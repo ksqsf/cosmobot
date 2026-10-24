@@ -12,7 +12,7 @@ module Bot.Agent.Tools.Web
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (allowWhen, tool, toolWithRunState, withDescription)
 import Bot.Agent.Types
 import qualified Bot.Effect.HTTP as HTTP
 import qualified Bot.Util.Html as Html
@@ -44,7 +44,7 @@ instance Exception WebToolException where
     InvalidWebSearchResponse source err -> [i|Invalid #{webSearchSource source} search response: #{err}|]
     UnsupportedWebUrl url -> [i|Unsupported URL: #{url}. Use an http or https URL.|]
 
-webSearchTool :: HTTP.HTTP :> es => Tool (Eff es)
+webSearchTool :: HTTP.HTTP :> es => BotTool (Eff es)
 webSearchTool =
   allowWhen (.toolConfig.webSearchEnable)
   . withDescription "Search the web for current information. Returns a JSON object with the query and a results array containing title, url, and snippet."
@@ -72,7 +72,7 @@ webSearchTool =
               , "results" Aeson..= results
               ])))
 
-webFetchTool :: (HTTP.HTTP :> es, IOE :> es) => Tool (Eff es)
+webFetchTool :: (HTTP.HTTP :> es, IOE :> es) => BotTool (Eff es)
 webFetchTool =
   allowWhen (.toolConfig.webFetch)
   . withDescription "Fetch a web page by URL and return extracted readable text. Supports http and https URLs."

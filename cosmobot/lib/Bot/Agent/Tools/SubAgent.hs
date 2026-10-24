@@ -10,7 +10,7 @@ module Bot.Agent.Tools.SubAgent
 where
 
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (parsedArguments, allowWhen, tagged, tool, toolAllowed, toolName, withDescription)
 import Bot.Agent.Types
 import qualified Bot.Effect.Agent as Agent
 import qualified Bot.Effect.AgentAudit as AgentAudit
@@ -40,8 +40,8 @@ subagentTool
      , Concurrent :> es
      , IOE :> es
      )
-  => [Tool (Eff es)]
-  -> Tool (Eff es)
+  => [BotTool (Eff es)]
+  -> BotTool (Eff es)
 subagentTool availableTools =
   tagged [workTag]
   . allowWhen (isRight . Resource.accessFromMessage . (.message))

@@ -10,9 +10,11 @@ module Bot.Agent.Middleware.Steering
   )
 where
 
+import Bot.Agent.Types (BotRuntime)
+import Bot.Chat.Transcript (appendUserInput)
 import Bot.Agent.Core
 import Bot.Core.Message (MessageInput)
-import Bot.Core.Transcript (Transcript, appendUserInput)
+import Bot.Core.Transcript (Transcript)
 import Bot.Prelude
 import qualified Streaming.Prelude as S
 
@@ -23,8 +25,8 @@ data SteeringControl es = SteeringControl
 
 withSteering
   :: SteeringControl es
-  -> Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  -> BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withSteering steering program =
   program
     { aroundProgram = \finalRuntime ->

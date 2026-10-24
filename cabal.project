@@ -1,4 +1,5 @@
 packages:
+  cosmocore
   cosmobot
   cosmobot-plugin-sdk
   cosmocode

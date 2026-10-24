@@ -63,8 +63,8 @@ withObservation
      HList.Has (ToolResultObservation es) context
   => Observer ObservationContext (Eff es)
   -> ContextStrategy
-  -> Runtime (ObservationContext ': EventObservation es ': context) (Eff es)
-  -> Runtime context (Eff es)
+  -> BotRuntime (ObservationContext ': EventObservation es ': context) (Eff es)
+  -> BotRuntime context (Eff es)
 withObservation observer contextStrategy program@Runtime{aroundToolTurn = toolTurn} =
   program
     { aroundAgentRun = \context action ->
@@ -137,7 +137,7 @@ transcriptMessageCount TurnState{transcript = Transcript{messages}} =
 withObservedAgentRun
   :: Observer ObservationContext (Eff es)
   -> ContextStrategy
-  -> Runtime context (Eff es)
+  -> BotRuntime context (Eff es)
   -> [Text]
   -> Stream (Of Output) (Eff es) Result
   -> Stream (Of Output) (Eff es) Result

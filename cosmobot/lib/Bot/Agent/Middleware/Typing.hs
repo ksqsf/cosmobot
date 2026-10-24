@@ -9,6 +9,7 @@ module Bot.Agent.Middleware.Typing
   )
 where
 
+import Bot.Agent.Types (BotRuntime)
 import Bot.Agent.Core
 import Bot.Agent.Types (Context (..))
 import Bot.Core.Message (IncomingMessage (..))
@@ -20,8 +21,8 @@ import qualified Effectful.Resource as Resource
 
 withTypingNotification
   :: (Chat.Chat :> es, Concurrency.Concurrency :> es, KatipE :> es, Resource.Resource :> es)
-  => Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  => BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withTypingNotification program =
   program
     { aroundAgentRun = \context action ->

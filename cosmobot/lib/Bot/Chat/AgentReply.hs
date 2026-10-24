@@ -10,6 +10,7 @@ module Bot.Chat.AgentReply
   , streamAgentReplyWith
   ) where
 
+import Bot.Agent.Types (BotRuntime)
 import qualified Bot.Agent as Agent
 import qualified Bot.Agent.Failure as Failure
 import Bot.Core.Message
@@ -36,7 +37,7 @@ streamAgentReplyWith
   :: ( Chat.Chat :> es, ChatLog.ChatLog :> es, Concurrency.Concurrency :> es
      , LLM.LLM :> es, Media.Media :> es, Storage.Storage :> es
      , KatipE :> es, Prim :> es, Concurrent :> es )
-  => Agent.Runtime '[] (Eff es)
+  => BotRuntime '[] (Eff es)
   -> Agent.SteeringControl es
   -> Agent.ToolEmittedMessageSink es
   -> (Chat.MessageOutResult -> Eff es ())

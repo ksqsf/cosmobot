@@ -125,7 +125,7 @@ sendPrompt
      )
   => ToolCallMetadata
   -> Text
-  -> [Tool (Eff es)]
+  -> [BotTool (Eff es)]
   -> Context
   -> SubAgent
   -> Text

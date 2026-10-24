@@ -29,8 +29,8 @@ data Resumption es = Resumption
   }
 
 withContinuations
-  :: Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  :: BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withContinuations runtime =
   runtime
     { aroundProgram = \finalRuntime ->
@@ -39,7 +39,7 @@ withContinuations runtime =
     }
 
 handleContinuations
-  :: Runtime '[] (Eff es)
+  :: BotRuntime '[] (Eff es)
   -> Program (Eff es) Result
   -> Program (Eff es) Result
 handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
@@ -117,7 +117,7 @@ handleContinuations runtime@Runtime{aroundToolTurn = toolTurn} =
             pure (argumentFailure "Continuation control tools must be called alone; no tool call in this turn was executed.")
       (go nextOrdinal saved (continue nextState)).observe
 
-exposedContinuationCalls :: Runtime context (Eff es) -> NonEmpty LLM.ToolCall -> [LLM.ToolCall]
+exposedContinuationCalls :: BotRuntime context (Eff es) -> NonEmpty LLM.ToolCall -> [LLM.ToolCall]
 exposedContinuationCalls runtime =
   filter isExposedContinuation . toList
   where

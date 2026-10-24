@@ -11,6 +11,7 @@ module Bot.Agent.Tools
   )
 where
 
+import Bot.Agent.Types (BotTool)
 import Bot.Agent.Tools.Chat
 import Bot.Agent.Tools.Files
 import Bot.Agent.Tools.Image
@@ -32,7 +33,6 @@ import Bot.Agent.Tools.Transcript
 import Bot.Agent.Tools.Typst
 import Bot.Agent.Tools.Web
 import Bot.Agent.Tools.Workspace
-import Bot.Agent.Tool
 import qualified Bot.Effect.ACP as ACP
 import qualified Bot.Effect.Agent as Agent
 import qualified Bot.Effect.AgentAudit as AgentAudit
@@ -81,7 +81,7 @@ defaultTools
   => FileSystem :> es
   => IOE :> es
   => EffectfulResource.Resource :> es
-  => [Tool (Eff es)]
+  => [BotTool (Eff es)]
 defaultTools = tools
   where
     tools = defaultToolsWith []
@@ -111,8 +111,8 @@ defaultToolsWith
   => FileSystem :> es
   => IOE :> es
   => EffectfulResource.Resource :> es
-  => [Tool (Eff es)]
-  -> [Tool (Eff es)]
+  => [BotTool (Eff es)]
+  -> [BotTool (Eff es)]
 defaultToolsWith extraTools = tools
   where
     tools =
@@ -156,7 +156,7 @@ defaultToolsWith extraTools = tools
       , subagentTool tools
       ] <> extraTools
 
-acpTools :: ACP.ACP :> es => [Tool (Eff es)]
+acpTools :: ACP.ACP :> es => [BotTool (Eff es)]
 acpTools =
   [ acpReadClientFileTool
   , acpWriteClientFileTool

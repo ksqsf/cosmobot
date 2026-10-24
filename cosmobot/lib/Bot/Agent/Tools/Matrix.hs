@@ -4,7 +4,7 @@ module Bot.Agent.Tools.Matrix
 where
 
 import Bot.Agent.Failure (externalServiceFailure)
-import Bot.Agent.Tool
+import Bot.Agent.Tool (parsedArguments, allowWhen, tagged, tool, withDescription)
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Core.Message (ChatPlatform (PlatformMatrix), IncomingMessage (..))
@@ -15,7 +15,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Aeson.Types as AesonTypes
 
-matrixRequestTool :: Matrix.Matrix :> es => Tool (Eff es)
+matrixRequestTool :: Matrix.Matrix :> es => BotTool (Eff es)
 matrixRequestTool =
   tagged [chatTag]
   . allowWhen matrixSuperuser

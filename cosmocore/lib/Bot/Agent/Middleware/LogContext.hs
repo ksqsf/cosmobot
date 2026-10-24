@@ -16,8 +16,8 @@ import qualified Streaming as Streaming
 
 withLogContext
   :: KatipE :> es
-  => Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  => Runtime host metadata context (Eff es)
+  -> Runtime host metadata context (Eff es)
 withLogContext runtime =
   runtime
     { aroundAgentRun = \context action ->

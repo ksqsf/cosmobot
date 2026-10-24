@@ -2,11 +2,12 @@
 
 module Main (main) where
 
+import Bot.Agent.Types (BotTool)
 import Bot.Agent.Core
 import Bot.Agent.Control (finishToolTurn)
 import Bot.Agent.Middleware.Python (interpretPython)
 import Bot.Agent.Program.Python
-import Bot.Agent.Tool (Tool, ToolTag (..), toolTags)
+import Bot.Agent.Tool (ToolTag (..), toolTags)
 import Bot.Agent.Tools.Common (specialTag, workTag)
 import Bot.Agent.Tools.Python
 import Bot.Agent.Types (ToolResult, permanentArgumentFailure, toolText, toolTextWithImages)
@@ -19,25 +20,13 @@ import qualified Data.Sequence as Seq
 import qualified Data.Foldable as Foldable
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Prelude (Show (show))
 import qualified Streaming.Prelude as S hiding (show)
 import Test.Tasty
 import Test.Tasty.HUnit
-import Test.Tasty.QuickCheck
 
 main :: IO ()
-main =
-  defaultMain $
-    testGroup "agent core interaction-tree laws"
-      [ testProperty "Tau t ≈ t" propTauInvisible
-      , testProperty "Vis is congruent when every continuation is" propVisCongruence
-      , testProperty "lift pure ≈ pure" propLiftPure
-      , testProperty "fmap agrees with bind and pure" propFmapIsBind
-      , testProperty "bind preserves Tau" propBindTau
-      , testProperty "bind distributes through Vis" propBindVis
-      , testProperty "bind preserves model and tool continuations" propBindBothEvents
-      , testProperty "Kleisli associativity" propKleisliAssociativity
-      , testGroup "Python structural interpretation"
+main = defaultMain $
+    testGroup "Python structural interpretation"
           [ testCase "enters Python before applying the saved continuation" testPythonEntry
           , testCase "orchestrates multiple tools before resuming once" testPythonMultiToolOrchestration
           , testCase "completed and failed exits each apply the saved continuation once" testPythonExits
@@ -46,132 +35,6 @@ main =
           , testCase "tool turn keeps results before image context" testToolTurnMessageOrder
           , testCase "py is a special composition tool" testPythonToolContract
           ]
-      ]
-
--- QuickCheck generates the real core type. The wrapper exists only because a
--- function-valued 'Program' cannot have ordinary 'Show' or 'Arbitrary'
--- instances. Generated visible events have two continuations, and 'eutt'
--- checks both.
-newtype ProgramCase = ProgramCase
-  { program :: Program (Eff '[]) Int
-  }
-
-instance Show ProgramCase where
-  show _ =
-    "<agent program>"
-
-instance Arbitrary ProgramCase where
-  arbitrary =
-    sized generateProgram
-
-  shrink _ =
-    []
-
-generateProgram :: Int -> Gen ProgramCase
-generateProgram 0 =
-  ProgramCase . pure <$> arbitrary
-generateProgram size =
-  frequency
-    [ (3, ProgramCase . pure <$> arbitrary)
-    , (2, tauCase)
-    , (2, outputCase)
-    , (3, visibleCase)
-    ]
-  where
-    smaller =
-      (.program) <$> generateProgram (size - 1)
-    branch =
-      (.program) <$> generateProgram (size `div` 2)
-    tauCase =
-      ProgramCase . tau <$> smaller
-    outputCase = do
-      value <- arbitrary :: Gen Int
-      next <- smaller
-      pure (ProgramCase (emit [i|output:#{value}|] next))
-    visibleCase =
-      ProgramCase <$> (visible <$> arbitrary <*> arbitrary <*> branch <*> branch)
-
-propTauInvisible :: ProgramCase -> Property
-propTauInvisible ProgramCase{program} =
-  tau program ~= program
-
-propVisCongruence :: Bool -> Int -> ProgramCase -> ProgramCase -> Property
-propVisCongruence useModel key ProgramCase{program = onLeft} ProgramCase{program = onRight} =
-  visible useModel key (tau onLeft) (tau onRight)
-    ~= visible useModel key onLeft onRight
-
-propLiftPure :: Int -> Property
-propLiftPure value =
-  (lift (pure value) :: Program (Eff '[]) Int) ~= pure value
-
-propFmapIsBind :: ProgramCase -> Fun Int Int -> Property
-propFmapIsBind ProgramCase{program} generated =
-  fmap f program
-    ~= (program >>= pure . f)
-  where
-    f = applyFun generated
-
-propBindTau :: ProgramCase -> Fun Int ProgramCase -> Property
-propBindTau ProgramCase{program} generated =
-  (tau program >>= next)
-    ~= tau (program >>= next)
-  where
-    next = arrow generated
-
-propBindVis
-  :: Bool
-  -> Int
-  -> ProgramCase
-  -> ProgramCase
-  -> Fun Int ProgramCase
-  -> Property
-propBindVis
-  useModel
-  key
-  ProgramCase{program = onLeft}
-  ProgramCase{program = onRight}
-  generated =
-    (visible useModel key onLeft onRight >>= next)
-      ~= visible useModel key (onLeft >>= next) (onRight >>= next)
-    where
-      next = arrow generated
-
-propBindBothEvents
-  :: Int
-  -> ProgramCase
-  -> ProgramCase
-  -> ProgramCase
-  -> ProgramCase
-  -> Fun Int ProgramCase
-  -> Property
-propBindBothEvents
-  key
-  ProgramCase{program = onFinalEven}
-  ProgramCase{program = onFinalOdd}
-  ProgramCase{program = onToolsEven}
-  ProgramCase{program = onToolsOdd}
-  generated =
-    (bothVisible key onFinalEven onFinalOdd onToolsEven onToolsOdd >>= next)
-      ~= bothVisible
-            key
-            (onFinalEven >>= next)
-            (onFinalOdd >>= next)
-            (onToolsEven >>= next)
-            (onToolsOdd >>= next)
-  where
-    next = arrow generated
-
-propKleisliAssociativity
-  :: ProgramCase
-  -> Fun Int ProgramCase
-  -> Fun Int ProgramCase
-  -> Property
-propKleisliAssociativity ProgramCase{program} generatedF generatedG =
-  ((program >>= f) >>= g)
-    ~= (program >>= \value -> f value >>= g)
-  where
-    f = arrow generatedF
-    g = arrow generatedG
 
 testPythonEntry :: Assertion
 testPythonEntry =
@@ -266,7 +129,7 @@ testToolTurnMessageOrder = do
 
 testPythonToolContract :: Assertion
 testPythonToolContract = do
-  toolTags (runPythonTool :: Tool (Eff '[])) @?=
+  toolTags (runPythonTool :: BotTool (Eff '[])) @?=
     [Named specialTag, Named workTag]
   assertBool "description must recommend py for composing multiple tools" $
     all (`Text.isInfixOf` runPythonDescription)
@@ -330,10 +193,6 @@ transcriptToolTexts (Transcript messages) =
   , Just (LLM.TextContent content) <- [message.content]
   ]
 
-arrow :: Fun Int ProgramCase -> Int -> Program (Eff '[]) Int
-arrow generated =
-  (.program) . applyFun generated
-
 tau :: Program (Eff '[]) result -> Program (Eff '[]) result
 tau =
   Program . pure . Continues
@@ -358,27 +217,6 @@ toolVisible key onEven onOdd =
   trigger (RunTools (toolRequest key)) >>= \turnState ->
     if even turnState.turn then onEven else onOdd
 
-modelVisible
-  :: Int
-  -> Program (Eff '[]) result
-  -> Program (Eff '[]) result
-  -> Program (Eff '[]) result
-modelVisible key onFinal onTools =
-  trigger (RunModel (emptyState key)) >>= \(_, answer) ->
-    case answer of
-      LLM.ChatFinalAnswer{} -> onFinal
-      LLM.ChatToolRequest{} -> onTools
-
-visible
-  :: Bool
-  -> Int
-  -> Program (Eff '[]) result
-  -> Program (Eff '[]) result
-  -> Program (Eff '[]) result
-visible useModel
-  | useModel = modelVisible
-  | otherwise = toolVisible
-
 bothVisible
   :: Int
   -> Program (Eff '[]) result
@@ -393,13 +231,6 @@ bothVisible key onFinalEven onFinalOdd onToolsEven onToolsOdd = do
       toolVisible key onFinalEven onFinalOdd
     LLM.ChatToolRequest{} ->
       toolVisible key onToolsEven onToolsOdd
-
--- Equality up to finite Tau: silently follow 'Continues', retain output and
--- visible-event order, and compare every response branch of a visible event.
-(~=) :: (Eq result, Show result) => Program (Eff '[]) result -> Program (Eff '[]) result -> Property
-left ~= right =
-  counterexample "programs are not equivalent up to Tau" $
-    eutt left right
 
 eutt :: Eq result => Program (Eff '[]) result -> Program (Eff '[]) result -> Bool
 eutt left right =

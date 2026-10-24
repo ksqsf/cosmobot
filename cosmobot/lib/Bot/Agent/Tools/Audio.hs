@@ -11,14 +11,14 @@ where
 
 import Bot.Agent.Failure (externalServiceFailure)
 import Bot.Agent.Tools.Common
-import Bot.Agent.Tool
+import Bot.Agent.Tool (noisy, tagged, tool, withDescription)
 import Bot.Agent.Types
 import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
 import Bot.Prelude
 import qualified Data.Text as Text
 
-generateAudioTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool (Eff es)
+generateAudioTool :: (Chat.Chat :> es, LLM.LLM :> es) => BotTool (Eff es)
 generateAudioTool =
   tagged [workTag]
   . noisy

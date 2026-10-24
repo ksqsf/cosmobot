@@ -10,6 +10,7 @@ module Bot.Agent.Middleware.RecursiveTranscript
   )
 where
 
+import Bot.Agent.Types (BotRuntime)
 import Bot.Agent.Core
 import Bot.Agent.Middleware.Observation.Types (EventObservation (..))
 import Bot.Agent.Types (Event (..))
@@ -24,8 +25,8 @@ withRecursiveTranscript
   :: forall es context.
      HList.Has (EventObservation es) context
   => Int
-  -> Runtime context (Eff es)
-  -> Runtime context (Eff es)
+  -> BotRuntime context (Eff es)
+  -> BotRuntime context (Eff es)
 withRecursiveTranscript tokenThreshold runtime =
   runtime
     { modelInputTranscript = \context turnState -> do

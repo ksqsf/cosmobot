@@ -16,7 +16,7 @@ import qualified Bot.Effect.Skills as Skills
 import Bot.Prelude
 import qualified Data.Text as Text
 
-loadSkillTool :: Skills.Skills :> es => Tool (Eff es)
+loadSkillTool :: Skills.Skills :> es => BotTool (Eff es)
 loadSkillTool =
   withDescription "Load an available skill's instructions or a UTF-8 text file from its directory into context."
   $ tool "load_skill"

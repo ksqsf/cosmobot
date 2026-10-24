@@ -12,7 +12,7 @@ module Bot.Agent.Tools.Image
 where
 
 import Bot.Agent.Failure (externalServiceFailure)
-import Bot.Agent.Tool
+import Bot.Agent.Tool (ToolArgument, mapArgument, noisy, tool, withDescription)
 import Bot.Agent.Tools.Common
 import Bot.Agent.Types
 import Bot.Core.Message
@@ -24,7 +24,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Text as Text
 import qualified Streaming.Prelude as S
 
-generateImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool (Eff es)
+generateImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => BotTool (Eff es)
 generateImageTool =
   noisy
   . withDescription "Generate an actual image from a prompt and send it to the current chat. Use this when the user *literally* asks to *draw*, *create*, or *generate* an image, including scheduled future image requests. After using this tool, keep the final answer brief and do not repeat the image URL. Never use this when the user is merely asking for, finding, or searching for an image; instead, use the web search tool."
@@ -46,7 +46,7 @@ generateImageTool =
           imageRef : _ ->
             sendImageToolResult context.message imageRef generated
 
-editImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => Tool (Eff es)
+editImageTool :: (Chat.Chat :> es, LLM.LLM :> es) => BotTool (Eff es)
 editImageTool =
   noisy
   . withDescription "Edit one or more existing images with the configured image edit model and send the result to the current chat. Use this when the user asks to modify, restyle, inpaint, combine, or use attached/reference images to create an edited image. Omit image_urls to edit images attached to the current message. Use mask_image_url only when the user supplies an explicit mask image; the mask applies to the first input image."
@@ -77,7 +77,7 @@ editImageTool =
               editedRef : _ ->
                 sendImageToolResult context.message editedRef edited
 
-viewImageTool :: Media.Media :> es => Tool (Eff es)
+viewImageTool :: Media.Media :> es => BotTool (Eff es)
 viewImageTool =
   tool "image_view"
     (requiredText "url" "Image URL to add to the current model context. Use an http://, https://, data:image/*, mxc:// (in Matrix), or existing media: media ID.")
