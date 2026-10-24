@@ -1,6 +1,7 @@
 #!/usr/bin/make -f
 
-CABAL_FLAGS = --builddir=dist-debian --prefix=/usr --datadir=/usr/share --datasubdir=cosmobot --disable-shared --disable-executable-dynamic
+# Template Haskell loads cosmocore dynamically; the executable links Haskell libraries statically.
+CABAL_FLAGS = --builddir=dist-debian --prefix=/usr --datadir=/usr/share --datasubdir=cosmobot --enable-shared --disable-executable-dynamic
 export PYBUILD_NAME = cosmobot-plugin
 export PYBUILD_DIR = cosmobot-plugin-python
 
