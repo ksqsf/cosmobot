@@ -49,6 +49,7 @@ import qualified Bot.Effect.Resource as Resource
 import qualified Bot.Effect.Scheduler as Scheduler
 import qualified Bot.Effect.Skills as Skills
 import qualified Bot.Effect.Typst as Typst
+import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import Effectful.Timeout
 import Effectful.Process
@@ -57,7 +58,8 @@ import qualified Effectful.Resource as EffectfulResource
 
 -- | Built-in tools exposed to the model after per-message permission checks.
 defaultTools
-  :: Agent.Agent :> es
+  :: Storage.Storage :> es
+  => Agent.Agent :> es
   => AgentAudit.AgentAudit :> es
   => Chat.Chat :> es
   => ChatLog.ChatLog :> es
@@ -87,7 +89,8 @@ defaultTools = tools
     tools = defaultToolsWith []
 
 defaultToolsWith
-  :: Agent.Agent :> es
+  :: Storage.Storage :> es
+  => Agent.Agent :> es
   => AgentAudit.AgentAudit :> es
   => Chat.Chat :> es
   => ChatLog.ChatLog :> es

@@ -1,5 +1,7 @@
 module Main (main) where
 
+import qualified Bot.Storage.AgentTranscript as AgentTranscript
+import qualified Bot.LLM.Types as LLM
 import Bot.Prelude
 import Bot.Chat.Driver.Types
 import qualified Bot.ChatLog.Record as ChatLogRecord
@@ -90,7 +92,8 @@ main :: IO ()
 main =
   defaultMain $ localOption (NumThreads 1) $
     testGroup "rpc"
-      [ testCase "request params default to empty object" testRequestParamsDefaultToEmptyObject
+      [ testCase "run transcript snapshots replace atomically and isolate runs" testRunTranscriptRpc
+      , testCase "request params default to empty object" testRequestParamsDefaultToEmptyObject
       , testCase "audit.recent bounds its snapshot limit" testAuditRecentBoundsLimit
       , testCase "audit.count returns the complete event count" testAuditCount
       , testCase "audit.search queries all stored events" testAuditSearch
@@ -2181,3 +2184,24 @@ responseSessionLabel response =
       AesonTypes.parseMaybe (Aeson.withObject "session" (Aeson..: "label")) session
     _ ->
       Nothing
+
+
+testRunTranscriptRpc :: IO ()
+testRunTranscriptRpc = do
+  (missing, invalid, saved, other) <- runRpcStorage ":memory:" $ runPrim $ AgentAudit.runAgentAudit do
+    rpcState <- RPC.newRpcState
+    let dispatch runId = RPCServer.dispatchRpcRequest rpcState
+          (RPCThread.threadRpcCallbacks (pure []) (const (pure False)))
+          (rpcRequest "thread.run_transcript" (Aeson.object ["runId" Aeson..= (runId :: Text)]))
+    missing <- dispatch "child"
+    invalid <- dispatch ""
+    AgentTranscript.saveRunTranscript "child" (Transcript (fromList [LLM.userText "first"]))
+    AgentTranscript.saveRunTranscript "other" (Transcript mempty)
+    AgentTranscript.saveRunTranscript "child" (Transcript (fromList [LLM.userText "first", LLM.ChatMessage "assistant" (Just (LLM.TextContent "answer")) [] Nothing (Just (LLM.ProviderState "test" [Aeson.String "opaque"]))]))
+    saved <- dispatch "child"
+    other <- dispatch "other"
+    pure (missing, invalid, saved, other)
+  missing @?= responseResult Aeson.Null
+  responseErrorCode invalid @?= Just "invalid_params"
+  saved @?= responseResult (Aeson.object ["messages" Aeson..= [LLM.userText "first", LLM.assistantText "answer"]])
+  other @?= responseResult (Aeson.object ["messages" Aeson..= ([] :: [LLM.ChatMessage])])

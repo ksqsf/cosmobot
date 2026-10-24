@@ -93,6 +93,7 @@ import qualified Bot.System.Typst.Types as TypstTypes
 import qualified Bot.Util.HList as HList
 import qualified Control.Exception as Exception
 import qualified Bot.LLM.Types as LLMTypes
+import qualified Bot.Storage.AgentTranscript as AgentTranscript
 import Bot.Prelude
 import qualified Bot.Chat.Driver.Telegram.Protocol as TelegramProtocol
 import qualified Data.Aeson as Aeson
@@ -1106,6 +1107,8 @@ testSubAgentLifecycle = do
     sent <- sendRun descendantMetadata (Aeson.object ["op" Aeson..= ("send" :: Text), "resource" Aeson..= resourceId, "prompt" Aeson..= ("work" :: Text)])
     liftIO $ AgentTypes.toolResultContent sent @?= "Prompt sent."
     childMetadata <- MVar.takeMVar started
+    liveTranscript <- AgentTranscript.loadRunTranscript childMetadata.agentRunId
+    liftIO $ fmap (chatMessageTextsByRole "user") liveTranscript @?= Just ["work"]
     liftIO $ do
       childMetadata.originRunId @?= "agent-root"
       assertBool "child has its own run id" (childMetadata.agentRunId /= descendantMetadata.agentRunId)
@@ -1144,6 +1147,12 @@ testSubAgentLifecycle = do
     liftIO $ assertBool "subagent detail reports final output" (either (const False) ("output:\nfinished" `Text.isInfixOf`) finishedDetail)
     destroyed <- sendRun testToolCallMetadata (Aeson.object ["op" Aeson..= ("delete" :: Text), "resource" Aeson..= ("reviewer" :: Text)])
     liftIO $ AgentTypes.toolResultContent destroyed @?= "Subagent destroyed."
+    savedTranscript <- AgentTranscript.loadRunTranscript childMetadata.agentRunId
+    liftIO $ do
+      fmap (chatMessageTextsByRole "user") savedTranscript @?= Just ["work", "change direction", "then verify"]
+      assertBool "completed answer survives resource destruction" $
+        maybe False (elem "finished" . chatMessageTextsByRole "assistant") savedTranscript
+
 
 testSubAgentWaitOperations :: IO ()
 testSubAgentWaitOperations = do

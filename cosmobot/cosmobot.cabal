@@ -202,6 +202,7 @@ library
         Bot.Agent.Middleware.ToolReplyNormalization
         Bot.Agent.Middleware.ToolResultCompaction
         Bot.Agent.Middleware.Typing
+        Bot.Agent.Middleware.TranscriptSnapshot
         Bot.Agent.Middleware.Tools
         Bot.Agent.Tools
         Bot.Agent.Tools.Audio
@@ -359,6 +360,7 @@ library
         Bot.Storage.ChatLog
         Bot.Storage.Identity
         Bot.Storage.Thread
+        Bot.Storage.AgentTranscript
         Bot.Storage.Lifecycle
         Bot.Storage.Matrix
         Bot.Storage.Prelude

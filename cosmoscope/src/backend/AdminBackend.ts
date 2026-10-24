@@ -5,7 +5,7 @@ import type {
   MediaDetail, MediaGcResult, MediaItem, MediaSearch, MediaSnapshot,
   MemoryDetail, MemoryHistoryEntry, MemoryKey, MemorySummary,
   Plugin, Resource, ResourceOperationResult, Schedule, SkillDetail, SkillSummary, Task,
-  ThreadDetail, ThreadListQuery, ThreadRunTarget, ThreadSnapshot,
+  ThreadDetail, ThreadListQuery, ThreadRunTarget, ThreadSnapshot, StoredThreadMessage,
 } from '@/types/domain'
 import type { ConfigChange, ConfigurationRollback, ConfigurationSnapshot, ConfigurationUpdate, ConfigurationValidation } from '@/rpc/schemas'
 
@@ -36,6 +36,7 @@ export interface AdminBackend {
     readonly list: (query: ThreadListQuery) => BackendEffect<ThreadSnapshot>
     readonly get: (id: number) => BackendEffect<ThreadDetail | null>
     readonly resolveRun: (runId: string) => BackendEffect<ThreadRunTarget>
+    readonly runTranscript: (runId: string) => BackendEffect<readonly StoredThreadMessage[] | null>
     readonly active: () => BackendEffect<readonly ActiveThread[]>
     readonly halt: (taskId: number) => BackendEffect<boolean>
   }
@@ -137,6 +138,8 @@ export const getThread = (id: number): Effect.Effect<ThreadDetail | null, Backen
   AdminBackendService.use((backend) => backend.threads.get(id))
 export const resolveThreadRun = (runId: string): Effect.Effect<ThreadRunTarget, BackendError, AdminBackend> =>
   AdminBackendService.use((backend) => backend.threads.resolveRun(runId))
+export const getRunTranscript = (runId: string): Effect.Effect<readonly StoredThreadMessage[] | null, BackendError, AdminBackend> =>
+  AdminBackendService.use((backend) => backend.threads.runTranscript(runId))
 export const listActiveThreads: Effect.Effect<readonly ActiveThread[], BackendError, AdminBackend> =
   AdminBackendService.use((backend) => backend.threads.active())
 export const haltActiveThread = (taskId: number): Effect.Effect<boolean, BackendError, AdminBackend> =>

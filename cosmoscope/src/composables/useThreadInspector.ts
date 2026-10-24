@@ -25,6 +25,7 @@ interface ThreadInspector {
   readonly selectedPath: ComputedRef<ThreadNode[]>
   readonly transcript: ComputedRef<ThreadTranscriptEntry[]>
   readonly stats: ComputedRef<ThreadStats>
+  readonly selectedAudit: ComputedRef<AuditRecord[]>
   readonly inspectThread: (threadId: number, selectionToken?: LatestToken) => Promise<void>
   readonly selectNode: (node: ThreadNode) => void
   readonly reset: () => void
@@ -50,7 +51,8 @@ export function useThreadInspector(
   const nodeLookup = computed(() => new Map((detail.value?.nodes ?? []).map((node) => [threadMessageKeyId(node.messageKey), node])))
   const selectedPath = computed(() => selectedNode.value === undefined ? [] : threadPathTo(selectedNode.value, nodeLookup.value))
   const transcript = computed(() => transcriptEntries(selectedPath.value))
-  const stats = computed(() => threadStats(auditRecordsLinkedTo(auditRecords.value, selectedPath.value.map(({ messageKey }) => messageKey))))
+  const selectedAudit = computed(() => auditRecordsLinkedTo(auditRecords.value, selectedPath.value.map(({ messageKey }) => messageKey)))
+  const stats = computed(() => threadStats(selectedAudit.value))
 
   async function inspectThread(threadId: number, selectionToken = latest.begin()): Promise<void> {
     if (!latest.current(selectionToken)) return
@@ -104,7 +106,7 @@ export function useThreadInspector(
 
   return {
     latest, detail, auditRecords, selectedNode, selectedKeys, expandedKeys, visible, treeFocused, treeZoom,
-    detailError, statsError, detailLoading, nodeLookup, selectedPath, transcript, stats,
+    detailError, statsError, detailLoading, nodeLookup, selectedPath, transcript, stats, selectedAudit,
     inspectThread, selectNode, reset,
   }
 }

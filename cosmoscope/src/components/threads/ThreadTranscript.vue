@@ -15,16 +15,18 @@ import { useOverlayLayer } from '@/overlay'
 import { messageText, readableMessageText, roleLabel, type ThreadTranscriptEntry } from '@/domain/threadTranscript'
 import type { ActiveThread, StoredThreadMessage, ThreadMessageKey } from '@/types/domain'
 
-defineProps<{
+const props = withDefaults(defineProps<{
   active?: ActiveThread | undefined
-  activeMessages: readonly StoredThreadMessage[]
-  activeTools: readonly ThreadToolActivity[]
-  transcript: readonly ThreadTranscriptEntry[]
+  messages?: readonly StoredThreadMessage[] | undefined
+  activeMessages?: readonly StoredThreadMessage[]
+  activeTools?: readonly ThreadToolActivity[]
+  transcript?: readonly ThreadTranscriptEntry[]
   selectedMessageKey?: ThreadMessageKey | undefined
   imageUrls: (message: StoredThreadMessage) => string[]
   attachments: (message: StoredThreadMessage) => MessageContentAttachment[]
-}>()
+}>(), { activeMessages: () => [], activeTools: () => [], transcript: () => [] })
 const emit = defineEmits<{ previewImage: [url: string] }>()
+const linearMessages = computed(() => props.messages ?? (props.active ? props.activeMessages : undefined))
 const router = useRouter()
 const toast = useToast()
 const list = ref<HTMLOListElement>()
@@ -110,7 +112,7 @@ defineExpose({ isPinned, scrollToEnd })
       @hide="menuLayer.hide(); contextEntry = undefined"
     />
     <header>
-      <span>{{ active ? 'Live context' : 'Context at node' }}</span><small><template v-if="active">{{ activeMessages.length }} messages</template><ChatLogMessageLink
+      <span>{{ messages ? 'Subagent conversation' : active ? 'Live context' : 'Context at node' }}</span><small><template v-if="linearMessages">{{ linearMessages.length }} messages</template><ChatLogMessageLink
         v-else-if="selectedMessageKey"
         :message-key="selectedMessageKey"
       /><template v-else>No node selected</template></small>
@@ -151,18 +153,18 @@ class="hljs language-json"
       </details>
     </div>
     <div
-      v-if="active === undefined && transcript.length === 0"
+      v-if="linearMessages === undefined && transcript.length === 0"
       class="thread-empty"
     >
       No stored messages for this node.
     </div>
     <ol
-      v-if="active"
+      v-if="linearMessages"
       ref="list"
       class="thread-transcript"
     >
       <li
-        v-for="(message, index) in activeMessages"
+        v-for="(message, index) in linearMessages"
         :key="index"
         :class="`role-${message.role}`"
       >

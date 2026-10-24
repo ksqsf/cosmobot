@@ -19,6 +19,7 @@ import qualified Bot.Effect.Concurrency as Concurrency
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Effect.Storage as Storage
 import Bot.Prelude
 import qualified Bot.Resource.SubAgent as SubAgent
 import qualified Data.Aeson as Aeson
@@ -35,6 +36,7 @@ subagentTool
      , LLM.LLM :> es
      , Media.Media :> es
      , Resource.Resource :> es
+     , Storage.Storage :> es
      , KatipE :> es
      , Prim :> es
      , Concurrent :> es

@@ -31,6 +31,7 @@ export const liveAdminMethods = [
   'thread.count',
   'thread.get',
   'thread.resolve_run',
+  'thread.run_transcript',
   'thread.active',
   'thread.halt',
   'memory.list',

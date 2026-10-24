@@ -20,6 +20,7 @@ import qualified Bot.JSONRPC as RPC
 import Bot.Prelude
 import Bot.RPC.Server (RpcServerCallbacks (..), noRpcServerCallbacks)
 import qualified Bot.Storage.Thread as Thread
+import qualified Bot.Storage.AgentTranscript as AgentTranscript
 import qualified Bot.Storage.Identity as Identity
 import qualified Bot.Storage.ChatLog as ChatLog
 import qualified Data.Aeson as Aeson
@@ -39,7 +40,7 @@ threadRpcCallbacks
 threadRpcCallbacks inspectActive haltActive =
   noRpcServerCallbacks
     { threadMethod = dispatchThreadMethod inspectActive haltActive
-    , supportedMethods = ["thread.list", "thread.count", "thread.get", "thread.resolve_run", "thread.active", "thread.halt"]
+    , supportedMethods = ["thread.list", "thread.count", "thread.get", "thread.resolve_run", "thread.run_transcript", "thread.active", "thread.halt"]
     }
 
 dispatchThreadMethod
@@ -93,6 +94,10 @@ dispatchThreadMethod inspectActive haltActive request =
           [ "threadId" Aeson..= threadId
           , "taskId" Aeson..= ((.taskId.unId) <$> active)
           ]
+    "thread.run_transcript" ->
+      parseParams request parseRunId \runId -> do
+        messages <- AgentTranscript.loadRunTranscript runId
+        pure $ maybe Aeson.Null (\stored -> Aeson.object ["messages" Aeson..= stored]) messages
     "thread.active" ->
       parseParams request parseNoParams \() -> do
         active <- inspectActive

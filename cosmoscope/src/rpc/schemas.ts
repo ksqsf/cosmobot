@@ -64,6 +64,7 @@ export const threadListSchema = z.object({
   leaves: z.number().int().nonnegative(),
   platforms: z.number().int().nonnegative(),
 }) satisfies z.ZodType<ThreadSnapshot>
+export const runTranscriptSchema = z.object({ messages: z.array(storedThreadMessageSchema) })
 export const threadDetailSchema = z.object({
   summary: threadSummarySchema,
   nodes: z.array(z.object({

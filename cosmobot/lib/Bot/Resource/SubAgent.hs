@@ -19,6 +19,7 @@ where
 import qualified Bot.Agent as Agent
 import Bot.Agent.Tool
 import Bot.Agent.Types
+import Bot.Agent.Middleware.TranscriptSnapshot (withTranscriptSnapshots)
 import Bot.Core.Message (MessageInput, inputWithImages)
 import Bot.Core.Transcript
 import qualified Bot.Effect.Concurrency as Concurrency
@@ -28,6 +29,8 @@ import qualified Bot.Effect.Chat as Chat
 import qualified Bot.Effect.LLM as LLM
 import qualified Bot.Effect.Media as Media
 import qualified Bot.Effect.Resource as Resource
+import qualified Bot.Effect.Storage as Storage
+import qualified Bot.Storage.AgentTranscript as AgentTranscript
 import Bot.Prelude
 import qualified Data.Foldable as Foldable
 import qualified Data.Sequence as Seq
@@ -118,6 +121,7 @@ sendPrompt
      , Concurrency.Concurrency :> es
      , LLM.LLM :> es
      , Media.Media :> es
+     , Storage.Storage :> es
      , KatipE :> es
      , Prim :> es
      , Concurrent :> es
@@ -162,7 +166,11 @@ sendPrompt metadata subagentId availableTools context subagent prompt =
                     , subagentId
                     }
                   _ S.:> agentResult <- S.toList
-                    (Agent.agentStream (Agent.withSteering (steeringControl steering) runtime) transcript)
+                    (Agent.agentStream
+                      (Agent.withSteering (steeringControl steering)
+                        (withTranscriptSnapshots
+                          (\snapshot -> AgentTranscript.saveRunTranscript (Agent.runIdOf runtime) snapshot
+                            `catchSync` \_ -> $(logWarning) "Could not persist subagent transcript") runtime)) transcript)
                   pure (agentResult.finalText, agentResult.transcript)
           MVar.modifyMVar_ steering (const (pure Nothing))
           MVar.modifyMVar_ subagent.state (pure . finishRun worker result)

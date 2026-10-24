@@ -56,14 +56,23 @@ import {
   threadDetailSchema,
   threadListSchema,
   threadRunTargetSchema,
+  runTranscriptSchema,
 } from '@/rpc/schemas'
 import type { RpcClient } from '@/rpc/client'
 import { RpcCallError, type LiveAdminMethod } from '@/rpc/protocol'
 import type { BackendEffect } from './AdminBackend'
-import type { AuditPlatform } from '@/types/domain'
+import type { AuditPlatform, AuditRecord } from '@/types/domain'
+
+interface AuditListeners {
+  readonly listeners: Set<{ refresh: () => Promise<void>, handler: (record: AuditRecord) => void }>
+  stop: (() => void) | undefined
+}
+const auditSubscriptions = new WeakMap<RpcClient, AuditListeners>()
 
 export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>): AdminBackend {
   const supports = (method: LiveAdminMethod): boolean => methods.has(method)
+  const audit: AuditListeners = auditSubscriptions.get(client) ?? { listeners: new Set(), stop: undefined }
+  auditSubscriptions.set(client, audit)
   return {
     tasks: {
       list: supports('concurrency.list') ? () => rpcEffect(
@@ -100,10 +109,27 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
         'Could not load thread audit events.',
         async () => auditThreadSchema.nullable().parse(await client.request('audit.thread', { threadId })),
       ),
-      subscribe: supports('audit.subscribe') ? (refresh, handler) => Effect.sync(() => client.subscribe(
-        'overview.audit', 'audit.subscribe', 'audit.unsubscribe', {}, ['audit.event'], refresh,
-        (_method, params) => handler(auditRecordSchema.parse(params)),
-      )) : unsupported('audit.subscribe'),
+      subscribe: supports('audit.subscribe') ? (refresh, handler) => rpcEffect('Could not subscribe to audit activity.', async () => {
+        const listener = { refresh, handler }
+        audit.listeners.add(listener)
+        const release = (): void => {
+          audit.listeners.delete(listener)
+          if (audit.listeners.size === 0) { audit.stop?.(); audit.stop = undefined }
+        }
+        try {
+          if (audit.stop === undefined) {
+            audit.stop = client.subscribe(
+              'overview.audit', 'audit.subscribe', 'audit.unsubscribe', {}, ['audit.event'],
+              async () => { await Promise.all([...audit.listeners].map((entry) => entry.refresh())) },
+              (_method, params) => {
+                const record = auditRecordSchema.parse(params)
+                for (const entry of audit.listeners) entry.handler(record)
+              },
+            )
+          } else await refresh()
+          return release
+        } catch (error) { release(); throw error }
+      }) : unsupported('audit.subscribe'),
     },
     threads: {
       count: () => rpcEffect('Could not load the thread count.', async () => z.object({ threads: z.number().int().nonnegative() }).parse(await client.request('thread.count')).threads),
@@ -115,6 +141,9 @@ export function makeRpcBackend(client: RpcClient, methods: ReadonlySet<string>):
       }))),
       get: (id) => rpcEffect('Could not load the thread.', async () => threadDetailSchema.nullable().parse(await client.request('thread.get', { threadId: id }))),
       resolveRun: (runId) => rpcEffect('Could not find the agent thread.', async () => threadRunTargetSchema.parse(await client.request('thread.resolve_run', { runId }))),
+      runTranscript: supports('thread.run_transcript') ? (runId) => rpcEffect('Could not load the subagent conversation.', async () =>
+        runTranscriptSchema.nullable().parse(await client.request('thread.run_transcript', { runId }))?.messages ?? null,
+      ) : unsupported('thread.run_transcript'),
       active: () => rpcEffect('Could not load active threads.', async () => activeThreadListSchema.parse(await client.request('thread.active')).threads),
       halt: (taskId) => rpcEffect('Could not halt the active thread.', async () => haltThreadSchema.parse(await client.request('thread.halt', { taskId })).halted),
     },

@@ -17,6 +17,7 @@ import RunIdLink from '@/components/RunIdLink.vue'
 import ActiveThreadsPanel from '@/components/threads/ActiveThreadsPanel.vue'
 import ThreadListPanel from '@/components/threads/ThreadListPanel.vue'
 import ThreadStatsPanel from '@/components/threads/ThreadStatsPanel.vue'
+import SubagentsPanel from '@/components/threads/SubagentsPanel.vue'
 import ThreadTranscript from '@/components/threads/ThreadTranscript.vue'
 import ThreadTreePanel from '@/components/threads/ThreadTreePanel.vue'
 import { haltActiveThread, resolveThreadRun } from '@/backend/AdminBackend'
@@ -345,6 +346,12 @@ watch([list.debouncedQuery, list.platforms], () => { list.first.value = 0; void 
           v-else
           :stats="inspectorStats"
           :audit-event-count="active.selected.value ? active.auditRecords.value.length : inspector.auditRecords.value.length"
+        />
+        <SubagentsPanel
+          v-if="inspector.visible.value"
+          :key="active.selected.value?.runId ?? JSON.stringify(inspector.selectedNode.value?.messageKey)"
+          :records="active.selected.value ? active.auditRecords.value : inspector.selectedAudit.value"
+          @preview-image="media.previewImage.value = $event"
         />
         <div
           class="thread-detail-grid"

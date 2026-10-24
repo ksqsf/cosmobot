@@ -721,3 +721,21 @@ The virtual RPC chat driver supports replies, streamed reply edits, audio/file
 fallback text, and mentions. It does not support deleting messages, fetching old
 message content, member lookups, avatars, group member listing, or member title
 changes.
+
+
+### `thread.run_transcript`
+
+Authenticated administration method. Parameters: `{ "runId": "..." }` (nonempty).
+Returns `{ "messages": [...] }` in conversation order, using the same message
+format as thread nodes, or `null` when no snapshot exists. An empty recorded
+conversation returns an empty array, distinct from missing history.
+
+Subagent runs save durable snapshots at model/tool boundaries and completion.
+Each run includes inherited conversation context and new messages, and remains
+inspectable after its resource is destroyed. Interrupted runs retain the last
+completed boundary; partial streaming tokens are not recorded. Snapshots use the
+runtime's canonical context, including its tool-result compaction, rather than
+an unbounded archive. Opaque provider continuation state is excluded. Runs from
+before this feature have no transcript to reconstruct from audit metadata.
+Cosmoscope polls the selected conversation while visible; older servers expose
+an explicit unavailable state for this capability.
