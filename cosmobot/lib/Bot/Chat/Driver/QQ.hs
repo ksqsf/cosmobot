@@ -16,6 +16,7 @@ module Bot.Chat.Driver.QQ
   , incomingMessages
   , eventToIncomingMessage
   , eventToIncomingMessageWith
+  , banMemberRequest
   , invitationAction
   , replyAction
   , forwardedMessagesText
@@ -98,6 +99,9 @@ instance Driver.ChatDriver QQDriver where
           ])
         pure (if actionSucceeded response then Right () else Left "QQ rejected the reaction.")
       _ -> pure (Left "QQ reactions require a chat, numeric message id and emoji ID string.")
+
+  banMember (QQDriver driver) message user =
+    maybe (pure False) (fmap actionSucceeded . sendAction driver) (banMemberRequest message user)
 
   deleteMessage (QQDriver driver) =
     deleteMessageQQ driver
@@ -1501,3 +1505,19 @@ parseReplyId value =
     case value of
       Aeson.String text -> readMaybe (toString text)
       _ -> Nothing
+
+
+banMemberRequest :: IncomingMessage -> Text -> Maybe Aeson.Value
+banMemberRequest message user = do
+  guard (message.kind == ChatGroup)
+  groupId <- message.chatId >>= chatIdInteger
+  userId <- readMaybe (Text.unpack user) :: Maybe Integer
+  guard (groupId > 0 && userId > 0)
+  pure (Aeson.object
+    [ "action" Aeson..= ("set_group_kick" :: Text)
+    , "params" Aeson..= Aeson.object
+        [ "group_id" Aeson..= groupId
+        , "user_id" Aeson..= userId
+        , "reject_add_request" Aeson..= True
+        ]
+    ])

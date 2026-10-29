@@ -10,7 +10,8 @@ Stability   : experimental
 -}
 
 module Bot.Chat.Driver.Matrix
-  ( MatrixDriver
+  ( banMemberRequest
+  , MatrixDriver
   , Config (..)
   , newMatrixDriver
   , runMatrixClient
@@ -117,6 +118,9 @@ instance Driver.ChatDriver MatrixDriver where
             fmap (const ()) <$> eitherCall "send m.reaction" driver
               (MatrixReaction roomId (matrixEventId (messageIdText messageId)) key)
       _ -> pure (Left "Matrix reactions require a room, native event id and reaction key string.")
+
+  banMember (MatrixDriver driver) message user =
+    maybe (pure False) (fmap (const True) . call driver) (banMemberRequest message user)
 
   deleteMessage (MatrixDriver driver) =
     deleteMessageMatrix driver
@@ -1715,3 +1719,12 @@ data MatrixDecryptionPlan = MatrixDecryptionPlan
   , decryptionIv :: !(CryptoCipher.IV CryptoAES.AES256)
   , decryptionExpectedHash :: !(CryptoHash.Digest CryptoHash.SHA256)
   }
+
+
+banMemberRequest :: IncomingMessage -> Text -> Maybe MatrixBanMember
+banMemberRequest message userId = do
+  roomId <- viaNonEmpty head message.chatAliases
+  guard (Text.isPrefixOf "!" roomId && Text.length roomId > 1)
+  let (localpart, server) = Text.breakOn ":" userId
+  guard (Text.isPrefixOf "@" localpart && Text.length localpart > 1 && Text.length server > 1)
+  pure (MatrixBanMember (matrixRoomId roomId) userId)

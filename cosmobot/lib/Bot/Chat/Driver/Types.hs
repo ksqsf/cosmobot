@@ -62,6 +62,10 @@ class ChatDriver driver where
   addReaction driver _ _ _ =
     pure (Left [i|#{driverPlatform driver} does not support reactions.|])
 
+  -- | Permanently ban and remove a member from the current chat.
+  banMember :: ChatDriverEffects driver es => driver -> IncomingMessage -> Text -> Eff es Bool
+  banMember _ _ _ = pure False
+
   deleteMessage :: ChatDriverEffects driver es => driver -> IncomingMessage -> MessageId -> Eff es Bool
   deleteMessage _ _ _ =
     pure False

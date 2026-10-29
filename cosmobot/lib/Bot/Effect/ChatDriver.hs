@@ -22,6 +22,7 @@ module Bot.Effect.ChatDriver
   , publishActivity
   , addReaction
   , deleteMessage
+  , banMember
   , messageOutPolicy
   , getMessageContent
   , getSenderMemberInfo
@@ -84,6 +85,7 @@ data ChatDriver :: Effect where
     -> Activity
     -> ChatDriver m ()
   AddReaction :: IncomingMessage -> MessageId -> Aeson.Value -> ChatDriver m (Either Text ())
+  BanMember :: IncomingMessage -> Text -> ChatDriver m Bool
   DeleteMessage
     :: IncomingMessage
     -> MessageId
@@ -184,6 +186,10 @@ deleteMessage :: ChatDriver :> es => IncomingMessage -> MessageId -> Eff es Bool
 deleteMessage message messageId =
   send (DeleteMessage message messageId)
 
+-- | Permanently ban and remove a member from the current chat.
+banMember :: ChatDriver :> es => IncomingMessage -> Text -> Eff es Bool
+banMember message userId = send (BanMember message userId)
+
 -- | Add a platform-native reaction in the current chat.
 addReaction :: ChatDriver :> es => IncomingMessage -> MessageId -> Aeson.Value -> Eff es (Either Text ())
 addReaction message messageId reaction =
@@ -271,6 +277,8 @@ chatDriverEffectHandler driver _ = \case
     Driver.publishActivity driver message activity
   AddReaction message messageId reaction ->
     Driver.addReaction driver message messageId reaction
+  BanMember message userId ->
+    Driver.banMember driver message userId
   DeleteMessage message messageId ->
     Driver.deleteMessage driver message messageId
   MessageOutPolicy message ->

@@ -205,6 +205,9 @@ data MatrixCompleteStreamMessage = MatrixCompleteStreamMessage
 
 data MatrixReaction = MatrixReaction !Text !MatrixEventId !Text
 
+data MatrixBanMember = MatrixBanMember !MatrixRoomId !Text
+  deriving (Eq, Show)
+
 data MatrixRedactEvent = MatrixRedactEvent
   { redactRoomId :: !Text
   , redactEventId :: !MatrixEventId
@@ -350,6 +353,15 @@ instance MatrixAPI MatrixReaction where
             , "key" Aeson..= key
             ]
         ]))
+
+instance MatrixAPI MatrixBanMember where
+  type MatrixResponse MatrixBanMember = Aeson.Value
+
+  call driver (MatrixBanMember roomId userId) =
+    matrixClientJsonCall driver "ban member" "ban member" matrixApiOptions
+      POST
+      (\baseUrl -> baseUrl /: "_matrix" /: "client" /: "v3" /: "rooms" /: matrixRoomIdText roomId /: "ban")
+      (ReqBodyJson (Aeson.object ["user_id" Aeson..= userId]))
 
 instance MatrixAPI MatrixRedactEvent where
   type MatrixResponse MatrixRedactEvent = Aeson.Value

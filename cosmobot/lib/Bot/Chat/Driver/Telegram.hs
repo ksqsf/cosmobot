@@ -122,6 +122,12 @@ instance Driver.ChatDriver TelegramDriver where
         setTelegramReaction driver chatId rawMessageId native
       _ -> pure (Left "Telegram reactions require numeric chat/message ids and an emoji string or ReactionType object.")
 
+  banMember (TelegramDriver driver) message user =
+    case (message.kind, message.chatId >>= chatIdInteger, readMaybe (Text.unpack user)) of
+      (ChatGroup, Just chatId, Just userId) | userId > 0 ->
+        Protocol.callTelegram driver Protocol.BanChatMemberRequest{chatId, userId, untilDate = Nothing}
+      _ -> pure False
+
   deleteMessage (TelegramDriver driver) =
     deleteMessageForTelegram driver
 
@@ -187,7 +193,8 @@ updateToIncomingMessage =
 updateToIncomingMessageWith :: Config -> Update -> Maybe IncomingMessage
 updateToIncomingMessageWith cfg Update{message = telegramMessage} = do
   message <- telegramMessage
-  guard (not (isBotMessage message))
+  guard (not (isBotMessage message)
+    || (isJust message.guestBotCallerUser && telegramChatKind message.chat.type_ == ChatGroup))
   pure IncomingMessage
     { eventKind = IncomingMessageCreated
     , replyQuote = message.quote >>= \q -> if q.isManual == Just True then Just q.text else Nothing

@@ -30,6 +30,7 @@ module Bot.Chat.Driver.Discord
   , eventToIncomingMessageWith
   , deletedEventToIncomingMessageWith
   , formatDiscordMarkdown
+  , banMemberRequest
   , discordUserAvatarValue
   )
 where
@@ -96,6 +97,11 @@ instance Driver.ChatDriver DiscordDriver where
         createDiscordReaction driver channelId (messageIdText messageId) emoji
         pure (Right ())
       _ -> pure (Left "Discord reactions require a channel and emoji string (Unicode or name:id).")
+
+  banMember (DiscordDriver driver) message user =
+    case banMemberRequest message user of
+      Just (guildId, userId) -> banGuildMember driver guildId userId $> True
+      Nothing -> pure False
 
   deleteMessage (DiscordDriver driver) =
     deleteMessageDiscord
@@ -538,3 +544,13 @@ stableTextId =
       fromIntegral ((fromIntegral acc `xor` fromIntegral (fromEnum char)) * fnvPrime :: Word64)
     fnvPrime :: Word64
     fnvPrime = 1099511628211
+
+
+banMemberRequest :: IncomingMessage -> Text -> Maybe (Text, Text)
+banMemberRequest message userId = do
+  guard (message.kind == ChatGroup)
+  guildId <- discordMessageGuildId message.raw
+  guard (validId guildId && validId userId)
+  pure (guildId, userId)
+  where
+    validId value = not (Text.null value) && Text.all (\c -> c >= '0' && c <= '9') value && Text.any (/= '0') value

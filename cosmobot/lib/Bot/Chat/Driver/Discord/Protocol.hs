@@ -90,6 +90,10 @@ createDiscordReaction :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Tex
 createDiscordReaction driver channelId messageId emoji =
   discordNoResponseRequest driver.config "PUT" PUT ["channels", channelId, "messages", messageId, "reactions", emoji, "@me"]
 
+banGuildMember :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Eff es ()
+banGuildMember driver guildId userId =
+  discordNoResponseRequest driver.config "PUT" PUT ["guilds", guildId, "bans", userId]
+
 deleteDiscordMessage :: (HTTP.HTTP :> es, KatipE :> es) => DiscordDriver -> Text -> Text -> Eff es ()
 deleteDiscordMessage driver channelId messageId =
   discordNoResponseRequest driver.config "DELETE" DELETE ["channels", channelId, "messages", messageId]

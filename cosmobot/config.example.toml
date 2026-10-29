@@ -329,7 +329,10 @@ script = "./update.sh"
 
 [handler.shutup]
 # POSIX extended regular expressions matching incoming messages to delete.
-# Empty means no automatic deletion. Patterns are checked when config is read.
+# Empty disables pattern deletion. Patterns are checked when config is read.
+# Repeat suppression remains active. In Telegram groups, guest bot replies trigger
+# bans of the bot and requesting user (including removal), then deletion of the
+# guest reply and its initiating message when the reply author and chat match.
 # TOML literal strings make backslashes easier to write, e.g. ['^spam[0-9]+$'].
 delete_patterns = []
 

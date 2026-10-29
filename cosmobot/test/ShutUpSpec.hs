@@ -8,7 +8,9 @@ import Bot.Core.Route
 import Bot.Handler.ShutUp
 import Bot.Handler.ShutUp.Config
 import Bot.Prelude
+import qualified Control.Exception as Exception
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.IORef as IORef
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -27,11 +29,20 @@ instance Driver.ChatDriver (DeleteChatDriver es0) where
   deleteMessage (DeleteChatDriver delete) =
     delete
 
+newtype ModerationChatDriver es = ModerationChatDriver (Text -> Eff es ())
+
+instance Driver.ChatDriver (ModerationChatDriver es0) where
+  type ChatDriverEffects (ModerationChatDriver es0) es = es ~ es0
+  driverPlatform _ = PlatformTelegram
+  banMember (ModerationChatDriver record) _ user = record ("ban:" <> user) $> True
+  deleteMessage (ModerationChatDriver record) _ mid = record ("delete:" <> messageIdText mid) $> True
+
 main :: IO ()
 main =
   defaultMain $
     testGroup "shutup"
-      [ testCase "matching message is deleted and routing stops" testMatchingMessageIsDeleted
+      [ testCase "guest bots ban both identities and delete, stopping routing" testGuestBot
+      , testCase "matching message is deleted and routing stops" testMatchingMessageIsDeleted
       , testCase "nonmatching message continues routing" testNonmatchingMessageContinues
       , testCase "third repeat and containing suffixes are deleted" $
           checkStream (map messageWithText ["a", "a", "a", "a", "xa", "ax", "b", "b", "b", "b"]) [3,4,5,6,9,10]
@@ -58,7 +69,7 @@ checkStream :: [IncomingMessage] -> [Int] -> IO ()
 checkStream messages expected = do
   deleted <- IORef.newIORef []
   continued <- IORef.newIORef []
-  runEff $ runPrim $ Chat.runChatWith
+  runEff $ runPrim $ startKatipE "shutup-spec" "test" $ Chat.runChatWith
     (DeleteChatDriver \_ messageId -> liftIO (IORef.modifyIORef' deleted (<> [messageId])) $> True) do
       handlers <- shutUpHandlers defaultShutUpConfig
       let later = continueOn anything \message _ ->
@@ -88,7 +99,7 @@ testNonmatchingMessageContinues = do
 
 runShutUp :: IORef.IORef [MessageId] -> IORef.IORef Bool -> ShutUpConfig -> IncomingMessage -> IO ()
 runShutUp deleted later cfg incoming =
-  runEff $ runPrim $
+  runEff $ runPrim $ startKatipE "shutup-spec" "test" $
     Chat.runChatWith
       ( DeleteChatDriver \_ messageId -> do
           liftIO $ IORef.modifyIORef' deleted (<> [messageId])
@@ -136,3 +147,73 @@ messageWithText body =
     , text = body
     , raw = Aeson.Null
     }
+
+
+testGuestBot :: IO ()
+testGuestBot = do
+  let guest = (messageWithText "guest response")
+        { kind = ChatGroup
+        , raw = Aeson.object
+            [ "from" Aeson..= Aeson.object ["id" Aeson..= (200 :: Int), "is_bot" Aeson..= True]
+            , "guest_bot_caller_user" Aeson..= Aeson.object ["id" Aeson..= (987654 :: Int)]
+            ]
+        }
+      expected = ["ban:200", "ban:987654", "delete:300"]
+  checkModeration guest Nothing expected False
+  let withReply author chat target = guest
+        { raw = case guest.raw of
+            Aeson.Object o -> Aeson.Object (KeyMap.insert "reply_to_message" (Aeson.object
+              [ "from" Aeson..= Aeson.object ["id" Aeson..= (author :: Integer)]
+              , "chat" Aeson..= Aeson.object ["id" Aeson..= (chat :: Integer)]
+              , "message_id" Aeson..= (target :: Integer)
+              ]) o)
+            value -> value
+        }
+      linkedGuest = withReply 987654 100 182
+      linkedExpected = expected <> ["delete:182"]
+  checkModeration linkedGuest Nothing linkedExpected False
+  for_ ["ban:200", "ban:987654", "delete:300", "delete:182"] \failed ->
+    checkModeration linkedGuest (Just failed) linkedExpected True
+  for_ [withReply 987655 100 182, withReply 987654 101 182, withReply 987654 100 0] \unrelated ->
+    checkModeration unrelated Nothing expected False
+  checkModerationCancellation linkedGuest
+  for_ ["ban:200", "ban:987654", "delete:300"] \failed ->
+    checkModeration guest (Just failed) expected True
+  for_ [ guest{platform = PlatformMatrix}
+       , guest{kind = ChatPrivate}
+       , guest{eventKind = IncomingMessageDeleted}
+       , guest{senderId = Nothing}
+       , guest{chatId = Nothing}
+       , guest{raw = Aeson.Null}
+       , guest{raw = Aeson.object ["from" Aeson..= Aeson.object ["is_bot" Aeson..= False], "guest_bot_caller_user" Aeson..= Aeson.object ["id" Aeson..= (987654 :: Int)]]}
+       , guest{raw = Aeson.object ["from" Aeson..= Aeson.object ["is_bot" Aeson..= True], "via_bot" Aeson..= Aeson.object ["id" Aeson..= (987654 :: Int)]]}
+       ] \ordinary -> checkModeration ordinary Nothing ["continued"] False
+
+checkModeration :: IncomingMessage -> Maybe Text -> [Text] -> Bool -> IO ()
+checkModeration message failure expected shouldFail = do
+  actions <- IORef.newIORef []
+  let record :: IOE :> es => Text -> Eff es ()
+      record action = do
+        liftIO (IORef.modifyIORef' actions (<> [action]))
+        when (failure == Just action) (throwIO (Exception.ErrorCall "moderation failed"))
+  result <- runEff $ runPrim $ startKatipE "shutup-spec" "test" $ trySync $ Chat.runChatWith (ModerationChatDriver record) do
+        handlers <- shutUpHandlers defaultShutUpConfig
+        runHandlers (handlers <> [continueOn anything (\_ _ -> record "continued")]) message
+  IORef.readIORef actions >>= (@?= expected)
+  isLeft result @?= shouldFail
+
+
+checkModerationCancellation :: IncomingMessage -> IO ()
+checkModerationCancellation message = do
+  actions <- IORef.newIORef ([] :: [Text])
+  result <- Exception.try @Exception.AsyncException $ runEff $ runPrim $ startKatipE "shutup-spec" "test" $
+    Chat.runChatWithHandler
+      (\_ -> \case
+        Chat.BanMember _ user -> do
+          liftIO (IORef.modifyIORef' actions (<> [user]))
+          throwIO Exception.ThreadKilled
+        _ -> error "cancellation must stop moderation") do
+          handlers <- shutUpHandlers defaultShutUpConfig
+          runHandlers handlers message
+  result @?= Left Exception.ThreadKilled
+  IORef.readIORef actions >>= (@?= ["200"])

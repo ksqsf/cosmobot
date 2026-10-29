@@ -111,6 +111,10 @@ instance ChatDriver driver => ChatDriver (NormalizingChatDriver driver) where
     withChatDriverEither message "Add reaction" do
       addReaction driver message messageId reaction
 
+  banMember (NormalizingChatDriver driver) message userId =
+    fromMaybe False <$> withChatDriverMaybe message "ban member" do
+      Just <$> banMember driver message userId
+
   deleteMessage (NormalizingChatDriver driver) message messageId =
     fromMaybe False <$> withChatDriverMaybe message "chat delete" do
       Just <$> deleteMessage driver message messageId
@@ -204,6 +208,10 @@ instance ChatDriver ChatDrivers where
   addReaction drivers message messageId reaction =
     withMessageDriver drivers message \driver ->
       addReaction driver message messageId reaction
+
+  banMember drivers message userId =
+    withMessageDriver drivers message \driver ->
+      banMember driver message userId
 
   deleteMessage drivers message messageId =
     withMessageDriver drivers message \driver ->

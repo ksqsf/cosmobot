@@ -20,6 +20,8 @@ Actively refactor code that is incoherent (commit separately):
 - Complete migrations across callers, tests, and documentation. Remove superseded implementations and temporary bridges within the agreed scope.
 - Test an abstraction against distinct supported contexts and boundary cases. Record remaining limits; passing current tests does not establish universal reuse.
 - Review the whole change path for extra conversions, competing conventions, and hidden dependencies. Prefer fewer concepts to a locally shorter patch; avoid speculative frameworks.
+- Never change a core type unless absolutely needed and approved by the user.
+- If adding new effect operation (e.g. ChatDriver), implement them for all implementors where appropriate.
 
 ## Architecture
 

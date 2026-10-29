@@ -442,6 +442,7 @@ data Message = Message
   , date            :: !(Maybe Integer)
   , messageThreadId :: !(Maybe Integer)
   , from            :: !(Maybe User)
+  , guestBotCallerUser :: !(Maybe User)
   , senderChat      :: !(Maybe Chat)
   , chat            :: !Chat
   , replyToMessage  :: !(Maybe Message)

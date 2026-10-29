@@ -88,6 +88,8 @@ main =
       , testCase "Telegram video becomes a message file" testTelegramVideoBecomesMessageFile
       , testCase "Telegram sticker records its emoji" testTelegramStickerRecordsEmoji
       , testCase "Telegram superuser is also allowed private sender" testTelegramSuperuserIsAlsoAllowedPrivateSender
+      , testCase "member bans use platform membership scopes and reject missing identities" testMemberBanRequests
+      , testCase "Telegram guest bot caller survives JSON normalization" testTelegramGuestBot
       , testCase "Telegram bot message is ignored" testTelegramBotMessageIsIgnored
       , testCase "Telegram referenced message includes sender identity" testTelegramReferencedMessageIncludesSenderIdentity
       , testCase "Telegram rich messages use HTML, media, and structured replies" testTelegramRichMessageRequest
@@ -1438,6 +1440,7 @@ telegramMessage fromBot =
     , date = Nothing
     , messageThreadId = Nothing
     , from = Just (telegramUser fromBot)
+    , guestBotCallerUser = Nothing
     , senderChat = Nothing
     , chat = telegramChat
     , quote = Nothing
@@ -1807,3 +1810,57 @@ testChatTranscript = for_ ["", "system"] $ \system -> do
            , LLM.userText "second"
            ]
   Aeson.toJSON (toList transcript.messages) @?= Aeson.toJSON expected
+
+
+testTelegramGuestBot :: IO ()
+testTelegramGuestBot = do
+  let caller = Telegram.User 987654 False "Caller" Nothing Nothing
+      value = case Aeson.toJSON (telegramMessage True) of
+        Aeson.Object o -> Aeson.Object (AesonKeyMap.insert "guest_bot_caller_user" (Aeson.toJSON caller) o)
+        _ -> error "expected object"
+  message <- case Aeson.fromJSON value of
+    Aeson.Error err -> assertFailure err
+    Aeson.Success parsed -> pure parsed
+  incoming <- maybe (assertFailure "guest bot was dropped") pure
+    (Telegram.updateToIncomingMessage (telegramUpdateWithMessage message))
+  incoming.senderId @?= Just "10001"
+  assertBool "guest bots in private chats remain ignored" $ isNothing $
+    Telegram.updateToIncomingMessage (telegramUpdateWithMessage message{Telegram.chat = privateTelegramMessage.chat})
+  let parseCaller = Aeson.withObject "message" \o -> do
+        user <- o Aeson..: "guest_bot_caller_user"
+        user Aeson..: "id"
+  AesonTypes.parseEither parseCaller incoming.raw @?= Right (987654 :: Integer)
+  let request = TelegramProtocol.BanChatMemberRequest (-100123) 987654 Nothing
+  Aeson.toJSON request @?= Aeson.object
+    ["chat_id" Aeson..= (-100123 :: Integer), "user_id" Aeson..= (987654 :: Integer)]
+  TelegramProtocol.telegramMethod request @?= "banChatMember"
+
+
+testMemberBanRequests :: IO ()
+testMemberBanRequests = do
+  let qq = fromMaybe (error "expected QQ message") (QQ.eventToIncomingMessage (qqMessageEvent 10001))
+      discord = fromMaybe (error "expected Discord message") (Discord.eventToIncomingMessage discordMessage)
+      matrix = fromMaybe (error "expected Matrix message") (Matrix.eventToIncomingMessage matrixRoomEvent)
+  QQ.banMemberRequest qq{chatId = Just "12345"} "98765" @?= Just (Aeson.object
+    [ "action" Aeson..= ("set_group_kick" :: Text)
+    , "params" Aeson..= Aeson.object
+        [ "group_id" Aeson..= (12345 :: Int)
+        , "user_id" Aeson..= (98765 :: Int)
+        , "reject_add_request" Aeson..= True
+        ]
+    ])
+  for_ ["", "0", "-1", "bogus"] \user -> do
+    QQ.banMemberRequest qq user @?= Nothing
+    Discord.banMemberRequest discord user @?= Nothing
+  QQ.banMemberRequest qq{kind = ChatPrivate} "98765" @?= Nothing
+  QQ.banMemberRequest qq{chatId = Nothing} "98765" @?= Nothing
+  Discord.banMemberRequest discord "98765" @?= Just ("80001", "98765")
+  Discord.banMemberRequest discord{raw = Aeson.Null} "98765" @?= Nothing
+  Discord.banMemberRequest discord{kind = ChatPrivate} "98765" @?= Nothing
+  for_ ["!room:example.org", "!opaqueRoomId"] \room ->
+    Matrix.banMemberRequest matrix{chatAliases = [room]} "@other:elsewhere.org"
+      @?= Just (MatrixProtocol.MatrixBanMember (MatrixProtocol.matrixRoomId room) "@other:elsewhere.org")
+  Matrix.banMemberRequest matrix{chatAliases = []} "@other:elsewhere.org" @?= Nothing
+  Matrix.banMemberRequest matrix{chatAliases = ["#alias:example.org"]} "@other:elsewhere.org" @?= Nothing
+  for_ ["", "other", "@:example.org", "@other:"] \user ->
+    Matrix.banMemberRequest matrix user @?= Nothing
